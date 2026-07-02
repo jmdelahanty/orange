@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git check-ignore *)",
+      "Bash(grep -v \".a$\")",
+      "Bash(git *)",
+      "Bash(sed -n '30,75p' ~/orange/src/threadworker.cpp)",
+      "Bash(sed -n '100,130p' ~/orange/src/threadworker.cpp)",
+      "Bash(g++ -fsanitize=thread -g -O1 -std=c++17 -Isrc tools/threadworker_tsan_stress.cpp src/offthreadmachine.cpp -o build-tsan/threadworker_tsan_stress -lpthread)",
+      "Bash(python3 -c \"import json; d=json.load\\(open\\('CMakePresets.json'\\)\\); print\\([p['name'] for p in d['configurePresets']]\\); print\\(json.dumps\\(d['configurePresets'][1], indent=1\\)\\)\")",
+      "Bash(sed -n '455,480p' CMakeLists.txt)",
+      "Bash(python3 -c \"import json; d=json.load\\(open\\('CMakePresets.json'\\)\\); print\\(json.dumps\\(d['configurePresets'][0], indent=1\\)\\)\")",
+      "Bash(python3 -c \"import json; d=json.load\\(open\\('CMakePresets.json'\\)\\); print\\(list\\(d.keys\\(\\)\\)\\); print\\(json.dumps\\(d.get\\('buildPresets', []\\)[:2], indent=1\\)\\); print\\(json.dumps\\(d['configurePresets'][2], indent=1\\)\\)\")",
+      "Bash(sed -n '15,25p' CMakeLists.txt)",
+      "Bash(cmake --preset debug_tsan)"
+    ]
+  }
+}

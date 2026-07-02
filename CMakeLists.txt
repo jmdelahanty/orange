@@ -399,6 +399,7 @@ set(NVENC_STRESS_LOAD_SOURCES
 set(EXTERNAL_RECORDER_IPC_PROBE_SOURCES
     "tools/external_recorder_ipc_probe.cpp"
     "${SRC_DIR}/FFmpegWriter.cpp"
+    "${SRC_DIR}/video_encode_profile.cpp"
     ${NVENCODER_SOURCES}
 )
 

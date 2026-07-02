@@ -108,6 +108,7 @@ private:
     uint64_t encoded_frames_ = 0;
     uint64_t blank_frames_encoded_ = 0;
     uint64_t dropped_frames_ = 0;
+    uint64_t crop_metadata_row_index_ = 0;
 };
 
 #endif // CROP_AND_ENCODE_WORKER_H

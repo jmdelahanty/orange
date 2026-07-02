@@ -900,7 +900,8 @@ Notes:
   crop clips do not create orphan final-tail clips. GUI finalization splits the
   root Orange-written
   `Cam*_crop_meta.csv` and `Cam*_crop_perf.csv` into per-clip crop sidecars by
-  continuous `recording_frame_id` ranges and records those paths under
+  continuous `recording_frame_id` ranges, rewriting `crop_video_frame_index` so
+  each clip-local crop metadata CSV starts at `0`, and records those paths under
   `recording_backend.crop_recording.rolling_clips` and each rolling clip's crop
   `recording_outputs` entry. The top-level
   `recording_outputs[serial].crop` descriptor is also finalized as an
@@ -1144,6 +1145,12 @@ Validation note:
   metadata CSV, and crop perf CSV. Newer schema-2 snapshots also mirror the same
   crop output under `recording_outputs[serial].crop` and
   `encoders[serial].outputs.crop`.
+- `Cam*_crop_meta.csv` is self-describing by header shape. The original
+  geometry columns remain first, and appended fields define crop-video frame
+  index, crop state, coordinate space, layout, rectangle semantics, detection
+  source, and selection policy. Use `crop_x,crop_y,crop_w,crop_h` as canonical
+  crop-window geometry and `detection_x,detection_y,detection_w,detection_h`
+  only as the selected live detection used to center the crop.
 - The GUI YOLO + crop observability smoke artifact
   `/home/jeremy/orange_data/exp/unsorted/2026_04_22_22_53_43` confirmed
   `crop_outputs[2010096]` matched the emitted crop artifacts, including

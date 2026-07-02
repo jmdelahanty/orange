@@ -30,6 +30,13 @@
 
 namespace {
 constexpr const char* kCropRecordingSinkModeEnv = "ORANGE_CROP_RECORDING_SINK_MODE";
+constexpr const char* kCropRectCoordinateSpace = "full_frame_pixels";
+constexpr const char* kCropRectLayout = "xywh_top_left";
+constexpr const char* kCropRectSemantics = "actual_clamped_source_roi";
+constexpr const char* kDetectionRectCoordinateSpace = "full_frame_pixels";
+constexpr const char* kDetectionRectLayout = "xywh_top_left";
+constexpr const char* kDetectionRectSemantics = "selected_postprocessed_model_detection";
+constexpr const char* kCropSelectionPolicy = "largest_detection_by_confidence";
 
 std::string normalize_crop_recording_sink_mode(std::string value)
 {
@@ -639,7 +646,7 @@ camera_control_(camera_control)
 
         encoder_->CreateEncoder(&initializeParams);
         encoder_->SetIOCudaStreams((NV_ENC_CUSTREAM_PTR)&m_stream, (NV_ENC_CUSTREAM_PTR)&m_stream);
-        
+
         const NvEncInputFrame *tempFrame = encoder_->GetNextInputFrame();
         encoder_pitch_ = tempFrame->pitch;
 
@@ -711,6 +718,7 @@ void CropAndEncodeWorker::reset_recording_counters()
     run_jobs_enqueued_ = 0;
     run_queue_full_drops_ = 0;
     run_queue_high_water_ = 0;
+    crop_metadata_row_index_ = 0;
 }
 
 void CropAndEncodeWorker::SetMaxQueueSize(int size)
@@ -1006,7 +1014,12 @@ bool CropAndEncodeWorker::ensure_recording_started(const std::string& recording_
                 << "recording_frame_id,local_frame_id,camera_frame_id,timestamp,timestamp_sys,"
                 << "has_detection,blank_frame,detection_confidence,"
                 << "crop_x,crop_y,crop_w,crop_h,"
-                << "detection_x,detection_y,detection_w,detection_h\n";
+                << "detection_x,detection_y,detection_w,detection_h,"
+                << "crop_video_frame_index,crop_state,crop_rect_valid,"
+                << "crop_rect_coordinate_space,crop_rect_layout,crop_rect_semantics,"
+                << "detection_rect_valid,detection_rect_coordinate_space,"
+                << "detection_rect_layout,detection_rect_semantics,detection_source,"
+                << "selection_policy\n";
         }
 
         crop_perf_.open(crop_perf_file_.c_str());
@@ -1031,6 +1044,7 @@ bool CropAndEncodeWorker::ensure_recording_started(const std::string& recording_
     }
 
     last_frame_id_used_ = 0;
+    crop_metadata_row_index_ = 0;
     encoder_flushed_ = false;
     camera_control_->active_recorders.fetch_add(1, std::memory_order_relaxed);
     is_recording_ = true;
@@ -1071,6 +1085,13 @@ void CropAndEncodeWorker::write_metadata_row(const CropFrameSnapshot& frame)
         return;
     }
 
+    const uint64_t crop_video_frame_index = crop_metadata_row_index_++;
+    const bool crop_rect_valid = frame.has_detection && !frame.blank_frame;
+    const bool detection_rect_valid =
+        frame.has_detection && frame.detection_w > 0.0f && frame.detection_h > 0.0f;
+    const char* crop_state = frame.has_detection ? "detected_crop" : "blank_no_detection";
+    const char* detection_source = frame.has_detection ? "model" : "none";
+
     *writer_.metadata << frame.recording_frame_id << ','
                       << frame.local_frame_id << ','
                       << frame.camera_frame_id << ','
@@ -1086,7 +1107,19 @@ void CropAndEncodeWorker::write_metadata_row(const CropFrameSnapshot& frame)
                       << frame.detection_x << ','
                       << frame.detection_y << ','
                       << frame.detection_w << ','
-                      << frame.detection_h << '\n';
+                      << frame.detection_h << ','
+                      << crop_video_frame_index << ','
+                      << crop_state << ','
+                      << (crop_rect_valid ? 1 : 0) << ','
+                      << kCropRectCoordinateSpace << ','
+                      << kCropRectLayout << ','
+                      << kCropRectSemantics << ','
+                      << (detection_rect_valid ? 1 : 0) << ','
+                      << kDetectionRectCoordinateSpace << ','
+                      << kDetectionRectLayout << ','
+                      << kDetectionRectSemantics << ','
+                      << detection_source << ','
+                      << kCropSelectionPolicy << '\n';
 }
 
 void CropAndEncodeWorker::write_perf_row(const CropFrameSnapshot& frame, const CropEncodePerfSample& sample)
@@ -1159,7 +1192,7 @@ void CropAndEncodeWorker::flush_and_close() {
         writer_.video = nullptr;
         std::cout << "[CropAndEncodeWorker] Video writer closed." << std::endl;
     }
-    
+
     if (writer_.metadata) {
         if (writer_.metadata->is_open()) {
             writer_.metadata->close();
@@ -1321,7 +1354,7 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
             if (active_crop_frame) {
                 ck(cudaStreamWaitEvent(m_stream, active_crop_frame->crop_ready_event, 0));
             }
-            
+
             if (encode_this_frame && active_crop_frame && external_crop_recording_enabled()) {
                 encode_prepared = submit_external_crop_frame(frame, active_crop_frame->d_crop_mono, &perf);
                 if (encode_prepared) {
@@ -1340,7 +1373,7 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
                 ck(cudaMemcpy2DAsync(d_nv12_dst, encIn->pitch,
                                      active_crop_frame->d_crop_mono, CROP_W,
                                      CROP_W, CROP_H, cudaMemcpyDeviceToDevice, m_stream));
-                
+
                 unsigned char* d_uv_plane_dst = d_nv12_dst + encIn->pitch * CROP_H;
                 ck(cudaMemset2DAsync(d_uv_plane_dst, encIn->pitch, 128, CROP_W, CROP_H / 2, m_stream));
                 encode_prepared = true;

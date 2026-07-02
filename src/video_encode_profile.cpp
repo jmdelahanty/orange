@@ -77,6 +77,170 @@ int normalize_importance_map_roi_size_px(int value)
     return value > 0 ? value : ImportanceMapConfig::kDefaultRoiSizePx;
 }
 
+uint32_t estimate_profile_target_bitrate(const VideoEncodeProfile& profile)
+{
+    if (profile.encoder_control_overrides.target_bitrate_bps > 0) {
+        return saturate_positive_u32(profile.encoder_control_overrides.target_bitrate_bps);
+    }
+
+    RecordingOutputConfig output_config;
+    output_config.mode = profile.output_mode;
+    output_config.downsample_factor = profile.downsample_factor;
+    output_config.requested_width = profile.requested_output_width;
+    output_config.requested_height = profile.requested_output_height;
+    output_config.resolved_width = static_cast<int>(profile.width);
+    output_config.resolved_height = static_cast<int>(profile.height);
+    output_config.resize_enabled = profile.resize_enabled;
+
+    CameraParams camera_params{};
+    camera_params.width = profile.source_width;
+    camera_params.height = profile.source_height;
+    camera_params.frame_rate = profile.fps;
+    camera_params.gpu_id = profile.source_gpu_id;
+    camera_params.color = profile.color;
+    return estimate_recording_bitrate(camera_params, output_config).average_bitrate;
+}
+
+double estimate_profile_target_bpp(const VideoEncodeProfile& profile,
+                                   uint32_t target_bps)
+{
+    const double denominator =
+        static_cast<double>(profile.width) *
+        static_cast<double>(profile.height) *
+        static_cast<double>(profile.fps);
+    if (denominator <= 0.0) {
+        return 0.0;
+    }
+    return static_cast<double>(target_bps) / denominator;
+}
+
+VideoSourcePixelContract derived_video_source_pixel_contract(
+    const VideoEncodeProfile& profile)
+{
+    VideoSourcePixelContract contract;
+    contract.encoder_input_format =
+        profile.input_format.empty() ? "nv12" : profile.input_format;
+    contract.encoded_pix_fmt = "yuv420p";
+    contract.encoded_color_range = "tv";
+
+    if (profile.output_kind == "crop") {
+        contract.id = "orange.crop.mono8.v1";
+        contract.pixel_format = "mono8";
+        contract.color_space = "linear_gray";
+        contract.channel_order = "gray";
+        contract.memory_layout = "HxW";
+        contract.width = profile.width;
+        contract.height = profile.height;
+        contract.source_origin = "analytics_crop";
+        contract.transform_to_encoder = "crop_mono8_to_nv12";
+        return contract;
+    }
+
+    const std::string source_format =
+        profile.source_format.empty()
+            ? (profile.color ? "rgb8" : "mono8")
+            : lower_ascii(profile.source_format);
+    const bool rgb_source = source_format == "rgb8" || source_format == "bgr8";
+    contract.id = rgb_source
+        ? "orange.camera.rgb8.full_frame.v1"
+        : "orange.camera.mono8.full_frame.v1";
+    contract.pixel_format = rgb_source ? "rgb8" : "mono8";
+    contract.color_space = rgb_source ? "srgb" : "linear_gray";
+    contract.channel_order = rgb_source ? "rgb" : "gray";
+    contract.memory_layout = rgb_source ? "HxWxC_interleaved" : "HxW";
+    contract.width = profile.source_width > 0 ? profile.source_width : profile.width;
+    contract.height = profile.source_height > 0 ? profile.source_height : profile.height;
+    contract.source_origin = "camera_dma";
+    const std::string transform_base = rgb_source ? "rgb8_to_nv12" : "mono8_to_nv12";
+    contract.transform_to_encoder =
+        profile.resize_enabled ? "resize_then_" + transform_base : transform_base;
+    return contract;
+}
+
+VideoSourcePixelContract merge_video_source_pixel_contract(
+    VideoSourcePixelContract base,
+    const VideoSourcePixelContract& override_contract)
+{
+    if (!override_contract.id.empty()) {
+        base.id = override_contract.id;
+    }
+    if (!override_contract.pixel_format.empty()) {
+        base.pixel_format = override_contract.pixel_format;
+    }
+    if (!override_contract.dtype.empty()) {
+        base.dtype = override_contract.dtype;
+    }
+    if (!override_contract.value_range.empty()) {
+        base.value_range = override_contract.value_range;
+    }
+    if (!override_contract.color_space.empty()) {
+        base.color_space = override_contract.color_space;
+    }
+    if (!override_contract.channel_order.empty()) {
+        base.channel_order = override_contract.channel_order;
+    }
+    if (!override_contract.memory_layout.empty()) {
+        base.memory_layout = override_contract.memory_layout;
+    }
+    if (override_contract.width > 0) {
+        base.width = override_contract.width;
+    }
+    if (override_contract.height > 0) {
+        base.height = override_contract.height;
+    }
+    if (!override_contract.coordinate_origin.empty()) {
+        base.coordinate_origin = override_contract.coordinate_origin;
+    }
+    if (!override_contract.source_origin.empty()) {
+        base.source_origin = override_contract.source_origin;
+    }
+    if (!override_contract.transform_to_encoder.empty()) {
+        base.transform_to_encoder = override_contract.transform_to_encoder;
+    }
+    if (!override_contract.encoder_input_format.empty()) {
+        base.encoder_input_format = override_contract.encoder_input_format;
+    }
+    if (!override_contract.encoded_pix_fmt.empty()) {
+        base.encoded_pix_fmt = override_contract.encoded_pix_fmt;
+    }
+    if (!override_contract.encoded_color_range.empty()) {
+        base.encoded_color_range = override_contract.encoded_color_range;
+    }
+    return base;
+}
+
+void append_source_pixel_comment_fields(std::ostringstream& comment,
+                                        const VideoEncodeProfile& profile)
+{
+    const VideoSourcePixelContract contract =
+        resolve_video_source_pixel_contract(profile);
+    comment << "; source_pixel_contract=" << contract.id
+            << "; source_pixel_format=" << contract.pixel_format
+            << "; source_pixel_dtype=" << contract.dtype
+            << "; source_pixel_range=" << contract.value_range
+            << "; source_color_space=" << contract.color_space
+            << "; source_channel_order=" << contract.channel_order
+            << "; source_memory_layout=" << contract.memory_layout
+            << "; source_width=" << contract.width
+            << "; source_height=" << contract.height
+            << "; source_coordinate_origin=" << contract.coordinate_origin
+            << "; source_origin=" << contract.source_origin
+            << "; source_transform_to_encoder=" << contract.transform_to_encoder
+            << "; encoder_input_format=" << contract.encoder_input_format
+            << "; encoded_pix_fmt=" << contract.encoded_pix_fmt
+            << "; encoded_color_range=" << contract.encoded_color_range;
+}
+
+nlohmann::json metadata_tags_to_json(
+    const std::vector<std::pair<std::string, std::string>>& tags)
+{
+    nlohmann::json out = nlohmann::json::object();
+    for (const auto& tag : tags) {
+        out[tag.first] = tag.second;
+    }
+    return out;
+}
+
 void apply_quality_recording_profile(NV_ENC_CONFIG& encode_config,
                                      const VideoEncodeProfile& profile,
                                      bool low_latency)
@@ -383,6 +547,7 @@ VideoEncodeProfile build_full_frame_video_encode_profile(
             camera_params,
             profile.tuning,
             profile.requested_gop_length);
+    profile.source_pixel_contract = resolve_video_source_pixel_contract(profile);
     return profile;
 }
 
@@ -413,6 +578,7 @@ VideoEncodeProfile build_crop_video_encode_profile(
     profile.source_gpu_id = camera_params.gpu_id;
     profile.encode_gpu_id = camera_params.gpu_id;
     profile.source_format = "mono8";
+    profile.source_pixel_contract = resolve_video_source_pixel_contract(profile);
     return profile;
 }
 
@@ -548,6 +714,139 @@ void apply_video_encode_profile_to_nvenc_config(
     }
 }
 
+VideoSourcePixelContract resolve_video_source_pixel_contract(
+    const VideoEncodeProfile& profile)
+{
+    return merge_video_source_pixel_contract(
+        derived_video_source_pixel_contract(profile),
+        profile.source_pixel_contract);
+}
+
+nlohmann::json build_video_source_pixel_contract_json(
+    const VideoEncodeProfile& profile)
+{
+    const VideoSourcePixelContract contract =
+        resolve_video_source_pixel_contract(profile);
+    return nlohmann::json{
+        {"id", contract.id},
+        {"pixel_format", contract.pixel_format},
+        {"dtype", contract.dtype},
+        {"value_range", contract.value_range},
+        {"color_space", contract.color_space},
+        {"channel_order", contract.channel_order},
+        {"memory_layout", contract.memory_layout},
+        {"width", contract.width},
+        {"height", contract.height},
+        {"coordinate_origin", contract.coordinate_origin},
+        {"source_origin", contract.source_origin},
+        {"transform_to_encoder", contract.transform_to_encoder},
+        {"encoder_input_format", contract.encoder_input_format},
+        {"encoded_pix_fmt", contract.encoded_pix_fmt},
+        {"encoded_color_range", contract.encoded_color_range}
+    };
+}
+
+nlohmann::json build_video_encoder_metadata_json(
+    const VideoEncodeProfile& profile)
+{
+    const std::string rc_strategy =
+        resolve_video_encode_rate_control_strategy(profile.tuning, profile.rate_control_mode);
+    nlohmann::json encoder = {
+        {"name", "nvenc"},
+        {"profile_name", profile.name},
+        {"codec", profile.codec},
+        {"preset", profile.preset},
+        {"tuning", profile.tuning},
+        {"rate_control_mode", profile.rate_control_mode},
+        {"rate_control_strategy", rc_strategy},
+        {"quality_value", profile.quality_value},
+        {"requested_gop_length", profile.requested_gop_length},
+        {"resolved_gop_length", profile.resolved_gop_length},
+        {"fps", profile.fps},
+        {"input_format", profile.input_format},
+        {"source_format", profile.source_format},
+        {"output_width", profile.width},
+        {"output_height", profile.height},
+        {"source_width", profile.source_width},
+        {"source_height", profile.source_height},
+        {"output_kind", profile.output_kind},
+        {"output_mode", profile.output_mode},
+        {"color", profile.color},
+        {"source_gpu_id", profile.source_gpu_id},
+        {"encode_gpu_id", profile.encode_gpu_id},
+        {"resize_enabled", profile.resize_enabled},
+        {"downsample_factor", profile.downsample_factor},
+        {"requested_output_width", profile.requested_output_width},
+        {"requested_output_height", profile.requested_output_height}
+    };
+
+    if (rc_strategy == "lossless") {
+        encoder["qp"] = 0;
+    } else if (rc_strategy == "cqp") {
+        encoder["qp"] = profile.quality_value;
+    } else {
+        const uint32_t target_bps = estimate_profile_target_bitrate(profile);
+        encoder["target_bps"] = target_bps;
+        encoder["target_bpp"] = estimate_profile_target_bpp(profile, target_bps);
+    }
+    if (profile.encoder_control_overrides.max_bitrate_bps > 0) {
+        encoder["max_bps"] = profile.encoder_control_overrides.max_bitrate_bps;
+    }
+    if (profile.encoder_control_overrides.vbv_buffer_size > 0) {
+        encoder["vbv_buffer_size"] = profile.encoder_control_overrides.vbv_buffer_size;
+    }
+    encoder["aq"] = profile.encoder_control_overrides.aq;
+    encoder["temporal_aq"] = profile.encoder_control_overrides.temporal_aq;
+    encoder["lookahead"] = profile.encoder_control_overrides.lookahead;
+    encoder["lookahead_depth"] = profile.encoder_control_overrides.lookahead_depth;
+
+    const std::string importance_map_mode =
+        normalize_importance_map_mode_string(profile.importance_map.mode);
+    encoder["importance_map"] = {
+        {"mode", importance_map_mode},
+        {"roi_size_px", normalize_importance_map_roi_size_px(
+             profile.importance_map.roi_size_px)}
+    };
+    return encoder;
+}
+
+nlohmann::json build_video_metadata_json(
+    const VideoEncodeProfile& profile,
+    const std::string& video_path,
+    const std::string& stream_id,
+    bool mp4_metadata_attempted,
+    bool mp4_metadata_succeeded,
+    const std::string& mp4_metadata_reason)
+{
+    nlohmann::json out = {
+        {"schema_id", "orange.video_metadata"},
+        {"schema_version", 1},
+        {"video_path", video_path},
+        {"stream_id", stream_id},
+        {"camera_serial", profile.camera_serial},
+        {"output_kind", profile.output_kind},
+        {"role", profile.role},
+        {"encoder", build_video_encoder_metadata_json(profile)},
+        {"source_pixel_contract", build_video_source_pixel_contract_json(profile)},
+        {"geometry", {
+            {"output_width", profile.width},
+            {"output_height", profile.height},
+            {"source_width", profile.source_width},
+            {"source_height", profile.source_height},
+            {"fps", profile.fps}
+        }},
+        {"mp4_tags_expected", metadata_tags_to_json(
+             build_video_encode_metadata_tags(profile))},
+        {"mp4_metadata_embedding", {
+            {"attempted", mp4_metadata_attempted},
+            {"succeeded", mp4_metadata_succeeded},
+            {"reason", mp4_metadata_reason},
+            {"validated_with_ffprobe", false}
+        }}
+    };
+    return out;
+}
+
 std::vector<std::pair<std::string, std::string>> build_video_encode_metadata_tags(
     const VideoEncodeProfile& profile)
 {
@@ -568,6 +867,7 @@ std::vector<std::pair<std::string, std::string>> build_video_encode_metadata_tag
             << "; fps=" << profile.fps
             << "; color=" << (profile.color ? 1 : 0)
             << "; gop=" << profile.resolved_gop_length;
+    append_source_pixel_comment_fields(comment, profile);
 
     if (profile.output_kind == "crop") {
         comment << "; output_kind=crop"
@@ -581,7 +881,8 @@ std::vector<std::pair<std::string, std::string>> build_video_encode_metadata_tag
         return tags;
     }
 
-    comment << "; output_mode=" << profile.output_mode;
+    comment << "; output_kind=" << profile.output_kind
+            << "; output_mode=" << profile.output_mode;
     if (profile.resize_enabled) {
         comment << "; source_res=" << profile.source_width << "x" << profile.source_height;
     }
@@ -593,29 +894,8 @@ std::vector<std::pair<std::string, std::string>> build_video_encode_metadata_tag
     } else if (rc_strategy == "cqp") {
         comment << "; rc=constqp; qp=" << profile.quality_value;
     } else {
-        const uint32_t target_bps = profile.encoder_control_overrides.target_bitrate_bps > 0
-            ? saturate_positive_u32(profile.encoder_control_overrides.target_bitrate_bps)
-            : [&profile]() {
-                RecordingOutputConfig output_config;
-                output_config.mode = profile.output_mode;
-                output_config.downsample_factor = profile.downsample_factor;
-                output_config.requested_width = profile.requested_output_width;
-                output_config.requested_height = profile.requested_output_height;
-                output_config.resolved_width = static_cast<int>(profile.width);
-                output_config.resolved_height = static_cast<int>(profile.height);
-                output_config.resize_enabled = profile.resize_enabled;
-                CameraParams camera_params{};
-                camera_params.width = profile.source_width;
-                camera_params.height = profile.source_height;
-                camera_params.frame_rate = profile.fps;
-                camera_params.gpu_id = profile.source_gpu_id;
-                camera_params.color = profile.color;
-                return estimate_recording_bitrate(camera_params, output_config).average_bitrate;
-            }();
-        const double actual_bpp = static_cast<double>(target_bps) /
-                                  (static_cast<double>(profile.width) *
-                                   static_cast<double>(profile.height) *
-                                   static_cast<double>(profile.fps));
+        const uint32_t target_bps = estimate_profile_target_bitrate(profile);
+        const double actual_bpp = estimate_profile_target_bpp(profile, target_bps);
         if (rc_strategy == "cbr") {
             comment << "; rc=cbr; bpp=" << std::fixed << std::setprecision(3)
                     << actual_bpp << "; target_bps=" << target_bps;

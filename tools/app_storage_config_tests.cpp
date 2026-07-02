@@ -379,6 +379,69 @@ void test_camera_config_scan_ignores_editor_and_temp_files()
     std::filesystem::remove_all(root);
 }
 
+void test_save_camera_configs_to_folder_writes_schema_four_files()
+{
+    const std::filesystem::path root = make_temp_dir();
+    const std::filesystem::path config_dir = root / "local" / "new_config";
+
+    CameraParams cameras[2] = {};
+    cameras[0].camera_name = "left";
+    cameras[0].camera_serial = "2010095";
+    cameras[0].device_model = "HB-7000SM";
+    cameras[0].camera_scan_type = "area_scan";
+    cameras[0].gpio_connector_variant = "area_scan_12_pin";
+    cameras[0].gpio_pinout_access = "not_exposed";
+    cameras[0].width = 3208;
+    cameras[0].height = 2200;
+    cameras[0].frame_rate = 100;
+    cameras[0].gain = 1000;
+    cameras[0].exposure = 3000;
+    cameras[0].pixel_format = "Mono8";
+    cameras[0].color_temp = "CT_Off";
+    cameras[0].gpu_id = 5;
+    cameras[0].configured_gpu_id = 5;
+    cameras[0].gpu_direct = true;
+    cameras[0].lens_control_enabled = true;
+    cameras[0].crop_pipeline.crop_size_px = 320;
+    cameras[0].crop_pipeline.preview_max_fps = 12;
+
+    cameras[1] = cameras[0];
+    cameras[1].camera_name = "right";
+    cameras[1].camera_serial = "2010096";
+    cameras[1].gpu_id = 7;
+    cameras[1].configured_gpu_id = 7;
+    cameras[1].crop_pipeline.crop_size_px = 384;
+
+    std::string error;
+    require(
+        save_camera_json_configs_to_folder(cameras, 2, config_dir.string(), &error),
+        "batch save should create camera config files: " + error);
+
+    require(
+        cameras[0].config_path == (config_dir / "2010095.json").string(),
+        "first camera should use canonical serial filename");
+    require(
+        cameras[1].config_path == (config_dir / "2010096.json").string(),
+        "second camera should use canonical serial filename");
+
+    const nlohmann::json left = read_json(config_dir / "2010095.json");
+    const nlohmann::json right = read_json(config_dir / "2010096.json");
+    require(left.value("schema_id", std::string()) == "orange.camera.config", "schema id should be current");
+    require(left.value("schema_version", 0) == 4, "schema version should be 4");
+    require(left.value("device_serial_number", std::string()) == "2010095", "left serial should be saved");
+    require(left.value("source_gpu_id", -1) == 5, "left source GPU should be saved");
+    require(left["crop_pipeline"].value("crop_size_px", 0) == 320, "left crop size should be saved");
+    require(right.value("device_serial_number", std::string()) == "2010096", "right serial should be saved");
+    require(right.value("source_gpu_id", -1) == 7, "right source GPU should be saved");
+    require(right["crop_pipeline"].value("crop_size_px", 0) == 384, "right crop size should be saved");
+
+    std::vector<std::string> camera_config_files;
+    update_camera_configs(camera_config_files, config_dir.string());
+    require(camera_config_files.size() == 2, "new folder should scan both generated camera configs");
+
+    std::filesystem::remove_all(root);
+}
+
 void test_camera_config_loads_lens_control_flag()
 {
     const std::filesystem::path root = make_temp_dir();
@@ -733,6 +796,8 @@ int main()
          &test_empty_app_sink_mode_is_not_configured},
         {"camera_config_scan_ignores_editor_and_temp_files",
          &test_camera_config_scan_ignores_editor_and_temp_files},
+        {"save_camera_configs_to_folder_writes_schema_four_files",
+         &test_save_camera_configs_to_folder_writes_schema_four_files},
         {"camera_config_loads_lens_control_flag", &test_camera_config_loads_lens_control_flag},
         {"camera_config_lens_control_defaults_enabled",
          &test_camera_config_lens_control_defaults_enabled},

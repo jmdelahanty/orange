@@ -94,6 +94,18 @@ CROP_META_HEADER = [
     "detection_y",
     "detection_w",
     "detection_h",
+    "crop_video_frame_index",
+    "crop_state",
+    "crop_rect_valid",
+    "crop_rect_coordinate_space",
+    "crop_rect_layout",
+    "crop_rect_semantics",
+    "detection_rect_valid",
+    "detection_rect_coordinate_space",
+    "detection_rect_layout",
+    "detection_rect_semantics",
+    "detection_source",
+    "selection_policy",
 ]
 
 CROP_PERF_HEADER = [
@@ -108,6 +120,23 @@ CROP_PERF_HEADER = [
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
+
+
+def crop_meta_contract_fields(frame_index: int, has_detection: bool) -> dict[str, object]:
+    return {
+        "crop_video_frame_index": frame_index,
+        "crop_state": "detected_crop" if has_detection else "blank_no_detection",
+        "crop_rect_valid": 1 if has_detection else 0,
+        "crop_rect_coordinate_space": "full_frame_pixels",
+        "crop_rect_layout": "xywh_top_left",
+        "crop_rect_semantics": "actual_clamped_source_roi",
+        "detection_rect_valid": 1 if has_detection else 0,
+        "detection_rect_coordinate_space": "full_frame_pixels",
+        "detection_rect_layout": "xywh_top_left",
+        "detection_rect_semantics": "selected_postprocessed_model_detection",
+        "detection_source": "model" if has_detection else "none",
+        "selection_policy": "largest_detection_by_confidence",
+    }
 
 
 def write_sidecar(
@@ -526,7 +555,7 @@ def write_crop_recording_artifacts(
         writer = csv.DictWriter(handle, fieldnames=CROP_META_HEADER)
         writer.writeheader()
         actual_detection_rows = rows if detection_rows is None else detection_rows
-        for frame_id in range(1, rows + 1):
+        for frame_index, frame_id in enumerate(range(1, rows + 1)):
             has_detection = frame_id <= actual_detection_rows
             writer.writerow(
                 {
@@ -546,6 +575,7 @@ def write_crop_recording_artifacts(
                     "detection_y": 22 if has_detection else 0,
                     "detection_w": 30 if has_detection else 0,
                     "detection_h": 32 if has_detection else 0,
+                    **crop_meta_contract_fields(frame_index, has_detection),
                 }
             )
 
@@ -596,7 +626,7 @@ def write_crop_clip_artifacts(
     with metadata.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=CROP_META_HEADER)
         writer.writeheader()
-        for frame_id in range(first_frame, metadata_last + 1):
+        for frame_index, frame_id in enumerate(range(first_frame, metadata_last + 1)):
             writer.writerow(
                 {
                     "recording_frame_id": frame_id,
@@ -615,6 +645,7 @@ def write_crop_clip_artifacts(
                     "detection_y": 22,
                     "detection_w": 30,
                     "detection_h": 32,
+                    **crop_meta_contract_fields(frame_index, True),
                 }
             )
     with perf.open("w", encoding="utf-8", newline="") as handle:
@@ -883,6 +914,24 @@ def write_external_crop_summary(
     queue_high_water: int = 4,
     enqueue_age_p95_ms: float = 1.5,
 ) -> None:
+    serial = path.name.removeprefix("Cam").removesuffix("_crop_external_summary.json")
+    title = f"Cam{serial} crop"
+    comment = (
+        "nvenc codec=hevc; preset=p7; tuning=lossless; res=256x256; fps=100; "
+        "color=0; gop=1; source_pixel_contract=orange.crop.mono8.v1; "
+        "source_pixel_format=mono8; source_pixel_dtype=uint8; "
+        "source_pixel_range=0_255; source_color_space=linear_gray; "
+        "source_channel_order=gray; source_memory_layout=HxW; "
+        "source_width=256; source_height=256; "
+        "source_coordinate_origin=top_left; source_origin=analytics_crop; "
+        "source_transform_to_encoder=crop_mono8_to_nv12; "
+        "encoder_input_format=nv12; encoded_pix_fmt=yuv420p; "
+        "encoded_color_range=tv; output_kind=crop; role=sidecar; "
+        "input_format=nv12; source_format=mono8; "
+        "coordinate_space=full_frame_pixels; "
+        "selection_policy=largest_detection_by_confidence; "
+        "blank_frame_policy=encode_black_frame_when_no_detection"
+    )
     path.write_text(
         json.dumps(
             {
@@ -894,6 +943,49 @@ def write_external_crop_summary(
                 "external_encode": {
                     "frames_dropped": dropped,
                     "enqueue_age_p95_ms": enqueue_age_p95_ms,
+                },
+                "video_metadata": {
+                    "schema_id": "orange.video_metadata",
+                    "schema_version": 1,
+                    "video_path": str(path).replace("_summary.json", ".mp4"),
+                    "stream_id": f"{serial}_crop",
+                    "camera_serial": serial,
+                    "output_kind": "crop",
+                    "role": "sidecar",
+                    "encoder": {
+                        "name": "nvenc",
+                        "codec": "hevc",
+                        "preset": "p7",
+                        "tuning": "lossless",
+                        "resolved_gop_length": 1,
+                        "fps": 100,
+                    },
+                    "source_pixel_contract": {
+                        "id": "orange.crop.mono8.v1",
+                        "pixel_format": "mono8",
+                        "dtype": "uint8",
+                        "value_range": "0_255",
+                        "color_space": "linear_gray",
+                        "channel_order": "gray",
+                        "memory_layout": "HxW",
+                        "width": 256,
+                        "height": 256,
+                        "coordinate_origin": "top_left",
+                        "source_origin": "analytics_crop",
+                        "transform_to_encoder": "crop_mono8_to_nv12",
+                        "encoder_input_format": "nv12",
+                        "encoded_pix_fmt": "yuv420p",
+                        "encoded_color_range": "tv",
+                    },
+                    "mp4_tags_expected": {
+                        "title": title,
+                        "comment": comment,
+                    },
+                    "mp4_metadata_embedding": {
+                        "attempted": True,
+                        "succeeded": True,
+                        "validated_with_ffprobe": False,
+                    },
                 },
             }
         )
@@ -1993,6 +2085,40 @@ def test_crop_recording_artifacts_pass_when_aligned() -> None:
         require(not reporter.failures, f"unexpected failures: {reporter.failures}")
         require(summary[serial]["metadata_rows"] == 3, "metadata row count should be summarized")
         require(summary[serial]["perf_rows"] == 3, "perf row count should be summarized")
+
+
+def test_crop_metadata_contract_accepts_valid_rows() -> None:
+    rows = [
+        {
+            "has_detection": "1",
+            "blank_frame": "0",
+            **{key: str(value) for key, value in crop_meta_contract_fields(0, True).items()},
+        },
+        {
+            "has_detection": "0",
+            "blank_frame": "1",
+            **{key: str(value) for key, value in crop_meta_contract_fields(1, False).items()},
+        },
+    ]
+    reporter = validator.Reporter(verbose=False)
+    validator.check_crop_metadata_contract(reporter, "2010096", rows, "")
+    require(not reporter.failures, f"unexpected contract failures: {reporter.failures}")
+
+
+def test_crop_metadata_contract_fails_on_bad_frame_index() -> None:
+    rows = [
+        {
+            "has_detection": "1",
+            "blank_frame": "0",
+            **{key: str(value) for key, value in crop_meta_contract_fields(3, True).items()},
+        },
+    ]
+    reporter = validator.Reporter(verbose=False)
+    validator.check_crop_metadata_contract(reporter, "2010096", rows, "")
+    require(
+        any("invalid crop_video_frame_index" in failure for failure in reporter.failures),
+        "bad crop_video_frame_index should fail",
+    )
 
 
 def test_crop_recording_artifacts_use_recording_output_descriptor_paths() -> None:
@@ -3705,6 +3831,30 @@ def test_crop_recording_artifacts_fail_on_keyframe_row_mismatch() -> None:
         )
 
 
+def test_crop_mp4_key_sample_flags_require_every_packet_key() -> None:
+    reporter = validator.Reporter(verbose=False)
+    original_ffprobe_packet_key_flags = validator.ffprobe_packet_key_flags
+    validator.ffprobe_packet_key_flags = lambda path, ffprobe: {
+        "status": "ok",
+        "flags": ["K_", "__", "K_"],
+    }
+    try:
+        validator.check_crop_mp4_key_samples(
+            reporter,
+            Path("Cam2010095_crop.mp4"),
+            "ffprobe",
+            "Cam2010095 crop MP4",
+            expected_packet_count=3,
+        )
+    finally:
+        validator.ffprobe_packet_key_flags = original_ffprobe_packet_key_flags
+
+    require(
+        any("expected every packet to be a key/sync sample" in failure for failure in reporter.failures),
+        f"non-key crop packet should fail MP4 key-sample validation: {reporter.failures}",
+    )
+
+
 def test_crop_recording_artifacts_fail_on_dropped_rows() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -4067,6 +4217,24 @@ def check_main_video_content_failure_allowlist(
                 "height": 4512,
                 "bitrate_bps": 5_000_000,
                 "path": "/tmp/no_lens.mp4",
+                "tags": {
+                    "title": "Cam2010093",
+                    "comment": (
+                        "nvenc codec=hevc; preset=p1; tuning=ll; res=4512x4512; "
+                        "fps=100; color=0; gop=100; "
+                        "source_pixel_contract=orange.camera.mono8.full_frame.v1; "
+                        "source_pixel_format=mono8; source_pixel_dtype=uint8; "
+                        "source_pixel_range=0_255; source_color_space=linear_gray; "
+                        "source_channel_order=gray; source_memory_layout=HxW; "
+                        "source_width=4512; source_height=4512; "
+                        "source_coordinate_origin=top_left; source_origin=camera_dma; "
+                        "source_transform_to_encoder=mono8_to_nv12; "
+                        "encoder_input_format=nv12; encoded_pix_fmt=yuv420p; "
+                        "encoded_color_range=tv; output_kind=full; "
+                        "output_mode=factor; rc=vbr; bpp=0.100; "
+                        "target_bps=150000000"
+                    ),
+                },
             }
         }
     }
@@ -4161,6 +4329,8 @@ def main() -> int:
         test_external_recorder_status_validation_requires_contract_flags,
         test_external_recorder_status_validation_derives_status_path_from_summary,
         test_crop_recording_artifacts_pass_when_aligned,
+        test_crop_metadata_contract_accepts_valid_rows,
+        test_crop_metadata_contract_fails_on_bad_frame_index,
         test_crop_recording_artifacts_use_recording_output_descriptor_paths,
         test_crop_recording_artifacts_external_queue_expectations,
         test_crop_recording_artifacts_external_queue_high_water_cannot_exceed_depth,
@@ -4198,6 +4368,7 @@ def main() -> int:
         test_rolling_clip_videos_are_complete_recording_candidates,
         test_crop_recording_artifacts_fail_on_perf_row_mismatch,
         test_crop_recording_artifacts_fail_on_keyframe_row_mismatch,
+        test_crop_mp4_key_sample_flags_require_every_packet_key,
         test_crop_recording_artifacts_fail_on_dropped_rows,
         test_crop_recording_artifacts_fail_on_yolo_row_mismatch,
         test_legacy_snapshot_without_crop_outputs_checks_requested_cameras,

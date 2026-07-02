@@ -5,6 +5,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+SOURCE_PIXEL_CONTRACT_BY_OUTPUT_KIND = {
+    "full": "orange.camera.mono8.full_frame.v1",
+    "crop": "orange.crop.mono8.v1",
+}
+
+SOURCE_PIXEL_TRANSFORM_BY_OUTPUT_KIND = {
+    "full": "mono8_to_nv12",
+    "crop": "crop_mono8_to_nv12",
+}
+
 
 def _as_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
@@ -23,6 +33,203 @@ def _artifact_exists(recording_folder: Path, value: Any) -> bool:
     if not value:
         return False
     return _artifact_path(recording_folder, value).exists()
+
+
+def normalized_mp4_tags(tags: Any) -> dict[str, str]:
+    if not isinstance(tags, dict):
+        return {}
+    return {
+        str(key).lower(): str(value)
+        for key, value in tags.items()
+        if value is not None
+    }
+
+
+def parse_mp4_comment_fields(comment: Any) -> dict[str, str]:
+    if not isinstance(comment, str):
+        return {}
+    fields: dict[str, str] = {}
+    for raw_part in comment.split(";"):
+        part = raw_part.strip()
+        if not part:
+            continue
+        if part.startswith("nvenc "):
+            part = part[len("nvenc "):].strip()
+        for token in part.split():
+            if "=" not in token:
+                continue
+            key, value = token.split("=", 1)
+            if key:
+                fields[key] = value
+    return fields
+
+
+def _append_expected_field_error(
+    errors: list[str],
+    fields: dict[str, str],
+    *,
+    key: str,
+    expected: str,
+    label: str,
+) -> None:
+    actual = fields.get(key)
+    if actual != expected:
+        errors.append(f"{label} MP4 comment {key}={actual!r}, expected {expected!r}")
+
+
+def mp4_source_pixel_tag_errors(
+    tags: Any,
+    *,
+    output_kind: str,
+    label: str,
+) -> list[str]:
+    errors: list[str] = []
+    normalized = normalized_mp4_tags(tags)
+    title = normalized.get("title")
+    comment = normalized.get("comment")
+    if not title:
+        errors.append(f"{label} MP4 metadata missing title tag")
+    if not comment:
+        errors.append(f"{label} MP4 metadata missing comment tag")
+        return errors
+
+    fields = parse_mp4_comment_fields(comment)
+    expected_contract = SOURCE_PIXEL_CONTRACT_BY_OUTPUT_KIND.get(output_kind)
+    expected_transform = SOURCE_PIXEL_TRANSFORM_BY_OUTPUT_KIND.get(output_kind)
+    if expected_contract:
+        _append_expected_field_error(
+            errors,
+            fields,
+            key="source_pixel_contract",
+            expected=expected_contract,
+            label=label,
+        )
+    if expected_transform:
+        _append_expected_field_error(
+            errors,
+            fields,
+            key="source_transform_to_encoder",
+            expected=expected_transform,
+            label=label,
+        )
+    for key, expected in (
+        ("source_pixel_format", "mono8"),
+        ("source_pixel_dtype", "uint8"),
+        ("source_pixel_range", "0_255"),
+        ("source_color_space", "linear_gray"),
+        ("source_channel_order", "gray"),
+        ("source_memory_layout", "HxW"),
+        ("source_coordinate_origin", "top_left"),
+        ("encoder_input_format", "nv12"),
+        ("encoded_pix_fmt", "yuv420p"),
+        ("encoded_color_range", "tv"),
+    ):
+        _append_expected_field_error(errors, fields, key=key, expected=expected, label=label)
+
+    _append_expected_field_error(errors, fields, key="output_kind", expected=output_kind, label=label)
+    for key in ("source_width", "source_height"):
+        value = fields.get(key)
+        try:
+            if int(value or "0") <= 0:
+                errors.append(f"{label} MP4 comment {key} must be positive, got {value!r}")
+        except ValueError:
+            errors.append(f"{label} MP4 comment {key} is not an integer: {value!r}")
+    return errors
+
+
+def video_metadata_contract_errors(
+    video_metadata: Any,
+    *,
+    output_kind: str,
+    label: str,
+    camera_serial: str | None = None,
+    stream_id: str | None = None,
+    mp4_tags: Any | None = None,
+) -> list[str]:
+    errors: list[str] = []
+    metadata = _as_dict(video_metadata)
+    if not metadata:
+        return [f"{label} missing video_metadata"]
+    if metadata.get("schema_id") != "orange.video_metadata":
+        errors.append(f"{label} video_metadata.schema_id={metadata.get('schema_id')!r}")
+    if metadata.get("schema_version") != 1:
+        errors.append(f"{label} video_metadata.schema_version={metadata.get('schema_version')!r}")
+    if metadata.get("output_kind") != output_kind:
+        errors.append(
+            f"{label} video_metadata.output_kind={metadata.get('output_kind')!r}, "
+            f"expected {output_kind!r}"
+        )
+    if camera_serial and metadata.get("camera_serial") != camera_serial:
+        errors.append(
+            f"{label} video_metadata.camera_serial={metadata.get('camera_serial')!r}, "
+            f"expected {camera_serial!r}"
+        )
+    if stream_id and metadata.get("stream_id") != stream_id:
+        errors.append(
+            f"{label} video_metadata.stream_id={metadata.get('stream_id')!r}, "
+            f"expected {stream_id!r}"
+        )
+
+    source = _as_dict(metadata.get("source_pixel_contract"))
+    expected_contract = SOURCE_PIXEL_CONTRACT_BY_OUTPUT_KIND.get(output_kind)
+    expected_transform = SOURCE_PIXEL_TRANSFORM_BY_OUTPUT_KIND.get(output_kind)
+    checks = {
+        "id": expected_contract,
+        "pixel_format": "mono8",
+        "dtype": "uint8",
+        "value_range": "0_255",
+        "color_space": "linear_gray",
+        "channel_order": "gray",
+        "memory_layout": "HxW",
+        "coordinate_origin": "top_left",
+        "transform_to_encoder": expected_transform,
+        "encoder_input_format": "nv12",
+        "encoded_pix_fmt": "yuv420p",
+        "encoded_color_range": "tv",
+    }
+    for key, expected in checks.items():
+        if expected is not None and source.get(key) != expected:
+            errors.append(
+                f"{label} video_metadata.source_pixel_contract.{key}="
+                f"{source.get(key)!r}, expected {expected!r}"
+            )
+    for key in ("width", "height"):
+        try:
+            if int(source.get(key, 0)) <= 0:
+                errors.append(f"{label} video_metadata.source_pixel_contract.{key} must be positive")
+        except (TypeError, ValueError):
+            errors.append(f"{label} video_metadata.source_pixel_contract.{key} is invalid")
+
+    encoder = _as_dict(metadata.get("encoder"))
+    for key in ("name", "codec", "preset", "tuning", "resolved_gop_length", "fps"):
+        if encoder.get(key) in (None, ""):
+            errors.append(f"{label} video_metadata.encoder.{key} missing")
+
+    expected_tags = _as_dict(metadata.get("mp4_tags_expected"))
+    errors.extend(
+        mp4_source_pixel_tag_errors(
+            expected_tags,
+            output_kind=output_kind,
+            label=f"{label} video_metadata.mp4_tags_expected",
+        )
+    )
+    if mp4_tags is not None:
+        actual_tags = normalized_mp4_tags(mp4_tags)
+        for key in ("title", "comment"):
+            expected = expected_tags.get(key)
+            actual = actual_tags.get(key)
+            if expected != actual:
+                errors.append(
+                    f"{label} MP4 tag {key}={actual!r}, expected video_metadata "
+                    f"mp4_tags_expected.{key}={expected!r}"
+                )
+    embedding = _as_dict(metadata.get("mp4_metadata_embedding"))
+    if embedding:
+        if embedding.get("attempted") is not True:
+            errors.append(f"{label} video_metadata.mp4_metadata_embedding.attempted is not true")
+        if embedding.get("succeeded") is not True:
+            errors.append(f"{label} video_metadata.mp4_metadata_embedding.succeeded is not true")
+    return errors
 
 
 def _same_artifact_path(recording_folder: Path, left: Any, right: Any) -> bool:
@@ -216,6 +423,52 @@ def recording_output_contract_errors(
                     crop_output=_as_dict(crop_outputs.get(serial)),
                 )
 
+    return errors
+
+
+def mp4_key_sample_flag_errors(
+    packet_flags: list[str],
+    *,
+    label: str,
+    require_all_key_samples: bool = False,
+    expected_packet_count: int | None = None,
+) -> list[str]:
+    """Return validation errors for ffprobe packet key flags.
+
+    ffprobe's demuxed packet key flag is populated from the MP4 sync-sample
+    table for MP4 inputs. Crop videos are encoded as GOP=1, so every packet
+    should be a key/sync sample.
+    """
+
+    normalized_flags = [str(flag).strip() for flag in packet_flags if str(flag).strip()]
+    errors: list[str] = []
+    if not normalized_flags:
+        errors.append(f"{label} MP4 has no packet key flags from ffprobe")
+        return errors
+
+    if expected_packet_count is not None and len(normalized_flags) != expected_packet_count:
+        errors.append(
+            f"{label} MP4 packet count from ffprobe ({len(normalized_flags)}) "
+            f"!= expected packet count ({expected_packet_count})"
+        )
+
+    key_flags = ["K" in flag.upper() for flag in normalized_flags]
+    if not key_flags[0]:
+        errors.append(
+            f"{label} MP4 first packet is not a key/sync sample "
+            f"(flags={normalized_flags[0]!r})"
+        )
+
+    if require_all_key_samples and not all(key_flags):
+        first_non_key_indices = [
+            index for index, is_key in enumerate(key_flags) if not is_key
+        ][:8]
+        errors.append(
+            f"{label} MP4 expected every packet to be a key/sync sample "
+            f"for GOP=1 crop video, but {len(key_flags) - sum(key_flags)} "
+            f"of {len(key_flags)} packet(s) were non-key "
+            f"(first non-key packet indices: {first_non_key_indices})"
+        )
     return errors
 
 

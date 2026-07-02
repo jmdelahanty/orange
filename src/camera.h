@@ -57,7 +57,7 @@ struct CameraRigIoOutputState {
 };
 
 struct CameraCropPipelineConfig {
-    static constexpr int kDefaultCropSizePx = 256;
+    static constexpr int kDefaultCropSizePx = 384;
     static constexpr int kMinCropSizePx = 32;
     static constexpr int kMaxCropSizePx = 2048;
     static constexpr int kDefaultPreviewMaxFps = 15;

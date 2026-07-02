@@ -22,7 +22,8 @@ Primary stages (per camera):
 - YOLO (`YoloWorker`): runs inference, writes detections into the entry, may dispatch to crop/encode.
 - Encoder preprocess (`EncoderPreprocessWorker`): prepares frames for HW encoding and hands off `ENCODER_WORKER_ENTRY` to the HW encoder.
 - HW encoder (`EncoderHwWorker`): performs NVENC encoding and file I/O.
-- Crop/encode (`CropAndEncodeWorker`): creates a 256x256 crop for both preview and optional NVENC recording.
+- Crop/encode (`CropAndEncodeWorker`): creates the configured square crop,
+  defaulting to 384x384, for both preview and optional NVENC recording.
 - Spatial snapshot (`SpatialSnapshotWorker`): optional calibration consumer
   that copies one requested full-resolution stream frame into snapshot-owned
   memory and releases the acquisition frame before UI/Hough work.
@@ -42,7 +43,8 @@ Files: `src/offthreadmachine.h`, `src/offthreadmachine.cpp`, `src/threadworker.h
 4. YOLO writes detection results into `WORKER_ENTRY` and sets `detections_ready`
    (atomic). It can forward the same entry to crop/encode by retaining an
    additional consumer ref.
-5. Crop/encode uses the same entry to produce a 256x256 crop for preview and optional recording.
+5. Crop/encode uses the same entry to produce the configured square crop,
+   defaulting to 384x384, for preview and optional recording.
 6. Encoder preprocess uses a separate pool of `ENCODER_WORKER_ENTRY` buffers and notifies the HW encoder via its own queue.
 7. Workers release their retained ref and push entries to the recycle queue
    when the last ref drops.

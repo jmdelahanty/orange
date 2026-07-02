@@ -89,6 +89,40 @@ void test_splits_crop_metadata_by_recording_frame_range()
     std::filesystem::remove_all(dir);
 }
 
+void test_rewrites_crop_video_frame_index_per_split_output()
+{
+    const std::filesystem::path dir = make_temp_dir("split_crop_index");
+    const std::filesystem::path input = dir / "Cam2010096_crop_meta.csv";
+    write_text(
+        input,
+        "recording_frame_id,local_frame_id,crop_video_frame_index,crop_state\n"
+        "1,101,0,detected_crop\n"
+        "2,102,1,detected_crop\n"
+        "3,103,2,detected_crop\n"
+        "4,104,3,detected_crop\n"
+        "5,105,4,detected_crop\n");
+
+    std::vector<orange::session::RecordingFrameCsvRange> ranges = {
+        {1, 2, (dir / "clips" / "clip_000000" / "Cam2010096_crop_meta.csv").string()},
+        {3, 5, (dir / "clips" / "clip_000001" / "Cam2010096_crop_meta.csv").string()},
+    };
+    std::string error;
+    require(
+        orange::session::split_recording_frame_csv_by_ranges(
+            input.string(),
+            &ranges,
+            &error),
+        "split should pass: " + error);
+
+    const auto first_lines = read_lines(ranges[0].output_path);
+    const auto second_lines = read_lines(ranges[1].output_path);
+    require(first_lines[1] == "1,101,0,detected_crop", "first clip index starts at 0");
+    require(first_lines[2] == "2,102,1,detected_crop", "first clip index increments");
+    require(second_lines[1] == "3,103,0,detected_crop", "second clip index resets to 0");
+    require(second_lines[3] == "5,105,2,detected_crop", "second clip index increments");
+    std::filesystem::remove_all(dir);
+}
+
 void test_ignores_rows_outside_requested_ranges()
 {
     const std::filesystem::path dir = make_temp_dir("subset");
@@ -184,6 +218,7 @@ int main()
 
     const TestCase tests[] = {
         {"splits_crop_metadata_by_recording_frame_range", test_splits_crop_metadata_by_recording_frame_range},
+        {"rewrites_crop_video_frame_index_per_split_output", test_rewrites_crop_video_frame_index_per_split_output},
         {"ignores_rows_outside_requested_ranges", test_ignores_rows_outside_requested_ranges},
         {"rejects_invalid_csv_contracts", test_rejects_invalid_csv_contracts},
         {"rejects_overlapping_ranges", test_rejects_overlapping_ranges},

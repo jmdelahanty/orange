@@ -91,6 +91,10 @@ void select_cameras_have_configs(std::vector<std::string>& camera_config_files, 
 bool set_camera_params(CameraParams* camera_params, GigEVisionDeviceInfo* device_info, std::vector<std::string>& camera_config_files, int camera_idx, int num_cameras);
 std::string build_camera_config_path(const std::string& config_folder, const CameraParams& camera_params);
 void assign_camera_config_paths(CameraParams* cameras_params, int num_cameras, const std::string& config_folder);
+bool save_camera_json_configs_to_folder(CameraParams* cameras_params,
+                                        int num_cameras,
+                                        const std::string& config_folder,
+                                        std::string* error_out = nullptr);
 void allocate_camera_frame_buffers(CameraEmergent* ecams, CameraParams* cameras_params, int evt_buffer_size, int num_cameras);
 void client_send_bringup_message(EnetContext* enet_context, flatbuffers::FlatBufferBuilder* builder, ENetPeer *server_connection, int cam_count, FetchGame::ManagerState server_state);
 void client_send_state_update_message(EnetContext* enet_context, flatbuffers::FlatBufferBuilder* builder, ENetPeer *server_connection, FetchGame::ManagerState server_state);

@@ -4249,6 +4249,65 @@ void assign_camera_config_paths(CameraParams* cameras_params, int num_cameras, c
     }
 }
 
+bool save_camera_json_configs_to_folder(CameraParams* cameras_params,
+                                        int num_cameras,
+                                        const std::string& config_folder,
+                                        std::string* error_out)
+{
+    if (error_out) {
+        error_out->clear();
+    }
+    if (!cameras_params || num_cameras <= 0) {
+        if (error_out) {
+            *error_out = "no open cameras to save";
+        }
+        return false;
+    }
+    if (config_folder.empty()) {
+        if (error_out) {
+            *error_out = "config folder missing";
+        }
+        return false;
+    }
+
+    std::vector<std::string> config_paths;
+    config_paths.reserve(static_cast<std::size_t>(num_cameras));
+    for (int i = 0; i < num_cameras; ++i) {
+        std::string config_path = build_camera_config_path(config_folder, cameras_params[i]);
+        if (config_path.empty()) {
+            if (error_out) {
+                *error_out = "camera " + std::to_string(i) + " is missing a serial number";
+            }
+            return false;
+        }
+        config_paths.push_back(std::move(config_path));
+    }
+
+    std::string mkdir_error;
+    if (!ensure_directory_exists(config_folder, &mkdir_error)) {
+        if (error_out) {
+            *error_out = mkdir_error.empty() ? "failed to create config folder" : mkdir_error;
+        }
+        return false;
+    }
+
+    for (int i = 0; i < num_cameras; ++i) {
+        cameras_params[i].config_path = config_paths[static_cast<std::size_t>(i)];
+        std::string save_error;
+        if (!save_camera_json_config(cameras_params[i], &save_error)) {
+            if (error_out) {
+                const std::string serial = cameras_params[i].camera_serial.empty()
+                    ? std::to_string(i)
+                    : cameras_params[i].camera_serial;
+                *error_out = "failed to save camera config for " + serial +
+                             (save_error.empty() ? std::string() : ": " + save_error);
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
 void select_cameras_have_configs(std::vector<std::string>& camera_config_files, GigEVisionDeviceInfo* device_info, bool* check, int cam_count)
 {
     // ... (implementation from project.h)

@@ -5,6 +5,7 @@
 
 #include "encoder_pipeline.h"
 #include "NvEncoder/NvEncoder.h"
+#include "json.hpp"
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -19,6 +20,24 @@ struct RecordingBitrateEstimate {
     bool average_clamped_to_min = false;
     bool average_clamped_to_max = false;
     bool max_clamped_to_max = false;
+};
+
+struct VideoSourcePixelContract {
+    std::string id;
+    std::string pixel_format;
+    std::string dtype = "uint8";
+    std::string value_range = "0_255";
+    std::string color_space;
+    std::string channel_order;
+    std::string memory_layout;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    std::string coordinate_origin = "top_left";
+    std::string source_origin;
+    std::string transform_to_encoder;
+    std::string encoder_input_format = "nv12";
+    std::string encoded_pix_fmt = "yuv420p";
+    std::string encoded_color_range = "tv";
 };
 
 struct VideoEncodeProfile {
@@ -48,6 +67,7 @@ struct VideoEncodeProfile {
     bool color = false;
     int source_gpu_id = -1;
     int encode_gpu_id = -1;
+    VideoSourcePixelContract source_pixel_contract;
     EncoderControlOverrides encoder_control_overrides;
     ImportanceMapConfig importance_map;
 };
@@ -89,6 +109,19 @@ void apply_video_encode_profile_to_nvenc_config(
     const VideoEncodeProfile& profile,
     NV_ENC_INITIALIZE_PARAMS* initialize_params,
     NV_ENC_CONFIG* encode_config);
+VideoSourcePixelContract resolve_video_source_pixel_contract(
+    const VideoEncodeProfile& profile);
+nlohmann::json build_video_source_pixel_contract_json(
+    const VideoEncodeProfile& profile);
+nlohmann::json build_video_encoder_metadata_json(
+    const VideoEncodeProfile& profile);
+nlohmann::json build_video_metadata_json(
+    const VideoEncodeProfile& profile,
+    const std::string& video_path,
+    const std::string& stream_id,
+    bool mp4_metadata_attempted = true,
+    bool mp4_metadata_succeeded = true,
+    const std::string& mp4_metadata_reason = std::string());
 std::vector<std::pair<std::string, std::string>> build_video_encode_metadata_tags(
     const VideoEncodeProfile& profile);
 std::string video_encode_profile_summary(const VideoEncodeProfile& profile);

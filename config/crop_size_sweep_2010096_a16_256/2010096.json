@@ -1,0 +1,89 @@
+{
+  "schema_id": "orange.camera.config",
+  "schema_version": 4,
+  "device_model_name": "HB-20000SBM",
+  "device_serial_number": "2010096",
+  "camera_scan_type": "area_scan",
+  "gpio_connector_variant": "area_scan_12_pin",
+  "gpio_recipe": "",
+  "name": "Cam2010096",
+  "width": 4512,
+  "height": 4512,
+  "frame_rate": 100,
+  "gain": 256,
+  "iris": 5,
+  "focus": 3100,
+  "exposure": 100,
+  "pixel_format": "Mono8",
+  "source_gpu_id": 5,
+  "color_temp": "CT_3000K",
+  "crop_pipeline": {
+    "crop_size_px": 256,
+    "preview_max_fps": 15
+  },
+  "gpu_direct": true,
+  "focus_uart_bootstrap": true,
+  "color": false,
+  "offset_x": 0,
+  "offset_y": 0,
+  "sync_mode": "free_run",
+  "trigger": {
+    "enabled": false,
+    "selector": "AcquisitionStart",
+    "source": "Software",
+    "activation": "RisingEdge"
+  },
+  "ptp": {
+    "enabled": false,
+    "mode": "TwoStep"
+  },
+  "gpio": {
+    "nodes": []
+  },
+  "recording": {
+    "profile_name": "validated_split_gop_hevc_100fps_gop25_recabled_a16",
+    "encode": {
+      "codec": "hevc",
+      "preset": "p1",
+      "tuning": "ll",
+      "rate_control_mode": "vbr",
+      "quality_value": 20,
+      "gop_length": 25,
+      "aq": "off",
+      "temporal_aq": "off",
+      "nvenc_direct_input": false
+    },
+    "output": {
+      "mode": "factor",
+      "downsample_factor": 1,
+      "requested_width": 4512,
+      "requested_height": 4512
+    },
+    "mode": "split_gop",
+    "split_gop": {
+      "placement": "multi_gpu",
+      "encoder_gpu_ids": [
+        5,
+        6
+      ],
+      "source_encoder_policy": "hybrid_split",
+      "transfer_mode": "raw",
+      "max_inflight_gops": 2,
+      "max_buffered_bytes": 134217728,
+      "strict": true,
+      "writer_queue": {
+        "max_packets": 4096,
+        "max_bytes": 134217728,
+        "fail_on_overflow": true
+      }
+    },
+    "constraints": {
+      "require_peer_access": true,
+      "preferred_topology_class": "PIX"
+    },
+    "resources": {
+      "acquire_work_entries": 64,
+      "encoder_entry_pool_size": 32
+    }
+  }
+}

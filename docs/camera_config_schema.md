@@ -17,6 +17,22 @@
   cable, power supply, or breakout module rather than the camera model.
 - The current operator-facing behavior and recipe expansions are documented in [camera_gpio_configuration_guide.md](/home/jeremy/orange-jeremy/docs/camera_gpio_configuration_guide.md).
 
+## Local Config Folder Convention
+
+GUI-local camera config sets live under:
+
+- `~/orange_data/config/local/<folder>/<serial>.json`
+
+The folder name is operator-defined. Each camera JSON filename is the canonical
+camera serial without leading zeros, for example `2010096.json`.
+
+In the GUI `Local` panel, `Create config from open cameras` creates a new local
+config folder and writes one schema-4 camera JSON per open camera using the
+current in-memory camera parameters. If the folder-name field is empty, Orange
+uses a timestamped `local_YYYY_MM_DD_HH_MM_SS` folder name. A typed folder name
+must be a new direct child of `config/local`; Orange rejects path separators and
+relative path tokens.
+
 ## Top-Level Fields
 
 Existing image and lens fields remain at the top level:
@@ -344,7 +360,7 @@ Notes:
 
 ```json
 "crop_pipeline": {
-  "crop_size_px": 256,
+  "crop_size_px": 384,
   "preview_max_fps": 15
 }
 ```
@@ -353,7 +369,7 @@ Notes:
 
 - `crop_size_px` is the square crop size used by the transitional GUI crop
   preview/recording path.
-- The value is sanitized on load and save: default `256`, even integer,
+- The value is sanitized on load and save: default `384`, even integer,
   clamped to `32..2048`.
 - The GUI uses one session crop size while streaming because GL textures and
   NVENC dimensions are allocated at stream start. If multiple open cameras have
@@ -365,8 +381,10 @@ Notes:
 - `ORANGE_CROP_PREVIEW_MAX_FPS` overrides `crop_pipeline.preview_max_fps` for
   the current process. `ORANGE_CROP_PREVIEW_DISABLE=1` bypasses crop preview
   entirely.
-- Use `Save to config` from the camera properties panel to persist the currently
-  selected session crop size back to a camera JSON.
+- Use `Create config from open cameras` from the `Local` panel to persist all
+  open cameras into a new local config set, or `Save to config` from the camera
+  properties panel to persist the currently selected session crop size back to
+  one camera JSON.
 
 ## Lens Control
 
@@ -541,7 +559,7 @@ Notes:
     ]
   },
   "crop_pipeline": {
-    "crop_size_px": 256
+    "crop_size_px": 384
   }
 }
 ```

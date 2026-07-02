@@ -21,7 +21,7 @@ Implications:
 - Pose should consume a GPU crop payload before NVENC/NV12 conversion.
 - Crop recording should consume the same crop payload, or a derived resized copy,
   after pose-compatible crop production.
-- If the pose model wants a larger crop than the current default `256x256`,
+- If the pose model wants a larger crop than the current default `384x384`,
   the pipeline should generate that larger crop first and downsample/convert
   only for crop-video encoding when needed.
 

@@ -17,14 +17,40 @@ from typing import Any
 import summarize_gui_validation as gui_summary
 import orange_citrus_orchestrator as orange_citrus
 from recording_output_validation import (
+    mp4_key_sample_flag_errors,
+    mp4_source_pixel_tag_errors,
     recording_clip_output_contract_errors,
     recording_output_contract_errors,
+    video_metadata_contract_errors,
 )
 
 
 DEFAULT_FFPROBE = Path("/opt/orange/lib/ffmpeg-nvidia/bin/ffprobe")
 DEFAULT_FFMPEG = Path("/opt/orange/lib/ffmpeg-nvidia/bin/ffmpeg")
 DEFAULT_GUI_RECORDING_ROOT = Path("/home/jeremy/orange_data/exp/unsorted")
+CROP_META_CONTRACT_COLUMNS = [
+    "crop_video_frame_index",
+    "crop_state",
+    "crop_rect_valid",
+    "crop_rect_coordinate_space",
+    "crop_rect_layout",
+    "crop_rect_semantics",
+    "detection_rect_valid",
+    "detection_rect_coordinate_space",
+    "detection_rect_layout",
+    "detection_rect_semantics",
+    "detection_source",
+    "selection_policy",
+]
+CROP_META_EXPECTED_TEXT = {
+    "crop_rect_coordinate_space": "full_frame_pixels",
+    "crop_rect_layout": "xywh_top_left",
+    "crop_rect_semantics": "actual_clamped_source_roi",
+    "detection_rect_coordinate_space": "full_frame_pixels",
+    "detection_rect_layout": "xywh_top_left",
+    "detection_rect_semantics": "selected_postprocessed_model_detection",
+    "selection_policy": "largest_detection_by_confidence",
+}
 
 
 class Reporter:
@@ -597,6 +623,78 @@ def check_keyframe_sidecar_starts_at_zero(
             f"{label} first keyframe frame {frames[0]} != 0",
         )
     return frames
+
+
+def ffprobe_packet_key_flags(path: Path, ffprobe: str) -> dict[str, Any]:
+    command = [
+        ffprobe,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "packet=flags",
+        "-of",
+        "csv=p=0",
+        str(path),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        return {"status": "ffprobe_not_found", "error": str(exc), "flags": []}
+    except subprocess.TimeoutExpired as exc:
+        return {"status": "timeout", "error": str(exc), "flags": []}
+
+    if result.returncode != 0:
+        return {
+            "status": "ffprobe_failed",
+            "error": result.stderr.strip(),
+            "flags": [],
+        }
+    return {
+        "status": "ok",
+        "flags": [line.strip() for line in result.stdout.splitlines() if line.strip()],
+    }
+
+
+def check_crop_mp4_key_samples(
+    reporter: Reporter,
+    path: Path,
+    ffprobe: str,
+    label: str,
+    *,
+    expected_packet_count: int | None,
+) -> None:
+    probe = ffprobe_packet_key_flags(path, ffprobe)
+    reporter.check(
+        probe.get("status") == "ok",
+        f"{label} packet key flags probed",
+        f"{label} packet key flag probe status={probe.get('status')!r}: {probe.get('error', '')}",
+    )
+    if probe.get("status") != "ok":
+        return
+
+    flags = probe.get("flags")
+    packet_flags = flags if isinstance(flags, list) else []
+    errors = mp4_key_sample_flag_errors(
+        packet_flags,
+        label=label,
+        require_all_key_samples=True,
+        expected_packet_count=expected_packet_count,
+    )
+    if errors:
+        for error in errors:
+            reporter.fail(error)
+    else:
+        reporter.pass_(
+            f"{label} MP4 key/sync samples cover every packet ({len(packet_flags)})"
+        )
 
 
 def camera_serials_with_complete_artifacts(recording_folder: Path) -> set[str]:
@@ -4071,6 +4169,12 @@ def check_videos(
             f"Cam{serial} {video_label} dimensions/frame count present ({width}x{height}, frames={frames})",
             f"Cam{serial} invalid {video_label} dimensions/frame count ({width}x{height}, frames={frames})",
         )
+        for error in mp4_source_pixel_tag_errors(
+            video.get("tags", {}),
+            output_kind="full",
+            label=f"Cam{serial} {video_label}",
+        ):
+            reporter.fail(error)
         bitrate_bps = number(video.get("bitrate_bps"))
         bitrate_mbps = None if bitrate_bps is None else bitrate_bps / 1_000_000.0
         bitrate_ok = bitrate_mbps is not None and bitrate_mbps >= min_bitrate_mbps
@@ -5036,6 +5140,93 @@ def check_crop_metadata_geometry(
     )
 
 
+def check_crop_metadata_contract(
+    reporter: Reporter,
+    serial: str,
+    rows: list[dict[str, str]],
+    label: str,
+) -> None:
+    label_prefix = f"{label} " if label else ""
+    if not rows:
+        reporter.fail(f"Cam{serial} {label_prefix}crop metadata has no rows for contract check")
+        return
+
+    header_fields = set(rows[0].keys())
+    missing_columns = [
+        column for column in CROP_META_CONTRACT_COLUMNS if column not in header_fields
+    ]
+    reporter.check(
+        not missing_columns,
+        f"Cam{serial} {label_prefix}crop metadata has self-describing contract columns",
+        (
+            f"Cam{serial} {label_prefix}crop metadata missing contract columns: "
+            f"{','.join(missing_columns)}"
+        ),
+    )
+    if missing_columns:
+        return
+
+    bad_index_rows = []
+    bad_state_rows = []
+    bad_validity_rows = []
+    bad_text_rows = []
+    for data_index, row in enumerate(rows):
+        line_number = data_index + 2
+        has_detection = int_csv_field(row, "has_detection") == 1
+        blank_frame = int_csv_field(row, "blank_frame") == 1
+        frame_index = int_csv_field(row, "crop_video_frame_index")
+        if frame_index != data_index:
+            bad_index_rows.append(line_number)
+
+        expected_state = "detected_crop" if has_detection else "blank_no_detection"
+        expected_crop_valid = 1 if has_detection and not blank_frame else 0
+        expected_detection_valid = 1 if has_detection and not blank_frame else 0
+        expected_detection_source = "model" if has_detection else "none"
+        if row.get("crop_state") != expected_state:
+            bad_state_rows.append(line_number)
+        if (
+            int_csv_field(row, "crop_rect_valid") != expected_crop_valid or
+            int_csv_field(row, "detection_rect_valid") != expected_detection_valid or
+            row.get("detection_source") != expected_detection_source
+        ):
+            bad_validity_rows.append(line_number)
+        if any(row.get(field) != expected for field, expected in CROP_META_EXPECTED_TEXT.items()):
+            bad_text_rows.append(line_number)
+
+    reporter.check(
+        not bad_index_rows,
+        f"Cam{serial} {label_prefix}crop_video_frame_index is contiguous from 0",
+        (
+            f"Cam{serial} {label_prefix}crop metadata has {len(bad_index_rows)} row(s) "
+            "with invalid crop_video_frame_index"
+        ),
+    )
+    reporter.check(
+        not bad_state_rows,
+        f"Cam{serial} {label_prefix}crop_state matches has_detection/blank_frame",
+        (
+            f"Cam{serial} {label_prefix}crop metadata has {len(bad_state_rows)} row(s) "
+            "with invalid crop_state"
+        ),
+    )
+    reporter.check(
+        not bad_validity_rows,
+        f"Cam{serial} {label_prefix}crop/detection validity flags match row state",
+        (
+            f"Cam{serial} {label_prefix}crop metadata has {len(bad_validity_rows)} row(s) "
+            "with invalid validity flags or detection_source"
+        ),
+    )
+    reporter.check(
+        not bad_text_rows,
+        f"Cam{serial} {label_prefix}crop metadata coordinate/layout semantics are explicit",
+        (
+            f"Cam{serial} {label_prefix}crop metadata has {len(bad_text_rows)} row(s) "
+            "with invalid coordinate/layout semantics"
+        ),
+    )
+
+
 def check_crop_rolling_clip_artifacts(
     reporter: Reporter,
     recording_folder: Path,
@@ -5220,6 +5411,7 @@ def check_crop_rolling_clip_artifacts(
         f"Cam{serial} {label} crop perf reports {len(dropped_rows)} dropped crop frame(s)",
     )
     check_crop_metadata_geometry(reporter, serial, crop_rows, crop_size, label)
+    check_crop_metadata_contract(reporter, serial, crop_rows, label)
 
     video_frames: int | None = None
     video_width: int | None = None
@@ -5242,6 +5434,13 @@ def check_crop_rolling_clip_artifacts(
                 f"frame_count ({frame_count})"
             ),
         )
+        check_crop_mp4_key_samples(
+            reporter,
+            video_path,
+            ffprobe,
+            f"Cam{serial} {label} crop MP4",
+            expected_packet_count=frame_count,
+        )
         if crop_size is not None:
             reporter.check(
                 video_width == crop_size and video_height == crop_size,
@@ -5251,6 +5450,12 @@ def check_crop_rolling_clip_artifacts(
                     f"!= crop_size_px {crop_size}"
                 ),
             )
+        for error in mp4_source_pixel_tag_errors(
+            video.get("tags", {}),
+            output_kind="crop",
+            label=f"Cam{serial} {label} crop MP4",
+        ):
+            reporter.fail(error)
 
     return {
         "clip_index": clip_index,
@@ -5581,6 +5786,19 @@ def check_crop_recording_artifacts(
                     f"Cam{serial} external crop summary",
                     external_summary,
                 )
+                should_require_video_metadata = (
+                    require_external_crop_backend_metadata
+                    or bool(external_summary.get("video_metadata"))
+                )
+                if should_require_video_metadata:
+                    for error in video_metadata_contract_errors(
+                        external_summary.get("video_metadata"),
+                        output_kind="crop",
+                        label=f"Cam{serial} external crop summary",
+                        camera_serial=serial,
+                        stream_id=f"{serial}_crop",
+                    ):
+                        reporter.fail(error)
             external_frames_received = integer(external_summary.get("frames_received"))
             external_frames_encoded = integer(external_summary.get("frames_encoded"))
             external_frames_dropped = integer(external_encode.get("frames_dropped"))
@@ -6075,6 +6293,7 @@ def check_crop_recording_artifacts(
                 )
 
         check_crop_metadata_geometry(reporter, serial, crop_rows, crop_size, "")
+        check_crop_metadata_contract(reporter, serial, crop_rows, "")
 
         video_frames: int | None = None
         video_width: int | None = None
@@ -6097,6 +6316,13 @@ def check_crop_recording_artifacts(
                     f"crop metadata rows ({len(crop_rows)})"
                 ),
             )
+            check_crop_mp4_key_samples(
+                reporter,
+                video_path,
+                ffprobe,
+                f"Cam{serial} crop MP4",
+                expected_packet_count=len(crop_rows),
+            )
             if crop_size is not None:
                 reporter.check(
                     video_width == crop_size and video_height == crop_size,
@@ -6106,6 +6332,23 @@ def check_crop_recording_artifacts(
                         f"!= crop_size_px {crop_size}"
                     ),
                 )
+            if descriptor_backend == "external_ipc" and external_summary:
+                for error in video_metadata_contract_errors(
+                    external_summary.get("video_metadata"),
+                    output_kind="crop",
+                    label=f"Cam{serial} external crop summary",
+                    camera_serial=serial,
+                    stream_id=f"{serial}_crop",
+                    mp4_tags=video.get("tags", {}),
+                ):
+                    reporter.fail(error)
+            else:
+                for error in mp4_source_pixel_tag_errors(
+                    video.get("tags", {}),
+                    output_kind="crop",
+                    label=f"Cam{serial} crop MP4",
+                ):
+                    reporter.fail(error)
 
         yolo_rows = integer(nested_dict(summary, "yolo", serial).get("rows"))
         if yolo_rows is not None and yolo_rows > 0:

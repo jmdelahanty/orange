@@ -9,6 +9,7 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
 
 namespace orange::session {
 
@@ -25,6 +26,45 @@ std::string first_csv_field(const std::string& line)
 {
     const size_t comma = line.find(',');
     return comma == std::string::npos ? line : line.substr(0, comma);
+}
+
+std::vector<std::string> split_csv_fields(const std::string& line)
+{
+    std::vector<std::string> fields;
+    size_t start = 0;
+    while (start <= line.size()) {
+        const size_t comma = line.find(',', start);
+        if (comma == std::string::npos) {
+            fields.push_back(line.substr(start));
+            break;
+        }
+        fields.push_back(line.substr(start, comma - start));
+        start = comma + 1;
+    }
+    return fields;
+}
+
+std::string join_csv_fields(const std::vector<std::string>& fields)
+{
+    std::ostringstream out;
+    for (size_t i = 0; i < fields.size(); ++i) {
+        if (i > 0) {
+            out << ',';
+        }
+        out << fields[i];
+    }
+    return out.str();
+}
+
+size_t csv_column_index(const std::string& header, const std::string& name)
+{
+    const std::vector<std::string> fields = split_csv_fields(header);
+    for (size_t i = 0; i < fields.size(); ++i) {
+        if (fields[i] == name) {
+            return i;
+        }
+    }
+    return std::numeric_limits<size_t>::max();
 }
 
 bool parse_u64_field(const std::string& value, uint64_t* parsed)
@@ -120,6 +160,10 @@ bool split_recording_frame_csv_by_ranges(
             "input CSV first column must be recording_frame_id: " + input_path);
         return false;
     }
+    const size_t crop_video_frame_index_column =
+        csv_column_index(header, "crop_video_frame_index");
+    const bool rewrite_crop_video_frame_index =
+        crop_video_frame_index_column != std::numeric_limits<size_t>::max();
 
     std::vector<std::ofstream> outputs;
     outputs.reserve(ranges->size());
@@ -165,7 +209,21 @@ bool split_recording_frame_csv_by_ranges(
             auto& range = (*ranges)[i];
             if (recording_frame_id >= range.first_recording_frame_id &&
                 recording_frame_id <= range.last_recording_frame_id) {
-                outputs[i] << line << '\n';
+                if (rewrite_crop_video_frame_index) {
+                    std::vector<std::string> fields = split_csv_fields(line);
+                    if (fields.size() <= crop_video_frame_index_column) {
+                        set_error(
+                            error_out,
+                            "missing crop_video_frame_index field at " + input_path + ":" +
+                                std::to_string(line_number));
+                        return false;
+                    }
+                    fields[crop_video_frame_index_column] =
+                        std::to_string(range.rows_written);
+                    outputs[i] << join_csv_fields(fields) << '\n';
+                } else {
+                    outputs[i] << line << '\n';
+                }
                 range.rows_written++;
                 break;
             }

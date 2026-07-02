@@ -163,7 +163,7 @@ Notes:
   either keep HEVC lossless or explicitly change both encoder and writer
   together.
 - The GUI now exposes a square crop size for the transitional crop encoder
-  path. It defaults to `256x256`, is clamped to an even `32..2048` px value, is
+  path. It defaults to `384x384`, is clamped to an even `32..2048` px value, is
   persisted as `crop_pipeline.crop_size_px` in camera JSON, and is fixed for the
   duration of a streaming session because GL textures and NVENC dimensions are
   allocated at stream start. For pose, the crop size may need to be larger than
@@ -530,6 +530,9 @@ Completed in the first code slice:
   no-detection blank frames.
 - Crop metadata now separates actual crop rectangle from source detection
   rectangle.
+- Crop metadata now appends self-describing contract columns for
+  `crop_video_frame_index`, crop state, crop/detection rectangle validity,
+  coordinate space, layout, semantics, detection source, and selection policy.
 - Crop worker snapshots frame/detection metadata before downstream crop work, so
   crop metadata/perf rows no longer need to hold the original `WORKER_ENTRY`.
 - Crop worker records a CUDA source-safe event and defers source

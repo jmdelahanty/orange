@@ -7520,6 +7520,34 @@ int main(int argc, char **args) {
             local_config_select = static_cast<int>(local_config_folders.size());
         }
     };
+    auto validate_local_config_folder_name = [](const std::string& folder_name,
+                                                std::string* error_out) {
+        if (error_out) {
+            error_out->clear();
+        }
+        if (folder_name.empty()) {
+            if (error_out) {
+                *error_out = "Folder name is empty.";
+            }
+            return false;
+        }
+        if (folder_name == "." || folder_name == ".." ||
+            folder_name.find('/') != std::string::npos ||
+            folder_name.find('\\') != std::string::npos) {
+            if (error_out) {
+                *error_out = "Folder name must not contain path separators or relative path tokens.";
+            }
+            return false;
+        }
+        return true;
+    };
+    auto select_local_config_folder = [&](const std::string& folder_path) {
+        refresh_local_config_folders();
+        auto it = std::find(local_config_folders.begin(), local_config_folders.end(), folder_path);
+        if (it != local_config_folders.end()) {
+            local_config_select = static_cast<int>(std::distance(local_config_folders.begin(), it));
+        }
+    };
     GuiAutorunState gui_autorun_state;
     if (gui_autorun_config.enabled) {
         gui_autorun_enter_stage(&gui_autorun_state, GuiAutorunStage::kSelectConfig);
@@ -8317,24 +8345,16 @@ int main(int argc, char **args) {
             ImGui::SameLine();
             if (ImGui::Button("Create folder")) {
                 const std::string folder_name = trim_ascii_whitespace(new_local_config_folder_name);
-                if (folder_name.empty()) {
-                    local_config_status = "Folder name is empty.";
-                    local_config_status_error = true;
-                } else if (folder_name == "." || folder_name == ".." ||
-                           folder_name.find('/') != std::string::npos ||
-                           folder_name.find('\\') != std::string::npos) {
-                    local_config_status = "Folder name must not contain path separators or relative path tokens.";
+                std::string validation_error;
+                if (!validate_local_config_folder_name(folder_name, &validation_error)) {
+                    local_config_status = validation_error;
                     local_config_status_error = true;
                 } else {
                     const std::string new_folder_path =
                         (std::filesystem::path(local_start_folder_name) / folder_name).string();
                     std::string ensure_error;
                     if (ensure_directory_exists(new_folder_path, &ensure_error)) {
-                        refresh_local_config_folders();
-                        auto it = std::find(local_config_folders.begin(), local_config_folders.end(), new_folder_path);
-                        if (it != local_config_folders.end()) {
-                            local_config_select = static_cast<int>(std::distance(local_config_folders.begin(), it));
-                        }
+                        select_local_config_folder(new_folder_path);
                         new_local_config_folder_name[0] = '\0';
                         local_config_status = std::string("Ready: ") + new_folder_path;
                         local_config_status_error = false;
@@ -8343,6 +8363,69 @@ int main(int argc, char **args) {
                         local_config_status_error = true;
                     }
                 }
+            }
+            ImGui::SameLine();
+            if (!camera_control->open || num_cameras <= 0) {
+                ImGui::BeginDisabled();
+            }
+            if (ImGui::Button("Create config from open cameras")) {
+                const std::string requested_folder_name =
+                    trim_ascii_whitespace(new_local_config_folder_name);
+                std::string folder_name = requested_folder_name.empty()
+                    ? std::string("local_") + get_current_date_time()
+                    : requested_folder_name;
+                std::string validation_error;
+                if (!validate_local_config_folder_name(folder_name, &validation_error)) {
+                    local_config_status = validation_error;
+                    local_config_status_error = true;
+                } else {
+                    std::filesystem::path new_folder_path =
+                        std::filesystem::path(local_start_folder_name) / folder_name;
+                    if (requested_folder_name.empty()) {
+                        for (int suffix = 2; suffix < 100; ++suffix) {
+                            std::error_code suffix_exists_error;
+                            const bool suffix_path_exists =
+                                std::filesystem::exists(new_folder_path, suffix_exists_error);
+                            if (suffix_exists_error || !suffix_path_exists) {
+                                break;
+                            }
+                            new_folder_path = std::filesystem::path(local_start_folder_name) /
+                                (folder_name + "_" + std::to_string(suffix));
+                        }
+                    }
+                    std::error_code exists_error;
+                    const bool path_exists = std::filesystem::exists(new_folder_path, exists_error);
+                    if (exists_error || path_exists) {
+                        local_config_status =
+                            exists_error
+                                ? std::string("Failed to check local config folder: ") + exists_error.message()
+                                : std::string("Local config folder already exists: ") + new_folder_path.string();
+                        local_config_status_error = true;
+                    } else {
+                        std::string save_error;
+                        if (save_camera_json_configs_to_folder(
+                                cameras_params,
+                                num_cameras,
+                                new_folder_path.string(),
+                                &save_error)) {
+                            select_local_config_folder(new_folder_path.string());
+                            update_camera_configs(camera_config_files, new_folder_path.string());
+                            new_local_config_folder_name[0] = '\0';
+                            local_config_status =
+                                "Created " + std::to_string(num_cameras) +
+                                " camera config file" + (num_cameras == 1 ? std::string() : "s") +
+                                ": " + new_folder_path.string();
+                            local_config_status_error = false;
+                        } else {
+                            local_config_status =
+                                save_error.empty() ? "Failed to create camera config files." : save_error;
+                            local_config_status_error = true;
+                        }
+                    }
+                }
+            }
+            if (!camera_control->open || num_cameras <= 0) {
+                ImGui::EndDisabled();
             }
 
             if (camera_control->open && has_selected_local_folder) {

@@ -71,6 +71,74 @@ def ipc_protocol_payload() -> dict:
     }
 
 
+def video_metadata_payload(serial: str, *, output_kind: str = "full") -> dict:
+    contract_id = (
+        "orange.crop.mono8.v1"
+        if output_kind == "crop"
+        else "orange.camera.mono8.full_frame.v1"
+    )
+    transform = "crop_mono8_to_nv12" if output_kind == "crop" else "mono8_to_nv12"
+    title = f"Cam{serial}" + (" crop" if output_kind == "crop" else "")
+    comment = (
+        "nvenc codec=hevc; preset=p1; tuning=ll; res=256x256; fps=60; "
+        f"color=0; gop=25; source_pixel_contract={contract_id}; "
+        "source_pixel_format=mono8; source_pixel_dtype=uint8; "
+        "source_pixel_range=0_255; source_color_space=linear_gray; "
+        "source_channel_order=gray; source_memory_layout=HxW; "
+        "source_width=256; source_height=256; "
+        "source_coordinate_origin=top_left; source_origin=camera_dma; "
+        f"source_transform_to_encoder={transform}; encoder_input_format=nv12; "
+        f"encoded_pix_fmt=yuv420p; encoded_color_range=tv; output_kind={output_kind}; "
+        "output_mode=factor; rc=vbr; bpp=0.100; target_bps=150000000"
+    )
+    if output_kind == "crop":
+        comment = comment.replace("source_origin=camera_dma", "source_origin=analytics_crop")
+    return {
+        "schema_id": "orange.video_metadata",
+        "schema_version": 1,
+        "video_path": f"Cam{serial}_external.mp4",
+        "stream_id": serial,
+        "camera_serial": serial,
+        "output_kind": output_kind,
+        "role": "sidecar" if output_kind == "crop" else "ingest_authoritative",
+        "encoder": {
+            "name": "nvenc",
+            "codec": "hevc",
+            "preset": "p1",
+            "tuning": "ll",
+            "rate_control_mode": "vbr",
+            "resolved_gop_length": 25,
+            "fps": 60,
+        },
+        "source_pixel_contract": {
+            "id": contract_id,
+            "pixel_format": "mono8",
+            "dtype": "uint8",
+            "value_range": "0_255",
+            "color_space": "linear_gray",
+            "channel_order": "gray",
+            "memory_layout": "HxW",
+            "width": 256,
+            "height": 256,
+            "coordinate_origin": "top_left",
+            "source_origin": "analytics_crop" if output_kind == "crop" else "camera_dma",
+            "transform_to_encoder": transform,
+            "encoder_input_format": "nv12",
+            "encoded_pix_fmt": "yuv420p",
+            "encoded_color_range": "tv",
+        },
+        "mp4_tags_expected": {
+            "title": title,
+            "comment": comment,
+        },
+        "mp4_metadata_embedding": {
+            "attempted": True,
+            "succeeded": True,
+            "validated_with_ffprobe": False,
+        },
+    }
+
+
 def write_summary(
     root: Path,
     serial: str,
@@ -125,6 +193,7 @@ def write_summary(
         "merged_output": {},
         "storage_preflight": storage_preflight_payload(),
         "ipc_protocol": ipc_protocol_payload(),
+        "video_metadata": video_metadata_payload(serial),
         "outputs": {
             "detach_csv": str(detach_path),
             "mp4": str(mp4_path),
@@ -369,7 +438,11 @@ def verify_one(
         "require_video_sanity": False,
     }
     original_ffprobe = verifier.ffprobe_video
-    verifier.ffprobe_video = lambda path, ffprobe: None
+    original_ffprobe_key_flags = verifier.ffprobe_packet_key_flags
+    verifier.ffprobe_video = lambda path, ffprobe: {
+        "tags": video_metadata_payload(serial)["mp4_tags_expected"]
+    }
+    verifier.ffprobe_packet_key_flags = lambda path, ffprobe: ["K_", "K_", "K_"]
     try:
         return verifier.verify_summary(
             root,
@@ -388,6 +461,7 @@ def verify_one(
         )
     finally:
         verifier.ffprobe_video = original_ffprobe
+        verifier.ffprobe_packet_key_flags = original_ffprobe_key_flags
 
 
 def test_queue_thresholds_pass_and_summarize() -> None:
@@ -423,6 +497,32 @@ def test_queue_threshold_failures() -> None:
                 require(expected in str(exc), f"unexpected failure for {kwargs}: {exc}")
             else:
                 raise AssertionError(f"expected verification failure for {kwargs}")
+
+
+def test_video_metadata_comment_mismatch_fails() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary_path, mp4_path = write_summary(root, "2010096")
+        rewrite_summary(
+            summary_path,
+            lambda payload: payload["video_metadata"]["mp4_tags_expected"].update(
+                {
+                    "comment": payload["video_metadata"]["mp4_tags_expected"]["comment"].replace(
+                        "source_pixel_contract=orange.camera.mono8.full_frame.v1",
+                        "source_pixel_contract=orange.bad_contract.v1",
+                    )
+                }
+            ),
+        )
+        try:
+            verify_one(root, summary_path, mp4_path)
+        except verifier.VerificationError as exc:
+            require(
+                "source_pixel_contract" in str(exc),
+                f"unexpected video metadata failure: {exc}",
+            )
+        else:
+            raise AssertionError("expected video metadata mismatch to fail")
 
 
 def test_queue_high_water_falls_back_to_detach_csv() -> None:
@@ -669,6 +769,69 @@ def test_stream_kind_and_output_kind_match_contract() -> None:
             raise AssertionError("expected summary output_kind mismatch to fail")
 
 
+def test_crop_external_mp4_requires_all_packet_key_samples() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010096"
+        summary_path, mp4_path = write_summary(root, serial)
+        rewrite_summary(
+            summary_path,
+            lambda payload: payload.update(
+                {
+                    "output_kind": "crop",
+                    "stream_kind": "crop",
+                    "video_metadata": video_metadata_payload(serial, output_kind="crop"),
+                }
+            ),
+        )
+        stream = {
+            "stream_id": serial,
+            "stream_kind": "crop",
+            "output_kind": "crop",
+            "summary_json": str(summary_path),
+            "mp4": str(mp4_path),
+            "routing_policy": "single_shard",
+        }
+        contract = {
+            "require_gop_routing": False,
+            "require_merged_mp4": True,
+            "require_video_sanity": False,
+        }
+        original_ffprobe = verifier.ffprobe_video
+        original_ffprobe_key_flags = verifier.ffprobe_packet_key_flags
+        verifier.ffprobe_video = lambda path, ffprobe: {
+            "tags": video_metadata_payload(serial, output_kind="crop")["mp4_tags_expected"]
+        }
+        verifier.ffprobe_packet_key_flags = lambda path, ffprobe: ["K_", "__", "K_"]
+        try:
+            try:
+                verifier.verify_summary(
+                    root,
+                    serial,
+                    stream,
+                    contract,
+                    "ffprobe",
+                    True,
+                    None,
+                    None,
+                    None,
+                    False,
+                    False,
+                    False,
+                    False,
+                )
+            except verifier.VerificationError as exc:
+                require(
+                    "expected every packet to be a key/sync sample" in str(exc),
+                    f"unexpected crop key-sample failure: {exc}",
+                )
+            else:
+                raise AssertionError("expected non-key crop packet to fail")
+        finally:
+            verifier.ffprobe_video = original_ffprobe
+            verifier.ffprobe_packet_key_flags = original_ffprobe_key_flags
+
+
 def test_status_sidecar_checks_rolling_progress() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -864,6 +1027,7 @@ def test_multi_shard_shard_mp4_retention_contract() -> None:
             },
             "storage_preflight": storage_preflight_payload(),
             "ipc_protocol": ipc_protocol_payload(),
+            "video_metadata": video_metadata_payload(serial),
             "outputs": {
                 "mp4": str(mp4_path),
             },
@@ -883,7 +1047,9 @@ def test_multi_shard_shard_mp4_retention_contract() -> None:
             "preserve_shard_mp4s": False,
         }
         original_ffprobe = verifier.ffprobe_video
-        verifier.ffprobe_video = lambda path, ffprobe: None
+        verifier.ffprobe_video = lambda path, ffprobe: {
+            "tags": video_metadata_payload(serial)["mp4_tags_expected"]
+        }
         try:
             result = verifier.verify_summary(
                 root,
@@ -937,6 +1103,7 @@ def main() -> int:
     tests = [
         test_queue_thresholds_pass_and_summarize,
         test_queue_threshold_failures,
+        test_video_metadata_comment_mismatch_fails,
         test_queue_high_water_falls_back_to_detach_csv,
         test_mp4_queue_overflow_failures,
         test_storage_preflight_failures,
@@ -944,6 +1111,7 @@ def main() -> int:
         test_rolling_output_requires_keyframe_zero,
         test_status_sidecar_passes_and_summarizes,
         test_stream_kind_and_output_kind_match_contract,
+        test_crop_external_mp4_requires_all_packet_key_samples,
         test_status_sidecar_checks_rolling_progress,
         test_status_sidecar_failures,
         test_runtime_status_is_checked_when_required,

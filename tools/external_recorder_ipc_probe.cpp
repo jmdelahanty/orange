@@ -2,6 +2,7 @@
 #include "FFmpegWriter.h"
 #include "external_recorder_ipc_protocol.h"
 #include "fsuid_guard.h"
+#include "video_encode_profile.h"
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -649,6 +650,108 @@ bool file_exists(const std::string& path)
     }
     std::error_code ec;
     return std::filesystem::exists(path, ec) && !ec;
+}
+
+VideoEncodeProfile build_external_video_encode_profile(
+    const Options& options,
+    const std::string& camera_serial,
+    int width,
+    int height,
+    int source_gpu_id,
+    int encode_gpu_id)
+{
+    VideoEncodeProfile profile;
+    profile.name = options.output_kind == "crop"
+        ? "external_crop_hevc_lossless_gop1"
+        : "external_full_hevc_low_latency";
+    profile.output_kind = options.output_kind;
+    profile.role = options.output_kind == "crop" ? "sidecar" : "ingest_authoritative";
+    profile.camera_serial = camera_serial;
+    profile.codec = normalize_video_encode_codec(options.codec);
+    profile.preset = normalize_video_encode_preset(options.preset);
+    profile.tuning = normalize_video_encode_tuning(options.tuning);
+    profile.rate_control_mode =
+        normalize_video_encode_rate_control_mode(options.rate_control_mode);
+    profile.output_mode = options.output_kind == "crop" ? "crop" : "factor";
+    profile.input_format = "nv12";
+    profile.source_format = "mono8";
+    profile.quality_value =
+        video_encode_tuning_is_lossless(profile.tuning)
+            ? 0
+            : clamp_video_encode_quality_value(static_cast<int>(options.quality_value));
+    profile.requested_gop_length = static_cast<int>(std::max<uint32_t>(1, options.gop));
+    profile.resolved_gop_length =
+        video_encode_tuning_is_lossless(profile.tuning)
+            ? 1
+            : std::max<uint32_t>(1, options.gop);
+    profile.width = static_cast<uint32_t>(std::max(0, width));
+    profile.height = static_cast<uint32_t>(std::max(0, height));
+    profile.source_width = profile.width;
+    profile.source_height = profile.height;
+    profile.fps = std::max<uint32_t>(1, options.fps);
+    profile.downsample_factor = 1;
+    profile.resize_enabled = false;
+    profile.color = false;
+    profile.source_gpu_id = source_gpu_id;
+    profile.encode_gpu_id = encode_gpu_id;
+    profile.encoder_control_overrides.target_bitrate_bps =
+        static_cast<int>(options.bitrate_bps);
+    profile.encoder_control_overrides.max_bitrate_bps =
+        static_cast<int>(std::max(options.max_bitrate_bps, options.bitrate_bps));
+    profile.encoder_control_overrides.vbv_buffer_size =
+        static_cast<int>(options.vbv_buffer_size);
+    profile.encoder_control_overrides.aq = 0;
+    profile.encoder_control_overrides.temporal_aq = 0;
+    profile.encoder_control_overrides.lookahead = 0;
+    profile.source_pixel_contract = resolve_video_source_pixel_contract(profile);
+    return profile;
+}
+
+VideoEncodeProfile build_external_video_encode_profile(
+    const Options& options,
+    const FrameDescriptor& desc,
+    int encode_gpu_id)
+{
+    return build_external_video_encode_profile(
+        options,
+        desc.camera_serial,
+        desc.width,
+        desc.height,
+        desc.source_gpu_id,
+        encode_gpu_id);
+}
+
+std::vector<std::pair<std::string, std::string>> build_external_video_metadata_tags(
+    const Options& options,
+    const FrameDescriptor& desc,
+    int encode_gpu_id,
+    std::vector<std::pair<std::string, std::string>> extra_tags = {})
+{
+    std::vector<std::pair<std::string, std::string>> tags =
+        build_video_encode_metadata_tags(
+            build_external_video_encode_profile(options, desc, encode_gpu_id));
+    tags.emplace_back("producer", "external_recorder_ipc_probe");
+    tags.emplace_back("camera_serial", desc.camera_serial);
+    tags.emplace_back("stream_id", desc.stream_id);
+    tags.emplace_back("external_recorder", "true");
+    for (auto& tag : extra_tags) {
+        tags.push_back(std::move(tag));
+    }
+    return tags;
+}
+
+std::string json_dump_for_inline_value(const nlohmann::json& value,
+                                       const std::string& continuation_indent)
+{
+    const std::string dumped = value.dump(2);
+    std::ostringstream out;
+    for (char ch : dumped) {
+        out << ch;
+        if (ch == '\n') {
+            out << continuation_indent;
+        }
+    }
+    return out.str();
 }
 
 struct StoragePathSnapshot {
@@ -1535,6 +1638,12 @@ struct EncodeSummary {
     int assigned_gpu_id = -1;
     int assigned_shard_id = 0;
     std::string routing_policy = "single_shard";
+    std::string camera_serial;
+    std::string stream_id;
+    int source_gpu_id = -1;
+    int width = 0;
+    int height = 0;
+    int pixel_format = 0;
     uint64_t frames_encoded = 0;
     uint64_t frames_dropped = 0;
     uint64_t source_releases_sent = 0;
@@ -1608,6 +1717,12 @@ struct RollingOutputSummary {
 struct MergedOutputSummary {
     bool enabled = false;
     bool failed = false;
+    std::string camera_serial;
+    std::string stream_id;
+    int source_gpu_id = -1;
+    int width = 0;
+    int height = 0;
+    int pixel_format = 0;
     uint64_t packets_written = 0;
     uint64_t bytes_written = 0;
     uint64_t gops_released = 0;
@@ -1636,6 +1751,12 @@ EncodeSummary aggregate_encode_summaries(const std::vector<EncodeSummary>& summa
     out.assigned_gpu_id = summaries.size() == 1 ? summaries.front().assigned_gpu_id : -1;
     out.assigned_shard_id = summaries.size() == 1 ? summaries.front().assigned_shard_id : -1;
     out.routing_policy = summaries.front().routing_policy;
+    out.camera_serial = summaries.front().camera_serial;
+    out.stream_id = summaries.front().stream_id;
+    out.source_gpu_id = summaries.front().source_gpu_id;
+    out.width = summaries.front().width;
+    out.height = summaries.front().height;
+    out.pixel_format = summaries.front().pixel_format;
     for (const EncodeSummary& summary : summaries) {
         out.frames_encoded += summary.frames_encoded;
         out.frames_dropped += summary.frames_dropped;
@@ -1907,6 +2028,7 @@ public:
             desc.assigned_shard_id,
             desc.width,
             desc.height,
+            desc.pixel_format,
             desc.bytes,
             desc.timestamp,
             desc.timestamp_sys});
@@ -1980,6 +2102,14 @@ public:
         out.mp4_path = mp4_path_;
         out.mp4_keyframe_path = mp4_keyframe_path_;
         out.error_message = error_message_;
+        if (have_first_desc_) {
+            out.camera_serial = first_desc_.camera_serial;
+            out.stream_id = first_desc_.stream_id;
+            out.source_gpu_id = first_desc_.source_gpu_id;
+            out.width = first_desc_.width;
+            out.height = first_desc_.height;
+            out.pixel_format = first_desc_.pixel_format;
+        }
         out.rolling.enabled = rolling_enabled_;
         out.rolling.implementation =
             rolling_enabled_ ? "external_recorder_gop_boundary_writer_rotation" : "none";
@@ -2013,6 +2143,7 @@ private:
         int assigned_shard_id = 0;
         int width = 0;
         int height = 0;
+        int pixel_format = 0;
         uint64_t bytes = 0;
         uint64_t timestamp = 0;
         uint64_t timestamp_sys = 0;
@@ -2031,6 +2162,7 @@ private:
 
     void ensure_writer_locked(const FrameDescriptor& desc)
     {
+        note_first_descriptor_locked(desc);
         if (writer_ || mp4_path_.empty()) {
             return;
         }
@@ -2038,16 +2170,15 @@ private:
         ensure_parent_directory(mp4_keyframe_path_);
         const AVCodecID codec_id =
             options_.codec == "h264" ? AV_CODEC_ID_H264 : AV_CODEC_ID_HEVC;
-        const std::vector<std::pair<std::string, std::string>> metadata_tags = {
-            {"producer", "external_recorder_ipc_probe"},
-            {"camera_serial", desc.camera_serial},
-            {"codec", options_.codec},
-            {"preset", options_.preset},
-            {"tuning", options_.tuning},
-            {"external_recorder", "true"},
-            {"merged_gop_output", "true"},
-            {"routing_policy", options_.routing_policy}
-        };
+        const std::vector<std::pair<std::string, std::string>> metadata_tags =
+            build_external_video_metadata_tags(
+                options_,
+                desc,
+                options_.gpu_id,
+                {
+                    {"merged_gop_output", "true"},
+                    {"routing_policy", options_.routing_policy}
+                });
         writer_ = std::make_unique<FFmpegWriter>(
             codec_id,
             desc.width,
@@ -2191,17 +2322,16 @@ private:
 
         const AVCodecID codec_id =
             options_.codec == "h264" ? AV_CODEC_ID_H264 : AV_CODEC_ID_HEVC;
-        const std::vector<std::pair<std::string, std::string>> metadata_tags = {
-            {"producer", "external_recorder_ipc_probe"},
-            {"camera_serial", desc.camera_serial},
-            {"codec", options_.codec},
-            {"preset", options_.preset},
-            {"tuning", options_.tuning},
-            {"external_recorder", "true"},
-            {"rolling_clip", "true"},
-            {"clip_id", current_clip_summary_.clip_id},
-            {"routing_policy", options_.routing_policy}
-        };
+        const std::vector<std::pair<std::string, std::string>> metadata_tags =
+            build_external_video_metadata_tags(
+                options_,
+                desc,
+                options_.gpu_id,
+                {
+                    {"rolling_clip", "true"},
+                    {"clip_id", current_clip_summary_.clip_id},
+                    {"routing_policy", options_.routing_policy}
+                });
         clip_writer_ = std::make_unique<FFmpegWriter>(
             codec_id,
             desc.width,
@@ -2334,6 +2464,7 @@ private:
                 clip_desc.assigned_shard_id = frame.assigned_shard_id;
                 clip_desc.width = frame.width;
                 clip_desc.height = frame.height;
+                clip_desc.pixel_format = frame.pixel_format;
             }
             ensure_clip_writer_locked(
                 clip_desc,
@@ -2397,6 +2528,15 @@ private:
         writer_.reset();
     }
 
+    void note_first_descriptor_locked(const FrameDescriptor& desc)
+    {
+        if (have_first_desc_) {
+            return;
+        }
+        first_desc_ = desc;
+        have_first_desc_ = true;
+    }
+
     Options options_;
     uint32_t gop_length_ = 1;
     std::string mp4_path_;
@@ -2429,6 +2569,8 @@ private:
     size_t mp4_peak_queued_bytes_ = 0;
     FFmpegWriterLatencyStats writer_latency_;
     std::string error_message_;
+    FrameDescriptor first_desc_;
+    bool have_first_desc_ = false;
 };
 
 struct EncodeWorkItem {
@@ -2593,6 +2735,14 @@ public:
         out.assigned_gpu_id = options_.gpu_id;
         out.assigned_shard_id = options_.shard_id;
         out.routing_policy = options_.routing_policy;
+        if (has_first_desc_) {
+            out.camera_serial = first_desc_.camera_serial;
+            out.stream_id = first_desc_.stream_id;
+            out.source_gpu_id = first_desc_.source_gpu_id;
+            out.width = first_desc_.width;
+            out.height = first_desc_.height;
+            out.pixel_format = first_desc_.pixel_format;
+        }
         out.frames_encoded = frames_encoded();
         out.frames_dropped = frames_dropped();
         out.source_releases_sent =
@@ -2825,6 +2975,10 @@ private:
 
     void initialize_encoder(const FrameDescriptor& desc)
     {
+        if (!has_first_desc_) {
+            first_desc_ = desc;
+            has_first_desc_ = true;
+        }
         if (encoder_) {
             return;
         }
@@ -2887,14 +3041,14 @@ private:
             ensure_parent_directory(resolved_mp4_keyframe_path_);
             const AVCodecID codec_id =
                 options_.codec == "h264" ? AV_CODEC_ID_H264 : AV_CODEC_ID_HEVC;
-            const std::vector<std::pair<std::string, std::string>> metadata_tags = {
-                {"producer", "external_recorder_ipc_probe"},
-                {"camera_serial", desc.camera_serial},
-                {"codec", options_.codec},
-                {"preset", options_.preset},
-                {"tuning", options_.tuning},
-                {"external_recorder", "true"}
-            };
+            const std::vector<std::pair<std::string, std::string>> metadata_tags =
+                build_external_video_metadata_tags(
+                    options_,
+                    desc,
+                    options_.gpu_id,
+                    {
+                        {"routing_policy", options_.routing_policy}
+                    });
             mp4_writer_ = std::make_unique<FFmpegWriter>(
                 codec_id,
                 desc.width,
@@ -3653,6 +3807,8 @@ private:
     std::atomic<uint64_t> source_releases_sent_{0};
     std::atomic<uint64_t> source_release_failures_{0};
     std::atomic<bool> failed_{false};
+    FrameDescriptor first_desc_;
+    bool has_first_desc_ = false;
     FrameDescriptor last_desc_;
     bool has_last_desc_ = false;
 };
@@ -3727,6 +3883,43 @@ void write_summary_json(const Options& options,
         merged.enabled ? merged.mp4_path : enc.mp4_path;
     const std::string output_mp4_keyframe_path =
         merged.enabled ? merged.mp4_keyframe_path : enc.mp4_keyframe_path;
+    const std::string metadata_camera_serial =
+        merged.enabled && !merged.camera_serial.empty()
+            ? merged.camera_serial
+            : (!enc.camera_serial.empty() ? enc.camera_serial : stream_id);
+    const std::string metadata_stream_id =
+        !stream_id.empty()
+            ? stream_id
+            : (merged.enabled && !merged.stream_id.empty() ? merged.stream_id : enc.stream_id);
+    const int metadata_width =
+        merged.enabled && merged.width > 0 ? merged.width : enc.width;
+    const int metadata_height =
+        merged.enabled && merged.height > 0 ? merged.height : enc.height;
+    const int metadata_source_gpu_id =
+        merged.enabled && merged.source_gpu_id >= 0
+            ? merged.source_gpu_id
+            : enc.source_gpu_id;
+    const int metadata_encode_gpu_id = enc.assigned_gpu_id;
+    const VideoEncodeProfile video_metadata_profile =
+        build_external_video_encode_profile(
+            options,
+            metadata_camera_serial,
+            metadata_width,
+            metadata_height,
+            metadata_source_gpu_id,
+            metadata_encode_gpu_id);
+    const bool mp4_metadata_supplied =
+        options.encode && !output_mp4_path.empty();
+    const nlohmann::json video_metadata =
+        build_video_metadata_json(
+            video_metadata_profile,
+            output_mp4_path,
+            metadata_stream_id,
+            mp4_metadata_supplied,
+            mp4_metadata_supplied,
+            mp4_metadata_supplied
+                ? "metadata tags supplied to MP4 writer"
+                : "MP4 metadata was not attempted for this recorder run");
     out << std::fixed << std::setprecision(6);
     out << "{\n";
     out << "  \"schema_id\": \"orange.external_recorder.summary\",\n";
@@ -3951,6 +4144,9 @@ void write_summary_json(const Options& options,
     out << "    \"mp4_bytes\": " << file_size_or_zero(output_mp4_path) << ",\n";
     out << "    \"mp4_keyframe_bytes\": " << file_size_or_zero(output_mp4_keyframe_path) << "\n";
     out << "  },\n";
+    out << "  \"video_metadata\": "
+        << json_dump_for_inline_value(video_metadata, "  ")
+        << ",\n";
     const StoragePreflightSnapshot storage = collect_storage_preflight(options);
     write_storage_preflight_json(out, storage, "  ");
     out << "\n";

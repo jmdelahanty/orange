@@ -12,8 +12,36 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from recording_output_validation import (
+    mp4_key_sample_flag_errors,
+    mp4_source_pixel_tag_errors,
+)
+
 
 DEFAULT_FFPROBE = Path("/opt/orange/lib/ffmpeg-nvidia/bin/ffprobe")
+CROP_META_CONTRACT_COLUMNS = [
+    "crop_video_frame_index",
+    "crop_state",
+    "crop_rect_valid",
+    "crop_rect_coordinate_space",
+    "crop_rect_layout",
+    "crop_rect_semantics",
+    "detection_rect_valid",
+    "detection_rect_coordinate_space",
+    "detection_rect_layout",
+    "detection_rect_semantics",
+    "detection_source",
+    "selection_policy",
+]
+CROP_META_EXPECTED_TEXT = {
+    "crop_rect_coordinate_space": "full_frame_pixels",
+    "crop_rect_layout": "xywh_top_left",
+    "crop_rect_semantics": "actual_clamped_source_roi",
+    "detection_rect_coordinate_space": "full_frame_pixels",
+    "detection_rect_layout": "xywh_top_left",
+    "detection_rect_semantics": "selected_postprocessed_model_detection",
+    "selection_policy": "largest_detection_by_confidence",
+}
 
 
 class ValidationError(RuntimeError):
@@ -123,6 +151,79 @@ def int_field(row: dict[str, Any], field: str, path: Path) -> int:
         raise ValidationError(f"invalid integer field {field}={value!r} in {path}") from exc
 
 
+def check_crop_metadata_contract(
+    rows: list[dict[str, str]],
+    path: Path,
+    serial: str,
+    reporter: Reporter,
+) -> None:
+    if not rows:
+        reporter.fail(f"Cam{serial} crop metadata has no rows for contract check")
+        return
+
+    header_fields = set(rows[0].keys())
+    missing_columns = [
+        column for column in CROP_META_CONTRACT_COLUMNS if column not in header_fields
+    ]
+    reporter.check(
+        not missing_columns,
+        f"Cam{serial} crop metadata has self-describing contract columns",
+        (
+            f"Cam{serial} crop metadata missing contract columns in {path}: "
+            f"{','.join(missing_columns)}"
+        ),
+    )
+    if missing_columns:
+        return
+
+    bad_index_rows = []
+    bad_state_rows = []
+    bad_validity_rows = []
+    bad_text_rows = []
+    for data_index, row in enumerate(rows):
+        line_number = data_index + 2
+        has_detection = int_field(row, "has_detection", path) != 0
+        blank_frame = int_field(row, "blank_frame", path) != 0
+        if int_field(row, "crop_video_frame_index", path) != data_index:
+            bad_index_rows.append(line_number)
+
+        expected_state = "detected_crop" if has_detection else "blank_no_detection"
+        expected_crop_valid = 1 if has_detection and not blank_frame else 0
+        expected_detection_valid = 1 if has_detection and not blank_frame else 0
+        expected_detection_source = "model" if has_detection else "none"
+        if row.get("crop_state") != expected_state:
+            bad_state_rows.append(line_number)
+        if (
+            int_field(row, "crop_rect_valid", path) != expected_crop_valid or
+            int_field(row, "detection_rect_valid", path) != expected_detection_valid or
+            row.get("detection_source") != expected_detection_source
+        ):
+            bad_validity_rows.append(line_number)
+        if any(row.get(field) != expected for field, expected in CROP_META_EXPECTED_TEXT.items()):
+            bad_text_rows.append(line_number)
+
+    reporter.check(
+        not bad_index_rows,
+        f"Cam{serial} crop_video_frame_index is contiguous from 0",
+        f"Cam{serial} crop metadata has {len(bad_index_rows)} invalid crop_video_frame_index row(s)",
+    )
+    reporter.check(
+        not bad_state_rows,
+        f"Cam{serial} crop_state matches has_detection/blank_frame",
+        f"Cam{serial} crop metadata has {len(bad_state_rows)} invalid crop_state row(s)",
+    )
+    reporter.check(
+        not bad_validity_rows,
+        f"Cam{serial} crop/detection validity flags match row state",
+        f"Cam{serial} crop metadata has {len(bad_validity_rows)} invalid validity row(s)",
+    )
+    reporter.check(
+        not bad_text_rows,
+        f"Cam{serial} crop metadata coordinate/layout semantics are explicit",
+        f"Cam{serial} crop metadata has {len(bad_text_rows)} invalid semantic row(s)",
+    )
+
+
 def ffprobe_video(path: Path, ffprobe: str) -> dict[str, Any]:
     stream = ffprobe_stream(path, ffprobe, count_frames=False)
     frame_count = stream.get("nb_frames")
@@ -141,6 +242,7 @@ def ffprobe_video(path: Path, ffprobe: str) -> dict[str, Any]:
         "frames": parsed_frame_count,
         "avg_frame_rate": stream.get("avg_frame_rate", ""),
         "duration": float(stream.get("duration") or 0.0),
+        "tags": stream.get("_format_tags", {}),
     }
 
 
@@ -159,7 +261,7 @@ def ffprobe_stream(path: Path, ffprobe: str, count_frames: bool) -> dict[str, An
         "-select_streams",
         "v:0",
         "-show_entries",
-        "stream=width,height,nb_frames,nb_read_frames,avg_frame_rate,duration",
+        "stream=width,height,nb_frames,nb_read_frames,avg_frame_rate,duration:format_tags=title,comment",
         "-of",
         "json",
         str(path),
@@ -193,7 +295,43 @@ def ffprobe_stream(path: Path, ffprobe: str, count_frames: bool) -> dict[str, An
     if not streams:
         raise ValidationError(f"ffprobe found no video stream in {path}")
 
-    return streams[0]
+    stream = streams[0]
+    fmt = payload.get("format", {}) if isinstance(payload.get("format"), dict) else {}
+    stream["_format_tags"] = fmt.get("tags", {}) if isinstance(fmt.get("tags"), dict) else {}
+    return stream
+
+
+def ffprobe_packet_key_flags(path: Path, ffprobe: str) -> list[str]:
+    command = [
+        ffprobe,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "packet=flags",
+        "-of",
+        "csv=p=0",
+        str(path),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise ValidationError(f"ffprobe executable not found: {ffprobe}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise ValidationError(f"ffprobe packet key flag probe timed out for {path}") from exc
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        raise ValidationError(f"ffprobe packet key flag probe failed for {path}: {stderr}")
+
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
 def camera_serial_from_main_video(path: Path) -> str | None:
@@ -333,6 +471,12 @@ def validate_main_artifacts(
                 f"metadata rows ({len(meta_rows)})"
             ),
         )
+        for error in mp4_source_pixel_tag_errors(
+            video.get("tags", {}),
+            output_kind="full",
+            label=f"Cam{serial} main video",
+        ):
+            reporter.fail(error)
         summaries[serial] = {
             "main_video": str(video_path),
             "main_frames": video["frames"],
@@ -435,6 +579,31 @@ def validate_crop_artifacts(
                 f"crop metadata rows ({len(crop_rows)})"
             ),
         )
+        try:
+            crop_key_flags = ffprobe_packet_key_flags(crop_video_path, ffprobe)
+        except ValidationError as exc:
+            reporter.fail(str(exc))
+            crop_key_flags = []
+        key_sample_errors = mp4_key_sample_flag_errors(
+            crop_key_flags,
+            label=f"Cam{serial} crop video",
+            require_all_key_samples=True,
+            expected_packet_count=len(crop_rows),
+        )
+        if key_sample_errors:
+            for error in key_sample_errors:
+                reporter.fail(error)
+        else:
+            reporter.pass_(
+                f"Cam{serial} crop video MP4 key/sync samples cover every packet "
+                f"({len(crop_key_flags)})"
+            )
+        for error in mp4_source_pixel_tag_errors(
+            crop_video.get("tags", {}),
+            output_kind="crop",
+            label=f"Cam{serial} crop video",
+        ):
+            reporter.fail(error)
 
         bad_geometry_rows = []
         for index, row in enumerate(crop_rows, start=2):
@@ -462,6 +631,7 @@ def validate_crop_artifacts(
                 "with invalid crop_w/crop_h geometry"
             ),
         )
+        check_crop_metadata_contract(crop_rows, crop_meta_path, serial, reporter)
 
         crop_ids = recording_frame_ids_from_csv(crop_rows, crop_meta_path)
         validate_monotonic_positive(crop_ids, f"Cam{serial} crop metadata", reporter)

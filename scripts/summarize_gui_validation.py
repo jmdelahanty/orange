@@ -1455,7 +1455,7 @@ def ffprobe_video(path: Path, ffprobe: str) -> dict[str, Any]:
         "-select_streams",
         "v:0",
         "-show_entries",
-        "stream=width,height,nb_frames,nb_read_frames,avg_frame_rate,duration:format=duration,size,bit_rate",
+        "stream=width,height,nb_frames,nb_read_frames,avg_frame_rate,duration:format=duration,size,bit_rate:format_tags=title,comment",
         "-of",
         "json",
         str(path),
@@ -1476,6 +1476,7 @@ def ffprobe_video(path: Path, ffprobe: str) -> dict[str, Any]:
         return {"status": "no_video_stream", "size_bytes": path.stat().st_size}
     stream = streams[0]
     fmt = payload.get("format", {}) if isinstance(payload.get("format"), dict) else {}
+    tags = fmt.get("tags", {}) if isinstance(fmt.get("tags"), dict) else {}
     size = int(fmt.get("size") or path.stat().st_size)
     duration = float(stream.get("duration") or fmt.get("duration") or 0.0)
     bit_rate = fmt.get("bit_rate")
@@ -1491,6 +1492,7 @@ def ffprobe_video(path: Path, ffprobe: str) -> dict[str, Any]:
         "duration_s": duration,
         "size_bytes": size,
         "bitrate_bps": bitrate_bps,
+        "tags": tags,
     }
 
 

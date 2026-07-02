@@ -1,0 +1,65 @@
+{
+  "experiment_id": "2010096_headless_real_yolo_pose_real_crop_size_256_a16_gpu5",
+  "notes": "Crop-size sweep baseline for the real YOLO-centered crop producer plus real TensorRT pose. This uses crop_pipeline.crop_size_px=256 and recording_sink_mode=preprocess_only so it measures crop ROI geometry, crop copy, and pose resize/inference without crop MP4 encode cost. Use the GUI/external-crop recording path to separately measure lossless crop-video encode cost.",
+  "selection": {
+    "camera_serials": ["2010096"],
+    "gpu_ids": [5]
+  },
+  "fixed": {
+    "duration_s": 8,
+    "warmup_s": 1,
+    "display": false,
+    "yolo": false,
+    "stream_only": false,
+    "sync_mode": "free_run",
+    "recording_sink_mode": "preprocess_only",
+    "config_folder": "/home/jeremy/orange-gop-split-a16/config/crop_size_sweep_2010096_a16_256",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "nvenc_direct_input": false,
+    "yolo_worker": {
+      "mode": "real",
+      "engine_path": "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.engine",
+      "decimate": 1,
+      "publish_live_ipc": false,
+      "timeout_ms": 500,
+      "prewarm_iterations": 3,
+      "fail_on_init_error": true
+    },
+    "pose_worker": {
+      "mode": "real",
+      "engine_path": "/home/jeremy/pose_cedar_shadow_filtered_gray_latest_traditional_a4c30ae1_v001_r001_fp16.engine",
+      "skeleton_id": "fish_v1",
+      "input_width": 256,
+      "input_height": 256,
+      "input_layout": "nchw",
+      "input_dtype": "fp32",
+      "normalization": "model_default",
+      "roi_source": "yolo_top_detection",
+      "queue_depth": 32,
+      "crop_frame_pool_size": 32,
+      "timeout_ms": 500,
+      "prewarm_iterations": 3,
+      "fail_on_init_error": true,
+      "write_events_jsonl": true
+    }
+  },
+  "matrix": {
+    "codec": ["hevc"],
+    "preset": ["p1"],
+    "tuning": ["ll"],
+    "rate_control_mode": ["vbr"],
+    "quality_value": [20],
+    "gop_length": [25],
+    "aq": ["off"],
+    "temporal_aq": ["off"],
+    "lookahead": ["off"]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 2.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true,
+    "require_zero_camera_drops": true,
+    "require_valid_video_content": false
+  }
+}

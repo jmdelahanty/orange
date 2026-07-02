@@ -13,7 +13,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from recording_output_validation import recording_clip_output_contract_errors
+from recording_output_validation import (
+    mp4_key_sample_flag_errors,
+    mp4_source_pixel_tag_errors,
+    recording_clip_output_contract_errors,
+    video_metadata_contract_errors,
+)
 
 
 CONTRACT_SCHEMA_ID = "orange.external_recorder.contract"
@@ -332,7 +337,7 @@ def selected_streams(contract: dict[str, Any], cameras: list[str] | None) -> dic
     return selected
 
 
-def ffprobe_video(path: Path, ffprobe: str) -> None:
+def ffprobe_video(path: Path, ffprobe: str) -> dict[str, Any]:
     command = [
         ffprobe,
         "-v",
@@ -340,7 +345,7 @@ def ffprobe_video(path: Path, ffprobe: str) -> None:
         "-select_streams",
         "v:0",
         "-show_entries",
-        "stream=width,height,duration:format=size,duration",
+        "stream=width,height,duration:format=size,duration:format_tags=title,comment",
         "-of",
         "json",
         str(path),
@@ -365,6 +370,59 @@ def ffprobe_video(path: Path, ffprobe: str) -> None:
     stream = streams[0]
     require(as_int(stream.get("width"), "ffprobe width") > 0, f"invalid MP4 width: {path}")
     require(as_int(stream.get("height"), "ffprobe height") > 0, f"invalid MP4 height: {path}")
+    fmt = payload.get("format")
+    fmt = fmt if isinstance(fmt, dict) else {}
+    tags = fmt.get("tags")
+    return {"tags": tags if isinstance(tags, dict) else {}}
+
+
+def ffprobe_packet_key_flags(path: Path, ffprobe: str) -> list[str]:
+    command = [
+        ffprobe,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "packet=flags",
+        "-of",
+        "csv=p=0",
+        str(path),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise VerificationError(f"ffprobe executable not found: {ffprobe}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise VerificationError(f"ffprobe packet key flag probe timed out for {path}") from exc
+    if result.returncode != 0:
+        raise VerificationError(
+            f"ffprobe packet key flag probe failed for {path}: {result.stderr.strip()}"
+        )
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def require_crop_mp4_key_samples(
+    path: Path,
+    ffprobe: str,
+    *,
+    label: str,
+    expected_packet_count: int | None,
+) -> None:
+    packet_flags = ffprobe_packet_key_flags(path, ffprobe)
+    for error in mp4_key_sample_flag_errors(
+        packet_flags,
+        label=label,
+        require_all_key_samples=True,
+        expected_packet_count=expected_packet_count,
+    ):
+        raise VerificationError(error)
 
 
 def verify_video_sanity(path: Path, allow_missing: bool) -> str:
@@ -627,7 +685,7 @@ def require_ipc_protocol_hello(payload: dict[str, Any], label: str) -> None:
         )
 
 
-def read_metadata_frame_rows(path: Path) -> list[dict[str, int]]:
+def read_metadata_frame_rows(path: Path) -> list[dict[str, int | None]]:
     fieldnames, rows = read_csv_rows(path)
     field_set = set(fieldnames)
     if "recording_frame_id" in field_set:
@@ -645,24 +703,30 @@ def read_metadata_frame_rows(path: Path) -> list[dict[str, int]]:
             f"metadata CSV missing {required_column} column: {path}",
         )
 
-    parsed_rows: list[dict[str, int]] = []
+    has_crop_video_frame_index = "crop_video_frame_index" in field_set
+    parsed_rows: list[dict[str, int | None]] = []
     for row_index, row in enumerate(rows, start=2):
-        parsed_rows.append(
-            {
-                "recording_frame_id": as_int(
-                    row.get(frame_id_column),
-                    f"{frame_id_column} row {row_index} in {path}",
-                ),
-                "timestamp": as_int(
-                    row.get("timestamp"),
-                    f"timestamp row {row_index} in {path}",
-                ),
-                "timestamp_sys": as_int(
-                    row.get("timestamp_sys"),
-                    f"timestamp_sys row {row_index} in {path}",
-                ),
-            }
-        )
+        parsed = {
+            "recording_frame_id": as_int(
+                row.get(frame_id_column),
+                f"{frame_id_column} row {row_index} in {path}",
+            ),
+            "timestamp": as_int(
+                row.get("timestamp"),
+                f"timestamp row {row_index} in {path}",
+            ),
+            "timestamp_sys": as_int(
+                row.get("timestamp_sys"),
+                f"timestamp_sys row {row_index} in {path}",
+            ),
+            "crop_video_frame_index": None,
+        }
+        if has_crop_video_frame_index:
+            parsed["crop_video_frame_index"] = as_int(
+                row.get("crop_video_frame_index"),
+                f"crop_video_frame_index row {row_index} in {path}",
+            )
+        parsed_rows.append(parsed)
     return parsed_rows
 
 
@@ -733,6 +797,7 @@ def verify_rolling_output(
     expected_next_frame = 1
     total_clip_frames = 0
     verified_clips: list[dict[str, Any]] = []
+    output_kind = str(summary.get("output_kind") or stream.get("output_kind") or "full")
     for expected_index, clip in enumerate(clips):
         require(isinstance(clip, dict), f"rolling clip {expected_index} is not an object for {serial}")
         require(clip.get("clip_index") == expected_index, f"unexpected clip_index for {serial}: {clip.get('clip_index')!r}")
@@ -745,7 +810,13 @@ def verify_rolling_output(
         require(mp4_path.exists() and mp4_path.stat().st_size > 0, f"missing rolling clip MP4 for {serial}: {mp4_path}")
         require(metadata_path.exists() and metadata_path.stat().st_size > 0, f"missing rolling metadata for {serial}: {metadata_path}")
         require(keyframe_path.exists() and keyframe_path.stat().st_size > 0, f"missing rolling keyframe sidecar for {serial}: {keyframe_path}")
-        ffprobe_video(mp4_path, ffprobe)
+        clip_probe = ffprobe_video(mp4_path, ffprobe)
+        for error in mp4_source_pixel_tag_errors(
+            clip_probe.get("tags", {}),
+            output_kind=output_kind,
+            label=f"rolling clip {expected_index} for {serial}",
+        ):
+            raise VerificationError(error)
         keyframes = keyframe_frames(keyframe_path)
         require(
             keyframes[0] == 0,
@@ -758,6 +829,13 @@ def verify_rolling_output(
         last_frame = as_int(clip.get("last_recording_frame_id"), "rolling clip last_recording_frame_id")
         require(frame_count > 0, f"rolling clip has no frames for {serial}: {clip.get('clip_id')}")
         require(packet_count > 0, f"rolling clip has no packets for {serial}: {clip.get('clip_id')}")
+        if output_kind == "crop":
+            require_crop_mp4_key_samples(
+                mp4_path,
+                ffprobe,
+                label=f"rolling crop clip {expected_index} MP4 for {serial}",
+                expected_packet_count=frame_count,
+            )
         require(first_frame == expected_next_frame, f"rolling frame continuity break for {serial}: expected {expected_next_frame}, got {first_frame}")
         require(last_frame == first_frame + frame_count - 1, f"rolling frame range mismatch for {serial}: {clip.get('clip_id')}")
         metadata_rows = read_metadata_frame_rows(metadata_path)
@@ -773,6 +851,15 @@ def verify_rolling_output(
             metadata_rows[-1]["recording_frame_id"] == last_frame,
             f"rolling metadata last frame mismatch for {serial}: {metadata_path}",
         )
+        if output_kind == "crop":
+            for expected_frame_index, row in enumerate(metadata_rows):
+                require(
+                    row.get("crop_video_frame_index") == expected_frame_index,
+                    (
+                        f"rolling crop metadata crop_video_frame_index mismatch for "
+                        f"{serial}: {metadata_path} row {expected_frame_index + 2}"
+                    ),
+                )
         for left, right in zip(metadata_rows, metadata_rows[1:]):
             left_frame = left["recording_frame_id"]
             right_frame = right["recording_frame_id"]
@@ -1297,7 +1384,24 @@ def verify_summary(
 
     mp4_path = path_from(stream.get("mp4") or summary.get("outputs", {}).get("mp4"), artifact_root)
     require(mp4_path.exists() and mp4_path.stat().st_size > 0, f"missing or empty external MP4: {mp4_path}")
-    ffprobe_video(mp4_path, ffprobe)
+    mp4_probe = ffprobe_video(mp4_path, ffprobe)
+    output_kind = str(summary.get("output_kind") or stream.get("output_kind") or "full")
+    if output_kind == "crop":
+        require_crop_mp4_key_samples(
+            mp4_path,
+            ffprobe,
+            label=f"external crop MP4 for {serial}",
+            expected_packet_count=frames_encoded,
+        )
+    for error in video_metadata_contract_errors(
+        summary.get("video_metadata"),
+        output_kind=output_kind,
+        label=f"summary for {serial}",
+        camera_serial=str(stream.get("camera_serial", serial)),
+        stream_id=str(stream.get("stream_id", serial)),
+        mp4_tags=mp4_probe.get("tags", {}),
+    ):
+        raise VerificationError(error)
 
     if bool(contract.get("require_gop_routing", True)):
         routing_path = path_from(

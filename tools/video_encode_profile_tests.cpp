@@ -14,6 +14,24 @@ void require(bool condition, const std::string& message)
     }
 }
 
+std::string tag_value(const std::vector<std::pair<std::string, std::string>>& tags,
+                      const std::string& key)
+{
+    for (const auto& tag : tags) {
+        if (tag.first == key) {
+            return tag.second;
+        }
+    }
+    return {};
+}
+
+void require_contains(const std::string& value,
+                      const std::string& expected,
+                      const std::string& message)
+{
+    require(value.find(expected) != std::string::npos, message);
+}
+
 CameraParams make_camera()
 {
     CameraParams camera{};
@@ -86,6 +104,32 @@ void test_full_profile_defaults()
     require(encode_config.monoChromeEncoding == 1, "mono full output marks monochrome");
     require(encode_config.encodeCodecConfig.hevcConfig.idrPeriod == 100, "HEVC IDR follows GOP");
     require(encode_config.encodeCodecConfig.hevcConfig.repeatSPSPPS == 1, "HEVC repeats SPS/PPS");
+
+    const auto tags = build_video_encode_metadata_tags(profile);
+    const std::string comment = tag_value(tags, "comment");
+    require_contains(
+        comment,
+        "source_pixel_contract=orange.camera.mono8.full_frame.v1",
+        "full comment source pixel contract");
+    require_contains(
+        comment,
+        "source_pixel_format=mono8",
+        "full comment source pixel format");
+    require_contains(
+        comment,
+        "source_transform_to_encoder=mono8_to_nv12",
+        "full comment source transform");
+    require_contains(
+        comment,
+        "output_kind=full",
+        "full comment output kind");
+
+    const nlohmann::json source_contract =
+        build_video_source_pixel_contract_json(profile);
+    require(
+        source_contract.at("id") == "orange.camera.mono8.full_frame.v1",
+        "full source contract json id");
+    require(source_contract.at("width") == 4512, "full source contract json width");
 }
 
 void test_full_profile_overrides()
@@ -147,6 +191,9 @@ void test_crop_profile()
     const VideoEncodeProfileNvencGuids guids =
         resolve_video_encode_profile_nvenc_guids(profile);
     const auto tags = build_video_encode_metadata_tags(profile);
+    const std::string comment = tag_value(tags, "comment");
+    const nlohmann::json metadata =
+        build_video_metadata_json(profile, "/tmp/Cam2010096_crop.mp4", "2010096_crop");
 
     require(profile.output_kind == "crop", "crop profile output kind");
     require(profile.role == "sidecar", "crop profile role");
@@ -165,6 +212,27 @@ void test_crop_profile()
     require(encode_config.rcParams.constQP.qpInterB == 0, "crop B QP 0");
     require(encode_config.rcParams.constQP.qpIntra == 0, "crop I QP 0");
     require(!tags.empty() && tags[0].second == "Cam2010096 crop", "crop metadata title");
+    require_contains(
+        comment,
+        "source_pixel_contract=orange.crop.mono8.v1",
+        "crop comment source pixel contract");
+    require_contains(
+        comment,
+        "source_pixel_format=mono8",
+        "crop comment source pixel format");
+    require_contains(
+        comment,
+        "source_transform_to_encoder=crop_mono8_to_nv12",
+        "crop comment source transform");
+    require(
+        metadata.at("source_pixel_contract").at("id") == "orange.crop.mono8.v1",
+        "crop metadata json source contract id");
+    require(
+        metadata.at("mp4_tags_expected").at("title") == "Cam2010096 crop",
+        "crop metadata json expected title");
+    require(
+        metadata.at("mp4_metadata_embedding").at("validated_with_ffprobe") == false,
+        "crop metadata json ffprobe validation flag");
 }
 
 void test_normalization()

@@ -823,7 +823,7 @@ Field semantics:
 Header (exact):
 
 ```text
-recording_frame_id,local_frame_id,camera_frame_id,timestamp,timestamp_sys,has_detection,blank_frame,detection_confidence,crop_x,crop_y,crop_w,crop_h,detection_x,detection_y,detection_w,detection_h
+recording_frame_id,local_frame_id,camera_frame_id,timestamp,timestamp_sys,has_detection,blank_frame,detection_confidence,crop_x,crop_y,crop_w,crop_h,detection_x,detection_y,detection_w,detection_h,crop_video_frame_index,crop_state,crop_rect_valid,crop_rect_coordinate_space,crop_rect_layout,crop_rect_semantics,detection_rect_valid,detection_rect_coordinate_space,detection_rect_layout,detection_rect_semantics,detection_source,selection_policy
 ```
 
 Field semantics:
@@ -842,12 +842,35 @@ Field semantics:
 - `crop_x,crop_y,crop_w,crop_h`: actual crop rectangle in source-frame pixels.
 - `detection_x,detection_y,detection_w,detection_h`: selected source detection
   rectangle in source-frame pixels.
+- `crop_video_frame_index`: zero-based row/video-frame index within this CSV.
+  Session-aggregate crop CSVs and per-clip rolling crop CSVs each start at `0`.
+- `crop_state`: `detected_crop` for source ROI crop frames, or
+  `blank_no_detection` for explicit blank no-detection frames.
+- `crop_rect_valid`: integer boolean (`0|1`), true when `crop_*` names an
+  actual source-frame ROI. Blank no-detection rows set this to `0`.
+- `crop_rect_coordinate_space`: currently `full_frame_pixels`.
+- `crop_rect_layout`: currently `xywh_top_left`.
+- `crop_rect_semantics`: currently `actual_clamped_source_roi`.
+- `detection_rect_valid`: integer boolean (`0|1`), true when `detection_*`
+  names the selected live detection bbox. Blank no-detection rows set this to
+  `0`.
+- `detection_rect_coordinate_space`: currently `full_frame_pixels`.
+- `detection_rect_layout`: currently `xywh_top_left`.
+- `detection_rect_semantics`: currently
+  `selected_postprocessed_model_detection`.
+- `detection_source`: `model` for normal detection rows and `none` for blank
+  no-detection rows. For full detection provenance, including synthetic
+  diagnostics, use `Cam<serial>_yolo_events.jsonl`.
+- `selection_policy`: currently `largest_detection_by_confidence`.
 
 Behavior note:
 - Blank crop frames may still be encoded when no detection exists.
 - Metadata is now intended to contain one row per encoded crop frame so crop
   video frames can be joined against crop metadata without inferring missing
   no-detection frames.
+- The crop CSV is self-describing by header shape. The original columns remain
+  first for compatibility; the appended fields define the coordinate and
+  semantic contract for crop and detection rectangles.
 
 ### YOLO Perf CSV (`Cam<serial>_yolo_perf.csv`)
 
