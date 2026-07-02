@@ -68,3 +68,5 @@ __pycache__/
 .codex
 .codex/
 .claude/settings.local.json
+out.txt
+cuda_debug.log
