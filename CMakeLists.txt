@@ -548,6 +548,16 @@ if(BUILD_TESTING)
     add_test(NAME threadworker_tsan_stress
         COMMAND ${ORANGE_TSAN_TEST_LAUNCHER} $<TARGET_FILE:threadworker_tsan_stress>)
 
+    add_executable(synthetic_pipeline_tests
+        "tools/synthetic_pipeline_tests.cpp"
+        "${SRC_DIR}/offthreadmachine.cpp"
+    )
+    target_include_directories(synthetic_pipeline_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(synthetic_pipeline_tests PRIVATE cxx_std_17)
+    target_link_libraries(synthetic_pipeline_tests PRIVATE Threads::Threads)
+    add_test(NAME synthetic_pipeline_tests
+        COMMAND ${ORANGE_TSAN_TEST_LAUNCHER} $<TARGET_FILE:synthetic_pipeline_tests>)
+
     add_executable(worker_entry_ownership_core_host_tests
         "tools/worker_entry_ownership_core_host_tests.cpp"
     )
@@ -582,6 +592,7 @@ if(BUILD_TESTING)
         foreach(_tsan_target
                 threadworker_tests
                 threadworker_tsan_stress
+                synthetic_pipeline_tests
                 worker_entry_ownership_core_host_tests
                 worker_entry_ownership_tsan_hammer
                 worker_entry_handoff_tsan_hammer)

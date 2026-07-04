@@ -214,6 +214,7 @@
             "targets": [
                 "threadworker_tests",
                 "threadworker_tsan_stress",
+                "synthetic_pipeline_tests",
                 "worker_entry_ownership_core_host_tests",
                 "worker_entry_ownership_tsan_hammer",
                 "worker_entry_handoff_tsan_hammer"
