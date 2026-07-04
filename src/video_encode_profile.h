@@ -37,7 +37,7 @@ struct VideoSourcePixelContract {
     std::string transform_to_encoder;
     std::string encoder_input_format = "nv12";
     std::string encoded_pix_fmt = "yuv420p";
-    std::string encoded_color_range = "tv";
+    std::string encoded_color_range = "pc";
 };
 
 struct VideoEncodeProfile {
@@ -108,6 +108,9 @@ VideoEncodeProfileNvencGuids resolve_video_encode_profile_nvenc_guids(
 void apply_video_encode_profile_to_nvenc_config(
     const VideoEncodeProfile& profile,
     NV_ENC_INITIALIZE_PARAMS* initialize_params,
+    NV_ENC_CONFIG* encode_config);
+void apply_full_range_video_signal_to_nvenc_config(
+    const std::string& codec,
     NV_ENC_CONFIG* encode_config);
 VideoSourcePixelContract resolve_video_source_pixel_contract(
     const VideoEncodeProfile& profile);

@@ -3,6 +3,7 @@
 extern "C"
 {
 #include <libavformat/avformat.h>
+#include <libavutil/pixfmt.h>
 #include <libavutil/opt.h>
 #include <libswresample/swresample.h>
 };
@@ -50,7 +51,7 @@ public:
     void create_thread();
     void quit_thread();
     void join_thread();
-    void write_one_pkt(AVPacket* pkt); 
+    void write_one_pkt(AVPacket* pkt);
     bool is_open() const { return open_; }
     // True once the writer thread exited on an exception. The thread never
     // calls exit(); it logs, latches this flag and stops so the owner can

@@ -926,7 +926,7 @@ def write_external_crop_summary(
         "source_coordinate_origin=top_left; source_origin=analytics_crop; "
         "source_transform_to_encoder=crop_mono8_to_nv12; "
         "encoder_input_format=nv12; encoded_pix_fmt=yuv420p; "
-        "encoded_color_range=tv; output_kind=crop; role=sidecar; "
+        "encoded_color_range=pc; output_kind=crop; role=sidecar; "
         "input_format=nv12; source_format=mono8; "
         "coordinate_space=full_frame_pixels; "
         "selection_policy=largest_detection_by_confidence; "
@@ -975,7 +975,7 @@ def write_external_crop_summary(
                         "transform_to_encoder": "crop_mono8_to_nv12",
                         "encoder_input_format": "nv12",
                         "encoded_pix_fmt": "yuv420p",
-                        "encoded_color_range": "tv",
+                        "encoded_color_range": "pc",
                     },
                     "mp4_tags_expected": {
                         "title": title,
@@ -4230,7 +4230,7 @@ def check_main_video_content_failure_allowlist(
                         "source_coordinate_origin=top_left; source_origin=camera_dma; "
                         "source_transform_to_encoder=mono8_to_nv12; "
                         "encoder_input_format=nv12; encoded_pix_fmt=yuv420p; "
-                        "encoded_color_range=tv; output_kind=full; "
+                        "encoded_color_range=pc; output_kind=full; "
                         "output_mode=factor; rc=vbr; bpp=0.100; "
                         "target_bps=150000000"
                     ),

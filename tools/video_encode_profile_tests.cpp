@@ -104,6 +104,12 @@ void test_full_profile_defaults()
     require(encode_config.monoChromeEncoding == 1, "mono full output marks monochrome");
     require(encode_config.encodeCodecConfig.hevcConfig.idrPeriod == 100, "HEVC IDR follows GOP");
     require(encode_config.encodeCodecConfig.hevcConfig.repeatSPSPPS == 1, "HEVC repeats SPS/PPS");
+    require(
+        encode_config.encodeCodecConfig.hevcConfig.hevcVUIParameters.videoSignalTypePresentFlag == 1,
+        "HEVC VUI video signal type present");
+    require(
+        encode_config.encodeCodecConfig.hevcConfig.hevcVUIParameters.videoFullRangeFlag == 1,
+        "HEVC VUI full range flag");
 
     const auto tags = build_video_encode_metadata_tags(profile);
     const std::string comment = tag_value(tags, "comment");
@@ -119,6 +125,10 @@ void test_full_profile_defaults()
         comment,
         "source_transform_to_encoder=mono8_to_nv12",
         "full comment source transform");
+    require_contains(
+        comment,
+        "encoded_color_range=pc",
+        "full comment encoded color range");
     require_contains(
         comment,
         "output_kind=full",
@@ -211,6 +221,12 @@ void test_crop_profile()
     require(encode_config.rcParams.constQP.qpInterP == 0, "crop P QP 0");
     require(encode_config.rcParams.constQP.qpInterB == 0, "crop B QP 0");
     require(encode_config.rcParams.constQP.qpIntra == 0, "crop I QP 0");
+    require(
+        encode_config.encodeCodecConfig.hevcConfig.hevcVUIParameters.videoSignalTypePresentFlag == 1,
+        "crop HEVC VUI video signal type present");
+    require(
+        encode_config.encodeCodecConfig.hevcConfig.hevcVUIParameters.videoFullRangeFlag == 1,
+        "crop HEVC VUI full range flag");
     require(!tags.empty() && tags[0].second == "Cam2010096 crop", "crop metadata title");
     require_contains(
         comment,
@@ -224,6 +240,10 @@ void test_crop_profile()
         comment,
         "source_transform_to_encoder=crop_mono8_to_nv12",
         "crop comment source transform");
+    require_contains(
+        comment,
+        "encoded_color_range=pc",
+        "crop comment encoded color range");
     require(
         metadata.at("source_pixel_contract").at("id") == "orange.crop.mono8.v1",
         "crop metadata json source contract id");

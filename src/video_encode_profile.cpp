@@ -16,6 +16,7 @@ constexpr int kDefaultQualityValue = 20;
 constexpr int kMinQualityValue = 1;
 constexpr int kMaxQualityValue = 51;
 constexpr int kMaxLookaheadDepth = 32;
+constexpr uint32_t kVuiVideoFormatUnspecified = 5;
 
 std::string lower_ascii(std::string value)
 {
@@ -121,7 +122,7 @@ VideoSourcePixelContract derived_video_source_pixel_contract(
     contract.encoder_input_format =
         profile.input_format.empty() ? "nv12" : profile.input_format;
     contract.encoded_pix_fmt = "yuv420p";
-    contract.encoded_color_range = "tv";
+    contract.encoded_color_range = "pc";
 
     if (profile.output_kind == "crop") {
         contract.id = "orange.crop.mono8.v1";
@@ -635,6 +636,7 @@ void apply_video_encode_profile_to_nvenc_config(
 
     encode_config->gopLength = profile.resolved_gop_length;
     encode_config->frameIntervalP = 1;
+    apply_full_range_video_signal_to_nvenc_config(profile.codec, encode_config);
 
     if (profile.output_kind == "crop") {
         encode_config->gopLength = 1;
@@ -711,6 +713,27 @@ void apply_video_encode_profile_to_nvenc_config(
 
     if (!profile.color) {
         encode_config->monoChromeEncoding = 1;
+    }
+}
+
+void apply_full_range_video_signal_to_nvenc_config(
+    const std::string& codec,
+    NV_ENC_CONFIG* encode_config)
+{
+    if (!encode_config) {
+        return;
+    }
+
+    if (normalize_video_encode_codec(codec) == "hevc") {
+        auto& vui = encode_config->encodeCodecConfig.hevcConfig.hevcVUIParameters;
+        vui.videoSignalTypePresentFlag = 1;
+        vui.videoFormat = kVuiVideoFormatUnspecified;
+        vui.videoFullRangeFlag = 1;
+    } else {
+        auto& vui = encode_config->encodeCodecConfig.h264Config.h264VUIParameters;
+        vui.videoSignalTypePresentFlag = 1;
+        vui.videoFormat = kVuiVideoFormatUnspecified;
+        vui.videoFullRangeFlag = 1;
     }
 }
 

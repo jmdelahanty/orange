@@ -88,7 +88,7 @@ def video_metadata_payload(serial: str, *, output_kind: str = "full") -> dict:
         "source_width=256; source_height=256; "
         "source_coordinate_origin=top_left; source_origin=camera_dma; "
         f"source_transform_to_encoder={transform}; encoder_input_format=nv12; "
-        f"encoded_pix_fmt=yuv420p; encoded_color_range=tv; output_kind={output_kind}; "
+        f"encoded_pix_fmt=yuv420p; encoded_color_range=pc; output_kind={output_kind}; "
         "output_mode=factor; rc=vbr; bpp=0.100; target_bps=150000000"
     )
     if output_kind == "crop":
@@ -125,7 +125,7 @@ def video_metadata_payload(serial: str, *, output_kind: str = "full") -> dict:
             "transform_to_encoder": transform,
             "encoder_input_format": "nv12",
             "encoded_pix_fmt": "yuv420p",
-            "encoded_color_range": "tv",
+            "encoded_color_range": "pc",
         },
         "mp4_tags_expected": {
             "title": title,

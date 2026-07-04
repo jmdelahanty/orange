@@ -1275,6 +1275,7 @@ void configure_encoder_params(const Options& options,
 
     encode_config->gopLength = std::max<uint32_t>(1, options.gop);
     encode_config->frameIntervalP = 1;
+    apply_full_range_video_signal_to_nvenc_config(options.codec, encode_config);
     if (options.tuning == "lossless") {
         encode_config->rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
         encode_config->rcParams.constQP = {0, 0, 0};

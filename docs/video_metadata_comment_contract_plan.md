@@ -172,7 +172,7 @@ format.tags.comment = <semicolon-separated encode/source-pixel summary>
 The `comment` should be stable but compact. Example:
 
 ```text
-nvenc codec=hevc; preset=p1; tuning=ll; res=4512x4512; fps=100; color=0; output_kind=full; gop=25; rc=vbr; target_bps=150000000; max_bps=150000000; vbv=150000000; source_pixel_contract=orange.camera.mono8.full_frame.v1; source_pixel_format=mono8; source_pixel_dtype=uint8; source_pixel_range=0_255; source_color_space=linear_gray; source_channel_order=gray; source_memory_layout=HxW; source_transform_to_encoder=mono8_to_nv12
+nvenc codec=hevc; preset=p1; tuning=ll; res=4512x4512; fps=100; color=0; output_kind=full; gop=25; rc=vbr; target_bps=150000000; max_bps=150000000; vbv=150000000; source_pixel_contract=orange.camera.mono8.full_frame.v1; source_pixel_format=mono8; source_pixel_dtype=uint8; source_pixel_range=0_255; source_color_space=linear_gray; source_channel_order=gray; source_memory_layout=HxW; source_width=4512; source_height=4512; source_coordinate_origin=top_left; source_origin=camera_dma; source_transform_to_encoder=mono8_to_nv12; encoder_input_format=nv12; encoded_pix_fmt=yuv420p; encoded_color_range=pc
 ```
 
 Crop videos should include:
@@ -186,6 +186,12 @@ source_pixel_contract=<crop contract id>
 
 Keep the legacy numeric `color=<0|1>` field for compatibility, but do not rely
 on it as the only pixel-format contract.
+
+Orange mono acquisition videos should also stamp the encoded stream as full
+range: HEVC/H264 VUI `video_full_range_flag = 1` and FFmpeg/MP4
+`color_range = pc`. `yuv420p` remains the expected decoded FFmpeg pixel format;
+the full-range flag is a numeric range interpretation, not a buffer-layout
+change from Orange's NV12 encoder input.
 
 ## Sidecar Shape
 
@@ -230,7 +236,7 @@ new top-level file:
       "source_origin": "camera_dma",
       "transform_to_encoder": "mono8_to_nv12",
       "encoded_stream_pix_fmt_expected": "yuv420p",
-      "encoded_stream_color_range_expected": "tv"
+      "encoded_stream_color_range_expected": "pc"
     },
     "mp4_tags_expected": {
       "title": "Cam2010093",

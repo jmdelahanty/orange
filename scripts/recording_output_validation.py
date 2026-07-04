@@ -122,7 +122,7 @@ def mp4_source_pixel_tag_errors(
         ("source_coordinate_origin", "top_left"),
         ("encoder_input_format", "nv12"),
         ("encoded_pix_fmt", "yuv420p"),
-        ("encoded_color_range", "tv"),
+        ("encoded_color_range", "pc"),
     ):
         _append_expected_field_error(errors, fields, key=key, expected=expected, label=label)
 
@@ -185,7 +185,7 @@ def video_metadata_contract_errors(
         "transform_to_encoder": expected_transform,
         "encoder_input_format": "nv12",
         "encoded_pix_fmt": "yuv420p",
-        "encoded_color_range": "tv",
+        "encoded_color_range": "pc",
     }
     for key, expected in checks.items():
         if expected is not None and source.get(key) != expected:

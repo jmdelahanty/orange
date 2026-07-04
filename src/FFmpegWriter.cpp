@@ -99,6 +99,8 @@ FFmpegWriter::FFmpegWriter(
     vpar->codec_type = AVMEDIA_TYPE_VIDEO;
     vpar->width = nWidth;
     vpar->height = nHeight;
+    vpar->format = AV_PIX_FMT_YUV420P;
+    vpar->color_range = AVCOL_RANGE_JPEG;
 
     if (vpar->codec_id == AV_CODEC_ID_H264) {
         vpar->codec_tag = MKTAG('a', 'v', 'c', '1');
@@ -186,7 +188,7 @@ void FFmpegWriter::push_packet(uint8_t* pData,
     }
     memcpy(pkt->data, pData, nBytes);
     const uint64_t alloc_copy_end_ns = steady_clock_now_ns();
-    
+
     const bool has_explicit_pts = nPts >= 0;
     const int64_t frame_index = has_explicit_pts ? nPts : sequential_frame_counter_;
     pkt->pts = av_rescale_q(frame_index, AVRational{1, nFps}, vs->time_base);
