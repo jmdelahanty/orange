@@ -439,12 +439,17 @@ static inline void initialize_writer_hw(
     }
     writer->metadata = new std::ofstream();
     writer->metadata->open(writer->metadata_file.c_str());
-     if (!(*writer->metadata))
+    if (!(*writer->metadata))
     {
-        std::cout << "Metadata file did not open!";
+        // Fail the recording start loudly: returning here would leave an open
+        // writer whose thread never starts, queueing packets to nowhere. The
+        // throw is caught at the worker-thread boundary (catch/latch/drain).
         delete writer->metadata;
         writer->metadata = nullptr;
-        return;
+        delete writer->video;
+        writer->video = nullptr;
+        throw std::runtime_error(
+            "Failed to open recording metadata file " + writer->metadata_file);
     }
     *writer->metadata << "frame_id,timestamp,timestamp_sys\n";
     writer->video->create_thread();

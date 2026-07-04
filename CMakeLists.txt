@@ -620,6 +620,23 @@ if(BUILD_TESTING)
     target_compile_features(external_crop_recorder_config_tests PRIVATE cxx_std_17)
     add_test(NAME external_crop_recorder_config_tests COMMAND external_crop_recorder_config_tests)
 
+    add_executable(ffmpeg_writer_failure_tests
+        "tools/ffmpeg_writer_failure_tests.cpp"
+        "${SRC_DIR}/FFmpegWriter.cpp"
+    )
+    target_include_directories(ffmpeg_writer_failure_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(ffmpeg_writer_failure_tests PRIVATE cxx_std_17)
+    target_link_libraries(ffmpeg_writer_failure_tests PRIVATE
+        ${AVFORMAT_LIBRARY}
+        ${SWRESAMPLE_LIBRARY}
+        ${AVUTIL_LIBRARY}
+        ${AVCODEC_LIBRARY}
+        pthread
+    )
+    set_target_properties(ffmpeg_writer_failure_tests PROPERTIES
+        BUILD_RPATH "${FFMPEG_LIBRARY_DIR}")
+    add_test(NAME ffmpeg_writer_failure_tests COMMAND ffmpeg_writer_failure_tests)
+
     add_test(
         NAME validate_gui_crop_preview_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/validate_gui_crop_preview_tests.py")

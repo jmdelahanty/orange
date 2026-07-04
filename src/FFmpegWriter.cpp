@@ -4,6 +4,7 @@
 #include "fsuid_guard.h"
 #include "nvtx_profiling.h"
 #include <algorithm>
+#include <stdexcept>
 #include <unistd.h>
 #include <filesystem>
 #ifdef __linux__
@@ -65,16 +66,21 @@ FFmpegWriter::FFmpegWriter(
     if (metadata_file) {
         keyframe_file_ = metadata_file;
     }
+    // Construction-time failures throw (docs/error_handling_convention.md):
+    // a writer that failed to open must be impossible to ignore. Callers run
+    // either on worker threads with catch/latch/drain boundaries or inside
+    // init-path try/catch blocks. Partial state is released before throwing
+    // because a throwing constructor does not run the destructor.
     oc = avformat_alloc_context();
     if (!oc) {
-        printf("FFMPEG: avformat_alloc_context error");
-        return;
+        throw std::runtime_error("FFmpegWriter: avformat_alloc_context failed");
     }
 
     AVOutputFormat *fmt = (AVOutputFormat *)av_guess_format("mp4", NULL, NULL);
     if (!fmt) {
-        printf("Invalid format");
-        return;
+        avformat_free_context(oc);
+        oc = NULL;
+        throw std::runtime_error("FFmpegWriter: av_guess_format(mp4) failed");
     }
     fmt->video_codec = eCodecId;
     oc->oformat = fmt;
@@ -87,8 +93,9 @@ FFmpegWriter::FFmpegWriter(
 
     vs = avformat_new_stream(oc, NULL);
     if (!vs) {
-        printf("FFMPEG: Could not alloc video stream");
-        return;
+        avformat_free_context(oc);
+        oc = NULL;
+        throw std::runtime_error("FFmpegWriter: could not alloc video stream");
     }
     vs->id = 0;
     vs->time_base = AVRational{1, 90000};
@@ -109,13 +116,20 @@ FFmpegWriter::FFmpegWriter(
     }
 
     if (avio_open(&oc->pb, szOutFilePath, AVIO_FLAG_WRITE) < 0) {
-        printf("FFMPEG: Could not open %s\n", szOutFilePath);
-        return;
+        avformat_free_context(oc);
+        oc = NULL;
+        throw std::runtime_error(
+            std::string("FFmpegWriter: could not open output file ") +
+            (szOutFilePath ? szOutFilePath : "(null)"));
     }
 
     if (avformat_write_header(oc, NULL)) {
-        printf("FFMPEG: avformat_write_header error!\n");
-        return;
+        avio_closep(&oc->pb);
+        avformat_free_context(oc);
+        oc = NULL;
+        throw std::runtime_error(
+            std::string("FFmpegWriter: avformat_write_header failed for ") +
+            (szOutFilePath ? szOutFilePath : "(null)"));
     }
     open_ = true;
 }

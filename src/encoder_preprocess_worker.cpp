@@ -332,7 +332,11 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
 
 EncoderPreprocessWorker::~EncoderPreprocessWorker()
 {
-    ck(cudaSetDevice(preprocess_gpu_id_));
+    // Destructor must not throw (docs/error_handling_convention.md):
+    // best-effort device selection during teardown.
+    if (cudaSetDevice(preprocess_gpu_id_) != cudaSuccess) {
+        std::cerr << "[EncoderPreprocessWorker] destructor: cudaSetDevice failed; continuing teardown" << std::endl;
+    }
     drain_pending_source_releases(true);
     dump_helper_preprocess_host_history();
     dump_source_release_history();

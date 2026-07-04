@@ -7296,7 +7296,14 @@ int main(int /*argc*/, char ** /*args*/) {
         .glsl_version = (char *) malloc(100)
     };
 
-    render_initialize_target(window);
+    // GLFW/window helpers throw on failure (library code never exits);
+    // main() owns the process-exit decision.
+    try {
+        render_initialize_target(window);
+    } catch (const std::exception& ex) {
+        std::cerr << "FATAL: display initialization failed: " << ex.what() << std::endl;
+        return EXIT_FAILURE;
+    }
 
     int max_cameras = 20;
     int cam_count;
@@ -8685,6 +8692,10 @@ int main(int /*argc*/, char ** /*args*/) {
                                     max_frame_size_bytes = current_size;
                                 }
                             }
+                            // CameraResources::initialize and the worker
+                            // constructors below throw on CUDA failures;
+                            // covered by the pipeline-construction try/catch.
+                            try {
                             for (int i = 0; i < num_cameras; ++i) {
                                 if (!gui_camera_has_acquisition_work(cameras_select[i])) {
                                     continue;
@@ -8709,7 +8720,6 @@ int main(int /*argc*/, char ** /*args*/) {
                             // never exits. Catch construction-time throws here at the
                             // pipeline construction boundary: print and exit nonzero
                             // (exiting from main is fine).
-                            try {
                             openGLDisplayWorkers = new COpenGLDisplay*[num_cameras]();
                             cropProducerWorkers = new CropProducerWorker*[num_cameras]();
                             cropAndEncodeWorkers = new CropAndEncodeWorker*[num_cameras]();
@@ -8920,23 +8930,52 @@ int main(int /*argc*/, char ** /*args*/) {
                                 if (!gui_camera_has_acquisition_work(cameras_select[i])) {
                                     continue;
                                 }
+                                // Thread boundary (docs/error_handling_convention.md):
+                                // an exception escaping a raw std::thread would
+                                // std::terminate the whole process. Catch, log
+                                // loudly, and let the thread exit cleanly so
+                                // other cameras keep streaming and recordings
+                                // can still be finalized.
+                                CameraEmergent* acquire_ecam = &ecams[i];
+                                CameraParams* acquire_params = &cameras_params[i];
+                                CameraEachSelect* acquire_select = &cameras_select[i];
+                                INDIGOSignalBuilder* acquire_indigo = &indigo_signal_builder;
+                                COpenGLDisplay* acquire_display = openGLDisplayWorkers[i];
+                                RecordingIngress* acquire_ingress =
+                                    orange::session::recording_ingress_for_camera(recording_session, i);
+                                YoloWorker* acquire_yolo = yolo_workers[i];
+                                CameraResources* acquire_resources = &camera_resources[i];
+                                FrameIPCManager* acquire_ipc = frame_ipc_managers[i].get();
+                                SpatialSnapshotWorker* acquire_snapshot =
+                                    spatialSnapshotWorkers ? spatialSnapshotWorkers[i] : nullptr;
                                 camera_threads.emplace_back(
-                                    &acquire_frames,
-                                    &ecams[i],
-                                    &cameras_params[i],
-                                    &cameras_select[i],
-                                    camera_control,
-                                    ptp_params,
-                                    &indigo_signal_builder,
-                                    openGLDisplayWorkers[i],
-                                    orange::session::recording_ingress_for_camera(recording_session, i),
-                                    yolo_workers[i],
-                                    image_writer,
-                                    &camera_resources[i],
-                                    frame_ipc_managers[i].get(),
-                                    nullptr,
-                                    spatialSnapshotWorkers ? spatialSnapshotWorkers[i] : nullptr
-                                );
+                                    [=]() {
+                                        try {
+                                            acquire_frames(
+                                                acquire_ecam,
+                                                acquire_params,
+                                                acquire_select,
+                                                camera_control,
+                                                ptp_params,
+                                                acquire_indigo,
+                                                acquire_display,
+                                                acquire_ingress,
+                                                acquire_yolo,
+                                                image_writer,
+                                                acquire_resources,
+                                                acquire_ipc,
+                                                nullptr,
+                                                acquire_snapshot);
+                                        } catch (const std::exception& ex) {
+                                            std::cerr << "[FATAL] acquisition thread for camera "
+                                                      << acquire_params->camera_serial
+                                                      << " failed: " << ex.what() << std::endl;
+                                        } catch (...) {
+                                            std::cerr << "[FATAL] acquisition thread for camera "
+                                                      << acquire_params->camera_serial
+                                                      << " failed with a non-std exception" << std::endl;
+                                        }
+                                    });
                             }
                         }
                     } else {
