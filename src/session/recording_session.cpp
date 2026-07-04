@@ -19,6 +19,7 @@
 #include <limits>
 #include <map>
 #include <sstream>
+#include <thread>
 
 namespace orange::session {
 
@@ -2085,36 +2086,169 @@ void request_stop_recording_run(CameraControl* camera_control)
     }
 }
 
-void request_drain_recording_run(RecordingSessionState* state, CameraControl* camera_control)
+void request_drain_recording_run(
+    std::vector<std::unique_ptr<ModernRecordingPipeline>>* recording_pipelines,
+    const std::string& recording_sink_mode,
+    CameraControl* camera_control)
 {
     request_stop_recording_run(camera_control);
-    if (!state) {
+    if (!recording_pipelines) {
         return;
     }
-    for (auto& pipeline : state->recording_pipelines) {
+    for (auto& pipeline : *recording_pipelines) {
         if (pipeline) {
             pipeline->request_recording_drain();
         }
     }
-    if (state->recording_sink_mode == "external_ipc" &&
-        camera_control &&
-        !recording_pipelines_drained(state)) {
+    // External IPC sinks never increment active_recorders (no in-process
+    // encoder owns the output), so the early-drain shortcut in
+    // request_stop_recording_run may have just cleared the drain latches even
+    // though the IPC handoff workers still hold frames awaiting ACK/RELEASE.
+    // Re-assert the latches until every pipeline reports drained; the drain
+    // completion path (workers or wait_for_recording_run_drain callers)
+    // clears them once the handoff is truly finished.
+    if (camera_control &&
+        should_reassert_recording_drain_flags(
+            recording_sink_mode,
+            recording_pipelines_drained(recording_pipelines))) {
         camera_control->recording_draining = true;
         camera_control->stop_record = true;
     }
 }
 
-bool recording_pipelines_drained(const RecordingSessionState* state)
+void request_drain_recording_run(RecordingSessionState* state, CameraControl* camera_control)
 {
-    if (!state) {
+    request_drain_recording_run(
+        state ? &state->recording_pipelines : nullptr,
+        state ? state->recording_sink_mode : std::string(),
+        camera_control);
+}
+
+bool should_reassert_recording_drain_flags(const std::string& recording_sink_mode,
+                                           const bool pipelines_drained)
+{
+    return recording_sink_mode == "external_ipc" && !pipelines_drained;
+}
+
+bool recording_pipelines_drained(
+    const std::vector<std::unique_ptr<ModernRecordingPipeline>>* recording_pipelines)
+{
+    if (!recording_pipelines) {
         return true;
     }
-    for (const auto& pipeline : state->recording_pipelines) {
+    for (const auto& pipeline : *recording_pipelines) {
         if (pipeline && !pipeline->is_drained()) {
             return false;
         }
     }
     return true;
+}
+
+bool recording_pipelines_drained(const RecordingSessionState* state)
+{
+    return recording_pipelines_drained(state ? &state->recording_pipelines : nullptr);
+}
+
+bool recording_run_drained(
+    const std::vector<std::unique_ptr<ModernRecordingPipeline>>* recording_pipelines,
+    const CameraControl* camera_control)
+{
+    if (camera_control &&
+        camera_control->active_recorders.load(std::memory_order_relaxed) > 0) {
+        return false;
+    }
+    return recording_pipelines_drained(recording_pipelines);
+}
+
+bool wait_for_recording_run_drain(
+    std::vector<std::unique_ptr<ModernRecordingPipeline>>* recording_pipelines,
+    CameraControl* camera_control,
+    const std::chrono::steady_clock::duration timeout,
+    const char* timeout_label)
+{
+    constexpr auto kPollInterval = std::chrono::milliseconds(1);
+    constexpr auto kDrainNudgeInterval = std::chrono::milliseconds(250);
+    const auto drain_deadline = std::chrono::steady_clock::now() + timeout;
+    auto next_drain_nudge = std::chrono::steady_clock::now() + kDrainNudgeInterval;
+    while (!recording_run_drained(recording_pipelines, camera_control) &&
+           std::chrono::steady_clock::now() < drain_deadline) {
+        const auto now = std::chrono::steady_clock::now();
+        if (recording_pipelines && now >= next_drain_nudge) {
+            // Passive drain states (pending GPU source releases, external IPC
+            // protocol replies) only make progress on worker flush ticks;
+            // re-request the drain so those ticks keep flowing.
+            for (auto& pipeline : *recording_pipelines) {
+                if (pipeline && !pipeline->is_drained()) {
+                    pipeline->request_recording_drain();
+                }
+            }
+            next_drain_nudge = now + kDrainNudgeInterval;
+        }
+        std::this_thread::sleep_for(kPollInterval);
+    }
+    const bool drained = recording_run_drained(recording_pipelines, camera_control);
+    if (!drained && timeout_label) {
+        std::cerr << timeout_label << " timed out with "
+                  << (camera_control
+                          ? camera_control->active_recorders.load(std::memory_order_relaxed)
+                          : 0)
+                  << " active recorder(s), pipelines_drained="
+                  << (recording_pipelines_drained(recording_pipelines) ? "true" : "false")
+                  << "." << std::endl;
+    }
+    return drained;
+}
+
+void clear_recording_run_state(CameraControl* camera_control)
+{
+    if (!camera_control) {
+        return;
+    }
+    camera_control->record_video = false;
+    camera_control->recording_draining = false;
+    camera_control->stop_record = false;
+    std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
+    camera_control->recording_folder.clear();
+    camera_control->recording_output_folder.clear();
+    camera_control->pending_recording_output_folder.clear();
+    camera_control->recording_rollover_at_frame_id = 0;
+    camera_control->recording_rollover_request_id = 0;
+    camera_control->recording_rollover_completed_request_id = 0;
+    camera_control->recording_rollover_completed_frame_id = 0;
+    camera_control->recording_rollover_completed_folder.clear();
+    camera_control->preserve_recording_session_state = false;
+    camera_control->latest_recording_frame_id.store(0, std::memory_order_relaxed);
+}
+
+void drain_and_shutdown_recording_run(
+    std::vector<std::unique_ptr<ModernRecordingPipeline>>* recording_pipelines,
+    const std::string& recording_sink_mode,
+    CameraControl* camera_control,
+    const std::chrono::steady_clock::duration drain_timeout,
+    const char* drain_timeout_label)
+{
+    request_drain_recording_run(recording_pipelines, recording_sink_mode, camera_control);
+    (void)wait_for_recording_run_drain(
+        recording_pipelines,
+        camera_control,
+        drain_timeout,
+        drain_timeout_label);
+
+    if (recording_pipelines) {
+        for (auto& pipeline : *recording_pipelines) {
+            if (pipeline) {
+                pipeline->request_stop();
+            }
+        }
+        for (auto& pipeline : *recording_pipelines) {
+            if (pipeline) {
+                pipeline->shutdown();
+                pipeline.reset();
+            }
+        }
+    }
+
+    clear_recording_run_state(camera_control);
 }
 
 void reset_external_ipc_connections(RecordingSessionState* state)

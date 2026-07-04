@@ -8,6 +8,7 @@
 #include "video_capture.h"
 #include "json.hpp"
 
+#include <chrono>
 #include <memory>
 #include <string>
 #include <vector>
@@ -211,7 +212,63 @@ RecordingRunStartResult begin_recording_run(RecordingSessionState* state,
                                             PTPParams* ptp_params,
                                             const std::string& recording_sink_mode = "real",
                                             const nlohmann::json* external_recorder_contract_config = nullptr);
+// --- Unified recording stop/drain core -------------------------------------
+//
+// Both binaries (GUI and headless client) MUST route recording stop/drain
+// through these functions. The GUI keeps its RecordingSessionState overloads
+// below, which delegate to the pipeline-list core; the headless client, which
+// owns its ModernRecordingPipeline vector directly, calls the core functions.
+//
+// Semantics locked down by tools/recording_session_drain_tests.cpp:
+// - request_stop_recording_run: clears record_video and pending rollover
+//   state, latches recording_draining/stop_record, and takes the early-drain
+//   shortcut (flags cleared, recording_folder cleared unless preserved) when
+//   active_recorders == 0 so an idle stop does not leave drain latches set.
+// - request_drain_recording_run: request_stop + per-pipeline drain request,
+//   then re-asserts recording_draining/stop_record for external_ipc sinks
+//   while the IPC handoff workers still hold undelivered frames (the encoder
+//   finalize paths never see those frames, so active_recorders stays 0).
+// - A recording run is drained only when BOTH active_recorders == 0 (in-
+//   process encoder + crop encoder finalize paths) AND every recording
+//   pipeline reports is_drained() (ingress/handoff workers, incl. external
+//   IPC ACK/RELEASE completion). Neither predicate alone is sufficient.
 void request_stop_recording_run(CameraControl* camera_control);
+void request_drain_recording_run(
+    std::vector<std::unique_ptr<ModernRecordingPipeline>>* recording_pipelines,
+    const std::string& recording_sink_mode,
+    CameraControl* camera_control);
+bool recording_pipelines_drained(
+    const std::vector<std::unique_ptr<ModernRecordingPipeline>>* recording_pipelines);
+// True when drain flags must stay latched after a stop request because an
+// external IPC sink still holds undrained frames. Pure decision helper so the
+// re-assert rule is unit-testable without live pipelines.
+bool should_reassert_recording_drain_flags(const std::string& recording_sink_mode,
+                                           bool pipelines_drained);
+bool recording_run_drained(
+    const std::vector<std::unique_ptr<ModernRecordingPipeline>>* recording_pipelines,
+    const CameraControl* camera_control);
+// Polls recording_run_drained() until it holds or timeout expires. Re-nudges
+// pipeline drain requests periodically so passive drain states (pending GPU
+// source releases, IPC protocol polling) keep making progress. Returns true
+// when the run fully drained within the timeout.
+bool wait_for_recording_run_drain(
+    std::vector<std::unique_ptr<ModernRecordingPipeline>>* recording_pipelines,
+    CameraControl* camera_control,
+    std::chrono::steady_clock::duration timeout,
+    const char* timeout_label);
+// Post-run CameraControl hygiene: clears every recording-run field (folders,
+// rollover bookkeeping, preserve flag, latest frame id). Call only after the
+// run's pipelines have drained and shut down.
+void clear_recording_run_state(CameraControl* camera_control);
+// Full stop sequence: request drain, wait (bounded), stop + shutdown + free
+// the pipelines, then clear residual CameraControl state.
+void drain_and_shutdown_recording_run(
+    std::vector<std::unique_ptr<ModernRecordingPipeline>>* recording_pipelines,
+    const std::string& recording_sink_mode,
+    CameraControl* camera_control,
+    std::chrono::steady_clock::duration drain_timeout = std::chrono::seconds(10),
+    const char* drain_timeout_label = "Recording drain");
+// RecordingSessionState overloads (GUI callers); thin delegates to the core.
 void request_drain_recording_run(RecordingSessionState* state, CameraControl* camera_control);
 bool recording_pipelines_drained(const RecordingSessionState* state);
 void reset_external_ipc_connections(RecordingSessionState* state);

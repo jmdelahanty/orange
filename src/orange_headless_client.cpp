@@ -3797,14 +3797,6 @@ void reset_ptp_params(PTPParams* ptp_params)
     ptp_params->network_set_stop_ptp = false;
 }
 
-void drain_and_shutdown_recording(std::vector<std::unique_ptr<ModernRecordingPipeline>>& recording_pipelines,
-                                  CameraControl* camera_control);
-void request_recording_drain(std::vector<std::unique_ptr<ModernRecordingPipeline>>& recording_pipelines,
-                             CameraControl* camera_control);
-bool wait_for_recording_drain(CameraControl* camera_control,
-                              std::chrono::steady_clock::duration timeout,
-                              const char* timeout_label);
-
 void shutdown_headless_run(std::vector<std::thread>& camera_threads,
                            std::vector<CameraResources>& camera_resources,
                            std::vector<int>& active_camera_indices,
@@ -3819,13 +3811,17 @@ void shutdown_headless_run(std::vector<std::thread>& camera_threads,
                            const std::vector<int>* opened_camera_indices,
                            CameraControl* camera_control,
                            PTPParams* ptp_params,
-                           bool reset_ptp_state)
+                           bool reset_ptp_state,
+                           const std::string& recording_sink_mode)
 {
     if (camera_control) {
         if (camera_control->record_video ||
-            camera_control->active_recorders.load(std::memory_order_relaxed) > 0) {
-            request_recording_drain(recording_pipelines, camera_control);
-            (void)wait_for_recording_drain(
+            camera_control->active_recorders.load(std::memory_order_relaxed) > 0 ||
+            !orange::session::recording_pipelines_drained(&recording_pipelines)) {
+            orange::session::request_drain_recording_run(
+                &recording_pipelines, recording_sink_mode, camera_control);
+            (void)orange::session::wait_for_recording_run_drain(
+                &recording_pipelines,
                 camera_control,
                 std::chrono::seconds(10),
                 "Headless live recording drain");
@@ -3844,7 +3840,12 @@ void shutdown_headless_run(std::vector<std::thread>& camera_threads,
     stop_headless_pose_pipeline(crop_producer_workers, pose_workers);
 
     if (camera_control) {
-        drain_and_shutdown_recording(recording_pipelines, camera_control);
+        orange::session::drain_and_shutdown_recording_run(
+            &recording_pipelines,
+            recording_sink_mode,
+            camera_control,
+            std::chrono::seconds(10),
+            "Headless recording drain");
         stop_headless_gpu_dmon_monitor(gpu_dmon_monitor);
         if (camera_control->sync_camera) {
             for (int idx : active_camera_indices) {
@@ -3944,91 +3945,6 @@ bool prepare_headless_recording_artifacts(const std::string& record_folder,
 
     std::cout << "Headless run artifacts save to : " << record_folder << std::endl;
     return true;
-}
-
-void drain_and_shutdown_recording(std::vector<std::unique_ptr<ModernRecordingPipeline>>& recording_pipelines,
-                                  CameraControl* camera_control)
-{
-    request_recording_drain(recording_pipelines, camera_control);
-
-    (void)wait_for_recording_drain(
-        camera_control,
-        std::chrono::seconds(10),
-        "Headless recording drain");
-
-    for (auto& pipeline : recording_pipelines) {
-        if (!pipeline) {
-            continue;
-        }
-        pipeline->request_stop();
-    }
-
-    for (auto& pipeline : recording_pipelines) {
-        if (!pipeline) {
-            continue;
-        }
-        pipeline->shutdown();
-        pipeline.reset();
-    }
-
-    camera_control->recording_draining = false;
-    camera_control->stop_record = false;
-    std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
-    camera_control->recording_folder.clear();
-    camera_control->recording_output_folder.clear();
-    camera_control->pending_recording_output_folder.clear();
-    camera_control->recording_rollover_at_frame_id = 0;
-    camera_control->recording_rollover_request_id = 0;
-    camera_control->recording_rollover_completed_request_id = 0;
-    camera_control->recording_rollover_completed_frame_id = 0;
-    camera_control->recording_rollover_completed_folder.clear();
-    camera_control->preserve_recording_session_state = false;
-    camera_control->latest_recording_frame_id.store(0, std::memory_order_relaxed);
-}
-
-void request_recording_drain(std::vector<std::unique_ptr<ModernRecordingPipeline>>& recording_pipelines,
-                             CameraControl* camera_control)
-{
-    if (!camera_control) {
-        return;
-    }
-    camera_control->record_video = false;
-    camera_control->recording_draining = true;
-    camera_control->stop_record = true;
-    {
-        std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
-        camera_control->pending_recording_output_folder.clear();
-        camera_control->recording_rollover_at_frame_id = 0;
-        camera_control->recording_rollover_request_id = 0;
-    }
-
-    for (auto& pipeline : recording_pipelines) {
-        if (pipeline) {
-            pipeline->request_recording_drain();
-        }
-    }
-}
-
-bool wait_for_recording_drain(CameraControl* camera_control,
-                              std::chrono::steady_clock::duration timeout,
-                              const char* timeout_label)
-{
-    if (!camera_control) {
-        return true;
-    }
-    const auto drain_deadline = std::chrono::steady_clock::now() + timeout;
-    while (camera_control->active_recorders.load(std::memory_order_relaxed) > 0 &&
-           std::chrono::steady_clock::now() < drain_deadline) {
-        usleep(1000);
-    }
-    const bool drained =
-        camera_control->active_recorders.load(std::memory_order_relaxed) == 0;
-    if (!drained && timeout_label) {
-        std::cerr << timeout_label << " timed out with "
-                  << camera_control->active_recorders.load(std::memory_order_relaxed)
-                  << " active recorder(s)." << std::endl;
-    }
-    return drained;
 }
 
 void stop_headless_frame_ipc_managers(std::vector<std::unique_ptr<FrameIPCManager>>& frame_ipc_managers)
@@ -4770,7 +4686,12 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
         stop_headless_frame_ipc_runtime(frame_ipc_runtime);
         clear_headless_frame_ipc_managers(frame_ipc_managers);
         if (enable_artifacts) {
-            drain_and_shutdown_recording(recording_pipelines, camera_control);
+            orange::session::drain_and_shutdown_recording_run(
+                &recording_pipelines,
+                recording_sink_mode,
+                camera_control,
+                std::chrono::seconds(10),
+                "Headless recording drain");
             stop_headless_gpu_dmon_monitor(gpu_dmon_monitor);
         }
         cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
@@ -4994,7 +4915,8 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                         nullptr,
                         camera_control,
                         ptp_params,
-                        true);
+                        true,
+                        "real");
                     stop_headless_frame_ipc_managers(frame_ipc_managers);
                     stop_headless_frame_ipc_runtime(&frame_ipc_runtime);
                     clear_headless_frame_ipc_managers(frame_ipc_managers);
@@ -5034,7 +4956,8 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                 nullptr,
                 camera_control,
                 ptp_params,
-                true);
+                true,
+                "real");
             stop_headless_frame_ipc_managers(frame_ipc_managers);
             stop_headless_frame_ipc_runtime(&frame_ipc_runtime);
             clear_headless_frame_ipc_managers(frame_ipc_managers);
@@ -8520,8 +8443,10 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             if (rolling_clip_recording) {
                 camera_control.preserve_recording_session_state = false;
             }
-            request_recording_drain(recording_pipelines, &camera_control);
-            recording_drain_completed = wait_for_recording_drain(
+            orange::session::request_drain_recording_run(
+                &recording_pipelines, options.recording_sink_mode, &camera_control);
+            recording_drain_completed = orange::session::wait_for_recording_run_drain(
+                &recording_pipelines,
                 &camera_control,
                 std::chrono::seconds(10),
                 "Headless timed recording drain");
@@ -8646,7 +8571,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         &selected_inventory_indices,
         &camera_control,
         &ptp_params,
-        false);
+        false,
+        options.recording_sink_mode);
 
     const bool external_recorder_stop_ok = stop_supervised_external_recorder();
 
