@@ -174,8 +174,11 @@ get_filename_component(CUDA_LIBRARY_DIR "${CUDA_CUDART_LIBRARY}" DIRECTORY)
 get_filename_component(FFMPEG_LIBRARY_DIR "${AVFORMAT_LIBRARY}" DIRECTORY)
 get_filename_component(TENSORRT_LIBRARY_DIR "${TENSORRT_LIBRARY}" DIRECTORY)
 
-set(ORANGE_COMMON_INCLUDE_DIRS
-    "${SRC_DIR}"
+# Third-party / SDK include directories. These are attached to every project
+# target as SYSTEM includes (via the orange_project_warnings interface library
+# below), so -Wall/-Wextra do not report warnings originating in vendored or SDK
+# headers. Only ${SRC_DIR} (project code) stays on the normal -I search path.
+set(ORANGE_THIRD_PARTY_INCLUDE_DIRS
     "${DIR_IMGUI}"
     "${DIR_IMGUI_BACKEND}"
     "${DIR_IMPLOT}"
@@ -192,6 +195,10 @@ set(ORANGE_COMMON_INCLUDE_DIRS
     "${TENSORRT_INCLUDE_DIR}"
     ${OpenCV_INCLUDE_DIRS}
     ${GLFW3_INCLUDE_DIRS}
+)
+
+set(ORANGE_COMMON_INCLUDE_DIRS
+    "${SRC_DIR}"
 )
 
 file(GLOB NVENCODER_SOURCES "${DIR_NVENCODER}/*.cpp")
@@ -224,6 +231,21 @@ set(IMPLOT_SOURCES
 set(FILEDIALOG_SOURCES
     "${DIR_FILEBROWSER}/ImGuiFileDialog.cpp"
 )
+
+# Vendored third-party sources (imgui, implot, ImGuiFileDialog, NvEncoder) are
+# compiled into project targets that carry -Wall/-Wextra. Silence warnings for
+# these specific sources at the source level: source-scoped COMPILE_OPTIONS are
+# emitted last on the command line, so -w overrides the target's warning flags
+# for exactly these files while project code stays fully warned.
+set(ORANGE_VENDORED_SOURCES
+    ${IMGUI_SOURCES}
+    ${IMPLOT_SOURCES}
+    ${FILEDIALOG_SOURCES}
+    ${NVENCODER_SOURCES}
+)
+set_property(
+    SOURCE ${ORANGE_VENDORED_SOURCES}
+    APPEND PROPERTY COMPILE_OPTIONS "-w")
 
 set(ORANGE_CUDA_SOURCES
     "${SRC_DIR}/kernel.cu"
@@ -407,6 +429,28 @@ set(EXTERNAL_RECORDER_SUPERVISOR_PLAN_SOURCES
     "tools/external_recorder_supervisor_plan.cpp"
     "${SRC_DIR}/external_recorder_supervisor.cpp"
 )
+
+# Project-code warning flags. Scoped to C++ compilation only ($<COMPILE_LANGUAGE:CXX>)
+# so nvcc device compilation of .cu sources is untouched. Attached to every project
+# target below via link_libraries(); vendored sources opt out at the source level
+# (see ORANGE_VENDORED_SOURCES above). -Werror is intentionally NOT enabled here.
+add_library(orange_project_warnings INTERFACE)
+target_compile_options(orange_project_warnings INTERFACE
+    $<$<COMPILE_LANGUAGE:CXX>:-Wall>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
+    # -Wmissing-field-initializers is suppressed intentionally: all ~278 hits are
+    # the canonical NVENC idiom `NV_ENC_* params = { NV_ENC_*_VER };` (set the
+    # version tag, zero-initialize the rest) plus a couple of designated-init
+    # aggregates that deliberately leave trailing members zero. These are all
+    # well-defined value-initialization, purely stylistic, and dominated the
+    # warning output (100+ hits), so the whole class is disabled here rather than
+    # littering every SDK struct with a full field list.
+    $<$<COMPILE_LANGUAGE:CXX>:-Wno-missing-field-initializers>
+)
+target_include_directories(orange_project_warnings SYSTEM INTERFACE
+    ${ORANGE_THIRD_PARTY_INCLUDE_DIRS}
+)
+link_libraries(orange_project_warnings)
 
 add_executable(orange ${ORANGE_SOURCES})
 add_executable(orange_client EXCLUDE_FROM_ALL ${ORANGE_CLIENT_SOURCES})

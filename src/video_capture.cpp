@@ -54,14 +54,14 @@ void start_ptp_sync(PTPState *ptp_state, PTPParams *ptp_params, CameraParams *ca
         }
         ptp_state->ptp_time = get_current_PTP_time(&ecam->camera);
     } else {
-        if (ptp_params->ptp_counter == camera_params->num_cameras - 1)
+        if (ptp_params->ptp_counter == static_cast<uint64_t>(camera_params->num_cameras - 1))
         {
             ptp_state->ptp_time = get_current_PTP_time(&ecam->camera);
             ptp_params->ptp_global_time = ((unsigned long long)delay_in_second) * 1000000000 + ptp_state->ptp_time;
         }
         uint64_t ptp_counter = sync_fetch_and_add(&ptp_params->ptp_counter, 1);
         printf("%lu\n", ptp_counter);
-        while (ptp_params->ptp_counter != camera_params->num_cameras)
+        while (ptp_params->ptp_counter != static_cast<uint64_t>(camera_params->num_cameras))
         {
             // printf(".");
             // fflush(stdout);

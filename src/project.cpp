@@ -5308,7 +5308,7 @@ void allocate_camera_frame_buffers(CameraEmergent* ecams, CameraParams* cameras_
     }
 }
 
-void client_send_bringup_message(EnetContext* enet_context, flatbuffers::FlatBufferBuilder* builder, ENetPeer *server_connection, int cam_count, FetchGame::ManagerState server_state)
+void client_send_bringup_message(EnetContext* /*enet_context*/, flatbuffers::FlatBufferBuilder* builder, ENetPeer *server_connection, int cam_count, FetchGame::ManagerState server_state)
 {
     // ... (implementation from project.h)
     char hostname[100];
@@ -5328,7 +5328,7 @@ void client_send_bringup_message(EnetContext* enet_context, flatbuffers::FlatBuf
     enet_peer_send(server_connection, 0, enet_packet);
 }
 
-void client_send_state_update_message(EnetContext* enet_context, flatbuffers::FlatBufferBuilder* builder, ENetPeer *server_connection, FetchGame::ManagerState server_state)
+void client_send_state_update_message(EnetContext* /*enet_context*/, flatbuffers::FlatBufferBuilder* builder, ENetPeer *server_connection, FetchGame::ManagerState server_state)
 {
     // ... (implementation from project.h)
     builder->Clear();

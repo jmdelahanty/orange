@@ -104,7 +104,7 @@ nlohmann::json make_roi_json(const UsafRoi& roi)
     };
 }
 
-nlohmann::json make_selection_json(const UsafResolvedElementSelection& selection)
+[[maybe_unused]] nlohmann::json make_selection_json(const UsafResolvedElementSelection& selection)
 {
     return {
         {"available", selection.available},
@@ -131,7 +131,7 @@ nlohmann::json make_metrics_json(const UsafResolvedElementMetrics& metrics)
     };
 }
 
-std::string metrics_dimension_label(bool use_vertical_sampling)
+[[maybe_unused]] std::string metrics_dimension_label(bool use_vertical_sampling)
 {
     return use_vertical_sampling ? "y" : "x";
 }

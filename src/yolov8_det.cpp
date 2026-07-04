@@ -32,7 +32,7 @@ void YOLOv8::initialize_plugins() {
     }
 }
 
-YOLOv8::YOLOv8(const std::string& engine_file_path, int width, int height)
+YOLOv8::YOLOv8(const std::string& engine_file_path, int /*width*/, int /*height*/)
 {
     this->stream = nullptr;
     this->d_planar = nullptr;
@@ -135,7 +135,7 @@ YOLOv8::~YOLOv8()
     if (this->stream) { cudaStreamDestroy(this->stream); }
 }
 
-void YOLOv8::make_pipe(bool warmup, int max_width, int max_height)
+void YOLOv8::make_pipe(bool warmup, int /*max_width*/, int /*max_height*/)
 {
     if (this->stream == nullptr) {
         int least_priority = 0;

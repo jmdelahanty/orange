@@ -130,7 +130,12 @@ public:
         }
 
         if (creator) {
-            std::memset(shared, 0, sizeof(SharedQueue));
+            // Deliberate raw zero-initialization of the freshly mapped shared-memory
+            // segment (including the queue slot array). SharedQueue holds std::atomic
+            // members, so it is not trivially-copyable; the void* cast documents that
+            // the byte-wise clear is intentional. The atomics below are then given
+            // their defined initial values via explicit store()s.
+            std::memset(static_cast<void*>(shared), 0, sizeof(SharedQueue));
             shared->head.store(0, std::memory_order_relaxed);
             shared->tail.store(0, std::memory_order_relaxed);
             shared->initialized.store(true, std::memory_order_release);

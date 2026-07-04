@@ -25,7 +25,7 @@ public:
     CGenericMutex(void) { pthread_mutex_init(&mutex, NULL); }
     ~CGenericMutex(void) { pthread_mutex_destroy(&mutex); }
 
-    inline void Lock(unsigned int timeOut = -1) { pthread_mutex_lock(&mutex); }
+    inline void Lock(unsigned int /*timeOut*/ = -1) { pthread_mutex_lock(&mutex); }
 
     inline void Unlock() { pthread_mutex_unlock(&mutex); }
 

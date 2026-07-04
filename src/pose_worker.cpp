@@ -970,7 +970,7 @@ void PoseWorker::publish_pose_result_v2(
         object.confidence = pose ? static_cast<float>(pose->confidence) : frame.detection_confidence;
         object.label_id = 0;
         object.track_id = -1;
-        object.flags = publish_detection_bbox ? shaman_v2::kObjectHasBbox : 0;
+        object.flags = publish_detection_bbox ? static_cast<uint32_t>(shaman_v2::kObjectHasBbox) : 0u;
         if (pose) {
             object.flags |= shaman_v2::kObjectHasPose;
             object.keypoint_count = static_cast<uint32_t>(

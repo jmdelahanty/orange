@@ -4749,8 +4749,8 @@ RecordingPreflightResult run_gui_recording_preflight(const CameraParams* cameras
         if (cameras_select[i].pose && !cameras_select[i].yolo) {
             append_camera_error("Pose currently requires YOLO enabled.");
         }
-        if (cameras_params[i].width < resolved_crop_size ||
-            cameras_params[i].height < resolved_crop_size) {
+        if (static_cast<int>(cameras_params[i].width) < resolved_crop_size ||
+            static_cast<int>(cameras_params[i].height) < resolved_crop_size) {
             std::ostringstream error;
             error << "Crop+Encode requires source frames at least "
                   << resolved_crop_size << "x"
@@ -7141,7 +7141,7 @@ bool gui_poll_local_control_start_request(
     return started;
 }
 
-void RenderSpeedGraph(int camera_id, YoloWorker* yolo_worker, SpeedTrackingData& speed_data) {
+void RenderSpeedGraph(int /*camera_id*/, YoloWorker* yolo_worker, SpeedTrackingData& speed_data) {
     if (!yolo_worker) return;
     
     // Get current tracked objects from YOLO worker
@@ -7213,7 +7213,7 @@ simplelogger::Logger *logger = simplelogger::LoggerFactory::CreateConsoleLogger(
 
 #define display_gpu_id 0
 
-int main(int argc, char **args) {
+int main(int /*argc*/, char ** /*args*/) {
 
     // Initialize the YOLOv8 plugins
     YOLOv8::initialize_plugins();
@@ -7478,7 +7478,6 @@ int main(int argc, char **args) {
     for (const auto &entry: std::filesystem::directory_iterator(network_start_folder_name)) {
         network_config_folders.push_back(entry.path().string());
     }
-    int network_config_select = 0;
 
     std::vector<std::string> local_config_folders;
     std::string local_start_folder_name = orange_root_dir_str + "/config/local";
@@ -8106,7 +8105,7 @@ int main(int argc, char **args) {
                             {
                                 // We still check if the worker is ready before calling the function
                                 // to prevent a crash, but the button is never grayed out.
-                                if (camera_control->subscribe && i < yolo_workers.size() && yolo_workers[i])
+                                if (camera_control->subscribe && static_cast<size_t>(i) < yolo_workers.size() && yolo_workers[i])
                                 {
                                     yolo_workers[i]->DumpNextFrame();
                                 }
@@ -8455,7 +8454,7 @@ int main(int argc, char **args) {
             if (ImGui::Button(camera_control->open ? "Close Camera" : "Open camera") ||
                 gui_autorun_requests.open_cameras) {
                 if (!camera_control->open) {
-                    if (local_config_select < local_config_folders.size()) {
+                    if (static_cast<size_t>(local_config_select) < local_config_folders.size()) {
                         update_camera_configs(camera_config_files, local_config_folders[local_config_select]);
                         if (!camera_config_files.empty()) {
                             select_cameras_have_configs(camera_config_files, device_info, camera_is_selected, cam_count);
@@ -9348,7 +9347,7 @@ int main(int argc, char **args) {
                 gui_session_timing_snapshot(&gui_session_timing, camera_control);
             if (camera_control->record_video) {
                 // Resize speed tracking data
-                if (speed_tracking_data.size() != num_cameras) {
+                if (speed_tracking_data.size() != static_cast<size_t>(num_cameras)) {
                         speed_tracking_data.resize(num_cameras);
                 }
 

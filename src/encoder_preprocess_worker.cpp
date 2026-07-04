@@ -1557,7 +1557,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
 
     // Measure total preprocessing time
     auto preprocess_end = std::chrono::steady_clock::now();
-    auto duration_us = std::chrono::duration_cast<std::chrono::microseconds>(preprocess_end - start_time).count();
+    [[maybe_unused]] auto duration_us = std::chrono::duration_cast<std::chrono::microseconds>(preprocess_end - start_time).count();
     
     // Log slow frames (> 12.5ms for 80fps target)
     // if (duration_us > 12500) {

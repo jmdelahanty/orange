@@ -17,6 +17,9 @@
 //---------------------------------------------------------------------------
 
 #pragma once
+// Vendored NVIDIA Video Codec SDK header: mark as a system header so Orange's
+// project -Wall/-Wextra policy does not report warnings from third-party code.
+#pragma GCC system_header
 #include <iomanip>
 #include <chrono>
 #include <sys/stat.h>

@@ -1,0 +1,45 @@
+name: CI
+
+# This project requires local CUDA, TensorRT and the EVT camera eSDK, so it can
+# only build on the self-hosted runner (GitHub-hosted runners cannot build it).
+on:
+  push:
+    branches: [exp/gop-split-a16]
+  pull_request:
+    branches: [exp/gop-split-a16]
+
+# Stacked pushes: keep only the newest run per ref, cancel older in-flight ones.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: self-hosted
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure (release)
+        run: cmake --preset release
+      - name: Build (release)
+        run: cmake --build targets/release -j"$(nproc)"
+      - name: Test (ctest)
+        run: ctest --test-dir targets/release --output-on-failure
+
+  tsan:
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure (debug_tsan)
+        run: cmake --preset debug_tsan
+      - name: Build (debug_tsan)
+        run: cmake --build --preset debug_tsan -j"$(nproc)"
+      - name: TSan stress + worker-entry hammers
+        run: >
+          ctest --test-dir targets/debug_tsan --output-on-failure
+          -R 'threadworker_tsan_stress|worker_entry_ownership_tsan_hammer|worker_entry_handoff_tsan_hammer'

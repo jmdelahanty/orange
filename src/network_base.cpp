@@ -125,7 +125,7 @@ void service_network(EnetContext* enet_context, float dt, std::function<void(con
     }
 }
 
-void send_indigo_message(EnetContext* enet_context, flatbuffers::FlatBufferBuilder* builder,
+void send_indigo_message(EnetContext* /*enet_context*/, flatbuffers::FlatBufferBuilder* builder,
                         ENetPeer* indigo_connection, FetchGame::SignalType signal_type)
 {
     builder->Clear();

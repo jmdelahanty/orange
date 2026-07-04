@@ -469,7 +469,11 @@ EncoderHwWorker::EncoderHwWorker(
     EncoderPreprocessWorker* prep_worker,
     CameraControl* camera_control
 )
+// Member initializers are ordered to match the declaration order in the header
+// (encoder_ and m_prep_worker_ are declared first) to satisfy -Wreorder.
 : CThreadWorker(name),
+  encoder_(),
+  m_prep_worker_(prep_worker),
   camera_params_(camera_params),
   encode_gpu_id_(encode_gpu_id >= 0 ? encode_gpu_id : camera_params->gpu_id),
   resolved_recording_config_(resolved_recording_config),
@@ -491,14 +495,12 @@ EncoderHwWorker::EncoderHwWorker(
   recording_strategy_config_(resolved_recording_config.strategy),
   shared_output_(std::move(shared_output)),
   owns_recording_output_(owns_recording_output),
-  m_prep_worker_(prep_worker),
-  camera_control_(camera_control),
-  encoder_(),
   m_stream(nullptr),
+  camera_control_(camera_control),
+  is_recording_(false), // Initialize recording state
   last_recording_frame_id_(0),
   last_fps_update_time_(std::chrono::steady_clock::now()),
-  frame_counter_(0),
-  is_recording_(false) // Initialize recording state
+  frame_counter_(0)
 {
     resolved_recording_config_.recording_gpu_id = encode_gpu_id_;
 

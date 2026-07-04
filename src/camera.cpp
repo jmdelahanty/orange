@@ -1506,7 +1506,7 @@ void update_gain_value(Emergent::CEmergentCamera *camera, int gain_val, CameraPa
     EVT_CameraGetUInt32ParamMax(camera, "Gain", &camera_params->gain_max);
     EVT_CameraGetUInt32ParamMin(camera, "Gain", &camera_params->gain_min);
     EVT_CameraGetUInt32ParamInc(camera, "Gain", &camera_params->gain_inc);
-    if (gain_val >= camera_params->gain_min && gain_val <= camera_params->gain_max)
+    if (gain_val >= static_cast<int>(camera_params->gain_min) && gain_val <= static_cast<int>(camera_params->gain_max))
     {
         EVT_CameraSetUInt32Param(camera, "Gain", gain_val);
         camera_params->gain = gain_val;
@@ -1548,7 +1548,7 @@ void update_width_value(Emergent::CEmergentCamera *camera, int width_val, Camera
     EVT_CameraGetUInt32ParamMax(camera, "Width", &camera_params->width_max);
     EVT_CameraGetUInt32ParamMin(camera, "Width", &camera_params->width_min);
     EVT_CameraGetUInt32ParamInc(camera, "Width", &camera_params->width_inc);
-    if (width_val >= camera_params->width_min && width_val <= camera_params->width_max)
+    if (width_val >= static_cast<int>(camera_params->width_min) && width_val <= static_cast<int>(camera_params->width_max))
     {
         EVT_CameraSetUInt32Param(camera, "Width", width_val);
         camera_params->width = width_val;
@@ -1560,7 +1560,7 @@ void update_height_value(Emergent::CEmergentCamera *camera, int height_val, Came
     EVT_CameraGetUInt32ParamMax(camera, "Height", &camera_params->height_max);
     EVT_CameraGetUInt32ParamMin(camera, "Height", &camera_params->height_min);
     EVT_CameraGetUInt32ParamInc(camera, "Height", &camera_params->height_inc);
-    if (height_val >= camera_params->height_min && height_val <= camera_params->height_max)
+    if (height_val >= static_cast<int>(camera_params->height_min) && height_val <= static_cast<int>(camera_params->height_max))
     {
         EVT_CameraSetUInt32Param(camera, "Height", height_val);
         camera_params->height = height_val;
@@ -1574,7 +1574,7 @@ void update_exposure_value(Emergent::CEmergentCamera *camera, int exposure_val, 
     EVT_CameraGetUInt32ParamMin(camera, "Exposure", &camera_params->exposure_min);
     EVT_CameraGetUInt32ParamInc(camera, "Exposure", &camera_params->exposure_inc);
 
-    if (exposure_val >= camera_params->exposure_min && exposure_val <= camera_params->exposure_max)
+    if (exposure_val >= static_cast<int>(camera_params->exposure_min) && exposure_val <= static_cast<int>(camera_params->exposure_max))
     {
         EVT_CameraSetUInt32Param(camera, "Exposure", exposure_val);
         camera_params->exposure = exposure_val;
@@ -1591,7 +1591,7 @@ void update_exposure_framerate_value(Emergent::CEmergentCamera *camera, int expo
         &camera_params->exposure_max,
         &camera_params->exposure_inc);
 
-    if (exposure_val >= camera_params->exposure_min && exposure_val <= camera_params->exposure_max)
+    if (exposure_val >= static_cast<int>(camera_params->exposure_min) && exposure_val <= static_cast<int>(camera_params->exposure_max))
     {
         EVT_CameraSetUInt32Param(camera, "Exposure", exposure_val);
         camera_params->exposure = exposure_val;
@@ -1604,9 +1604,9 @@ void update_exposure_framerate_value(Emergent::CEmergentCamera *camera, int expo
             &camera_params->frame_rate_max,
             &camera_params->frame_rate_inc);
 
-        if (*frame_rate_val < camera_params->frame_rate_min) {
+        if (*frame_rate_val < static_cast<int>(camera_params->frame_rate_min)) {
             *frame_rate_val = camera_params->frame_rate_min;
-        } else if (*frame_rate_val > camera_params->frame_rate_max) {
+        } else if (*frame_rate_val > static_cast<int>(camera_params->frame_rate_max)) {
             *frame_rate_val = camera_params->frame_rate_max;
         }
 
@@ -1731,7 +1731,7 @@ void update_offsetX_value(Emergent::CEmergentCamera *camera, int OFFSET_X_VAL, C
     EVT_CameraGetUInt32ParamInc(camera, "OffsetX", &camera_params->offsetx_inc);
     printf("OffsetX Inc: \t\t%d\n", camera_params->offsetx_inc);
 
-    if (OFFSET_X_VAL >= camera_params->offsetx_min && OFFSET_X_VAL <= camera_params->offsetx_max)
+    if (OFFSET_X_VAL >= static_cast<int>(camera_params->offsetx_min) && OFFSET_X_VAL <= static_cast<int>(camera_params->offsetx_max))
     {
         EVT_CameraSetUInt32Param(camera, "OffsetX", OFFSET_X_VAL);
         camera_params->offsetx = OFFSET_X_VAL;
@@ -1749,7 +1749,7 @@ void update_offsetY_value(Emergent::CEmergentCamera *camera, int OFFSET_Y_VAL, C
     EVT_CameraGetUInt32ParamInc(camera, "OffsetY", &camera_params->offsety_inc);
     printf("OffsetY Inc: \t\t%d\n", camera_params->offsety_inc);
 
-    if (OFFSET_Y_VAL >= camera_params->offsety_min && OFFSET_Y_VAL <= camera_params->offsety_max)
+    if (OFFSET_Y_VAL >= static_cast<int>(camera_params->offsety_min) && OFFSET_Y_VAL <= static_cast<int>(camera_params->offsety_max))
     {
         EVT_CameraSetUInt32Param(camera, "OffsetY", OFFSET_Y_VAL);
         camera_params->offsety = OFFSET_Y_VAL;
@@ -2131,7 +2131,6 @@ void change_camera_ip(GigEVisionDeviceInfo *device_info, const char *new_ip, Cam
 // Use this function with caution, need to reintiate the GigEVisionDeviceInfo after changing the camera ip.
 void change_camera_ip_persistent(GigEVisionDeviceInfo *device_info, Emergent::CEmergentCamera *camera, const char *new_ip, CameraParams *camera_params)
 {
-    const char *mac_address = device_info->macAddress;
     const char *subnet_mask = device_info->currentSubnetMask;
     const char *default_gateway = device_info->defaultGateway;
     check_camera_errors(Emergent::EVT_IPConfig(camera, true, new_ip, subnet_mask, default_gateway), camera_params->camera_serial.c_str());
@@ -2144,7 +2143,6 @@ void quick_print_camera(GigEVisionDeviceInfo *device_info, int camera_idx)
 
 int scan_cameras(int max_cameras, GigEVisionDeviceInfo *device_info)
 {
-    int cameras_found = 0;
     unsigned int listcam_buf_size = max_cameras;
     unsigned int count;
 
@@ -2196,7 +2194,6 @@ void sort_cameras_ip(GigEVisionDeviceInfo *device_info, GigEVisionDeviceInfo *so
 
 int order_for_test_rig(int max_cameras, GigEVisionDeviceInfo *device_info, GigEVisionDeviceInfo *ordered_device_info)
 {
-    int cameras_found = 0;
     unsigned int listcam_buf_size = max_cameras;
     unsigned int count;
 

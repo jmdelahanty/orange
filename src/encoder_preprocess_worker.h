@@ -173,7 +173,7 @@ private:
     NppiSize resize_output_size_;
     NppiRect resize_output_roi_;
 
-    static const int DEFAULT_ENCODER_ENTRY_POOL_SIZE = 120;
+    static constexpr int DEFAULT_ENCODER_ENTRY_POOL_SIZE = 120;
     std::vector<ENCODER_WORKER_ENTRY> encoder_entry_pool_;
     std::vector<cudaEvent_t> event_pool_;
     std::vector<cudaEvent_t> copy_start_event_pool_;

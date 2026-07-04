@@ -173,7 +173,7 @@ inline float VelocityTracker::calculateDistance(const pose::Object& detection, c
 }
 
 // Update speed calculation for a tracked object
-inline void VelocityTracker::updateObjectSpeed(TrackedObject& obj, uint64_t timestamp) {
+inline void VelocityTracker::updateObjectSpeed(TrackedObject& obj, [[maybe_unused]] uint64_t timestamp) {
     if (obj.position_history.size() < 2) {
         obj.current_speed_pixels_per_sec = 0.0f;
         obj.current_speed_physical_units = 0.0f;

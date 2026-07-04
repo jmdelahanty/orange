@@ -981,6 +981,7 @@ YoloWorker::YoloWorker(const char* name,
                        CameraControl* camera_control,
                        SafeQueue<WORKER_ENTRY*>& recycle_queue)
     : CThreadWorker(name),
+      m_dump_next_frame(false),
       yolov8_instance_(nullptr),
       associated_camera_params_(cam_params),
       associated_camera_select_(cam_select),
@@ -991,8 +992,7 @@ YoloWorker::YoloWorker(const char* name,
       last_fps_update_time_(std::chrono::steady_clock::now()),
       frame_counter_(0),
       current_fps_(0.0),
-      m_recycle_queue(recycle_queue),
-      m_dump_next_frame(false)
+      m_recycle_queue(recycle_queue)
 {
     ck(cudaSetDevice(associated_camera_params_->gpu_id));
     std::cout << "YoloWorker constructor set to CUDA device: " << associated_camera_params_->gpu_id << std::endl;

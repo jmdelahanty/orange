@@ -1068,7 +1068,7 @@ void acquire_frames(
     CameraEachSelect* camera_select,
     CameraControl* camera_control,
     PTPParams* ptp_params,
-    INDIGOSignalBuilder* indigo_signal_builder,
+    INDIGOSignalBuilder* /*indigo_signal_builder*/,
     COpenGLDisplay* openGLDisplay,
     RecordingIngress* recording_ingress,
     YoloWorker* yolo_worker,
@@ -2442,7 +2442,7 @@ void acquire_frames(
                           << " observed_source="
                           << (ptp_register_read_decimate() <= 1 ? "latched_ptp" : "frame_timestamp")
                           << std::endl;
-                while (ptp_params->ptp_stop_counter != camera_params->num_cameras) {
+                while (ptp_params->ptp_stop_counter != static_cast<uint64_t>(camera_params->num_cameras)) {
                     usleep(10);
                 }
                 ptp_params->ptp_stop_reached = true;
@@ -2550,7 +2550,5 @@ void acquire_frames(
 
         CUDA_CTX_LOG("=== ACQUIRE FRAMES END ===");
         std::cout << "Acquire frames thread finished for camera: " << camera_params->camera_serial << std::endl;
-
-        CUcontext popped_context;
     }
 }

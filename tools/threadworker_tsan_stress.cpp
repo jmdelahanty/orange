@@ -11,8 +11,8 @@
 //   ctest --test-dir targets/debug_tsan -R threadworker_tsan_stress
 //
 // Standalone build (no CUDA/SDK deps):
-//   g++ -fsanitize=thread -g -O1 -std=c++17 -Isrc \
-//       tools/threadworker_tsan_stress.cpp src/offthreadmachine.cpp \
+//   g++ -fsanitize=thread -g -O1 -std=c++17 -Isrc
+//       tools/threadworker_tsan_stress.cpp src/offthreadmachine.cpp
 //       -o /tmp/threadworker_tsan_stress -lpthread
 //   setarch $(uname -m) -R /tmp/threadworker_tsan_stress   # -R: see runbook
 //

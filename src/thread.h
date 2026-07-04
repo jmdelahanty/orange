@@ -10,7 +10,7 @@
 inline float tick()
 {
     struct timespec ts;
-    uint32_t res = clock_gettime(CLOCK_MONOTONIC, &ts);
+    int res = clock_gettime(CLOCK_MONOTONIC, &ts);
     if (res == -1)
     {
         return 0;

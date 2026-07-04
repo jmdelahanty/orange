@@ -583,7 +583,7 @@ std::vector<unsigned int> build_requested_iris_values(const Options& options, co
     return build_iris_sweep(iris_start, iris_stop, camera_params.iris_inc, options.iris_step_multiple);
 }
 
-std::string get_current_utc_timestamp()
+[[maybe_unused]] std::string get_current_utc_timestamp()
 {
     auto now = std::chrono::system_clock::now();
     auto time_t_now = std::chrono::system_clock::to_time_t(now);
@@ -593,7 +593,7 @@ std::string get_current_utc_timestamp()
     return oss.str();
 }
 
-std::string get_current_date_time()
+[[maybe_unused]] std::string get_current_date_time()
 {
     auto now = std::chrono::system_clock::now();
     auto time_t_now = std::chrono::system_clock::to_time_t(now);

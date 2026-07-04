@@ -163,7 +163,7 @@ do { \
 #endif
 
 // Enhanced context push/pop wrappers with validation (always available)
-inline CUresult cuCtxPushCurrentDebug(CUcontext ctx, const char* location, unsigned long long frame_id = 0) {
+inline CUresult cuCtxPushCurrentDebug(CUcontext ctx, [[maybe_unused]] const char* location, [[maybe_unused]] unsigned long long frame_id = 0) {
     CUcontext before_ctx = nullptr;
     cuCtxGetCurrent(&before_ctx);
     
@@ -186,7 +186,7 @@ inline CUresult cuCtxPushCurrentDebug(CUcontext ctx, const char* location, unsig
     return result;
 }
 
-inline CUresult cuCtxPopCurrentDebug(CUcontext* pctx, const char* location, unsigned long long frame_id = 0) {
+inline CUresult cuCtxPopCurrentDebug(CUcontext* pctx, [[maybe_unused]] const char* location, [[maybe_unused]] unsigned long long frame_id = 0) {
     CUcontext before_ctx = nullptr;
     cuCtxGetCurrent(&before_ctx);
     
@@ -282,7 +282,7 @@ private:
 #define VALIDATE_CUDA_OP(op, frame_id) validateCudaOperation(op, __FILE__, __LINE__, frame_id)
 
 // Function to dump complete CUDA state
-inline void dumpCudaState(const char* location, unsigned long long frame_id = 0) {
+inline void dumpCudaState([[maybe_unused]] const char* location, [[maybe_unused]] unsigned long long frame_id = 0) {
     #if defined(DEBUG_CUDA_CONTEXT) || defined(ENABLE_CUDA_DEBUG_LOGGING)
     std::lock_guard<std::mutex> lock(g_debug_log_mutex);
     

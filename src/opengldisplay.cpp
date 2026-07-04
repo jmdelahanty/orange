@@ -50,9 +50,9 @@ COpenGLDisplay::COpenGLDisplay(const char* name, CameraParams *camera_params, Ca
       d_skeleton_for_drawing_(nullptr),
       d_display_mono_resize_buffer_(nullptr),
       d_display_resize_buffer_(nullptr),
+      last_display_log_time_(std::chrono::steady_clock::now()),
       m_stream(nullptr),
-      m_recycle_queue(recycle_queue),
-      last_display_log_time_(std::chrono::steady_clock::now())
+      m_recycle_queue(recycle_queue)
 {
     std::cout << "[OPENGL_DISPLAY] CONSTRUCTOR for " << camera_params->camera_name << " on display GPU " << display_gpu_id << std::endl;
 
