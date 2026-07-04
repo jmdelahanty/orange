@@ -418,6 +418,11 @@ set(NVENC_STRESS_LOAD_SOURCES
     ${NVENCODER_SOURCES}
 )
 
+set(NV12_PREFILL_VALIDATION_SOURCES
+    "tools/nv12_prefill_validation.cpp"
+    ${NVENCODER_SOURCES}
+)
+
 set(EXTERNAL_RECORDER_IPC_PROBE_SOURCES
     "tools/external_recorder_ipc_probe.cpp"
     "${SRC_DIR}/FFmpegWriter.cpp"
@@ -459,6 +464,7 @@ add_executable(evt_lens_probe ${EVT_LENS_PROBE_SOURCES})
 add_executable(evt_aperture_characterize ${EVT_APERTURE_CHARACTERIZE_SOURCES})
 add_executable(evt_stream_smoke EXCLUDE_FROM_ALL ${EVT_STREAM_SMOKE_SOURCES})
 add_executable(nvenc_stress_load EXCLUDE_FROM_ALL ${NVENC_STRESS_LOAD_SOURCES})
+add_executable(nv12_prefill_validation EXCLUDE_FROM_ALL ${NV12_PREFILL_VALIDATION_SOURCES})
 add_executable(external_recorder_ipc_probe EXCLUDE_FROM_ALL ${EXTERNAL_RECORDER_IPC_PROBE_SOURCES})
 add_executable(external_recorder_supervisor_plan EXCLUDE_FROM_ALL ${EXTERNAL_RECORDER_SUPERVISOR_PLAN_SOURCES})
 
@@ -851,6 +857,7 @@ orange_configure_target(evt_lens_probe)
 orange_configure_target(evt_aperture_characterize)
 orange_configure_target(evt_stream_smoke)
 orange_configure_target(nvenc_stress_load)
+orange_configure_target(nv12_prefill_validation)
 orange_configure_target(external_recorder_ipc_probe)
 orange_configure_target(external_recorder_supervisor_plan)
 if(TARGET recording_session_manifest_tests)
@@ -994,6 +1001,14 @@ target_link_libraries(evt_stream_smoke PRIVATE
 )
 
 target_link_libraries(nvenc_stress_load PRIVATE
+    ${CUDA_CUDART_LIBRARY}
+    ${CUDA_DRIVER_LIBRARY}
+    ${NVIDIA_ENCODE_LIBRARY}
+    m
+    pthread
+)
+
+target_link_libraries(nv12_prefill_validation PRIVATE
     ${CUDA_CUDART_LIBRARY}
     ${CUDA_DRIVER_LIBRARY}
     ${NVIDIA_ENCODE_LIBRARY}

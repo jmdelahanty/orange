@@ -651,19 +651,17 @@ camera_control_(camera_control)
         const NvEncInputFrame *tempFrame = encoder_->GetNextInputFrame();
         encoder_pitch_ = tempFrame->pitch;
 
-        // Allocate and initialize the blank frame buffer
-        const size_t encoder_buffer_size = static_cast<size_t>(encoder_pitch_) * crop_height_ * 3 / 2;
-        ck(cudaMalloc(&d_blank_frame_, encoder_buffer_size));
+        // Crops are monochrome (Mono8 ROI copies), so the NV12 chroma plane is
+        // constant neutral gray. Pre-fill every NVENC ring surface once here;
+        // the per-frame path only ever writes the Y plane afterwards.
+        encoder_->FillInputFrameChromaPlanes(0x80);
 
-        // --- Correct YUV Initialization for a Black Frame ---
-        // 1. Set the Y (luma) plane to 0 for black.
+        // Allocate and initialize the blank (luma-only) frame buffer used when
+        // no detection is available. Chroma never needs to be staged: the ring
+        // surfaces already hold the constant 0x80 chroma plane.
         size_t luma_size = static_cast<size_t>(encoder_pitch_) * crop_height_;
+        ck(cudaMalloc(&d_blank_frame_, luma_size));
         ck(cudaMemsetAsync(d_blank_frame_, 0, luma_size, m_stream));
-
-        // 2. Set the UV (chroma) plane to 128 for neutral color.
-        size_t chroma_size = static_cast<size_t>(encoder_pitch_) * crop_height_ / 2;
-        unsigned char* d_uv_plane = d_blank_frame_ + luma_size;
-        ck(cudaMemsetAsync(d_uv_plane, 128, chroma_size, m_stream));
 
     } catch (const std::exception& e) {
         std::cerr << "[CropAndEncodeWorker] Failed to initialize encoder: " << e.what() << std::endl;
@@ -1386,12 +1384,11 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
                 pic_params.inputTimeStamp = zero_based_recording_frame;
                 pic_params.inputDuration = 1;
 
+                // Y plane only: the ring surface chroma was pre-filled with
+                // 0x80 at encoder creation and never changes (mono crops).
                 ck(cudaMemcpy2DAsync(d_nv12_dst, encIn->pitch,
                                      active_crop_frame->d_crop_mono, CROP_W,
                                      CROP_W, CROP_H, cudaMemcpyDeviceToDevice, m_stream));
-
-                unsigned char* d_uv_plane_dst = d_nv12_dst + encIn->pitch * CROP_H;
-                ck(cudaMemset2DAsync(d_uv_plane_dst, encIn->pitch, 128, CROP_W, CROP_H / 2, m_stream));
                 encode_prepared = true;
             }
 
@@ -1443,8 +1440,9 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
                 pic_params.frameIdx = static_cast<uint32_t>(zero_based_recording_frame & 0xffffffffu);
                 pic_params.inputTimeStamp = zero_based_recording_frame;
                 pic_params.inputDuration = 1;
+                // Y plane only: ring chroma is a constant 0x80 pre-fill.
                 ck(cudaMemcpy2DAsync(encIn->inputPtr, encIn->pitch, d_blank_frame_,
-                                     encoder_pitch_, encoder_pitch_, crop_height_ * 3 / 2,
+                                     encoder_pitch_, encoder_pitch_, crop_height_,
                                      cudaMemcpyDeviceToDevice, m_stream));
 
                 std::vector<std::vector<uint8_t>> packets;

@@ -170,7 +170,6 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
       m_hw_worker_(nullptr),
       d_input_staging_(nullptr),
       d_rgba_resize_(nullptr),
-      d_uv_default_plane_(nullptr),
       direct_input_enabled_(direct_input_enabled),
       recording_output_config_(recording_output_config),
       encoder_pitch_(encoder_pitch),
@@ -272,11 +271,6 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
         if (recording_output_config_.resize_enabled) {
             ck(cudaMalloc(&d_rgba_resize_, static_cast<size_t>(output_width_) * output_height_ * 4));
         }
-    } else {
-        const int uv_pitch = direct_input_enabled_ ? direct_input_pitch_ : encoder_pitch_;
-        size_t uv_plane_size = static_cast<size_t>(uv_pitch) * output_height_ / 2;
-        ck(cudaMalloc(&d_uv_default_plane_, uv_plane_size));
-        ck(cudaMemset(d_uv_default_plane_, 128, uv_plane_size));
     }
 
     const int entry_pool_size = resolve_encoder_entry_pool_size(
@@ -300,6 +294,32 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
         }
         encoder_entry_pool_[i].preprocess_complete_event = nullptr;
         free_encoder_entries_.push(&encoder_entry_pool_[i]);
+    }
+
+    if (!camera_params_->color) {
+        // Monochrome sources have a constant neutral-gray (0x80) chroma plane.
+        // Pre-fill the UV region of every persistent NV12 surface once here so
+        // the per-frame path only ever writes the Y plane. These buffers live
+        // for the worker's lifetime (entry pool) or are registered with NVENC
+        // as the input ring (direct-input slots) and are never chroma-written
+        // again.
+        const size_t uv_pitch = static_cast<size_t>(
+            direct_input_enabled_ ? direct_input_pitch_ : encoder_pitch_);
+        const size_t uv_plane_size = uv_pitch * output_height_ / 2;
+        if (direct_input_enabled_) {
+            for (void* surface : direct_input_surfaces_) {
+                unsigned char* d_uv_plane =
+                    static_cast<unsigned char*>(surface) + uv_pitch * output_height_;
+                ck(cudaMemset(d_uv_plane, 0x80, uv_plane_size));
+            }
+        } else {
+            for (int i = 0; i < entry_pool_size; ++i) {
+                unsigned char* d_uv_plane =
+                    encoder_entry_pool_[i].d_prepared_frame + uv_pitch * output_height_;
+                ck(cudaMemset(d_uv_plane, 0x80, uv_plane_size));
+            }
+        }
+        ck(cudaDeviceSynchronize());
     }
     available_buffers_.store(direct_input_enabled_ ? direct_input_slot_count_ : entry_pool_size, std::memory_order_relaxed);
     
@@ -359,7 +379,6 @@ EncoderPreprocessWorker::~EncoderPreprocessWorker()
 
     if (d_input_staging_) cudaFree(d_input_staging_);
     if (d_rgba_resize_) cudaFree(d_rgba_resize_);
-    if (d_uv_default_plane_) cudaFree(d_uv_default_plane_);
     if (debayer_gpu_.d_debayer) cudaFree(debayer_gpu_.d_debayer);
 
     // --- Clean up the Event Pool ---
@@ -1472,9 +1491,10 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
             m_stream);
 
     } else {
-        // Monochrome path: Copy Y plane and fill UV planes to create an NV12-compatible frame
+        // Monochrome path: write the Y plane only. The UV plane of every
+        // persistent surface was pre-filled with neutral gray (0x80) once at
+        // construction and is never touched per frame.
         unsigned char* d_y_plane_dst = encoder_entry->d_prepared_frame;
-        unsigned char* d_uv_plane_dst = d_y_plane_dst + (encoder_entry->surface_pitch * output_height_);
 
         if (recording_output_config_.resize_enabled) {
             check_npp_status(
@@ -1500,9 +1520,6 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
                 cudaMemcpyDeviceToDevice,
                 m_stream));
         }
-
-        size_t uv_plane_size = encoder_entry->surface_pitch * output_height_ / 2;
-        ck(cudaMemcpyAsync(d_uv_plane_dst, d_uv_default_plane_, uv_plane_size, cudaMemcpyDeviceToDevice, m_stream));
     }
     }
     

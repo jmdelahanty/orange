@@ -109,6 +109,38 @@ void NvEncoderCuda::RegisterExternalCudaInputBuffers(const std::vector<void*>& i
         false);
 }
 
+void NvEncoderCuda::FillInputFrameChromaPlanes(uint8_t value)
+{
+    if (m_vInputFrames.empty())
+    {
+        NVENC_THROW_ERROR("No input frames available for chroma prefill", NV_ENC_ERR_ENCODER_NOT_INITIALIZED);
+    }
+
+    CUDA_DRVAPI_CALL(cuCtxPushCurrent(m_cuContext));
+    for (const NvEncInputFrame& inputFrame : m_vInputFrames)
+    {
+        const uint32_t chromaHeight =
+            NvEncoder::GetChromaHeight(inputFrame.bufferFormat, GetMaxEncodeHeight());
+        if (!inputFrame.inputPtr || chromaHeight == 0)
+        {
+            continue;
+        }
+        for (uint32_t plane = 0; plane < inputFrame.numChromaPlanes; ++plane)
+        {
+            CUdeviceptr chromaPlane = (CUdeviceptr)((uint8_t*)inputFrame.inputPtr +
+                inputFrame.chromaOffsets[plane]);
+            // Fill the full chroma pitch (including padding) for each chroma row.
+            CUDA_DRVAPI_CALL(cuMemsetD2D8(chromaPlane,
+                inputFrame.chromaPitch,
+                value,
+                inputFrame.chromaPitch,
+                chromaHeight));
+        }
+    }
+    CUDA_DRVAPI_CALL(cuCtxSynchronize());
+    CUDA_DRVAPI_CALL(cuCtxPopCurrent(NULL));
+}
+
 void NvEncoderCuda::SetIOCudaStreams(NV_ENC_CUSTREAM_PTR inputStream, NV_ENC_CUSTREAM_PTR outputStream)
 {
     NVENC_API_CALL(m_nvenc.nvEncSetIOCudaStreams(m_hEncoder, inputStream, outputStream));

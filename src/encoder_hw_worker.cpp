@@ -611,6 +611,16 @@ EncoderHwWorker::EncoderHwWorker(
             throw std::runtime_error("Failed to get NVENC input frame while initializing hardware worker");
         }
         encoder_input_pitch_ = static_cast<int>(encoder_input_frame->pitch);
+        if (!camera_params_->color) {
+            // Monochrome sources have a constant neutral-gray chroma plane.
+            // Pre-fill every ring surface once so the per-frame input copy can
+            // stay Y-plane-only (the direct-input path pre-fills its externally
+            // owned surfaces in EncoderPreprocessWorker instead).
+            encoder_.pEnc->FillInputFrameChromaPlanes(0x80);
+            std::cout << "[EncoderHwWorker] Pre-filled NVENC input ring chroma with 0x80 for "
+                      << threadName << " (mono source, per-frame copies are Y-only)"
+                      << std::endl;
+        }
     } else {
         std::cout << "[EncoderHwWorker] Direct NVENC input enabled via ORANGE_NVENC_DIRECT_INPUT=1"
                   << " (ring slots: " << encoder_buffer_count_ << ")" << std::endl;
@@ -2569,6 +2579,10 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
             {
                 NVTX_GPU_COPY_DYNAMIC(std::string("NVENC input CopyToDeviceFrame"));
                 const uint64_t copy_to_input_start_ns = steady_clock_now_ns();
+                // Mono sources: the ring chroma was pre-filled with 0x80 at
+                // encoder creation and never changes, so copy the Y plane only.
+                const uint32_t chroma_planes_to_copy =
+                    camera_params_->color ? encoderInputFrame->numChromaPlanes : 0u;
                 NvEncoderCuda::CopyToDeviceFrame(
                     encoder_.cuContext,
                     entry->d_prepared_frame,
@@ -2580,7 +2594,7 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                     CU_MEMORYTYPE_DEVICE,
                     encoderInputFrame->bufferFormat,
                     encoderInputFrame->chromaOffsets,
-                    encoderInputFrame->numChromaPlanes
+                    chroma_planes_to_copy
                 );
                 const uint64_t copy_to_input_end_ns = steady_clock_now_ns();
                 if (copy_to_input_end_ns >= copy_to_input_start_ns) {

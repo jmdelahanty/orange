@@ -160,7 +160,6 @@ private:
     Debayer debayer_gpu_;
     unsigned char* d_input_staging_;
     unsigned char* d_rgba_resize_;
-    unsigned char* d_uv_default_plane_;
     bool direct_input_enabled_;
     RecordingOutputConfig recording_output_config_;
     int encoder_pitch_;

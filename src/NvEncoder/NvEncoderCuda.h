@@ -46,6 +46,15 @@ public:
     virtual ~NvEncoderCuda();
 
     /**
+    *  @brief Fill the chroma planes of every input surface in the ring with a
+    *  constant byte value (e.g. 0x80 for neutral gray). Intended as a one-time
+    *  initialization after the input buffers are allocated or registered, so
+    *  monochrome sources can skip per-frame chroma writes entirely.
+    *  Synchronous: returns after the fill has completed on the device.
+    */
+    void FillInputFrameChromaPlanes(uint8_t value);
+
+    /**
     *  @brief This is a static function to copy input data from host memory to device memory.
     *  This function assumes YUV plane is a single contiguous memory segment.
     */
