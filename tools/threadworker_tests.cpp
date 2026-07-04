@@ -78,6 +78,53 @@ private:
     std::atomic<int> processed_{0};
 };
 
+class ThrowingWorker final : public CThreadWorker<int> {
+public:
+    ThrowingWorker()
+        : CThreadWorker<int>("ThrowingWorker")
+    {
+    }
+
+private:
+    bool WorkerFunction(int* item) override
+    {
+        if (item) {
+            throw std::runtime_error("injected worker failure");
+        }
+        return false;
+    }
+};
+
+void test_worker_exception_latches_fatal_error()
+{
+    ThrowingWorker worker;
+    require(!worker.HasFatalError(), "new worker should start without a fatal error");
+    require(worker.GetFatalErrorMessage().empty(),
+            "new worker should have an empty fatal-error message");
+    require(worker.GetFatalErrorCount() == 0,
+            "new worker should have a zero fatal-error count");
+
+    require(worker.StartThread() == 0, "throwing worker should start");
+    int value = 1;
+    require(worker.PutObjectToQueueIn(&value), "enqueue should succeed while running");
+
+    for (int i = 0; i < 1000 && !worker.HasFatalError(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    require(worker.HasFatalError(),
+            "a throwing WorkerFunction should latch the fatal-error flag");
+    const std::string message = worker.GetFatalErrorMessage();
+    require(message.find("injected worker failure") != std::string::npos,
+            "fatal-error message should carry the thrown exception text");
+    require(worker.GetFatalErrorCount() >= 1,
+            "fatal-error count should record the exception");
+    worker.StopThread();
+
+    require(worker.HasFatalError(), "fatal-error latch should survive StopThread");
+    require(worker.GetFatalErrorMessage() == message,
+            "first error should win: message must not change after the latch");
+}
+
 void test_enqueue_reports_true_while_running()
 {
     IntWorker worker;
@@ -438,6 +485,7 @@ void test_queue_out_bound_through_worker_thread()
 int main()
 {
     try {
+        test_worker_exception_latches_fatal_error();
         test_enqueue_reports_true_while_running();
         test_enqueue_reports_false_after_stop();
         test_immediate_stop_after_start_rejects_enqueue();

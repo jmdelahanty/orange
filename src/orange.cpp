@@ -63,6 +63,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <cctype>
 #include <filesystem>
@@ -3694,6 +3695,161 @@ void render_gui_external_recorder_status(
             "Crop recorder",
             recording_session.external_crop_recorder_lifecycle,
             recording_session.external_crop_recorder_last_error));
+}
+
+// --- Worker fatal-error observability -------------------------------------
+// Every pipeline worker derives from COffThreadMachine, whose fatal-error
+// latch (HasFatalError()/GetFatalErrorMessage()) records the first exception
+// caught at the worker-thread boundary. These helpers sweep the GUI-owned
+// worker fleet each frame while streaming and surface any latched worker as
+// a prominent red banner in the "Local" window, plus a once-per-worker
+// stderr log line.
+
+struct GuiWorkerFatalErrorEntry {
+    std::string worker_name;
+    std::string message;
+};
+
+void gui_collect_worker_fatal_error(
+    std::vector<GuiWorkerFatalErrorEntry>* entries,
+    const char* label,
+    int camera_index,
+    const COffThreadMachine* worker)
+{
+    if (!entries || !worker || !worker->HasFatalError()) {
+        return;
+    }
+    std::string name = label;
+    if (camera_index >= 0) {
+        name += "[";
+        name += std::to_string(camera_index);
+        name += "]";
+    }
+    const char* thread_name = worker->GetThreadName();
+    if (thread_name && thread_name[0] != '\0') {
+        name += " (";
+        name += thread_name;
+        name += ")";
+    }
+    std::string message = worker->GetFatalErrorMessage();
+    if (message.empty()) {
+        message = "worker thread exception (no message recorded)";
+    }
+    if (worker->GetFatalErrorCount() > 1) {
+        message += " [+";
+        message += std::to_string(worker->GetFatalErrorCount() - 1);
+        message += " more]";
+    }
+    entries->push_back({std::move(name), std::move(message)});
+}
+
+// Sweeps every live worker the GUI owns. Only call while
+// camera_control->subscribe is true: the pointer arrays exist solely for the
+// duration of a streaming session (allocated at stream start, deleted and
+// nulled by the stop-streaming teardown before this runs in the same frame).
+std::vector<GuiWorkerFatalErrorEntry> gui_collect_worker_fatal_errors(
+    int num_cameras,
+    COpenGLDisplay** display_workers,
+    CropProducerWorker** crop_producer_workers,
+    CropAndEncodeWorker** crop_and_encode_workers,
+    CropPreviewWorker** crop_preview_workers,
+    SpatialSnapshotWorker** spatial_snapshot_workers,
+    PoseWorker** pose_workers,
+    ImageWriterWorker* image_writer_worker,
+    const orange::session::RecordingSessionState& recording_session)
+{
+    std::vector<GuiWorkerFatalErrorEntry> entries;
+    for (int i = 0; i < num_cameras; ++i) {
+        if (display_workers) {
+            gui_collect_worker_fatal_error(
+                &entries, "display", i, display_workers[i]);
+        }
+        if (crop_producer_workers) {
+            gui_collect_worker_fatal_error(
+                &entries, "crop producer", i, crop_producer_workers[i]);
+        }
+        if (crop_and_encode_workers) {
+            gui_collect_worker_fatal_error(
+                &entries, "crop encoder", i, crop_and_encode_workers[i]);
+        }
+        if (crop_preview_workers) {
+            gui_collect_worker_fatal_error(
+                &entries, "crop preview", i, crop_preview_workers[i]);
+        }
+        if (spatial_snapshot_workers) {
+            gui_collect_worker_fatal_error(
+                &entries, "spatial snapshot", i, spatial_snapshot_workers[i]);
+        }
+        if (pose_workers) {
+            gui_collect_worker_fatal_error(
+                &entries, "pose", i, pose_workers[i]);
+        }
+        if (static_cast<size_t>(i) < yolo_workers.size()) {
+            gui_collect_worker_fatal_error(
+                &entries, "yolo", i, yolo_workers[i]);
+        }
+    }
+    gui_collect_worker_fatal_error(
+        &entries, "image writer", -1, image_writer_worker);
+    for (size_t i = 0; i < recording_session.recording_pipelines.size(); ++i) {
+        const auto& pipeline = recording_session.recording_pipelines[i];
+        if (!pipeline) {
+            continue;
+        }
+        const int camera_index = static_cast<int>(i);
+        gui_collect_worker_fatal_error(
+            &entries, "encoder preprocess", camera_index,
+            pipeline->preprocess_worker());
+        gui_collect_worker_fatal_error(
+            &entries, "encoder hw", camera_index, pipeline->hw_worker());
+        for (const auto& helper : pipeline->helper_encode_targets_) {
+            gui_collect_worker_fatal_error(
+                &entries, "helper encoder preprocess", camera_index,
+                helper.preprocess_worker.get());
+            gui_collect_worker_fatal_error(
+                &entries, "helper encoder hw", camera_index,
+                helper.hw_worker.get());
+        }
+    }
+    return entries;
+}
+
+// stderr log, once per newly-latched worker (not per frame). The caller
+// clears `already_logged` when streaming stops so a fresh session logs anew.
+void gui_note_new_worker_fatal_errors(
+    std::set<std::string>* already_logged,
+    const std::vector<GuiWorkerFatalErrorEntry>& entries)
+{
+    if (!already_logged) {
+        return;
+    }
+    for (const auto& entry : entries) {
+        if (already_logged->insert(entry.worker_name).second) {
+            std::cerr << "[GUI][worker_fatal] " << entry.worker_name << ": "
+                      << entry.message << std::endl;
+        }
+    }
+}
+
+void render_gui_worker_fatal_errors(
+    const std::vector<GuiWorkerFatalErrorEntry>& entries)
+{
+    if (entries.empty()) {
+        return;
+    }
+    const ImVec4 error_color{1.0f, 0.25f, 0.20f, 1.0f};
+    ImGui::Separator();
+    ImGui::TextColored(
+        error_color,
+        "WORKER FATAL ERROR: %d worker thread%s stopped processing",
+        static_cast<int>(entries.size()),
+        entries.size() == 1 ? "" : "s");
+    ImGui::PushStyleColor(ImGuiCol_Text, error_color);
+    for (const auto& entry : entries) {
+        ImGui::TextWrapped(
+            "  %s: %s", entry.worker_name.c_str(), entry.message.c_str());
+    }
+    ImGui::PopStyleColor();
 }
 
 void gui_refresh_external_recorder_lifecycle(
@@ -7381,6 +7537,7 @@ int main(int /*argc*/, char ** /*args*/) {
     PoseWorker** poseWorkers = nullptr;
     ImageWriterWorker* image_writer = new ImageWriterWorker("ImageSaverThread");
     image_writer->StartThread();
+    std::set<std::string> gui_worker_fatal_errors_logged; // once-per-worker stderr log
 
     std::vector<CameraResources> camera_resources;
     orange::session::RecordingSessionState recording_session;
@@ -9318,6 +9475,32 @@ int main(int /*argc*/, char ** /*args*/) {
                     streaming_fps.load(),
                     nullptr);
                 render_gui_external_recorder_status(recording_session);
+            }
+
+            if (camera_control->subscribe) {
+                // The worker arrays only exist while streaming. The
+                // stop-streaming teardown (same GUI thread, earlier in this
+                // frame) clears subscribe first and then deletes the workers
+                // and nulls the arrays, so when this guard passes the
+                // pointers are either live or nullptr - never freed.
+                const std::vector<GuiWorkerFatalErrorEntry> worker_fatal_errors =
+                    gui_collect_worker_fatal_errors(
+                        num_cameras,
+                        openGLDisplayWorkers,
+                        cropProducerWorkers,
+                        cropAndEncodeWorkers,
+                        cropPreviewWorkers,
+                        spatialSnapshotWorkers,
+                        poseWorkers,
+                        image_writer,
+                        recording_session);
+                gui_note_new_worker_fatal_errors(
+                    &gui_worker_fatal_errors_logged, worker_fatal_errors);
+                render_gui_worker_fatal_errors(worker_fatal_errors);
+            } else if (!gui_worker_fatal_errors_logged.empty()) {
+                // Workers are gone; a fresh streaming session starts with
+                // clean latches, so let it log anew.
+                gui_worker_fatal_errors_logged.clear();
             }
 
             ImGui::PopStyleColor(1);

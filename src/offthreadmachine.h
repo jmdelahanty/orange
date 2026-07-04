@@ -2,6 +2,8 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
+#include <string>
 
 #if defined(__GNUC__)
 #  include <pthread.h>
@@ -34,6 +36,20 @@ public:
     // be finalized.
     bool HasFatalError() const { return fatalError.load(std::memory_order_acquire); }
 
+    // The first fatal exception's message (with a wall-clock timestamp
+    // appended). Empty until HasFatalError() is true. First error wins;
+    // later exceptions only bump GetFatalErrorCount(). Safe from any thread.
+    std::string GetFatalErrorMessage() const;
+
+    // Monotonic count of fatal exceptions noted on the worker thread
+    // (0 == healthy). Never resets for the lifetime of the object.
+    int GetFatalErrorCount() const {
+        return fatalErrorCount.load(std::memory_order_relaxed);
+    }
+
+    // NUL-terminated label passed to the constructor / StartThread().
+    const char *GetThreadName() const { return threadName; }
+
 protected:
     // Record a fatal exception observed on the worker thread: log it with the
     // worker's name (rate-limited) and latch the fatal-error flag. Never throws.
@@ -51,7 +67,11 @@ private:
     // data
     std::atomic<bool> threadOn{false}; // true while thread should stay alive
     std::atomic<bool> fatalError{false}; // latched by NoteWorkerException
-    std::atomic<int>  fatalErrorLogCount{0}; // rate-limits fatal-error logging
+    std::atomic<int>  fatalErrorCount{0}; // total exceptions noted; also
+                                          // rate-limits fatal-error logging
+    mutable std::mutex fatalErrorMutex;   // guards fatalErrorMessage
+    std::string fatalErrorMessage;        // first exception's text; written
+                                          // once before fatalError is set
     THREAD_HANDLE      threadHandle{}; // 0 / nullptr when not running
     int                cpuToUse = -1;  // 0‑based CPU#, ‑1 ⇒ no affinity
 };
