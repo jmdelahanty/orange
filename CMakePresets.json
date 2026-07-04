@@ -140,10 +140,7 @@
     "buildPresets": [
         {
             "name": "release",
-            "configurePreset": "release",
-            "targets": [
-                "orange"
-            ]
+            "configurePreset": "release"
         },
         {
             "name": "debug",
