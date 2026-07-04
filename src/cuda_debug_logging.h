@@ -82,25 +82,9 @@ do { \
               << " | Context: " << static_cast<void*>(current_ctx) << std::endl; \
 } while(0)
 
-// Enhanced CUDA error checking with context info
-#define CUDA_CHECK_WITH_CTX(call, location) \
-do { \
-    cudaError_t err = call; \
-    if (err != cudaSuccess) { \
-        int current_device = -1; \
-        cudaGetDevice(&current_device); \
-        CUcontext current_ctx = nullptr; \
-        cuCtxGetCurrent(&current_ctx); \
-        std::lock_guard<std::mutex> lock(g_debug_log_mutex); \
-        std::cerr << "[CUDA ERROR] " << location \
-                  << " | Thread: " << std::this_thread::get_id() \
-                  << " | Device: " << current_device \
-                  << " | Context: " << static_cast<void*>(current_ctx) \
-                  << " | Error: " << cudaGetErrorString(err) \
-                  << " | Call: " << #call << std::endl; \
-        abort(); \
-    } \
-} while(0)
+// CUDA_CHECK_WITH_CTX was removed: it called abort() from library code
+// (forbidden by docs/error_handling_convention.md) and had no call sites.
+// Use CHECK() from src/common.hpp, which throws a typed cuda_error.
 
 // Function to validate CUDA context consistency
 inline bool validate_cuda_context(const char* location, CUcontext expected_ctx = nullptr) {

@@ -4253,17 +4253,6 @@ bool start_headless_frame_ipc_runtime(HeadlessFrameIpcRuntime* runtime,
 
 } // namespace
 
-void quit_process(bool error = false, const std::string &reason = "")
-{
-    enet_deinitialize();
-    // Show console reason before exit
-    if (error)
-    {
-        std::cout << reason << std::endl;
-        std::exit(EXIT_FAILURE);
-    }
-}
-
 extern bool quit_server;
 
 bool open_cameras(CameraParams *cameras_params,
@@ -10164,7 +10153,11 @@ int run_remote_mode()
 {
     if (enet_initialize() != 0)
     {
-        quit_process(true, "ENET failed to initialize!");
+        // Return the failure to main() (which owns the process-exit decision)
+        // instead of exiting from a helper.
+        std::cerr << "ENET failed to initialize!" << std::endl;
+        enet_deinitialize();
+        return EXIT_FAILURE;
     }
 
     EnetContext client;

@@ -678,8 +678,10 @@ camera_control_(camera_control)
 CropAndEncodeWorker::~CropAndEncodeWorker() {
     std::cout << "[CropAndEncodeWorker] Destructor for " << threadName << std::endl;
 
-    if (camera_params_) {
-        ck(cudaSetDevice(camera_params_->gpu_id));
+    // Destructor must not throw (docs/error_handling_convention.md):
+    // best-effort device selection during teardown.
+    if (camera_params_ && cudaSetDevice(camera_params_->gpu_id) != cudaSuccess) {
+        std::cerr << "[CropAndEncodeWorker] destructor: cudaSetDevice failed; continuing teardown" << std::endl;
     }
 
     if (is_recording_) {

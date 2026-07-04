@@ -1070,7 +1070,11 @@ YoloWorker::~YoloWorker() {
     }
 
     if (associated_camera_params_) {
-        ck(cudaSetDevice(associated_camera_params_->gpu_id));
+        // Destructor must not throw (docs/error_handling_convention.md):
+        // best-effort device selection during teardown.
+        if (cudaSetDevice(associated_camera_params_->gpu_id) != cudaSuccess) {
+            std::cerr << "[YoloWorker] destructor: cudaSetDevice failed; continuing teardown" << std::endl;
+        }
         if (debayer_gpu_.d_debayer) { cudaFree(debayer_gpu_.d_debayer); }
         if (frame_original_gpu_.d_orig) { cudaFree(frame_original_gpu_.d_orig); }
         if (yolov8_instance_) { delete yolov8_instance_; }

@@ -36,6 +36,10 @@ struct FFmpegWriterLatencyStats {
 class FFmpegWriter
 {
 public:
+    // Throws std::runtime_error if the output container cannot be opened
+    // (allocation, avio_open or header write failure). A successfully
+    // constructed writer is always open; a recording can therefore never
+    // silently "record to nowhere" (docs/error_handling_convention.md).
     FFmpegWriter(AVCodecID eCodecId, int nWidth, int nHeight, int nFps, const char *szOutFilePath, const char *metadata_file,
                  const std::vector<std::pair<std::string, std::string>>& metadata_tags = {},
                  FFmpegWriterQueueConfig queue_config = {});

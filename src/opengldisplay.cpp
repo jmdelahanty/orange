@@ -111,7 +111,11 @@ COpenGLDisplay::COpenGLDisplay(const char* name, CameraParams *camera_params, Ca
 COpenGLDisplay::~COpenGLDisplay()
 {
     std::cout << "[OPENGL_DISPLAY] DESTRUCTOR for " << (camera_params ? camera_params->camera_name : "unknown") << std::endl;
-    ck(cudaSetDevice(display_gpu_id));
+    // Destructor must not throw (docs/error_handling_convention.md):
+    // best-effort device selection during teardown.
+    if (cudaSetDevice(display_gpu_id) != cudaSuccess) {
+        std::cerr << "[OPENGL_DISPLAY] destructor: cudaSetDevice failed; continuing teardown" << std::endl;
+    }
 
     if (m_stream) cudaStreamDestroy(m_stream);
     if (h_p2p_copy_buffer_) cudaFreeHost(h_p2p_copy_buffer_);

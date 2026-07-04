@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <stdio.h>
 #include <cstdio>
+#include <stdexcept>
 #include <GL/glew.h>
 #include <cuda_gl_interop.h>
 #include <GLFW/glfw3.h>
@@ -136,8 +137,9 @@ GLFWwindow *gx_glfw_init_render_target(u32 /*marjor_version*/, u32 /*minor_versi
     glfwSetErrorCallback(gx_glfw_error_callback);
     if (!glfwInit())
     {
-        printf("Could not initialize glfw!");
-        exit(EXIT_FAILURE);
+        // Construction-time failure: throw, never exit() from library code
+        // (docs/error_handling_convention.md). main() catches and exits.
+        throw std::runtime_error("Could not initialize glfw!");
     }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -148,9 +150,8 @@ GLFWwindow *gx_glfw_init_render_target(u32 /*marjor_version*/, u32 /*minor_versi
     GLFWwindow *window = glfwCreateWindow(width, height, title, NULL, NULL);
     if (!window)
     {
-        printf("Could not initialize window!");
         glfwTerminate();
-        exit(EXIT_FAILURE);
+        throw std::runtime_error("Could not initialize window!");
     };
 
     return window;

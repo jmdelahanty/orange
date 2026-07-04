@@ -18,6 +18,7 @@
 #include <fstream>
 #include <string>
 #include <sstream>
+#include <stdexcept>
 #include <mutex>
 #include <time.h>
 
@@ -197,6 +198,14 @@ private:
 class LogTransaction {
 public:
     LogTransaction(Logger *pLogger, LogLevel level, const char *szFile, const int nLine, const char *szFunc) : pLogger(pLogger), level(level) {
+        if (level == FATAL) {
+            // Orange modification: FATAL messages are buffered so the text can
+            // be carried by the exception thrown from the destructor.
+            if (pLogger) {
+                ossFatal << pLogger->GetLead(level, szFile, nLine, szFunc);
+            }
+            return;
+        }
         if (!pLogger) {
             std::cout << "[-----] ";
             return;
@@ -207,7 +216,26 @@ public:
         pLogger->EnterCriticalSection();
         pLogger->GetStream() << pLogger->GetLead(level, szFile, nLine, szFunc);
     }
-    ~LogTransaction() {
+    // Orange modification: library code must never exit() the process (see
+    // docs/error_handling_convention.md). A FATAL log now throws
+    // std::runtime_error carrying the logged message instead of exit(1); the
+    // exception is absorbed by the worker-thread catch/latch/drain boundaries
+    // or by init-path try/catch blocks. The destructor is noexcept(false) on
+    // purpose; LOG(FATAL) is only ever the direct result of a failed API call,
+    // never part of stack unwinding.
+    ~LogTransaction() noexcept(false) {
+        if (level == FATAL) {
+            const std::string message = ossFatal.str();
+            if (pLogger && pLogger->ShouldLogFor(level)) {
+                pLogger->EnterCriticalSection();
+                pLogger->GetStream() << message << std::endl;
+                pLogger->FlushStream();
+                pLogger->LeaveCriticalSection();
+            } else {
+                std::cerr << message << std::endl;
+            }
+            throw std::runtime_error(message);
+        }
         if (!pLogger) {
             std::cout << std::endl;
             return;
@@ -218,11 +246,11 @@ public:
         pLogger->GetStream() << std::endl;
         pLogger->FlushStream();
         pLogger->LeaveCriticalSection();
-        if (level == FATAL) {
-            exit(1);
-        }
     }
     std::ostream& GetStream() {
+        if (level == FATAL) {
+            return ossFatal;
+        }
         if (!pLogger) {
             return std::cout;
         }
@@ -235,6 +263,7 @@ private:
     Logger *pLogger;
     LogLevel level;
     std::ostringstream ossNull;
+    std::ostringstream ossFatal;
 };
 
 }

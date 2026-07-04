@@ -13,6 +13,7 @@
 #include <nppi_color_conversion.h>
 #include <algorithm>
 #include <iostream>
+#include <stdexcept>
 #include "global.h"
 #include "NvEncoder/NvEncoder.h"
 #include "cuda_context_debug.h"
@@ -136,12 +137,17 @@ static inline void initialize_writer(Writer *writer, CameraParams *camera_params
     }
     writer->metadata = new std::ofstream();
     writer->metadata->open(writer->metadata_file.c_str());
-     if (!(*writer->metadata))
+    if (!(*writer->metadata))
     {
-        std::cout << "Metadata file did not open!";
+        // Fail the recording start loudly: returning here would leave an open
+        // writer with no metadata sink and no way for the caller to notice.
+        // The throw is caught at the worker-thread boundary (catch/latch/drain).
         delete writer->metadata;
         writer->metadata = nullptr;
-        return;
+        delete writer->video;
+        writer->video = nullptr;
+        throw std::runtime_error(
+            "Failed to open recording metadata file " + writer->metadata_file);
     }
     *writer->metadata << "frame_id,timestamp,timestamp_sys\n";
 }
