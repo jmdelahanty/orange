@@ -7554,6 +7554,195 @@ int main(int /*argc*/, char ** /*args*/) {
             local_config_select = static_cast<int>(std::distance(local_config_folders.begin(), it));
         }
     };
+    // Orderly stop-streaming teardown, shared by the "Stop streaming"
+    // button and the window-close shutdown path. Must be defined after
+    // every local it captures by reference and called synchronously from
+    // this scope only.
+    auto stop_streaming_and_teardown = [&]() {
+        camera_control->subscribe = false;
+        // STOP STREAMING
+        std::cout << "STOPPING STREAMING SESSION..." << std::endl;
+        if (camera_control->record_video) {
+            gui_note_recording_stop_requested(
+                &gui_recording_run,
+                "stream_shutdown");
+            orange::session::request_drain_recording_run(&recording_session, camera_control);
+            gui_mark_recording_finalizing(&gui_session_timing);
+            std::cout << "Recording toggled OFF by stream shutdown. Encoders will drain queued frames." << std::endl;
+        } else if (camera_control->recording_draining) {
+            gui_note_recording_stop_requested(
+                &gui_recording_run,
+                "stream_shutdown");
+            gui_mark_recording_finalizing(&gui_session_timing);
+        }
+
+        // 1. Stop the acquisition threads first.
+        // This prevents new frames from entering the pipeline.
+        for (auto &t : camera_threads) {
+            if (t.joinable()) t.join();
+        }
+        camera_threads.clear();
+        std::cout << "Acquisition threads joined." << std::endl;
+
+        // RESET PTP STATE
+        if (ptp_stream_sync) {
+            ptp_params->ptp_global_time = 0;
+            ptp_params->ptp_stop_time = 0;
+            ptp_params->ptp_counter = 0;
+            ptp_params->ptp_stop_counter = 0;
+            ptp_params->network_sync = false;
+            ptp_params->network_set_start_ptp = false;
+            ptp_params->ptp_stop_reached = false;
+            ptp_params->ptp_start_reached = false;
+            camera_control->sync_camera = false; // Also reset this flag
+            std::cout << "PTPParams state has been reset for the next run." << std::endl;
+        }
+
+        // 2. Signal all worker threads to stop processing NEW data from their queues.
+        // They will finish processing whatever is currently in their queue.
+        for (int i = 0; i < num_cameras; i++) {
+            if (yolo_workers[i]) yolo_workers[i]->StopThread();
+            if (openGLDisplayWorkers[i]) openGLDisplayWorkers[i]->StopThread();
+            if (cropProducerWorkers[i]) cropProducerWorkers[i]->StopThread();
+            if (cropPreviewWorkers[i]) cropPreviewWorkers[i]->StopThread();
+            if (cropAndEncodeWorkers[i]) cropAndEncodeWorkers[i]->StopThread();
+            if (poseWorkers[i]) poseWorkers[i]->StopThread();
+            if (spatialSnapshotWorkers && spatialSnapshotWorkers[i]) {
+                spatialSnapshotWorkers[i]->StopThread();
+            }
+            orange::session::request_stop_recording_pipeline_for_camera(&recording_session, i);
+        }
+        std::cout << "All worker threads signaled to stop. Waiting for queues to drain..." << std::endl;
+
+        // 3. Join and delete workers in REVERSE pipeline order to ensure the pipeline is drained.
+        for (int i = 0; i < num_cameras; i++) {
+            // Endpoints are first.
+            if (openGLDisplayWorkers[i]) {
+                delete openGLDisplayWorkers[i];
+                openGLDisplayWorkers[i] = nullptr;
+            }
+
+            if (cropAndEncodeWorkers[i]) {
+                std::cout << "Flushing final packets for crop encoder " << cameras_params[i].camera_serial << "..." << std::endl;
+                cropAndEncodeWorkers[i]->finalize_recording();
+                delete cropAndEncodeWorkers[i];
+                cropAndEncodeWorkers[i] = nullptr;
+            }
+
+            if (cropPreviewWorkers[i]) {
+                delete cropPreviewWorkers[i];
+                cropPreviewWorkers[i] = nullptr;
+            }
+
+            if (poseWorkers[i]) {
+                poseWorkers[i]->CloseRecording();
+                delete poseWorkers[i];
+                poseWorkers[i] = nullptr;
+            }
+
+            if (spatialSnapshotWorkers && spatialSnapshotWorkers[i]) {
+                delete spatialSnapshotWorkers[i];
+                spatialSnapshotWorkers[i] = nullptr;
+            }
+
+            if (cropProducerWorkers[i]) {
+                cropProducerWorkers[i]->CloseRecording();
+                delete cropProducerWorkers[i];
+                cropProducerWorkers[i] = nullptr;
+            }
+            
+            // Now the hardware encoder, which is fed by the preprocessor.
+            // The YOLO worker can be deleted now.
+            if (yolo_workers[i]) {
+                delete yolo_workers[i];
+                yolo_workers[i] = nullptr;
+            }
+
+            orange::session::shutdown_recording_pipeline_for_camera(&recording_session, i);
+        }
+        
+        // Clear the worker pointer vectors
+        yolo_workers.clear();
+        orange::session::clear_recording_pipelines(&recording_session);
+        if(openGLDisplayWorkers) { delete[] openGLDisplayWorkers; openGLDisplayWorkers = nullptr; }
+        if(cropProducerWorkers) { delete[] cropProducerWorkers; cropProducerWorkers = nullptr; }
+        if(cropAndEncodeWorkers) { delete[] cropAndEncodeWorkers; cropAndEncodeWorkers = nullptr; }
+        if(cropPreviewWorkers) { delete[] cropPreviewWorkers; cropPreviewWorkers = nullptr; }
+        if(spatialSnapshotWorkers) { delete[] spatialSnapshotWorkers; spatialSnapshotWorkers = nullptr; }
+        if(poseWorkers) { delete[] poseWorkers; poseWorkers = nullptr; }
+        std::cout << "Worker threads all cleaned up." << std::endl;
+        frame_ipc_managers.clear();
+        frame_ipc_init_errors.clear();
+
+        // 4. Final resource cleanup
+        for (int i = 0; i < num_cameras; i++) {
+            if (!gui_camera_has_acquisition_work(cameras_select[i])) {
+                continue;
+            }
+            destroy_frame_buffer(&ecams[i].camera, ecams[i].evt_frame, evt_buffer_size, &cameras_params[i]);
+            delete[] ecams[i].evt_frame;
+            ecams[i].evt_frame = nullptr;
+            ecams[i].evt_frame_count = 0;
+            check_camera_errors(EVT_CameraCloseStream(&ecams[i].camera), cameras_params[i].camera_serial.c_str());
+        }
+
+        for (int i = 0; i < num_cameras; i++) {
+            if (cameras_select[i].stream_on) {
+                int w = int(cameras_params[i].width / cameras_select[i].downsample);
+                int h = int(cameras_params[i].height / cameras_select[i].downsample);
+                clear_upload_and_cleanup(tex[i], w, h);
+            }
+            // Add this block to clean up the crop textures
+            if (cameras_select[i].crop_and_encode) {
+                clear_upload_and_cleanup(
+                    crop_tex[i],
+                    crop_size_px,
+                    crop_size_px);
+            }
+        }
+
+        if(tex) delete[] tex;
+        tex = nullptr;
+        if(crop_tex) delete[] crop_tex;
+        crop_tex = nullptr;
+        display_uploaded_serials.clear();
+        crop_preview_uploaded_serials.clear();
+        live_preview_texture_ids.clear();
+
+        for(int i = 0; i < num_cameras; ++i) {
+            camera_resources[i].cleanup();
+        }
+        camera_resources.clear();
+        std::cout << "Cleaned up all per-camera resources." << std::endl;
+        if (gui_finalize_recording_session_if_ready(
+                &gui_recording_run,
+                &recording_session,
+                camera_control,
+                cameras_params,
+                cameras_select,
+                num_cameras,
+                crop_size_px,
+                gui_display_frame_rate_json(
+                    gui_display_frame_rate_stats,
+                    stream_downsample,
+                    resolve_gui_display_preview_max_fps_snapshot(
+                        cameras_select,
+                        num_cameras),
+                    static_cast<int>(window->swap_interval),
+                    static_cast<int>(window->frame_max_fps),
+                    show_yolo_speed_graphs,
+                    orange_imgui_glfw_size_cache_stats()))) {
+            gui_display_frame_rate_stats.Finish();
+            gui_mark_local_control_drain_completed(
+                &gui_local_control_stop_scheduler,
+                gui_local_control_event_log_path,
+                gui_recording_run.recording_folder);
+            std::cout << "[GUI][recording] Finalized recording session during stream shutdown."
+                      << std::endl;
+        }
+        gui_mark_recording_finished(&gui_session_timing);
+        gui_mark_stream_stopped(&gui_session_timing);
+    };
     GuiAutorunState gui_autorun_state;
     if (gui_autorun_config.enabled) {
         gui_autorun_enter_stage(&gui_autorun_state, GuiAutorunStage::kSelectConfig);
@@ -8979,189 +9168,7 @@ int main(int /*argc*/, char ** /*args*/) {
                             }
                         }
                     } else {
-                        camera_control->subscribe = false;
-                        // STOP STREAMING
-                        std::cout << "STOPPING STREAMING SESSION..." << std::endl;
-                        if (camera_control->record_video) {
-                            gui_note_recording_stop_requested(
-                                &gui_recording_run,
-                                "stream_shutdown");
-                            orange::session::request_drain_recording_run(&recording_session, camera_control);
-                            gui_mark_recording_finalizing(&gui_session_timing);
-                            std::cout << "Recording toggled OFF by stream shutdown. Encoders will drain queued frames." << std::endl;
-                        } else if (camera_control->recording_draining) {
-                            gui_note_recording_stop_requested(
-                                &gui_recording_run,
-                                "stream_shutdown");
-                            gui_mark_recording_finalizing(&gui_session_timing);
-                        }
-
-                        // 1. Stop the acquisition threads first.
-                        // This prevents new frames from entering the pipeline.
-                        for (auto &t : camera_threads) {
-                            if (t.joinable()) t.join();
-                        }
-                        camera_threads.clear();
-                        std::cout << "Acquisition threads joined." << std::endl;
-
-                        // RESET PTP STATE
-                        if (ptp_stream_sync) {
-                            ptp_params->ptp_global_time = 0;
-                            ptp_params->ptp_stop_time = 0;
-                            ptp_params->ptp_counter = 0;
-                            ptp_params->ptp_stop_counter = 0;
-                            ptp_params->network_sync = false;
-                            ptp_params->network_set_start_ptp = false;
-                            ptp_params->ptp_stop_reached = false;
-                            ptp_params->ptp_start_reached = false;
-                            camera_control->sync_camera = false; // Also reset this flag
-                            std::cout << "PTPParams state has been reset for the next run." << std::endl;
-                        }
-
-                        // 2. Signal all worker threads to stop processing NEW data from their queues.
-                        // They will finish processing whatever is currently in their queue.
-                        for (int i = 0; i < num_cameras; i++) {
-                            if (yolo_workers[i]) yolo_workers[i]->StopThread();
-                            if (openGLDisplayWorkers[i]) openGLDisplayWorkers[i]->StopThread();
-                            if (cropProducerWorkers[i]) cropProducerWorkers[i]->StopThread();
-                            if (cropPreviewWorkers[i]) cropPreviewWorkers[i]->StopThread();
-                            if (cropAndEncodeWorkers[i]) cropAndEncodeWorkers[i]->StopThread();
-                            if (poseWorkers[i]) poseWorkers[i]->StopThread();
-                            if (spatialSnapshotWorkers && spatialSnapshotWorkers[i]) {
-                                spatialSnapshotWorkers[i]->StopThread();
-                            }
-                            orange::session::request_stop_recording_pipeline_for_camera(&recording_session, i);
-                        }
-                        std::cout << "All worker threads signaled to stop. Waiting for queues to drain..." << std::endl;
-
-                        // 3. Join and delete workers in REVERSE pipeline order to ensure the pipeline is drained.
-                        for (int i = 0; i < num_cameras; i++) {
-                            // Endpoints are first.
-                            if (openGLDisplayWorkers[i]) {
-                                delete openGLDisplayWorkers[i];
-                                openGLDisplayWorkers[i] = nullptr;
-                            }
-
-                            if (cropAndEncodeWorkers[i]) {
-                                std::cout << "Flushing final packets for crop encoder " << cameras_params[i].camera_serial << "..." << std::endl;
-                                cropAndEncodeWorkers[i]->finalize_recording();
-                                delete cropAndEncodeWorkers[i];
-                                cropAndEncodeWorkers[i] = nullptr;
-                            }
-
-                            if (cropPreviewWorkers[i]) {
-                                delete cropPreviewWorkers[i];
-                                cropPreviewWorkers[i] = nullptr;
-                            }
-
-                            if (poseWorkers[i]) {
-                                poseWorkers[i]->CloseRecording();
-                                delete poseWorkers[i];
-                                poseWorkers[i] = nullptr;
-                            }
-
-                            if (spatialSnapshotWorkers && spatialSnapshotWorkers[i]) {
-                                delete spatialSnapshotWorkers[i];
-                                spatialSnapshotWorkers[i] = nullptr;
-                            }
-
-                            if (cropProducerWorkers[i]) {
-                                cropProducerWorkers[i]->CloseRecording();
-                                delete cropProducerWorkers[i];
-                                cropProducerWorkers[i] = nullptr;
-                            }
-                            
-                            // Now the hardware encoder, which is fed by the preprocessor.
-                            // The YOLO worker can be deleted now.
-                            if (yolo_workers[i]) {
-                                delete yolo_workers[i];
-                                yolo_workers[i] = nullptr;
-                            }
-
-                            orange::session::shutdown_recording_pipeline_for_camera(&recording_session, i);
-                        }
-                        
-                        // Clear the worker pointer vectors
-                        yolo_workers.clear();
-                        orange::session::clear_recording_pipelines(&recording_session);
-                        if(openGLDisplayWorkers) { delete[] openGLDisplayWorkers; openGLDisplayWorkers = nullptr; }
-                        if(cropProducerWorkers) { delete[] cropProducerWorkers; cropProducerWorkers = nullptr; }
-                        if(cropAndEncodeWorkers) { delete[] cropAndEncodeWorkers; cropAndEncodeWorkers = nullptr; }
-                        if(cropPreviewWorkers) { delete[] cropPreviewWorkers; cropPreviewWorkers = nullptr; }
-                        if(spatialSnapshotWorkers) { delete[] spatialSnapshotWorkers; spatialSnapshotWorkers = nullptr; }
-                        if(poseWorkers) { delete[] poseWorkers; poseWorkers = nullptr; }
-                        std::cout << "Worker threads all cleaned up." << std::endl;
-                        frame_ipc_managers.clear();
-                        frame_ipc_init_errors.clear();
-
-                        // 4. Final resource cleanup
-                        for (int i = 0; i < num_cameras; i++) {
-                            if (!gui_camera_has_acquisition_work(cameras_select[i])) {
-                                continue;
-                            }
-                            destroy_frame_buffer(&ecams[i].camera, ecams[i].evt_frame, evt_buffer_size, &cameras_params[i]);
-                            delete[] ecams[i].evt_frame;
-                            ecams[i].evt_frame = nullptr;
-                            ecams[i].evt_frame_count = 0;
-                            check_camera_errors(EVT_CameraCloseStream(&ecams[i].camera), cameras_params[i].camera_serial.c_str());
-                        }
-
-                        for (int i = 0; i < num_cameras; i++) {
-                            if (cameras_select[i].stream_on) {
-                                int w = int(cameras_params[i].width / cameras_select[i].downsample);
-                                int h = int(cameras_params[i].height / cameras_select[i].downsample);
-                                clear_upload_and_cleanup(tex[i], w, h);
-                            }
-                            // Add this block to clean up the crop textures
-                            if (cameras_select[i].crop_and_encode) {
-                                clear_upload_and_cleanup(
-                                    crop_tex[i],
-                                    crop_size_px,
-                                    crop_size_px);
-                            }
-                        }
-
-                        if(tex) delete[] tex;
-                        tex = nullptr;
-                        if(crop_tex) delete[] crop_tex;
-                        crop_tex = nullptr;
-                        display_uploaded_serials.clear();
-                        crop_preview_uploaded_serials.clear();
-                        live_preview_texture_ids.clear();
-
-                        for(int i = 0; i < num_cameras; ++i) {
-                            camera_resources[i].cleanup();
-                        }
-                        camera_resources.clear();
-                        std::cout << "Cleaned up all per-camera resources." << std::endl;
-                        if (gui_finalize_recording_session_if_ready(
-                                &gui_recording_run,
-                                &recording_session,
-                                camera_control,
-                                cameras_params,
-                                cameras_select,
-                                num_cameras,
-                                crop_size_px,
-                                gui_display_frame_rate_json(
-                                    gui_display_frame_rate_stats,
-                                    stream_downsample,
-                                    resolve_gui_display_preview_max_fps_snapshot(
-                                        cameras_select,
-                                        num_cameras),
-                                    static_cast<int>(window->swap_interval),
-                                    static_cast<int>(window->frame_max_fps),
-                                    show_yolo_speed_graphs,
-                                    orange_imgui_glfw_size_cache_stats()))) {
-                            gui_display_frame_rate_stats.Finish();
-                            gui_mark_local_control_drain_completed(
-                                &gui_local_control_stop_scheduler,
-                                gui_local_control_event_log_path,
-                                gui_recording_run.recording_folder);
-                            std::cout << "[GUI][recording] Finalized recording session during stream shutdown."
-                                      << std::endl;
-                        }
-                        gui_mark_recording_finished(&gui_session_timing);
-                        gui_mark_stream_stopped(&gui_session_timing);
+                        stop_streaming_and_teardown();
                     }
                 }
                 if (calibration_tool_busy) {
@@ -9547,6 +9554,61 @@ int main(int /*argc*/, char ** /*args*/) {
     clear_usaf_captured_texture(&usaf_ui_state);
     clear_spatial_layout_texture(&spatial_layout_ui_state);
     gui_local_control_server.Stop();
+
+    if (camera_control->subscribe) {
+        std::cout << "Window closed while streaming; running stream shutdown..." << std::endl;
+        stop_streaming_and_teardown();
+        // At window close there are no further GUI frames to poll
+        // gui_finalize_recording_session_if_ready (the render loop does that
+        // every frame after a button-initiated stop). Drain completion is
+        // synchronous by the end of the teardown, so the finalize call inside
+        // it normally succeeds; poll here with a bounded wait to cover the
+        // remaining not-ready paths (e.g. an injected diagnostic finalize
+        // stall) instead of exiting without a session manifest.
+        if (gui_recording_run.active && gui_recording_run.finalizing) {
+            const auto finalize_deadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds(15);
+            bool finalized_at_exit = false;
+            while (!finalized_at_exit &&
+                   std::chrono::steady_clock::now() < finalize_deadline) {
+                finalized_at_exit = gui_finalize_recording_session_if_ready(
+                    &gui_recording_run,
+                    &recording_session,
+                    camera_control,
+                    cameras_params,
+                    cameras_select,
+                    num_cameras,
+                    crop_size_px,
+                    gui_display_frame_rate_json(
+                        gui_display_frame_rate_stats,
+                        stream_downsample,
+                        resolve_gui_display_preview_max_fps_snapshot(
+                            cameras_select,
+                            num_cameras),
+                        static_cast<int>(window->swap_interval),
+                        static_cast<int>(window->frame_max_fps),
+                        show_yolo_speed_graphs,
+                        orange_imgui_glfw_size_cache_stats()));
+                if (finalized_at_exit) {
+                    gui_display_frame_rate_stats.Finish();
+                    gui_mark_local_control_drain_completed(
+                        &gui_local_control_stop_scheduler,
+                        gui_local_control_event_log_path,
+                        gui_recording_run.recording_folder);
+                    std::cout << "[GUI][recording] Finalized recording session during"
+                                 " window-close shutdown." << std::endl;
+                } else {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
+            }
+            if (!finalized_at_exit) {
+                std::cerr << "[GUI][recording] WARNING: recording session did not"
+                             " finalize within 15s of window close; the recording"
+                             " session manifest may be missing or incomplete."
+                          << std::endl;
+            }
+        }
+    }
 
     if (camera_control->open) {
         for (int i = 0; i < num_cameras; i++) {
