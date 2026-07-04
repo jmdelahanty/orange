@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
+#include <time.h>
 #include <exception>
 #include "offthreadmachine.h"
 
@@ -92,9 +93,48 @@ void COffThreadMachine::DoStopThread() {
   // queues).
 }
 
+std::string COffThreadMachine::GetFatalErrorMessage() const {
+  // Fast path: lock-free and allocation-free while healthy (SSO empty string).
+  if (!fatalError.load(std::memory_order_acquire))
+    return std::string();
+  std::lock_guard<std::mutex> lock(fatalErrorMutex);
+  return fatalErrorMessage;
+}
+
 void COffThreadMachine::NoteWorkerException(const char *what) noexcept {
+  const int count =
+      fatalErrorCount.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (count == 1) {
+    // First error wins: record the message (with a wall-clock timestamp)
+    // *before* publishing the latch below, so a reader that observes
+    // HasFatalError()==true (acquire) also observes the completed message
+    // (release). The message is never modified again after this point; the
+    // mutex additionally makes the string read/write itself race-free.
+    char stamp[32];
+    stamp[0] = 0;
+    const time_t now = time(nullptr);
+    struct tm tm_buf {};
+#if defined(__GNUC__)
+    if (localtime_r(&now, &tm_buf))
+      strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &tm_buf);
+#else
+    if (localtime_s(&tm_buf, &now) == 0)
+      strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &tm_buf);
+#endif
+    try {
+      std::lock_guard<std::mutex> lock(fatalErrorMutex);
+      fatalErrorMessage = what ? what : "unknown";
+      if (stamp[0]) {
+        fatalErrorMessage += " (at ";
+        fatalErrorMessage += stamp;
+        fatalErrorMessage += ")";
+      }
+    } catch (...) {
+      // bad_alloc while already handling a failure: keep the latch usable,
+      // drop the message text (GetFatalErrorMessage() returns "").
+    }
+  }
   fatalError.store(true, std::memory_order_release);
-  const int count = fatalErrorLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
   if (count <= 5) {
     fprintf(stderr, "[%s] worker thread exception%s: %s\n", threadName,
             count == 5 ? " (suppressing further reports)" : "",
