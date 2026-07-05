@@ -4291,6 +4291,12 @@ int main(int /*argc*/, char ** /*args*/) {
     // Background external-recorder start runner (joined on completion,
     // cancellation, and shutdown; see GuiAsyncRecordingStartState).
     GuiAsyncRecordingStartState gui_async_recording_start;
+    // Background recording-finalize runner (recorder stops + summary reads +
+    // manifest/snapshot writes off the render thread). Joined on completion
+    // by the per-frame gui_poll_async_recording_finalize, and on
+    // teardown/shutdown by gui_join_async_recording_finalize - never
+    // detached (see GuiAsyncRecordingFinalizeState in gui/recording_finalizer.h).
+    GuiAsyncRecordingFinalizeState gui_async_recording_finalize;
     GuiLocalControlStartRequestState gui_local_control_start_request;
     gui_local_control_start_request.enabled =
         gui_local_control_recording_start_enabled(&app_storage_config);
@@ -4476,6 +4482,24 @@ int main(int /*argc*/, char ** /*args*/) {
             camera_control,
             "stream_shutdown",
             gui_local_control_event_log_path);
+        // A recording finalize may still be running on the background
+        // thread; join it and complete it BEFORE any pipeline/worker
+        // teardown (blocking here is deliberate - this path already waits):
+        // the prepare phase handed the recorder lifecycle objects to the
+        // finalize state and the background phase may be mid-write.
+        if (gui_join_async_recording_finalize(
+                &gui_async_recording_finalize,
+                &gui_recording_run,
+                &recording_session,
+                camera_control)) {
+            gui_display_frame_rate_stats.Finish();
+            gui_mark_local_control_drain_completed(
+                &gui_local_control_stop_scheduler,
+                gui_local_control_event_log_path,
+                gui_recording_run.recording_folder);
+            std::cout << "[GUI][recording] Finalized recording session before"
+                         " stream teardown." << std::endl;
+        }
         camera_control->subscribe = false;
         // STOP STREAMING
         std::cout << "STOPPING STREAMING SESSION..." << std::endl;
@@ -6138,15 +6162,28 @@ int main(int /*argc*/, char ** /*args*/) {
                         std::cout << "Recording start already in progress"
                                      " (external recorder starting). Please wait..."
                                   << std::endl;
-                    } else if (!camera_control->record_video && camera_control->recording_draining) {
-                        std::cout << "Recording is still draining. Please wait..." << std::endl;
+                    } else if (!camera_control->record_video &&
+                               (camera_control->recording_draining ||
+                                gui_recording_run.finalizing ||
+                                gui_async_recording_finalize.active)) {
+                        // The finalize gate clears recording_draining before
+                        // the background finalize phase runs, so the drain
+                        // flag alone no longer covers the whole window: also
+                        // reject while the run is still finalizing (latched
+                        // until the completion phase, including across
+                        // finalize-failure retries) or the background
+                        // finalize worker is in flight. Without this a press
+                        // here could start a new run into the still-claimed
+                        // recording folder.
+                        std::cout << "Recording is still draining/finalizing."
+                                     " Please wait..." << std::endl;
                         // Surface the rejection in the GUI: stdout alone made the
                         // play button look dead while a drain was latched.
                         recording_preflight_errors = {
                             "Recording start rejected: the previous recording is still "
-                            "draining. Wait for finalization to complete (see session "
-                            "status below); if this state persists, the external "
-                            "recorder may not be draining."};
+                            "draining or finalizing. Wait for finalization to complete "
+                            "(see session status below); if this state persists, the "
+                            "external recorder may not be draining."};
                     } else {
                         const bool next_record_state = !camera_control->record_video;
                         if (next_record_state) {
@@ -6217,7 +6254,13 @@ int main(int /*argc*/, char ** /*args*/) {
                 ImGui::TextWrapped("Recording path: %s", active_recording_folder.c_str());
             }
 
-            if (gui_finalize_recording_session_if_ready(
+            // Phased finalize: launches the background finalize the frame
+            // the drain gate opens and completes it (GUI-thread completion
+            // phase) the frame the worker finishes; true exactly when a
+            // finalize completed successfully this frame, matching the old
+            // synchronous gui_finalize_recording_session_if_ready contract.
+            if (gui_poll_async_recording_finalize(
+                    &gui_async_recording_finalize,
                     &gui_recording_run,
                     &recording_session,
                     camera_control,
@@ -6275,7 +6318,9 @@ int main(int /*argc*/, char ** /*args*/) {
                     gui_session_timing_snapshot(
                         &gui_session_timing,
                         camera_control,
-                        gui_async_recording_start.active);
+                        gui_async_recording_start.active,
+                        gui_async_recording_finalize_progress_view(
+                            gui_async_recording_finalize));
                 ImGui::Separator();
                 render_gui_session_timing_status(
                     timing,
@@ -6380,7 +6425,12 @@ int main(int /*argc*/, char ** /*args*/) {
             // Draw main camera views
             const auto camera_draw_start = std::chrono::steady_clock::now();
             const GuiSessionTimingSnapshot timing =
-                gui_session_timing_snapshot(&gui_session_timing, camera_control);
+                gui_session_timing_snapshot(
+                    &gui_session_timing,
+                    camera_control,
+                    gui_async_recording_start.active,
+                    gui_async_recording_finalize_progress_view(
+                        gui_async_recording_finalize));
             if (camera_control->record_video) {
                 // Resize speed tracking data
                 if (speed_tracking_data.size() != static_cast<size_t>(num_cameras)) {
@@ -6556,6 +6606,26 @@ int main(int /*argc*/, char ** /*args*/) {
         camera_control,
         "gui_shutdown",
         gui_local_control_event_log_path);
+
+    // Window-close shutdown: a recording finalize may still be running on
+    // the background thread. JOIN it (a single recorder stop can exceed the
+    // bounded 15s finalize wait below, so racing a fresh synchronous
+    // finalize against that cap would abandon the in-flight one) and
+    // complete it before any further cleanup. Idempotent when nothing is in
+    // flight; the streaming teardown below also joins first.
+    if (gui_join_async_recording_finalize(
+            &gui_async_recording_finalize,
+            &gui_recording_run,
+            &recording_session,
+            camera_control)) {
+        gui_display_frame_rate_stats.Finish();
+        gui_mark_local_control_drain_completed(
+            &gui_local_control_stop_scheduler,
+            gui_local_control_event_log_path,
+            gui_recording_run.recording_folder);
+        std::cout << "[GUI][recording] Finalized recording session during"
+                     " window-close shutdown." << std::endl;
+    }
 
     if (camera_control->subscribe) {
         std::cout << "Window closed while streaming; running stream shutdown..." << std::endl;

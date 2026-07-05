@@ -1,5 +1,6 @@
 #pragma once
 
+#include "gui/recording_finalizer.h"
 #include "gui/recording_run_state.h"
 #include "json.hpp"
 
@@ -56,6 +57,13 @@ struct GuiSessionTimingSnapshot {
     std::string starting_elapsed = "00:00:00";
     std::string recording_elapsed = "00:00:00";
     std::string finalizing_elapsed = "00:00:00";
+    // Background finalize progress (visible only while the async finalize
+    // phase is in flight): coarse stage label plus the clip counter published
+    // by the rolling clip-manifest writer (0/0 for single-clip finalizes).
+    bool finalize_progress_visible = false;
+    std::string finalize_stage_label;
+    int finalize_clips_done = 0;
+    int finalize_clips_total = 0;
 };
 
 struct GuiExternalRecorderStatusLine {
@@ -127,10 +135,19 @@ void gui_request_recording_stop_through_operator_path(
 // CameraControl carries no flag for that window, so the GUI passes it in.
 // CameraControl stays authoritative for the other flags: an active
 // recording (record_video) always wins over a stale pending marker.
+//
+// finalize_progress.pending is true while a background recording finalize
+// (recorder stops + summary reads + manifest writes) is still in flight.
+// The drain gate clears recording_draining before that phase launches, so
+// CameraControl alone would read as idle: the pending marker keeps the
+// snapshot in "finalizing" (finalizing_elapsed keeps ticking from the
+// original finalizing transition) and surfaces the coarse progress stage +
+// clip counter until the completion phase flips the run to finalized.
 GuiSessionTimingSnapshot gui_session_timing_snapshot(
     GuiSessionTimingState* timing,
     const CameraControl* camera_control,
-    bool recording_start_pending = false);
+    bool recording_start_pending = false,
+    const GuiRecordingFinalizeProgressView& finalize_progress = {});
 
 // Text-only ImGui renderer (defined in session_status_render.cpp so the
 // session_status_tests link stays free of ImGui and worker objects).

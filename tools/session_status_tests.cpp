@@ -518,6 +518,126 @@ void test_mark_recording_started_clears_pending()
     std::cout << "PASS test_mark_recording_started_clears_pending" << std::endl;
 }
 
+// --- background finalize progress derivation ---------------------------------
+
+void test_finalize_stage_labels()
+{
+    require_eq(gui_recording_finalize_stage_label(
+                   static_cast<int>(GuiRecordingFinalizeStage::kStoppingRecorders)),
+               "stopping recorders", "stopping-recorders stage label");
+    require_eq(gui_recording_finalize_stage_label(
+                   static_cast<int>(GuiRecordingFinalizeStage::kReadingSummaries)),
+               "reading recorder summaries", "reading-summaries stage label");
+    require_eq(gui_recording_finalize_stage_label(
+                   static_cast<int>(GuiRecordingFinalizeStage::kWritingClipManifests)),
+               "writing clip manifests", "writing-clip-manifests stage label");
+    require_eq(gui_recording_finalize_stage_label(
+                   static_cast<int>(GuiRecordingFinalizeStage::kUpdatingSnapshot)),
+               "updating session snapshot", "updating-snapshot stage label");
+    require_eq(gui_recording_finalize_stage_label(
+                   static_cast<int>(GuiRecordingFinalizeStage::kIdle)),
+               "preparing", "idle stage label");
+    require_eq(gui_recording_finalize_stage_label(999),
+               "preparing", "unknown stage values map to preparing");
+    std::cout << "PASS test_finalize_stage_labels" << std::endl;
+}
+
+void test_snapshot_finalize_pending_keeps_finalizing_and_shows_progress()
+{
+    // The finalize gate clears recording_draining the frame the background
+    // finalize launches; without the pending marker the snapshot would fall
+    // through to "finished" mid-finalize. The marker must keep the snapshot
+    // finalizing (with the original finalizing-elapsed baseline) and surface
+    // the coarse stage plus clip counter.
+    GuiSessionTimingState timing;
+    timing.stream_running = true;
+    timing.stream_started_at = steady_clock::now() - seconds{600};
+    timing.recording_running = true;
+    timing.recording_started_at = steady_clock::now() - seconds{120};
+
+    CameraControl camera_control;
+    camera_control.subscribe = true;
+    camera_control.record_video = false;
+    camera_control.recording_draining = true;
+
+    // Frame 1: drain in progress, no background finalize yet.
+    const GuiSessionTimingSnapshot draining =
+        gui_session_timing_snapshot(&timing, &camera_control);
+    require(draining.recording_finalizing, "draining reports finalizing");
+    require(!draining.finalize_progress_visible,
+            "no finalize progress line before the background phase launches");
+    const auto finalizing_started_at = timing.finalizing_started_at;
+
+    // Frame 2: gate opened, drain flags cleared, background finalize
+    // in flight.
+    camera_control.recording_draining = false;
+    GuiRecordingFinalizeProgressView progress;
+    progress.pending = true;
+    progress.stage = static_cast<int>(GuiRecordingFinalizeStage::kStoppingRecorders);
+    const GuiSessionTimingSnapshot stopping =
+        gui_session_timing_snapshot(&timing, &camera_control, false, progress);
+    require(stopping.recording_finalizing,
+            "pending finalize keeps the snapshot finalizing after the gate"
+            " cleared the drain flags");
+    require(timing.finalizing_started_at == finalizing_started_at,
+            "pending finalize preserves the finalizing-elapsed baseline");
+    require(stopping.finalize_progress_visible,
+            "pending finalize surfaces the progress line");
+    require_eq(stopping.finalize_stage_label, "stopping recorders",
+               "progress line carries the stage label");
+    require(stopping.finalize_clips_done == 0 && stopping.finalize_clips_total == 0,
+            "no clip counter before the clip-manifest stage");
+    require_eq(stopping.recording_elapsed, "00:02:00",
+               "frozen recording elapsed survives the pending window");
+
+    // Later frame: clip manifests being written, clip counter published.
+    progress.stage = static_cast<int>(GuiRecordingFinalizeStage::kWritingClipManifests);
+    progress.clips_done = 2;
+    progress.clips_total = 5;
+    const GuiSessionTimingSnapshot writing =
+        gui_session_timing_snapshot(&timing, &camera_control, false, progress);
+    require(writing.recording_finalizing && writing.finalize_progress_visible,
+            "clip-manifest stage still reports finalizing with progress");
+    require_eq(writing.finalize_stage_label, "writing clip manifests",
+               "clip-manifest stage label");
+    require(writing.finalize_clips_done == 2 && writing.finalize_clips_total == 5,
+            "clip counter passes through to the snapshot");
+
+    // Completion: the background finalize finished, drain flags stay clear.
+    const GuiSessionTimingSnapshot finished =
+        gui_session_timing_snapshot(&timing, &camera_control);
+    require(!finished.recording_finalizing,
+            "finalize completion transitions the snapshot out of finalizing");
+    require(!finished.finalize_progress_visible,
+            "no progress line after completion");
+    require(finished.has_recording_elapsed,
+            "last-recording elapsed survives finalize completion");
+    std::cout << "PASS test_snapshot_finalize_pending_keeps_finalizing_and_shows_progress"
+              << std::endl;
+}
+
+void test_snapshot_finalize_pending_never_overrides_active_recording()
+{
+    // CameraControl stays authoritative: a (contradictory) pending finalize
+    // marker must not override an active recording.
+    GuiSessionTimingState timing;
+    CameraControl camera_control;
+    camera_control.subscribe = true;
+    camera_control.record_video = true;
+
+    GuiRecordingFinalizeProgressView progress;
+    progress.pending = true;
+    progress.stage = static_cast<int>(GuiRecordingFinalizeStage::kReadingSummaries);
+    const GuiSessionTimingSnapshot snapshot =
+        gui_session_timing_snapshot(&timing, &camera_control, false, progress);
+    require(snapshot.recording_running,
+            "an active recording wins over a stale finalize-pending marker");
+    require(!snapshot.recording_finalizing && !snapshot.finalize_progress_visible,
+            "no finalizing/progress state while the recording is active");
+    std::cout << "PASS test_snapshot_finalize_pending_never_overrides_active_recording"
+              << std::endl;
+}
+
 // --- gui_external_recorder_status_line ----------------------------------------
 
 orange::external_recorder::RecorderProcessState make_process(
@@ -715,6 +835,9 @@ int main()
         test_snapshot_pending_completion_transitions_to_recording();
         test_snapshot_pending_failure_returns_to_idle();
         test_mark_recording_started_clears_pending();
+        test_finalize_stage_labels();
+        test_snapshot_finalize_pending_keeps_finalizing_and_shows_progress();
+        test_snapshot_finalize_pending_never_overrides_active_recording();
         test_status_line_idle_and_error_fallback();
         test_status_line_running_and_degraded();
         test_status_line_error_states();

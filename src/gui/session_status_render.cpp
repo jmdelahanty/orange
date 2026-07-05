@@ -41,6 +41,22 @@ void render_gui_session_timing_status(
             ImVec4{1.0f, 1.0f, 0.0f, 1.0f},
             "Finalizing: %s",
             timing.finalizing_elapsed.c_str());
+        if (timing.finalize_progress_visible) {
+            // Same styling family as the recording-starting line above.
+            if (timing.finalize_clips_total > 0) {
+                ImGui::TextColored(
+                    ImVec4{1.0f, 0.65f, 0.0f, 1.0f},
+                    "Finalize: %s (clip %d of %d)",
+                    timing.finalize_stage_label.c_str(),
+                    timing.finalize_clips_done,
+                    timing.finalize_clips_total);
+            } else {
+                ImGui::TextColored(
+                    ImVec4{1.0f, 0.65f, 0.0f, 1.0f},
+                    "Finalize: %s",
+                    timing.finalize_stage_label.c_str());
+            }
+        }
         ImGui::TextDisabled("Recorded: %s", timing.recording_elapsed.c_str());
     } else if (timing.has_recording_elapsed) {
         ImGui::TextDisabled("Last recording: %s", timing.recording_elapsed.c_str());

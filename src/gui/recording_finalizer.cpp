@@ -24,6 +24,7 @@
 #include <iomanip>
 #include <iostream>
 #include <map>
+#include <mutex>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -409,7 +410,8 @@ bool gui_write_external_rolling_recording_session_manifest(
     const nlohmann::json& gui_display_frame_rate,
     nlohmann::json* manifest_out,
     nlohmann::json* bridge_out,
-    std::string* error_out)
+    std::string* error_out,
+    GuiRecordingFinalizeProgress* progress)
 {
     orange::session::RecordingControlConfig recording_control;
     if (!gui_external_recorder_recording_control_from_plan(
@@ -647,6 +649,12 @@ bool gui_write_external_rolling_recording_session_manifest(
     if (!crop_output_attachments_ok) {
         full_frame_clips_ok = false;
     }
+    if (progress) {
+        progress->clips_total.store(
+            static_cast<int>(clips_by_index.size()),
+            std::memory_order_relaxed);
+        progress->clips_done.store(0, std::memory_order_relaxed);
+    }
     for (auto it = clips_by_index.begin(); it != clips_by_index.end(); ++it) {
         orange::session::RollingClipManifestOptions clip = std::move(it->second);
         if (clip.recording_folder.empty()) {
@@ -716,6 +724,9 @@ bool gui_write_external_rolling_recording_session_manifest(
             return false;
         }
         clip_options.push_back(std::move(clip));
+        if (progress) {
+            progress->clips_done.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
     nlohmann::json rolling_recording_backend = recording_backend;
@@ -896,22 +907,6 @@ double gui_elapsed_seconds_between(const std::chrono::steady_clock::time_point& 
     return std::chrono::duration<double>(finish - start).count();
 }
 
-std::vector<std::string> gui_recording_camera_serials(const CameraParams* cameras_params,
-                                                      const CameraEachSelect* cameras_select,
-                                                      const int num_cameras)
-{
-    std::vector<std::string> serials;
-    if (!cameras_params || !cameras_select || num_cameras <= 0) {
-        return serials;
-    }
-    for (int i = 0; i < num_cameras; ++i) {
-        if (cameras_select[i].record && !cameras_params[i].camera_serial.empty()) {
-            serials.push_back(cameras_params[i].camera_serial);
-        }
-    }
-    return serials;
-}
-
 void gui_update_local_control_stop_manifest_for_finalized_drain(
     GuiRecordingRunState* run)
 {
@@ -949,14 +944,38 @@ void gui_update_local_control_stop_manifest_for_finalized_drain(
 
 }  // namespace
 
-bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
-                                             orange::session::RecordingSessionState* recording_session,
-                                             CameraControl* camera_control,
-                                             const CameraParams* cameras_params,
-                                             const CameraEachSelect* cameras_select,
-                                             const int num_cameras,
-                                             const int crop_size_px,
-                                             const nlohmann::json& gui_display_frame_rate)
+
+// --- Phased finalize ---------------------------------------------------------
+//
+// The monolithic gui_finalize_recording_session_if_ready body was split into
+// the gate / prepare (F1) / run (F2) / complete (F3) phases declared in
+// gui/recording_finalizer.h. The transplanted code below is otherwise
+// verbatim; every mutation of live GUI-owned state (CameraControl,
+// RecordingSessionState, the run flags) stays on the GUI thread in the gate,
+// F1, and F3, while F2 touches only its inputs/outcome structs and the
+// filesystem so it can run on a background thread.
+
+const char* gui_recording_finalize_stage_label(const int stage)
+{
+    switch (static_cast<GuiRecordingFinalizeStage>(stage)) {
+        case GuiRecordingFinalizeStage::kStoppingRecorders:
+            return "stopping recorders";
+        case GuiRecordingFinalizeStage::kReadingSummaries:
+            return "reading recorder summaries";
+        case GuiRecordingFinalizeStage::kWritingClipManifests:
+            return "writing clip manifests";
+        case GuiRecordingFinalizeStage::kUpdatingSnapshot:
+            return "updating session snapshot";
+        case GuiRecordingFinalizeStage::kIdle:
+        default:
+            return "preparing";
+    }
+}
+
+bool gui_recording_finalize_gate_ready(
+    GuiRecordingRunState* run,
+    orange::session::RecordingSessionState* recording_session,
+    CameraControl* camera_control)
 {
     if (!run || !run->active || !run->finalizing || run->recording_folder.empty()) {
         return false;
@@ -1025,6 +1044,22 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
             run->stop_control["diagnostic_finalize_stall_active"] = false;
         }
     }
+    return true;
+}
+
+GuiRecordingFinalizeInputs gui_prepare_recording_finalize(
+    GuiRecordingRunState* run,
+    orange::session::RecordingSessionState* recording_session,
+    const CameraParams* cameras_params,
+    const CameraEachSelect* cameras_select,
+    const int num_cameras,
+    const int crop_size_px,
+    const nlohmann::json& gui_display_frame_rate)
+{
+    GuiRecordingFinalizeInputs inputs;
+    if (!run) {
+        return inputs;
+    }
 
     run->recording_drained_at = std::chrono::steady_clock::now();
     run->recording_drained_at_utc = get_current_utc_timestamp();
@@ -1034,17 +1069,131 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
     }
     gui_update_local_control_stop_manifest_for_finalized_drain(run);
 
-    std::vector<std::string> camera_serials =
-        gui_recording_camera_serials(cameras_params, cameras_select, num_cameras);
+    inputs.valid = true;
+    inputs.run = *run;
+    inputs.external_ipc = run->recording_sink_mode == "external_ipc";
+    inputs.recording_session_available = recording_session != nullptr;
+    inputs.crop_external_recorder_active =
+        recording_session &&
+        recording_session->crop_recording_sink_mode == "external_ipc" &&
+        !recording_session->external_crop_recorder_lifecycle.plan.streams.empty();
+    inputs.crop_size_px = crop_size_px;
+    inputs.gui_display_frame_rate = gui_display_frame_rate;
+
+    if (cameras_params && cameras_select && num_cameras > 0) {
+        inputs.cameras.reserve(static_cast<size_t>(num_cameras));
+        for (int i = 0; i < num_cameras; ++i) {
+            GuiRecordingFinalizeCameraSnapshot camera;
+            camera.camera_serial = cameras_params[i].camera_serial;
+            camera.camera_id = cameras_params[i].camera_id;
+            camera.frame_rate = cameras_params[i].frame_rate;
+            camera.record = cameras_select[i].record;
+            camera.crop_and_encode = cameras_select[i].crop_and_encode;
+            inputs.cameras.push_back(std::move(camera));
+        }
+    }
+
+    if (recording_session) {
+        if (inputs.external_ipc) {
+            // Both of these touch live pipeline objects, so they must stay
+            // on the GUI thread: reset the IPC connections before the
+            // recorders are stopped (as the synchronous body did), and
+            // snapshot the per-pipeline ingress stats for the background
+            // phase (the drain gate guarantees they are final).
+            orange::session::reset_external_ipc_connections(recording_session);
+            const size_t pipeline_count = std::min(
+                recording_session->recording_pipelines.size(),
+                static_cast<size_t>(std::max(0, num_cameras)));
+            for (size_t i = 0; i < pipeline_count; ++i) {
+                const auto& pipeline = recording_session->recording_pipelines[i];
+                if (!pipeline || !pipeline->recording_ingress()) {
+                    continue;
+                }
+                if (cameras_select && !cameras_select[i].record) {
+                    continue;
+                }
+                const std::string serial =
+                    cameras_params && !cameras_params[i].camera_serial.empty()
+                        ? cameras_params[i].camera_serial
+                        : std::to_string(i);
+                const RecordingIngressStats stats =
+                    pipeline->recording_ingress()->GetStats();
+                inputs.total_ingress_submitted += stats.submitted_frames;
+                inputs.total_ingress_acked += stats.external_ipc_frames_acked;
+                inputs.total_ingress_failures += stats.external_ipc_failures;
+                inputs.total_ingress_ack_timeouts += stats.external_ipc_ack_timeouts;
+                inputs.ingress_stats[serial] = {
+                    {"submitted_frames", stats.submitted_frames},
+                    {"external_ipc_frames_acked", stats.external_ipc_frames_acked},
+                    {"external_ipc_failures", stats.external_ipc_failures},
+                    {"external_ipc_ack_timeouts", stats.external_ipc_ack_timeouts}
+                };
+            }
+        }
+
+        // MOVE ownership of the external recorder lifecycle states into the
+        // finalize inputs so a concurrent start (or anything else on the GUI
+        // thread) can never touch the objects the background phase stops and
+        // reads. The moved-from members are reset to fresh states explicitly
+        // (the defaulted move leaves scalar fields unspecified).
+        inputs.external_recorder_lifecycle =
+            std::move(recording_session->external_recorder_lifecycle);
+        recording_session->external_recorder_lifecycle =
+            orange::external_recorder::SupervisedRecorderLifecycleState{};
+        inputs.external_crop_recorder_lifecycle =
+            std::move(recording_session->external_crop_recorder_lifecycle);
+        recording_session->external_crop_recorder_lifecycle =
+            orange::external_recorder::SupervisedRecorderLifecycleState{};
+        inputs.external_recorder_last_error =
+            recording_session->external_recorder_last_error;
+        inputs.external_crop_recorder_last_error =
+            recording_session->external_crop_recorder_last_error;
+        inputs.external_recorder_contract_path =
+            recording_session->external_recorder_contract_path;
+        inputs.external_recorder_supervisor_plan_path =
+            recording_session->external_recorder_supervisor_plan_path;
+        inputs.external_crop_recorder_contract_path =
+            recording_session->external_crop_recorder_contract_path;
+        inputs.external_crop_recorder_supervisor_plan_path =
+            recording_session->external_crop_recorder_supervisor_plan_path;
+    }
+    return inputs;
+}
+
+GuiRecordingFinalizeOutcome gui_run_recording_finalize(
+    GuiRecordingFinalizeInputs* inputs,
+    GuiRecordingFinalizeProgress* progress)
+{
+    GuiRecordingFinalizeOutcome outcome;
+    if (!inputs || !inputs->valid) {
+        outcome.error_message = "internal error: finalize inputs are unavailable";
+        return outcome;
+    }
+    auto publish_stage = [&](const GuiRecordingFinalizeStage stage) {
+        if (progress) {
+            progress->stage.store(
+                static_cast<int>(stage), std::memory_order_relaxed);
+        }
+    };
+    publish_stage(GuiRecordingFinalizeStage::kStoppingRecorders);
+
+    const GuiRecordingRunState& run = inputs->run;
+    const bool external_ipc = inputs->external_ipc;
+    const int crop_size_px = inputs->crop_size_px;
+    const nlohmann::json& gui_display_frame_rate = inputs->gui_display_frame_rate;
+
+    std::vector<std::string> camera_serials;
+    for (const GuiRecordingFinalizeCameraSnapshot& camera : inputs->cameras) {
+        if (camera.record && !camera.camera_serial.empty()) {
+            camera_serials.push_back(camera.camera_serial);
+        }
+    }
     std::vector<orange::session::RecordingSessionCameraArtifact> camera_artifacts;
     nlohmann::json recording_backend = nlohmann::json::object();
     bool external_recorder_ok = true;
     std::string external_recorder_error;
     std::vector<orange::session::RecordingOutputDescriptor> external_crop_outputs;
-    bool crop_external_recorder_active =
-        recording_session &&
-        recording_session->crop_recording_sink_mode == "external_ipc" &&
-        !recording_session->external_crop_recorder_lifecycle.plan.streams.empty();
+    const bool crop_external_recorder_active = inputs->crop_external_recorder_active;
     bool crop_external_recorder_lifecycle_ok = true;
     bool crop_external_recorder_ok = true;
     std::string crop_external_recorder_error;
@@ -1109,10 +1258,10 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
     // overrides. Stop crop first so scoped environment restoration unwinds in
     // the reverse order of startup.
     if (crop_external_recorder_active &&
-        recording_session->external_crop_recorder_lifecycle.started) {
+        inputs->external_crop_recorder_lifecycle.started) {
         std::string stop_error;
         if (!orange::external_recorder::StopSupervisedRecorderLifecycle(
-                &recording_session->external_crop_recorder_lifecycle,
+                &inputs->external_crop_recorder_lifecycle,
                 &stop_error)) {
             crop_external_recorder_ok = false;
             crop_external_recorder_lifecycle_ok = false;
@@ -1125,14 +1274,15 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
     }
 
     if (external_ipc) {
-        if (!recording_session) {
+        if (!inputs->recording_session_available) {
             external_recorder_ok = false;
             external_recorder_error = "external IPC recording session state is unavailable";
         } else {
-            orange::session::reset_external_ipc_connections(recording_session);
+            // reset_external_ipc_connections ran in the prepare phase (it
+            // touches live pipeline objects).
             std::string stop_error;
             if (!orange::external_recorder::StopSupervisedRecorderLifecycle(
-                    &recording_session->external_recorder_lifecycle,
+                    &inputs->external_recorder_lifecycle,
                     &stop_error)) {
                 external_recorder_ok = false;
                 append_error_message(
@@ -1141,60 +1291,34 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                         ? "external recorder supervisor shutdown failed"
                         : stop_error);
             }
-            if (!recording_session->external_recorder_lifecycle.last_artifact_error.empty()) {
+            if (!inputs->external_recorder_lifecycle.last_artifact_error.empty()) {
                 append_error_message(
                     external_recorder_error,
-                    recording_session->external_recorder_lifecycle.last_artifact_error);
-                recording_session->external_recorder_lifecycle.last_artifact_error.clear();
+                    inputs->external_recorder_lifecycle.last_artifact_error);
+                inputs->external_recorder_lifecycle.last_artifact_error.clear();
                 external_recorder_ok = false;
             }
-            if (!recording_session->external_recorder_lifecycle.last_runtime_error.empty()) {
+            if (!inputs->external_recorder_lifecycle.last_runtime_error.empty()) {
                 append_error_message(
                     external_recorder_error,
-                    recording_session->external_recorder_lifecycle.last_runtime_error);
-                recording_session->external_recorder_lifecycle.last_runtime_error.clear();
+                    inputs->external_recorder_lifecycle.last_runtime_error);
+                inputs->external_recorder_lifecycle.last_runtime_error.clear();
                 external_recorder_ok = false;
             }
-            if (!recording_session->external_recorder_last_error.empty()) {
+            if (!inputs->external_recorder_last_error.empty()) {
                 append_error_message(
                     external_recorder_error,
-                    recording_session->external_recorder_last_error);
+                    inputs->external_recorder_last_error);
                 external_recorder_ok = false;
             }
 
-            nlohmann::json ingress_stats = nlohmann::json::object();
-            uint64_t total_ingress_submitted = 0;
-            uint64_t total_ingress_acked = 0;
-            uint64_t total_ingress_failures = 0;
-            uint64_t total_ingress_ack_timeouts = 0;
-            const size_t pipeline_count = std::min(
-                recording_session->recording_pipelines.size(),
-                static_cast<size_t>(std::max(0, num_cameras)));
-            for (size_t i = 0; i < pipeline_count; ++i) {
-                const auto& pipeline = recording_session->recording_pipelines[i];
-                if (!pipeline || !pipeline->recording_ingress()) {
-                    continue;
-                }
-                if (cameras_select && !cameras_select[i].record) {
-                    continue;
-                }
-                const std::string serial =
-                    cameras_params && !cameras_params[i].camera_serial.empty()
-                        ? cameras_params[i].camera_serial
-                        : std::to_string(i);
-                const RecordingIngressStats stats =
-                    pipeline->recording_ingress()->GetStats();
-                total_ingress_submitted += stats.submitted_frames;
-                total_ingress_acked += stats.external_ipc_frames_acked;
-                total_ingress_failures += stats.external_ipc_failures;
-                total_ingress_ack_timeouts += stats.external_ipc_ack_timeouts;
-                ingress_stats[serial] = {
-                    {"submitted_frames", stats.submitted_frames},
-                    {"external_ipc_frames_acked", stats.external_ipc_frames_acked},
-                    {"external_ipc_failures", stats.external_ipc_failures},
-                    {"external_ipc_ack_timeouts", stats.external_ipc_ack_timeouts}
-                };
-            }
+            // Ingress stats were snapshotted from the live pipelines in the
+            // prepare phase; the drain gate guarantees they are final.
+            const nlohmann::json& ingress_stats = inputs->ingress_stats;
+            const uint64_t total_ingress_submitted = inputs->total_ingress_submitted;
+            const uint64_t total_ingress_acked = inputs->total_ingress_acked;
+            const uint64_t total_ingress_failures = inputs->total_ingress_failures;
+            const uint64_t total_ingress_ack_timeouts = inputs->total_ingress_ack_timeouts;
             if (total_ingress_failures > 0 ||
                 total_ingress_ack_timeouts > 0 ||
                 (total_ingress_submitted > 0 &&
@@ -1214,12 +1338,13 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                     std::to_string(total_ingress_ack_timeouts);
             }
 
+            publish_stage(GuiRecordingFinalizeStage::kReadingSummaries);
             nlohmann::json summary_paths = nlohmann::json::object();
             nlohmann::json merged_mp4s = nlohmann::json::object();
             nlohmann::json keyframe_paths = nlohmann::json::object();
             nlohmann::json gop_routing_paths = nlohmann::json::object();
 
-            for (const auto& stream : recording_session->external_recorder_lifecycle.plan.streams) {
+            for (const auto& stream : inputs->external_recorder_lifecycle.plan.streams) {
                 if (!gui_external_stream_is_full(stream)) {
                     continue;
                 }
@@ -1324,7 +1449,7 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
             recording_backend = {
                 {"mode", "external_ipc"},
                 {"status", external_recorder_ok ? "completed" : "incomplete"},
-                {"artifact_root", recording_session->external_recorder_lifecycle.plan.artifact_root},
+                {"artifact_root", inputs->external_recorder_lifecycle.plan.artifact_root},
                 {"source", "external_recorder_summary"},
                 {"ingress_stats", ingress_stats},
                 {"ingress_totals",
@@ -1338,14 +1463,14 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                 {"merged_mp4", merged_mp4s},
                 {"keyframes", keyframe_paths},
                 {"gop_routing_csv", gop_routing_paths},
-                {"external_recorder_contract_path", recording_session->external_recorder_contract_path},
+                {"external_recorder_contract_path", inputs->external_recorder_contract_path},
                 {"external_recorder_supervisor_plan_path",
-                 recording_session->external_recorder_supervisor_plan_path},
+                 inputs->external_recorder_supervisor_plan_path},
                 {"external_recorder_session_json",
-                 (std::filesystem::path(recording_session->external_recorder_lifecycle.plan.artifact_root) /
+                 (std::filesystem::path(inputs->external_recorder_lifecycle.plan.artifact_root) /
                   "external_recorder_session.json").string()},
                 {"external_recorder_finalization_json",
-                 (std::filesystem::path(recording_session->external_recorder_lifecycle.plan.artifact_root) /
+                 (std::filesystem::path(inputs->external_recorder_lifecycle.plan.artifact_root) /
                   "external_recorder_finalization.json").string()}
             };
             if (!external_recorder_error.empty()) {
@@ -1356,31 +1481,32 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
         camera_artifacts =
             orange::session::build_recording_camera_artifacts(
                 camera_serials,
-                run->recording_folder,
+                run.recording_folder,
                 true);
     }
 
+    publish_stage(GuiRecordingFinalizeStage::kReadingSummaries);
     if (crop_external_recorder_active) {
-        if (!recording_session->external_crop_recorder_lifecycle.last_artifact_error.empty()) {
+        if (!inputs->external_crop_recorder_lifecycle.last_artifact_error.empty()) {
             append_error_message(
                 crop_external_recorder_error,
-                recording_session->external_crop_recorder_lifecycle.last_artifact_error);
-            recording_session->external_crop_recorder_lifecycle.last_artifact_error.clear();
+                inputs->external_crop_recorder_lifecycle.last_artifact_error);
+            inputs->external_crop_recorder_lifecycle.last_artifact_error.clear();
             crop_external_recorder_ok = false;
             crop_external_recorder_lifecycle_ok = false;
         }
-        if (!recording_session->external_crop_recorder_lifecycle.last_runtime_error.empty()) {
+        if (!inputs->external_crop_recorder_lifecycle.last_runtime_error.empty()) {
             append_error_message(
                 crop_external_recorder_error,
-                recording_session->external_crop_recorder_lifecycle.last_runtime_error);
-            recording_session->external_crop_recorder_lifecycle.last_runtime_error.clear();
+                inputs->external_crop_recorder_lifecycle.last_runtime_error);
+            inputs->external_crop_recorder_lifecycle.last_runtime_error.clear();
             crop_external_recorder_ok = false;
             crop_external_recorder_lifecycle_ok = false;
         }
-        if (!recording_session->external_crop_recorder_last_error.empty()) {
+        if (!inputs->external_crop_recorder_last_error.empty()) {
             append_error_message(
                 crop_external_recorder_error,
-                recording_session->external_crop_recorder_last_error);
+                inputs->external_crop_recorder_last_error);
             crop_external_recorder_ok = false;
             crop_external_recorder_lifecycle_ok = false;
         }
@@ -1401,7 +1527,7 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
         orange::session::RecordingControlConfig crop_recording_control_config;
         std::string crop_recording_control_error;
         if (!gui_external_recorder_recording_control_from_plan(
-                recording_session->external_crop_recorder_lifecycle.plan,
+                inputs->external_crop_recorder_lifecycle.plan,
                 &crop_recording_control_config,
                 &crop_recording_control_error)) {
             append_error_message(crop_external_recorder_error, crop_recording_control_error);
@@ -1509,7 +1635,7 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                 };
             };
 
-        for (const auto& stream : recording_session->external_crop_recorder_lifecycle.plan.streams) {
+        for (const auto& stream : inputs->external_crop_recorder_lifecycle.plan.streams) {
             if (!gui_external_stream_is_crop(stream)) {
                 continue;
             }
@@ -1715,7 +1841,7 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                     if (!metadata_ranges.empty()) {
                         std::string split_error;
                         const std::string root_metadata =
-                            (std::filesystem::path(run->recording_folder) /
+                            (std::filesystem::path(run.recording_folder) /
                              ("Cam" + serial + "_crop_meta.csv")).string();
                         // Crop metadata rows exist only for frames accepted
                         // for encoding, so a row outside every clip range is
@@ -1734,7 +1860,7 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                         }
                         split_error.clear();
                         const std::string root_perf =
-                            (std::filesystem::path(run->recording_folder) /
+                            (std::filesystem::path(run.recording_folder) /
                              ("Cam" + serial + "_crop_perf.csv")).string();
                         // Crop perf rows are also written for frames dropped
                         // before external submission (drop_reason set), so
@@ -1828,7 +1954,7 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
         recording_backend["crop_recording"] = {
             {"mode", "external_ipc"},
             {"status", crop_external_recorder_ok ? "completed" : "incomplete"},
-            {"artifact_root", recording_session->external_crop_recorder_lifecycle.plan.artifact_root},
+            {"artifact_root", inputs->external_crop_recorder_lifecycle.plan.artifact_root},
             {"source", "external_crop_recorder_summary"},
             {"summary_json", crop_summary_paths},
             {"merged_mp4", crop_mp4_paths},
@@ -1844,14 +1970,14 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
             {"encode_queue_depth", crop_encode_queue_depth},
             {"encode_queue_high_water", crop_encode_queue_high_water},
             {"enqueue_age_p95_ms", crop_enqueue_age_p95_ms},
-            {"external_crop_recorder_contract_path", recording_session->external_crop_recorder_contract_path},
+            {"external_crop_recorder_contract_path", inputs->external_crop_recorder_contract_path},
             {"external_crop_recorder_supervisor_plan_path",
-             recording_session->external_crop_recorder_supervisor_plan_path},
+             inputs->external_crop_recorder_supervisor_plan_path},
             {"external_crop_recorder_session_json",
-             (std::filesystem::path(recording_session->external_crop_recorder_lifecycle.plan.artifact_root) /
+             (std::filesystem::path(inputs->external_crop_recorder_lifecycle.plan.artifact_root) /
               "external_recorder_session.json").string()},
             {"external_crop_recorder_finalization_json",
-             (std::filesystem::path(recording_session->external_crop_recorder_lifecycle.plan.artifact_root) /
+             (std::filesystem::path(inputs->external_crop_recorder_lifecycle.plan.artifact_root) /
               "external_recorder_finalization.json").string()}
         };
         if (!crop_rolling_clips.empty()) {
@@ -1867,8 +1993,9 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
         external_recorder_ok &&
         (!crop_external_recorder_active || crop_external_recorder_ok);
 
+    publish_stage(GuiRecordingFinalizeStage::kWritingClipManifests);
     const std::filesystem::path manifest_path =
-        std::filesystem::path(run->recording_folder) / "recording_session.json";
+        std::filesystem::path(run.recording_folder) / "recording_session.json";
     nlohmann::json manifest = nlohmann::json::object();
     nlohmann::json recording_session_bridge = nlohmann::json::object();
     std::string manifest_mode = "single_clip";
@@ -1876,25 +2003,30 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
         external_ipc ? "orange_gui_external_ipc" : "orange_gui";
     const bool external_rolling_requested =
         external_ipc &&
-        recording_session &&
+        inputs->recording_session_available &&
         gui_external_recorder_plan_requests_rolling(
-            recording_session->external_recorder_lifecycle.plan);
+            inputs->external_recorder_lifecycle.plan);
 
     if (external_rolling_requested) {
         std::string rolling_error;
         if (!gui_write_external_rolling_recording_session_manifest(
-                *run,
-                recording_session->external_recorder_lifecycle.plan,
+                run,
+                inputs->external_recorder_lifecycle.plan,
                 recording_backend,
                 external_crop_outputs,
                 recording_session_ok,
                 gui_display_frame_rate,
                 &manifest,
                 &recording_session_bridge,
-                &rolling_error)) {
+                &rolling_error,
+                progress)) {
             std::cerr << "[GUI][recording] Failed to write GUI external IPC rolling manifest: "
                       << rolling_error << std::endl;
-            return false;
+            outcome.error_message =
+                "failed to write GUI external IPC rolling manifest: " + rolling_error;
+            outcome.external_recorder_error = external_recorder_error;
+            outcome.crop_external_recorder_error = crop_external_recorder_error;
+            return outcome;
         }
         if (!recording_session_bridge.value("full_frame_pass", true)) {
             external_recorder_ok = false;
@@ -1907,45 +2039,45 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
         orange::session::SingleClipRecordingSessionManifestOptions manifest_options;
         manifest_options.producer = manifest_producer;
         manifest_options.session_id =
-            std::filesystem::path(run->recording_folder).filename().string();
-        manifest_options.created_at_utc = run->recording_started_at_utc;
-        manifest_options.updated_at_utc = run->recording_drained_at_utc;
-        manifest_options.recording_folder = run->recording_folder;
+            std::filesystem::path(run.recording_folder).filename().string();
+        manifest_options.created_at_utc = run.recording_started_at_utc;
+        manifest_options.updated_at_utc = run.recording_drained_at_utc;
+        manifest_options.recording_folder = run.recording_folder;
         manifest_options.status = recording_session_ok ? "completed" : "incomplete";
-        manifest_options.stream_started_at_utc = run->recording_started_at_utc;
-        manifest_options.stream_finished_at_utc = run->recording_drained_at_utc;
+        manifest_options.stream_started_at_utc = run.recording_started_at_utc;
+        manifest_options.stream_finished_at_utc = run.recording_drained_at_utc;
         manifest_options.stream_actual_elapsed_s =
-            gui_elapsed_seconds_between(run->recording_started_at, run->recording_drained_at);
+            gui_elapsed_seconds_between(run.recording_started_at, run.recording_drained_at);
         manifest_options.recording_started = true;
-        manifest_options.recording_started_at_utc = run->recording_started_at_utc;
+        manifest_options.recording_started_at_utc = run.recording_started_at_utc;
         manifest_options.recording_started_at_elapsed_s = 0.0;
         manifest_options.recording_stop_requested = true;
-        manifest_options.recording_stop_requested_at_utc = run->recording_stop_requested_at_utc;
+        manifest_options.recording_stop_requested_at_utc = run.recording_stop_requested_at_utc;
         manifest_options.recording_stop_requested_at_elapsed_s =
-            gui_elapsed_seconds_between(run->recording_started_at, run->recording_stop_requested_at);
-        manifest_options.recording_stop_reason = run->stop_reason;
+            gui_elapsed_seconds_between(run.recording_started_at, run.recording_stop_requested_at);
+        manifest_options.recording_stop_reason = run.stop_reason;
         manifest_options.recording_drain_completed = true;
-        manifest_options.recording_drained_at_utc = run->recording_drained_at_utc;
+        manifest_options.recording_drained_at_utc = run.recording_drained_at_utc;
         manifest_options.recording_drained_at_elapsed_s =
-            gui_elapsed_seconds_between(run->recording_started_at, run->recording_drained_at);
+            gui_elapsed_seconds_between(run.recording_started_at, run.recording_drained_at);
         manifest_options.actual_recording_duration_s =
-            gui_elapsed_seconds_between(run->recording_started_at, run->recording_stop_requested_at);
+            gui_elapsed_seconds_between(run.recording_started_at, run.recording_stop_requested_at);
         manifest_options.drain_duration_s =
-            gui_elapsed_seconds_between(run->recording_stop_requested_at, run->recording_drained_at);
+            gui_elapsed_seconds_between(run.recording_stop_requested_at, run.recording_drained_at);
         manifest_options.timed_stop_hit = false;
-        manifest_options.recording_stop_control = run->stop_control;
+        manifest_options.recording_stop_control = run.stop_control;
         manifest_options.recording_backend = recording_backend;
         manifest_options.cameras = std::move(camera_artifacts);
-        if (cameras_params && cameras_select) {
+        if (!inputs->cameras.empty()) {
             const int resolved_crop_size =
                 CropAndEncodeWorker::SanitizeCropSize(crop_size_px);
-            for (int i = 0; i < num_cameras; ++i) {
-                if (!cameras_select[i].crop_and_encode) {
+            for (const GuiRecordingFinalizeCameraSnapshot& camera : inputs->cameras) {
+                if (!camera.crop_and_encode) {
                     continue;
                 }
-                std::string camera_serial = cameras_params[i].camera_serial;
+                std::string camera_serial = camera.camera_serial;
                 if (camera_serial.empty()) {
-                    camera_serial = std::to_string(cameras_params[i].camera_id);
+                    camera_serial = std::to_string(camera.camera_id);
                 }
                 auto external_crop_it = std::find_if(
                     external_crop_outputs.begin(),
@@ -1957,10 +2089,10 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                     manifest_options.recording_outputs.push_back(*external_crop_it);
                 } else if (crop_external_recorder_active) {
                     const std::filesystem::path external_crop_root =
-                        recording_session
+                        !inputs->external_crop_recorder_lifecycle.plan.artifact_root.empty()
                             ? std::filesystem::path(
-                                  recording_session->external_crop_recorder_lifecycle.plan.artifact_root)
-                            : std::filesystem::path(run->recording_folder) / "external_crop_recorder";
+                                  inputs->external_crop_recorder_lifecycle.plan.artifact_root)
+                            : std::filesystem::path(run.recording_folder) / "external_crop_recorder";
                     const std::string external_crop_prefix =
                         (external_crop_root / ("Cam" + camera_serial + "_crop_external")).string();
                     orange::session::RecordingOutputDescriptor output;
@@ -1977,7 +2109,7 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                         "Cam" + camera_serial + "_crop_sidecar_perf.csv";
                     output.width = resolved_crop_size;
                     output.height = resolved_crop_size;
-                    output.frame_rate = cameras_params[i].frame_rate;
+                    output.frame_rate = camera.frame_rate;
                     output.codec = "hevc";
                     output.container = "mp4";
                     output.tuning = "lossless";
@@ -2010,10 +2142,10 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                     manifest_options.recording_outputs.push_back(
                         orange::session::build_crop_recording_output_descriptor(
                             camera_serial,
-                            run->recording_folder,
+                            run.recording_folder,
                             true,
                             resolved_crop_size,
-                            cameras_params[i].frame_rate,
+                            camera.frame_rate,
                             manifest_options.status));
                 }
             }
@@ -2028,7 +2160,11 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                 &manifest_error)) {
             std::cerr << "[GUI][recording] Failed to write recording_session.json: "
                       << manifest_error << std::endl;
-            return false;
+            outcome.error_message =
+                "failed to write recording_session.json: " + manifest_error;
+            outcome.external_recorder_error = external_recorder_error;
+            outcome.crop_external_recorder_error = crop_external_recorder_error;
+            return outcome;
         }
         recording_session_bridge = {
             {"pass", recording_session_ok},
@@ -2039,16 +2175,17 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
         };
     }
 
-    if (external_ipc && recording_session) {
+    publish_stage(GuiRecordingFinalizeStage::kUpdatingSnapshot);
+    if (external_ipc && inputs->recording_session_available) {
         orange::external_recorder::FinalizationManifestOptions finalization_options;
-        finalization_options.experiment_root = run->recording_folder;
+        finalization_options.experiment_root = run.recording_folder;
         finalization_options.artifact_root =
-            recording_session->external_recorder_lifecycle.plan.artifact_root;
+            inputs->external_recorder_lifecycle.plan.artifact_root;
         finalization_options.run_id =
-            std::filesystem::path(run->recording_folder).filename().string();
+            std::filesystem::path(run.recording_folder).filename().string();
         finalization_options.status = external_recorder_ok ? "pass" : "fail";
-        finalization_options.started_at_utc = run->recording_started_at_utc;
-        finalization_options.finished_at_utc = run->recording_drained_at_utc;
+        finalization_options.started_at_utc = run.recording_started_at_utc;
+        finalization_options.finished_at_utc = run.recording_drained_at_utc;
         finalization_options.error = external_recorder_error;
         nlohmann::json finalization =
             orange::external_recorder::BuildExternalRecorderFinalizationManifest(
@@ -2056,23 +2193,23 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
         finalization["recording_session_manifest"] = recording_session_bridge;
         const orange::external_recorder::ArtifactWriteResult finalization_write =
             orange::external_recorder::WriteExternalRecorderFinalizationArtifact(
-                recording_session->external_recorder_lifecycle.plan.artifact_root,
+                inputs->external_recorder_lifecycle.plan.artifact_root,
                 finalization);
         if (!finalization_write.ok) {
             std::cerr << "[GUI][recording] Failed to write external recorder finalization: "
                       << finalization_write.error_message << std::endl;
         }
     }
-    if (crop_external_recorder_active && recording_session) {
+    if (crop_external_recorder_active) {
         orange::external_recorder::FinalizationManifestOptions finalization_options;
-        finalization_options.experiment_root = run->recording_folder;
+        finalization_options.experiment_root = run.recording_folder;
         finalization_options.artifact_root =
-            recording_session->external_crop_recorder_lifecycle.plan.artifact_root;
+            inputs->external_crop_recorder_lifecycle.plan.artifact_root;
         finalization_options.run_id =
-            std::filesystem::path(run->recording_folder).filename().string();
+            std::filesystem::path(run.recording_folder).filename().string();
         finalization_options.status = crop_external_recorder_ok ? "pass" : "fail";
-        finalization_options.started_at_utc = run->recording_started_at_utc;
-        finalization_options.finished_at_utc = run->recording_drained_at_utc;
+        finalization_options.started_at_utc = run.recording_started_at_utc;
+        finalization_options.finished_at_utc = run.recording_drained_at_utc;
         finalization_options.error = crop_external_recorder_error;
         nlohmann::json finalization =
             orange::external_recorder::BuildExternalRecorderFinalizationManifest(
@@ -2088,7 +2225,7 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
         };
         const orange::external_recorder::ArtifactWriteResult finalization_write =
             orange::external_recorder::WriteExternalRecorderFinalizationArtifact(
-                recording_session->external_crop_recorder_lifecycle.plan.artifact_root,
+                inputs->external_crop_recorder_lifecycle.plan.artifact_root,
                 finalization);
         if (!finalization_write.ok) {
             std::cerr << "[GUI][recording] Failed to write external crop recorder finalization: "
@@ -2105,23 +2242,76 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
             {"gui_display_frame_rate", gui_display_frame_rate}
         };
         if (!update_recording_snapshot_session_artifacts(
-                run->recording_folder,
+                run.recording_folder,
                 snapshot_update)) {
             std::cerr << "[GUI][recording] Failed to update recording_snapshot.json session pointers."
                       << std::endl;
-            return false;
+            outcome.error_message =
+                "failed to update recording_snapshot.json session pointers";
+            outcome.external_recorder_error = external_recorder_error;
+            outcome.crop_external_recorder_error = crop_external_recorder_error;
+            return outcome;
         }
         if (manifest.contains("recording_outputs") &&
             manifest["recording_outputs"].is_object() &&
             !update_recording_snapshot_recording_outputs(
-                run->recording_folder,
+                run.recording_folder,
                 manifest["recording_outputs"])) {
             std::cerr << "[GUI][recording] Failed to update recording_snapshot.json recording outputs."
                       << std::endl;
-            return false;
+            outcome.error_message =
+                "failed to update recording_snapshot.json recording outputs";
+            outcome.external_recorder_error = external_recorder_error;
+            outcome.crop_external_recorder_error = crop_external_recorder_error;
+            return outcome;
         }
     }
 
+    outcome.ok = true;
+    outcome.external_recorder_error = external_recorder_error;
+    outcome.crop_external_recorder_error = crop_external_recorder_error;
+    return outcome;
+}
+
+bool gui_complete_recording_finalize(
+    GuiRecordingFinalizeInputs* inputs,
+    GuiRecordingFinalizeOutcome&& outcome,
+    GuiRecordingRunState* run,
+    orange::session::RecordingSessionState* recording_session,
+    CameraControl* camera_control)
+{
+    if (!inputs || !inputs->valid || !run) {
+        return false;
+    }
+
+    // Return lifecycle ownership to the session first (the states are
+    // stopped by the run phase on both outcomes). On failure this restores
+    // the exact pre-phased retry surface: the per-frame gate reopens
+    // (finalizing stays latched below) and the retried finalize re-moves and
+    // re-stops the lifecycles, which no-ops because started is false; the
+    // manifest writes are trunc-overwrites so re-running them is safe.
+    if (recording_session) {
+        recording_session->external_recorder_lifecycle =
+            std::move(inputs->external_recorder_lifecycle);
+        recording_session->external_crop_recorder_lifecycle =
+            std::move(inputs->external_crop_recorder_lifecycle);
+    }
+
+    if (!outcome.ok) {
+        std::cerr << "[GUI][recording] Recording session finalize failed"
+                  << " (will retry): " << outcome.error_message << std::endl;
+        if (recording_session) {
+            // Loud failure for the GUI status line. finalizing stays latched
+            // and the folder stays claimed, so no new recording can start
+            // into the unfinalized folder and the finalize retries.
+            recording_session->external_recorder_last_error = outcome.error_message;
+        }
+        inputs->valid = false;
+        return false;
+    }
+
+    const std::filesystem::path manifest_path =
+        std::filesystem::path(run->recording_folder) / "recording_session.json";
     if (camera_control) {
         camera_control->preserve_recording_session_state = false;
         std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
@@ -2134,20 +2324,213 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
     }
     std::cout << "[GUI][recording] Wrote recording session manifest: "
               << manifest_path.string() << std::endl;
-    if (external_ipc && recording_session) {
+    if (inputs->external_ipc && recording_session) {
         recording_session->active_external_recorder_contract = nlohmann::json::object();
         recording_session->external_recorder_contract_path.clear();
         recording_session->external_recorder_supervisor_plan_path.clear();
-        recording_session->external_recorder_last_error = external_recorder_error;
+        recording_session->external_recorder_last_error = outcome.external_recorder_error;
     }
-    if (crop_external_recorder_active && recording_session) {
+    if (inputs->crop_external_recorder_active && recording_session) {
         recording_session->active_external_crop_recorder_contract = nlohmann::json::object();
         recording_session->external_crop_recorder_contract_path.clear();
         recording_session->external_crop_recorder_supervisor_plan_path.clear();
-        recording_session->external_crop_recorder_last_error = crop_external_recorder_error;
+        recording_session->external_crop_recorder_last_error = outcome.crop_external_recorder_error;
     }
     run->active = false;
     run->finalizing = false;
     run->finalized = true;
+    inputs->valid = false;
     return true;
+}
+
+namespace {
+
+// Joins the worker and runs F3 on the calling (GUI) thread. The caller must
+// have observed done == true or accept blocking until the worker finishes.
+bool gui_complete_async_recording_finalize(
+    GuiAsyncRecordingFinalizeState* state,
+    GuiRecordingRunState* run,
+    orange::session::RecordingSessionState* recording_session,
+    CameraControl* camera_control)
+{
+    if (state->worker.joinable()) {
+        state->worker.join();
+    }
+    state->active = false;
+    const bool finalized = gui_complete_recording_finalize(
+        &state->inputs,
+        std::move(state->outcome),
+        run,
+        recording_session,
+        camera_control);
+    state->inputs = GuiRecordingFinalizeInputs{};
+    state->outcome = GuiRecordingFinalizeOutcome{};
+    state->progress.stage.store(
+        static_cast<int>(GuiRecordingFinalizeStage::kIdle),
+        std::memory_order_relaxed);
+    state->progress.clips_done.store(0, std::memory_order_relaxed);
+    state->progress.clips_total.store(0, std::memory_order_relaxed);
+    return finalized;
+}
+
+void gui_launch_async_recording_finalize(
+    GuiAsyncRecordingFinalizeState* state,
+    GuiRecordingRunState* run,
+    orange::session::RecordingSessionState* recording_session,
+    const CameraParams* cameras_params,
+    const CameraEachSelect* cameras_select,
+    const int num_cameras,
+    const int crop_size_px,
+    const nlohmann::json& gui_display_frame_rate)
+{
+    state->inputs = gui_prepare_recording_finalize(
+        run,
+        recording_session,
+        cameras_params,
+        cameras_select,
+        num_cameras,
+        crop_size_px,
+        gui_display_frame_rate);
+    if (!state->inputs.valid) {
+        return;
+    }
+    state->outcome = GuiRecordingFinalizeOutcome{};
+    state->progress.stage.store(
+        static_cast<int>(GuiRecordingFinalizeStage::kStoppingRecorders),
+        std::memory_order_relaxed);
+    state->progress.clips_done.store(0, std::memory_order_relaxed);
+    state->progress.clips_total.store(0, std::memory_order_relaxed);
+    state->started_at = std::chrono::steady_clock::now();
+    state->done.store(false, std::memory_order_release);
+    state->active = true;
+    GuiAsyncRecordingFinalizeState* worker_state = state;
+    state->worker = std::thread([worker_state]() {
+        // Thread boundary (docs/error_handling_convention.md): an exception
+        // escaping a raw std::thread would std::terminate the whole process.
+        // Catch, report through the outcome slot, and let the GUI poll
+        // surface the failure loudly (finalizing stays latched; the gate
+        // retries).
+        try {
+            worker_state->outcome = gui_run_recording_finalize(
+                &worker_state->inputs,
+                &worker_state->progress);
+        } catch (const std::exception& ex) {
+            worker_state->outcome = GuiRecordingFinalizeOutcome{};
+            worker_state->outcome.error_message =
+                std::string("recording finalize threw: ") + ex.what();
+        } catch (...) {
+            worker_state->outcome = GuiRecordingFinalizeOutcome{};
+            worker_state->outcome.error_message =
+                "recording finalize threw a non-std exception";
+        }
+        worker_state->done.store(true, std::memory_order_release);
+    });
+    std::cout << "[GUI][recording] Recording finalize pending"
+              << " folder=" << state->inputs.run.recording_folder
+              << " sink_mode=" << state->inputs.run.recording_sink_mode
+              << std::endl;
+}
+
+}  // namespace
+
+bool gui_poll_async_recording_finalize(
+    GuiAsyncRecordingFinalizeState* state,
+    GuiRecordingRunState* run,
+    orange::session::RecordingSessionState* recording_session,
+    CameraControl* camera_control,
+    const CameraParams* cameras_params,
+    const CameraEachSelect* cameras_select,
+    const int num_cameras,
+    const int crop_size_px,
+    const nlohmann::json& gui_display_frame_rate)
+{
+    if (!state || !run) {
+        return false;
+    }
+    if (state->active) {
+        if (!state->done.load(std::memory_order_acquire)) {
+            return false;
+        }
+        return gui_complete_async_recording_finalize(
+            state, run, recording_session, camera_control);
+    }
+    if (!gui_recording_finalize_gate_ready(run, recording_session, camera_control)) {
+        return false;
+    }
+    gui_launch_async_recording_finalize(
+        state,
+        run,
+        recording_session,
+        cameras_params,
+        cameras_select,
+        num_cameras,
+        crop_size_px,
+        gui_display_frame_rate);
+    return false;
+}
+
+bool gui_join_async_recording_finalize(
+    GuiAsyncRecordingFinalizeState* state,
+    GuiRecordingRunState* run,
+    orange::session::RecordingSessionState* recording_session,
+    CameraControl* camera_control)
+{
+    if (!state || !run) {
+        return false;
+    }
+    if (!state->active) {
+        if (state->worker.joinable()) {
+            state->worker.join();
+        }
+        return false;
+    }
+    std::cout << "[GUI][recording] Waiting for the in-flight recording finalize"
+                 " (recorder shutdown is bounded by its graceful timeout)..."
+              << std::endl;
+    return gui_complete_async_recording_finalize(
+        state, run, recording_session, camera_control);
+}
+
+GuiRecordingFinalizeProgressView gui_async_recording_finalize_progress_view(
+    const GuiAsyncRecordingFinalizeState& state)
+{
+    GuiRecordingFinalizeProgressView view;
+    view.pending = state.active;
+    view.stage = state.progress.stage.load(std::memory_order_relaxed);
+    view.clips_done = state.progress.clips_done.load(std::memory_order_relaxed);
+    view.clips_total = state.progress.clips_total.load(std::memory_order_relaxed);
+    return view;
+}
+
+bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
+                                             orange::session::RecordingSessionState* recording_session,
+                                             CameraControl* camera_control,
+                                             const CameraParams* cameras_params,
+                                             const CameraEachSelect* cameras_select,
+                                             const int num_cameras,
+                                             const int crop_size_px,
+                                             const nlohmann::json& gui_display_frame_rate)
+{
+    if (!gui_recording_finalize_gate_ready(run, recording_session, camera_control)) {
+        return false;
+    }
+    GuiRecordingFinalizeInputs inputs = gui_prepare_recording_finalize(
+        run,
+        recording_session,
+        cameras_params,
+        cameras_select,
+        num_cameras,
+        crop_size_px,
+        gui_display_frame_rate);
+    if (!inputs.valid) {
+        return false;
+    }
+    GuiRecordingFinalizeOutcome outcome =
+        gui_run_recording_finalize(&inputs, nullptr);
+    return gui_complete_recording_finalize(
+        &inputs,
+        std::move(outcome),
+        run,
+        recording_session,
+        camera_control);
 }

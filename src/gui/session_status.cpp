@@ -167,7 +167,8 @@ void gui_request_recording_stop_through_operator_path(
 GuiSessionTimingSnapshot gui_session_timing_snapshot(
     GuiSessionTimingState* timing,
     const CameraControl* camera_control,
-    const bool recording_start_pending)
+    const bool recording_start_pending,
+    const GuiRecordingFinalizeProgressView& finalize_progress)
 {
     GuiSessionTimingSnapshot snapshot;
     if (!timing) {
@@ -178,6 +179,12 @@ GuiSessionTimingSnapshot gui_session_timing_snapshot(
     const bool stream_active = camera_control && camera_control->subscribe;
     const bool recording_active = camera_control && camera_control->record_video;
     const bool recording_draining = camera_control && camera_control->recording_draining;
+    // The finalize gate clears recording_draining the frame the background
+    // finalize launches; the pending marker keeps the snapshot in
+    // "finalizing" for that window (CameraControl stays authoritative for an
+    // active recording).
+    const bool recording_finalize_pending =
+        finalize_progress.pending && !recording_active;
 
     if (stream_active && !timing->stream_running) {
         timing->stream_running = true;
@@ -201,9 +208,12 @@ GuiSessionTimingSnapshot gui_session_timing_snapshot(
 
     if (recording_active && !timing->recording_running) {
         gui_mark_recording_started(timing);
-    } else if (!recording_active && recording_draining && !timing->recording_finalizing) {
+    } else if (!recording_active &&
+               (recording_draining || recording_finalize_pending) &&
+               !timing->recording_finalizing) {
         gui_mark_recording_finalizing(timing);
     } else if (!recording_active && !recording_draining &&
+               !recording_finalize_pending &&
                (timing->recording_running || timing->recording_finalizing)) {
         gui_mark_recording_finished(timing);
     }
@@ -235,6 +245,13 @@ GuiSessionTimingSnapshot gui_session_timing_snapshot(
     if (timing->recording_finalizing) {
         snapshot.finalizing_elapsed =
             format_elapsed_time(gui_elapsed_since(timing->finalizing_started_at, now));
+    }
+    if (timing->recording_finalizing && recording_finalize_pending) {
+        snapshot.finalize_progress_visible = true;
+        snapshot.finalize_stage_label =
+            gui_recording_finalize_stage_label(finalize_progress.stage);
+        snapshot.finalize_clips_done = finalize_progress.clips_done;
+        snapshot.finalize_clips_total = finalize_progress.clips_total;
     }
     return snapshot;
 }

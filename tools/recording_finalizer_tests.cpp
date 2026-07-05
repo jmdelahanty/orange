@@ -21,6 +21,7 @@
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 // The NvEnc/CUDA sources linked into this target log through this global.
@@ -631,6 +632,265 @@ void test_finalizer_gating()
     // equivalent active_recorders re-assert contract above.
 }
 
+// --- Phased finalize (prepare / run / complete + async drivers) --------------
+
+struct PhasedFinalizeFixture {
+    CameraParams camera{};
+    CameraEachSelect select{};
+    CameraControl camera_control;
+    orange::session::RecordingSessionState recording_session;
+    GuiRecordingRunState run;
+
+    explicit PhasedFinalizeFixture(const std::string& folder)
+    {
+        camera.camera_serial = "990001";
+        camera.camera_id = 0;
+        camera.frame_rate = 100;
+        select.record = true;
+        select.crop_and_encode = false;
+        recording_session.recording_sink_mode = "real";
+        run = make_finalizing_run(folder);
+        run.recording_sink_mode = "real";
+        // The claim CameraControl holds for the duration of the run; ONLY
+        // the completion phase may release it.
+        camera_control.recording_folder = folder;
+        camera_control.preserve_recording_session_state = true;
+    }
+};
+
+void test_phased_finalize_failure_leaves_retryable_state()
+{
+    // Keep the diagnostic finalize stall knobs out of the picture.
+    ScopedEnv gui_stall("ORANGE_GUI_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS");
+    ScopedEnv stall("ORANGE_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS");
+
+    ScopedTempDir tmp;
+    const std::filesystem::path session = tmp.path() / "session_fail";
+    std::filesystem::create_directories(session);
+    // No recording_snapshot.json: the run phase writes the session manifest
+    // and then fails at the snapshot update, exercising the failure path.
+
+    PhasedFinalizeFixture fixture(session.string());
+    require(gui_recording_finalize_gate_ready(
+                &fixture.run, &fixture.recording_session, &fixture.camera_control),
+            "a drained real-mode run must pass the gate");
+
+    GuiRecordingFinalizeInputs inputs = gui_prepare_recording_finalize(
+        &fixture.run,
+        &fixture.recording_session,
+        &fixture.camera,
+        &fixture.select,
+        1,
+        320,
+        nlohmann::json::object());
+    require(inputs.valid, "prepare must produce valid inputs");
+    require(!inputs.external_ipc, "real sink mode must not mark external_ipc");
+    require(inputs.cameras.size() == 1 && inputs.cameras[0].record,
+            "prepare must snapshot the camera inputs");
+    require(!fixture.run.recording_drained_at_utc.empty(),
+            "prepare must stamp the drain timestamp on the live run");
+
+    GuiRecordingFinalizeProgress progress;
+    GuiRecordingFinalizeOutcome outcome =
+        gui_run_recording_finalize(&inputs, &progress);
+    require(!outcome.ok, "missing recording_snapshot.json must fail the run phase");
+    require(outcome.error_message.find("recording_snapshot.json") != std::string::npos,
+            "the failure must name the snapshot update");
+    require(progress.stage.load() ==
+                static_cast<int>(GuiRecordingFinalizeStage::kUpdatingSnapshot),
+            "the failure must happen in the updating-snapshot stage");
+
+    require(!gui_complete_recording_finalize(
+                &inputs,
+                std::move(outcome),
+                &fixture.run,
+                &fixture.recording_session,
+                &fixture.camera_control),
+            "completion of a failed outcome must report false");
+    // Retry property: finalizing stays latched, the folder stays claimed,
+    // the loud error is installed for the GUI status line.
+    require(fixture.run.active && fixture.run.finalizing && !fixture.run.finalized,
+            "a failed finalize must leave the run latched finalizing");
+    require(fixture.camera_control.recording_folder == session.string(),
+            "a failed finalize must leave the folder claimed");
+    require(fixture.camera_control.preserve_recording_session_state,
+            "a failed finalize must not clear the preserve flag");
+    require(!fixture.recording_session.external_recorder_last_error.empty(),
+            "a failed finalize must install a loud error");
+
+    // Make the snapshot update succeed and retry the WHOLE finalize through
+    // the synchronous composition (exactly what the per-frame gate does).
+    write_text_file(session / "recording_snapshot.json", "{\"session\":{}}");
+    require(gui_finalize_recording_session_if_ready(
+                &fixture.run,
+                &fixture.recording_session,
+                &fixture.camera_control,
+                &fixture.camera,
+                &fixture.select,
+                1,
+                320,
+                nlohmann::json::object()),
+            "the retried finalize must succeed");
+    require(!fixture.run.active && !fixture.run.finalizing && fixture.run.finalized,
+            "the retried finalize must flip the terminal run state");
+    require(fixture.camera_control.recording_folder.empty(),
+            "the successful finalize must release the folder claim");
+    require(!fixture.camera_control.preserve_recording_session_state,
+            "the successful finalize must clear the preserve flag");
+    require(std::filesystem::exists(session / "recording_session.json"),
+            "the finalize must leave a session manifest on disk");
+    nlohmann::json manifest;
+    {
+        std::ifstream input(session / "recording_session.json");
+        input >> manifest;
+    }
+    require(manifest.value("status", std::string()) == "completed",
+            "real-mode manifest should complete");
+
+    // Terminal state flips exactly once: a further poll must be a no-op.
+    require(!gui_finalize_recording_session_if_ready(
+                &fixture.run,
+                &fixture.recording_session,
+                &fixture.camera_control,
+                &fixture.camera,
+                &fixture.select,
+                1,
+                320,
+                nlohmann::json::object()),
+            "a finalized run must not finalize again");
+    std::cout << "PASS test_phased_finalize_failure_leaves_retryable_state"
+              << std::endl;
+}
+
+void test_async_finalize_poll_launches_and_completes()
+{
+    ScopedEnv gui_stall("ORANGE_GUI_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS");
+    ScopedEnv stall("ORANGE_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS");
+
+    ScopedTempDir tmp;
+    const std::filesystem::path session = tmp.path() / "session_async";
+    std::filesystem::create_directories(session);
+    write_text_file(session / "recording_snapshot.json", "{\"session\":{}}");
+
+    PhasedFinalizeFixture fixture(session.string());
+    GuiAsyncRecordingFinalizeState async_finalize;
+    const nlohmann::json frame_rate = nlohmann::json::object();
+
+    // Frame 1: the gate opens and the poll launches the background phase.
+    require(!gui_poll_async_recording_finalize(
+                &async_finalize,
+                &fixture.run,
+                &fixture.recording_session,
+                &fixture.camera_control,
+                &fixture.camera,
+                &fixture.select,
+                1,
+                320,
+                frame_rate),
+            "the launching poll must not report completion");
+    require(async_finalize.active, "the poll must launch the background phase");
+    require(fixture.run.finalizing && !fixture.run.finalized,
+            "the run stays finalizing while the background phase runs");
+    const GuiRecordingFinalizeProgressView view =
+        gui_async_recording_finalize_progress_view(async_finalize);
+    require(view.pending, "the progress view must report pending");
+
+    // Later frames: poll until the worker publishes done and the completion
+    // phase flips the terminal state.
+    bool finalized = false;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (!finalized && std::chrono::steady_clock::now() < deadline) {
+        finalized = gui_poll_async_recording_finalize(
+            &async_finalize,
+            &fixture.run,
+            &fixture.recording_session,
+            &fixture.camera_control,
+            &fixture.camera,
+            &fixture.select,
+            1,
+            320,
+            frame_rate);
+        if (!finalized) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
+    require(finalized, "the poll must complete the background finalize");
+    require(!async_finalize.active && !async_finalize.worker.joinable(),
+            "completion must join and clear the worker");
+    require(!fixture.run.active && !fixture.run.finalizing && fixture.run.finalized,
+            "completion must flip the terminal run state exactly once");
+    require(fixture.camera_control.recording_folder.empty(),
+            "completion must release the folder claim");
+    require(std::filesystem::exists(session / "recording_session.json"),
+            "the async finalize must write the session manifest");
+
+    // The next poll observes the finalized run and never relaunches.
+    require(!gui_poll_async_recording_finalize(
+                &async_finalize,
+                &fixture.run,
+                &fixture.recording_session,
+                &fixture.camera_control,
+                &fixture.camera,
+                &fixture.select,
+                1,
+                320,
+                frame_rate),
+            "a finalized run must not relaunch the background phase");
+    require(!async_finalize.active, "no background phase after the terminal state");
+    std::cout << "PASS test_async_finalize_poll_launches_and_completes" << std::endl;
+}
+
+void test_async_finalize_join_completes_in_flight_work()
+{
+    ScopedEnv gui_stall("ORANGE_GUI_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS");
+    ScopedEnv stall("ORANGE_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS");
+
+    ScopedTempDir tmp;
+    const std::filesystem::path session = tmp.path() / "session_join";
+    std::filesystem::create_directories(session);
+    write_text_file(session / "recording_snapshot.json", "{\"session\":{}}");
+
+    PhasedFinalizeFixture fixture(session.string());
+    GuiAsyncRecordingFinalizeState async_finalize;
+
+    // Join with nothing in flight: no-op, no completion.
+    require(!gui_join_async_recording_finalize(
+                &async_finalize,
+                &fixture.run,
+                &fixture.recording_session,
+                &fixture.camera_control),
+            "joining an idle finalize state must be a no-op");
+    require(fixture.run.finalizing, "the idle join must not touch the run");
+
+    // Launch, then join (the teardown/window-close path): the join must
+    // block until the background phase finishes and complete it.
+    require(!gui_poll_async_recording_finalize(
+                &async_finalize,
+                &fixture.run,
+                &fixture.recording_session,
+                &fixture.camera_control,
+                &fixture.camera,
+                &fixture.select,
+                1,
+                320,
+                nlohmann::json::object()),
+            "the launching poll must not report completion");
+    require(async_finalize.active, "the poll must launch the background phase");
+    require(gui_join_async_recording_finalize(
+                &async_finalize,
+                &fixture.run,
+                &fixture.recording_session,
+                &fixture.camera_control),
+            "the join must complete the in-flight finalize");
+    require(!fixture.run.active && !fixture.run.finalizing && fixture.run.finalized,
+            "the joined finalize must flip the terminal run state");
+    require(fixture.camera_control.recording_folder.empty(),
+            "the joined finalize must release the folder claim");
+    std::cout << "PASS test_async_finalize_join_completes_in_flight_work"
+              << std::endl;
+}
+
 }  // namespace
 
 int main()
@@ -653,6 +913,12 @@ int main()
         {"write_external_rolling_manifest_success",
          &test_write_external_rolling_manifest_success},
         {"finalizer_gating", &test_finalizer_gating},
+        {"phased_finalize_failure_leaves_retryable_state",
+         &test_phased_finalize_failure_leaves_retryable_state},
+        {"async_finalize_poll_launches_and_completes",
+         &test_async_finalize_poll_launches_and_completes},
+        {"async_finalize_join_completes_in_flight_work",
+         &test_async_finalize_join_completes_in_flight_work},
     };
 
     for (const auto& test : tests) {

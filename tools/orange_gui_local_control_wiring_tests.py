@@ -256,10 +256,22 @@ def test_recording_session_stop_control_carries_drain_evidence() -> None:
         in finalized_body,
         "finalized drain helper must persist terminal ACK state",
     )
+    # The finalize is phased (gate / prepare / run / complete): the
+    # stop-control evidence update happens in the GUI-thread prepare phase,
+    # which snapshots the run BEFORE the background run phase writes the
+    # manifest. Both the async driver and the synchronous composition go
+    # through gui_prepare_recording_finalize.
+    prepare_body = function_body(finalizer, "gui_prepare_recording_finalize")
+    require(
+        "gui_update_local_control_stop_manifest_for_finalized_drain(run);" in prepare_body,
+        "recording finalize prepare phase must update stop-control evidence"
+        " before the manifest is written",
+    )
     finalize_body = function_body(finalizer, "gui_finalize_recording_session_if_ready")
     require(
-        "gui_update_local_control_stop_manifest_for_finalized_drain(run);" in finalize_body,
-        "recording finalizer must update stop-control evidence before writing the manifest",
+        "gui_prepare_recording_finalize(" in finalize_body,
+        "the synchronous finalizer must run the prepare phase (which updates"
+        " stop-control evidence) before writing the manifest",
     )
     copy_body = function_body(orange, "gui_copy_local_control_event_log_to_recording_session")
     for needle, description in (
@@ -401,18 +413,33 @@ def test_diagnostic_finalize_stall_can_exercise_drain_timeout() -> None:
         "ORANGE_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS" in env_body,
         "diagnostic finalize stall must have a non-GUI alias",
     )
-    finalize_body = function_body(finalizer, "gui_finalize_recording_session_if_ready")
+    # The finalize is phased: the diagnostic stall knob is consulted by the
+    # per-frame drain gate, which both the async driver and the synchronous
+    # composition run before any finalize work starts.
+    gate_body = function_body(finalizer, "gui_recording_finalize_gate_ready")
     require(
-        "gui_local_control_diagnostic_finalize_stall_seconds()" in finalize_body,
-        "recording finalizer must consult the diagnostic stall knob",
+        "gui_local_control_diagnostic_finalize_stall_seconds()" in gate_body,
+        "the finalize drain gate must consult the diagnostic stall knob",
     )
     require(
-        'run->stop_control["diagnostic_finalize_stall_active"] = true' in finalize_body,
+        'run->stop_control["diagnostic_finalize_stall_active"] = true' in gate_body,
         "diagnostic stall must persist active-state evidence in stop control",
     )
     require(
-        "return false;" in finalize_body,
+        "return false;" in gate_body,
         "diagnostic stall must defer finalization until the stall interval elapses",
+    )
+    finalize_body = function_body(finalizer, "gui_finalize_recording_session_if_ready")
+    require(
+        "gui_recording_finalize_gate_ready(" in finalize_body,
+        "the synchronous finalizer must run the drain gate (which consults"
+        " the diagnostic stall knob)",
+    )
+    poll_body = function_body(finalizer, "gui_poll_async_recording_finalize")
+    require(
+        "gui_recording_finalize_gate_ready(" in poll_body,
+        "the async finalize poll must run the drain gate (which consults"
+        " the diagnostic stall knob)",
     )
     wrapper = read("scripts/orange_gui_validation_wrapper.sh")
     require(
