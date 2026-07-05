@@ -311,6 +311,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/aperture_characterization.cpp"
     "${SRC_DIR}/calibration_image_set.cpp"
     "${SRC_DIR}/dish_top_rim_observation.cpp"
+    "${SRC_DIR}/ruler_alignment.cpp"
     "${SRC_DIR}/spatial_calibration_snapshot.cpp"
     "${SRC_DIR}/spatial_layout_schema.cpp"
     "${SRC_DIR}/spatial_snapshot_worker.cpp"
@@ -771,6 +772,15 @@ if(BUILD_TESTING)
     target_compile_features(dish_top_rim_observation_tests PRIVATE cxx_std_17)
     target_link_libraries(dish_top_rim_observation_tests PRIVATE ${OpenCV_LIBS})
     add_test(NAME dish_top_rim_observation_tests COMMAND dish_top_rim_observation_tests)
+
+    add_executable(ruler_alignment_tests
+        "tools/ruler_alignment_tests.cpp"
+        "${SRC_DIR}/ruler_alignment.cpp"
+    )
+    target_include_directories(ruler_alignment_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(ruler_alignment_tests PRIVATE cxx_std_17)
+    target_link_libraries(ruler_alignment_tests PRIVATE ${OpenCV_LIBS})
+    add_test(NAME ruler_alignment_tests COMMAND ruler_alignment_tests)
 
     add_executable(calibration_image_set_tests
         "tools/calibration_image_set_tests.cpp"
