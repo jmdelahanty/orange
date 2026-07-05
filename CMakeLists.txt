@@ -282,6 +282,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/frame_ipc_panel.cpp"
     "${SRC_DIR}/gui/host_ptp_panel.cpp"
     "${SRC_DIR}/gui/recording_panel.cpp"
+    "${SRC_DIR}/gui/recording_snapshots.cpp"
     "${SRC_DIR}/gui/spatial_layout/calibration_metadata.cpp"
     "${SRC_DIR}/gui/spatial_layout/canvas_edit.cpp"
     "${SRC_DIR}/gui/spatial_layout/capture_panel.cpp"
@@ -752,6 +753,26 @@ if(BUILD_TESTING)
         ${CUDA_DRIVER_LIBRARY}
     )
     add_test(NAME app_storage_config_tests COMMAND app_storage_config_tests)
+
+    add_executable(recording_snapshots_tests
+        "tools/recording_snapshots_tests.cpp"
+        "${SRC_DIR}/gui/recording_snapshots.cpp"
+        "${SRC_DIR}/project.cpp"
+        "${SRC_DIR}/camera.cpp"
+        "${SRC_DIR}/spatial_calibration_snapshot.cpp"
+        "${SRC_DIR}/spatial_layout_schema.cpp"
+    )
+    target_include_directories(recording_snapshots_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(recording_snapshots_tests PRIVATE cxx_std_17)
+    target_link_libraries(recording_snapshots_tests PRIVATE
+        ${ENET_LIBRARY}
+        ${EVT_CAMERA_LIBRARY}
+        ${EVT_GENICAM_LIBRARY}
+        ${EVT_GIGE_LIBRARY}
+        ${CUDA_CUDART_LIBRARY}
+        ${CUDA_DRIVER_LIBRARY}
+    )
+    add_test(NAME recording_snapshots_tests COMMAND recording_snapshots_tests)
 
     add_executable(spatial_calibration_snapshot_tests
         "tools/spatial_calibration_snapshot_tests.cpp"
