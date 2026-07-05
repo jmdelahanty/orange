@@ -531,6 +531,25 @@ if(BUILD_TESTING)
     set_tests_properties(recording_session_drain_tests
         PROPERTIES DEPENDS recording_session_drain_tests_build)
 
+    # gui/recording_finalizer.cpp calls into the recording session, external
+    # recorder, ingress, and crop encoder stacks, so reuse the closed source
+    # set already proven to link for the recording session manifest tests.
+    add_executable(recording_finalizer_tests EXCLUDE_FROM_ALL
+        "tools/recording_finalizer_tests.cpp"
+        "${SRC_DIR}/gui/recording_finalizer.cpp"
+        ${RECORDING_SESSION_MANIFEST_TEST_SOURCES}
+    )
+    target_include_directories(recording_finalizer_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(recording_finalizer_tests PRIVATE cxx_std_17)
+    add_test(
+        NAME recording_finalizer_tests_build
+        COMMAND ${CMAKE_COMMAND}
+                --build "${CMAKE_BINARY_DIR}"
+                --target recording_finalizer_tests)
+    add_test(NAME recording_finalizer_tests COMMAND recording_finalizer_tests)
+    set_tests_properties(recording_finalizer_tests
+        PROPERTIES DEPENDS recording_finalizer_tests_build)
+
     add_executable(video_encode_profile_tests
         "tools/video_encode_profile_tests.cpp"
         "${SRC_DIR}/video_encode_profile.cpp"
@@ -920,6 +939,9 @@ orange_configure_target(external_recorder_supervisor_plan)
 if(TARGET recording_session_manifest_tests)
     orange_configure_target(recording_session_manifest_tests)
 endif()
+if(TARGET recording_finalizer_tests)
+    orange_configure_target(recording_finalizer_tests)
+endif()
 
 target_link_libraries(orange PRIVATE
     ${ENET_LIBRARY}
@@ -1007,6 +1029,36 @@ if(TARGET recording_session_manifest_tests)
     )
     if(ORANGE_ENABLE_NVTX)
         target_link_libraries(recording_session_manifest_tests PRIVATE ${NVTX_LIBRARY})
+    endif()
+endif()
+
+if(TARGET recording_finalizer_tests)
+    target_link_libraries(recording_finalizer_tests PRIVATE
+        ${EVT_CAMERA_LIBRARY}
+        ${EVT_GENICAM_LIBRARY}
+        ${EVT_GIGE_LIBRARY}
+        ${ENET_LIBRARY}
+        ${CUDA_CUDART_LIBRARY}
+        ${CUDA_DRIVER_LIBRARY}
+        ${CUDA_NPPICC_LIBRARY}
+        ${CUDA_NPPIDEI_LIBRARY}
+        ${CUDA_NPPC_LIBRARY}
+        ${CUDA_NPPIG_LIBRARY}
+        ${CUDA_NPPIAL_LIBRARY}
+        ${NVIDIA_ENCODE_LIBRARY}
+        ${AVFORMAT_LIBRARY}
+        ${SWSCALE_LIBRARY}
+        ${SWRESAMPLE_LIBRARY}
+        ${AVUTIL_LIBRARY}
+        ${AVCODEC_LIBRARY}
+        ${OpenCV_LIBS}
+        ${TENSORRT_LIBRARY}
+        ${TENSORRT_PLUGIN_LIBRARY}
+        m
+        pthread
+    )
+    if(ORANGE_ENABLE_NVTX)
+        target_link_libraries(recording_finalizer_tests PRIVATE ${NVTX_LIBRARY})
     endif()
 endif()
 
