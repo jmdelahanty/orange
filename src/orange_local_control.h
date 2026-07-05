@@ -3,6 +3,8 @@
 #include "json.hpp"
 
 #include <atomic>
+#include <cstdint>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -95,6 +97,7 @@ struct LocalControlServerOptions {
     std::string event_log_path;
     int socket_mode = 0666;
     std::size_t max_request_bytes = 64 * 1024;
+    std::size_t max_dedupe_entries = 4096;
     bool allow_gui_lifecycle_commands = false;
     bool allow_gui_start_recording_commands = false;
     bool allow_gui_stop_recording_commands = false;
@@ -106,6 +109,10 @@ struct ParsedLocalControlRequest {
     std::string request_id;
     std::string operation_id;
     std::string source;
+    // Optional epoch/seq fence fields. Zero means "not present" (legacy
+    // request); when present they must be positive integers.
+    std::uint64_t epoch = 0;
+    std::uint64_t seq = 0;
     nlohmann::json params = nlohmann::json::object();
 };
 
@@ -115,6 +122,9 @@ struct PendingLocalControlCommand {
     std::string operation_id;
     std::string source;
     std::string received_at_utc;
+    // Zero means the request carried no epoch/seq (legacy mode).
+    std::uint64_t epoch = 0;
+    std::uint64_t seq = 0;
     nlohmann::json params = nlohmann::json::object();
 };
 
@@ -149,10 +159,22 @@ public:
     std::vector<PendingLocalControlCommand> DrainPendingCommands();
     std::string last_error() const;
 
+    // Recording-generation fence. The GUI thread advances the session epoch
+    // whenever a new recording generation starts; commands stamped with an
+    // older epoch are rejected before they can be queued.
+    void AdvanceSessionEpoch();
+    // Marks a fenced command as completed. Ignored for stale epochs and for
+    // legacy commands that carried no epoch/seq (epoch == 0 or seq == 0).
+    void MarkCommandDone(std::uint64_t epoch, std::uint64_t seq);
+    std::uint64_t session_epoch() const;
+    std::uint64_t last_done_seq() const;
+
 private:
     void ServeLoop();
     void HandleClient(int client_fd);
     nlohmann::json HandleRequest(const nlohmann::json& request);
+    void AppendEpochTelemetry(nlohmann::json* response,
+                              const ParsedLocalControlRequest& parsed) const;
     void LogEvent(const nlohmann::json& event);
     void SetLastError(const std::string& error);
     void ReleaseSocketPathLock();
@@ -163,6 +185,10 @@ private:
     mutable std::mutex state_mutex_;
     std::unordered_set<std::string> accepted_request_ids_;
     std::unordered_set<std::string> accepted_operation_keys_;
+    std::deque<std::string> accepted_request_id_order_;
+    std::deque<std::string> accepted_operation_key_order_;
+    std::uint64_t session_epoch_ = 1;
+    std::uint64_t last_done_seq_ = 0;
     std::vector<PendingLocalControlCommand> pending_commands_;
     std::string last_error_;
     std::thread thread_;

@@ -98,6 +98,30 @@ bool is_mutating_method(const std::string& method)
            IsProjectedCenterPreflightMethod(method);
 }
 
+bool json_optional_positive_uint64_field(const nlohmann::json& object,
+                                         const char* name,
+                                         std::uint64_t* value_out,
+                                         std::string* error_out)
+{
+    const auto it = object.find(name);
+    if (it == object.end()) {
+        if (value_out) {
+            *value_out = 0;
+        }
+        return true;
+    }
+    if (!it->is_number_unsigned() || it->get<std::uint64_t>() == 0) {
+        if (error_out) {
+            *error_out = std::string("field must be a positive integer: ") + name;
+        }
+        return false;
+    }
+    if (value_out) {
+        *value_out = it->get<std::uint64_t>();
+    }
+    return true;
+}
+
 std::string request_string_or_empty(const nlohmann::json& request, const char* key)
 {
     const auto it = request.find(key);
@@ -288,6 +312,22 @@ nlohmann::json recording_start_to_json(
 std::string operation_dedupe_key(const ParsedLocalControlRequest& parsed)
 {
     return parsed.method + "\n" + parsed.operation_id;
+}
+
+bool insert_bounded_dedupe_entry(std::unordered_set<std::string>* entries,
+                                 std::deque<std::string>* insertion_order,
+                                 const std::string& value,
+                                 const std::size_t max_entries)
+{
+    if (!entries->insert(value).second) {
+        return false;
+    }
+    insertion_order->push_back(value);
+    while (max_entries > 0 && insertion_order->size() > max_entries) {
+        entries->erase(insertion_order->front());
+        insertion_order->pop_front();
+    }
+    return true;
 }
 
 bool allow_gui_start_recording(const LocalControlServerOptions& options)
@@ -683,6 +723,11 @@ bool ParseLocalControlRequest(const nlohmann::json& request,
         return false;
     }
 
+    if (!json_optional_positive_uint64_field(request, "epoch", &parsed.epoch, error_out) ||
+        !json_optional_positive_uint64_field(request, "seq", &parsed.seq, error_out)) {
+        return false;
+    }
+
     const auto params_it = request.find("params");
     if (params_it == request.end()) {
         parsed.params = nlohmann::json::object();
@@ -763,6 +808,10 @@ bool LocalControlServer::Start(const LocalControlServerOptions& options,
         last_error_.clear();
         accepted_request_ids_.clear();
         accepted_operation_keys_.clear();
+        accepted_request_id_order_.clear();
+        accepted_operation_key_order_.clear();
+        session_epoch_ = 1;
+        last_done_seq_ = 0;
         pending_commands_.clear();
     }
     thread_ = std::thread(&LocalControlServer::ServeLoop, this);
@@ -816,6 +865,40 @@ std::string LocalControlServer::last_error() const
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
     return last_error_;
+}
+
+void LocalControlServer::AdvanceSessionEpoch()
+{
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    ++session_epoch_;
+    last_done_seq_ = 0;
+}
+
+void LocalControlServer::MarkCommandDone(const std::uint64_t epoch,
+                                         const std::uint64_t seq)
+{
+    if (epoch == 0 || seq == 0) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (epoch != session_epoch_) {
+        return;
+    }
+    if (seq > last_done_seq_) {
+        last_done_seq_ = seq;
+    }
+}
+
+std::uint64_t LocalControlServer::session_epoch() const
+{
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return session_epoch_;
+}
+
+std::uint64_t LocalControlServer::last_done_seq() const
+{
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    return last_done_seq_;
 }
 
 void LocalControlServer::SetLastError(const std::string& error)
@@ -1048,7 +1131,7 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
     }
 
     if (parsed.method == "status") {
-        return {
+        nlohmann::json response = {
             {"schema_id", kLocalControlResponseSchemaId},
             {"schema_version", kLocalControlSchemaVersion},
             {"ok", true},
@@ -1059,43 +1142,107 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
             {"responded_at_utc", utc_now()},
             {"status", LocalControlStatusSnapshotToJson(status_snapshot)},
         };
+        AppendEpochTelemetry(&response, parsed);
+        return response;
     }
 
     const std::string received_at_utc = utc_now();
     bool duplicate = false;
     bool queued_for_gui_thread = false;
+    bool stale_epoch = false;
+    std::uint64_t stale_epoch_current = 0;
     const bool start_recording_allowed = allow_gui_start_recording(options_);
     const bool stop_recording_allowed = allow_gui_stop_recording(options_);
     const bool citrus_completion_allowed =
         allow_gui_citrus_completion(options_);
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        const auto inserted = accepted_request_ids_.insert(parsed.request_id);
-        const bool duplicate_request_id = !inserted.second;
-        bool duplicate_operation_id = false;
-        if (!duplicate_request_id && is_mutating_method(parsed.method)) {
-            const auto operation_inserted =
-                accepted_operation_keys_.insert(operation_dedupe_key(parsed));
-            duplicate_operation_id = !operation_inserted.second;
+        const bool mutating = is_mutating_method(parsed.method);
+        if (mutating && parsed.epoch != 0) {
+            if (parsed.epoch < session_epoch_) {
+                // The command was stamped for an older recording generation;
+                // reject it so it cannot act on the current one.
+                stale_epoch = true;
+                stale_epoch_current = session_epoch_;
+            } else {
+                if (parsed.epoch > session_epoch_) {
+                    // The client is ahead of the last GUI epoch bump; adopt
+                    // its epoch and restart the completed-seq watermark.
+                    session_epoch_ = parsed.epoch;
+                    last_done_seq_ = 0;
+                }
+                if (parsed.seq != 0 && parsed.seq <= last_done_seq_) {
+                    // This command (or a later one in the same epoch) already
+                    // completed; re-ACK without queueing.
+                    duplicate = true;
+                }
+            }
         }
-        duplicate = duplicate_request_id || duplicate_operation_id;
+        if (!stale_epoch && !duplicate) {
+            const bool duplicate_request_id = !insert_bounded_dedupe_entry(
+                &accepted_request_ids_,
+                &accepted_request_id_order_,
+                parsed.request_id,
+                options_.max_dedupe_entries);
+            bool duplicate_operation_id = false;
+            if (!duplicate_request_id && mutating) {
+                duplicate_operation_id = !insert_bounded_dedupe_entry(
+                    &accepted_operation_keys_,
+                    &accepted_operation_key_order_,
+                    operation_dedupe_key(parsed),
+                    options_.max_dedupe_entries);
+            }
+            duplicate = duplicate_request_id || duplicate_operation_id;
+        }
         const bool supports_gui_thread_queue =
             parsed.method == "citrus_completion" ||
             (parsed.method == "start_recording" &&
              start_recording_allowed) ||
             (parsed.method == "stop_recording" &&
              stop_recording_allowed);
-        if (supports_gui_thread_queue && !duplicate) {
+        if (!stale_epoch && supports_gui_thread_queue && !duplicate) {
             PendingLocalControlCommand command;
             command.method = parsed.method;
             command.request_id = parsed.request_id;
             command.operation_id = parsed.operation_id;
             command.source = parsed.source;
             command.received_at_utc = received_at_utc;
+            command.epoch = parsed.epoch;
+            command.seq = parsed.seq;
             command.params = parsed.params;
             pending_commands_.push_back(std::move(command));
             queued_for_gui_thread = true;
         }
+    }
+
+    if (stale_epoch) {
+        nlohmann::json response = {
+            {"schema_id", kLocalControlResponseSchemaId},
+            {"schema_version", kLocalControlSchemaVersion},
+            {"ok", false},
+            {"accepted", false},
+            {"duplicate", false},
+            {"queued_for_gui_thread", false},
+            {"request_id", parsed.request_id},
+            {"operation_id", parsed.operation_id},
+            {"method", parsed.method},
+            {"responded_at_utc", utc_now()},
+            {"error",
+             {
+                 {"code", "stale_epoch"},
+                 {"message",
+                  "request epoch " + std::to_string(parsed.epoch) +
+                      " is older than current session epoch " +
+                      std::to_string(stale_epoch_current) +
+                      "; the command's recording generation is over"},
+             }},
+            {"status", LocalControlStatusSnapshotToJson(status_snapshot)},
+        };
+        AppendEpochTelemetry(&response, parsed);
+        LogEvent({{"received_at_utc", received_at_utc},
+                  {"request", request},
+                  {"response", response}});
+        return response;
     }
 
     if (IsProjectedCenterPreflightMethod(parsed.method)) {
@@ -1123,6 +1270,7 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
                  {"preflight_projected_center_verification", preflight.effect},
              }},
         };
+        AppendEpochTelemetry(&response, parsed);
         LogEvent({{"received_at_utc", received_at_utc},
                   {"request", request},
                   {"response", response}});
@@ -1150,6 +1298,7 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
                  {"recording_lifecycle_mutated", false},
              }},
         };
+        AppendEpochTelemetry(&response, parsed);
         LogEvent({{"received_at_utc", received_at_utc},
                   {"request", request},
                   {"response", response}});
@@ -1178,6 +1327,7 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
                  {"recording_lifecycle_mutated", false},
              }},
         };
+        AppendEpochTelemetry(&response, parsed);
         LogEvent({{"received_at_utc", received_at_utc},
                   {"request", request},
                   {"response", response}});
@@ -1206,6 +1356,7 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
                  {"recording_lifecycle_mutated", false},
              }},
         };
+        AppendEpochTelemetry(&response, parsed);
         LogEvent({{"received_at_utc", received_at_utc},
                   {"request", request},
                   {"response", response}});
@@ -1234,10 +1385,40 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
          }},
         {"status", LocalControlStatusSnapshotToJson(status_snapshot)},
     };
+    AppendEpochTelemetry(&response, parsed);
     LogEvent({{"received_at_utc", received_at_utc},
               {"request", request},
               {"response", response}});
     return response;
+}
+
+void LocalControlServer::AppendEpochTelemetry(
+    nlohmann::json* response,
+    const ParsedLocalControlRequest& parsed) const
+{
+    if (!response) {
+        return;
+    }
+    std::uint64_t current_epoch = 0;
+    std::uint64_t last_done = 0;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        current_epoch = session_epoch_;
+        last_done = last_done_seq_;
+    }
+    (*response)["current_epoch"] = current_epoch;
+    (*response)["last_done_seq"] = last_done;
+    if (parsed.epoch != 0) {
+        (*response)["epoch"] = parsed.epoch;
+    }
+    if (parsed.seq != 0) {
+        (*response)["seq"] = parsed.seq;
+    }
+    const auto status_it = response->find("status");
+    if (status_it != response->end() && status_it->is_object()) {
+        (*status_it)["current_epoch"] = current_epoch;
+        (*status_it)["last_done_seq"] = last_done;
+    }
 }
 
 void LocalControlServer::LogEvent(const nlohmann::json& event)

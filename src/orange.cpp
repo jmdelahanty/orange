@@ -188,6 +188,8 @@ struct GuiLocalControlStopSchedulerState {
     std::string forced_finalize_requested_at_utc;
     std::string last_event;
     std::string last_event_at_utc;
+    uint64_t epoch = 0;  // 0 = command carried no epoch/seq (legacy)
+    uint64_t seq = 0;
     std::chrono::steady_clock::time_point deadline{};
     std::chrono::steady_clock::time_point stop_triggered_at{};
 };
@@ -202,6 +204,8 @@ struct GuiLocalControlStartRequestState {
     std::string received_at_utc;
     std::string last_event;
     std::string last_event_at_utc;
+    uint64_t epoch = 0;  // 0 = command carried no epoch/seq (legacy)
+    uint64_t seq = 0;
 };
 
 enum class GuiAutorunStage {
@@ -4106,9 +4110,19 @@ void gui_clear_local_control_stop_schedule(
     scheduler->deadline = {};
 }
 
+// Set once in main(); lets the recording-start and drain-completion choke
+// points advance the local-control epoch fence without threading the server
+// pointer through every recording-path call signature.
+orange::control::LocalControlServer* g_gui_local_control_server = nullptr;
+
 void gui_reset_local_control_stop_scheduler_for_recording_start(
     GuiLocalControlStopSchedulerState* scheduler)
 {
+    if (g_gui_local_control_server) {
+        // A new recording generation begins: commands stamped for the
+        // previous generation must no longer be able to stop this one.
+        g_gui_local_control_server->AdvanceSessionEpoch();
+    }
     if (!scheduler) {
         return;
     }
@@ -4298,6 +4312,8 @@ void gui_drain_local_control_commands(
                 start_request->reason = "local_control_start";
             }
             start_request->received_at_utc = command.received_at_utc;
+            start_request->epoch = command.epoch;
+            start_request->seq = command.seq;
             gui_note_local_control_start_event(start_request, "queued");
             std::cout << "[GUI][local_control] queued recording start"
                       << " request_id=" << start_request->request_id
@@ -4437,6 +4453,8 @@ void gui_drain_local_control_commands(
                     : "citrus_completion";
         }
         stop_scheduler->received_at_utc = command.received_at_utc;
+        stop_scheduler->epoch = command.epoch;
+        stop_scheduler->seq = command.seq;
         stop_scheduler->deadline = deadline;
         gui_note_local_control_stop_event(
             stop_scheduler,
@@ -4693,6 +4711,11 @@ void gui_mark_local_control_drain_completed(
     if (!stop_scheduler->drain_completed) {
         stop_scheduler->drain_completed = true;
         stop_scheduler->drain_completed_at_utc = get_current_utc_timestamp();
+        if (g_gui_local_control_server && stop_scheduler->epoch != 0) {
+            g_gui_local_control_server->MarkCommandDone(
+                stop_scheduler->epoch,
+                stop_scheduler->seq);
+        }
         gui_note_local_control_stop_event(
             stop_scheduler,
             stop_scheduler->drain_timed_out
@@ -7275,6 +7298,11 @@ bool gui_poll_local_control_start_request(
         pose_workers,
         recording_preflight_errors,
         "local_control_start_recording");
+    if (started && g_gui_local_control_server && start_request->epoch != 0) {
+        g_gui_local_control_server->MarkCommandDone(
+            start_request->epoch,
+            start_request->seq);
+    }
     gui_note_local_control_start_event(
         start_request,
         started ? "start_triggered" : "start_failed");
@@ -7562,6 +7590,7 @@ int main(int /*argc*/, char ** /*args*/) {
     bool gui_local_control_exit_stream_stop_requested = false;
     GuiDisplayFrameRateStats gui_display_frame_rate_stats;
     orange::control::LocalControlServer gui_local_control_server;
+    g_gui_local_control_server = &gui_local_control_server;
     std::string gui_local_control_event_log_path;
     if (!gui_local_control_disabled()) {
         orange::control::LocalControlServerOptions control_options;

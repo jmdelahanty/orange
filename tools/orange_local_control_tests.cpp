@@ -1257,6 +1257,348 @@ void test_start_recording_queues_when_start_mode_enabled()
             "pending start command should preserve params");
 }
 
+nlohmann::json fenced_request_json(const std::string& method,
+                                   const std::string& request_id,
+                                   const std::string& operation_id,
+                                   const uint64_t epoch,
+                                   const uint64_t seq,
+                                   nlohmann::json params = nlohmann::json::object())
+{
+    nlohmann::json request =
+        request_json(method, request_id, operation_id, std::move(params));
+    request["epoch"] = epoch;
+    request["seq"] = seq;
+    return request;
+}
+
+LocalControlServerOptions lifecycle_options(const std::filesystem::path& socket_path)
+{
+    LocalControlServerOptions options;
+    options.socket_path = socket_path.string();
+    options.allow_gui_lifecycle_commands = true;
+    return options;
+}
+
+void require_start_lifecycle_server(LocalControlServer* server,
+                                    const LocalControlServerOptions& options)
+{
+    std::filesystem::remove(options.socket_path);
+    std::string error;
+    require(server->Start(options, &error),
+            "lifecycle server start failed: " + error);
+    wait_until_running(server);
+    server->UpdateStatus(healthy_status());
+}
+
+void test_parse_rejects_invalid_epoch_and_seq()
+{
+    std::string error;
+    nlohmann::json zero_epoch =
+        request_json("stop_recording", "fence-parse-req-1", "fence-parse-op-1");
+    zero_epoch["epoch"] = 0;
+    require(!ParseLocalControlRequest(zero_epoch, nullptr, &error),
+            "epoch=0 should fail to parse");
+    require(error.find("epoch") != std::string::npos,
+            "epoch=0 failure should mention epoch");
+
+    nlohmann::json negative_seq =
+        request_json("stop_recording", "fence-parse-req-2", "fence-parse-op-2");
+    negative_seq["seq"] = -1;
+    require(!ParseLocalControlRequest(negative_seq, nullptr, &error),
+            "negative seq should fail to parse");
+
+    nlohmann::json string_epoch =
+        request_json("stop_recording", "fence-parse-req-3", "fence-parse-op-3");
+    string_epoch["epoch"] = "5";
+    require(!ParseLocalControlRequest(string_epoch, nullptr, &error),
+            "string epoch should fail to parse");
+
+    orange::control::ParsedLocalControlRequest parsed;
+    require(ParseLocalControlRequest(
+                fenced_request_json(
+                    "stop_recording", "fence-parse-req-4", "fence-parse-op-4", 3, 7),
+                &parsed,
+                &error),
+            "valid fenced request should parse: " + error);
+    require(parsed.epoch == 3 && parsed.seq == 7,
+            "parsed request should carry epoch and seq");
+    require(ParseLocalControlRequest(
+                request_json("stop_recording", "fence-parse-req-5", "fence-parse-op-5"),
+                &parsed,
+                &error),
+            "legacy request without epoch/seq should parse");
+    require(parsed.epoch == 0 && parsed.seq == 0,
+            "legacy request should parse with epoch=0 and seq=0");
+}
+
+void test_fenced_stop_is_queued_and_reports_epoch_telemetry()
+{
+    const auto socket_path = temp_path("fence_fresh.sock");
+    LocalControlServer server;
+    require_start_lifecycle_server(&server, lifecycle_options(socket_path));
+
+    require(server.session_epoch() == 1, "server should start at session epoch 1");
+    require(server.last_done_seq() == 0, "server should start with last_done_seq 0");
+
+    const nlohmann::json response = send_request(
+        socket_path,
+        fenced_request_json("stop_recording", "fence-fresh-req-1", "fence-fresh-op-1",
+                            1, 1, {{"grace_seconds", 0}}));
+    const nlohmann::json status =
+        send_request(socket_path, request_json("status", "fence-fresh-status"));
+    const std::vector<PendingLocalControlCommand> pending =
+        server.DrainPendingCommands();
+    server.Stop();
+
+    require(response["ok"].get<bool>(), "fresh fenced stop should be ok");
+    require(response["accepted"].get<bool>(), "fresh fenced stop should be accepted");
+    require(!response["duplicate"].get<bool>(), "fresh fenced stop should not be duplicate");
+    require(response["queued_for_gui_thread"].get<bool>(),
+            "fresh fenced stop should queue for the GUI thread");
+    require(response["current_epoch"].get<uint64_t>() == 1,
+            "response should report current_epoch");
+    require(response["last_done_seq"].get<uint64_t>() == 0,
+            "response should report last_done_seq");
+    require(response["epoch"].get<uint64_t>() == 1, "response should echo request epoch");
+    require(response["seq"].get<uint64_t>() == 1, "response should echo request seq");
+    require(status["current_epoch"].get<uint64_t>() == 1,
+            "status response should report current_epoch");
+    require(status["status"]["current_epoch"].get<uint64_t>() == 1,
+            "status snapshot should report current_epoch");
+    require(status["status"]["last_done_seq"].get<uint64_t>() == 0,
+            "status snapshot should report last_done_seq");
+    require(pending.size() == 1, "fresh fenced stop should queue exactly one command");
+    require(pending[0].epoch == 1 && pending[0].seq == 1,
+            "queued command should carry its epoch and seq");
+}
+
+void test_stale_epoch_command_is_rejected_and_not_queued()
+{
+    const auto socket_path = temp_path("fence_stale_epoch.sock");
+    LocalControlServer server;
+    require_start_lifecycle_server(&server, lifecycle_options(socket_path));
+
+    server.AdvanceSessionEpoch();  // GUI recording start: epoch 1 -> 2
+    require(server.session_epoch() == 2, "epoch should advance to 2");
+
+    const nlohmann::json stale = send_request(
+        socket_path,
+        fenced_request_json("stop_recording", "fence-stale-req-1", "fence-stale-op-1",
+                            1, 5, {{"grace_seconds", 0}}));
+    const std::vector<PendingLocalControlCommand> pending =
+        server.DrainPendingCommands();
+
+    require(!stale["ok"].get<bool>(), "stale-epoch stop should not be ok");
+    require(!stale["accepted"].get<bool>(), "stale-epoch stop should not be accepted");
+    require(!stale["duplicate"].get<bool>(), "stale-epoch stop should not be duplicate");
+    require(!stale["queued_for_gui_thread"].get<bool>(),
+            "stale-epoch stop must not queue for the GUI thread");
+    require(stale["error"]["code"].get<std::string>() == "stale_epoch",
+            "stale-epoch stop should report the stale_epoch error code");
+    require(stale["current_epoch"].get<uint64_t>() == 2,
+            "stale-epoch rejection should report the current epoch");
+    require(pending.empty(), "stale-epoch stop must not create pending commands");
+
+    // A stale-epoch rejection must not burn the request/operation ids: the
+    // same ids stamped with the current epoch should be accepted and queued.
+    const nlohmann::json current = send_request(
+        socket_path,
+        fenced_request_json("stop_recording", "fence-stale-req-1", "fence-stale-op-1",
+                            2, 1, {{"grace_seconds", 0}}));
+    const std::vector<PendingLocalControlCommand> requeued =
+        server.DrainPendingCommands();
+    server.Stop();
+
+    require(current["ok"].get<bool>() && current["accepted"].get<bool>(),
+            "current-epoch stop should be accepted after the stale rejection");
+    require(!current["duplicate"].get<bool>(),
+            "current-epoch stop should not be duplicate after the stale rejection");
+    require(requeued.size() == 1, "current-epoch stop should queue");
+}
+
+void test_same_epoch_stale_seq_is_reacked_duplicate_and_not_queued()
+{
+    const auto socket_path = temp_path("fence_stale_seq.sock");
+    LocalControlServer server;
+    require_start_lifecycle_server(&server, lifecycle_options(socket_path));
+
+    server.MarkCommandDone(1, 5);
+    require(server.last_done_seq() == 5, "last_done_seq should advance to 5");
+
+    const nlohmann::json replay = send_request(
+        socket_path,
+        fenced_request_json("stop_recording", "fence-seq-req-1", "fence-seq-op-1",
+                            1, 5, {{"grace_seconds", 0}}));
+    const nlohmann::json older = send_request(
+        socket_path,
+        fenced_request_json("stop_recording", "fence-seq-req-2", "fence-seq-op-2",
+                            1, 4, {{"grace_seconds", 0}}));
+    const std::vector<PendingLocalControlCommand> pending =
+        server.DrainPendingCommands();
+
+    require(replay["ok"].get<bool>() && replay["accepted"].get<bool>(),
+            "stale-seq replay should still be acknowledged");
+    require(replay["duplicate"].get<bool>(),
+            "stale-seq replay should be re-ACKed as duplicate");
+    require(!replay["queued_for_gui_thread"].get<bool>(),
+            "stale-seq replay must not queue for the GUI thread");
+    require(older["duplicate"].get<bool>(),
+            "older-seq replay should also be re-ACKed as duplicate");
+    require(pending.empty(), "stale-seq replays must not create pending commands");
+
+    const nlohmann::json fresh = send_request(
+        socket_path,
+        fenced_request_json("stop_recording", "fence-seq-req-3", "fence-seq-op-3",
+                            1, 6, {{"grace_seconds", 0}}));
+    const std::vector<PendingLocalControlCommand> queued =
+        server.DrainPendingCommands();
+    server.Stop();
+
+    require(!fresh["duplicate"].get<bool>(), "seq above last_done should not be duplicate");
+    require(fresh["queued_for_gui_thread"].get<bool>(),
+            "seq above last_done should queue for the GUI thread");
+    require(queued.size() == 1 && queued[0].seq == 6,
+            "seq above last_done should queue exactly one command");
+}
+
+void test_client_ahead_epoch_is_adopted()
+{
+    const auto socket_path = temp_path("fence_adopt.sock");
+    LocalControlServer server;
+    require_start_lifecycle_server(&server, lifecycle_options(socket_path));
+
+    server.MarkCommandDone(1, 3);
+    const nlohmann::json ahead = send_request(
+        socket_path,
+        fenced_request_json("stop_recording", "fence-adopt-req-1", "fence-adopt-op-1",
+                            3, 1, {{"grace_seconds", 0}}));
+    const std::vector<PendingLocalControlCommand> pending =
+        server.DrainPendingCommands();
+
+    require(ahead["ok"].get<bool>() && ahead["accepted"].get<bool>(),
+            "client-ahead epoch should be accepted");
+    require(ahead["queued_for_gui_thread"].get<bool>(),
+            "client-ahead epoch should queue for the GUI thread");
+    require(ahead["current_epoch"].get<uint64_t>() == 3,
+            "client-ahead epoch should be adopted in the response");
+    require(server.session_epoch() == 3, "server should adopt the client-ahead epoch");
+    require(server.last_done_seq() == 0,
+            "epoch adoption should reset the last_done_seq watermark");
+    require(pending.size() == 1, "client-ahead command should queue");
+
+    const nlohmann::json now_stale = send_request(
+        socket_path,
+        fenced_request_json("stop_recording", "fence-adopt-req-2", "fence-adopt-op-2",
+                            2, 9, {{"grace_seconds", 0}}));
+    server.Stop();
+    require(now_stale["error"]["code"].get<std::string>() == "stale_epoch",
+            "epochs below the adopted epoch should now be stale");
+}
+
+void test_legacy_requests_bypass_epoch_gates()
+{
+    const auto socket_path = temp_path("fence_legacy.sock");
+    LocalControlServer server;
+    require_start_lifecycle_server(&server, lifecycle_options(socket_path));
+
+    server.AdvanceSessionEpoch();
+    server.MarkCommandDone(2, 7);
+
+    const nlohmann::json request =
+        request_json("stop_recording", "fence-legacy-req-1", "fence-legacy-op-1",
+                     {{"grace_seconds", 0}});
+    const nlohmann::json first = send_request(socket_path, request);
+    const nlohmann::json duplicate = send_request(socket_path, request);
+    const std::vector<PendingLocalControlCommand> pending =
+        server.DrainPendingCommands();
+    server.Stop();
+
+    require(first["ok"].get<bool>() && first["accepted"].get<bool>(),
+            "legacy stop should be accepted regardless of epoch state");
+    require(!first["duplicate"].get<bool>(), "legacy stop should not be duplicate");
+    require(first["queued_for_gui_thread"].get<bool>(),
+            "legacy stop should queue for the GUI thread");
+    require(first["current_epoch"].get<uint64_t>() == 2,
+            "legacy response should still report current_epoch");
+    require(!first.contains("epoch") && !first.contains("seq"),
+            "legacy response should not invent epoch/seq echoes");
+    require(duplicate["duplicate"].get<bool>(),
+            "legacy duplicate request_id should still be re-ACKed as duplicate");
+    require(!duplicate["queued_for_gui_thread"].get<bool>(),
+            "legacy duplicate should not queue again");
+    require(pending.size() == 1, "legacy stop should queue exactly once");
+    require(pending[0].epoch == 0 && pending[0].seq == 0,
+            "legacy pending command should carry no epoch/seq");
+}
+
+void test_mark_command_done_ignores_stale_epoch()
+{
+    LocalControlServer server;
+    require(server.session_epoch() == 1, "fresh server should be at epoch 1");
+
+    server.AdvanceSessionEpoch();  // epoch 2
+    server.MarkCommandDone(1, 9);
+    require(server.last_done_seq() == 0,
+            "stale-epoch completion must not advance last_done_seq");
+
+    server.MarkCommandDone(2, 3);
+    require(server.last_done_seq() == 3,
+            "current-epoch completion should advance last_done_seq");
+    server.MarkCommandDone(2, 2);
+    require(server.last_done_seq() == 3,
+            "completions must not move last_done_seq backwards");
+    server.MarkCommandDone(0, 4);
+    server.MarkCommandDone(2, 0);
+    require(server.last_done_seq() == 3,
+            "legacy (zero) epoch/seq completions must be ignored");
+
+    server.AdvanceSessionEpoch();  // epoch 3
+    require(server.last_done_seq() == 0,
+            "advancing the epoch should reset last_done_seq");
+}
+
+void test_dedupe_cap_evicts_oldest_without_breaking_recent_duplicates()
+{
+    const auto socket_path = temp_path("fence_dedupe_cap.sock");
+    LocalControlServer server;
+    LocalControlServerOptions options = lifecycle_options(socket_path);
+    options.max_dedupe_entries = 3;
+    require_start_lifecycle_server(&server, options);
+
+    auto stop_request = [](const int index) {
+        const std::string suffix = std::to_string(index);
+        return request_json("stop_recording",
+                            "cap-req-" + suffix,
+                            "cap-op-" + suffix,
+                            {{"grace_seconds", 0}});
+    };
+    for (int i = 1; i <= 4; ++i) {
+        const nlohmann::json response = send_request(socket_path, stop_request(i));
+        require(!response["duplicate"].get<bool>(),
+                "distinct request " + std::to_string(i) + " should not be duplicate");
+    }
+    require(server.DrainPendingCommands().size() == 4,
+            "all four distinct stops should have queued");
+
+    const nlohmann::json recent_duplicate = send_request(socket_path, stop_request(4));
+    require(recent_duplicate["duplicate"].get<bool>(),
+            "the most recent request should still be detected as duplicate");
+    require(!recent_duplicate["queued_for_gui_thread"].get<bool>(),
+            "the recent duplicate should not queue again");
+
+    const nlohmann::json evicted = send_request(socket_path, stop_request(1));
+    const std::vector<PendingLocalControlCommand> pending =
+        server.DrainPendingCommands();
+    server.Stop();
+
+    require(!evicted["duplicate"].get<bool>(),
+            "the oldest request should have been evicted from the dedupe window");
+    require(evicted["queued_for_gui_thread"].get<bool>(),
+            "the evicted request should be accepted as new");
+    require(pending.size() == 1 && pending[0].request_id == "cap-req-1",
+            "the evicted request should queue exactly once");
+}
+
 void test_start_stop_are_rejected_in_diagnostic_mode()
 {
     const auto socket_path = temp_path("stop.sock");
@@ -1360,6 +1702,22 @@ int main()
          test_start_recording_queues_when_start_mode_enabled},
         {"start_stop_are_rejected_in_diagnostic_mode",
          test_start_stop_are_rejected_in_diagnostic_mode},
+        {"parse_rejects_invalid_epoch_and_seq",
+         test_parse_rejects_invalid_epoch_and_seq},
+        {"fenced_stop_is_queued_and_reports_epoch_telemetry",
+         test_fenced_stop_is_queued_and_reports_epoch_telemetry},
+        {"stale_epoch_command_is_rejected_and_not_queued",
+         test_stale_epoch_command_is_rejected_and_not_queued},
+        {"same_epoch_stale_seq_is_reacked_duplicate_and_not_queued",
+         test_same_epoch_stale_seq_is_reacked_duplicate_and_not_queued},
+        {"client_ahead_epoch_is_adopted",
+         test_client_ahead_epoch_is_adopted},
+        {"legacy_requests_bypass_epoch_gates",
+         test_legacy_requests_bypass_epoch_gates},
+        {"mark_command_done_ignores_stale_epoch",
+         test_mark_command_done_ignores_stale_epoch},
+        {"dedupe_cap_evicts_oldest_without_breaking_recent_duplicates",
+         test_dedupe_cap_evicts_oldest_without_breaking_recent_duplicates},
     };
     for (const auto& test : tests) {
         test.second();

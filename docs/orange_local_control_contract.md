@@ -1,8 +1,8 @@
 # Orange Local Control Contract
 
-Status: v1 contract, Orange GUI endpoint, and opt-in recording start/stop
-control slices.
-Last updated: 2026-05-29.
+Status: v1 contract, Orange GUI endpoint, opt-in recording start/stop
+control slices, and optional epoch/seq command fencing.
+Last updated: 2026-07-04.
 
 ## Purpose
 
@@ -254,6 +254,62 @@ Supported methods:
 `method + operation_id` values are idempotent. `start_recording` is accepted
 only when local-control recording start is enabled. `stop_recording` is accepted
 only when local-control recording stop is enabled.
+
+## Versioning, Unknown Fields, and Epoch/Seq Fencing
+
+The v1 request schema is extended additively. Unknown request fields are
+ignored by Orange (existing behavior, now contractual), so clients may send
+newer optional fields to an older Orange without breaking; `schema_version`
+stays `1` for additive extensions.
+
+Two optional additive fields fence mutating commands to the recording
+generation they were issued for: `epoch` and `seq`. Both are positive
+integers (`uint64`, values `>= 1`; `0` or non-integers are rejected as
+`invalid_request`). When both are absent the request runs in legacy mode:
+exactly the pre-fence behavior, gated only by the `request_id` /
+`method + operation_id` dedupe described above. Id-based dedupe still applies
+to fenced requests as a fallback.
+
+Server state behind the fence:
+
+- `current_epoch` starts at `1` and advances every time a new Orange recording
+  generation starts (any recording start: operator button, autorun, or
+  local-control `start_recording`).
+- `last_done_seq` starts at `0`, is reset to `0` on every epoch change, and
+  advances only when a fenced command's effect actually completes on the GUI
+  thread: a `start_recording` that triggers a recording start, or a stop whose
+  drain finalizes. Acceptance and queueing alone do not advance it.
+
+Every response, and the embedded `status` object, reports `current_epoch` and
+`last_done_seq`; responses to fenced requests also echo the request's `epoch`
+and `seq`.
+
+Gating for mutating commands that carry `epoch`/`seq`, applied before the
+id-based dedupe:
+
+- `epoch < current_epoch`: the command was stamped for an older recording
+  generation. Orange rejects it with `ok=false`, `accepted=false`, and error
+  code `stale_epoch`, and does not queue it. This is what prevents a delayed
+  or replayed stop from a previous run — even one retried with a fresh
+  `operation_id` — from truncating the current recording.
+- `epoch == current_epoch` and `seq <= last_done_seq`: the command (or a later
+  one in the same epoch) already completed. Orange re-ACKs it with `ok=true`,
+  `accepted=true`, `duplicate=true`, and does not queue it again.
+- `epoch > current_epoch`: the client is ahead of Orange's last epoch bump.
+  Orange adopts the client epoch, resets `last_done_seq` to `0`, and processes
+  the command normally.
+
+Recommended client pattern: learn `current_epoch` from a `status` request,
+stamp every mutating command with that epoch and a monotonically increasing
+`seq`, and retry with the identical `epoch`/`seq`/`operation_id` triple until
+an ACK arrives. A `stale_epoch` rejection means the command's recording
+generation is over and the command must be dropped, not retried with fresh
+ids. Requests without `epoch`/`seq` remain fully supported.
+
+The id-based dedupe sets are bounded (4096 entries each, oldest evicted
+first), so extremely old `request_id`/`operation_id` values can eventually be
+accepted again in very long GUI sessions; fenced clients are protected by the
+epoch/seq gates regardless.
 
 ## Status Semantics
 
