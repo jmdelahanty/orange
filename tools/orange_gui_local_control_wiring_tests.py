@@ -231,8 +231,9 @@ def test_recording_session_stop_control_carries_drain_evidence() -> None:
     ):
         require(needle in manifest_body, f"recording manifest control must include {description}")
 
+    finalizer = read("src/gui/recording_finalizer.cpp")
     finalized_body = function_body(
-        orange,
+        finalizer,
         "gui_update_local_control_stop_manifest_for_finalized_drain",
     )
     require(
@@ -255,7 +256,7 @@ def test_recording_session_stop_control_carries_drain_evidence() -> None:
         in finalized_body,
         "finalized drain helper must persist terminal ACK state",
     )
-    finalize_body = function_body(orange, "gui_finalize_recording_session_if_ready")
+    finalize_body = function_body(finalizer, "gui_finalize_recording_session_if_ready")
     require(
         "gui_update_local_control_stop_manifest_for_finalized_drain(run);" in finalize_body,
         "recording finalizer must update stop-control evidence before writing the manifest",
@@ -387,9 +388,9 @@ def test_local_control_event_log_preserves_request_provenance() -> None:
 
 
 def test_diagnostic_finalize_stall_can_exercise_drain_timeout() -> None:
-    orange = read("src/orange.cpp")
+    finalizer = read("src/gui/recording_finalizer.cpp")
     env_body = function_body(
-        orange,
+        finalizer,
         "gui_local_control_diagnostic_finalize_stall_seconds",
     )
     require(
@@ -400,7 +401,7 @@ def test_diagnostic_finalize_stall_can_exercise_drain_timeout() -> None:
         "ORANGE_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS" in env_body,
         "diagnostic finalize stall must have a non-GUI alias",
     )
-    finalize_body = function_body(orange, "gui_finalize_recording_session_if_ready")
+    finalize_body = function_body(finalizer, "gui_finalize_recording_session_if_ready")
     require(
         "gui_local_control_diagnostic_finalize_stall_seconds()" in finalize_body,
         "recording finalizer must consult the diagnostic stall knob",

@@ -282,6 +282,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/camera_properties_panel.cpp"
     "${SRC_DIR}/gui/frame_ipc_panel.cpp"
     "${SRC_DIR}/gui/host_ptp_panel.cpp"
+    "${SRC_DIR}/gui/recording_finalizer.cpp"
     "${SRC_DIR}/gui/recording_panel.cpp"
     "${SRC_DIR}/gui/recording_snapshots.cpp"
     "${SRC_DIR}/gui/spatial_layout/calibration_metadata.cpp"
