@@ -278,6 +278,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/projected_center_preflight.cpp"
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/image_writer_worker.cpp"
+    "${SRC_DIR}/gui/autorun.cpp"
     "${SRC_DIR}/gui/camera_properties_panel.cpp"
     "${SRC_DIR}/gui/frame_ipc_panel.cpp"
     "${SRC_DIR}/gui/host_ptp_panel.cpp"
@@ -773,6 +774,15 @@ if(BUILD_TESTING)
         ${CUDA_DRIVER_LIBRARY}
     )
     add_test(NAME recording_snapshots_tests COMMAND recording_snapshots_tests)
+
+    add_executable(gui_autorun_tests
+        "tools/gui_autorun_tests.cpp"
+        "${SRC_DIR}/gui/autorun.cpp"
+    )
+    target_include_directories(gui_autorun_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(gui_autorun_tests PRIVATE cxx_std_17)
+    target_link_libraries(gui_autorun_tests PRIVATE Threads::Threads)
+    add_test(NAME gui_autorun_tests COMMAND gui_autorun_tests)
 
     add_executable(spatial_calibration_snapshot_tests
         "tools/spatial_calibration_snapshot_tests.cpp"
