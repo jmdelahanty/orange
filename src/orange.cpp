@@ -6140,6 +6140,13 @@ int main(int /*argc*/, char ** /*args*/) {
                                   << std::endl;
                     } else if (!camera_control->record_video && camera_control->recording_draining) {
                         std::cout << "Recording is still draining. Please wait..." << std::endl;
+                        // Surface the rejection in the GUI: stdout alone made the
+                        // play button look dead while a drain was latched.
+                        recording_preflight_errors = {
+                            "Recording start rejected: the previous recording is still "
+                            "draining. Wait for finalization to complete (see session "
+                            "status below); if this state persists, the external "
+                            "recorder may not be draining."};
                     } else {
                         const bool next_record_state = !camera_control->record_video;
                         if (next_record_state) {
