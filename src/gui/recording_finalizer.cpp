@@ -992,7 +992,9 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
             return false;
         }
         if (recording_session &&
-            !orange::session::recording_pipelines_drained(recording_session)) {
+            orange::session::should_reassert_recording_drain_flags(
+                run->recording_sink_mode,
+                orange::session::recording_pipelines_drained(recording_session))) {
             if (camera_control) {
                 camera_control->recording_draining = true;
                 camera_control->stop_record = true;
