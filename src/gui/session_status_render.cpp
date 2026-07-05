@@ -31,6 +31,11 @@ void render_gui_session_timing_status(
             ImVec4{0.0f, 1.0f, 0.0f, 1.0f},
             "Recording: %s",
             timing.recording_elapsed.c_str());
+    } else if (timing.recording_starting) {
+        ImGui::TextColored(
+            ImVec4{1.0f, 0.65f, 0.0f, 1.0f},
+            "Starting external recorder: %s",
+            timing.starting_elapsed.c_str());
     } else if (timing.recording_finalizing) {
         ImGui::TextColored(
             ImVec4{1.0f, 1.0f, 0.0f, 1.0f},

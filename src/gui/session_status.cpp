@@ -85,8 +85,10 @@ void gui_mark_stream_started(GuiSessionTimingState* timing)
     const auto now = std::chrono::steady_clock::now();
     timing->stream_running = true;
     timing->stream_started_at = now;
+    timing->recording_starting = false;
     timing->recording_running = false;
     timing->recording_finalizing = false;
+    timing->recording_start_pending_at = {};
     timing->recording_started_at = {};
     timing->finalizing_started_at = {};
     timing->last_recording_elapsed = std::chrono::seconds{0};
@@ -105,6 +107,8 @@ void gui_mark_recording_started(GuiSessionTimingState* timing)
     if (!timing) {
         return;
     }
+    timing->recording_starting = false;
+    timing->recording_start_pending_at = {};
     timing->recording_running = true;
     timing->recording_finalizing = false;
     timing->recording_started_at = std::chrono::steady_clock::now();
@@ -162,7 +166,8 @@ void gui_request_recording_stop_through_operator_path(
 
 GuiSessionTimingSnapshot gui_session_timing_snapshot(
     GuiSessionTimingState* timing,
-    const CameraControl* camera_control)
+    const CameraControl* camera_control,
+    const bool recording_start_pending)
 {
     GuiSessionTimingSnapshot snapshot;
     if (!timing) {
@@ -181,6 +186,19 @@ GuiSessionTimingSnapshot gui_session_timing_snapshot(
         gui_mark_stream_stopped(timing);
     }
 
+    // Pending-start reconciliation. CameraControl stays authoritative: an
+    // active recording always wins over a stale pending marker (the pending
+    // window ends exactly when record_video flips true at completion, or
+    // when the start fails/cancels and the caller stops reporting pending).
+    if (recording_start_pending && !recording_active && !timing->recording_starting) {
+        timing->recording_starting = true;
+        timing->recording_start_pending_at = now;
+    } else if ((!recording_start_pending || recording_active) &&
+               timing->recording_starting) {
+        timing->recording_starting = false;
+        timing->recording_start_pending_at = {};
+    }
+
     if (recording_active && !timing->recording_running) {
         gui_mark_recording_started(timing);
     } else if (!recording_active && recording_draining && !timing->recording_finalizing) {
@@ -191,6 +209,7 @@ GuiSessionTimingSnapshot gui_session_timing_snapshot(
     }
 
     snapshot.stream_running = timing->stream_running;
+    snapshot.recording_starting = timing->recording_starting;
     snapshot.recording_running = timing->recording_running;
     snapshot.recording_finalizing = timing->recording_finalizing;
     snapshot.has_recording_elapsed =
@@ -201,6 +220,11 @@ GuiSessionTimingSnapshot gui_session_timing_snapshot(
     if (timing->stream_running) {
         snapshot.stream_elapsed =
             format_elapsed_time(gui_elapsed_since(timing->stream_started_at, now));
+    }
+    if (timing->recording_starting) {
+        snapshot.starting_elapsed =
+            format_elapsed_time(
+                gui_elapsed_since(timing->recording_start_pending_at, now));
     }
     if (timing->recording_running) {
         snapshot.recording_elapsed =

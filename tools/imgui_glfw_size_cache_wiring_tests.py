@@ -218,8 +218,12 @@ def test_imgui_backend_does_not_own_main_window_size_callbacks() -> None:
 
 
 def test_recording_start_resets_size_cache_stats() -> None:
+    # The telemetry resets live in the GUI-side start-completion helper,
+    # which runs at the moment the run actually starts: directly for a
+    # synchronous start and from gui_poll_async_recording_start once a
+    # background external-recorder start completes.
     orange = read("src/orange.cpp")
-    body = function_body(orange, "gui_request_recording_start_through_operator_path")
+    body = function_body(orange, "gui_finish_recording_start_through_operator_path")
     require(
         "display_frame_rate_stats->Reset()" in body,
         "recording start must reset GUI frame-rate telemetry",

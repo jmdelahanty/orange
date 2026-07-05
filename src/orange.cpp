@@ -61,6 +61,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <fstream>
@@ -158,6 +159,47 @@ struct GuiLocalControlStartRequestState {
     std::string last_event_at_utc;
     uint64_t epoch = 0;  // 0 = command carried no epoch/seq (legacy)
     uint64_t seq = 0;
+};
+
+// Owns the single background thread that runs the external-recorder
+// supervisor spawn + socket wait for a GUI recording start
+// (orange::session::start_prepared_recording_run_supervisors). Owned by
+// main scope; the worker is joined on completion
+// (gui_poll_async_recording_start), on cancellation, and on shutdown
+// (gui_cancel_async_recording_start) - never detached. The background
+// thread must never touch ImGui, CameraControl, worker objects, or any
+// other GUI state: it only reads `prepared`, writes `outcome`, and then
+// publishes `done`; the GUI thread reads `outcome` only after observing
+// `done` and joining the worker.
+struct GuiAsyncRecordingStartState {
+    std::thread worker;
+    std::atomic<bool> done{false};
+    bool active = false;
+    orange::session::PreparedRecordingRunStart prepared;
+    orange::session::RecordingRunSupervisorStartOutcome outcome;
+    std::string context;
+    std::chrono::steady_clock::time_point started_at{};
+    // Deferred local-control ack bookkeeping, copied from the start request
+    // at launch time (the live request state may be overwritten by a newer
+    // command while this start is still pending).
+    bool from_local_control = false;
+    uint64_t local_control_epoch = 0;
+    uint64_t local_control_seq = 0;
+    std::string local_control_request_id;
+    std::string local_control_operation_id;
+    std::string local_control_source;
+    std::string local_control_reason;
+    std::string local_control_received_at_utc;
+};
+
+// Outcome of a GUI-operator recording-start request. kPending means the
+// external recorder supervisors are starting on the background thread and
+// the run will start (or fail loudly) at a later
+// gui_poll_async_recording_start; record_video stays false until then.
+enum class GuiRecordingStartDispatch {
+    kFailed,
+    kStarted,
+    kPending,
 };
 
 std::string gui_trim_ascii_whitespace(const std::string& input)
@@ -3385,8 +3427,39 @@ void render_aperture_characterization_window(
 
 }  // namespace
 
-bool gui_request_recording_start_through_operator_path(
-    orange::session::RecordingSessionState* recording_session,
+namespace {
+
+// Shared failure reporting for the synchronous and asynchronous recording
+// start paths; mirrors the reporting the pre-async operator path did inline.
+void gui_log_recording_start_failure(
+    const orange::session::RecordingRunStartResult& start_result,
+    std::vector<std::string>* recording_preflight_errors)
+{
+    if (recording_preflight_errors) {
+        *recording_preflight_errors = {
+            start_result.error_message.empty()
+                ? "Failed to start recording run."
+                : start_result.error_message};
+    }
+    if (!start_result.error_message.empty()) {
+        std::cerr << "[GUI][recording] " << start_result.error_message << std::endl;
+    }
+    if (!start_result.external_recorder_contract_path.empty()) {
+        std::cerr << "[GUI][recording] external recorder contract: "
+                  << start_result.external_recorder_contract_path
+                  << std::endl;
+    }
+}
+
+}  // namespace
+
+// GUI-side completion of a successful recording-run start: worker folder
+// rotation, per-run snapshots, timers, and run-state bookkeeping. Runs on
+// the GUI thread only (touches worker objects and GUI state), either
+// directly after a synchronous start or from gui_poll_async_recording_start
+// once the background supervisor start completed.
+void gui_finish_recording_start_through_operator_path(
+    const orange::session::RecordingRunStartResult& start_result,
     CameraControl* camera_control,
     GuiRecordingRunState* recording_run,
     GuiSessionTimingState* timing,
@@ -3397,78 +3470,12 @@ bool gui_request_recording_start_through_operator_path(
     const int num_cameras,
     const std::string& yolo_model,
     const int crop_size_px,
-    EncoderConfig* encoder_config,
-    const std::string& input_folder,
-    PTPParams* ptp_params,
     CropProducerWorker** crop_producer_workers,
     CropPreviewWorker** crop_preview_workers,
     CropAndEncodeWorker** crop_and_encode_workers,
     PoseWorker** pose_workers,
-    std::vector<std::string>* recording_preflight_errors,
     const std::string& context)
 {
-    if (!recording_session || !camera_control || !recording_run || !timing) {
-        if (recording_preflight_errors) {
-            *recording_preflight_errors = {
-                "Orange GUI recording start request is missing runtime state."};
-        }
-        std::cerr << "[GUI][recording] Start rejected: missing runtime state"
-                  << " context=" << context << std::endl;
-        return false;
-    }
-
-    const RecordingPreflightResult preflight =
-        run_gui_recording_preflight(
-            cameras_params,
-            cameras_select,
-            num_cameras,
-            yolo_model,
-            crop_size_px);
-    if (!preflight.ok) {
-        if (recording_preflight_errors) {
-            *recording_preflight_errors = preflight.errors;
-        }
-        log_recording_preflight_failure(context.c_str(), preflight);
-        return false;
-    }
-
-    if (recording_preflight_errors) {
-        recording_preflight_errors->clear();
-    }
-    const std::string output_root =
-        encoder_config && !encoder_config->folder_name.empty()
-            ? encoder_config->folder_name
-            : input_folder;
-    const orange::session::RecordingRunStartResult start_result =
-        orange::session::begin_recording_run(
-            recording_session,
-            camera_control,
-            cameras_params,
-            cameras_select,
-            num_cameras,
-            output_root,
-            ptp_params,
-            recording_session->recording_sink_mode,
-            &recording_session->external_recorder_contract_config);
-
-    if (!start_result.ok) {
-        if (recording_preflight_errors) {
-            *recording_preflight_errors = {
-                start_result.error_message.empty()
-                    ? "Failed to start recording run."
-                    : start_result.error_message};
-        }
-        if (!start_result.error_message.empty()) {
-            std::cerr << "[GUI][recording] " << start_result.error_message << std::endl;
-        }
-        if (!start_result.external_recorder_contract_path.empty()) {
-            std::cerr << "[GUI][recording] external recorder contract: "
-                      << start_result.external_recorder_contract_path
-                      << std::endl;
-        }
-        return false;
-    }
-
     const std::string& resolved_recording_folder = start_result.recording_folder;
     const std::string& resolved_recording_sink_mode = start_result.recording_sink_mode;
     for (int i = 0; i < num_cameras; ++i) {
@@ -3536,11 +3543,343 @@ bool gui_request_recording_start_through_operator_path(
     if (!resolved_recording_folder.empty()) {
         std::cout << "Recording folder: " << resolved_recording_folder << std::endl;
     }
-    return true;
+}
+
+GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
+    GuiAsyncRecordingStartState* async_start,
+    orange::session::RecordingSessionState* recording_session,
+    CameraControl* camera_control,
+    GuiRecordingRunState* recording_run,
+    GuiSessionTimingState* timing,
+    orange::gui::GuiDisplayFrameRateStats* display_frame_rate_stats,
+    GuiLocalControlStopSchedulerState* stop_scheduler,
+    CameraParams* cameras_params,
+    CameraEachSelect* cameras_select,
+    const int num_cameras,
+    const std::string& yolo_model,
+    const int crop_size_px,
+    EncoderConfig* encoder_config,
+    const std::string& input_folder,
+    PTPParams* ptp_params,
+    CropProducerWorker** crop_producer_workers,
+    CropPreviewWorker** crop_preview_workers,
+    CropAndEncodeWorker** crop_and_encode_workers,
+    PoseWorker** pose_workers,
+    std::vector<std::string>* recording_preflight_errors,
+    const std::string& context)
+{
+    if (!recording_session || !camera_control || !recording_run || !timing) {
+        if (recording_preflight_errors) {
+            *recording_preflight_errors = {
+                "Orange GUI recording start request is missing runtime state."};
+        }
+        std::cerr << "[GUI][recording] Start rejected: missing runtime state"
+                  << " context=" << context << std::endl;
+        return GuiRecordingStartDispatch::kFailed;
+    }
+    if (async_start && async_start->active) {
+        // Debounce: a background recorder start is already in flight; the
+        // pending window resolves through gui_poll_async_recording_start.
+        if (recording_preflight_errors) {
+            *recording_preflight_errors = {
+                "A recording start is already in progress"
+                " (external recorder starting)."};
+        }
+        std::cerr << "[GUI][recording] Start ignored: a recording start is already pending"
+                  << " context=" << context << std::endl;
+        return GuiRecordingStartDispatch::kFailed;
+    }
+
+    const RecordingPreflightResult preflight =
+        run_gui_recording_preflight(
+            cameras_params,
+            cameras_select,
+            num_cameras,
+            yolo_model,
+            crop_size_px);
+    if (!preflight.ok) {
+        if (recording_preflight_errors) {
+            *recording_preflight_errors = preflight.errors;
+        }
+        log_recording_preflight_failure(context.c_str(), preflight);
+        return GuiRecordingStartDispatch::kFailed;
+    }
+
+    if (recording_preflight_errors) {
+        recording_preflight_errors->clear();
+    }
+    const std::string output_root =
+        encoder_config && !encoder_config->folder_name.empty()
+            ? encoder_config->folder_name
+            : input_folder;
+    orange::session::PreparedRecordingRunStart prepared =
+        orange::session::prepare_recording_run(
+            recording_session,
+            camera_control,
+            cameras_params,
+            cameras_select,
+            num_cameras,
+            output_root,
+            ptp_params,
+            recording_session->recording_sink_mode,
+            &recording_session->external_recorder_contract_config);
+    if (!prepared.valid) {
+        orange::session::RecordingRunStartResult failed_result;
+        failed_result.recording_folder = prepared.recording_folder;
+        failed_result.recording_sink_mode = prepared.recording_sink_mode;
+        failed_result.error_message = prepared.error_message;
+        failed_result.external_recorder_contract_path =
+            prepared.external_recorder_contract_path;
+        gui_log_recording_start_failure(failed_result, recording_preflight_errors);
+        return GuiRecordingStartDispatch::kFailed;
+    }
+
+    if (!async_start || !prepared.requires_supervisor_start()) {
+        // No external recorder processes to wait for (or no async runner):
+        // keep the synchronous behavior, which is fast for in-process sinks.
+        orange::session::RecordingRunSupervisorStartOutcome outcome =
+            orange::session::start_prepared_recording_run_supervisors(prepared);
+        const orange::session::RecordingRunStartResult start_result =
+            orange::session::complete_recording_run(
+                recording_session,
+                camera_control,
+                cameras_params,
+                num_cameras,
+                ptp_params,
+                prepared,
+                std::move(outcome));
+        if (!start_result.ok) {
+            gui_log_recording_start_failure(start_result, recording_preflight_errors);
+            return GuiRecordingStartDispatch::kFailed;
+        }
+        gui_finish_recording_start_through_operator_path(
+            start_result,
+            camera_control,
+            recording_run,
+            timing,
+            display_frame_rate_stats,
+            stop_scheduler,
+            cameras_params,
+            cameras_select,
+            num_cameras,
+            yolo_model,
+            crop_size_px,
+            crop_producer_workers,
+            crop_preview_workers,
+            crop_and_encode_workers,
+            pose_workers,
+            context);
+        return GuiRecordingStartDispatch::kStarted;
+    }
+
+    async_start->done.store(false, std::memory_order_release);
+    async_start->active = true;
+    async_start->prepared = std::move(prepared);
+    async_start->outcome = orange::session::RecordingRunSupervisorStartOutcome{};
+    async_start->context = context;
+    async_start->started_at = std::chrono::steady_clock::now();
+    async_start->from_local_control = false;
+    GuiAsyncRecordingStartState* worker_state = async_start;
+    async_start->worker = std::thread([worker_state]() {
+        // Thread boundary (docs/error_handling_convention.md): an exception
+        // escaping a raw std::thread would std::terminate the whole process.
+        // Catch, report through the outcome slot, and let the GUI poll
+        // surface the failure loudly.
+        try {
+            worker_state->outcome =
+                orange::session::start_prepared_recording_run_supervisors(
+                    worker_state->prepared);
+        } catch (const std::exception& ex) {
+            worker_state->outcome =
+                orange::session::RecordingRunSupervisorStartOutcome{};
+            worker_state->outcome.error_message =
+                std::string("external recorder start threw: ") + ex.what();
+        } catch (...) {
+            worker_state->outcome =
+                orange::session::RecordingRunSupervisorStartOutcome{};
+            worker_state->outcome.error_message =
+                "external recorder start threw a non-std exception";
+        }
+        worker_state->done.store(true, std::memory_order_release);
+    });
+    std::cout << "[GUI][recording] External recorder start pending"
+              << " context=" << context
+              << " sink_mode=" << async_start->prepared.recording_sink_mode
+              << " folder=" << async_start->prepared.recording_folder
+              << std::endl;
+    return GuiRecordingStartDispatch::kPending;
+}
+
+// Polled once per GUI frame. When the background supervisor start finishes,
+// joins the worker and completes (or fails) the run on the GUI thread:
+// record_video flips true here, workers rotate folders here, and any
+// deferred local-control ack fires here. Returns true when a pending start
+// completed successfully this frame.
+bool gui_poll_async_recording_start(
+    GuiAsyncRecordingStartState* async_start,
+    GuiLocalControlStartRequestState* start_request,
+    orange::session::RecordingSessionState* recording_session,
+    CameraControl* camera_control,
+    GuiRecordingRunState* recording_run,
+    GuiSessionTimingState* timing,
+    orange::gui::GuiDisplayFrameRateStats* display_frame_rate_stats,
+    GuiLocalControlStopSchedulerState* stop_scheduler,
+    CameraParams* cameras_params,
+    CameraEachSelect* cameras_select,
+    const int num_cameras,
+    const std::string& yolo_model,
+    const int crop_size_px,
+    PTPParams* ptp_params,
+    CropProducerWorker** crop_producer_workers,
+    CropPreviewWorker** crop_preview_workers,
+    CropAndEncodeWorker** crop_and_encode_workers,
+    PoseWorker** pose_workers,
+    std::vector<std::string>* recording_preflight_errors,
+    const std::string& event_log_path)
+{
+    if (!async_start || !async_start->active ||
+        !async_start->done.load(std::memory_order_acquire)) {
+        return false;
+    }
+    if (async_start->worker.joinable()) {
+        async_start->worker.join();
+    }
+    async_start->active = false;
+
+    const orange::session::RecordingRunStartResult start_result =
+        orange::session::complete_recording_run(
+            recording_session,
+            camera_control,
+            cameras_params,
+            num_cameras,
+            ptp_params,
+            async_start->prepared,
+            std::move(async_start->outcome));
+    const bool started = start_result.ok;
+    if (started) {
+        gui_finish_recording_start_through_operator_path(
+            start_result,
+            camera_control,
+            recording_run,
+            timing,
+            display_frame_rate_stats,
+            stop_scheduler,
+            cameras_params,
+            cameras_select,
+            num_cameras,
+            yolo_model,
+            crop_size_px,
+            crop_producer_workers,
+            crop_preview_workers,
+            crop_and_encode_workers,
+            pose_workers,
+            async_start->context);
+    } else {
+        gui_log_recording_start_failure(start_result, recording_preflight_errors);
+        std::cerr << "[GUI][recording] Recording start failed"
+                  << " context=" << async_start->context << std::endl;
+    }
+
+    if (async_start->from_local_control) {
+        // Deferred local-control ack: the epoch fence (MarkCommandDone) and
+        // the start_triggered event advance only now that the start actually
+        // completed; a failed start reports start_failed instead, exactly
+        // like the synchronous failure path.
+        if (started && g_gui_local_control_server &&
+            async_start->local_control_epoch != 0) {
+            g_gui_local_control_server->MarkCommandDone(
+                async_start->local_control_epoch,
+                async_start->local_control_seq);
+        }
+        gui_note_local_control_start_event(
+            start_request,
+            started ? "start_triggered" : "start_failed");
+        std::cout << "[GUI][local_control] recording start "
+                  << (started ? "triggered" : "failed")
+                  << " request_id=" << async_start->local_control_request_id
+                  << " operation_id=" << async_start->local_control_operation_id
+                  << std::endl;
+        gui_log_local_control_event(
+            event_log_path,
+            {
+                {"event", started ? "recording_start_triggered"
+                                  : "recording_start_failed"},
+                {"method", "start_recording"},
+                {"request_id", async_start->local_control_request_id},
+                {"operation_id", async_start->local_control_operation_id},
+                {"command_source", async_start->local_control_source},
+                {"reason", async_start->local_control_reason},
+                {"received_at_utc", async_start->local_control_received_at_utc},
+            });
+    }
+
+    async_start->prepared = orange::session::PreparedRecordingRunStart{};
+    async_start->outcome = orange::session::RecordingRunSupervisorStartOutcome{};
+    async_start->from_local_control = false;
+    return started;
+}
+
+// Cancels a pending background recording start: joins the worker (bounded
+// by the supervisor's socket-ready timeout plus its fast-fail cleanup),
+// stops any recorder processes it spawned, and restores the pre-start
+// CameraControl/session state without ever flipping record_video. Must run
+// before worker teardown in stop_streaming_and_teardown and before shutdown.
+void gui_cancel_async_recording_start(
+    GuiAsyncRecordingStartState* async_start,
+    GuiLocalControlStartRequestState* start_request,
+    orange::session::RecordingSessionState* recording_session,
+    CameraControl* camera_control,
+    const std::string& reason,
+    const std::string& event_log_path)
+{
+    if (!async_start) {
+        return;
+    }
+    if (!async_start->active) {
+        if (async_start->worker.joinable()) {
+            async_start->worker.join();
+        }
+        return;
+    }
+    std::cout << "[GUI][recording] Canceling pending recording start"
+              << " reason=" << reason << std::endl;
+    if (async_start->worker.joinable()) {
+        async_start->worker.join();
+    }
+    async_start->active = false;
+    orange::session::abort_prepared_recording_run(
+        recording_session,
+        camera_control,
+        async_start->prepared,
+        std::move(async_start->outcome),
+        reason);
+    if (async_start->from_local_control) {
+        gui_note_local_control_start_event(start_request, "start_failed");
+        std::cout << "[GUI][local_control] recording start canceled"
+                  << " request_id=" << async_start->local_control_request_id
+                  << " operation_id=" << async_start->local_control_operation_id
+                  << " reason=" << reason
+                  << std::endl;
+        gui_log_local_control_event(
+            event_log_path,
+            {
+                {"event", "recording_start_failed"},
+                {"method", "start_recording"},
+                {"request_id", async_start->local_control_request_id},
+                {"operation_id", async_start->local_control_operation_id},
+                {"command_source", async_start->local_control_source},
+                {"reason", reason},
+                {"received_at_utc", async_start->local_control_received_at_utc},
+            });
+    }
+    async_start->prepared = orange::session::PreparedRecordingRunStart{};
+    async_start->outcome = orange::session::RecordingRunSupervisorStartOutcome{};
+    async_start->from_local_control = false;
 }
 
 bool gui_poll_local_control_start_request(
     GuiLocalControlStartRequestState* start_request,
+    GuiAsyncRecordingStartState* async_start,
     orange::session::RecordingSessionState* recording_session,
     CameraControl* camera_control,
     GuiRecordingRunState* recording_run,
@@ -3606,33 +3945,76 @@ bool gui_poll_local_control_start_request(
         reject_start("ignored_already_recording", "already_recording");
         return false;
     }
+    if (async_start && async_start->active) {
+        reject_start("ignored_start_pending", "recording_start_pending");
+        return false;
+    }
     if (camera_control->recording_draining ||
         (recording_run && recording_run->finalizing)) {
         reject_start("ignored_recording_finalizing", "recording_finalizing");
         return false;
     }
 
-    const bool started = gui_request_recording_start_through_operator_path(
-        recording_session,
-        camera_control,
-        recording_run,
-        timing,
-        display_frame_rate_stats,
-        stop_scheduler,
-        cameras_params,
-        cameras_select,
-        num_cameras,
-        yolo_model,
-        crop_size_px,
-        encoder_config,
-        input_folder,
-        ptp_params,
-        crop_producer_workers,
-        crop_preview_workers,
-        crop_and_encode_workers,
-        pose_workers,
-        recording_preflight_errors,
-        "local_control_start_recording");
+    const GuiRecordingStartDispatch dispatch =
+        gui_request_recording_start_through_operator_path(
+            async_start,
+            recording_session,
+            camera_control,
+            recording_run,
+            timing,
+            display_frame_rate_stats,
+            stop_scheduler,
+            cameras_params,
+            cameras_select,
+            num_cameras,
+            yolo_model,
+            crop_size_px,
+            encoder_config,
+            input_folder,
+            ptp_params,
+            crop_producer_workers,
+            crop_preview_workers,
+            crop_and_encode_workers,
+            pose_workers,
+            recording_preflight_errors,
+            "local_control_start_recording");
+
+    if (dispatch == GuiRecordingStartDispatch::kPending) {
+        // The start is running on the background thread. Defer the epoch
+        // fence (MarkCommandDone) and the start_triggered/start_failed
+        // resolution to gui_poll_async_recording_start /
+        // gui_cancel_async_recording_start; copy the ack identity now
+        // because the live request state may be reused by a newer command.
+        async_start->from_local_control = true;
+        async_start->local_control_epoch = start_request->epoch;
+        async_start->local_control_seq = start_request->seq;
+        async_start->local_control_request_id = request_id;
+        async_start->local_control_operation_id = operation_id;
+        async_start->local_control_source = start_request->source;
+        async_start->local_control_reason = start_request->reason;
+        async_start->local_control_received_at_utc = start_request->received_at_utc;
+        gui_note_local_control_start_event(start_request, "start_pending");
+        std::cout << "[GUI][local_control] recording start pending"
+                  << " request_id=" << request_id
+                  << " operation_id=" << operation_id
+                  << std::endl;
+        gui_log_local_control_event(
+            event_log_path,
+            {
+                {"event", "recording_start_pending"},
+                {"method", "start_recording"},
+                {"request_id", request_id},
+                {"operation_id", operation_id},
+                {"command_source", start_request->source},
+                {"reason", start_request->reason},
+                {"received_at_utc", start_request->received_at_utc},
+            });
+        // The start was accepted; report true so the caller suppresses a
+        // same-frame autorun toggle, exactly as for a synchronous start.
+        return true;
+    }
+
+    const bool started = dispatch == GuiRecordingStartDispatch::kStarted;
     if (started && g_gui_local_control_server && start_request->epoch != 0) {
         g_gui_local_control_server->MarkCommandDone(
             start_request->epoch,
@@ -3906,6 +4288,9 @@ int main(int /*argc*/, char ** /*args*/) {
     orange::session::RecordingSessionState recording_session;
     GuiSessionTimingState gui_session_timing;
     GuiRecordingRunState gui_recording_run;
+    // Background external-recorder start runner (joined on completion,
+    // cancellation, and shutdown; see GuiAsyncRecordingStartState).
+    GuiAsyncRecordingStartState gui_async_recording_start;
     GuiLocalControlStartRequestState gui_local_control_start_request;
     gui_local_control_start_request.enabled =
         gui_local_control_recording_start_enabled(&app_storage_config);
@@ -4080,6 +4465,17 @@ int main(int /*argc*/, char ** /*args*/) {
     // every local it captures by reference and called synchronously from
     // this scope only.
     auto stop_streaming_and_teardown = [&]() {
+        // A recording start may still be pending on the background thread;
+        // join and abort it BEFORE any worker teardown so the thread never
+        // outlives the objects the completed run would have touched, and so
+        // no recorder children leak from a half-started run.
+        gui_cancel_async_recording_start(
+            &gui_async_recording_start,
+            &gui_local_control_start_request,
+            &recording_session,
+            camera_control,
+            "stream_shutdown",
+            gui_local_control_event_log_path);
         camera_control->subscribe = false;
         // STOP STREAMING
         std::cout << "STOPPING STREAMING SESSION..." << std::endl;
@@ -4284,6 +4680,27 @@ int main(int /*argc*/, char ** /*args*/) {
         GuiFrameTimingSample gui_frame_timing;
         orange::gui::reap_host_ptp_stack_worker(&host_ptp_stack_ui);
         gui_refresh_external_recorder_lifecycles(&recording_session, camera_control);
+        gui_poll_async_recording_start(
+            &gui_async_recording_start,
+            &gui_local_control_start_request,
+            &recording_session,
+            camera_control,
+            &gui_recording_run,
+            &gui_session_timing,
+            &gui_display_frame_rate_stats,
+            &gui_local_control_stop_scheduler,
+            cameras_params,
+            cameras_select,
+            num_cameras,
+            yolo_model,
+            crop_size_px,
+            ptp_params,
+            cropProducerWorkers,
+            cropPreviewWorkers,
+            cropAndEncodeWorkers,
+            poseWorkers,
+            &recording_preflight_errors,
+            gui_local_control_event_log_path);
         gui_poll_local_control_drain_timeout(
             &gui_local_control_stop_scheduler,
             camera_control,
@@ -4384,6 +4801,7 @@ int main(int /*argc*/, char ** /*args*/) {
             const bool local_control_start_triggered =
                 gui_poll_local_control_start_request(
                     &gui_local_control_start_request,
+                    &gui_async_recording_start,
                     &recording_session,
                     camera_control,
                     &gui_recording_run,
@@ -5714,12 +6132,20 @@ int main(int /*argc*/, char ** /*args*/) {
                 }
                 if (ImGui::Button(camera_control->record_video ? ICON_FK_PAUSE : ICON_FK_PLAY) ||
                     gui_autorun_requests.toggle_recording) {
-                    if (!camera_control->record_video && camera_control->recording_draining) {
+                    if (gui_async_recording_start.active) {
+                        // Debounce: a background external-recorder start is
+                        // still pending; ignore the press until it resolves.
+                        std::cout << "Recording start already in progress"
+                                     " (external recorder starting). Please wait..."
+                                  << std::endl;
+                    } else if (!camera_control->record_video && camera_control->recording_draining) {
                         std::cout << "Recording is still draining. Please wait..." << std::endl;
                     } else {
                         const bool next_record_state = !camera_control->record_video;
                         if (next_record_state) {
-                            if (gui_request_recording_start_through_operator_path(
+                            const GuiRecordingStartDispatch record_start_dispatch =
+                                gui_request_recording_start_through_operator_path(
+                                    &gui_async_recording_start,
                                     &recording_session,
                                     camera_control,
                                     &gui_recording_run,
@@ -5741,8 +6167,15 @@ int main(int /*argc*/, char ** /*args*/) {
                                     &recording_preflight_errors,
                                     gui_autorun_requests.toggle_recording
                                         ? "autorun_start_recording"
-                                        : "gui_start_recording")) {
+                                        : "gui_start_recording");
+                            if (record_start_dispatch ==
+                                GuiRecordingStartDispatch::kStarted) {
                                 std::cout << "Recording toggled ON." << std::endl;
+                            } else if (record_start_dispatch ==
+                                       GuiRecordingStartDispatch::kPending) {
+                                std::cout << "Recording start pending:"
+                                             " external recorder starting..."
+                                          << std::endl;
                             }
                         } else {
                             // STOP RECORDING
@@ -5832,7 +6265,10 @@ int main(int /*argc*/, char ** /*args*/) {
 
             if (camera_control->open) {
                 const GuiSessionTimingSnapshot timing =
-                    gui_session_timing_snapshot(&gui_session_timing, camera_control);
+                    gui_session_timing_snapshot(
+                        &gui_session_timing,
+                        camera_control,
+                        gui_async_recording_start.active);
                 ImGui::Separator();
                 render_gui_session_timing_status(
                     timing,
@@ -6101,6 +6537,18 @@ int main(int /*argc*/, char ** /*args*/) {
     clear_usaf_captured_texture(&usaf_ui_state);
     clear_spatial_layout_texture(&spatial_layout_ui_state);
     gui_local_control_server.Stop();
+
+    // Window-close shutdown: a recording start may still be pending on the
+    // background thread even when streaming already stopped (defensive; the
+    // streaming teardown below also cancels). Join and abort it before any
+    // further cleanup. Idempotent when nothing is pending.
+    gui_cancel_async_recording_start(
+        &gui_async_recording_start,
+        &gui_local_control_start_request,
+        &recording_session,
+        camera_control,
+        "gui_shutdown",
+        gui_local_control_event_log_path);
 
     if (camera_control->subscribe) {
         std::cout << "Window closed while streaming; running stream shutdown..." << std::endl;

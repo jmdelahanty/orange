@@ -400,6 +400,124 @@ void test_snapshot_stream_stop_resets()
     std::cout << "PASS test_snapshot_stream_stop_resets" << std::endl;
 }
 
+// --- recording-start pending derivation ---------------------------------------
+//
+// Rules locked in (read from the implementation):
+//   - The pending window is reported by the caller (recording_start_pending);
+//     CameraControl carries no flag for it. While pending and record_video is
+//     false, the snapshot reports recording_starting with an elapsed derived
+//     from the reconciliation timestamp.
+//   - CameraControl stays authoritative: record_video == true always clears
+//     the starting state, even if the caller still reports pending.
+//   - A pending window that ends without record_video flipping (start failed
+//     or was canceled) returns the snapshot to recording-idle with no
+//     Last-recording line.
+
+void test_snapshot_recording_start_pending()
+{
+    GuiSessionTimingState timing;
+    CameraControl camera_control;
+    camera_control.subscribe = true;
+
+    const GuiSessionTimingSnapshot pending =
+        gui_session_timing_snapshot(&timing, &camera_control, true);
+    require(pending.stream_running, "pending start keeps the stream running");
+    require(pending.recording_starting,
+            "pending start reports recording_starting");
+    require(!pending.recording_running && !pending.recording_finalizing,
+            "pending start is neither recording nor finalizing");
+    require(!pending.has_recording_elapsed,
+            "pending start reports no recording elapsed yet");
+    require_eq(pending.starting_elapsed, "00:00:00",
+               "starting elapsed begins at zero on reconciliation");
+    require(timing.recording_starting,
+            "reconciliation marks the mirror starting in place");
+
+    // Elapsed derives from the mirror's pending timestamp and persists
+    // across frames while the caller keeps reporting pending.
+    timing.recording_start_pending_at = steady_clock::now() - seconds{3};
+    const GuiSessionTimingSnapshot later =
+        gui_session_timing_snapshot(&timing, &camera_control, true);
+    require(later.recording_starting, "pending persists while still reported");
+    require_eq(later.starting_elapsed, "00:00:03",
+               "starting elapsed formats from the pending timestamp");
+    std::cout << "PASS test_snapshot_recording_start_pending" << std::endl;
+}
+
+void test_snapshot_pending_completion_transitions_to_recording()
+{
+    GuiSessionTimingState timing;
+    CameraControl camera_control;
+    camera_control.subscribe = true;
+
+    (void)gui_session_timing_snapshot(&timing, &camera_control, true);
+    require(timing.recording_starting, "pending latched before completion");
+
+    // Completion: record_video flips true. Even if the caller still reports
+    // pending for the same frame, CameraControl is authoritative and the
+    // snapshot transitions straight to recording.
+    camera_control.record_video = true;
+    const GuiSessionTimingSnapshot completed =
+        gui_session_timing_snapshot(&timing, &camera_control, true);
+    require(completed.recording_running,
+            "record_video wins over a stale pending marker");
+    require(!completed.recording_starting,
+            "recording clears the starting state");
+    require(!timing.recording_starting &&
+                timing.recording_start_pending_at == steady_clock::time_point{},
+            "completion resets the mirror's pending fields");
+    std::cout << "PASS test_snapshot_pending_completion_transitions_to_recording"
+              << std::endl;
+}
+
+void test_snapshot_pending_failure_returns_to_idle()
+{
+    GuiSessionTimingState timing;
+    CameraControl camera_control;
+    camera_control.subscribe = true;
+
+    (void)gui_session_timing_snapshot(&timing, &camera_control, true);
+    require(timing.recording_starting, "pending latched before the failure");
+
+    // The start failed or was canceled: the caller stops reporting pending
+    // and record_video never flipped. The snapshot returns to recording-idle
+    // with no Last-recording line.
+    const GuiSessionTimingSnapshot failed =
+        gui_session_timing_snapshot(&timing, &camera_control, false);
+    require(!failed.recording_starting && !failed.recording_running &&
+                !failed.recording_finalizing && !failed.has_recording_elapsed,
+            "a failed/canceled pending start reads recording-idle");
+    require(!timing.recording_starting &&
+                timing.recording_start_pending_at == steady_clock::time_point{},
+            "failure resets the mirror's pending fields");
+    require(failed.stream_running, "the stream keeps running after the failure");
+    std::cout << "PASS test_snapshot_pending_failure_returns_to_idle" << std::endl;
+}
+
+void test_mark_recording_started_clears_pending()
+{
+    GuiSessionTimingState timing;
+    timing.recording_starting = true;
+    timing.recording_start_pending_at = steady_clock::now() - seconds{2};
+
+    gui_mark_recording_started(&timing);
+    require(!timing.recording_starting &&
+                timing.recording_start_pending_at == steady_clock::time_point{},
+            "gui_mark_recording_started clears the pending-start fields");
+    require(timing.recording_running,
+            "gui_mark_recording_started still marks the recording running");
+
+    GuiSessionTimingState stream_reset;
+    stream_reset.recording_starting = true;
+    stream_reset.recording_start_pending_at = steady_clock::now();
+    gui_mark_stream_started(&stream_reset);
+    require(!stream_reset.recording_starting &&
+                stream_reset.recording_start_pending_at ==
+                    steady_clock::time_point{},
+            "gui_mark_stream_started clears the pending-start fields");
+    std::cout << "PASS test_mark_recording_started_clears_pending" << std::endl;
+}
+
 // --- gui_external_recorder_status_line ----------------------------------------
 
 orange::external_recorder::RecorderProcessState make_process(
@@ -593,6 +711,10 @@ int main()
         test_snapshot_draining_shows_finalizing();
         test_snapshot_drain_complete_and_last_recording();
         test_snapshot_stream_stop_resets();
+        test_snapshot_recording_start_pending();
+        test_snapshot_pending_completion_transitions_to_recording();
+        test_snapshot_pending_failure_returns_to_idle();
+        test_mark_recording_started_clears_pending();
         test_status_line_idle_and_error_fallback();
         test_status_line_running_and_degraded();
         test_status_line_error_states();

@@ -534,6 +534,25 @@ if(BUILD_TESTING)
     set_tests_properties(recording_session_drain_tests
         PROPERTIES DEPENDS recording_session_drain_tests_build)
 
+    # Locks down the phased recording-run start API (prepare / supervisor
+    # start / complete / abort) used by the GUI async start path plus the
+    # synchronous begin_recording_run wrapper; reuses the closed source set
+    # already proven to link for the recording session manifest tests.
+    add_executable(recording_session_phased_start_tests EXCLUDE_FROM_ALL
+        "tools/recording_session_phased_start_tests.cpp"
+        ${RECORDING_SESSION_MANIFEST_TEST_SOURCES}
+    )
+    target_include_directories(recording_session_phased_start_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(recording_session_phased_start_tests PRIVATE cxx_std_17)
+    add_test(
+        NAME recording_session_phased_start_tests_build
+        COMMAND ${CMAKE_COMMAND}
+                --build "${CMAKE_BINARY_DIR}"
+                --target recording_session_phased_start_tests)
+    add_test(NAME recording_session_phased_start_tests COMMAND recording_session_phased_start_tests)
+    set_tests_properties(recording_session_phased_start_tests
+        PROPERTIES DEPENDS recording_session_phased_start_tests_build)
+
     # gui/recording_finalizer.cpp calls into the recording session, external
     # recorder, ingress, and crop encoder stacks, so reuse the closed source
     # set already proven to link for the recording session manifest tests.
@@ -919,6 +938,9 @@ if(BUILD_TESTING)
     target_include_directories(external_recorder_supervisor_socket_stub PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(external_recorder_supervisor_socket_stub PRIVATE cxx_std_17)
     add_dependencies(external_recorder_supervisor_tests external_recorder_supervisor_socket_stub)
+    if(TARGET recording_session_phased_start_tests)
+        add_dependencies(recording_session_phased_start_tests external_recorder_supervisor_socket_stub)
+    endif()
 
     add_executable(orange_local_control_tests
         "tools/orange_local_control_tests.cpp"
@@ -1151,6 +1173,36 @@ if(TARGET recording_session_drain_tests)
     )
     if(ORANGE_ENABLE_NVTX)
         target_link_libraries(recording_session_drain_tests PRIVATE ${NVTX_LIBRARY})
+    endif()
+endif()
+
+if(TARGET recording_session_phased_start_tests)
+    target_link_libraries(recording_session_phased_start_tests PRIVATE
+        ${EVT_CAMERA_LIBRARY}
+        ${EVT_GENICAM_LIBRARY}
+        ${EVT_GIGE_LIBRARY}
+        ${ENET_LIBRARY}
+        ${CUDA_CUDART_LIBRARY}
+        ${CUDA_DRIVER_LIBRARY}
+        ${CUDA_NPPICC_LIBRARY}
+        ${CUDA_NPPIDEI_LIBRARY}
+        ${CUDA_NPPC_LIBRARY}
+        ${CUDA_NPPIG_LIBRARY}
+        ${CUDA_NPPIAL_LIBRARY}
+        ${NVIDIA_ENCODE_LIBRARY}
+        ${AVFORMAT_LIBRARY}
+        ${SWSCALE_LIBRARY}
+        ${SWRESAMPLE_LIBRARY}
+        ${AVUTIL_LIBRARY}
+        ${AVCODEC_LIBRARY}
+        ${OpenCV_LIBS}
+        ${TENSORRT_LIBRARY}
+        ${TENSORRT_PLUGIN_LIBRARY}
+        m
+        pthread
+    )
+    if(ORANGE_ENABLE_NVTX)
+        target_link_libraries(recording_session_phased_start_tests PRIVATE ${NVTX_LIBRARY})
     endif()
 endif()
 

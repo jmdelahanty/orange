@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fcntl.h>
 #include <fstream>
+#include <iostream>
 #include <limits>
 #include <signal.h>
 #include <sstream>
@@ -1472,14 +1473,48 @@ bool StopSupervisorProcesses(SupervisorRuntimeState* runtime,
     for (RecorderProcessState& process : runtime->processes) {
         if (process.active && process.pid > 0) {
             kill(process.pid, SIGKILL);
-            int wait_status = 0;
-            if (waitpid(process.pid, &wait_status, 0) < 0) {
+            // Bounded reap. A child wedged in an uninterruptible (D-state)
+            // syscall can survive SIGKILL indefinitely, and a blocking
+            // waitpid here would hang the caller forever. Poll with WNOHANG
+            // under a deadline instead; on timeout, log loudly and abandon
+            // the zombie. process.active stays true with the pid recorded,
+            // so a later PollSupervisorProcesses (or a repeated stop) can
+            // still reap it opportunistically via waitpid(WNOHANG).
+            constexpr std::chrono::milliseconds kSigkillReapTimeout{5000};
+            constexpr std::chrono::milliseconds kSigkillReapPollInterval{20};
+            const auto reap_deadline =
+                std::chrono::steady_clock::now() + kSigkillReapTimeout;
+            bool reap_resolved = false;
+            while (!reap_resolved) {
+                int wait_status = 0;
+                const pid_t wait_result =
+                    waitpid(process.pid, &wait_status, WNOHANG);
+                if (wait_result == process.pid) {
+                    capture_wait_status(&process, wait_status);
+                    reap_resolved = true;
+                } else if (wait_result < 0) {
+                    ok = false;
+                    process.status = "wait_failed";
+                    process.error = std::string("waitpid after SIGKILL failed: ") +
+                                    std::strerror(errno);
+                    reap_resolved = true;
+                } else if (std::chrono::steady_clock::now() >= reap_deadline) {
+                    break;
+                } else {
+                    std::this_thread::sleep_for(kSigkillReapPollInterval);
+                }
+            }
+            if (!reap_resolved) {
                 ok = false;
-                process.status = "wait_failed";
-                process.error = std::string("waitpid after SIGKILL failed: ") +
-                                std::strerror(errno);
-            } else {
-                capture_wait_status(&process, wait_status);
+                process.status = "kill_reap_timeout";
+                process.error =
+                    "external recorder pid " + std::to_string(process.pid) +
+                    " did not exit within " +
+                    std::to_string(kSigkillReapTimeout.count()) +
+                    " ms of SIGKILL; abandoning the zombie (a later poll will"
+                    " reap it opportunistically)";
+                std::cerr << "[external_recorder_supervisor] WARNING: "
+                          << process.error << std::endl;
             }
         }
         if (!process.error.empty()) {

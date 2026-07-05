@@ -53,6 +53,106 @@ struct RecordingRunStartResult {
     std::string external_recorder_supervisor_plan_path;
 };
 
+// --- Phased recording-run start ---------------------------------------------
+//
+// begin_recording_run keeps its synchronous contract (the headless-style
+// callers block in it deliberately); it is composed of the three phases
+// declared below, which the GUI operator path drives separately so the ImGui
+// render thread never blocks on external recorder startup (NVENC init in the
+// spawned recorders takes seconds):
+//
+//   1. prepare_recording_run — caller thread only. Mutates CameraControl and
+//      RecordingSessionState: resets the run flags, resolves the recording
+//      folder, writes the snapshot/PTP markers, stops a stale previous
+//      lifecycle, resets external IPC connections, and materializes +
+//      writes the external recorder contracts. On failure it performs the
+//      failed-start cleanup itself and returns valid == false.
+//   2. start_prepared_recording_run_supervisors — safe to run on a
+//      background thread. fork/execs the supervised recorder processes and
+//      waits (bounded) for socket readiness. It touches only the prepared
+//      options, its own outcome object, and the filesystem — never
+//      CameraControl, RecordingSessionState, or worker objects. On failure
+//      it stops any lifecycle it already started (zero graceful timeout: no
+//      frames were ever sent during startup) so a failed start never leaks
+//      recorder children.
+//   3. complete_recording_run — caller thread only. Installs the outcome
+//      into the session state, writes the supervisor plan artifacts,
+//      refreshes the latest-recording snapshot, and only then flips
+//      record_video true. On a failed outcome it runs exactly the
+//      synchronous failed-start cleanup and reports the error.
+//
+// abort_prepared_recording_run cancels a prepared (and possibly already
+// supervisor-started) run without ever flipping record_video, for teardown
+// or shutdown while a background start is still pending.
+
+struct PreparedRecordingRunStart {
+    bool valid = false;
+    std::string error_message;  // set when valid == false
+    std::string recording_folder;
+    std::string recording_id;
+    std::string resolved_base_folder;
+    // Effective sink mode for RecordingRunStartResult reporting
+    // (normalized when recognized, the raw request otherwise).
+    std::string recording_sink_mode = "real";
+    // Normalized sink mode used for the latest-recording snapshot refresh.
+    std::string normalized_sink_mode;
+    bool external_recorder_requested = false;
+    bool external_crop_recorder_requested = false;
+    orange::external_recorder::SupervisedRecorderLifecycleOptions
+        external_recorder_lifecycle_options;
+    orange::external_recorder::SupervisedRecorderLifecycleOptions
+        external_crop_recorder_lifecycle_options;
+    std::string external_recorder_contract_path;
+    std::string external_crop_recorder_contract_path;
+
+    bool requires_supervisor_start() const {
+        return external_recorder_requested || external_crop_recorder_requested;
+    }
+};
+
+struct RecordingRunSupervisorStartOutcome {
+    bool ok = false;
+    std::string error_message;
+    bool external_recorder_attempted = false;
+    bool external_crop_recorder_attempted = false;
+    std::string external_recorder_last_error;
+    std::string external_crop_recorder_last_error;
+    orange::external_recorder::SupervisedRecorderLifecycleState
+        external_recorder_lifecycle;
+    orange::external_recorder::SupervisedRecorderLifecycleState
+        external_crop_recorder_lifecycle;
+};
+
+PreparedRecordingRunStart prepare_recording_run(
+    RecordingSessionState* state,
+    CameraControl* camera_control,
+    CameraParams* cameras_params,
+    const CameraEachSelect* cameras_select,
+    int num_cameras,
+    const std::string& base_folder,
+    PTPParams* ptp_params,
+    const std::string& recording_sink_mode = "real",
+    const nlohmann::json* external_recorder_contract_config = nullptr);
+
+RecordingRunSupervisorStartOutcome start_prepared_recording_run_supervisors(
+    const PreparedRecordingRunStart& prepared);
+
+RecordingRunStartResult complete_recording_run(
+    RecordingSessionState* state,
+    CameraControl* camera_control,
+    CameraParams* cameras_params,
+    int num_cameras,
+    PTPParams* ptp_params,
+    const PreparedRecordingRunStart& prepared,
+    RecordingRunSupervisorStartOutcome&& outcome);
+
+void abort_prepared_recording_run(
+    RecordingSessionState* state,
+    CameraControl* camera_control,
+    const PreparedRecordingRunStart& prepared,
+    RecordingRunSupervisorStartOutcome&& outcome,
+    const std::string& abort_reason);
+
 struct SingleClipRecordingSessionManifestOptions {
     std::string producer = "orange";
     std::string session_id;

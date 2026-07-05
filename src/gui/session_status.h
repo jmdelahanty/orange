@@ -32,9 +32,15 @@ struct SupervisedRecorderLifecycleState;
 
 struct GuiSessionTimingState {
     bool stream_running = false;
+    // A recording start is pending: the external recorder supervisors are
+    // being spawned on a background thread and record_video has not flipped
+    // true yet. Reconciled in gui_session_timing_snapshot from the
+    // recording_start_pending argument.
+    bool recording_starting = false;
     bool recording_running = false;
     bool recording_finalizing = false;
     std::chrono::steady_clock::time_point stream_started_at{};
+    std::chrono::steady_clock::time_point recording_start_pending_at{};
     std::chrono::steady_clock::time_point recording_started_at{};
     std::chrono::steady_clock::time_point finalizing_started_at{};
     std::chrono::seconds last_recording_elapsed{0};
@@ -42,10 +48,12 @@ struct GuiSessionTimingState {
 
 struct GuiSessionTimingSnapshot {
     bool stream_running = false;
+    bool recording_starting = false;
     bool recording_running = false;
     bool recording_finalizing = false;
     bool has_recording_elapsed = false;
     std::string stream_elapsed = "00:00:00";
+    std::string starting_elapsed = "00:00:00";
     std::string recording_elapsed = "00:00:00";
     std::string finalizing_elapsed = "00:00:00";
 };
@@ -114,9 +122,15 @@ void gui_request_recording_stop_through_operator_path(
     const std::string& stop_reason,
     nlohmann::json stop_control = nlohmann::json::object());
 
+// recording_start_pending is true while a background recording start (the
+// external recorder supervisor spawn + socket wait) is still in flight;
+// CameraControl carries no flag for that window, so the GUI passes it in.
+// CameraControl stays authoritative for the other flags: an active
+// recording (record_video) always wins over a stale pending marker.
 GuiSessionTimingSnapshot gui_session_timing_snapshot(
     GuiSessionTimingState* timing,
-    const CameraControl* camera_control);
+    const CameraControl* camera_control,
+    bool recording_start_pending = false);
 
 // Text-only ImGui renderer (defined in session_status_render.cpp so the
 // session_status_tests link stays free of ImGui and worker objects).
