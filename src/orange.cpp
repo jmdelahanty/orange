@@ -36,6 +36,7 @@
 #include "aperture_characterization.h"
 #include "camera_preview_utils.h"
 #include "gui/autorun.h"
+#include "gui/env_util.h"
 #include "gui/camera_properties_panel.h"
 #include "gui/frame_ipc_panel.h"
 #include "gui/host_ptp_panel.h"
@@ -178,14 +179,6 @@ struct GuiLocalControlStartRequestState {
     uint64_t seq = 0;
 };
 
-std::string gui_lower_ascii(std::string text)
-{
-    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    return text;
-}
-
 std::string gui_trim_ascii_whitespace(const std::string& input)
 {
     size_t start = 0;
@@ -197,32 +190,6 @@ std::string gui_trim_ascii_whitespace(const std::string& input)
         --end;
     }
     return input.substr(start, end - start);
-}
-
-std::optional<bool> gui_env_flag_value(const char* name)
-{
-    const char* raw = std::getenv(name);
-    if (!raw || !*raw) {
-        return std::nullopt;
-    }
-    const std::string value = gui_lower_ascii(raw);
-    if (value == "1" || value == "true" || value == "yes" || value == "on") {
-        return true;
-    }
-    if (value == "0" || value == "false" || value == "no" || value == "off") {
-        return false;
-    }
-    std::cerr << "[GUI][autorun] Ignoring invalid " << name << "='"
-              << raw << "'" << std::endl;
-    return std::nullopt;
-}
-
-bool gui_env_flag_enabled(const char* name, const bool default_value = false)
-{
-    if (const std::optional<bool> value = gui_env_flag_value(name)) {
-        return *value;
-    }
-    return default_value;
 }
 
 bool gui_env_flag_override(

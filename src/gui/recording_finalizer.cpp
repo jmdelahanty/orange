@@ -5,6 +5,8 @@
 
 #include "gui/recording_finalizer.h"
 
+#include "gui/env_util.h"
+
 #include "crop_and_encode_worker.h"
 #include "external_recorder_contract_utils.h"
 #include "project.h"
@@ -27,27 +29,6 @@
 #include <utility>
 #include <vector>
 
-
-int gui_env_int(const char* name, const int default_value, const int min_value)
-{
-    const char* raw = std::getenv(name);
-    if (!raw || !*raw) {
-        return default_value;
-    }
-    char* end = nullptr;
-    const long parsed = std::strtol(raw, &end, 10);
-    if (end == raw || *end != '\0') {
-        std::cerr << "[GUI][autorun] Ignoring invalid " << name << "='"
-                  << raw << "'" << std::endl;
-        return default_value;
-    }
-    if (parsed < min_value) {
-        std::cerr << "[GUI][autorun] Raising " << name << "=" << parsed
-                  << " to minimum " << min_value << std::endl;
-        return min_value;
-    }
-    return static_cast<int>(parsed);
-}
 
 namespace {
 

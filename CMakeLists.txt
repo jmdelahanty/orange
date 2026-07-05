@@ -279,6 +279,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/image_writer_worker.cpp"
     "${SRC_DIR}/gui/autorun.cpp"
+    "${SRC_DIR}/gui/env_util.cpp"
     "${SRC_DIR}/gui/camera_properties_panel.cpp"
     "${SRC_DIR}/gui/frame_ipc_panel.cpp"
     "${SRC_DIR}/gui/host_ptp_panel.cpp"
@@ -537,6 +538,7 @@ if(BUILD_TESTING)
     add_executable(recording_finalizer_tests EXCLUDE_FROM_ALL
         "tools/recording_finalizer_tests.cpp"
         "${SRC_DIR}/gui/recording_finalizer.cpp"
+        "${SRC_DIR}/gui/env_util.cpp"
         ${RECORDING_SESSION_MANIFEST_TEST_SOURCES}
     )
     target_include_directories(recording_finalizer_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
@@ -798,6 +800,7 @@ if(BUILD_TESTING)
     add_executable(gui_autorun_tests
         "tools/gui_autorun_tests.cpp"
         "${SRC_DIR}/gui/autorun.cpp"
+        "${SRC_DIR}/gui/env_util.cpp"
     )
     target_include_directories(gui_autorun_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(gui_autorun_tests PRIVATE cxx_std_17)

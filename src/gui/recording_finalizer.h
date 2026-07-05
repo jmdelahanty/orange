@@ -31,7 +31,6 @@ struct SupervisorPlan;
 
 // Shared env helper: orange.cpp's local-control drain timeout resolution
 // also calls this, so both translation units use this single copy.
-int gui_env_int(const char* name, int default_value, int min_value);
 
 // Shared with orange.cpp's timed-stop scheduler code.
 bool has_gui_timepoint(const std::chrono::steady_clock::time_point& timepoint);

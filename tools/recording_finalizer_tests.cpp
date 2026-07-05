@@ -5,6 +5,7 @@
 // orange.cpp call sites rely on.
 
 #include "gui/recording_finalizer.h"
+#include "gui/env_util.h"
 
 #include "external_recorder_contract_utils.h"
 #include "external_recorder_supervisor.h"
