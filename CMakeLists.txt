@@ -286,6 +286,8 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/recording_finalizer.cpp"
     "${SRC_DIR}/gui/recording_panel.cpp"
     "${SRC_DIR}/gui/recording_snapshots.cpp"
+    "${SRC_DIR}/gui/session_status.cpp"
+    "${SRC_DIR}/gui/session_status_render.cpp"
     "${SRC_DIR}/gui/spatial_layout/calibration_metadata.cpp"
     "${SRC_DIR}/gui/spatial_layout/canvas_edit.cpp"
     "${SRC_DIR}/gui/spatial_layout/capture_panel.cpp"
@@ -551,6 +553,30 @@ if(BUILD_TESTING)
     add_test(NAME recording_finalizer_tests COMMAND recording_finalizer_tests)
     set_tests_properties(recording_finalizer_tests
         PROPERTIES DEPENDS recording_finalizer_tests_build)
+
+    # gui/session_status.cpp needs has_gui_timepoint (gui/recording_finalizer.cpp),
+    # the recording session drain path, and the external recorder lifecycle
+    # stack, so reuse the closed source set already proven to link for the
+    # recording session manifest tests. The ImGui renderers live in
+    # gui/session_status_render.cpp (orange target only) so this test links
+    # the pure builders without ImGui or display/worker objects.
+    add_executable(session_status_tests EXCLUDE_FROM_ALL
+        "tools/session_status_tests.cpp"
+        "${SRC_DIR}/gui/session_status.cpp"
+        "${SRC_DIR}/gui/recording_finalizer.cpp"
+        "${SRC_DIR}/gui/env_util.cpp"
+        ${RECORDING_SESSION_MANIFEST_TEST_SOURCES}
+    )
+    target_include_directories(session_status_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(session_status_tests PRIVATE cxx_std_17)
+    add_test(
+        NAME session_status_tests_build
+        COMMAND ${CMAKE_COMMAND}
+                --build "${CMAKE_BINARY_DIR}"
+                --target session_status_tests)
+    add_test(NAME session_status_tests COMMAND session_status_tests)
+    set_tests_properties(session_status_tests
+        PROPERTIES DEPENDS session_status_tests_build)
 
     add_executable(video_encode_profile_tests
         "tools/video_encode_profile_tests.cpp"
@@ -945,6 +971,9 @@ endif()
 if(TARGET recording_finalizer_tests)
     orange_configure_target(recording_finalizer_tests)
 endif()
+if(TARGET session_status_tests)
+    orange_configure_target(session_status_tests)
+endif()
 
 target_link_libraries(orange PRIVATE
     ${ENET_LIBRARY}
@@ -1062,6 +1091,36 @@ if(TARGET recording_finalizer_tests)
     )
     if(ORANGE_ENABLE_NVTX)
         target_link_libraries(recording_finalizer_tests PRIVATE ${NVTX_LIBRARY})
+    endif()
+endif()
+
+if(TARGET session_status_tests)
+    target_link_libraries(session_status_tests PRIVATE
+        ${EVT_CAMERA_LIBRARY}
+        ${EVT_GENICAM_LIBRARY}
+        ${EVT_GIGE_LIBRARY}
+        ${ENET_LIBRARY}
+        ${CUDA_CUDART_LIBRARY}
+        ${CUDA_DRIVER_LIBRARY}
+        ${CUDA_NPPICC_LIBRARY}
+        ${CUDA_NPPIDEI_LIBRARY}
+        ${CUDA_NPPC_LIBRARY}
+        ${CUDA_NPPIG_LIBRARY}
+        ${CUDA_NPPIAL_LIBRARY}
+        ${NVIDIA_ENCODE_LIBRARY}
+        ${AVFORMAT_LIBRARY}
+        ${SWSCALE_LIBRARY}
+        ${SWRESAMPLE_LIBRARY}
+        ${AVUTIL_LIBRARY}
+        ${AVCODEC_LIBRARY}
+        ${OpenCV_LIBS}
+        ${TENSORRT_LIBRARY}
+        ${TENSORRT_PLUGIN_LIBRARY}
+        m
+        pthread
+    )
+    if(ORANGE_ENABLE_NVTX)
+        target_link_libraries(session_status_tests PRIVATE ${NVTX_LIBRARY})
     endif()
 endif()
 
