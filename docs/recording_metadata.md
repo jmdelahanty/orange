@@ -901,9 +901,18 @@ Notes:
   root Orange-written
   `Cam*_crop_meta.csv` and `Cam*_crop_perf.csv` into per-clip crop sidecars by
   continuous `recording_frame_id` ranges, rewriting `crop_video_frame_index` so
-  each clip-local crop metadata CSV starts at `0`, and records those paths under
+  each clip-local crop metadata CSV starts at `0` while preserving the appended
+  session-global `session_crop_video_frame_index` column verbatim when
+  present, and records those paths under
   `recording_backend.crop_recording.rolling_clips` and each rolling clip's crop
-  `recording_outputs` entry. The top-level
+  `recording_outputs` entry. The splitter rejects clip ranges with internal
+  gaps (consecutive ranges must satisfy `next.first_recording_frame_id ==
+  previous.last_recording_frame_id + 1`) and fails the crop metadata split
+  when any root metadata row falls outside every clip range, naming the orphan
+  row count and the first orphaned `recording_frame_id`. Crop perf rows
+  outside every clip range are counted and logged loudly but are not fatal,
+  because perf rows are also written for frames dropped before external
+  submission and those frames never reach any clip. The top-level
   `recording_outputs[serial].crop` descriptor is also finalized as an
   external-IPC session aggregate for the merged crop MP4 and root crop CSVs,
   with `details.scope = "session_aggregate"` and the recorder `stream_id`,

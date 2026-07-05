@@ -1033,7 +1033,7 @@ bool CropAndEncodeWorker::ensure_recording_started(const std::string& recording_
                 << "crop_rect_coordinate_space,crop_rect_layout,crop_rect_semantics,"
                 << "detection_rect_valid,detection_rect_coordinate_space,"
                 << "detection_rect_layout,detection_rect_semantics,detection_source,"
-                << "selection_policy\n";
+                << "selection_policy,session_crop_video_frame_index\n";
         }
 
         crop_perf_.open(crop_perf_file_.c_str());
@@ -1099,6 +1099,11 @@ void CropAndEncodeWorker::write_metadata_row(const CropFrameSnapshot& frame)
         return;
     }
 
+    // Session-global monotonic row index. Written both as
+    // crop_video_frame_index (rewritten per clip from 0 when finalization
+    // splits the root CSV into rolling-clip sidecars) and as
+    // session_crop_video_frame_index (preserved verbatim through splitting).
+    // At acquisition time the two values are identical.
     const uint64_t crop_video_frame_index = crop_metadata_row_index_++;
     const bool crop_rect_valid = frame.has_detection && !frame.blank_frame;
     const bool detection_rect_valid =
@@ -1133,7 +1138,8 @@ void CropAndEncodeWorker::write_metadata_row(const CropFrameSnapshot& frame)
                       << kDetectionRectLayout << ','
                       << kDetectionRectSemantics << ','
                       << detection_source << ','
-                      << kCropSelectionPolicy << '\n';
+                      << kCropSelectionPolicy << ','
+                      << crop_video_frame_index << '\n';
 }
 
 void CropAndEncodeWorker::write_perf_row(const CropFrameSnapshot& frame, const CropEncodePerfSample& sample)

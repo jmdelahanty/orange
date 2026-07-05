@@ -123,7 +123,7 @@ void test_rewrites_crop_video_frame_index_per_split_output()
     std::filesystem::remove_all(dir);
 }
 
-void test_ignores_rows_outside_requested_ranges()
+void test_counts_and_skips_orphan_rows_when_policy_allows()
 {
     const std::filesystem::path dir = make_temp_dir("subset");
     const std::filesystem::path input = dir / "Cam2010096_crop_perf.csv";
@@ -139,17 +139,134 @@ void test_ignores_rows_outside_requested_ranges()
         {2, 3, (dir / "clip.csv").string()},
     };
     std::string error;
+    orange::session::RecordingFrameCsvSplitStats stats;
+    require(
+        orange::session::split_recording_frame_csv_by_ranges(
+            input.string(),
+            &ranges,
+            &error,
+            orange::session::RecordingFrameCsvOrphanRowPolicy::kCountAndSkip,
+            &stats),
+        "subset split should pass: " + error);
+    require(ranges[0].rows_written == 2, "subset row count");
+    require(stats.orphan_rows == 2, "subset orphan row count");
+    require(stats.first_orphan_recording_frame_id == 1,
+            "subset first orphan recording_frame_id");
+    const auto lines = read_lines(ranges[0].output_path);
+    require(lines.size() == 3, "subset output line count");
+    require(lines[1] == "2,0.2", "subset first row");
+    require(lines[2] == "3,0.3", "subset last row");
+    std::filesystem::remove_all(dir);
+}
+
+void test_fails_on_orphan_rows_by_default()
+{
+    const std::filesystem::path dir = make_temp_dir("orphan_fail");
+    const std::filesystem::path input = dir / "Cam2010096_crop_meta.csv";
+    write_text(
+        input,
+        "recording_frame_id,local_frame_id\n"
+        "1,101\n"
+        "2,102\n"
+        "3,103\n"
+        "4,104\n"
+        "7,107\n");
+
+    // Contiguous ranges [2,3] + [4,6]; rows 1 and 7 fall outside every range.
+    std::vector<orange::session::RecordingFrameCsvRange> ranges = {
+        {2, 3, (dir / "a.csv").string()},
+        {4, 6, (dir / "b.csv").string()},
+    };
+    std::string error;
+    orange::session::RecordingFrameCsvSplitStats stats;
+    require(
+        !orange::session::split_recording_frame_csv_by_ranges(
+            input.string(),
+            &ranges,
+            &error,
+            orange::session::RecordingFrameCsvOrphanRowPolicy::kFail,
+            &stats),
+        "orphan rows should fail the split by default");
+    require(error.find("2 row(s)") != std::string::npos,
+            "orphan error should name the orphan row count: " + error);
+    require(error.find("first orphaned recording_frame_id 1") != std::string::npos,
+            "orphan error should name the first orphaned recording_frame_id: " + error);
+    require(stats.orphan_rows == 2, "orphan stats row count");
+    require(stats.first_orphan_recording_frame_id == 1,
+            "orphan stats first recording_frame_id");
+    std::filesystem::remove_all(dir);
+}
+
+void test_rejects_gap_between_consecutive_ranges()
+{
+    const std::filesystem::path dir = make_temp_dir("gap");
+    const std::filesystem::path input = dir / "input.csv";
+    write_text(input, "recording_frame_id,total_ms\n1,0.1\n");
+    std::vector<orange::session::RecordingFrameCsvRange> ranges = {
+        {1, 3, (dir / "a.csv").string()},
+        {5, 6, (dir / "b.csv").string()},
+    };
+    std::string error;
+    require(
+        !orange::session::split_recording_frame_csv_by_ranges(
+            input.string(),
+            &ranges,
+            &error),
+        "gapped ranges should fail");
+    require(error.find("gap between recording_frame_id ranges") != std::string::npos,
+            "gap error should mention the gap: " + error);
+    require(error.find("ending at 3") != std::string::npos,
+            "gap error should name the lower boundary: " + error);
+    require(error.find("starting at 5") != std::string::npos,
+            "gap error should name the upper boundary: " + error);
+    require(error.find("expected 4") != std::string::npos,
+            "gap error should name the expected next frame id: " + error);
+    std::filesystem::remove_all(dir);
+}
+
+void test_preserves_session_crop_video_frame_index_verbatim()
+{
+    const std::filesystem::path dir = make_temp_dir("session_index");
+    const std::filesystem::path input = dir / "Cam2010096_crop_meta.csv";
+    write_text(
+        input,
+        "recording_frame_id,local_frame_id,crop_video_frame_index,"
+        "selection_policy,session_crop_video_frame_index\n"
+        "1,101,0,largest_detection_by_confidence,0\n"
+        "2,102,1,largest_detection_by_confidence,1\n"
+        "3,103,2,largest_detection_by_confidence,2\n"
+        "4,104,3,largest_detection_by_confidence,3\n"
+        "5,105,4,largest_detection_by_confidence,4\n");
+
+    std::vector<orange::session::RecordingFrameCsvRange> ranges = {
+        {1, 2, (dir / "clips" / "clip_000000" / "Cam2010096_crop_meta.csv").string()},
+        {3, 5, (dir / "clips" / "clip_000001" / "Cam2010096_crop_meta.csv").string()},
+    };
+    std::string error;
     require(
         orange::session::split_recording_frame_csv_by_ranges(
             input.string(),
             &ranges,
             &error),
-        "subset split should pass: " + error);
-    require(ranges[0].rows_written == 2, "subset row count");
-    const auto lines = read_lines(ranges[0].output_path);
-    require(lines.size() == 3, "subset output line count");
-    require(lines[1] == "2,0.2", "subset first row");
-    require(lines[2] == "3,0.3", "subset last row");
+        "session index split should pass: " + error);
+
+    const auto first_lines = read_lines(ranges[0].output_path);
+    const auto second_lines = read_lines(ranges[1].output_path);
+    require(
+        first_lines[0] ==
+            "recording_frame_id,local_frame_id,crop_video_frame_index,"
+            "selection_policy,session_crop_video_frame_index",
+        "session index header preserved");
+    require(first_lines[1] == "1,101,0,largest_detection_by_confidence,0",
+            "first clip keeps session index 0 and clip index 0");
+    require(first_lines[2] == "2,102,1,largest_detection_by_confidence,1",
+            "first clip keeps session index 1 and clip index 1");
+    require(second_lines[1] == "3,103,0,largest_detection_by_confidence,2",
+            "second clip rewrites clip index to 0 but keeps session index 2");
+    require(second_lines[2] == "4,104,1,largest_detection_by_confidence,3",
+            "second clip rewrites clip index to 1 but keeps session index 3");
+    require(second_lines[3] == "5,105,2,largest_detection_by_confidence,4",
+            "second clip rewrites clip index to 2 but keeps session index 4");
     std::filesystem::remove_all(dir);
 }
 
@@ -219,7 +336,10 @@ int main()
     const TestCase tests[] = {
         {"splits_crop_metadata_by_recording_frame_range", test_splits_crop_metadata_by_recording_frame_range},
         {"rewrites_crop_video_frame_index_per_split_output", test_rewrites_crop_video_frame_index_per_split_output},
-        {"ignores_rows_outside_requested_ranges", test_ignores_rows_outside_requested_ranges},
+        {"counts_and_skips_orphan_rows_when_policy_allows", test_counts_and_skips_orphan_rows_when_policy_allows},
+        {"fails_on_orphan_rows_by_default", test_fails_on_orphan_rows_by_default},
+        {"rejects_gap_between_consecutive_ranges", test_rejects_gap_between_consecutive_ranges},
+        {"preserves_session_crop_video_frame_index_verbatim", test_preserves_session_crop_video_frame_index_verbatim},
         {"rejects_invalid_csv_contracts", test_rejects_invalid_csv_contracts},
         {"rejects_overlapping_ranges", test_rejects_overlapping_ranges},
     };

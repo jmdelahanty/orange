@@ -176,6 +176,15 @@ def check_crop_metadata_contract(
     if missing_columns:
         return
 
+    # session_crop_video_frame_index is optional (appended by newer recorders);
+    # when present it must be contiguous ascending. In session-aggregate CSVs
+    # it starts at 0 and equals crop_video_frame_index; in per-clip split CSVs
+    # it continues the session-global count while crop_video_frame_index
+    # restarts at 0.
+    has_session_index = "session_crop_video_frame_index" in header_fields
+    session_index_base = None
+    bad_session_index_rows = []
+
     bad_index_rows = []
     bad_state_rows = []
     bad_validity_rows = []
@@ -186,6 +195,12 @@ def check_crop_metadata_contract(
         blank_frame = int_field(row, "blank_frame", path) != 0
         if int_field(row, "crop_video_frame_index", path) != data_index:
             bad_index_rows.append(line_number)
+        if has_session_index:
+            session_index = int_field(row, "session_crop_video_frame_index", path)
+            if session_index_base is None:
+                session_index_base = session_index
+            if session_index != session_index_base + data_index:
+                bad_session_index_rows.append(line_number)
 
         expected_state = "detected_crop" if has_detection else "blank_no_detection"
         expected_crop_valid = 1 if has_detection and not blank_frame else 0
@@ -207,6 +222,15 @@ def check_crop_metadata_contract(
         f"Cam{serial} crop_video_frame_index is contiguous from 0",
         f"Cam{serial} crop metadata has {len(bad_index_rows)} invalid crop_video_frame_index row(s)",
     )
+    if has_session_index:
+        reporter.check(
+            not bad_session_index_rows,
+            f"Cam{serial} session_crop_video_frame_index is contiguous ascending",
+            (
+                f"Cam{serial} crop metadata has {len(bad_session_index_rows)} "
+                "invalid session_crop_video_frame_index row(s)"
+            ),
+        )
     reporter.check(
         not bad_state_rows,
         f"Cam{serial} crop_state matches has_detection/blank_frame",

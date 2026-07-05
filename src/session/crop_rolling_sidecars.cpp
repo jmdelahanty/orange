@@ -121,6 +121,41 @@ bool validate_ranges(const std::vector<RecordingFrameCsvRange>& ranges,
             }
         }
     }
+
+    // Reject internal gaps between consecutive ranges. The recorder assigns
+    // frames to clips contiguously (clip k covers zero-based frames
+    // [k * clip_span_frames, (k + 1) * clip_span_frames), with terminal-tail
+    // frames coalesced into the final clip), so a gap between the reported
+    // per-clip ranges means frames were lost at a clip boundary. The first
+    // range is intentionally not required to start at any particular
+    // recording_frame_id: head/tail coverage is enforced by the orphan-row
+    // policy of the split itself.
+    std::vector<size_t> order(ranges.size());
+    for (size_t i = 0; i < order.size(); ++i) {
+        order[i] = i;
+    }
+    std::sort(order.begin(), order.end(), [&ranges](size_t lhs, size_t rhs) {
+        return ranges[lhs].first_recording_frame_id <
+               ranges[rhs].first_recording_frame_id;
+    });
+    for (size_t k = 0; k + 1 < order.size(); ++k) {
+        const auto& lower = ranges[order[k]];
+        const auto& upper = ranges[order[k + 1]];
+        if (upper.first_recording_frame_id !=
+            lower.last_recording_frame_id + 1) {
+            set_error(
+                error_out,
+                "gap between recording_frame_id ranges at indexes " +
+                    std::to_string(order[k]) + " and " +
+                    std::to_string(order[k + 1]) + ": range ending at " +
+                    std::to_string(lower.last_recording_frame_id) +
+                    " is followed by range starting at " +
+                    std::to_string(upper.first_recording_frame_id) +
+                    " (expected " +
+                    std::to_string(lower.last_recording_frame_id + 1) + ")");
+            return false;
+        }
+    }
     return true;
 }
 
@@ -129,8 +164,13 @@ bool validate_ranges(const std::vector<RecordingFrameCsvRange>& ranges,
 bool split_recording_frame_csv_by_ranges(
     const std::string& input_path,
     std::vector<RecordingFrameCsvRange>* ranges,
-    std::string* error_out)
+    std::string* error_out,
+    RecordingFrameCsvOrphanRowPolicy orphan_row_policy,
+    RecordingFrameCsvSplitStats* stats_out)
 {
+    if (stats_out) {
+        *stats_out = RecordingFrameCsvSplitStats{};
+    }
     if (input_path.empty()) {
         set_error(error_out, "input CSV path is empty");
         return false;
@@ -192,6 +232,8 @@ bool split_recording_frame_csv_by_ranges(
 
     std::string line;
     uint64_t line_number = 1;
+    uint64_t orphan_rows = 0;
+    uint64_t first_orphan_recording_frame_id = 0;
     while (std::getline(input, line)) {
         ++line_number;
         if (line.empty()) {
@@ -205,6 +247,7 @@ bool split_recording_frame_csv_by_ranges(
                     std::to_string(line_number));
             return false;
         }
+        bool matched = false;
         for (size_t i = 0; i < ranges->size(); ++i) {
             auto& range = (*ranges)[i];
             if (recording_frame_id >= range.first_recording_frame_id &&
@@ -225,9 +268,33 @@ bool split_recording_frame_csv_by_ranges(
                     outputs[i] << line << '\n';
                 }
                 range.rows_written++;
+                matched = true;
                 break;
             }
         }
+        if (!matched) {
+            if (orphan_rows == 0) {
+                first_orphan_recording_frame_id = recording_frame_id;
+            }
+            ++orphan_rows;
+        }
+    }
+
+    if (stats_out) {
+        stats_out->orphan_rows = orphan_rows;
+        stats_out->first_orphan_recording_frame_id =
+            first_orphan_recording_frame_id;
+    }
+    if (orphan_rows > 0 &&
+        orphan_row_policy == RecordingFrameCsvOrphanRowPolicy::kFail) {
+        set_error(
+            error_out,
+            std::to_string(orphan_rows) +
+                " row(s) in " + input_path +
+                " match no recording_frame_id range (first orphaned"
+                " recording_frame_id " +
+                std::to_string(first_orphan_recording_frame_id) + ")");
+        return false;
     }
 
     for (size_t i = 0; i < outputs.size(); ++i) {

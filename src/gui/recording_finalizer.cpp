@@ -1717,10 +1717,14 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                         const std::string root_metadata =
                             (std::filesystem::path(run->recording_folder) /
                              ("Cam" + serial + "_crop_meta.csv")).string();
+                        // Crop metadata rows exist only for frames accepted
+                        // for encoding, so a row outside every clip range is
+                        // a hole in the recorded data: fail loudly.
                         if (!orange::session::split_recording_frame_csv_by_ranges(
                                 root_metadata,
                                 &metadata_ranges,
-                                &split_error)) {
+                                &split_error,
+                                orange::session::RecordingFrameCsvOrphanRowPolicy::kFail)) {
                             stream_ok = false;
                             crop_external_recorder_ok = false;
                             append_error_message(
@@ -1732,16 +1736,35 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                         const std::string root_perf =
                             (std::filesystem::path(run->recording_folder) /
                              ("Cam" + serial + "_crop_perf.csv")).string();
+                        // Crop perf rows are also written for frames dropped
+                        // before external submission (drop_reason set), so
+                        // head/tail rows can legitimately match no clip
+                        // range: count and report them without failing.
+                        orange::session::RecordingFrameCsvSplitStats perf_split_stats;
                         if (!orange::session::split_recording_frame_csv_by_ranges(
                                 root_perf,
                                 &perf_ranges,
-                                &split_error)) {
+                                &split_error,
+                                orange::session::RecordingFrameCsvOrphanRowPolicy::kCountAndSkip,
+                                &perf_split_stats)) {
                             stream_ok = false;
                             crop_external_recorder_ok = false;
                             append_error_message(
                                 crop_external_recorder_error,
                                 "failed to split crop perf for camera " +
                                     serial + ": " + split_error);
+                        } else if (perf_split_stats.orphan_rows > 0) {
+                            std::cerr
+                                << "[GUI][recording] WARNING: "
+                                << perf_split_stats.orphan_rows
+                                << " crop perf row(s) for camera " << serial
+                                << " matched no rolling clip range (first orphaned"
+                                   " recording_frame_id "
+                                << perf_split_stats.first_orphan_recording_frame_id
+                                << "); these rows describe frames dropped before"
+                                   " external submission and were left out of the"
+                                   " per-clip crop perf sidecars."
+                                << std::endl;
                         }
                         nlohmann::json stream_clips = nlohmann::json::array();
                         for (size_t i = 0; i < clip_records.size(); ++i) {

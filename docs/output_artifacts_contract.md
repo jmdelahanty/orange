@@ -823,7 +823,7 @@ Field semantics:
 Header (exact):
 
 ```text
-recording_frame_id,local_frame_id,camera_frame_id,timestamp,timestamp_sys,has_detection,blank_frame,detection_confidence,crop_x,crop_y,crop_w,crop_h,detection_x,detection_y,detection_w,detection_h,crop_video_frame_index,crop_state,crop_rect_valid,crop_rect_coordinate_space,crop_rect_layout,crop_rect_semantics,detection_rect_valid,detection_rect_coordinate_space,detection_rect_layout,detection_rect_semantics,detection_source,selection_policy
+recording_frame_id,local_frame_id,camera_frame_id,timestamp,timestamp_sys,has_detection,blank_frame,detection_confidence,crop_x,crop_y,crop_w,crop_h,detection_x,detection_y,detection_w,detection_h,crop_video_frame_index,crop_state,crop_rect_valid,crop_rect_coordinate_space,crop_rect_layout,crop_rect_semantics,detection_rect_valid,detection_rect_coordinate_space,detection_rect_layout,detection_rect_semantics,detection_source,selection_policy,session_crop_video_frame_index
 ```
 
 Field semantics:
@@ -844,6 +844,13 @@ Field semantics:
   rectangle in source-frame pixels.
 - `crop_video_frame_index`: zero-based row/video-frame index within this CSV.
   Session-aggregate crop CSVs and per-clip rolling crop CSVs each start at `0`.
+- `session_crop_video_frame_index`: zero-based session-global monotonic crop
+  row/video-frame index, written at acquisition time. In the session-aggregate
+  (root) crop CSV it equals `crop_video_frame_index`. When finalization splits
+  the root crop CSV into per-clip rolling crop CSVs, this column is preserved
+  verbatim while `crop_video_frame_index` is rewritten per clip from `0`, so
+  the two values diverge in per-clip CSVs. This column is intentionally last
+  so older consumers that address the original columns are unaffected.
 - `crop_state`: `detected_crop` for source ROI crop frames, or
   `blank_no_detection` for explicit blank no-detection frames.
 - `crop_rect_valid`: integer boolean (`0|1`), true when `crop_*` names an
@@ -871,6 +878,18 @@ Behavior note:
 - The crop CSV is self-describing by header shape. The original columns remain
   first for compatibility; the appended fields define the coordinate and
   semantic contract for crop and detection rectangles.
+- Join recipe (per-clip row to session-global row): join on
+  `recording_frame_id`, which is unique across the session and preserved by
+  splitting; or, in CSVs that carry `session_crop_video_frame_index`, use that
+  column directly as the session-global crop video/row ordinal (it indexes the
+  merged session-aggregate crop MP4 and root crop CSV).
+- Compatibility rule: `session_crop_video_frame_index` is optional. Root crop
+  CSVs written before the column existed still split and validate exactly as
+  before (rows pass through with only the `crop_video_frame_index` rewrite).
+  Validators treat the column as optional-but-checked-when-present: when the
+  header contains it, every row must carry a contiguous ascending value
+  (starting at `0` in session-aggregate CSVs, continuing the session-global
+  count in per-clip CSVs); when the header lacks it, no check applies.
 
 ### YOLO Perf CSV (`Cam<serial>_yolo_perf.csv`)
 

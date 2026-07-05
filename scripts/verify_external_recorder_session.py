@@ -704,6 +704,9 @@ def read_metadata_frame_rows(path: Path) -> list[dict[str, int | None]]:
         )
 
     has_crop_video_frame_index = "crop_video_frame_index" in field_set
+    has_session_crop_video_frame_index = (
+        "session_crop_video_frame_index" in field_set
+    )
     parsed_rows: list[dict[str, int | None]] = []
     for row_index, row in enumerate(rows, start=2):
         parsed = {
@@ -720,11 +723,17 @@ def read_metadata_frame_rows(path: Path) -> list[dict[str, int | None]]:
                 f"timestamp_sys row {row_index} in {path}",
             ),
             "crop_video_frame_index": None,
+            "session_crop_video_frame_index": None,
         }
         if has_crop_video_frame_index:
             parsed["crop_video_frame_index"] = as_int(
                 row.get("crop_video_frame_index"),
                 f"crop_video_frame_index row {row_index} in {path}",
+            )
+        if has_session_crop_video_frame_index:
+            parsed["session_crop_video_frame_index"] = as_int(
+                row.get("session_crop_video_frame_index"),
+                f"session_crop_video_frame_index row {row_index} in {path}",
             )
         parsed_rows.append(parsed)
     return parsed_rows
@@ -795,6 +804,7 @@ def verify_rolling_output(
         )
 
     expected_next_frame = 1
+    expected_next_session_index: int | None = None
     total_clip_frames = 0
     verified_clips: list[dict[str, Any]] = []
     output_kind = str(summary.get("output_kind") or stream.get("output_kind") or "full")
@@ -859,6 +869,38 @@ def verify_rolling_output(
                         f"rolling crop metadata crop_video_frame_index mismatch for "
                         f"{serial}: {metadata_path} row {expected_frame_index + 2}"
                     ),
+                )
+            # session_crop_video_frame_index is optional (appended by newer
+            # recorders). When present it is preserved verbatim by the crop
+            # sidecar split, so it must continue the session-global count
+            # within each clip and across consecutive clips.
+            clip_session_indexes = [
+                row.get("session_crop_video_frame_index") for row in metadata_rows
+            ]
+            if any(value is not None for value in clip_session_indexes):
+                first_session_index = clip_session_indexes[0]
+                for offset, session_index in enumerate(clip_session_indexes):
+                    require(
+                        session_index is not None
+                        and first_session_index is not None
+                        and session_index == first_session_index + offset,
+                        (
+                            f"rolling crop metadata session_crop_video_frame_index "
+                            f"mismatch for {serial}: {metadata_path} row {offset + 2}"
+                        ),
+                    )
+                if expected_next_session_index is not None:
+                    require(
+                        first_session_index == expected_next_session_index,
+                        (
+                            f"rolling crop metadata session_crop_video_frame_index "
+                            f"continuity break for {serial}: {metadata_path} starts "
+                            f"at {first_session_index}, expected "
+                            f"{expected_next_session_index}"
+                        ),
+                    )
+                expected_next_session_index = (
+                    first_session_index + len(clip_session_indexes)
                 )
         for left, right in zip(metadata_rows, metadata_rows[1:]):
             left_frame = left["recording_frame_id"]

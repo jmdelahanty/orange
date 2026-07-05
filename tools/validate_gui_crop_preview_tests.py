@@ -106,6 +106,7 @@ CROP_META_HEADER = [
     "detection_rect_semantics",
     "detection_source",
     "selection_policy",
+    "session_crop_video_frame_index",
 ]
 
 CROP_PERF_HEADER = [
@@ -122,9 +123,16 @@ def require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
-def crop_meta_contract_fields(frame_index: int, has_detection: bool) -> dict[str, object]:
+def crop_meta_contract_fields(
+    frame_index: int,
+    has_detection: bool,
+    session_frame_index: int | None = None,
+) -> dict[str, object]:
     return {
         "crop_video_frame_index": frame_index,
+        "session_crop_video_frame_index": (
+            frame_index if session_frame_index is None else session_frame_index
+        ),
         "crop_state": "detected_crop" if has_detection else "blank_no_detection",
         "crop_rect_valid": 1 if has_detection else 0,
         "crop_rect_coordinate_space": "full_frame_pixels",
@@ -645,7 +653,11 @@ def write_crop_clip_artifacts(
                     "detection_y": 22,
                     "detection_w": 30,
                     "detection_h": 32,
-                    **crop_meta_contract_fields(frame_index, True),
+                    **crop_meta_contract_fields(
+                        frame_index,
+                        True,
+                        session_frame_index=frame_id - 1,
+                    ),
                 }
             )
     with perf.open("w", encoding="utf-8", newline="") as handle:
@@ -2118,6 +2130,84 @@ def test_crop_metadata_contract_fails_on_bad_frame_index() -> None:
     require(
         any("invalid crop_video_frame_index" in failure for failure in reporter.failures),
         "bad crop_video_frame_index should fail",
+    )
+
+
+def test_crop_metadata_contract_checks_optional_session_frame_index() -> None:
+    # A non-contiguous session_crop_video_frame_index must fail when the
+    # column is present.
+    rows = [
+        {
+            "has_detection": "1",
+            "blank_frame": "0",
+            **{
+                key: str(value)
+                for key, value in crop_meta_contract_fields(
+                    0, True, session_frame_index=10
+                ).items()
+            },
+        },
+        {
+            "has_detection": "1",
+            "blank_frame": "0",
+            **{
+                key: str(value)
+                for key, value in crop_meta_contract_fields(
+                    1, True, session_frame_index=12
+                ).items()
+            },
+        },
+    ]
+    reporter = validator.Reporter(verbose=False)
+    validator.check_crop_metadata_contract(reporter, "2010096", rows, "")
+    require(
+        any(
+            "invalid session_crop_video_frame_index" in failure
+            for failure in reporter.failures
+        ),
+        "non-contiguous session_crop_video_frame_index should fail",
+    )
+
+    # A clip-style CSV whose session index starts at an offset but stays
+    # contiguous must pass.
+    rows = [
+        {
+            "has_detection": "1",
+            "blank_frame": "0",
+            **{
+                key: str(value)
+                for key, value in crop_meta_contract_fields(
+                    index, True, session_frame_index=10 + index
+                ).items()
+            },
+        }
+        for index in range(3)
+    ]
+    reporter = validator.Reporter(verbose=False)
+    validator.check_crop_metadata_contract(reporter, "2010096", rows, "")
+    require(
+        not reporter.failures,
+        f"contiguous offset session_crop_video_frame_index should pass: {reporter.failures}",
+    )
+
+    # Old-schema rows without the column must still pass: the column is
+    # optional and only checked when present.
+    rows = [
+        {
+            "has_detection": "1",
+            "blank_frame": "0",
+            **{
+                key: str(value)
+                for key, value in crop_meta_contract_fields(0, True).items()
+                if key != "session_crop_video_frame_index"
+            },
+        },
+    ]
+    reporter = validator.Reporter(verbose=False)
+    validator.check_crop_metadata_contract(reporter, "2010096", rows, "")
+    require(
+        not reporter.failures,
+        f"missing session_crop_video_frame_index column should pass: {reporter.failures}",
     )
 
 
@@ -4331,6 +4421,7 @@ def main() -> int:
         test_crop_recording_artifacts_pass_when_aligned,
         test_crop_metadata_contract_accepts_valid_rows,
         test_crop_metadata_contract_fails_on_bad_frame_index,
+        test_crop_metadata_contract_checks_optional_session_frame_index,
         test_crop_recording_artifacts_use_recording_output_descriptor_paths,
         test_crop_recording_artifacts_external_queue_expectations,
         test_crop_recording_artifacts_external_queue_high_water_cannot_exceed_depth,
