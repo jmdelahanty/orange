@@ -192,6 +192,11 @@ struct GuiRecordingFinalizeOutcome {
     // non-empty on ok == true finalizes whose manifests are "incomplete").
     std::string external_recorder_error;
     std::string crop_external_recorder_error;
+    // Shadow-mode incremental clip split cross-check summary (stage 4,
+    // ORANGE_GUI_INCREMENTAL_CLIP_SHADOW). Set only when a shadow index
+    // exists for the run; F3 copies it onto the run state for the GUI
+    // status. Observation only - never affects ok.
+    std::string shadow_cross_check_summary;
 };
 
 // Per-frame drain gate (GUI thread). True when the drained run may finalize

@@ -25,6 +25,10 @@ struct GuiRecordingRunState {
     std::chrono::steady_clock::time_point recording_stop_requested_at{};
     std::chrono::steady_clock::time_point recording_drained_at{};
     bool diagnostic_finalize_stall_reported = false;
+    // Shadow-mode incremental clip split cross-check result for the last
+    // finalized run (stage 4, ORANGE_GUI_INCREMENTAL_CLIP_SHADOW); empty
+    // unless shadow mode ran. Kept here so the GUI status can render it.
+    std::string shadow_cross_check_summary;
 };
 
 }  // namespace orange::gui

@@ -283,6 +283,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/camera_properties_panel.cpp"
     "${SRC_DIR}/gui/frame_ipc_panel.cpp"
     "${SRC_DIR}/gui/host_ptp_panel.cpp"
+    "${SRC_DIR}/gui/incremental_clip_shadow.cpp"
     "${SRC_DIR}/gui/recording_finalizer.cpp"
     "${SRC_DIR}/gui/recording_panel.cpp"
     "${SRC_DIR}/gui/recording_snapshots.cpp"
@@ -500,6 +501,22 @@ if(BUILD_TESTING)
     target_compile_features(crop_rolling_sidecars_tests PRIVATE cxx_std_17)
     add_test(NAME crop_rolling_sidecars_tests COMMAND crop_rolling_sidecars_tests)
 
+    # Shadow-mode incremental clip splitter (stage 4). The worker core, the
+    # announcement intake, the JSONL partial index, the finalize cross-check
+    # comparator, and an end-to-end run of the real worker thread against
+    # synthetic root CSVs. The lifecycle-facing wrappers only read plain
+    # struct fields, so no external recorder sources are linked.
+    add_executable(incremental_clip_shadow_tests
+        "tools/incremental_clip_shadow_tests.cpp"
+        "${SRC_DIR}/gui/incremental_clip_shadow.cpp"
+        "${SRC_DIR}/gui/env_util.cpp"
+        "${SRC_DIR}/session/crop_rolling_sidecars.cpp"
+    )
+    target_include_directories(incremental_clip_shadow_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(incremental_clip_shadow_tests PRIVATE cxx_std_17)
+    target_link_libraries(incremental_clip_shadow_tests PRIVATE Threads::Threads)
+    add_test(NAME incremental_clip_shadow_tests COMMAND incremental_clip_shadow_tests)
+
     set(RECORDING_SESSION_MANIFEST_TEST_SOURCES ${ORANGE_CLIENT_SOURCES})
     list(REMOVE_ITEM
          RECORDING_SESSION_MANIFEST_TEST_SOURCES
@@ -574,6 +591,7 @@ if(BUILD_TESTING)
     add_executable(recording_finalizer_tests EXCLUDE_FROM_ALL
         "tools/recording_finalizer_tests.cpp"
         "${SRC_DIR}/gui/recording_finalizer.cpp"
+        "${SRC_DIR}/gui/incremental_clip_shadow.cpp"
         "${SRC_DIR}/gui/env_util.cpp"
         ${RECORDING_SESSION_MANIFEST_TEST_SOURCES}
     )
@@ -598,6 +616,7 @@ if(BUILD_TESTING)
         "tools/session_status_tests.cpp"
         "${SRC_DIR}/gui/session_status.cpp"
         "${SRC_DIR}/gui/recording_finalizer.cpp"
+        "${SRC_DIR}/gui/incremental_clip_shadow.cpp"
         "${SRC_DIR}/gui/env_util.cpp"
         ${RECORDING_SESSION_MANIFEST_TEST_SOURCES}
     )

@@ -40,6 +40,7 @@
 #include "gui/camera_properties_panel.h"
 #include "gui/frame_ipc_panel.h"
 #include "gui/host_ptp_panel.h"
+#include "gui/incremental_clip_shadow.h"
 #include "gui/recording_finalizer.h"
 #include "gui/recording_panel.h"
 #include "gui/recording_snapshots.h"
@@ -4306,6 +4307,14 @@ int main(int /*argc*/, char ** /*args*/) {
     // teardown/shutdown by gui_join_async_recording_finalize - never
     // detached (see GuiAsyncRecordingFinalizeState in gui/recording_finalizer.h).
     GuiAsyncRecordingFinalizeState gui_async_recording_finalize;
+    // Shadow-mode incremental clip splitter (stage 4, gated by
+    // ORANGE_GUI_INCREMENTAL_CLIP_SHADOW; default OFF = zero new behavior,
+    // zero new threads). Started with an external-IPC rolling recording,
+    // fed per-frame completion watermarks after the recorder lifecycle
+    // refresh, and joined the frame the run enters finalizing and on
+    // teardown/shutdown - never detached (see
+    // GuiIncrementalClipShadowState in gui/incremental_clip_shadow.h).
+    GuiIncrementalClipShadowState gui_incremental_clip_shadow;
     GuiLocalControlStartRequestState gui_local_control_start_request;
     gui_local_control_start_request.enabled =
         gui_local_control_recording_start_enabled(&app_storage_config);
@@ -4491,6 +4500,12 @@ int main(int /*argc*/, char ** /*args*/) {
             camera_control,
             "stream_shutdown",
             gui_local_control_event_log_path);
+        // The shadow-mode incremental clip splitter (if running) must stop
+        // BEFORE the finalize sequence below: the finalize prepare phase
+        // moves the recorder lifecycle states and the authoritative split
+        // writes into the same clip folders the shadow worker appends to.
+        // Prompt no-op when idle or the flag is off.
+        gui_join_incremental_clip_shadow(&gui_incremental_clip_shadow);
         // A recording finalize may still be running on the background
         // thread; join it and complete it BEFORE any pipeline/worker
         // teardown (blocking here is deliberate - this path already waits):
@@ -4713,6 +4728,24 @@ int main(int /*argc*/, char ** /*args*/) {
         GuiFrameTimingSample gui_frame_timing;
         orange::gui::reap_host_ptp_stack_worker(&host_ptp_stack_ui);
         gui_refresh_external_recorder_lifecycles(&recording_session, camera_control);
+        // Shadow-mode incremental clip splitter
+        // (ORANGE_GUI_INCREMENTAL_CLIP_SHADOW): starts with an external-IPC
+        // rolling recording and is fed the crop recorder status snapshots
+        // refreshed just above. The join lives directly before
+        // gui_poll_async_recording_finalize below (the only place the
+        // finalize prepare phase can launch this frame). With the flag off
+        // every call below is a cheap no-op.
+        if (!gui_recording_run.finalizing) {
+            gui_maybe_start_incremental_clip_shadow(
+                &gui_incremental_clip_shadow,
+                recording_session.external_crop_recorder_lifecycle,
+                gui_recording_run.recording_folder,
+                camera_control->record_video &&
+                    !camera_control->recording_draining);
+            gui_push_incremental_clip_shadow_watermarks(
+                &gui_incremental_clip_shadow,
+                recording_session.external_crop_recorder_lifecycle);
+        }
         gui_poll_async_recording_start(
             &gui_async_recording_start,
             &gui_local_control_start_request,
@@ -6318,6 +6351,16 @@ int main(int /*argc*/, char ** /*args*/) {
                 ImGui::TextWrapped("Recording path: %s", active_recording_folder.c_str());
             }
 
+            // The shadow-mode incremental clip splitter (if running) is
+            // signaled and JOINED the frame the run enters finalizing -
+            // directly before the poll below, the only place the finalize
+            // prepare phase (F1) can launch this frame - so the worker is
+            // gone before F1 moves the recorder lifecycle states and before
+            // the authoritative F2 split touches the same clip folders.
+            // Prompt no-op when idle or the flag is off.
+            if (gui_recording_run.finalizing) {
+                gui_join_incremental_clip_shadow(&gui_incremental_clip_shadow);
+            }
             // Phased finalize: launches the background finalize the frame
             // the drain gate opens and completes it (GUI-thread completion
             // phase) the frame the worker finishes; true exactly when a
@@ -6670,6 +6713,11 @@ int main(int /*argc*/, char ** /*args*/) {
         camera_control,
         "gui_shutdown",
         gui_local_control_event_log_path);
+
+    // Window-close shutdown: stop the shadow-mode incremental clip splitter
+    // (if running) before the finalize join below, mirroring the streaming
+    // teardown ordering. Prompt no-op when idle or the flag is off.
+    gui_join_incremental_clip_shadow(&gui_incremental_clip_shadow);
 
     // Window-close shutdown: a recording finalize may still be running on
     // the background thread. JOIN it (a single recorder stop can exceed the

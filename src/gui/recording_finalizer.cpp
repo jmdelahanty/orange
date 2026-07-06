@@ -6,6 +6,7 @@
 #include "gui/recording_finalizer.h"
 
 #include "gui/env_util.h"
+#include "gui/incremental_clip_shadow.h"
 
 #include "crop_and_encode_worker.h"
 #include "external_recorder_contract_utils.h"
@@ -1524,6 +1525,10 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
         nlohmann::json crop_encode_queue_high_water = nlohmann::json::object();
         nlohmann::json crop_enqueue_age_p95_ms = nlohmann::json::object();
         nlohmann::json crop_rolling_clips = nlohmann::json::object();
+        // Authoritative per-clip CSVs written by the rolling splits below,
+        // collected for the shadow-mode cross-check after the stream loop
+        // (stage 4, ORANGE_GUI_INCREMENTAL_CLIP_SHADOW).
+        std::vector<std::string> shadow_cross_check_csv_paths;
         orange::session::RecordingControlConfig crop_recording_control_config;
         std::string crop_recording_control_error;
         if (!gui_external_recorder_recording_control_from_plan(
@@ -1857,6 +1862,11 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                                 crop_external_recorder_error,
                                 "failed to split crop metadata for camera " +
                                     serial + ": " + split_error);
+                        } else {
+                            for (const auto& range : metadata_ranges) {
+                                shadow_cross_check_csv_paths.push_back(
+                                    range.output_path);
+                            }
                         }
                         split_error.clear();
                         const std::string root_perf =
@@ -1879,18 +1889,24 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                                 crop_external_recorder_error,
                                 "failed to split crop perf for camera " +
                                     serial + ": " + split_error);
-                        } else if (perf_split_stats.orphan_rows > 0) {
-                            std::cerr
-                                << "[GUI][recording] WARNING: "
-                                << perf_split_stats.orphan_rows
-                                << " crop perf row(s) for camera " << serial
-                                << " matched no rolling clip range (first orphaned"
-                                   " recording_frame_id "
-                                << perf_split_stats.first_orphan_recording_frame_id
-                                << "); these rows describe frames dropped before"
-                                   " external submission and were left out of the"
-                                   " per-clip crop perf sidecars."
-                                << std::endl;
+                        } else {
+                            for (const auto& range : perf_ranges) {
+                                shadow_cross_check_csv_paths.push_back(
+                                    range.output_path);
+                            }
+                            if (perf_split_stats.orphan_rows > 0) {
+                                std::cerr
+                                    << "[GUI][recording] WARNING: "
+                                    << perf_split_stats.orphan_rows
+                                    << " crop perf row(s) for camera " << serial
+                                    << " matched no rolling clip range (first orphaned"
+                                       " recording_frame_id "
+                                    << perf_split_stats.first_orphan_recording_frame_id
+                                    << "); these rows describe frames dropped before"
+                                       " external submission and were left out of the"
+                                       " per-clip crop perf sidecars."
+                                    << std::endl;
+                            }
                         }
                         nlohmann::json stream_clips = nlohmann::json::array();
                         for (size_t i = 0; i < clip_records.size(); ++i) {
@@ -1938,6 +1954,30 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
             crop_encode_queue_high_water[serial] = summary_encode_queue_high_water;
             if (summary_enqueue_age_p95_ms >= 0.0) {
                 crop_enqueue_age_p95_ms[serial] = summary_enqueue_age_p95_ms;
+            }
+        }
+
+        // Shadow-mode cross-check (stage 4, ORANGE_GUI_INCREMENTAL_CLIP_SHADOW):
+        // compare the shadow per-clip CSVs written incrementally during the
+        // recording against the authoritative split above. Runs only when a
+        // shadow index exists (i.e. the shadow worker ran for this run), so
+        // finalizes without the flag see zero delta. Observation only: the
+        // result never affects the finalize outcome, and the shadow files
+        // stay on disk for post-hoc inspection.
+        {
+            const std::string shadow_index_path =
+                gui_shadow_index_path(run.recording_folder);
+            std::error_code shadow_index_exists_error;
+            if (std::filesystem::exists(shadow_index_path,
+                                        shadow_index_exists_error)) {
+                const GuiShadowCrossCheckOutcome cross_check =
+                    gui_cross_check_incremental_clip_shadow(
+                        shadow_index_path,
+                        shadow_cross_check_csv_paths);
+                outcome.shadow_cross_check_summary = cross_check.summary;
+                std::cerr << "[GUI][recording] " << cross_check.summary
+                          << " (index: " << shadow_index_path << ")"
+                          << std::endl;
             }
         }
 
@@ -2335,6 +2375,9 @@ bool gui_complete_recording_finalize(
         recording_session->external_crop_recorder_contract_path.clear();
         recording_session->external_crop_recorder_supervisor_plan_path.clear();
         recording_session->external_crop_recorder_last_error = outcome.crop_external_recorder_error;
+    }
+    if (!outcome.shadow_cross_check_summary.empty()) {
+        run->shadow_cross_check_summary = outcome.shadow_cross_check_summary;
     }
     run->active = false;
     run->finalizing = false;
