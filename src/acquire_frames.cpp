@@ -2158,6 +2158,16 @@ void acquire_frames(
                                           << " recording_frame="
                                           << current_entry->recording_frame_id
                                           << std::endl;
+                                {
+                                    // Record the cause before flipping the
+                                    // flags so the GUI stop reconciler can
+                                    // attach it to the run manifest.
+                                    std::lock_guard<std::mutex> stop_reason_lock(
+                                        camera_control->recording_folder_mutex);
+                                    if (camera_control->worker_stop_reason.empty()) {
+                                        camera_control->worker_stop_reason = "fail_on_drop";
+                                    }
+                                }
                                 camera_control->record_video = false;
                                 camera_control->recording_draining = true;
                                 camera_control->stop_record = true;

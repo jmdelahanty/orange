@@ -152,6 +152,12 @@ struct CameraControl
     uint64_t recording_rollover_completed_frame_id = 0;
     std::string recording_rollover_completed_folder;
     bool preserve_recording_session_state = false;
+    // Why the last worker-initiated recording stop happened (e.g.
+    // "fail_on_drop"). Pipeline workers that flip record_video false
+    // themselves set this under recording_folder_mutex (first writer wins);
+    // the GUI stop reconciler reads-and-clears it so the run manifest
+    // records the cause. Empty when no worker-initiated stop is pending.
+    std::string worker_stop_reason;
     std::atomic<uint64_t> latest_recording_frame_id{0};
 };
 

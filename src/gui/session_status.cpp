@@ -77,6 +77,23 @@ void gui_note_recording_stop_requested(GuiRecordingRunState* run,
     run->stop_reason = stop_reason.empty() ? "manual_stop" : stop_reason;
 }
 
+bool gui_detect_externally_requested_stop(
+    const CameraControl* camera_control,
+    const GuiRecordingRunState* run,
+    const bool recording_start_pending)
+{
+    if (!camera_control || !run) {
+        return false;
+    }
+    if (!run->active || run->finalizing) {
+        return false;
+    }
+    if (recording_start_pending) {
+        return false;
+    }
+    return !camera_control->record_video;
+}
+
 void gui_mark_stream_started(GuiSessionTimingState* timing)
 {
     if (!timing) {

@@ -3954,6 +3954,15 @@ bool gui_poll_local_control_start_request(
         reject_start("ignored_recording_finalizing", "recording_finalizing");
         return false;
     }
+    if (recording_run && recording_run->active) {
+        // Defense-in-depth: an active run that never finalized
+        // (record_video already false, finalizing never latched). The
+        // worker-stop reconciler normally routes this into finalization
+        // within a frame; starting here would reuse the previous run's
+        // still-claimed recording folder.
+        reject_start("ignored_previous_run_active", "previous_recording_run_active");
+        return false;
+    }
 
     const GuiRecordingStartDispatch dispatch =
         gui_request_recording_start_through_operator_path(
@@ -4725,6 +4734,42 @@ int main(int /*argc*/, char ** /*args*/) {
             poseWorkers,
             &recording_preflight_errors,
             gui_local_control_event_log_path);
+        // Worker-initiated stop reconciliation. Pipeline workers may stop a
+        // recording themselves (recording.fail_on_drop in acquire_frames /
+        // EncoderPreprocessWorker flips record_video false and latches the
+        // drain flags) but must stay GUI-agnostic, so they never mark the
+        // GUI run finalizing. Without this the finalize gate (whose first
+        // term is run->finalizing) never opens, the CameraControl folder
+        // claim stays latched, and the next start would reuse the previous
+        // run's folder. Detect that state here - after the async-start poll
+        // so a start completing this frame is never misread as a stop, and
+        // before the ImGui draw so the finalize gate poll later this same
+        // frame can launch the finalize - and route it through the exact
+        // operator stop path.
+        if (gui_detect_externally_requested_stop(
+                camera_control,
+                &gui_recording_run,
+                gui_async_recording_start.active)) {
+            std::string worker_stop_reason;
+            {
+                std::lock_guard<std::mutex> stop_reason_lock(
+                    camera_control->recording_folder_mutex);
+                worker_stop_reason.swap(camera_control->worker_stop_reason);
+            }
+            const std::string external_stop_reason =
+                worker_stop_reason.empty() ? "external_stop" : worker_stop_reason;
+            std::cerr << "[GUI][recording] Worker-initiated recording stop"
+                         " detected; routing the run into finalization."
+                      << " stop_reason=" << external_stop_reason
+                      << " folder=" << gui_recording_run.recording_folder
+                      << std::endl;
+            gui_request_recording_stop_through_operator_path(
+                &recording_session,
+                camera_control,
+                &gui_recording_run,
+                &gui_session_timing,
+                external_stop_reason);
+        }
         gui_poll_local_control_drain_timeout(
             &gui_local_control_stop_scheduler,
             camera_control,
@@ -6184,6 +6229,25 @@ int main(int /*argc*/, char ** /*args*/) {
                             "draining or finalizing. Wait for finalization to complete "
                             "(see session status below); if this state persists, the "
                             "external recorder may not be draining."};
+                    } else if (!camera_control->record_video &&
+                               gui_recording_run.active) {
+                        // Defense-in-depth: an active run that never
+                        // finalized (record_video already false, but the run
+                        // was never routed into finalization). The
+                        // worker-stop reconciler earlier this frame normally
+                        // makes this state transient (it marks the run
+                        // finalizing, caught by the branch above), so this
+                        // guards the reconciler's one-frame window and any
+                        // future leak. Starting here would reuse the
+                        // previous run's still-claimed recording folder.
+                        std::cout << "Recording start rejected: previous"
+                                     " recording run never finalized."
+                                  << std::endl;
+                        recording_preflight_errors = {
+                            "Recording start rejected: the previous recording run is "
+                            "still active and has not finalized. Wait one frame for "
+                            "the stop reconciler to route it into finalization; if "
+                            "this state persists, report it as a bug."};
                     } else {
                         const bool next_record_state = !camera_control->record_video;
                         if (next_record_state) {

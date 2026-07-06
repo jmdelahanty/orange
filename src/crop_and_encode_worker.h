@@ -91,6 +91,11 @@ private:
     CropPreviewWorker* crop_preview_worker_ = nullptr;
     std::string crop_sidecar_perf_file_;
     std::string current_sidecar_recording_folder_;
+    // Session folder claimed on CameraControl when this recording started
+    // (mirrors EncoderHwWorker::active_recording_session_folder_): the
+    // finalize path may clear CameraControl::recording_folder only when it
+    // still matches this capture and preservation was not requested.
+    std::string active_recording_session_folder_;
     int max_queue_size_ = 40;
     std::atomic<uint64_t> jobs_enqueued_{0};
     std::atomic<uint64_t> queue_full_drops_{0};

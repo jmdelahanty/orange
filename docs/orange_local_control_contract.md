@@ -475,7 +475,9 @@ same error code.
 When start triggers, it routes through the same GUI/operator start path:
 
 - run the GUI recording preflight
-- call `begin_recording_run(...)`
+- drive the phased recording-run start (`prepare_recording_run(...)`,
+  `start_prepared_recording_run_supervisors(...)`,
+  `complete_recording_run(...)`)
 - rotate crop/pose/recording worker output folders
 - update detect/crop/pose/spatial snapshots
 - reset GUI recording timing and display frame-rate telemetry

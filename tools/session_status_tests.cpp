@@ -231,6 +231,97 @@ void test_note_recording_run()
     std::cout << "PASS test_note_recording_run" << std::endl;
 }
 
+// --- gui_detect_externally_requested_stop --------------------------------------
+//
+// Rules locked in (read from the implementation):
+//   - Fires exactly for the worker-initiated stop signature: an active,
+//     not-finalizing run whose CameraControl no longer reports record_video,
+//     outside the async-start pending window.
+//   - Never fires for a run already routed into finalization (operator /
+//     local-control / teardown stops mark finalizing before record_video
+//     flips false), for an inactive or finalized run, while the recording is
+//     still running, or while a background recording start is pending.
+//   - Pure and read-only: detection mutates nothing, so it keeps firing
+//     until the caller routes the stop (which sets finalizing).
+
+void test_detect_externally_requested_stop()
+{
+    CameraControl camera_control;
+    GuiRecordingRunState run;
+
+    // Null safety.
+    require(!gui_detect_externally_requested_stop(nullptr, &run),
+            "null CameraControl never detects a stop");
+    require(!gui_detect_externally_requested_stop(&camera_control, nullptr),
+            "null run never detects a stop");
+
+    // Inactive run (nothing ever started): record_video false is idle, not
+    // a worker-initiated stop.
+    require(!gui_detect_externally_requested_stop(&camera_control, &run),
+            "an inactive run never detects a stop");
+
+    // Async-start pending window: record_video legitimately false while the
+    // external recorder supervisors spawn; the run state must stay
+    // untouched until the poll resolves the start.
+    require(!gui_detect_externally_requested_stop(&camera_control, &run, true),
+            "the pending-start window never detects a stop on an idle run");
+
+    // Active recording: record_video true.
+    gui_note_recording_started(&run, &camera_control, "/data/rec_001", "real");
+    camera_control.record_video = true;
+    require(!gui_detect_externally_requested_stop(&camera_control, &run),
+            "an active recording with record_video true is not a stop");
+
+    // Worker-initiated stop: a pipeline worker flips record_video false
+    // (fail_on_drop) without touching the GUI run state.
+    camera_control.record_video = false;
+    camera_control.recording_draining = true;
+    camera_control.stop_record = true;
+    require(gui_detect_externally_requested_stop(&camera_control, &run),
+            "record_video false under an active non-finalizing run fires");
+
+    // Detection is pure: nothing changed, so it keeps firing next frame.
+    require(gui_detect_externally_requested_stop(&camera_control, &run),
+            "detection is read-only and keeps firing until routed");
+
+    // A concurrent pending start suppresses detection (the run state
+    // belongs to the pending resolution for that window).
+    require(!gui_detect_externally_requested_stop(&camera_control, &run, true),
+            "a pending start suppresses detection");
+
+    // Routing the stop (what the reconciler does) sets finalizing; the
+    // predicate must go quiet so the finalize path is entered exactly once.
+    gui_note_recording_stop_requested(&run, "fail_on_drop");
+    require(run.finalizing, "routing marked the run finalizing");
+    require(!gui_detect_externally_requested_stop(&camera_control, &run),
+            "a finalizing run never re-fires");
+
+    // Operator-stop ordering: the operator path marks finalizing BEFORE
+    // record_video flips false, so the predicate never fires on it.
+    GuiRecordingRunState operator_run;
+    CameraControl operator_control;
+    gui_note_recording_started(&operator_run, &operator_control,
+                               "/data/rec_002", "real");
+    operator_control.record_video = true;
+    gui_note_recording_stop_requested(&operator_run, "manual_stop");
+    require(!gui_detect_externally_requested_stop(&operator_control,
+                                                  &operator_run),
+            "an operator stop (finalizing before the flip) never fires"
+            " while record_video is still true");
+    operator_control.record_video = false;
+    require(!gui_detect_externally_requested_stop(&operator_control,
+                                                  &operator_run),
+            "an operator stop never fires after the flip either");
+
+    // Finalized run: active false again, record_video false is idle.
+    GuiRecordingRunState finalized_run;
+    finalized_run.finalized = true;
+    require(!gui_detect_externally_requested_stop(&camera_control,
+                                                  &finalized_run),
+            "a finalized (inactive) run never fires");
+    std::cout << "PASS test_detect_externally_requested_stop" << std::endl;
+}
+
 // --- gui_session_timing_snapshot ---------------------------------------------
 
 void test_snapshot_idle()
@@ -825,6 +916,7 @@ int main()
         test_format_storage_bytes();
         test_mark_transitions();
         test_note_recording_run();
+        test_detect_externally_requested_stop();
         test_snapshot_idle();
         test_snapshot_streaming_only();
         test_snapshot_streaming_and_recording();

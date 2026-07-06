@@ -55,11 +55,12 @@ struct RecordingRunStartResult {
 
 // --- Phased recording-run start ---------------------------------------------
 //
-// begin_recording_run keeps its synchronous contract (the headless-style
-// callers block in it deliberately); it is composed of the three phases
-// declared below, which the GUI operator path drives separately so the ImGui
-// render thread never blocks on external recorder startup (NVENC init in the
-// spawned recorders takes seconds):
+// A recording-run start is composed of the three phases declared below,
+// which the GUI operator path drives separately so the ImGui render thread
+// never blocks on external recorder startup (NVENC init in the spawned
+// recorders takes seconds). (A synchronous begin_recording_run wrapper used
+// to compose them; it had no live callers and was removed - callers run the
+// phases directly.)
 //
 //   1. prepare_recording_run — caller thread only. Mutates CameraControl and
 //      RecordingSessionState: resets the run flags, resolves the recording
@@ -303,15 +304,6 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
                                            CameraResources* camera_resources,
                                            CameraControl* camera_control,
                                            const AppStorageConfig* app_storage_config = nullptr);
-RecordingRunStartResult begin_recording_run(RecordingSessionState* state,
-                                            CameraControl* camera_control,
-                                            CameraParams* cameras_params,
-                                            const CameraEachSelect* cameras_select,
-                                            int num_cameras,
-                                            const std::string& base_folder,
-                                            PTPParams* ptp_params,
-                                            const std::string& recording_sink_mode = "real",
-                                            const nlohmann::json* external_recorder_contract_config = nullptr);
 // --- Unified recording stop/drain core -------------------------------------
 //
 // Both binaries (GUI and headless client) MUST route recording stop/drain

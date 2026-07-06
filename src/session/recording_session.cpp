@@ -1749,10 +1749,9 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
 
 namespace {
 
-// Failed-start cleanup shared by every phase. Byte-for-byte the cleanup the
-// synchronous begin_recording_run performed via its cleanup_failed_start
-// lambda: release the run's claim on the CameraControl folders/flags and
-// stop any session lifecycle still marked started.
+// Failed-start cleanup shared by every phase: release the run's claim on
+// the CameraControl folders/flags and stop any session lifecycle still
+// marked started.
 void cleanup_failed_recording_run_start(RecordingSessionState* state,
                                         CameraControl* camera_control,
                                         const std::string& recording_folder)
@@ -1844,18 +1843,39 @@ PreparedRecordingRunStart prepare_recording_run(
         camera_control->recording_rollover_completed_request_id = 0;
         camera_control->recording_rollover_completed_frame_id = 0;
         camera_control->recording_rollover_completed_folder.clear();
+        camera_control->worker_stop_reason.clear();
     }
 
-    std::string recording_id = get_current_date_time();
+    const std::string recording_id = get_current_date_time();
     std::string recording_folder;
     std::string resolved_base_folder = base_folder;
     {
         std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
-        if (camera_control->recording_folder.empty()) {
-            camera_control->recording_folder = resolved_base_folder + "/" + recording_id;
-        } else {
-            recording_id = std::filesystem::path(camera_control->recording_folder).filename().string();
+        if (!camera_control->recording_folder.empty()) {
+            // A non-empty folder claim at prepare time is a leak: the
+            // finalize path releases the claim when a run completes, so a
+            // surviving claim means the previous run never finalized.
+            // Reusing it would send this run into the previous run's
+            // directory, truncate-overwriting its snapshot/PTP/session
+            // artifacts and reopening the same Cam* output files. Mint a
+            // fresh timestamped folder unconditionally.
+            const std::string stale_folder = camera_control->recording_folder;
+            std::cerr << "[recording] WARNING: prepare_recording_run found a"
+                         " stale recording folder claim from a previous run"
+                         " that never finalized; discarding it and minting a"
+                         " fresh folder."
+                      << " stale_folder=" << stale_folder
+                      << std::endl;
+            if (resolved_base_folder.empty()) {
+                const std::filesystem::path stale_parent =
+                    std::filesystem::path(stale_folder).parent_path();
+                if (!stale_parent.empty() && stale_parent != "/") {
+                    resolved_base_folder = stale_parent.string();
+                }
+            }
+            camera_control->recording_folder.clear();
         }
+        camera_control->recording_folder = resolved_base_folder + "/" + recording_id;
         recording_folder = camera_control->recording_folder;
     }
 
@@ -2243,41 +2263,6 @@ void abort_prepared_recording_run(
               << std::endl;
 }
 
-RecordingRunStartResult begin_recording_run(RecordingSessionState* state,
-                                            CameraControl* camera_control,
-                                            CameraParams* cameras_params,
-                                            const CameraEachSelect* cameras_select,
-                                            const int num_cameras,
-                                            const std::string& base_folder,
-                                            PTPParams* ptp_params,
-                                            const std::string& recording_sink_mode,
-                                            const nlohmann::json* external_recorder_contract_config)
-{
-    PreparedRecordingRunStart prepared = prepare_recording_run(
-        state,
-        camera_control,
-        cameras_params,
-        cameras_select,
-        num_cameras,
-        base_folder,
-        ptp_params,
-        recording_sink_mode,
-        external_recorder_contract_config);
-    if (!prepared.valid) {
-        return failed_recording_run_start_result(prepared, prepared.error_message);
-    }
-    RecordingRunSupervisorStartOutcome outcome =
-        start_prepared_recording_run_supervisors(prepared);
-    return complete_recording_run(
-        state,
-        camera_control,
-        cameras_params,
-        num_cameras,
-        ptp_params,
-        prepared,
-        std::move(outcome));
-}
-
 void request_stop_recording_run(CameraControl* camera_control)
 {
     if (!camera_control) {
@@ -2434,6 +2419,7 @@ void clear_recording_run_state(CameraControl* camera_control)
     camera_control->recording_rollover_completed_frame_id = 0;
     camera_control->recording_rollover_completed_folder.clear();
     camera_control->preserve_recording_session_state = false;
+    camera_control->worker_stop_reason.clear();
     camera_control->latest_recording_frame_id.store(0, std::memory_order_relaxed);
 }
 

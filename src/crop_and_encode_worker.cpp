@@ -1060,6 +1060,13 @@ bool CropAndEncodeWorker::ensure_recording_started(const std::string& recording_
     last_frame_id_used_ = 0;
     crop_metadata_row_index_ = 0;
     encoder_flushed_ = false;
+    {
+        // Capture the session folder this run claimed on CameraControl so
+        // finalize_recording can release the claim only when it is still
+        // ours (mirrors EncoderHwWorker's recording-start capture).
+        std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
+        active_recording_session_folder_ = camera_control_->recording_folder;
+    }
     camera_control_->active_recorders.fetch_add(1, std::memory_order_relaxed);
     is_recording_ = true;
     return true;
@@ -1237,6 +1244,8 @@ void CropAndEncodeWorker::finalize_recording()
     is_recording_ = false;
     crop_sidecar_perf_file_.clear();
     current_sidecar_recording_folder_.clear();
+    const std::string finalized_session_folder = active_recording_session_folder_;
+    active_recording_session_folder_.clear();
     reset_recording_counters();
     if (crop_producer_worker_) {
         crop_producer_worker_->CloseRecording();
@@ -1249,8 +1258,18 @@ void CropAndEncodeWorker::finalize_recording()
                 camera_control_->recording_draining = false;
             }
             camera_control_->stop_record = false;
+            // Release the session-folder claim only when preservation was
+            // not requested and the claim is still this run's (exactly like
+            // EncoderHwWorker::finalize_recording). The previous
+            // unconditional clear could strip a preserved claim (the GUI
+            // latches preserve_recording_session_state for the whole run
+            // and releases the claim itself in its finalize completion
+            // phase) whenever the crop encoder drained last.
             std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
-            camera_control_->recording_folder.clear();
+            if (!camera_control_->preserve_recording_session_state &&
+                camera_control_->recording_folder == finalized_session_folder) {
+                camera_control_->recording_folder.clear();
+            }
         }
     }
 }

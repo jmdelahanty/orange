@@ -1306,6 +1306,15 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
                       << " recording_frame=" << entry->recording_frame_id
                       << " dropped_total=" << dropped_total
                       << std::endl;
+            {
+                // Record the cause before flipping the flags so the GUI
+                // stop reconciler can attach it to the run manifest.
+                std::lock_guard<std::mutex> stop_reason_lock(
+                    camera_control_->recording_folder_mutex);
+                if (camera_control_->worker_stop_reason.empty()) {
+                    camera_control_->worker_stop_reason = "fail_on_drop";
+                }
+            }
             camera_control_->record_video = false;
             camera_control_->recording_draining = true;
             camera_control_->stop_record = true;

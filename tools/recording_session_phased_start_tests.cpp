@@ -2,13 +2,15 @@
 // (orange::session::prepare_recording_run /
 // start_prepared_recording_run_supervisors / complete_recording_run /
 // abort_prepared_recording_run) that the GUI operator path drives across a
-// background thread, plus the synchronous begin_recording_run wrapper the
-// headless-style callers keep using.
+// background thread.
 //
 // Semantics locked in (no cameras or NVENC hardware required):
 // - prepare_recording_run claims the recording folder on CameraControl,
 //   creates the run scaffolding (folder, snapshot, external recorder
 //   contract artifact), and never flips record_video.
+// - prepare_recording_run always mints a fresh timestamped folder: a
+//   pre-latched CameraControl folder claim (a previous run that never
+//   finalized) is discarded with a loud warning, never reused.
 // - start_prepared_recording_run_supervisors with a nonexistent recorder
 //   binary fails fast (the forked child _exit(127)s before socket
 //   readiness) and reports the failure without touching CameraControl.
@@ -21,8 +23,9 @@
 // - abort_prepared_recording_run stops the already-spawned recorder
 //   processes and restores the pre-start state without flipping
 //   record_video (the cancel-during-pending path).
-// - begin_recording_run (the synchronous wrapper) reports the same failure
-//   with the same cleanup.
+// - The recorder tool resolves through ORANGE_EXTERNAL_RECORDER_TOOL when
+//   the prepared lifecycle options carry no explicit tool path, and a
+//   failure through that resolution performs the same cleanup.
 
 #include "session/recording_session.h"
 
@@ -256,9 +259,9 @@ void test_supervisor_failure_fails_loudly_and_cleans_up()
               << std::endl;
 }
 
-void test_sync_begin_recording_run_failure_parity()
+void test_env_resolved_recorder_tool_failure_parity()
 {
-    const std::filesystem::path base = make_temp_base_folder("sync_fail");
+    const std::filesystem::path base = make_temp_base_folder("env_fail");
     CameraControl camera_control;
     orange::session::RecordingSessionState state;
     state.recording_sink_mode = "external_ipc";
@@ -266,15 +269,18 @@ void test_sync_begin_recording_run_failure_parity()
     CameraEachSelect select;
     select.record = true;
     PTPParams ptp{};
-    const std::string socket_path = make_socket_path("sync_fail");
+    const std::string socket_path = make_socket_path("env_fail");
     const nlohmann::json contract_config = make_contract_config(socket_path);
 
-    // begin_recording_run resolves the recorder tool through the
-    // environment; point it at a nonexistent binary for the failure case.
+    // With no explicit recorder_tool_path in the prepared lifecycle
+    // options, the supervisor start resolves the recorder tool through the
+    // environment (the path the removed synchronous begin_recording_run
+    // wrapper exercised); point it at a nonexistent binary for the failure
+    // case.
     setenv("ORANGE_EXTERNAL_RECORDER_TOOL",
            "/nonexistent/orange_phased_start_recorder_binary", 1);
-    const orange::session::RecordingRunStartResult result =
-        orange::session::begin_recording_run(
+    orange::session::PreparedRecordingRunStart prepared =
+        orange::session::prepare_recording_run(
             &state,
             &camera_control,
             &camera,
@@ -284,18 +290,133 @@ void test_sync_begin_recording_run_failure_parity()
             &ptp,
             "external_ipc",
             &contract_config);
+    require(prepared.valid, "prepare must succeed: " + prepared.error_message);
+    orange::session::RecordingRunSupervisorStartOutcome outcome =
+        orange::session::start_prepared_recording_run_supervisors(prepared);
+    const orange::session::RecordingRunStartResult result =
+        orange::session::complete_recording_run(
+            &state,
+            &camera_control,
+            &camera,
+            1,
+            &ptp,
+            prepared,
+            std::move(outcome));
     unsetenv("ORANGE_EXTERNAL_RECORDER_TOOL");
 
-    require(!result.ok, "the synchronous wrapper must report the failure");
+    require(!result.ok, "the env-resolved-tool failure must be reported");
     require(!result.error_message.empty(),
-            "the synchronous failure must carry an error message");
+            "the env-resolved-tool failure must carry an error message");
     require(!state.external_recorder_last_error.empty(),
-            "the synchronous failure must set the session error state");
+            "the env-resolved-tool failure must set the session error state");
     require(!state.external_recorder_lifecycle.started,
-            "no lifecycle may remain started after a synchronous failure");
-    require_failed_start_state_restored(&camera_control, "synchronous failure");
+            "no lifecycle may remain started after the failure");
+    require_failed_start_state_restored(&camera_control,
+                                        "env-resolved-tool failure");
     std::filesystem::remove_all(base);
-    std::cout << "PASS test_sync_begin_recording_run_failure_parity" << std::endl;
+    std::cout << "PASS test_env_resolved_recorder_tool_failure_parity"
+              << std::endl;
+}
+
+void test_prepare_mints_fresh_folder_over_stale_latch()
+{
+    const std::filesystem::path base = make_temp_base_folder("stale_latch");
+    CameraControl camera_control;
+    orange::session::RecordingSessionState state;  // default "real" sink
+    CameraParams camera = make_camera_params();
+    CameraEachSelect select;
+    select.record = true;
+    PTPParams ptp{};
+
+    // A previous run that never finalized leaks its folder claim on
+    // CameraControl. prepare_recording_run must never reuse it: reuse would
+    // send the new run into the previous run's directory,
+    // truncate-overwriting recording_snapshot.json, the PTP summary, and
+    // recording_session.json, and reopening the same Cam* output files.
+    const std::string stale_folder = (base / "stale_previous_run").string();
+    std::filesystem::create_directories(stale_folder);
+    {
+        std::lock_guard<std::mutex> lock(camera_control.recording_folder_mutex);
+        camera_control.recording_folder = stale_folder;
+    }
+
+    orange::session::PreparedRecordingRunStart prepared =
+        orange::session::prepare_recording_run(
+            &state,
+            &camera_control,
+            &camera,
+            &select,
+            1,
+            base.string(),
+            &ptp,
+            "real",
+            nullptr);
+    require(prepared.valid, "prepare must succeed: " + prepared.error_message);
+    require(prepared.recording_folder != stale_folder,
+            "prepare must never reuse a stale recording folder claim");
+    require(!prepared.recording_folder.empty() &&
+                std::filesystem::exists(prepared.recording_folder),
+            "prepare must create the freshly minted folder");
+    require(prepared.recording_folder.rfind(base.string() + "/", 0) == 0,
+            "the fresh folder must be minted under the base folder");
+    require(orange::session::current_recording_folder(&camera_control) ==
+                prepared.recording_folder,
+            "the CameraControl claim must be replaced by the fresh folder");
+    require(!std::filesystem::exists(
+                std::filesystem::path(stale_folder) / "recording_snapshot.json"),
+            "prepare must not write run scaffolding into the stale folder");
+    require(!camera_control.record_video,
+            "prepare must never flip record_video");
+    orange::session::clear_recording_run_state(&camera_control);
+    std::filesystem::remove_all(base);
+    std::cout << "PASS test_prepare_mints_fresh_folder_over_stale_latch"
+              << std::endl;
+}
+
+void test_prepare_mints_fresh_folder_with_empty_base_and_stale_latch()
+{
+    const std::filesystem::path base = make_temp_base_folder("stale_no_base");
+    CameraControl camera_control;
+    orange::session::RecordingSessionState state;
+    CameraParams camera = make_camera_params();
+    CameraEachSelect select;
+    select.record = true;
+    PTPParams ptp{};
+
+    // With an empty base folder the old reuse branch was the only source of
+    // an output root. The mint-fresh path must still refuse to reuse the
+    // stale folder itself and instead mint a sibling under the stale
+    // claim's parent directory.
+    const std::string stale_folder = (base / "stale_previous_run").string();
+    std::filesystem::create_directories(stale_folder);
+    {
+        std::lock_guard<std::mutex> lock(camera_control.recording_folder_mutex);
+        camera_control.recording_folder = stale_folder;
+    }
+
+    orange::session::PreparedRecordingRunStart prepared =
+        orange::session::prepare_recording_run(
+            &state,
+            &camera_control,
+            &camera,
+            &select,
+            1,
+            std::string(),
+            &ptp,
+            "real",
+            nullptr);
+    require(prepared.valid, "prepare must succeed: " + prepared.error_message);
+    require(prepared.recording_folder != stale_folder,
+            "empty-base prepare must never reuse the stale folder");
+    require(prepared.recording_folder.rfind(base.string() + "/", 0) == 0,
+            "the fresh folder must be minted under the stale claim's parent");
+    require(orange::session::current_recording_folder(&camera_control) ==
+                prepared.recording_folder,
+            "the CameraControl claim must be replaced by the fresh folder");
+    orange::session::clear_recording_run_state(&camera_control);
+    std::filesystem::remove_all(base);
+    std::cout << "PASS test_prepare_mints_fresh_folder_with_empty_base_and_stale_latch"
+              << std::endl;
 }
 
 void test_successful_start_flips_record_video_at_completion()
@@ -439,8 +560,10 @@ int main(int, char** argv)
     }
     try {
         test_prepare_creates_run_scaffolding();
+        test_prepare_mints_fresh_folder_over_stale_latch();
+        test_prepare_mints_fresh_folder_with_empty_base_and_stale_latch();
         test_supervisor_failure_fails_loudly_and_cleans_up();
-        test_sync_begin_recording_run_failure_parity();
+        test_env_resolved_recorder_tool_failure_parity();
         test_successful_start_flips_record_video_at_completion();
         test_abort_pending_start_stops_recorders_and_restores_state();
     } catch (const std::exception& error) {

@@ -112,6 +112,36 @@ void gui_note_recording_stop_requested(GuiRecordingRunState* run,
                                        const std::string& stop_reason,
                                        nlohmann::json stop_control = nlohmann::json::object());
 
+// True exactly when a pipeline worker (not the GUI operator/teardown paths)
+// stopped the recording out from under an active GUI run: the run is still
+// active, nothing routed it into finalization yet (finalizing false), and
+// CameraControl no longer reports record_video. Every GUI-side stop path
+// (operator button, local control, autorun, teardown) marks the run
+// finalizing BEFORE record_video flips false, so this combination can only
+// be produced by a worker-initiated stop (e.g. recording.fail_on_drop in
+// acquire_frames / EncoderPreprocessWorker).
+//
+// Predicate terms:
+// - run->active: there is a live GUI run to reconcile; while a start is
+//   still resolving (record_video false, run not yet noted started) active
+//   is false, so a not-yet-started run never fires.
+// - !run->finalizing: an operator/teardown stop already routed the run into
+//   finalization; firing again would only churn the stop reason.
+// - !recording_start_pending: the async external-recorder start window
+//   (GuiAsyncRecordingStartState.active). record_video is legitimately
+//   false there and the run state must stay untouched until
+//   gui_poll_async_recording_start resolves the pending start.
+// - !camera_control->record_video: the actual stop signal.
+//
+// Pure read-only detection; the caller (the per-frame reconciler in
+// orange.cpp) routes a detected stop through
+// gui_request_recording_stop_through_operator_path so the finalize gate
+// opens exactly as it does for an operator stop.
+bool gui_detect_externally_requested_stop(
+    const CameraControl* camera_control,
+    const GuiRecordingRunState* run,
+    bool recording_start_pending = false);
+
 void gui_mark_stream_started(GuiSessionTimingState* timing);
 
 void gui_mark_stream_stopped(GuiSessionTimingState* timing);
