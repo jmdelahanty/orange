@@ -553,6 +553,21 @@ if(BUILD_TESTING)
     set_tests_properties(recording_session_phased_start_tests
         PROPERTIES DEPENDS recording_session_phased_start_tests_build)
 
+    add_executable(recording_folder_reuse_regression_tests EXCLUDE_FROM_ALL
+        "tools/recording_folder_reuse_regression_tests.cpp"
+        ${RECORDING_SESSION_MANIFEST_TEST_SOURCES}
+    )
+    target_include_directories(recording_folder_reuse_regression_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(recording_folder_reuse_regression_tests PRIVATE cxx_std_17)
+    add_test(
+        NAME recording_folder_reuse_regression_tests_build
+        COMMAND ${CMAKE_COMMAND}
+                --build "${CMAKE_BINARY_DIR}"
+                --target recording_folder_reuse_regression_tests)
+    add_test(NAME recording_folder_reuse_regression_tests COMMAND recording_folder_reuse_regression_tests)
+    set_tests_properties(recording_folder_reuse_regression_tests
+        PROPERTIES DEPENDS recording_folder_reuse_regression_tests_build)
+
     # gui/recording_finalizer.cpp calls into the recording session, external
     # recorder, ingress, and crop encoder stacks, so reuse the closed source
     # set already proven to link for the recording session manifest tests.
@@ -1203,6 +1218,34 @@ if(TARGET recording_session_phased_start_tests)
     )
     if(ORANGE_ENABLE_NVTX)
         target_link_libraries(recording_session_phased_start_tests PRIVATE ${NVTX_LIBRARY})
+    endif()
+
+    target_link_libraries(recording_folder_reuse_regression_tests PRIVATE
+        ${EVT_CAMERA_LIBRARY}
+        ${EVT_GENICAM_LIBRARY}
+        ${EVT_GIGE_LIBRARY}
+        ${ENET_LIBRARY}
+        ${CUDA_CUDART_LIBRARY}
+        ${CUDA_DRIVER_LIBRARY}
+        ${CUDA_NPPICC_LIBRARY}
+        ${CUDA_NPPIDEI_LIBRARY}
+        ${CUDA_NPPC_LIBRARY}
+        ${CUDA_NPPIG_LIBRARY}
+        ${CUDA_NPPIAL_LIBRARY}
+        ${NVIDIA_ENCODE_LIBRARY}
+        ${AVFORMAT_LIBRARY}
+        ${SWSCALE_LIBRARY}
+        ${SWRESAMPLE_LIBRARY}
+        ${AVUTIL_LIBRARY}
+        ${AVCODEC_LIBRARY}
+        ${OpenCV_LIBS}
+        ${TENSORRT_LIBRARY}
+        ${TENSORRT_PLUGIN_LIBRARY}
+        m
+        pthread
+    )
+    if(ORANGE_ENABLE_NVTX)
+        target_link_libraries(recording_folder_reuse_regression_tests PRIVATE ${NVTX_LIBRARY})
     endif()
 endif()
 
