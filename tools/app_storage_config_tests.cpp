@@ -130,6 +130,7 @@ void test_missing_config_uses_defaults()
         "default full-frame sink mode should not count as app-configured");
     require(config.gui_recording_record_for_seconds == 0, "default record_for_seconds");
     require(config.gui_recording_clip_seconds == 0, "default clip_seconds");
+    require(!config.gui_incremental_clip_shadow, "default incremental clip shadow disabled");
     require(config.gui_crop_recording_sink_mode == "in_process", "default crop sink mode");
     require(config.gui_crop_external_encode_queue_depth == -1, "default crop queue unset");
     require(config.gui_crop_external_recorder_gpu_id == -1, "default crop recorder GPU unset");
@@ -173,6 +174,7 @@ void test_loads_gui_and_crop_defaults()
   },
   "recording": {
     "sink_mode": "external_ipc",
+    "incremental_clip_shadow": true,
     "recording_control": {
       "record_for_seconds": 6,
       "clip_seconds": 2
@@ -217,6 +219,7 @@ void test_loads_gui_and_crop_defaults()
     require(config.gui_recording_sink_mode_configured, "full-frame sink mode should be app-configured");
     require(config.gui_recording_record_for_seconds == 6, "record_for_seconds should load");
     require(config.gui_recording_clip_seconds == 2, "clip_seconds should load");
+    require(config.gui_incremental_clip_shadow, "incremental_clip_shadow should load");
     require(config.gui_crop_recording_sink_mode == "external_ipc", "crop sink mode should load");
     require(config.gui_crop_external_encode_queue_depth == 128, "crop queue depth should load");
     require(config.gui_crop_external_recorder_gpu_id == 4, "crop recorder GPU should load");

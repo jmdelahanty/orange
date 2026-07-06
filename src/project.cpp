@@ -1148,6 +1148,7 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
     config.gui_swap_interval = -1;
     config.gui_frame_max_fps = -1;
     config.gui_show_speed_graphs = false;
+    config.gui_incremental_clip_shadow = false;
     config.gui_local_control_recording_start_enabled = false;
     config.gui_local_control_recording_stop_enabled = false;
     config.gui_local_control_citrus_completion_stop_enabled = false;
@@ -1255,6 +1256,17 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                 config.gui_recording_sink_mode = sink_mode;
                 config.gui_recording_sink_mode_configured = true;
             }
+        }
+        if (!read_optional_bool_field(
+                recording,
+                "incremental_clip_shadow",
+                &config.gui_incremental_clip_shadow,
+                error_out,
+                "recording")) {
+            if (error_out && error_out->find(config_path.string()) == std::string::npos) {
+                *error_out += " in " + config_path.string();
+            }
+            return false;
         }
         if (recording.contains("recording_control")) {
             if (!recording["recording_control"].is_object()) {

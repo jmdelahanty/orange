@@ -47,6 +47,7 @@ struct AppStorageConfig {
     int gui_swap_interval = -1;
     int gui_frame_max_fps = -1;
     bool gui_show_speed_graphs = false;
+    bool gui_incremental_clip_shadow = false;
     bool gui_local_control_recording_start_enabled = false;
     bool gui_local_control_recording_stop_enabled = false;
     bool gui_local_control_citrus_completion_stop_enabled = false;

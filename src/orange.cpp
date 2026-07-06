@@ -4148,6 +4148,12 @@ int main(int /*argc*/, char ** /*args*/) {
                   << app_storage_config.gui_ptp_register_read_decimate
                   << std::endl;
     }
+    if (app_storage_config.gui_incremental_clip_shadow) {
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_GUI_INCREMENTAL_CLIP_SHADOW",
+            "1",
+            "incremental clip shadow mode");
+    }
     set_gui_env_from_app_config_if_absent(
         "ORANGE_CROP_RECORDING_SINK_MODE",
         app_storage_config.gui_crop_recording_sink_mode,

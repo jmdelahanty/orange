@@ -413,6 +413,26 @@ validator now follows `recording_session.json` external video paths and passes
 for this layout. Remaining production-hardening work is GUI-visible recorder
 health/failure reporting and GUI PTP-stack preflight/repair.
 
+### `recording.incremental_clip_shadow`
+
+Type:
+
+- boolean (optional, default `false`)
+
+Behavior:
+
+- When `true`, sets `ORANGE_GUI_INCREMENTAL_CLIP_SHADOW=1` at startup unless the
+  environment variable is already set (the environment wins when set).
+- Enables the shadow-mode incremental clip finalizer for external-IPC rolling
+  recordings: completed clips are split into `*.shadow.csv` files during the
+  recording, a `recording_clip_index.shadow.jsonl` partial index is kept in the
+  recording folder, and finalize logs a
+  `shadow cross-check: N/M clip CSVs identical, ...` comparison against the
+  authoritative split. Observation only: shadow output never replaces the
+  authoritative artifacts and mismatches never fail a recording. The terminal
+  clip always reports `missing` in the cross-check (it completes during recorder
+  shutdown, after the shadow worker has stopped).
+
 ### `recording.recording_control`
 
 Type:
