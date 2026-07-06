@@ -294,10 +294,14 @@ void refresh_recorder_status_sidecar(RecorderProcessState* process)
                 optional_u64(rolling, "completed_clip_count");
             snapshot.rolling_last_completed_clip_index =
                 optional_int(rolling, "last_completed_clip_index");
+            snapshot.rolling_last_completed_clip_first_recording_frame_id =
+                optional_u64(rolling, "last_completed_clip_first_recording_frame_id");
             snapshot.rolling_last_completed_clip_last_recording_frame_id =
                 optional_u64(rolling, "last_completed_clip_last_recording_frame_id");
             snapshot.rolling_last_completed_clip_frame_count =
                 optional_u64(rolling, "last_completed_clip_frame_count");
+            snapshot.rolling_last_completed_clip_packets_written =
+                optional_u64(rolling, "last_completed_clip_packets_written");
             snapshot.rolling_last_rollover_status =
                 optional_string(rolling, "last_rollover_status");
         }
@@ -1624,10 +1628,14 @@ nlohmann::json SupervisorRuntimeStateToJson(const SupervisorRuntimeState& runtim
                 {"rolling_completed_clip_count", recorder_status.rolling_completed_clip_count},
                 {"rolling_last_completed_clip_index",
                  recorder_status.rolling_last_completed_clip_index},
+                {"rolling_last_completed_clip_first_recording_frame_id",
+                 recorder_status.rolling_last_completed_clip_first_recording_frame_id},
                 {"rolling_last_completed_clip_last_recording_frame_id",
                  recorder_status.rolling_last_completed_clip_last_recording_frame_id},
                 {"rolling_last_completed_clip_frame_count",
                  recorder_status.rolling_last_completed_clip_frame_count},
+                {"rolling_last_completed_clip_packets_written",
+                 recorder_status.rolling_last_completed_clip_packets_written},
                 {"rolling_last_rollover_status", recorder_status.rolling_last_rollover_status},
                 {"worker_failed", recorder_status.worker_failed},
                 {"storage_checked", recorder_status.storage_checked},

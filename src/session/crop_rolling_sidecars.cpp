@@ -307,4 +307,256 @@ bool split_recording_frame_csv_by_ranges(
     return true;
 }
 
+RecordingFrameCsvSplitResult append_clip_rows_from_root_csv(
+    const std::string& root_csv_path,
+    IncrementalClipSplitCursor* cursor,
+    const RecordingFrameCsvRange& clip_range,
+    const std::string& output_csv_path,
+    RecordingFrameCsvOrphanRowPolicy orphan_row_policy)
+{
+    RecordingFrameCsvSplitResult result;
+    const auto fail = [&result](const std::string& message) {
+        result.status = RecordingFrameCsvClipSplitStatus::kFailed;
+        result.error = message;
+        return result;
+    };
+
+    if (root_csv_path.empty()) {
+        return fail("input CSV path is empty");
+    }
+    if (!cursor) {
+        return fail("cursor is null");
+    }
+    if (output_csv_path.empty()) {
+        return fail("output CSV path is empty");
+    }
+    if (clip_range.first_recording_frame_id == 0 ||
+        clip_range.last_recording_frame_id == 0 ||
+        clip_range.first_recording_frame_id >
+            clip_range.last_recording_frame_id) {
+        return fail("invalid recording_frame_id clip range [" +
+                    std::to_string(clip_range.first_recording_frame_id) + ", " +
+                    std::to_string(clip_range.last_recording_frame_id) + "]");
+    }
+
+    // Continuation vs. new clip. Re-calling with the active clip's own range
+    // resumes it; a new range must start exactly one past the highest
+    // consumed recording_frame_id (same contiguity rule as validate_ranges).
+    const bool continuation =
+        cursor->active_clip_first_recording_frame_id != 0 &&
+        clip_range.first_recording_frame_id ==
+            cursor->active_clip_first_recording_frame_id;
+    if (continuation) {
+        if (clip_range.last_recording_frame_id !=
+            cursor->active_clip_last_recording_frame_id) {
+            return fail(
+                "clip range [" +
+                std::to_string(clip_range.first_recording_frame_id) + ", " +
+                std::to_string(clip_range.last_recording_frame_id) +
+                "] does not match the active clip range [" +
+                std::to_string(cursor->active_clip_first_recording_frame_id) +
+                ", " +
+                std::to_string(cursor->active_clip_last_recording_frame_id) +
+                "]");
+        }
+        if (cursor->any_row_consumed &&
+            cursor->last_consumed_recording_frame_id ==
+                clip_range.last_recording_frame_id) {
+            // The clip was already fully consumed by a previous call.
+            result.status = RecordingFrameCsvClipSplitStatus::kCompleted;
+            result.clip_rows_written = cursor->active_clip_rows_written;
+            return result;
+        }
+    } else {
+        if (cursor->any_row_consumed &&
+            clip_range.first_recording_frame_id !=
+                cursor->last_consumed_recording_frame_id + 1) {
+            return fail(
+                "gap between recording_frame_id ranges: rows consumed ending"
+                " at " +
+                std::to_string(cursor->last_consumed_recording_frame_id) +
+                " are followed by clip range starting at " +
+                std::to_string(clip_range.first_recording_frame_id) +
+                " (expected " +
+                std::to_string(cursor->last_consumed_recording_frame_id + 1) +
+                ")");
+        }
+        cursor->active_clip_first_recording_frame_id =
+            clip_range.first_recording_frame_id;
+        cursor->active_clip_last_recording_frame_id =
+            clip_range.last_recording_frame_id;
+        cursor->active_clip_rows_written = 0;
+        cursor->active_clip_output_created = false;
+    }
+
+    std::ifstream input(root_csv_path, std::ios::in | std::ios::binary);
+    if (!input) {
+        return fail("failed to open input CSV: " + root_csv_path);
+    }
+    // pending_partial_line holds the file bytes at [byte_offset,
+    // byte_offset + pending_partial_line.size()); resume reading after them.
+    input.seekg(static_cast<std::streamoff>(
+        cursor->byte_offset + cursor->pending_partial_line.size()));
+
+    std::string buffer = cursor->pending_partial_line;
+    size_t pos = 0;  // Consumed frontier within buffer.
+    bool reached_eof = false;
+
+    std::ofstream output;
+    const auto ensure_output_open = [&]() -> bool {
+        if (output.is_open()) {
+            return true;
+        }
+        if (!cursor->active_clip_output_created) {
+            const std::filesystem::path output_path(output_csv_path);
+            const std::filesystem::path parent = output_path.parent_path();
+            if (!parent.empty()) {
+                std::error_code ec;
+                std::filesystem::create_directories(parent, ec);
+                if (ec) {
+                    return false;
+                }
+            }
+            output.open(output_csv_path, std::ios::out | std::ios::trunc);
+            if (!output) {
+                return false;
+            }
+            output << cursor->header << '\n';
+            cursor->active_clip_output_created = true;
+        } else {
+            output.open(output_csv_path, std::ios::out | std::ios::app);
+        }
+        return static_cast<bool>(output);
+    };
+    const auto finalize_cursor = [&]() {
+        cursor->byte_offset += pos;
+        cursor->pending_partial_line = buffer.substr(pos);
+        result.clip_rows_written = cursor->active_clip_rows_written;
+    };
+
+    if (cursor->header_parsed && !ensure_output_open()) {
+        finalize_cursor();
+        return fail("failed to open output CSV: " + output_csv_path);
+    }
+
+    bool clip_completed = false;
+    while (true) {
+        const size_t newline = buffer.find('\n', pos);
+        if (newline == std::string::npos) {
+            if (reached_eof) {
+                break;  // Trailing partial line (if any) is stashed below.
+            }
+            char chunk[64 * 1024];
+            input.read(chunk, sizeof(chunk));
+            const std::streamsize got = input.gcount();
+            if (got > 0) {
+                buffer.append(chunk, static_cast<size_t>(got));
+            } else {
+                reached_eof = true;
+            }
+            continue;
+        }
+        const std::string line = buffer.substr(pos, newline - pos);
+        const uint64_t line_start_offset = cursor->byte_offset + pos;
+        const size_t next_pos = newline + 1;
+
+        if (!cursor->header_parsed) {
+            if (first_csv_field(line) != "recording_frame_id") {
+                finalize_cursor();
+                return fail(
+                    "input CSV first column must be recording_frame_id: " +
+                    root_csv_path);
+            }
+            cursor->header = line;
+            cursor->crop_video_frame_index_column =
+                csv_column_index(line, "crop_video_frame_index");
+            cursor->header_parsed = true;
+            pos = next_pos;
+            if (!ensure_output_open()) {
+                finalize_cursor();
+                return fail("failed to open output CSV: " + output_csv_path);
+            }
+            continue;
+        }
+        if (line.empty()) {
+            pos = next_pos;
+            continue;
+        }
+
+        uint64_t recording_frame_id = 0;
+        if (!parse_u64_field(first_csv_field(line), &recording_frame_id)) {
+            finalize_cursor();
+            return fail("invalid recording_frame_id at " + root_csv_path +
+                        " byte offset " + std::to_string(line_start_offset));
+        }
+        if (recording_frame_id > clip_range.last_recording_frame_id) {
+            // The next clip's rows have arrived. Leave this line (and
+            // everything after it) unconsumed for a future call.
+            clip_completed = true;
+            break;
+        }
+        if (recording_frame_id < clip_range.first_recording_frame_id) {
+            if (result.stats.orphan_rows == 0) {
+                result.stats.first_orphan_recording_frame_id =
+                    recording_frame_id;
+            }
+            ++result.stats.orphan_rows;
+            if (orphan_row_policy == RecordingFrameCsvOrphanRowPolicy::kFail) {
+                finalize_cursor();
+                return fail(
+                    std::to_string(result.stats.orphan_rows) + " row(s) in " +
+                    root_csv_path +
+                    " match no recording_frame_id range (first orphaned"
+                    " recording_frame_id " +
+                    std::to_string(
+                        result.stats.first_orphan_recording_frame_id) +
+                    ")");
+            }
+            pos = next_pos;
+            continue;
+        }
+
+        // In-range row: rewrite crop_video_frame_index (when present) from 0
+        // per clip; everything else — including any
+        // session_crop_video_frame_index column — passes through verbatim.
+        if (cursor->crop_video_frame_index_column !=
+            std::numeric_limits<size_t>::max()) {
+            std::vector<std::string> fields = split_csv_fields(line);
+            if (fields.size() <= cursor->crop_video_frame_index_column) {
+                finalize_cursor();
+                return fail("missing crop_video_frame_index field at " +
+                            root_csv_path + " byte offset " +
+                            std::to_string(line_start_offset));
+            }
+            fields[cursor->crop_video_frame_index_column] =
+                std::to_string(cursor->active_clip_rows_written);
+            output << join_csv_fields(fields) << '\n';
+        } else {
+            output << line << '\n';
+        }
+        ++cursor->active_clip_rows_written;
+        ++result.rows_written;
+        cursor->any_row_consumed = true;
+        cursor->last_consumed_recording_frame_id = recording_frame_id;
+        pos = next_pos;
+        if (recording_frame_id == clip_range.last_recording_frame_id) {
+            clip_completed = true;
+            break;
+        }
+    }
+
+    if (output.is_open()) {
+        output.flush();
+        if (!output) {
+            finalize_cursor();
+            return fail("failed while writing output CSV: " + output_csv_path);
+        }
+    }
+    finalize_cursor();
+    result.status = clip_completed
+        ? RecordingFrameCsvClipSplitStatus::kCompleted
+        : RecordingFrameCsvClipSplitStatus::kIncomplete;
+    return result;
+}
+
 }  // namespace orange::session

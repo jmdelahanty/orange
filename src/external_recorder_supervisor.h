@@ -133,8 +133,10 @@ struct RecorderStatusSnapshot {
     uint64_t rolling_frames_until_next_rollover = 0;
     uint64_t rolling_completed_clip_count = 0;
     int rolling_last_completed_clip_index = -1;
+    uint64_t rolling_last_completed_clip_first_recording_frame_id = 0;
     uint64_t rolling_last_completed_clip_last_recording_frame_id = 0;
     uint64_t rolling_last_completed_clip_frame_count = 0;
+    uint64_t rolling_last_completed_clip_packets_written = 0;
     std::string rolling_last_rollover_status;
     bool worker_failed = false;
     bool storage_checked = false;

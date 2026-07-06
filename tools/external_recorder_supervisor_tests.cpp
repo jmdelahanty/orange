@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <signal.h>
@@ -554,8 +555,9 @@ void test_process_poll_reads_status_sidecar()
     const std::filesystem::path status_path =
         std::filesystem::temp_directory_path() /
         ("orange_external_recorder_status_" + suffix + ".json");
+    std::ostringstream full_status_json_out;
     {
-        std::ofstream out(status_path);
+        std::ostringstream& out = full_status_json_out;
         out
             << "{\n"
             << "  \"schema_id\": \"orange.external_recorder.status\",\n"
@@ -585,8 +587,10 @@ void test_process_poll_reads_status_sidecar()
             << "    \"frames_until_next_rollover\": 37,\n"
             << "    \"completed_clip_count\": 1,\n"
             << "    \"last_completed_clip_index\": 0,\n"
+            << "    \"last_completed_clip_first_recording_frame_id\": 1,\n"
             << "    \"last_completed_clip_last_recording_frame_id\": 200,\n"
             << "    \"last_completed_clip_frame_count\": 200,\n"
+            << "    \"last_completed_clip_packets_written\": 207,\n"
             << "    \"last_rollover_status\": \"completed\"\n"
             << "  },\n"
             << "  \"storage_preflight\": {\n"
@@ -631,6 +635,11 @@ void test_process_poll_reads_status_sidecar()
             << "  \"worker_failed\": false\n"
             << "}\n";
     }
+    const std::string full_status_json = full_status_json_out.str();
+    {
+        std::ofstream out(status_path);
+        out << full_status_json;
+    }
 
     SupervisorRuntimeState runtime;
     runtime.artifact_root = "/tmp/orange_external_recorder_supervisor_tests";
@@ -670,6 +679,12 @@ void test_process_poll_reads_status_sidecar()
             "status sidecar rolling completed clip count should parse");
     require(runtime.processes[0].recorder_status.rolling_last_completed_clip_index == 0,
             "status sidecar rolling last completed clip should parse");
+    require(runtime.processes[0].recorder_status
+                    .rolling_last_completed_clip_first_recording_frame_id == 1,
+            "status sidecar rolling last completed clip first frame id should parse");
+    require(runtime.processes[0].recorder_status
+                    .rolling_last_completed_clip_packets_written == 207,
+            "status sidecar rolling last completed clip packets written should parse");
     require(runtime.processes[0].recorder_status.rolling_last_rollover_status == "completed",
             "status sidecar rolling last rollover status should parse");
     require(runtime.processes[0].recorder_status.storage_checked,
@@ -727,6 +742,42 @@ void test_process_poll_reads_status_sidecar()
             "status sidecar descriptor intake clean flag should parse");
     require(runtime.processes[0].recorder_status.last_client_control_command == "finalize",
             "status sidecar last client control command should parse");
+
+    // Old recorders that do not emit the per-clip completion fields must
+    // still parse cleanly, with the new fields defaulting to zero.
+    {
+        std::ofstream out(status_path);
+        out
+            << "{\n"
+            << "  \"schema_id\": \"orange.external_recorder.status\",\n"
+            << "  \"schema_version\": 1,\n"
+            << "  \"status\": \"running\",\n"
+            << "  \"rolling\": {\n"
+            << "    \"enabled\": true,\n"
+            << "    \"completed_clip_count\": 1,\n"
+            << "    \"last_completed_clip_index\": 0,\n"
+            << "    \"last_completed_clip_last_recording_frame_id\": 200,\n"
+            << "    \"last_completed_clip_frame_count\": 200\n"
+            << "  }\n"
+            << "}\n";
+    }
+    require(PollSupervisorProcesses(&runtime, &error),
+            "old-recorder status sidecar polling should not fail: " + error);
+    require(runtime.processes[0].recorder_status.rolling_last_completed_clip_frame_count == 200,
+            "old-recorder status sidecar frame count should parse");
+    require(runtime.processes[0].recorder_status
+                    .rolling_last_completed_clip_first_recording_frame_id == 0,
+            "absent first recording frame id should default to zero");
+    require(runtime.processes[0].recorder_status
+                    .rolling_last_completed_clip_packets_written == 0,
+            "absent packets written should default to zero");
+    // Restore the full sidecar for the runtime summary assertions below.
+    {
+        std::ofstream out(status_path);
+        out << full_status_json;
+    }
+    require(PollSupervisorProcesses(&runtime, &error),
+            "restored status sidecar polling should not fail: " + error);
 
     const nlohmann::json summary = SupervisorRuntimeStateToJson(runtime);
     require(summary["processes"][0]["status_json_path"] == status_path.string(),

@@ -1019,8 +1019,10 @@ struct RollingStatusSnapshot {
     uint64_t frames_until_next_rollover = 0;
     uint64_t completed_clip_count = 0;
     int last_completed_clip_index = -1;
+    uint64_t last_completed_clip_first_recording_frame_id = 0;
     uint64_t last_completed_clip_last_recording_frame_id = 0;
     uint64_t last_completed_clip_frame_count = 0;
+    uint64_t last_completed_clip_packets_written = 0;
     std::string last_rollover_status = "none";
 };
 
@@ -1168,10 +1170,14 @@ bool write_recorder_status_json(const Options& options,
                 << rolling_status.completed_clip_count << ",\n";
             out << "    \"last_completed_clip_index\": "
                 << rolling_status.last_completed_clip_index << ",\n";
+            out << "    \"last_completed_clip_first_recording_frame_id\": "
+                << rolling_status.last_completed_clip_first_recording_frame_id << ",\n";
             out << "    \"last_completed_clip_last_recording_frame_id\": "
                 << rolling_status.last_completed_clip_last_recording_frame_id << ",\n";
             out << "    \"last_completed_clip_frame_count\": "
                 << rolling_status.last_completed_clip_frame_count << ",\n";
+            out << "    \"last_completed_clip_packets_written\": "
+                << rolling_status.last_completed_clip_packets_written << ",\n";
             out << "    \"last_rollover_status\": \""
                 << json_escape(rolling_status.last_rollover_status) << "\"\n";
             out << "  },\n";
@@ -4395,10 +4401,14 @@ int main(int argc, char** argv)
                         const RollingClipOutputSummary& last_clip = clips.back();
                         rolling_status.last_completed_clip_index =
                             last_clip.clip_index;
+                        rolling_status.last_completed_clip_first_recording_frame_id =
+                            last_clip.first_recording_frame_id;
                         rolling_status.last_completed_clip_last_recording_frame_id =
                             last_clip.last_recording_frame_id;
                         rolling_status.last_completed_clip_frame_count =
                             last_clip.frame_count;
+                        rolling_status.last_completed_clip_packets_written =
+                            last_clip.packets_written;
                         rolling_status.last_rollover_status =
                             last_clip.failed ? "failed" : "completed";
                     }
