@@ -505,6 +505,41 @@ void render_texture_image_centered(GLuint texture,
         ImVec2(1, 1));
 }
 
+void render_primary_video_texture(GLuint texture,
+                                  const ImVec2 available_size,
+                                  const float image_width,
+                                  const float image_height,
+                                  orange::ui::ImageCanvasViewState* canvas_view,
+                                  const bool canvas_enabled,
+                                  const int camera_index)
+{
+    if (canvas_enabled &&
+        canvas_view != nullptr &&
+        texture != 0 &&
+        available_size.x > 1.0f &&
+        available_size.y > 1.0f &&
+        image_width > 0.0f &&
+        image_height > 0.0f) {
+        const std::string plot_id =
+            "##primary_video_canvas_plot_" + std::to_string(camera_index);
+        const std::string image_id =
+            "##primary_video_canvas_image_" + std::to_string(camera_index);
+        if (orange::ui::begin_image_canvas_sized(
+                plot_id.c_str(),
+                texture,
+                static_cast<int>(image_width),
+                static_cast<int>(image_height),
+                canvas_view,
+                available_size,
+                image_id.c_str())) {
+            ImPlot::EndPlot();
+        }
+        return;
+    }
+
+    render_texture_image_centered(texture, available_size, image_width, image_height);
+}
+
 int sanitize_gui_stream_downsample(const int requested)
 {
     static constexpr std::array<int, 5> kAllowed = {1, 2, 4, 8, 16};
@@ -597,6 +632,11 @@ int resolve_gui_display_preview_max_fps_snapshot(const CameraEachSelect* cameras
 bool resolve_gui_yolo_speed_graphs_enabled(const bool default_value)
 {
     return gui_env_flag_enabled("ORANGE_GUI_SHOW_SPEED_GRAPHS", default_value);
+}
+
+bool resolve_gui_primary_video_canvas_enabled(const bool default_value)
+{
+    return gui_env_flag_enabled("ORANGE_GUI_PRIMARY_VIDEO_CANVAS", default_value);
 }
 
 bool gui_any_crop_recording_enabled(const CameraEachSelect* cameras_select, const int num_cameras)
@@ -4281,6 +4321,8 @@ int main(int /*argc*/, char ** /*args*/) {
     bool show_crop_preview_windows = !gui_autorun_config.hide_crop_preview;
     bool show_yolo_speed_graphs =
         resolve_gui_yolo_speed_graphs_enabled(app_storage_config.gui_show_speed_graphs);
+    bool primary_video_canvas_enabled =
+        resolve_gui_primary_video_canvas_enabled(false);
     std::string crop_preview_config_status;
     bool crop_preview_config_status_warning = false;
     CameraControl *camera_control = new CameraControl();
@@ -4295,6 +4337,7 @@ int main(int /*argc*/, char ** /*args*/) {
     std::vector<uint64_t> display_uploaded_serials;
     std::vector<uint64_t> crop_preview_uploaded_serials;
     std::vector<GLuint> live_preview_texture_ids;
+    std::vector<orange::ui::ImageCanvasViewState> primary_video_canvas_views;
     PoseWorker** poseWorkers = nullptr;
     ImageWriterWorker* image_writer = new ImageWriterWorker("ImageSaverThread");
     image_writer->StartThread();
@@ -4679,6 +4722,7 @@ int main(int /*argc*/, char ** /*args*/) {
         display_uploaded_serials.clear();
         crop_preview_uploaded_serials.clear();
         live_preview_texture_ids.clear();
+        primary_video_canvas_views.clear();
 
         for(int i = 0; i < num_cameras; ++i) {
             camera_resources[i].cleanup();
@@ -5141,6 +5185,7 @@ int main(int /*argc*/, char ** /*args*/) {
                 }
             }
             ImGui::Checkbox("show YOLO speed graphs", &show_yolo_speed_graphs);
+            ImGui::Checkbox("zoom/pan primary video", &primary_video_canvas_enabled);
             
    
             if (camera_control->record_video) {
@@ -5509,6 +5554,9 @@ int main(int /*argc*/, char ** /*args*/) {
         if (tex && num_cameras > 0) {
             if (static_cast<int>(live_preview_texture_ids.size()) < num_cameras) {
                 live_preview_texture_ids.resize(num_cameras, 0);
+            }
+            if (static_cast<int>(primary_video_canvas_views.size()) < num_cameras) {
+                primary_video_canvas_views.resize(num_cameras);
             }
             for (int i = 0; i < num_cameras; ++i) {
                 live_preview_texture_ids[i] = tex[i].texture;
@@ -5973,6 +6021,9 @@ int main(int /*argc*/, char ** /*args*/) {
                             live_preview_texture_ids.assign(
                                 num_cameras,
                                 0);
+                            primary_video_canvas_views.assign(
+                                num_cameras,
+                                {});
                             yolo_workers.assign(num_cameras, nullptr);
                             // Initialize all worker pointers to nullptr
                             for(int i = 0; i < num_cameras; ++i) {
@@ -6561,6 +6612,17 @@ int main(int /*argc*/, char ** /*args*/) {
                             timing,
                             streaming_fps.load(),
                             cameras_select[i].yolo ? yolo_worker : nullptr);
+                        orange::ui::ImageCanvasViewState* primary_canvas_view =
+                            (i >= 0 && i < static_cast<int>(primary_video_canvas_views.size()))
+                                ? &primary_video_canvas_views[i]
+                                : nullptr;
+                        if (primary_video_canvas_enabled && primary_canvas_view != nullptr) {
+                            const std::string fit_button_id =
+                                "Fit##primary_video_canvas_fit_recording_" + std::to_string(i);
+                            if (ImGui::SmallButton(fit_button_id.c_str())) {
+                                primary_canvas_view->fit_requested = true;
+                            }
+                        }
             
                         ImVec2 avail_size = ImGui::GetContentRegionAvail();
                         avail_size.y *= 0.5f;
@@ -6568,11 +6630,14 @@ int main(int /*argc*/, char ** /*args*/) {
                             static_cast<float>(cameras_params[i].width / cameras_select[i].downsample);
                         const float display_height =
                             static_cast<float>(cameras_params[i].height / cameras_select[i].downsample);
-                        render_texture_image_centered(
+                        render_primary_video_texture(
                             tex[i].texture,
                             avail_size,
                             display_width,
-                            display_height);
+                            display_height,
+                            primary_canvas_view,
+                            primary_video_canvas_enabled,
+                            i);
 
                         if (show_yolo_speed_graphs && cameras_select[i].yolo && yolo_worker) {
                             const auto speed_graph_start = std::chrono::steady_clock::now();
@@ -6595,16 +6660,30 @@ int main(int /*argc*/, char ** /*args*/) {
                             timing,
                             streaming_fps.load(),
                             cameras_select[i].yolo ? yolo_worker : nullptr);
+                        orange::ui::ImageCanvasViewState* primary_canvas_view =
+                            (i >= 0 && i < static_cast<int>(primary_video_canvas_views.size()))
+                                ? &primary_video_canvas_views[i]
+                                : nullptr;
+                        if (primary_video_canvas_enabled && primary_canvas_view != nullptr) {
+                            const std::string fit_button_id =
+                                "Fit##primary_video_canvas_fit_streaming_" + std::to_string(i);
+                            if (ImGui::SmallButton(fit_button_id.c_str())) {
+                                primary_canvas_view->fit_requested = true;
+                            }
+                        }
                         const ImVec2 avail_size = ImGui::GetContentRegionAvail();
                         const float display_width =
                             static_cast<float>(cameras_params[i].width / cameras_select[i].downsample);
                         const float display_height =
                             static_cast<float>(cameras_params[i].height / cameras_select[i].downsample);
-                        render_texture_image_centered(
+                        render_primary_video_texture(
                             tex[i].texture,
                             avail_size,
                             display_width,
-                            display_height);
+                            display_height,
+                            primary_canvas_view,
+                            primary_video_canvas_enabled,
+                            i);
                         ImGui::End();
                     }
                 }

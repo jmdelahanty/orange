@@ -30,13 +30,13 @@ inline ImVec2 compute_image_canvas_size(int image_width, int image_height, float
     return ImVec2(width, height);
 }
 
-inline bool begin_image_canvas(
+inline bool begin_image_canvas_sized(
     const char* plot_id,
     GLuint texture,
     int image_width,
     int image_height,
     ImageCanvasViewState* view_state,
-    float max_display_fraction,
+    ImVec2 canvas_size,
     const char* image_item_id = "##image_canvas")
 {
     if (texture == 0 || image_width <= 0 || image_height <= 0 || view_state == nullptr) {
@@ -49,7 +49,8 @@ inline bool begin_image_canvas(
         view_state->fit_requested = true;
     }
 
-    const ImVec2 canvas_size = compute_image_canvas_size(image_width, image_height, max_display_fraction);
+    canvas_size.x = std::max(1.0f, canvas_size.x);
+    canvas_size.y = std::max(1.0f, canvas_size.y);
     const ImPlotAxisFlags axis_flags =
         ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks | ImPlotAxisFlags_NoGridLines;
 
@@ -75,6 +76,25 @@ inline bool begin_image_canvas(
                       ImVec2(0, 1),
                       ImVec2(1, 0));
     return true;
+}
+
+inline bool begin_image_canvas(
+    const char* plot_id,
+    GLuint texture,
+    int image_width,
+    int image_height,
+    ImageCanvasViewState* view_state,
+    float max_display_fraction,
+    const char* image_item_id = "##image_canvas")
+{
+    return begin_image_canvas_sized(
+        plot_id,
+        texture,
+        image_width,
+        image_height,
+        view_state,
+        compute_image_canvas_size(image_width, image_height, max_display_fraction),
+        image_item_id);
 }
 
 } // namespace orange::ui
