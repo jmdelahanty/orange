@@ -1846,7 +1846,8 @@ PreparedRecordingRunStart prepare_recording_run(
         camera_control->worker_stop_reason.clear();
     }
 
-    const std::string recording_id = get_current_date_time();
+    const std::string recording_id_base = get_current_date_time();
+    std::string recording_id;
     std::string recording_folder;
     std::string resolved_base_folder = base_folder;
     {
@@ -1875,7 +1876,21 @@ PreparedRecordingRunStart prepare_recording_run(
             }
             camera_control->recording_folder.clear();
         }
-        camera_control->recording_folder = resolved_base_folder + "/" + recording_id;
+        std::string folder_error;
+        if (!create_unique_timestamped_folder(
+                resolved_base_folder,
+                recording_id_base,
+                &recording_folder,
+                &recording_id,
+                &folder_error)) {
+            prepared.error_message = folder_error.empty()
+                ? "failed to allocate a unique recording folder"
+                : folder_error;
+            std::cerr << "[recording] Failed to allocate recording folder: "
+                      << prepared.error_message << std::endl;
+            return prepared;
+        }
+        camera_control->recording_folder = recording_folder;
         recording_folder = camera_control->recording_folder;
     }
 
@@ -1899,7 +1914,6 @@ PreparedRecordingRunStart prepare_recording_run(
         normalized_sink_mode.empty() ? recording_sink_mode : normalized_sink_mode;
     prepared.external_recorder_requested = external_recorder_requested;
 
-    make_folder(recording_folder);
     write_recording_snapshot(
         recording_folder,
         recording_id,

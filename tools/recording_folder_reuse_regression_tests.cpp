@@ -71,6 +71,31 @@ std::string read_file(const std::filesystem::path& path)
     return out.str();
 }
 
+void write_file(const std::filesystem::path& path, const std::string& contents)
+{
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream out(path);
+    out << contents;
+}
+
+std::string wait_for_next_recording_second()
+{
+    const std::string initial = get_current_date_time();
+    for (int i = 0; i < 200; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        const std::string now = get_current_date_time();
+        if (now != initial) {
+            return now;
+        }
+    }
+    return get_current_date_time();
+}
+
+bool starts_with(const std::string& value, const std::string& prefix)
+{
+    return value.rfind(prefix, 0) == 0;
+}
+
 orange::session::PreparedRecordingRunStart prepare_run(
     orange::session::RecordingSessionState* state,
     CameraControl* camera_control,
@@ -159,6 +184,58 @@ void test_stop_without_finalize_must_not_reuse_folder()
             "rewritten by run 2's prepare");
 }
 
+void test_same_second_existing_timestamp_folder_gets_suffix()
+{
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        const std::filesystem::path base =
+            make_temp_base_folder(
+                "same_second_existing_" + std::to_string(attempt));
+        CameraControl camera_control;
+        orange::session::RecordingSessionState state;
+        state.recording_sink_mode = "real";
+        CameraParams camera = make_camera_params();
+        CameraEachSelect select;
+        select.record = true;
+        PTPParams ptp{};
+
+        const std::string timestamp_id = wait_for_next_recording_second();
+        const std::filesystem::path existing_folder = base / timestamp_id;
+        const std::filesystem::path existing_snapshot =
+            existing_folder / "recording_snapshot.json";
+        const std::string sentinel =
+            "{\"sentinel\":\"preexisting same-second folder\"}\n";
+        write_file(existing_snapshot, sentinel);
+
+        const orange::session::PreparedRecordingRunStart run =
+            prepare_run(&state, &camera_control, &camera, &select, base, &ptp);
+        require(run.valid, "prepare must succeed: " + run.error_message);
+
+        if (!starts_with(run.recording_id, timestamp_id)) {
+            orange::session::clear_recording_run_state(&camera_control);
+            std::filesystem::remove_all(base);
+            continue;
+        }
+
+        require(run.recording_id == timestamp_id + "_001",
+                "same-second collision must suffix the recording id");
+        require(run.recording_folder ==
+                    (base / (timestamp_id + "_001")).string(),
+                "same-second collision must use the suffixed folder");
+        require(std::filesystem::exists(run.recording_folder),
+                "prepare must create the suffixed folder");
+        require(read_file(existing_snapshot) == sentinel,
+                "preexisting same-second snapshot must not be overwritten");
+        require(orange::session::current_recording_folder(&camera_control) ==
+                    run.recording_folder,
+                "CameraControl must claim the suffixed folder");
+        orange::session::clear_recording_run_state(&camera_control);
+        std::filesystem::remove_all(base);
+        return;
+    }
+    throw std::runtime_error(
+        "could not exercise a same-second timestamp collision after retries");
+}
+
 // A latched folder with no active run (any future leak path) must never be
 // silently reused either: prepare must mint fresh.
 void test_stale_latch_is_never_silently_reused()
@@ -201,6 +278,8 @@ int main()
     const Case cases[] = {
         {"stop_without_finalize_must_not_reuse_folder",
          test_stop_without_finalize_must_not_reuse_folder},
+        {"same_second_existing_timestamp_folder_gets_suffix",
+         test_same_second_existing_timestamp_folder_gets_suffix},
         {"stale_latch_is_never_silently_reused",
          test_stale_latch_is_never_silently_reused},
     };

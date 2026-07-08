@@ -2284,7 +2284,25 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
         {
             std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
             if (camera_control_->recording_folder.empty()) {
-                camera_control_->recording_folder = base_folder_name_ + "/" + get_current_date_time();
+                std::string allocated_folder;
+                std::string allocated_id;
+                std::string allocation_error;
+                if (!create_unique_timestamped_folder(
+                        base_folder_name_,
+                        get_current_date_time(),
+                        &allocated_folder,
+                        &allocated_id,
+                        &allocation_error)) {
+                    std::cerr << "[" << this->threadName
+                              << "] Failed to allocate recording folder: "
+                              << (allocation_error.empty()
+                                      ? "unknown error"
+                                      : allocation_error)
+                              << std::endl;
+                    camera_control_->record_video = false;
+                    return false;
+                }
+                camera_control_->recording_folder = allocated_folder;
             }
             current_session_folder = camera_control_->recording_folder;
             current_recording_folder = camera_control_->recording_output_folder.empty()

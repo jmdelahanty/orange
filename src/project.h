@@ -86,6 +86,11 @@ void init_7MP_camera_params_color(CameraParams* camera_params, int camera_id, in
 void init_7MP_camera_params_mono(CameraParams* camera_params, int camera_id, int num_cameras, int gain, int exposure, int gpu_id, int frame_rate);
 bool make_folder(std::string folder_name);
 bool ensure_directory_exists(const std::string& folder_name, std::string* error_out = nullptr);
+bool create_unique_timestamped_folder(const std::string& base_folder,
+                                      const std::string& timestamp_id,
+                                      std::string* folder_out,
+                                      std::string* id_out,
+                                      std::string* error_out = nullptr);
 void list_child_directories(const std::string& root_folder, std::vector<std::string>& child_directories);
 void update_camera_configs(std::vector<std::string>& camera_config_files, std::string input_folder);
 void select_cameras_have_configs(std::vector<std::string>& camera_config_files, GigEVisionDeviceInfo* device_info, bool* check, int cam_count);

@@ -30,16 +30,21 @@
 #include "session/recording_session.h"
 
 #include "external_recorder_lifecycle.h"
+#include "project.h"
 #include "video_capture.h"
 
 #include "NvEncoder/Logger.h"
 
+#include <chrono>
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <sys/types.h>
 #include <unistd.h>
@@ -88,6 +93,32 @@ std::string make_socket_path(const std::string& tag)
 {
     return "/tmp/orange_phased_start_" + tag + "_" +
            std::to_string(static_cast<long long>(getpid())) + ".sock";
+}
+
+std::string read_file(const std::filesystem::path& path)
+{
+    std::ifstream in(path);
+    std::ostringstream out;
+    out << in.rdbuf();
+    return out.str();
+}
+
+std::string wait_for_next_recording_second()
+{
+    const std::string initial = get_current_date_time();
+    for (int i = 0; i < 200; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        const std::string now = get_current_date_time();
+        if (now != initial) {
+            return now;
+        }
+    }
+    return get_current_date_time();
+}
+
+bool starts_with(const std::string& value, const std::string& prefix)
+{
+    return value.rfind(prefix, 0) == 0;
 }
 
 nlohmann::json make_contract_config(const std::string& socket_path)
@@ -257,6 +288,130 @@ void test_supervisor_failure_fails_loudly_and_cleans_up()
     std::filesystem::remove_all(base);
     std::cout << "PASS test_supervisor_failure_fails_loudly_and_cleans_up"
               << std::endl;
+}
+
+void test_failed_external_start_retry_suffixes_abandoned_folder()
+{
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        const std::filesystem::path base =
+            make_temp_base_folder(
+                "failed_retry_" + std::to_string(attempt));
+        CameraControl camera_control;
+        orange::session::RecordingSessionState state;
+        state.recording_sink_mode = "external_ipc";
+        CameraParams camera = make_camera_params();
+        CameraEachSelect select;
+        select.record = true;
+        PTPParams ptp{};
+        const std::string socket_path =
+            make_socket_path("failed_retry_" + std::to_string(attempt));
+        const nlohmann::json contract_config = make_contract_config(socket_path);
+
+        const std::string timestamp_id = wait_for_next_recording_second();
+        orange::session::PreparedRecordingRunStart run1 =
+            orange::session::prepare_recording_run(
+                &state,
+                &camera_control,
+                &camera,
+                &select,
+                1,
+                base.string(),
+                &ptp,
+                "external_ipc",
+                &contract_config);
+        require(run1.valid, "run1 prepare must succeed: " + run1.error_message);
+        if (!starts_with(run1.recording_id, timestamp_id)) {
+            orange::session::abort_prepared_recording_run(
+                &state,
+                &camera_control,
+                run1,
+                orange::session::RecordingRunSupervisorStartOutcome{},
+                "timestamp_retry");
+            std::filesystem::remove(socket_path);
+            std::filesystem::remove_all(base);
+            continue;
+        }
+
+        const std::filesystem::path run1_snapshot =
+            std::filesystem::path(run1.recording_folder) /
+            "recording_snapshot.json";
+        const std::filesystem::path run1_contract =
+            std::filesystem::path(run1.recording_folder) /
+            "external_recorder_contract.json";
+        require(std::filesystem::exists(run1_snapshot),
+                "run1 prepare must write recording_snapshot.json");
+        require(std::filesystem::exists(run1_contract),
+                "run1 prepare must write external recorder contract");
+        const std::string run1_snapshot_content = read_file(run1_snapshot);
+        const std::string run1_contract_content = read_file(run1_contract);
+
+        orange::session::RecordingRunSupervisorStartOutcome failed_outcome;
+        failed_outcome.error_message = "synthetic supervisor start failure";
+        failed_outcome.external_recorder_attempted = true;
+        failed_outcome.external_recorder_last_error =
+            "synthetic supervisor start failure";
+        const orange::session::RecordingRunStartResult failed_result =
+            orange::session::complete_recording_run(
+                &state,
+                &camera_control,
+                &camera,
+                1,
+                &ptp,
+                run1,
+                std::move(failed_outcome));
+        require(!failed_result.ok, "synthetic failed outcome must fail");
+        require_failed_start_state_restored(&camera_control, "synthetic failure");
+
+        orange::session::PreparedRecordingRunStart run2 =
+            orange::session::prepare_recording_run(
+                &state,
+                &camera_control,
+                &camera,
+                &select,
+                1,
+                base.string(),
+                &ptp,
+                "external_ipc",
+                &contract_config);
+        require(run2.valid, "run2 prepare must succeed: " + run2.error_message);
+        if (!starts_with(run2.recording_id, timestamp_id)) {
+            orange::session::abort_prepared_recording_run(
+                &state,
+                &camera_control,
+                run2,
+                orange::session::RecordingRunSupervisorStartOutcome{},
+                "timestamp_retry");
+            std::filesystem::remove(socket_path);
+            std::filesystem::remove_all(base);
+            continue;
+        }
+
+        require(run2.recording_id == timestamp_id + "_001",
+                "failed external start retry must suffix the recording id");
+        require(run2.recording_folder != run1.recording_folder,
+                "failed external start retry must not reuse the abandoned folder");
+        require(run2.recording_folder ==
+                    (base / (timestamp_id + "_001")).string(),
+                "failed external start retry must use the suffixed folder");
+        require(read_file(run1_snapshot) == run1_snapshot_content,
+                "failed external start retry must not rewrite run1 snapshot");
+        require(read_file(run1_contract) == run1_contract_content,
+                "failed external start retry must not rewrite run1 contract");
+
+        orange::session::abort_prepared_recording_run(
+            &state,
+            &camera_control,
+            run2,
+            orange::session::RecordingRunSupervisorStartOutcome{},
+            "test_cleanup");
+        std::filesystem::remove(socket_path);
+        std::filesystem::remove_all(base);
+        std::cout << "PASS test_failed_external_start_retry_suffixes_abandoned_folder"
+                  << std::endl;
+        return;
+    }
+    throw std::runtime_error(
+        "could not exercise same-second failed external start retry after retries");
 }
 
 void test_env_resolved_recorder_tool_failure_parity()
@@ -563,6 +718,7 @@ int main(int, char** argv)
         test_prepare_mints_fresh_folder_over_stale_latch();
         test_prepare_mints_fresh_folder_with_empty_base_and_stale_latch();
         test_supervisor_failure_fails_loudly_and_cleans_up();
+        test_failed_external_start_retry_suffixes_abandoned_folder();
         test_env_resolved_recorder_tool_failure_parity();
         test_successful_start_flips_record_video_at_completion();
         test_abort_pending_start_stops_recorders_and_restores_state();

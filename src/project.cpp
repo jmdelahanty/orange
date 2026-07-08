@@ -4205,6 +4205,97 @@ bool ensure_directory_exists(const std::string& folder_name, std::string* error_
     return true;
 }
 
+bool create_unique_timestamped_folder(const std::string& base_folder,
+                                      const std::string& timestamp_id,
+                                      std::string* folder_out,
+                                      std::string* id_out,
+                                      std::string* error_out)
+{
+    if (folder_out) {
+        folder_out->clear();
+    }
+    if (id_out) {
+        id_out->clear();
+    }
+    if (error_out) {
+        error_out->clear();
+    }
+    if (timestamp_id.empty()) {
+        if (error_out) {
+            *error_out = "timestamp id missing";
+        }
+        return false;
+    }
+
+    auto folder_for_id = [&](const std::string& id) {
+        if (base_folder.empty()) {
+            return std::string("/") + id;
+        }
+        return (std::filesystem::path(base_folder) / id).string();
+    };
+
+    std::string last_collision;
+    std::string last_error;
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+
+    constexpr int kMaxSuffix = 999;
+    for (int suffix = 0; suffix <= kMaxSuffix; ++suffix) {
+        std::string candidate_id = timestamp_id;
+        if (suffix > 0) {
+            std::ostringstream suffix_stream;
+            suffix_stream << "_" << std::setfill('0') << std::setw(3) << suffix;
+            candidate_id += suffix_stream.str();
+        }
+        const std::string candidate_folder = folder_for_id(candidate_id);
+        const std::filesystem::path candidate_path(candidate_folder);
+
+        std::error_code create_error;
+        if (std::filesystem::create_directories(candidate_path, create_error)) {
+            if (folder_out) {
+                *folder_out = candidate_folder;
+            }
+            if (id_out) {
+                *id_out = candidate_id;
+            }
+            if (suffix > 0) {
+                std::cout << "[recording] Timestamped recording folder already existed; using "
+                          << candidate_folder << std::endl;
+            }
+            return true;
+        }
+
+        std::error_code exists_error;
+        const bool exists = std::filesystem::exists(candidate_path, exists_error);
+        if (exists && !exists_error) {
+            last_collision = candidate_folder;
+            continue;
+        }
+        if (create_error) {
+            last_error = "failed to create recording folder " + candidate_folder +
+                         ": " + create_error.message();
+        } else if (exists_error) {
+            last_error = "failed to inspect recording folder " + candidate_folder +
+                         ": " + exists_error.message();
+        } else {
+            last_error = "failed to create recording folder " + candidate_folder;
+        }
+        break;
+    }
+
+    if (error_out) {
+        if (!last_error.empty()) {
+            *error_out = last_error;
+        } else {
+            *error_out = "all timestamped recording folder candidates already exist";
+            if (!last_collision.empty()) {
+                *error_out += "; last collision: " + last_collision;
+            }
+        }
+    }
+    return false;
+}
+
 void list_child_directories(const std::string& root_folder, std::vector<std::string>& child_directories)
 {
     child_directories.clear();
