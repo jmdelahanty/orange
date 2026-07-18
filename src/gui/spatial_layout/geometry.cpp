@@ -79,9 +79,10 @@ std::vector<Point2d> sample_circle_boundary_points(
     return points;
 }
 
-bool sample_citrus_experimental_area_outline_in_camera_px(
+bool sample_citrus_circle_outline_in_camera_px(
     const CitrusSpatialTemplateState& template_state,
     const Point2d& center_arena_relative_px,
+    double radius_canvas_px,
     std::vector<Point2d>* camera_points_out,
     std::string* error_out)
 {
@@ -95,7 +96,7 @@ bool sample_citrus_experimental_area_outline_in_camera_px(
     if (!template_state.available ||
         !template_state.has_arena_canvas_region ||
         !template_state.has_canvas_to_camera_homography ||
-        template_state.experimental_area_radius_px <= 0.0) {
+        radius_canvas_px <= 0.0) {
         if (error_out) {
             *error_out = "Citrus outline projection requires arena canvas region, canvas-to-camera homography, and positive radius.";
         }
@@ -105,7 +106,7 @@ bool sample_citrus_experimental_area_outline_in_camera_px(
     const std::vector<Point2d> arena_relative_points = sample_circle_boundary_points(
         center_arena_relative_px.x,
         center_arena_relative_px.y,
-        template_state.experimental_area_radius_px,
+        radius_canvas_px,
         kProjectedCircleSampleCount);
     camera_points_out->reserve(arena_relative_points.size());
     for (const Point2d& arena_relative_point : arena_relative_points) {
@@ -125,6 +126,20 @@ bool sample_citrus_experimental_area_outline_in_camera_px(
         camera_points_out->push_back(camera_point);
     }
     return !camera_points_out->empty();
+}
+
+bool sample_citrus_experimental_area_outline_in_camera_px(
+    const CitrusSpatialTemplateState& template_state,
+    const Point2d& center_arena_relative_px,
+    std::vector<Point2d>* camera_points_out,
+    std::string* error_out)
+{
+    return sample_citrus_circle_outline_in_camera_px(
+        template_state,
+        center_arena_relative_px,
+        template_state.experimental_area_radius_px,
+        camera_points_out,
+        error_out);
 }
 
 std::array<Point2d, 4> oriented_rectangle_corners(

@@ -5,6 +5,7 @@ recordings while also exposing resolved camera-pixel overlays for each
 recording.
 
 Date anchored: 2026-04-06.
+Last updated: 2026-07-18.
 Status: draft design, partially implemented in Orange UI/schema code. The
 recording-snapshot writer and Citrus/H5 consumer path are still pending.
 
@@ -47,7 +48,8 @@ underlying experimental layout is the same.
 Use three layers:
 
 - `dish_mask`: observed camera-view boundary for usable arena-bearing space
-- `arena_layout`: canonical rig-level zone layout
+- `arena_layout`: authority-owned rig-level zone layout, materialized in an
+  Orange artifact when Orange needs to register or snapshot it
 - `view_registration`: per-camera, per-recording mapping from canonical layout
   space into camera-native pixels
 
@@ -69,6 +71,28 @@ Recommended naming split:
 - canonical artifact name: `arena_layout`
 - per-recording resolved snapshot block: `calibrations[serial].arena_layout`
 - per-recording transform payload inside that block: `registration`
+
+### Definition Authority Versus Artifact Custody
+
+The component that serializes or stores an `arena_layout` artifact is not
+automatically the authority that may redefine the layout.
+
+- Citrus is the definition authority for a layout imported from a Citrus
+  rig/canvas/arena configuration.
+- Orange is the definition authority for an Orange-authored standalone layout.
+- Orange owns every Orange-native immutable artifact it writes, including an
+  imported execution snapshot, the camera-space observation, the
+  per-recording registration, and the resolved overlays.
+- An imported Orange artifact must preserve the upstream layout identity and
+  source fingerprint. Importing must not mint a second semantic identity or
+  transfer definition authority to Orange.
+
+This yields two different, compatible source-of-truth statements:
+
+- the definition authority is the source of truth for layout identity and
+  layout-space geometry;
+- the immutable Orange artifact is the source of truth for the exact layout
+  revision and registration Orange used for a calibration or recording.
 
 ## Immediate V1 Slice
 
@@ -107,21 +131,27 @@ orange.calibration.dish_top_rim_observation
 
 Layer mapping:
 
-- `dish_top_rim_observation.observed_boundary` is the physical top-rim
-  evidence in `camera_native_pixels`.
+- `dish_top_rim_observation.observed_boundary` is physical boundary evidence in
+  `camera_native_pixels`. For the fish-occupiable circular-dish workflow, the
+  intended feature is the water-side inner edge in the `dish_top_rim` plane,
+  not the outer rim.
 - `dish_top_rim_observation.circle_detection.detected_circle` is the Hough
   proposal shown to the operator, already scaled to full-resolution
   `camera_native_pixels`; top-rim save should persist this proposal instead of
   rerunning Hough at save time.
-- `dish_top_rim_observation.accepted_experimental_area_boundary` is the
-  operator-confirmed circular boundary Citrus should interpret as the daily
-  `experimental_area` / chaser boundary.
-- `dish_top_rim_observation.accepted_mask` is the eroded
+- `dish_top_rim_observation.accepted_inner_rim_boundary` is the schema-v2 name
+  for the Orange-operator-confirmed physical boundary. It is evidence for a
+  Citrus `experimental_area` proposal; it does not mean Citrus has accepted or
+  applied it. `accepted_experimental_area_boundary` remains a schema-v1 reader
+  fallback and an explicit compatibility alias in schema-v2 artifacts.
+- `dish_top_rim_observation.accepted_mask` is the offset
   Palette-compatible/detection-gating view of that accepted boundary.
-- `dish_mask.outer_geometry` should represent the accepted or observed top-rim
-  circle when the top rim is the usable physical boundary.
-- `dish_mask.valid_geometry` should represent the inward-eroded accepted circle
-  used to gate detections.
+- `dish_mask.outer_geometry` should represent the accepted or observed
+  water-side inner-rim circle when that feature bounds the water-accessible
+  footprint.
+- `dish_mask.valid_geometry` represents the derived detection-centroid gate.
+  New Orange saves use an outward `centroid_gate_outset_px`; legacy artifacts
+  may use an inward `edge_margin_px`.
 - `arena_layout` remains the Citrus-owned canonical dish/arena definition and
   should not be replaced by the Orange Hough result.
 - `view_registration` may use the accepted circle as evidence for
@@ -134,15 +164,17 @@ Layer mapping:
 The Orange top-rim artifact is therefore camera-space evidence for `dish_mask`
 and Citrus experimental-area review, not a replacement for `arena_layout`.
 
-For V0, the experimental-area boundary is the operator-confirmed circle:
+The v2 field, with the v1 field as fallback/alias, produces a Citrus proposal
+and the camera-space `dish_mask.outer_geometry`:
 
 ```text
-dish_top_rim_observation.accepted_experimental_area_boundary.circle
-  -> Citrus experimental_area / chaser boundary proposal
+dish_top_rim_observation.accepted_inner_rim_boundary.circle
+  -> v1 fallback: accepted_experimental_area_boundary.circle
+  -> Citrus experimental_area / chaser boundary proposal, pending Citrus acceptance
   -> dish_mask.outer_geometry.circle
 ```
 
-The eroded detection/export view is separate:
+The offset detection/export view is separate:
 
 ```text
 dish_top_rim_observation.accepted_mask.circle
@@ -150,9 +182,11 @@ dish_top_rim_observation.accepted_mask.circle
   -> optional valid_detection_region / Palette export
 ```
 
-If only one confirmed circle is available, Orange may use the same circle as
-`outer_geometry` and derive `valid_geometry` by applying the configured
-`edge_margin_px`.
+If only one confirmed circle is available, Orange uses it as `outer_geometry`
+and derives `valid_geometry` using exactly one policy: legacy inward
+`edge_margin_px` or new outward `centroid_gate_outset_px`. Both values must not
+be positive simultaneously. This offset changes centroid gating only; it does
+not change the accepted physical rim.
 
 Citrus H5 should snapshot both sides:
 
@@ -651,9 +685,10 @@ Recommended top-level shape:
               "type": "circle",
               "cx": 2254.0,
               "cy": 2256.0,
-              "r": 1920.0
+              "r": 2072.0
             },
-            "edge_margin_px": 140.0
+            "edge_margin_px": 0.0,
+            "centroid_gate_outset_px": 12.0
           },
           "source": "manual"
         }
@@ -782,8 +817,9 @@ Citrus may mirror those into H5 or its own runtime metadata for convenience.
 
 Citrus should not:
 
-- mint a new identity for the same layout when Orange already emitted a
-  `calibration_ref`
+- mint a new semantic `layout_id` for a layout whose definition authority
+  already supplied one; an Orange `calibration_ref` may identify only the
+  immutable execution snapshot
 - treat raw camera-pixel overlays as the source of truth
 - require `experimental_area_*` to be the shared cross-tool contract
 
@@ -794,25 +830,40 @@ resolved overlays.
 
 ## Ownership
 
-Orange owns:
+Definition authority follows provenance:
 
-- canonical `arena_layout` artifact packages
-- canonical `dish_mask` artifact packages
+- Citrus owns the canonical identity and layout-space geometry for layouts
+  imported from Citrus.
+- Orange owns the canonical identity and layout-space geometry for layouts
+  authored as standalone Orange layouts.
+
+Orange owns artifact custody for:
+
+- Orange-authored `arena_layout` definitions
+- immutable Orange materializations of imported layouts
+- Orange-native `dish_mask` artifact packages and camera-space evidence
 - per-recording `view_registration`
 - resolved runtime overlays in `recording_snapshot.json`
 
-Citrus owns:
+Citrus owns runtime interpretation for:
 
-- consumption of Orange-emitted refs and runtime overlays
+- its rig/canvas/arena configuration and imported-layout definition revisions
+- acceptance or rejection of Orange boundary/registration proposals
 - optional copy-through into H5/session metadata
 - protocol- and stimulus-specific use of one or more resolved zones
+
+An Orange execution snapshot may be authoritative for what Orange used without
+becoming authoritative for the upstream Citrus definition. Neither side may
+silently rewrite the other side's artifact or semantic identity.
 
 ## V1 Implementation Guidance
 
 Current implemented slice:
 
-1. Orange can save canonical `arena_layout` artifact directories containing
-   `circle` and `rectangle` zones plus resolved runtime sidecars.
+1. Orange can save immutable `arena_layout` artifact directories containing
+   `circle` and `rectangle` zones plus resolved runtime sidecars. Such an
+   artifact is either an Orange-authored definition or an imported execution
+   snapshot; provenance determines which.
 2. Saved artifact directories contain `measurement.json`,
    `arena_layout_runtime.json`, and `dish_mask_runtime.json`.
 3. Recording startup can load those saved files through

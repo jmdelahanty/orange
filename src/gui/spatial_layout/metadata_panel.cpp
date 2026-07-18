@@ -1,5 +1,6 @@
 #include "gui/spatial_layout/metadata_panel.h"
 
+#include "dish_top_rim_observation.h"
 #include "gui/spatial_layout/preflight.h"
 #include "imgui.h"
 #include "misc/cpp/imgui_stdlib.h"
@@ -544,34 +545,32 @@ void render_calibration_capture_metadata_panel(
         "unknown",
         "not_applicable"
     };
-    static constexpr const char* kBoundaryTargetPresets[] = {
-        "top_level_visible_boundary",
-        "outer_visible_rim_edge",
-        "inner_visible_rim_edge",
-        "operator_estimated_reachable_boundary",
-        "unknown"
-    };
-    static constexpr const char* kBoundaryInclusionPolicyPresets[] = {
-        "prefer_slight_overcoverage_to_avoid_fish_escape",
-        "fit_visible_boundary_exactly",
-        "prefer_slight_undercoverage_for_detection_safety",
-        "unknown"
-    };
     render_string_preset_combo(
         "Dish fill state",
         &ui_state->calibration_dish_fill_state,
         kDishFillStatePresets,
         IM_ARRAYSIZE(kDishFillStatePresets));
-    render_string_preset_combo(
-        "Rim boundary target",
-        &ui_state->calibration_operator_boundary_target,
-        kBoundaryTargetPresets,
-        IM_ARRAYSIZE(kBoundaryTargetPresets));
-    render_string_preset_combo(
-        "Boundary inclusion policy",
-        &ui_state->calibration_boundary_inclusion_policy,
-        kBoundaryInclusionPolicyPresets,
-        IM_ARRAYSIZE(kBoundaryInclusionPolicyPresets));
+
+    ImGui::SeparatorText("Dish Inner-Rim Observation (Schema v2)");
+    ImGui::TextDisabled(
+        "Plane: %s",
+        orange::calibration::kDishTopRimTargetPlane);
+    ImGui::TextDisabled(
+        "Feature: %s",
+        orange::calibration::kDishTopRimTargetFeature);
+    ImGui::TextDisabled(
+        "Region: %s",
+        orange::calibration::kDishTopRimRegion);
+    ImGui::TextWrapped(
+        "Fit the water-side inner edge of the dish opening. Do not fit the outer flange edge or silently enlarge the circle.");
+    ImGui::Checkbox(
+        "I confirm the fit follows the water-side inner rim edge",
+        &ui_state->calibration_inner_rim_target_confirmed);
+    if (!ui_state->calibration_inner_rim_target_confirmed) {
+        ImGui::TextColored(
+            ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
+            "Confirmation is required before saving a schema-v2 top-rim observation.");
+    }
     ImGui::Checkbox(
         "Requires repeatable filter reinstall",
         &ui_state->calibration_requires_filter_reinstalled_repeatably);

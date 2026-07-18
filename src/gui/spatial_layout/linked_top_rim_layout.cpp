@@ -200,8 +200,12 @@ bool build_arena_layout_bundle_from_linked_top_rim(
 
     const nlohmann::json accepted_boundary =
         linked_top_rim.value(
-            "accepted_experimental_area_boundary",
-            nlohmann::json::object());
+            "accepted_inner_rim_boundary",
+            linked_top_rim.value(
+                "accepted_experimental_area_boundary",
+                linked_top_rim.value(
+                    "observed_boundary",
+                    nlohmann::json::object())));
     CircleGeometry accepted_circle;
     if (!circle_geometry_from_json(
             accepted_boundary.value("geometry", nlohmann::json::object()),
@@ -230,6 +234,8 @@ bool build_arena_layout_bundle_from_linked_top_rim(
     }
     const double edge_margin_px =
         std::max(0.0, accepted_circle.r - valid_circle.r);
+    const double centroid_gate_outset_px =
+        std::max(0.0, valid_circle.r - accepted_circle.r);
 
     ArenaLayoutArtifact artifact;
     artifact.artifact_id = build_arena_layout_artifact_id(
@@ -323,6 +329,8 @@ bool build_arena_layout_bundle_from_linked_top_rim(
     dish_mask_runtime.geometry.valid_geometry =
         runtime_circle(valid_circle.cx, valid_circle.cy, valid_circle.r);
     dish_mask_runtime.geometry.edge_margin_px = edge_margin_px;
+    dish_mask_runtime.geometry.centroid_gate_outset_px =
+        centroid_gate_outset_px;
 
     *artifact_out = std::move(artifact);
     *dish_mask_runtime_out = std::move(dish_mask_runtime);

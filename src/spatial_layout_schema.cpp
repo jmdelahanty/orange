@@ -674,8 +674,31 @@ bool validate_dish_mask_geometry(const DishMaskGeometry& value, std::string* err
     if (!is_finite(value.edge_margin_px) || value.edge_margin_px < 0.0) {
         return set_error(error_out, "dish_mask.edge_margin_px must be >= 0");
     }
-    if (!runtime_geometry_inside_runtime_geometry(value.valid_geometry, value.outer_geometry)) {
-        return set_error(error_out, "dish_mask.valid_geometry must lie inside dish_mask.outer_geometry");
+    if (!is_finite(value.centroid_gate_outset_px) ||
+        value.centroid_gate_outset_px < 0.0) {
+        return set_error(
+            error_out,
+            "dish_mask.centroid_gate_outset_px must be >= 0");
+    }
+    if (value.edge_margin_px > 0.0 && value.centroid_gate_outset_px > 0.0) {
+        return set_error(
+            error_out,
+            "dish_mask.edge_margin_px and centroid_gate_outset_px are mutually exclusive");
+    }
+    if (value.centroid_gate_outset_px > 0.0) {
+        if (!runtime_geometry_inside_runtime_geometry(
+                value.outer_geometry,
+                value.valid_geometry)) {
+            return set_error(
+                error_out,
+                "dish_mask.outer_geometry must lie inside outward centroid-gate valid_geometry");
+        }
+    } else if (!runtime_geometry_inside_runtime_geometry(
+                   value.valid_geometry,
+                   value.outer_geometry)) {
+        return set_error(
+            error_out,
+            "dish_mask.valid_geometry must lie inside dish_mask.outer_geometry when no centroid-gate outset is configured");
     }
     return true;
 }
@@ -967,7 +990,8 @@ nlohmann::json dish_mask_geometry_to_json(const DishMaskGeometry& value)
         {"coordinate_space", coordinate_space_to_string(value.coordinate_space)},
         {"outer_geometry", runtime_geometry_to_json(value.outer_geometry)},
         {"valid_geometry", runtime_geometry_to_json(value.valid_geometry)},
-        {"edge_margin_px", value.edge_margin_px}
+        {"edge_margin_px", value.edge_margin_px},
+        {"centroid_gate_outset_px", value.centroid_gate_outset_px}
     };
 }
 
@@ -1227,6 +1251,17 @@ bool parse_dish_mask_geometry_json(const nlohmann::json& node, DishMaskGeometry*
         !node.contains("valid_geometry") || !parse_runtime_geometry_json(node.at("valid_geometry"), &out->valid_geometry, error_out) ||
         !parse_required_number(node, "edge_margin_px", "dish_mask.geometry", &out->edge_margin_px, error_out)) {
         return false;
+    }
+    out->centroid_gate_outset_px = 0.0;
+    if (node.contains("centroid_gate_outset_px")) {
+        if (!parse_required_number(
+                node,
+                "centroid_gate_outset_px",
+                "dish_mask.geometry",
+                &out->centroid_gate_outset_px,
+                error_out)) {
+            return false;
+        }
     }
     return validate_dish_mask_geometry(*out, error_out);
 }

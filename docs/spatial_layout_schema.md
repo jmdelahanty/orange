@@ -5,6 +5,7 @@ used to describe `dish_mask`, canonical `arena_layout`, and the resolved
 per-recording camera-view overlays consumed by Citrus.
 
 Date anchored: 2026-04-06.
+Last updated: 2026-07-18.
 Status: draft schema, partially implemented in Orange code. Snapshot emission
 and Citrus-side consumption are still pending.
 
@@ -40,7 +41,9 @@ Embedded runtime payload versions:
   measurements. A calibration session may also maintain a mutable
   `arena_layout_set.json` companion that points at the latest saved arena-layout
   artifact for each camera/canvas/arena. The set is an operator/navigation and
-  import convenience; the per-arena artifact remains the source of truth.
+  import convenience. The per-arena artifact is the source of truth for the
+  exact revision Orange used; `layout_authority` and provenance determine who
+  owns the upstream semantic definition.
 - `orange.calibration.image_set` is an acquisition/import artifact, not a
   runtime spatial-layout payload. Citrus may import image sets to fit or accept
   homography, scale, top-rim, or crosshair calibration, while `dish_mask` and
@@ -49,13 +52,16 @@ Embedded runtime payload versions:
   may be the inner experimental area if the outer dish rim is not visible.
 - For the current circular single-arena V0, `dish_mask` may be sourced from
   `orange.calibration.dish_top_rim_observation`. In that case the
-  observation's `accepted_experimental_area_boundary` is the load-bearing
-  circular geometry used for Citrus experimental-area review and
-  `dish_mask.outer_geometry`, while the eroded `accepted_mask` remains the
-  `dish_mask.valid_geometry` / detection-export view.
+  observation's schema-v2 `accepted_inner_rim_boundary` is the
+  Orange-confirmed physical boundary used for Citrus experimental-area review
+  and `dish_mask.outer_geometry`. The v1
+  `accepted_experimental_area_boundary` field remains an explicit compatibility
+  alias and does not assert Citrus acceptance. The offset `accepted_mask`
+  remains the `dish_mask.valid_geometry` / detection-export view.
 - The Hough-detected circle is proposal/provenance. The operator-confirmed
-  accepted circle is the geometry used for the daily experimental-area
-  boundary; eroded derived masks are used for detection gating or export.
+  accepted circle is Orange's physical-boundary evidence for the daily
+  experimental-area proposal; offset derived masks are used for detection
+  gating or export.
 - Palette `dish_mask` metadata is an adapter/export view from the Orange
   artifact. It is not the native spatial-layout payload.
 - `layout_id` and `zone_id` are the authoritative stable identifiers. Runtime
@@ -87,6 +93,11 @@ Embedded runtime payload versions:
 - In that single-circle slice, `arena_layout` remains the canonical
   Citrus-owned dish/arena identity, while `dish_mask` remains Orange's
   camera-space evidence about the visible and valid dish region.
+- Importing a Citrus layout into an `orange.calibration.arena_layout` artifact
+  does not transfer definition authority. Orange owns the immutable artifact
+  and its execution provenance; Citrus remains authoritative for the imported
+  `layout_id` and layout-space geometry. An Orange-authored layout instead uses
+  `layout_authority.system = "orange"`.
 - The current Orange UI may use an approximate camera-space circle fit to an
   inverse-projected Citrus contour as a preview/registration seed when
   homography is available.
@@ -107,13 +118,14 @@ Embedded runtime payload versions:
   accepted-boundary points rather than silently inferred from only a
   camera-space Hough radius.
 - The Citrus runtime containment invariant for chasing/stimulus use is
-  `physically_reachable_fish_area <= Citrus experimental_area / chaser boundary`.
-  Orange exports eroded masks as `valid_detection_region` or
-  `dish_mask.valid_geometry` for detection/analysis safety, but those eroded
+  `water_accessible_footprint <= Citrus experimental_area / chaser boundary`.
+  Orange exports offset masks as `valid_detection_region` or
+  `dish_mask.valid_geometry` for detection/analysis policy, but those derived
   regions must not silently replace the Citrus runtime `experimental_area`.
-  When uncertain, the accepted experimental-area boundary should prefer slight
-  overcoverage so the fish cannot be physically reachable but logically outside
-  the chaser boundary.
+  Orange's accepted physical evidence should follow the observed water-side
+  inner rim without silently expanding it. When uncertain, Orange should report
+  signed fit residuals and uncertainty; Citrus owns any conservative runtime
+  containment policy applied to its experimental area.
 
 ## Common Types
 
@@ -283,9 +295,10 @@ the full dish rim.
     "type": "circle",
     "cx": 2254.0,
     "cy": 2256.0,
-    "r": 1920.0
+    "r": 2072.0
   },
-  "edge_margin_px": 140.0
+  "edge_margin_px": 0.0,
+  "centroid_gate_outset_px": 12.0
 }
 ```
 
@@ -295,11 +308,16 @@ Required fields:
 - `outer_geometry`: `circle` or `oriented_rectangle`
 - `valid_geometry`: same geometry type as `outer_geometry`
 - `edge_margin_px`: number
+- `centroid_gate_outset_px`: optional number; readers default it to zero for
+  older runtime JSON
 
 Rules:
 
 - `edge_margin_px` must be greater than or equal to zero.
-- `valid_geometry` must lie inside `outer_geometry`.
+- `centroid_gate_outset_px` must be greater than or equal to zero.
+- `edge_margin_px` and `centroid_gate_outset_px` are mutually exclusive.
+- With a positive outset, `outer_geometry` must lie inside `valid_geometry`.
+  Otherwise `valid_geometry` must lie inside `outer_geometry`.
 - For circular masks, `outer_geometry` and `valid_geometry` should share the
   same center unless the operator explicitly overrides them.
 - For rectangular masks, `outer_geometry` and `valid_geometry` are represented
@@ -310,7 +328,7 @@ Compatibility note:
 - Older autofocus-only notes in this repo used the shorthand
   `cx/cy/r/rim_margin_px/r_valid`.
 - New spatial-calibration work should use `outer_geometry`,
-  `valid_geometry`, and `edge_margin_px` instead.
+  `valid_geometry`, `edge_margin_px`, and `centroid_gate_outset_px` instead.
 - UI and detection flows may describe this as the `experimental area` when that
   is the visible boundary the operator is fitting.
 
@@ -320,18 +338,27 @@ When a circular mask is sourced from
 `orange.calibration.dish_top_rim_observation`, the runtime mapping is:
 
 ```text
-observation.accepted_experimental_area_boundary
+observation.accepted_inner_rim_boundary
+  -> dish_mask.runtime.geometry.outer_geometry
+
+observation.accepted_experimental_area_boundary (schema-v1 fallback / schema-v2 alias)
   -> dish_mask.runtime.geometry.outer_geometry
 
 observation.accepted_mask
   -> dish_mask.runtime.geometry.valid_geometry
 ```
 
-If the observation lacks `accepted_experimental_area_boundary` but contains a
-non-eroded accepted or observed rim circle, that circle maps to
-`outer_geometry`. If the observation only has one confirmed circle, Orange may
-use the same circle as `outer_geometry` and derive `valid_geometry` by
-subtracting `edge_margin_px`.
+Readers select `accepted_inner_rim_boundary` first, then the schema-v1
+`accepted_experimental_area_boundary`, then a non-eroded observed rim circle.
+The selected circle maps to `outer_geometry`. If the observation only has one
+confirmed circle, Orange uses it as `outer_geometry` and derives
+`valid_geometry` by adding `centroid_gate_outset_px` for new centroid-gating
+artifacts or subtracting legacy `edge_margin_px`.
+
+Compatibility rule: v1 consumers must continue to read
+`accepted_experimental_area_boundary`. New design and UI language should call
+the physical feature the water-side inner rim and must not imply that Orange
+accepted a Citrus runtime configuration.
 
 Recommended runtime source fields:
 
@@ -564,9 +591,10 @@ Optional fields:
       "type": "circle",
       "cx": 2254.0,
       "cy": 2256.0,
-      "r": 1920.0
+      "r": 2072.0
     },
-    "edge_margin_px": 140.0
+    "edge_margin_px": 0.0,
+    "centroid_gate_outset_px": 12.0
   },
   "provenance": {
     "source": "manual",
@@ -652,6 +680,35 @@ Required fields:
 Optional fields:
 
 - `context`
+- `layout_authority`
+
+### `layout_authority`
+
+`layout_authority` separates ownership of the semantic layout definition from
+custody of the immutable Orange artifact.
+
+Required fields when present:
+
+- `system`: one of `orange`, `citrus`
+- `role = "definition_authority"`
+
+Optional fields:
+
+- `canonical_layout_ref`: object identifying the upstream definition
+- `source_fingerprint`: string
+
+Rules:
+
+- New `imported_template` artifacts should include
+  `layout_authority.system = "citrus"` and a stable upstream reference or
+  fingerprint.
+- New `manual_template` artifacts authored in Orange should include
+  `layout_authority.system = "orange"`.
+- `artifact_id` identifies the immutable Orange materialization and must not be
+  substituted for the upstream `layout_id`.
+- Existing schema-v1 artifacts without `layout_authority` remain readable. An
+  imported artifact without it is authority-ambiguous and should produce a
+  provenance warning rather than being assumed Orange-owned.
 
 ### `layout`
 
@@ -716,6 +773,15 @@ Required fields:
 Optional fields:
 
 - `notes`: string
+- `source_ref`: object containing the upstream path or stable identity and its
+  fingerprint
+
+Rules:
+
+- `source = "imported_template"` should carry `source_ref` in newly written
+  artifacts.
+- `source_ref` is provenance for the definition that Orange materialized; it
+  does not transfer ownership of that definition.
 
 ### `context`
 
@@ -740,6 +806,10 @@ Optional fields:
     "fingerprint": "fnv1a64:..."
   },
   "layout_id": "bank4_circle_v1",
+  "layout_authority": {
+    "system": "orange",
+    "role": "definition_authority"
+  },
   "layout": {
     "coordinate_space": "layout_mm",
     "outer_geometry": {
@@ -888,9 +958,10 @@ Recommended enclosing shape in `recording_snapshot.json`:
               "type": "circle",
               "cx": 2254.0,
               "cy": 2256.0,
-              "r": 1920.0
+              "r": 2072.0
             },
-            "edge_margin_px": 140.0
+            "edge_margin_px": 0.0,
+            "centroid_gate_outset_px": 12.0
           },
           "source": "manual"
         }

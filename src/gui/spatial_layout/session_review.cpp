@@ -127,6 +127,11 @@ void populate_calibration_domain_metadata_from_json(
         json_string_or(domain, "coordinate_space", metadata->calibration_domain_coordinate_space);
     metadata->calibration_domain_edge_margin_px =
         json_number_or(domain, "edge_margin_px", metadata->calibration_domain_edge_margin_px);
+    metadata->calibration_domain_centroid_gate_outset_px =
+        json_number_or(
+            domain,
+            "centroid_gate_outset_px",
+            metadata->calibration_domain_centroid_gate_outset_px);
     metadata->calibration_domain_radius_px =
         json_number_or(domain, "radius_px", metadata->calibration_domain_radius_px);
     metadata->calibration_domain_width_px =
@@ -432,25 +437,35 @@ bool parse_top_rim_circle_from_observation(const nlohmann::json& observation,
     if (cx == nullptr || cy == nullptr || radius == nullptr || !observation.is_object()) {
         return false;
     }
-    const nlohmann::json& accepted = object_or_empty(observation, "accepted_mask");
-    const nlohmann::json& center = object_or_empty(accepted, "center_px");
-    if (center.contains("x") && center["x"].is_number() &&
-        center.contains("y") && center["y"].is_number() &&
-        accepted.contains("radius_px") && accepted["radius_px"].is_number()) {
+    const auto parse_boundary_geometry = [&](const char* field) {
+        const nlohmann::json& boundary = object_or_empty(observation, field);
+        const nlohmann::json& geometry = object_or_empty(boundary, "geometry");
+        const nlohmann::json& center = object_or_empty(geometry, "center_px");
+        if (!center.contains("x") || !center["x"].is_number() ||
+            !center.contains("y") || !center["y"].is_number() ||
+            !geometry.contains("radius_px") || !geometry["radius_px"].is_number()) {
+            return false;
+        }
         *cx = center["x"].get<double>();
         *cy = center["y"].get<double>();
-        *radius = accepted["radius_px"].get<double>();
-        return *radius > 0.0;
-    }
-    const nlohmann::json& observed = object_or_empty(observation, "observed_boundary");
-    const nlohmann::json& geometry = object_or_empty(observed, "geometry");
-    const nlohmann::json& observed_center = object_or_empty(geometry, "center_px");
-    if (observed_center.contains("x") && observed_center["x"].is_number() &&
-        observed_center.contains("y") && observed_center["y"].is_number() &&
-        geometry.contains("radius_px") && geometry["radius_px"].is_number()) {
-        *cx = observed_center["x"].get<double>();
-        *cy = observed_center["y"].get<double>();
         *radius = geometry["radius_px"].get<double>();
+        return *radius > 0.0;
+    };
+    if (parse_boundary_geometry("accepted_inner_rim_boundary") ||
+        parse_boundary_geometry("accepted_experimental_area_boundary") ||
+        parse_boundary_geometry("observed_boundary")) {
+        return true;
+    }
+
+    // Last-resort compatibility for old links that only embedded the eroded mask.
+    const nlohmann::json& accepted_mask = object_or_empty(observation, "accepted_mask");
+    const nlohmann::json& center = object_or_empty(accepted_mask, "center_px");
+    if (center.contains("x") && center["x"].is_number() &&
+        center.contains("y") && center["y"].is_number() &&
+        accepted_mask.contains("radius_px") && accepted_mask["radius_px"].is_number()) {
+        *cx = center["x"].get<double>();
+        *cy = center["y"].get<double>();
+        *radius = accepted_mask["radius_px"].get<double>();
         return *radius > 0.0;
     }
     return false;

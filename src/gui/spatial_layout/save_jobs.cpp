@@ -131,6 +131,12 @@ nlohmann::json make_top_rim_observation_link_json(
             write_result.observation.value("accepted_mask", nlohmann::json::object());
         link["observed_boundary"] =
             write_result.observation.value("observed_boundary", nlohmann::json::object());
+        link["accepted_inner_rim_boundary"] =
+            write_result.observation.value(
+                "accepted_inner_rim_boundary",
+                write_result.observation.value(
+                    "accepted_experimental_area_boundary",
+                    nlohmann::json::object()));
         link["accepted_experimental_area_boundary"] =
             write_result.observation.value(
                 "accepted_experimental_area_boundary",

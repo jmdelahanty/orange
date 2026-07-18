@@ -17,9 +17,20 @@ inline constexpr const char* kCalibrationRegistrySchemaId = "orange.calibration.
 inline constexpr int kCalibrationRegistrySchemaVersion = 1;
 inline constexpr const char* kDishTopRimObservationSchemaId =
     "orange.calibration.dish_top_rim_observation";
-inline constexpr int kDishTopRimObservationSchemaVersion = 1;
+inline constexpr int kDishTopRimObservationSchemaVersionV1 = 1;
+inline constexpr int kDishTopRimObservationSchemaVersion = 2;
 inline constexpr const char* kDishTopRimObservationMethod =
-    "orange_acquisition_circle_hough_operator_confirmed_v1";
+    "orange_acquisition_circle_hough_operator_confirmed_inner_rim_v2";
+inline constexpr const char* kDishTopRimTargetPlane = "dish_top_rim";
+inline constexpr const char* kDishTopRimTargetFeature =
+    "dish_inner_rim_water_side_edge";
+inline constexpr const char* kDishTopRimRegion = "water_accessible_footprint";
+inline constexpr const char* kDishTopRimBoundaryRole =
+    "orange_physical_boundary_evidence";
+inline constexpr const char* kDishTopRimBoundaryInterpretation =
+    "operator_confirmed_dish_inner_rim_water_side_edge";
+inline constexpr const char* kDishTopRimBoundaryInclusionPolicy =
+    "follow_observed_inner_rim_without_silent_offset";
 inline constexpr const char* kCalibrationFingerprintAlgorithm = "fnv1a64";
 
 struct DishTopRimPoint {
@@ -111,12 +122,20 @@ struct DishTopRimObservationRequest {
     DishTopRimCircle detected_circle;
     std::string detected_circle_source;
     double valid_region_erosion_px = 0.0;
-    std::string accepted_boundary_runtime_role = "citrus_experimental_area_boundary";
+    double centroid_gate_outset_px = 0.0;
+    bool has_physical_inner_diameter_mm = false;
+    double physical_inner_diameter_mm = 0.0;
+    std::string physical_inner_diameter_source;
+    std::string dish_design_id;
+    bool has_reference_camera_pixels_per_mm = false;
+    double reference_camera_pixels_per_mm = 0.0;
+    std::string reference_camera_scale_target_plane;
+    std::string accepted_boundary_role = kDishTopRimBoundaryRole;
     std::string accepted_boundary_interpretation =
-        "operator_accepted_orange_dish_rim_equals_citrus_experimental_area_boundary";
-    std::string boundary_inclusion_policy = "prefer_slight_overcoverage_to_avoid_fish_escape";
-    std::string operator_boundary_target = "top_level_visible_boundary";
-    bool operator_confirmed = true;
+        kDishTopRimBoundaryInterpretation;
+    std::string boundary_inclusion_policy = kDishTopRimBoundaryInclusionPolicy;
+    std::string operator_boundary_target = kDishTopRimTargetFeature;
+    bool operator_confirmed = false;
     std::string operator_status = "orange_operator_confirmed";
     std::string operator_notes;
     DishTopRimRuntimeVerification runtime_verification;

@@ -122,6 +122,7 @@ struct DishMaskGeometry {
     RuntimeGeometry outer_geometry;
     RuntimeGeometry valid_geometry;
     double edge_margin_px = 0.0;
+    double centroid_gate_outset_px = 0.0;
 };
 
 struct DishMaskArtifactCamera {

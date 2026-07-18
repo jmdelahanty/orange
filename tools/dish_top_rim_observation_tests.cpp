@@ -77,9 +77,19 @@ orange::calibration::DishTopRimObservationRequest make_request(const std::string
     request.capture.frame_rate_hz = 1.0;
     request.capture.dish_fill_state = "water_filled";
     request.capture.requires_filter_reinstalled_repeatably = true;
-    request.valid_region_erosion_px = 10.0;
-    request.operator_boundary_target = "top_level_visible_boundary";
-    request.boundary_inclusion_policy = "prefer_slight_overcoverage_to_avoid_fish_escape";
+    request.centroid_gate_outset_px = 10.0;
+    request.has_physical_inner_diameter_mm = true;
+    request.physical_inner_diameter_mm = 80.0;
+    request.physical_inner_diameter_source =
+        "/fixture/shadow.json#dish_config.dimensions.diameter_mm";
+    request.dish_design_id = "palm1";
+    request.has_reference_camera_pixels_per_mm = true;
+    request.reference_camera_pixels_per_mm = 3.7;
+    request.reference_camera_scale_target_plane = "projected_surface";
+    request.operator_boundary_target =
+        orange::calibration::kDishTopRimTargetFeature;
+    request.boundary_inclusion_policy =
+        orange::calibration::kDishTopRimBoundaryInclusionPolicy;
     request.operator_confirmed = true;
     request.operator_notes = "fixture operator note";
     request.runtime_verification.status = "unknown";
@@ -111,7 +121,8 @@ orange::calibration::DishTopRimObservationRequest make_request(const std::string
                 {"translate_y_px", -2.0},
                 {"scale_px_per_layout_unit", 12.5},
                 {"rotation_deg_clockwise", 1.25},
-                {"edge_margin_px", 10.0}
+                {"edge_margin_px", 0.0},
+                {"centroid_gate_outset_px", 10.0}
             }}
         }}
     };
@@ -206,6 +217,9 @@ void test_artifact_write_and_snapshot()
     require(
         observation.value("schema_id", "") == kDishTopRimObservationSchemaId,
         "observation schema id");
+    require(
+        observation.value("schema_version", 0) == kDishTopRimObservationSchemaVersion,
+        "observation schema version");
     require(observation.value("artifact_id", "") == artifact_id, "observation artifact id");
     require(
         observation["calibration_ref"].value("artifact_id", "") == artifact_id,
@@ -220,27 +234,87 @@ void test_artifact_write_and_snapshot()
         observation["accepted_mask"].value("source_array_role", "") == "images_full",
         "accepted mask source array role");
     require(
-        std::abs(observation["accepted_mask"].value("radius_px", 0.0) - 140.0) < 0.001,
-        "accepted mask stores eroded valid radius");
+        std::abs(observation["accepted_mask"].value("radius_px", 0.0) - 160.0) < 0.001,
+        "accepted mask stores outward centroid-gate radius");
     require(
-        observation["accepted_experimental_area_boundary"].value("role", "") ==
-            "citrus_experimental_area_boundary",
-        "accepted experimental-area boundary role");
+        observation["accepted_inner_rim_boundary"].value("role", "") ==
+            kDishTopRimBoundaryRole,
+        "accepted inner-rim boundary role");
+    require(
+        observation["accepted_inner_rim_boundary"].value("target_plane", "") ==
+            kDishTopRimTargetPlane,
+        "accepted inner-rim target plane");
+    require(
+        observation["accepted_inner_rim_boundary"].value("target_feature", "") ==
+            kDishTopRimTargetFeature,
+        "accepted inner-rim target feature");
+    require(
+        observation["accepted_inner_rim_boundary"].value("region", "") ==
+            kDishTopRimRegion,
+        "accepted inner-rim region semantics");
     require(
         std::abs(
-            observation["accepted_experimental_area_boundary"]["geometry"].value("radius_px", 0.0) -
+            observation["accepted_inner_rim_boundary"]["geometry"].value("radius_px", 0.0) -
             150.0) < 0.001,
-        "accepted experimental-area boundary stores non-eroded radius");
+        "accepted inner-rim boundary stores non-eroded radius");
+    require(
+        std::abs(
+            observation["accepted_inner_rim_boundary"]["physical_geometry"].value(
+                "radius_mm",
+                0.0) -
+            40.0) < 0.001,
+        "accepted inner-rim boundary stores physical radius in mm");
+    require(
+        std::abs(
+            observation["accepted_inner_rim_boundary"]["camera_scale"].value(
+                "pixels_per_mm",
+                0.0) -
+            3.75) < 0.001,
+        "top-rim camera scale derives from pixel and physical radii");
+    require(
+        !observation["accepted_inner_rim_boundary"]["camera_scale"]
+             ["comparison_reference"]
+                 .value("authoritative_for_dish_top_rim", true),
+        "projected-surface comparison scale is not authoritative at the top rim");
+    require(
+        std::abs(
+            observation["valid_detection_region"].value(
+                "centroid_gate_outset_mm",
+                0.0) -
+            (10.0 / 3.75)) < 0.001,
+        "centroid-gate forgiveness is available in mm");
+    require(
+        observation["accepted_experimental_area_boundary"].value(
+            "compatibility_alias",
+            false),
+        "legacy experimental-area field is marked as a compatibility alias");
+    require(
+        observation["accepted_experimental_area_boundary"].value("alias_of", "") ==
+            "accepted_inner_rim_boundary",
+        "legacy experimental-area field points to v2 boundary");
+    require(
+        !observation["accepted_experimental_area_boundary"].value(
+            "asserts_citrus_acceptance",
+            true),
+        "legacy alias does not assert Citrus acceptance");
     require(
         observation["boundary_interpretation"].value("boundary_inclusion_policy", "") ==
-            "prefer_slight_overcoverage_to_avoid_fish_escape",
+            kDishTopRimBoundaryInclusionPolicy,
         "boundary inclusion policy preserved");
+    require(
+        observation["boundary_interpretation"].value("accepted_boundary_field", "") ==
+            "accepted_inner_rim_boundary",
+        "boundary interpretation selects the v2 field");
     require(
         observation["capture"].value("dish_fill_state", "") == "water_filled",
         "dish fill state preserved");
     require(
         observation["operator_review"].value("accepted", false),
         "operator review accepted");
+    require(
+        observation["operator_review"].value("confirmed_target_feature", "") ==
+            kDishTopRimTargetFeature,
+        "operator review records the confirmed target feature");
     require(
         observation["operator_review"].value("notes", "") == "fixture operator note",
         "operator notes preserved");
@@ -379,6 +453,11 @@ void test_artifact_write_and_snapshot()
         image_set["observations"]["arena_context"].value("arena_id", "") == "arena_1",
         "image-set observations stores arena context");
     require(
+        image_set["observations"]["dish_top_rim"]["accepted_boundary"].value(
+            "target_feature",
+            "") == kDishTopRimTargetFeature,
+        "image-set accepted boundary uses v2 inner-rim semantics");
+    require(
         image_set["review_artifacts"]["registration_hough_overlay"].value("path", "") ==
             "overlays/registration_hough_overlay.png",
         "image-set companion stores registration/Hough overlay path");
@@ -396,6 +475,14 @@ void test_artifact_write_and_snapshot()
     require(
         manifest.value("artifact_schema_id", "") == kDishTopRimObservationSchemaId,
         "manifest artifact schema id");
+    require(
+        manifest.value("artifact_schema_version", 0) ==
+            kDishTopRimObservationSchemaVersion,
+        "manifest artifact schema version");
+    require(
+        manifest["summary"].value("target_feature", "") ==
+            kDishTopRimTargetFeature,
+        "manifest summary stores target feature");
     require(
         manifest["calibration_ref"].value("fingerprint", "") ==
             observation["calibration_ref"].value("fingerprint", ""),
@@ -422,7 +509,7 @@ void test_artifact_write_and_snapshot()
     require(palette.value("shape", "") == "circle", "Palette shape");
     require(palette["detected_circle"]["center"][0].get<int>() == 322, "Palette center x from accepted mask");
     require(palette["detected_circle"]["center"][1].get<int>() == 254, "Palette center y from accepted mask");
-    require(palette["detected_circle"].value("radius", 0) == 140, "Palette radius from accepted mask");
+    require(palette["detected_circle"].value("radius", 0) == 160, "Palette radius from accepted mask");
     require(palette["metrics"]["image_shape"][0].get<int>() == 512, "Palette image height");
     require(palette["metrics"]["image_shape"][1].get<int>() == 640, "Palette image width");
 
@@ -438,16 +525,29 @@ void test_artifact_write_and_snapshot()
         std::abs(spatial_runtime["geometry"]["outer_geometry"].value("r", 0.0) - 150.0) < 0.001,
         "spatial runtime outer radius from accepted circle");
     require(
-        std::abs(spatial_runtime["geometry"]["valid_geometry"].value("r", 0.0) - 140.0) < 0.001,
-        "spatial runtime valid radius from eroded mask");
+        std::abs(spatial_runtime["geometry"]["valid_geometry"].value("r", 0.0) - 160.0) < 0.001,
+        "spatial runtime valid radius from outward centroid gate");
+    require(
+        std::abs(
+            spatial_runtime["geometry"].value("centroid_gate_outset_px", 0.0) -
+            10.0) < 0.001,
+        "spatial runtime carries explicit centroid-gate outset");
     require(
         spatial_runtime["source_observation"].value("artifact_id", "") == artifact_id,
         "spatial runtime references source observation");
+    require(
+        spatial_runtime["source_observation"]["accepted_inner_rim_boundary"].value(
+            "target_feature",
+            "") == kDishTopRimTargetFeature,
+        "spatial runtime references v2 inner-rim boundary");
     orange::spatial::DishMaskRuntime parsed_runtime;
     require(
         orange::spatial::parse_dish_mask_runtime_json(spatial_runtime, &parsed_runtime, &error),
         "spatial runtime export parses with spatial schema: " + error);
     require(parsed_runtime.has_geometry, "parsed spatial runtime has geometry");
+    require(
+        std::abs(parsed_runtime.geometry.centroid_gate_outset_px - 10.0) < 0.001,
+        "parsed runtime preserves centroid-gate outset");
 
     const nlohmann::json registry = read_json(root / "index.json");
     require(
@@ -470,8 +570,33 @@ void test_artifact_write_and_snapshot()
     const nlohmann::json& entry =
         snapshot["calibrations"]["2012632"]["dish_top_rim_observation"];
     require(entry.value("artifact_id", "") == artifact_id, "snapshot artifact id");
+    require(
+        entry["accepted_inner_rim_boundary"].value("target_feature", "") ==
+            kDishTopRimTargetFeature,
+        "snapshot carries v2 inner-rim boundary");
     require(!entry.value("active_for_detection_gating", true), "snapshot does not enable gating");
     require(entry.value("gating_policy", "") == "not_enabled", "snapshot gating policy");
+
+    nlohmann::json v1_observation = observation;
+    v1_observation["schema_version"] = kDishTopRimObservationSchemaVersionV1;
+    v1_observation.erase("accepted_inner_rim_boundary");
+    v1_observation["accepted_experimental_area_boundary"].erase("compatibility_alias");
+    v1_observation["accepted_experimental_area_boundary"].erase("alias_of");
+    const nlohmann::json v1_runtime =
+        dish_top_rim_spatial_dish_mask_runtime_export_to_json(v1_observation);
+    require(
+        std::abs(v1_runtime["geometry"]["outer_geometry"].value("r", 0.0) - 150.0) <
+            0.001,
+        "runtime export continues to read the v1 accepted boundary");
+    const nlohmann::json v1_snapshot_entry =
+        build_dish_top_rim_recording_snapshot_entry(v1_observation, false);
+    require(
+        std::abs(
+            v1_snapshot_entry["accepted_inner_rim_boundary"]["geometry"].value(
+                "radius_px",
+                0.0) -
+            150.0) < 0.001,
+        "snapshot adapter maps a v1 boundary into the v2 semantic slot");
 
     std::filesystem::remove_all(root);
 }
@@ -592,6 +717,93 @@ void test_rejects_non_full_source_array_role()
     expect_rejects_source_array_role("full_frame_but_not_declared");
 }
 
+void test_rejects_ambiguous_v1_boundary_target()
+{
+    using namespace orange::calibration;
+    const std::filesystem::path root = make_temp_root();
+    DishTopRimObservationRequest request = make_request("dishrim_ambiguous_target");
+    request.operator_boundary_target = "top_level_visible_boundary";
+
+    DishTopRimCircle accepted;
+    accepted.center.x = 322.0;
+    accepted.center.y = 254.0;
+    accepted.radius_px = 150.0;
+
+    DishTopRimObservationWriteResult result;
+    std::string error;
+    const bool ok = write_dish_top_rim_observation_artifact(
+        root.string(),
+        request,
+        make_synthetic_dish_frame(),
+        make_hough_params(),
+        accepted,
+        &result,
+        &error);
+    require(!ok, "schema-v2 writer should reject the ambiguous v1 boundary target");
+    require(
+        error.find(kDishTopRimTargetFeature) != std::string::npos,
+        "ambiguous-target error should name the required feature");
+    std::filesystem::remove_all(root);
+}
+
+void test_rejects_unconfirmed_inner_rim()
+{
+    using namespace orange::calibration;
+    const std::filesystem::path root = make_temp_root();
+    DishTopRimObservationRequest request = make_request("dishrim_unconfirmed");
+    request.operator_confirmed = false;
+
+    DishTopRimCircle accepted;
+    accepted.center.x = 322.0;
+    accepted.center.y = 254.0;
+    accepted.radius_px = 150.0;
+
+    DishTopRimObservationWriteResult result;
+    std::string error;
+    const bool ok = write_dish_top_rim_observation_artifact(
+        root.string(),
+        request,
+        make_synthetic_dish_frame(),
+        make_hough_params(),
+        accepted,
+        &result,
+        &error);
+    require(!ok, "schema-v2 writer should reject an unconfirmed inner-rim fit");
+    require(
+        error.find("operator confirmation") != std::string::npos,
+        "unconfirmed-fit error should explain the missing confirmation");
+    std::filesystem::remove_all(root);
+}
+
+void test_rejects_simultaneous_inward_and_outward_offsets()
+{
+    using namespace orange::calibration;
+    const std::filesystem::path root = make_temp_root();
+    DishTopRimObservationRequest request = make_request("dishrim_conflicting_offsets");
+    request.valid_region_erosion_px = 2.0;
+
+    DishTopRimCircle accepted;
+    accepted.center.x = 322.0;
+    accepted.center.y = 254.0;
+    accepted.radius_px = 150.0;
+
+    DishTopRimObservationWriteResult result;
+    std::string error;
+    const bool ok = write_dish_top_rim_observation_artifact(
+        root.string(),
+        request,
+        make_synthetic_dish_frame(),
+        make_hough_params(),
+        accepted,
+        &result,
+        &error);
+    require(!ok, "writer should reject simultaneous inward and outward offsets");
+    require(
+        error.find("mutually exclusive") != std::string::npos,
+        "conflicting-offset error should explain exclusivity");
+    std::filesystem::remove_all(root);
+}
+
 } // namespace
 
 int main()
@@ -602,6 +814,9 @@ int main()
         test_nested_storage_relative_manifest_path();
         test_rejects_mismatched_image_shape();
         test_rejects_non_full_source_array_role();
+        test_rejects_ambiguous_v1_boundary_target();
+        test_rejects_unconfirmed_inner_rim();
+        test_rejects_simultaneous_inward_and_outward_offsets();
     } catch (const std::exception& ex) {
         std::cerr << "dish_top_rim_observation_tests failed: " << ex.what() << std::endl;
         return 1;

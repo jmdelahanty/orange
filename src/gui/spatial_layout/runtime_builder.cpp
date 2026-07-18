@@ -28,20 +28,20 @@ using orange::spatial::VisibilityStatus;
 
 constexpr double kPi = 3.14159265358979323846;
 
-RuntimeGeometry inset_runtime_geometry(const RuntimeGeometry& geometry, double edge_margin_px)
+RuntimeGeometry offset_runtime_geometry(const RuntimeGeometry& geometry, double radial_offset_px)
 {
     if (geometry.type == RuntimeGeometryType::kCircle) {
         return runtime_circle(
             geometry.circle.cx,
             geometry.circle.cy,
-            std::max(0.0, geometry.circle.r - edge_margin_px));
+            std::max(0.0, geometry.circle.r + radial_offset_px));
     }
 
     return runtime_oriented_rectangle(
         geometry.oriented_rectangle.cx,
         geometry.oriented_rectangle.cy,
-        std::max(0.0, geometry.oriented_rectangle.width - 2.0 * edge_margin_px),
-        std::max(0.0, geometry.oriented_rectangle.height - 2.0 * edge_margin_px),
+        std::max(0.0, geometry.oriented_rectangle.width + 2.0 * radial_offset_px),
+        std::max(0.0, geometry.oriented_rectangle.height + 2.0 * radial_offset_px),
         geometry.oriented_rectangle.rotation_deg_clockwise);
 }
 
@@ -229,8 +229,12 @@ void rebuild_schema_preview(SpatialLayoutUiState* ui_state, const CameraParams* 
                                   ui_state->registration.layout_to_camera_matrix,
                                   effective_rotation_deg);
     ui_state->dish_mask_runtime.geometry.valid_geometry =
-        inset_runtime_geometry(ui_state->dish_mask_runtime.geometry.outer_geometry, ui_state->edge_margin_px);
+        offset_runtime_geometry(
+            ui_state->dish_mask_runtime.geometry.outer_geometry,
+            ui_state->centroid_gate_outset_px - ui_state->edge_margin_px);
     ui_state->dish_mask_runtime.geometry.edge_margin_px = ui_state->edge_margin_px;
+    ui_state->dish_mask_runtime.geometry.centroid_gate_outset_px =
+        ui_state->centroid_gate_outset_px;
 
     ui_state->preview_calibration = {};
     ui_state->preview_calibration.has_dish_mask = true;

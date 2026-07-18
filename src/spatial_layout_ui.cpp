@@ -239,7 +239,11 @@ bool load_spatial_layout_artifact(
         }
         if (dish_mask_runtime.has_geometry) {
             ui_state->edge_margin_px = std::max(0.0, dish_mask_runtime.geometry.edge_margin_px);
-            loaded_parts.push_back("edge_margin");
+            ui_state->centroid_gate_outset_px =
+                std::max(0.0, dish_mask_runtime.geometry.centroid_gate_outset_px);
+            ui_state->centroid_gate_outset_authored_mm = false;
+            ui_state->centroid_gate_outset_mm_camera_serial.clear();
+            loaded_parts.push_back("centroid_gate_offset");
         }
     }
 
@@ -1023,10 +1027,39 @@ void render_spatial_layout_window(
             ui_state->citrus_template.source_config_name.c_str(),
             ui_state->citrus_template.source_camera_id.c_str());
         ImGui::TextWrapped(
-            "Citrus circle: arena-relative center=(%.2f, %.2f) r=%.2f canvas px",
+            "Citrus experimental area: arena-relative center=(%.2f, %.2f) r=%.2f canvas px",
             ui_state->citrus_template.experimental_area_center_x_px,
             ui_state->citrus_template.experimental_area_center_y_px,
             ui_state->citrus_template.experimental_area_radius_px);
+        if (ui_state->citrus_template.has_radius_mm) {
+            ImGui::SameLine();
+            ImGui::TextDisabled(
+                "(%.4f mm)",
+                ui_state->citrus_template.experimental_area_radius_mm);
+        }
+        if (ui_state->citrus_template.has_calibration_ring_outer_radius_px) {
+            ImGui::TextWrapped(
+                "Citrus calibration fit-ring outer dot-center radius: %.2f canvas px%s",
+                ui_state->citrus_template.calibration_ring_outer_radius_px,
+                ui_state->citrus_template.calibration_pattern_mode.empty()
+                    ? ""
+                    : " (separate from the experimental-area radius)");
+            if (ui_state->citrus_template.has_pixels_per_mm_projector &&
+                ui_state->citrus_template.pixels_per_mm_projector > 0.0) {
+                const double fit_ring_radius_mm =
+                    ui_state->citrus_template.calibration_ring_outer_radius_px /
+                    ui_state->citrus_template.pixels_per_mm_projector;
+                const double inset_canvas_px =
+                    ui_state->citrus_template.experimental_area_radius_px -
+                    ui_state->citrus_template.calibration_ring_outer_radius_px;
+                ImGui::TextDisabled(
+                    "Fit ring: %.4f mm radius; %.2f canvas px / %.4f mm inside configured experimental area",
+                    fit_ring_radius_mm,
+                    inset_canvas_px,
+                    inset_canvas_px /
+                        ui_state->citrus_template.pixels_per_mm_projector);
+            }
+        }
         if (ui_state->citrus_template.has_arena_canvas_region) {
             const Point2d origin = citrus_arena_origin_canvas_px(ui_state->citrus_template);
             const Point2d global_center = citrus_arena_relative_to_canvas_px(
@@ -1056,6 +1089,29 @@ void render_spatial_layout_window(
                 ImGui::TextWrapped(
                     "Citrus projected outline samples: %zu",
                     ui_state->citrus_projected_outline_camera_points.size());
+                if (ui_state->has_citrus_projected_fit_ring &&
+                    ui_state->citrus_projected_fit_ring_geometry.type ==
+                        RuntimeGeometryType::kCircle) {
+                    ImGui::TextWrapped(
+                        "Citrus fit ring through the same homography: center=(%.2f, %.2f), r=%.2f camera px",
+                        ui_state->citrus_projected_fit_ring_geometry.circle.cx,
+                        ui_state->citrus_projected_fit_ring_geometry.circle.cy,
+                        ui_state->citrus_projected_fit_ring_geometry.circle.r);
+                }
+                if (ui_state->has_detected_experimental_area_circle &&
+                    ui_state->detected_experimental_area_geometry.type ==
+                        RuntimeGeometryType::kCircle) {
+                    const double radius_delta_px =
+                        ui_state->detected_experimental_area_geometry.circle.r -
+                        ui_state->citrus_projected_circle_geometry.circle.r;
+                    ImGui::TextWrapped(
+                        "Current Hough/fit rim minus Citrus experimental-area projection: %.2f camera px (%.2f%% of rim radius)",
+                        radius_delta_px,
+                        100.0 * radius_delta_px /
+                            std::max(
+                                1e-9,
+                                ui_state->detected_experimental_area_geometry.circle.r));
+                }
             }
         } else {
             ImGui::TextColored(
@@ -1103,7 +1159,7 @@ void render_spatial_layout_window(
                     detected_arena_relative.y -
                     ui_state->citrus_template.experimental_area_center_y_px;
                 ImGui::TextWrapped(
-                    "Detected top-rim center maps to Citrus global canvas=(%.2f, %.2f), arena-relative=(%.2f, %.2f), delta=(%+.2f, %+.2f) px.",
+                    "Detected water-side inner-rim center maps to Citrus global canvas=(%.2f, %.2f), arena-relative=(%.2f, %.2f), delta=(%+.2f, %+.2f) px.",
                     detected_canvas_center.x,
                     detected_canvas_center.y,
                     detected_arena_relative.x,
@@ -1128,12 +1184,68 @@ void render_spatial_layout_window(
             coordinate_space == 0 ? CoordinateSpace::kLayoutMm : CoordinateSpace::kLayoutUnits;
     }
     ImGui::InputText("Ordering rule", &ui_state->layout_artifact.provenance.ordering_rule);
-    render_layout_geometry_editor("Experimental area", &ui_state->layout_artifact.layout.outer_geometry);
+    if (render_layout_geometry_editor(
+            "Experimental area",
+            &ui_state->layout_artifact.layout.outer_geometry)) {
+        ui_state->calibration_inner_rim_target_confirmed = false;
+    }
 
     ImGui::SeparatorText("View Registration");
     render_registration_editor(ui_state);
-    ImGui::InputDouble("Experimental area edge margin (px)", &ui_state->edge_margin_px, 0.5, 5.0, "%.2f");
-    ui_state->edge_margin_px = std::max(0.0, ui_state->edge_margin_px);
+    bool rendered_physical_centroid_gate_control = false;
+    if (ui_state->citrus_template.has_inner_diameter_mm &&
+        ui_state->dish_mask_runtime.has_geometry &&
+        ui_state->dish_mask_runtime.geometry.outer_geometry.type ==
+            orange::spatial::RuntimeGeometryType::kCircle) {
+        const double inner_radius_mm =
+            ui_state->citrus_template.inner_diameter_mm * 0.5;
+        const double radius_px =
+            ui_state->dish_mask_runtime.geometry.outer_geometry.circle.r;
+        if (inner_radius_mm > 0.0 && radius_px > 0.0) {
+            const double pixels_per_mm = radius_px / inner_radius_mm;
+            if (!ui_state->centroid_gate_outset_authored_mm ||
+                ui_state->centroid_gate_outset_mm_camera_serial !=
+                    selected_camera.camera_serial) {
+                ui_state->centroid_gate_outset_mm =
+                    ui_state->centroid_gate_outset_px / pixels_per_mm;
+                ui_state->centroid_gate_outset_authored_mm = true;
+                ui_state->centroid_gate_outset_mm_camera_serial =
+                    selected_camera.camera_serial;
+            }
+            if (ImGui::InputDouble(
+                    "Centroid gate outward forgiveness (mm)",
+                    &ui_state->centroid_gate_outset_mm,
+                    0.01,
+                    0.1,
+                    "%.4f")) {
+                ui_state->centroid_gate_outset_mm =
+                    std::max(0.0, ui_state->centroid_gate_outset_mm);
+                ui_state->edge_margin_px = 0.0;
+            }
+            ui_state->centroid_gate_outset_px =
+                ui_state->centroid_gate_outset_mm * pixels_per_mm;
+            ImGui::Text(
+                "Physical inner radius: %.3f mm | top-rim scale: %.5f px/mm | forgiveness: %.2f px",
+                inner_radius_mm,
+                pixels_per_mm,
+                ui_state->centroid_gate_outset_px);
+            rendered_physical_centroid_gate_control = true;
+        }
+    }
+    if (!rendered_physical_centroid_gate_control) {
+        ui_state->centroid_gate_outset_authored_mm = false;
+        ui_state->centroid_gate_outset_mm_camera_serial.clear();
+        if (ImGui::InputDouble(
+                "Centroid gate outward forgiveness (px)",
+                &ui_state->centroid_gate_outset_px,
+                0.5,
+                5.0,
+                "%.2f")) {
+            ui_state->centroid_gate_outset_px =
+                std::max(0.0, ui_state->centroid_gate_outset_px);
+            ui_state->edge_margin_px = 0.0;
+        }
+    }
 
     ImGui::SeparatorText("Zones");
     render_zone_editor(ui_state);
@@ -1169,6 +1281,7 @@ void render_spatial_layout_window(
         top_rim_save_busy,
         generic_image_set_save_busy,
         ui_state->has_capture &&
+            ui_state->calibration_inner_rim_target_confirmed &&
             ui_state->dish_mask_runtime.has_geometry &&
             ui_state->has_detected_experimental_area_circle &&
             ui_state->detected_experimental_area_geometry.type == RuntimeGeometryType::kCircle &&
@@ -1226,7 +1339,7 @@ void render_spatial_layout_window(
         } else {
             ImGui::TextDisabled("Drag green to move the selected zone. Drag gold/orange handles to resize it.");
         }
-        ImGui::TextDisabled("Blue outline/triangle: current Citrus experimental-area outline inverse-projected into camera pixels; triangle is fitted-center diagnostic. Pink outline/cross: detected experimental-area proposal. Green outline/diamond/line: corrected Citrus outline preserving current Citrus radius with the proposed center. Orange outline: resolved experimental boundary. Yellow outline: valid region after edge margin. Green/cyan outlines: resolved zone overlays.");
+        ImGui::TextDisabled("Blue outline/triangle: Citrus experimental area inverse-projected into camera pixels. Purple outline: separately configured Citrus calibration fit ring. Pink outline/cross: detected water-side inner-rim proposal. Green outline/diamond/line: corrected Citrus outline preserving the configured experimental radius with the proposed center. Orange outline: operator-adjusted physical inner-rim boundary. Yellow outline: outward centroid-gating region (legacy artifacts may instead use an inward margin). Green/cyan outlines: resolved zone overlays.");
     }
 
     ImGui::Separator();

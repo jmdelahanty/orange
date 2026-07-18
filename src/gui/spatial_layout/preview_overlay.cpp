@@ -98,7 +98,9 @@ void draw_projected_outline_polyline(const std::vector<Point2d>& camera_points,
 }
 
 void draw_citrus_projected_outline_overlay(const std::vector<Point2d>& camera_points,
-                                           const RuntimeGeometry& fitted_geometry)
+                                           const RuntimeGeometry& fitted_geometry,
+                                           ImU32 color,
+                                           const char* label)
 {
     if (camera_points.size() < 3 ||
         fitted_geometry.type != RuntimeGeometryType::kCircle ||
@@ -106,7 +108,6 @@ void draw_citrus_projected_outline_overlay(const std::vector<Point2d>& camera_po
         return;
     }
 
-    const ImU32 color = IM_COL32(100, 190, 255, 230);
     draw_projected_outline_polyline(camera_points, color, 2.0f);
 
     const ImVec2 center = ImPlot::PlotToPixels(
@@ -121,7 +122,7 @@ void draw_citrus_projected_outline_overlay(const std::vector<Point2d>& camera_po
     draw_list->AddText(
         ImVec2(center.x + 10.0f, center.y + 6.0f),
         color,
-        "Citrus");
+        label);
 }
 
 bool compute_citrus_corrected_outline_overlay(
@@ -274,7 +275,20 @@ bool draw_runtime_preview(
          ui_state->citrus_template.source_camera_id == ui_state->captured_camera_serial)) {
         draw_citrus_projected_outline_overlay(
             ui_state->citrus_projected_outline_camera_points,
-            ui_state->citrus_projected_circle_geometry);
+            ui_state->citrus_projected_circle_geometry,
+            IM_COL32(100, 190, 255, 230),
+            "Citrus experimental area");
+    }
+    if (ui_state->has_citrus_projected_fit_ring &&
+        (ui_state->citrus_template.source_camera_id.empty() ||
+         ui_state->captured_camera_serial.empty() ||
+         ui_state->citrus_template.source_camera_id ==
+             ui_state->captured_camera_serial)) {
+        draw_citrus_projected_outline_overlay(
+            ui_state->citrus_projected_fit_ring_outline_camera_points,
+            ui_state->citrus_projected_fit_ring_geometry,
+            IM_COL32(185, 120, 255, 220),
+            "Citrus fit ring");
     }
     draw_runtime_geometry(
         ui_state->dish_mask_runtime.geometry.outer_geometry,

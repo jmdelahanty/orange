@@ -35,6 +35,13 @@ bool sample_citrus_experimental_area_outline_in_camera_px(
     std::vector<Point2d>* camera_points_out,
     std::string* error_out);
 
+bool sample_citrus_circle_outline_in_camera_px(
+    const CitrusSpatialTemplateState& template_state,
+    const Point2d& center_arena_relative_px,
+    double radius_canvas_px,
+    std::vector<Point2d>* camera_points_out,
+    std::string* error_out);
+
 std::array<Point2d, 4> oriented_rectangle_corners(
     const orange::spatial::RuntimeGeometry& geometry);
 

@@ -30,6 +30,8 @@ void populate_calibration_domain_metadata_from_runtime(
     metadata->calibration_domain_coordinate_space =
         orange::spatial::coordinate_space_to_string(geometry.coordinate_space);
     metadata->calibration_domain_edge_margin_px = geometry.edge_margin_px;
+    metadata->calibration_domain_centroid_gate_outset_px =
+        geometry.centroid_gate_outset_px;
 
     const RuntimeGeometry& outer = geometry.outer_geometry;
     const RuntimeGeometry& valid = geometry.valid_geometry;
@@ -130,7 +132,9 @@ nlohmann::json calibration_domain_observation_json(
         {"target_plane", metadata_or_unknown(target_plane)},
         {"coordinate_space", metadata.calibration_domain_coordinate_space},
         {"outer_geometry", calibration_domain_geometry_json(metadata, false)},
-        {"edge_margin_px", metadata.calibration_domain_edge_margin_px}
+        {"edge_margin_px", metadata.calibration_domain_edge_margin_px},
+        {"centroid_gate_outset_px",
+         metadata.calibration_domain_centroid_gate_outset_px}
     };
 
     if (metadata.calibration_domain_shape == "circle") {

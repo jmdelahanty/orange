@@ -4,7 +4,7 @@
 
 namespace orange::gui::spatial_layout {
 
-void render_layout_geometry_editor(
+bool render_layout_geometry_editor(
     const char* label_prefix,
     orange::spatial::LayoutGeometry* geometry);
 

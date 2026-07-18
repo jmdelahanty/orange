@@ -185,6 +185,9 @@ bool handle_registration_canvas_edit(SpatialLayoutUiState* ui_state)
     }
 
     if (ui_state->registration.type != RegistrationType::kSimilarity) {
+        if (changed) {
+            ui_state->calibration_inner_rim_target_confirmed = false;
+        }
         return changed;
     }
 
@@ -246,6 +249,9 @@ bool handle_registration_canvas_edit(SpatialLayoutUiState* ui_state)
         }
     }
 
+    if (changed) {
+        ui_state->calibration_inner_rim_target_confirmed = false;
+    }
     return changed;
 }
 

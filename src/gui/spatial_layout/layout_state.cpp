@@ -200,7 +200,11 @@ void initialize_spatial_layout_defaults(SpatialLayoutUiState* ui_state)
     ui_state->registration_ty_px = 512.0;
     ui_state->registration_scale = 8.0;
     ui_state->registration_rotation_deg_clockwise = 0.0;
-    ui_state->edge_margin_px = 12.0;
+    ui_state->edge_margin_px = 0.0;
+    ui_state->centroid_gate_outset_px = 12.0;
+    ui_state->centroid_gate_outset_mm = 0.0;
+    ui_state->centroid_gate_outset_authored_mm = false;
+    ui_state->centroid_gate_outset_mm_camera_serial.clear();
 }
 
 void reset_registration_from_frame(SpatialLayoutUiState* ui_state)
@@ -224,6 +228,7 @@ void reset_registration_from_frame(SpatialLayoutUiState* ui_state)
     ui_state->registration_ty_px =
         static_cast<double>(ui_state->captured_texture_height) * 0.5 -
         ui_state->registration_scale * center.y;
+    ui_state->calibration_inner_rim_target_confirmed = false;
     ui_state->captured_canvas_view.fit_requested = true;
 }
 
@@ -234,6 +239,7 @@ void clear_detected_experimental_area_circle(SpatialLayoutUiState* ui_state)
     }
     ui_state->has_detected_experimental_area_circle = false;
     ui_state->detected_experimental_area_geometry = RuntimeGeometry{};
+    ui_state->calibration_inner_rim_target_confirmed = false;
     ui_state->detection_status.clear();
     ui_state->detection_error.clear();
 }

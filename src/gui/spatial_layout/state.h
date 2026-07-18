@@ -30,6 +30,12 @@ struct CitrusSpatialTemplateState {
     std::string source_config_name;
     std::string source_camera_id;
     std::string source_dish_type_name;
+    bool has_inner_diameter_mm = false;
+    double inner_diameter_mm = 0.0;
+    std::string inner_diameter_source_field;
+    bool has_pixels_per_mm_camera = false;
+    double pixels_per_mm_camera = 0.0;
+    std::string pixels_per_mm_camera_target_plane;
     bool has_arena_canvas_region = false;
     double arena_center_x_px = 0.0;
     double arena_center_y_px = 0.0;
@@ -42,6 +48,10 @@ struct CitrusSpatialTemplateState {
     double experimental_area_radius_mm = 0.0;
     bool has_pixels_per_mm_projector = false;
     double pixels_per_mm_projector = 0.0;
+    std::string calibration_pattern_mode;
+    std::string calibration_pattern_mask_policy;
+    bool has_calibration_ring_outer_radius_px = false;
+    double calibration_ring_outer_radius_px = 0.0;
     bool has_camera_to_canvas_homography = false;
     std::array<double, 9> camera_to_canvas_homography{
         1.0, 0.0, 0.0,
@@ -138,6 +148,7 @@ struct SpatialLayoutCalibrationImageSetMetadata {
     double calibration_domain_height_px = 0.0;
     double calibration_domain_rotation_deg_clockwise = 0.0;
     double calibration_domain_edge_margin_px = 0.0;
+    double calibration_domain_centroid_gate_outset_px = 0.0;
     bool has_calibration_domain_valid_circle = false;
     double calibration_domain_valid_center_x_px = 0.0;
     double calibration_domain_valid_center_y_px = 0.0;
@@ -255,7 +266,11 @@ struct SpatialLayoutUiState {
     double registration_ty_px = 0.0;
     double registration_scale = 1.0;
     double registration_rotation_deg_clockwise = 0.0;
-    double edge_margin_px = 12.0;
+    double edge_margin_px = 0.0;
+    double centroid_gate_outset_px = 12.0;
+    double centroid_gate_outset_mm = 0.0;
+    bool centroid_gate_outset_authored_mm = false;
+    std::string centroid_gate_outset_mm_camera_serial;
 
     GLuint captured_texture = 0;
     int captured_texture_width = 0;
@@ -319,6 +334,10 @@ struct SpatialLayoutUiState {
     std::string detection_error;
     CitrusSpatialTemplateState citrus_template;
     std::vector<CitrusSpatialTemplateState> citrus_canvas_templates;
+    bool has_citrus_projected_fit_ring = false;
+    orange::spatial::RuntimeGeometry citrus_projected_fit_ring_geometry;
+    std::vector<orange::gui::spatial_layout::Point2d>
+        citrus_projected_fit_ring_outline_camera_points;
     int citrus_canvas_template_index = -1;
     std::string citrus_canvas_config_path;
     bool has_citrus_projected_circle = false;
@@ -362,9 +381,7 @@ struct SpatialLayoutUiState {
     std::string calibration_projector_state = "unknown";
     bool calibration_projector_visible_to_camera = false;
     std::string calibration_dish_fill_state = "unknown";
-    std::string calibration_operator_boundary_target = "top_level_visible_boundary";
-    std::string calibration_boundary_inclusion_policy =
-        "prefer_slight_overcoverage_to_avoid_fish_escape";
+    bool calibration_inner_rim_target_confirmed = false;
     bool calibration_requires_filter_reinstalled_repeatably = false;
     std::string calibration_operator_notes;
     std::string calibration_image_set_purpose = "homography_grid";

@@ -607,12 +607,12 @@
         "dish_top_rim": {
           "type": "object",
           "additionalProperties": true,
-          "description": "Generic envelope for accepted dish top-rim evidence. The accepted_boundary should mirror the specialized top-rim artifact's accepted_experimental_area_boundary, not an eroded detection mask.",
+          "description": "Generic envelope for accepted dish top-rim evidence. The accepted_boundary should mirror the specialized top-rim artifact's accepted_inner_rim_boundary (or the schema-v1 compatibility alias), not an offset detection mask.",
           "properties": {
             "accepted_boundary": {
               "type": "object",
               "additionalProperties": true,
-              "description": "Operator-accepted experimental-area/chaser boundary in camera-native pixels."
+              "description": "Operator-confirmed water-side inner-rim boundary in camera-native pixels, with optional physical-mm geometry and a same-plane camera scale. This is evidence proposed to Citrus, not proof of Citrus acceptance."
             },
             "observed_boundary": {
               "type": "object",
@@ -627,12 +627,12 @@
             "valid_detection_region": {
               "type": "object",
               "additionalProperties": true,
-              "description": "Optional eroded detection/analysis region. This is not the default Citrus experimental-area/chaser boundary."
+              "description": "Optional offset detection-centroid region. New saves may use an outward centroid-gate outset; legacy saves may use inward erosion. This is not the physical inner-rim boundary."
             },
             "accepted_mask": {
               "type": "object",
               "additionalProperties": true,
-              "description": "Optional Palette-compatible eroded mask view."
+              "description": "Optional Palette-compatible offset mask view."
             }
           }
         },
@@ -867,6 +867,11 @@
         "edge_margin_px": {
           "type": "number",
           "minimum": 0
+        },
+        "centroid_gate_outset_px": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Outward detection-centroid forgiveness. Mutually exclusive with a positive legacy inward edge_margin_px."
         }
       }
     },

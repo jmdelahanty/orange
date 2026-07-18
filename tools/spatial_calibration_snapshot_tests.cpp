@@ -183,6 +183,41 @@ bool run_roundtrip_test()
                      &error),
                  "snapshot calibration parses back through schema");
 
+    DishMaskRuntime outward_runtime = make_fixture_dish_mask_runtime();
+    outward_runtime.geometry.valid_geometry.circle.r = 512.0;
+    outward_runtime.geometry.edge_margin_px = 0.0;
+    outward_runtime.geometry.centroid_gate_outset_px = 12.0;
+    const nlohmann::json outward_json =
+        dish_mask_runtime_to_json(outward_runtime);
+    DishMaskRuntime parsed_outward;
+    ok &= expect(
+        parse_dish_mask_runtime_json(outward_json, &parsed_outward, &error),
+        "outward centroid-gate runtime parses");
+    ok &= expect(
+        parsed_outward.geometry.valid_geometry.circle.r == 512.0 &&
+            parsed_outward.geometry.centroid_gate_outset_px == 12.0,
+        "outward centroid-gate runtime round-trips");
+
+    nlohmann::json legacy_inward_json =
+        dish_mask_runtime_to_json(make_fixture_dish_mask_runtime());
+    legacy_inward_json["geometry"].erase("centroid_gate_outset_px");
+    DishMaskRuntime parsed_legacy_inward;
+    ok &= expect(
+        parse_dish_mask_runtime_json(
+            legacy_inward_json,
+            &parsed_legacy_inward,
+            &error),
+        "legacy inward runtime without outset field remains readable");
+    ok &= expect(
+        parsed_legacy_inward.geometry.centroid_gate_outset_px == 0.0,
+        "legacy runtime defaults centroid-gate outset to zero");
+
+    DishMaskRuntime conflicting_runtime = outward_runtime;
+    conflicting_runtime.geometry.edge_margin_px = 1.0;
+    ok &= expect(
+        !validate_dish_mask_runtime(conflicting_runtime, &error),
+        "simultaneous inward and outward offsets are rejected");
+
     std::filesystem::remove_all(temp_root);
     return ok;
 }

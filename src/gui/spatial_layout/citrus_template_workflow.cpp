@@ -53,6 +53,9 @@ bool update_citrus_projected_circle_preview(
     ui_state->has_citrus_projected_circle = false;
     ui_state->citrus_projected_circle_geometry = RuntimeGeometry{};
     ui_state->citrus_projected_outline_camera_points.clear();
+    ui_state->has_citrus_projected_fit_ring = false;
+    ui_state->citrus_projected_fit_ring_geometry = RuntimeGeometry{};
+    ui_state->citrus_projected_fit_ring_outline_camera_points.clear();
     if (!ui_state->citrus_template.available ||
         !ui_state->citrus_template.has_canvas_to_camera_homography) {
         if (error_out) {
@@ -81,6 +84,33 @@ bool update_citrus_projected_circle_preview(
     ui_state->citrus_projected_circle_geometry =
         runtime_circle(fitted_circle.cx, fitted_circle.cy, fitted_circle.r);
     ui_state->citrus_projected_outline_camera_points = std::move(camera_points);
+    if (ui_state->citrus_template.has_calibration_ring_outer_radius_px) {
+        std::vector<Point2d> fit_ring_camera_points;
+        if (sample_citrus_circle_outline_in_camera_px(
+                ui_state->citrus_template,
+                make_point(
+                    ui_state->citrus_template.experimental_area_center_x_px,
+                    ui_state->citrus_template.experimental_area_center_y_px),
+                ui_state->citrus_template.calibration_ring_outer_radius_px,
+                &fit_ring_camera_points,
+                nullptr)) {
+            CircleGeometry fit_ring_circle;
+            if (fit_circle_to_points(
+                    fit_ring_camera_points,
+                    &fit_ring_circle,
+                    nullptr,
+                    nullptr)) {
+                ui_state->has_citrus_projected_fit_ring = true;
+                ui_state->citrus_projected_fit_ring_geometry =
+                    runtime_circle(
+                        fit_ring_circle.cx,
+                        fit_ring_circle.cy,
+                        fit_ring_circle.r);
+                ui_state->citrus_projected_fit_ring_outline_camera_points =
+                    std::move(fit_ring_camera_points);
+            }
+        }
+    }
     if (rms_error_out != nullptr) {
         *rms_error_out = rms_error;
     }
@@ -100,6 +130,9 @@ bool apply_citrus_template_to_spatial_layout(
     ui_state->has_citrus_projected_circle = false;
     ui_state->citrus_projected_circle_geometry = RuntimeGeometry{};
     ui_state->citrus_projected_outline_camera_points.clear();
+    ui_state->has_citrus_projected_fit_ring = false;
+    ui_state->citrus_projected_fit_ring_geometry = RuntimeGeometry{};
+    ui_state->citrus_projected_fit_ring_outline_camera_points.clear();
 
     LayoutGeometry imported_outer;
     imported_outer.type = LayoutGeometryType::kCircle;
@@ -172,6 +205,9 @@ void clear_citrus_template_import(SpatialLayoutUiState* ui_state)
     ui_state->has_citrus_projected_circle = false;
     ui_state->citrus_projected_circle_geometry = RuntimeGeometry{};
     ui_state->citrus_projected_outline_camera_points.clear();
+    ui_state->has_citrus_projected_fit_ring = false;
+    ui_state->citrus_projected_fit_ring_geometry = RuntimeGeometry{};
+    ui_state->citrus_projected_fit_ring_outline_camera_points.clear();
     ui_state->citrus_import_status.clear();
     ui_state->citrus_import_error.clear();
 }

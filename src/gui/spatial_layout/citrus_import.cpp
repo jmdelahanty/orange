@@ -178,6 +178,30 @@ bool build_citrus_single_circle_template_state(
     template_state.source_config_name = arena_json.value("config_name", arena_name);
     template_state.source_camera_id = camera_calibration_json.value("camera_id", "");
     template_state.source_dish_type_name = arena_json.value("selected_dish_type_name", "");
+    if (arena_json.contains("dish_config") &&
+        arena_json["dish_config"].is_object() &&
+        arena_json["dish_config"].contains("dimensions") &&
+        arena_json["dish_config"]["dimensions"].is_object()) {
+        const nlohmann::json& dimensions =
+            arena_json["dish_config"]["dimensions"];
+        constexpr const char* kInnerDiameterFields[] = {
+            "inner_diameter_mm",
+            "usable_area_diameter_mm",
+            "diameter_mm"
+        };
+        for (const char* field : kInnerDiameterFields) {
+            if (dimensions.contains(field) && dimensions[field].is_number()) {
+                const double value = dimensions[field].get<double>();
+                if (value > 0.0) {
+                    template_state.has_inner_diameter_mm = true;
+                    template_state.inner_diameter_mm = value;
+                    template_state.inner_diameter_source_field =
+                        std::string("dish_config.dimensions.") + field;
+                    break;
+                }
+            }
+        }
+    }
     const bool has_arena_center =
         parse_optional_json_number(camera_calibration_json, "arena_center_x_px", &template_state.arena_center_x_px) &&
         parse_optional_json_number(camera_calibration_json, "arena_center_y_px", &template_state.arena_center_y_px);
@@ -209,6 +233,53 @@ bool build_citrus_single_circle_template_state(
         template_state.has_pixels_per_mm_projector = true;
         template_state.pixels_per_mm_projector =
             camera_calibration_json.at("pixels_per_mm_projector").get<double>();
+    }
+    template_state.calibration_pattern_mode =
+        arena_json.value("calibration_pattern_mode", "");
+    template_state.calibration_pattern_mask_policy =
+        arena_json.value("calibration_pattern_mask_policy", "");
+    if (arena_json.contains("calibration_ring_outer_radius_px") &&
+        arena_json["calibration_ring_outer_radius_px"].is_number()) {
+        const double ring_outer_radius_px =
+            arena_json["calibration_ring_outer_radius_px"].get<double>();
+        if (ring_outer_radius_px > 0.0) {
+            template_state.has_calibration_ring_outer_radius_px = true;
+            template_state.calibration_ring_outer_radius_px =
+                ring_outer_radius_px;
+        }
+    }
+    if (camera_calibration_json.contains("pixels_per_mm_camera") &&
+        camera_calibration_json.at("pixels_per_mm_camera").is_number()) {
+        const double pixels_per_mm_camera =
+            camera_calibration_json.at("pixels_per_mm_camera").get<double>();
+        if (pixels_per_mm_camera > 0.0) {
+            template_state.has_pixels_per_mm_camera = true;
+            template_state.pixels_per_mm_camera = pixels_per_mm_camera;
+            template_state.pixels_per_mm_camera_target_plane =
+                "unknown_legacy_camera_scale_plane";
+            if (camera_calibration_json.contains("scale_models") &&
+                camera_calibration_json["scale_models"].is_array()) {
+                for (const nlohmann::json& scale_model :
+                     camera_calibration_json["scale_models"]) {
+                    if (!scale_model.is_object() ||
+                        !scale_model.contains("pixels_per_mm_camera") ||
+                        !scale_model["pixels_per_mm_camera"].is_number()) {
+                        continue;
+                    }
+                    const double model_pixels_per_mm =
+                        scale_model["pixels_per_mm_camera"].get<double>();
+                    if (std::abs(model_pixels_per_mm - pixels_per_mm_camera) >
+                        1e-6 * std::max(1.0, pixels_per_mm_camera)) {
+                        continue;
+                    }
+                    template_state.pixels_per_mm_camera_target_plane =
+                        scale_model.value(
+                            "target_plane",
+                            "unknown_legacy_camera_scale_plane");
+                    break;
+                }
+            }
+        }
     }
 
     std::string homography_error;

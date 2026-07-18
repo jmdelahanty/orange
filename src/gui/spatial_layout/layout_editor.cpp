@@ -30,35 +30,39 @@ T clamp_index(T value, T count)
 
 }  // namespace
 
-void render_layout_geometry_editor(const char* label_prefix, LayoutGeometry* geometry)
+bool render_layout_geometry_editor(const char* label_prefix, LayoutGeometry* geometry)
 {
     if (geometry == nullptr) {
-        return;
+        return false;
     }
 
+    bool changed = false;
     int geometry_type = geometry->type == LayoutGeometryType::kCircle ? 0 : 1;
     const char* geometry_items[] = {"circle", "rectangle"};
     if (ImGui::Combo((std::string(label_prefix) + " shape").c_str(), &geometry_type, geometry_items, IM_ARRAYSIZE(geometry_items))) {
         geometry->type = geometry_type == 0 ? LayoutGeometryType::kCircle : LayoutGeometryType::kRectangle;
+        changed = true;
     }
 
     if (geometry->type == LayoutGeometryType::kCircle) {
-        ImGui::InputDouble((std::string(label_prefix) + " cx").c_str(), &geometry->circle.cx, 0.5);
-        ImGui::InputDouble((std::string(label_prefix) + " cy").c_str(), &geometry->circle.cy, 0.5);
-        ImGui::InputDouble((std::string(label_prefix) + " r").c_str(), &geometry->circle.r, 0.5);
+        changed |= ImGui::InputDouble((std::string(label_prefix) + " cx").c_str(), &geometry->circle.cx, 0.5);
+        changed |= ImGui::InputDouble((std::string(label_prefix) + " cy").c_str(), &geometry->circle.cy, 0.5);
+        changed |= ImGui::InputDouble((std::string(label_prefix) + " r").c_str(), &geometry->circle.r, 0.5);
         geometry->circle.r = std::max(0.0, geometry->circle.r);
     } else {
-        ImGui::InputDouble((std::string(label_prefix) + " x").c_str(), &geometry->rectangle.x, 0.5);
-        ImGui::InputDouble((std::string(label_prefix) + " y").c_str(), &geometry->rectangle.y, 0.5);
-        ImGui::InputDouble((std::string(label_prefix) + " width").c_str(), &geometry->rectangle.width, 0.5);
-        ImGui::InputDouble((std::string(label_prefix) + " height").c_str(), &geometry->rectangle.height, 0.5);
+        changed |= ImGui::InputDouble((std::string(label_prefix) + " x").c_str(), &geometry->rectangle.x, 0.5);
+        changed |= ImGui::InputDouble((std::string(label_prefix) + " y").c_str(), &geometry->rectangle.y, 0.5);
+        changed |= ImGui::InputDouble((std::string(label_prefix) + " width").c_str(), &geometry->rectangle.width, 0.5);
+        changed |= ImGui::InputDouble((std::string(label_prefix) + " height").c_str(), &geometry->rectangle.height, 0.5);
         geometry->rectangle.width = std::max(0.0, geometry->rectangle.width);
         geometry->rectangle.height = std::max(0.0, geometry->rectangle.height);
     }
+    return changed;
 }
 
 void render_registration_editor(SpatialLayoutUiState* ui_state)
 {
+    bool geometry_changed = false;
     const char* registration_type_items[] = {"identity", "translation", "similarity"};
     int registration_type = 2;
     if (ui_state->registration.type == RegistrationType::kIdentity) {
@@ -70,6 +74,7 @@ void render_registration_editor(SpatialLayoutUiState* ui_state)
         ui_state->registration.type =
             registration_type == 0 ? RegistrationType::kIdentity :
             (registration_type == 1 ? RegistrationType::kTranslation : RegistrationType::kSimilarity);
+        geometry_changed = true;
     }
 
     const char* source_items[] = {"manual", "manual_fit", "detected_fit", "imported", "identity"};
@@ -120,13 +125,21 @@ void render_registration_editor(SpatialLayoutUiState* ui_state)
     const bool similarity_enabled = ui_state->registration.type == RegistrationType::kSimilarity;
 
     ImGui::BeginDisabled(!translation_enabled);
-    ImGui::InputDouble("Translate X (px)", &ui_state->registration_tx_px, 1.0, 20.0, "%.2f");
-    ImGui::InputDouble("Translate Y (px)", &ui_state->registration_ty_px, 1.0, 20.0, "%.2f");
+    geometry_changed |= ImGui::InputDouble(
+        "Translate X (px)", &ui_state->registration_tx_px, 1.0, 20.0, "%.2f");
+    geometry_changed |= ImGui::InputDouble(
+        "Translate Y (px)", &ui_state->registration_ty_px, 1.0, 20.0, "%.2f");
     ImGui::EndDisabled();
 
     ImGui::BeginDisabled(!similarity_enabled);
-    ImGui::InputDouble("Scale (px / layout unit)", &ui_state->registration_scale, 0.05, 1.0, "%.4f");
-    ImGui::InputDouble("Rotation CW (deg)", &ui_state->registration_rotation_deg_clockwise, 0.25, 2.0, "%.2f");
+    geometry_changed |= ImGui::InputDouble(
+        "Scale (px / layout unit)", &ui_state->registration_scale, 0.05, 1.0, "%.4f");
+    geometry_changed |= ImGui::InputDouble(
+        "Rotation CW (deg)",
+        &ui_state->registration_rotation_deg_clockwise,
+        0.25,
+        2.0,
+        "%.2f");
     ImGui::EndDisabled();
     ui_state->registration_scale = std::max(0.0001, ui_state->registration_scale);
 
@@ -134,6 +147,9 @@ void render_registration_editor(SpatialLayoutUiState* ui_state)
     ui_state->registration.fit_point_count = std::max(0, ui_state->registration.fit_point_count);
     ImGui::InputDouble("Residual (px)", &ui_state->registration.residual_px, 0.1, 1.0, "%.3f");
     ui_state->registration.residual_px = std::max(0.0, ui_state->registration.residual_px);
+    if (geometry_changed) {
+        ui_state->calibration_inner_rim_target_confirmed = false;
+    }
 }
 
 void render_zone_editor(SpatialLayoutUiState* ui_state)

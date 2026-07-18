@@ -1,6 +1,7 @@
 # Dish Top-Rim Observation And Runtime Mask Design
 
 Date: 2026-06-01
+Last updated: 2026-07-18
 
 Status: design plus first implementation slice. The Orange-native artifact
 writer, Hough-circle proposal, visible overlays, Palette export, spatial
@@ -22,15 +23,18 @@ Related documents:
 Define the Orange/Citrus contract for using camera-captured dish images to
 produce four related but separate outputs:
 
-- a camera-space observation of the physical dish top rim
+- a camera-space observation of the water-side inner edge in the physical dish
+  top-rim plane
 - a session or daily valid-detection mask for Orange predictions
 - a visible review artifact that shows how the mask was made
 - a reviewable Citrus alignment suggestion based on the current Citrus
   homography and projected crosshair
 
 The immediate rig has one dish/arena per camera view, but the artifact shape
-should not assume that forever. The V0 scope is one top-rim boundary and one
-valid circular detection region per camera.
+should not assume that forever. The V0 implementation scope is one top-rim
+circle and one valid circular detection region per camera. The intended
+fish-occupiable boundary feature is the water-side inner rim, not the outer
+edge of the top flange.
 
 ## Design Summary
 
@@ -54,9 +58,9 @@ boundary. A daily capture may therefore write both:
 
 Ownership split:
 
-- Orange owns raw captured images, detected top-rim geometry, valid-detection
-  masks, visible review overlays, and prediction-gating decisions in camera
-  pixels.
+- Orange owns raw captured images, detected inner-rim geometry in the top-rim
+  plane, valid-detection masks, visible review overlays, and prediction-gating
+  decisions in camera pixels.
 - Citrus owns canonical canvas, arena layout, homography artifacts, stimulus
   geometry, and any accepted changes to Citrus-side spatial configuration.
 - Neither side should silently mutate the other side's geometry.
@@ -75,51 +79,57 @@ camera-space Orange observation and Citrus-owned rig/homography/optical model.
 
 ## Physical Target
 
-The observed boundary target is:
+The target has three separate semantics:
 
 ```text
-dish_top_rim
+target_plane   = dish_top_rim
+target_feature = dish_inner_rim_water_side_edge
+region         = water_accessible_footprint
 ```
 
-This is intentionally not the inner wall, dish bottom, fish plane, or projector
-plane. The top rim is a practical and repeatable physical boundary for the
-operator to detect and review.
+`dish_top_rim` names the observation plane. It is not specific enough to name
+the fitted edge. The load-bearing feature for the fish-occupiable area is the
+water-side inner edge of the dish opening. It is intentionally not the outer
+edge of the top flange, the lower inner wall, dish bottom, fish plane, or
+projector plane.
 
-The valid detection area should usually be derived by eroding inward from the
-top-rim boundary. The rim itself is the observed physical boundary; the eroded
-region is the safe area where fish detections should be accepted.
+The canonical physical boundary should follow the operator-confirmed inner rim
+without silently expanding or eroding it. Uncertainty, overcoverage, and
+undercoverage belong in fit metrics and downstream policy, not in the accepted
+physical evidence itself.
 
 Recommended separate geometry names:
 
-- `observed_boundary`: the fitted top rim in camera pixels
-- `accepted_experimental_area_boundary`: the operator-accepted daily boundary
-  that Citrus should interpret as the experimental-area boundary
-- `valid_detection_region`: an eroded region used to gate YOLO outputs
+- `observed_boundary`: the fitted water-side inner rim in camera pixels
+- `accepted_inner_rim_boundary`: schema-v2 name for the
+  Orange-operator-confirmed physical boundary
+- `accepted_experimental_area_boundary`: existing schema-v1 compatibility name
+  for the same Orange-confirmed boundary; it does not assert Citrus acceptance
+- `valid_detection_region`: a derived centroid-gating region. New Orange saves
+  use a small outward offset so a fish bounding-box centroid near the wall is
+  not rejected; legacy inward-eroded artifacts remain readable
 - `valid_tracking_region`: optional future region, usually stricter than the
-  observed boundary
-- `stimulus_safe_region`: optional future region, owned or accepted by Citrus
+  physical boundary
+- `stimulus_safe_region`: a derived region owned or accepted by Citrus
 
-For the Orange/Citrus daily circular-dish workflow, the default policy is that
-the operator-accepted rim boundary equals the Citrus `experimental_area`
-boundary. The accepted experimental-area boundary should bias toward slight
-overcoverage rather than undercoverage because undercoverage allows a fish to
-be physically inside the dish while logically outside the experiment. Eroded
-masks remain useful diagnostics/exports but are not the primary Citrus runtime
-boundary.
+The physical inner-rim boundary is a proposal input to Citrus. Citrus owns the
+decision to accept it as, or derive from it, the runtime `experimental_area`.
+Orange should never encode Citrus acceptance merely because an Orange operator
+accepted the camera-space fit.
 
-The runtime containment invariant is:
+The runtime containment invariant remains:
 
 ```text
-physically_reachable_fish_area <= Citrus experimental_area / chaser boundary
+water_accessible_footprint <= Citrus experimental_area / chaser boundary
 ```
 
-That means a daily rim registration must not silently shrink the Citrus
-experimental area below the operator-accepted reachable boundary. If rim
-visibility, refraction, or fit uncertainty leaves ambiguity, prefer a slightly
-larger accepted experimental-area boundary or require explicit operator review.
-Any inward erosion belongs to `valid_detection_region`, post-processing masks,
-or analysis/tracking diagnostics unless Citrus explicitly accepts a stricter
-runtime policy.
+That invariant is a Citrus runtime-policy constraint, not permission to inflate
+the Orange physical observation. If a circle approximation or uncertain edge
+would under-cover part of the observed footprint, Orange should report signed
+residuals and require review. Any inward erosion or outward centroid
+forgiveness belongs to `valid_detection_region`, post-processing masks, or
+analysis/tracking diagnostics. Citrus may derive stimulus clearance
+separately; neither offset is baked into the canonical inner-rim evidence.
 
 ## Circular Dish V0 Geometry
 
@@ -131,12 +141,34 @@ workflow:
 2. Run an OpenCV Hough-circle detector with logged parameters.
 3. Show the detected circle as an overlay to the operator.
 4. Let the operator accept or adjust center/radius.
-5. Persist the accepted circle as the load-bearing experimental-area boundary.
+5. Persist the accepted circle as the load-bearing Orange inner-rim boundary
+   evidence.
 
-The accepted circle, not the raw detector output, is the geometry used for the
-daily Citrus experimental-area boundary. Detection gating and Palette exports
-may use an inward-eroded `accepted_mask` or `valid_detection_region`, but those
-derived masks are not the default Citrus runtime/chaser boundary.
+The accepted circle, not the raw detector output, is the geometry proposed for
+daily Citrus experimental-area registration. Detection gating and Palette
+exports may use an offset `accepted_mask` or `valid_detection_region`, but
+those derived masks are not the physical inner-rim boundary and do not carry
+Citrus runtime acceptance.
+
+### Commissioning Versus Daily Registration
+
+The first trusted registration for a dish design is a commissioning operation:
+
+- compare the accepted inner-rim center and full boundary against the canonical
+  dish definition;
+- permit an explicit center-and-radius proposal so an incorrect canonical size
+  is not preserved indefinitely;
+- require Citrus-side operator acceptance before any canonical or runtime
+  experimental-area revision.
+
+After a trusted inner-rim size exists, daily placement registration should
+normally preserve that size and solve only placement. For a circle this is a
+center update; radius deviation is a drift diagnostic. A meaningful radius
+change should trigger re-commissioning or explicit operator-reviewed geometry
+revision rather than being absorbed silently into every daily fit.
+
+Orange may compute both commissioning and daily diagnostics, but they remain
+proposals. Citrus owns the accepted definition/runtime revision.
 
 Recommended V0 method string:
 
@@ -212,6 +244,67 @@ Citrus may map points into:
 Those mapped values are derived previews. The authoritative Orange observation
 remains the camera-space source geometry plus source images.
 
+### Physical units at the top-rim plane
+
+When the selected dish definition provides a known inner diameter, Orange
+copies that dimension and its source reference into the accepted boundary. For
+a circular dish:
+
+```text
+physical_inner_radius_mm = physical_inner_diameter_mm / 2
+top_rim_pixels_per_mm = accepted_radius_px / physical_inner_radius_mm
+top_rim_mm_per_pixel = 1 / top_rim_pixels_per_mm
+centroid_gate_outset_mm = centroid_gate_outset_px / top_rim_pixels_per_mm
+```
+
+The physical radius and camera-space radius describe the same water-side inner
+rim at `target_plane = dish_top_rim`. This derived scale is therefore valid for
+rim-local distances. A Citrus `pixels_per_mm_camera` value calibrated at
+`projected_surface` may be recorded as a diagnostic comparison, but it is not
+authoritative for the top-rim plane.
+
+For the palm dishes, the known inner diameter is 80 mm, so the physical
+inner-rim radius is 40 mm. The accepted Cam2010093 fit from 2026-07-18 has
+`radius_px = 2152.7285`, yielding approximately `53.8182 px/mm`; a 12 px
+centroid-gate outset is approximately `0.2230 mm` at that plane.
+
+### Citrus fit-ring versus experimental-area diagnostics
+
+The Citrus calibration fit ring and Citrus experimental area are separate
+configured geometries and must be labeled separately in Orange:
+
+- current `shadow/arena_1` experimental-area radius: `166 canvas px`, or
+  `39.8145 mm` at `4.16934 canvas px/mm`;
+- circular calibration fit-ring outer dot-center radius: `140 canvas px`, or
+  `33.5785 mm`;
+- fit-ring inset from the experimental-area boundary: `26 canvas px`, or
+  `6.2360 mm`; the fit-ring radius is only `84.34%` of the experimental radius.
+
+This explains why a projected circular fit pattern can look much smaller even
+when the separately rendered experimental-area outline/crosshair is correctly
+sized. The `experimental_area` mask clips the calibration pattern but does not
+move the fit-ring dot centers from 140 px out to the 166 px boundary.
+
+There is also a second, independent transform discrepancy in the 2026-07-18
+Cam2010093 comparison. Orange currently loads the legacy sidecar
+`calibration_artifacts/homography_arena_1_2010093.yml`, timestamped
+2026-05-27. Inverse-projecting the configured 166 px experimental circle with
+that matrix gives an approximately `(2253.05, 2358.99)` camera-pixel center and
+`2033.68 px` radius. The new accepted rim is approximately
+`(2226.53, 2237.55)` with `2152.73 px` radius. The predicted Citrus radius is
+therefore `119.05 px`, or `5.53%`, smaller, and the centers differ by about
+124 px. The 39.8145 mm versus 40 mm physical-radius difference is far too small
+to explain that result.
+
+Until a live capture validates which transform matches the physically rendered
+outline, treat the legacy homography projection as a diagnostic rather than
+ground truth. Orange now displays both the projected experimental area and the
+projected 140 px fit ring with distinct labels and reports their camera-space
+circle fits. The next calibration check should capture the live Citrus
+experimental-area outline and fit-ring in the same camera state, then compare
+each against its corresponding prediction and the plane-labeled Citrus
+homography products.
+
 ## Mapping To Spatial Layout
 
 This artifact is a concrete V0 producer for the existing spatial layout layers.
@@ -223,7 +316,9 @@ Mapping:
 dish_top_rim_observation.observed_boundary
   -> spatial_layout.dish_mask.outer_geometry
 
-dish_top_rim_observation.accepted_experimental_area_boundary
+dish_top_rim_observation.accepted_experimental_area_boundary (v1 compatibility)
+  -> schema-v2 semantic: accepted_inner_rim_boundary
+  -> Orange-confirmed water-side inner-rim evidence
   -> Citrus experimental_area / chaser boundary proposal
   -> spatial_layout.dish_mask.outer_geometry
 
@@ -242,10 +337,12 @@ derived camera-pixel zone/mask geometry
 
 Interpretation:
 
-- `dish_mask` is the camera-space valid-region layer. The top-rim artifact is
-  one way to produce it.
-- `arena_layout` is still the canonical Citrus dish/arena identity. The Hough
-  circle must not become the canonical arena layout.
+- `dish_mask` is the camera-space valid-region layer. The inner-rim observation
+  in the top-rim plane is one way to produce it.
+- For the immediate imported single-circle slice, `arena_layout` is still the
+  canonical Citrus dish/arena identity. More generally, definition authority
+  follows provenance. The Hough circle must not silently replace an imported
+  canonical arena layout.
 - `view_registration` may use the accepted circle as evidence for a
   `translation` or `similarity` fit, but a top-rim circle is not a replacement
   homography.
@@ -533,9 +630,101 @@ Recommended schema id:
 orange.calibration.dish_top_rim_observation
 ```
 
+### Schema-V1 Compatibility Decision
+
+The current writer emits `schema_version = 2`. Existing schema-v1 artifacts
+used `accepted_experimental_area_boundary`, including legacy interpretation
+strings that can read as though Orange accepted Citrus runtime geometry.
+Existing artifacts are immutable and remain readable as written.
+
+For schema v1:
+
+- treat `accepted_experimental_area_boundary` as Orange-operator-confirmed
+  camera-space physical-boundary evidence only;
+- require review of the source image/overlay before asserting that a legacy
+  `top_level_visible_boundary` is specifically the water-side inner edge;
+- do not infer Citrus acceptance from the field name, role, or interpretation
+  string.
+
+Schema v2 adds `accepted_inner_rim_boundary` with:
+
+```text
+target_plane   = dish_top_rim
+target_feature = dish_inner_rim_water_side_edge
+region         = water_accessible_footprint
+```
+
+New artifacts retain the v1 field as an explicit compatibility alias with
+`alias_of = accepted_inner_rim_boundary`, `compatibility_alias = true`, and
+`asserts_citrus_acceptance = false`. The alias carries the same non-eroded
+geometry so v1 consumers can continue to read it. Existing v1 files are never
+rewritten.
+
 ## Observation JSON Shape
 
-Candidate `observation.json`:
+The load-bearing schema-v2 boundary fields are:
+
+```json
+{
+  "schema_id": "orange.calibration.dish_top_rim_observation",
+  "schema_version": 2,
+  "circle_detection": {
+    "method": "orange_acquisition_circle_hough_operator_confirmed_inner_rim_v2"
+  },
+  "observed_boundary": {
+    "target_plane": "dish_top_rim",
+    "target_feature": "dish_inner_rim_water_side_edge",
+    "region": "water_accessible_footprint",
+    "coordinate_space": "camera_native_pixels",
+    "geometry": {"type": "circle", "center_px": {"x": 1234, "y": 988}, "radius_px": 822}
+  },
+  "accepted_inner_rim_boundary": {
+    "role": "orange_physical_boundary_evidence",
+    "interpretation": "operator_confirmed_dish_inner_rim_water_side_edge",
+    "target_plane": "dish_top_rim",
+    "target_feature": "dish_inner_rim_water_side_edge",
+    "region": "water_accessible_footprint",
+    "boundary_inclusion_policy": "follow_observed_inner_rim_without_silent_offset",
+    "coordinate_space": "camera_native_pixels",
+    "geometry": {"type": "circle", "center_px": {"x": 1234, "y": 988}, "radius_px": 822},
+    "physical_geometry": {
+      "type": "circle",
+      "coordinate_space": "dish_top_rim_mm",
+      "center_mm": {"x": 0, "y": 0},
+      "radius_mm": 40,
+      "diameter_mm": 80,
+      "dish_design_id": "palm1",
+      "dimension_source": ".../shadow.json#dish_config.dimensions.diameter_mm"
+    },
+    "camera_scale": {
+      "target_plane": "dish_top_rim",
+      "pixels_per_mm": 20.55,
+      "mm_per_pixel": 0.04866,
+      "derivation": "accepted_camera_radius_px_divided_by_physical_inner_radius_mm"
+    },
+    "operator_confirmed": true
+  },
+  "accepted_experimental_area_boundary": {
+    "compatibility_alias": true,
+    "alias_of": "accepted_inner_rim_boundary",
+    "asserts_citrus_acceptance": false,
+    "geometry": {"type": "circle", "center_px": {"x": 1234, "y": 988}, "radius_px": 822}
+  },
+  "valid_detection_region": {
+    "derived_from": "accepted_inner_rim_boundary",
+    "erosion_px": 0,
+    "centroid_gate_outset_px": 12,
+    "centroid_gate_outset_mm": 0.584,
+    "offset_direction": "outward",
+    "purpose": "bounding_box_centroid_detection_gating",
+    "geometry": {"type": "circle", "center_px": {"x": 1234, "y": 988}, "radius_px": 834}
+  }
+}
+```
+
+The following full schema-v1 `observation.json` example is retained as a
+legacy reader reference. Its boundary role and interpretation strings do not
+override the compatibility decision above:
 
 ```json
 {
@@ -1177,10 +1366,13 @@ each session needs a new capture.
 - [x] no runtime detection gating yet
 - [x] no automatic Citrus mutation
 
-Current caveat: the implemented UI save action records the accepted top-rim
-circle and valid detection region from the current Spatial Layout UI fit. It
-does not yet capture or decode a projected crosshair center, so crosshair
-alignment offsets remain future work.
+The implemented UI save action records a schema-v2 accepted inner-rim circle
+and valid detection region from the current Spatial Layout fit. It labels the
+plane, target feature, and water-accessible region explicitly, requires the
+operator to confirm that the fit follows the water-side inner edge, and clears
+that confirmation when the capture, Hough proposal, or accepted geometry
+changes. The action does not yet capture or decode a projected crosshair
+center, so crosshair alignment offsets remain future work.
 
 ### Slice 2: Operator Preview
 
@@ -1191,6 +1383,8 @@ alignment offsets remain future work.
 - [x] add optional Palette adapter export JSON for import testing
 - [x] add spatial `dish_mask_runtime` adapter JSON for import/testing against
   the existing `recording_snapshot.json` calibration shape
+- [x] add schema-v2 `accepted_inner_rim_boundary` output and an explicit
+  `dish_inner_rim_water_side_edge` UI target without rewriting v1 artifacts
 
 ### Slice 3: Runtime Gating
 
@@ -1215,8 +1409,8 @@ alignment offsets remain future work.
 
 ## Open Questions
 
-- How much inward erosion should be the default for
-  `valid_detection_region`?
+- Is the current approximately 0.223 mm outward centroid forgiveness sufficient
+  for near-wall fish bounding boxes across cameras and body orientations?
 - Can the rim be seen reliably in normal 850 nm runtime images, or is runtime
   verification usually `unknown`?
 - Does removing and reinstalling the filter introduce measurable pixel shift?
@@ -1237,7 +1431,7 @@ alignment offsets remain future work.
   preserve the current Citrus experimental-area shape/radius. Any radius
   adjustment must be an explicit future/operator-reviewed behavior.
 - OpenCV Hough circle detection is the initial automatic proposal mechanism.
-- The accepted circle is the load-bearing experimental-area boundary; eroded
+- The accepted circle is the load-bearing physical inner-rim boundary; offset
   masks are derived detection/export views.
 - The native durable artifact is Orange-specific; Palette metadata is an
   adapter/export view.

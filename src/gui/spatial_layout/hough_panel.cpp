@@ -54,24 +54,25 @@ void render_hough_registration_actions(
     }
 
     ImGui::BeginDisabled(!ui_state->has_capture);
-    if (ImGui::Button("Fit Hough circle from capture")) {
+    if (ImGui::Button("Fit water-side inner-rim circle")) {
         std::string detect_error;
         if (!detect_experimental_area_circle_from_capture(ui_state, &detect_error)) {
             ui_state->detection_error = detect_error;
-            ui_state->detection_status = "Experimental-area detection failed.";
+            ui_state->detection_status = "Water-side inner-rim detection failed.";
         }
     }
     ImGui::EndDisabled();
 
     ImGui::BeginDisabled(!ui_state->has_detected_experimental_area_circle);
-    if (ImGui::Button("Use Hough fit for registration")) {
+    if (ImGui::Button("Use inner-rim fit for registration")) {
         std::string seed_error;
         if (!seed_registration_from_detected_experimental_area_circle(ui_state, &seed_error)) {
             ui_state->detection_error = seed_error;
         } else {
             ui_state->detection_error.clear();
             if (ui_state->detection_status.empty()) {
-                ui_state->detection_status = "Seeded registration from detected experimental area.";
+                ui_state->detection_status =
+                    "Seeded registration from the detected water-side inner rim.";
             } else {
                 ui_state->detection_status += " Applied to registration.";
             }
@@ -101,7 +102,7 @@ bool detect_experimental_area_circle_from_capture(
     if (!ui_state->has_capture || ui_state->captured_texture_width <= 0 || ui_state->captured_texture_height <= 0 ||
         ui_state->captured_rgba.empty()) {
         if (error_out) {
-            *error_out = "Capture a frame before running experimental-area detection.";
+            *error_out = "Capture a frame before running water-side inner-rim detection.";
         }
         return false;
     }
@@ -201,7 +202,8 @@ bool detect_experimental_area_circle_from_capture(
 
     if (circles.empty()) {
         if (error_out) {
-            *error_out = "No experimental-area circle was detected in the captured frame.";
+            *error_out =
+                "No water-side inner-rim circle was detected in the captured frame.";
         }
         return false;
     }
@@ -227,13 +229,14 @@ bool detect_experimental_area_circle_from_capture(
             static_cast<double>(best_circle[1]) * inv_scale,
             std::max(
                 1.0,
-                static_cast<double>(best_circle[2]) * inv_scale +
-                    ui_state->hough_radius_adjustment_px));
+                    static_cast<double>(best_circle[2]) * inv_scale +
+                        ui_state->hough_radius_adjustment_px));
     ui_state->has_detected_experimental_area_circle = true;
+    ui_state->calibration_inner_rim_target_confirmed = false;
     ui_state->detection_error.clear();
 
     std::ostringstream status;
-    status << "Detected experimental-area circle at ("
+    status << "Detected water-side inner-rim circle at ("
            << std::lround(ui_state->detected_experimental_area_geometry.circle.cx) << ", "
            << std::lround(ui_state->detected_experimental_area_geometry.circle.cy) << ")"
            << " r=" << std::lround(ui_state->detected_experimental_area_geometry.circle.r);
@@ -261,7 +264,7 @@ bool seed_registration_from_detected_experimental_area_circle(
     }
     if (!ui_state->has_detected_experimental_area_circle) {
         if (error_out) {
-            *error_out = "Run experimental-area detection before seeding registration.";
+            *error_out = "Run water-side inner-rim detection before seeding registration.";
         }
         return false;
     }
@@ -299,6 +302,7 @@ bool seed_registration_from_detected_experimental_area_circle(
     ui_state->registration_scale = scale;
     ui_state->registration_tx_px = desired_center.x - rotated_center_x;
     ui_state->registration_ty_px = desired_center.y - rotated_center_y;
+    ui_state->calibration_inner_rim_target_confirmed = false;
     return true;
 }
 
@@ -317,7 +321,9 @@ void render_hough_circle_tuning(
     if (ImGui::Button("Reset Hough Defaults")) {
         reset_hough_defaults(ui_state);
     }
-    ImGui::Checkbox("Show Hough proposal overlay", &ui_state->show_hough_proposal_overlay);
+    ImGui::Checkbox(
+        "Show inner-rim Hough proposal overlay",
+        &ui_state->show_hough_proposal_overlay);
     ImGui::Checkbox(
         "Show corrected Citrus outline overlay",
         &ui_state->show_citrus_corrected_center_overlay);
@@ -356,8 +362,9 @@ void render_hough_circle_tuning(
         ui_state->detected_experimental_area_geometry.circle.r =
             std::max(1.0, ui_state->detected_experimental_area_geometry.circle.r);
         if (edited_detection) {
+            ui_state->calibration_inner_rim_target_confirmed = false;
             ui_state->detection_error.clear();
-            ui_state->detection_status = "Edited detected experimental-area circle.";
+            ui_state->detection_status = "Edited detected water-side inner-rim circle.";
         }
     }
 }

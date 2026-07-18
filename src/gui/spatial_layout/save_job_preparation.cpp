@@ -435,6 +435,13 @@ bool prepare_dish_top_rim_observation_save_job_from_spatial_layout(
         }
         return false;
     }
+    if (!ui_state->calibration_inner_rim_target_confirmed) {
+        if (error_out) {
+            *error_out =
+                "Confirm that the fit follows the water-side inner rim edge before saving a schema-v2 top-rim observation.";
+        }
+        return false;
+    }
     const std::string source_array_role =
         ui_state->captured_source_array_role.empty()
             ? "images_full"
@@ -555,11 +562,18 @@ bool prepare_dish_top_rim_observation_save_job_from_spatial_layout(
     request.detected_circle_source =
         "orange_spatial_layout_ui_cached_hough_scaled_to_full_resolution";
     request.valid_region_erosion_px = std::max(0.0, ui_state->edge_margin_px);
+    request.centroid_gate_outset_px =
+        std::max(0.0, ui_state->centroid_gate_outset_px);
+    request.accepted_boundary_role =
+        orange::calibration::kDishTopRimBoundaryRole;
+    request.accepted_boundary_interpretation =
+        orange::calibration::kDishTopRimBoundaryInterpretation;
     request.operator_boundary_target =
-        metadata_or_unknown(ui_state->calibration_operator_boundary_target);
+        orange::calibration::kDishTopRimTargetFeature;
     request.boundary_inclusion_policy =
-        metadata_or_unknown(ui_state->calibration_boundary_inclusion_policy);
-    request.operator_confirmed = true;
+        orange::calibration::kDishTopRimBoundaryInclusionPolicy;
+    request.operator_confirmed =
+        ui_state->calibration_inner_rim_target_confirmed;
     request.operator_status = "orange_spatial_layout_ui_confirmed";
     request.operator_notes = ui_state->calibration_operator_notes;
     request.runtime_verification.status = "unknown";
@@ -589,12 +603,30 @@ bool prepare_dish_top_rim_observation_save_job_from_spatial_layout(
             {"translate_y_px", ui_state->registration_ty_px},
             {"scale_px_per_layout_unit", ui_state->registration_scale},
             {"rotation_deg_clockwise", ui_state->registration_rotation_deg_clockwise},
-            {"edge_margin_px", ui_state->edge_margin_px}
+            {"edge_margin_px", ui_state->edge_margin_px},
+            {"centroid_gate_outset_px", ui_state->centroid_gate_outset_px}
         }},
         {"accepted_circle_source", "orange_spatial_layout_runtime.outer_geometry"},
         {"hough_circle_source", request.detected_circle_source}
     };
     if (ui_state->citrus_template.available) {
+        request.dish_design_id =
+            ui_state->citrus_template.source_dish_type_name;
+        if (ui_state->citrus_template.has_inner_diameter_mm) {
+            request.has_physical_inner_diameter_mm = true;
+            request.physical_inner_diameter_mm =
+                ui_state->citrus_template.inner_diameter_mm;
+            request.physical_inner_diameter_source =
+                ui_state->citrus_template.source_config_path + "#" +
+                ui_state->citrus_template.inner_diameter_source_field;
+        }
+        if (ui_state->citrus_template.has_pixels_per_mm_camera) {
+            request.has_reference_camera_pixels_per_mm = true;
+            request.reference_camera_pixels_per_mm =
+                ui_state->citrus_template.pixels_per_mm_camera;
+            request.reference_camera_scale_target_plane =
+                ui_state->citrus_template.pixels_per_mm_camera_target_plane;
+        }
         nlohmann::json rig_context = nlohmann::json::object();
         if (!ui_state->citrus_template.source_rig_name.empty()) {
             rig_context["rig_id"] = ui_state->citrus_template.source_rig_name;

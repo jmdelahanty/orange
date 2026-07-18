@@ -148,6 +148,9 @@ SpatialLayoutPersistencePanelEvent render_spatial_layout_persistence_panel(
     ImGui::EndDisabled();
     if (panel_state.top_rim_save_busy) {
         ImGui::TextDisabled("Top-rim observation save is running in the background.");
+    } else if (!ui_state->calibration_inner_rim_target_confirmed) {
+        ImGui::TextDisabled(
+            "Confirm the water-side inner-rim target in Capture Metadata to enable schema-v2 save.");
     }
 
     ImGui::SameLine();

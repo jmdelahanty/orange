@@ -774,7 +774,8 @@ is the already displayed Hough proposal scaled back to full-resolution
 camera-native coordinates. The save path must not rerun Hough on the full image
 and risk persisting a different fit from the one the operator reviewed. The
 operator-confirmed/edited circle remains the load-bearing geometry in
-`observed_boundary` and `accepted_experimental_area_boundary`; eroded
+`observed_boundary` and schema-v2 `accepted_inner_rim_boundary`; the
+`accepted_experimental_area_boundary` field is a compatibility alias. Offset
 `accepted_mask` and `valid_detection_region` remain detection/export views.
 Top-rim artifacts also write `overlays/registration_hough_overlay.png`, a
 review image showing the saved Hough proposal together with the accepted
@@ -1377,10 +1378,11 @@ Recommended:
 This image-set purpose is the generic acquisition envelope. The specialized
 top-rim observation remains the load-bearing accepted-boundary fit artifact.
 For Orange/Citrus daily rim registration, `accepted_boundary` should mirror the
-specialized artifact's `accepted_experimental_area_boundary`, not the eroded
-Palette-compatible `accepted_mask`. The default inclusion policy is
-`prefer_slight_overcoverage_to_avoid_fish_escape`; eroded valid-detection masks
-can be exported separately for tracking/analysis diagnostics.
+specialized artifact's `accepted_inner_rim_boundary`, not the offset
+Palette-compatible `accepted_mask`. The accepted physical circle follows the
+observed water-side inner rim without a silent offset. A distinct outward
+centroid-gate outset may be exported for bounding-box-centroid forgiveness;
+legacy inward valid-detection margins remain readable.
 
 Consumers should preserve this runtime invariant:
 
@@ -1388,7 +1390,7 @@ Consumers should preserve this runtime invariant:
 physically_reachable_fish_area <= Citrus experimental_area / chaser boundary
 ```
 
-Do not use an eroded `accepted_mask`, `valid_detection_region`, or analysis ROI
+Do not use an offset `accepted_mask`, `valid_detection_region`, or analysis ROI
 as the Citrus runtime experimental-area/chaser boundary unless that stricter
 policy is explicitly operator accepted. The default daily circular-dish import
 should keep the accepted top-rim boundary at least as large as the area the

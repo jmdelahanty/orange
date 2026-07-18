@@ -152,6 +152,14 @@ def make_top_rim_link(
         "arena_context": arena_context,
         "accepted_mask": observation.get("accepted_mask", {}),
         "observed_boundary": observation.get("observed_boundary", {}),
+        "accepted_inner_rim_boundary": observation.get(
+            "accepted_inner_rim_boundary",
+            observation.get("accepted_experimental_area_boundary", {}),
+        ),
+        "accepted_experimental_area_boundary": observation.get(
+            "accepted_experimental_area_boundary", {}
+        ),
+        "boundary_interpretation": observation.get("boundary_interpretation", {}),
         "valid_detection_region": observation.get("valid_detection_region", {}),
     }
     for key in ["arena_id", "canvas_id"]:

@@ -495,12 +495,107 @@ nlohmann::json dish_top_rim_observation_to_json(
     const std::string& fingerprint)
 {
     const double erosion = std::max(0.0, request.valid_region_erosion_px);
+    const double outset = std::max(0.0, request.centroid_gate_outset_px);
     DishTopRimCircle valid_circle = accepted_circle;
-    valid_circle.radius_px = std::max(0.0, accepted_circle.radius_px - erosion);
+    valid_circle.radius_px =
+        std::max(0.0, accepted_circle.radius_px - erosion + outset);
+
+    const bool has_physical_inner_diameter =
+        request.has_physical_inner_diameter_mm &&
+        std::isfinite(request.physical_inner_diameter_mm) &&
+        request.physical_inner_diameter_mm > 0.0;
+    const double physical_inner_radius_mm =
+        has_physical_inner_diameter
+            ? request.physical_inner_diameter_mm * 0.5
+            : 0.0;
+    const double top_rim_pixels_per_mm =
+        physical_inner_radius_mm > 0.0
+            ? accepted_circle.radius_px / physical_inner_radius_mm
+            : 0.0;
+    const double centroid_gate_outset_mm =
+        top_rim_pixels_per_mm > 0.0 ? outset / top_rim_pixels_per_mm : 0.0;
 
     const double center_dx = accepted_circle.center.x - detected_circle.center.x;
     const double center_dy = accepted_circle.center.y - detected_circle.center.y;
     const double radius_delta = accepted_circle.radius_px - detected_circle.radius_px;
+    const std::string accepted_boundary_role =
+        request.accepted_boundary_role.empty()
+            ? kDishTopRimBoundaryRole
+            : request.accepted_boundary_role;
+    const std::string accepted_boundary_interpretation =
+        request.accepted_boundary_interpretation.empty()
+            ? kDishTopRimBoundaryInterpretation
+            : request.accepted_boundary_interpretation;
+    const std::string boundary_inclusion_policy =
+        request.boundary_inclusion_policy.empty()
+            ? kDishTopRimBoundaryInclusionPolicy
+            : request.boundary_inclusion_policy;
+
+    nlohmann::json accepted_inner_rim_boundary = {
+        {"role", accepted_boundary_role},
+        {"interpretation", accepted_boundary_interpretation},
+        {"physical_target", kDishTopRimTargetPlane},
+        {"target_plane", kDishTopRimTargetPlane},
+        {"target_feature", kDishTopRimTargetFeature},
+        {"region", kDishTopRimRegion},
+        {"coordinate_space", "camera_native_pixels"},
+        {"geometry", circle_geometry_to_json(accepted_circle)},
+        {"operator_confirmed", request.operator_confirmed},
+        {"accepted_by_operator", request.operator_confirmed},
+        {"accepted_at_utc", request.created_utc},
+        {"source_boundary", "observed_boundary"},
+        {"operator_boundary_target", kDishTopRimTargetFeature},
+        {"boundary_inclusion_policy", boundary_inclusion_policy},
+        {"operator_adjustment_px", {
+            {"center_dx", rounded_or_zero(center_dx)},
+            {"center_dy", rounded_or_zero(center_dy)},
+            {"radius_delta", rounded_or_zero(radius_delta)}
+        }}
+    };
+    if (has_physical_inner_diameter) {
+        accepted_inner_rim_boundary["physical_geometry"] = {
+            {"type", "circle"},
+            {"coordinate_space", "dish_top_rim_mm"},
+            {"center_mm", {{"x", 0.0}, {"y", 0.0}}},
+            {"radius_mm", physical_inner_radius_mm},
+            {"diameter_mm", request.physical_inner_diameter_mm},
+            {"dish_design_id", request.dish_design_id},
+            {"dimension_source", request.physical_inner_diameter_source}
+        };
+        accepted_inner_rim_boundary["camera_scale"] = {
+            {"target_plane", kDishTopRimTargetPlane},
+            {"coordinate_space", "camera_native_pixels"},
+            {"derivation",
+             "accepted_camera_radius_px_divided_by_physical_inner_radius_mm"},
+            {"pixels_per_mm", top_rim_pixels_per_mm},
+            {"mm_per_pixel", 1.0 / top_rim_pixels_per_mm},
+            {"accepted_radius_px", accepted_circle.radius_px},
+            {"physical_radius_mm", physical_inner_radius_mm}
+        };
+        if (request.has_reference_camera_pixels_per_mm &&
+            std::isfinite(request.reference_camera_pixels_per_mm) &&
+            request.reference_camera_pixels_per_mm > 0.0) {
+            accepted_inner_rim_boundary["camera_scale"]["comparison_reference"] = {
+                {"pixels_per_mm", request.reference_camera_pixels_per_mm},
+                {"target_plane",
+                 request.reference_camera_scale_target_plane.empty()
+                     ? "unknown"
+                     : request.reference_camera_scale_target_plane},
+                {"authoritative_for_dish_top_rim", false},
+                {"purpose", "cross_plane_diagnostic_only"}
+            };
+        }
+    }
+    nlohmann::json accepted_experimental_area_boundary_alias =
+        accepted_inner_rim_boundary;
+    accepted_experimental_area_boundary_alias["role"] =
+        "citrus_experimental_area_boundary";
+    accepted_experimental_area_boundary_alias["interpretation"] =
+        "compatibility_alias_of_accepted_inner_rim_boundary";
+    accepted_experimental_area_boundary_alias["compatibility_alias"] = true;
+    accepted_experimental_area_boundary_alias["alias_of"] =
+        "accepted_inner_rim_boundary";
+    accepted_experimental_area_boundary_alias["asserts_citrus_acceptance"] = false;
 
     nlohmann::json illumination = nlohmann::json::object();
     if (!request.capture.illumination_spectrum.empty()) {
@@ -612,65 +707,49 @@ nlohmann::json dish_top_rim_observation_to_json(
             {"image_shape_px", image_shape_json(request.camera.height, request.camera.width)},
             {"detected_circle", circle_to_json(detected_circle)}
         }},
-        {"physical_target", "dish_top_rim"},
+        {"physical_target", kDishTopRimTargetPlane},
         {"observed_boundary", {
-            {"surface", "dish_top_rim"},
+            {"surface", kDishTopRimTargetPlane},
+            {"target_plane", kDishTopRimTargetPlane},
+            {"target_feature", kDishTopRimTargetFeature},
+            {"region", kDishTopRimRegion},
             {"coordinate_space", "camera_native_pixels"},
             {"geometry", circle_geometry_to_json(accepted_circle)}
         }},
-        {"accepted_experimental_area_boundary", {
-            {"role", request.accepted_boundary_runtime_role.empty()
-                         ? "citrus_experimental_area_boundary"
-                         : request.accepted_boundary_runtime_role},
-            {"interpretation", request.accepted_boundary_interpretation.empty()
-                                   ? "operator_accepted_orange_dish_rim_equals_citrus_experimental_area_boundary"
-                                   : request.accepted_boundary_interpretation},
-            {"physical_target", "dish_top_rim"},
-            {"target_plane", "dish_top_rim"},
-            {"coordinate_space", "camera_native_pixels"},
-            {"geometry", circle_geometry_to_json(accepted_circle)},
-            {"operator_confirmed", request.operator_confirmed},
-            {"accepted_by_operator", request.operator_confirmed},
-            {"accepted_at_utc", request.created_utc},
-            {"source_boundary", "observed_boundary"},
-            {"operator_boundary_target", request.operator_boundary_target.empty()
-                                             ? "unknown"
-                                             : request.operator_boundary_target},
-            {"boundary_inclusion_policy", request.boundary_inclusion_policy.empty()
-                                              ? "unknown"
-                                              : request.boundary_inclusion_policy},
-            {"operator_adjustment_px", {
-                {"center_dx", rounded_or_zero(center_dx)},
-                {"center_dy", rounded_or_zero(center_dy)},
-                {"radius_delta", rounded_or_zero(radius_delta)}
-            }}
-        }},
+        {"accepted_inner_rim_boundary", accepted_inner_rim_boundary},
+        {"accepted_experimental_area_boundary",
+         accepted_experimental_area_boundary_alias},
         {"boundary_interpretation", {
-            {"accepted_boundary_role", request.accepted_boundary_runtime_role.empty()
-                                           ? "citrus_experimental_area_boundary"
-                                           : request.accepted_boundary_runtime_role},
-            {"accepted_boundary_semantics",
-             request.accepted_boundary_interpretation.empty()
-                 ? "operator_accepted_orange_dish_rim_equals_citrus_experimental_area_boundary"
-                 : request.accepted_boundary_interpretation},
-            {"observed_boundary_surface", "dish_top_rim"},
-            {"operator_boundary_target", request.operator_boundary_target.empty()
-                                             ? "unknown"
-                                             : request.operator_boundary_target},
-            {"boundary_inclusion_policy", request.boundary_inclusion_policy.empty()
-                                              ? "unknown"
-                                              : request.boundary_inclusion_policy},
+            {"accepted_boundary_field", "accepted_inner_rim_boundary"},
+            {"accepted_boundary_role", accepted_boundary_role},
+            {"accepted_boundary_semantics", accepted_boundary_interpretation},
+            {"observed_boundary_surface", kDishTopRimTargetPlane},
+            {"target_plane", kDishTopRimTargetPlane},
+            {"target_feature", kDishTopRimTargetFeature},
+            {"region", kDishTopRimRegion},
+            {"operator_boundary_target", kDishTopRimTargetFeature},
+            {"boundary_inclusion_policy", boundary_inclusion_policy},
+            {"citrus_runtime_mapping_status", "proposal_pending_citrus_acceptance"},
             {"valid_detection_region_policy",
-             "derived_by_erosion_for_detection_gating_exports_not_primary_citrus_experimental_area_boundary"}
+             outset > 0.0
+                 ? "derived_by_outward_offset_for_bounding_box_centroid_forgiveness"
+                 : (erosion > 0.0
+                        ? "legacy_derived_by_inward_erosion_for_detection_gating"
+                        : "matches_primary_inner_rim_boundary")}
         }},
         {"valid_detection_region", {
             {"coordinate_space", "camera_native_pixels"},
-            {"derived_from", "observed_boundary"},
+            {"derived_from", "accepted_inner_rim_boundary"},
             {"erosion_px", erosion},
+            {"centroid_gate_outset_px", outset},
+            {"offset_direction",
+             outset > 0.0 ? "outward" : (erosion > 0.0 ? "inward" : "none")},
+            {"purpose", "bounding_box_centroid_detection_gating"},
             {"geometry", circle_geometry_to_json(valid_circle)}
         }},
         {"accepted_mask", {
             {"shape", "circle"},
+            {"derived_from", "accepted_inner_rim_boundary"},
             {"coordinate_space", "camera_native_pixels"},
             {"source_array_role", request.source_array_role},
             {"source_frame_index", request.source_frame_index},
@@ -683,7 +762,7 @@ nlohmann::json dish_top_rim_observation_to_json(
             {"operator_adjustment_px", {
                 {"center_dx", rounded_or_zero(center_dx)},
                 {"center_dy", rounded_or_zero(center_dy)},
-                {"radius_delta", rounded_or_zero(radius_delta - erosion)}
+                {"radius_delta", rounded_or_zero(radius_delta - erosion + outset)}
             }}
         }},
         {"quality", {
@@ -697,7 +776,10 @@ nlohmann::json dish_top_rim_observation_to_json(
         }},
         {"operator_review", {
             {"status", request.operator_status},
-            {"accepted", request.operator_confirmed}
+            {"accepted", request.operator_confirmed},
+            {"confirmed_target_plane", kDishTopRimTargetPlane},
+            {"confirmed_target_feature", kDishTopRimTargetFeature},
+            {"confirmed_region", kDishTopRimRegion}
         }},
         {"artifacts", {
             {"observation_path", relative_to_artifact_dir(paths.observation_json_path, paths)},
@@ -733,6 +815,14 @@ nlohmann::json dish_top_rim_observation_to_json(
             }}
         }}
     };
+    if (has_physical_inner_diameter) {
+        observation["valid_detection_region"]["centroid_gate_outset_mm"] =
+            centroid_gate_outset_mm;
+        observation["accepted_mask"]["physical_radius_mm"] =
+            physical_inner_radius_mm + centroid_gate_outset_mm;
+        observation["accepted_mask"]["physical_scale_ref"] =
+            "accepted_inner_rim_boundary.camera_scale";
+    }
     if (!request.arena_context.empty()) {
         observation["arena_context"] = request.arena_context;
     }
@@ -756,7 +846,9 @@ nlohmann::json dish_top_rim_observation_manifest_to_json(
         {"pixel_format", request.camera.pixel_format},
         {"width", request.camera.width},
         {"height", request.camera.height},
-        {"physical_target", "dish_top_rim"},
+        {"physical_target", kDishTopRimTargetPlane},
+        {"target_feature", kDishTopRimTargetFeature},
+        {"region", kDishTopRimRegion},
         {"coordinate_space", "camera_native_pixels"},
         {"source_array_role", request.source_array_role}
     };
@@ -765,16 +857,17 @@ nlohmann::json dish_top_rim_observation_manifest_to_json(
         {"operator_confirmed", request.operator_confirmed},
         {"runtime_verification_status", request.runtime_verification.status},
         {"camera_serial", request.camera.serial},
-        {"physical_target", "dish_top_rim"},
-        {"accepted_boundary_role", request.accepted_boundary_runtime_role.empty()
-                                       ? "citrus_experimental_area_boundary"
-                                       : request.accepted_boundary_runtime_role},
+        {"physical_target", kDishTopRimTargetPlane},
+        {"target_feature", kDishTopRimTargetFeature},
+        {"region", kDishTopRimRegion},
+        {"accepted_boundary_role", request.accepted_boundary_role.empty()
+                                       ? kDishTopRimBoundaryRole
+                                       : request.accepted_boundary_role},
         {"boundary_inclusion_policy", request.boundary_inclusion_policy.empty()
-                                          ? "unknown"
+                                          ? kDishTopRimBoundaryInclusionPolicy
                                           : request.boundary_inclusion_policy},
-        {"operator_boundary_target", request.operator_boundary_target.empty()
-                                         ? "unknown"
-                                         : request.operator_boundary_target},
+        {"operator_boundary_target", kDishTopRimTargetFeature},
+        {"citrus_runtime_mapping_status", "proposal_pending_citrus_acceptance"},
         {"dish_fill_state", request.capture.dish_fill_state},
         {"coordinate_space", "camera_native_pixels"}
     };
@@ -956,8 +1049,20 @@ CalibrationImageSetRequest build_dish_top_rim_image_set_request(
         {"dish_top_rim", {
             {"accepted_boundary",
              observation_json.value(
+                 "accepted_inner_rim_boundary",
+                 observation_json.value(
+                     "accepted_experimental_area_boundary",
+                     observation_json.value("observed_boundary", nlohmann::json::object())))},
+            {"accepted_inner_rim_boundary",
+             observation_json.value(
+                 "accepted_inner_rim_boundary",
+                 observation_json.value(
+                     "accepted_experimental_area_boundary",
+                     nlohmann::json::object()))},
+            {"accepted_experimental_area_boundary",
+             observation_json.value(
                  "accepted_experimental_area_boundary",
-                 observation_json.value("observed_boundary", nlohmann::json::object()))},
+                 nlohmann::json::object())},
             {"observed_boundary",
              observation_json.value("observed_boundary", nlohmann::json::object())},
             {"boundary_interpretation",
@@ -1056,8 +1161,14 @@ nlohmann::json dish_top_rim_spatial_dish_mask_runtime_export_to_json(
 {
     const nlohmann::json observed_boundary =
         observation_json.value("observed_boundary", nlohmann::json::object());
-    const nlohmann::json observed_geometry =
-        observed_boundary.value("geometry", nlohmann::json::object());
+    const nlohmann::json accepted_boundary =
+        observation_json.value(
+            "accepted_inner_rim_boundary",
+            observation_json.value(
+                "accepted_experimental_area_boundary",
+                observed_boundary));
+    const nlohmann::json accepted_geometry =
+        accepted_boundary.value("geometry", nlohmann::json::object());
     const nlohmann::json valid_region =
         observation_json.value("valid_detection_region", nlohmann::json::object());
     const nlohmann::json valid_geometry =
@@ -1076,7 +1187,7 @@ nlohmann::json dish_top_rim_spatial_dish_mask_runtime_export_to_json(
     const std::string coordinate_space =
         valid_region.value(
             "coordinate_space",
-            observed_boundary.value("coordinate_space", "camera_native_pixels"));
+            accepted_boundary.value("coordinate_space", "camera_native_pixels"));
 
     return {
         {"schema_version", 1},
@@ -1084,9 +1195,11 @@ nlohmann::json dish_top_rim_spatial_dish_mask_runtime_export_to_json(
         {"source", "detected_fit"},
         {"geometry", {
             {"coordinate_space", coordinate_space},
-            {"outer_geometry", runtime_circle(observed_geometry)},
+            {"outer_geometry", runtime_circle(accepted_geometry)},
             {"valid_geometry", runtime_circle(valid_geometry)},
-            {"edge_margin_px", valid_region.value("erosion_px", 0.0)}
+            {"edge_margin_px", valid_region.value("erosion_px", 0.0)},
+            {"centroid_gate_outset_px",
+             valid_region.value("centroid_gate_outset_px", 0.0)}
         }},
         {"source_observation", {
             {"artifact_id", observation_json.value("artifact_id", "")},
@@ -1094,6 +1207,12 @@ nlohmann::json dish_top_rim_spatial_dish_mask_runtime_export_to_json(
             {"artifact_schema_version", observation_json.value("schema_version", 0)},
             {"fingerprint",
              observation_json.value("calibration_ref", nlohmann::json::object()).value("fingerprint", "")},
+            {"accepted_inner_rim_boundary",
+             observation_json.value(
+                 "accepted_inner_rim_boundary",
+                 observation_json.value(
+                     "accepted_experimental_area_boundary",
+                     nlohmann::json::object()))},
             {"accepted_experimental_area_boundary",
              observation_json.value("accepted_experimental_area_boundary", nlohmann::json::object())},
             {"boundary_interpretation",
@@ -1165,6 +1284,23 @@ bool write_dish_top_rim_observation_artifact(
             error_out,
             "source_array_role must be images_full for top-rim observations; Citrus homography images are full resolution");
     }
+    if (!request.operator_confirmed) {
+        return set_error(
+            error_out,
+            "schema-v2 top-rim observations require explicit operator confirmation of the water-side inner-rim target");
+    }
+    if (request.operator_boundary_target != kDishTopRimTargetFeature) {
+        return set_error(
+            error_out,
+            std::string("operator_boundary_target must be ") +
+                kDishTopRimTargetFeature + " for schema-v2 observations");
+    }
+    if (request.boundary_inclusion_policy != kDishTopRimBoundaryInclusionPolicy) {
+        return set_error(
+            error_out,
+            std::string("boundary_inclusion_policy must be ") +
+                kDishTopRimBoundaryInclusionPolicy + " for schema-v2 observations");
+    }
     if (source_image.empty()) {
         return set_error(error_out, "source image is empty");
     }
@@ -1174,8 +1310,40 @@ bool write_dish_top_rim_observation_artifact(
     if (!validate_circle(accepted_circle, source_image.cols, source_image.rows, "accepted_circle", error_out)) {
         return false;
     }
-    if (accepted_circle.radius_px - request.valid_region_erosion_px <= 0.0) {
-        return set_error(error_out, "valid region erosion leaves non-positive radius");
+    if (!std::isfinite(request.valid_region_erosion_px) ||
+        request.valid_region_erosion_px < 0.0 ||
+        !std::isfinite(request.centroid_gate_outset_px) ||
+        request.centroid_gate_outset_px < 0.0) {
+        return set_error(
+            error_out,
+            "valid-region erosion and centroid-gate outset must be finite and >= 0");
+    }
+    if (request.valid_region_erosion_px > 0.0 &&
+        request.centroid_gate_outset_px > 0.0) {
+        return set_error(
+            error_out,
+            "valid-region erosion and centroid-gate outset are mutually exclusive");
+    }
+    if (accepted_circle.radius_px - request.valid_region_erosion_px +
+            request.centroid_gate_outset_px <=
+        0.0) {
+        return set_error(error_out, "valid detection region has non-positive radius");
+    }
+    if (request.has_physical_inner_diameter_mm &&
+        (!std::isfinite(request.physical_inner_diameter_mm) ||
+         request.physical_inner_diameter_mm <= 0.0)) {
+        return set_error(error_out, "physical inner diameter must be finite and > 0 mm");
+    }
+    if (request.has_physical_inner_diameter_mm &&
+        request.physical_inner_diameter_source.empty()) {
+        return set_error(
+            error_out,
+            "physical inner diameter requires a non-empty dimension source");
+    }
+    if (request.has_reference_camera_pixels_per_mm &&
+        (!std::isfinite(request.reference_camera_pixels_per_mm) ||
+         request.reference_camera_pixels_per_mm <= 0.0)) {
+        return set_error(error_out, "reference camera scale must be finite and > 0 px/mm");
     }
 
     const DishTopRimObservationArtifactPaths paths =
@@ -1216,7 +1384,9 @@ bool write_dish_top_rim_observation_artifact(
     }
 
     DishTopRimCircle valid_circle = accepted_circle;
-    valid_circle.radius_px = accepted_circle.radius_px - request.valid_region_erosion_px;
+    valid_circle.radius_px =
+        accepted_circle.radius_px - request.valid_region_erosion_px +
+        request.centroid_gate_outset_px;
     const cv::Mat overlay = make_overlay(source_image, detected_circle, accepted_circle, valid_circle);
     if (!write_image_file(paths.review_overlay_path, overlay, error_out) ||
         !write_image_file(paths.registration_hough_overlay_path, overlay, error_out) ||
@@ -1356,6 +1526,12 @@ nlohmann::json build_dish_top_rim_recording_snapshot_entry(
             "coordinate_space",
             "camera_native_pixels");
     entry["accepted_mask"] = observation_json.value("accepted_mask", nlohmann::json::object());
+    entry["accepted_inner_rim_boundary"] =
+        observation_json.value(
+            "accepted_inner_rim_boundary",
+            observation_json.value(
+                "accepted_experimental_area_boundary",
+                nlohmann::json::object()));
     entry["accepted_experimental_area_boundary"] =
         observation_json.value(
             "accepted_experimental_area_boundary",
