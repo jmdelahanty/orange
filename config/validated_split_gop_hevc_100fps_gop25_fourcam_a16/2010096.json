@@ -34,7 +34,18 @@
     "mode": "TwoStep"
   },
   "gpio": {
-    "nodes": []
+    "nodes": [
+      {
+        "name": "GPO_0_Polarity",
+        "type": "bool",
+        "value": false
+      },
+      {
+        "name": "GPO_0_Mode",
+        "type": "enum",
+        "value": "Exposure"
+      }
+    ]
   },
   "recording": {
     "profile_name": "validated_split_gop_hevc_100fps_gop25_fourcam_a16",

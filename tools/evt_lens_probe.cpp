@@ -33,6 +33,7 @@ struct Options {
     unsigned int focus_target = 0;
     bool set_iris_target = false;
     unsigned int iris_target = 0;
+    bool restore_nir_strobe_pulse = false;
 
     bool enable_uart = false;
     std::string uart_baud = "B_9600";
@@ -68,6 +69,7 @@ struct ProbeSummary {
     Status genicam_exercise = Status::kNotRun;
     Status focus_target = Status::kNotRun;
     Status iris_target = Status::kNotRun;
+    Status nir_strobe_pulse_restore = Status::kNotRun;
     Status uart_enable_sequence = Status::kNotRun;
     Status uart_loopback = Status::kNotRun;
 };
@@ -189,6 +191,7 @@ void print_usage(const char* argv0) {
         << "  --exercise-genicam            Write Focus/Iris current values back and read back latency.\n"
         << "  --focus-target <value>        Set Focus to a specific value.\n"
         << "  --iris-target <value>         Set Iris to a specific value.\n"
+        << "  --restore-nir-strobe-pulse   Set GPO_0 to active-low Exposure pulse mode and verify readback.\n"
         << "  --enable-uart                 Apply UART setup sequence (GPO_3 mode + Uart* nodes).\n"
         << "  --uart-baud <enum>            UART baud enum (default B_9600).\n"
         << "  --uart-data-bits <n>          UART data bits (default 8).\n"
@@ -253,6 +256,8 @@ bool parse_args(int argc, char** argv, Options* options) {
                 return false;
             }
             options->set_iris_target = true;
+        } else if (arg == "--restore-nir-strobe-pulse") {
+            options->restore_nir_strobe_pulse = true;
         } else if (arg == "--enable-uart") {
             options->enable_uart = true;
         } else if (arg == "--uart-baud") {
@@ -601,6 +606,43 @@ bool try_set_uint(CEmergentCamera* camera, const char* name, unsigned int value)
     return true;
 }
 
+bool restore_nir_strobe_pulse_with_readback(CEmergentCamera* camera) {
+    constexpr const char* kModeNode = "GPO_0_Mode";
+    constexpr const char* kPolarityNode = "GPO_0_Polarity";
+    constexpr const char* kExpectedMode = "Exposure";
+    constexpr bool kExpectedPolarity = false;
+
+    std::cout << "\n[NIR Strobe Pulse Recovery]\n";
+    bool ok = try_set_bool(camera, kPolarityNode, kExpectedPolarity);
+    ok = try_set_enum(camera, kModeNode, kExpectedMode) && ok;
+
+    std::string mode_readback;
+    const bool mode_read_ok = get_enum_value(camera, kModeNode, &mode_readback);
+    bool polarity_readback = true;
+    const EVT_ERROR polarity_read_err =
+        EVT_CameraGetBoolParam(camera, kPolarityNode, &polarity_readback);
+
+    if (!mode_read_ok) {
+        std::cout << "  - " << kModeNode << " readback failed\n";
+        ok = false;
+    } else {
+        std::cout << "  - " << kModeNode << " readback=" << mode_readback << "\n";
+        ok = (mode_readback == kExpectedMode) && ok;
+    }
+    if (polarity_read_err != EVT_SUCCESS) {
+        std::cout << "  - " << kPolarityNode << " readback failed ("
+                  << evt_error_to_string(polarity_read_err) << ")\n";
+        ok = false;
+    } else {
+        std::cout << "  - " << kPolarityNode << " readback="
+                  << (polarity_readback ? "true" : "false") << "\n";
+        ok = (polarity_readback == kExpectedPolarity) && ok;
+    }
+
+    std::cout << "  - recovery result: " << (ok ? "PASS" : "FAIL") << "\n";
+    return ok;
+}
+
 UartRestoreState capture_uart_restore_state(CEmergentCamera* camera) {
     UartRestoreState state;
     bool enabled = false;
@@ -900,6 +942,11 @@ int run_probe(const Options& options) {
         summary.iris_target = ok ? Status::kPass : Status::kFail;
     }
 
+    if (options.restore_nir_strobe_pulse) {
+        const bool ok = restore_nir_strobe_pulse_with_readback(&cam_guard.camera);
+        summary.nir_strobe_pulse_restore = ok ? Status::kPass : Status::kFail;
+    }
+
     UartRestoreState restore_state;
     if (options.enable_uart) {
         restore_state = capture_uart_restore_state(&cam_guard.camera);
@@ -928,6 +975,8 @@ int run_probe(const Options& options) {
     std::cout << "  GenICam exercise: " << status_to_string(summary.genicam_exercise) << "\n";
     std::cout << "  Focus target write: " << status_to_string(summary.focus_target) << "\n";
     std::cout << "  Iris target write: " << status_to_string(summary.iris_target) << "\n";
+    std::cout << "  NIR strobe pulse restore: "
+              << status_to_string(summary.nir_strobe_pulse_restore) << "\n";
     std::cout << "  UART enable sequence: " << status_to_string(summary.uart_enable_sequence) << "\n";
     std::cout << "  UART loopback: " << status_to_string(summary.uart_loopback) << "\n";
 
@@ -944,6 +993,10 @@ int main(int argc, char** argv) {
     if (options.show_help) {
         print_usage(argv[0]);
         return 0;
+    }
+    if (options.restore_nir_strobe_pulse && options.serial.empty()) {
+        std::cerr << "--restore-nir-strobe-pulse requires an explicit --serial.\n";
+        return 1;
     }
     return run_probe(options);
 }

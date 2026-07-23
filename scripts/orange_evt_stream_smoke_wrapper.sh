@@ -30,6 +30,7 @@ Options:
   --timeout-ms <ms>        Frame wait timeout when grabbing frames.
   --frame-rate <fps>       Diagnostic override for configured FrameRate.
   --gpu-direct <0|1>       Diagnostic override for configured GPUDirect.
+  --frame-stats            Print Mono8 brightness statistics for explicitly acquired frames.
   --dry-run                Validate wrapper arguments and print the command.
   --help                   Show this message.
 
@@ -122,13 +123,9 @@ if [[ "${EUID}" -ne 0 ]]; then
   if arg_present "--dry-run" "$@"; then
     set -- "${ROOT_ARGS[@]}"
   else
-    if ! sudo -n -v; then
-      echo "[evt-stream-smoke-wrapper] sudo -n failed." >&2
-      echo "[evt-stream-smoke-wrapper] Install the NOPASSWD wrapper with:" >&2
-      echo "  cd $EXPERIMENT_ORANGE_ROOT" >&2
-      echo "  sudo scripts/install_orange_evt_stream_smoke_wrapper.sh --install-sudoers" >&2
-      exit 1
-    fi
+    # Do not use `sudo -v` here. A deliberately narrow NOPASSWD rule authorizes
+    # this exact wrapper command but does not authorize a generic credential
+    # refresh, so `sudo -n -v` incorrectly fails even when execution is allowed.
     exec sudo -n "$SELF" "${ROOT_ARGS[@]}"
   fi
 fi
@@ -172,7 +169,7 @@ while [[ $# -gt 0 ]]; do
       CMD+=("--serials" "$1")
       shift
       ;;
-    --all|--list-only)
+    --all|--list-only|--frame-stats)
       CMD+=("$1")
       shift
       ;;

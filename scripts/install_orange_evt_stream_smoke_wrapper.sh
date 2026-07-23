@@ -82,6 +82,7 @@ for required in \
   "--measure-seconds" \
   "--frame-rate" \
   "--gpu-direct" \
+  "--frame-stats" \
   "evt_stream_smoke" \
   "/home/jeremy/orange-gop-split-a16/targets/release/evt_stream_smoke"; do
   if [[ "$HELP_TEXT" != *"$required"* ]]; then

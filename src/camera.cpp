@@ -130,6 +130,16 @@ bool get_camera_uint32_param_value(Emergent::CEmergentCamera* camera,
     return EVT_CameraGetUInt32Param(camera, name, out_value) == EVT_SUCCESS;
 }
 
+bool get_camera_bool_param_value(Emergent::CEmergentCamera* camera,
+                                 const char* name,
+                                 bool* out_value)
+{
+    if (camera == nullptr || name == nullptr || out_value == nullptr) {
+        return false;
+    }
+    return EVT_CameraGetBoolParam(camera, name, out_value) == EVT_SUCCESS;
+}
+
 bool parse_gpo_line_index(const std::string& camera_line, int* index_out)
 {
     if (index_out) {
@@ -379,8 +389,17 @@ void apply_gpio_node_config(
         check_camera_errors(
             EVT_CameraSetEnumParam(camera, node.name.c_str(), node.value_string.c_str()),
             camera_params->camera_serial.c_str());
+        std::string readback;
+        if (!get_camera_enum_param_string(camera, node.name.c_str(), &readback) ||
+            readback != node.value_string) {
+            throw_camera_config_error(
+                camera_params->camera_serial,
+                std::string("[") + context + "] GPIO enum readback mismatch for " +
+                    node.name + ": requested=" + node.value_string +
+                    " readback=" + (readback.empty() ? "<unavailable>" : readback));
+        }
         std::cout << camera_params->camera_serial
-                  << " [" << context << "] GPIO enum " << node.name
+                  << " [" << context << "] Verified GPIO enum " << node.name
                   << "=" << node.value_string
                   << std::endl;
         return;
@@ -389,8 +408,17 @@ void apply_gpio_node_config(
         check_camera_errors(
             EVT_CameraSetBoolParam(camera, node.name.c_str(), node.value_bool),
             camera_params->camera_serial.c_str());
+        bool readback = false;
+        if (!get_camera_bool_param_value(camera, node.name.c_str(), &readback) ||
+            readback != node.value_bool) {
+            throw_camera_config_error(
+                camera_params->camera_serial,
+                std::string("[") + context + "] GPIO bool readback mismatch for " +
+                    node.name + ": requested=" + (node.value_bool ? "true" : "false") +
+                    " readback=" + (readback ? "true" : "false"));
+        }
         std::cout << camera_params->camera_serial
-                  << " [" << context << "] GPIO bool " << node.name
+                  << " [" << context << "] Verified GPIO bool " << node.name
                   << "=" << (node.value_bool ? "true" : "false")
                   << std::endl;
         return;
@@ -399,8 +427,17 @@ void apply_gpio_node_config(
         check_camera_errors(
             EVT_CameraSetUInt32Param(camera, node.name.c_str(), node.value_uint),
             camera_params->camera_serial.c_str());
+        unsigned int readback = 0;
+        if (!get_camera_uint32_param_value(camera, node.name.c_str(), &readback) ||
+            readback != node.value_uint) {
+            throw_camera_config_error(
+                camera_params->camera_serial,
+                std::string("[") + context + "] GPIO uint readback mismatch for " +
+                    node.name + ": requested=" + std::to_string(node.value_uint) +
+                    " readback=" + std::to_string(readback));
+        }
         std::cout << camera_params->camera_serial
-                  << " [" << context << "] GPIO uint " << node.name
+                  << " [" << context << "] Verified GPIO uint " << node.name
                   << "=" << node.value_uint
                   << std::endl;
         return;
@@ -1295,6 +1332,15 @@ bool restore_rig_io_output_normal_mode(Emergent::CEmergentCamera* camera,
                    "=" + output_mode + " write failed: " + get_evt_error_string(err));
         return false;
     }
+    std::string mode_readback;
+    if (!get_camera_enum_param_string(camera, mode_node.c_str(), &mode_readback) ||
+        mode_readback != output_mode) {
+        set_status("Rig I/O normal-mode restore failed: " + mode_node +
+                   " readback mismatch; requested=" + output_mode +
+                   ", readback=" +
+                   (mode_readback.empty() ? "<unavailable>" : mode_readback) + ".");
+        return false;
+    }
 
     bool wrote_polarity = false;
     if (has_param(camera, polarity_node.c_str())) {
@@ -1304,11 +1350,21 @@ bool restore_rig_io_output_normal_mode(Emergent::CEmergentCamera* camera,
                        " write failed: " + get_evt_error_string(err));
             return false;
         }
+        bool polarity_readback = false;
+        if (!get_camera_bool_param_value(
+                camera, polarity_node.c_str(), &polarity_readback) ||
+            polarity_readback != normal_polarity) {
+            set_status("Rig I/O normal-mode restore failed: " + polarity_node +
+                       " readback mismatch; requested=" +
+                       (normal_polarity ? "true" : "false") +
+                       ", readback=" + (polarity_readback ? "true" : "false") + ".");
+            return false;
+        }
         wrote_polarity = true;
     }
 
     std::ostringstream oss;
-    oss << "Restored mapped normal output mode for " << connection.camera_line
+    oss << "Restored and verified mapped normal output mode for " << connection.camera_line
         << ": " << mode_node << "=" << output_mode;
     if (wrote_polarity) {
         oss << ", " << polarity_node << "="

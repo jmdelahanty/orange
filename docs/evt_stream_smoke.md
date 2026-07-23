@@ -67,6 +67,22 @@ orange-evt-stream-smoke \
   --frames 1
 ```
 
+For a Mono8 illumination check, request host buffers and brightness statistics:
+
+```bash
+orange-evt-stream-smoke \
+  --config-dir /home/jeremy/orange_data/config/local/Fred \
+  --serial 2012632 \
+  --frames 3 \
+  --gpu-direct 0 \
+  --frame-stats
+```
+
+The per-frame summary reports mean/min/max intensity, the fraction below 8,
+and the fraction at or above 250. This distinguishes successful camera/GPO
+configuration from a filtered scene that remains dark because the physical
+strobe, cable, or power path is not illuminating the view.
+
 Measure raw EVT acquisition FPS outside the GUI/recorder/display path:
 
 ```bash

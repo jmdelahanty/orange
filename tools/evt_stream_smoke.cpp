@@ -30,6 +30,7 @@ struct Options {
     double measure_seconds = 0.0;
     int override_frame_rate = -1;
     int override_gpu_direct = -1;
+    bool frame_stats = false;
     bool show_help = false;
 };
 
@@ -116,6 +117,7 @@ void print_usage(const char* argv0)
         << "  --timeout-ms <ms>        Frame wait timeout when grabbing frames (default 1000).\n"
         << "  --frame-rate <fps>       Diagnostic override for configured FrameRate.\n"
         << "  --gpu-direct <0|1>       Diagnostic override for configured GPUDirect.\n"
+        << "  --frame-stats            Print Mono8 brightness statistics for explicitly acquired frames.\n"
         << "  --help                   Show this message.\n";
 }
 
@@ -217,6 +219,8 @@ bool parse_args(int argc, char** argv, Options* options)
                 std::cerr << "Invalid --gpu-direct value: " << value << "\n";
                 return false;
             }
+        } else if (arg == "--frame-stats") {
+            options->frame_stats = true;
         } else {
             std::cerr << "Unknown option: " << arg << "\n";
             print_usage(argv[0]);
@@ -303,6 +307,10 @@ ProbeResult probe_camera(
                 params.gpu_id_runtime_overridden = false;
             }
         }
+        if (options.frame_stats && (params.gpu_direct || params.pixel_format != "Mono8")) {
+            throw std::runtime_error(
+                "--frame-stats requires --gpu-direct 0 and pixel_format=Mono8");
+        }
         const unsigned int requested_frame_rate = params.frame_rate;
 
         std::cout << "\n[CAMERA] serial=" << params.camera_serial
@@ -382,6 +390,45 @@ ProbeResult probe_camera(
                               << " timestamp=" << frame.timestamp
                               << " bytes=" << frame.bufferSize
                               << "\n";
+                }
+                if (options.frame_stats && frame.imagePtr != nullptr && frame.bufferSize > 0) {
+                    const auto* pixels = static_cast<const unsigned char*>(frame.imagePtr);
+                    const std::size_t pixel_count = std::min<std::size_t>(
+                        static_cast<std::size_t>(frame.bufferSize),
+                        static_cast<std::size_t>(frame.size_x) *
+                            static_cast<std::size_t>(frame.size_y));
+                    std::uint64_t sum = 0;
+                    std::uint64_t black_count = 0;
+                    std::uint64_t saturated_count = 0;
+                    unsigned int min_value = 255;
+                    unsigned int max_value = 0;
+                    for (std::size_t i = 0; i < pixel_count; ++i) {
+                        const unsigned int value = pixels[i];
+                        sum += value;
+                        min_value = std::min(min_value, value);
+                        max_value = std::max(max_value, value);
+                        black_count += value < 8 ? 1U : 0U;
+                        saturated_count += value >= 250 ? 1U : 0U;
+                    }
+                    const double mean = pixel_count > 0
+                        ? static_cast<double>(sum) / static_cast<double>(pixel_count)
+                        : 0.0;
+                    const double black_fraction = pixel_count > 0
+                        ? static_cast<double>(black_count) / static_cast<double>(pixel_count)
+                        : 1.0;
+                    const double saturated_fraction = pixel_count > 0
+                        ? static_cast<double>(saturated_count) / static_cast<double>(pixel_count)
+                        : 0.0;
+                    std::cout << std::fixed << std::setprecision(6)
+                              << "[FRAME_STATS] " << params.camera_serial
+                              << " frame=" << frame_number
+                              << " samples=" << pixel_count
+                              << " mean=" << mean
+                              << " min=" << min_value
+                              << " max=" << max_value
+                              << " black_fraction_lt8=" << black_fraction
+                              << " saturated_fraction_ge250=" << saturated_fraction
+                              << std::defaultfloat << "\n";
                 }
                 check_camera_errors(
                     Emergent::EVT_CameraQueueFrame(&ecam.camera, &frame),

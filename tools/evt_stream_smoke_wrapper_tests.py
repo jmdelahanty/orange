@@ -42,6 +42,14 @@ def test_shell_scripts_parse() -> None:
         result = run(["bash", "-n", str(script)])
         require(result.returncode == 0, f"{script.name} failed bash -n: {result.stderr}")
 
+    wrapper_source = SMOKE_WRAPPER.read_text(encoding="utf-8")
+    require(
+        "sudo -n -v" not in "\n".join(
+            line for line in wrapper_source.splitlines() if not line.lstrip().startswith("#")
+        ),
+        "wrapper must execute its specifically authorized command without a generic sudo credential check",
+    )
+
 
 def test_wrapper_dry_run_builds_expected_command() -> None:
     with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
@@ -58,6 +66,7 @@ def test_wrapper_dry_run_builds_expected_command() -> None:
                 "250",
                 "--gpu-direct",
                 "1",
+                "--frame-stats",
                 "--measure-seconds",
                 "1",
                 "--buffer-count",
@@ -71,6 +80,7 @@ def test_wrapper_dry_run_builds_expected_command() -> None:
     require("2012632" in result.stdout, "dry-run should include serial")
     require("--frame-rate 250" in result.stdout, "dry-run should include frame-rate override")
     require("--gpu-direct 1" in result.stdout, "dry-run should include GPUDirect override")
+    require("--frame-stats" in result.stdout, "dry-run should include frame statistics")
 
 
 def test_wrapper_dry_run_inherits_env_defaults() -> None:

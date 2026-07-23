@@ -271,14 +271,19 @@ Current behavior:
 - For `purpose = "nir_strobe_trigger"`, the UI also exposes named controls:
   - `Suppress mapped NIR strobe`: captures the current state if needed, then
     forces manual inactive output.
-  - `Restore mapped pulse mode`: restores the captured state when available,
-    otherwise uses `normal_output_mode` and `normal_polarity`.
+  - `Restore mapped pulse mode`: always writes and verifies the mapping's
+    config-defined `normal_output_mode` and `normal_polarity`. It does not
+    replay a captured manual GPO state, because that state may itself have been
+    inherited from an interrupted calibration run.
 - These live output controls are disabled while recording or finalization is
   active. The broader camera property panel also locks live camera mutations in
   that state, with focus intended as the only live-adjustable exception.
 - On the current `Cam2010096` wiring, oscilloscope testing showed the normal
   exposure-pulse state is `GPO_0_Mode = Exposure` and
   `GPO_0_Polarity = false`.
+- Put those normal-runtime values in `gpio.nodes` as well. Orange applies and
+  verifies those nodes whenever the camera is opened, so startup is a recovery
+  boundary even after an interrupted diagnostic or calibration process.
 - That diagnostic is not a full runtime strobe controller. It may replace a
   camera-generated pulse mode with manual GPO mode, so first use should be with
   streaming stopped. Restore the captured GPO state, or re-open/reapply the

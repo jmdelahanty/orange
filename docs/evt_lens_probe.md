@@ -70,6 +70,8 @@ At runtime the utility:
 - Prints node type, current value, and range/inc where available.
 - Optionally exercises `Focus`/`Iris` with write-readback and timing.
 - Optionally applies UART configuration and runs loopback (`UartTxData` -> `UartRxData`).
+- Optionally restores `GPO_0` to the Cam2010096 active-low exposure-pulse
+  strobe mode and requires matching camera readback.
 - Prints a summary (`PASS`/`FAIL`/`NOT_RUN`) for each probe class.
 
 ## Build
@@ -127,6 +129,18 @@ LD_LIBRARY_PATH=/opt/EVT/eSDK/lib:${LD_LIBRARY_PATH} \
 LD_LIBRARY_PATH=/opt/EVT/eSDK/lib:${LD_LIBRARY_PATH} \
   ./build/evt_lens_probe --serial 2010096 --focus-target 5000
 ```
+
+7. Recover the mapped NIR strobe after an interrupted calibration workflow.
+   This mutates camera state and therefore requires an explicit serial:
+
+```bash
+LD_LIBRARY_PATH=/opt/EVT/eSDK/lib:${LD_LIBRARY_PATH} \
+  ./build/evt_lens_probe --serial 2010096 --restore-nir-strobe-pulse
+```
+
+Success requires readback of `GPO_0_Mode = Exposure` and
+`GPO_0_Polarity = false`; a successful write without matching readback is a
+failure.
 
 ## Run Across Multiple Cameras
 
