@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.calibration.commissioned_rig_setup.v2",
+  "title": "Commissioned Rig Setup Candidate",
+  "allOf": [
+    {"$ref": "orange_calibration_package_common.schema.json#/$defs/basePackage"},
+    {
+      "type": "object",
+      "properties": {
+        "schema_id": {"const": "orange.calibration.commissioned_rig_setup"},
+        "schema_version": {"const": 2},
+        "package_kind": {"const": "commissioned_rig_setup"},
+        "identity": {
+          "type": "object",
+          "required": [
+            "authority",
+            "rig_id",
+            "rig_geometry_revision",
+            "canvas_id",
+            "source_release_id",
+            "source_release_sha256",
+            "requirements_profile_id",
+            "target_plane",
+            "canvas_raster",
+            "coordinate_conventions",
+            "projection_geometry_identity",
+            "camera_arena_map"
+          ],
+          "properties": {
+            "authority": {"const": "citrus"},
+            "rig_id": {"type": "string", "minLength": 1},
+            "rig_geometry_revision": {"type": "integer", "minimum": 1},
+            "canvas_id": {"type": "string", "minLength": 1},
+            "source_release_id": {"type": "string", "minLength": 1},
+            "source_release_sha256": {
+              "$ref": "orange_calibration_package_common.schema.json#/$defs/sha256"
+            },
+            "requirements_profile_id": {"type": "string", "minLength": 1},
+            "target_plane": {"const": "projected_surface"},
+            "canvas_raster": {
+              "type": "object",
+              "required": ["width_px", "height_px"],
+              "properties": {
+                "width_px": {"type": "integer", "minimum": 1},
+                "height_px": {"type": "integer", "minimum": 1}
+              },
+              "additionalProperties": false
+            },
+            "coordinate_conventions": {"type": "object"},
+            "projection_geometry_identity": {
+              "type": "object",
+              "required": ["schema_id", "schema_version", "fingerprint"],
+              "properties": {
+                "schema_id": {
+                  "const": "citrus.calibration.canvas_projection_geometry_identity"
+                },
+                "schema_version": {"const": 1},
+                "fingerprint": {
+                  "$ref": "orange_calibration_package_common.schema.json#/$defs/sha256"
+                }
+              },
+              "additionalProperties": false
+            },
+            "camera_arena_map": {
+              "$ref": "orange_calibration_package_common.schema.json#/$defs/cameraArenaMap"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

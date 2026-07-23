@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.recording.calibration_capsule.v2",
+  "title": "Recording Calibration Capsule Candidate",
+  "allOf": [
+    {"$ref": "orange_calibration_package_common.schema.json#/$defs/basePackage"},
+    {
+      "type": "object",
+      "properties": {
+        "schema_id": {"const": "orange.recording.calibration_capsule"},
+        "schema_version": {"const": 2},
+        "package_kind": {"const": "recording_calibration_capsule"},
+        "identity": {
+          "type": "object",
+          "required": [
+            "authority",
+            "rig_id",
+            "canvas_id",
+            "composition_mode",
+            "composition",
+            "target_plane",
+            "camera_arena_map"
+          ],
+          "properties": {
+            "authority": {"const": "orange"},
+            "rig_id": {"type": "string", "minLength": 1},
+            "canvas_id": {"type": "string", "minLength": 1},
+            "composition_mode": {
+              "enum": ["base_only", "selected_daily_registration"]
+            },
+            "composition": {
+              "type": "object",
+              "required": ["commissioned_setup", "canvas_binding"],
+              "properties": {
+                "commissioned_setup": {"$ref": "#/$defs/packageReference"},
+                "canvas_binding": {"$ref": "#/$defs/packageReference"},
+                "daily_registration": {"$ref": "#/$defs/packageReference"}
+              },
+              "additionalProperties": false
+            },
+            "target_plane": {"const": "projected_surface"},
+            "camera_arena_map": {
+              "$ref": "orange_calibration_package_common.schema.json#/$defs/cameraArenaMap"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "packageReference": {
+      "type": "object",
+      "required": [
+        "package_id",
+        "identity_sha256",
+        "package_manifest_sha256",
+        "inventory_sha256"
+      ],
+      "properties": {
+        "package_id": {"type": "string", "minLength": 1},
+        "identity_sha256": {
+          "$ref": "orange_calibration_package_common.schema.json#/$defs/sha256"
+        },
+        "package_manifest_sha256": {
+          "$ref": "orange_calibration_package_common.schema.json#/$defs/sha256"
+        },
+        "inventory_sha256": {
+          "$ref": "orange_calibration_package_common.schema.json#/$defs/sha256"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

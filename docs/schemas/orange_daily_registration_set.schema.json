@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.calibration.daily_registration_set.v2",
+  "title": "Daily Registration Set Candidate",
+  "allOf": [
+    {"$ref": "orange_calibration_package_common.schema.json#/$defs/basePackage"},
+    {
+      "type": "object",
+      "properties": {
+        "schema_id": {"const": "orange.calibration.daily_registration_set"},
+        "schema_version": {"const": 2},
+        "package_kind": {"const": "daily_registration_set"},
+        "identity": {
+          "type": "object",
+          "required": [
+            "authority",
+            "rig_id",
+            "canvas_id",
+            "commissioned_setup_id",
+            "commissioned_setup_identity_sha256",
+            "commissioned_setup_manifest_sha256",
+            "commissioned_setup_inventory_sha256",
+            "canvas_binding_id",
+            "canvas_binding_identity_sha256",
+            "canvas_binding_manifest_sha256",
+            "canvas_binding_inventory_sha256",
+            "source_registration_id",
+            "source_registration_sha256",
+            "valid_until_utc",
+            "transform_policy",
+            "canonical_experimental_dimensions_preserved",
+            "target_plane",
+            "camera_arena_map"
+          ],
+          "properties": {
+            "authority": {"type": "string", "minLength": 1},
+            "rig_id": {"type": "string", "minLength": 1},
+            "canvas_id": {"type": "string", "minLength": 1},
+            "commissioned_setup_id": {"type": "string", "minLength": 1},
+            "commissioned_setup_identity_sha256": {
+              "$ref": "orange_calibration_package_common.schema.json#/$defs/sha256"
+            },
+            "commissioned_setup_manifest_sha256": {
+              "$ref": "orange_calibration_package_common.schema.json#/$defs/sha256"
+            },
+            "commissioned_setup_inventory_sha256": {
+              "$ref": "orange_calibration_package_common.schema.json#/$defs/sha256"
+            },
+            "canvas_binding_id": {"type": "string", "minLength": 1},
+            "canvas_binding_identity_sha256": {
+              "$ref": "orange_calibration_package_common.schema.json#/$defs/sha256"
+            },
+            "canvas_binding_manifest_sha256": {
+              "$ref": "orange_calibration_package_common.schema.json#/$defs/sha256"
+            },
+            "canvas_binding_inventory_sha256": {
+              "$ref": "orange_calibration_package_common.schema.json#/$defs/sha256"
+            },
+            "source_registration_id": {"type": "string", "minLength": 1},
+            "source_registration_sha256": {
+              "$ref": "orange_calibration_package_common.schema.json#/$defs/sha256"
+            },
+            "valid_until_utc": {"type": "string", "format": "date-time"},
+            "transform_policy": {
+              "const": "translation_only_move_arena_and_experimental_area_together"
+            },
+            "canonical_experimental_dimensions_preserved": {"const": true},
+            "target_plane": {"const": "projected_surface"},
+            "camera_arena_map": {
+              "$ref": "orange_calibration_package_common.schema.json#/$defs/cameraArenaMap"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

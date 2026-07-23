@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.calibration.experiment_canvas_binding.v2",
+  "title": "Experiment Canvas Binding Candidate",
+  "allOf": [
+    {"$ref": "orange_calibration_package_common.schema.json#/$defs/basePackage"},
+    {
+      "type": "object",
+      "properties": {
+        "schema_id": {"const": "orange.calibration.experiment_canvas_binding"},
+        "schema_version": {"const": 2},
+        "package_kind": {"const": "experiment_canvas_binding"},
+        "identity": {
+          "type": "object",
+          "required": [
+            "authority",
+            "rig_id",
+            "canvas_id",
+            "commissioned_setup_id",
+            "commissioned_setup_identity_sha256",
+            "commissioned_setup_manifest_sha256",
+            "commissioned_setup_inventory_sha256",
+            "canvas_config_sha256",
+            "target_plane",
+            "camera_arena_map"
+          ],
+          "properties": {
+            "authority": {"type": "string", "minLength": 1},
+            "rig_id": {"type": "string", "minLength": 1},
+            "canvas_id": {"type": "string", "minLength": 1},
+            "commissioned_setup_id": {"type": "string", "minLength": 1},
+            "commissioned_setup_identity_sha256": {
+              "$ref": "orange_calibration_package_common.schema.json#/$defs/sha256"
+            },
+            "commissioned_setup_manifest_sha256": {
+              "$ref": "orange_calibration_package_common.schema.json#/$defs/sha256"
+            },
+            "commissioned_setup_inventory_sha256": {
+              "$ref": "orange_calibration_package_common.schema.json#/$defs/sha256"
+            },
+            "canvas_config_sha256": {
+              "$ref": "orange_calibration_package_common.schema.json#/$defs/sha256"
+            },
+            "target_plane": {"const": "projected_surface"},
+            "camera_arena_map": {
+              "$ref": "orange_calibration_package_common.schema.json#/$defs/cameraArenaMap"
+            }
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}

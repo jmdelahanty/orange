@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.calibration.package_inventory.v1",
+  "title": "Calibration Package Exact-Byte Inventory",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "package_id",
+    "package_kind",
+    "status",
+    "policy",
+    "file_count",
+    "total_bytes",
+    "required_failure_count",
+    "files",
+    "gaps"
+  ],
+  "properties": {
+    "schema_id": {"const": "orange.calibration.package_inventory"},
+    "schema_version": {"const": 1},
+    "package_id": {"type": "string", "minLength": 1},
+    "package_kind": {
+      "enum": [
+        "commissioned_rig_setup",
+        "experiment_canvas_binding",
+        "daily_registration_set",
+        "recording_calibration_capsule"
+      ]
+    },
+    "status": {"enum": ["complete", "incomplete"]},
+    "policy": {"type": "object"},
+    "file_count": {"type": "integer", "minimum": 0},
+    "total_bytes": {"type": "integer", "minimum": 0},
+    "required_failure_count": {"type": "integer", "minimum": 0},
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "role",
+          "package_relative_path",
+          "sha256",
+          "size_bytes",
+          "required",
+          "classification",
+          "exact_source_bytes",
+          "scope",
+          "source"
+        ],
+        "properties": {
+          "role": {"type": "string", "minLength": 1},
+          "package_relative_path": {
+            "type": "string",
+            "minLength": 1,
+            "not": {"pattern": "(?:^/|(?:^|/)\\.\\.(?:/|$)|\\\\)"}
+          },
+          "sha256": {
+            "$ref": "orange_calibration_package_common.schema.json#/$defs/sha256"
+          },
+          "size_bytes": {"type": "integer", "minimum": 0},
+          "required": {"type": "boolean"},
+          "classification": {
+            "enum": [
+              "runtime_critical",
+              "review_evidence",
+              "archive_evidence",
+              "provenance"
+            ]
+          },
+          "exact_source_bytes": {"const": true},
+          "scope": {
+            "type": "object",
+            "required": ["camera_id", "arena_id", "target_plane"],
+            "properties": {
+              "camera_id": {"type": ["string", "null"]},
+              "arena_id": {"type": ["string", "null"]},
+              "target_plane": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": false
+          },
+          "source": {
+            "type": "object",
+            "required": ["path", "sha256", "size_bytes"],
+            "properties": {
+              "path": {"type": "string", "minLength": 1},
+              "sha256": {
+                "$ref": "orange_calibration_package_common.schema.json#/$defs/sha256"
+              },
+              "size_bytes": {"type": "integer", "minimum": 0},
+              "declared_sha256": {
+                "$ref": "orange_calibration_package_common.schema.json#/$defs/sha256"
+              },
+              "declared_sha256_verified": {"const": true}
+            },
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "gaps": {"type": "array", "items": {"type": "object"}}
+  },
+  "additionalProperties": false
+}

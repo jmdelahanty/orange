@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.calibration.registry_pointer.v1",
+  "title": "Calibration Registry Active Pointer (future promotion surface)",
+  "description": "Schema only in the first slice. The candidate packager cannot write this product.",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "status",
+    "rig_id",
+    "product_kind",
+    "package_id",
+    "package_relative_path",
+    "package_manifest_sha256",
+    "selected_at_utc"
+  ],
+  "properties": {
+    "schema_id": {"const": "orange.calibration.registry_pointer"},
+    "schema_version": {"const": 1},
+    "status": {"const": "accepted"},
+    "rig_id": {"type": "string", "minLength": 1},
+    "canvas_id": {"type": ["string", "null"]},
+    "product_kind": {
+      "enum": ["commissioned_rig_setup", "experiment_canvas_binding", "daily_registration_set"]
+    },
+    "package_id": {"type": "string", "minLength": 1},
+    "package_relative_path": {
+      "type": "string",
+      "minLength": 1,
+      "not": {"pattern": "(?:^/|(?:^|/)\\.\\.(?:/|$)|\\\\)"}
+    },
+    "package_manifest_sha256": {
+      "$ref": "orange_calibration_package_common.schema.json#/$defs/sha256"
+    },
+    "selected_at_utc": {"type": "string", "format": "date-time"}
+  },
+  "additionalProperties": false
+}

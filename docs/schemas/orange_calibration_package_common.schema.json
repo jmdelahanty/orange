@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.calibration.package_common.v2",
+  "title": "Orange Calibration Package Common Definitions",
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "cameraArenaMap": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["arena_id", "target_plane"],
+        "properties": {
+          "arena_id": {"type": "string", "minLength": 1},
+          "target_plane": {"type": "string", "minLength": 1},
+          "native_width_px": {"type": "integer", "minimum": 1},
+          "native_height_px": {"type": "integer", "minimum": 1},
+          "tank_design_id": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": true
+      }
+    },
+    "canonicalization": {
+      "type": "object",
+      "required": [
+        "profile",
+        "identity_input_path",
+        "digest_algorithm",
+        "floating_point_values_allowed"
+      ],
+      "properties": {
+        "profile": {"const": "orange.canonical_json.v1"},
+        "identity_input_path": {"const": "package.json#/identity"},
+        "digest_algorithm": {"const": "sha256"},
+        "floating_point_values_allowed": {"const": false}
+      },
+      "additionalProperties": false
+    },
+    "candidateLifecycle": {
+      "type": "object",
+      "required": ["state", "activation_allowed", "active_pointer_written", "immutable"],
+      "properties": {
+        "state": {"const": "candidate"},
+        "activation_allowed": {"const": false},
+        "active_pointer_written": {"const": false},
+        "immutable": {"const": true}
+      },
+      "additionalProperties": false
+    },
+    "inventoryReference": {
+      "type": "object",
+      "required": ["package_relative_path", "sha256", "file_count", "total_bytes"],
+      "properties": {
+        "package_relative_path": {"const": "inventory.json"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "file_count": {"type": "integer", "minimum": 0},
+        "total_bytes": {"type": "integer", "minimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "basePackage": {
+      "type": "object",
+      "required": [
+        "schema_id",
+        "schema_version",
+        "package_kind",
+        "package_id",
+        "identity_sha256",
+        "identity",
+        "canonicalization",
+        "lifecycle",
+        "created_at_utc",
+        "authority",
+        "inventory",
+        "completeness"
+      ],
+      "properties": {
+        "schema_version": {"const": 2},
+        "package_id": {
+          "type": "string",
+          "pattern": "^(commission|binding|dailyreg|capsule)_[0-9a-f]{64}$"
+        },
+        "identity_sha256": {"$ref": "#/$defs/sha256"},
+        "identity": {"type": "object"},
+        "canonicalization": {"$ref": "#/$defs/canonicalization"},
+        "lifecycle": {"$ref": "#/$defs/candidateLifecycle"},
+        "created_at_utc": {"type": "string", "format": "date-time"},
+        "authority": {"type": "object"},
+        "inventory": {"$ref": "#/$defs/inventoryReference"},
+        "completeness": {
+          "type": "object",
+          "required": ["status", "required_failure_count", "gap_count"],
+          "properties": {
+            "status": {"enum": ["complete", "incomplete"]},
+            "required_failure_count": {"type": "integer", "minimum": 0},
+            "gap_count": {"type": "integer", "minimum": 0}
+          },
+          "additionalProperties": false
+        }
+      }
+    }
+  }
+}
