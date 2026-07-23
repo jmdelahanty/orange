@@ -209,9 +209,13 @@ bool is_candidate_for_expectation(const SpatialLayoutSessionReviewImage& image,
             "arena_projection");
     case MatrixExpectationKind::DryScale:
         return is_stage_purpose_candidate(
-            image,
-            "projected_surface_dry_reference",
-            "scale_image");
+                   image,
+                   "projected_surface_physical_scale_commissioning",
+                   "projected_surface_scale_calibration") ||
+               is_stage_purpose_candidate(
+                   image,
+                   "projected_surface_dry_reference",
+                   "scale_image");
     case MatrixExpectationKind::DryHomography:
         return is_stage_purpose_candidate(
             image,
@@ -273,6 +277,32 @@ bool check_dry_projection_product(const SpatialLayoutSessionReviewImage& image,
                                   const MatrixExpectationKind kind,
                                   std::vector<std::string>* details)
 {
+    if (kind == MatrixExpectationKind::DryScale &&
+        image.purpose == "projected_surface_scale_calibration") {
+        bool ok = true;
+        ok &= check_string(details, image.capture_stage,
+                           "projected_surface_physical_scale_commissioning",
+                           "capture_stage");
+        ok &= check_string(details, image.target_plane, "projected_surface",
+                           "target_plane");
+        ok &= check_string(details, image.role, "physical_target", "image role");
+        ok &= check_string(details, image.metadata.wet_or_dry, "dry", "wet_or_dry");
+        ok &= check_string(details, image.metadata.parity_group_role,
+                           "projected_surface_scale", "parity_group_role");
+        ok &= check_bool(details, image.metadata.reference_only, false,
+                         "reference_only");
+        ok &= check_bool(details, image.metadata.physical_target_used, true,
+                         "physical_target_used");
+        ok &= check_string(details, image.metadata.target_method,
+                           "physical_target_known_xy", "target_method");
+        ok &= check_string(details, image.metadata.pattern_type,
+                           "physical_point_set", "pattern_type");
+        if (image.metadata.target_id.empty()) {
+            add_detail(details, "target_id is missing");
+            ok = false;
+        }
+        return ok;
+    }
     bool ok = check_common_dry_projection_surface(image, details);
     switch (kind) {
     case MatrixExpectationKind::DryArena:

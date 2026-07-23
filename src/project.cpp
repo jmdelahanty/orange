@@ -1,7 +1,10 @@
 // src/project.cpp
 #include "project.h"
 #include "camera_config_schema.h"
+#include "citrus_recording_geometry.h"
+#include "fnv1a64_fingerprint.h"
 #include "fsuid_guard.h"
+#include "gui/spatial_layout/sha256.h"
 #include "spatial_calibration_snapshot.h"
 #include <unistd.h>      // For gethostname in client_send_bringup_message
 #include <pwd.h>
@@ -18,9 +21,11 @@
 #include <cctype>
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <fcntl.h>
 #include <map>
 #include <utility>
 #include <mutex>
@@ -3843,6 +3848,1025 @@ bool write_json_atomic(const std::filesystem::path& path,
     return true;
 }
 
+constexpr const char* kRecordingGeometryAssetsSchemaId =
+    "orange.recording.geometry_assets";
+constexpr int kRecordingGeometryAssetsSchemaVersion = 1;
+constexpr std::uintmax_t kRecordingGeometryCompactAssetMaxBytes =
+    32ull * 1024ull * 1024ull;
+constexpr std::uintmax_t kRecordingGeometryImageAssetMaxBytes =
+    256ull * 1024ull * 1024ull;
+
+std::string recording_geometry_sha256(const std::string& bytes) {
+    return "sha256:" +
+        orange::gui::spatial_layout::checksum::sha256_hex(bytes);
+}
+
+std::string recording_geometry_fnv1a64(const std::string& bytes) {
+    std::uint64_t hash = UINT64_C(14695981039346656037);
+    for (const unsigned char byte : bytes) {
+        hash ^= static_cast<std::uint64_t>(byte);
+        hash *= UINT64_C(1099511628211);
+    }
+    return orange::calibration::format_fnv1a64_fingerprint(hash);
+}
+
+std::string recording_geometry_safe_component(const std::string& value) {
+    std::string safe;
+    safe.reserve(std::min<std::size_t>(value.size(), 96));
+    for (const unsigned char character : value) {
+        if (safe.size() >= 96) {
+            break;
+        }
+        if (std::isalnum(character) || character == '-' || character == '_' ||
+            character == '.') {
+            safe.push_back(static_cast<char>(character));
+        } else {
+            safe.push_back('_');
+        }
+    }
+    while (!safe.empty() && safe.front() == '.') {
+        safe.front() = '_';
+    }
+    return safe.empty() ? "unnamed" : safe;
+}
+
+std::filesystem::path recording_geometry_normalized_path(
+    const std::filesystem::path& path) {
+    std::error_code error;
+    std::filesystem::path normalized =
+        std::filesystem::weakly_canonical(path, error);
+    if (!error) {
+        return normalized;
+    }
+    normalized = std::filesystem::absolute(path, error);
+    return error ? path.lexically_normal() : normalized.lexically_normal();
+}
+
+bool recording_geometry_path_is_inside(
+    const std::filesystem::path& child,
+    const std::filesystem::path& parent) {
+    const auto normalized_child = recording_geometry_normalized_path(child);
+    const auto normalized_parent = recording_geometry_normalized_path(parent);
+    auto child_it = normalized_child.begin();
+    for (auto parent_it = normalized_parent.begin();
+         parent_it != normalized_parent.end(); ++parent_it, ++child_it) {
+        if (child_it == normalized_child.end() || *child_it != *parent_it) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool recording_geometry_sync_path(const std::filesystem::path& path,
+                                  const bool directory) {
+#ifdef __linux__
+    const int flags = directory ? (O_RDONLY | O_DIRECTORY) : O_RDONLY;
+    const int descriptor = ::open(path.c_str(), flags);
+    if (descriptor < 0) {
+        return false;
+    }
+    const bool ok = ::fsync(descriptor) == 0;
+    ::close(descriptor);
+    return ok;
+#else
+    (void)path;
+    (void)directory;
+    return true;
+#endif
+}
+
+bool recording_geometry_write_exact_file(
+    const std::filesystem::path& path,
+    const std::string& bytes,
+    std::string* error_out) {
+    std::error_code error;
+    std::filesystem::create_directories(path.parent_path(), error);
+    if (error) {
+        if (error_out) {
+            *error_out = "could not create geometry asset directory: " +
+                error.message();
+        }
+        return false;
+    }
+    {
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        if (!output) {
+            if (error_out) {
+                *error_out = "could not create geometry asset: " + path.string();
+            }
+            return false;
+        }
+        output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+        output.flush();
+        if (!output) {
+            if (error_out) {
+                *error_out = "could not write geometry asset: " + path.string();
+            }
+            return false;
+        }
+    }
+    if (!recording_geometry_sync_path(path, false)) {
+        if (error_out) {
+            *error_out = "could not fsync geometry asset: " + path.string();
+        }
+        return false;
+    }
+    return true;
+}
+
+bool recording_geometry_read_source(
+    const std::filesystem::path& path,
+    const std::string& expected_checksum,
+    const std::uintmax_t maximum_bytes,
+    std::string* bytes_out,
+    std::string* sha256_out,
+    std::string* error_out) {
+    if (!bytes_out || !sha256_out) {
+        if (error_out) *error_out = "null geometry asset output";
+        return false;
+    }
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(path, error) || error) {
+        if (error_out) *error_out = "source is not a regular file";
+        return false;
+    }
+    const std::uintmax_t file_size = std::filesystem::file_size(path, error);
+    if (error) {
+        if (error_out) *error_out = "could not read source file size";
+        return false;
+    }
+    if (file_size > maximum_bytes) {
+        if (error_out) {
+            *error_out = "source exceeds materialization size limit";
+        }
+        return false;
+    }
+    std::string bytes;
+    std::string read_error;
+    if (!orange::gui::spatial_layout::checksum::read_file(
+            path, &bytes, &read_error)) {
+        if (error_out) *error_out = read_error;
+        return false;
+    }
+    const std::string checksum = recording_geometry_sha256(bytes);
+    if (!expected_checksum.empty()) {
+        std::string observed_declared_checksum;
+        if (expected_checksum.rfind("sha256:", 0) == 0) {
+            observed_declared_checksum = checksum;
+        } else if (expected_checksum.rfind("fnv1a64:", 0) == 0) {
+            observed_declared_checksum = recording_geometry_fnv1a64(bytes);
+        } else {
+            if (error_out) {
+                *error_out = "source uses an unsupported declared checksum algorithm";
+            }
+            return false;
+        }
+        if (observed_declared_checksum != expected_checksum) {
+            if (error_out) {
+                *error_out = "source checksum does not match the accepted reference";
+            }
+            return false;
+        }
+    }
+    *bytes_out = std::move(bytes);
+    *sha256_out = checksum;
+    return true;
+}
+
+bool recording_geometry_image_extension(const std::filesystem::path& path) {
+    std::string extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](const unsigned char character) {
+                       return static_cast<char>(std::tolower(character));
+                   });
+    return extension == ".png" || extension == ".jpg" ||
+        extension == ".jpeg" || extension == ".tif" ||
+        extension == ".tiff";
+}
+
+nlohmann::json recording_geometry_asset_reference(
+    const nlohmann::json& manifest,
+    const std::string& manifest_bytes) {
+    return {
+        {"schema_id", kRecordingGeometryAssetsSchemaId},
+        {"schema_version", kRecordingGeometryAssetsSchemaVersion},
+        {"status", manifest.value("status", "unavailable")},
+        {"relative_path", "recording_geometry_assets/manifest.json"},
+        {"sha256", recording_geometry_sha256(manifest_bytes)},
+        {"request_sha256", manifest.value("request_sha256", "")},
+        {"file_count", manifest.value("materialized_file_count", 0)},
+        {"total_bytes", manifest.value(
+            "total_bytes", static_cast<std::uint64_t>(0))},
+        {"optional_image_evidence_requested",
+         manifest.value("optional_image_evidence_requested", false)},
+        {"optional_image_evidence_status",
+         manifest.value("optional_image_evidence_status", "not_requested")},
+        {"required_failure_count",
+         manifest.value("required_failure_count", 0)},
+    };
+}
+
+bool recording_geometry_validate_existing_bundle(
+    const std::filesystem::path& bundle_dir,
+    const std::string& request_sha256,
+    nlohmann::json* reference_out,
+    std::string* error_out) {
+    const std::filesystem::path manifest_path = bundle_dir / "manifest.json";
+    std::string manifest_bytes;
+    std::string ignored_checksum;
+    std::string error;
+    if (!recording_geometry_read_source(
+            manifest_path, "", kRecordingGeometryCompactAssetMaxBytes,
+            &manifest_bytes, &ignored_checksum, &error)) {
+        if (error_out) *error_out = "existing asset manifest is unreadable: " + error;
+        return false;
+    }
+    nlohmann::json manifest =
+        nlohmann::json::parse(manifest_bytes, nullptr, false);
+    if (manifest.is_discarded() || !manifest.is_object() ||
+        manifest.value("schema_id", "") != kRecordingGeometryAssetsSchemaId ||
+        manifest.value("schema_version", 0) !=
+            kRecordingGeometryAssetsSchemaVersion ||
+        manifest.value("request_sha256", "") != request_sha256) {
+        if (error_out) *error_out = "existing asset manifest identity does not match";
+        return false;
+    }
+    const nlohmann::json files = manifest.value(
+        "files", nlohmann::json::array());
+    if (!files.is_array()) {
+        if (error_out) *error_out = "existing asset manifest files is not an array";
+        return false;
+    }
+    for (const auto& file : files) {
+        if (!file.is_object() || !file.contains("relative_path") ||
+            !file["relative_path"].is_string() ||
+            !file.contains("sha256") || !file["sha256"].is_string()) {
+            if (error_out) *error_out = "existing asset manifest has an invalid file row";
+            return false;
+        }
+        const std::filesystem::path relative =
+            file["relative_path"].get<std::string>();
+        const std::filesystem::path source = bundle_dir / relative;
+        if (relative.is_absolute() ||
+            !recording_geometry_path_is_inside(source, bundle_dir)) {
+            if (error_out) *error_out = "existing asset path escapes its bundle";
+            return false;
+        }
+        std::string bytes;
+        std::string checksum;
+        if (!recording_geometry_read_source(
+                source, file["sha256"].get<std::string>(),
+                kRecordingGeometryImageAssetMaxBytes,
+                &bytes, &checksum, &error)) {
+            if (error_out) {
+                *error_out = "existing geometry asset failed verification: " +
+                    relative.generic_string() + ": " + error;
+            }
+            return false;
+        }
+    }
+    if (reference_out) {
+        *reference_out = recording_geometry_asset_reference(
+            manifest, manifest_bytes);
+    }
+    return true;
+}
+
+struct RecordingGeometryStagingGuard {
+    std::filesystem::path path;
+    bool published = false;
+
+    ~RecordingGeometryStagingGuard() {
+        if (published || path.empty()) {
+            return;
+        }
+        std::error_code error;
+        std::filesystem::remove_all(path, error);
+    }
+};
+
+nlohmann::json materialize_recording_geometry_assets(
+    const std::filesystem::path& recording_folder,
+    const nlohmann::json& geometry_contract) {
+    nlohmann::json request_payload = geometry_contract;
+    request_payload.erase("materialized_assets");
+    const std::string request_sha256 =
+        recording_geometry_sha256(request_payload.dump());
+    const bool include_images = parse_runtime_env_flag(
+        "ORANGE_RECORDING_GEOMETRY_COPY_IMAGES", false);
+    const std::filesystem::path final_dir =
+        recording_folder / "recording_geometry_assets";
+
+    std::error_code exists_error;
+    if (std::filesystem::exists(final_dir, exists_error) && !exists_error) {
+        nlohmann::json existing_reference;
+        std::string existing_error;
+        if (recording_geometry_validate_existing_bundle(
+                final_dir, request_sha256, &existing_reference,
+                &existing_error)) {
+            return existing_reference;
+        }
+        return {
+            {"schema_id", kRecordingGeometryAssetsSchemaId},
+            {"schema_version", kRecordingGeometryAssetsSchemaVersion},
+            {"status", "unavailable"},
+            {"request_sha256", request_sha256},
+            {"reason", "existing_bundle_conflict"},
+            {"error", existing_error},
+        };
+    }
+
+    const auto nonce = std::chrono::steady_clock::now()
+        .time_since_epoch().count();
+    const std::filesystem::path staging_dir = recording_folder /
+        (".recording_geometry_assets.tmp." + std::to_string(::getpid()) +
+         "." + std::to_string(nonce));
+    RecordingGeometryStagingGuard staging_guard{staging_dir};
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    std::error_code error;
+    std::filesystem::create_directories(staging_dir, error);
+    if (error) {
+        return {
+            {"schema_id", kRecordingGeometryAssetsSchemaId},
+            {"schema_version", kRecordingGeometryAssetsSchemaVersion},
+            {"status", "unavailable"},
+            {"request_sha256", request_sha256},
+            {"reason", "staging_directory_creation_failed"},
+            {"error", error.message()},
+        };
+    }
+
+    nlohmann::json files = nlohmann::json::array();
+    nlohmann::json failures = nlohmann::json::array();
+    nlohmann::json warnings = nlohmann::json::array();
+    std::set<std::string> destinations;
+    std::size_t required_requested = 0;
+    std::size_t required_failures = 0;
+    std::size_t optional_requested = 0;
+    std::size_t optional_failures = 0;
+    std::uintmax_t total_bytes = 0;
+
+    const auto record_failure = [&](const std::string& role,
+                                    const std::filesystem::path& source,
+                                    const std::filesystem::path& relative,
+                                    const nlohmann::json& context,
+                                    const bool required,
+                                    const std::string& reason) {
+        nlohmann::json row = {
+            {"role", role},
+            {"source_path", source.string()},
+            {"relative_path", relative.generic_string()},
+            {"required", required},
+            {"reason", reason},
+        };
+        if (context.is_object()) row["context"] = context;
+        failures.push_back(std::move(row));
+        if (required) {
+            ++required_failures;
+        } else {
+            ++optional_failures;
+        }
+    };
+
+    const auto copy_asset = [&](const std::string& role,
+                                const std::filesystem::path& source,
+                                const std::filesystem::path& relative,
+                                const std::string& expected_checksum,
+                                const nlohmann::json& context,
+                                const bool required,
+                                const std::uintmax_t maximum_bytes,
+                                std::string* source_bytes_out = nullptr) {
+        if (required) {
+            ++required_requested;
+        } else {
+            ++optional_requested;
+        }
+        if (source.empty() || relative.empty() || relative.is_absolute()) {
+            record_failure(role, source, relative, context, required,
+                           "missing or invalid source/destination path");
+            return false;
+        }
+        const bool declared_checksum_required = required &&
+            role.rfind("orange_spatial_", 0) != 0;
+        if (declared_checksum_required && expected_checksum.empty()) {
+            record_failure(role, source, relative, context, required,
+                           "accepted source has no declared checksum");
+            return false;
+        }
+        const std::string relative_text = relative.generic_string();
+        if (!destinations.insert(relative_text).second) {
+            record_failure(role, source, relative, context, required,
+                           "duplicate destination path");
+            return false;
+        }
+        const std::filesystem::path destination = staging_dir / relative;
+        if (!recording_geometry_path_is_inside(destination, staging_dir)) {
+            record_failure(role, source, relative, context, required,
+                           "destination path escapes the asset bundle");
+            return false;
+        }
+        std::string bytes;
+        std::string checksum;
+        std::string source_error;
+        if (!recording_geometry_read_source(
+                source, expected_checksum, maximum_bytes,
+                &bytes, &checksum, &source_error)) {
+            record_failure(role, source, relative, context, required,
+                           source_error);
+            return false;
+        }
+        std::string write_error;
+        if (!recording_geometry_write_exact_file(
+                destination, bytes, &write_error)) {
+            record_failure(role, source, relative, context, required,
+                           write_error);
+            return false;
+        }
+        nlohmann::json row = {
+            {"role", role},
+            {"source_path", recording_geometry_normalized_path(source).string()},
+            {"relative_path", relative_text},
+            {"sha256", checksum},
+            {"size_bytes", bytes.size()},
+            {"exact_source_bytes", true},
+            {"required", required},
+        };
+        if (!expected_checksum.empty()) {
+            row["declared_source_checksum"] = expected_checksum;
+            const std::size_t delimiter = expected_checksum.find(':');
+            row["declared_checksum_algorithm"] = delimiter == std::string::npos
+                ? "unknown"
+                : expected_checksum.substr(0, delimiter);
+            if (expected_checksum.rfind("sha256:", 0) == 0) {
+                row["declared_source_sha256"] = expected_checksum;
+            }
+            row["declared_checksum_verified"] = true;
+        }
+        if (context.is_object()) row["context"] = context;
+        files.push_back(std::move(row));
+        total_bytes += bytes.size();
+        if (source_bytes_out) *source_bytes_out = std::move(bytes);
+        return true;
+    };
+
+    const nlohmann::json daily_registration = geometry_contract.value(
+        "daily_registration_geometry", nlohmann::json::object());
+    const std::string daily_registration_mode = daily_registration.is_object()
+        ? daily_registration.value("mode", "base_only")
+        : "base_only";
+    const std::string daily_registration_status = daily_registration.is_object()
+        ? daily_registration.value("status", "not_configured")
+        : "not_configured";
+    const std::string daily_registration_id = daily_registration.is_object()
+        ? daily_registration.value("registration_id", "")
+        : "";
+    const bool selected_daily_registration =
+        daily_registration_mode == "selected_daily_registration";
+    const nlohmann::json daily_context = {
+        {"mode", daily_registration_mode},
+        {"status", daily_registration_status},
+        {"registration_id", daily_registration_id},
+    };
+    if (daily_registration.is_object()) {
+        const nlohmann::json runtime_selection = daily_registration.value(
+            "runtime_selection", nlohmann::json::object());
+        if (runtime_selection.is_object() &&
+            !runtime_selection.value("source_path", "").empty()) {
+            copy_asset(
+                "daily_registration_runtime_selection",
+                runtime_selection.value("source_path", ""),
+                std::filesystem::path("daily_registration") /
+                    "runtime_selection.json",
+                runtime_selection.value("sha256", ""), daily_context, true,
+                kRecordingGeometryCompactAssetMaxBytes);
+        }
+        if (selected_daily_registration) {
+            const nlohmann::json registration = daily_registration.value(
+                "registration", nlohmann::json::object());
+            copy_asset(
+                "daily_registration_acceptance",
+                registration.value("source_path", ""),
+                std::filesystem::path("daily_registration") /
+                    "registration.json",
+                registration.value("sha256", ""), daily_context, true,
+                kRecordingGeometryCompactAssetMaxBytes);
+            const nlohmann::json candidate = daily_registration.value(
+                "candidate", nlohmann::json::object());
+            copy_asset(
+                "daily_registration_candidate",
+                candidate.value("source_path", ""),
+                std::filesystem::path("daily_registration") /
+                    "candidate.json",
+                candidate.value("sha256", ""), daily_context, true,
+                kRecordingGeometryCompactAssetMaxBytes);
+        }
+    }
+
+    const nlohmann::json daily_cameras = daily_registration.is_object()
+        ? daily_registration.value("cameras", nlohmann::json::object())
+        : nlohmann::json::object();
+    const nlohmann::json cameras = geometry_contract.value(
+        "cameras", nlohmann::json::object());
+    nlohmann::json camera_scope = nlohmann::json::array();
+    nlohmann::json arena_by_camera = nlohmann::json::object();
+    std::map<std::string, std::vector<std::string>> tank_cameras;
+    if (cameras.is_object()) {
+        for (auto camera_it = cameras.begin(); camera_it != cameras.end(); ++camera_it) {
+            if (!camera_it.value().is_object()) continue;
+            const std::string camera_id = camera_it.key();
+            const std::string safe_camera =
+                recording_geometry_safe_component(camera_id);
+            const std::string arena_id =
+                camera_it.value().value("arena_id", "");
+            camera_scope.push_back(camera_id);
+            arena_by_camera[camera_id] = arena_id;
+            const nlohmann::json context = {
+                {"camera_serial", camera_id},
+                {"arena_id", arena_id},
+            };
+            const nlohmann::json tank = camera_it.value().value(
+                "tank_design", nlohmann::json::object());
+            if (tank.is_object()) {
+                const std::string tank_id = tank.value("tank_design_id", "");
+                if (!tank_id.empty()) tank_cameras[tank_id].push_back(camera_id);
+            }
+
+            if (selected_daily_registration) {
+                const nlohmann::json daily_camera =
+                    daily_cameras.is_object() && daily_cameras.contains(camera_id)
+                    ? daily_cameras[camera_id]
+                    : nlohmann::json::object();
+                nlohmann::json rim_context = context;
+                rim_context.update({
+                    {"registration_id", daily_registration_id},
+                    {"target_plane", "dish_top_rim"},
+                    {"coordinate_space", "camera_native_pixels"},
+                });
+                const std::filesystem::path rim_destination =
+                    std::filesystem::path("cameras") /
+                    ("Cam" + safe_camera) / "daily_registration" /
+                    "rim_observation";
+                if (!daily_camera.is_object() ||
+                    daily_camera.value("status", "") != "resolved") {
+                    copy_asset(
+                        "daily_rim_observation", {},
+                        rim_destination / "observation.json", "",
+                        rim_context, true,
+                        kRecordingGeometryCompactAssetMaxBytes);
+                } else {
+                    const nlohmann::json observation = daily_camera.value(
+                        "rim_observation", nlohmann::json::object());
+                    copy_asset(
+                        "daily_rim_observation",
+                        observation.value("source_path", ""),
+                        rim_destination / "observation.json",
+                        observation.value("sha256", ""), rim_context, true,
+                        kRecordingGeometryCompactAssetMaxBytes);
+
+                    const nlohmann::json compact = daily_camera.value(
+                        "compact_artifacts", nlohmann::json::object());
+                    struct DailyCompactAsset {
+                        const char* key;
+                        const char* role;
+                        const char* relative_path;
+                    };
+                    static constexpr DailyCompactAsset daily_compact_assets[] = {
+                        {"manifest", "daily_rim_manifest", "manifest.json"},
+                        {"image_set", "daily_rim_image_set", "image_set.json"},
+                        {"spatial_dish_mask_runtime_v1",
+                         "daily_rim_spatial_mask_export",
+                         "exports/spatial_dish_mask_runtime_v1.json"},
+                        {"palette_dish_mask_v2",
+                         "daily_rim_palette_mask_export",
+                         "exports/palette_dish_mask_v2.json"},
+                    };
+                    for (const DailyCompactAsset& asset :
+                         daily_compact_assets) {
+                        const nlohmann::json source = compact.value(
+                            asset.key, nlohmann::json::object());
+                        copy_asset(
+                            asset.role, source.value("source_path", ""),
+                            rim_destination / asset.relative_path,
+                            source.value("sha256", ""), rim_context, true,
+                            kRecordingGeometryCompactAssetMaxBytes);
+                    }
+
+                    if (include_images) {
+                        const nlohmann::json evidence = daily_camera.value(
+                            "optional_evidence", nlohmann::json::object());
+                        struct DailyEvidenceAsset {
+                            const char* key;
+                            const char* role;
+                            const char* relative_path;
+                        };
+                        static constexpr DailyEvidenceAsset evidence_assets[] = {
+                            {"review_overlay", "daily_rim_review_overlay",
+                             "evidence/top_rim_fit.png"},
+                            {"valid_detection_overlay",
+                             "daily_rim_valid_detection_overlay",
+                             "evidence/valid_detection_region.png"},
+                            {"registration_hough_overlay",
+                             "daily_rim_hough_overlay",
+                             "evidence/registration_hough_overlay.png"},
+                            {"source_frame", "daily_rim_source_frame",
+                             "evidence/source_frame.png"},
+                        };
+                        for (const DailyEvidenceAsset& asset : evidence_assets) {
+                            const nlohmann::json source = evidence.value(
+                                asset.key, nlohmann::json::object());
+                            if (!source.is_object() ||
+                                source.value("source_path", "").empty()) {
+                                continue;
+                            }
+                            copy_asset(
+                                asset.role, source.value("source_path", ""),
+                                rim_destination / asset.relative_path,
+                                source.value("declared_checksum", ""),
+                                rim_context, false,
+                                kRecordingGeometryImageAssetMaxBytes);
+                        }
+                    }
+                }
+            }
+
+            const nlohmann::json projection = camera_it.value().value(
+                "projection_geometry", nlohmann::json::object());
+            if (projection.is_object() &&
+                projection.value("status", "") == "resolved") {
+                const nlohmann::json homography = projection.value(
+                    "homography", nlohmann::json::object());
+                const nlohmann::json homography_active = homography.value(
+                    "active_pointer_snapshot", nlohmann::json::object());
+                nlohmann::json projected_context = context;
+                projected_context["target_plane"] = "projected_surface";
+                copy_asset(
+                    "active_homography_pointer",
+                    homography.value("source_path", ""),
+                    std::filesystem::path("cameras") /
+                        ("Cam" + safe_camera) / "projection" /
+                        "homography_active.json",
+                    homography.value("source_sha256", ""),
+                    projected_context, true,
+                    kRecordingGeometryCompactAssetMaxBytes);
+
+                std::string homography_candidate_bytes;
+                const std::filesystem::path homography_candidate_path =
+                    homography_active.value("candidate_json_path", "");
+                const bool homography_candidate_copied = copy_asset(
+                    "homography_candidate",
+                    homography_candidate_path,
+                    std::filesystem::path("cameras") /
+                        ("Cam" + safe_camera) / "projection" / "homography" /
+                        "candidate.json",
+                    homography_active.value("candidate_json_checksum", ""),
+                    projected_context, true,
+                    kRecordingGeometryCompactAssetMaxBytes,
+                    &homography_candidate_bytes);
+                copy_asset(
+                    "homography_matrix_yaml",
+                    homography_active.value("homography_yaml_path", ""),
+                    std::filesystem::path("cameras") /
+                        ("Cam" + safe_camera) / "projection" / "homography" /
+                        "homography.yml",
+                    homography_active.value("homography_yaml_checksum", ""),
+                    projected_context, true,
+                    kRecordingGeometryCompactAssetMaxBytes);
+
+                if (include_images && homography_candidate_copied) {
+                    const nlohmann::json candidate = nlohmann::json::parse(
+                        homography_candidate_bytes, nullptr, false);
+                    if (candidate.is_discarded() || !candidate.is_object()) {
+                        record_failure(
+                            "homography_candidate_json_validation",
+                            homography_candidate_path,
+                            std::filesystem::path("cameras") /
+                                ("Cam" + safe_camera) / "projection" /
+                                "homography/candidate.json",
+                            projected_context, true,
+                            "candidate source is not a JSON object");
+                    } else {
+                        const nlohmann::json debug_outputs = candidate.value(
+                            "debug_outputs", nlohmann::json::object());
+                        if (debug_outputs.is_object()) {
+                            for (auto output_it = debug_outputs.begin();
+                                 output_it != debug_outputs.end(); ++output_it) {
+                                if (!output_it.value().is_string()) continue;
+                                const std::filesystem::path debug_relative =
+                                    output_it.value().get<std::string>();
+                                const std::filesystem::path debug_source =
+                                    homography_candidate_path.parent_path() /
+                                    debug_relative;
+                                if (debug_relative.is_absolute() ||
+                                    !recording_geometry_path_is_inside(
+                                        debug_source,
+                                        homography_candidate_path.parent_path()) ||
+                                    !recording_geometry_image_extension(debug_source)) {
+                                    record_failure(
+                                        "homography_debug_image", debug_source,
+                                        {}, projected_context, false,
+                                        "debug image path is outside the candidate directory or unsupported");
+                                    continue;
+                                }
+                                copy_asset(
+                                    "homography_debug_image", debug_source,
+                                    std::filesystem::path("cameras") /
+                                        ("Cam" + safe_camera) / "projection" /
+                                        "homography/evidence" /
+                                        (recording_geometry_safe_component(
+                                             output_it.key()) +
+                                         debug_source.extension().string()),
+                                    "", projected_context, false,
+                                    kRecordingGeometryImageAssetMaxBytes);
+                            }
+                        }
+                        const nlohmann::json source = candidate.value(
+                            "source", nlohmann::json::object());
+                        const std::filesystem::path source_image =
+                            source.value("image_path", "");
+                        if (!source_image.empty()) {
+                            if (recording_geometry_image_extension(source_image)) {
+                                copy_asset(
+                                    "homography_source_capture", source_image,
+                                    std::filesystem::path("cameras") /
+                                        ("Cam" + safe_camera) / "projection" /
+                                        "homography/evidence" /
+                                        ("source_capture" +
+                                         source_image.extension().string()),
+                                    "", projected_context, false,
+                                    kRecordingGeometryImageAssetMaxBytes);
+                            } else {
+                                record_failure(
+                                    "homography_source_capture", source_image,
+                                    {}, projected_context, false,
+                                    "source capture has an unsupported image extension");
+                            }
+                        }
+                    }
+                }
+
+                const nlohmann::json scale_models = projection.value(
+                    "scale_models", nlohmann::json::object());
+                const nlohmann::json scale = scale_models.value(
+                    "projected_surface", nlohmann::json::object());
+                const nlohmann::json scale_active = scale.value(
+                    "active_pointer_snapshot", nlohmann::json::object());
+                copy_asset(
+                    "active_projected_surface_scale_pointer",
+                    scale.value("source_path", ""),
+                    std::filesystem::path("cameras") /
+                        ("Cam" + safe_camera) / "projection" /
+                        "projected_surface_scale_active.json",
+                    scale.value("source_sha256", ""),
+                    projected_context, true,
+                    kRecordingGeometryCompactAssetMaxBytes);
+                copy_asset(
+                    "projected_surface_scale_candidate",
+                    scale_active.value("candidate_json_path", ""),
+                    std::filesystem::path("cameras") /
+                        ("Cam" + safe_camera) / "projection" / "scale" /
+                        "candidate.json",
+                    scale_active.value("candidate_json_checksum", ""),
+                    projected_context, true,
+                    kRecordingGeometryCompactAssetMaxBytes);
+
+                const nlohmann::json source_observation = scale_active.value(
+                    "source_observation", nlohmann::json::object());
+                std::string observation_bytes;
+                const std::filesystem::path observation_path =
+                    source_observation.value("path", "");
+                const bool observation_copied = copy_asset(
+                    "projected_surface_scale_observation",
+                    observation_path,
+                    std::filesystem::path("cameras") /
+                        ("Cam" + safe_camera) / "projection" / "scale" /
+                        "observation.json",
+                    source_observation.value("sha256", ""),
+                    projected_context, true,
+                    kRecordingGeometryCompactAssetMaxBytes,
+                    &observation_bytes);
+                if (include_images && observation_copied) {
+                    const nlohmann::json observation = nlohmann::json::parse(
+                        observation_bytes, nullptr, false);
+                    if (observation.is_object()) {
+                        const nlohmann::json artifact_paths = observation.value(
+                            "artifact_paths", nlohmann::json::object());
+                        const std::filesystem::path overlay =
+                            artifact_paths.value("overlay_png", "");
+                        if (!overlay.empty()) {
+                            copy_asset(
+                                "projected_surface_scale_overlay", overlay,
+                                std::filesystem::path("cameras") /
+                                    ("Cam" + safe_camera) / "projection" /
+                                    "scale/evidence/overlay.png",
+                                "", projected_context, false,
+                                kRecordingGeometryImageAssetMaxBytes);
+                        }
+                        const nlohmann::json source_capture = observation.value(
+                            "source_capture", nlohmann::json::object());
+                        const std::filesystem::path source_image =
+                            source_capture.value("image_path", "");
+                        if (!source_image.empty() &&
+                            recording_geometry_image_extension(source_image)) {
+                            copy_asset(
+                                "projected_surface_scale_source_capture",
+                                source_image,
+                                std::filesystem::path("cameras") /
+                                    ("Cam" + safe_camera) / "projection" /
+                                    "scale/evidence" /
+                                    ("source_capture" +
+                                     source_image.extension().string()),
+                                "", projected_context, false,
+                                kRecordingGeometryImageAssetMaxBytes);
+                        }
+                    }
+                }
+            }
+
+            const nlohmann::json spatial = camera_it.value().value(
+                "orange_spatial_calibration", nlohmann::json::object());
+            if (spatial.is_object() && spatial.value("status", "") == "resolved") {
+                const std::filesystem::path spatial_root =
+                    spatial.value("source_artifact_dir", "");
+                nlohmann::json spatial_context = context;
+                spatial_context["target_plane"] = "dish_top_rim_and_camera_mask";
+                const std::filesystem::path spatial_destination =
+                    std::filesystem::path("cameras") /
+                    ("Cam" + safe_camera) / "spatial";
+                std::string spatial_manifest_bytes;
+                const bool spatial_manifest_copied = copy_asset(
+                    "orange_spatial_manifest", spatial_root / "manifest.json",
+                    spatial_destination / "manifest.json", "",
+                    spatial_context, true,
+                    kRecordingGeometryCompactAssetMaxBytes,
+                    &spatial_manifest_bytes);
+                bool spatial_identity_matches = true;
+                if (spatial_manifest_copied) {
+                    const nlohmann::json spatial_manifest = nlohmann::json::parse(
+                        spatial_manifest_bytes, nullptr, false);
+                    const nlohmann::json summary = spatial_manifest.value(
+                        "summary", nlohmann::json::object());
+                    const std::string manifest_camera =
+                        summary.value("camera_serial", "");
+                    const std::string manifest_arena =
+                        summary.value("arena_id", "");
+                    if ((!manifest_camera.empty() && manifest_camera != camera_id) ||
+                        (!manifest_arena.empty() && !arena_id.empty() &&
+                         manifest_arena != arena_id)) {
+                        spatial_identity_matches = false;
+                        record_failure(
+                            "orange_spatial_manifest_identity",
+                            spatial_root / "manifest.json",
+                            spatial_destination / "manifest.json",
+                            spatial_context, true,
+                            "spatial artifact camera/arena identity mismatch");
+                    }
+                }
+                if (spatial_identity_matches) {
+                    for (const char* filename : {
+                             "measurement.json",
+                             "arena_layout_runtime.json",
+                             "dish_mask_runtime.json"}) {
+                        copy_asset(
+                            std::string("orange_spatial_") + filename,
+                            spatial_root / filename,
+                            spatial_destination / filename,
+                            "", spatial_context, true,
+                            kRecordingGeometryCompactAssetMaxBytes);
+                    }
+                    if (include_images) {
+                        std::error_code directory_error;
+                        for (std::filesystem::directory_iterator iterator(
+                                 spatial_root, directory_error), end;
+                             !directory_error && iterator != end;
+                             iterator.increment(directory_error)) {
+                            if (!iterator->is_regular_file() ||
+                                !recording_geometry_image_extension(iterator->path())) {
+                                continue;
+                            }
+                            copy_asset(
+                                "orange_spatial_evidence_image",
+                                iterator->path(),
+                                spatial_destination / "evidence" /
+                                    recording_geometry_safe_component(
+                                        iterator->path().filename().string()),
+                                "", spatial_context, false,
+                                kRecordingGeometryImageAssetMaxBytes);
+                        }
+                        if (directory_error) {
+                            warnings.push_back(
+                                "could not enumerate optional spatial evidence for camera " +
+                                camera_id + ": " + directory_error.message());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    const nlohmann::json tank_designs = geometry_contract.value(
+        "tank_designs", nlohmann::json::object());
+    if (tank_designs.is_object()) {
+        for (auto tank_it = tank_designs.begin(); tank_it != tank_designs.end();
+             ++tank_it) {
+            if (!tank_it.value().is_object() ||
+                tank_it.value().value("status", "") != "resolved") {
+                continue;
+            }
+            const nlohmann::json artifact = tank_it.value().value(
+                "artifact", nlohmann::json::object());
+            const nlohmann::json tank_context = {
+                {"tank_design_id", tank_it.key()},
+                {"camera_serials", tank_cameras[tank_it.key()]},
+            };
+            copy_asset(
+                "tank_design",
+                artifact.value("source_path", ""),
+                std::filesystem::path("tank_designs") /
+                    (recording_geometry_safe_component(tank_it.key()) + ".json"),
+                artifact.value("sha256", ""), tank_context, true,
+                kRecordingGeometryCompactAssetMaxBytes);
+        }
+    }
+
+    const std::string status = required_requested == 0
+        ? "empty"
+        : (required_failures == 0 ? "complete" : "partial");
+    const std::string optional_status = !include_images
+        ? "not_requested"
+        : (optional_failures == 0 ? "complete" : "partial");
+    nlohmann::json manifest = {
+        {"schema_id", kRecordingGeometryAssetsSchemaId},
+        {"schema_version", kRecordingGeometryAssetsSchemaVersion},
+        {"created_at_utc", get_current_utc_timestamp()},
+        {"status", status},
+        {"request_sha256", request_sha256},
+        {"contract", {
+            {"schema_id", geometry_contract.value("schema_id", "")},
+            {"schema_version", geometry_contract.value("schema_version", 0)},
+            {"status", geometry_contract.value("status", "unknown")},
+        }},
+        {"policy", {
+            {"participating_cameras_only", true},
+            {"cross_arena_fallback_allowed", false},
+            {"exact_source_bytes", true},
+            {"active_pointer_resolution",
+             "active_pointer_plus_checksum_bound_immutable_targets"},
+            {"failure_action", "record_status_and_continue"},
+            {"images_are_optional", true},
+            {"selected_daily_registration_compact_assets_required", true},
+        }},
+        {"scope", {
+            {"camera_serials", camera_scope},
+            {"arena_by_camera", arena_by_camera},
+            {"daily_registration", daily_context},
+        }},
+        {"optional_image_evidence_requested", include_images},
+        {"optional_image_evidence_status", optional_status},
+        {"required_requested_file_count", required_requested},
+        {"required_failure_count", required_failures},
+        {"optional_requested_file_count", optional_requested},
+        {"optional_failure_count", optional_failures},
+        {"materialized_file_count", files.size()},
+        {"total_bytes", total_bytes},
+        {"files", files},
+        {"failures", failures},
+        {"warnings", warnings},
+    };
+    const std::string manifest_bytes = manifest.dump(2) + "\n";
+    std::string manifest_error;
+    if (!recording_geometry_write_exact_file(
+            staging_dir / "manifest.json", manifest_bytes,
+            &manifest_error)) {
+        std::filesystem::remove_all(staging_dir, error);
+        return {
+            {"schema_id", kRecordingGeometryAssetsSchemaId},
+            {"schema_version", kRecordingGeometryAssetsSchemaVersion},
+            {"status", "unavailable"},
+            {"request_sha256", request_sha256},
+            {"reason", "manifest_write_failed"},
+            {"error", manifest_error},
+        };
+    }
+    (void)recording_geometry_sync_path(staging_dir, true);
+    std::filesystem::rename(staging_dir, final_dir, error);
+    if (error) {
+        const std::string publish_error = error.message();
+        std::filesystem::remove_all(staging_dir, error);
+        return {
+            {"schema_id", kRecordingGeometryAssetsSchemaId},
+            {"schema_version", kRecordingGeometryAssetsSchemaVersion},
+            {"status", "unavailable"},
+            {"request_sha256", request_sha256},
+            {"reason", "bundle_publish_failed"},
+            {"error", publish_error},
+        };
+    }
+    staging_guard.published = true;
+    (void)recording_geometry_sync_path(recording_folder, true);
+    return recording_geometry_asset_reference(manifest, manifest_bytes);
+}
+
 bool write_latest_recording_pointer(const std::string& base_folder,
                                     const std::string& recording_folder,
                                     const std::string& recording_id,
@@ -4593,6 +5617,25 @@ bool write_recording_snapshot(const std::string& recording_folder,
     return true;
 }
 
+bool publish_latest_recording_pointer(const std::string& base_folder,
+                                      const std::string& recording_folder,
+                                      const std::string& recording_id) {
+    if (recording_folder.empty()) {
+        return false;
+    }
+    const std::filesystem::path snapshot_path =
+        std::filesystem::path(recording_folder) / "recording_snapshot.json";
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(snapshot_path, error) || error) {
+        return false;
+    }
+    return write_latest_recording_pointer(
+        base_folder,
+        recording_folder,
+        recording_id.empty() ? get_current_date_time() : recording_id,
+        get_current_utc_timestamp());
+}
+
 bool initialize_ptp_sync_summary(const std::string& recording_folder,
                                  const std::string& recording_id,
                                  int num_cameras,
@@ -5091,6 +6134,318 @@ bool update_recording_snapshot_spatial_calibration(const std::string& recording_
         return false;
     }
 
+    return true;
+}
+
+bool update_recording_snapshot_citrus_runtime_geometry(
+    const std::string& recording_folder,
+    const nlohmann::json& citrus_runtime_geometry) {
+    if (recording_folder.empty() || !citrus_runtime_geometry.is_object()) {
+        return false;
+    }
+    const std::filesystem::path snapshot_path =
+        std::filesystem::path(recording_folder) / "recording_snapshot.json";
+    std::lock_guard<std::mutex> lock(recording_snapshot_mutex());
+    nlohmann::json snapshot;
+    if (!read_recording_snapshot_locked(snapshot_path, &snapshot)) {
+        return false;
+    }
+    nlohmann::json runtime_geometry = citrus_runtime_geometry;
+    nlohmann::json registered_masks = nlohmann::json::object();
+    const nlohmann::json daily_status = runtime_geometry.value(
+        "daily_registration", nlohmann::json::object());
+    const nlohmann::json runtime = daily_status.is_object()
+        ? daily_status.value("runtime", nlohmann::json::object())
+        : nlohmann::json::object();
+    const nlohmann::json runtime_targets = runtime.is_object()
+        ? runtime.value("targets", nlohmann::json::array())
+        : nlohmann::json::array();
+    const std::string runtime_mode = runtime.is_object()
+        ? runtime.value("mode", "unknown")
+        : "unknown";
+    const std::string runtime_status = runtime.is_object()
+        ? runtime.value("daily_registration_status", "unavailable")
+        : "unavailable";
+
+    auto string_field = [](const nlohmann::json& value,
+                           const char* key) -> std::string {
+        if (!value.is_object()) return {};
+        const auto it = value.find(key);
+        return it != value.end() && it->is_string()
+            ? it->get<std::string>()
+            : std::string();
+    };
+    auto& calibrations = snapshot["calibrations"];
+    if (!calibrations.is_object()) calibrations = nlohmann::json::object();
+    for (auto calibration_it = calibrations.begin();
+         calibration_it != calibrations.end(); ++calibration_it) {
+        if (!calibration_it.value().is_object()) continue;
+        auto observation_it = calibration_it.value().find(
+            "dish_top_rim_observation");
+        if (observation_it == calibration_it.value().end() ||
+            !observation_it->is_object()) {
+            continue;
+        }
+        nlohmann::json& observation = *observation_it;
+        const nlohmann::json registration = observation.value(
+            "daily_registration", nlohmann::json::object());
+        const std::string expected_path = string_field(
+            registration, "source_path");
+        const std::string expected_sha256 = string_field(
+            registration, "sha256");
+        const std::string camera_serial = calibration_it.key();
+        const std::string arena_id = observation.value("arena_id", "");
+        const nlohmann::json* matching_target = nullptr;
+        if (runtime_targets.is_array()) {
+            for (const auto& target : runtime_targets) {
+                if (target.is_object() &&
+                    target.value("camera_id", "") == camera_serial &&
+                    target.value("arena_id", "") == arena_id) {
+                    matching_target = &target;
+                    break;
+                }
+            }
+        }
+        const std::string observed_path = matching_target
+            ? string_field(*matching_target, "registration_path")
+            : std::string();
+        const std::string observed_sha256 = matching_target
+            ? string_field(*matching_target, "registration_sha256")
+            : std::string();
+        const bool exact_registration_match = matching_target != nullptr &&
+            !expected_path.empty() && !expected_sha256.empty() &&
+            observed_path == expected_path &&
+            observed_sha256 == expected_sha256;
+        const bool applied = exact_registration_match &&
+            runtime_mode == "selected_daily_registration" &&
+            runtime_status == "selected_valid" &&
+            matching_target->value("applied", false);
+        observation["citrus_runtime_application"] = {
+            {"capture_status", runtime_geometry.value(
+                "capture_status", "unavailable")},
+            {"mode", runtime_mode},
+            {"daily_registration_status", runtime_status},
+            {"matching_runtime_target_found", matching_target != nullptr},
+            {"exact_registration_path_and_checksum_match",
+             exact_registration_match},
+            {"selected_daily_registration_applied_by_citrus", applied},
+        };
+        if (matching_target != nullptr) {
+            observation["citrus_runtime_application"]["target"] =
+                *matching_target;
+        }
+        registered_masks[camera_serial] = observation;
+    }
+    runtime_geometry["registered_dish_masks"] = std::move(registered_masks);
+    snapshot["citrus_runtime_geometry"] = std::move(runtime_geometry);
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    return write_json_atomic(snapshot_path, snapshot,
+                             std::filesystem::perms::unknown, false,
+                             "recording snapshot");
+}
+
+bool write_recording_geometry_contract(
+    const std::string& recording_folder,
+    const nlohmann::json& geometry_contract,
+    std::string* error_out) {
+    if (error_out) {
+        error_out->clear();
+    }
+    if (recording_folder.empty() || !geometry_contract.is_object()) {
+        if (error_out) {
+            *error_out = "recording folder and geometry contract object are required";
+        }
+        return false;
+    }
+    if (geometry_contract.value("schema_id", "") !=
+            orange::recording_geometry::kRecordingGeometryContractSchemaId ||
+        geometry_contract.value("schema_version", 0) !=
+            orange::recording_geometry::kRecordingGeometryContractSchemaVersion) {
+        if (error_out) {
+            *error_out = "recording geometry contract schema identity is invalid";
+        }
+        return false;
+    }
+
+    const std::filesystem::path folder(recording_folder);
+    nlohmann::json materialized_contract = geometry_contract;
+    nlohmann::json materialized_assets;
+    try {
+        materialized_assets = materialize_recording_geometry_assets(
+            folder, materialized_contract);
+    } catch (const std::exception& exception) {
+        nlohmann::json request_payload = materialized_contract;
+        request_payload.erase("materialized_assets");
+        materialized_assets = {
+            {"schema_id", kRecordingGeometryAssetsSchemaId},
+            {"schema_version", kRecordingGeometryAssetsSchemaVersion},
+            {"status", "unavailable"},
+            {"request_sha256",
+             recording_geometry_sha256(request_payload.dump())},
+            {"reason", "materialization_exception"},
+            {"error", exception.what()},
+        };
+    }
+    materialized_contract["materialized_assets"] = materialized_assets;
+    const std::string materialized_status = materialized_assets.value(
+        "status", "unavailable");
+    if (materialized_status == "partial" ||
+        materialized_status == "unavailable") {
+        if (!materialized_contract.contains("warnings") ||
+            !materialized_contract["warnings"].is_array()) {
+            materialized_contract["warnings"] = nlohmann::json::array();
+        }
+        materialized_contract["warnings"].push_back(
+            "Recording-local geometry assets are " + materialized_status +
+            "; numerical geometry remains embedded in this contract.");
+    }
+    const std::filesystem::path contract_path =
+        folder / "recording_geometry_contract.json";
+    const std::filesystem::path snapshot_path =
+        folder / "recording_snapshot.json";
+    const std::string contract_bytes = materialized_contract.dump(2) + "\n";
+    const std::string contract_sha256 =
+        "sha256:" + orange::gui::spatial_layout::checksum::sha256_hex(
+            contract_bytes);
+
+    std::lock_guard<std::mutex> lock(recording_snapshot_mutex());
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    std::string write_error;
+    if (!write_json_atomic(
+            contract_path,
+            materialized_contract,
+            std::filesystem::perms::unknown,
+            false,
+            "recording geometry contract",
+            &write_error)) {
+        if (error_out) {
+            *error_out = write_error.empty()
+                ? "failed to write recording geometry contract"
+                : write_error;
+        }
+        return false;
+    }
+
+    nlohmann::json snapshot;
+    if (!read_recording_snapshot_locked(snapshot_path, &snapshot)) {
+        if (error_out) {
+            *error_out = "recording geometry contract was written, but recording snapshot could not be read";
+        }
+        return false;
+    }
+    nlohmann::json camera_status = nlohmann::json::object();
+    const nlohmann::json cameras = materialized_contract.value(
+        "cameras", nlohmann::json::object());
+    if (cameras.is_object()) {
+        for (auto it = cameras.begin(); it != cameras.end(); ++it) {
+            if (it.value().is_object()) {
+                camera_status[it.key()] = it.value().value("status", "unknown");
+            }
+        }
+    }
+    std::error_code path_error;
+    std::filesystem::path absolute_contract_path =
+        std::filesystem::absolute(contract_path, path_error);
+    if (path_error) {
+        absolute_contract_path = contract_path;
+    }
+    snapshot["recording_geometry_contract"] = {
+        {"schema_id", materialized_contract.value("schema_id", "")},
+        {"schema_version", materialized_contract.value("schema_version", 0)},
+        {"status", materialized_contract.value("status", "unknown")},
+        {"relative_path", "recording_geometry_contract.json"},
+        {"path", absolute_contract_path.string()},
+        {"sha256", contract_sha256},
+        {"selection", materialized_contract.value(
+            "selection", nlohmann::json::object())},
+        {"camera_status", std::move(camera_status)},
+        {"recording_blocked", materialized_contract.value(
+            "recording_policy", nlohmann::json::object()).value(
+                "recording_blocked", false)},
+        {"materialized_assets", materialized_assets},
+    };
+
+    const nlohmann::json daily_registration = materialized_contract.value(
+        "daily_registration_geometry", nlohmann::json::object());
+    const nlohmann::json daily_cameras = daily_registration.is_object()
+        ? daily_registration.value("cameras", nlohmann::json::object())
+        : nlohmann::json::object();
+    if (daily_cameras.is_object()) {
+        auto& calibrations = snapshot["calibrations"];
+        if (!calibrations.is_object()) calibrations = nlohmann::json::object();
+        const nlohmann::json registration = daily_registration.value(
+            "registration", nlohmann::json::object());
+        const nlohmann::json runtime_selection = daily_registration.value(
+            "runtime_selection", nlohmann::json::object());
+        for (auto camera_it = daily_cameras.begin();
+             camera_it != daily_cameras.end(); ++camera_it) {
+            if (!camera_it.value().is_object() ||
+                camera_it.value().value("status", "") != "resolved") {
+                continue;
+            }
+            nlohmann::json observation = camera_it.value().value(
+                "recording_snapshot_entry", nlohmann::json::object());
+            if (!observation.is_object() || observation.empty()) continue;
+            const std::string camera_serial = camera_it.key();
+            const std::string safe_camera =
+                recording_geometry_safe_component(camera_serial);
+            observation["daily_registration"] = {
+                {"registration_id", daily_registration.value(
+                    "registration_id", "")},
+                {"source_path", registration.value("source_path", "")},
+                {"sha256", registration.value("sha256", "")},
+                {"selection_mode", daily_registration.value(
+                    "mode", "base_only")},
+                {"selection_status", daily_registration.value(
+                    "status", "not_configured")},
+                {"runtime_selection_source_path", runtime_selection.value(
+                    "source_path", "")},
+                {"runtime_selection_sha256", runtime_selection.value(
+                    "sha256", "")},
+            };
+            observation["recording_local_assets"] = {
+                {"observation_relative_path",
+                 (std::filesystem::path("recording_geometry_assets") /
+                  "cameras" / ("Cam" + safe_camera) /
+                  "daily_registration" / "rim_observation" /
+                  "observation.json").generic_string()},
+                {"spatial_mask_export_relative_path",
+                 (std::filesystem::path("recording_geometry_assets") /
+                  "cameras" / ("Cam" + safe_camera) /
+                  "daily_registration" / "rim_observation" / "exports" /
+                  "spatial_dish_mask_runtime_v1.json").generic_string()},
+                {"palette_mask_export_relative_path",
+                 (std::filesystem::path("recording_geometry_assets") /
+                  "cameras" / ("Cam" + safe_camera) /
+                  "daily_registration" / "rim_observation" / "exports" /
+                  "palette_dish_mask_v2.json").generic_string()},
+                {"asset_bundle_status", materialized_assets.value(
+                    "status", "unavailable")},
+            };
+            observation["citrus_runtime_application"] = {
+                {"capture_status", "pending_recording_start"},
+                {"selected_daily_registration_applied_by_citrus", false},
+            };
+            calibrations[camera_serial]["dish_top_rim_observation"] =
+                std::move(observation);
+        }
+    }
+    if (!write_json_atomic(
+            snapshot_path,
+            snapshot,
+            std::filesystem::perms::unknown,
+            false,
+            "recording snapshot",
+            &write_error)) {
+        if (error_out) {
+            *error_out = write_error.empty()
+                ? "failed to reference recording geometry contract from recording snapshot"
+                : write_error;
+        }
+        return false;
+    }
     return true;
 }
 

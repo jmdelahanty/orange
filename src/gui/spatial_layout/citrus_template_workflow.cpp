@@ -315,6 +315,11 @@ bool import_citrus_canvas_templates(
         return false;
     }
 
+    // Canvas selection is broader than the legacy single-circle preview
+    // importer. Preserve any readable Citrus canvas for recording metadata
+    // even when the preview adapter below does not support its shape.
+    ui_state->citrus_canvas_config_path = config_path.string();
+
     std::vector<CitrusSpatialTemplateState> templates;
     std::vector<std::string> available_camera_ids;
     if (!collect_citrus_single_circle_templates(

@@ -1,6 +1,7 @@
 #include "gui/spatial_layout/session_io.h"
 
 #include "dish_top_rim_observation.h"
+#include "fnv1a64_fingerprint.h"
 #include "fsuid_guard.h"
 #include "project.h"
 
@@ -74,10 +75,7 @@ std::string compute_json_fingerprint(const nlohmann::json& value)
     uint64_t hash = kFnv1a64Offset;
     fnv1a64_update_bytes(&hash, payload.data(), payload.size());
 
-    std::ostringstream oss;
-    oss << kCalibrationFingerprintAlgorithm << ':'
-        << std::hex << std::nouppercase << hash;
-    return oss.str();
+    return orange::calibration::format_fnv1a64_fingerprint(hash);
 }
 
 std::string compute_file_fingerprint(const std::filesystem::path& path, std::string* error_out)
@@ -106,10 +104,7 @@ std::string compute_file_fingerprint(const std::filesystem::path& path, std::str
         return "";
     }
 
-    std::ostringstream oss;
-    oss << kCalibrationFingerprintAlgorithm << ':'
-        << std::hex << std::nouppercase << hash;
-    return oss.str();
+    return orange::calibration::format_fnv1a64_fingerprint(hash);
 }
 
 bool write_image_file(const std::filesystem::path& path, const cv::Mat& image, std::string* error_out)

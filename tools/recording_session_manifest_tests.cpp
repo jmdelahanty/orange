@@ -2,9 +2,12 @@
 #include "NvEncoder/Logger.h"
 
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <unistd.h>
 
 simplelogger::Logger* logger =
     simplelogger::LoggerFactory::CreateConsoleLogger();
@@ -271,6 +274,53 @@ void test_camera_preferred_recording_sink_resolution()
     unsetenv("ORANGE_GUI_RECORDING_SINK_MODE");
 }
 
+void test_manifest_references_recording_geometry_contract()
+{
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_session_geometry_" +
+         std::to_string(static_cast<long long>(::getpid())));
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder);
+    {
+        std::ofstream output(folder / "recording_geometry_contract.json");
+        output << nlohmann::json{
+            {"schema_id", "orange.recording.geometry_contract"},
+            {"schema_version", 1},
+            {"status", "resolved"},
+            {"materialized_assets", {
+                {"schema_id", "orange.recording.geometry_assets"},
+                {"schema_version", 1},
+                {"status", "complete"},
+                {"relative_path", "recording_geometry_assets/manifest.json"},
+                {"sha256", "sha256:" + std::string(64, 'a')},
+            }},
+        }.dump(2) << '\n';
+    }
+
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "test";
+    options.session_id = "geometry_session";
+    options.recording_folder = folder.string();
+    options.status = "completed";
+    const nlohmann::json manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    const nlohmann::json reference = manifest.at("metadata").at(
+        "recording_geometry_contract");
+    require(reference.at("status") == "resolved",
+            "session manifest should preserve geometry contract status");
+    require(reference.at("relative_path") == "recording_geometry_contract.json",
+            "session manifest should use a recording-relative geometry path");
+    require(reference.at("sha256").get<std::string>().rfind("sha256:", 0) == 0,
+            "session manifest should checksum the exact geometry contract bytes");
+    require(reference.at("materialized_assets").at("status") == "complete",
+            "session manifest should expose the recording-local geometry asset bundle");
+    require(reference.at("materialized_assets").at("relative_path") ==
+                "recording_geometry_assets/manifest.json",
+            "session manifest should preserve the recording-relative asset path");
+    std::filesystem::remove_all(folder);
+}
+
 }  // namespace
 
 int main()
@@ -287,6 +337,8 @@ int main()
          test_rolling_manifest_emits_session_aggregate_and_clip_crop_outputs},
         {"camera_preferred_recording_sink_resolution",
          test_camera_preferred_recording_sink_resolution},
+        {"manifest_references_recording_geometry_contract",
+         test_manifest_references_recording_geometry_contract},
     };
 
     for (const TestCase& test : tests) {

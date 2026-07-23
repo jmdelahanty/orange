@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
+import math
 import subprocess
 import sys
 from collections import Counter
@@ -111,6 +113,405 @@ def read_json(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValidationError(f"expected object JSON in {path}")
     return payload
+
+
+def sha256_reference(data: bytes) -> str:
+    return f"sha256:{hashlib.sha256(data).hexdigest()}"
+
+
+def recording_local_path(root: Path, relative_value: Any, label: str) -> Path:
+    relative = Path(str(relative_value or ""))
+    if not relative_value or relative.is_absolute():
+        raise ValidationError(f"{label} must be a non-empty recording-relative path")
+    resolved_root = root.resolve()
+    resolved = (resolved_root / relative).resolve()
+    try:
+        resolved.relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValidationError(f"{label} escapes the recording folder: {relative}") from exc
+    return resolved
+
+
+def read_exact_json(path: Path) -> tuple[bytes, dict[str, Any]]:
+    try:
+        data = path.read_bytes()
+    except FileNotFoundError as exc:
+        raise ValidationError(f"missing JSON file: {path}") from exc
+    try:
+        payload = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValidationError(f"invalid JSON file {path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValidationError(f"expected object JSON in {path}")
+    return data, payload
+
+
+def _camera_circle(value: Any) -> tuple[float, float, float] | None:
+    if not isinstance(value, dict) or value.get("type") != "circle":
+        return None
+    center = value.get("center_px")
+    if not isinstance(center, dict):
+        return None
+    try:
+        x = float(center["x"])
+        y = float(center["y"])
+        radius = float(value["radius_px"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(math.isfinite(component) for component in (x, y, radius)) or radius <= 0:
+        return None
+    return x, y, radius
+
+
+def validate_daily_registered_masks(
+    contract: dict[str, Any],
+    snapshot: dict[str, Any],
+    scoped_camera_set: set[str],
+    files: list[Any],
+    reporter: Reporter,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "status": "not_configured",
+        "resolved_mask_count": 0,
+    }
+    daily = contract.get("daily_registration_geometry")
+    if not isinstance(daily, dict):
+        return summary
+    status = str(daily.get("status", "invalid"))
+    mode = str(daily.get("mode", "base_only"))
+    summary.update({"status": status, "mode": mode})
+    if mode != "selected_daily_registration":
+        return summary
+    if status != "selected_resolved":
+        reporter.warn(
+            f"selected daily registration is {status!r}; no complete mask set is claimed"
+        )
+        return summary
+
+    daily_cameras = daily.get("cameras")
+    calibrations = snapshot.get("calibrations")
+    if not isinstance(daily_cameras, dict):
+        reporter.fail("selected daily registration has no camera dictionary")
+        return summary
+    if not isinstance(calibrations, dict):
+        reporter.fail("selected daily registration is absent from snapshot calibrations")
+        calibrations = {}
+
+    required_roles = {
+        "daily_rim_observation",
+        "daily_rim_manifest",
+        "daily_rim_image_set",
+        "daily_rim_spatial_mask_export",
+        "daily_rim_palette_mask_export",
+    }
+    roles_by_camera: dict[str, set[str]] = {}
+    for row in files:
+        if not isinstance(row, dict):
+            continue
+        context = row.get("context")
+        if not isinstance(context, dict):
+            continue
+        camera = context.get("camera_serial")
+        role = row.get("role")
+        if camera is not None and isinstance(role, str):
+            roles_by_camera.setdefault(str(camera), set()).add(role)
+
+    cameras_to_validate = scoped_camera_set or {
+        str(camera) for camera in daily_cameras
+    }
+    for camera in sorted(cameras_to_validate):
+        camera_daily = daily_cameras.get(camera)
+        if not isinstance(camera_daily, dict) or camera_daily.get("status") != "resolved":
+            reporter.fail(f"daily registration has no resolved mask for camera {camera}")
+            continue
+        entry = camera_daily.get("recording_snapshot_entry")
+        if not isinstance(entry, dict):
+            reporter.fail(f"daily registration mask entry is missing for camera {camera}")
+            continue
+        inner = entry.get("accepted_inner_rim_boundary")
+        valid = entry.get("valid_detection_region")
+        inner_circle = _camera_circle(
+            inner.get("geometry") if isinstance(inner, dict) else None
+        )
+        valid_circle = _camera_circle(
+            valid.get("geometry") if isinstance(valid, dict) else None
+        )
+        geometry_ok = (
+            isinstance(inner, dict)
+            and inner.get("coordinate_space") == "camera_native_pixels"
+            and inner.get("target_plane") == "dish_top_rim"
+            and isinstance(valid, dict)
+            and valid.get("coordinate_space") == "camera_native_pixels"
+            and valid.get("purpose") == "bounding_box_centroid_detection_gating"
+            and valid.get("offset_direction") == "outward"
+            and inner_circle is not None
+            and valid_circle is not None
+            and abs(inner_circle[0] - valid_circle[0]) <= 1e-6
+            and abs(inner_circle[1] - valid_circle[1]) <= 1e-6
+            and valid_circle[2] >= inner_circle[2]
+        )
+        reporter.check(
+            geometry_ok,
+            f"camera {camera} registered rim and outward centroid gate are coherent",
+            f"camera {camera} registered rim/gate geometry is invalid or contradictory",
+        )
+        snapshot_entry = (
+            calibrations.get(camera, {}).get("dish_top_rim_observation")
+            if isinstance(calibrations.get(camera), dict)
+            else None
+        )
+        reporter.check(
+            isinstance(snapshot_entry, dict)
+            and snapshot_entry.get("artifact_id") == entry.get("artifact_id")
+            and snapshot_entry.get("valid_detection_region") == valid,
+            f"camera {camera} direct recording-snapshot mask matches the contract",
+            f"camera {camera} recording-snapshot mask differs from the contract",
+        )
+        missing_roles = required_roles - roles_by_camera.get(camera, set())
+        reporter.check(
+            not missing_roles,
+            f"camera {camera} recording-local daily mask package is complete",
+            f"camera {camera} daily mask package lacks roles {sorted(missing_roles)}",
+        )
+        if geometry_ok and not missing_roles:
+            summary["resolved_mask_count"] += 1
+    return summary
+
+
+def validate_recording_geometry_artifacts(
+    recording_folder: Path,
+    snapshot: dict[str, Any],
+    reporter: Reporter,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {"status": "not_referenced", "files": 0}
+    reference = snapshot.get("recording_geometry_contract")
+    if not isinstance(reference, dict):
+        reporter.warn("recording snapshot has no recording geometry contract reference")
+        return summary
+
+    try:
+        contract_path = recording_local_path(
+            recording_folder,
+            reference.get("relative_path"),
+            "recording geometry contract path",
+        )
+        contract_bytes, contract = read_exact_json(contract_path)
+    except ValidationError as exc:
+        reporter.fail(str(exc))
+        summary["status"] = "invalid"
+        return summary
+
+    expected_contract_sha256 = reference.get("sha256")
+    actual_contract_sha256 = sha256_reference(contract_bytes)
+    reporter.check(
+        expected_contract_sha256 == actual_contract_sha256,
+        "recording geometry contract checksum matches recording_snapshot.json",
+        (
+            "recording geometry contract checksum mismatch: "
+            f"expected {expected_contract_sha256!r}, got {actual_contract_sha256!r}"
+        ),
+    )
+    reporter.check(
+        contract.get("schema_id") == "orange.recording.geometry_contract"
+        and contract.get("schema_version") == 1,
+        "recording geometry contract schema identity is valid",
+        "recording geometry contract schema identity is invalid",
+    )
+    summary.update(
+        {
+            "status": str(contract.get("status", "unknown")),
+            "contract_path": str(contract_path),
+            "contract_sha256": actual_contract_sha256,
+        }
+    )
+
+    assets = contract.get("materialized_assets")
+    if not isinstance(assets, dict):
+        reporter.warn("recording geometry contract predates materialized assets")
+        summary["asset_status"] = "legacy_not_referenced"
+        return summary
+    summary["asset_status"] = str(assets.get("status", "unknown"))
+    if assets.get("status") == "unavailable":
+        reporter.warn(
+            "recording-local geometry assets are explicitly unavailable; "
+            "numerical geometry remains in the contract"
+        )
+        return summary
+
+    try:
+        manifest_path = recording_local_path(
+            recording_folder,
+            assets.get("relative_path"),
+            "recording geometry asset manifest path",
+        )
+        manifest_bytes, manifest = read_exact_json(manifest_path)
+    except ValidationError as exc:
+        reporter.fail(str(exc))
+        summary["asset_status"] = "invalid"
+        return summary
+
+    actual_manifest_sha256 = sha256_reference(manifest_bytes)
+    reporter.check(
+        assets.get("sha256") == actual_manifest_sha256,
+        "recording geometry asset manifest checksum matches the contract",
+        (
+            "recording geometry asset manifest checksum mismatch: "
+            f"expected {assets.get('sha256')!r}, got {actual_manifest_sha256!r}"
+        ),
+    )
+    reporter.check(
+        manifest.get("schema_id") == "orange.recording.geometry_assets"
+        and manifest.get("schema_version") == 1,
+        "recording geometry asset manifest schema identity is valid",
+        "recording geometry asset manifest schema identity is invalid",
+    )
+    reporter.check(
+        assets.get("request_sha256") == manifest.get("request_sha256"),
+        "recording geometry asset request identity matches the contract",
+        "recording geometry asset request identity differs from the contract",
+    )
+    reporter.check(
+        assets.get("status") == manifest.get("status"),
+        "recording geometry asset status matches the contract",
+        "recording geometry asset status differs from the contract",
+    )
+
+    files = manifest.get("files")
+    if not isinstance(files, list):
+        reporter.fail("recording geometry asset manifest files is not an array")
+        return summary
+    reporter.check(
+        assets.get("file_count") == len(files)
+        and manifest.get("materialized_file_count") == len(files),
+        f"recording geometry asset file counts agree ({len(files)})",
+        "recording geometry asset file counts disagree",
+    )
+    failures = manifest.get("failures")
+    if not isinstance(failures, list):
+        reporter.fail("recording geometry asset manifest failures is not an array")
+        failures = []
+    required_failures = sum(
+        1 for failure in failures
+        if isinstance(failure, dict) and failure.get("required") is True
+    )
+    optional_failures = sum(
+        1 for failure in failures
+        if isinstance(failure, dict) and failure.get("required") is False
+    )
+    reporter.check(
+        manifest.get("required_failure_count") == required_failures
+        and assets.get("required_failure_count") == required_failures,
+        f"recording geometry required-failure counts agree ({required_failures})",
+        "recording geometry required-failure counts disagree",
+    )
+    reporter.check(
+        manifest.get("optional_failure_count") == optional_failures,
+        f"recording geometry optional-failure count agrees ({optional_failures})",
+        "recording geometry optional-failure count disagrees",
+    )
+    status = manifest.get("status")
+    status_consistent = (
+        (status == "complete" and required_failures == 0)
+        or (status == "partial" and required_failures > 0)
+        or (
+            status == "empty"
+            and manifest.get("required_requested_file_count") == 0
+            and not files
+        )
+    )
+    reporter.check(
+        status_consistent,
+        f"recording geometry asset status {status!r} matches its failures",
+        f"recording geometry asset status {status!r} contradicts its failures/counts",
+    )
+
+    bundle_root = manifest_path.parent.resolve()
+    scope = manifest.get("scope") if isinstance(manifest.get("scope"), dict) else {}
+    scoped_cameras = scope.get("camera_serials")
+    scoped_camera_set = {
+        str(value) for value in scoped_cameras
+    } if isinstance(scoped_cameras, list) else set()
+    arena_by_camera = scope.get("arena_by_camera")
+    if not isinstance(arena_by_camera, dict):
+        arena_by_camera = {}
+    file_failure_count_before = len(reporter.failures)
+    total_bytes = 0
+    for index, file_entry in enumerate(files):
+        if not isinstance(file_entry, dict):
+            reporter.fail(f"geometry asset file row {index} is not an object")
+            continue
+        relative = file_entry.get("relative_path")
+        try:
+            asset_path = recording_local_path(
+                bundle_root,
+                relative,
+                f"geometry asset file row {index} path",
+            )
+            asset_bytes = asset_path.read_bytes()
+        except (ValidationError, FileNotFoundError) as exc:
+            reporter.fail(str(exc))
+            continue
+        actual_sha256 = sha256_reference(asset_bytes)
+        if actual_sha256 != file_entry.get("sha256"):
+            reporter.fail(
+                f"geometry asset checksum mismatch for {relative}: "
+                f"expected {file_entry.get('sha256')!r}, got {actual_sha256!r}"
+            )
+            continue
+        if file_entry.get("size_bytes") != len(asset_bytes):
+            reporter.fail(
+                f"geometry asset byte count mismatch for {relative}: "
+                f"expected {file_entry.get('size_bytes')!r}, got {len(asset_bytes)}"
+            )
+            continue
+        context = file_entry.get("context")
+        if isinstance(context, dict):
+            camera = context.get("camera_serial")
+            arena = context.get("arena_id")
+            if camera is not None and str(camera) not in scoped_camera_set:
+                reporter.fail(
+                    f"geometry asset {relative} names unscoped camera {camera!r}"
+                )
+                continue
+            if (
+                camera is not None
+                and arena is not None
+                and str(arena_by_camera.get(str(camera), "")) != str(arena)
+            ):
+                reporter.fail(
+                    f"geometry asset {relative} arena {arena!r} does not match "
+                    f"camera {camera!r} scope"
+                )
+                continue
+        total_bytes += len(asset_bytes)
+
+    summary["daily_registration"] = validate_daily_registered_masks(
+        contract, snapshot, scoped_camera_set, files, reporter
+    )
+
+    reporter.check(
+        assets.get("total_bytes") == total_bytes
+        and manifest.get("total_bytes") == total_bytes,
+        f"recording geometry asset byte totals agree ({total_bytes})",
+        "recording geometry asset byte totals disagree",
+    )
+    summary.update(
+        {
+            "asset_manifest_path": str(manifest_path),
+            "asset_manifest_sha256": actual_manifest_sha256,
+            "files": len(files),
+            "total_bytes": total_bytes,
+        }
+    )
+    if manifest.get("status") == "partial":
+        reporter.warn(
+            "recording geometry asset bundle is explicitly partial; inspect its failures[]"
+        )
+    elif manifest.get("status") == "empty":
+        reporter.pass_("recording geometry asset bundle is explicitly empty")
+    elif len(reporter.failures) == file_failure_count_before:
+        reporter.pass_("all listed recording geometry assets passed checksum validation")
+    return summary
 
 
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
@@ -730,6 +1131,7 @@ def validate_recording(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
     reporter = Reporter()
     summary: dict[str, Any] = {
         "recording_folder": str(recording_folder),
+        "geometry": {},
         "main": {},
         "crop": {},
         "warnings": reporter.warnings,
@@ -748,6 +1150,9 @@ def validate_recording(args: argparse.Namespace) -> tuple[int, dict[str, Any]]:
         reporter.fail(str(exc))
         snapshot = {}
 
+    summary["geometry"] = validate_recording_geometry_artifacts(
+        recording_folder, snapshot, reporter
+    )
     summary["main"] = validate_main_artifacts(recording_folder, args.ffprobe, reporter)
     summary["crop"] = validate_crop_artifacts(
         recording_folder,

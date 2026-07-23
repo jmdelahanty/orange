@@ -38,6 +38,21 @@ std::filesystem::path make_temp_root()
     return root;
 }
 
+nlohmann::json visibility_domain(const std::string& domain_id,
+                                 const std::string& shape,
+                                 const std::string& geometry_status,
+                                 const std::string& authority)
+{
+    return {
+        {"domain_id", domain_id},
+        {"shape", shape},
+        {"coordinate_space", "final_display_canvas_px"},
+        {"geometry_status", geometry_status},
+        {"authority", authority},
+        {"distinct_from_experimental_area", true},
+    };
+}
+
 orange::calibration::CalibrationImageSetRequest make_request()
 {
     using namespace orange::calibration;
@@ -63,6 +78,10 @@ orange::calibration::CalibrationImageSetRequest make_request()
     request.capture.has_exposure_us = true;
     request.capture.frame_rate_hz = 1.0;
     request.capture.has_frame_rate_hz = true;
+    request.capture.camera_timestamp_ns = 1234567890123ULL;
+    request.capture.has_camera_timestamp_ns = true;
+    request.capture.timestamp_sys_ns = 1234567890999ULL;
+    request.capture.has_timestamp_sys_ns = true;
     request.capture.light_handling = "suppress_mapped_strobe";
     request.capture.light_state = "visible_projector_only";
     request.capture.illumination_spectrum = "broadband_visible";
@@ -110,6 +129,50 @@ orange::calibration::CalibrationImageSetRequest make_request()
         {"diagnostic_only", true},
         {"authority", "citrus_recomputes_before_acceptance"}
     };
+    request.citrus_calibration_scene_pre_capture = {
+        {"transaction_id", "calgrp_20260608T194500Z_shadow_homography_grid"},
+        {"recipe_id", "homography_rings"},
+        {"scene_revision", 12},
+        {"content_fingerprint", "fnv1a64:scene"},
+        {"state", "presented"},
+        {"presented", true}
+    };
+    request.citrus_calibration_scene_post_capture =
+        request.citrus_calibration_scene_pre_capture;
+    request.citrus_calibration_scene_consistency = {
+        {"status", "same_scene"},
+        {"policy", "required_same_presented_scene_v1"},
+        {"scene_revision", 12},
+        {"content_fingerprint", "fnv1a64:scene"}
+    };
+    request.citrus_calibration_scene_restore_status = {
+        {"transaction_id", "calgrp_20260608T194500Z_shadow_homography_grid"},
+        {"state", "restored"},
+        {"presented", true},
+        {"active", false}
+    };
+    request.citrus_arena_centering_pre_capture = {
+        {"transaction_id", "arena-centering-1"},
+        {"stage_id", "probe_plus_x"},
+        {"presented", true}
+    };
+    request.citrus_arena_centering_post_capture =
+        request.citrus_arena_centering_pre_capture;
+    request.citrus_arena_centering_consistency = {
+        {"status", "same_stage"},
+        {"transaction_id", "arena-centering-1"},
+        {"stage_id", "probe_plus_x"}
+    };
+    request.capture_group_membership = {
+        {"schema_id", "orange.calibration.capture_group_membership"},
+        {"schema_version", 1},
+        {"capture_group_id", "calgrp_20260608T194500Z_shadow_homography_grid"},
+        {"expected_camera_serials", {"2010093", "2010094"}},
+        {"completed_camera_serials", {"2010093"}},
+        {"failed_cameras", {{{"camera_serial", "2010094"}, {"error", "fixture"}}}},
+        {"status", "partial"},
+        {"intentional_camera_scope", true}
+    };
     request.operator_notes = "fixture notes";
     return request;
 }
@@ -147,6 +210,18 @@ void test_writer_emits_core_shape()
         "capture group id");
     require(image_set["capture"].value("projector_visible_to_camera", false), "projector visible");
     require(
+        image_set["capture"].value("camera_timestamp_ns", 0ULL) ==
+            1234567890123ULL,
+        "embedded camera timestamp");
+    require(
+        image_set["capture"].value("camera_timestamp_clock_domain", "") ==
+            "camera_ptp",
+        "camera timestamp clock domain");
+    require(
+        image_set["capture"].value("timestamp_sys_ns", 0ULL) ==
+            1234567890999ULL,
+        "host acquisition timestamp");
+    require(
         image_set["capture"].value("light_handling", "") == "suppress_mapped_strobe",
         "light handling");
     require(
@@ -170,6 +245,31 @@ void test_writer_emits_core_shape()
     require(image_set["images"][0].value("checksum", "") == "fnv1a64:abc", "checksum");
     require(image_set["projected_pattern"].value("type", "") == "dot_grid", "projected pattern");
     require(image_set["citrus_preview"].value("diagnostic_only", false), "diagnostic preview");
+    require(
+        image_set["citrus_calibration_scene_pre_capture"].value("scene_revision", 0) == 12,
+        "pre-capture Citrus scene emitted");
+    require(
+        image_set["citrus_calibration_scene_consistency"].value("status", "") ==
+            "same_scene",
+        "Citrus scene consistency emitted");
+    require(
+        image_set["citrus_calibration_scene_restore_status"].value("state", "") ==
+            "restored",
+        "Citrus scene restore status emitted");
+    require(
+        image_set["citrus_arena_centering_pre_capture"].value("stage_id", "") ==
+            "probe_plus_x",
+        "pre-capture arena-centering stage emitted");
+    require(
+        image_set["citrus_arena_centering_consistency"].value("status", "") ==
+            "same_stage",
+        "arena-centering consistency emitted");
+    require(
+        image_set["capture_group_membership"].value("status", "") == "partial",
+        "explicit partial capture-group membership emitted");
+    require(
+        image_set["capture_group_membership"]["expected_camera_serials"].size() == 2,
+        "expected camera set emitted");
     require(image_set.value("operator_notes", "") == "fixture notes", "operator notes");
 
     std::filesystem::remove_all(root);
@@ -347,8 +447,20 @@ void test_emits_dry_reference_capture_stage_metadata()
     CalibrationImageSetRequest request = make_request();
     request.artifact_id = "calimg_20260608_2010093_dry_reference";
     request.capture_stage = "projected_surface_dry_reference";
+    request.workflow_profile_id = "unobstructed_canvas_commissioning";
+    request.fixture_state = "holder_removed";
+    request.homography_role = "commissioning_reference";
+    request.visibility_domain = visibility_domain(
+        "unobstructed_arena_rectangle",
+        "rectangle",
+        "not_embedded",
+        "citrus_arena_layout");
     request.target_plane = "projected_surface";
     request.wet_or_dry = "dry";
+    request.imaging_shelf_installed = false;
+    request.has_imaging_shelf_installed = true;
+    request.dish_installed = false;
+    request.has_dish_installed = true;
     request.pattern_type = "rectangular_grid";
     request.pattern_domain = "full_projected_surface";
     request.target_method = "projected_pattern_on_diffuser";
@@ -374,9 +486,86 @@ void test_emits_dry_reference_capture_stage_metadata()
         "dry reference stage emitted");
     require(image_set.value("wet_or_dry", "") == "dry", "dry state emitted");
     require(
+        image_set.value("workflow_profile_id", "") ==
+            "unobstructed_canvas_commissioning",
+        "unobstructed commissioning profile emitted");
+    require(
+        image_set.value("fixture_state", "") == "holder_removed",
+        "holder-removed fixture state emitted");
+    require(
+        image_set.value("homography_role", "") == "commissioning_reference",
+        "commissioning homography role emitted");
+    require(
+        image_set["visibility_domain"].value("domain_id", "") ==
+            "unobstructed_arena_rectangle",
+        "unobstructed arena visibility domain emitted");
+    require(
         image_set.value("parity_group_role", "") == "dry_reference",
         "dry reference role emitted");
     require(image_set.value("reference_only", false), "dry reference is reference only");
+
+    std::filesystem::remove_all(root);
+}
+
+void test_emits_daily_registration_preview_identity()
+{
+    using namespace orange::calibration;
+
+    const std::filesystem::path root = make_temp_root();
+    const std::filesystem::path output_path =
+        root / "daily_registration_preview_image_set.json";
+
+    CalibrationImageSetRequest request = make_request();
+    request.artifact_id = "calimg_dailyreg_2010093_preview";
+    request.capture_stage = "daily_registration_candidate_validation";
+    request.workflow_profile_id = "installed_tank_registration";
+    request.fixture_state = "holder_installed_dish_installed";
+    request.homography_role = "validation_only";
+    request.citrus_daily_registration_pre_capture = {
+        {"schema_id", "citrus.daily_registration.status"},
+        {"schema_version", 1},
+        {"active", true},
+        {"transaction_id", "daily-shadow-1"},
+        {"candidate_sha256", "sha256:" + std::string(64, 'c')},
+        {"preview_active", true},
+        {"visible", true},
+        {"operation_id", "daily-preview-op-1"},
+    };
+    request.citrus_daily_registration_post_capture =
+        request.citrus_daily_registration_pre_capture;
+    request.citrus_daily_registration_consistency = {
+        {"status", "same_candidate_preview"},
+        {"policy", "required_same_daily_registration_preview_v1"},
+        {"transaction_id", "daily-shadow-1"},
+        {"candidate_sha256", "sha256:" + std::string(64, 'c')},
+        {"operation_id", "daily-preview-op-1"},
+    };
+
+    CalibrationImageSetWriteResult result;
+    std::string error;
+    require(
+        write_calibration_image_set_json_file(
+            output_path.string(), request, &result, &error),
+        "daily registration preview image set should be accepted: " + error);
+
+    const nlohmann::json image_set = read_json(output_path);
+    require(
+        image_set.value("capture_stage", "") ==
+            "daily_registration_candidate_validation",
+        "daily validation stage emitted");
+    require(
+        image_set["citrus_daily_registration_pre_capture"].value(
+            "transaction_id", "") == "daily-shadow-1",
+        "daily transaction identity emitted before capture");
+    require(
+        image_set["citrus_daily_registration_post_capture"].value(
+            "candidate_sha256", "") ==
+                "sha256:" + std::string(64, 'c'),
+        "daily candidate identity emitted after capture");
+    require(
+        image_set["citrus_daily_registration_consistency"].value(
+            "status", "") == "same_candidate_preview",
+        "daily preview bracket consistency emitted");
 
     std::filesystem::remove_all(root);
 }
@@ -391,6 +580,14 @@ void test_emits_wet_projected_surface_runtime_stack_metadata()
     CalibrationImageSetRequest wet_projection = make_request();
     wet_projection.artifact_id = "calimg_20260608_2010093_wet_projected_surface";
     wet_projection.capture_stage = "projected_surface_wet_runtime_stack";
+    wet_projection.workflow_profile_id = "wet_tank_projected_surface";
+    wet_projection.fixture_state = "holder_installed_dish_installed";
+    wet_projection.homography_role = "operational_candidate";
+    wet_projection.visibility_domain = visibility_domain(
+        "imaging_shelf_aperture",
+        "circle",
+        "unmeasured",
+        "citrus_imaging_shelf_profile_pending");
     wet_projection.target_plane = "projected_surface";
     wet_projection.wet_or_dry = "wet";
     wet_projection.imaging_shelf_installed = true;
@@ -437,6 +634,96 @@ void test_emits_wet_projected_surface_runtime_stack_metadata()
     require(
         projection.value("pattern_type", "") == "circular_rings",
         "wet projection rings metadata emitted");
+    require(
+        projection.value("fixture_state", "") ==
+            "holder_installed_dish_installed",
+        "wet installed fixture state emitted");
+    require(
+        projection["visibility_domain"].value("domain_id", "") ==
+            "imaging_shelf_aperture",
+        "wet capture preserves holder aperture domain");
+
+    std::filesystem::remove_all(root);
+}
+
+void test_emits_holder_installed_projected_surface_metadata()
+{
+    using namespace orange::calibration;
+
+    const std::filesystem::path root = make_temp_root();
+    CalibrationImageSetRequest request = make_request();
+    request.artifact_id = "calimg_20260608_2010093_holder_installed";
+    request.capture_stage = "projected_surface_holder_installed";
+    request.workflow_profile_id = "holder_installed_projected_surface";
+    request.fixture_state = "holder_installed_dish_absent";
+    request.homography_role = "operational_candidate";
+    request.visibility_domain = visibility_domain(
+        "imaging_shelf_aperture",
+        "circle",
+        "unmeasured",
+        "operator_declared_fixture_profile_pending_observation");
+    request.target_plane = "projected_surface";
+    request.wet_or_dry = "dry";
+    request.imaging_shelf_installed = true;
+    request.has_imaging_shelf_installed = true;
+    request.dish_installed = false;
+    request.has_dish_installed = true;
+    request.open_water_surface_present = false;
+    request.has_open_water_surface_present = true;
+    request.target_method = "projected_pattern_on_diffuser";
+    request.pattern_type = "circular_rings";
+    request.pattern_domain = "circular_experimental_domain";
+    request.matched_parity_group_id = "holder_stack_20260608T194500Z";
+    request.parity_group_role = "holder_installed_projected_surface";
+    request.reference_only = false;
+    request.has_reference_only = true;
+
+    CalibrationImageSetWriteResult result;
+    std::string error;
+    require(
+        write_calibration_image_set_json_file(
+            (root / "holder_installed_image_set.json").string(),
+            request,
+            &result,
+            &error),
+        "holder-installed image set should be accepted: " + error);
+
+    const nlohmann::json image_set = result.image_set;
+    require(
+        image_set.value("capture_stage", "") ==
+            "projected_surface_holder_installed",
+        "holder-installed stage emitted");
+    require(
+        image_set.value("fixture_state", "") ==
+            "holder_installed_dish_absent",
+        "dish-absent holder fixture state emitted");
+    require(
+        image_set.value("pattern_domain", "") ==
+            "circular_experimental_domain",
+        "experimental-area ring support emitted separately from holder visibility");
+    require(
+        image_set["visibility_domain"].value("domain_id", "") ==
+            "imaging_shelf_aperture",
+        "holder aperture visibility domain emitted");
+    require(
+        image_set.value("homography_role", "") == "operational_candidate",
+        "holder homography capture is an operational candidate pending review");
+
+    request.artifact_id = "calimg_20260608_2010093_holder_rectangle";
+    request.pattern_type = "rectangular_grid";
+    request.pattern_domain = "full_projected_surface";
+    request.visibility_domain["shape"] = "rectangle";
+    require(
+        write_calibration_image_set_json_file(
+            (root / "holder_rectangle_image_set.json").string(),
+            request,
+            &result,
+            &error),
+        "rectangular holder validation may preserve full-surface pattern support: " +
+            error);
+    require(
+        result.image_set.value("homography_role", "") == "operational_candidate",
+        "rectangular holder homography may be an operational candidate");
 
     std::filesystem::remove_all(root);
 }
@@ -566,8 +853,20 @@ void test_rejects_dry_reference_without_reference_only()
 
     CalibrationImageSetRequest request = make_request();
     request.capture_stage = "projected_surface_dry_reference";
+    request.workflow_profile_id = "unobstructed_canvas_commissioning";
+    request.fixture_state = "holder_removed";
+    request.homography_role = "commissioning_reference";
+    request.visibility_domain = visibility_domain(
+        "unobstructed_arena_rectangle",
+        "rectangle",
+        "not_embedded",
+        "citrus_arena_layout");
     request.target_plane = "projected_surface";
     request.wet_or_dry = "dry";
+    request.imaging_shelf_installed = false;
+    request.has_imaging_shelf_installed = true;
+    request.dish_installed = false;
+    request.has_dish_installed = true;
     request.parity_group_role = "dry_reference";
     request.reference_only = false;
     request.has_reference_only = true;
@@ -683,6 +982,8 @@ int main()
         test_accepts_validation_pattern_purpose();
         test_accepts_aggregate_camera_arena_set();
         test_emits_dry_reference_capture_stage_metadata();
+        test_emits_daily_registration_preview_identity();
+        test_emits_holder_installed_projected_surface_metadata();
         test_emits_wet_projected_surface_runtime_stack_metadata();
         test_accepts_dry_physical_target_height_parallax_diagnostic();
         test_rejects_dry_physical_target_height_parallax_with_water();

@@ -76,6 +76,16 @@ void render_group_capture_panels(
             capture.width,
             capture.height,
             capture.source_frame_count > 1 ? "mean" : "frame");
+        if (capture.metadata.capture_group_membership.is_object() &&
+            !capture.metadata.capture_group_membership.empty()) {
+            ImGui::TextDisabled(
+                "group=%s scene=%s",
+                capture.metadata.capture_group_membership.value(
+                    "status", std::string("unknown")).c_str(),
+                capture.metadata.capture_group_membership.value(
+                    "scene_consistency_status",
+                    std::string("unavailable")).c_str());
+        }
         if (capture.texture != 0 && capture.width > 0 && capture.height > 0) {
             const ImVec2 image_size =
                 fit_group_capture_image_size(

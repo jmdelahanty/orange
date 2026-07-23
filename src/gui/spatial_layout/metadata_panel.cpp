@@ -595,8 +595,49 @@ void render_calibration_capture_metadata_panel(
         "camera_physical_dish_base_inner_surface",
         "camera_physical_fish_height",
         "projected_surface_dry_reference",
+        "projected_surface_holder_installed",
         "projected_surface_wet_runtime_stack",
         "dish_top_observation",
+        "unknown"
+    };
+    static constexpr const char* kWorkflowProfilePresets[] = {
+        "camera_physical_planes",
+        "unobstructed_canvas_commissioning",
+        "holder_installed_projected_surface",
+        "wet_tank_projected_surface",
+        "installed_tank_registration",
+        "custom"
+    };
+    static constexpr const char* kFixtureStatePresets[] = {
+        "holder_removed",
+        "holder_installed_dish_absent",
+        "holder_installed_dish_installed",
+        "unknown"
+    };
+    static constexpr const char* kHomographyRolePresets[] = {
+        "commissioning_reference",
+        "operational_candidate",
+        "validation_only",
+        "not_applicable",
+        "unknown"
+    };
+    static constexpr const char* kVisibilityDomainPresets[] = {
+        "unobstructed_arena_rectangle",
+        "imaging_shelf_aperture",
+        "unknown"
+    };
+    static constexpr const char* kVisibilityShapePresets[] = {
+        "rectangle",
+        "circle",
+        "rounded_rectangle",
+        "polygon",
+        "unknown"
+    };
+    static constexpr const char* kVisibilityGeometryStatusPresets[] = {
+        "not_embedded",
+        "unmeasured",
+        "configured",
+        "observed",
         "unknown"
     };
     static constexpr const char* kTargetPlanePresets[] = {
@@ -663,6 +704,7 @@ void render_calibration_capture_metadata_panel(
         "physical_dish_base",
         "physical_fish_height",
         "dry_reference",
+        "holder_installed_projected_surface",
         "wet_projected_surface",
         ""
     };
@@ -671,6 +713,36 @@ void render_calibration_capture_metadata_panel(
         &ui_state->calibration_capture_stage,
         kCaptureStagePresets,
         IM_ARRAYSIZE(kCaptureStagePresets));
+    render_string_preset_combo(
+        "Workflow profile",
+        &ui_state->calibration_workflow_profile_id,
+        kWorkflowProfilePresets,
+        IM_ARRAYSIZE(kWorkflowProfilePresets));
+    render_string_preset_combo(
+        "Fixture state",
+        &ui_state->calibration_fixture_state,
+        kFixtureStatePresets,
+        IM_ARRAYSIZE(kFixtureStatePresets));
+    render_string_preset_combo(
+        "Homography role",
+        &ui_state->calibration_homography_role,
+        kHomographyRolePresets,
+        IM_ARRAYSIZE(kHomographyRolePresets));
+    render_string_preset_combo(
+        "Camera visibility domain",
+        &ui_state->calibration_visibility_domain_id,
+        kVisibilityDomainPresets,
+        IM_ARRAYSIZE(kVisibilityDomainPresets));
+    render_string_preset_combo(
+        "Visibility shape",
+        &ui_state->calibration_visibility_domain_shape,
+        kVisibilityShapePresets,
+        IM_ARRAYSIZE(kVisibilityShapePresets));
+    render_string_preset_combo(
+        "Visibility geometry status",
+        &ui_state->calibration_visibility_domain_geometry_status,
+        kVisibilityGeometryStatusPresets,
+        IM_ARRAYSIZE(kVisibilityGeometryStatusPresets));
     if (ImGui::BeginCombo(
             "Image-set purpose",
             ui_state->calibration_image_set_purpose.empty()

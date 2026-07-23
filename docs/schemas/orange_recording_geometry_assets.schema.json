@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.recording.geometry_assets.v1",
+  "title": "Orange Recording Geometry Assets",
+  "description": "Recording-local exact-byte copies of the scoped immutable geometry evidence referenced by an Orange recording geometry contract.",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "created_at_utc",
+    "status",
+    "request_sha256",
+    "contract",
+    "policy",
+    "scope",
+    "optional_image_evidence_requested",
+    "optional_image_evidence_status",
+    "required_requested_file_count",
+    "required_failure_count",
+    "optional_requested_file_count",
+    "optional_failure_count",
+    "materialized_file_count",
+    "total_bytes",
+    "files",
+    "failures",
+    "warnings"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "orange.recording.geometry_assets"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "created_at_utc": {
+      "type": "string"
+    },
+    "status": {
+      "enum": ["complete", "partial", "empty"]
+    },
+    "request_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "contract": {
+      "type": "object",
+      "required": ["schema_id", "schema_version", "status"],
+      "properties": {
+        "schema_id": {"const": "orange.recording.geometry_contract"},
+        "schema_version": {"const": 1},
+        "status": {"type": "string"}
+      },
+      "additionalProperties": true
+    },
+    "policy": {
+      "type": "object",
+      "required": [
+        "participating_cameras_only",
+        "cross_arena_fallback_allowed",
+        "exact_source_bytes",
+        "active_pointer_resolution",
+        "failure_action",
+        "images_are_optional"
+      ],
+      "properties": {
+        "participating_cameras_only": {"const": true},
+        "cross_arena_fallback_allowed": {"const": false},
+        "exact_source_bytes": {"const": true},
+        "active_pointer_resolution": {
+          "const": "active_pointer_plus_checksum_bound_immutable_targets"
+        },
+        "failure_action": {"const": "record_status_and_continue"},
+        "images_are_optional": {"const": true}
+      },
+      "additionalProperties": true
+    },
+    "scope": {
+      "type": "object",
+      "required": ["camera_serials", "arena_by_camera"],
+      "properties": {
+        "camera_serials": {
+          "type": "array",
+          "items": {"type": "string"},
+          "uniqueItems": true
+        },
+        "arena_by_camera": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        }
+      },
+      "additionalProperties": true
+    },
+    "optional_image_evidence_requested": {"type": "boolean"},
+    "optional_image_evidence_status": {
+      "enum": ["not_requested", "complete", "partial"]
+    },
+    "required_requested_file_count": {"type": "integer", "minimum": 0},
+    "required_failure_count": {"type": "integer", "minimum": 0},
+    "optional_requested_file_count": {"type": "integer", "minimum": 0},
+    "optional_failure_count": {"type": "integer", "minimum": 0},
+    "materialized_file_count": {"type": "integer", "minimum": 0},
+    "total_bytes": {"type": "integer", "minimum": 0},
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "role",
+          "source_path",
+          "relative_path",
+          "sha256",
+          "size_bytes",
+          "exact_source_bytes",
+          "required"
+        ],
+        "properties": {
+          "role": {"type": "string"},
+          "source_path": {"type": "string"},
+          "relative_path": {
+            "type": "string",
+            "not": {"pattern": "^(?:/|.*(?:^|/)\\.\\.(?:/|$))"}
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "size_bytes": {"type": "integer", "minimum": 0},
+          "exact_source_bytes": {"const": true},
+          "required": {"type": "boolean"},
+          "declared_source_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "declared_source_checksum": {
+            "type": "string",
+            "pattern": "^(?:sha256:[0-9a-f]{64}|fnv1a64:[0-9a-f]{16})$"
+          },
+          "declared_checksum_algorithm": {
+            "enum": ["sha256", "fnv1a64"]
+          },
+          "declared_checksum_verified": {"const": true},
+          "context": {"type": "object"}
+        },
+        "additionalProperties": true
+      }
+    },
+    "failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["role", "source_path", "relative_path", "required", "reason"],
+        "additionalProperties": true
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  },
+  "additionalProperties": true
+}

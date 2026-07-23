@@ -10,9 +10,7 @@ namespace orange::gui::spatial_layout {
 namespace {
 
 constexpr const char* kCalibrationCaptureProfileId =
-    "spatial_layout_visible_long_exposure_v1";
-constexpr unsigned int kCalibrationCaptureFrameRateHz = 10;
-constexpr unsigned int kCalibrationCaptureExposureUs = 10000;
+    "spatial_layout_visible_long_exposure_v2";
 
 std::string sanitize_artifact_component(const std::string& value)
 {
@@ -101,9 +99,9 @@ void mark_calibration_capture_profile_active_for_cameras(
     ui_state->calibration_capture_profile_operation_id =
         std::string(kCalibrationCaptureProfileId) + "_" +
         sanitize_artifact_component(get_current_utc_timestamp()) +
-        "_all_open_cameras";
+        "_camera_scope";
     ui_state->calibration_capture_profile_camera_serial =
-        "all_open:" + camera_serials.str();
+        "camera_scope:" + camera_serials.str();
     ui_state->calibration_capture_profile_light_camera_serial =
         light_params ? light_params->camera_serial : "";
 }
@@ -137,6 +135,20 @@ bool set_camera_uint32_param_for_calibration(
     }
 
     const unsigned int clamped_value = std::clamp(requested_value, *cached_min, *cached_max);
+    unsigned int current_readback = 0;
+    const EVT_ERROR current_get_err =
+        Emergent::EVT_CameraGetUInt32Param(camera, node_name, &current_readback);
+    if (current_get_err == EVT_SUCCESS && current_readback == clamped_value) {
+        *cached_value = current_readback;
+        if (status_out) {
+            std::ostringstream oss;
+            oss << node_name << " requested=" << requested_value
+                << " applied=" << current_readback
+                << " already_configured=true";
+            *status_out = oss.str();
+        }
+        return true;
+    }
     const EVT_ERROR set_err =
         Emergent::EVT_CameraSetUInt32Param(camera, node_name, clamped_value);
     if (set_err != EVT_SUCCESS) {
@@ -269,6 +281,7 @@ bool apply_calibration_capture_settings_to_camera(
     CameraEmergent* ecam,
     CameraParams* camera_params,
     const bool recording_mutation_locked,
+    const CalibrationCaptureTiming& timing,
     std::string* status_out)
 {
     if (ecam == nullptr || camera_params == nullptr) {
@@ -291,7 +304,7 @@ bool apply_calibration_capture_settings_to_camera(
             &ecam->camera,
             camera_params,
             "FrameRate",
-            kCalibrationCaptureFrameRateHz,
+            timing.frame_rate_hz,
             &camera_params->frame_rate,
             &camera_params->frame_rate_min,
             &camera_params->frame_rate_max,
@@ -308,7 +321,7 @@ bool apply_calibration_capture_settings_to_camera(
             &ecam->camera,
             camera_params,
             "Exposure",
-            kCalibrationCaptureExposureUs,
+            timing.exposure_us,
             &camera_params->exposure,
             &camera_params->exposure_min,
             &camera_params->exposure_max,
@@ -449,15 +462,13 @@ bool restore_calibration_mapped_strobe_pulse(
     const std::string& connection_key,
     std::string* status_out)
 {
-    if (ui_state != nullptr &&
-        ui_state->calibration_light_restore_state.valid &&
-        ui_state->calibration_light_restore_key == connection_key) {
-        return restore_rig_io_output_diagnostic_state(
-            ecam ? &ecam->camera : nullptr,
-            &camera_params,
-            ui_state->calibration_light_restore_state,
-            status_out);
-    }
+    // A calibration suppression/manual state may have been captured after a
+    // prior interrupted run had already left the line in GPO mode. Replaying
+    // that state would perpetuate the fault while labeling the strobe active.
+    // The mapped pulse restore contract is therefore the config-defined normal
+    // mode, never an arbitrary captured diagnostic state.
+    (void)ui_state;
+    (void)connection_key;
     return restore_rig_io_output_normal_mode(
         ecam ? &ecam->camera : nullptr,
         &camera_params,
@@ -729,7 +740,8 @@ bool prepare_calibration_capture_preflight(
     const bool mapped_strobe_available,
     const bool recording_mutation_locked,
     const std::string& requested_light_handling,
-    std::string* status_out)
+    std::string* status_out,
+    const CalibrationCaptureTiming timing)
 {
     if (capture_ecam == nullptr || capture_params == nullptr) {
         if (status_out) {
@@ -778,6 +790,7 @@ bool prepare_calibration_capture_preflight(
         capture_ecam,
         capture_params,
         recording_mutation_locked,
+        timing,
         &capture_status);
     if (!capture_ok) {
         std::string restore_status;
@@ -805,6 +818,139 @@ bool prepare_calibration_capture_preflight(
         oss << "Calibration capture profile " << kCalibrationCaptureProfileId
             << " prepared transactionally: " << light_status << " "
             << capture_status;
+        *status_out = oss.str();
+    }
+    return true;
+}
+
+bool prepare_calibration_capture_preflight_camera_serials(
+    SpatialLayoutUiState* ui_state,
+    CameraEmergent* ecams,
+    CameraParams* cameras_params,
+    const int num_cameras,
+    const std::vector<std::string>& camera_serials,
+    CameraEmergent* light_ecam,
+    const CameraParams* light_params,
+    const bool mapped_strobe_available,
+    const bool recording_mutation_locked,
+    const std::string& requested_light_handling,
+    std::string* status_out,
+    const CalibrationCaptureTiming timing)
+{
+    if (ui_state == nullptr || ecams == nullptr || cameras_params == nullptr ||
+        num_cameras <= 0 || camera_serials.empty()) {
+        if (status_out) {
+            *status_out =
+                "Scoped calibration prepare failed: no requested open cameras are available.";
+        }
+        return false;
+    }
+    if (recording_mutation_locked) {
+        if (status_out) {
+            *status_out = "Scoped calibration prepare blocked while recording/finalizing.";
+        }
+        return false;
+    }
+
+    std::vector<int> requested_indices;
+    requested_indices.reserve(camera_serials.size());
+    for (const std::string& serial : camera_serials) {
+        const auto existing = std::find_if(
+            requested_indices.begin(),
+            requested_indices.end(),
+            [&](const int index) {
+                return cameras_params[index].camera_serial == serial;
+            });
+        if (existing != requested_indices.end()) {
+            continue;
+        }
+        int matched_index = -1;
+        for (int index = 0; index < num_cameras; ++index) {
+            if (cameras_params[index].camera_serial == serial) {
+                matched_index = index;
+                break;
+            }
+        }
+        if (matched_index < 0) {
+            if (status_out) {
+                *status_out = "Scoped calibration prepare failed: requested camera " +
+                              serial + " is not open.";
+            }
+            return false;
+        }
+        requested_indices.push_back(matched_index);
+    }
+
+    const bool needs_mapped_strobe =
+        calibration_light_handling_needs_mapped_strobe(requested_light_handling);
+    if (needs_mapped_strobe && !mapped_strobe_available) {
+        if (status_out) {
+            *status_out = "Scoped calibration prepare failed: no exposed "
+                          "nir_strobe_trigger light-control camera is available.";
+        }
+        return false;
+    }
+
+    CameraEmergent* action_light_ecam =
+        mapped_strobe_available ? light_ecam : &ecams[requested_indices.front()];
+    const CameraParams* action_light_params =
+        mapped_strobe_available ? light_params : &cameras_params[requested_indices.front()];
+    std::string light_status;
+    if (!apply_calibration_light_handling_to_camera(
+            ui_state,
+            action_light_ecam,
+            *action_light_params,
+            recording_mutation_locked,
+            requested_light_handling,
+            &light_status)) {
+        if (status_out) {
+            *status_out = light_status;
+        }
+        return false;
+    }
+
+    std::vector<int> prepared_indices;
+    for (const int camera_index : requested_indices) {
+        std::string camera_status;
+        if (!apply_calibration_capture_settings_to_camera(
+                ui_state,
+                &ecams[camera_index],
+                &cameras_params[camera_index],
+                recording_mutation_locked,
+                timing,
+                &camera_status)) {
+            std::string restore_status;
+            restore_calibration_capture_preflight_all_cameras(
+                ui_state,
+                ecams,
+                cameras_params,
+                num_cameras,
+                light_ecam,
+                light_params,
+                mapped_strobe_available,
+                recording_mutation_locked,
+                &restore_status);
+            if (status_out) {
+                *status_out = "Scoped calibration prepare failed: " + camera_status +
+                              " Rollback attempted: " + restore_status;
+            }
+            return false;
+        }
+        prepared_indices.push_back(camera_index);
+    }
+
+    mark_calibration_capture_profile_active_for_cameras(
+        ui_state,
+        cameras_params,
+        prepared_indices,
+        mapped_strobe_available ? light_params : nullptr);
+    if (status_out) {
+        std::ostringstream oss;
+        oss << "Scoped calibration capture profile " << kCalibrationCaptureProfileId
+            << " prepared transactionally: " << light_status
+            << " Applied " << timing.frame_rate_hz << " FPS / "
+            << (static_cast<double>(timing.exposure_us) / 1000.0) << " ms to "
+            << prepared_indices.size() << " camera(s).";
         *status_out = oss.str();
     }
     return true;
@@ -920,7 +1066,8 @@ bool prepare_calibration_capture_preflight_all_cameras(
     const bool mapped_strobe_available,
     const bool recording_mutation_locked,
     const std::string& requested_light_handling,
-    std::string* status_out)
+    std::string* status_out,
+    const CalibrationCaptureTiming timing)
 {
     if (ui_state == nullptr || ecams == nullptr || cameras_params == nullptr || num_cameras <= 0) {
         if (status_out) {
@@ -972,6 +1119,7 @@ bool prepare_calibration_capture_preflight_all_cameras(
             &ecams[camera_index],
             &cameras_params[camera_index],
             recording_mutation_locked,
+            timing,
             &camera_status);
         if (!camera_ok) {
             std::string restore_status;
@@ -1006,7 +1154,9 @@ bool prepare_calibration_capture_preflight_all_cameras(
         std::ostringstream oss;
         oss << "All-camera calibration capture profile " << kCalibrationCaptureProfileId
             << " prepared transactionally: " << light_status
-            << " Applied 10 FPS / 10 ms to " << prepared_indices.size()
+            << " Applied " << timing.frame_rate_hz << " FPS / "
+            << (static_cast<double>(timing.exposure_us) / 1000.0) << " ms to "
+            << prepared_indices.size()
             << " camera(s).";
         *status_out = oss.str();
     }

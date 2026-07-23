@@ -173,6 +173,37 @@ bool should_attach_observed_domain_for_target_plane(const std::string& target_pl
            target_plane == "dish_top_rim";
 }
 
+nlohmann::json visibility_domain_json(
+    const SpatialLayoutCalibrationImageSetMetadata& metadata)
+{
+    if (metadata.visibility_domain_id.empty()) {
+        return nlohmann::json::object();
+    }
+    std::string authority = "operator_declared_capture_context";
+    if (metadata.visibility_domain_id == "unobstructed_arena_rectangle") {
+        authority = "citrus_arena_layout";
+    } else if (metadata.visibility_domain_id == "imaging_shelf_aperture") {
+        authority = "operator_declared_fixture_profile_pending_observation";
+    }
+    return {
+        {"domain_id", metadata.visibility_domain_id},
+        {"semantic_role", metadata.visibility_domain_id == "imaging_shelf_aperture"
+                              ? "fixture_visibility_aperture"
+                              : "camera_visible_calibration_domain"},
+        {"shape", metadata.visibility_domain_shape.empty()
+                      ? std::string("unknown")
+                      : metadata.visibility_domain_shape},
+        {"coordinate_space", "final_display_canvas_px"},
+        {"geometry_status", metadata.visibility_domain_geometry_status.empty()
+                                ? std::string("unknown")
+                                : metadata.visibility_domain_geometry_status},
+        {"authority", authority},
+        {"distinct_from_experimental_area", true},
+        {"distinct_from_dish_inner_rim", true},
+        {"distinct_from_projected_pattern_support", true}
+    };
+}
+
 }  // namespace
 
 void attach_calibration_domain_observation(
@@ -249,6 +280,10 @@ void apply_capture_stage_metadata_to_request(
         return;
     }
     request->capture_stage = metadata.capture_stage;
+    request->workflow_profile_id = metadata.workflow_profile_id;
+    request->fixture_state = metadata.fixture_state;
+    request->homography_role = metadata.homography_role;
+    request->visibility_domain = visibility_domain_json(metadata);
     request->plane_z_mm_nominal = metadata.plane_z_mm_nominal;
     request->has_plane_z_mm_nominal = metadata.has_plane_z_mm_nominal;
     request->plane_z_mm_uncertainty = metadata.plane_z_mm_uncertainty;
@@ -351,6 +386,13 @@ SpatialLayoutCalibrationImageSetMetadata make_calibration_image_set_metadata_fro
     metadata.image_set_scale_target_type = ui_state.calibration_image_set_scale_target_type;
     metadata.image_set_notes = ui_state.calibration_image_set_notes;
     metadata.capture_stage = ui_state.calibration_capture_stage;
+    metadata.workflow_profile_id = ui_state.calibration_workflow_profile_id;
+    metadata.fixture_state = ui_state.calibration_fixture_state;
+    metadata.homography_role = ui_state.calibration_homography_role;
+    metadata.visibility_domain_id = ui_state.calibration_visibility_domain_id;
+    metadata.visibility_domain_shape = ui_state.calibration_visibility_domain_shape;
+    metadata.visibility_domain_geometry_status =
+        ui_state.calibration_visibility_domain_geometry_status;
     metadata.plane_z_mm_nominal = ui_state.calibration_plane_z_mm_nominal;
     metadata.has_plane_z_mm_nominal = ui_state.calibration_has_plane_z_mm_nominal;
     metadata.plane_z_mm_uncertainty = ui_state.calibration_plane_z_mm_uncertainty;
@@ -399,6 +441,50 @@ SpatialLayoutCalibrationImageSetMetadata make_calibration_image_set_metadata_fro
     metadata.citrus_projection_epoch_consistency =
         ui_state.captured_citrus_projection_epoch_consistency.is_object()
             ? ui_state.captured_citrus_projection_epoch_consistency
+            : nlohmann::json::object();
+    metadata.citrus_calibration_scene_pre_capture =
+        ui_state.captured_citrus_calibration_scene_pre_capture.is_object()
+            ? ui_state.captured_citrus_calibration_scene_pre_capture
+            : nlohmann::json::object();
+    metadata.citrus_calibration_scene_post_capture =
+        ui_state.captured_citrus_calibration_scene_post_capture.is_object()
+            ? ui_state.captured_citrus_calibration_scene_post_capture
+            : nlohmann::json::object();
+    metadata.citrus_calibration_scene_consistency =
+        ui_state.captured_citrus_calibration_scene_consistency.is_object()
+            ? ui_state.captured_citrus_calibration_scene_consistency
+            : nlohmann::json::object();
+    metadata.citrus_calibration_scene_restore_status =
+        ui_state.captured_citrus_calibration_scene_restore_status.is_object()
+            ? ui_state.captured_citrus_calibration_scene_restore_status
+            : nlohmann::json::object();
+    metadata.citrus_arena_centering_pre_capture =
+        ui_state.captured_citrus_arena_centering_pre_capture.is_object()
+            ? ui_state.captured_citrus_arena_centering_pre_capture
+            : nlohmann::json::object();
+    metadata.citrus_arena_centering_post_capture =
+        ui_state.captured_citrus_arena_centering_post_capture.is_object()
+            ? ui_state.captured_citrus_arena_centering_post_capture
+            : nlohmann::json::object();
+    metadata.citrus_arena_centering_consistency =
+        ui_state.captured_citrus_arena_centering_consistency.is_object()
+            ? ui_state.captured_citrus_arena_centering_consistency
+            : nlohmann::json::object();
+    metadata.citrus_daily_registration_pre_capture =
+        ui_state.captured_citrus_daily_registration_pre_capture.is_object()
+            ? ui_state.captured_citrus_daily_registration_pre_capture
+            : nlohmann::json::object();
+    metadata.citrus_daily_registration_post_capture =
+        ui_state.captured_citrus_daily_registration_post_capture.is_object()
+            ? ui_state.captured_citrus_daily_registration_post_capture
+            : nlohmann::json::object();
+    metadata.citrus_daily_registration_consistency =
+        ui_state.captured_citrus_daily_registration_consistency.is_object()
+            ? ui_state.captured_citrus_daily_registration_consistency
+            : nlohmann::json::object();
+    metadata.capture_group_membership =
+        ui_state.captured_group_membership.is_object()
+            ? ui_state.captured_group_membership
             : nlohmann::json::object();
     populate_calibration_domain_metadata_from_runtime(&metadata, ui_state);
     return metadata;
@@ -450,6 +536,13 @@ void apply_calibration_image_set_metadata_to_ui(
     ui_state->calibration_image_set_scale_target_type = metadata.image_set_scale_target_type;
     ui_state->calibration_image_set_notes = metadata.image_set_notes;
     ui_state->calibration_capture_stage = metadata.capture_stage;
+    ui_state->calibration_workflow_profile_id = metadata.workflow_profile_id;
+    ui_state->calibration_fixture_state = metadata.fixture_state;
+    ui_state->calibration_homography_role = metadata.homography_role;
+    ui_state->calibration_visibility_domain_id = metadata.visibility_domain_id;
+    ui_state->calibration_visibility_domain_shape = metadata.visibility_domain_shape;
+    ui_state->calibration_visibility_domain_geometry_status =
+        metadata.visibility_domain_geometry_status;
     ui_state->calibration_plane_z_mm_nominal = metadata.plane_z_mm_nominal;
     ui_state->calibration_has_plane_z_mm_nominal = metadata.has_plane_z_mm_nominal;
     ui_state->calibration_plane_z_mm_uncertainty = metadata.plane_z_mm_uncertainty;
@@ -498,6 +591,50 @@ void apply_calibration_image_set_metadata_to_ui(
     ui_state->captured_citrus_projection_epoch_consistency =
         metadata.citrus_projection_epoch_consistency.is_object()
             ? metadata.citrus_projection_epoch_consistency
+            : nlohmann::json::object();
+    ui_state->captured_citrus_calibration_scene_pre_capture =
+        metadata.citrus_calibration_scene_pre_capture.is_object()
+            ? metadata.citrus_calibration_scene_pre_capture
+            : nlohmann::json::object();
+    ui_state->captured_citrus_calibration_scene_post_capture =
+        metadata.citrus_calibration_scene_post_capture.is_object()
+            ? metadata.citrus_calibration_scene_post_capture
+            : nlohmann::json::object();
+    ui_state->captured_citrus_calibration_scene_consistency =
+        metadata.citrus_calibration_scene_consistency.is_object()
+            ? metadata.citrus_calibration_scene_consistency
+            : nlohmann::json::object();
+    ui_state->captured_citrus_calibration_scene_restore_status =
+        metadata.citrus_calibration_scene_restore_status.is_object()
+            ? metadata.citrus_calibration_scene_restore_status
+            : nlohmann::json::object();
+    ui_state->captured_citrus_arena_centering_pre_capture =
+        metadata.citrus_arena_centering_pre_capture.is_object()
+            ? metadata.citrus_arena_centering_pre_capture
+            : nlohmann::json::object();
+    ui_state->captured_citrus_arena_centering_post_capture =
+        metadata.citrus_arena_centering_post_capture.is_object()
+            ? metadata.citrus_arena_centering_post_capture
+            : nlohmann::json::object();
+    ui_state->captured_citrus_arena_centering_consistency =
+        metadata.citrus_arena_centering_consistency.is_object()
+            ? metadata.citrus_arena_centering_consistency
+            : nlohmann::json::object();
+    ui_state->captured_citrus_daily_registration_pre_capture =
+        metadata.citrus_daily_registration_pre_capture.is_object()
+            ? metadata.citrus_daily_registration_pre_capture
+            : nlohmann::json::object();
+    ui_state->captured_citrus_daily_registration_post_capture =
+        metadata.citrus_daily_registration_post_capture.is_object()
+            ? metadata.citrus_daily_registration_post_capture
+            : nlohmann::json::object();
+    ui_state->captured_citrus_daily_registration_consistency =
+        metadata.citrus_daily_registration_consistency.is_object()
+            ? metadata.citrus_daily_registration_consistency
+            : nlohmann::json::object();
+    ui_state->captured_group_membership =
+        metadata.capture_group_membership.is_object()
+            ? metadata.capture_group_membership
             : nlohmann::json::object();
 }
 

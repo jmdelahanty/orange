@@ -951,10 +951,24 @@ override the compatibility decision above:
 
 ## Recording Snapshot Reference
 
-Normal recordings should not embed the full observation. They should reference
-the accepted or active artifact and record the gating state.
+New recordings snapshot the exact selected daily-registration observation rather
+than resolving a mutable "latest" artifact later. The compact, machine-readable
+observation package is copied under
+`recording_geometry_assets/cameras/Cam<serial>/daily_registration/`, while the
+selection, acceptance, and candidate receipts live under
+`recording_geometry_assets/daily_registration/`. The two accepted circles are
+embedded directly in both the Orange recording snapshot and the immutable
+recording geometry contract. Source paths and checksums remain present for
+provenance.
 
-Candidate `recording_snapshot.json` block:
+This is intentionally separate from claiming that Orange used the region as a
+live detector gate. Until Slice 3 is implemented,
+`active_in_orange_live_detection_pipeline` remains `false`. Citrus records its
+own exact daily-registration application state independently; Orange only marks
+the selected mask as applied by Citrus after the returned camera, arena,
+registration path, and checksum all match.
+
+Representative `recording_snapshot.json` block:
 
 ```json
 {
@@ -963,23 +977,54 @@ Candidate `recording_snapshot.json` block:
       "dish_top_rim_observation": {
         "artifact_id": "dishrim_20260601_120000_2012632",
         "artifact_schema_id": "orange.calibration.dish_top_rim_observation",
-        "artifact_schema_version": 1,
-        "fingerprint": "fnv1a64:...",
-        "runtime_verification": {
-          "status": "pass",
-          "checked_at_utc": "2026-06-01T16:10:00Z"
-        }
-      },
-      "valid_detection_region": {
-        "enabled": true,
-        "source_artifact_id": "dishrim_20260601_120000_2012632",
+        "artifact_schema_version": 2,
         "coordinate_space": "camera_native_pixels",
-        "gating_policy": "reject_outside_region_and_log"
+        "accepted_inner_rim_boundary": {
+          "coordinate_space": "camera_native_pixels",
+          "target_plane": "dish_top_rim",
+          "geometry": {
+            "type": "circle",
+            "center_px": {"x": 2252.1, "y": 2281.7},
+            "radius_px": 2146.7
+          }
+        },
+        "valid_detection_region": {
+          "coordinate_space": "camera_native_pixels",
+          "purpose": "bounding_box_centroid_detection_gating",
+          "offset_direction": "outward",
+          "geometry": {
+            "type": "circle",
+            "center_px": {"x": 2252.1, "y": 2281.7},
+            "radius_px": 2163.8
+          }
+        },
+        "source": {
+          "path": "/absolute/calibration/path/observation.json",
+          "sha256": "sha256:..."
+        },
+        "available_for_downstream_detection_gating": true,
+        "active_in_orange_live_detection_pipeline": false,
+        "gating_semantics": "bounding_box_centroid_inside_valid_detection_region",
+        "recording_local_assets": {
+          "observation_relative_path": "recording_geometry_assets/cameras/Cam2012632/daily_registration/rim_observation/observation.json",
+          "spatial_mask_export_relative_path": "recording_geometry_assets/cameras/Cam2012632/daily_registration/rim_observation/exports/spatial_dish_mask_runtime_v1.json",
+          "palette_mask_export_relative_path": "recording_geometry_assets/cameras/Cam2012632/daily_registration/rim_observation/exports/palette_dish_mask_v2.json"
+        },
+        "citrus_runtime_application": {
+          "capture_status": "pending_recording_start"
+        }
       }
     }
   }
 }
 ```
+
+The exact same camera entry is included in
+`recording_geometry_contract.json`. Citrus mirrors the full contract to
+`/recording_geometry_contract/contract_json` and its camera-scoped view to
+`/recording_geometry_contract/h5_scope_json`. This gives downstream readers a
+recording-stable mask even when the original calibration-session directory or
+active daily-registration pointer later changes.
 
 ## Palette Compatibility Mapping
 
@@ -1386,6 +1431,23 @@ center, so crosshair alignment offsets remain future work.
 - [x] add schema-v2 `accepted_inner_rim_boundary` output and an explicit
   `dish_inner_rim_water_side_edge` UI target without rewriting v1 artifacts
 
+### Slice 2.5: Recording Persistence
+
+- [x] resolve the exact selected daily-registration receipt at recording start
+  without falling back to a mutable latest observation
+- [x] validate the receipt, registration, candidate, commissioned homography,
+  observation checksum, camera identity, coordinate space, and two-circle
+  semantics
+- [x] copy the compact observation, manifest, image-set reference, and spatial
+  and Palette exports into recording-local assets
+- [x] embed the full inner-rim boundary and outward centroid gate directly in
+  `recording_snapshot.json` and the Orange recording geometry contract
+- [x] expose the camera-scoped entry through the contract Citrus mirrors into
+  H5
+- [x] preserve the distinction between an available downstream mask and an
+  active Orange live-detection gate
+- [ ] backfill historical recordings; existing recordings remain unchanged
+
 ### Slice 3: Runtime Gating
 
 - load an active observation artifact per camera
@@ -1419,7 +1481,9 @@ center, so crosshair alignment offsets remain future work.
 - What minimum Hough quality metrics should be required before the UI allows
   operator confirmation?
 - Should Citrus copy the Orange visible review overlay into its H5/output
-  folder, or store only the Orange artifact reference plus checksum?
+  folder? V0 copies images into the Orange recording only when
+  `ORANGE_RECORDING_GEOMETRY_COPY_IMAGES=1`; Citrus H5 stores the exact compact
+  contract and checksums rather than image bytes.
 
 ## Resolved V0 Decisions
 

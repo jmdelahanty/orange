@@ -1,5 +1,6 @@
 #include "session/recording_session.h"
 
+#include "citrus_recording_geometry.h"
 #include "external_recorder_contract_utils.h"
 #include "external_recorder_supervisor.h"
 #include "fsuid_guard.h"
@@ -7,6 +8,7 @@
 #include "recording_ingress.h"
 #include "recording_output_utils.h"
 #include "session/external_crop_recorder_config.h"
+#include "gui/spatial_layout/sha256.h"
 
 #include <algorithm>
 #include <array>
@@ -54,6 +56,56 @@ std::string trim_ascii_copy(std::string value)
         return !is_space(c);
     }).base(), value.end());
     return value;
+}
+
+void add_recording_geometry_contract_reference(
+    nlohmann::json* manifest,
+    const std::string& recording_folder)
+{
+    if (manifest == nullptr || recording_folder.empty()) {
+        return;
+    }
+    const std::filesystem::path path =
+        std::filesystem::path(recording_folder) /
+        "recording_geometry_contract.json";
+    std::string bytes;
+    std::string error;
+    if (!orange::gui::spatial_layout::checksum::read_file(
+            path, &bytes, &error)) {
+        return;
+    }
+    nlohmann::json contract = nlohmann::json::parse(bytes, nullptr, false);
+    if (contract.is_discarded() || !contract.is_object() ||
+        contract.value("schema_id", "") !=
+            orange::recording_geometry::kRecordingGeometryContractSchemaId ||
+        contract.value("schema_version", 0) !=
+            orange::recording_geometry::kRecordingGeometryContractSchemaVersion) {
+        std::cerr << "[recording_session] Ignoring invalid recording geometry contract: "
+                  << path << std::endl;
+        return;
+    }
+    std::error_code path_error;
+    std::filesystem::path absolute_path = std::filesystem::absolute(path, path_error);
+    if (path_error) {
+        absolute_path = path;
+    }
+    if (!manifest->contains("metadata") || !(*manifest)["metadata"].is_object()) {
+        (*manifest)["metadata"] = nlohmann::json::object();
+    }
+    (*manifest)["metadata"]["recording_geometry_contract"] = {
+        {"schema_id", contract.value("schema_id", "")},
+        {"schema_version", contract.value("schema_version", 0)},
+        {"status", contract.value("status", "unknown")},
+        {"relative_path", "recording_geometry_contract.json"},
+        {"path", absolute_path.string()},
+        {"sha256", "sha256:" +
+            orange::gui::spatial_layout::checksum::sha256_hex(bytes)},
+    };
+    const auto assets_it = contract.find("materialized_assets");
+    if (assets_it != contract.end() && assets_it->is_object()) {
+        (*manifest)["metadata"]["recording_geometry_contract"]
+            ["materialized_assets"] = *assets_it;
+    }
 }
 
 int resolve_positive_int_env(const char* name, const int fallback, const int max_value)
@@ -1320,6 +1372,8 @@ nlohmann::json build_single_clip_recording_session_manifest(
         !options.recording_stop_control.empty()) {
         manifest["recording"]["control"] = options.recording_stop_control;
     }
+    add_recording_geometry_contract_reference(
+        &manifest, options.recording_folder);
     return manifest;
 }
 
@@ -1411,6 +1465,8 @@ nlohmann::json build_rolling_clip_recording_session_manifest(
         manifest["recording_outputs"] =
             build_recording_outputs_json(options.recording_outputs);
     }
+    add_recording_geometry_contract_reference(
+        &manifest, options.recording_folder);
     return manifest;
 }
 
@@ -2114,6 +2170,13 @@ RecordingRunStartResult complete_recording_run(
     const PreparedRecordingRunStart& prepared,
     RecordingRunSupervisorStartOutcome&& outcome)
 {
+    // Retained in the phased-start API for parity with in-process completion
+    // and existing callers. External supervisor completion no longer rebuilds
+    // the base recording snapshot from these values.
+    (void)cameras_params;
+    (void)num_cameras;
+    (void)ptp_params;
+
     RecordingRunStartResult result;
     if (!camera_control) {
         result.error_message = "recording run completion is missing CameraControl";
@@ -2188,16 +2251,15 @@ RecordingRunStartResult complete_recording_run(
                   << " artifact_root=" << state->external_recorder_lifecycle.plan.artifact_root
                   << std::endl;
 
-        if (!write_recording_snapshot(
-                prepared.recording_folder,
-                prepared.recording_id,
-                cameras_params,
-                num_cameras,
+        // The snapshot was created during prepare and may already contain
+        // recording-start extensions such as the immutable geometry-contract
+        // reference and direct daily rim-mask entries. Successful supervisor
+        // startup only needs to publish the latest-recording pointer; rewriting
+        // the base snapshot here would erase those extensions.
+        if (!publish_latest_recording_pointer(
                 prepared.resolved_base_folder,
-                true,
-                camera_control->sync_camera,
-                ptp_params,
-                prepared.normalized_sink_mode)) {
+                prepared.recording_folder,
+                prepared.recording_id)) {
             std::cerr << "[recording_session] Failed to refresh latest-recording pointer for GUI external recorder run."
                       << std::endl;
         }

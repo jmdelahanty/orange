@@ -605,6 +605,27 @@ void test_successful_start_flips_record_video_at_completion()
     require(prepared.valid, "prepare must succeed: " + prepared.error_message);
     configure_lifecycle_options_for_test(&prepared, stub_path.string());
 
+    const std::filesystem::path snapshot_path =
+        std::filesystem::path(prepared.recording_folder) /
+        "recording_snapshot.json";
+    nlohmann::json enriched_snapshot;
+    {
+        std::ifstream input(snapshot_path);
+        require(static_cast<bool>(input),
+                "prepared recording snapshot must be readable");
+        input >> enriched_snapshot;
+    }
+    enriched_snapshot["recording_geometry_contract"] = {
+        {"relative_path", "recording_geometry_contract.json"},
+        {"sha256", "sha256:must_survive_supervisor_start"},
+    };
+    {
+        std::ofstream output(snapshot_path, std::ios::trunc);
+        require(static_cast<bool>(output),
+                "prepared recording snapshot must be writable");
+        output << enriched_snapshot.dump(2) << '\n';
+    }
+
     orange::session::RecordingRunSupervisorStartOutcome outcome =
         orange::session::start_prepared_recording_run_supervisors(prepared);
     require(outcome.ok, "stub-backed start must succeed: " + outcome.error_message);
@@ -634,6 +655,17 @@ void test_successful_start_flips_record_video_at_completion()
                 std::filesystem::exists(
                     result.external_recorder_supervisor_plan_path),
             "completion must write the supervisor plan artifact");
+    nlohmann::json completed_snapshot;
+    {
+        std::ifstream input(snapshot_path);
+        require(static_cast<bool>(input),
+                "completed recording snapshot must be readable");
+        input >> completed_snapshot;
+    }
+    require(completed_snapshot.at("recording_geometry_contract").at(
+                "sha256") == "sha256:must_survive_supervisor_start",
+            "successful supervisor startup must preserve recording-start"
+            " snapshot extensions");
 
     // Tear down the stub-backed run.
     std::string stop_error;

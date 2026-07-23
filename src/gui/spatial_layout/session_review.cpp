@@ -415,6 +415,25 @@ SpatialLayoutCalibrationImageSetMetadata metadata_from_image_set_entry_json(
         metadata.citrus_projection_epoch_consistency =
             image["citrus_projection_epoch_consistency"];
     }
+    const auto guided_json = [&](const char* key) -> nlohmann::json {
+        if (image.contains(key) && image[key].is_object()) {
+            return image[key];
+        }
+        if (image_set.contains(key) && image_set[key].is_object()) {
+            return image_set[key];
+        }
+        return nlohmann::json::object();
+    };
+    metadata.citrus_calibration_scene_pre_capture =
+        guided_json("citrus_calibration_scene_pre_capture");
+    metadata.citrus_calibration_scene_post_capture =
+        guided_json("citrus_calibration_scene_post_capture");
+    metadata.citrus_calibration_scene_consistency =
+        guided_json("citrus_calibration_scene_consistency");
+    metadata.citrus_calibration_scene_restore_status =
+        guided_json("citrus_calibration_scene_restore_status");
+    metadata.capture_group_membership =
+        guided_json("capture_group_membership");
     return metadata;
 }
 
@@ -787,6 +806,37 @@ void add_session_review_image_warnings(
                 " has a circular tank-bottom domain but no linked accepted top-rim "
                 "observation; Citrus should treat the capture-time observed_domain as "
                 "diagnostic rather than authoritative.");
+    }
+    if (image.metadata.capture_group_membership.is_object() &&
+        !image.metadata.capture_group_membership.empty()) {
+        const std::string group_status =
+            image.metadata.capture_group_membership.value(
+                "status", std::string("unknown"));
+        if (group_status != "complete") {
+            add_unique_session_review_warning(
+                warnings,
+                context + " belongs to capture group " +
+                    image.metadata.capture_group_membership.value(
+                        "capture_group_id", image.capture_group_id) +
+                    " with status=" + group_status + ".");
+        }
+    }
+    if (image.metadata.citrus_calibration_scene_consistency.is_object() &&
+        !image.metadata.citrus_calibration_scene_consistency.empty() &&
+        image.metadata.citrus_calibration_scene_consistency.value(
+            "status", std::string("unavailable")) != "same_scene") {
+        add_unique_session_review_warning(
+            warnings,
+            context +
+                " does not have one verified unchanged Citrus scene across capture.");
+    }
+    if (image.metadata.citrus_calibration_scene_pre_capture.is_object() &&
+        !image.metadata.citrus_calibration_scene_pre_capture.empty() &&
+        image.metadata.citrus_calibration_scene_restore_status.value(
+            "state", std::string()) != "restored") {
+        add_unique_session_review_warning(
+            warnings,
+            context + " lacks a verified Citrus prior-scene restore fence.");
     }
 }
 

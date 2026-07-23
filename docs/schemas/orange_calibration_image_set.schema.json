@@ -44,6 +44,7 @@
         "validation_pattern",
         "dry_physical_target_height_parallax_diagnostic",
         "camera_only_physical_target_calibration",
+        "projected_surface_scale_calibration",
         "scale_image",
         "dish_top_rim",
         "crosshair_alignment"
@@ -76,6 +77,18 @@
     },
     "capture_stage": {
       "$ref": "#/$defs/capture_stage"
+    },
+    "workflow_profile_id": {
+      "$ref": "#/$defs/workflow_profile_id"
+    },
+    "fixture_state": {
+      "$ref": "#/$defs/fixture_state"
+    },
+    "homography_role": {
+      "$ref": "#/$defs/homography_role"
+    },
+    "visibility_domain": {
+      "$ref": "#/$defs/visibility_domain"
     },
     "plane_z_mm_nominal": {
       "type": "number"
@@ -316,6 +329,20 @@
         "last_camera_frame_id": {
           "type": "integer",
           "minimum": 0
+        },
+        "camera_timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Embedded camera timestamp for the saved frame, in the declared camera clock domain."
+        },
+        "camera_timestamp_clock_domain": {
+          "type": "string",
+          "enum": ["camera_ptp"]
+        },
+        "timestamp_sys_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Host system timestamp associated with acquisition; not a substitute for the camera PTP timestamp."
         },
         "capture_mode": {
           "type": "string"
@@ -677,6 +704,70 @@
         }
       }
     },
+    "citrus_projection_snapshot_pre_capture": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "citrus_projection_snapshot_post_capture": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "citrus_projection_epoch_consistency": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "citrus_calibration_scene_pre_capture": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Citrus scene status after the common presentation fence and before grouped camera acquisition."
+    },
+    "citrus_calibration_scene_post_capture": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Citrus scene status after grouped camera acquisition and before restoration."
+    },
+    "citrus_calibration_scene_consistency": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "citrus_calibration_scene_restore_status": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Citrus scene status after the prior projection scene crossed its restore presentation fence."
+    },
+    "citrus_arena_centering_pre_capture": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Arena-centering transaction status before the grouped camera capture."
+    },
+    "citrus_arena_centering_post_capture": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Arena-centering transaction status after the grouped camera capture."
+    },
+    "citrus_arena_centering_consistency": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Required identity comparison proving the same staged center and embedded scene bracketed acquisition."
+    },
+    "citrus_daily_registration_pre_capture": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Daily-registration candidate-preview status before grouped acquisition."
+    },
+    "citrus_daily_registration_post_capture": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Daily-registration candidate-preview status after grouped acquisition."
+    },
+    "citrus_daily_registration_consistency": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Identity comparison proving that one unchanged candidate preview bracketed acquisition."
+    },
+    "capture_group_membership": {
+      "$ref": "#/$defs/capture_group_membership"
+    },
     "operator_notes": {
       "type": "string"
     }
@@ -687,14 +778,105 @@
       "description": "Current operator workflow stage for new Orange calibration image-set writes. Deprecated projected-pattern tank-bottom/fish stages are intentionally not schema-valid for current payloads.",
       "enum": [
         "projected_surface_dry_reference",
+        "projected_surface_holder_installed",
         "projected_surface_wet_runtime_stack",
         "camera_physical_projected_surface",
         "camera_physical_dish_base_inner_surface",
         "camera_physical_fish_height",
+        "projected_surface_physical_scale_commissioning",
         "projector_surface_validation",
         "dish_top_observation",
+        "daily_registration_rim",
+        "daily_registration_base_center",
+        "daily_registration_candidate_validation",
         "unknown"
       ]
+    },
+    "workflow_profile_id": {
+      "type": "string",
+      "enum": [
+        "camera_physical_planes",
+        "unobstructed_canvas_commissioning",
+        "holder_installed_projected_surface",
+        "wet_tank_projected_surface",
+        "installed_tank_registration",
+        "custom"
+      ]
+    },
+    "fixture_state": {
+      "type": "string",
+      "enum": [
+        "holder_removed",
+        "holder_installed_dish_absent",
+        "holder_installed_dish_installed",
+        "unknown"
+      ]
+    },
+    "homography_role": {
+      "type": "string",
+      "enum": [
+        "commissioning_reference",
+        "operational_candidate",
+        "validation_only",
+        "not_applicable",
+        "unknown"
+      ]
+    },
+    "visibility_domain": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "domain_id",
+        "shape",
+        "coordinate_space",
+        "geometry_status",
+        "authority"
+      ],
+      "properties": {
+        "domain_id": {
+          "type": "string",
+          "enum": [
+            "unobstructed_arena_rectangle",
+            "imaging_shelf_aperture",
+            "unknown"
+          ]
+        },
+        "shape": {
+          "type": "string",
+          "enum": [
+            "rectangle",
+            "circle",
+            "rounded_rectangle",
+            "polygon",
+            "unknown"
+          ]
+        },
+        "coordinate_space": {
+          "type": "string",
+          "enum": [
+            "final_display_canvas_px",
+            "arena_local_canvas_px",
+            "unknown"
+          ]
+        },
+        "geometry_status": {
+          "type": "string",
+          "enum": [
+            "not_embedded",
+            "unmeasured",
+            "configured",
+            "observed",
+            "unknown"
+          ]
+        },
+        "authority": {
+          "type": "string",
+          "minLength": 1
+        },
+        "distinct_from_experimental_area": {
+          "const": true
+        }
+      }
     },
     "wet_or_dry": {
       "type": "string",
@@ -748,10 +930,12 @@
       "type": "string",
       "enum": [
         "dry_reference",
+        "holder_installed_projected_surface",
         "wet_projected_surface",
         "physical_projected_surface",
         "physical_dish_base",
         "physical_fish_height",
+        "projected_surface_scale",
         "projector_surface_validation"
       ]
     },
@@ -1076,8 +1260,119 @@
           },
           "description": "Warn-only V0 consistency result comparing Citrus projection snapshots before and after this image capture."
         },
+        "citrus_calibration_scene_pre_capture": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "citrus_calibration_scene_post_capture": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "citrus_calibration_scene_consistency": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "citrus_calibration_scene_restore_status": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "citrus_arena_centering_pre_capture": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "citrus_arena_centering_post_capture": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "citrus_arena_centering_consistency": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "citrus_daily_registration_pre_capture": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "citrus_daily_registration_post_capture": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "citrus_daily_registration_consistency": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "capture_group_membership": {
+          "$ref": "#/$defs/capture_group_membership"
+        },
         "description": {
           "type": "string"
+        }
+      }
+    },
+    "capture_group_membership": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "schema_id",
+        "schema_version",
+        "capture_group_id",
+        "expected_camera_serials",
+        "completed_camera_serials",
+        "status"
+      ],
+      "properties": {
+        "schema_id": {
+          "const": "orange.calibration.capture_group_membership"
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "capture_group_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_camera_serials": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "completed_camera_serials": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "failed_cameras": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "camera_serial": {
+                "type": "string"
+              },
+              "error": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "partial",
+            "failed",
+            "invalid_scene"
+          ]
+        },
+        "intentional_camera_scope": {
+          "const": true
         }
       }
     },

@@ -43,6 +43,7 @@ void reset_hough_defaults(SpatialLayoutUiState* ui_state)
     ui_state->hough_fallback_enabled = true;
     ui_state->show_hough_proposal_overlay = true;
     ui_state->show_citrus_corrected_center_overlay = true;
+    ui_state->show_daily_registration_overlay = true;
 }
 
 void render_hough_registration_actions(
@@ -327,6 +328,9 @@ void render_hough_circle_tuning(
     ImGui::Checkbox(
         "Show corrected Citrus outline overlay",
         &ui_state->show_citrus_corrected_center_overlay);
+    ImGui::Checkbox(
+        "Show accepted daily-registration rim and area",
+        &ui_state->show_daily_registration_overlay);
     ImGui::InputDouble("Hough dp", &ui_state->hough_dp, 0.05, 0.25, "%.3f");
     ImGui::InputDouble("Hough min distance fraction", &ui_state->hough_min_dist_fraction, 0.01, 0.05, "%.3f");
     ImGui::InputDouble("Hough param1", &ui_state->hough_param1, 5.0, 25.0, "%.1f");

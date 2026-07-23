@@ -88,6 +88,54 @@ Primary use:
 The DOF target should be evaluated using the same spatial-resolution metric as
 the USAF workflow wherever possible.
 
+Confirmed future hardware for the first Orange workflow:
+
+- Edmund Optics **DOF 5-15 Depth of Field Target**, stock `#54-440`;
+- fixed 45-degree inclined target with horizontal and vertical 5 lp/mm and
+  15 lp/mm patterns;
+- black pattern on white-backed film, intended for reflected illumination;
+- built-in depth scale spanning up to 50 mm.
+
+Unlike a generic flat target moved through several physical z positions, this
+target presents a continuum of known object depths in one image. The planned
+`z_samples.csv` rows should therefore normally be derived from native-pixel
+analysis strips along one averaged capture, rather than requiring the operator
+to move the target between z samples.
+
+Future guided commissioning TODO:
+
+1. Keep the workflow Orange-owned and optional; it characterizes the
+   camera/lens optical operating point and must not become a Citrus geometry or
+   experiment-start gate.
+2. Bind every result to the rig geometry revision, camera serial, lens, focus,
+   iris, exposure, gain, pixel format/raster, filters, illumination spectrum,
+   target identity, target pose, tested optical path, and declared reference
+   plane.
+3. Capture averaged, native-resolution frames without resampling or clipping.
+   Prefer the production filters and illumination path; label a dry or
+   visible-light-only measurement as diagnostic when it does not reproduce the
+   experiment's dish/water/IR path.
+4. Let the operator confirm the target boundary, orientation, depth-zero datum,
+   and the four 5/15 lp/mm horizontal/vertical lanes. Then automatically
+   compute local modulation versus z and retain the full curves.
+5. Define near/far limits as the contiguous interval around best focus that
+   passes an explicit, recorded resolution/contrast criterion. Report each
+   frequency and orientation separately, with crossing uncertainty,
+   saturation, sampling, pose, and target-coverage QC.
+6. Persist the raw/averaged source frames, analysis overlays,
+   `measurement.json`, `z_samples.csv`, camera config snapshot, immutable
+   manifest/fingerprint, and an optional multi-camera result-set manifest.
+7. Permit a compatible accepted result to be referenced from later recording
+   metadata, while recording `not_performed` or `incompatible` explicitly and
+   never blocking users who skip this adjunct characterization.
+
+Initial Shadow sampling note: the accepted projected-surface scales are about
+52.3--52.7 camera pixels/mm. At that sampling, 5 lp/mm is about 10.5 pixels per
+line pair (about 5.2 pixels/bar), while 15 lp/mm is only about 3.5 pixels per
+line pair (about 1.75 pixels/bar). The 15 lp/mm result is useful but must carry
+a native-sampling/phase-sensitivity warning and must not be calculated from a
+resized preview.
+
 ## Planned Artifact Types
 
 Planned schema IDs:
@@ -450,9 +498,14 @@ Do not do these in the first implementation:
 
 ### Phase 4: DOF V1 Analysis
 
-- [ ] Z-labeled capture sequence.
-- [ ] Resolution scoring per z sample.
-- [ ] Threshold-defined DOF window.
+- [ ] Add an Edmund `#54-440` target definition and operator-confirmed target
+      pose/depth-datum annotation.
+- [ ] Capture one or more averaged native-resolution source frames per camera.
+- [ ] Extract z-labeled samples along the target's inclined 5/15 lp/mm lanes.
+- [ ] Score horizontal and vertical modulation per z sample without resizing.
+- [ ] Produce threshold-defined near/far DOF windows with uncertainty and QC.
+- [ ] Write immutable per-camera artifacts and an optional multi-camera result
+      set bound to the rig revision and optical operating point.
 
 ### Phase 5: Derived Capability Summary
 

@@ -278,8 +278,17 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/projected_center_preflight.cpp"
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/image_writer_worker.cpp"
+    "${SRC_DIR}/citrus_recording_geometry.cpp"
     "${SRC_DIR}/gui/autorun.cpp"
     "${SRC_DIR}/gui/env_util.cpp"
+    "${SRC_DIR}/gui/guided_capture_autorun.cpp"
+    "${SRC_DIR}/gui/guided_capture_autorun_config.cpp"
+    "${SRC_DIR}/gui/arena_centering_analysis.cpp"
+    "${SRC_DIR}/gui/daily_registration_geometry.cpp"
+    "${SRC_DIR}/gui/projected_surface_scale_analysis.cpp"
+    "${SRC_DIR}/gui/projected_surface_scale_artifact.cpp"
+    "${SRC_DIR}/gui/arena_centering_autorun.cpp"
+    "${SRC_DIR}/gui/arena_centering_autorun_config.cpp"
     "${SRC_DIR}/gui/camera_properties_panel.cpp"
     "${SRC_DIR}/gui/frame_ipc_panel.cpp"
     "${SRC_DIR}/gui/host_ptp_panel.cpp"
@@ -295,6 +304,8 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/spatial_layout/citrus_import.cpp"
     "${SRC_DIR}/gui/spatial_layout/citrus_template_workflow.cpp"
     "${SRC_DIR}/gui/spatial_layout/calibration_workflow.cpp"
+    "${SRC_DIR}/gui/spatial_layout/daily_registration_preview.cpp"
+    "${SRC_DIR}/gui/spatial_layout/daily_registration_workflow.cpp"
     "${SRC_DIR}/gui/spatial_layout/geometry.cpp"
     "${SRC_DIR}/gui/spatial_layout/group_capture_controller.cpp"
     "${SRC_DIR}/gui/spatial_layout/hough_panel.cpp"
@@ -375,6 +386,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/pre_encoder_reference_writer.cpp"
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/project.cpp"
+    "${SRC_DIR}/citrus_recording_geometry.cpp"
     "${SRC_DIR}/spatial_calibration_snapshot.cpp"
     "${SRC_DIR}/spatial_layout_schema.cpp"
     "${SRC_DIR}/spatial_snapshot_worker.cpp"
@@ -830,12 +842,23 @@ if(BUILD_TESTING)
     target_compile_features(yolo_event_log_validation_tests PRIVATE cxx_std_17)
     add_test(NAME yolo_event_log_validation_tests COMMAND yolo_event_log_validation_tests)
 
+    add_executable(yolo_spatial_mask_tests
+        "tools/yolo_spatial_mask_tests.cpp"
+    )
+    target_include_directories(yolo_spatial_mask_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(yolo_spatial_mask_tests PRIVATE cxx_std_17)
+    add_test(NAME yolo_spatial_mask_tests COMMAND yolo_spatial_mask_tests)
+
     add_executable(camera_config_validation_tests
         "tools/camera_config_validation_tests.cpp"
     )
     target_include_directories(camera_config_validation_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(camera_config_validation_tests PRIVATE cxx_std_17)
     add_test(NAME camera_config_validation_tests COMMAND camera_config_validation_tests)
+
+    add_test(
+        NAME make_guided_calibration_timing_config_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/make_guided_calibration_timing_config_tests.py")
 
     add_executable(app_storage_config_tests
         "tools/app_storage_config_tests.cpp"
@@ -858,7 +881,9 @@ if(BUILD_TESTING)
 
     add_executable(recording_snapshots_tests
         "tools/recording_snapshots_tests.cpp"
+        "${SRC_DIR}/citrus_recording_geometry.cpp"
         "${SRC_DIR}/gui/recording_snapshots.cpp"
+        "${SRC_DIR}/gui/spatial_layout/projection_snapshot_client.cpp"
         "${SRC_DIR}/project.cpp"
         "${SRC_DIR}/camera.cpp"
         "${SRC_DIR}/spatial_calibration_snapshot.cpp"
@@ -876,6 +901,32 @@ if(BUILD_TESTING)
     )
     add_test(NAME recording_snapshots_tests COMMAND recording_snapshots_tests)
 
+    add_test(
+        NAME validate_recording_geometry_assets_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/validate_recording_geometry_assets_tests.py")
+
+    add_test(
+        NAME calibration_package_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/calibration_package_tests.py")
+
+    add_executable(canvas_projection_geometry_identity_tests
+        "tools/canvas_projection_geometry_identity_tests.cpp"
+    )
+    target_include_directories(canvas_projection_geometry_identity_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(canvas_projection_geometry_identity_tests PRIVATE cxx_std_17)
+    add_test(
+        NAME canvas_projection_geometry_identity_tests
+        COMMAND canvas_projection_geometry_identity_tests)
+
+    add_executable(citrus_recording_geometry_tests
+        "tools/citrus_recording_geometry_tests.cpp"
+        "${SRC_DIR}/citrus_recording_geometry.cpp"
+    )
+    target_include_directories(citrus_recording_geometry_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(citrus_recording_geometry_tests PRIVATE cxx_std_17)
+    add_test(NAME citrus_recording_geometry_tests COMMAND citrus_recording_geometry_tests)
+
     add_executable(gui_autorun_tests
         "tools/gui_autorun_tests.cpp"
         "${SRC_DIR}/gui/autorun.cpp"
@@ -885,6 +936,71 @@ if(BUILD_TESTING)
     target_compile_features(gui_autorun_tests PRIVATE cxx_std_17)
     target_link_libraries(gui_autorun_tests PRIVATE Threads::Threads)
     add_test(NAME gui_autorun_tests COMMAND gui_autorun_tests)
+
+    add_executable(guided_capture_autorun_config_tests
+        "tools/guided_capture_autorun_config_tests.cpp"
+        "${SRC_DIR}/gui/guided_capture_autorun_config.cpp"
+        "${SRC_DIR}/gui/env_util.cpp"
+    )
+    target_include_directories(guided_capture_autorun_config_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(guided_capture_autorun_config_tests PRIVATE cxx_std_17)
+    add_test(NAME guided_capture_autorun_config_tests COMMAND guided_capture_autorun_config_tests)
+
+    add_executable(arena_centering_analysis_tests
+        "tools/arena_centering_analysis_tests.cpp"
+        "${SRC_DIR}/gui/arena_centering_analysis.cpp"
+    )
+    target_include_directories(arena_centering_analysis_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(arena_centering_analysis_tests PRIVATE cxx_std_17)
+    target_link_libraries(arena_centering_analysis_tests PRIVATE ${OpenCV_LIBS} Threads::Threads)
+    add_test(NAME arena_centering_analysis_tests COMMAND arena_centering_analysis_tests)
+
+    add_executable(daily_registration_geometry_tests
+        "tools/daily_registration_geometry_tests.cpp"
+        "${SRC_DIR}/gui/daily_registration_geometry.cpp"
+    )
+    target_include_directories(daily_registration_geometry_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(daily_registration_geometry_tests PRIVATE cxx_std_17)
+    add_test(NAME daily_registration_geometry_tests COMMAND daily_registration_geometry_tests)
+
+    add_executable(daily_registration_preview_tests
+        "tools/daily_registration_preview_tests.cpp"
+        "${SRC_DIR}/gui/daily_registration_geometry.cpp"
+        "${SRC_DIR}/gui/spatial_layout/daily_registration_preview.cpp"
+    )
+    target_include_directories(daily_registration_preview_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(daily_registration_preview_tests PRIVATE cxx_std_17)
+    add_test(NAME daily_registration_preview_tests COMMAND daily_registration_preview_tests)
+
+    add_executable(projected_surface_scale_analysis_tests
+        "tools/projected_surface_scale_analysis_tests.cpp"
+        "${SRC_DIR}/gui/projected_surface_scale_analysis.cpp"
+    )
+    target_include_directories(projected_surface_scale_analysis_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(projected_surface_scale_analysis_tests PRIVATE cxx_std_17)
+    target_link_libraries(projected_surface_scale_analysis_tests PRIVATE ${OpenCV_LIBS})
+    add_test(NAME projected_surface_scale_analysis_tests COMMAND projected_surface_scale_analysis_tests)
+
+    add_executable(arena_centering_detect_images
+        "tools/arena_centering_detect_images.cpp"
+        "${SRC_DIR}/gui/arena_centering_analysis.cpp"
+    )
+    target_include_directories(arena_centering_detect_images PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(arena_centering_detect_images PRIVATE cxx_std_17)
+    target_link_libraries(arena_centering_detect_images PRIVATE ${OpenCV_LIBS} Threads::Threads)
+
+    add_executable(arena_centering_autorun_config_tests
+        "tools/arena_centering_autorun_config_tests.cpp"
+        "${SRC_DIR}/gui/arena_centering_autorun_config.cpp"
+        "${SRC_DIR}/gui/env_util.cpp"
+    )
+    target_include_directories(arena_centering_autorun_config_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(arena_centering_autorun_config_tests PRIVATE cxx_std_17)
+    add_test(NAME arena_centering_autorun_config_tests COMMAND arena_centering_autorun_config_tests)
+    add_test(
+        NAME validate_gui_guided_capture_result_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/validate_gui_guided_capture_result_tests.py"
+    )
 
     add_executable(spatial_calibration_snapshot_tests
         "tools/spatial_calibration_snapshot_tests.cpp"
@@ -922,6 +1038,13 @@ if(BUILD_TESTING)
     target_include_directories(calibration_image_set_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(calibration_image_set_tests PRIVATE cxx_std_17)
     add_test(NAME calibration_image_set_tests COMMAND calibration_image_set_tests)
+
+    add_executable(fnv1a64_fingerprint_tests
+        "tools/fnv1a64_fingerprint_tests.cpp"
+    )
+    target_include_directories(fnv1a64_fingerprint_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(fnv1a64_fingerprint_tests PRIVATE cxx_std_17)
+    add_test(NAME fnv1a64_fingerprint_tests COMMAND fnv1a64_fingerprint_tests)
 
     add_executable(pose_event_log_tests
         "tools/pose_event_log_tests.cpp"

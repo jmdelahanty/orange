@@ -1,4 +1,5 @@
 #include "aperture_characterization.h"
+#include "fnv1a64_fingerprint.h"
 #include "fsuid_guard.h"
 
 #include <algorithm>
@@ -878,10 +879,7 @@ bool fnv1a64_update_file(uint64_t* hash, const std::filesystem::path& path, std:
 
 std::string format_fnv1a64(uint64_t hash)
 {
-    std::ostringstream oss;
-    oss << kCalibrationFingerprintAlgorithm << ":"
-        << std::hex << std::setfill('0') << std::setw(16) << std::nouppercase << hash;
-    return oss.str();
+    return orange::calibration::format_fnv1a64_fingerprint(hash);
 }
 
 } // namespace

@@ -290,7 +290,7 @@ void restore_spatial_layout_capture_state(
         std::move(backup.pending_full_res_snapshot_pre_capture);
 }
 
-bool prepare_generic_calibration_image_set_save_job_from_group_capture(
+bool prepare_generic_calibration_image_set_save_job_from_group_capture_impl(
     SpatialLayoutUiState* ui_state,
     const SpatialLayoutGroupCaptureFrame& capture,
     const CameraParams& camera_params,
@@ -386,6 +386,15 @@ bool prepare_generic_calibration_image_set_save_job_from_group_capture(
                 job_out->request.capture.gain = capture.camera_gain;
                 job_out->request.capture.has_gain = true;
             }
+            if (capture.camera_timestamp_ns != 0) {
+                job_out->request.capture.camera_timestamp_ns =
+                    capture.camera_timestamp_ns;
+                job_out->request.capture.has_camera_timestamp_ns = true;
+            }
+            if (capture.timestamp_sys_ns != 0) {
+                job_out->request.capture.timestamp_sys_ns = capture.timestamp_sys_ns;
+                job_out->request.capture.has_timestamp_sys_ns = true;
+            }
             attach_calibration_domain_observation(
                 &job_out->request,
                 capture.metadata);
@@ -398,6 +407,18 @@ bool prepare_generic_calibration_image_set_save_job_from_group_capture(
 }
 
 }  // namespace
+
+bool prepare_generic_calibration_image_set_save_job_from_group_capture(
+    SpatialLayoutUiState* ui_state,
+    const SpatialLayoutGroupCaptureFrame& capture,
+    const CameraParams& camera_params,
+    const std::string& artifact_root_dir,
+    GenericCalibrationImageSetSaveJob* job_out,
+    std::string* error_out)
+{
+    return prepare_generic_calibration_image_set_save_job_from_group_capture_impl(
+        ui_state, capture, camera_params, artifact_root_dir, job_out, error_out);
+}
 
 bool prepare_dish_top_rim_observation_save_job_from_spatial_layout(
     SpatialLayoutUiState* ui_state,
@@ -682,6 +703,97 @@ bool prepare_dish_top_rim_observation_save_job_from_spatial_layout(
     return true;
 }
 
+bool prepare_dish_top_rim_observation_save_job_from_group_capture(
+    SpatialLayoutUiState* ui_state,
+    const SpatialLayoutGroupCaptureFrame& capture,
+    const CameraParams& camera_params,
+    const std::string& artifact_root_dir,
+    const orange::calibration::DishTopRimCircle& detected_circle,
+    const orange::calibration::DishTopRimCircle& accepted_circle,
+    TopRimObservationSaveJob* job_out,
+    std::string* error_out)
+{
+    if (ui_state == nullptr || !capture.valid || capture.rgba.empty()) {
+        if (error_out != nullptr) {
+            *error_out = "Daily top-rim save requires a valid owned grouped frame.";
+        }
+        return false;
+    }
+    SpatialLayoutCaptureStateBackup capture_backup =
+        backup_spatial_layout_capture_state(*ui_state);
+    const auto dish_mask_backup = ui_state->dish_mask_runtime;
+    const bool has_detection_backup =
+        ui_state->has_detected_experimental_area_circle;
+    const auto detection_backup = ui_state->detected_experimental_area_geometry;
+    const bool confirmation_backup =
+        ui_state->calibration_inner_rim_target_confirmed;
+    const std::string notes_backup = ui_state->calibration_operator_notes;
+
+    ui_state->has_capture = true;
+    ui_state->captured_texture_width = capture.width;
+    ui_state->captured_texture_height = capture.height;
+    ui_state->captured_rgba = capture.rgba;
+    ui_state->captured_camera_serial = capture.camera_serial;
+    ui_state->captured_source_array_role = capture.source_array_role;
+    ui_state->captured_capture_mode = capture.capture_mode;
+    ui_state->captured_capture_group_id = capture.capture_group_id;
+    ui_state->captured_source_frame_count =
+        std::max<uint32_t>(1u, capture.source_frame_count);
+    ui_state->captured_first_local_frame_id = capture.first_local_frame_id;
+    ui_state->captured_last_local_frame_id = capture.last_local_frame_id;
+    ui_state->captured_first_camera_frame_id = capture.first_camera_frame_id;
+    ui_state->captured_last_camera_frame_id = capture.last_camera_frame_id;
+    apply_calibration_image_set_metadata_to_ui(ui_state, capture.metadata);
+    const int citrus_index =
+        find_citrus_template_index_for_camera(*ui_state, capture.camera_serial);
+    if (citrus_index >= 0) {
+        ui_state->citrus_template =
+            ui_state->citrus_canvas_templates[static_cast<size_t>(citrus_index)];
+    }
+
+    auto make_circle = [](const orange::calibration::DishTopRimCircle& circle) {
+        RuntimeGeometry geometry;
+        geometry.type = RuntimeGeometryType::kCircle;
+        geometry.circle.cx = circle.center.x;
+        geometry.circle.cy = circle.center.y;
+        geometry.circle.r = circle.radius_px;
+        return geometry;
+    };
+    ui_state->has_detected_experimental_area_circle = true;
+    ui_state->detected_experimental_area_geometry = make_circle(detected_circle);
+    ui_state->dish_mask_runtime.has_geometry = true;
+    ui_state->dish_mask_runtime.geometry.outer_geometry =
+        make_circle(accepted_circle);
+    ui_state->dish_mask_runtime.geometry.valid_geometry =
+        make_circle(accepted_circle);
+    ui_state->calibration_inner_rim_target_confirmed = true;
+    ui_state->calibration_operator_notes =
+        "Guided daily registration: operator confirmed the water-side inner rim.";
+
+    const bool ok =
+        prepare_dish_top_rim_observation_save_job_from_spatial_layout(
+            ui_state,
+            camera_params,
+            artifact_root_dir,
+            job_out,
+            error_out);
+    if (ok && job_out != nullptr) {
+        job_out->request.detected_circle_source =
+            "orange_guided_daily_registration_cached_hough_full_resolution";
+        job_out->request.operator_status =
+            "orange_guided_daily_registration_operator_confirmed";
+    }
+
+    ui_state->dish_mask_runtime = dish_mask_backup;
+    ui_state->has_detected_experimental_area_circle = has_detection_backup;
+    ui_state->detected_experimental_area_geometry = detection_backup;
+    ui_state->calibration_inner_rim_target_confirmed = confirmation_backup;
+    ui_state->calibration_operator_notes = notes_backup;
+    restore_spatial_layout_capture_state(
+        ui_state, std::move(capture_backup));
+    return ok;
+}
+
 bool prepare_generic_calibration_image_set_save_job_from_spatial_layout(
     SpatialLayoutUiState* ui_state,
     const CameraParams& selected_camera,
@@ -878,6 +990,27 @@ bool prepare_generic_calibration_image_set_save_job_from_spatial_layout(
                 !capture_metadata.citrus_projection_epoch_consistency.empty()
             ? capture_metadata.citrus_projection_epoch_consistency
             : make_citrus_projection_epoch_consistency(request);
+    request.citrus_calibration_scene_pre_capture =
+        capture_metadata.citrus_calibration_scene_pre_capture;
+    request.citrus_calibration_scene_post_capture =
+        capture_metadata.citrus_calibration_scene_post_capture;
+    request.citrus_calibration_scene_consistency =
+        capture_metadata.citrus_calibration_scene_consistency;
+    request.citrus_calibration_scene_restore_status =
+        capture_metadata.citrus_calibration_scene_restore_status;
+    request.citrus_arena_centering_pre_capture =
+        capture_metadata.citrus_arena_centering_pre_capture;
+    request.citrus_arena_centering_post_capture =
+        capture_metadata.citrus_arena_centering_post_capture;
+    request.citrus_arena_centering_consistency =
+        capture_metadata.citrus_arena_centering_consistency;
+    request.citrus_daily_registration_pre_capture =
+        capture_metadata.citrus_daily_registration_pre_capture;
+    request.citrus_daily_registration_post_capture =
+        capture_metadata.citrus_daily_registration_post_capture;
+    request.citrus_daily_registration_consistency =
+        capture_metadata.citrus_daily_registration_consistency;
+    request.capture_group_membership = capture_metadata.capture_group_membership;
     attach_runtime_role_metadata(&request);
     attach_projection_surface_authored_domain_hint(&request);
     attach_calibration_domain_observation(&request, capture_metadata);
@@ -922,6 +1055,13 @@ bool queue_group_calibration_image_set_save_jobs(
         }
         return false;
     }
+    if (group_capture_workflow_active(*ui_state)) {
+        if (error_out) {
+            *error_out =
+                "Guided grouped capture is still verifying or restoring the Citrus scene.";
+        }
+        return false;
+    }
 
     std::string session_artifact_root;
     if (!ensure_spatial_calibration_session(
@@ -947,7 +1087,7 @@ bool queue_group_calibration_image_set_save_jobs(
             return false;
         }
         GenericCalibrationImageSetSaveJob job;
-        if (!prepare_generic_calibration_image_set_save_job_from_group_capture(
+        if (!prepare_generic_calibration_image_set_save_job_from_group_capture_impl(
                 ui_state,
                 capture,
                 cameras_params[camera_index],

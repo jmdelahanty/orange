@@ -81,6 +81,11 @@ When `clip_seconds = 0`, keep the existing structure:
 <recording_folder>/
   recording_session.json
   recording_snapshot.json
+  recording_geometry_contract.json
+  recording_geometry_assets/
+    manifest.json
+    cameras/...
+    tank_designs/...
   ptp_sync_summary.json
   Cam2010095.mp4
   Cam2010095_meta.csv
@@ -105,6 +110,24 @@ descriptor paths and counts. Optional crop videos are represented as
 `recording_outputs[serial].crop` with `role = "sidecar"` when crop writing is
 enabled.
 
+When `recording_geometry_contract.json` exists, both single-clip and rolling
+session manifests add `metadata.recording_geometry_contract`. That reference
+contains the schema identity/version, contract status, absolute and
+recording-folder-relative paths, and the SHA-256 of the exact sidecar bytes.
+New contracts also expose `metadata.recording_geometry_contract.materialized_assets`,
+which points at the checksummed, recording-local exact-byte evidence bundle.
+Geometry remains optional and non-blocking; consumers must inspect its status
+before using any transform or scale. See
+`docs/recording_geometry_contract.md`.
+
+If a selected daily registration is active, that same contract reference leads
+to the exact accepted registration and per-participating-camera schema-v2 dish
+mask. Consumers should use
+`recording_snapshot.json.calibrations[serial].dish_top_rim_observation` for the
+direct numerical view and follow its `recording_local_assets` paths when they
+need the immutable source observation or mask exports. The session manifest
+does not duplicate the circles as an independent authority.
+
 ## Rolling-Clip Layout
 
 When headless `recording_control.clip_seconds > 0`, the parent session folder is
@@ -114,6 +137,11 @@ the discovery root and each clip gets its own subfolder:
 <recording_folder>/
   recording_session.json
   recording_snapshot.json
+  recording_geometry_contract.json
+  recording_geometry_assets/
+    manifest.json
+    cameras/...
+    tank_designs/...
   ptp_sync_summary.json
   Cam2010095_pipeline_perf.csv
   Cam2010096_pipeline_perf.csv

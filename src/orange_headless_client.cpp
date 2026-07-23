@@ -50,6 +50,7 @@
 #include "yolo_event_log.h"
 #include "yolo_event_log_validation.h"
 #include "crop_producer_worker.h"
+#include "citrus_recording_geometry.h"
 #include "pose_worker.h"
 #include "pose_event_log_validation.h"
 #include <signal.h>
@@ -775,7 +776,7 @@ std::string normalize_headless_token(std::string value)
 nlohmann::json build_headless_yolo_worker_config_json(
     const HeadlessYoloWorkerConfig& config)
 {
-    return {
+    nlohmann::json value = {
         {"mode", config.mode},
         {"engine_path", config.engine_path},
         {"decimate", config.decimate},
@@ -784,6 +785,23 @@ nlohmann::json build_headless_yolo_worker_config_json(
         {"prewarm_iterations", config.prewarm_iterations},
         {"fail_on_init_error", config.fail_on_init_error}
     };
+    const auto spatial =
+        orange::analytics_mask::resolve_runtime_config_from_environment();
+    value["spatial_mask"] = spatial.ok
+        ? nlohmann::json{
+            {"status", "configured"},
+            {"mode", orange::analytics_mask::mode_to_string(
+                spatial.config.mode)},
+            {"configuration_source", spatial.config.source},
+            {"input_context_outset_px",
+             spatial.config.input_context_outset_px},
+            {"outside_tensor_value", 0.0},
+        }
+        : nlohmann::json{
+            {"status", "invalid"},
+            {"error", spatial.error},
+        };
+    return value;
 }
 
 nlohmann::json build_headless_pose_worker_config_json(
@@ -3889,7 +3907,8 @@ bool prepare_headless_recording_artifacts(const std::string& record_folder,
                                           int num_cameras,
                                           PTPParams* ptp_params,
                                           bool update_latest_pointer,
-                                          const std::string& recording_sink_mode)
+                                          const std::string& recording_sink_mode,
+                                          nlohmann::json* geometry_contract_out)
 {
     if (record_folder.empty()) {
         std::cerr << "Headless recording folder is empty." << std::endl;
@@ -3931,6 +3950,43 @@ bool prepare_headless_recording_artifacts(const std::string& record_folder,
             recording_sink_mode)) {
         std::cerr << "Failed to write headless recording snapshot for " << record_folder << std::endl;
         return false;
+    }
+
+    orange::recording_geometry::CitrusGeometryResolveRequest geometry_request;
+    geometry_request.captured_at_utc = get_current_utc_timestamp();
+    geometry_request.selection_source = "none";
+    if (const char* selected_canvas =
+            std::getenv("ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH");
+        selected_canvas != nullptr && selected_canvas[0] != '\0') {
+        geometry_request.selected_canvas_config_path = selected_canvas;
+        geometry_request.selection_source = "explicit_recording_environment";
+    }
+    geometry_request.camera_serials.reserve(static_cast<std::size_t>(num_cameras));
+    for (int index = 0; index < num_cameras; ++index) {
+        std::string serial = cameras_params[index].camera_serial;
+        if (serial.empty()) {
+            serial = std::to_string(cameras_params[index].camera_id);
+        }
+        geometry_request.camera_serials.push_back(std::move(serial));
+    }
+    const auto geometry_resolution =
+        orange::recording_geometry::resolve_citrus_recording_geometry(geometry_request);
+    if (geometry_contract_out) {
+        *geometry_contract_out = geometry_resolution.contract;
+    }
+    std::string geometry_error;
+    if (!write_recording_geometry_contract(
+            record_folder, geometry_resolution.contract, &geometry_error)) {
+        std::cerr << "Failed to write optional headless recording geometry contract";
+        if (!geometry_error.empty()) {
+            std::cerr << ": " << geometry_error;
+        }
+        std::cerr << std::endl;
+    } else {
+        std::cout << "Headless recording geometry contract written"
+                  << " status="
+                  << geometry_resolution.contract.value("status", "unknown")
+                  << " folder=" << record_folder << std::endl;
     }
 
     if (!initialize_ptp_sync_summary(
@@ -4488,6 +4544,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
 
     std::vector<std::shared_ptr<yolo_event_log::SyntheticYoloEventEmitter>>
         synthetic_yolo_emitters(num_cameras);
+    nlohmann::json headless_recording_geometry_contract =
+        nlohmann::json::object();
     if (yolo_event_log_config.enabled()) {
         for (int idx : selected_indices) {
             synthetic_yolo_emitters[idx] =
@@ -4521,7 +4579,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     static_cast<int>(selected_camera_params.size()),
                     ptp_params,
                     update_latest_pointer,
-                    recording_sink_mode)) {
+                    recording_sink_mode,
+                    &headless_recording_geometry_contract)) {
                 cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
                 return false;
             }
@@ -4649,8 +4708,6 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                             crop_producer_workers[idx].get());
                     }
                     yolo_workers[idx]->SetMaxQueueSize(240);
-                    yolo_workers[idx]->Warmup(yolo_worker_config.prewarm_iterations);
-                    yolo_workers[idx]->StartThread();
                 } catch (const std::exception& ex) {
                     if (yolo_worker_config.fail_on_init_error ||
                         pose_worker_config.enabled()) {
@@ -4663,6 +4720,126 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     cameras_select[idx].yolo = false;
                     cameras_select[idx].yolo_model = nullptr;
                 }
+            }
+
+            const auto spatial_config =
+                orange::analytics_mask::resolve_runtime_config_from_environment();
+            if (!spatial_config.ok) {
+                throw std::runtime_error(spatial_config.error);
+            }
+            const auto spatial_mode = spatial_config.config.mode;
+            if (spatial_mode != orange::analytics_mask::Mode::kOff &&
+                (!enable_artifacts ||
+                 !headless_recording_geometry_contract.is_object() ||
+                 headless_recording_geometry_contract.empty())) {
+                throw std::runtime_error(
+                    "headless YOLO spatial masking requires recording artifacts "
+                    "and a resolved recording geometry contract");
+            }
+
+            nlohmann::json spatial_runtime = {
+                {"schema_id", "orange.analytics.spatial_mask_recording_arm"},
+                {"schema_version", 1},
+                {"status", "resolving"},
+                {"mode", orange::analytics_mask::mode_to_string(spatial_mode)},
+                {"configuration_source", spatial_config.config.source},
+                {"input_context_outset_px",
+                 spatial_config.config.input_context_outset_px},
+                {"outside_tensor_value", 0.0},
+                {"application_phase", "before_headless_worker_start"},
+                {"immutable_for_recording", true},
+                {"cameras", nlohmann::json::object()},
+            };
+            std::size_t armed_spatial_workers = 0;
+            for (int idx : selected_indices) {
+                if (!yolo_workers[idx]) {
+                    continue;
+                }
+                const std::string serial = cameras_params[idx].camera_serial.empty()
+                    ? std::to_string(cameras_params[idx].camera_id)
+                    : cameras_params[idx].camera_serial;
+                orange::analytics_mask::Policy policy;
+                if (spatial_mode == orange::analytics_mask::Mode::kOff) {
+                    policy.mode = spatial_mode;
+                    policy.camera_serial = serial;
+                    policy.source_width = cameras_params[idx].width;
+                    policy.source_height = cameras_params[idx].height;
+                } else {
+                    auto resolved =
+                        orange::analytics_mask::resolve_policy_from_recording_geometry_contract(
+                            headless_recording_geometry_contract,
+                            serial,
+                            cameras_params[idx].width,
+                            cameras_params[idx].height,
+                            spatial_mode,
+                            spatial_config.config.input_context_outset_px);
+                    if (!resolved.ok) {
+                        throw std::runtime_error(
+                            "headless spatial mask camera " + serial + ": " +
+                            resolved.error);
+                    }
+                    policy = std::move(resolved.policy);
+                }
+
+                std::uint64_t generation = 0;
+                std::string request_error;
+                if (!yolo_workers[idx]->RequestSpatialMaskPolicy(
+                        policy, &generation, &request_error)) {
+                    throw std::runtime_error(
+                        "headless spatial mask camera " + serial +
+                        " rejected policy: " + request_error);
+                }
+                spatial_runtime["cameras"][serial] =
+                    orange::analytics_mask::policy_to_json(policy);
+                spatial_runtime["cameras"][serial]["status"] =
+                    "requested_before_worker_start";
+                spatial_runtime["cameras"][serial]["policy_generation"] =
+                    generation;
+                if (enable_artifacts) {
+                    headless_recording_geometry_contract["cameras"][serial]
+                        ["yolo_spatial_mask_runtime"] =
+                            spatial_runtime["cameras"][serial];
+                    if (spatial_mode != orange::analytics_mask::Mode::kOff) {
+                        nlohmann::json& daily_entry =
+                            headless_recording_geometry_contract["cameras"][serial]
+                                ["daily_registration_geometry"]
+                                ["recording_snapshot_entry"];
+                        daily_entry["active_in_orange_live_detection_pipeline"] =
+                            orange::analytics_mask::enforces_centroid(spatial_mode);
+                        daily_entry["orange_live_detection_pipeline_mode"] =
+                            orange::analytics_mask::mode_to_string(spatial_mode);
+                        daily_entry["active_in_orange_neural_input_mask"] =
+                            orange::analytics_mask::masks_input(spatial_mode);
+                    }
+                }
+                ++armed_spatial_workers;
+            }
+            spatial_runtime["status"] = "armed_before_worker_start";
+            spatial_runtime["armed_camera_count"] = armed_spatial_workers;
+            if (enable_artifacts) {
+                headless_recording_geometry_contract["analytics_runtime"]
+                    ["yolo_spatial_mask"] = std::move(spatial_runtime);
+                std::string geometry_error;
+                if (!write_recording_geometry_contract(
+                        record_folder,
+                        headless_recording_geometry_contract,
+                        &geometry_error)) {
+                    if (spatial_mode != orange::analytics_mask::Mode::kOff) {
+                        throw std::runtime_error(
+                            "failed to persist headless spatial mask contract: " +
+                            geometry_error);
+                    }
+                    std::cerr << "Failed to update optional headless spatial mask contract: "
+                              << geometry_error << std::endl;
+                }
+            }
+
+            for (int idx : selected_indices) {
+                if (!yolo_workers[idx]) {
+                    continue;
+                }
+                yolo_workers[idx]->Warmup(yolo_worker_config.prewarm_iterations);
+                yolo_workers[idx]->StartThread();
             }
         }
 

@@ -21,10 +21,16 @@ bool is_dry_physical_target_height_parallax_diagnostic(const std::string& value)
     return value == "dry_physical_target_height_parallax_diagnostic";
 }
 
+bool is_projected_surface_scale_calibration(const std::string& value)
+{
+    return value == "projected_surface_scale_calibration";
+}
+
 bool is_camera_only_physical_target_purpose(const std::string& value)
 {
     return value == "camera_only_physical_target_calibration" ||
-           is_dry_physical_target_height_parallax_diagnostic(value);
+           is_dry_physical_target_height_parallax_diagnostic(value) ||
+           is_projected_surface_scale_calibration(value);
 }
 
 bool is_allowed_purpose(const std::string& value)
@@ -60,13 +66,82 @@ bool is_allowed_capture_stage(const std::string& value)
 {
     return value.empty() ||
            value == "projected_surface_dry_reference" ||
+           value == "projected_surface_holder_installed" ||
            value == "projected_surface_wet_runtime_stack" ||
            value == "camera_physical_projected_surface" ||
            value == "camera_physical_dish_base_inner_surface" ||
            value == "camera_physical_fish_height" ||
+           value == "projected_surface_physical_scale_commissioning" ||
            value == "projector_surface_validation" ||
            value == "dish_top_observation" ||
+           value == "daily_registration_rim" ||
+           value == "daily_registration_base_center" ||
+           value == "daily_registration_candidate_validation" ||
            value == "unknown";
+}
+
+bool is_allowed_workflow_profile_id(const std::string& value)
+{
+    return value.empty() ||
+           value == "camera_physical_planes" ||
+           value == "unobstructed_canvas_commissioning" ||
+           value == "holder_installed_projected_surface" ||
+           value == "wet_tank_projected_surface" ||
+           value == "installed_tank_registration" ||
+           value == "custom";
+}
+
+bool is_allowed_fixture_state(const std::string& value)
+{
+    return value.empty() ||
+           value == "holder_removed" ||
+           value == "holder_installed_dish_absent" ||
+           value == "holder_installed_dish_installed" ||
+           value == "unknown";
+}
+
+bool is_allowed_homography_role(const std::string& value)
+{
+    return value.empty() ||
+           value == "commissioning_reference" ||
+           value == "operational_candidate" ||
+           value == "validation_only" ||
+           value == "not_applicable" ||
+           value == "unknown";
+}
+
+bool is_allowed_visibility_domain_id(const std::string& value)
+{
+    return value == "unobstructed_arena_rectangle" ||
+           value == "imaging_shelf_aperture" ||
+           value == "unknown";
+}
+
+bool is_valid_visibility_domain(const nlohmann::json& value)
+{
+    if (value.empty()) {
+        return true;
+    }
+    if (!value.is_object()) {
+        return false;
+    }
+    const std::string domain_id = value.value("domain_id", "");
+    const std::string shape = value.value("shape", "");
+    const std::string coordinate_space = value.value("coordinate_space", "");
+    const std::string geometry_status = value.value("geometry_status", "");
+    return is_allowed_visibility_domain_id(domain_id) &&
+           (shape == "rectangle" || shape == "circle" ||
+            shape == "rounded_rectangle" || shape == "polygon" ||
+            shape == "unknown") &&
+           (coordinate_space == "final_display_canvas_px" ||
+            coordinate_space == "arena_local_canvas_px" ||
+            coordinate_space == "unknown") &&
+           (geometry_status == "not_embedded" ||
+            geometry_status == "unmeasured" ||
+            geometry_status == "configured" ||
+            geometry_status == "observed" ||
+            geometry_status == "unknown") &&
+           value.contains("authority") && value["authority"].is_string();
 }
 
 bool is_allowed_wet_or_dry(const std::string& value)
@@ -121,10 +196,12 @@ bool is_allowed_parity_group_role(const std::string& value)
 {
     return value.empty() ||
            value == "dry_reference" ||
+           value == "holder_installed_projected_surface" ||
            value == "wet_projected_surface" ||
            value == "physical_projected_surface" ||
            value == "physical_dish_base" ||
            value == "physical_fish_height" ||
+           value == "projected_surface_scale" ||
            value == "projector_surface_validation";
 }
 
@@ -198,6 +275,25 @@ bool validate_request(const CalibrationImageSetRequest& request, std::string* er
             error_out,
             "image_set capture_stage is not supported: " + request.capture_stage);
     }
+    if (!is_allowed_workflow_profile_id(request.workflow_profile_id)) {
+        return set_error(
+            error_out,
+            "image_set workflow_profile_id is not supported: " +
+                request.workflow_profile_id);
+    }
+    if (!is_allowed_fixture_state(request.fixture_state)) {
+        return set_error(
+            error_out,
+            "image_set fixture_state is not supported: " + request.fixture_state);
+    }
+    if (!is_allowed_homography_role(request.homography_role)) {
+        return set_error(
+            error_out,
+            "image_set homography_role is not supported: " + request.homography_role);
+    }
+    if (!is_valid_visibility_domain(request.visibility_domain)) {
+        return set_error(error_out, "image_set visibility_domain is invalid");
+    }
     if (!is_allowed_wet_or_dry(request.wet_or_dry)) {
         return set_error(error_out, "image_set wet_or_dry is not supported: " + request.wet_or_dry);
     }
@@ -264,6 +360,90 @@ bool validate_request(const CalibrationImageSetRequest& request, std::string* er
                 error_out,
                 "projected_surface_dry_reference must be reference_only=true");
         }
+        if (request.workflow_profile_id != "unobstructed_canvas_commissioning") {
+            return set_error(
+                error_out,
+                "projected_surface_dry_reference requires "
+                "workflow_profile_id=unobstructed_canvas_commissioning");
+        }
+        if (request.fixture_state != "holder_removed") {
+            return set_error(
+                error_out,
+                "projected_surface_dry_reference requires fixture_state=holder_removed");
+        }
+        if (!request.has_imaging_shelf_installed || request.imaging_shelf_installed ||
+            !request.has_dish_installed || request.dish_installed) {
+            return set_error(
+                error_out,
+                "projected_surface_dry_reference requires explicit shelf=false and dish=false");
+        }
+        if (request.visibility_domain.value("domain_id", std::string()) !=
+            "unobstructed_arena_rectangle") {
+            return set_error(
+                error_out,
+                "projected_surface_dry_reference requires the unobstructed arena visibility domain");
+        }
+        const std::string expected_role =
+            request.purpose == "homography_grid"
+                ? "commissioning_reference"
+                : "validation_only";
+        if (request.homography_role != expected_role) {
+            return set_error(
+                error_out,
+                "projected_surface_dry_reference has the wrong homography_role for its purpose");
+        }
+    }
+    if (request.capture_stage == "projected_surface_holder_installed") {
+        if (request.target_plane != "projected_surface") {
+            return set_error(
+                error_out,
+                "projected_surface_holder_installed must use target_plane=projected_surface");
+        }
+        if (request.wet_or_dry != "dry") {
+            return set_error(
+                error_out,
+                "projected_surface_holder_installed must use wet_or_dry=dry");
+        }
+        if (request.workflow_profile_id != "holder_installed_projected_surface" ||
+            request.fixture_state != "holder_installed_dish_absent") {
+            return set_error(
+                error_out,
+                "projected_surface_holder_installed requires the holder-installed profile and fixture state");
+        }
+        if (!request.has_imaging_shelf_installed || !request.imaging_shelf_installed ||
+            !request.has_dish_installed || request.dish_installed ||
+            !request.has_open_water_surface_present || request.open_water_surface_present) {
+            return set_error(
+                error_out,
+                "projected_surface_holder_installed requires shelf=true, dish=false, and open_water=false");
+        }
+        if (request.pattern_domain != "circular_experimental_domain" &&
+            request.pattern_domain != "full_projected_surface") {
+            return set_error(
+                error_out,
+                "projected_surface_holder_installed requires a circular or full projected-surface pattern domain");
+        }
+        if (request.visibility_domain.value("domain_id", std::string()) !=
+            "imaging_shelf_aperture") {
+            return set_error(
+                error_out,
+                "projected_surface_holder_installed requires the imaging shelf aperture visibility domain");
+        }
+        if (request.parity_group_role != "holder_installed_projected_surface" ||
+            effective_parity_group_id(request).empty()) {
+            return set_error(
+                error_out,
+                "projected_surface_holder_installed requires a holder-installed parity group");
+        }
+        const std::string expected_role =
+            request.purpose == "homography_grid"
+                ? "operational_candidate"
+                : "validation_only";
+        if (request.homography_role != expected_role) {
+            return set_error(
+                error_out,
+                "projected_surface_holder_installed has the wrong homography_role for its purpose");
+        }
     }
     if (request.capture_stage == "projected_surface_wet_runtime_stack") {
         if (request.target_plane != "projected_surface") {
@@ -275,6 +455,33 @@ bool validate_request(const CalibrationImageSetRequest& request, std::string* er
             return set_error(
                 error_out,
                 "projected_surface_wet_runtime_stack must use parity_group_role=wet_projected_surface");
+        }
+        if (request.workflow_profile_id != "wet_tank_projected_surface" ||
+            request.fixture_state != "holder_installed_dish_installed") {
+            return set_error(
+                error_out,
+                "projected_surface_wet_runtime_stack requires the wet-tank profile and installed fixture state");
+        }
+        if (!request.has_imaging_shelf_installed || !request.imaging_shelf_installed ||
+            !request.has_dish_installed || !request.dish_installed) {
+            return set_error(
+                error_out,
+                "projected_surface_wet_runtime_stack requires explicit shelf=true and dish=true");
+        }
+        if (request.visibility_domain.value("domain_id", std::string()) !=
+            "imaging_shelf_aperture") {
+            return set_error(
+                error_out,
+                "projected_surface_wet_runtime_stack requires the imaging shelf aperture visibility domain");
+        }
+        const std::string expected_role =
+            request.purpose == "homography_grid"
+                ? "operational_candidate"
+                : "validation_only";
+        if (request.homography_role != expected_role) {
+            return set_error(
+                error_out,
+                "projected_surface_wet_runtime_stack has the wrong homography_role for its purpose");
         }
     }
     if (request.capture_stage == "projected_surface_wet_runtime_stack") {
@@ -376,6 +583,42 @@ bool validate_request(const CalibrationImageSetRequest& request, std::string* er
                     request.purpose + " requires reference_only=true");
             }
         }
+        if (is_projected_surface_scale_calibration(request.purpose)) {
+            if (request.capture_stage !=
+                    "projected_surface_physical_scale_commissioning" ||
+                request.target_plane != "projected_surface" ||
+                request.plane_id != "projected_surface_physical") {
+                return set_error(
+                    error_out,
+                    "projected_surface_scale_calibration requires the projected-surface "
+                    "physical scale commissioning stage and plane");
+            }
+            if (request.workflow_profile_id != "unobstructed_canvas_commissioning" ||
+                request.fixture_state != "holder_removed") {
+                return set_error(
+                    error_out,
+                    "projected_surface_scale_calibration requires the unobstructed "
+                    "holder-removed commissioning profile");
+            }
+            if (!request.has_imaging_shelf_installed || request.imaging_shelf_installed ||
+                !request.has_dish_installed || request.dish_installed ||
+                request.wet_or_dry != "dry") {
+                return set_error(
+                    error_out,
+                    "projected_surface_scale_calibration requires dry shelf=false and dish=false");
+            }
+            if (request.parity_group_role != "projected_surface_scale") {
+                return set_error(
+                    error_out,
+                    "projected_surface_scale_calibration requires "
+                    "parity_group_role=projected_surface_scale");
+            }
+            if (!request.has_reference_only || request.reference_only) {
+                return set_error(
+                    error_out,
+                    "projected_surface_scale_calibration requires reference_only=false");
+            }
+        }
         if (request.capture_stage == "camera_physical_projected_surface") {
             if (request.target_plane != "projected_surface" ||
                 request.plane_id != "projected_surface_physical") {
@@ -415,7 +658,8 @@ bool validate_request(const CalibrationImageSetRequest& request, std::string* er
                     error_out,
                     "camera_physical_fish_height requires parity_group_role=physical_fish_height");
             }
-        } else {
+        } else if (request.capture_stage !=
+                   "projected_surface_physical_scale_commissioning") {
             return set_error(
                 error_out,
                 request.purpose + " requires a camera_physical_* capture_stage");
@@ -526,6 +770,13 @@ nlohmann::json capture_to_json(const CalibrationImageSetCaptureContext& capture)
     if (capture.has_camera_frame_range) {
         out["first_camera_frame_id"] = capture.first_camera_frame_id;
         out["last_camera_frame_id"] = capture.last_camera_frame_id;
+    }
+    if (capture.has_camera_timestamp_ns) {
+        out["camera_timestamp_ns"] = capture.camera_timestamp_ns;
+        out["camera_timestamp_clock_domain"] = "camera_ptp";
+    }
+    if (capture.has_timestamp_sys_ns) {
+        out["timestamp_sys_ns"] = capture.timestamp_sys_ns;
     }
     if (!capture.capture_mode.empty()) {
         out["capture_mode"] = capture.capture_mode;
@@ -651,6 +902,18 @@ nlohmann::json calibration_image_set_to_json(const CalibrationImageSetRequest& r
     if (!request.capture_stage.empty()) {
         out["capture_stage"] = request.capture_stage;
     }
+    if (!request.workflow_profile_id.empty()) {
+        out["workflow_profile_id"] = request.workflow_profile_id;
+    }
+    if (!request.fixture_state.empty()) {
+        out["fixture_state"] = request.fixture_state;
+    }
+    if (!request.homography_role.empty()) {
+        out["homography_role"] = request.homography_role;
+    }
+    if (!request.visibility_domain.empty()) {
+        out["visibility_domain"] = request.visibility_domain;
+    }
     if (request.has_plane_z_mm_nominal) {
         out["plane_z_mm_nominal"] = request.plane_z_mm_nominal;
     }
@@ -762,6 +1025,61 @@ nlohmann::json calibration_image_set_to_json(const CalibrationImageSetRequest& r
     }
     if (!request.citrus_preview.empty()) {
         out["citrus_preview"] = request.citrus_preview;
+    }
+    if (!request.citrus_projection_snapshot_pre_capture.empty()) {
+        out["citrus_projection_snapshot_pre_capture"] =
+            request.citrus_projection_snapshot_pre_capture;
+    }
+    if (!request.citrus_projection_snapshot_post_capture.empty()) {
+        out["citrus_projection_snapshot_post_capture"] =
+            request.citrus_projection_snapshot_post_capture;
+    }
+    if (!request.citrus_projection_epoch_consistency.empty()) {
+        out["citrus_projection_epoch_consistency"] =
+            request.citrus_projection_epoch_consistency;
+    }
+    if (!request.citrus_calibration_scene_pre_capture.empty()) {
+        out["citrus_calibration_scene_pre_capture"] =
+            request.citrus_calibration_scene_pre_capture;
+    }
+    if (!request.citrus_calibration_scene_post_capture.empty()) {
+        out["citrus_calibration_scene_post_capture"] =
+            request.citrus_calibration_scene_post_capture;
+    }
+    if (!request.citrus_calibration_scene_consistency.empty()) {
+        out["citrus_calibration_scene_consistency"] =
+            request.citrus_calibration_scene_consistency;
+    }
+    if (!request.citrus_calibration_scene_restore_status.empty()) {
+        out["citrus_calibration_scene_restore_status"] =
+            request.citrus_calibration_scene_restore_status;
+    }
+    if (!request.citrus_arena_centering_pre_capture.empty()) {
+        out["citrus_arena_centering_pre_capture"] =
+            request.citrus_arena_centering_pre_capture;
+    }
+    if (!request.citrus_arena_centering_post_capture.empty()) {
+        out["citrus_arena_centering_post_capture"] =
+            request.citrus_arena_centering_post_capture;
+    }
+    if (!request.citrus_arena_centering_consistency.empty()) {
+        out["citrus_arena_centering_consistency"] =
+            request.citrus_arena_centering_consistency;
+    }
+    if (!request.citrus_daily_registration_pre_capture.empty()) {
+        out["citrus_daily_registration_pre_capture"] =
+            request.citrus_daily_registration_pre_capture;
+    }
+    if (!request.citrus_daily_registration_post_capture.empty()) {
+        out["citrus_daily_registration_post_capture"] =
+            request.citrus_daily_registration_post_capture;
+    }
+    if (!request.citrus_daily_registration_consistency.empty()) {
+        out["citrus_daily_registration_consistency"] =
+            request.citrus_daily_registration_consistency;
+    }
+    if (!request.capture_group_membership.empty()) {
+        out["capture_group_membership"] = request.capture_group_membership;
     }
     if (!request.operator_notes.empty()) {
         out["operator_notes"] = request.operator_notes;

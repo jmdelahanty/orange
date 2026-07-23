@@ -1,5 +1,6 @@
 #include "gui/spatial_layout/preview_overlay.h"
 
+#include "gui/spatial_layout/daily_registration_preview.h"
 #include "gui/spatial_layout/geometry.h"
 #include "implot.h"
 
@@ -95,6 +96,105 @@ void draw_projected_outline_polyline(const std::vector<Point2d>& camera_points,
             color,
             thickness);
     }
+}
+
+bool circle_geometry_differs(
+    const RuntimeGeometry& lhs,
+    const RuntimeGeometry& rhs)
+{
+    if (lhs.type != RuntimeGeometryType::kCircle ||
+        rhs.type != RuntimeGeometryType::kCircle) {
+        return true;
+    }
+    return std::hypot(
+               lhs.circle.cx - rhs.circle.cx,
+               lhs.circle.cy - rhs.circle.cy) > 0.25 ||
+        std::abs(lhs.circle.r - rhs.circle.r) > 0.25;
+}
+
+void draw_labeled_circle(
+    const RuntimeGeometry& geometry,
+    ImU32 color,
+    float thickness,
+    const char* label,
+    float label_y_offset)
+{
+    if (geometry.type != RuntimeGeometryType::kCircle ||
+        geometry.circle.r <= 0.0) {
+        return;
+    }
+    draw_circle_geometry(geometry, color, thickness);
+    const ImVec2 center = ImPlot::PlotToPixels(
+        ImPlotPoint(geometry.circle.cx, geometry.circle.cy));
+    ImPlot::GetPlotDrawList()->AddText(
+        ImVec2(center.x + 12.0f, center.y + label_y_offset),
+        color,
+        label);
+}
+
+void draw_daily_registration_overlay(
+    const DailyRegistrationPreviewOverlay& overlay)
+{
+    if (!overlay.available ||
+        overlay.accepted_rim_circle.type != RuntimeGeometryType::kCircle ||
+        overlay.accepted_rim_circle.circle.r <= 0.0 ||
+        overlay.registered_outline_camera_px.size() < 3) {
+        return;
+    }
+
+    const ImU32 raw_color = IM_COL32(255, 35, 200, 235);
+    const ImU32 accepted_color = IM_COL32(255, 145, 25, 255);
+    const ImU32 area_color = overlay.selected_for_runtime
+        ? IM_COL32(45, 255, 125, 255)
+        : IM_COL32(45, 230, 210, 255);
+
+    const bool raw_differs_from_accepted = overlay.has_raw_hough_circle &&
+        circle_geometry_differs(
+            overlay.raw_hough_circle, overlay.accepted_rim_circle);
+    if (overlay.has_raw_hough_circle) {
+        draw_labeled_circle(
+            overlay.raw_hough_circle,
+            raw_color,
+            raw_differs_from_accepted ? 2.0f : 3.0f,
+            raw_differs_from_accepted
+                ? "Daily raw Hough"
+                : "Daily Hough / accepted rim",
+            raw_differs_from_accepted ? -42.0f : -24.0f);
+    }
+    if (raw_differs_from_accepted || !overlay.has_raw_hough_circle) {
+        draw_labeled_circle(
+            overlay.accepted_rim_circle,
+            raw_differs_from_accepted ? accepted_color : raw_color,
+            3.0f,
+            "Daily accepted rim fit",
+            -24.0f);
+    }
+
+    draw_projected_outline_polyline(
+        overlay.registered_outline_camera_px, area_color, 3.2f);
+    ImDrawList* draw_list = ImPlot::GetPlotDrawList();
+    const ImVec2 registered_center = ImPlot::PlotToPixels(
+        ImPlotPoint(
+            overlay.registered_center_camera_px.x,
+            overlay.registered_center_camera_px.y));
+    const ImVec2 rim_center = ImPlot::PlotToPixels(
+        ImPlotPoint(
+            overlay.accepted_rim_circle.circle.cx,
+            overlay.accepted_rim_circle.circle.cy));
+    draw_list->AddLine(rim_center, registered_center, area_color, 2.0f);
+    constexpr float marker = 9.0f;
+    draw_list->AddQuadFilled(
+        ImVec2(registered_center.x, registered_center.y - marker),
+        ImVec2(registered_center.x + marker, registered_center.y),
+        ImVec2(registered_center.x, registered_center.y + marker),
+        ImVec2(registered_center.x - marker, registered_center.y),
+        area_color);
+    draw_list->AddText(
+        ImVec2(registered_center.x + 12.0f, registered_center.y + 8.0f),
+        area_color,
+        overlay.selected_for_runtime
+            ? "Selected daily experimental area"
+            : "Daily candidate experimental area");
 }
 
 void draw_citrus_projected_outline_overlay(const std::vector<Point2d>& camera_points,
@@ -269,6 +369,11 @@ bool draw_runtime_preview(
 
     bool changed = false;
     ImPlot::PushPlotClipRect();
+    DailyRegistrationPreviewOverlay daily_overlay;
+    const bool has_daily_registration_overlay =
+        ui_state->show_daily_registration_overlay &&
+        resolve_daily_registration_preview_overlay(
+            *ui_state, &daily_overlay);
     if (ui_state->has_citrus_projected_circle &&
         (ui_state->citrus_template.source_camera_id.empty() ||
          ui_state->captured_camera_serial.empty() ||
@@ -310,10 +415,15 @@ bool draw_runtime_preview(
         draw_zone_label(zone, ui_state->layout_artifact, color);
     }
     if (ui_state->show_hough_proposal_overlay &&
-        ui_state->has_detected_experimental_area_circle) {
+        ui_state->has_detected_experimental_area_circle &&
+        (!has_daily_registration_overlay ||
+         circle_geometry_differs(
+             ui_state->detected_experimental_area_geometry,
+             daily_overlay.accepted_rim_circle))) {
         draw_hough_proposal_overlay(ui_state->detected_experimental_area_geometry);
     }
     if (ui_state->show_citrus_corrected_center_overlay &&
+        !has_daily_registration_overlay &&
         ui_state->has_detected_experimental_area_circle &&
         ui_state->has_citrus_projected_circle) {
         Point2d corrected_center_camera{};
@@ -327,6 +437,9 @@ bool draw_runtime_preview(
                 corrected_center_camera,
                 corrected_outline_camera);
         }
+    }
+    if (has_daily_registration_overlay) {
+        draw_daily_registration_overlay(daily_overlay);
     }
     ImPlot::PopPlotClipRect();
 

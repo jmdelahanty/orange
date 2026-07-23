@@ -116,6 +116,9 @@ bool write_recording_snapshot(const std::string& recording_folder,
                               bool sync_camera_enabled = false,
                               const PTPParams* ptp_params = nullptr,
                               const std::string& recording_sink_mode = "real");
+bool publish_latest_recording_pointer(const std::string& base_folder,
+                                      const std::string& recording_folder,
+                                      const std::string& recording_id);
 nlohmann::json build_gpu_runtime_info(int gpu_id);
 RecordingValidationGpuPathInfo build_recording_validation_gpu_path_info(int source_gpu_id,
                                                                         int helper_gpu_id);
@@ -154,6 +157,13 @@ bool update_recording_snapshot_spatial_calibration_from_artifact(const std::stri
                                                                  const std::string& camera_serial,
                                                                  const std::string& artifact_dir,
                                                                  std::string* error_out = nullptr);
+bool update_recording_snapshot_citrus_runtime_geometry(
+    const std::string& recording_folder,
+    const nlohmann::json& citrus_runtime_geometry);
+bool write_recording_geometry_contract(
+    const std::string& recording_folder,
+    const nlohmann::json& geometry_contract,
+    std::string* error_out = nullptr);
 std::string build_model_id_from_path(const std::string& model_path);
 nlohmann::json build_gpu_copy_path_static_topology_info(int source_gpu_id, int target_gpu_id);
 std::string lookup_nvidia_smi_topology_class(int source_gpu_id,

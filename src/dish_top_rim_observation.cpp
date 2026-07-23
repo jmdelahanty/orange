@@ -1,5 +1,6 @@
 #include "dish_top_rim_observation.h"
 
+#include "fnv1a64_fingerprint.h"
 #include "fsuid_guard.h"
 
 #include <opencv2/imgcodecs.hpp>
@@ -41,9 +42,7 @@ void fnv1a64_update(uint64_t* hash, const unsigned char* data, size_t size)
 
 std::string fnv1a64_to_string(uint64_t hash)
 {
-    std::ostringstream oss;
-    oss << kCalibrationFingerprintAlgorithm << ':' << std::hex << std::nouppercase << hash;
-    return oss.str();
+    return format_fnv1a64_fingerprint(hash);
 }
 
 std::string compute_bytes_fingerprint(const std::vector<unsigned char>& bytes)

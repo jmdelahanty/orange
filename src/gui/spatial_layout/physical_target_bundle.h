@@ -9,6 +9,11 @@ namespace orange::gui::spatial_layout {
 
 std::filesystem::path default_physical_calibration_target_json_path();
 
+bool compute_file_sha256(
+    const std::filesystem::path& path,
+    std::string* sha256_out,
+    std::string* error_out);
+
 bool materialize_physical_target_bundle_for_request(
     orange::calibration::CalibrationImageSetRequest* request,
     const std::filesystem::path& artifact_dir,

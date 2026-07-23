@@ -1,5 +1,6 @@
 #include "usaf_resolution_calibration.h"
 
+#include "fnv1a64_fingerprint.h"
 #include "fsuid_guard.h"
 
 #include <opencv2/opencv.hpp>
@@ -586,9 +587,7 @@ std::string compute_usaf_resolution_fingerprint(
         return {};
     }
 
-    std::ostringstream oss;
-    oss << kCalibrationFingerprintAlgorithm << ':' << std::hex << std::nouppercase << hash;
-    return oss.str();
+    return orange::calibration::format_fnv1a64_fingerprint(hash);
 }
 
 bool write_usaf_resolution_json(

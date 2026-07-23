@@ -275,6 +275,57 @@ void test_runtime_synthetic_marker_mismatch_fails_schema()
     require(stats.schema_errors == 1, "expected one runtime synthetic marker schema error");
 }
 
+void add_off_spatial_mask(nlohmann::json* event)
+{
+    const uint64_t count = (*event)["yolo"]["detection_count"].get<uint64_t>();
+    (*event)["spatial_mask"] = {
+        {"schema_id", "orange.analytics.spatial_mask_runtime"},
+        {"schema_version", 1},
+        {"mode", "off"},
+        {"policy_generation", 0},
+        {"input_mask", {{"enabled", false}}},
+        {"centroid_gate", {{"evaluated", false}, {"enforced", false}}},
+        {"result", {
+            {"raw_detection_count", count},
+            {"inside_detection_count", 0},
+            {"outside_detection_count", 0},
+            {"downstream_detection_count", count},
+        }},
+        {"outside_detections", nlohmann::json::array()},
+    };
+}
+
+void test_valid_spatial_mask_result_passes()
+{
+    TestDir dir("spatial_valid");
+    auto config = make_config();
+    config.mode = "real";
+    write_metadata(dir.path, 20);
+    write_event_log(dir.path, config, 20, [](const uint64_t, nlohmann::json* event) {
+        add_off_spatial_mask(event);
+    });
+    const auto stats = summarize(dir.path, config);
+    require(stats.status == "pass", "valid spatial mask result should pass");
+    require(stats.schema_errors == 0, "valid spatial mask schema");
+}
+
+void test_spatial_mask_count_mismatch_fails_schema()
+{
+    TestDir dir("spatial_invalid");
+    auto config = make_config();
+    config.mode = "real";
+    write_metadata(dir.path, 20);
+    write_event_log(dir.path, config, 20, [](const uint64_t line, nlohmann::json* event) {
+        add_off_spatial_mask(event);
+        if (line == 1) {
+            (*event)["spatial_mask"]["result"]["raw_detection_count"] = 1;
+        }
+    });
+    const auto stats = summarize(dir.path, config);
+    require(stats.status == "fail", "spatial count mismatch should fail");
+    require(stats.schema_errors == 1, "one spatial schema error expected");
+}
+
 }  // namespace
 
 int main()
@@ -295,6 +346,10 @@ int main()
         {"real_worker_log_skips_synthetic_cadence", &test_real_worker_log_skips_synthetic_cadence},
         {"runtime_synthetic_marker_mismatch_fails_schema",
          &test_runtime_synthetic_marker_mismatch_fails_schema},
+        {"valid_spatial_mask_result_passes",
+         &test_valid_spatial_mask_result_passes},
+        {"spatial_mask_count_mismatch_fails_schema",
+         &test_spatial_mask_count_mismatch_fails_schema},
     };
 
     for (const auto& test : tests) {

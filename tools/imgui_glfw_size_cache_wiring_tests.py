@@ -155,21 +155,19 @@ def test_size_cache_owns_glfw_user_pointer() -> None:
     set_occurrences = source_occurrences("glfwSetWindowUserPointer", roots)
     get_occurrences = source_occurrences("glfwGetWindowUserPointer", roots)
     require(
-        set_occurrences == [
-            ("src/gx_helper.h", 101, "glfwSetWindowUserPointer(render_target, context);")
+        [(path, text) for path, _line, text in set_occurrences] == [
+            ("src/gx_helper.h", "glfwSetWindowUserPointer(render_target, context);")
         ],
         f"GLFW window user pointer ownership changed: {set_occurrences}",
     )
     require(
-        get_occurrences == [
+        [(path, text) for path, _line, text in get_occurrences] == [
             (
                 "src/gx_helper.h",
-                79,
                 'static_cast<gx_context *>(glfwGetWindowUserPointer(render_target));',
             ),
             (
                 "src/gx_helper.h",
-                90,
                 'static_cast<gx_context *>(glfwGetWindowUserPointer(render_target));',
             ),
         ],

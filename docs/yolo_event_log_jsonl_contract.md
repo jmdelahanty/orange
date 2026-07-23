@@ -159,6 +159,42 @@ result.
       "keypoints": []
     }
   ],
+  "spatial_mask": {
+    "schema_id": "orange.analytics.spatial_mask_runtime",
+    "schema_version": 1,
+    "mode": "gate_and_input_mask",
+    "policy_generation": 1,
+    "input_mask": {
+      "enabled": true,
+      "outside_tensor_value": 0.0,
+      "input_context_outset_px": 0.0,
+      "geometry": {
+        "type": "circle",
+        "coordinate_space": "camera_native_pixels",
+        "cx": 2244.9,
+        "cy": 2315.2,
+        "radius": 2163.0
+      }
+    },
+    "centroid_gate": {
+      "evaluated": true,
+      "enforced": true,
+      "geometry": {
+        "type": "circle",
+        "coordinate_space": "camera_native_pixels",
+        "cx": 2244.9,
+        "cy": 2315.2,
+        "radius": 2163.0
+      }
+    },
+    "result": {
+      "raw_detection_count": 1,
+      "inside_detection_count": 1,
+      "outside_detection_count": 0,
+      "downstream_detection_count": 1
+    },
+    "outside_detections": []
+  },
   "citrus_live_ipc": {
     "queue_name": "/shm_cam_2010096",
     "enabled": true,
@@ -200,6 +236,23 @@ Detection semantics:
   production YOLO detections, detection quality, real ROI selection, or real
   detection-to-pose behavior.
 
+Spatial-mask semantics:
+
+- `spatial_mask.mode` is `off`, `audit`, `gate_only`, or
+  `gate_and_input_mask` and is immutable for the recording arm.
+- `detections` and `yolo.detection_count` contain downstream detections after
+  enforcement. `spatial_mask.result.raw_detection_count` preserves the count
+  before the centroid decision.
+- `audit` records `would_reject` outside detections but does not alter the
+  downstream array. Gate modes record `rejected` and remove those detections
+  before tracking, crop/pose production, ENet, and Citrus live IPC.
+- Each outside decision includes the original box, its camera-pixel centroid,
+  and signed distance to the valid-region boundary (positive inside, negative
+  outside).
+- The source artifact/registration/checksum identity and exact input/gate
+  circles are repeated in this object; the recording geometry contract is the
+  session-level authority for the same policy.
+
 `citrus_live_ipc.request_status` values:
 
 - `queued`: Orange requested a live IPC update; final publish/suppress outcome
@@ -212,6 +265,8 @@ Detection semantics:
   Citrus queue.
 - `not_requested_zero_detections`: zero-detection results are not published to
   the current Citrus live queue.
+- `not_requested_spatial_gate`: the model produced one or more boxes, but all
+  were rejected by the enforced camera-space centroid gate before live IPC.
 - `not_requested_failed`: failed/timeout results are not published to the
   current Citrus live queue.
 

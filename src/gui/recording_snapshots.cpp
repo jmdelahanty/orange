@@ -1,9 +1,13 @@
 #include "gui/recording_snapshots.h"
+#include "citrus_recording_geometry.h"
+#include "gui/spatial_layout/projection_snapshot_client.h"
 
 #include "camera.h"
 #include "crop_and_encode_worker.h"
 #include "crop_producer.h"
 #include "project.h"
+#include "spatial_calibration_snapshot.h"
+#include "spatial_layout_schema.h"
 #include "video_capture.h"
 
 #include <cstdlib>
@@ -327,5 +331,213 @@ void update_gui_spatial_calibration_snapshots(const std::string& recording_folde
 
         std::cout << "Recording snapshot spatial calibration for camera "
                   << camera_key << " loaded from " << artifact_path << std::endl;
+    }
+}
+
+std::string resolve_gui_citrus_recording_canvas_config_path(
+    const std::string& ui_selected_path,
+    std::string* source_out)
+{
+    struct Candidate {
+        const char* env_name;
+        const char* source;
+    };
+    static constexpr Candidate candidates[] = {
+        {"ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH", "explicit_recording_environment"},
+        {"ORANGE_GUI_GUIDED_CAPTURE_CITRUS_CONFIG_PATH", "guided_capture_environment"},
+        {"ORANGE_GUI_ARENA_CENTERING_CITRUS_CONFIG_PATH", "arena_centering_environment"},
+    };
+    for (const Candidate& candidate : candidates) {
+        const char* value = std::getenv(candidate.env_name);
+        if (value != nullptr && value[0] != '\0') {
+            if (source_out) *source_out = candidate.source;
+            return value;
+        }
+    }
+    if (!ui_selected_path.empty()) {
+        if (source_out) *source_out = "spatial_layout_ui_selection";
+        return ui_selected_path;
+    }
+    if (source_out) *source_out = "none";
+    return {};
+}
+
+nlohmann::json build_gui_recording_geometry_contract(
+    const std::string& ui_selected_citrus_canvas_config_path,
+    const CameraParams* cameras_params,
+    const CameraEachSelect* cameras_select,
+    const int num_cameras)
+{
+    if (!cameras_params || !cameras_select || num_cameras <= 0) {
+        return {
+            {"schema_id", "orange.recording.geometry_contract"},
+            {"schema_version", 1},
+            {"status", "invalid_request"},
+            {"cameras", nlohmann::json::object()},
+            {"warnings", nlohmann::json::array({
+                "GUI recording geometry contract request had no cameras."})},
+        };
+    }
+
+    orange::recording_geometry::CitrusGeometryResolveRequest request;
+    request.selected_canvas_config_path =
+        resolve_gui_citrus_recording_canvas_config_path(
+            ui_selected_citrus_canvas_config_path,
+            &request.selection_source);
+    request.captured_at_utc = get_current_utc_timestamp();
+    for (int index = 0; index < num_cameras; ++index) {
+        if (!gui_camera_has_acquisition_work(cameras_select[index])) {
+            continue;
+        }
+        std::string serial = cameras_params[index].camera_serial;
+        if (serial.empty()) {
+            serial = std::to_string(cameras_params[index].camera_id);
+        }
+        request.camera_serials.push_back(std::move(serial));
+    }
+
+    auto resolution =
+        orange::recording_geometry::resolve_citrus_recording_geometry(request);
+    bool has_orange_spatial_calibration = false;
+    for (const std::string& serial : request.camera_serials) {
+        nlohmann::json& camera = resolution.contract["cameras"][serial];
+        const std::string artifact_path =
+            resolve_gui_spatial_calibration_artifact_path(serial);
+        if (artifact_path.empty()) {
+            camera["orange_spatial_calibration"] = {
+                {"status", "not_configured"},
+            };
+            continue;
+        }
+        orange::spatial::CameraSpatialCalibration calibration;
+        std::string error;
+        if (!orange::spatial::load_camera_spatial_calibration_from_artifact_dir(
+                artifact_path, &calibration, &error)) {
+            camera["orange_spatial_calibration"] = {
+                {"status", "invalid"},
+                {"source_artifact_dir", artifact_path},
+                {"error", error},
+            };
+            resolution.contract["warnings"].push_back(
+                "Orange spatial calibration for camera " + serial +
+                " could not be embedded: " + error);
+            continue;
+        }
+        camera["orange_spatial_calibration"] = {
+            {"status", "resolved"},
+            {"source_artifact_dir", artifact_path},
+            {"runtime", orange::spatial::camera_spatial_calibration_to_json(
+                calibration)},
+        };
+        has_orange_spatial_calibration = true;
+    }
+    if (!resolution.configured && has_orange_spatial_calibration) {
+        resolution.contract["status"] = "orange_only";
+    }
+    return resolution.contract;
+}
+
+bool write_gui_recording_geometry_contract(
+    const std::string& recording_folder,
+    const nlohmann::json& contract,
+    std::string* error_out)
+{
+    if (recording_folder.empty()) {
+        if (error_out) {
+            *error_out = "recording folder is empty";
+        }
+        return false;
+    }
+    std::string local_error;
+    if (!write_recording_geometry_contract(
+            recording_folder, contract, &local_error)) {
+        if (error_out) {
+            *error_out = local_error;
+        }
+        return false;
+    }
+    if (error_out) {
+        error_out->clear();
+    }
+    std::cout << "Recording geometry contract written"
+              << " status=" << contract.value("status", "unknown")
+              << " citrus_canvas="
+              << contract.value(
+                    "selection", nlohmann::json::object()).value(
+                        "selected_canvas_name", "none")
+              << " folder=" << recording_folder << std::endl;
+    return true;
+}
+
+void update_gui_recording_geometry_contract(
+    const std::string& recording_folder,
+    const std::string& ui_selected_citrus_canvas_config_path,
+    const CameraParams* cameras_params,
+    const CameraEachSelect* cameras_select,
+    const int num_cameras)
+{
+    if (recording_folder.empty()) {
+        return;
+    }
+    const nlohmann::json contract = build_gui_recording_geometry_contract(
+        ui_selected_citrus_canvas_config_path,
+        cameras_params,
+        cameras_select,
+        num_cameras);
+
+    std::string error;
+    if (!write_gui_recording_geometry_contract(
+            recording_folder, contract, &error)) {
+        std::cerr << "Failed to write recording geometry contract";
+        if (!error.empty()) {
+            std::cerr << ": " << error;
+        }
+        std::cerr << std::endl;
+        return;
+    }
+}
+
+void update_gui_citrus_runtime_geometry_snapshot(
+    const std::string& recording_folder)
+{
+    if (recording_folder.empty()) {
+        return;
+    }
+    const auto result = orange::gui::spatial_layout::
+        query_citrus_daily_registration_status("recording-start");
+    nlohmann::json snapshot = {
+        {"schema_id", "orange.recording.citrus_runtime_geometry"},
+        {"schema_version", 1},
+        {"captured_at_utc", get_current_utc_timestamp()},
+        {"capture_status", result.ok ? "captured" : "unavailable"},
+        {"recording_blocked_by_capture_failure", false},
+        {"daily_registration_optional", true},
+        {"mode", "unknown"},
+        {"daily_registration_status", "unavailable"},
+        {"all_selected_runtime_safe", true},
+    };
+    if (result.ok) {
+        const auto runtime = result.daily_registration.value(
+            "runtime", nlohmann::json::object());
+        snapshot["mode"] = runtime.value("mode", "base_only");
+        snapshot["daily_registration_status"] = runtime.value(
+            "daily_registration_status", "not_performed");
+        snapshot["all_selected_runtime_safe"] = runtime.value(
+            "all_selected_runtime_safe", true);
+        snapshot["daily_registration"] = result.daily_registration;
+        const auto response_status = result.response.value(
+            "status", nlohmann::json::object());
+        snapshot["rig_canvas_commissioning"] = response_status.value(
+            "runtime_rig_canvas_commissioning_compatibility",
+            nlohmann::json::object());
+    } else {
+        snapshot["capture_error"] = result.reason;
+        snapshot["policy"] =
+            "continue_recording_and_mark_citrus_runtime_geometry_unavailable";
+    }
+    if (!update_recording_snapshot_citrus_runtime_geometry(
+            recording_folder, snapshot)) {
+        std::cerr << "Failed to update recording snapshot Citrus runtime "
+                     "geometry metadata" << std::endl;
     }
 }

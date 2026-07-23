@@ -190,6 +190,106 @@ YoloEventLogValidationStats summarize_yolo_event_log(
         const uint64_t detection_count =
             json_u64_or_default(yolo.value("detection_count", nlohmann::json()),
                                 std::numeric_limits<uint64_t>::max());
+
+        const auto spatial_it = event.find("spatial_mask");
+        if (spatial_it != event.end()) {
+            bool spatial_error = !spatial_it->is_object();
+            const nlohmann::json spatial = spatial_it->is_object()
+                ? *spatial_it
+                : nlohmann::json::object();
+            const std::string spatial_mode =
+                json_string_or_default(spatial, "mode", "");
+            const bool known_spatial_mode =
+                spatial_mode == "off" ||
+                spatial_mode == "audit" ||
+                spatial_mode == "gate_only" ||
+                spatial_mode == "gate_and_input_mask";
+            const nlohmann::json input_mask = spatial.value(
+                "input_mask", nlohmann::json::object());
+            const nlohmann::json centroid_gate = spatial.value(
+                "centroid_gate", nlohmann::json::object());
+            const nlohmann::json spatial_result = spatial.value(
+                "result", nlohmann::json::object());
+            const nlohmann::json outside = spatial.value(
+                "outside_detections", nlohmann::json::array());
+            bool input_enabled_valid = false;
+            const bool input_enabled = json_bool_or_default(
+                input_mask, "enabled", false, &input_enabled_valid);
+            bool gate_evaluated_valid = false;
+            const bool gate_evaluated = json_bool_or_default(
+                centroid_gate, "evaluated", false, &gate_evaluated_valid);
+            bool gate_enforced_valid = false;
+            const bool gate_enforced = json_bool_or_default(
+                centroid_gate, "enforced", false, &gate_enforced_valid);
+            const uint64_t raw_count = json_u64_or_default(
+                spatial_result.value("raw_detection_count", nlohmann::json()),
+                std::numeric_limits<uint64_t>::max());
+            const uint64_t inside_count = json_u64_or_default(
+                spatial_result.value("inside_detection_count", nlohmann::json()),
+                std::numeric_limits<uint64_t>::max());
+            const uint64_t outside_count = json_u64_or_default(
+                spatial_result.value("outside_detection_count", nlohmann::json()),
+                std::numeric_limits<uint64_t>::max());
+            const uint64_t downstream_count = json_u64_or_default(
+                spatial_result.value("downstream_detection_count", nlohmann::json()),
+                std::numeric_limits<uint64_t>::max());
+            spatial_error = spatial_error ||
+                json_string_or_default(spatial, "schema_id", "") !=
+                    "orange.analytics.spatial_mask_runtime" ||
+                json_u64_or_default(
+                    spatial.value("schema_version", nlohmann::json()), 0) != 1 ||
+                !known_spatial_mode ||
+                !spatial_result.is_object() ||
+                !outside.is_array() ||
+                downstream_count != detection_count ||
+                outside.size() != outside_count ||
+                !input_enabled_valid ||
+                !gate_evaluated_valid ||
+                !gate_enforced_valid;
+
+            if (known_spatial_mode && spatial_mode == "off") {
+                spatial_error = spatial_error ||
+                    input_enabled || gate_evaluated || gate_enforced ||
+                    inside_count != 0 || outside_count != 0 ||
+                    raw_count != downstream_count;
+            } else if (known_spatial_mode) {
+                const bool audit = spatial_mode == "audit";
+                const bool masked = spatial_mode == "gate_and_input_mask";
+                spatial_error = spatial_error ||
+                    !gate_evaluated ||
+                    gate_enforced == audit ||
+                    input_enabled != masked ||
+                    raw_count != inside_count + outside_count ||
+                    downstream_count != (audit ? raw_count : inside_count) ||
+                    json_u64_or_default(
+                        spatial.value("policy_generation", nlohmann::json()), 0) == 0;
+                const nlohmann::json source = spatial.value(
+                    "source", nlohmann::json::object());
+                const std::string source_sha = json_string_or_default(
+                    source, "sha256", "");
+                spatial_error = spatial_error ||
+                    json_string_or_default(source, "artifact_id", "").empty() ||
+                    source_sha.rfind("sha256:", 0) != 0;
+            }
+            if (outside.is_array()) {
+                for (const nlohmann::json& decision : outside) {
+                    const std::string expected = spatial_mode == "audit"
+                        ? "would_reject"
+                        : "rejected";
+                    if (!decision.is_object() ||
+                        json_string_or_default(decision, "decision", "") != expected ||
+                        json_string_or_default(
+                            decision, "rejected_reason", "") !=
+                            "outside_valid_detection_region") {
+                        spatial_error = true;
+                        break;
+                    }
+                }
+            }
+            if (spatial_error) {
+                stats.schema_errors++;
+            }
+        }
         const std::string detection_source =
             json_string_or_default(yolo, "detection_source", "");
         bool synthetic_runtime_detection_valid = false;

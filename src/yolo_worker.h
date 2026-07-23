@@ -10,12 +10,17 @@
 #include "network_base.h"     // For EnetContext, ENetPeer
 #include "shaman.h"           // For shaman::SharedBoxQueue
 #include "velocity_tracker.h" // For VelocityTracker
+#include "yolo_spatial_mask.h"
 #include <chrono>
 #include <vector>
 #include <chrono>
 #include <cuda.h>
 #include <atomic>
+#include <condition_variable>
+#include <cstdint>
 #include <memory>
+#include <mutex>
+#include <string>
 #include "common.hpp"         // For pose::Object
 
 class COpenGLDisplay;
@@ -39,6 +44,17 @@ public:
     void SetDisplayWorker(COpenGLDisplay* display_worker);
     void SetCropProducerWorker(CropProducerWorker* crop_worker);
     void Warmup(int iterations);
+    // Policies are requested from the control thread and applied only at a
+    // worker frame boundary. A nonzero generation is acknowledged by
+    // WaitForSpatialMaskPolicy before recording is allowed to begin.
+    bool RequestSpatialMaskPolicy(
+        const orange::analytics_mask::Policy& policy,
+        std::uint64_t* generation_out,
+        std::string* error_out = nullptr);
+    bool WaitForSpatialMaskPolicy(
+        std::uint64_t generation,
+        std::chrono::milliseconds timeout,
+        std::string* error_out = nullptr);
     void DumpNextFrame() { m_dump_next_frame.store(true);}
     std::vector<TrackedObject> getTrackedObjects() const {
         return velocity_tracker_.getTrackedObjects();
@@ -66,6 +82,7 @@ private:
     void WorkerReset() override;
     void OnQueueInEnqueued(WORKER_ENTRY* entry, int queue_depth_after_enqueue) override;
     void OnQueueInDequeued(WORKER_ENTRY* entry, int queue_depth_after_dequeue) override;
+    void ApplyPendingSpatialMaskPolicyAtFrameBoundary();
 
     std::atomic<bool> m_dump_next_frame;
 
@@ -96,6 +113,16 @@ private:
     uint64_t perf_sample_counter_ = 0;
     int perf_sample_rate_ = 1;
     std::string perf_log_folder_;
+
+    mutable std::mutex spatial_mask_mutex_;
+    std::condition_variable spatial_mask_cv_;
+    orange::analytics_mask::Policy pending_spatial_mask_policy_;
+    std::uint64_t pending_spatial_mask_generation_ = 0;
+    std::atomic<std::uint64_t> requested_spatial_mask_generation_{0};
+    std::atomic<std::uint64_t> applied_spatial_mask_generation_{0};
+    // Worker-thread-owned after frame-boundary application.
+    orange::analytics_mask::Policy active_spatial_mask_policy_;
+    std::shared_ptr<const nlohmann::json> active_spatial_mask_policy_json_;
 };
 
 #endif // YOLO_WORKER_H

@@ -8,7 +8,7 @@ Usage:
   install_orange_local_benchmark_wrapper.sh --target /usr/local/bin/orange-local-benchmark
 
 Installs this repo's narrow sudo benchmark wrapper and verifies the installed
-command exposes the expected headless YOLO perf flags.
+command exposes the expected headless YOLO perf and spatial-mask flags.
 EOF
 }
 
@@ -62,6 +62,10 @@ for required in \
   "--yolo-ready-event-fastpath" \
   "--yolo-detach-input" \
   "--preprocess-defer-source-release" \
+  "--yolo-spatial-mask-mode" \
+  "--yolo-spatial-mask-input-context-outset-px" \
+  "--yolo-spatial-mask-apply-timeout-ms" \
+  "--citrus-recording-canvas-config-path" \
   "/home/jeremy/orange-gop-split-a16/experiment_specs"; do
   if [[ "$HELP_TEXT" != *"$required"* ]]; then
     echo "Installed wrapper help is missing expected text: $required" >&2

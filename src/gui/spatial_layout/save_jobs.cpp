@@ -381,14 +381,7 @@ public:
             }
             return false;
         }
-        if (running_ || queued_job_.has_value()) {
-            if (error_out) {
-                *error_out = "A top-rim observation save is already running.";
-            }
-            return false;
-        }
-        queued_job_ = std::move(job);
-        running_ = true;
+        queued_jobs_.push_back(std::move(job));
         cv_.notify_one();
         return true;
     }
@@ -396,7 +389,7 @@ public:
     bool IsBusy() const
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        return running_ || queued_job_.has_value();
+        return running_ || !queued_jobs_.empty();
     }
 
     bool PopCompleted(TopRimObservationSaveResult* result_out)
@@ -421,13 +414,14 @@ private:
             {
                 std::unique_lock<std::mutex> lock(mutex_);
                 cv_.wait(lock, [this] {
-                    return stop_requested_ || queued_job_.has_value();
+                    return stop_requested_ || !queued_jobs_.empty();
                 });
-                if (stop_requested_ && !queued_job_.has_value()) {
+                if (stop_requested_ && queued_jobs_.empty()) {
                     return;
                 }
-                job = std::move(queued_job_);
-                queued_job_.reset();
+                job = std::move(queued_jobs_.front());
+                queued_jobs_.pop_front();
+                running_ = true;
             }
 
             TopRimObservationSaveResult result =
@@ -446,7 +440,7 @@ private:
     std::thread worker_thread_;
     bool stop_requested_ = false;
     bool running_ = false;
-    std::optional<TopRimObservationSaveJob> queued_job_;
+    std::deque<TopRimObservationSaveJob> queued_jobs_;
     std::deque<TopRimObservationSaveResult> completed_results_;
 };
 
@@ -577,6 +571,10 @@ nlohmann::json make_generic_calibration_image_set_image_entry(
         "artifact_schema_version",
         "capture_timestamp_utc",
         "capture_stage",
+        "workflow_profile_id",
+        "fixture_state",
+        "homography_role",
+        "visibility_domain",
         "plane_z_mm_nominal",
         "plane_z_mm_uncertainty",
         "wet_or_dry",
@@ -636,6 +634,49 @@ nlohmann::json make_generic_calibration_image_set_image_entry(
         entry["citrus_projection_epoch_consistency"] =
             request.citrus_projection_epoch_consistency;
     }
+    if (!request.citrus_calibration_scene_pre_capture.empty()) {
+        entry["citrus_calibration_scene_pre_capture"] =
+            request.citrus_calibration_scene_pre_capture;
+    }
+    if (!request.citrus_calibration_scene_post_capture.empty()) {
+        entry["citrus_calibration_scene_post_capture"] =
+            request.citrus_calibration_scene_post_capture;
+    }
+    if (!request.citrus_calibration_scene_consistency.empty()) {
+        entry["citrus_calibration_scene_consistency"] =
+            request.citrus_calibration_scene_consistency;
+    }
+    if (!request.citrus_calibration_scene_restore_status.empty()) {
+        entry["citrus_calibration_scene_restore_status"] =
+            request.citrus_calibration_scene_restore_status;
+    }
+    if (!request.citrus_arena_centering_pre_capture.empty()) {
+        entry["citrus_arena_centering_pre_capture"] =
+            request.citrus_arena_centering_pre_capture;
+    }
+    if (!request.citrus_arena_centering_post_capture.empty()) {
+        entry["citrus_arena_centering_post_capture"] =
+            request.citrus_arena_centering_post_capture;
+    }
+    if (!request.citrus_arena_centering_consistency.empty()) {
+        entry["citrus_arena_centering_consistency"] =
+            request.citrus_arena_centering_consistency;
+    }
+    if (!request.citrus_daily_registration_pre_capture.empty()) {
+        entry["citrus_daily_registration_pre_capture"] =
+            request.citrus_daily_registration_pre_capture;
+    }
+    if (!request.citrus_daily_registration_post_capture.empty()) {
+        entry["citrus_daily_registration_post_capture"] =
+            request.citrus_daily_registration_post_capture;
+    }
+    if (!request.citrus_daily_registration_consistency.empty()) {
+        entry["citrus_daily_registration_consistency"] =
+            request.citrus_daily_registration_consistency;
+    }
+    if (!request.capture_group_membership.empty()) {
+        entry["capture_group_membership"] = request.capture_group_membership;
+    }
     if (!request.operator_notes.empty()) {
         entry["operator_notes"] = request.operator_notes;
     }
@@ -655,6 +696,10 @@ nlohmann::json make_empty_aggregate_calibration_image_set(
     aggregate_request.observations = nlohmann::json::object();
     aggregate_request.review_artifacts = nlohmann::json::object();
     aggregate_request.capture_stage.clear();
+    aggregate_request.workflow_profile_id.clear();
+    aggregate_request.fixture_state.clear();
+    aggregate_request.homography_role.clear();
+    aggregate_request.visibility_domain = nlohmann::json::object();
     aggregate_request.has_plane_z_mm_nominal = false;
     aggregate_request.has_plane_z_mm_uncertainty = false;
     aggregate_request.wet_or_dry.clear();
@@ -682,6 +727,20 @@ nlohmann::json make_empty_aggregate_calibration_image_set(
     aggregate_request.physical_target_origin_definition.clear();
     aggregate_request.physical_target_x_orientation_marker_definition.clear();
     aggregate_request.physical_target = nlohmann::json::object();
+    aggregate_request.citrus_projection_snapshot_pre_capture = nlohmann::json::object();
+    aggregate_request.citrus_projection_snapshot_post_capture = nlohmann::json::object();
+    aggregate_request.citrus_projection_epoch_consistency = nlohmann::json::object();
+    aggregate_request.citrus_calibration_scene_pre_capture = nlohmann::json::object();
+    aggregate_request.citrus_calibration_scene_post_capture = nlohmann::json::object();
+    aggregate_request.citrus_calibration_scene_consistency = nlohmann::json::object();
+    aggregate_request.citrus_calibration_scene_restore_status = nlohmann::json::object();
+    aggregate_request.citrus_arena_centering_pre_capture = nlohmann::json::object();
+    aggregate_request.citrus_arena_centering_post_capture = nlohmann::json::object();
+    aggregate_request.citrus_arena_centering_consistency = nlohmann::json::object();
+    aggregate_request.citrus_daily_registration_pre_capture = nlohmann::json::object();
+    aggregate_request.citrus_daily_registration_post_capture = nlohmann::json::object();
+    aggregate_request.citrus_daily_registration_consistency = nlohmann::json::object();
+    aggregate_request.capture_group_membership = nlohmann::json::object();
     aggregate_request.operator_notes.clear();
 
     nlohmann::json image_set =

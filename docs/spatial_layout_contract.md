@@ -5,7 +5,7 @@ recordings while also exposing resolved camera-pixel overlays for each
 recording.
 
 Date anchored: 2026-04-06.
-Last updated: 2026-07-18.
+Last updated: 2026-07-19.
 Status: draft design, partially implemented in Orange UI/schema code. The
 recording-snapshot writer and Citrus/H5 consumer path are still pending.
 
@@ -14,6 +14,14 @@ Field-level schema details now live in `docs/spatial_layout_schema.md`.
 For generic Orange-acquired calibration image sets used by Citrus homography,
 scale, top-rim, and crosshair workflows, see
 `docs/calibration_image_set_schema.md`.
+
+For the proposed single-window Orange/Citrus workflow that combines a stable
+commissioning calibration with a translation-only daily dish placement, see
+`docs/orange_citrus_guided_daily_registration_contract.md`.
+
+For the implemented dry projected-surface disk workflow, including Orange and
+Citrus ownership, the 3 mm target-plane contract, scale QC, and explicit
+candidate promotion, see `docs/projected_surface_scale_commissioning.md`.
 
 Camera-raster coordinate convention is shared with the calibration image-set
 contract: `(0,0)` is the top-left camera pixel, `x` increases right, and `y`
@@ -188,7 +196,8 @@ and derives `valid_geometry` using exactly one policy: legacy inward
 be positive simultaneously. This offset changes centroid gating only; it does
 not change the accepted physical rim.
 
-Citrus H5 should snapshot both sides:
+Citrus H5 snapshots both sides for recording-bound selected daily
+registrations:
 
 - the Orange artifact reference, accepted circle, source coordinate system, and
   visible review overlay checksum
@@ -871,7 +880,13 @@ Current implemented slice:
    `recording_snapshot.json["calibrations"][serial]`.
 4. The emitted snapshot carries `arena_layout.registration`, resolved
    camera-pixel zone overlays, and the resolved `dish_mask.runtime`.
-5. Until a standalone canonical `dish_mask` artifact file exists, the emitted
+5. Independently of that legacy assignment hook, recording startup now resolves
+   the exact selected Citrus daily registration and writes its accepted
+   schema-v2 Orange rim and outward gate to
+   `calibrations[serial].dish_top_rim_observation`. Exact compact sources are
+   copied under `recording_geometry_assets`, and Citrus mirrors the contract
+   into H5.
+6. Until a standalone canonical `dish_mask` artifact file exists, the emitted
    `dish_mask.calibration_ref` is a runtime-derived ref tied to the saved arena
    artifact id.
 
@@ -879,8 +894,9 @@ Remaining recommended slice:
 
 1. Add standalone canonical `dish_mask` artifact packages when the dish mask is
    no longer just the saved runtime sidecar.
-2. Add a first-class UI/session assignment surface instead of relying on the
-   per-camera environment variables.
+2. Add a first-class UI/session assignment surface for non-daily standalone
+   spatial artifacts instead of relying on the per-camera environment
+   variables. Selected daily observations no longer require that hook.
 3. Let Citrus consume the emitted `calibrations[serial]` overlays directly.
 
 Recommended first fitting strategy:

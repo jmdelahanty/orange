@@ -26,6 +26,9 @@ struct CitrusSpatialTemplateState {
     std::string source_config_path;
     std::string source_rig_name;
     std::string source_canvas_name;
+    std::string projection_geometry_authority_mode = "local_canvas";
+    std::string projection_geometry_authority_canvas_name;
+    std::string projection_geometry_authority_config_path;
     std::string source_arena_name;
     std::string source_config_name;
     std::string source_camera_id;
@@ -53,6 +56,32 @@ struct CitrusSpatialTemplateState {
     bool has_calibration_ring_outer_radius_px = false;
     double calibration_ring_outer_radius_px = 0.0;
     bool has_camera_to_canvas_homography = false;
+    bool has_authoritative_camera_to_canvas_homography = false;
+    std::string homography_authority_status = "not_loaded";
+    std::string homography_import_error;
+    std::string homography_active_pointer_path;
+    std::string homography_candidate_set_id;
+    std::string homography_candidate_id;
+    std::string homography_candidate_json_path;
+    std::string homography_yaml_path;
+    std::string homography_target_plane;
+    std::string homography_direction;
+    std::string homography_configuration_fingerprint;
+    std::string homography_canvas_checksum;
+    std::string homography_canvas_compatibility_basis;
+    std::string homography_canvas_compatibility_warning;
+    std::string homography_canvas_geometry_fingerprint;
+    std::string homography_commissioning_release_id;
+    std::string homography_accepted_at_utc;
+    std::string homography_source_image_path;
+    std::string homography_source_image_checksum;
+    std::string homography_projector_intensity_report_path;
+    std::string homography_projector_intensity_report_sha256;
+    bool has_homography_quality = false;
+    double homography_rms_reprojection_error_canvas_px = 0.0;
+    double homography_maximum_reprojection_error_canvas_px = 0.0;
+    double homography_holdout_rms_error_canvas_px = 0.0;
+    double homography_holdout_maximum_error_canvas_px = 0.0;
     std::array<double, 9> camera_to_canvas_homography{
         1.0, 0.0, 0.0,
         0.0, 1.0, 0.0,
@@ -107,6 +136,12 @@ struct SpatialLayoutCalibrationImageSetMetadata {
     std::string image_set_scale_target_type = "unknown";
     std::string image_set_notes;
     std::string capture_stage = "projected_surface_dry_reference";
+    std::string workflow_profile_id = "unobstructed_canvas_commissioning";
+    std::string fixture_state = "holder_removed";
+    std::string homography_role = "commissioning_reference";
+    std::string visibility_domain_id = "unobstructed_arena_rectangle";
+    std::string visibility_domain_shape = "rectangle";
+    std::string visibility_domain_geometry_status = "not_embedded";
     double plane_z_mm_nominal = 0.0;
     bool has_plane_z_mm_nominal = false;
     double plane_z_mm_uncertainty = 0.0;
@@ -159,6 +194,17 @@ struct SpatialLayoutCalibrationImageSetMetadata {
     nlohmann::json citrus_projection_snapshot_pre_capture = nlohmann::json::object();
     nlohmann::json citrus_projection_snapshot_post_capture = nlohmann::json::object();
     nlohmann::json citrus_projection_epoch_consistency = nlohmann::json::object();
+    nlohmann::json citrus_calibration_scene_pre_capture = nlohmann::json::object();
+    nlohmann::json citrus_calibration_scene_post_capture = nlohmann::json::object();
+    nlohmann::json citrus_calibration_scene_consistency = nlohmann::json::object();
+    nlohmann::json citrus_calibration_scene_restore_status = nlohmann::json::object();
+    nlohmann::json citrus_arena_centering_pre_capture = nlohmann::json::object();
+    nlohmann::json citrus_arena_centering_post_capture = nlohmann::json::object();
+    nlohmann::json citrus_arena_centering_consistency = nlohmann::json::object();
+    nlohmann::json citrus_daily_registration_pre_capture = nlohmann::json::object();
+    nlohmann::json citrus_daily_registration_post_capture = nlohmann::json::object();
+    nlohmann::json citrus_daily_registration_consistency = nlohmann::json::object();
+    nlohmann::json capture_group_membership = nlohmann::json::object();
 };
 
 struct SpatialLayoutGroupCaptureFrame {
@@ -190,6 +236,133 @@ struct SpatialLayoutGroupCaptureFrame {
     uint64_t last_local_frame_id = 0;
     uint64_t first_camera_frame_id = 0;
     uint64_t last_camera_frame_id = 0;
+    uint64_t camera_timestamp_ns = 0;
+    uint64_t timestamp_sys_ns = 0;
+};
+
+struct DailyRegistrationTargetUiState {
+    std::string camera_serial;
+    std::string arena_id;
+    std::string alignment_basis =
+        "commissioned_homography_and_canonical_experimental_center";
+    bool rim_detection_ok = false;
+    std::string rim_detection_error;
+    double detected_rim_center_x_camera_px = 0.0;
+    double detected_rim_center_y_camera_px = 0.0;
+    double detected_rim_radius_camera_px = 0.0;
+    double accepted_rim_center_x_camera_px = 0.0;
+    double accepted_rim_center_y_camera_px = 0.0;
+    double accepted_rim_radius_camera_px = 0.0;
+    bool rim_operator_confirmed = false;
+    SpatialLayoutGroupCaptureFrame rim_capture;
+    std::vector<unsigned char> rim_gray;
+    std::string rim_observation_artifact_id;
+    std::string rim_observation_path;
+    std::string rim_observation_sha256;
+
+    double requested_translation_x_canvas_px = 0.0;
+    double requested_translation_y_canvas_px = 0.0;
+    int applied_translation_x_canvas_px = 0;
+    int applied_translation_y_canvas_px = 0;
+    double base_experimental_center_x_canvas_px = 0.0;
+    double base_experimental_center_y_canvas_px = 0.0;
+    double desired_experimental_center_x_canvas_px = 0.0;
+    double desired_experimental_center_y_canvas_px = 0.0;
+    double effective_experimental_center_x_canvas_px = 0.0;
+    double effective_experimental_center_y_canvas_px = 0.0;
+    double translation_rounding_residual_x_canvas_px = 0.0;
+    double translation_rounding_residual_y_canvas_px = 0.0;
+    std::string candidate_homography_id;
+    std::string candidate_homography_path;
+    std::string candidate_homography_sha256;
+    bool geometry_review_ok = false;
+    std::string geometry_review_error;
+    double geometry_corrected_center_x_camera_px = 0.0;
+    double geometry_corrected_center_y_camera_px = 0.0;
+    double geometry_center_residual_x_camera_px = 0.0;
+    double geometry_center_residual_y_camera_px = 0.0;
+    double geometry_center_residual_norm_camera_px = 0.0;
+    double geometry_center_quantization_bound_camera_px = 0.0;
+    double geometry_predicted_radius_min_camera_px = 0.0;
+    double geometry_predicted_radius_mean_camera_px = 0.0;
+    double geometry_predicted_radius_max_camera_px = 0.0;
+    double geometry_rim_radial_rms_error_camera_px = 0.0;
+    double geometry_maximum_outside_rim_camera_px = 0.0;
+    std::vector<orange::gui::spatial_layout::Point2d>
+        geometry_outline_camera_px;
+    std::string geometry_review_observation_path;
+    std::string geometry_review_observation_sha256;
+    std::string geometry_review_overlay_path;
+    std::string geometry_review_overlay_sha256;
+
+    bool projected_center_detection_ok = false;
+    std::string projected_center_detection_error;
+    double projected_center_x_camera_px = 0.0;
+    double projected_center_y_camera_px = 0.0;
+    double projected_center_radius_camera_px = 0.0;
+    double base_center_residual_x_camera_px = 0.0;
+    double base_center_residual_y_camera_px = 0.0;
+    bool projected_center_operator_confirmed = false;
+    nlohmann::json projected_center_detection = nlohmann::json::object();
+    SpatialLayoutGroupCaptureFrame projected_center_capture;
+    std::string projected_center_source_path;
+    std::string projected_center_source_sha256;
+    std::string projected_center_image_set_path;
+    std::string projected_center_manifest_path;
+    std::string projected_center_observation_artifact_id;
+    std::string projected_center_observation_path;
+    std::string projected_center_observation_sha256;
+
+    bool preview_detection_ok = false;
+    std::string preview_detection_error;
+    double preview_center_x_camera_px = 0.0;
+    double preview_center_y_camera_px = 0.0;
+    double preview_residual_x_camera_px = 0.0;
+    double preview_residual_y_camera_px = 0.0;
+    double preview_residual_norm_camera_px = 0.0;
+    nlohmann::json preview_detection = nlohmann::json::object();
+    SpatialLayoutGroupCaptureFrame preview_capture;
+    std::string preview_source_path;
+    std::string preview_source_sha256;
+    std::string preview_image_set_path;
+    std::string preview_manifest_path;
+    std::string validation_observation_path;
+    std::string validation_observation_sha256;
+};
+
+struct DailyRegistrationWorkflowUiState {
+    bool active = false;
+    std::string stage = "idle";
+    std::string transaction_id;
+    std::string created_utc;
+    std::string transaction_dir;
+    std::string session_artifact_root;
+    std::string status;
+    std::string error;
+    std::string pending_group_kind;
+    std::string pending_operation_id;
+    std::string pending_terminal_stage;
+    std::string pending_terminal_reason;
+    std::string candidate_path;
+    std::string candidate_sha256;
+    std::string accepted_registration_path;
+    std::string accepted_registration_sha256;
+    std::string valid_until_utc;
+    bool start_physical_state_armed = false;
+    bool physical_state_confirmed = false;
+    bool visible_projection_path_confirmed = false;
+    bool preview_outline_containment_confirmed = false;
+    bool geometry_outline_operator_confirmed = false;
+    bool runtime_optical_state_restored_confirmed = false;
+    bool accept_registration_armed = false;
+    bool select_runtime_mode_armed = false;
+    double maximum_preview_center_residual_camera_px = 5.0;
+    double maximum_geometry_residual_beyond_quantization_camera_px = 1.0;
+    nlohmann::json citrus_begin_status = nlohmann::json::object();
+    nlohmann::json citrus_candidate_status = nlohmann::json::object();
+    nlohmann::json citrus_accept_status = nlohmann::json::object();
+    nlohmann::json citrus_runtime_selection_status = nlohmann::json::object();
+    std::vector<DailyRegistrationTargetUiState> targets;
 };
 
 struct SpatialLayoutSessionReviewImage {
@@ -292,8 +465,43 @@ struct SpatialLayoutUiState {
     nlohmann::json captured_citrus_projection_snapshot_pre_capture = nlohmann::json::object();
     nlohmann::json captured_citrus_projection_snapshot_post_capture = nlohmann::json::object();
     nlohmann::json captured_citrus_projection_epoch_consistency = nlohmann::json::object();
+    nlohmann::json captured_citrus_calibration_scene_pre_capture = nlohmann::json::object();
+    nlohmann::json captured_citrus_calibration_scene_post_capture = nlohmann::json::object();
+    nlohmann::json captured_citrus_calibration_scene_consistency = nlohmann::json::object();
+    nlohmann::json captured_citrus_calibration_scene_restore_status = nlohmann::json::object();
+    nlohmann::json captured_citrus_arena_centering_pre_capture = nlohmann::json::object();
+    nlohmann::json captured_citrus_arena_centering_post_capture = nlohmann::json::object();
+    nlohmann::json captured_citrus_arena_centering_consistency = nlohmann::json::object();
+    nlohmann::json captured_citrus_daily_registration_pre_capture = nlohmann::json::object();
+    nlohmann::json captured_citrus_daily_registration_post_capture = nlohmann::json::object();
+    nlohmann::json captured_citrus_daily_registration_consistency = nlohmann::json::object();
+    nlohmann::json captured_group_membership = nlohmann::json::object();
     std::string group_capture_id;
     std::string group_capture_mode = "operator_group_next_frame";
+    std::string group_capture_scene_recipe = "auto";
+    std::string group_capture_scene_authority = "calibration_scene";
+    std::string group_capture_expected_stage_id;
+    nlohmann::json group_capture_scene_options = nlohmann::json::object();
+    std::string group_capture_resolved_scene_recipe;
+    std::string group_capture_workflow_state = "idle";
+    std::string group_capture_terminal_outcome;
+    std::string group_capture_transaction_id;
+    std::string group_capture_scene_operation_id;
+    std::string group_capture_scene_request_id;
+    std::string group_capture_restore_operation_id;
+    std::string group_capture_restore_request_id;
+    std::vector<std::string> group_capture_selected_camera_serials;
+    std::vector<std::string> group_capture_expected_camera_serials;
+    std::vector<std::string> group_capture_arena_ids;
+    bool group_capture_camera_scope_initialized = false;
+    bool group_capture_restore_required = false;
+    uint32_t group_capture_target_frame_count = 1;
+    double group_capture_next_scene_poll_at_seconds = 0.0;
+    double group_capture_scene_deadline_at_seconds = 0.0;
+    double group_capture_presented_not_before_seconds = 0.0;
+    nlohmann::json group_capture_scene_pre_capture = nlohmann::json::object();
+    nlohmann::json group_capture_scene_post_capture = nlohmann::json::object();
+    nlohmann::json group_capture_scene_restore_status = nlohmann::json::object();
     SpatialLayoutCalibrationImageSetMetadata group_capture_metadata;
     std::vector<SpatialLayoutPendingGroupSnapshotRequest> pending_group_snapshot_requests;
     std::vector<SpatialLayoutGroupCaptureFrame> group_captures;
@@ -330,6 +538,7 @@ struct SpatialLayoutUiState {
     bool hough_fallback_enabled = true;
     bool show_hough_proposal_overlay = true;
     bool show_citrus_corrected_center_overlay = true;
+    bool show_daily_registration_overlay = true;
     std::string detection_status;
     std::string detection_error;
     CitrusSpatialTemplateState citrus_template;
@@ -345,6 +554,40 @@ struct SpatialLayoutUiState {
     std::vector<orange::gui::spatial_layout::Point2d> citrus_projected_outline_camera_points;
     std::string citrus_import_status;
     std::string citrus_import_error;
+    std::string homography_candidate_review_manifest_path;
+    nlohmann::json homography_candidate_review_manifest =
+        nlohmann::json::object();
+    nlohmann::json homography_candidate_review_status =
+        nlohmann::json::object();
+    bool homography_candidate_review_revalidated = false;
+    bool accept_reviewed_homographies_armed = false;
+    std::string homography_candidate_review_message;
+    std::string homography_candidate_review_error;
+    std::string projected_surface_scale_review_manifest_path;
+    nlohmann::json projected_surface_scale_review_manifest =
+        nlohmann::json::object();
+    nlohmann::json projected_surface_scale_review_status =
+        nlohmann::json::object();
+    nlohmann::json projected_surface_scale_review_verification =
+        nlohmann::json::object();
+    std::string projected_surface_scale_review_transaction_id;
+    std::string projected_surface_scale_review_canvas_sha256;
+    std::string projected_surface_scale_candidate_manifest_path;
+    nlohmann::json projected_surface_scale_candidate_manifest =
+        nlohmann::json::object();
+    bool projected_surface_scale_review_revalidated = false;
+    bool accept_reviewed_projected_surface_scales_armed = false;
+    std::string projected_surface_scale_review_message;
+    std::string projected_surface_scale_review_error;
+    nlohmann::json rig_canvas_commissioning_status = nlohmann::json::object();
+    bool accept_rig_canvas_commissioning_armed = false;
+    std::string rig_canvas_commissioning_message;
+    std::string rig_canvas_commissioning_error;
+    nlohmann::json daily_registration_status = nlohmann::json::object();
+    DailyRegistrationWorkflowUiState daily_registration_workflow;
+    bool base_only_runtime_mode_armed = false;
+    std::string daily_registration_message;
+    std::string daily_registration_error;
     std::string persistence_status;
     std::string persistence_error;
     std::string calibration_session_id;
@@ -392,6 +635,12 @@ struct SpatialLayoutUiState {
     std::string calibration_image_set_scale_target_type = "unknown";
     std::string calibration_image_set_notes;
     std::string calibration_capture_stage = "projected_surface_dry_reference";
+    std::string calibration_workflow_profile_id = "unobstructed_canvas_commissioning";
+    std::string calibration_fixture_state = "holder_removed";
+    std::string calibration_homography_role = "commissioning_reference";
+    std::string calibration_visibility_domain_id = "unobstructed_arena_rectangle";
+    std::string calibration_visibility_domain_shape = "rectangle";
+    std::string calibration_visibility_domain_geometry_status = "not_embedded";
     double calibration_plane_z_mm_nominal = 0.0;
     bool calibration_has_plane_z_mm_nominal = false;
     double calibration_plane_z_mm_uncertainty = 0.0;

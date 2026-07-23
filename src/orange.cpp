@@ -36,9 +36,11 @@
 #include "aperture_characterization.h"
 #include "camera_preview_utils.h"
 #include "gui/autorun.h"
+#include "gui/arena_centering_autorun.h"
 #include "gui/env_util.h"
 #include "gui/camera_properties_panel.h"
 #include "gui/frame_ipc_panel.h"
+#include "gui/guided_capture_autorun.h"
 #include "gui/host_ptp_panel.h"
 #include "gui/incremental_clip_shadow.h"
 #include "gui/recording_finalizer.h"
@@ -1956,6 +1958,235 @@ YoloWorker* gui_yolo_worker_at(const int camera_index)
     return yolo_workers[static_cast<std::size_t>(camera_index)];
 }
 
+using GuiYoloSpatialMaskConfig = orange::analytics_mask::RuntimeConfig;
+
+struct GuiYoloSpatialMaskConfigState {
+    GuiYoloSpatialMaskConfig config;
+    std::string error;
+    bool initialized = false;
+};
+
+GuiYoloSpatialMaskConfigState& gui_yolo_spatial_mask_config_state()
+{
+    static GuiYoloSpatialMaskConfigState state;
+    if (!state.initialized) {
+        const auto resolved =
+            orange::analytics_mask::resolve_runtime_config_from_environment();
+        if (resolved.ok) {
+            state.config = resolved.config;
+        } else {
+            state.error = resolved.error;
+        }
+        state.initialized = true;
+    }
+    return state;
+}
+
+struct GuiYoloSpatialMaskArmResult {
+    bool ok = false;
+    bool explicitly_enabled = false;
+    std::string error;
+};
+
+bool resolve_gui_yolo_spatial_mask_config(
+    GuiYoloSpatialMaskConfig* config_out,
+    std::string* error_out)
+{
+    if (!config_out) {
+        if (error_out) {
+            *error_out = "internal error: null spatial mask config destination";
+        }
+        return false;
+    }
+    const GuiYoloSpatialMaskConfigState& state =
+        gui_yolo_spatial_mask_config_state();
+    if (!state.error.empty()) {
+        if (error_out) {
+            *error_out = state.error;
+        }
+        return false;
+    }
+    *config_out = state.config;
+    if (error_out) {
+        error_out->clear();
+    }
+    return true;
+}
+
+GuiYoloSpatialMaskArmResult arm_gui_yolo_spatial_masks(
+    nlohmann::json* recording_geometry_contract,
+    const CameraParams* cameras_params,
+    const CameraEachSelect* cameras_select,
+    const int num_cameras)
+{
+    GuiYoloSpatialMaskArmResult result;
+    GuiYoloSpatialMaskConfig config;
+    if (!resolve_gui_yolo_spatial_mask_config(&config, &result.error)) {
+        result.explicitly_enabled =
+            std::getenv("ORANGE_YOLO_SPATIAL_MASK_MODE") != nullptr;
+        return result;
+    }
+    result.explicitly_enabled =
+        config.mode != orange::analytics_mask::Mode::kOff;
+    if (!recording_geometry_contract || !recording_geometry_contract->is_object() ||
+        !cameras_params || !cameras_select || num_cameras <= 0) {
+        result.error = "recording geometry contract or camera state is unavailable";
+        return result;
+    }
+
+    nlohmann::json runtime = {
+        {"schema_id", "orange.analytics.spatial_mask_recording_arm"},
+        {"schema_version", 1},
+        {"status", "resolving"},
+        {"mode", orange::analytics_mask::mode_to_string(config.mode)},
+        {"configuration_source", config.source},
+        {"input_context_outset_px", config.input_context_outset_px},
+        {"outside_tensor_value", 0.0},
+        {"apply_timeout_ms", config.apply_timeout_ms},
+        {"immutable_for_recording", true},
+        {"cameras", nlohmann::json::object()},
+    };
+
+    struct PendingArm {
+        int camera_index = -1;
+        std::string camera_serial;
+        YoloWorker* worker = nullptr;
+        orange::analytics_mask::Policy policy;
+        std::uint64_t generation = 0;
+    };
+    std::vector<PendingArm> pending;
+    for (int index = 0; index < num_cameras; ++index) {
+        if (!cameras_select[index].yolo) {
+            continue;
+        }
+        PendingArm arm;
+        arm.camera_index = index;
+        arm.camera_serial = cameras_params[index].camera_serial.empty()
+            ? std::to_string(cameras_params[index].camera_id)
+            : cameras_params[index].camera_serial;
+        arm.worker = gui_yolo_worker_at(index);
+        if (!arm.worker) {
+            result.error = "YOLO spatial mask arm has no worker for camera " +
+                arm.camera_serial;
+            runtime["status"] = "failed";
+            runtime["error"] = result.error;
+            (*recording_geometry_contract)["analytics_runtime"]
+                ["yolo_spatial_mask"] = std::move(runtime);
+            return result;
+        }
+
+        if (config.mode == orange::analytics_mask::Mode::kOff) {
+            arm.policy.mode = config.mode;
+            arm.policy.camera_serial = arm.camera_serial;
+            arm.policy.source_width = cameras_params[index].width;
+            arm.policy.source_height = cameras_params[index].height;
+        } else {
+            auto resolved =
+                orange::analytics_mask::resolve_policy_from_recording_geometry_contract(
+                    *recording_geometry_contract,
+                    arm.camera_serial,
+                    cameras_params[index].width,
+                    cameras_params[index].height,
+                    config.mode,
+                    config.input_context_outset_px);
+            if (!resolved.ok) {
+                result.error = "camera " + arm.camera_serial + ": " +
+                    resolved.error;
+                runtime["status"] = "failed";
+                runtime["error"] = result.error;
+                runtime["cameras"][arm.camera_serial] = {
+                    {"status", "resolution_failed"},
+                    {"error", resolved.error},
+                };
+                (*recording_geometry_contract)["analytics_runtime"]
+                    ["yolo_spatial_mask"] = std::move(runtime);
+                return result;
+            }
+            arm.policy = std::move(resolved.policy);
+        }
+        runtime["cameras"][arm.camera_serial] =
+            orange::analytics_mask::policy_to_json(arm.policy);
+        runtime["cameras"][arm.camera_serial]["status"] = "resolved";
+        pending.push_back(std::move(arm));
+    }
+
+    if (pending.empty()) {
+        runtime["status"] = "not_applicable_no_yolo_workers";
+        (*recording_geometry_contract)["analytics_runtime"]
+            ["yolo_spatial_mask"] = std::move(runtime);
+        result.ok = true;
+        return result;
+    }
+
+    const auto request_off_rollback = [&]() {
+        for (PendingArm& arm : pending) {
+            orange::analytics_mask::Policy off;
+            off.mode = orange::analytics_mask::Mode::kOff;
+            off.camera_serial = arm.camera_serial;
+            off.source_width = cameras_params[arm.camera_index].width;
+            off.source_height = cameras_params[arm.camera_index].height;
+            std::uint64_t ignored_generation = 0;
+            std::string ignored_error;
+            arm.worker->RequestSpatialMaskPolicy(
+                off, &ignored_generation, &ignored_error);
+        }
+    };
+
+    for (PendingArm& arm : pending) {
+        std::string request_error;
+        if (!arm.worker->RequestSpatialMaskPolicy(
+                arm.policy, &arm.generation, &request_error)) {
+            result.error = "camera " + arm.camera_serial +
+                " rejected spatial mask policy: " + request_error;
+            runtime["status"] = "failed";
+            runtime["error"] = result.error;
+            request_off_rollback();
+            (*recording_geometry_contract)["analytics_runtime"]
+                ["yolo_spatial_mask"] = std::move(runtime);
+            return result;
+        }
+    }
+    for (PendingArm& arm : pending) {
+        std::string wait_error;
+        if (!arm.worker->WaitForSpatialMaskPolicy(
+                arm.generation,
+                std::chrono::milliseconds(config.apply_timeout_ms),
+                &wait_error)) {
+            result.error = "camera " + arm.camera_serial +
+                " did not apply spatial mask policy: " + wait_error;
+            runtime["status"] = "failed";
+            runtime["error"] = result.error;
+            request_off_rollback();
+            (*recording_geometry_contract)["analytics_runtime"]
+                ["yolo_spatial_mask"] = std::move(runtime);
+            return result;
+        }
+        runtime["cameras"][arm.camera_serial]["status"] = "armed";
+        runtime["cameras"][arm.camera_serial]["policy_generation"] =
+            arm.generation;
+        (*recording_geometry_contract)["cameras"][arm.camera_serial]
+            ["yolo_spatial_mask_runtime"] =
+                runtime["cameras"][arm.camera_serial];
+        if (arm.policy.mode != orange::analytics_mask::Mode::kOff) {
+            nlohmann::json& daily_entry =
+                (*recording_geometry_contract)["cameras"][arm.camera_serial]
+                    ["daily_registration_geometry"]["recording_snapshot_entry"];
+            daily_entry["active_in_orange_live_detection_pipeline"] =
+                orange::analytics_mask::enforces_centroid(arm.policy.mode);
+            daily_entry["orange_live_detection_pipeline_mode"] =
+                orange::analytics_mask::mode_to_string(arm.policy.mode);
+            daily_entry["active_in_orange_neural_input_mask"] =
+                orange::analytics_mask::masks_input(arm.policy.mode);
+        }
+    }
+    runtime["status"] = "armed";
+    runtime["armed_camera_count"] = pending.size();
+    (*recording_geometry_contract)["analytics_runtime"]
+        ["yolo_spatial_mask"] = std::move(runtime);
+    result.ok = true;
+    return result;
+}
+
 void log_recording_preflight_failure(const char* context,
                                      const RecordingPreflightResult& preflight)
 {
@@ -3550,6 +3781,7 @@ void gui_finish_recording_start_through_operator_path(
         cameras_params,
         cameras_select,
         num_cameras);
+    update_gui_citrus_runtime_geometry_snapshot(resolved_recording_folder);
     for (int i = 0; i < num_cameras; ++i) {
         if (crop_and_encode_workers && crop_and_encode_workers[i]) {
             crop_and_encode_workers[i]->RotateRecordingFolder(
@@ -3601,6 +3833,7 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
     const int crop_size_px,
     EncoderConfig* encoder_config,
     const std::string& input_folder,
+    const std::string& citrus_canvas_config_path,
     PTPParams* ptp_params,
     CropProducerWorker** crop_producer_workers,
     CropPreviewWorker** crop_preview_workers,
@@ -3672,6 +3905,56 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
         failed_result.external_recorder_contract_path =
             prepared.external_recorder_contract_path;
         gui_log_recording_start_failure(failed_result, recording_preflight_errors);
+        return GuiRecordingStartDispatch::kFailed;
+    }
+
+    nlohmann::json recording_geometry_contract =
+        build_gui_recording_geometry_contract(
+        citrus_canvas_config_path,
+        cameras_params,
+        cameras_select,
+        num_cameras);
+    GuiYoloSpatialMaskArmResult spatial_mask_arm =
+        arm_gui_yolo_spatial_masks(
+            &recording_geometry_contract,
+            cameras_params,
+            cameras_select,
+            num_cameras);
+    if (!spatial_mask_arm.ok &&
+        !recording_geometry_contract.contains("analytics_runtime")) {
+        recording_geometry_contract["analytics_runtime"]
+            ["yolo_spatial_mask"] = {
+                {"schema_id", "orange.analytics.spatial_mask_recording_arm"},
+                {"schema_version", 1},
+                {"status", "failed"},
+                {"error", spatial_mask_arm.error},
+            };
+    }
+    std::string geometry_write_error;
+    const bool geometry_written = write_gui_recording_geometry_contract(
+        prepared.recording_folder,
+        recording_geometry_contract,
+        &geometry_write_error);
+    if (!geometry_written) {
+        std::cerr << "[GUI][recording] Failed to write recording geometry contract: "
+                  << geometry_write_error << std::endl;
+    }
+    if (!spatial_mask_arm.ok ||
+        (spatial_mask_arm.explicitly_enabled && !geometry_written)) {
+        std::string error = spatial_mask_arm.ok
+            ? "Spatial masking was armed, but its recording geometry contract "
+              "could not be persisted: " + geometry_write_error
+            : "YOLO spatial mask arm failed: " + spatial_mask_arm.error;
+        orange::session::abort_prepared_recording_run(
+            recording_session,
+            camera_control,
+            prepared,
+            orange::session::RecordingRunSupervisorStartOutcome{},
+            error);
+        if (recording_preflight_errors) {
+            *recording_preflight_errors = {error};
+        }
+        std::cerr << "[GUI][recording] Start rejected: " << error << std::endl;
         return GuiRecordingStartDispatch::kFailed;
     }
 
@@ -3934,6 +4217,7 @@ bool gui_poll_local_control_start_request(
     const int crop_size_px,
     EncoderConfig* encoder_config,
     const std::string& input_folder,
+    const std::string& citrus_canvas_config_path,
     PTPParams* ptp_params,
     CropProducerWorker** crop_producer_workers,
     CropPreviewWorker** crop_preview_workers,
@@ -4021,6 +4305,7 @@ bool gui_poll_local_control_start_request(
             crop_size_px,
             encoder_config,
             input_folder,
+            citrus_canvas_config_path,
             ptp_params,
             crop_producer_workers,
             crop_preview_workers,
@@ -4294,6 +4579,59 @@ int main(int /*argc*/, char ** /*args*/) {
                   << " enable_yolo=" << gui_autorun_config.enable_yolo
                   << " enable_crop=" << gui_autorun_config.enable_crop
                   << " start_recording=" << gui_autorun_config.start_recording
+                  << std::endl;
+    }
+    const orange::gui::GuidedCaptureAutorunConfig guided_capture_autorun_config =
+        orange::gui::resolve_guided_capture_autorun_config();
+    if (guided_capture_autorun_config.enabled) {
+        std::cout << "[GUI][guided_capture_autorun] enabled"
+                  << " citrus_config="
+                  << guided_capture_autorun_config.citrus_config_path
+                  << " profile="
+                  << guided_capture_autorun_config.workflow_profile_id
+                  << " recipe=" << guided_capture_autorun_config.recipe
+                  << " purpose=" << guided_capture_autorun_config.purpose
+                  << " cameras="
+                  << guided_capture_autorun_config.camera_serials.size()
+                  << " frame_count="
+                  << guided_capture_autorun_config.frame_count
+                  << " sweep_levels="
+                  << guided_capture_autorun_config.sweep_foreground_grays_u8.size()
+                  << " sweep_repeats="
+                  << guided_capture_autorun_config.sweep_repeats
+                  << " save="
+                  << guided_capture_autorun_config.save_captures
+                  << " result="
+                  << guided_capture_autorun_config.result_json_path
+                  << std::endl;
+    }
+    const orange::gui::ArenaCenteringAutorunConfig arena_centering_autorun_config =
+        orange::gui::resolve_arena_centering_autorun_config();
+    if (guided_capture_autorun_config.enabled &&
+        arena_centering_autorun_config.enabled) {
+        std::cerr << "[GUI] guided capture sweep and arena-centering autorun "
+                     "cannot own the calibration scene simultaneously."
+                  << std::endl;
+        return EXIT_FAILURE;
+    }
+    if (arena_centering_autorun_config.enabled) {
+        std::cout << "[GUI][arena_centering] enabled"
+                  << " citrus_config="
+                  << arena_centering_autorun_config.citrus_config_path
+                  << " cameras="
+                  << arena_centering_autorun_config.camera_serials.size()
+                  << " probe_canvas_px="
+                  << arena_centering_autorun_config.symmetric_probe_canvas_px
+                  << " tolerance_camera_px="
+                  << arena_centering_autorun_config.verification_tolerance_camera_px
+                  << " save_verified_centers_armed="
+                  << arena_centering_autorun_config.save_verified_centers_armed
+                  << " fit_homographies="
+                  << arena_centering_autorun_config.fit_homographies_after_centering
+                  << " accept_homographies_armed="
+                  << arena_centering_autorun_config.accept_homographies_armed
+                  << " result="
+                  << arena_centering_autorun_config.result_json_path
                   << std::endl;
     }
     
@@ -4762,6 +5100,14 @@ int main(int /*argc*/, char ** /*args*/) {
     if (gui_autorun_config.enabled) {
         gui_autorun_enter_stage(&gui_autorun_state, GuiAutorunStage::kSelectConfig);
     }
+    orange::gui::GuidedCaptureAutorunState guided_capture_autorun_state;
+    orange::gui::guided_capture_autorun_start(
+        &guided_capture_autorun_state,
+        guided_capture_autorun_config);
+    orange::gui::ArenaCenteringAutorunState arena_centering_autorun_state;
+    orange::gui::arena_centering_autorun_start(
+        &arena_centering_autorun_state,
+        arena_centering_autorun_config);
 
     auto previous_gui_frame_start = std::chrono::steady_clock::now();
     const auto gui_frame_min_interval =
@@ -4877,6 +5223,38 @@ int main(int /*argc*/, char ** /*args*/) {
             camera_control,
             &gui_recording_run,
             calibration_tool_busy);
+        const orange::gui::GuidedCaptureAutorunRequests guided_capture_requests =
+            orange::gui::guided_capture_autorun_update(
+                &guided_capture_autorun_state,
+                guided_capture_autorun_config,
+                &spatial_layout_ui_state,
+                camera_control,
+                ecams,
+                cameras_params,
+                cameras_select,
+                num_cameras,
+                spatialSnapshotWorkers,
+                spatial_calibration_sessions_folder);
+        const orange::gui::ArenaCenteringAutorunRequests arena_centering_requests =
+            orange::gui::arena_centering_autorun_update(
+                &arena_centering_autorun_state,
+                arena_centering_autorun_config,
+                &spatial_layout_ui_state,
+                camera_control,
+                ecams,
+                cameras_params,
+                cameras_select,
+                num_cameras,
+                spatialSnapshotWorkers,
+                spatial_calibration_sessions_folder);
+        gui_autorun_requests.toggle_streaming =
+            gui_autorun_requests.toggle_streaming ||
+            guided_capture_requests.toggle_streaming ||
+            arena_centering_requests.toggle_streaming;
+        gui_autorun_requests.close_window =
+            gui_autorun_requests.close_window ||
+            guided_capture_requests.close_window ||
+            arena_centering_requests.close_window;
         gui_request_local_control_forced_finalize_if_needed(
             &gui_local_control_stop_scheduler,
             camera_control,
@@ -4967,6 +5345,7 @@ int main(int /*argc*/, char ** /*args*/) {
                     crop_size_px,
                     encoder_config,
                     input_folder,
+                    spatial_layout_ui_state.citrus_canvas_config_path,
                     ptp_params,
                     cropProducerWorkers,
                     cropPreviewWorkers,
@@ -5063,6 +5442,58 @@ int main(int /*argc*/, char ** /*args*/) {
                 }
             } else {
                 ImGui::TextDisabled("No YOLO model selected");
+            }
+
+            {
+                GuiYoloSpatialMaskConfigState& spatial_mask_state =
+                    gui_yolo_spatial_mask_config_state();
+                static constexpr const char* spatial_mask_modes[] = {
+                    "Off",
+                    "Audit only",
+                    "Centroid gate",
+                    "Centroid gate + fused input mask",
+                };
+                int mode_index = static_cast<int>(
+                    spatial_mask_state.config.mode);
+                ImGui::BeginDisabled(
+                    camera_control->record_video ||
+                    gui_async_recording_start.active);
+                if (ImGui::Combo(
+                        "YOLO dish spatial policy",
+                        &mode_index,
+                        spatial_mask_modes,
+                        IM_ARRAYSIZE(spatial_mask_modes))) {
+                    spatial_mask_state.config.mode =
+                        static_cast<orange::analytics_mask::Mode>(mode_index);
+                    spatial_mask_state.config.source = "gui";
+                    spatial_mask_state.error.clear();
+                }
+                if (orange::analytics_mask::masks_input(
+                        spatial_mask_state.config.mode)) {
+                    float outset =
+                        spatial_mask_state.config.input_context_outset_px;
+                    if (ImGui::InputFloat(
+                            "Neural input context outset (camera px)",
+                            &outset,
+                            1.0f,
+                            10.0f,
+                            "%.1f")) {
+                        spatial_mask_state.config.input_context_outset_px =
+                            std::clamp(outset, 0.0f, 10000.0f);
+                        spatial_mask_state.config.source = "gui";
+                        spatial_mask_state.error.clear();
+                    }
+                }
+                ImGui::EndDisabled();
+                ImGui::TextDisabled(
+                    "Resolved from the exact selected daily rim at recording arm; "
+                    "full-frame recording is unchanged.");
+                if (!spatial_mask_state.error.empty()) {
+                    ImGui::TextColored(
+                        ImVec4(0.95f, 0.35f, 0.30f, 1.0f),
+                        "%s",
+                        spatial_mask_state.error.c_str());
+                }
             }
 
             if (camera_control->subscribe) {
@@ -6357,6 +6788,7 @@ int main(int /*argc*/, char ** /*args*/) {
                                     crop_size_px,
                                     encoder_config,
                                     input_folder,
+                                    spatial_layout_ui_state.citrus_canvas_config_path,
                                     ptp_params,
                                     cropProducerWorkers,
                                     cropPreviewWorkers,

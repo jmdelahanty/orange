@@ -215,20 +215,37 @@ void YOLOv8::make_pipe(bool warmup, int /*max_width*/, int /*max_height*/)
     }
 }
 
-void YOLOv8::preprocess_gpu(unsigned char *d_src, int source_width, int source_height, bool is_color)
+void YOLOv8::preprocess_gpu(
+    unsigned char *d_src,
+    int source_width,
+    int source_height,
+    bool is_color,
+    const YoloPreprocessCircleMask* circle_mask)
 {
     const float inp_h  = (float)inp_h_int;
     const float inp_w  = (float)inp_w_int;
     float r = std::min(inp_h / (float)source_height, inp_w / (float)source_width);
     
-    launch_optimized_yolo_preprocess(
-        d_src,
-        (float*)this->device_ptrs[0], //directly write to device pointer
-        source_width, source_height,
-        inp_w_int, inp_h_int,
-        is_color,
-        this->stream
-    );
+    if (circle_mask) {
+        launch_optimized_yolo_preprocess_circle_masked(
+            d_src,
+            (float*)this->device_ptrs[0], //directly write to device pointer
+            source_width, source_height,
+            inp_w_int, inp_h_int,
+            is_color,
+            *circle_mask,
+            this->stream
+        );
+    } else {
+        launch_optimized_yolo_preprocess(
+            d_src,
+            (float*)this->device_ptrs[0], //directly write to device pointer
+            source_width, source_height,
+            inp_w_int, inp_h_int,
+            is_color,
+            this->stream
+        );
+    }
 
     this->pparam.ratio  = 1.0f / r;
     this->pparam.dw     = (inp_w - source_width * r) / 2.0f;

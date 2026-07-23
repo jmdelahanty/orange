@@ -190,6 +190,56 @@ void YoloEventLogger::WriteResult(const YoloResultRecord& record) {
         yolo["error"] = record.error;
     }
 
+    nlohmann::json spatial_mask = record.spatial_mask.policy
+        ? *record.spatial_mask.policy
+        : nlohmann::json{
+            {"schema_id", "orange.analytics.spatial_mask_runtime"},
+            {"schema_version", 1},
+            {"mode", "off"},
+            {"input_mask", {
+                {"enabled", false},
+                {"outside_tensor_value", 0.0},
+                {"input_context_outset_px", 0.0},
+                {"geometry", nlohmann::json::object()},
+            }},
+            {"centroid_gate", {
+                {"evaluated", false},
+                {"enforced", false},
+                {"geometry", nlohmann::json::object()},
+            }},
+            {"source", nlohmann::json::object()},
+        };
+    spatial_mask["policy_generation"] = record.spatial_mask.policy_generation;
+    spatial_mask["result"] = {
+        {"raw_detection_count", record.spatial_mask.raw_detection_count},
+        {"inside_detection_count", record.spatial_mask.inside_detection_count},
+        {"outside_detection_count", record.spatial_mask.outside_detection_count},
+        {"downstream_detection_count", record.spatial_mask.downstream_detection_count},
+    };
+    nlohmann::json outside_detections = nlohmann::json::array();
+    for (const SpatialMaskOutsideDetection& outside :
+         record.spatial_mask.outside_detections) {
+        outside_detections.push_back({
+            {"raw_index", outside.raw_index},
+            {"box", {
+                {"x_px", outside.x_px},
+                {"y_px", outside.y_px},
+                {"width_px", outside.width_px},
+                {"height_px", outside.height_px},
+                {"label", outside.label},
+                {"confidence", outside.confidence},
+            }},
+            {"centroid_px", {
+                {"x", outside.centroid_x_px},
+                {"y", outside.centroid_y_px},
+            }},
+            {"signed_boundary_distance_px", outside.signed_boundary_distance_px},
+            {"decision", outside.rejected ? "rejected" : "would_reject"},
+            {"rejected_reason", "outside_valid_detection_region"},
+        });
+    }
+    spatial_mask["outside_detections"] = std::move(outside_detections);
+
     nlohmann::json root = {
         {"schema_id", "orange.yolo_event"},
         {"schema_version", 1},
@@ -212,6 +262,7 @@ void YoloEventLogger::WriteResult(const YoloResultRecord& record) {
             {"event_monotonic_us", record.event_monotonic_us}
         }},
         {"yolo", std::move(yolo)},
+        {"spatial_mask", std::move(spatial_mask)},
         {"detections", std::move(detections)},
         {"citrus_live_ipc", {
             {"queue_name", record.queue_name},
@@ -335,6 +386,10 @@ void SyntheticYoloEventEmitter::EmitFrame(const SyntheticYoloFrameInput& frame)
             frame.width,
             frame.height));
     }
+    record.spatial_mask.raw_detection_count =
+        static_cast<int>(record.detections.size());
+    record.spatial_mask.downstream_detection_count =
+        static_cast<int>(record.detections.size());
     logger_.Enqueue(std::move(record));
 }
 

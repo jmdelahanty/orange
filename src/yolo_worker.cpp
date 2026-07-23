@@ -994,6 +994,8 @@ YoloWorker::YoloWorker(const char* name,
       current_fps_(0.0),
       m_recycle_queue(recycle_queue)
 {
+    active_spatial_mask_policy_json_ = std::make_shared<const nlohmann::json>(
+        orange::analytics_mask::policy_to_json(active_spatial_mask_policy_));
     ck(cudaSetDevice(associated_camera_params_->gpu_id));
     std::cout << "YoloWorker constructor set to CUDA device: " << associated_camera_params_->gpu_id << std::endl;
 
@@ -1089,6 +1091,137 @@ void YoloWorker::SetCropProducerWorker(CropProducerWorker* crop_worker) {
     m_crop_worker = crop_worker;
 }
 
+bool YoloWorker::RequestSpatialMaskPolicy(
+    const orange::analytics_mask::Policy& policy,
+    std::uint64_t* generation_out,
+    std::string* error_out)
+{
+    if (generation_out) {
+        *generation_out = 0;
+    }
+    if (error_out) {
+        error_out->clear();
+    }
+    std::string validation_error;
+    if (!orange::analytics_mask::validate_policy(policy, &validation_error)) {
+        if (error_out) {
+            *error_out = validation_error;
+        }
+        return false;
+    }
+    if (policy.mode != orange::analytics_mask::Mode::kOff) {
+        if (!associated_camera_params_) {
+            if (error_out) {
+                *error_out = "YOLO worker has no associated camera";
+            }
+            return false;
+        }
+        if (policy.camera_serial != associated_camera_params_->camera_serial) {
+            if (error_out) {
+                *error_out = "spatial mask camera does not match YOLO worker";
+            }
+            return false;
+        }
+        if (static_cast<unsigned int>(policy.source_width) !=
+                associated_camera_params_->width ||
+            static_cast<unsigned int>(policy.source_height) !=
+                associated_camera_params_->height) {
+            if (error_out) {
+                *error_out = "spatial mask raster does not match YOLO worker camera";
+            }
+            return false;
+        }
+    }
+
+    std::uint64_t generation = 0;
+    {
+        std::lock_guard<std::mutex> lock(spatial_mask_mutex_);
+        generation = requested_spatial_mask_generation_.load(
+            std::memory_order_relaxed) + 1;
+        pending_spatial_mask_policy_ = policy;
+        pending_spatial_mask_generation_ = generation;
+        requested_spatial_mask_generation_.store(
+            generation, std::memory_order_release);
+    }
+    if (generation_out) {
+        *generation_out = generation;
+    }
+    return true;
+}
+
+bool YoloWorker::WaitForSpatialMaskPolicy(
+    const std::uint64_t generation,
+    const std::chrono::milliseconds timeout,
+    std::string* error_out)
+{
+    if (error_out) {
+        error_out->clear();
+    }
+    if (generation == 0) {
+        if (error_out) {
+            *error_out = "spatial mask generation is zero";
+        }
+        return false;
+    }
+    std::unique_lock<std::mutex> lock(spatial_mask_mutex_);
+    if (!spatial_mask_cv_.wait_for(lock, timeout, [&]() {
+            return applied_spatial_mask_generation_.load(
+                       std::memory_order_acquire) >= generation;
+        })) {
+        if (error_out) {
+            *error_out = "timed out waiting for YOLO worker to apply spatial mask";
+        }
+        return false;
+    }
+    const std::uint64_t applied = applied_spatial_mask_generation_.load(
+        std::memory_order_acquire);
+    if (applied != generation) {
+        if (error_out) {
+            *error_out = "spatial mask request was superseded before recording arm";
+        }
+        return false;
+    }
+    return true;
+}
+
+void YoloWorker::ApplyPendingSpatialMaskPolicyAtFrameBoundary()
+{
+    const std::uint64_t requested = requested_spatial_mask_generation_.load(
+        std::memory_order_acquire);
+    if (requested == applied_spatial_mask_generation_.load(
+                         std::memory_order_relaxed)) {
+        return;
+    }
+
+    orange::analytics_mask::Policy next;
+    {
+        std::lock_guard<std::mutex> lock(spatial_mask_mutex_);
+        if (pending_spatial_mask_generation_ != requested) {
+            return;
+        }
+        next = pending_spatial_mask_policy_;
+    }
+    std::shared_ptr<const nlohmann::json> next_json;
+    try {
+        next_json = std::make_shared<const nlohmann::json>(
+            orange::analytics_mask::policy_to_json(next));
+    } catch (const std::exception& error) {
+        std::cerr << "[YOLO][spatial_mask] " << threadName
+                  << " failed to materialize generation=" << requested
+                  << " error=" << error.what() << std::endl;
+        return;
+    }
+    active_spatial_mask_policy_ = std::move(next);
+    active_spatial_mask_policy_json_ = std::move(next_json);
+    applied_spatial_mask_generation_.store(requested, std::memory_order_release);
+    spatial_mask_cv_.notify_all();
+    std::cout << "[YOLO][spatial_mask] " << threadName
+              << " applied generation=" << requested
+              << " mode=" << orange::analytics_mask::mode_to_string(
+                     active_spatial_mask_policy_.mode)
+              << std::endl;
+}
+
 void YoloWorker::SetDisplayWorker(COpenGLDisplay* display_worker) {
     m_display_worker = display_worker;
 }
@@ -1116,6 +1249,21 @@ void YoloWorker::Warmup(int iterations)
     if (iterations <= 0 || !yolov8_instance_ || !associated_camera_params_) {
         return;
     }
+    // Headless recording installs its immutable policy before worker start;
+    // apply it here so prewarm exercises the selected kernel specialization.
+    ApplyPendingSpatialMaskPolicyAtFrameBoundary();
+    YoloPreprocessCircleMask preprocess_circle_mask{};
+    const YoloPreprocessCircleMask* preprocess_circle_mask_ptr = nullptr;
+    if (orange::analytics_mask::masks_input(active_spatial_mask_policy_.mode)) {
+        preprocess_circle_mask.center_x = active_spatial_mask_policy_.input_circle.cx;
+        preprocess_circle_mask.center_y = active_spatial_mask_policy_.input_circle.cy;
+        preprocess_circle_mask.radius_squared =
+            active_spatial_mask_policy_.input_circle.radius *
+            active_spatial_mask_policy_.input_circle.radius;
+        preprocess_circle_mask.outside_tensor_value =
+            active_spatial_mask_policy_.outside_tensor_value;
+        preprocess_circle_mask_ptr = &preprocess_circle_mask;
+    }
     const int gpu_id = associated_camera_params_->gpu_id;
     const int camera_width = associated_camera_params_->width;
     const int camera_height = associated_camera_params_->height;
@@ -1141,7 +1289,8 @@ void YoloWorker::Warmup(int iterations)
                 d_warmup_source,
                 camera_width,
                 camera_height,
-                is_color);
+                is_color,
+                preprocess_circle_mask_ptr);
             yolov8_instance_->infer();
             ck(cudaStreamSynchronize(yolov8_instance_->stream));
             std::vector<pose::Object> warmup_detections;
@@ -1185,6 +1334,26 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
     if (!yolov8_instance_ || !entry || !entry->d_image) {
         release_worker_entry_to_recycle(m_recycle_queue, entry, release_context);
         return false;
+    }
+
+    ApplyPendingSpatialMaskPolicyAtFrameBoundary();
+    const orange::analytics_mask::Policy& spatial_mask_policy =
+        active_spatial_mask_policy_;
+    const std::uint64_t spatial_mask_generation =
+        applied_spatial_mask_generation_.load(std::memory_order_acquire);
+    const std::shared_ptr<const nlohmann::json>& spatial_mask_policy_json =
+        active_spatial_mask_policy_json_;
+    YoloPreprocessCircleMask preprocess_circle_mask{};
+    const YoloPreprocessCircleMask* preprocess_circle_mask_ptr = nullptr;
+    if (orange::analytics_mask::masks_input(spatial_mask_policy.mode)) {
+        preprocess_circle_mask.center_x = spatial_mask_policy.input_circle.cx;
+        preprocess_circle_mask.center_y = spatial_mask_policy.input_circle.cy;
+        preprocess_circle_mask.radius_squared =
+            spatial_mask_policy.input_circle.radius *
+            spatial_mask_policy.input_circle.radius;
+        preprocess_circle_mask.outside_tensor_value =
+            spatial_mask_policy.outside_tensor_value;
+        preprocess_circle_mask_ptr = &preprocess_circle_mask;
     }
 
     // Set the CUDA device for this thread.
@@ -1506,10 +1675,20 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             if (associated_camera_params_->color) {
                 // If color, debayer to RGBA first, then our kernel will handle the rest.
                 debayer_frame_gpu(associated_camera_params_, &frame_original_gpu_, &debayer_gpu_);
-                yolov8_instance_->preprocess_gpu(debayer_gpu_.d_debayer, camera_width, camera_height, true);
+                yolov8_instance_->preprocess_gpu(
+                    debayer_gpu_.d_debayer,
+                    camera_width,
+                    camera_height,
+                    true,
+                    preprocess_circle_mask_ptr);
             } else {
                 // If mono, pass the raw mono buffer directly to the kernel.
-                yolov8_instance_->preprocess_gpu(frame_original_gpu_.d_orig, camera_width, camera_height, false);
+                yolov8_instance_->preprocess_gpu(
+                    frame_original_gpu_.d_orig,
+                    camera_width,
+                    camera_height,
+                    false,
+                    preprocess_circle_mask_ptr);
             }
         }
         if (yolo_detach_input &&
@@ -1732,6 +1911,61 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             }
         }
 
+        yolo_event_log::SpatialMaskResult spatial_mask_result;
+        spatial_mask_result.raw_detection_count =
+            static_cast<int>(entry->detections.size());
+        if (!skip_cpu_results &&
+            orange::analytics_mask::evaluates_centroid(
+                spatial_mask_policy.mode)) {
+            const bool enforce = orange::analytics_mask::enforces_centroid(
+                spatial_mask_policy.mode);
+            std::size_t write_index = 0;
+            for (std::size_t raw_index = 0;
+                 raw_index < entry->detections.size();
+                 ++raw_index) {
+                pose::Object& detection = entry->detections[raw_index];
+                const orange::analytics_mask::GateDecision decision =
+                    orange::analytics_mask::evaluate_box_centroid(
+                        detection.rect.x,
+                        detection.rect.y,
+                        detection.rect.width,
+                        detection.rect.height,
+                        spatial_mask_policy.centroid_gate_circle);
+                if (decision.inside) {
+                    ++spatial_mask_result.inside_detection_count;
+                    if (enforce) {
+                        if (write_index != raw_index) {
+                            entry->detections[write_index] = std::move(detection);
+                        }
+                        ++write_index;
+                    }
+                    continue;
+                }
+
+                ++spatial_mask_result.outside_detection_count;
+                yolo_event_log::SpatialMaskOutsideDetection outside;
+                outside.raw_index = static_cast<int>(raw_index);
+                outside.x_px = detection.rect.x;
+                outside.y_px = detection.rect.y;
+                outside.width_px = detection.rect.width;
+                outside.height_px = detection.rect.height;
+                outside.label = detection.label;
+                outside.confidence = detection.prob;
+                outside.centroid_x_px = decision.centroid_x;
+                outside.centroid_y_px = decision.centroid_y;
+                outside.signed_boundary_distance_px =
+                    decision.signed_boundary_distance_px;
+                outside.rejected = enforce;
+                spatial_mask_result.outside_detections.push_back(
+                    std::move(outside));
+            }
+            if (enforce) {
+                entry->detections.resize(write_index);
+            }
+        }
+        spatial_mask_result.downstream_detection_count =
+            static_cast<int>(entry->detections.size());
+
         // Update velocity tracking with new detections
 #if YOLO_PROFILE
         const auto track_start = std::chrono::steady_clock::now();
@@ -1836,9 +2070,17 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             frame_ipc_request_status = frame_ipc_enabled ? "queued" : "not_enabled";
         } else {
             yolo_status = "zero_detections";
-            frame_ipc_request_status = frame_ipc_enabled
-                ? "not_requested_zero_detections"
-                : "not_enabled";
+            if (frame_ipc_enabled &&
+                spatial_mask_result.raw_detection_count > 0 &&
+                spatial_mask_result.outside_detection_count > 0 &&
+                orange::analytics_mask::enforces_centroid(
+                    spatial_mask_policy.mode)) {
+                frame_ipc_request_status = "not_requested_spatial_gate";
+            } else {
+                frame_ipc_request_status = frame_ipc_enabled
+                    ? "not_requested_zero_detections"
+                    : "not_enabled";
+            }
         }
 
         if (!skip_cpu_results && frame_ipc && entry->has_detections && !synthetic_detection_mode) {
@@ -1903,6 +2145,9 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 record.error = "synthetic_runtime_detection_non_production";
             }
             record.detections = entry->detections;
+            spatial_mask_result.policy = spatial_mask_policy_json;
+            spatial_mask_result.policy_generation = spatial_mask_generation;
+            record.spatial_mask = std::move(spatial_mask_result);
             record.queue_name = frame_ipc_queue_name;
             record.ipc_enabled = frame_ipc_enabled;
             record.ipc_requested = frame_ipc_update_requested;

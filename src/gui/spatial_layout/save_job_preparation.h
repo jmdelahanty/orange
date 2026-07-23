@@ -14,9 +14,27 @@ bool prepare_dish_top_rim_observation_save_job_from_spatial_layout(
     TopRimObservationSaveJob* job_out,
     std::string* error_out);
 
+bool prepare_dish_top_rim_observation_save_job_from_group_capture(
+    SpatialLayoutUiState* ui_state,
+    const SpatialLayoutGroupCaptureFrame& capture,
+    const CameraParams& camera_params,
+    const std::string& artifact_root_dir,
+    const orange::calibration::DishTopRimCircle& detected_circle,
+    const orange::calibration::DishTopRimCircle& accepted_circle,
+    TopRimObservationSaveJob* job_out,
+    std::string* error_out);
+
 bool prepare_generic_calibration_image_set_save_job_from_spatial_layout(
     SpatialLayoutUiState* ui_state,
     const CameraParams& selected_camera,
+    const std::string& artifact_root_dir,
+    GenericCalibrationImageSetSaveJob* job_out,
+    std::string* error_out);
+
+bool prepare_generic_calibration_image_set_save_job_from_group_capture(
+    SpatialLayoutUiState* ui_state,
+    const SpatialLayoutGroupCaptureFrame& capture,
+    const CameraParams& camera_params,
     const std::string& artifact_root_dir,
     GenericCalibrationImageSetSaveJob* job_out,
     std::string* error_out);

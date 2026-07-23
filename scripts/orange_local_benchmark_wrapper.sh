@@ -14,9 +14,15 @@ ANALYTICS_EARLY_OWNED_FRAME=""
 YOLO_READY_EVENT_FASTPATH=""
 YOLO_DETACH_INPUT=""
 PREPROCESS_DEFER_SOURCE_RELEASE=""
+YOLO_SPATIAL_MASK_MODE=""
+YOLO_SPATIAL_MASK_INPUT_CONTEXT_OUTSET_PX=""
+YOLO_SPATIAL_MASK_APPLY_TIMEOUT_MS=""
+CITRUS_RECORDING_CANVAS_CONFIG_PATH=""
 ALLOWED_SPEC_DIR_1="$ORANGE_ROOT/experiment_specs"
 ALLOWED_SPEC_DIR_2="/tmp"
 ALLOWED_SPEC_DIR_3="$EXPERIMENT_ORANGE_ROOT/experiment_specs"
+ALLOWED_CITRUS_RIG_DIR="/home/jeremy/citrus/targets/rigs"
+ALLOWED_CITRUS_TEST_DIR="/tmp"
 EVT_PROFILE="/etc/profile.d/evt.sh"
 
 usage() {
@@ -38,6 +44,15 @@ Options:
   --yolo-detach-input <0|1>          Export ORANGE_YOLO_DETACH_INPUT.
   --preprocess-defer-source-release <0|1>
                                       Export ORANGE_PREPROCESS_DEFER_SOURCE_RELEASE.
+  --yolo-spatial-mask-mode <mode>    Export ORANGE_YOLO_SPATIAL_MASK_MODE. Modes:
+                                      off, audit, gate_only, gate_and_input_mask.
+  --yolo-spatial-mask-input-context-outset-px <px>
+                                      Export ORANGE_YOLO_SPATIAL_MASK_INPUT_CONTEXT_OUTSET_PX.
+  --yolo-spatial-mask-apply-timeout-ms <ms>
+                                      Export ORANGE_YOLO_SPATIAL_MASK_APPLY_TIMEOUT_MS (50-10000).
+  --citrus-recording-canvas-config-path <path>
+                                      Select an existing Citrus canvas JSON under
+                                      /home/jeremy/citrus/targets/rigs or /tmp.
 
 Behavior:
   - Runs orange_client in local experiment mode as root.
@@ -162,6 +177,60 @@ while [[ $# -gt 0 ]]; do
       PREPROCESS_DEFER_SOURCE_RELEASE="$1"
       shift
       ;;
+    --yolo-spatial-mask-mode)
+      shift
+      [[ $# -gt 0 ]] || { echo "--yolo-spatial-mask-mode requires a value." >&2; exit 2; }
+      case "$1" in
+        off|audit|gate_only|gate_and_input_mask)
+          YOLO_SPATIAL_MASK_MODE="$1"
+          ;;
+        *)
+          echo "--yolo-spatial-mask-mode must be off, audit, gate_only, or gate_and_input_mask." >&2
+          exit 2
+          ;;
+      esac
+      shift
+      ;;
+    --yolo-spatial-mask-input-context-outset-px)
+      shift
+      [[ $# -gt 0 ]] || { echo "--yolo-spatial-mask-input-context-outset-px requires a value." >&2; exit 2; }
+      [[ "$1" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]] || {
+        echo "--yolo-spatial-mask-input-context-outset-px must be a non-negative finite decimal." >&2
+        exit 2
+      }
+      YOLO_SPATIAL_MASK_INPUT_CONTEXT_OUTSET_PX="$1"
+      shift
+      ;;
+    --yolo-spatial-mask-apply-timeout-ms)
+      shift
+      [[ $# -gt 0 ]] || { echo "--yolo-spatial-mask-apply-timeout-ms requires a value." >&2; exit 2; }
+      [[ "$1" =~ ^[0-9]+$ ]] || { echo "--yolo-spatial-mask-apply-timeout-ms must be an integer." >&2; exit 2; }
+      if (( 10#$1 < 50 || 10#$1 > 10000 )); then
+        echo "--yolo-spatial-mask-apply-timeout-ms must be within [50,10000]." >&2
+        exit 2
+      fi
+      YOLO_SPATIAL_MASK_APPLY_TIMEOUT_MS="$1"
+      shift
+      ;;
+    --citrus-recording-canvas-config-path)
+      shift
+      [[ $# -gt 0 ]] || { echo "--citrus-recording-canvas-config-path requires a value." >&2; exit 2; }
+      CITRUS_RECORDING_CANVAS_CONFIG_PATH="$(realpath -e "$1")"
+      if [[ ! -f "$CITRUS_RECORDING_CANVAS_CONFIG_PATH" ||
+            "$CITRUS_RECORDING_CANVAS_CONFIG_PATH" != *.json ]]; then
+        echo "Citrus recording canvas config must be an existing JSON file." >&2
+        exit 2
+      fi
+      case "$CITRUS_RECORDING_CANVAS_CONFIG_PATH" in
+        "$ALLOWED_CITRUS_RIG_DIR"/*|"$ALLOWED_CITRUS_TEST_DIR"/*)
+          ;;
+        *)
+          echo "Refusing Citrus canvas config outside allowed roots: $CITRUS_RECORDING_CANVAS_CONFIG_PATH" >&2
+          exit 2
+          ;;
+      esac
+      shift
+      ;;
     *)
       break
       ;;
@@ -210,6 +279,22 @@ export_optional_runtime_env() {
   if [[ -n "$PREPROCESS_DEFER_SOURCE_RELEASE" ]]; then
     echo "[sudo-wrapper] preprocess_defer_source_release=$PREPROCESS_DEFER_SOURCE_RELEASE"
     export ORANGE_PREPROCESS_DEFER_SOURCE_RELEASE="$PREPROCESS_DEFER_SOURCE_RELEASE"
+  fi
+  if [[ -n "$YOLO_SPATIAL_MASK_MODE" ]]; then
+    echo "[sudo-wrapper] yolo_spatial_mask_mode=$YOLO_SPATIAL_MASK_MODE"
+    export ORANGE_YOLO_SPATIAL_MASK_MODE="$YOLO_SPATIAL_MASK_MODE"
+  fi
+  if [[ -n "$YOLO_SPATIAL_MASK_INPUT_CONTEXT_OUTSET_PX" ]]; then
+    echo "[sudo-wrapper] yolo_spatial_mask_input_context_outset_px=$YOLO_SPATIAL_MASK_INPUT_CONTEXT_OUTSET_PX"
+    export ORANGE_YOLO_SPATIAL_MASK_INPUT_CONTEXT_OUTSET_PX="$YOLO_SPATIAL_MASK_INPUT_CONTEXT_OUTSET_PX"
+  fi
+  if [[ -n "$YOLO_SPATIAL_MASK_APPLY_TIMEOUT_MS" ]]; then
+    echo "[sudo-wrapper] yolo_spatial_mask_apply_timeout_ms=$YOLO_SPATIAL_MASK_APPLY_TIMEOUT_MS"
+    export ORANGE_YOLO_SPATIAL_MASK_APPLY_TIMEOUT_MS="$YOLO_SPATIAL_MASK_APPLY_TIMEOUT_MS"
+  fi
+  if [[ -n "$CITRUS_RECORDING_CANVAS_CONFIG_PATH" ]]; then
+    echo "[sudo-wrapper] citrus_recording_canvas_config_path=$CITRUS_RECORDING_CANVAS_CONFIG_PATH"
+    export ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH="$CITRUS_RECORDING_CANVAS_CONFIG_PATH"
   fi
 }
 

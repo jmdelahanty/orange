@@ -46,6 +46,10 @@ struct CalibrationImageSetCaptureContext {
     uint64_t first_camera_frame_id = 0;
     uint64_t last_camera_frame_id = 0;
     bool has_camera_frame_range = false;
+    uint64_t camera_timestamp_ns = 0;
+    bool has_camera_timestamp_ns = false;
+    uint64_t timestamp_sys_ns = 0;
+    bool has_timestamp_sys_ns = false;
     std::string capture_mode;
     double exposure_us = 0.0;
     bool has_exposure_us = false;
@@ -104,6 +108,10 @@ struct CalibrationImageSetRequest {
     CalibrationImageSetCaptureContext capture;
     nlohmann::json rig_context = nlohmann::json::object();
     std::string capture_stage;
+    std::string workflow_profile_id;
+    std::string fixture_state;
+    std::string homography_role;
+    nlohmann::json visibility_domain = nlohmann::json::object();
     double plane_z_mm_nominal = 0.0;
     bool has_plane_z_mm_nominal = false;
     double plane_z_mm_uncertainty = 0.0;
@@ -153,6 +161,17 @@ struct CalibrationImageSetRequest {
     nlohmann::json citrus_projection_snapshot_pre_capture = nlohmann::json::object();
     nlohmann::json citrus_projection_snapshot_post_capture = nlohmann::json::object();
     nlohmann::json citrus_projection_epoch_consistency = nlohmann::json::object();
+    nlohmann::json citrus_calibration_scene_pre_capture = nlohmann::json::object();
+    nlohmann::json citrus_calibration_scene_post_capture = nlohmann::json::object();
+    nlohmann::json citrus_calibration_scene_consistency = nlohmann::json::object();
+    nlohmann::json citrus_calibration_scene_restore_status = nlohmann::json::object();
+    nlohmann::json citrus_arena_centering_pre_capture = nlohmann::json::object();
+    nlohmann::json citrus_arena_centering_post_capture = nlohmann::json::object();
+    nlohmann::json citrus_arena_centering_consistency = nlohmann::json::object();
+    nlohmann::json citrus_daily_registration_pre_capture = nlohmann::json::object();
+    nlohmann::json citrus_daily_registration_post_capture = nlohmann::json::object();
+    nlohmann::json citrus_daily_registration_consistency = nlohmann::json::object();
+    nlohmann::json capture_group_membership = nlohmann::json::object();
     std::string operator_notes;
 };
 

@@ -1,0 +1,381 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.recording.geometry_contract.v1",
+  "title": "Orange Recording Geometry Contract",
+  "description": "Immutable recording-start snapshot of selected experiment geometry and optional commissioned projection authority.",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "captured_at_utc",
+    "status",
+    "recording_policy",
+    "runtime_participation",
+    "selection",
+    "sources",
+    "tank_designs",
+    "cameras",
+    "warnings",
+    "errors"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "orange.recording.geometry_contract"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "captured_at_utc": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "resolved",
+        "partial",
+        "invalid",
+        "orange_only",
+        "not_configured"
+      ]
+    },
+    "recording_policy": {
+      "type": "object",
+      "required": [
+        "citrus_metadata_optional",
+        "citrus_runtime_optional",
+        "recording_blocked",
+        "missing_or_invalid_metadata_action"
+      ],
+      "properties": {
+        "citrus_metadata_optional": {"const": true},
+        "citrus_runtime_optional": {"const": true},
+        "recording_blocked": {"const": false},
+        "missing_or_invalid_metadata_action": {
+          "const": "record_status_and_continue"
+        }
+      },
+      "additionalProperties": true
+    },
+    "runtime_participation": {
+      "type": "object"
+    },
+    "selection": {
+      "type": "object",
+      "required": ["source", "selected_canvas_config_path"],
+      "additionalProperties": true
+    },
+    "sources": {
+      "type": "object"
+    },
+    "tank_designs": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object"
+      }
+    },
+    "daily_registration_geometry": {
+      "type": "object",
+      "required": [
+        "schema_id",
+        "schema_version",
+        "status",
+        "mode",
+        "recording_blocked",
+        "participating_cameras_only",
+        "cameras",
+        "warnings",
+        "errors"
+      ],
+      "properties": {
+        "schema_id": {
+          "const": "orange.recording.daily_registration_geometry"
+        },
+        "schema_version": {"const": 1},
+        "status": {
+          "enum": [
+            "not_configured",
+            "base_only",
+            "invalid",
+            "selected_resolved",
+            "selected_partial"
+          ]
+        },
+        "mode": {
+          "enum": ["base_only", "selected_daily_registration"]
+        },
+        "recording_blocked": {"const": false},
+        "participating_cameras_only": {"const": true},
+        "registration_id": {"type": "string"},
+        "runtime_selection": {"$ref": "#/$defs/sourceSnapshot"},
+        "registration": {"$ref": "#/$defs/sourceSnapshot"},
+        "candidate": {"$ref": "#/$defs/sourceSnapshot"},
+        "cameras": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["camera_serial", "status", "errors"],
+            "properties": {
+              "camera_serial": {"type": "string"},
+              "arena_id": {"type": "string"},
+              "status": {"enum": ["resolved", "unavailable"]},
+              "rim_observation": {"$ref": "#/$defs/sourceSnapshot"},
+              "compact_artifacts": {"type": "object"},
+              "optional_evidence": {"type": "object"},
+              "recording_snapshot_entry": {
+                "$ref": "#/$defs/registeredDishMask"
+              },
+              "errors": {
+                "type": "array",
+                "items": {"type": "string"}
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {"status": {"const": "resolved"}},
+                  "required": ["status"]
+                },
+                "then": {
+                  "required": [
+                    "arena_id",
+                    "rim_observation",
+                    "compact_artifacts",
+                    "recording_snapshot_entry"
+                  ]
+                }
+              }
+            ],
+            "additionalProperties": true
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "errors": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      },
+      "additionalProperties": true
+    },
+    "cameras": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["camera_serial", "status"],
+        "properties": {
+          "camera_serial": {"type": "string"},
+          "status": {
+            "enum": [
+              "resolved",
+              "unavailable",
+              "not_configured"
+            ]
+          },
+          "arena_id": {"type": "string"},
+          "selected_canvas": {"type": "object"},
+          "projection_geometry": {"type": "object"},
+          "tank_design": {"type": "object"},
+          "orange_spatial_calibration": {"type": "object"},
+          "daily_registration_geometry": {
+            "type": "object",
+            "properties": {
+              "schema_id": {
+                "const": "orange.recording.daily_registration_camera_geometry"
+              },
+              "schema_version": {"const": 1},
+              "status": {"const": "resolved"},
+              "mode": {"const": "selected_daily_registration"},
+              "registration_id": {"type": "string"},
+              "registration": {"type": "object"},
+              "recording_snapshot_entry": {
+                "$ref": "#/$defs/registeredDishMask"
+              }
+            },
+            "required": [
+              "schema_id",
+              "schema_version",
+              "status",
+              "mode",
+              "registration_id",
+              "registration",
+              "recording_snapshot_entry"
+            ],
+            "additionalProperties": true
+          },
+          "warnings": {"type": "array", "items": {"type": "string"}},
+          "errors": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": true
+      }
+    },
+    "materialized_assets": {
+      "type": "object",
+      "required": ["schema_id", "schema_version", "status", "request_sha256"],
+      "properties": {
+        "schema_id": {"const": "orange.recording.geometry_assets"},
+        "schema_version": {"const": 1},
+        "status": {
+          "enum": ["complete", "partial", "empty", "unavailable"]
+        },
+        "relative_path": {
+          "const": "recording_geometry_assets/manifest.json"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "request_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "file_count": {"type": "integer", "minimum": 0},
+        "total_bytes": {"type": "integer", "minimum": 0},
+        "optional_image_evidence_requested": {"type": "boolean"},
+        "optional_image_evidence_status": {
+          "enum": ["not_requested", "complete", "partial"]
+        },
+        "required_failure_count": {"type": "integer", "minimum": 0},
+        "reason": {"type": "string"},
+        "error": {"type": "string"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {"enum": ["complete", "partial", "empty"]}
+            }
+          },
+          "then": {
+            "required": [
+              "relative_path",
+              "sha256",
+              "file_count",
+              "total_bytes",
+              "optional_image_evidence_requested",
+              "optional_image_evidence_status",
+              "required_failure_count"
+            ]
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "warnings": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "errors": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  },
+  "$defs": {
+    "sourceSnapshot": {
+      "type": "object",
+      "required": ["source_path", "sha256", "snapshot"],
+      "properties": {
+        "source_path": {"type": "string"},
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "snapshot": {"type": "object"}
+      },
+      "additionalProperties": true
+    },
+    "circleGeometry": {
+      "type": "object",
+      "required": ["type", "center_px", "radius_px"],
+      "properties": {
+        "type": {"const": "circle"},
+        "center_px": {
+          "type": "object",
+          "required": ["x", "y"],
+          "properties": {
+            "x": {"type": "number"},
+            "y": {"type": "number"}
+          },
+          "additionalProperties": true
+        },
+        "radius_px": {"type": "number", "exclusiveMinimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "registeredDishMask": {
+      "type": "object",
+      "required": [
+        "artifact_id",
+        "artifact_schema_id",
+        "artifact_schema_version",
+        "camera_serial",
+        "arena_id",
+        "coordinate_space",
+        "accepted_inner_rim_boundary",
+        "accepted_mask",
+        "valid_detection_region",
+        "source",
+        "available_for_downstream_detection_gating",
+        "active_in_orange_live_detection_pipeline",
+        "gating_semantics"
+      ],
+      "properties": {
+        "artifact_id": {"type": "string"},
+        "artifact_schema_id": {
+          "const": "orange.calibration.dish_top_rim_observation"
+        },
+        "artifact_schema_version": {"const": 2},
+        "camera_serial": {"type": "string"},
+        "arena_id": {"type": "string"},
+        "coordinate_space": {"const": "camera_native_pixels"},
+        "accepted_inner_rim_boundary": {
+          "type": "object",
+          "required": ["coordinate_space", "target_plane", "geometry"],
+          "properties": {
+            "coordinate_space": {"const": "camera_native_pixels"},
+            "target_plane": {"const": "dish_top_rim"},
+            "geometry": {"$ref": "#/$defs/circleGeometry"}
+          },
+          "additionalProperties": true
+        },
+        "accepted_mask": {
+          "type": "object",
+          "required": ["shape", "coordinate_space", "center_px", "radius_px"],
+          "properties": {
+            "shape": {"const": "circle"},
+            "coordinate_space": {"const": "camera_native_pixels"},
+            "center_px": {"type": "object"},
+            "radius_px": {"type": "number", "exclusiveMinimum": 0}
+          },
+          "additionalProperties": true
+        },
+        "valid_detection_region": {
+          "type": "object",
+          "required": [
+            "coordinate_space",
+            "purpose",
+            "offset_direction",
+            "geometry"
+          ],
+          "properties": {
+            "coordinate_space": {"const": "camera_native_pixels"},
+            "purpose": {
+              "const": "bounding_box_centroid_detection_gating"
+            },
+            "offset_direction": {"const": "outward"},
+            "geometry": {"$ref": "#/$defs/circleGeometry"}
+          },
+          "additionalProperties": true
+        },
+        "source": {"type": "object"},
+        "available_for_downstream_detection_gating": {"const": true},
+        "active_in_orange_live_detection_pipeline": {"const": false},
+        "gating_semantics": {
+          "const": "bounding_box_centroid_inside_valid_detection_region"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

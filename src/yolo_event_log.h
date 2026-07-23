@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.hpp"
+#include "json.hpp"
 #include "yolo_event_log_config.h"
 
 #include <condition_variable>
@@ -8,6 +9,7 @@
 #include <deque>
 #include <fstream>
 #include <mutex>
+#include <memory>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -15,6 +17,30 @@
 #include <vector>
 
 namespace yolo_event_log {
+
+struct SpatialMaskOutsideDetection {
+    int raw_index = -1;
+    float x_px = 0.0f;
+    float y_px = 0.0f;
+    float width_px = 0.0f;
+    float height_px = 0.0f;
+    int label = 0;
+    float confidence = 0.0f;
+    float centroid_x_px = 0.0f;
+    float centroid_y_px = 0.0f;
+    float signed_boundary_distance_px = 0.0f;
+    bool rejected = false;
+};
+
+struct SpatialMaskResult {
+    std::shared_ptr<const nlohmann::json> policy;
+    uint64_t policy_generation = 0;
+    int raw_detection_count = 0;
+    int inside_detection_count = 0;
+    int outside_detection_count = 0;
+    int downstream_detection_count = 0;
+    std::vector<SpatialMaskOutsideDetection> outside_detections;
+};
 
 struct YoloResultRecord {
     std::string recording_folder;
@@ -35,6 +61,7 @@ struct YoloResultRecord {
     std::string detection_source = "model";
     bool synthetic_runtime_detection = false;
     std::vector<pose::Object> detections;
+    SpatialMaskResult spatial_mask;
     std::string queue_name;
     bool ipc_enabled = false;
     bool ipc_requested = false;

@@ -19,7 +19,12 @@ public:
     ~YOLOv8();
     // We don't yet have cameras with larger resolutions than 4512x4512
     void make_pipe(bool warmup = true, int max_width=4512, int max_height=4512);
-    void preprocess_gpu(unsigned char *d_src, int source_width, int source_height, bool is_color);
+    void preprocess_gpu(
+        unsigned char *d_src,
+        int source_width,
+        int source_height,
+        bool is_color,
+        const YoloPreprocessCircleMask* circle_mask = nullptr);
     void infer();
     void postprocess(std::vector<Object> &objs);
     static void draw_objects(const cv::Mat&                                image,

@@ -163,7 +163,12 @@ bool run_roundtrip_test()
     ok &= expect(!calibration.dish_mask.calibration_ref.fingerprint.empty(),
                  "dish mask runtime ref has a fingerprint");
 
-    nlohmann::json snapshot = {{"recording_id", "fixture_recording"}};
+    nlohmann::json snapshot = {
+        {"recording_id", "fixture_recording"},
+        {"calibrations", {{"2010095", {
+            {"dish_top_rim_observation", {{"artifact_id", "dishrim_fixture"}}}
+        }}}}
+    };
     ok &= expect(apply_camera_spatial_calibration_to_snapshot_json(
                      &snapshot,
                      "2010095",
@@ -175,6 +180,9 @@ bool run_roundtrip_test()
     ok &= expect(snapshot["calibrations"]["2010095"]["arena_layout"]["runtime"]["layout_id"] ==
                      artifact.layout_id,
                  "snapshot preserves runtime layout id");
+    ok &= expect(snapshot["calibrations"]["2010095"]["dish_top_rim_observation"]
+                     ["artifact_id"] == "dishrim_fixture",
+                 "spatial update preserves independently owned camera calibration products");
 
     CameraSpatialCalibration parsed;
     ok &= expect(parse_camera_spatial_calibration_json(

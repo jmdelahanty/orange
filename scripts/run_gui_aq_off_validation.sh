@@ -599,6 +599,34 @@ else:
             ptp_enabled = bool(data.get("ptp", {}).get("enabled", False))
             if ptp_enabled != expect_ptp_enabled:
                 errors.append(f"{path}: ptp.enabled is not {expect_ptp_enabled}")
+        mapped_nir_strobes = [
+            item
+            for item in data.get("rig_io", {}).get("connections", [])
+            if isinstance(item, dict)
+            and item.get("purpose") == "nir_strobe_trigger"
+            and item.get("direction") == "output"
+        ]
+        if data.get("gpio_pinout_access") == "exposed" and mapped_nir_strobes:
+            gpio_nodes = {
+                item.get("name"): item
+                for item in data.get("gpio", {}).get("nodes", [])
+                if isinstance(item, dict) and isinstance(item.get("name"), str)
+            }
+            required_strobe_nodes = {
+                "GPO_0_Polarity": ("bool", False),
+                "GPO_0_Mode": ("enum", "Exposure"),
+            }
+            for node_name, (node_type, node_value) in required_strobe_nodes.items():
+                node = gpio_nodes.get(node_name)
+                if (
+                    not node
+                    or node.get("type") != node_type
+                    or node.get("value") != node_value
+                ):
+                    errors.append(
+                        f"{path}: exposed mapped NIR strobe requires gpio.nodes "
+                        f"{node_name}={node_value!r} ({node_type})"
+                    )
         if (
             crop_recording_sink_mode == "external_ipc"
             and crop_external_require_separate_gpu_raw == "1"
@@ -915,6 +943,25 @@ fi
 if [[ -n "${ORANGE_GUI_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS:-}" ]]; then
   ENV_ARGS+=("ORANGE_GUI_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS=${ORANGE_GUI_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS}")
 fi
+while IFS= read -r var_name; do
+  [[ -n "${var_name}" ]] || continue
+  ENV_ARGS+=("${var_name}=${!var_name}")
+done < <(compgen -e ORANGE_GUI_GUIDED_CAPTURE_ | sort)
+while IFS= read -r var_name; do
+  [[ -n "${var_name}" ]] || continue
+  ENV_ARGS+=("${var_name}=${!var_name}")
+done < <(compgen -e ORANGE_GUI_ARENA_CENTERING_ | sort)
+for var_name in \
+  ORANGE_GUI_OPERATOR_MONITOR \
+  ORANGE_GUI_RESERVED_MONITOR \
+  ORANGE_CITRUS_EXPECTED_STIMULUS_MONITOR \
+  ORANGE_GUI_PROJECTED_SURFACE_SCALE_TARGETS_READY \
+  ORANGE_GUI_ACCEPT_PROJECTED_SURFACE_SCALES_ARMED \
+  ORANGE_GUI_GROUP_CAPTURE_POST_PRESENTATION_SETTLE_MS; do
+  if [[ -n "${!var_name:-}" ]]; then
+    ENV_ARGS+=("${var_name}=${!var_name}")
+  fi
+done
 if [[ -n "${ORANGE_CROP_PREVIEW_MAX_FPS:-}" ]]; then
   ENV_ARGS+=("ORANGE_CROP_PREVIEW_MAX_FPS=${ORANGE_CROP_PREVIEW_MAX_FPS}")
 fi

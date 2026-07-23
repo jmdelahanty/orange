@@ -7,6 +7,7 @@
 #include "gui/spatial_layout/capture_panel.h"
 #include "gui/spatial_layout/citrus_import.h"
 #include "gui/spatial_layout/citrus_template_workflow.h"
+#include "gui/spatial_layout/daily_registration_workflow.h"
 #include "gui/spatial_layout/geometry.h"
 #include "gui/spatial_layout/group_capture_controller.h"
 #include "gui/spatial_layout/hough_panel.h"
@@ -24,17 +25,23 @@
 #include "gui/spatial_layout/save_job_preparation.h"
 #include "gui/spatial_layout/save_jobs.h"
 #include "gui/spatial_layout/session_review.h"
+#include "gui/spatial_layout/sha256.h"
 #include "imgui.h"
 #include "misc/cpp/imgui_stdlib.h"
 #include <ImGuiFileDialog.h>
 #include "spatial_snapshot_worker.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <limits>
+#include <map>
+#include <set>
 #include <sstream>
 #include <vector>
+
+#include <unistd.h>
 
 namespace {
 
@@ -71,7 +78,11 @@ using orange::gui::spatial_layout::citrus_canvas_to_arena_relative_px;
 using orange::gui::spatial_layout::default_citrus_rigs_root;
 using orange::gui::spatial_layout::ensure_spatial_calibration_session;
 using orange::gui::spatial_layout::eligible_group_capture_camera_count;
+using orange::gui::spatial_layout::advance_daily_registration_workflow;
+using orange::gui::spatial_layout::advance_group_capture_workflow;
 using orange::gui::spatial_layout::find_citrus_template_index_for_camera;
+using orange::gui::spatial_layout::group_capture_workflow_active;
+using orange::gui::spatial_layout::initialize_group_capture_camera_scope;
 using orange::gui::spatial_layout::initialize_spatial_layout_defaults;
 using orange::gui::spatial_layout::kCalibrationManifestSchemaId;
 using orange::gui::spatial_layout::kSpatialLayoutArenaLayoutRuntimeFilename;
@@ -84,6 +95,7 @@ using orange::gui::spatial_layout::handle_registration_canvas_edit;
 using orange::gui::spatial_layout::handle_selected_zone_canvas_edit;
 using orange::gui::spatial_layout::read_json_file;
 using orange::gui::spatial_layout::render_group_capture_panels;
+using orange::gui::spatial_layout::render_daily_registration_workflow_panel;
 using orange::gui::spatial_layout::render_layout_geometry_editor;
 using orange::gui::spatial_layout::render_calibration_workflow_tabs;
 using orange::gui::spatial_layout::render_calibration_capture_metadata_panel;
@@ -93,6 +105,7 @@ using orange::gui::spatial_layout::render_zone_editor;
 using orange::gui::spatial_layout::reset_registration_from_frame;
 using orange::gui::spatial_layout::rebuild_schema_preview;
 using orange::gui::spatial_layout::request_group_full_resolution_snapshots;
+using orange::gui::spatial_layout::resolve_group_capture_scene_recipe;
 using orange::gui::spatial_layout::draw_runtime_preview;
 using orange::gui::spatial_layout::poll_generic_calibration_image_set_save_worker;
 using orange::gui::spatial_layout::poll_top_rim_observation_save_worker;
@@ -110,6 +123,18 @@ using orange::gui::spatial_layout::select_citrus_template_by_index;
 using orange::gui::spatial_layout::save_spatial_layout_artifact;
 using orange::gui::spatial_layout::save_linked_arena_layout_artifacts;
 using orange::gui::spatial_layout::import_citrus_canvas_templates;
+using orange::gui::spatial_layout::load_citrus_homography_candidate_set_for_review;
+using orange::gui::spatial_layout::promote_citrus_homography_candidates;
+using orange::gui::spatial_layout::query_citrus_homography_candidate_status;
+using orange::gui::spatial_layout::reject_citrus_homography_candidates;
+using orange::gui::spatial_layout::promote_citrus_projected_surface_scale_candidates;
+using orange::gui::spatial_layout::query_citrus_projected_surface_scale_candidate_status;
+using orange::gui::spatial_layout::load_citrus_projected_surface_scale_candidate_set_for_review;
+using orange::gui::spatial_layout::reject_citrus_projected_surface_scale_candidates;
+using orange::gui::spatial_layout::finalize_citrus_rig_canvas_commissioning;
+using orange::gui::spatial_layout::query_citrus_rig_canvas_commissioning_status;
+using orange::gui::spatial_layout::query_citrus_daily_registration_status;
+using orange::gui::spatial_layout::select_citrus_daily_registration_runtime_mode;
 using orange::gui::spatial_layout::submit_generic_calibration_image_set_save_job;
 using orange::gui::spatial_layout::submit_top_rim_observation_save_job;
 using orange::gui::spatial_layout::sync_single_experimental_area_zone;
@@ -120,6 +145,222 @@ using orange::gui::spatial_layout::queued_generic_calibration_image_set_save_job
 constexpr const char* kLoadSpatialLayoutDialogId = "LoadSpatialLayoutArtifact";
 constexpr const char* kLoadCitrusArenaConfigDialogId = "LoadCitrusArenaConfig";
 constexpr const char* kLoadCalibrationSessionDialogId = "LoadCalibrationSession";
+constexpr const char* kLoadHomographyCandidateSetDialogId =
+    "LoadHomographyCandidateSet";
+constexpr const char* kLoadProjectedSurfaceScaleCandidateSetDialogId =
+    "LoadProjectedSurfaceScaleCandidateSet";
+
+std::string next_homography_review_operation_id(const std::string& action)
+{
+    static std::uint64_t sequence = 0;
+    const auto ticks = std::chrono::steady_clock::now()
+        .time_since_epoch().count();
+    return "orange_homography_review_" + action + "_" +
+        std::to_string(static_cast<long long>(::getpid())) + "_" +
+        std::to_string(static_cast<long long>(ticks)) + "_" +
+        std::to_string(++sequence);
+}
+
+std::string next_scale_review_operation_id(const std::string& action)
+{
+    static std::uint64_t sequence = 0;
+    const auto ticks = std::chrono::steady_clock::now()
+        .time_since_epoch().count();
+    return "orange_projected_surface_scale_review_" + action + "_" +
+        std::to_string(static_cast<long long>(::getpid())) + "_" +
+        std::to_string(static_cast<long long>(ticks)) + "_" +
+        std::to_string(++sequence);
+}
+
+std::string next_commissioning_operation_id(const std::string& action)
+{
+    static std::uint64_t sequence = 0;
+    const auto ticks = std::chrono::steady_clock::now()
+        .time_since_epoch().count();
+    return "orange_rig_canvas_commissioning_" + action + "_" +
+        std::to_string(static_cast<long long>(::getpid())) + "_" +
+        std::to_string(static_cast<long long>(ticks)) + "_" +
+        std::to_string(++sequence);
+}
+
+bool json_number(const nlohmann::json& object,
+                 const char* key,
+                 double* value_out)
+{
+    if (!object.is_object() || value_out == nullptr) return false;
+    const auto value = object.find(key);
+    if (value == object.end() || !value->is_number()) return false;
+    *value_out = value->get<double>();
+    return true;
+}
+
+nlohmann::json homography_targets_from_manifest(const nlohmann::json& manifest)
+{
+    nlohmann::json targets = nlohmann::json::array();
+    for (const auto& candidate : manifest.value(
+             "candidates", nlohmann::json::array())) {
+        if (!candidate.is_object()) continue;
+        targets.push_back({
+            {"arena_id", candidate.value("arena_id", "")},
+            {"camera_id", candidate.value("camera_id", "")},
+        });
+    }
+    return targets;
+}
+
+struct PersistedScaleReviewBundle {
+    bool ok = false;
+    std::string error;
+    std::filesystem::path candidate_manifest_path;
+    nlohmann::json candidate_manifest = nlohmann::json::object();
+    std::filesystem::path orange_manifest_path;
+    nlohmann::json orange_manifest = nlohmann::json::object();
+    nlohmann::json targets = nlohmann::json::array();
+};
+
+PersistedScaleReviewBundle load_persisted_scale_review_bundle(
+    const std::filesystem::path& selected)
+{
+    PersistedScaleReviewBundle result;
+    auto fail = [&](const std::string& error) {
+        result.error = error;
+        return result;
+    };
+    nlohmann::json manifest;
+    std::string error;
+    if (selected.filename() != "manifest.json" ||
+        !read_json_file(selected, &manifest, &error)) {
+        return fail(error.empty()
+            ? "Choose a Citrus projected-surface scale manifest.json."
+            : error);
+    }
+    const std::filesystem::path set_dir = selected.parent_path();
+    const std::string candidate_set_id = manifest.value("candidate_set_id", "");
+    if (manifest.value("schema_id", "") !=
+            "citrus.calibration.projected_surface_scale_candidate_set" ||
+        manifest.value("schema_version", 0) != 1 ||
+        manifest.value("status", "") != "ready_for_review" ||
+        candidate_set_id.empty() || set_dir.filename() != candidate_set_id ||
+        manifest.value("canvas_checksum", "").rfind("sha256:", 0) != 0) {
+        return fail("Selected JSON is not a complete ready-for-review Citrus "
+                    "projected-surface scale candidate set.");
+    }
+    if (std::filesystem::is_regular_file(set_dir / "acceptance_receipt.json") ||
+        std::filesystem::is_regular_file(set_dir / "rejection_receipt.json")) {
+        return fail("This candidate set is already finalized and cannot be "
+                    "re-opened for promotion.");
+    }
+
+    std::vector<std::filesystem::path> candidate_paths;
+    std::error_code ec;
+    for (const auto& child : std::filesystem::directory_iterator(set_dir, ec)) {
+        if (ec) return fail("Could not enumerate the candidate-set directory.");
+        const auto candidate_path = child.path() / "candidate.json";
+        if (child.is_directory() &&
+            std::filesystem::is_regular_file(candidate_path)) {
+            candidate_paths.push_back(candidate_path);
+        }
+    }
+    std::sort(candidate_paths.begin(), candidate_paths.end());
+    if (candidate_paths.empty() ||
+        candidate_paths.size() != manifest.value("candidate_count", 0U)) {
+        return fail("Candidate-set file count does not match its manifest.");
+    }
+
+    std::map<std::string, nlohmann::json> expected_observations;
+    nlohmann::json target_rows = nlohmann::json::array();
+    std::filesystem::path orange_artifacts_root;
+    for (const auto& candidate_path : candidate_paths) {
+        nlohmann::json candidate;
+        if (!read_json_file(candidate_path, &candidate, &error)) return fail(error);
+        const std::string arena_id = candidate.value("arena_id", "");
+        const std::string camera_id = candidate.value("camera_id", "");
+        const auto source = candidate.value(
+            "source_observation", nlohmann::json::object());
+        const std::filesystem::path observation_path = source.value("path", "");
+        const std::string observation_sha256 = source.value("sha256", "");
+        const std::string key = arena_id + "\n" + camera_id;
+        if (candidate.value("schema_id", "") !=
+                "citrus.calibration.projected_surface_scale_candidate" ||
+            candidate.value("schema_version", 0) != 1 ||
+            candidate.value("status", "") != "ready_for_review" ||
+            candidate.value("candidate_set_id", "") != candidate_set_id ||
+            arena_id.empty() || camera_id.empty() || observation_path.empty() ||
+            observation_sha256.rfind("sha256:", 0) != 0 ||
+            !expected_observations.emplace(key, nlohmann::json{
+                {"observation_path", observation_path.string()},
+                {"observation_sha256", observation_sha256},
+            }).second) {
+            return fail("One or more persisted scale candidates has invalid "
+                        "identity or source-observation provenance.");
+        }
+        target_rows.push_back({
+            {"arena_id", arena_id},
+            {"camera_id", camera_id},
+            {"candidate_id", candidate.value("candidate_id", "")},
+            {"candidate_json_path", candidate_path.string()},
+            {"source_observation", source},
+        });
+        if (orange_artifacts_root.empty()) {
+            auto parent = observation_path.parent_path();
+            while (!parent.empty() && parent.filename() != "artifacts") {
+                parent = parent.parent_path();
+            }
+            orange_artifacts_root = parent;
+        }
+    }
+    if (orange_artifacts_root.empty() ||
+        !std::filesystem::is_directory(orange_artifacts_root)) {
+        return fail("Could not locate the Orange calibration-session artifacts "
+                    "for this candidate set.");
+    }
+
+    std::vector<std::pair<std::filesystem::path, nlohmann::json>> matches;
+    for (const auto& child :
+         std::filesystem::directory_iterator(orange_artifacts_root, ec)) {
+        if (ec) return fail("Could not enumerate Orange calibration artifacts.");
+        const auto aggregate_path = child.path() / "manifest.json";
+        if (!child.is_directory() ||
+            !std::filesystem::is_regular_file(aggregate_path)) continue;
+        nlohmann::json aggregate;
+        std::string ignored;
+        if (!read_json_file(aggregate_path, &aggregate, &ignored) ||
+            aggregate.value("schema_id", "") !=
+                "orange.calibration.projected_surface_scale_observation_set" ||
+            aggregate.value("status", "") != "passed" ||
+            aggregate.value("citrus_canvas_sha256", "") !=
+                manifest.value("canvas_checksum", "")) continue;
+        std::map<std::string, nlohmann::json> aggregate_observations;
+        for (const auto& observation : aggregate.value(
+                 "observations", nlohmann::json::array())) {
+            aggregate_observations[observation.value("arena_id", "") + "\n" +
+                observation.value("camera_id", "")] = {
+                    {"observation_path",
+                     observation.value("observation_path", "")},
+                    {"observation_sha256",
+                     observation.value("observation_sha256", "")},
+                };
+        }
+        if (aggregate_observations == expected_observations) {
+            matches.push_back({aggregate_path, std::move(aggregate)});
+        }
+    }
+    if (matches.size() != 1) {
+        return fail(matches.empty()
+            ? "No Orange observation-set manifest exactly matches the "
+              "candidate sources."
+            : "More than one Orange observation-set manifest matches this "
+              "candidate set; recovery is ambiguous.");
+    }
+    manifest["targets"] = target_rows;
+    result.ok = true;
+    result.candidate_manifest_path = selected;
+    result.candidate_manifest = std::move(manifest);
+    result.orange_manifest_path = matches.front().first;
+    result.orange_manifest = std::move(matches.front().second);
+    result.targets = std::move(target_rows);
+    return result;
+}
 
 template <typename T>
 T clamp_index(T value, T count)
@@ -642,6 +883,25 @@ void render_spatial_layout_window(
     }
     SpatialSnapshotWorker* selected_snapshot_worker =
         spatial_snapshot_workers ? spatial_snapshot_workers[ui_state->selected_camera] : nullptr;
+    initialize_group_capture_camera_scope(
+        ui_state,
+        cameras_params,
+        cameras_select,
+        spatial_snapshot_workers,
+        num_cameras);
+    advance_group_capture_workflow(
+        ui_state,
+        cameras_params,
+        cameras_select,
+        num_cameras,
+        spatial_snapshot_workers);
+    advance_daily_registration_workflow(
+        ui_state,
+        cameras_params,
+        cameras_select,
+        num_cameras,
+        spatial_snapshot_workers,
+        artifact_root_dir);
     if (spatial_snapshot_workers != nullptr) {
         for (int camera_index = 0; camera_index < num_cameras; ++camera_index) {
             SpatialSnapshotWorker* worker = spatial_snapshot_workers[camera_index];
@@ -700,6 +960,12 @@ void render_spatial_layout_window(
             }
         }
     }
+    advance_group_capture_workflow(
+        ui_state,
+        cameras_params,
+        cameras_select,
+        num_cameras,
+        spatial_snapshot_workers);
     ImGui::Text("Current settings: focus=%u iris=%u exposure=%u frame_rate=%u gain=%u size=%ux%u",
                 selected_camera.focus,
                 selected_camera.iris,
@@ -727,10 +993,13 @@ void render_spatial_layout_window(
         !camera_control->subscribe &&
         !camera_control->record_video &&
         !other_calibration_tool_busy;
+    const bool group_capture_pending =
+        group_capture_workflow_active(*ui_state);
     const bool can_capture_live_preview =
         camera_control->subscribe &&
         !camera_control->record_video &&
         !other_calibration_tool_busy &&
+        !group_capture_pending &&
         cameras_select[ui_state->selected_camera].stream_on &&
         live_preview_texture_ids != nullptr &&
         live_preview_texture_ids[ui_state->selected_camera] != 0 &&
@@ -745,20 +1014,20 @@ void render_spatial_layout_window(
             cameras_select,
             spatial_snapshot_workers,
             num_cameras);
-    const bool group_capture_pending =
-        pending_group_snapshot_count(*ui_state) > 0;
     const bool can_capture_full_resolution_stream_snapshot =
         camera_control->subscribe &&
         !camera_control->record_video &&
         !other_calibration_tool_busy &&
         cameras_select[ui_state->selected_camera].stream_on &&
         selected_snapshot_worker != nullptr &&
-        !full_res_request_pending_for_selected;
+        !full_res_request_pending_for_selected &&
+        !group_capture_pending;
     const bool can_capture_group_full_resolution_stream_snapshot =
         camera_control->subscribe &&
         !camera_control->record_video &&
         !other_calibration_tool_busy &&
         eligible_group_camera_count > 0 &&
+        !ui_state->group_capture_selected_camera_serials.empty() &&
         ui_state->pending_full_res_snapshot_request_id == 0 &&
         !group_capture_pending;
 
@@ -869,8 +1138,83 @@ void render_spatial_layout_window(
         }
     }
     ImGui::EndDisabled();
+
+    ImGui::SeparatorText("Guided Citrus Group Capture");
+    ImGui::BeginDisabled(group_capture_pending);
+    static constexpr const char* kGroupSceneRecipes[] = {
+        "auto",
+        "black_reference",
+        "arena_outline",
+        "experimental_area_center_and_outline",
+        "homography_grid",
+        "homography_rings",
+        "verification_dots"
+    };
+    if (ImGui::BeginCombo(
+            "Citrus scene recipe",
+            ui_state->group_capture_scene_recipe.c_str())) {
+        for (const char* recipe : kGroupSceneRecipes) {
+            const bool selected = ui_state->group_capture_scene_recipe == recipe;
+            if (ImGui::Selectable(recipe, selected)) {
+                ui_state->group_capture_scene_recipe = recipe;
+            }
+            if (selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::TextDisabled(
+        "Resolved scene: %s",
+        resolve_group_capture_scene_recipe(*ui_state).c_str());
+    ImGui::Text("Expected cameras (intentional group scope):");
+    for (int camera_index = 0; camera_index < num_cameras; ++camera_index) {
+        const std::string& serial = cameras_params[camera_index].camera_serial;
+        bool selected =
+            std::find(
+                ui_state->group_capture_selected_camera_serials.begin(),
+                ui_state->group_capture_selected_camera_serials.end(),
+                serial) != ui_state->group_capture_selected_camera_serials.end();
+        const std::string label = "Cam" + serial + "##GroupScope" + serial;
+        if (ImGui::Checkbox(label.c_str(), &selected)) {
+            ui_state->group_capture_camera_scope_initialized = true;
+            auto& scope = ui_state->group_capture_selected_camera_serials;
+            scope.erase(std::remove(scope.begin(), scope.end(), serial), scope.end());
+            if (selected) {
+                scope.push_back(serial);
+            }
+        }
+        ImGui::SameLine();
+        const bool ready =
+            cameras_select != nullptr && spatial_snapshot_workers != nullptr &&
+            cameras_select[camera_index].stream_on &&
+            spatial_snapshot_workers[camera_index] != nullptr;
+        ImGui::TextDisabled("(%s)", ready ? "ready" : "not ready");
+    }
+    if (ImGui::SmallButton("Use all streaming cameras")) {
+        ui_state->group_capture_selected_camera_serials.clear();
+        for (int camera_index = 0; camera_index < num_cameras; ++camera_index) {
+            if (cameras_select != nullptr && spatial_snapshot_workers != nullptr &&
+                cameras_select[camera_index].stream_on &&
+                spatial_snapshot_workers[camera_index] != nullptr) {
+                ui_state->group_capture_selected_camera_serials.push_back(
+                    cameras_params[camera_index].camera_serial);
+            }
+        }
+        ui_state->group_capture_camera_scope_initialized = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Use selected camera only")) {
+        ui_state->group_capture_selected_camera_serials = {
+            selected_camera.camera_serial};
+        ui_state->group_capture_camera_scope_initialized = true;
+    }
+    ImGui::EndDisabled();
+    ImGui::TextDisabled(
+        "Orange asks Citrus to present this scene, waits for one shared display fence, then requests fresh frames from exactly this camera set.");
+
     ImGui::BeginDisabled(!can_capture_group_full_resolution_stream_snapshot);
-    if (ImGui::Button("Capture Group Full-Resolution Snapshots")) {
+    if (ImGui::Button("Run Guided Group Capture")) {
         std::string request_error;
         if (!request_group_full_resolution_snapshots(
                 ui_state,
@@ -887,7 +1231,7 @@ void render_spatial_layout_window(
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(!can_capture_group_full_resolution_stream_snapshot);
-    if (ImGui::Button("Capture Averaged Group Snapshots")) {
+    if (ImGui::Button("Run Guided Averaged Group Capture")) {
         std::string request_error;
         if (!request_group_full_resolution_snapshots(
                 ui_state,
@@ -918,8 +1262,9 @@ void render_spatial_layout_window(
     }
     if (group_capture_pending) {
         ImGui::TextDisabled(
-            "Grouped capture %s is waiting on %d camera(s).",
+            "Guided group %s state=%s, pending camera snapshots=%d.",
             ui_state->group_capture_id.c_str(),
+            ui_state->group_capture_workflow_state.c_str(),
             pending_group_snapshot_count(*ui_state));
     } else if (camera_control->subscribe && eligible_group_camera_count <= 0) {
         ImGui::TextDisabled("No streaming cameras with spatial snapshot workers are available for grouped capture.");
@@ -1011,13 +1356,21 @@ void render_spatial_layout_window(
                 rebuild_schema_preview(ui_state, &selected_camera);
             }
         }
-        if (!ui_state->citrus_canvas_config_path.empty()) {
-            ImGui::TextDisabled("%s", ui_state->citrus_canvas_config_path.c_str());
-        }
+    }
+    if (!ui_state->citrus_canvas_config_path.empty()) {
+        ImGui::TextWrapped(
+            "Recording metadata canvas: %s",
+            ui_state->citrus_canvas_config_path.c_str());
     }
 
     if (!ui_state->citrus_template.available) {
-        ImGui::TextDisabled("Import a Citrus canvas config to seed the single circular experimental area.");
+        if (ui_state->citrus_canvas_config_path.empty()) {
+            ImGui::TextDisabled(
+                "Select a Citrus canvas for recording metadata. Circular canvases can also seed the legacy spatial preview.");
+        } else {
+            ImGui::TextDisabled(
+                "Canvas selected for recording metadata; its shape is not supported by the legacy single-circle preview adapter.");
+        }
     } else {
         ImGui::TextWrapped(
             "Imported: rig=%s canvas=%s arena=%s config=%s camera=%s",
@@ -1026,6 +1379,52 @@ void render_spatial_layout_window(
             ui_state->citrus_template.source_arena_name.c_str(),
             ui_state->citrus_template.source_config_name.c_str(),
             ui_state->citrus_template.source_camera_id.c_str());
+        if (ui_state->citrus_template.has_authoritative_camera_to_canvas_homography) {
+            ImGui::TextColored(
+                ImVec4(0.35f, 0.95f, 0.45f, 1.0f),
+                "Homography authority: accepted and compatible (%s)",
+                ui_state->citrus_template.homography_candidate_set_id.c_str());
+            ImGui::TextDisabled(
+                "accepted=%s plane=%s direction=%s",
+                ui_state->citrus_template.homography_accepted_at_utc.c_str(),
+                ui_state->citrus_template.homography_target_plane.c_str(),
+                ui_state->citrus_template.homography_direction.c_str());
+            if (!ui_state->citrus_template.homography_canvas_compatibility_basis.empty()) {
+                ImGui::TextDisabled(
+                    "canvas compatibility: %s%s%s",
+                    ui_state->citrus_template.homography_canvas_compatibility_basis.c_str(),
+                    ui_state->citrus_template.homography_commissioning_release_id.empty()
+                        ? "" : " release=",
+                    ui_state->citrus_template.homography_commissioning_release_id.c_str());
+            }
+            if (!ui_state->citrus_template.homography_canvas_compatibility_warning.empty()) {
+                ImGui::TextColored(
+                    ImVec4(1.0f, 0.80f, 0.25f, 1.0f),
+                    "Compatibility warning: %s",
+                    ui_state->citrus_template.homography_canvas_compatibility_warning.c_str());
+            }
+            if (ui_state->citrus_template.has_homography_quality) {
+                ImGui::TextDisabled(
+                    "fit RMS/max %.4f/%.4f canvas px; holdout RMS/max %.4f/%.4f canvas px",
+                    ui_state->citrus_template.homography_rms_reprojection_error_canvas_px,
+                    ui_state->citrus_template.homography_maximum_reprojection_error_canvas_px,
+                    ui_state->citrus_template.homography_holdout_rms_error_canvas_px,
+                    ui_state->citrus_template.homography_holdout_maximum_error_canvas_px);
+            }
+            ImGui::TextDisabled(
+                "active pointer: %s",
+                ui_state->citrus_template.homography_active_pointer_path.c_str());
+        } else {
+            ImGui::TextColored(
+                ImVec4(1.0f, 0.65f, 0.30f, 1.0f),
+                "Homography authority: %s",
+                ui_state->citrus_template.homography_authority_status.c_str());
+            if (!ui_state->citrus_template.homography_import_error.empty()) {
+                ImGui::TextWrapped(
+                    "%s",
+                    ui_state->citrus_template.homography_import_error.c_str());
+            }
+        }
         ImGui::TextWrapped(
             "Citrus experimental area: arena-relative center=(%.2f, %.2f) r=%.2f canvas px",
             ui_state->citrus_template.experimental_area_center_x_px,
@@ -1170,6 +1569,668 @@ void render_spatial_layout_window(
         }
     }
 
+    ImGui::SeparatorText("Homography Candidate Review And Promotion");
+    ImGui::TextWrapped(
+        "Promotion is a separate, explicitly armed step. Citrus revalidates the "
+        "persisted evidence against the currently loaded canvas before it can "
+        "replace the active homographies.");
+    if (ImGui::Button("Choose Persisted Candidate Set...")) {
+        IGFD::FileDialogConfig config;
+        config.path = "/home/jeremy/citrus/targets/rigs";
+        config.countSelectionMax = 1;
+        ImGuiFileDialog::Instance()->OpenDialog(
+            kLoadHomographyCandidateSetDialogId,
+            "Choose candidate_set.json",
+            ".json",
+            config);
+    }
+    if (!ui_state->homography_candidate_review_manifest_path.empty()) {
+        ImGui::TextDisabled(
+            "%s",
+            ui_state->homography_candidate_review_manifest_path.c_str());
+    }
+    const bool has_review_manifest =
+        ui_state->homography_candidate_review_manifest.is_object() &&
+        ui_state->homography_candidate_review_manifest.value(
+            "schema_id", "") == "citrus.homography_candidate.status" &&
+        ui_state->homography_candidate_review_manifest.value(
+            "state", "") == "ready_for_review";
+    ImGui::BeginDisabled(!has_review_manifest);
+    if (ImGui::Button("Revalidate In Citrus")) {
+        const auto& manifest = ui_state->homography_candidate_review_manifest;
+        const auto result = load_citrus_homography_candidate_set_for_review(
+            std::filesystem::path(
+                ui_state->homography_candidate_review_manifest_path)
+                .parent_path().string(),
+            manifest.value("candidate_set_id", ""),
+            manifest.value("canvas_checksum", ""),
+            homography_targets_from_manifest(manifest),
+            next_homography_review_operation_id("load"));
+        ui_state->homography_candidate_review_status = result.candidate;
+        ui_state->homography_candidate_review_revalidated = false;
+        ui_state->accept_reviewed_homographies_armed = false;
+        if (!result.ok) {
+            ui_state->homography_candidate_review_error = result.reason;
+            ui_state->homography_candidate_review_message.clear();
+        } else {
+            ui_state->homography_candidate_review_error.clear();
+            ui_state->homography_candidate_review_message =
+                "Citrus accepted the revalidation request. Refresh after it has "
+                "processed the candidate set.";
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Refresh Review Status")) {
+        const std::string transaction_id =
+            ui_state->homography_candidate_review_manifest.value(
+                "transaction_id", "");
+        const auto result = query_citrus_homography_candidate_status(
+            transaction_id, "operator-review-refresh");
+        if (!result.ok) {
+            ui_state->homography_candidate_review_error = result.reason;
+            ui_state->homography_candidate_review_revalidated = false;
+        } else {
+            ui_state->homography_candidate_review_status = result.candidate;
+            const bool committed =
+                result.candidate.value("state", "") == "committed" &&
+                result.candidate.value("receipt", nlohmann::json::object()).value(
+                    "outcome", "") == "committed";
+            const auto revalidation = result.candidate.value(
+                "revalidation", nlohmann::json::object());
+            ui_state->homography_candidate_review_revalidated =
+                result.candidate.value("active", false) &&
+                result.candidate.value("state", "") == "ready_for_review" &&
+                result.candidate.value("loaded_from_persisted_candidate_set", false) &&
+                result.candidate.value("transaction_id", "") == transaction_id &&
+                result.candidate.value("candidate_set_id", "") ==
+                    ui_state->homography_candidate_review_manifest.value(
+                        "candidate_set_id", "") &&
+                revalidation.value("status", "") == "passed";
+            ui_state->homography_candidate_review_error.clear();
+            if (committed) {
+                ui_state->accept_reviewed_homographies_armed = false;
+                const std::string canvas_path =
+                    ui_state->homography_candidate_review_manifest.value(
+                        "canvas_path", "");
+                std::string import_status;
+                std::string import_error;
+                if (canvas_path.empty() ||
+                    !import_citrus_canvas_templates(
+                        ui_state,
+                        selected_camera,
+                        canvas_path,
+                        &import_status,
+                        &import_error)) {
+                    ui_state->homography_candidate_review_error =
+                        "Promotion committed, but Orange could not reload the "
+                        "authoritative canvas artifacts: " + import_error;
+                } else if (!ui_state->citrus_template
+                                .has_authoritative_camera_to_canvas_homography) {
+                    ui_state->homography_candidate_review_error =
+                        "Promotion committed, but the selected Orange camera did "
+                        "not load an accepted compatible active pointer: " +
+                        ui_state->citrus_template.homography_import_error;
+                } else {
+                    ui_state->citrus_import_status =
+                        "Loaded newly promoted authoritative homographies. " +
+                        import_status;
+                    ui_state->citrus_import_error.clear();
+                    rebuild_schema_preview(ui_state, &selected_camera);
+                }
+                ui_state->homography_candidate_review_message =
+                    "Citrus committed the candidate set as the current canvas "
+                    "authority; Orange reloaded its accepted active pointers.";
+            } else if (!ui_state->homography_candidate_review_revalidated) {
+                const auto error_it = result.candidate.find("error");
+                ui_state->homography_candidate_review_error =
+                    error_it != result.candidate.end() && error_it->is_string()
+                        ? error_it->get<std::string>()
+                        : "Citrus has not reported a passed persisted-set revalidation.";
+            }
+            if (!committed) {
+                ui_state->homography_candidate_review_message =
+                    ui_state->homography_candidate_review_revalidated
+                        ? "Persisted set revalidated. Review every camera before arming promotion."
+                        : "Citrus review status refreshed.";
+            }
+        }
+    }
+    ImGui::EndDisabled();
+
+    const nlohmann::json review_rows =
+        ui_state->homography_candidate_review_status.value(
+            "candidates",
+            ui_state->homography_candidate_review_manifest.value(
+                "candidates", nlohmann::json::array()));
+    if (review_rows.is_array() && !review_rows.empty() &&
+        ImGui::BeginTable("homography_candidate_review_table", 6,
+                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                              ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Arena / Camera");
+        ImGui::TableSetupColumn("State");
+        ImGui::TableSetupColumn("Fit RMS / max");
+        ImGui::TableSetupColumn("Holdout RMS / max");
+        ImGui::TableSetupColumn("Photometry");
+        ImGui::TableSetupColumn("Evidence");
+        ImGui::TableHeadersRow();
+        for (const auto& candidate : review_rows) {
+            const auto quality = candidate.value(
+                "quality", nlohmann::json::object());
+            const auto full = quality.value("full_fit", nlohmann::json::object());
+            const auto holdout = quality.value("holdout", nlohmann::json::object());
+            const auto photometry = candidate.value(
+                "source_photometry", nlohmann::json::object());
+            const auto metrics = photometry.value(
+                "metrics", nlohmann::json::object());
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::Text("%s / %s",
+                        candidate.value("arena_id", "").c_str(),
+                        candidate.value("camera_id", "").c_str());
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted(candidate.value("status", "unknown").c_str());
+            ImGui::TableSetColumnIndex(2);
+            ImGui::Text("%.4f / %.4f",
+                        full.value("rms_reprojection_error_canvas_px", 0.0),
+                        full.value("maximum_reprojection_error_canvas_px", 0.0));
+            ImGui::TableSetColumnIndex(3);
+            ImGui::Text("%.4f / %.4f",
+                        holdout.value("rms_error_canvas_px", 0.0),
+                        holdout.value("maximum_error_canvas_px", 0.0));
+            ImGui::TableSetColumnIndex(4);
+            ImGui::Text("contrast %.1f, sat %.5f",
+                        metrics.value("dot_background_contrast_u8", 0.0),
+                        metrics.value(
+                            "dot_core_saturation_fraction_ge_threshold", 0.0));
+            ImGui::TableSetColumnIndex(5);
+            const std::filesystem::path candidate_dir =
+                std::filesystem::path(
+                    ui_state->homography_candidate_review_manifest_path)
+                    .parent_path() /
+                (candidate.value("arena_id", "") + "_" +
+                 candidate.value("camera_id", ""));
+            ImGui::TextWrapped("%s", candidate_dir.string().c_str());
+        }
+        ImGui::EndTable();
+    }
+
+    ImGui::BeginDisabled(!ui_state->homography_candidate_review_revalidated);
+    ImGui::Checkbox(
+        "I reviewed all detection, reprojection, coordinate-frame, and canvas-layout evidence",
+        &ui_state->accept_reviewed_homographies_armed);
+    ImGui::BeginDisabled(!ui_state->accept_reviewed_homographies_armed);
+    if (ImGui::Button("Promote Reviewed Set As Canvas Authority")) {
+        const auto& manifest = ui_state->homography_candidate_review_manifest;
+        const nlohmann::json verification = {
+            {"schema_id", "orange.homography_candidate.operator_review"},
+            {"schema_version", 1},
+            {"status", "passed"},
+            {"candidate_set_id", manifest.value("candidate_set_id", "")},
+            {"candidate_set_manifest_path",
+             ui_state->homography_candidate_review_manifest_path},
+            {"citrus_revalidation",
+             ui_state->homography_candidate_review_status.value(
+                 "revalidation", nlohmann::json::object())},
+            {"operator_assertions", {
+                {"all_camera_detection_overlays_reviewed", true},
+                {"all_camera_reprojection_overlays_reviewed", true},
+                {"coordinate_frame_evidence_reviewed", true},
+                {"logical_canvas_layout_evidence_reviewed", true},
+            }},
+        };
+        const auto result = promote_citrus_homography_candidates(
+            manifest.value("transaction_id", ""),
+            manifest.value("canvas_checksum", ""),
+            verification,
+            true,
+            next_homography_review_operation_id("promote"));
+        ui_state->accept_reviewed_homographies_armed = false;
+        if (!result.ok) {
+            ui_state->homography_candidate_review_error = result.reason;
+            ui_state->homography_candidate_review_message.clear();
+        } else {
+            ui_state->homography_candidate_review_error.clear();
+            ui_state->homography_candidate_review_message =
+                "Promotion request accepted. Refresh the review status, then "
+                "re-import the Citrus canvas to load the new authoritative artifacts.";
+        }
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Release Without Promotion")) {
+        const auto result = reject_citrus_homography_candidates(
+            ui_state->homography_candidate_review_manifest.value(
+                "transaction_id", ""),
+            "operator_released_persisted_review_without_promotion",
+            next_homography_review_operation_id("release"));
+        ui_state->accept_reviewed_homographies_armed = false;
+        ui_state->homography_candidate_review_revalidated = false;
+        if (!result.ok) {
+            ui_state->homography_candidate_review_error = result.reason;
+        } else {
+            ui_state->homography_candidate_review_error.clear();
+            ui_state->homography_candidate_review_message =
+                "Review transaction released; active homographies were unchanged.";
+        }
+    }
+    ImGui::EndDisabled();
+    if (!ui_state->homography_candidate_review_message.empty()) {
+        ImGui::TextWrapped(
+            "%s", ui_state->homography_candidate_review_message.c_str());
+    }
+    if (!ui_state->homography_candidate_review_error.empty()) {
+        ImGui::TextColored(
+            ImVec4(1.0f, 0.55f, 0.30f, 1.0f),
+            "%s", ui_state->homography_candidate_review_error.c_str());
+    }
+
+    ImGui::SeparatorText("Projected-Surface Physical Scale Review And Promotion");
+    ImGui::TextWrapped(
+        "Orange detects the 5 mm physical target and writes overlays; Citrus "
+        "independently re-fits the correspondences and owns runtime activation. "
+        "The 25 mm C-to-XPLUS span and 77 mm outer diameter are validation-only.");
+    if (ImGui::Button("Choose Persisted Physical-Scale Candidate Set...")) {
+        IGFD::FileDialogConfig config;
+        config.path = "/home/jeremy/citrus/targets/rigs";
+        config.countSelectionMax = 1;
+        ImGuiFileDialog::Instance()->OpenDialog(
+            kLoadProjectedSurfaceScaleCandidateSetDialogId,
+            "Choose projected-surface scale manifest.json",
+            ".json",
+            config);
+    }
+    if (!ui_state->projected_surface_scale_candidate_manifest_path.empty()) {
+        ImGui::TextDisabled(
+            "Citrus candidates: %s",
+            ui_state->projected_surface_scale_candidate_manifest_path.c_str());
+        ImGui::TextDisabled(
+            "Orange QC: %s",
+            ui_state->projected_surface_scale_review_manifest_path.c_str());
+        if (ImGui::Button("Revalidate Persisted Physical Scales In Citrus")) {
+            const auto& manifest =
+                ui_state->projected_surface_scale_candidate_manifest;
+            const auto result =
+                load_citrus_projected_surface_scale_candidate_set_for_review(
+                    std::filesystem::path(
+                        ui_state->projected_surface_scale_candidate_manifest_path)
+                        .parent_path().string(),
+                    manifest.value("candidate_set_id", ""),
+                    manifest.value("canvas_checksum", ""),
+                    manifest.value("targets", nlohmann::json::array()),
+                    next_scale_review_operation_id("load"));
+            ui_state->projected_surface_scale_review_status = result.candidate;
+            ui_state->projected_surface_scale_review_revalidated = false;
+            ui_state->accept_reviewed_projected_surface_scales_armed = false;
+            if (!result.ok) {
+                ui_state->projected_surface_scale_review_error = result.reason;
+                ui_state->projected_surface_scale_review_message.clear();
+            } else {
+                ui_state->projected_surface_scale_review_error.clear();
+                ui_state->projected_surface_scale_review_message =
+                    "Citrus accepted the persisted-scale revalidation request. "
+                    "Refresh after its main thread processes the candidate set.";
+            }
+        }
+    }
+    if (!ui_state->projected_surface_scale_review_manifest_path.empty()) {
+        ImGui::TextDisabled(
+            "%s", ui_state->projected_surface_scale_review_manifest_path.c_str());
+    }
+    const auto scale_targets =
+        ui_state->projected_surface_scale_review_verification.value(
+            "targets", nlohmann::json::array());
+    if (scale_targets.is_array() && !scale_targets.empty() &&
+        ImGui::BeginTable("projected_surface_scale_review_table", 6,
+                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                              ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Arena / Camera");
+        ImGui::TableSetupColumn("Status");
+        ImGui::TableSetupColumn("Fit RMS / max (mm)");
+        ImGui::TableSetupColumn("Holdout RMS / max (mm)");
+        ImGui::TableSetupColumn("C-X / OD (mm)");
+        ImGui::TableSetupColumn("Overlay evidence");
+        ImGui::TableHeadersRow();
+        for (const auto& target : scale_targets) {
+            const auto metrics = target.value("metrics", nlohmann::json::object());
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::Text("%s / %s",
+                        target.value("arena_id", "").c_str(),
+                        target.value("camera_id", "").c_str());
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted(target.value("status", "unknown").c_str());
+            ImGui::TableSetColumnIndex(2);
+            ImGui::Text("%.4f / %.4f",
+                        metrics.value("fit_rms_mm", 0.0),
+                        metrics.value("fit_max_mm", 0.0));
+            ImGui::TableSetColumnIndex(3);
+            ImGui::Text("%.4f / %.4f",
+                        metrics.value("holdout_rms_mm", 0.0),
+                        metrics.value("holdout_max_mm", 0.0));
+            ImGui::TableSetColumnIndex(4);
+            double c_to_xplus_mm = 0.0;
+            double outside_diameter_mm = 0.0;
+            const bool has_c_to_xplus = json_number(
+                metrics, "c_to_xplus_measured_mm", &c_to_xplus_mm);
+            const bool has_outside_diameter = json_number(
+                metrics, "outer_diameter_measured_mm", &outside_diameter_mm);
+            if (has_c_to_xplus && has_outside_diameter) {
+                ImGui::Text("%.3f / %.3f", c_to_xplus_mm, outside_diameter_mm);
+            } else {
+                ImGui::TextUnformatted("n/a");
+            }
+            ImGui::TableSetColumnIndex(5);
+            ImGui::TextWrapped("%s", target.value("overlay_path", "").c_str());
+        }
+        ImGui::EndTable();
+    }
+    if (ImGui::Button("Refresh Physical Scale Review Status")) {
+        const auto status = query_citrus_projected_surface_scale_candidate_status(
+            ui_state->projected_surface_scale_review_transaction_id,
+            "operator-review-refresh");
+        if (!status.ok) {
+            ui_state->projected_surface_scale_review_error = status.reason;
+        } else {
+            ui_state->projected_surface_scale_review_status = status.candidate;
+            const auto revalidation = status.candidate.value(
+                "revalidation", nlohmann::json::object());
+            ui_state->projected_surface_scale_review_revalidated =
+                status.candidate.value("active", false) &&
+                status.candidate.value("state", "") == "ready_for_review" &&
+                status.candidate.value(
+                    "loaded_from_persisted_candidate_set", false) &&
+                status.candidate.value("transaction_id", "") ==
+                    ui_state->projected_surface_scale_review_transaction_id &&
+                status.candidate.value("candidate_set_id", "") ==
+                    ui_state->projected_surface_scale_candidate_manifest.value(
+                        "candidate_set_id", "") &&
+                revalidation.value("status", "") == "passed";
+            ui_state->projected_surface_scale_review_error.clear();
+            ui_state->projected_surface_scale_review_message =
+                ui_state->projected_surface_scale_review_revalidated
+                    ? "Persisted physical scales revalidated. Review every "
+                      "camera overlay before arming promotion."
+                    : "Citrus physical-scale review status refreshed.";
+        }
+    }
+    const bool persisted_scale_review_selected =
+        !ui_state->projected_surface_scale_candidate_manifest_path.empty();
+    const bool scale_ready_for_review =
+        ui_state->projected_surface_scale_review_verification.value(
+            "status", "") == "passed" &&
+        ui_state->projected_surface_scale_review_status.value(
+            "active", false) &&
+        ui_state->projected_surface_scale_review_status.value(
+            "state", "") == "ready_for_review" &&
+        (!persisted_scale_review_selected ||
+         ui_state->projected_surface_scale_review_revalidated);
+    ImGui::BeginDisabled(!scale_ready_for_review);
+    ImGui::Checkbox(
+        "I reviewed all scale overlays, orientation markers, holdout errors, and independent dimensions",
+        &ui_state->accept_reviewed_projected_surface_scales_armed);
+    ImGui::BeginDisabled(
+        !ui_state->accept_reviewed_projected_surface_scales_armed);
+    if (ImGui::Button("Promote Reviewed Physical Scales As Canvas Authority")) {
+        nlohmann::json verification =
+            ui_state->projected_surface_scale_review_verification;
+        verification["operator_review"] = {
+            {"status", "passed"},
+            {"all_camera_overlays_reviewed", true},
+            {"orientation_markers_reviewed", true},
+            {"pitch_fit_and_holdout_reviewed", true},
+            {"independent_dimensions_reviewed", true},
+            {"three_mm_plane_contract_reviewed", true},
+        };
+        if (persisted_scale_review_selected) {
+            verification["citrus_revalidation"] =
+                ui_state->projected_surface_scale_review_status.value(
+                    "revalidation", nlohmann::json::object());
+            verification["candidate_set_manifest_path"] =
+                ui_state->projected_surface_scale_candidate_manifest_path;
+        }
+        const auto promotion =
+            promote_citrus_projected_surface_scale_candidates(
+                ui_state->projected_surface_scale_review_transaction_id,
+                ui_state->projected_surface_scale_review_canvas_sha256,
+                verification,
+                true,
+                next_scale_review_operation_id("promote"));
+        ui_state->accept_reviewed_projected_surface_scales_armed = false;
+        ui_state->projected_surface_scale_review_revalidated = false;
+        if (!promotion.ok) {
+            ui_state->projected_surface_scale_review_error = promotion.reason;
+        } else {
+            ui_state->projected_surface_scale_review_error.clear();
+            ui_state->projected_surface_scale_review_message =
+                "Physical-scale promotion request accepted; the guided workflow "
+                "will finish after Citrus commits all active pointers.";
+        }
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Release Physical Scales Without Promotion")) {
+        const auto rejection = reject_citrus_projected_surface_scale_candidates(
+            ui_state->projected_surface_scale_review_transaction_id,
+            "operator_released_scale_review_without_promotion",
+            next_scale_review_operation_id("release"));
+        ui_state->accept_reviewed_projected_surface_scales_armed = false;
+        ui_state->projected_surface_scale_review_revalidated = false;
+        if (!rejection.ok) {
+            ui_state->projected_surface_scale_review_error = rejection.reason;
+        } else {
+            ui_state->projected_surface_scale_review_error.clear();
+            ui_state->projected_surface_scale_review_message =
+                "Physical-scale candidate released; active scale was unchanged.";
+        }
+    }
+    ImGui::EndDisabled();
+    if (!ui_state->projected_surface_scale_review_message.empty()) {
+        ImGui::TextWrapped(
+            "%s", ui_state->projected_surface_scale_review_message.c_str());
+    }
+    if (!ui_state->projected_surface_scale_review_error.empty()) {
+        ImGui::TextColored(
+            ImVec4(1.0f, 0.55f, 0.30f, 1.0f),
+            "%s", ui_state->projected_surface_scale_review_error.c_str());
+    }
+
+    ImGui::SeparatorText("Rig-Owned Canvas Commissioning Authority");
+    ImGui::TextWrapped(
+        "Finalize only after every camera has an accepted projected-surface "
+        "homography and physical scale. Citrus writes an immutable release "
+        "with frozen rig/canvas snapshots and atomically activates a small "
+        "pointer. Daily dish registration must not edit this canvas geometry.");
+    if (ImGui::Button("Refresh Commissioning Readiness / Active Release")) {
+        const auto result = query_citrus_rig_canvas_commissioning_status(
+            "operator-commissioning-refresh");
+        if (!result.ok) {
+            ui_state->rig_canvas_commissioning_error = result.reason;
+        } else {
+            ui_state->rig_canvas_commissioning_status = result.commissioning;
+            ui_state->rig_canvas_commissioning_error.clear();
+            ui_state->rig_canvas_commissioning_message =
+                "Citrus commissioning authority status refreshed.";
+        }
+    }
+    const auto& commissioning_status =
+        ui_state->rig_canvas_commissioning_status;
+    if (!commissioning_status.empty()) {
+        ImGui::Text("State: %s", commissioning_status.value(
+            "state", "unknown").c_str());
+        ImGui::SameLine();
+        ImGui::TextDisabled("ready to finalize: %s",
+            commissioning_status.value("ready_to_finalize", false)
+                ? "yes" : "no");
+        if (!commissioning_status.value("release_id", "").empty()) {
+            ImGui::Text("Active release: %s",
+                commissioning_status.value("release_id", "").c_str());
+            ImGui::TextDisabled("%s",
+                commissioning_status.value("manifest_path", "").c_str());
+        }
+        const auto rows = commissioning_status.value(
+            "finalize_requirements", nlohmann::json::object()).value(
+                "targets", nlohmann::json::array());
+        if (rows.is_array() && !rows.empty() &&
+            ImGui::BeginTable("commissioning_requirements_table", 4,
+                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                    ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Arena / Camera");
+            ImGui::TableSetupColumn("Homography");
+            ImGui::TableSetupColumn("Scale");
+            ImGui::TableSetupColumn("Missing / stale reason");
+            ImGui::TableHeadersRow();
+            for (const auto& row : rows) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::Text("%s / %s", row.value("arena_id", "").c_str(),
+                            row.value("camera_id", "").c_str());
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(
+                    row.value("homography_compatible", false) ? "OK" : "missing");
+                ImGui::TableSetColumnIndex(2);
+                ImGui::TextUnformatted(
+                    row.value("scale_compatible", false) ? "OK" : "missing");
+                ImGui::TableSetColumnIndex(3);
+                const std::string reason = !row.value("homography_error", "").empty()
+                    ? row.value("homography_error", "")
+                    : row.value("scale_error", row.value("error", ""));
+                ImGui::TextWrapped("%s", reason.c_str());
+            }
+            ImGui::EndTable();
+        }
+        const auto last_finalize = commissioning_status.value(
+            "last_finalize", nlohmann::json::object());
+        if (!last_finalize.empty() &&
+            last_finalize.value("state", "not_requested") != "not_requested") {
+            ImGui::Text("Last finalize: %s",
+                last_finalize.value("state", "unknown").c_str());
+            if (!last_finalize.value("error", "").empty()) {
+                ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.30f, 1.0f),
+                    "%s", last_finalize.value("error", "").c_str());
+            }
+        }
+    }
+    const bool commissioning_ready =
+        commissioning_status.value("ready_to_finalize", false);
+    ImGui::BeginDisabled(!commissioning_ready);
+    ImGui::Checkbox(
+        "I accept this rig revision, canvas snapshot, homographies, scales, QC, and source sessions as commissioning authority",
+        &ui_state->accept_rig_canvas_commissioning_armed);
+    ImGui::BeginDisabled(!ui_state->accept_rig_canvas_commissioning_armed);
+    if (ImGui::Button("Finalize And Activate Immutable Canvas Commissioning")) {
+        const std::string canvas_path = !ui_state->citrus_canvas_config_path.empty()
+            ? ui_state->citrus_canvas_config_path
+            : ui_state->loaded_calibration_session_citrus_config_path;
+        std::string canvas_checksum;
+        std::string checksum_error;
+        if (canvas_path.empty()) {
+            ui_state->rig_canvas_commissioning_error =
+                "Load/import the Citrus canvas before finalizing commissioning.";
+        } else if (!orange::gui::spatial_layout::checksum::file_sha256(
+                       canvas_path, &canvas_checksum, &checksum_error)) {
+            ui_state->rig_canvas_commissioning_error = checksum_error;
+        } else {
+            const std::string operation_id =
+                next_commissioning_operation_id("finalize");
+            nlohmann::json session_dirs = nlohmann::json::array();
+            if (!ui_state->calibration_session_dir.empty()) {
+                session_dirs.push_back(ui_state->calibration_session_dir);
+            }
+            const auto result = finalize_citrus_rig_canvas_commissioning(
+                operation_id, canvas_path, canvas_checksum, session_dirs, true,
+                operation_id);
+            if (!result.ok) {
+                ui_state->rig_canvas_commissioning_error = result.reason;
+            } else {
+                ui_state->rig_canvas_commissioning_error.clear();
+                ui_state->rig_canvas_commissioning_message =
+                    "Finalize request accepted. Refresh status to see the "
+                    "committed release or an evidence-gate rejection.";
+            }
+        }
+        ui_state->accept_rig_canvas_commissioning_armed = false;
+    }
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+    if (!ui_state->rig_canvas_commissioning_message.empty()) {
+        ImGui::TextWrapped("%s",
+            ui_state->rig_canvas_commissioning_message.c_str());
+    }
+    if (!ui_state->rig_canvas_commissioning_error.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.30f, 1.0f), "%s",
+            ui_state->rig_canvas_commissioning_error.c_str());
+    }
+
+    ImGui::SeparatorText("Optional Daily Registration Runtime Mode");
+    ImGui::TextWrapped(
+        "Daily dish registration is optional. Base-only uses the immutable "
+        "commissioned canvas, homography, scale, and arena geometry. A missing "
+        "daily registration never blocks base-only operation; only an explicitly "
+        "selected invalid registration is blocking.");
+    if (ImGui::Button("Refresh Daily Registration Status")) {
+        const auto result = query_citrus_daily_registration_status(
+            "operator-daily-registration-refresh");
+        if (!result.ok) {
+            ui_state->daily_registration_error = result.reason;
+        } else {
+            ui_state->daily_registration_status = result.daily_registration;
+            ui_state->daily_registration_error.clear();
+            ui_state->daily_registration_message =
+                "Citrus daily-registration runtime status refreshed.";
+        }
+    }
+    const auto daily_runtime = ui_state->daily_registration_status.value(
+        "runtime", nlohmann::json::object());
+    if (!daily_runtime.empty()) {
+        ImGui::Text("Mode: %s", daily_runtime.value(
+            "mode", "base_only").c_str());
+        ImGui::SameLine();
+        ImGui::TextDisabled("status: %s", daily_runtime.value(
+            "daily_registration_status", "not_performed").c_str());
+        if (!daily_runtime.value("all_selected_runtime_safe", true)) {
+            ImGui::TextColored(
+                ImVec4(1.0f, 0.55f, 0.30f, 1.0f),
+                "The selected daily registration is invalid. Return to "
+                "base-only to use commissioned geometry.");
+        }
+    }
+    ImGui::Checkbox(
+        "I intend to use commissioned base geometry without daily registration",
+        &ui_state->base_only_runtime_mode_armed);
+    ImGui::BeginDisabled(!ui_state->base_only_runtime_mode_armed);
+    if (ImGui::Button("Select Base-Only Runtime Mode")) {
+        const std::string operation_id =
+            next_commissioning_operation_id("select-base-only");
+        const auto result = select_citrus_daily_registration_runtime_mode(
+            "base_only", "", "", true, operation_id);
+        if (!result.ok) {
+            ui_state->daily_registration_error = result.reason;
+        } else {
+            ui_state->daily_registration_status = result.daily_registration;
+            ui_state->daily_registration_error.clear();
+            ui_state->daily_registration_message =
+                "Base-only selected. Experiments will use immutable commissioned "
+                "geometry and do not require a daily registration.";
+        }
+        ui_state->base_only_runtime_mode_armed = false;
+    }
+    ImGui::EndDisabled();
+    if (!ui_state->daily_registration_message.empty()) {
+        ImGui::TextWrapped("%s", ui_state->daily_registration_message.c_str());
+    }
+    if (!ui_state->daily_registration_error.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.30f, 1.0f), "%s",
+            ui_state->daily_registration_error.c_str());
+    }
+
+    render_daily_registration_workflow_panel(
+        ui_state,
+        cameras_params,
+        cameras_select,
+        num_cameras,
+        spatial_snapshot_workers,
+        artifact_root_dir);
+
     ImGui::SeparatorText("Detection And Canonical Layout");
     ImGui::InputText("Layout ID", &ui_state->layout_artifact.layout_id);
     ImGui::InputText("Artifact ID", &ui_state->layout_artifact.artifact_id);
@@ -1294,6 +2355,7 @@ void render_spatial_layout_window(
             !spatial_save_busy,
         !ui_state->group_captures.empty() &&
             pending_group_snapshot_count(*ui_state) == 0 &&
+            !group_capture_workflow_active(*ui_state) &&
             !spatial_save_busy,
         !ui_state->calibration_session_dir.empty() &&
             (ui_state->citrus_template.available ||
@@ -1339,7 +2401,7 @@ void render_spatial_layout_window(
         } else {
             ImGui::TextDisabled("Drag green to move the selected zone. Drag gold/orange handles to resize it.");
         }
-        ImGui::TextDisabled("Blue outline/triangle: Citrus experimental area inverse-projected into camera pixels. Purple outline: separately configured Citrus calibration fit ring. Pink outline/cross: detected water-side inner-rim proposal. Green outline/diamond/line: corrected Citrus outline preserving the configured experimental radius with the proposed center. Orange outline: operator-adjusted physical inner-rim boundary. Yellow outline: outward centroid-gating region (legacy artifacts may instead use an inward margin). Green/cyan outlines: resolved zone overlays.");
+        ImGui::TextDisabled("Blue outline/triangle: commissioned/base Citrus experimental area inverse-projected into camera pixels. Purple outline: separately configured Citrus calibration fit ring. Pink outline/cross: transient water-side inner-rim proposal. Magenta 'Daily Hough / accepted rim': the top-rim fit used by daily registration; if the operator adjusted it, raw Hough remains magenta and the accepted rim is orange. Bright green 'Selected daily experimental area': the unchanged canonical area after the exact selected integer translation. Teal indicates the same geometry while still a candidate. Yellow is the outward centroid gate; green/cyan outlines are resolved zone overlays.");
     }
 
     ImGui::Separator();
@@ -1438,18 +2500,103 @@ void render_spatial_layout_window(
         ImGuiFileDialog::Instance()->Close();
     }
 
+    if (ImGuiFileDialog::Instance()->Display(
+            kLoadHomographyCandidateSetDialogId)) {
+        if (ImGuiFileDialog::Instance()->IsOk()) {
+            const std::filesystem::path selected =
+                ImGuiFileDialog::Instance()->GetFilePathName();
+            nlohmann::json manifest;
+            std::string error;
+            if (selected.filename() != "candidate_set.json" ||
+                !read_json_file(selected, &manifest, &error) ||
+                manifest.value("schema_id", "") !=
+                    "citrus.homography_candidate.status" ||
+                manifest.value("schema_version", 0) != 1 ||
+                manifest.value("state", "") != "ready_for_review" ||
+                manifest.value("candidate_set_id", "").empty() ||
+                manifest.value("canvas_checksum", "").rfind("sha256:", 0) != 0 ||
+                !manifest.value("candidates", nlohmann::json::array()).is_array() ||
+                manifest.value("candidates", nlohmann::json::array()).empty()) {
+                ui_state->homography_candidate_review_error = error.empty()
+                    ? "Selected JSON is not a complete ready-for-review Citrus candidate set."
+                    : error;
+            } else {
+                ui_state->homography_candidate_review_manifest_path =
+                    selected.string();
+                ui_state->homography_candidate_review_manifest =
+                    std::move(manifest);
+                ui_state->homography_candidate_review_status =
+                    nlohmann::json::object();
+                ui_state->homography_candidate_review_revalidated = false;
+                ui_state->accept_reviewed_homographies_armed = false;
+                ui_state->homography_candidate_review_error.clear();
+                ui_state->homography_candidate_review_message =
+                    "Candidate set loaded locally. Ask Citrus to revalidate it "
+                    "before reviewing and promoting.";
+            }
+        }
+        ImGuiFileDialog::Instance()->Close();
+    }
+
+    if (ImGuiFileDialog::Instance()->Display(
+            kLoadProjectedSurfaceScaleCandidateSetDialogId)) {
+        if (ImGuiFileDialog::Instance()->IsOk()) {
+            const std::filesystem::path selected =
+                ImGuiFileDialog::Instance()->GetFilePathName();
+            auto bundle = load_persisted_scale_review_bundle(selected);
+            if (!bundle.ok) {
+                ui_state->projected_surface_scale_review_error = bundle.error;
+            } else {
+                ui_state->projected_surface_scale_candidate_manifest_path =
+                    bundle.candidate_manifest_path.string();
+                ui_state->projected_surface_scale_candidate_manifest =
+                    std::move(bundle.candidate_manifest);
+                ui_state->projected_surface_scale_review_manifest_path =
+                    bundle.orange_manifest_path.string();
+                ui_state->projected_surface_scale_review_manifest =
+                    std::move(bundle.orange_manifest);
+                ui_state->projected_surface_scale_review_verification =
+                    ui_state->projected_surface_scale_review_manifest.value(
+                        "verification", nlohmann::json::object());
+                ui_state->projected_surface_scale_review_transaction_id =
+                    ui_state->projected_surface_scale_candidate_manifest.value(
+                        "transaction_id", "");
+                ui_state->projected_surface_scale_review_canvas_sha256 =
+                    ui_state->projected_surface_scale_candidate_manifest.value(
+                        "canvas_checksum", "");
+                ui_state->projected_surface_scale_review_status =
+                    nlohmann::json::object();
+                ui_state->projected_surface_scale_review_revalidated = false;
+                ui_state->accept_reviewed_projected_surface_scales_armed = false;
+                ui_state->projected_surface_scale_review_error.clear();
+                ui_state->projected_surface_scale_review_message =
+                    "Persisted Citrus candidates and their exact Orange QC "
+                    "bundle were loaded locally. Ask Citrus to revalidate "
+                    "before reviewing and promoting.";
+            }
+        }
+        ImGuiFileDialog::Instance()->Close();
+    }
+
     if (ImGuiFileDialog::Instance()->Display(kLoadCitrusArenaConfigDialogId)) {
         if (ImGuiFileDialog::Instance()->IsOk()) {
             std::string status;
             std::string error;
+            const std::string selected_config_path =
+                ImGuiFileDialog::Instance()->GetFilePathName();
             if (!import_citrus_canvas_templates(
                     ui_state,
                     selected_camera,
-                    ImGuiFileDialog::Instance()->GetFilePathName(),
+                    selected_config_path,
                     &status,
                     &error)) {
                 ui_state->citrus_import_error = error;
-                ui_state->citrus_import_status.clear();
+                if (ui_state->citrus_canvas_config_path == selected_config_path) {
+                    ui_state->citrus_import_status =
+                        "Selected Citrus canvas for recording metadata. Spatial preview import is unavailable for this canvas.";
+                } else {
+                    ui_state->citrus_import_status.clear();
+                }
             } else {
                 ui_state->citrus_import_status = status;
                 ui_state->citrus_import_error.clear();

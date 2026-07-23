@@ -285,6 +285,53 @@ measured scale and compare it to projection-surface scale, but it should not
 change chaser/stimulus runtime behavior until plane-specific runtime transforms
 are designed and accepted.
 
+## Workflow Profile, Fixture State, And Visible Support
+
+Four named workflow profiles keep stable layout geometry separate from the
+physical assembly present during a capture:
+
+- `unobstructed_canvas_commissioning`: holder removed, dish absent, dry
+  projection surface visible across the configured rectangular arena. The
+  normal fitting scene is Citrus `homography_grid` with a full-arena unmasked
+  rectangular grid. A homography image has
+  `homography_role = "commissioning_reference"`.
+- `holder_installed_projected_surface`: holder installed, dish absent, dry
+  projection surface visible only through the holder aperture. The normal
+  fitting scene is Citrus `homography_rings`. A homography image has
+  `homography_role = "operational_candidate"`.
+- `wet_tank_projected_surface`: holder and dish installed with the recording
+  water path present. It uses circular fitting/validation support without
+  claiming a physical fish-plane transform.
+- `installed_tank_registration`: daily dish/rim and projected-center evidence.
+  It changes neither the canonical arena rectangle nor the base homography.
+
+`fixture_state` records the physical assembly as `holder_removed`,
+`holder_installed_dish_absent`, or `holder_installed_dish_installed`.
+
+`visibility_domain` means the camera-visible support for the projected
+calibration pattern. It is either `unobstructed_arena_rectangle` or
+`imaging_shelf_aperture`. It is explicitly distinct from the Citrus
+experimental area and from Orange's physical dish-rim/centroid gate. The
+current holder aperture is recorded with `geometry_status = "unmeasured"`;
+the capture does not pretend the experimental-area circle is a measured holder
+aperture. A holder-installed `homography_rings` scene separately uses
+`pattern_domain = "circular_experimental_domain"`; that point set is a subset
+of what the camera can see through the holder aperture.
+
+The arena rectangle, holder aperture, and installed tank experimental area are
+therefore three separate facts. A circular projected point layout describes
+the visible fitting support; it still fits an ordinary planar homography.
+
+Holder-aperture geometry and reprojection overlays are derived observations,
+not additional source images. They are stored below the owning camera artifact
+as
+`derived/holder_fixture_observations/<run_id>/observation.json` with
+checksummed PNG evidence. A session-level
+`derived/holder_fixture/<run_id>/manifest.json` joins all camera observations.
+Creating this evidence must not rewrite `image_set.json`, `manifest.json`, or
+their fingerprints; candidate fitting continues to refer to the immutable
+captured image set.
+
 ## Capture Stage And Wet Matching
 
 `capture_stage` describes the operator workflow block. It is separate from
@@ -300,6 +347,11 @@ V1 stage values:
   `wet_or_dry = "dry"`, `parity_group_role = "dry_reference"`, and
   `reference_only = true`. It records the non-wetted full camera-space
   projection-surface reference for a given rig/canvas/camera configuration.
+- `projected_surface_holder_installed`: dry projected-surface capture with the
+  shelf/holder installed and the dish absent. It uses
+  `pattern_domain = "circular_experimental_domain"`, records the separate
+  `imaging_shelf_aperture` visibility domain, and does not claim either the
+  ring support or experimental-area boundary measures the holder aperture.
 - `projected_surface_wet_runtime_stack`: projection-surface capture after the
   imaging shelf and target dish assembly are installed, water is at recording
   fill level, the open water surface is present and settled, and the projected
@@ -319,6 +371,24 @@ V1 stage values:
   at the projection surface. This stage may carry projected-pattern/canvas
   metadata, but it must not be selected as a physical `C_z` map.
 - `dish_top_observation`: existing dish top-rim / valid-area observation set.
+- `daily_registration_rim`: grouped black-reference capture used to detect and
+  explicitly confirm today's water-side inner rim. The load-bearing result is
+  still the linked schema-v2 top-rim observation; the Hough proposal is not
+  accepted automatically. The default daily workflow records installed runtime
+  IR filters and retains the mapped experiment pulse/strobe path.
+- `daily_registration_base_center`: optional optical-diagnostic grouped capture
+  of Citrus's commissioned
+  experimental-area center and outline before applying today's translation.
+  It is measured against the accepted physical rim and does not mutate the
+  base homography or canonical area geometry. It is not required by the
+  rim-only daily-registration workflow.
+- `daily_registration_candidate_validation`: optional optical-diagnostic
+  grouped capture of the exact
+  transient Citrus candidate preview. Its pre/post daily-registration status
+  must identify the same transaction, candidate checksum, operation, and
+  content fingerprint. The default rim-only path instead writes a computed
+  `orange.calibration.daily_registration_geometry_review` plus overlay from the
+  accepted rim frame; that is not a second image-set capture.
 
 Current Orange physical-target defaults are dry height-parallax diagnostics.
 For those saves, use `purpose = "dry_physical_target_height_parallax_diagnostic"`,
@@ -542,7 +612,7 @@ The Spatial Layout UI can save generic `orange.calibration.image_set` artifacts
 piecewise from the currently captured full-resolution snapshot. This is an
 acquisition/provenance workflow, not a fitting workflow.
 
-The UI groups the daily workflow into tabs:
+The UI groups acquisition into tabs:
 
 - `Camera Physical Planes`: dry physical-target captures at the `C_0`,
   `C_base`, and `C_fish` nominal heights. The target must have known physical
@@ -554,18 +624,24 @@ The UI groups the daily workflow into tabs:
   `projected_pattern_used_as_coordinate_target = false`. These captures are for
   dry camera/lens height-parallax diagnostics and are not runtime correction
   ready.
-- `Projector Surface Validation`: dry projection-surface reference captures
-  before the dish assembly/imaging shelf is installed. This block supports full
-  camera-space arena definition, dry projection-surface homography, and
-  validation pattern captures. These saves use
+- `Unobstructed Canvas`: holder-removed dry projection-surface commissioning
+  evidence. This block supports the stable per-camera arena rectangle, a full
+  rectangular grid, and validation captures. Its arena-outline reference
+  includes a small Citrus arena-center fiducial that is explicitly not a
+  fitting correspondence or experimental-area boundary. These saves use
   `capture_stage = "projected_surface_dry_reference"` and
-  `reference_only = true`.
-- `Wet Projection Surface`: wet runtime-stack projection-surface captures
+  `workflow_profile_id = "unobstructed_canvas_commissioning"`.
+- `Holder Installed`: shelf/holder-installed, dish-absent projected-surface
+  evidence within the circular visibility aperture. These saves use
+  `capture_stage = "projected_surface_holder_installed"` and
+  `workflow_profile_id = "holder_installed_projected_surface"`.
+- `Wet Tank Installed`: wet runtime-stack projection-surface captures
   after the imaging shelf and dish assembly are installed at the target arena
   slot and water is at recording fill level. This block supports projection
   surface scale, homography with rings, experimental-area crosshair, and
   validation pattern captures. These saves use
   `capture_stage = "projected_surface_wet_runtime_stack"` and
+  `workflow_profile_id = "wet_tank_projected_surface"` and
   `parity_group_role = "wet_projected_surface"`. They are
   projection-surface projector/render validation captures, not physical
   tank-bottom or fish-height calibration maps.
@@ -787,12 +863,16 @@ This supports daily piecewise acquisition:
 1. Save the dry projection-surface block: full camera-space arena definition,
    scale image, homography image, and validation pattern. These captures are
    dry references and projector-surface validation artifacts.
-2. Install the target dish assembly/imaging shelf, fill to recording level, and
+2. Install the imaging shelf/holder without dishes and save the holder-installed
+   validation block. The observed aperture is fixture visibility geometry;
+   rings/grid and verification dots validate the accepted dry homography only.
+   They do not create a replacement homography candidate.
+3. Install the target dish assembly, fill to recording level, and
    let the open water surface settle.
-3. Save the wet projection-surface block: scale image, homography with rings,
+4. Save the wet projection-surface block: scale image, homography with rings,
    experimental-area crosshair, and validation pattern. These captures validate
    projector/render behavior at the wetted projection surface only.
-4. With projector off unless it is used only as non-coordinate illumination,
+5. With projector off unless it is used only as non-coordinate illumination,
    save dry physical-target height-parallax diagnostic captures at:
    `camera_physical_projected_surface`, `camera_physical_dish_base_inner_surface`,
    and `camera_physical_fish_height`. These three captures share one
@@ -801,7 +881,7 @@ This supports daily piecewise acquisition:
    reference-only dry source images for comparing height-dependent camera/lens
    behavior. They are not wet runtime recording-condition `C_0`, `C_base`, or
    `C_fish` maps.
-5. Save the existing dish top-observation set for top-rim / valid-area review.
+6. Save the existing dish top-observation set for top-rim / valid-area review.
 
 Citrus should import these image sets, preview/focus the relevant fit, and own
 any accepted homography, scale, or runtime experimental-area correction.
@@ -825,7 +905,7 @@ Consumers should prefer the per-arena aggregate link when they are importing a
 camera/arena calibration set, and use the session-level maps for discovery or
 repair workflows.
 
-## Group Capture Plan
+## Guided Group Capture
 
 Some calibration steps should be ergonomic across the whole rig even when they
 do not require strict synchronized exposure. For the current physical-target
@@ -834,23 +914,68 @@ C-plane, dry/wet projection-surface validation, and dish/valid-area workflow,
 selected/open cameras. It does not yet mean ChArUco/3D-calibration-grade frame
 alignment.
 
-Implemented V0 group capture behavior:
+Implemented guided V1 group capture behavior:
 
 - The operator prepares the calibration capture state, normally with
   `Prepare All Cameras`, so the selected light handling is applied first and
   each camera uses the intended capture timing.
-- The operator clicks a group snapshot action.
-- Orange sends one full-resolution snapshot request to each selected/open
+- The operator explicitly chooses the expected camera set. The saved group
+  distinguishes an intentional one-camera scope from an incomplete
+  multi-camera group.
+- Orange maps the workflow profile and capture purpose to a named Citrus
+  scene. `homography_grid` uses Citrus `homography_grid` for unobstructed
+  commissioning and `homography_rings` for holder-installed or wet-tank
+  profiles. `verification_dots` and `validation_pattern` use
+  `verification_dots`; `crosshair_alignment` uses
+  `experimental_area_center_and_outline`; `arena_projection` uses
+  `arena_outline`; and non-projected physical captures use `black_reference`.
+  The operator may override the recipe explicitly.
+- Orange requests one Citrus multi-arena scene transaction and does not request
+  a camera frame until Citrus reports the exact request/operation identity,
+  `state=presented`, a nonempty semantic content fingerprint, the resolved
+  arena/camera targets, and the common display fence.
+- Orange then sends one full-resolution snapshot request to each expected
   camera's `SpatialSnapshotWorker`.
 - Each worker captures its next usable full-resolution frame or temporal-mean
   frame, using the same requested purpose/target-plane metadata.
-- Orange records a shared `capture_group_id` and a V0 capture mode such as
+- Orange records a shared `capture_group_id` and a capture mode such as
   `operator_group_next_frame` or `operator_group_temporal_mean`.
 - Orange freezes the image-set metadata at group-capture request time:
   purpose, target plane, capture stage, physical-target or projected-pattern
   descriptors, operator notes, illumination/filter/projector/light state, and
   capture timing metadata for each camera.
 - The UI reports per-camera pending/completed/failed state.
+- After every camera request reaches a terminal result, Orange samples Citrus
+  once more. `scene_revision` and `content_fingerprint` must match the shared
+  pre-capture scene or the group is marked `invalid_scene`.
+- Orange requests restoration of the exact Citrus transaction and keeps the
+  grouped save action disabled until the prior scene has crossed its restore
+  presentation fence.
+- Every completed camera artifact persists identical
+  `citrus_calibration_scene_pre_capture`,
+  `citrus_calibration_scene_post_capture`,
+  `citrus_calibration_scene_consistency`,
+  `citrus_calibration_scene_restore_status`, and
+  `capture_group_membership` objects. Membership includes the intentional
+  expected set, completed set, failed cameras and errors, and one of
+  `complete`, `partial`, `failed`, or `invalid_scene`.
+- Arena-centering commissioning groups additionally persist
+  `citrus_arena_centering_pre_capture`,
+  `citrus_arena_centering_post_capture`, and
+  `citrus_arena_centering_consistency`. These prove that the same transaction,
+  absolute staged arena center, and embedded arena-outline scene bracketed the
+  grouped PTP capture. Their scene is intentionally not restored between probe
+  stages; the enclosing arena-centering transaction owns final commit/abort and
+  restoration.
+- Optional daily-registration optical-preview groups persist
+  `citrus_daily_registration_pre_capture`,
+  `citrus_daily_registration_post_capture`, and
+  `citrus_daily_registration_consistency`. A complete group requires
+  `same_candidate_preview`; the transaction ID, candidate SHA-256, preview
+  operation ID, and semantic content fingerprint must remain unchanged across
+  acquisition. The candidate preview is not restored by the generic capture
+  controller because the enclosing daily transaction owns accept, reject, or
+  abort and verifies restoration itself.
 - Completed grouped captures are shown as dynamic per-camera preview panels.
   Selecting a panel promotes that camera image into the detailed fit/editor
   preview.
@@ -861,19 +986,26 @@ Implemented V0 group capture behavior:
   saves are queued through the existing background image-set writer so the UI
   remains responsive.
 
-This V0 mode is intended for operator convenience and consistent metadata. It
+This guided mode is intended for operator convenience and consistent metadata. It
 is appropriate for arena projection, homography image collection, dry and wet
 projection-surface scale, camera-only physical-target C-plane capture,
 projection-surface crosshair alignment, validation-pattern capture, and daily
 top-rim review when exact same-frame timing is not required.
 
-Deferred strict synchronized capture:
+The projector-intensity commissioning runner adds a stricter accepted-result
+policy on top of grouped capture: cameras start at the calibration cadence with
+`sync_mode = ptp_gate`, each saved image persists its embedded
+`capture.camera_timestamp_ns` with `camera_timestamp_clock_domain = camera_ptp`,
+and the guided result is rejected when the within-group timestamp span exceeds
+100,000 ns. `capture.timestamp_sys_ns` is also retained for acquisition
+diagnostics but is not used as a substitute for the camera PTP timestamp.
 
-- Add an explicit capture mode such as `ptp_frame_aligned`.
+Remaining strict synchronized-capture follow-up:
+
+- Add an explicit general-purpose capture mode such as `ptp_frame_aligned`.
 - Arm all participating workers before accepting frames.
-- Require PTP-enabled cameras and persist embedded camera timestamps.
-- Validate timestamp/frame skew against a configured tolerance.
-- Reject, retry, or warn on cameras whose captures fall outside tolerance.
+- Generalize the commissioning PTP/timestamp gate to other workflows.
+- Add automatic retry for cameras whose captures fall outside tolerance.
 - Persist per-camera skew metrics and the synchronization policy in the
   image-set metadata.
 - Use this mode for future ChArUco-board or 3D calibration workflows where
@@ -981,6 +1113,9 @@ Recommended fields:
 - `timestamp_utc`
 - `frame_id`
 - `recording_frame_id`
+- `camera_timestamp_ns`
+- `camera_timestamp_clock_domain = "camera_ptp"`
+- `timestamp_sys_ns`
 - `capture_mode`
 - `exposure_us`
 - `frame_rate_hz`
@@ -1031,8 +1166,10 @@ capturing the calibration image.
 
 - `suppress_mapped_strobe` captures the current mapped GPO state and forces the
   mapped output inactive.
-- `keep_or_restore_mapped_pulse` restores the captured state when available, or
-  restores the mapping's normal output mode.
+- `keep_or_restore_mapped_pulse` always writes and verifies the mapping's
+  config-defined normal output mode and polarity. Captured GPO state is not a
+  valid source of truth for this action because an interrupted earlier run may
+  have captured a stale manual state.
 - `force_manual_active` captures the current state and forces the mapped output
   active.
 
@@ -1077,6 +1214,12 @@ Each item in `images[]` should include:
 - `checksum`
 - `coordinate_space`
 - `image_shape`
+
+`fnv1a64` checksums use the canonical lowercase form
+`fnv1a64:<16 hexadecimal digits>`, including leading zeroes. Readers may
+normalize older Orange artifacts that omitted leading zeroes only when both
+digests are valid FNV-1a values and their numeric 64-bit values are equal.
+Other checksum algorithms remain exact-string contracts.
 
 Recommended roles:
 

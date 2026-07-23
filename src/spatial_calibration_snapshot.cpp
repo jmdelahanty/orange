@@ -1,10 +1,10 @@
 #include "spatial_calibration_snapshot.h"
 
+#include "fnv1a64_fingerprint.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
-#include <iomanip>
-#include <sstream>
 
 namespace orange::spatial {
 namespace {
@@ -12,7 +12,6 @@ namespace {
 constexpr const char* kMeasurementFilename = "measurement.json";
 constexpr const char* kArenaLayoutRuntimeFilename = "arena_layout_runtime.json";
 constexpr const char* kDishMaskRuntimeFilename = "dish_mask_runtime.json";
-constexpr const char* kFingerprintAlgorithm = "fnv1a64";
 constexpr uint64_t kFnv1a64Offset = 14695981039346656037ULL;
 constexpr uint64_t kFnv1a64Prime = 1099511628211ULL;
 
@@ -66,9 +65,7 @@ std::string compute_json_fingerprint(const nlohmann::json& value)
     uint64_t hash = kFnv1a64Offset;
     fnv1a64_update(&hash, payload.data(), payload.size());
 
-    std::ostringstream oss;
-    oss << kFingerprintAlgorithm << ':' << std::hex << std::nouppercase << hash;
-    return oss.str();
+    return orange::calibration::format_fnv1a64_fingerprint(hash);
 }
 
 } // namespace
@@ -185,7 +182,17 @@ bool apply_camera_spatial_calibration_to_snapshot_json(
     if (!snapshot->contains("calibrations") || !(*snapshot)["calibrations"].is_object()) {
         (*snapshot)["calibrations"] = nlohmann::json::object();
     }
-    (*snapshot)["calibrations"][camera_serial] = camera_spatial_calibration_to_json(calibration);
+    // A recording camera can carry independently owned calibration products
+    // (for example, the exact selected daily top-rim observation).  Updating
+    // the legacy spatial dish-mask/arena-layout view must not replace those
+    // sibling products after the recording geometry contract has been
+    // written.
+    nlohmann::json& camera_calibrations =
+        (*snapshot)["calibrations"][camera_serial];
+    if (!camera_calibrations.is_object()) {
+        camera_calibrations = nlohmann::json::object();
+    }
+    camera_calibrations.update(camera_spatial_calibration_to_json(calibration));
     return true;
 }
 

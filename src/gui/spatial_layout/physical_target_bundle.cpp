@@ -29,6 +29,8 @@ constexpr const char* kCameraOnlyPhysicalTargetCalibrationPurpose =
     "camera_only_physical_target_calibration";
 constexpr const char* kDryPhysicalTargetHeightParallaxDiagnosticPurpose =
     "dry_physical_target_height_parallax_diagnostic";
+constexpr const char* kProjectedSurfaceScaleCalibrationPurpose =
+    "projected_surface_scale_calibration";
 
 constexpr std::array<uint32_t, 64> kSha256K = {
     0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
@@ -406,7 +408,7 @@ nlohmann::json default_coordinate_scale_policy()
             {"point_b", "XPLUS"},
             {"nominal_distance_mm", 25.0},
             {"measured_distance_mm", 25.0},
-            {"measurement_method", "ruler"},
+            {"measurement_method", "calipers"},
             {"measurement_uncertainty_mm", 0.5},
             {"apply_scale_correction", false}
         }}
@@ -422,13 +424,13 @@ nlohmann::json fabrication_with_default_observations(nlohmann::json fabrication)
         fabrication["measured_outer_diameter_mm"] = 77.0;
     }
     if (!fabrication.contains("measured_outer_diameter_method")) {
-        fabrication["measured_outer_diameter_method"] = "ruler";
+        fabrication["measured_outer_diameter_method"] = "calipers";
     }
     if (!fabrication.contains("measured_C_to_XPLUS_mm")) {
         fabrication["measured_C_to_XPLUS_mm"] = 25.0;
     }
     if (!fabrication.contains("measured_C_to_XPLUS_method")) {
-        fabrication["measured_C_to_XPLUS_method"] = "ruler";
+        fabrication["measured_C_to_XPLUS_method"] = "calipers";
     }
     if (!fabrication.contains("measured_C_to_XPLUS_uncertainty_mm")) {
         fabrication["measured_C_to_XPLUS_uncertainty_mm"] = 0.5;
@@ -479,6 +481,14 @@ std::filesystem::path default_physical_calibration_target_json_path()
     return legacy_typo;
 }
 
+bool compute_file_sha256(
+    const std::filesystem::path& path,
+    std::string* sha256_out,
+    std::string* error_out)
+{
+    return file_sha256(path, sha256_out, error_out);
+}
+
 bool materialize_physical_target_bundle_for_request(
     orange::calibration::CalibrationImageSetRequest* request,
     const std::filesystem::path& artifact_dir,
@@ -491,7 +501,8 @@ bool materialize_physical_target_bundle_for_request(
         return false;
     }
     if (request->purpose != kCameraOnlyPhysicalTargetCalibrationPurpose &&
-        request->purpose != kDryPhysicalTargetHeightParallaxDiagnosticPurpose) {
+        request->purpose != kDryPhysicalTargetHeightParallaxDiagnosticPurpose &&
+        request->purpose != kProjectedSurfaceScaleCalibrationPurpose) {
         return true;
     }
     if (artifact_dir.empty()) {
@@ -649,7 +660,7 @@ bool materialize_physical_target_bundle_for_request(
     physical_target["physical_target_instance_id"] = nullptr;
     physical_target["equivalent_instance_count"] = 4;
     physical_target["equivalence_basis"] =
-        "operator measured all four fabricated instances as indistinguishable within available ruler precision";
+        "operator measured all four fabricated instances with calipers as 77 mm outside diameter, 5 mm pitch, and 25 mm C-to-XPLUS span";
     physical_target["coordinate_frame"] =
         target_json.value("coordinate_frame", nlohmann::json::object());
     physical_target["geometry"] =
@@ -670,11 +681,24 @@ bool materialize_physical_target_bundle_for_request(
     physical_target["capture_condition_policy"] = {
         {"wet_or_dry", request->wet_or_dry},
         {"water_path_included", request->wet_or_dry == "wet"},
-        {"runtime_correction_ready", false},
+        {"runtime_correction_ready",
+         request->purpose == kProjectedSurfaceScaleCalibrationPurpose},
         {"current_use", request->purpose},
         {"analysis_readiness",
-         "raw_capture_and_provenance_only_until_fiducial_detection_is_reliable"}
+         request->purpose == kProjectedSurfaceScaleCalibrationPurpose
+             ? "orange_correspondence_fit_then_citrus_authoritative_refit"
+             : "raw_capture_and_provenance_only_until_fiducial_detection_is_reliable"}
     };
+    if (request->purpose == kProjectedSurfaceScaleCalibrationPurpose) {
+        physical_target["plane_contract"] = {
+            {"target_plane", "projected_surface"},
+            {"illuminated_hole_center_plane_z_mm", 0.0},
+            {"camera_facing_target_surface_z_mm", 3.0},
+            {"occluding_target_thickness_mm", 3.0},
+            {"coordinate_interpretation",
+             "transmitted-light hole centers locate the projected surface; the acrylic top face is not z=0"},
+        };
+    }
     if (request->purpose == kDryPhysicalTargetHeightParallaxDiagnosticPurpose) {
         physical_target["capture_condition_policy"]["diagnostic_only"] = true;
         physical_target["capture_condition_policy"]["not_runtime_recording_condition_map"] = true;

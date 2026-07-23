@@ -101,6 +101,7 @@ Top-level fields:
   "sync": { ... },
   "cameras": { ... },
   "camera_runtime": { ... },
+  "recording_geometry_contract": { ... },
   "calibrations": { ... },
   "gpu_inventory": { ... },
   "gpu_monitoring": { ... },
@@ -172,6 +173,38 @@ string). It carries resolved per-recording spatial calibration outputs such as
 resolved camera-pixel zone overlays. GUI recordings now emit this block when a
 per-camera saved spatial artifact directory is supplied with
 `ORANGE_SPATIAL_CALIBRATION_ARTIFACT_<serial>`.
+
+When a selected Citrus daily registration resolves at recording start, Orange
+also writes
+`calibrations[serial].dish_top_rim_observation` without requiring a separate
+spatial-artifact environment variable. That entry contains the accepted
+physical inner-rim circle and the distinct outward
+`valid_detection_region`/`accepted_mask` in `camera_native_pixels`, plus the
+exact source checksum and recording-local asset paths. It explicitly says
+whether Citrus reported the same registration as applied and does not claim
+that Orange's live detector used the gate.
+
+`recording_geometry_contract` is an always-attempted reference to the immutable
+`recording_geometry_contract.json` sidecar. The sidecar snapshots an optionally
+selected Citrus rig/canvas, its validated commissioning authority, per-camera
+homography and projected-surface scale, selected experimental area and tank
+design, plus any configured Orange spatial artifact. Its status is explicitly
+non-blocking. See `docs/recording_geometry_contract.md` for selection,
+inheritance, status, and plane rules.
+
+New geometry contracts include `materialized_assets`, a checksummed reference
+to `recording_geometry_assets/manifest.json`. That recording-local bundle
+preserves exact accepted-pointer, candidate, observation, tank, and Orange
+spatial-artifact bytes for the participating cameras. Large calibration images
+remain opt-in through `ORANGE_RECORDING_GEOMETRY_COPY_IMAGES=1`.
+
+For selected daily registration, the compact bundle always attempts to retain
+the runtime-selection receipt, accepted registration, candidate, schema-v2 rim
+observation, observation manifest/image set, and both machine-readable dish-mask
+exports. Optional image mode additionally retains the source frame and all rim
+review overlays. Citrus H5 receives the complete numerical entry through the
+exact `/recording_geometry_contract/contract_json` mirror, while its separate
+runtime geometry datasets describe what Citrus actually applied.
 
 Current emitted `sync` shape:
 

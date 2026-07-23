@@ -4,7 +4,9 @@
 #include <cstdlib>
 #include <stdio.h>
 #include <cstdio>
+#include <cstring>
 #include <stdexcept>
+#include <string>
 #include <GL/glew.h>
 #include <cuda_gl_interop.h>
 #include <GLFW/glfw3.h>
@@ -146,13 +148,131 @@ GLFWwindow *gx_glfw_init_render_target(u32 /*marjor_version*/, u32 /*minor_versi
     // local_glsl_version = "#version 330";
     strcpy(glsl_version, "#version 130");
 
+    // Calibration workflows can reserve a projector output for Citrus.  When
+    // an operator monitor is named, place Orange deterministically before the
+    // window becomes visible and reject any layout that could cover the
+    // reserved stimulus monitor.
+    const char* operator_monitor_name =
+        std::getenv("ORANGE_GUI_OPERATOR_MONITOR");
+    const char* reserved_monitor_name =
+        std::getenv("ORANGE_GUI_RESERVED_MONITOR");
+    const bool deterministic_placement =
+        operator_monitor_name != nullptr && *operator_monitor_name != '\0';
+    GLFWmonitor* operator_monitor = nullptr;
+    GLFWmonitor* reserved_monitor = nullptr;
+    int operator_x = 0;
+    int operator_y = 0;
+    if (deterministic_placement ||
+        (reserved_monitor_name != nullptr && *reserved_monitor_name != '\0')) {
+        int monitor_count = 0;
+        GLFWmonitor** monitors = glfwGetMonitors(&monitor_count);
+        for (int index = 0; index < monitor_count; ++index) {
+            const char* name = glfwGetMonitorName(monitors[index]);
+            if (deterministic_placement && name != nullptr &&
+                std::strcmp(name, operator_monitor_name) == 0) {
+                operator_monitor = monitors[index];
+            }
+            if (reserved_monitor_name != nullptr &&
+                *reserved_monitor_name != '\0' && name != nullptr &&
+                std::strcmp(name, reserved_monitor_name) == 0) {
+                reserved_monitor = monitors[index];
+            }
+        }
+        if (deterministic_placement && operator_monitor == nullptr) {
+            throw std::runtime_error(
+                std::string("ORANGE_GUI_OPERATOR_MONITOR was not found: ") +
+                operator_monitor_name);
+        }
+        if (reserved_monitor_name != nullptr &&
+            *reserved_monitor_name != '\0' && reserved_monitor == nullptr) {
+            throw std::runtime_error(
+                std::string("ORANGE_GUI_RESERVED_MONITOR was not found: ") +
+                reserved_monitor_name);
+        }
+        if (operator_monitor != nullptr &&
+            reserved_monitor != nullptr &&
+            operator_monitor == reserved_monitor) {
+            throw std::runtime_error(
+                "Orange operator and reserved stimulus monitors must differ");
+        }
+    }
+    if (operator_monitor != nullptr) {
+        const GLFWvidmode* operator_mode = glfwGetVideoMode(operator_monitor);
+        if (operator_mode == nullptr ||
+            width > static_cast<u32>(operator_mode->width) ||
+            height > static_cast<u32>(operator_mode->height)) {
+            throw std::runtime_error(
+                "Orange GUI dimensions exceed the selected operator monitor");
+        }
+        glfwGetMonitorPos(operator_monitor, &operator_x, &operator_y);
+        if (reserved_monitor != nullptr) {
+            const GLFWvidmode* reserved_mode = glfwGetVideoMode(reserved_monitor);
+            int reserved_x = 0;
+            int reserved_y = 0;
+            glfwGetMonitorPos(reserved_monitor, &reserved_x, &reserved_y);
+            if (reserved_mode == nullptr) {
+                throw std::runtime_error(
+                    "Could not read the reserved stimulus monitor mode");
+            }
+            const bool overlaps_reserved =
+                operator_x < reserved_x + reserved_mode->width &&
+                operator_x + static_cast<int>(width) > reserved_x &&
+                operator_y < reserved_y + reserved_mode->height &&
+                operator_y + static_cast<int>(height) > reserved_y;
+            if (overlaps_reserved) {
+                throw std::runtime_error(
+                    "Orange GUI bounds overlap the reserved Citrus stimulus monitor");
+            }
+        }
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+    }
+
     // Create window with graphics context
     GLFWwindow *window = glfwCreateWindow(width, height, title, NULL, NULL);
+    if (operator_monitor != nullptr) {
+        glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
+    }
     if (!window)
     {
         glfwTerminate();
         throw std::runtime_error("Could not initialize window!");
     };
+
+    if (operator_monitor != nullptr) {
+        glfwSetWindowPos(window, operator_x, operator_y);
+        glfwShowWindow(window);
+        glfwPollEvents();
+        int actual_x = 0;
+        int actual_y = 0;
+        int actual_width = 0;
+        int actual_height = 0;
+        glfwGetWindowPos(window, &actual_x, &actual_y);
+        glfwGetWindowSize(window, &actual_width, &actual_height);
+        if (reserved_monitor != nullptr) {
+            const GLFWvidmode* reserved_mode = glfwGetVideoMode(reserved_monitor);
+            int reserved_x = 0;
+            int reserved_y = 0;
+            glfwGetMonitorPos(reserved_monitor, &reserved_x, &reserved_y);
+            const bool overlaps_reserved = reserved_mode != nullptr &&
+                actual_x < reserved_x + reserved_mode->width &&
+                actual_x + actual_width > reserved_x &&
+                actual_y < reserved_y + reserved_mode->height &&
+                actual_y + actual_height > reserved_y;
+            if (overlaps_reserved) {
+                glfwDestroyWindow(window);
+                throw std::runtime_error(
+                    "Window manager placed Orange over the reserved Citrus stimulus monitor");
+            }
+        }
+        std::printf(
+            "[GUI][display] operator_monitor=\"%s\" window_pos=%d,%d window_size=%dx%d reserved_monitor=\"%s\"\n",
+            operator_monitor_name,
+            actual_x,
+            actual_y,
+            actual_width,
+            actual_height,
+            reserved_monitor_name != nullptr ? reserved_monitor_name : "");
+    }
 
     return window;
 }

@@ -54,6 +54,10 @@ is_positive_integer() {
   [[ "$1" =~ ^[1-9][0-9]*$ ]]
 }
 
+is_nonnegative_number() {
+  [[ "$1" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]]
+}
+
 validate_existing_path_under_allowed_roots() {
   local value="$1"
   shift
@@ -269,7 +273,127 @@ validate_env_item() {
         return 2
       }
       ;;
-    ORANGE_YOLO_PERF_LOG|ORANGE_CROP_COPY_TIMING|ORANGE_CROP_STAGE_SOURCE|ORANGE_ANALYTICS_EARLY_OWNED_FRAME|ORANGE_YOLO_DETACH_INPUT|ORANGE_YOLO_READY_EVENT_FASTPATH|ORANGE_RECORDING_DETECT_PRIORITY|ORANGE_GUI_SHOW_SPEED_GRAPHS|ORANGE_GUI_AUTORUN|ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE|ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW|ORANGE_GUI_AUTORUN_ENABLE_STREAM|ORANGE_GUI_AUTORUN_ENABLE_RECORD|ORANGE_GUI_AUTORUN_ENABLE_YOLO|ORANGE_GUI_AUTORUN_ENABLE_CROP|ORANGE_GUI_AUTORUN_START_RECORDING|ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU|ORANGE_GUI_EXTERNAL_RECORDER_CONTRACT|ORANGE_CROP_PREVIEW_DISABLE|ORANGE_LOCAL_CONTROL_DISABLE|ORANGE_GUI_LOCAL_CONTROL_DISABLE|ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_START|ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START|ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_STOP|ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP|ORANGE_LOCAL_CONTROL_ENABLE_CITRUS_STOP|ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP|ORANGE_LOCAL_CONTROL_EXIT_AFTER_FINALIZE|ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE)
+    ORANGE_GUI_GUIDED_CAPTURE_CITRUS_CONFIG_PATH)
+      value="$(validate_existing_path_under_allowed_roots "$value" \
+        "/home/jeremy/citrus" \
+        "/tmp")" || {
+        echo "Guided-capture Citrus config is outside allowed roots or missing: $value" >&2
+        return 2
+      }
+      ;;
+    ORANGE_GUI_GUIDED_CAPTURE_RESULT_JSON)
+      value="$(validate_path_under_allowed_roots "$value" \
+        "/tmp" \
+        "/home/jeremy/orange_data")" || {
+        echo "Guided-capture result path is outside allowed roots: $value" >&2
+        return 2
+      }
+      ;;
+    ORANGE_GUI_ARENA_CENTERING_CITRUS_CONFIG_PATH)
+      value="$(validate_existing_path_under_allowed_roots "$value" \
+        "/home/jeremy/citrus" \
+        "/tmp")" || {
+        echo "Arena-centering Citrus config is outside allowed roots or missing: $value" >&2
+        return 2
+      }
+      ;;
+    ORANGE_GUI_ARENA_CENTERING_RESULT_JSON)
+      value="$(validate_path_under_allowed_roots "$value" \
+        "/tmp" \
+        "/home/jeremy/orange_data")" || {
+        echo "Arena-centering result path is outside allowed roots: $value" >&2
+        return 2
+      }
+      ;;
+    ORANGE_GUI_GUIDED_CAPTURE_RECIPE)
+      [[ "$value" =~ ^(black_reference|uniform_gray|arena_outline|experimental_area_center_and_outline|homography_grid|homography_rings|verification_dots)$ ]] || {
+        echo "Invalid guided-capture recipe: $value" >&2
+        return 2
+      }
+      ;;
+    ORANGE_GUI_GUIDED_CAPTURE_RECIPE_SEQUENCE)
+      [[ -z "$value" || "$value" =~ ^(black_reference|uniform_gray|arena_outline|experimental_area_center_and_outline|homography_grid|homography_rings|verification_dots)(,(black_reference|uniform_gray|arena_outline|experimental_area_center_and_outline|homography_grid|homography_rings|verification_dots))*$ ]] || {
+        echo "Invalid guided-capture recipe sequence: $value" >&2
+        return 2
+      }
+      ;;
+    ORANGE_GUI_FIXTURE_APERTURE_SHAPE)
+      [[ "$value" =~ ^(circle|rectangle|rounded_rectangle|polygon|unknown)$ ]] || {
+        echo "Invalid fixture aperture shape: $value" >&2
+        return 2
+      }
+      ;;
+    ORANGE_GUI_GUIDED_CAPTURE_PROFILE)
+      [[ "$value" =~ ^(unobstructed_canvas_commissioning|holder_installed_projected_surface|wet_tank_projected_surface|installed_tank_registration)$ ]] || {
+        echo "Invalid guided-capture workflow profile: $value" >&2
+        return 2
+      }
+      ;;
+    ORANGE_GUI_GUIDED_CAPTURE_PURPOSE)
+      [[ "$value" =~ ^[A-Za-z0-9_.-]+$ ]] || {
+        echo "Invalid guided-capture purpose: $value" >&2
+        return 2
+      }
+      ;;
+    ORANGE_GUI_GUIDED_CAPTURE_CAMERAS)
+      [[ "$value" =~ ^[0-9]+(,[0-9]+)*$ ]] || {
+        echo "Invalid guided-capture camera list: $value" >&2
+        return 2
+      }
+      ;;
+    ORANGE_GUI_ARENA_CENTERING_CAMERAS)
+      [[ "$value" =~ ^[0-9]+(,[0-9]+)*$ ]] || {
+        echo "Invalid arena-centering camera list: $value" >&2
+        return 2
+      }
+      ;;
+    ORANGE_GUI_OPERATOR_MONITOR|ORANGE_GUI_RESERVED_MONITOR|ORANGE_CITRUS_EXPECTED_STIMULUS_MONITOR)
+      [[ "$value" =~ ^[A-Za-z0-9_.-]+$ ]] || {
+        echo "Invalid display output name for $key: $value" >&2
+        return 2
+      }
+      ;;
+    ORANGE_GUI_GUIDED_CAPTURE_FOREGROUND_GRAY_U8)
+      is_nonnegative_integer "$value" && (( value <= 255 )) || {
+        echo "$key must be an integer from 0 through 255" >&2
+        return 2
+      }
+      ;;
+    ORANGE_GUI_ARENA_CENTERING_FOREGROUND_GRAY_U8|ORANGE_GUI_HOMOGRAPHY_SATURATION_PIXEL_THRESHOLD_U8)
+      is_nonnegative_integer "$value" && (( value <= 255 )) || {
+        echo "$key must be an integer from 0 through 255" >&2
+        return 2
+      }
+      ;;
+    ORANGE_GUI_ARENA_CENTERING_PROJECTOR_INTENSITY_REPORT_PATH)
+      [[ "$value" =~ ^/home/jeremy/orange_data/calibrations/commissioning/projector_intensity_[A-Za-z0-9_.-]+/commissioning_report\.json$ ]] &&
+        [[ -f "$value" ]] || {
+        echo "$key must name an existing projector-intensity commissioning report" >&2
+        return 2
+      }
+      ;;
+    ORANGE_GUI_ARENA_CENTERING_PROJECTOR_INTENSITY_REPORT_SHA256)
+      [[ "$value" =~ ^[0-9a-f]{64}$ ]] || {
+        echo "$key must be a lowercase SHA-256 value" >&2
+        return 2
+      }
+      ;;
+    ORANGE_GUI_GUIDED_CAPTURE_SWEEP_FOREGROUND_GRAYS_U8)
+      [[ "$value" =~ ^[0-9]+(,[0-9]+)*$ ]] || {
+        echo "$key must be comma-separated integers from 0 through 255" >&2
+        return 2
+      }
+      local gray
+      local -a grays
+      IFS=',' read -r -a grays <<<"$value"
+      for gray in "${grays[@]}"; do
+        (( gray <= 255 )) || {
+          echo "$key values must be from 0 through 255" >&2
+          return 2
+        }
+      done
+      ;;
+    ORANGE_YOLO_PERF_LOG|ORANGE_CROP_COPY_TIMING|ORANGE_CROP_STAGE_SOURCE|ORANGE_ANALYTICS_EARLY_OWNED_FRAME|ORANGE_YOLO_DETACH_INPUT|ORANGE_YOLO_READY_EVENT_FASTPATH|ORANGE_RECORDING_DETECT_PRIORITY|ORANGE_GUI_SHOW_SPEED_GRAPHS|ORANGE_GUI_AUTORUN|ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE|ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW|ORANGE_GUI_AUTORUN_ENABLE_STREAM|ORANGE_GUI_AUTORUN_ENABLE_RECORD|ORANGE_GUI_AUTORUN_ENABLE_YOLO|ORANGE_GUI_AUTORUN_ENABLE_CROP|ORANGE_GUI_AUTORUN_START_RECORDING|ORANGE_GUI_GUIDED_CAPTURE_AUTORUN|ORANGE_GUI_GUIDED_CAPTURE_SAVE|ORANGE_GUI_GUIDED_CAPTURE_EXIT_AFTER_COMPLETION|ORANGE_GUI_GUIDED_CAPTURE_APPLY_CALIBRATION_PREFLIGHT|ORANGE_GUI_GUIDED_CAPTURE_INCLUDE_ARENA_OUTLINE_REFERENCE|ORANGE_GUI_GUIDED_CAPTURE_FIT_HOMOGRAPHIES|ORANGE_GUI_PROJECTED_SURFACE_SCALE_TARGETS_READY|ORANGE_GUI_ACCEPT_PROJECTED_SURFACE_SCALES_ARMED|ORANGE_GUI_ARENA_CENTERING_AUTORUN|ORANGE_GUI_ARENA_CENTERING_APPLY_CALIBRATION_PREFLIGHT|ORANGE_GUI_ARENA_CENTERING_SAVE_CAPTURES|ORANGE_GUI_ARENA_CENTERING_SAVE_VERIFIED_CENTERS_ARMED|ORANGE_GUI_ARENA_CENTERING_RESIZE_ARENAS|ORANGE_GUI_ARENA_CENTERING_SAVE_VERIFIED_LAYOUT_ARMED|ORANGE_GUI_ARENA_CENTERING_FIT_HOMOGRAPHIES|ORANGE_GUI_ARENA_CENTERING_ACCEPT_HOMOGRAPHIES_ARMED|ORANGE_GUI_ARENA_CENTERING_EXIT_AFTER_COMPLETION|ORANGE_GUI_ARENA_CENTERING_REQUIRE_STABILITY_CAPTURE|ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU|ORANGE_GUI_EXTERNAL_RECORDER_CONTRACT|ORANGE_CROP_PREVIEW_DISABLE|ORANGE_LOCAL_CONTROL_DISABLE|ORANGE_GUI_LOCAL_CONTROL_DISABLE|ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_START|ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START|ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_STOP|ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP|ORANGE_LOCAL_CONTROL_ENABLE_CITRUS_STOP|ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP|ORANGE_LOCAL_CONTROL_EXIT_AFTER_FINALIZE|ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE)
       is_bool "$value" || {
         echo "$key must be 0 or 1" >&2
         return 2
@@ -281,9 +405,15 @@ validate_env_item() {
         return 2
       }
       ;;
-    ORANGE_PTP_REGISTER_READ_DECIMATE|ORANGE_GUI_STREAM_DOWNSAMPLE|ORANGE_DISPLAY_PREVIEW_MAX_FPS|ORANGE_GUI_SWAP_INTERVAL|ORANGE_GUI_FRAME_MAX_FPS|ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS|ORANGE_GUI_AUTORUN_RECORD_SECONDS|ORANGE_GUI_RECORD_FOR_SECONDS|ORANGE_GUI_CLIP_SECONDS|ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH|ORANGE_CROP_PREVIEW_MAX_FPS|ORANGE_CROP_FRAME_POOL_SIZE|ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID|ORANGE_YOLO_RT_PRIORITY|ORANGE_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS|ORANGE_GUI_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS|ORANGE_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS|ORANGE_GUI_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS)
+    ORANGE_PTP_REGISTER_READ_DECIMATE|ORANGE_GUI_STREAM_DOWNSAMPLE|ORANGE_DISPLAY_PREVIEW_MAX_FPS|ORANGE_GUI_SWAP_INTERVAL|ORANGE_GUI_FRAME_MAX_FPS|ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS|ORANGE_GUI_AUTORUN_RECORD_SECONDS|ORANGE_GUI_GUIDED_CAPTURE_FRAME_COUNT|ORANGE_GUI_GUIDED_CAPTURE_FRAME_RATE_HZ|ORANGE_GUI_GUIDED_CAPTURE_EXPOSURE_US|ORANGE_GUI_GUIDED_CAPTURE_SWEEP_REPEATS|ORANGE_GUI_GUIDED_CAPTURE_STARTUP_TIMEOUT_SECONDS|ORANGE_GUI_GUIDED_CAPTURE_WORKFLOW_TIMEOUT_SECONDS|ORANGE_GUI_ARENA_CENTERING_FRAME_COUNT|ORANGE_GUI_ARENA_CENTERING_FRAME_RATE_HZ|ORANGE_GUI_ARENA_CENTERING_EXPOSURE_US|ORANGE_GUI_ARENA_CENTERING_MAX_PTP_SPAN_NS|ORANGE_GUI_ARENA_CENTERING_PROJECTION_SETTLE_MS|ORANGE_GUI_ARENA_CENTERING_STABILITY_INTERVAL_MS|ORANGE_GUI_ARENA_CENTERING_STABILITY_MAX_CAPTURE_ATTEMPTS|ORANGE_GUI_GROUP_CAPTURE_POST_PRESENTATION_SETTLE_MS|ORANGE_GUI_RECORD_FOR_SECONDS|ORANGE_GUI_CLIP_SECONDS|ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH|ORANGE_CROP_PREVIEW_MAX_FPS|ORANGE_CROP_FRAME_POOL_SIZE|ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID|ORANGE_YOLO_RT_PRIORITY|ORANGE_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS|ORANGE_GUI_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS|ORANGE_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS|ORANGE_GUI_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS)
       is_nonnegative_integer "$value" || {
         echo "$key must be a non-negative integer" >&2
+        return 2
+      }
+      ;;
+    ORANGE_GUI_ARENA_CENTERING_PROBE_CANVAS_PX|ORANGE_GUI_ARENA_CENTERING_VERIFICATION_TOLERANCE_CAMERA_PX|ORANGE_GUI_ARENA_CENTERING_MAX_REFINEMENT_CANVAS_PX|ORANGE_GUI_ARENA_CENTERING_RECTANGLE_SAFETY_MARGIN_CAMERA_PX|ORANGE_GUI_ARENA_CENTERING_RECTANGLE_CENTER_TOLERANCE_CAMERA_PX|ORANGE_GUI_ARENA_CENTERING_RECTANGLE_PREDICTION_TOLERANCE_CAMERA_PX|ORANGE_GUI_ARENA_CENTERING_RECTANGLE_MAXIMALITY_SLACK_CAMERA_PX|ORANGE_GUI_ARENA_CENTERING_MAX_ARENA_SCALE_CHANGE_FRACTION|ORANGE_GUI_ARENA_CENTERING_STABILITY_MAX_CENTER_DELTA_CAMERA_PX|ORANGE_GUI_ARENA_CENTERING_STABILITY_MAX_CORNER_DELTA_CAMERA_PX|ORANGE_GUI_HOMOGRAPHY_MAXIMUM_RMS_ERROR_CANVAS_PX|ORANGE_GUI_HOMOGRAPHY_MAXIMUM_POINT_ERROR_CANVAS_PX|ORANGE_GUI_HOMOGRAPHY_MINIMUM_INLIER_RATIO|ORANGE_GUI_HOMOGRAPHY_MAXIMUM_HOLDOUT_RMS_ERROR_CANVAS_PX|ORANGE_GUI_HOMOGRAPHY_MAXIMUM_HOLDOUT_ERROR_CANVAS_PX|ORANGE_GUI_HOMOGRAPHY_MAXIMUM_DOT_CORE_SATURATION_FRACTION|ORANGE_GUI_HOMOGRAPHY_MINIMUM_DOT_BACKGROUND_CONTRAST_U8)
+      is_nonnegative_number "$value" || {
+        echo "$key must be a non-negative number" >&2
         return 2
       }
       ;;
@@ -402,4 +532,60 @@ fi
 
 ensure_ptp_stack_for_gui
 
-exec "$ORANGE_BIN"
+set +e
+"$ORANGE_BIN"
+orange_status=$?
+set -e
+
+# Calibration outputs are the only non-recording products written by this
+# wrapper. Repair ownership narrowly, using only a validated result path and
+# calibration-session paths emitted by Orange itself. This mirrors the
+# recording wrapper's SUDO_UID/SUDO_GID handoff without accepting an arbitrary
+# tree.
+calibration_result_json="${ORANGE_GUI_ARENA_CENTERING_RESULT_JSON:-${ORANGE_GUI_GUIDED_CAPTURE_RESULT_JSON:-}}"
+if [[ -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" &&
+      -n "${calibration_result_json}" ]]; then
+  result_path="$(realpath -e "${calibration_result_json}" 2>/dev/null || true)"
+  case "$result_path" in
+    /tmp/*|/home/jeremy/orange_data/*)
+      chown -- "${SUDO_UID}:${SUDO_GID}" "$result_path"
+      ;;
+  esac
+  if [[ -n "$result_path" ]]; then
+    mapfile -t calibration_session_dirs < <(python3 - "$result_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+try:
+    payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    raise SystemExit(0)
+
+paths = set()
+pending = [payload]
+while pending:
+    node = pending.pop()
+    if isinstance(node, dict):
+        session_dir = node.get("session_dir")
+        if session_dir:
+            paths.add(str(session_dir))
+        pending.extend(node.values())
+    elif isinstance(node, list):
+        pending.extend(node)
+for path in sorted(paths):
+    print(path)
+PY
+)
+    for session_dir in "${calibration_session_dirs[@]}"; do
+      resolved_session="$(realpath -e "$session_dir" 2>/dev/null || true)"
+      case "$resolved_session" in
+        /home/jeremy/orange_data/calibrations/sessions/*)
+          chown -R -- "${SUDO_UID}:${SUDO_GID}" "$resolved_session"
+          ;;
+      esac
+    done
+  fi
+fi
+
+exit "$orange_status"
