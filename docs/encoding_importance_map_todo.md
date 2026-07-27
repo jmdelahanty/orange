@@ -1,7 +1,9 @@
 # Recording Importance Map TODO
 
 Date: 2026-03-18
-Status: target design with partial runtime prototype
+Updated: 2026-07-24
+Status: static daily-dish prior implemented for the external recorder; dynamic
+YOLO ROI remains planned
 
 Scope: plan a full-frame recording quality-prioritization system that can steer
 NVENC bit allocation toward the fish without requiring TensorRT.
@@ -13,9 +15,27 @@ Current runtime status:
   defaults to `512`
 - this v1 path is for plumbing validation only and is not yet dish-geometry
   driven
+- the production external full-frame recorder now supports an opt-in
+  `static_dish_prior` delta-QP policy
+- the GUI option is disabled by default and resolves the exact selected daily
+  registration's accepted camera-pixel circle at recording arm
+- Orange binds the recording-local rim artifact path, checksum, and fingerprint
+  into each recorder stream before the recorder process starts
+- the external recorder builds one immutable codec-native map per shard and
+  attaches it to every NVENC submission path
+- the external recorder accepts `vbr_cq` and uses the shared Orange video
+  profile to configure NVENC VBR `targetQuality`, the requested average
+  bitrate, maximum bitrate ceiling, and VBV while keeping AQ, temporal AQ, and
+  lookahead disabled
+- recorder summaries preserve the requested mode, resolved strategy,
+  target-quality activation, bitrate/VBV limits, and QP-map provenance
 - motion ROI, arena priors, and detector-informed maps remain planned work
 
 Note:
+- For the review of Palette's July 24 noise-floor, fish-edge, range, and encoder
+  characterization claims, including arithmetic corrections and the required
+  paired validation, see
+  `docs/palette_rig_characterization_review_2026_07_24.md`.
 - For the newer draft on canonical `layout_id` / `zone_id`, per-recording
   registration, and resolved camera-pixel overlays for Citrus, see
   `docs/spatial_layout_contract.md`.
@@ -660,15 +680,21 @@ Current code-path finding:
   preprocess and encoder HW do not currently wait for YOLO completion.
 - `ENCODER_WORKER_ENTRY` carries prepared-frame identity and timing, but no
   detection or ROI payload.
-- Therefore a same-frame YOLO ROI would require blocking or extra
-  synchronization in the recording path.
+- Production full-frame encoding now runs in a separate recorder process.
+- Therefore dynamic YOLO guidance needs a compact asynchronous ROI update on
+  the existing bidirectional Orange/recorder control connection; it must not
+  rely on sharing an in-process worker object.
+- A strict same-frame YOLO ROI would still require blocking or intentional
+  buffering and is not the intended first implementation.
 
 Design rule for the first dynamic implementation:
 
 - Do not block encode on same-frame YOLO.
-- Let `YoloWorker` publish a per-camera latest-good ROI state.
-- Let `EncoderHwWorker` read that state at encode time and build a per-frame
-  delta-QP map from the latest valid ROI.
+- Let `YoloWorker` publish a per-camera latest-good ROI state with source frame
+  identity and completion time.
+- Forward that state to the external recorder as a non-blocking control update.
+- Let each external encoder shard select the newest ROI whose source frame is
+  not newer than the frame being encoded and compose a per-frame delta-QP map.
 - If the latest ROI is stale or missing, fall back to a configured safe source:
   static ROI, static dish/arena prior, or neutral map.
 
@@ -712,6 +738,51 @@ Suggested v1 policy defaults:
 - `smoothing_alpha = 0.25`
 - fallback source: `static_roi` when configured, otherwise neutral
 
+For the daily-dish production path, the fallback should instead be the exact
+armed `static_dish_prior`. The dynamic map composes regions by taking the most
+protective applicable delta:
+
+- expanded YOLO box core: strong protection
+- YOLO box halo: mild protection
+- accepted daily dish: static protection
+- outside dish: positive QP penalty
+
+At 100 fps, non-blocking publication will commonly make the most recent useful
+box one frame old. A generous box margin, bounded hold time, and optional
+tracker prediction are preferable to delaying video submission for same-frame
+YOLO.
+
+Dynamic maps cannot safely overwrite one shared byte array while NVENC may
+still reference it. Use a bounded map-slot ring tied to encoder in-flight
+submissions, or otherwise retain each submitted map until that submission is
+retired. Static dish maps avoid this issue because their storage is immutable
+for the full encoder lifetime.
+
+Safety rules from the July 2026 consumer review:
+
+- A missing, stale, or late detection must never remove the static dish prior.
+  Dynamic YOLO boxes are an additional quality boost, not the only protection.
+- The dynamic policy must never block frame submission. If no eligible ROI
+  update is immediately available, encode with the immutable dish map and log
+  the fallback.
+- The full-frame master must remain complete even when YOLO or crop production
+  fails. Dynamic guidance cannot become a recording availability dependency.
+- Persist the source detection frame id, encoded frame id, ROI rectangle,
+  margins, deltas, and fresh/held/fallback state for every map change (or every
+  encoded frame in a compact sidecar). Spatially varying quantization is part
+  of recording provenance.
+- Score quality on escape/fast-motion epochs explicitly. Average-frame metrics
+  can hide the exact events where a lagged ROI is least reliable.
+- Run a bitrate/CQ ladder against the same pre-encoder reference before
+  promoting dynamic guidance. If uniform settings preserve downstream fish
+  metrics at a useful bitrate, dynamic coupling may not be justified.
+
+The generated chaser position can be another zero-latency importance source
+because Citrus knows it before rendering. It can preserve the stimulus and may
+provide an anticipatory region during chase behavior, but it does not replace
+the fish ROI: retreat, freezing, spontaneous motion, and detection failures can
+put the animal elsewhere.
+
 Metadata that should be emitted in `recording_snapshot.json`:
 
 - requested mode and active mode
@@ -736,19 +807,19 @@ Implementation checklist:
 
 - [ ] Keep `yolo_roi` behind the high-resolution crop/pose reactivation work
       unless codec-quality evaluation becomes the immediate priority again.
-- [ ] Extract static centered-square QP-map generation into a reusable
+- [x] Extract codec-native QP-map generation into a reusable
       `ImportanceMapBuilder` helper.
 - [ ] Add unit tests for ROI-to-CTB-grid conversion, clamping, margin expansion,
       and source-to-output scaling.
-- [ ] Add a per-camera `LatestYoloRoiState` shared between `YoloWorker` and
-      encoder workers.
+- [ ] Add a per-camera `LatestYoloRoiState` published by `YoloWorker` and sent
+      to the external recorder over the control protocol.
 - [ ] Update `YoloWorker` to publish best detection ROI with frame ids,
       confidence, and timestamps.
 - [ ] Extend `ImportanceMapConfig` with `yolo_roi` mode and v1 policy fields.
 - [ ] Update headless CLI/spec parsing, run config, runs JSON/CSV, and analyzer
       fields for the new mode.
-- [ ] Update `EncoderHwWorker` to build a per-frame QP map from the latest ROI
-      when `importance_map_mode=yolo_roi`.
+- [ ] Update the external recorder shards to compose a per-frame QP map from
+      the latest ROI when `importance_map_mode=yolo_roi`.
 - [ ] Preserve the existing `static_roi` path as the baseline/off-vs-on proof.
 - [ ] Emit snapshot diagnostics explaining whether dynamic maps used fresh,
       held, or fallback ROI data.
@@ -806,10 +877,12 @@ Implementation checklist:
 
 ## Phase 5: Importance Signals Without TRT
 
-- [ ] Implement a dish-prior-only prototype before motion or TRT-driven signals.
-- [ ] Cache one static dish-prior map per camera / recording session and reuse
+- [x] Implement a dish-prior-only external-recorder prototype before motion or
+      TRT-driven signals.
+- [x] Cache one static dish-prior map per camera / recording session and reuse
   it for every frame.
-- [ ] Build `static_dish_prior` from the dish mask.
+- [x] Build `static_dish_prior` from the selected daily-registration accepted
+      mask.
 - [ ] Build `static_arena_prior` from zero or more arena geometries.
 - [ ] Add low-resolution motion/background-subtraction ROI constrained by the
   dish mask and, when present, by the arena layout.
@@ -827,14 +900,22 @@ Implementation checklist:
 
 ## Phase 7: NVENC Integration
 
-- [ ] Start NVENC map integration with static dish-prior input only.
-- [ ] Convert importance sources into a codec-ready map primitive.
-- [ ] Prefer HEVC delta-QP map path for full-frame recording.
+- [x] Start NVENC map integration with static dish-prior input only.
+- [x] Convert the daily circle into a codec-ready map primitive.
+- [x] Use the HEVC delta-QP map path for external full-frame recording.
 - [ ] Start with mild default deltas and validate visually plus downstream-task
   quality.
-- [ ] Keep the feature opt-in.
+- [x] Keep the feature opt-in and disabled by default.
 - [ ] Benchmark future map-guided encoding against generic `AQ/TemporalAQ`, not
   just against neutral encoding.
+- [x] Support the same `vbr_cq` quality-target strategy in the external recorder
+      and the in-process encoder.
+- [ ] Run an identical-source VBR/VBR-CQ/CQP quality and file-size ladder before
+      promoting map-guided encoding.
+- [ ] Screen P3 against P1 with matched VBR 150 Mbps and VBR-CQ 20 rows at
+      4512x4512 @ 100 fps. Treat P3 as a candidate only if it preserves zero
+      drops and bounded recorder queues while improving fixed-bitrate quality
+      and/or reducing bitrate at the fixed CQ target.
 - [ ] Measure real throughput impact; do not assume map guidance reduces motion
   estimation work.
 

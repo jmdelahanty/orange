@@ -172,6 +172,53 @@ void test_full_profile_overrides()
     require(encode_config.rcParams.enableTemporalAQ == 0, "temporal AQ override off");
 }
 
+void test_vbr_cq_profile_with_external_style_overrides()
+{
+    const CameraParams camera = make_camera();
+    ResolvedRecordingConfig config = make_full_config();
+    config.encode.rate_control_mode = "vbr_cq";
+    config.encode.quality_value = 22;
+    config.encoder_control_overrides.target_bitrate_bps = 150000000;
+    config.encoder_control_overrides.max_bitrate_bps = 250000000;
+    config.encoder_control_overrides.vbv_buffer_size = 250000000;
+    config.encoder_control_overrides.aq = 0;
+    config.encoder_control_overrides.temporal_aq = 0;
+    config.encoder_control_overrides.lookahead = 0;
+
+    const VideoEncodeProfile profile =
+        build_full_frame_video_encode_profile(camera, 6, config);
+    const NV_ENC_CONFIG encode_config = apply_to_config(profile);
+
+    require(profile.rate_control_mode == "vbr_cq",
+            "VBR-CQ profile mode retained");
+    require(encode_config.rcParams.rateControlMode == NV_ENC_PARAMS_RC_VBR,
+            "VBR-CQ uses NVENC VBR mode");
+    require(encode_config.rcParams.targetQuality == 22,
+            "VBR-CQ target quality applied");
+    require(encode_config.rcParams.targetQualityLSB == 0,
+            "VBR-CQ fractional target quality defaults to zero");
+    require(encode_config.rcParams.averageBitRate == 150000000U,
+            "VBR-CQ average bitrate applied");
+    require(encode_config.rcParams.maxBitRate == 250000000U,
+            "VBR-CQ bitrate ceiling applied");
+    require(encode_config.rcParams.vbvBufferSize == 250000000U,
+            "VBR-CQ VBV ceiling applied");
+    require(encode_config.rcParams.enableAQ == 0,
+            "external-style VBR-CQ keeps AQ disabled");
+    require(encode_config.rcParams.enableTemporalAQ == 0,
+            "external-style VBR-CQ keeps temporal AQ disabled");
+    require(encode_config.rcParams.enableLookahead == 0,
+            "external-style VBR-CQ keeps lookahead disabled");
+
+    const nlohmann::json metadata = build_video_encoder_metadata_json(profile);
+    require(metadata.at("rate_control_strategy") == "vbr_cq",
+            "VBR-CQ metadata records the resolved strategy");
+    require(metadata.at("quality_value") == 22,
+            "VBR-CQ metadata records target quality");
+    require(metadata.at("max_bps") == 250000000,
+            "VBR-CQ metadata records bitrate ceiling");
+}
+
 void test_lossless_full_profile()
 {
     const CameraParams camera = make_camera();
@@ -272,6 +319,7 @@ int main()
 {
     test_full_profile_defaults();
     test_full_profile_overrides();
+    test_vbr_cq_profile_with_external_style_overrides();
     test_lossless_full_profile();
     test_crop_profile();
     test_normalization();

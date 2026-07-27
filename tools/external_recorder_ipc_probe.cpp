@@ -1,6 +1,7 @@
 #include "NvEncoder/NvEncoderCuda.h"
 #include "FFmpegWriter.h"
 #include "external_recorder_ipc_protocol.h"
+#include "encoder_qp_map.h"
 #include "fsuid_guard.h"
 #include "video_encode_profile.h"
 
@@ -12,6 +13,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <csignal>
 #include <condition_variable>
 #include <cstdint>
@@ -88,6 +90,7 @@ struct Options {
     std::vector<int> shard_gpu_ids;
     std::string routing_policy = "single_shard";
     bool preserve_shard_mp4s = false;
+    orange::encoding::QpMapPolicy importance_map;
 };
 
 struct FrameDescriptor {
@@ -187,8 +190,8 @@ void signal_handler(int)
         << "  --codec <hevc|h264>   Default hevc.\n"
         << "  --preset <p1|p3|p5|p7> Default p1.\n"
         << "  --tuning <ll|ull|hq|lossless> Default ll.\n"
-        << "  --rate-control <vbr|cqp> Default vbr. Ignored for lossless tuning.\n"
-        << "  --quality <int>      CQP QP value for --rate-control cqp. Default 20.\n"
+        << "  --rate-control <vbr|vbr_cq|cqp> Default vbr. Ignored for lossless tuning.\n"
+        << "  --quality <0..51>     VBR-CQ target quality or CQP quantizer. Default 20.\n"
         << "  --gop <int>           GOP length. Default 25.\n"
         << "  --bitrate-bps <int>   Average bitrate. Default 150000000.\n"
         << "  --max-bitrate-bps <int> Max bitrate. Default 150000000.\n"
@@ -214,6 +217,14 @@ void signal_handler(int)
         << "  --shard-gpu-ids <csv> Diagnostic multi-shard GPU ids, e.g. 5,6.\n"
         << "  --routing-policy <name> Routing policy label. Default single_shard.\n"
         << "  --preserve-shard-mp4s Keep diagnostic per-shard MP4 files after merged output finalizes.\n"
+        << "  --importance-map-mode <off|static_dish_prior> Default off.\n"
+        << "  --importance-map-center-x-px <float> Protected circle center X in source camera pixels.\n"
+        << "  --importance-map-center-y-px <float> Protected circle center Y in source camera pixels.\n"
+        << "  --importance-map-radius-px <float> Protected circle radius in source camera pixels.\n"
+        << "  --importance-map-halo-px <float> Neutral halo outside the protected circle. Default 64.\n"
+        << "  --importance-map-inside-delta-qp <int> Inside-circle QP delta. Default -2.\n"
+        << "  --importance-map-halo-delta-qp <int> Halo QP delta. Default 0.\n"
+        << "  --importance-map-outside-delta-qp <int> Outside QP delta. Default 2.\n"
         << "  --monochrome          Enable NVENC monochrome encoding. Default.\n"
         << "  --no-monochrome       Disable monochrome encoding.\n"
         << "  --help\n";
@@ -239,6 +250,28 @@ int parse_i32(const std::string& value, const char* name)
         throw std::runtime_error(std::string("Invalid ") + name + ": " + value);
     }
     return static_cast<int>(parsed);
+}
+
+int parse_signed_i32(const std::string& value, const char* name)
+{
+    char* end = nullptr;
+    const long parsed = std::strtol(value.c_str(), &end, 10);
+    if (end == value.c_str() || *end != '\0' ||
+        parsed < std::numeric_limits<int>::min() ||
+        parsed > std::numeric_limits<int>::max()) {
+        throw std::runtime_error(std::string("Invalid ") + name + ": " + value);
+    }
+    return static_cast<int>(parsed);
+}
+
+double parse_finite_double(const std::string& value, const char* name)
+{
+    char* end = nullptr;
+    const double parsed = std::strtod(value.c_str(), &end);
+    if (end == value.c_str() || *end != '\0' || !std::isfinite(parsed)) {
+        throw std::runtime_error(std::string("Invalid ") + name + ": " + value);
+    }
+    return parsed;
 }
 
 std::vector<int> parse_i32_list(const std::string& value, const char* name)
@@ -434,6 +467,36 @@ Options parse_options(int argc, char** argv)
             options.preserve_shard_mp4s = true;
         } else if (arg == "--no-preserve-shard-mp4s") {
             options.preserve_shard_mp4s = false;
+        } else if (arg == "--importance-map-mode") {
+            options.importance_map.mode = orange::encoding::normalize_qp_map_mode(
+                consume(arg.c_str()));
+        } else if (arg == "--importance-map-center-x-px") {
+            options.importance_map.circle.center_x_px =
+                parse_finite_double(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--importance-map-center-y-px") {
+            options.importance_map.circle.center_y_px =
+                parse_finite_double(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--importance-map-radius-px") {
+            options.importance_map.circle.radius_px =
+                parse_finite_double(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--importance-map-halo-px") {
+            options.importance_map.halo_px =
+                parse_finite_double(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--importance-map-inside-delta-qp") {
+            options.importance_map.inside_delta_qp =
+                parse_signed_i32(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--importance-map-halo-delta-qp") {
+            options.importance_map.halo_delta_qp =
+                parse_signed_i32(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--importance-map-outside-delta-qp") {
+            options.importance_map.outside_delta_qp =
+                parse_signed_i32(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--importance-map-source-artifact-path") {
+            options.importance_map.source_artifact_path = consume(arg.c_str());
+        } else if (arg == "--importance-map-source-artifact-sha256") {
+            options.importance_map.source_artifact_sha256 = consume(arg.c_str());
+        } else if (arg == "--importance-map-source-artifact-fingerprint") {
+            options.importance_map.source_artifact_fingerprint = consume(arg.c_str());
         } else if (arg == "--monochrome") {
             options.monochrome = true;
         } else if (arg == "--no-monochrome") {
@@ -458,8 +521,10 @@ Options parse_options(int argc, char** argv)
     if (options.codec != "hevc" && options.codec != "h264") {
         throw std::runtime_error("--codec must be hevc or h264");
     }
-    if (options.rate_control_mode != "vbr" && options.rate_control_mode != "cqp") {
-        throw std::runtime_error("--rate-control must be vbr or cqp");
+    if (options.rate_control_mode != "vbr" &&
+        options.rate_control_mode != "vbr_cq" &&
+        options.rate_control_mode != "cqp") {
+        throw std::runtime_error("--rate-control must be vbr, vbr_cq, or cqp");
     }
     if (options.quality_value > 51) {
         throw std::runtime_error("--quality must be <= 51");
@@ -478,6 +543,16 @@ Options parse_options(int argc, char** argv)
     }
     if (!options.shard_gpu_ids.empty() && options.routing_policy == "single_shard") {
         options.routing_policy = "gop_modulo";
+    }
+    std::string importance_map_error;
+    if (!orange::encoding::validate_qp_map_policy(
+            options.importance_map,
+            &importance_map_error)) {
+        throw std::runtime_error("Invalid importance map: " + importance_map_error);
+    }
+    if (options.importance_map.enabled() && options.stream_kind != "full_frame") {
+        throw std::runtime_error(
+            "Importance maps are currently supported only for full_frame streams");
     }
     return options;
 }
@@ -691,7 +766,7 @@ VideoEncodeProfile build_external_video_encode_profile(
     profile.fps = std::max<uint32_t>(1, options.fps);
     profile.downsample_factor = 1;
     profile.resize_enabled = false;
-    profile.color = false;
+    profile.color = !options.monochrome;
     profile.source_gpu_id = source_gpu_id;
     profile.encode_gpu_id = encode_gpu_id;
     profile.encoder_control_overrides.target_bitrate_bps =
@@ -734,6 +809,14 @@ std::vector<std::pair<std::string, std::string>> build_external_video_metadata_t
     tags.emplace_back("camera_serial", desc.camera_serial);
     tags.emplace_back("stream_id", desc.stream_id);
     tags.emplace_back("external_recorder", "true");
+    tags.emplace_back(
+        "importance_map_mode",
+        orange::encoding::normalize_qp_map_mode(options.importance_map.mode));
+    if (!options.importance_map.source_artifact_sha256.empty()) {
+        tags.emplace_back(
+            "importance_map_source_sha256",
+            options.importance_map.source_artifact_sha256);
+    }
     for (auto& tag : extra_tags) {
         tags.push_back(std::move(tag));
     }
@@ -1143,6 +1226,14 @@ bool write_recorder_status_json(const Options& options,
             }
             out << "],\n";
             out << "  \"routing_policy\": \"" << json_escape(options.routing_policy) << "\",\n";
+            out << "  \"importance_map_requested_mode\": \""
+                << json_escape(orange::encoding::normalize_qp_map_mode(
+                       options.importance_map.mode))
+                << "\",\n";
+            out << "  \"rate_control_requested_mode\": \""
+                << json_escape(options.rate_control_mode) << "\",\n";
+            out << "  \"rate_control_quality_value\": "
+                << options.quality_value << ",\n";
             out << "  \"recording_control\": {\n";
             out << "    \"record_for_seconds\": " << options.record_for_seconds << ",\n";
             out << "    \"clip_seconds\": " << options.clip_seconds << "\n";
@@ -1271,86 +1362,19 @@ void configure_encoder_params(const Options& options,
         resolve_preset_guid(options.preset),
         resolve_tuning_info(options.tuning));
 
-    initialize_params->encodeWidth = width;
-    initialize_params->encodeHeight = height;
-    initialize_params->darWidth = width;
-    initialize_params->darHeight = height;
-    initialize_params->frameRateNum = std::max<uint32_t>(1, options.fps);
-    initialize_params->frameRateDen = 1;
-    initialize_params->enablePTD = 1;
-
-    encode_config->gopLength = std::max<uint32_t>(1, options.gop);
-    encode_config->frameIntervalP = 1;
-    apply_full_range_video_signal_to_nvenc_config(options.codec, encode_config);
-    if (options.tuning == "lossless") {
-        encode_config->rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
-        encode_config->rcParams.constQP = {0, 0, 0};
-        encode_config->rcParams.averageBitRate = 0;
-        encode_config->rcParams.maxBitRate = 0;
-        encode_config->rcParams.vbvBufferSize = 0;
-        encode_config->rcParams.enableAQ = 0;
-        encode_config->rcParams.enableTemporalAQ = 0;
-        encode_config->rcParams.enableLookahead = 0;
-        encode_config->rcParams.lowDelayKeyFrameScale = 0;
-        encode_config->gopLength = 1;
-    } else if (options.rate_control_mode == "cqp") {
-        const uint8_t qp = static_cast<uint8_t>(std::min<uint32_t>(51, options.quality_value));
-        encode_config->rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
-        encode_config->rcParams.constQP = {qp, qp, qp};
-        encode_config->rcParams.averageBitRate = 0;
-        encode_config->rcParams.maxBitRate = 0;
-        encode_config->rcParams.vbvBufferSize = 0;
-        encode_config->rcParams.enableAQ = 0;
-        encode_config->rcParams.enableTemporalAQ = 0;
-        encode_config->rcParams.enableLookahead = 0;
-        encode_config->rcParams.lowDelayKeyFrameScale = 0;
-    } else {
-        const bool low_latency = options.tuning == "ll" || options.tuning == "ull";
-        encode_config->rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
-        encode_config->rcParams.averageBitRate = options.bitrate_bps;
-        encode_config->rcParams.maxBitRate =
-            std::max(options.max_bitrate_bps, options.bitrate_bps);
-        encode_config->rcParams.vbvBufferSize =
-            options.vbv_buffer_size > 0
-                ? options.vbv_buffer_size
-                : encode_config->rcParams.maxBitRate;
-        encode_config->rcParams.enableAQ = 0;
-        encode_config->rcParams.enableTemporalAQ = 0;
-        encode_config->rcParams.enableLookahead = 0;
-        encode_config->rcParams.lowDelayKeyFrameScale = low_latency ? 1 : 0;
-    }
-    encode_config->rcParams.enableMinQP = 0;
-    encode_config->rcParams.enableMaxQP = 0;
-    encode_config->rcParams.strictGOPTarget = 0;
-    encode_config->rcParams.enableNonRefP = 0;
-    initialize_params->enableWeightedPrediction = 0;
-
-    if (options.codec == "hevc") {
-        auto& hevc = encode_config->encodeCodecConfig.hevcConfig;
-        hevc.pixelBitDepthMinus8 = 0;
-        hevc.idrPeriod = encode_config->gopLength;
-        hevc.sliceMode = 0;
-        hevc.sliceModeData = 0;
-        hevc.maxNumRefFramesInDPB = 1;
-        hevc.repeatSPSPPS = 1;
-        hevc.outputBufferingPeriodSEI = 0;
-        hevc.outputPictureTimingSEI = 0;
-        hevc.outputAUD = 0;
-        hevc.enableLTR = 0;
-    } else {
-        auto& h264 = encode_config->encodeCodecConfig.h264Config;
-        h264.idrPeriod = encode_config->gopLength;
-        h264.sliceMode = 0;
-        h264.sliceModeData = 0;
-        h264.repeatSPSPPS = 1;
-        h264.maxNumRefFrames = 1;
-        h264.adaptiveTransformMode = NV_ENC_H264_ADAPTIVE_TRANSFORM_DISABLE;
-        h264.bdirectMode = NV_ENC_H264_BDIRECT_MODE_DISABLE;
-        h264.entropyCodingMode = NV_ENC_H264_ENTROPY_CODING_MODE_CAVLC;
-    }
-    if (options.monochrome) {
-        encode_config->monoChromeEncoding = 1;
-    }
+    const VideoEncodeProfile profile = build_external_video_encode_profile(
+        options,
+        "",
+        static_cast<int>(width),
+        static_cast<int>(height),
+        -1,
+        options.gpu_id);
+    apply_video_encode_profile_to_nvenc_config(
+        profile, initialize_params, encode_config);
+    encode_config->rcParams.qpMapMode =
+        options.importance_map.enabled()
+            ? NV_ENC_QP_MAP_DELTA
+            : NV_ENC_QP_MAP_DISABLED;
 }
 
 int create_listen_socket(const std::string& socket_path)
@@ -1690,7 +1714,89 @@ struct EncodeSummary {
     bool mp4_retained = false;
     bool mp4_removed_after_merge = false;
     std::string mp4_retention_error;
+    orange::encoding::QpDeltaMap importance_map;
 };
+
+nlohmann::json importance_map_summary_json(
+    const Options& options,
+    const orange::encoding::QpDeltaMap& map,
+    const std::vector<EncodeSummary>& shards)
+{
+    nlohmann::json shard_status = nlohmann::json::array();
+    for (const EncodeSummary& shard : shards) {
+        shard_status.push_back({
+            {"assigned_gpu_id", shard.assigned_gpu_id},
+            {"assigned_shard_id", shard.assigned_shard_id},
+            {"enabled", shard.importance_map.enabled()},
+            {"checksum", shard.importance_map.checksum},
+        });
+    }
+    return {
+        {"requested_mode", orange::encoding::normalize_qp_map_mode(
+            options.importance_map.mode)},
+        {"active_mode", map.enabled() ? map.mode : orange::encoding::kQpMapModeOff},
+        {"enabled", map.enabled()},
+        {"geometry", {
+            {"shape", "circle"},
+            {"center_x_px", options.importance_map.circle.center_x_px},
+            {"center_y_px", options.importance_map.circle.center_y_px},
+            {"radius_px", options.importance_map.circle.radius_px},
+        }},
+        {"halo_px", options.importance_map.halo_px},
+        {"inside_delta_qp", options.importance_map.inside_delta_qp},
+        {"halo_delta_qp", options.importance_map.halo_delta_qp},
+        {"outside_delta_qp", options.importance_map.outside_delta_qp},
+        {"block_size", map.block_size},
+        {"grid_width", map.grid_width},
+        {"grid_height", map.grid_height},
+        {"map_size_bytes", map.size_bytes()},
+        {"inside_block_count", map.inside_block_count},
+        {"halo_block_count", map.halo_block_count},
+        {"outside_block_count", map.outside_block_count},
+        {"map_checksum", map.checksum},
+        {"block_classification", "block_intersects_protected_circle"},
+        {"source", {
+            {"artifact_path", options.importance_map.source_artifact_path},
+            {"artifact_sha256", options.importance_map.source_artifact_sha256},
+            {"artifact_fingerprint", options.importance_map.source_artifact_fingerprint},
+        }},
+        {"shards", std::move(shard_status)},
+    };
+}
+
+nlohmann::json rate_control_summary_json(const Options& options)
+{
+    const std::string strategy = resolve_video_encode_rate_control_strategy(
+        options.tuning, options.rate_control_mode);
+    const bool const_qp = strategy == "lossless" || strategy == "cqp";
+    const uint32_t resolved_max_bitrate = const_qp
+        ? 0U
+        : std::max(options.max_bitrate_bps, options.bitrate_bps);
+    const uint32_t resolved_vbv = const_qp
+        ? 0U
+        : (options.vbv_buffer_size > 0
+               ? options.vbv_buffer_size
+               : resolved_max_bitrate);
+    return {
+        {"requested_mode", options.rate_control_mode},
+        {"resolved_strategy", strategy},
+        {"nvenc_rate_control_mode", const_qp ? "constqp" : "vbr"},
+        {"quality_value", options.quality_value},
+        {"target_quality_active", strategy == "vbr_cq"},
+        {"target_quality", strategy == "vbr_cq" ? options.quality_value : 0U},
+        {"target_quality_lsb", 0},
+        {"const_qp_active", const_qp},
+        {"const_qp", const_qp
+             ? (strategy == "lossless" ? 0U : options.quality_value)
+             : 0U},
+        {"average_bitrate_bps", const_qp ? 0U : options.bitrate_bps},
+        {"max_bitrate_bps", resolved_max_bitrate},
+        {"vbv_buffer_size", resolved_vbv},
+        {"aq", false},
+        {"temporal_aq", false},
+        {"lookahead", false},
+    };
+}
 
 struct RollingClipOutputSummary {
     int clip_index = 0;
@@ -1764,6 +1870,7 @@ EncodeSummary aggregate_encode_summaries(const std::vector<EncodeSummary>& summa
     out.width = summaries.front().width;
     out.height = summaries.front().height;
     out.pixel_format = summaries.front().pixel_format;
+    out.importance_map = summaries.front().importance_map;
     for (const EncodeSummary& summary : summaries) {
         out.frames_encoded += summary.frames_encoded;
         out.frames_dropped += summary.frames_dropped;
@@ -2788,6 +2895,7 @@ public:
         out.mp4_path = options_.mp4_out_path;
         out.mp4_keyframe_path = resolved_mp4_keyframe_path_;
         out.mp4_retained = file_exists(options_.mp4_out_path);
+        out.importance_map = importance_map_;
         return out;
     }
 
@@ -2835,6 +2943,16 @@ public:
 
 private:
     static constexpr size_t kInvalidSlot = std::numeric_limits<size_t>::max();
+
+    void apply_importance_map(NV_ENC_PIC_PARAMS* pic_params)
+    {
+        if (!pic_params || !importance_map_.enabled()) {
+            return;
+        }
+        pic_params->qpDeltaMap = importance_map_.values.data();
+        pic_params->qpDeltaMapSize =
+            static_cast<uint32_t>(importance_map_.size_bytes());
+    }
 
     void ensure_copy_stream()
     {
@@ -3021,10 +3139,33 @@ private:
             &initialize_params,
             &encode_config,
             encoder_.get());
+        const uint32_t qp_block_size = options_.codec == "hevc" ? 32U : 16U;
+        std::string importance_map_error;
+        if (!orange::encoding::build_circle_qp_delta_map(
+                options_.importance_map,
+                static_cast<uint32_t>(desc.width),
+                static_cast<uint32_t>(desc.height),
+                qp_block_size,
+                &importance_map_,
+                &importance_map_error)) {
+            throw std::runtime_error(
+                "Failed to build encoder importance map: " + importance_map_error);
+        }
         encoder_->CreateEncoder(&initialize_params);
         encoder_->SetIOCudaStreams(
             reinterpret_cast<NV_ENC_CUSTREAM_PTR>(&stream_),
             reinterpret_cast<NV_ENC_CUSTREAM_PTR>(&stream_));
+        if (importance_map_.enabled()) {
+            std::cout << "external_recorder_ipc_probe QP map enabled"
+                      << " mode=" << importance_map_.mode
+                      << " grid=" << importance_map_.grid_width
+                      << "x" << importance_map_.grid_height
+                      << " bytes=" << importance_map_.size_bytes()
+                      << " checksum=" << importance_map_.checksum
+                      << " gpu_id=" << options_.gpu_id
+                      << " shard_id=" << options_.shard_id
+                      << std::endl;
+        }
 
         if (!options_.bitstream_out_path.empty()) {
             ensure_parent_directory(options_.bitstream_out_path);
@@ -3301,6 +3442,7 @@ private:
         pic_params.frameIdx = static_cast<uint32_t>(encode_sample.encode_index & 0xffffffffu);
         pic_params.inputTimeStamp = desc.recording_frame_id;
         pic_params.inputDuration = 1;
+        apply_importance_map(&pic_params);
 
         NvEncoderEncodeFrameTiming timing;
         const auto submit_start = std::chrono::steady_clock::now();
@@ -3445,6 +3587,7 @@ private:
         pic_params.frameIdx = static_cast<uint32_t>(sample.encode_index & 0xffffffffu);
         pic_params.inputTimeStamp = item.desc.recording_frame_id;
         pic_params.inputDuration = 1;
+        apply_importance_map(&pic_params);
 
         std::vector<std::vector<uint8_t>> packets;
         std::vector<uint64_t> output_timestamps;
@@ -3576,6 +3719,7 @@ private:
         pic_params.frameIdx = static_cast<uint32_t>(sample.encode_index & 0xffffffffu);
         pic_params.inputTimeStamp = item.desc.recording_frame_id;
         pic_params.inputDuration = 1;
+        apply_importance_map(&pic_params);
 
         std::vector<std::vector<uint8_t>> packets;
         std::vector<uint64_t> output_timestamps;
@@ -3814,6 +3958,7 @@ private:
     std::atomic<uint64_t> source_releases_sent_{0};
     std::atomic<uint64_t> source_release_failures_{0};
     std::atomic<bool> failed_{false};
+    orange::encoding::QpDeltaMap importance_map_;
     FrameDescriptor first_desc_;
     bool has_first_desc_ = false;
     FrameDescriptor last_desc_;
@@ -3956,6 +4101,9 @@ void write_summary_json(const Options& options,
     out << "  \"tuning\": \"" << json_escape(options.tuning) << "\",\n";
     out << "  \"rate_control_mode\": \"" << json_escape(options.rate_control_mode) << "\",\n";
     out << "  \"quality_value\": " << options.quality_value << ",\n";
+    out << "  \"rate_control\": "
+        << json_dump_for_inline_value(rate_control_summary_json(options), "  ")
+        << ",\n";
     out << "  \"fps\": " << options.fps << ",\n";
     out << "  \"encode_max_fps\": " << options.encode_max_fps << ",\n";
     out << "  \"encode_queue_depth\": " << options.encode_queue_depth << ",\n";
@@ -3963,6 +4111,12 @@ void write_summary_json(const Options& options,
     out << "  \"encode_prewarm_bytes\": " << options.encode_prewarm_bytes << ",\n";
     out << "  \"encode_prewarm_peer_copy\": "
         << (options.encode_prewarm_peer_copy ? "true" : "false") << ",\n";
+    out << "  \"importance_map\": "
+        << json_dump_for_inline_value(
+               importance_map_summary_json(
+                   options, enc.importance_map, shard_summaries),
+               "  ")
+        << ",\n";
     out << "  \"recording_control\": {\n";
     out << "    \"record_for_seconds\": " << options.record_for_seconds << ",\n";
     out << "    \"clip_seconds\": " << options.clip_seconds << "\n";
@@ -4045,6 +4199,10 @@ void write_summary_json(const Options& options,
         out << "      \"prewarm_ms\": " << shard.prewarm_ms << ",\n";
         out << "      \"prewarm_peer_copy\": "
             << (shard.prewarm_peer_copy ? "true" : "false") << ",\n";
+        out << "      \"importance_map_enabled\": "
+            << (shard.importance_map.enabled() ? "true" : "false") << ",\n";
+        out << "      \"importance_map_checksum\": \""
+            << json_escape(shard.importance_map.checksum) << "\",\n";
         out << "      \"worker_failed\": " << (shard.failed ? "true" : "false") << ",\n";
         out << "      \"mp4_queue_overflowed\": "
             << (shard.mp4_queue_overflowed ? "true" : "false") << ",\n";

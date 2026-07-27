@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <cstdio>
 #include <filesystem>
@@ -451,6 +452,168 @@ bool read_u64_field(const nlohmann::json& node,
                ? node[key].get<uint64_t>()
                : static_cast<uint64_t>(node[key].get<int64_t>());
     return true;
+}
+
+bool read_double_field(const nlohmann::json& node,
+                       const std::string& key,
+                       double* out,
+                       std::string* error_out,
+                       const std::string& context)
+{
+    if (!node.contains(key)) {
+        return true;
+    }
+    if (!node[key].is_number()) {
+        return set_error(error_out, context + "." + key + " must be a number");
+    }
+    const double value = node[key].get<double>();
+    if (!std::isfinite(value)) {
+        return set_error(error_out, context + "." + key + " must be finite");
+    }
+    *out = value;
+    return true;
+}
+
+bool read_qp_map_policy(const nlohmann::json& stream,
+                        orange::encoding::QpMapPolicy* policy_out,
+                        std::string* error_out,
+                        const std::string& context)
+{
+    if (!policy_out || !stream.contains("importance_map")) {
+        return true;
+    }
+    const nlohmann::json& node = stream["importance_map"];
+    const std::string map_context = context + ".importance_map";
+    if (!node.is_object()) {
+        return set_error(error_out, map_context + " must be an object");
+    }
+
+    orange::encoding::QpMapPolicy policy = *policy_out;
+    if (!read_string_field(node, "mode", &policy.mode, error_out, map_context)) {
+        return false;
+    }
+    policy.mode = orange::encoding::normalize_qp_map_mode(policy.mode);
+    if (policy.mode != orange::encoding::kQpMapModeOff) {
+        if (!node.contains("geometry") || !node["geometry"].is_object()) {
+            return set_error(
+                error_out,
+                map_context + ".geometry must be an object when the QP map is enabled");
+        }
+        const nlohmann::json& geometry = node["geometry"];
+        const std::string geometry_context = map_context + ".geometry";
+        std::string shape = "circle";
+        if (!read_string_field(
+                geometry, "shape", &shape, error_out, geometry_context)) {
+            return false;
+        }
+        shape = normalize_token(shape);
+        if (shape != "circle") {
+            return set_error(error_out, geometry_context + ".shape must be circle");
+        }
+        if (!read_double_field(
+                geometry,
+                "center_x_px",
+                &policy.circle.center_x_px,
+                error_out,
+                geometry_context) ||
+            !read_double_field(
+                geometry,
+                "center_y_px",
+                &policy.circle.center_y_px,
+                error_out,
+                geometry_context) ||
+            !read_double_field(
+                geometry,
+                "radius_px",
+                &policy.circle.radius_px,
+                error_out,
+                geometry_context)) {
+            return false;
+        }
+    }
+    if (!read_double_field(node, "halo_px", &policy.halo_px, error_out, map_context) ||
+        !read_int_field(
+            node,
+            "inside_delta_qp",
+            &policy.inside_delta_qp,
+            error_out,
+            map_context,
+            -51) ||
+        !read_int_field(
+            node,
+            "halo_delta_qp",
+            &policy.halo_delta_qp,
+            error_out,
+            map_context,
+            -51) ||
+        !read_int_field(
+            node,
+            "outside_delta_qp",
+            &policy.outside_delta_qp,
+            error_out,
+            map_context,
+            -51)) {
+        return false;
+    }
+    if (node.contains("source")) {
+        if (!node["source"].is_object()) {
+            return set_error(error_out, map_context + ".source must be an object");
+        }
+        const nlohmann::json& source = node["source"];
+        const std::string source_context = map_context + ".source";
+        if (!read_string_field(
+                source,
+                "artifact_path",
+                &policy.source_artifact_path,
+                error_out,
+                source_context) ||
+            !read_string_field(
+                source,
+                "artifact_sha256",
+                &policy.source_artifact_sha256,
+                error_out,
+                source_context) ||
+            !read_string_field(
+                source,
+                "artifact_fingerprint",
+                &policy.source_artifact_fingerprint,
+                error_out,
+                source_context)) {
+            return false;
+        }
+    }
+
+    std::string validation_error;
+    if (!orange::encoding::validate_qp_map_policy(policy, &validation_error)) {
+        return set_error(error_out, map_context + " is invalid: " + validation_error);
+    }
+    *policy_out = std::move(policy);
+    return true;
+}
+
+nlohmann::json qp_map_policy_to_json(const orange::encoding::QpMapPolicy& policy)
+{
+    nlohmann::json result = {
+        {"mode", orange::encoding::normalize_qp_map_mode(policy.mode)},
+        {"halo_px", policy.halo_px},
+        {"inside_delta_qp", policy.inside_delta_qp},
+        {"halo_delta_qp", policy.halo_delta_qp},
+        {"outside_delta_qp", policy.outside_delta_qp},
+    };
+    if (policy.enabled()) {
+        result["geometry"] = {
+            {"shape", "circle"},
+            {"center_x_px", policy.circle.center_x_px},
+            {"center_y_px", policy.circle.center_y_px},
+            {"radius_px", policy.circle.radius_px},
+        };
+    }
+    result["source"] = {
+        {"artifact_path", policy.source_artifact_path},
+        {"artifact_sha256", policy.source_artifact_sha256},
+        {"artifact_fingerprint", policy.source_artifact_fingerprint},
+    };
+    return result;
 }
 
 bool read_gpu_id_array(const nlohmann::json& node,
@@ -952,6 +1115,43 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
                             context)) {
             return false;
         }
+        if (!read_qp_map_policy(
+                stream,
+                &stream_plan.importance_map,
+                error_out,
+                context)) {
+            return false;
+        }
+        if (stream_plan.importance_map.enabled() &&
+            stream_plan.stream_kind != "full_frame") {
+            return set_error(
+                error_out,
+                context +
+                    ".importance_map is currently supported only for full_frame streams");
+        }
+        stream_plan.rate_control_mode = normalize_token(
+            stream_plan.rate_control_mode);
+        if (stream_plan.rate_control_mode != "vbr" &&
+            stream_plan.rate_control_mode != "vbr_cq" &&
+            stream_plan.rate_control_mode != "cqp") {
+            return set_error(
+                error_out,
+                context +
+                    ".rate_control_mode must be vbr, vbr_cq, or cqp");
+        }
+        if (stream_plan.quality_value > 51) {
+            return set_error(
+                error_out,
+                context + ".quality_value must be within [0, 51]");
+        }
+        if ((stream_plan.rate_control_mode == "vbr" ||
+             stream_plan.rate_control_mode == "vbr_cq") &&
+            stream_plan.max_bitrate_bps < stream_plan.bitrate_bps) {
+            return set_error(
+                error_out,
+                context +
+                    ".max_bitrate_bps must be greater than or equal to bitrate_bps");
+        }
 
         if (stream_plan.analytics_gpu_id < 0) {
             return set_error(error_out, context + ".analytics_gpu_id is required");
@@ -1190,7 +1390,37 @@ std::vector<std::string> BuildRecorderCommand(const SupervisorPlan& plan,
         std::to_string(stream.shard_id),
         "--routing-policy",
         stream.routing_policy,
+        "--importance-map-mode",
+        orange::encoding::normalize_qp_map_mode(stream.importance_map.mode),
     };
+    if (stream.importance_map.enabled()) {
+        argv.push_back("--importance-map-center-x-px");
+        argv.push_back(std::to_string(stream.importance_map.circle.center_x_px));
+        argv.push_back("--importance-map-center-y-px");
+        argv.push_back(std::to_string(stream.importance_map.circle.center_y_px));
+        argv.push_back("--importance-map-radius-px");
+        argv.push_back(std::to_string(stream.importance_map.circle.radius_px));
+        argv.push_back("--importance-map-halo-px");
+        argv.push_back(std::to_string(stream.importance_map.halo_px));
+        argv.push_back("--importance-map-inside-delta-qp");
+        argv.push_back(std::to_string(stream.importance_map.inside_delta_qp));
+        argv.push_back("--importance-map-halo-delta-qp");
+        argv.push_back(std::to_string(stream.importance_map.halo_delta_qp));
+        argv.push_back("--importance-map-outside-delta-qp");
+        argv.push_back(std::to_string(stream.importance_map.outside_delta_qp));
+        if (!stream.importance_map.source_artifact_path.empty()) {
+            argv.push_back("--importance-map-source-artifact-path");
+            argv.push_back(stream.importance_map.source_artifact_path);
+        }
+        if (!stream.importance_map.source_artifact_sha256.empty()) {
+            argv.push_back("--importance-map-source-artifact-sha256");
+            argv.push_back(stream.importance_map.source_artifact_sha256);
+        }
+        if (!stream.importance_map.source_artifact_fingerprint.empty()) {
+            argv.push_back("--importance-map-source-artifact-fingerprint");
+            argv.push_back(stream.importance_map.source_artifact_fingerprint);
+        }
+    }
     if (stream.terminal_tail_coalesce_frames > 0) {
         argv.push_back("--terminal-tail-coalesce-frames");
         argv.push_back(std::to_string(stream.terminal_tail_coalesce_frames));
@@ -1267,6 +1497,7 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
             {"vbv_buffer_size", stream.vbv_buffer_size},
             {"min_free_bytes", stream.min_free_bytes},
             {"low_space_warning_bytes", stream.low_space_warning_bytes},
+            {"importance_map", qp_map_policy_to_json(stream.importance_map)},
             {"preserve_shard_mp4s", plan.preserve_shard_mp4s},
             {"command", {
                 {"argv", BuildRecorderCommand(plan, stream)},

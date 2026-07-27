@@ -625,6 +625,12 @@ def summarize_resolved(resolved: ResolvedRun) -> None:
         tb_day_1 = (mp4_size / duration_s * 86400.0 / 1_000_000_000_000.0) if duration_s > 0.0 else 0.0
         analytics = camera_results.get(str(serial), {})
         external_encode = summary.get("external_encode", {}) if isinstance(summary, dict) else {}
+        rate_control = summary.get("rate_control", {}) if isinstance(summary, dict) else {}
+        if not isinstance(rate_control, dict):
+            rate_control = {}
+        importance_map = summary.get("importance_map", {}) if isinstance(summary, dict) else {}
+        if not isinstance(importance_map, dict):
+            importance_map = {}
         row = {
             "manifest_run_id": resolved.run_id,
             "stage": resolved.stage,
@@ -656,6 +662,15 @@ def summarize_resolved(resolved: ResolvedRun) -> None:
             "bitrate_bps": stream.get("bitrate_bps", ""),
             "max_bitrate_bps": stream.get("max_bitrate_bps", ""),
             "vbv_buffer_size": stream.get("vbv_buffer_size", ""),
+            "resolved_rate_control_strategy": rate_control.get("resolved_strategy", ""),
+            "target_quality_active": rate_control.get("target_quality_active", ""),
+            "target_quality": rate_control.get("target_quality", ""),
+            "resolved_average_bitrate_bps": rate_control.get("average_bitrate_bps", ""),
+            "resolved_max_bitrate_bps": rate_control.get("max_bitrate_bps", ""),
+            "resolved_vbv_buffer_size": rate_control.get("vbv_buffer_size", ""),
+            "importance_map_requested_mode": importance_map.get("requested_mode", ""),
+            "importance_map_active_mode": importance_map.get("active_mode", ""),
+            "importance_map_checksum": importance_map.get("map_checksum", ""),
             "frames_received": optional_int(summary.get("frames_received"), 0),
             "acks_sent": optional_int(summary.get("acks_sent"), 0),
             "encode_enqueued": optional_int(summary.get("encode_enqueued"), 0),
@@ -743,13 +758,13 @@ def write_review_report(path: Path, manifest: dict[str, Any], resolved_runs: lis
         "",
         "## Runs",
         "",
-        "| Run | Stage | Status | Camera | Preset | Tuning | GOP | Shards | Encoded | Drops | Queue | Mbps | TB/day 1 cam | MP4 |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | ---: | ---: | --- | ---: | ---: | --- |",
+        "| Run | Stage | Status | Camera | Preset | Tuning | RC | Q | GOP | Shards | Encoded | Drops | Queue | Mbps | TB/day 1 cam | MP4 |",
+        "| --- | --- | --- | --- | --- | --- | --- | ---: | --- | --- | ---: | ---: | --- | ---: | ---: | --- |",
     ]
     for resolved in resolved_runs:
         if not resolved.rows:
             lines.append(
-                f"| `{resolved.run_id}` | {resolved.stage} | {resolved.status} | | | | | | | | | | | |"
+                f"| `{resolved.run_id}` | {resolved.stage} | {resolved.status} | | | | | | | | | | | | | |"
             )
             continue
         for row in resolved.rows:
@@ -762,6 +777,8 @@ def write_review_report(path: Path, manifest: dict[str, Any], resolved_runs: lis
                 f"{row.get('camera_serial', '')} | "
                 f"{row.get('preset', '')} | "
                 f"{row.get('tuning', '')} | "
+                f"{row.get('resolved_rate_control_strategy') or row.get('rate_control_mode', '')} | "
+                f"{row.get('quality_value', '')} | "
                 f"{row.get('gop', '')} | "
                 f"{row.get('shard_gpu_ids', '')} | "
                 f"{row.get('frames_encoded', '')} | "
@@ -883,6 +900,9 @@ def main() -> int:
                 "tuning",
                 "rate_control_mode",
                 "quality_value",
+                "resolved_rate_control_strategy",
+                "target_quality_active",
+                "target_quality",
                 "gop",
                 "shard_count",
                 "mp4_size_bytes",

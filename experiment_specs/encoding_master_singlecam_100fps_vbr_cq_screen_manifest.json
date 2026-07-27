@@ -1,0 +1,211 @@
+{
+  "schema_id": "orange.encoding_master_experiment.manifest",
+  "schema_version": 1,
+  "experiment_id": "encoding_master_singlecam_100fps_vbr_cq_screen",
+  "notes": "First-stage live-fish screen of the production external recorder at 4512x4512 and 100 fps. This compares the current P1 VBR 150 Mbps control against integer NVENC P1 VBR-CQ targets 18, 20, 22, and 24 with a 250 Mbps maximum/VBV ceiling. Two targeted P3 rows repeat the VBR control and CQ20 so preset effects can be screened at both a fixed bitrate and a fixed quality target without doubling the full CQ ladder. The registered-dish QP map is explicitly off in every run. Because these are sequential live acquisitions rather than replay of one immutable source, use the results to reject unstable or clearly poor settings; do not treat small between-run quality differences as definitive without a later identical-source replay or balanced repetitions.",
+  "defaults": {
+    "camera_serials": ["2010096"],
+    "analytics_gpu_id": 7,
+    "artifact_root": "/home/jeremy/orange_data/benchmarks/encoding_quality",
+    "analytics_output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "duration_s": 15,
+    "warmup_s": 2,
+    "orange_client": "/home/jeremy/orange-gop-split-a16/targets/release/orange_client",
+    "benchmark": "/usr/local/bin/orange-local-benchmark",
+    "sudo": true,
+    "verify_external_recorder": true,
+    "yolo_perf_log": true,
+    "yolo_perf_sample": 1
+  },
+  "runs": [
+    {
+      "run_id": "vbr150_control",
+      "stage": "rate_control_screen",
+      "description": "Current production control: P1 LL VBR 150 Mbps, GOP 25, QP map off.",
+      "base_spec": "experiment_specs/2010096_external_ipc_vbr_cq_quality_base_100fps_a16_gpu7_8.json",
+      "tags": ["control", "vbr", "map_off"],
+      "stream_overrides": {
+        "2010096": {
+          "preset": "p1",
+          "rate_control_mode": "vbr",
+          "quality_value": 20,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000,
+          "importance_map": {"mode": "off"}
+        }
+      },
+      "matrix_overrides": {
+        "preset": ["p1"],
+        "rate_control_mode": ["vbr"],
+        "quality_value": [20],
+        "target_bitrate_bps": [150000000],
+        "max_bitrate_bps": [150000000],
+        "vbv_buffer_size": [150000000],
+        "importance_map_mode": ["off"]
+      }
+    },
+    {
+      "run_id": "vbr150_p3_preset_screen",
+      "stage": "preset_screen",
+      "description": "Matched P3 LL VBR 150 Mbps control for fixed-bitrate quality and throughput comparison against the P1 control.",
+      "base_spec": "experiment_specs/2010096_external_ipc_vbr_cq_quality_base_100fps_a16_gpu7_8.json",
+      "tags": ["preset_screen", "p3", "vbr", "map_off"],
+      "stream_overrides": {
+        "2010096": {
+          "preset": "p3",
+          "rate_control_mode": "vbr",
+          "quality_value": 20,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000,
+          "importance_map": {"mode": "off"}
+        }
+      },
+      "matrix_overrides": {
+        "preset": ["p3"],
+        "rate_control_mode": ["vbr"],
+        "quality_value": [20],
+        "target_bitrate_bps": [150000000],
+        "max_bitrate_bps": [150000000],
+        "vbv_buffer_size": [150000000],
+        "importance_map_mode": ["off"]
+      }
+    },
+    {
+      "run_id": "vbr_cq18_max250",
+      "stage": "rate_control_screen",
+      "description": "VBR-CQ target 18 with 150 Mbps average target and 250 Mbps maximum/VBV ceiling.",
+      "base_spec": "experiment_specs/2010096_external_ipc_vbr_cq_quality_base_100fps_a16_gpu7_8.json",
+      "tags": ["vbr_cq", "cq18", "map_off"],
+      "stream_overrides": {
+        "2010096": {
+          "preset": "p1",
+          "rate_control_mode": "vbr_cq",
+          "quality_value": 18,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 250000000,
+          "vbv_buffer_size": 250000000,
+          "importance_map": {"mode": "off"}
+        }
+      },
+      "matrix_overrides": {
+        "preset": ["p1"],
+        "rate_control_mode": ["vbr_cq"],
+        "quality_value": [18],
+        "target_bitrate_bps": [150000000],
+        "max_bitrate_bps": [250000000],
+        "vbv_buffer_size": [250000000],
+        "importance_map_mode": ["off"]
+      }
+    },
+    {
+      "run_id": "vbr_cq20_max250",
+      "stage": "rate_control_screen",
+      "description": "VBR-CQ target 20 with 150 Mbps average target and 250 Mbps maximum/VBV ceiling.",
+      "base_spec": "experiment_specs/2010096_external_ipc_vbr_cq_quality_base_100fps_a16_gpu7_8.json",
+      "tags": ["vbr_cq", "cq20", "map_off"],
+      "stream_overrides": {
+        "2010096": {
+          "preset": "p1",
+          "rate_control_mode": "vbr_cq",
+          "quality_value": 20,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 250000000,
+          "vbv_buffer_size": 250000000,
+          "importance_map": {"mode": "off"}
+        }
+      },
+      "matrix_overrides": {
+        "preset": ["p1"],
+        "rate_control_mode": ["vbr_cq"],
+        "quality_value": [20],
+        "target_bitrate_bps": [150000000],
+        "max_bitrate_bps": [250000000],
+        "vbv_buffer_size": [250000000],
+        "importance_map_mode": ["off"]
+      }
+    },
+    {
+      "run_id": "vbr_cq20_p3_preset_screen",
+      "stage": "preset_screen",
+      "description": "Matched P3 LL VBR-CQ 20 run for fixed-quality bitrate, quality, and throughput comparison against P1 CQ20.",
+      "base_spec": "experiment_specs/2010096_external_ipc_vbr_cq_quality_base_100fps_a16_gpu7_8.json",
+      "tags": ["preset_screen", "p3", "vbr_cq", "cq20", "map_off"],
+      "stream_overrides": {
+        "2010096": {
+          "preset": "p3",
+          "rate_control_mode": "vbr_cq",
+          "quality_value": 20,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 250000000,
+          "vbv_buffer_size": 250000000,
+          "importance_map": {"mode": "off"}
+        }
+      },
+      "matrix_overrides": {
+        "preset": ["p3"],
+        "rate_control_mode": ["vbr_cq"],
+        "quality_value": [20],
+        "target_bitrate_bps": [150000000],
+        "max_bitrate_bps": [250000000],
+        "vbv_buffer_size": [250000000],
+        "importance_map_mode": ["off"]
+      }
+    },
+    {
+      "run_id": "vbr_cq22_max250",
+      "stage": "rate_control_screen",
+      "description": "VBR-CQ target 22 with 150 Mbps average target and 250 Mbps maximum/VBV ceiling.",
+      "base_spec": "experiment_specs/2010096_external_ipc_vbr_cq_quality_base_100fps_a16_gpu7_8.json",
+      "tags": ["vbr_cq", "cq22", "map_off"],
+      "stream_overrides": {
+        "2010096": {
+          "preset": "p1",
+          "rate_control_mode": "vbr_cq",
+          "quality_value": 22,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 250000000,
+          "vbv_buffer_size": 250000000,
+          "importance_map": {"mode": "off"}
+        }
+      },
+      "matrix_overrides": {
+        "preset": ["p1"],
+        "rate_control_mode": ["vbr_cq"],
+        "quality_value": [22],
+        "target_bitrate_bps": [150000000],
+        "max_bitrate_bps": [250000000],
+        "vbv_buffer_size": [250000000],
+        "importance_map_mode": ["off"]
+      }
+    },
+    {
+      "run_id": "vbr_cq24_max250",
+      "stage": "rate_control_screen",
+      "description": "VBR-CQ target 24 with 150 Mbps average target and 250 Mbps maximum/VBV ceiling.",
+      "base_spec": "experiment_specs/2010096_external_ipc_vbr_cq_quality_base_100fps_a16_gpu7_8.json",
+      "tags": ["vbr_cq", "cq24", "map_off"],
+      "stream_overrides": {
+        "2010096": {
+          "preset": "p1",
+          "rate_control_mode": "vbr_cq",
+          "quality_value": 24,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 250000000,
+          "vbv_buffer_size": 250000000,
+          "importance_map": {"mode": "off"}
+        }
+      },
+      "matrix_overrides": {
+        "preset": ["p1"],
+        "rate_control_mode": ["vbr_cq"],
+        "quality_value": [24],
+        "target_bitrate_bps": [150000000],
+        "max_bitrate_bps": [250000000],
+        "vbv_buffer_size": [250000000],
+        "importance_map_mode": ["off"]
+      }
+    }
+  ]
+}

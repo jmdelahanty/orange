@@ -126,6 +126,17 @@ void ApplyExternalRecorderRecordingControlToContract(
 nlohmann::json MaterializeExternalRecorderContractForCameras(
     const CameraContractMaterializationInput& input);
 
+bool BindExternalRecorderDishPriorFromRecordingGeometry(
+    nlohmann::json* contract,
+    const nlohmann::json& recording_geometry_contract,
+    const std::string& recording_folder,
+    std::string* error_out = nullptr);
+
+bool WriteMaterializedExternalRecorderContract(
+    const std::string& recording_folder,
+    const nlohmann::json& contract,
+    std::string* error_out = nullptr);
+
 FailFastArtifactResult WriteExternalRecorderFailFastArtifacts(
     const FailFastArtifactOptions& options);
 

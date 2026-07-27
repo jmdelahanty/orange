@@ -154,6 +154,144 @@ void test_single_shard_plan_builds_command()
             "command should include live status sidecar path");
     require(!has_arg(argv, "--shard-gpu-ids"),
             "single shard command should not include --shard-gpu-ids");
+    require(has_arg_pair(argv, "--importance-map-mode", "off"),
+            "importance maps must be explicitly disabled by default");
+}
+
+void test_static_dish_prior_builds_geometry_command()
+{
+    nlohmann::json contract = make_contract({5, 6}, "gop_modulo");
+    contract["streams"]["2010096"]["importance_map"] = {
+        {"mode", "static_dish_prior"},
+        {"geometry", {
+            {"shape", "circle"},
+            {"center_x_px", 2243.25},
+            {"center_y_px", 2234.75},
+            {"radius_px", 2160.5},
+        }},
+        {"halo_px", 64.0},
+        {"inside_delta_qp", -2},
+        {"halo_delta_qp", 0},
+        {"outside_delta_qp", 2},
+        {"source", {
+            {"artifact_path", "/recording/geometry/Cam2010096/rim.json"},
+            {"artifact_sha256", "sha256:abc"},
+            {"artifact_fingerprint", "rim-v1:def"},
+        }},
+    };
+
+    SupervisorPlan plan;
+    std::string error;
+    require(BuildSupervisorPlanFromContract(contract, {}, &plan, &error),
+            "static dish-prior contract should build: " + error);
+    require(plan.streams.size() == 1, "expected one QP-map stream");
+    const auto& policy = plan.streams[0].importance_map;
+    require(policy.enabled(), "static dish-prior policy should be enabled");
+    require(policy.circle.center_x_px == 2243.25,
+            "circle center X should survive contract parsing");
+    require(policy.circle.radius_px == 2160.5,
+            "circle radius should survive contract parsing");
+    require(policy.source_artifact_sha256 == "sha256:abc",
+            "source checksum should survive contract parsing");
+
+    const std::vector<std::string> argv = BuildRecorderCommand(plan, plan.streams[0]);
+    require(has_arg_pair(argv, "--importance-map-mode", "static_dish_prior"),
+            "recorder command should enable static dish priority");
+    require(has_arg_pair(argv, "--importance-map-center-x-px", "2243.250000"),
+            "recorder command should include circle center X");
+    require(has_arg_pair(argv, "--importance-map-radius-px", "2160.500000"),
+            "recorder command should include circle radius");
+    require(has_arg_pair(argv, "--importance-map-inside-delta-qp", "-2"),
+            "recorder command should include inside QP delta");
+    require(has_arg_pair(
+                argv,
+                "--importance-map-source-artifact-sha256",
+                "sha256:abc"),
+            "recorder command should include source checksum");
+
+    const nlohmann::json plan_json = SupervisorPlanToJson(plan);
+    require(plan_json["streams"][0]["importance_map"]["mode"] ==
+                "static_dish_prior",
+            "plan artifact should preserve active policy");
+}
+
+void test_static_dish_prior_requires_valid_circle()
+{
+    nlohmann::json contract = make_contract({5}, "single_shard");
+    contract["streams"]["2010096"]["importance_map"] = {
+        {"mode", "static_dish_prior"},
+        {"geometry", {
+            {"shape", "circle"},
+            {"center_x_px", 100.0},
+            {"center_y_px", 100.0},
+            {"radius_px", 0.0},
+        }},
+    };
+    SupervisorPlan plan;
+    std::string error;
+    require(!BuildSupervisorPlanFromContract(contract, {}, &plan, &error),
+            "zero-radius dish prior must be rejected");
+    require(error.find("radius") != std::string::npos,
+            "invalid circle rejection should name radius");
+}
+
+void test_vbr_cq_flows_to_recorder_and_plan()
+{
+    nlohmann::json contract = make_contract({5, 6}, "gop_modulo");
+    auto& stream = contract["streams"]["2010096"];
+    stream["rate_control_mode"] = "vbr_cq";
+    stream["quality_value"] = 22;
+    stream["bitrate_bps"] = 150000000;
+    stream["max_bitrate_bps"] = 250000000;
+    stream["vbv_buffer_size"] = 250000000;
+
+    SupervisorPlan plan;
+    std::string error;
+    require(BuildSupervisorPlanFromContract(contract, {}, &plan, &error),
+            "VBR-CQ contract should build: " + error);
+    require(plan.streams.size() == 1, "expected one VBR-CQ stream");
+    const auto& parsed = plan.streams[0];
+    require(parsed.rate_control_mode == "vbr_cq",
+            "VBR-CQ mode should survive contract parsing");
+    require(parsed.quality_value == 22,
+            "VBR-CQ target quality should survive contract parsing");
+    require(parsed.max_bitrate_bps == 250000000,
+            "VBR-CQ bitrate ceiling should survive contract parsing");
+
+    const std::vector<std::string> argv = BuildRecorderCommand(plan, parsed);
+    require(has_arg_pair(argv, "--rate-control", "vbr_cq"),
+            "recorder command should select VBR-CQ");
+    require(has_arg_pair(argv, "--quality", "22"),
+            "recorder command should include VBR-CQ target quality");
+    require(has_arg_pair(argv, "--max-bitrate-bps", "250000000"),
+            "recorder command should include VBR-CQ bitrate ceiling");
+
+    const nlohmann::json plan_json = SupervisorPlanToJson(plan);
+    require(plan_json["streams"][0]["rate_control_mode"] == "vbr_cq",
+            "supervisor artifact should preserve VBR-CQ mode");
+    require(plan_json["streams"][0]["quality_value"] == 22,
+            "supervisor artifact should preserve VBR-CQ target quality");
+}
+
+void test_invalid_external_rate_control_is_rejected()
+{
+    nlohmann::json contract = make_contract({5}, "single_shard");
+    contract["streams"]["2010096"]["rate_control_mode"] = "mystery";
+    SupervisorPlan plan;
+    std::string error;
+    require(!BuildSupervisorPlanFromContract(contract, {}, &plan, &error),
+            "unknown external rate-control mode must be rejected");
+    require(error.find("rate_control_mode") != std::string::npos,
+            "rate-control rejection should name the invalid field");
+
+    contract = make_contract({5}, "single_shard");
+    contract["streams"]["2010096"]["rate_control_mode"] = "vbr_cq";
+    contract["streams"]["2010096"]["quality_value"] = 52;
+    error.clear();
+    require(!BuildSupervisorPlanFromContract(contract, {}, &plan, &error),
+            "VBR-CQ target quality above 51 must be rejected");
+    require(error.find("quality_value") != std::string::npos,
+            "quality rejection should name the invalid field");
 }
 
 void test_crop_stream_plan_uses_real_camera_serial_and_env_key()
@@ -959,6 +1097,14 @@ int main(int argc, char** argv)
 
     const TestCase tests[] = {
         {"single_shard_plan_builds_command", test_single_shard_plan_builds_command},
+        {"static_dish_prior_builds_geometry_command",
+         test_static_dish_prior_builds_geometry_command},
+        {"static_dish_prior_requires_valid_circle",
+         test_static_dish_prior_requires_valid_circle},
+        {"vbr_cq_flows_to_recorder_and_plan",
+         test_vbr_cq_flows_to_recorder_and_plan},
+        {"invalid_external_rate_control_is_rejected",
+         test_invalid_external_rate_control_is_rejected},
         {"crop_stream_plan_uses_real_camera_serial_and_env_key",
          test_crop_stream_plan_uses_real_camera_serial_and_env_key},
         {"two_shard_plan_builds_gop_modulo_command", test_two_shard_plan_builds_gop_modulo_command},

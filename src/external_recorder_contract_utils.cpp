@@ -291,6 +291,10 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
         contract.contains("streams") && contract["streams"].is_object()
             ? contract["streams"]
             : nlohmann::json::object();
+    const nlohmann::json default_importance_map =
+        contract.contains("importance_map") && contract["importance_map"].is_object()
+            ? contract["importance_map"]
+            : nlohmann::json{{"mode", orange::encoding::kQpMapModeOff}};
 
     if (!input.cameras_params || input.num_cameras <= 0) {
         contract["streams"] = std::move(streams);
@@ -355,6 +359,7 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
         set_json_default(&stream, "bitrate_bps", 150000000);
         set_json_default(&stream, "max_bitrate_bps", 150000000);
         set_json_default(&stream, "vbv_buffer_size", 150000000);
+        set_json_default(&stream, "importance_map", default_importance_map);
 
         for (const char* key : {
                  "summary_json",
@@ -396,6 +401,156 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
         contract["streams"] = std::move(streams);
     }
     return contract;
+}
+
+bool BindExternalRecorderDishPriorFromRecordingGeometry(
+    nlohmann::json* contract,
+    const nlohmann::json& recording_geometry_contract,
+    const std::string& recording_folder,
+    std::string* error_out)
+{
+    if (!contract || !contract->is_object()) {
+        if (error_out) *error_out = "external recorder contract object is required";
+        return false;
+    }
+    if (!contract->contains("streams") || !(*contract)["streams"].is_object()) {
+        if (error_out) *error_out = "external recorder contract streams object is required";
+        return false;
+    }
+    const nlohmann::json cameras = recording_geometry_contract.value(
+        "cameras", nlohmann::json::object());
+    if (!cameras.is_object()) {
+        if (error_out) *error_out = "recording geometry cameras object is required";
+        return false;
+    }
+
+    for (auto stream_it = (*contract)["streams"].begin();
+         stream_it != (*contract)["streams"].end();
+         ++stream_it) {
+        if (!stream_it.value().is_object()) {
+            continue;
+        }
+        nlohmann::json& stream = stream_it.value();
+        nlohmann::json importance_map = stream.value(
+            "importance_map", nlohmann::json::object());
+        if (!importance_map.is_object()) {
+            if (error_out) {
+                *error_out = "external recorder stream " + stream_it.key() +
+                    " importance_map must be an object";
+            }
+            return false;
+        }
+        const std::string mode = orange::encoding::normalize_qp_map_mode(
+            importance_map.value(
+                "mode", std::string(orange::encoding::kQpMapModeOff)));
+        importance_map["mode"] = mode;
+        if (mode == orange::encoding::kQpMapModeOff) {
+            stream["importance_map"] = std::move(importance_map);
+            continue;
+        }
+        if (mode != orange::encoding::kQpMapModeStaticDishPrior) {
+            if (error_out) {
+                *error_out = "external recorder stream " + stream_it.key() +
+                    " uses unsupported importance-map mode " + mode;
+            }
+            return false;
+        }
+        if (importance_map.contains("geometry") &&
+            importance_map["geometry"].is_object()) {
+            stream["importance_map"] = std::move(importance_map);
+            continue;
+        }
+        const std::string geometry_source = importance_map.value(
+            "geometry_source", "selected_daily_registration");
+        if (geometry_source != "selected_daily_registration") {
+            if (error_out) {
+                *error_out = "external recorder stream " + stream_it.key() +
+                    " importance_map.geometry_source must be selected_daily_registration";
+            }
+            return false;
+        }
+
+        const std::string camera_serial = stream.value(
+            "camera_serial", stream_it.key());
+        const auto camera_it = cameras.find(camera_serial);
+        if (camera_it == cameras.end() || !camera_it->is_object()) {
+            if (error_out) {
+                *error_out = "static dish-prior QP map requested, but recording geometry "
+                    "has no camera " + camera_serial;
+            }
+            return false;
+        }
+        const nlohmann::json daily = camera_it->value(
+            "daily_registration_geometry", nlohmann::json::object());
+        const nlohmann::json snapshot = daily.value(
+            "recording_snapshot_entry", nlohmann::json::object());
+        const nlohmann::json accepted_mask = snapshot.value(
+            "accepted_mask", nlohmann::json::object());
+        const nlohmann::json center = accepted_mask.value(
+            "center_px", nlohmann::json::object());
+        if (daily.value("status", "") != "resolved" ||
+            accepted_mask.value("shape", "") != "circle" ||
+            !center.contains("x") || !center["x"].is_number() ||
+            !center.contains("y") || !center["y"].is_number() ||
+            !accepted_mask.contains("radius_px") ||
+            !accepted_mask["radius_px"].is_number() ||
+            accepted_mask["radius_px"].get<double>() <= 0.0) {
+            if (error_out) {
+                *error_out = "static dish-prior QP map requested, but camera " +
+                    camera_serial + " has no resolved accepted daily circle";
+            }
+            return false;
+        }
+
+        const nlohmann::json source = snapshot.value(
+            "source", nlohmann::json::object());
+        const nlohmann::json calibration_ref = snapshot.value(
+            "calibration_ref", nlohmann::json::object());
+        const std::string relative_source = source.value(
+            "intended_recording_relative_path", "");
+        const std::string bound_source_path = relative_source.empty()
+            ? source.value("path", "")
+            : (std::filesystem::path(recording_folder) / relative_source).string();
+        importance_map["geometry_source"] = geometry_source;
+        importance_map["binding_status"] = "resolved_at_recording_arm";
+        importance_map["coordinate_space"] = "camera_native_pixels";
+        importance_map["geometry"] = {
+            {"shape", "circle"},
+            {"center_x_px", center["x"].get<double>()},
+            {"center_y_px", center["y"].get<double>()},
+            {"radius_px", accepted_mask["radius_px"].get<double>()},
+            {"radius_semantics", "accepted_mask_with_centroid_forgiveness"},
+        };
+        set_json_default(&importance_map, "halo_px", 64.0);
+        set_json_default(&importance_map, "inside_delta_qp", -2);
+        set_json_default(&importance_map, "halo_delta_qp", 0);
+        set_json_default(&importance_map, "outside_delta_qp", 2);
+        importance_map["source"] = {
+            {"artifact_path", bound_source_path},
+            {"artifact_sha256", source.value("sha256", "")},
+            {"artifact_fingerprint", calibration_ref.value("fingerprint", "")},
+            {"artifact_id", snapshot.value("artifact_id", "")},
+            {"recording_relative_path", relative_source},
+        };
+        stream["importance_map"] = std::move(importance_map);
+    }
+    if (error_out) error_out->clear();
+    return true;
+}
+
+bool WriteMaterializedExternalRecorderContract(
+    const std::string& recording_folder,
+    const nlohmann::json& contract,
+    std::string* error_out)
+{
+    if (recording_folder.empty()) {
+        if (error_out) *error_out = "recording folder is required";
+        return false;
+    }
+    return write_json_file(
+        std::filesystem::path(recording_folder) / "external_recorder_contract.json",
+        contract,
+        error_out);
 }
 
 FailFastArtifactResult WriteExternalRecorderFailFastArtifacts(

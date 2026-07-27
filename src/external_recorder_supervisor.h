@@ -1,5 +1,6 @@
 #pragma once
 
+#include "encoder_qp_map.h"
 #include "json.hpp"
 
 #include <cstdint>
@@ -73,6 +74,7 @@ struct RecorderStreamPlan {
     uint64_t min_free_bytes = 0;
     uint64_t low_space_warning_bytes = 0;
     int shard_id = 0;
+    orange::encoding::QpMapPolicy importance_map;
 };
 
 struct SupervisorPlan {

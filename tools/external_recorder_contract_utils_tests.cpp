@@ -353,6 +353,82 @@ void explicit_input_recording_control_overrides_config()
             "explicit input clip_seconds should propagate to stream");
 }
 
+void binds_selected_daily_circle_to_static_dish_prior()
+{
+    CameraParams cameras[1] = {
+        make_camera("2010096", 7, {7, 8}),
+    };
+    CameraEachSelect selected[1]{};
+    selected[0].record = true;
+    nlohmann::json overrides = {
+        {"importance_map", {
+            {"mode", "static_dish_prior"},
+            {"geometry_source", "selected_daily_registration"},
+        }},
+    };
+    orange::external_recorder::CameraContractMaterializationInput input;
+    input.contract_config = &overrides;
+    input.recording_folder = "/tmp/orange_qp_binding";
+    input.recording_id = "session_qp_binding";
+    input.cameras_params = cameras;
+    input.cameras_select = selected;
+    input.num_cameras = 1;
+    nlohmann::json contract =
+        orange::external_recorder::MaterializeExternalRecorderContractForCameras(input);
+    require(contract["streams"]["2010096"]["importance_map"]["mode"] ==
+                "static_dish_prior",
+            "top-level QP policy should propagate to materialized streams");
+
+    const nlohmann::json geometry = {
+        {"cameras", {
+            {"2010096", {
+                {"daily_registration_geometry", {
+                    {"status", "resolved"},
+                    {"recording_snapshot_entry", {
+                        {"artifact_id", "dishrim_test"},
+                        {"accepted_mask", {
+                            {"shape", "circle"},
+                            {"center_px", {{"x", 2215.5}, {"y", 2234.75}}},
+                            {"radius_px", 2154.5},
+                        }},
+                        {"source", {
+                            {"path", "/calibration/original/observation.json"},
+                            {"sha256", "sha256:abc"},
+                            {"intended_recording_relative_path",
+                             "recording_geometry_assets/cameras/Cam2010096/observation.json"},
+                        }},
+                        {"calibration_ref", {
+                            {"fingerprint", "fnv1a64:def"},
+                        }},
+                    }},
+                }},
+            }},
+        }},
+    };
+    std::string error;
+    require(orange::external_recorder::BindExternalRecorderDishPriorFromRecordingGeometry(
+                &contract, geometry, input.recording_folder, &error),
+            "daily geometry binding should succeed: " + error);
+    const nlohmann::json& map = contract["streams"]["2010096"]["importance_map"];
+    require(map["geometry"]["center_x_px"] == 2215.5,
+            "bound QP map should use the accepted-mask center");
+    require(map["geometry"]["radius_px"] == 2154.5,
+            "bound QP map should use the accepted-mask radius");
+    require(map["source"]["artifact_path"] ==
+                "/tmp/orange_qp_binding/recording_geometry_assets/cameras/"
+                "Cam2010096/observation.json",
+            "bound QP map should point at the recording-local immutable source");
+    require(map["source"]["artifact_sha256"] == "sha256:abc",
+            "bound QP map should preserve source checksum");
+
+    orange::external_recorder::SupervisorPlan plan;
+    require(orange::external_recorder::BuildSupervisorPlanFromContract(
+                contract, {}, &plan, &error),
+            "bound QP contract should build a supervisor plan: " + error);
+    require(plan.streams[0].importance_map.enabled(),
+            "bound plan should enable the QP map");
+}
+
 void writes_failfast_artifacts()
 {
     const std::filesystem::path root =
@@ -587,6 +663,8 @@ int main()
         std::cout << "[PASS] preserves_configured_recording_control_when_input_is_default\n";
         explicit_input_recording_control_overrides_config();
         std::cout << "[PASS] explicit_input_recording_control_overrides_config\n";
+        binds_selected_daily_circle_to_static_dish_prior();
+        std::cout << "[PASS] binds_selected_daily_circle_to_static_dish_prior\n";
         writes_failfast_artifacts();
         std::cout << "[PASS] writes_failfast_artifacts\n";
         writes_supervised_session_artifacts();
