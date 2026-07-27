@@ -46,10 +46,10 @@ Cut user-visible startup time (open cameras + start streaming) while preserving 
 - No startup executor, feature flag, or per-stage timing instrumentation exists yet.
 - The newer focus-bootstrap logic in `src/camera.cpp` adds more per-camera work during open/configure, which increases the value of baseline timing before parallelization.
 
-## Instrumentation Update (2026-07-27)
+## Instrumentation And GUI Responsiveness Update (2026-07-27)
 
-Phase 0 startup timing is implemented for the GUI path while retaining the
-existing serial startup order and PTP gate behavior. Each camera-open attempt
+Phase 0 startup timing and the first asynchronous GUI lifecycle are implemented
+while retaining serial camera-SDK order and PTP gate behavior. Each camera-open attempt
 and stream-start attempt writes an atomic, user-owned JSON report under:
 
 ```text
@@ -66,10 +66,16 @@ is performed by the GUI thread.
 Implementation and interpretation details are in
 [`gui_camera_startup_timing.md`](gui_camera_startup_timing.md).
 
-This does **not** yet parallelize camera calls, change readiness semantics, or
-instrument the headless camera-open/stream-start lifecycle. The next decision
-should be based on live one-, two-, and four-camera reports rather than on the
-length of the visible GUI pause alone.
+Camera open/configuration, CUDA/IPC preparation, worker construction, stream
+open, buffer allocation, and PTP configuration now run on a joinable startup
+worker. OpenGL/CUDA display texture creation and the final ownership handoff
+remain on the GUI thread. The GUI exposes phase progress and cancellation, and
+`CameraControl::subscribe` is not asserted until runtime arrays are complete.
+
+This does **not** yet parallelize calls across cameras or instrument the
+headless camera-open/stream-start lifecycle. The next concurrency decision
+should be based on live one-, two-, and four-camera reports and an explicit
+Emergent SDK safety test.
 
 ## Parallelization Plan
 
@@ -90,7 +96,9 @@ length of the visible GUI pause alone.
 
 ## Phase 1: Introduce Startup Executor and Feature Flag
 
-- [ ] Add a bounded startup executor (`max_parallel_startup_workers`).
+- [x] Move blocking GUI startup behind a single joinable, cancelable executor.
+- [x] Keep serial camera call ordering as the safe default.
+- [ ] Add a bounded per-camera startup executor (`max_parallel_startup_workers`).
 - [ ] Add runtime flag/config:
   - `parallel_camera_startup` (default off for first rollout)
   - `max_parallel_startup_workers` (default conservative, e.g. 2-4).
@@ -129,14 +137,18 @@ length of the visible GUI pause alone.
 
 ## Phase 5: UX and Observability
 
-- [ ] Add startup progress state visible to user/network manager:
-  - `opening`, `configuring`, `allocating_buffers`, `ptp_setup`, `ready`.
+- [x] Add phase-level startup progress and cancellation in the GUI:
+  - `opening_cameras`, `preparing_stream_resources`, GUI texture handoff,
+    `constructing_stream_runtime`, and `waiting_for_first_frames`.
+- [ ] Add per-camera progress and expose it to the local-control/status API.
 - [ ] Emit per-camera startup timing logs.
 - [ ] Emit one startup summary line with total time and slowest camera/stage.
 
 ## Phase 6: Testing and Rollout
 
-- [ ] Unit-test startup result aggregation and rollback behavior.
+- [x] Unit-test the generic nonblocking worker, exception conversion,
+  cooperative cancellation, and shutdown join.
+- [ ] Unit-test hardware-independent controller result aggregation and rollback.
 - [ ] Integration tests:
   - one camera fails open
   - one camera fails stream open

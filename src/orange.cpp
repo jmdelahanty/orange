@@ -38,6 +38,7 @@
 #include "camera_preview_utils.h"
 #include "gui/autorun.h"
 #include "gui/arena_centering_autorun.h"
+#include "gui/camera_startup_controller.h"
 #include "gui/env_util.h"
 #include "gui/camera_properties_panel.h"
 #include "gui/frame_ipc_panel.h"
@@ -95,6 +96,11 @@ using orange::gui::GuiFrameTimingSample;
 using orange::gui::gui_display_frame_rate_json;
 using orange::gui::gui_sample_display_frame_rate;
 using orange::gui::gui_sample_frame_timings;
+using orange::gui::apply_gui_crop_preview_max_fps_to_camera_configs;
+using orange::gui::apply_gui_crop_size_to_camera_configs;
+using orange::gui::resolve_gui_crop_preview_max_fps_from_camera_configs;
+using orange::gui::resolve_gui_crop_size_from_camera_configs;
+using orange::gui::run_gui_recording_preflight;
 
 struct FovCaptureSnapshot {
     bool available = false;
@@ -1829,195 +1835,6 @@ std::string trim_ascii_whitespace(const std::string& input)
         --end;
     }
     return input.substr(start, end - start);
-}
-
-std::vector<RecordingValidationCameraInput> build_gui_recording_validation_inputs(
-    const CameraParams* cameras_params,
-    const CameraEachSelect* cameras_select,
-    const int num_cameras)
-{
-    std::vector<RecordingValidationCameraInput> inputs;
-    if (!cameras_params || !cameras_select || num_cameras <= 0) {
-        return inputs;
-    }
-
-    inputs.reserve(static_cast<std::size_t>(num_cameras));
-    for (int i = 0; i < num_cameras; ++i) {
-        RecordingValidationCameraInput input;
-        input.camera_index = i;
-        input.camera_serial = cameras_params[i].camera_serial;
-        input.record_enabled = cameras_select[i].record;
-        input.source_gpu_id = cameras_params[i].gpu_id;
-        input.strategy = cameras_params[i].recording.strategy;
-        input.constraints = cameras_params[i].recording.constraints;
-        inputs.push_back(std::move(input));
-    }
-
-    return inputs;
-}
-
-RecordingPreflightResult run_gui_recording_preflight(const CameraParams* cameras_params,
-                                                     const CameraEachSelect* cameras_select,
-                                                     const int num_cameras,
-                                                     const std::string& selected_yolo_model,
-                                                     const int crop_size_px)
-{
-    RecordingPreflightResult result = run_recording_preflight(
-        build_gui_recording_validation_inputs(cameras_params, cameras_select, num_cameras),
-        [](const int source_gpu_id, const int helper_gpu_id) {
-            return build_recording_validation_gpu_path_info(source_gpu_id, helper_gpu_id);
-        });
-    const int resolved_crop_size = CropAndEncodeWorker::SanitizeCropSize(crop_size_px);
-
-    if (!cameras_params || !cameras_select || num_cameras <= 0) {
-        return result;
-    }
-
-    for (int i = 0; i < num_cameras; ++i) {
-        const std::string serial = cameras_params[i].camera_serial.empty()
-            ? ("camera_index_" + std::to_string(i))
-            : cameras_params[i].camera_serial;
-
-        auto append_camera_error = [&](const std::string& message) {
-            result.errors.push_back(serial + ": " + message);
-            result.ok = false;
-        };
-
-        if (cameras_select[i].yolo) {
-            std::string engine_path = selected_yolo_model;
-            if (cameras_select[i].yolo_model && cameras_select[i].yolo_model[0] != '\0') {
-                engine_path = cameras_select[i].yolo_model;
-            }
-
-            if (engine_path.empty()) {
-                append_camera_error("YOLO enabled but no detect engine is configured or selected.");
-            } else if (!std::filesystem::exists(engine_path)) {
-                append_camera_error("YOLO detect engine does not exist: " + engine_path);
-            }
-        }
-
-        if (!cameras_select[i].crop_and_encode) {
-            if (cameras_select[i].pose) {
-                append_camera_error("Pose currently requires Crop+Encode enabled.");
-            }
-            continue;
-        }
-
-        if (!cameras_select[i].record) {
-            append_camera_error("Crop+Encode currently requires full-frame Record enabled.");
-        }
-        if (!cameras_select[i].yolo) {
-            append_camera_error("Crop+Encode requires YOLO enabled.");
-        }
-        if (cameras_select[i].pose && !cameras_select[i].yolo) {
-            append_camera_error("Pose currently requires YOLO enabled.");
-        }
-        if (static_cast<int>(cameras_params[i].width) < resolved_crop_size ||
-            static_cast<int>(cameras_params[i].height) < resolved_crop_size) {
-            std::ostringstream error;
-            error << "Crop+Encode requires source frames at least "
-                  << resolved_crop_size << "x"
-                  << resolved_crop_size
-                  << "; configured frame is "
-                  << cameras_params[i].width << "x" << cameras_params[i].height
-                  << ".";
-            append_camera_error(error.str());
-        }
-    }
-
-    result.ok = result.errors.empty();
-    return result;
-}
-
-int resolve_gui_crop_size_from_camera_configs(const CameraParams* cameras_params,
-                                              const int num_cameras,
-                                              const int fallback_crop_size,
-                                              bool* mixed_values_out)
-{
-    if (mixed_values_out) {
-        *mixed_values_out = false;
-    }
-
-    if (!cameras_params || num_cameras <= 0) {
-        return CropAndEncodeWorker::SanitizeCropSize(fallback_crop_size);
-    }
-
-    const int resolved_crop_size =
-        CropAndEncodeWorker::SanitizeCropSize(cameras_params[0].crop_pipeline.crop_size_px);
-    bool mixed_values = false;
-    for (int i = 1; i < num_cameras; ++i) {
-        const int camera_crop_size =
-            CropAndEncodeWorker::SanitizeCropSize(cameras_params[i].crop_pipeline.crop_size_px);
-        if (camera_crop_size != resolved_crop_size) {
-            mixed_values = true;
-            break;
-        }
-    }
-
-    if (mixed_values_out) {
-        *mixed_values_out = mixed_values;
-    }
-    return resolved_crop_size;
-}
-
-int resolve_gui_crop_preview_max_fps_from_camera_configs(const CameraParams* cameras_params,
-                                                         const int num_cameras,
-                                                         const int fallback_preview_max_fps,
-                                                         bool* mixed_values_out)
-{
-    if (mixed_values_out) {
-        *mixed_values_out = false;
-    }
-
-    if (!cameras_params || num_cameras <= 0) {
-        return sanitize_camera_crop_preview_max_fps(fallback_preview_max_fps);
-    }
-
-    const int resolved_preview_max_fps =
-        sanitize_camera_crop_preview_max_fps(cameras_params[0].crop_pipeline.preview_max_fps);
-    bool mixed_values = false;
-    for (int i = 1; i < num_cameras; ++i) {
-        const int camera_preview_max_fps =
-            sanitize_camera_crop_preview_max_fps(cameras_params[i].crop_pipeline.preview_max_fps);
-        if (camera_preview_max_fps != resolved_preview_max_fps) {
-            mixed_values = true;
-            break;
-        }
-    }
-
-    if (mixed_values_out) {
-        *mixed_values_out = mixed_values;
-    }
-    return resolved_preview_max_fps;
-}
-
-void apply_gui_crop_size_to_camera_configs(CameraParams* cameras_params,
-                                           const int num_cameras,
-                                           const int crop_size_px)
-{
-    if (!cameras_params || num_cameras <= 0) {
-        return;
-    }
-
-    const int resolved_crop_size = CropAndEncodeWorker::SanitizeCropSize(crop_size_px);
-    for (int i = 0; i < num_cameras; ++i) {
-        cameras_params[i].crop_pipeline.crop_size_px = resolved_crop_size;
-    }
-}
-
-void apply_gui_crop_preview_max_fps_to_camera_configs(CameraParams* cameras_params,
-                                                      const int num_cameras,
-                                                      const int preview_max_fps)
-{
-    if (!cameras_params || num_cameras <= 0) {
-        return;
-    }
-
-    const int resolved_preview_max_fps =
-        sanitize_camera_crop_preview_max_fps(preview_max_fps);
-    for (int i = 0; i < num_cameras; ++i) {
-        cameras_params[i].crop_pipeline.preview_max_fps = resolved_preview_max_fps;
-    }
 }
 
 YoloWorker* gui_yolo_worker_at(const int camera_index)
@@ -4982,6 +4799,7 @@ int main(int /*argc*/, char ** /*args*/) {
     orange::session::RecordingSessionState recording_session;
     GuiSessionTimingState gui_session_timing;
     orange::gui::GuiStartupTimingRecorder gui_startup_timing;
+    orange::gui::GuiCameraStartupController gui_camera_startup;
     const std::filesystem::path gui_startup_timing_artifact_dir =
         std::filesystem::path(orange_root_dir_str) /
         "diagnostics" / "camera_startup";
@@ -5397,6 +5215,7 @@ int main(int /*argc*/, char ** /*args*/) {
         }
         gui_mark_recording_finished(&gui_session_timing);
         gui_mark_stream_stopped(&gui_session_timing);
+        gui_camera_startup.NotifyInstalledStreamStopped();
     };
     GuiAutorunState gui_autorun_state;
     if (gui_autorun_config.enabled) {
@@ -5424,6 +5243,131 @@ int main(int /*argc*/, char ** /*args*/) {
         const auto gui_frame_start = std::chrono::steady_clock::now();
         previous_gui_frame_start = gui_frame_start;
         GuiFrameTimingSample gui_frame_timing;
+        orange::gui::GuiCameraStartupEvent startup_event =
+            gui_camera_startup.PollGuiThread();
+        if (startup_event.kind ==
+            orange::gui::GuiCameraStartupEventKind::kCameraOpenSucceeded) {
+            std::unique_ptr<orange::gui::GuiCameraOpenProduct> product =
+                std::move(startup_event.camera_open_product);
+            if (!product || product->camera_count <= 0) {
+                local_config_status =
+                    "Camera startup completed without an open-camera product.";
+                local_config_status_error = true;
+            } else {
+                num_cameras = product->camera_count;
+                cameras_params = product->camera_params.release();
+                cameras_select = product->camera_selection.release();
+                ecams = product->cameras.release();
+                ptp_stream_sync = product->ptp_stream_sync;
+                if (product->mixed_ptp_modes) {
+                    std::cout << "[GUI] Mixed ptp_gate/non-PTP camera configs"
+                                 " loaded; leaving PTP Stream Sync unchecked."
+                              << std::endl;
+                }
+
+                const orange::recording::RecordingConfigSyncResult sync_result =
+                    orange::recording::sync_encoder_config_from_camera_defaults(
+                        cameras_params,
+                        num_cameras,
+                        encoder_config);
+                recording_config_defaults_status = sync_result.message;
+                recording_config_defaults_status_warning = sync_result.warning;
+                if (!recording_config_defaults_status.empty()) {
+                    std::cout << "[GUI][recording-defaults] "
+                              << recording_config_defaults_status << std::endl;
+                }
+
+                crop_size_px = product->crop_size_px;
+                if (product->mixed_crop_sizes) {
+                    crop_size_config_status =
+                        "Mixed crop sizes loaded; using first open camera value for this GUI session.";
+                    crop_size_config_status_warning = true;
+                    apply_gui_crop_size_to_camera_configs(
+                        cameras_params, num_cameras, crop_size_px);
+                } else {
+                    crop_size_config_status =
+                        "Loaded crop size from camera config: " +
+                        std::to_string(crop_size_px) + " px.";
+                    crop_size_config_status_warning = false;
+                }
+
+                crop_preview_max_fps = product->crop_preview_max_fps;
+                if (product->mixed_crop_preview_max_fps) {
+                    crop_preview_config_status =
+                        "Mixed crop preview FPS caps loaded; using first open camera value for this GUI session.";
+                    crop_preview_config_status_warning = true;
+                    apply_gui_crop_preview_max_fps_to_camera_configs(
+                        cameras_params,
+                        num_cameras,
+                        crop_preview_max_fps);
+                } else {
+                    crop_preview_config_status =
+                        "Loaded crop preview max FPS from camera config: " +
+                        std::to_string(crop_preview_max_fps) + ".";
+                    crop_preview_config_status_warning = false;
+                }
+                apply_gui_autorun_camera_selection(
+                    gui_autorun_config,
+                    cameras_select,
+                    num_cameras);
+                realtime_plot_data = new ScrollingBuffer[num_cameras];
+                camera_control->open = true;
+                local_config_status = startup_event.message;
+                local_config_status_error = false;
+                gui_camera_startup.NotifyCameraOpenInstalled();
+                gui_startup_timing.FlushPending();
+            }
+        } else if (startup_event.kind ==
+                   orange::gui::GuiCameraStartupEventKind::kStreamActivated) {
+            display_uploaded_serials.assign(
+                num_cameras, std::numeric_limits<uint64_t>::max());
+            crop_preview_uploaded_serials.assign(
+                num_cameras, std::numeric_limits<uint64_t>::max());
+            live_preview_texture_ids.assign(num_cameras, 0);
+            primary_video_canvas_views.assign(num_cameras, {});
+            for (int i = 0; i < num_cameras; ++i) {
+                if (cameras_select[i].stream_on && tex) {
+                    live_preview_texture_ids[static_cast<std::size_t>(i)] =
+                        tex[i].texture;
+                }
+            }
+            recording_preflight_errors.clear();
+            std::cout << "[GUI][camera_startup] " << startup_event.message
+                      << std::endl;
+        } else if (startup_event.kind ==
+                   orange::gui::GuiCameraStartupEventKind::kStreamReady) {
+            std::cout << "[GUI][camera_startup] " << startup_event.message
+                      << std::endl;
+            gui_startup_timing.FlushPending();
+        } else if (startup_event.kind ==
+                       orange::gui::GuiCameraStartupEventKind::kStreamFailed ||
+                   (startup_event.kind ==
+                        orange::gui::GuiCameraStartupEventKind::kCanceled &&
+                    camera_control->open)) {
+            recording_preflight_errors = startup_event.errors;
+            if (recording_preflight_errors.empty() &&
+                !startup_event.message.empty()) {
+                recording_preflight_errors.push_back(startup_event.message);
+            }
+            std::cerr << "[GUI][camera_startup] " << startup_event.message
+                      << std::endl;
+            if (gui_camera_startup.stream_runtime_installed()) {
+                stop_streaming_and_teardown();
+            } else {
+                camera_control->subscribe = false;
+                gui_mark_stream_stopped(&gui_session_timing);
+            }
+            gui_startup_timing.FlushPending();
+        } else if (startup_event.kind ==
+                       orange::gui::GuiCameraStartupEventKind::kCameraOpenFailed ||
+                   startup_event.kind ==
+                       orange::gui::GuiCameraStartupEventKind::kCanceled) {
+            local_config_status = startup_event.message;
+            local_config_status_error =
+                startup_event.kind !=
+                orange::gui::GuiCameraStartupEventKind::kCanceled;
+            gui_startup_timing.FlushPending();
+        }
         orange::gui::reap_host_ptp_stack_worker(&host_ptp_stack_ui);
         gui_refresh_external_recorder_lifecycles(&recording_session, camera_control);
         // Shadow-mode incremental clip splitter
@@ -6050,6 +5994,10 @@ int main(int /*argc*/, char ** /*args*/) {
                         ? local_config_folders[local_config_select]
                         : std::string();
                 const auto camera_properties_draw_start = std::chrono::steady_clock::now();
+                const bool camera_startup_busy = gui_camera_startup.busy();
+                if (camera_startup_busy) {
+                    ImGui::BeginDisabled();
+                }
                 orange::gui::render_camera_properties_panel(
                     ecams,
                     cameras_params,
@@ -6059,6 +6007,9 @@ int main(int /*argc*/, char ** /*args*/) {
                     camera_control->record_video ||
                         camera_control->recording_draining ||
                         gui_recording_run.finalizing);
+                if (camera_startup_busy) {
+                    ImGui::EndDisabled();
+                }
                 gui_frame_timing.camera_properties_draw_ms += gui_elapsed_ms(
                     camera_properties_draw_start,
                     std::chrono::steady_clock::now());
@@ -6103,6 +6054,9 @@ int main(int /*argc*/, char ** /*args*/) {
                     }
                 }
 
+                if (camera_startup_busy) {
+                    ImGui::BeginDisabled();
+                }
                 if (ImGui::BeginTable("Camera Control Setting", 9,
                                       ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings |
                                       ImGuiTableFlags_Borders)) {
@@ -6235,6 +6189,9 @@ int main(int /*argc*/, char ** /*args*/) {
                         ImGui::Checkbox(temp_string, &cameras_select[i].send_yolo_via_enet);
                     }
                     ImGui::EndTable();
+                }
+                if (camera_startup_busy) {
+                    ImGui::EndDisabled();
                 }
 
                 orange::gui::render_frame_ipc_status_panel(
@@ -6576,12 +6533,17 @@ int main(int /*argc*/, char ** /*args*/) {
                 // ImGui::EndDisabled();
             }
 
-            if (camera_control->subscribe || calibration_tool_busy) {
+            const orange::gui::GuiCameraStartupStatus camera_startup_status =
+                gui_camera_startup.status();
+            if (camera_control->subscribe || calibration_tool_busy ||
+                camera_startup_status.busy) {
                 ImGui::BeginDisabled();
             }
 
-            if (ImGui::Button(camera_control->open ? "Close Camera" : "Open camera") ||
-                gui_autorun_requests.open_cameras) {
+            if (!camera_startup_status.busy &&
+                (ImGui::Button(
+                     camera_control->open ? "Close Camera" : "Open camera") ||
+                 gui_autorun_requests.open_cameras)) {
                 if (calibration_tool_busy) {
                     local_config_status =
                         orange::calibration::global_transaction_coordinator()
@@ -6595,209 +6557,71 @@ int main(int /*argc*/, char ** /*args*/) {
                 } else if (!camera_control->open) {
                     const uint64_t camera_open_requested_ns =
                         orange::gui::GuiStartupTimingRecorder::NowNs();
-                    if (static_cast<size_t>(local_config_select) < local_config_folders.size()) {
-                        update_camera_configs(camera_config_files, local_config_folders[local_config_select]);
+                    if (static_cast<std::size_t>(local_config_select) <
+                        local_config_folders.size()) {
+                        update_camera_configs(
+                            camera_config_files,
+                            local_config_folders[local_config_select]);
                         if (!camera_config_files.empty()) {
-                            select_cameras_have_configs(camera_config_files, device_info, camera_is_selected, cam_count);
+                            select_cameras_have_configs(
+                                camera_config_files,
+                                device_info,
+                                camera_is_selected,
+                                cam_count);
                         } else {
-                            std::cout << "[GUI] Selected local config folder is empty; preserving current camera selection."
+                            std::cout << "[GUI] Selected local config folder is empty;"
+                                         " preserving current camera selection."
                                       << std::endl;
                         }
                     }
 
-                    num_cameras = 0;
-                    for (int i = 0; i < cam_count; i++) {
+                    orange::gui::GuiCameraOpenRequest request;
+                    request.stream_downsample = stream_downsample;
+                    request.display_preview_max_fps =
+                        gui_display_preview_max_fps_default;
+                    request.fallback_crop_size_px = crop_size_px;
+                    request.fallback_crop_preview_max_fps =
+                        crop_preview_max_fps;
+                    request.camera_config_files = camera_config_files;
+                    request.timing = &gui_startup_timing;
+                    request.timing_artifact_directory =
+                        gui_startup_timing_artifact_dir;
+                    request.request_started_ns = camera_open_requested_ns;
+                    for (int i = 0; i < cam_count; ++i) {
                         if (camera_is_selected[i]) {
-                            num_cameras++;
+                            orange::gui::GuiSelectedCameraDevice selected;
+                            selected.device = device_info[i];
+                            selected.device_index = i;
+                            request.selected_devices.push_back(selected);
                         }
                     }
-                    if (num_cameras > 0) {
-                        camera_control->open = true;
-                        cameras_params = new CameraParams[num_cameras];
-                        cameras_select = new CameraEachSelect[num_cameras];
-                        for (int i = 0; i < num_cameras; ++i) {
-                            cameras_select[i].downsample = stream_downsample;
-                            cameras_select[i].display_preview_max_fps =
-                                gui_display_preview_max_fps_default;
-                        }
-
-                        std::vector<int> selected_cameras;
-                        for (int i = 0; i < cam_count; i++) {
-                            if (camera_is_selected[i]) {
-                                selected_cameras.push_back(i);
-                            }
-                        }
-
-                        std::vector<orange::gui::GuiStartupTimingCamera>
-                            camera_open_timing_cameras;
-                        camera_open_timing_cameras.reserve(selected_cameras.size());
-                        for (std::size_t i = 0; i < selected_cameras.size(); ++i) {
-                            const int device_index = selected_cameras[i];
-                            orange::gui::GuiStartupTimingCamera timing_camera;
-                            timing_camera.serial = device_info[device_index].serialNumber;
-                            timing_camera.camera_index = static_cast<int>(i);
-                            timing_camera.context = {
-                                {"device_index", device_index},
-                            };
-                            camera_open_timing_cameras.push_back(std::move(timing_camera));
-                        }
-                        nlohmann::json camera_open_context = {
-                            {"selected_camera_count", selected_cameras.size()},
-                        };
-                        if (static_cast<std::size_t>(local_config_select) <
-                            local_config_folders.size()) {
-                            camera_open_context["config_directory"] =
-                                local_config_folders[local_config_select];
-                        }
-                        gui_startup_timing.Begin(
-                            "camera_open",
-                            gui_startup_timing_artifact_dir,
-                            camera_open_timing_cameras,
-                            camera_open_context,
-                            camera_open_requested_ns);
-                        gui_startup_timing.RecordGlobalInterval(
-                            "config_discovery_and_camera_selection",
-                            camera_open_requested_ns,
-                            orange::gui::GuiStartupTimingRecorder::NowNs());
-
-                        std::vector<bool> skip_setting_params;
-                        skip_setting_params.resize(num_cameras);
-                        for (int i = 0; i < num_cameras; i++) {
-                            orange::gui::GuiStartupTimingScope timing_scope(
-                                &gui_startup_timing,
-                                "load_camera_config",
-                                device_info[selected_cameras[i]].serialNumber);
-                            if (!set_camera_params(&cameras_params[i], &device_info[selected_cameras[i]],
-                                                   camera_config_files, selected_cameras[i], num_cameras)) {
-                                skip_setting_params[i] = true;
-                                cameras_params[i].camera_id = selected_cameras[i];
-                                cameras_params[i].num_cameras = num_cameras;
-                            } else {
-                                skip_setting_params[i] = false;
-
-                            }
-                        }
-
-                        {
-                            const orange::recording::RecordingConfigSyncResult sync_result =
-                                orange::recording::sync_encoder_config_from_camera_defaults(
-                                    cameras_params,
-                                    num_cameras,
-                                    encoder_config);
-                            recording_config_defaults_status = sync_result.message;
-                            recording_config_defaults_status_warning = sync_result.warning;
-                            if (!recording_config_defaults_status.empty()) {
-                                std::cout << "[GUI][recording-defaults] "
-                                          << recording_config_defaults_status << std::endl;
-                            }
-                        }
-
-
-                        for (int i = 0; i < num_cameras; i++) {
-                            cameras_select[i].stream_on = false;
-                            if (cameras_params[i].camera_name == "ceiling_center") {
-                                cameras_select[i].stream_on = true;
-                                cameras_select[i].yolo = false;
-                            }
-
-                            if (cameras_params[i].camera_name == "shelter") {
-                                cameras_select[i].stream_on = true;
-                            }
-
-                        }
-
-                        ecams = new CameraEmergent[num_cameras];
-                        for (int i = 0; i < num_cameras; i++) {
-                            orange::gui::GuiStartupTimingScope timing_scope(
-                                &gui_startup_timing,
-                                "open_and_configure_camera",
-                                cameras_params[i].camera_serial);
-                            if (!skip_setting_params[i]) {
-                                open_camera_with_params(&ecams[i].camera, &device_info[cameras_params[i].camera_id],
-                                                    &cameras_params[i], "gui_open_selected_cameras");
-                            } else {
-                                update_camera_params(&ecams[i].camera, &device_info[cameras_params[i].camera_id],
-                                                    &cameras_params[i]);
-                            }
-
-                        }
-                        const uint64_t post_open_configuration_started_ns =
-                            orange::gui::GuiStartupTimingRecorder::NowNs();
-                        int ptp_config_count = 0;
-                        for (int i = 0; i < num_cameras; i++) {
-                            if (camera_sync_mode_uses_ptp(&cameras_params[i])) {
-                                ptp_config_count++;
-                            }
-                        }
-                        if (ptp_config_count == num_cameras && num_cameras > 0) {
-                            ptp_stream_sync = true;
+                    request.selection_finished_ns =
+                        orange::gui::GuiStartupTimingRecorder::NowNs();
+                    request.timing_context = {
+                        {"selected_camera_count", request.selected_devices.size()},
+                        {"execution_model", "async_controller_serial_camera_calls"},
+                    };
+                    if (static_cast<std::size_t>(local_config_select) <
+                        local_config_folders.size()) {
+                        request.timing_context["config_directory"] =
+                            local_config_folders[local_config_select];
+                    }
+                    if (request.selected_devices.empty()) {
+                        local_config_status = "Select at least one camera to open.";
+                        local_config_status_error = true;
+                    } else {
+                        std::string start_error;
+                        if (gui_camera_startup.StartCameraOpen(
+                                std::move(request), &start_error)) {
+                            local_config_status =
+                                "Opening and configuring selected cameras...";
+                            local_config_status_error = false;
                         } else {
-                            if (ptp_config_count > 0) {
-                                std::cout << "[GUI] Mixed ptp_gate/non-PTP camera configs loaded; leaving PTP Stream Sync unchecked."
-                                          << std::endl;
-                            }
-                            ptp_stream_sync = false;
+                            local_config_status = start_error.empty()
+                                ? "Could not start the camera-open worker."
+                                : start_error;
+                            local_config_status_error = true;
                         }
-                        {
-                            bool mixed_crop_sizes = false;
-                            crop_size_px = resolve_gui_crop_size_from_camera_configs(
-                                cameras_params,
-                                num_cameras,
-                                crop_size_px,
-                                &mixed_crop_sizes);
-                            if (mixed_crop_sizes) {
-                                crop_size_config_status =
-                                    "Mixed crop sizes loaded; using first open camera value for this GUI session.";
-                                crop_size_config_status_warning = true;
-                                apply_gui_crop_size_to_camera_configs(cameras_params, num_cameras, crop_size_px);
-                            } else {
-                                crop_size_config_status =
-                                    "Loaded crop size from camera config: " + std::to_string(crop_size_px) + " px.";
-                                crop_size_config_status_warning = false;
-                            }
-                        }
-                        {
-                            bool mixed_preview_max_fps = false;
-                            crop_preview_max_fps =
-                                resolve_gui_crop_preview_max_fps_from_camera_configs(
-                                    cameras_params,
-                                    num_cameras,
-                                    crop_preview_max_fps,
-                                    &mixed_preview_max_fps);
-                            if (mixed_preview_max_fps) {
-                                crop_preview_config_status =
-                                    "Mixed crop preview FPS caps loaded; using first open camera value for this GUI session.";
-                                crop_preview_config_status_warning = true;
-                                apply_gui_crop_preview_max_fps_to_camera_configs(
-                                    cameras_params,
-                                    num_cameras,
-                                    crop_preview_max_fps);
-                            } else {
-                                crop_preview_config_status =
-                                    "Loaded crop preview max FPS from camera config: " +
-                                    std::to_string(crop_preview_max_fps) + ".";
-                                crop_preview_config_status_warning = false;
-                            }
-                        }
-                        apply_gui_autorun_camera_selection(
-                            gui_autorun_config,
-                            cameras_select,
-                            num_cameras);
-                        realtime_plot_data = new ScrollingBuffer[num_cameras];
-                        const uint64_t camera_open_completed_ns =
-                            orange::gui::GuiStartupTimingRecorder::NowNs();
-                        gui_startup_timing.RecordGlobalInterval(
-                            "post_open_gui_configuration",
-                            post_open_configuration_started_ns,
-                            camera_open_completed_ns);
-                        gui_startup_timing.MarkHandlerComplete(
-                            camera_open_completed_ns);
-                        gui_startup_timing.MarkOperationComplete(
-                            camera_open_completed_ns);
-                        // Persist before this recorder can be reused by an
-                        // autorun stream-start request in the same GUI frame.
-                        gui_startup_timing.FlushPending();
-
                     }
                 } else {
                     camera_control->open = false;
@@ -6821,20 +6645,37 @@ int main(int /*argc*/, char ** /*args*/) {
                     realtime_plot_data = nullptr;
                 }
             }
-            if (camera_control->subscribe || calibration_tool_busy) {
+            if (camera_control->subscribe || calibration_tool_busy ||
+                camera_startup_status.busy) {
                 ImGui::EndDisabled();
+            }
+            if (camera_startup_status.busy) {
+                ImGui::TextDisabled(
+                    "Camera startup: %s",
+                    camera_startup_status.message.c_str());
+                if (ImGui::Button("Cancel camera startup")) {
+                    gui_camera_startup.RequestCancel("operator_requested");
+                }
             }
 
             orange::gui::render_host_ptp_stack_panel(
                 &host_ptp_stack_ui,
-                camera_control->subscribe,
+                camera_control->subscribe || gui_camera_startup.busy(),
                 ptp_stream_sync);
 
             if (!camera_control->record_video && camera_control->open) {
                 if (camera_control->subscribe) {
                     // ImGui::BeginDisabled();
                 }
+                const orange::gui::GuiCameraStartupStatus stream_startup_status =
+                    gui_camera_startup.status();
+                if (stream_startup_status.busy) {
+                    ImGui::BeginDisabled();
+                }
                 ImGui::Checkbox("PTP Stream Sync", &ptp_stream_sync);
+                if (stream_startup_status.busy) {
+                    ImGui::EndDisabled();
+                }
                 ImGui::SameLine();
                 if (camera_control->subscribe) {
                     // ImGui::EndDisabled();
@@ -6842,8 +6683,14 @@ int main(int /*argc*/, char ** /*args*/) {
                 if (calibration_tool_busy) {
                     ImGui::BeginDisabled();
                 }
-                if (ImGui::Button(camera_control->subscribe ? "Stop streaming" : "Start streaming") ||
-                    gui_autorun_requests.toggle_streaming) {
+                if (ImGui::Button(
+                        stream_startup_status.busy
+                            ? "Cancel stream startup"
+                            : (camera_control->subscribe
+                                ? "Stop streaming"
+                                : "Start streaming")) ||
+                    (!stream_startup_status.busy &&
+                     gui_autorun_requests.toggle_streaming)) {
                     if (calibration_tool_busy &&
                         !calibration_workflow_stream_request_authorized) {
                         const std::string error =
@@ -6854,469 +6701,85 @@ int main(int /*argc*/, char ** /*args*/) {
                                         : "Stream start");
                         recording_preflight_errors = {error};
                         std::cerr << "[GUI][stream] " << error << std::endl;
-                    } else {
-                        const bool start_streaming = !camera_control->subscribe;
-                        if (start_streaming) {
-                        const uint64_t stream_start_requested_ns =
-                            orange::gui::GuiStartupTimingRecorder::NowNs();
-                        std::vector<orange::gui::GuiStartupTimingCamera>
-                            stream_timing_cameras;
-                        for (int i = 0; i < num_cameras; ++i) {
-                            if (!gui_camera_has_acquisition_work(cameras_select[i])) {
-                                continue;
-                            }
-                            orange::gui::GuiStartupTimingCamera timing_camera;
-                            timing_camera.serial = cameras_params[i].camera_serial;
-                            timing_camera.camera_index = i;
-                            timing_camera.gpu_id = cameras_params[i].gpu_id;
-                            timing_camera.context = {
-                                {"width", cameras_params[i].width},
-                                {"height", cameras_params[i].height},
-                                {"stream_on", cameras_select[i].stream_on},
-                                {"record", cameras_select[i].record},
-                                {"yolo", cameras_select[i].yolo},
-                                {"crop_and_encode", cameras_select[i].crop_and_encode},
-                                {"pose", cameras_select[i].pose},
-                                {"send_frame_ipc", cameras_select[i].send_frame_ipc},
-                            };
-                            stream_timing_cameras.push_back(std::move(timing_camera));
-                        }
-                        gui_startup_timing.Begin(
-                            "stream_start",
-                            gui_startup_timing_artifact_dir,
-                            stream_timing_cameras,
-                            {
-                                {"ptp_stream_sync", ptp_stream_sync},
-                                {"evt_buffer_size", evt_buffer_size},
-                                {"selected_camera_count", stream_timing_cameras.size()},
-                                {"yolo_model", yolo_model},
-                            },
-                            stream_start_requested_ns);
-                        const uint64_t stream_preflight_started_ns =
-                            orange::gui::GuiStartupTimingRecorder::NowNs();
-                        const RecordingPreflightResult preflight =
-                            run_gui_recording_preflight(
-                                cameras_params,
-                                cameras_select,
-                                num_cameras,
-                                yolo_model,
-                                crop_size_px);
-                        gui_startup_timing.RecordGlobalInterval(
-                            "recording_preflight",
-                            stream_preflight_started_ns,
-                            orange::gui::GuiStartupTimingRecorder::NowNs());
-                        if (!preflight.ok) {
-                            recording_preflight_errors = preflight.errors;
-                            log_recording_preflight_failure("gui_start_streaming", preflight);
-                            gui_startup_timing.MarkHandlerComplete();
-                            gui_startup_timing.MarkFailed("recording_preflight_failed");
-                        } else {
+                    } else if (stream_startup_status.busy &&
+                               !stream_startup_status
+                                    .stream_runtime_installed) {
+                        gui_camera_startup.RequestCancel(
+                            "stream_stop_requested_during_startup");
+                    } else if (!camera_control->subscribe) {
+                        orange::gui::GuiStreamStartupBindings bindings;
+                        bindings.cameras = ecams;
+                        bindings.camera_params = cameras_params;
+                        bindings.camera_selection = cameras_select;
+                        bindings.camera_count = num_cameras;
+                        bindings.camera_control = camera_control;
+                        bindings.ptp_params = ptp_params;
+                        bindings.evt_buffer_size = evt_buffer_size;
+                        bindings.ptp_stream_sync = ptp_stream_sync;
+                        bindings.crop_size_px = crop_size_px;
+                        bindings.display_cuda_device_id = display_gpu_id;
+                        bindings.show_crop_preview_windows =
+                            show_crop_preview_windows;
+                        bindings.yolo_model = &yolo_model;
+                        bindings.encoder_config = encoder_config;
+                        bindings.input_folder = input_folder;
+                        bindings.indigo_signal_builder = &indigo_signal_builder;
+                        bindings.image_writer = image_writer;
+                        bindings.recording_session = &recording_session;
+                        bindings.app_storage_config = &app_storage_config;
+                        bindings.timing = &gui_startup_timing;
+                        bindings.timing_artifact_directory =
+                            gui_startup_timing_artifact_dir;
+                        bindings.camera_resources = &camera_resources;
+                        bindings.frame_ipc_managers = &frame_ipc_managers;
+                        bindings.frame_ipc_init_errors =
+                            &frame_ipc_init_errors;
+                        bindings.display_workers = &openGLDisplayWorkers;
+                        bindings.crop_producer_workers =
+                            &cropProducerWorkers;
+                        bindings.crop_encode_workers =
+                            &cropAndEncodeWorkers;
+                        bindings.crop_preview_workers =
+                            &cropPreviewWorkers;
+                        bindings.spatial_snapshot_workers =
+                            &spatialSnapshotWorkers;
+                        bindings.pose_workers = &poseWorkers;
+                        bindings.display_textures = &tex;
+                        bindings.crop_textures = &crop_tex;
+                        bindings.yolo_workers = &yolo_workers;
+                        bindings.acquisition_threads = &camera_threads;
+
+                        std::string start_error;
+                        if (gui_camera_startup.StartStream(
+                                std::move(bindings), &start_error)) {
                             recording_preflight_errors.clear();
-                            camera_control->subscribe = true;
                             gui_mark_stream_started(&gui_session_timing);
-                            gui_startup_timing.MarkGlobalInstant("subscribe_enabled");
-                        // START STREAMING
-                            std::cout << "STARTING STREAMING SESSION..." << std::endl;
-
-                            if (std::any_of(cameras_select, cameras_select + num_cameras, [](const CameraEachSelect& cs){ return cs.record || cs.crop_and_encode; })) {
-                                // Store the base folder for recordings, not the final timestamped one.
-                                encoder_config->folder_name = input_folder;
-                            }
-
-                            // This part remains the same
-                            const uint64_t pipeline_session_allocation_started_ns =
-                                orange::gui::GuiStartupTimingRecorder::NowNs();
-                            camera_resources.resize(num_cameras);
-                            frame_ipc_managers.clear();
-                            frame_ipc_managers.resize(num_cameras);
-                            frame_ipc_init_errors.clear();
-                            frame_ipc_init_errors.resize(num_cameras);
-                            size_t max_frame_size_bytes = 0;
-                            for (int i = 0; i < num_cameras; ++i) {
-                                size_t current_size = (size_t)cameras_params[i].width * (size_t)cameras_params[i].height;
-                                if (current_size > max_frame_size_bytes) {
-                                    max_frame_size_bytes = current_size;
-                                }
-                            }
-                            gui_startup_timing.RecordGlobalInterval(
-                                "pipeline_session_allocation",
-                                pipeline_session_allocation_started_ns,
-                                orange::gui::GuiStartupTimingRecorder::NowNs());
-                            // CameraResources::initialize and the worker
-                            // constructors below throw on CUDA failures;
-                            // covered by the pipeline-construction try/catch.
-                            try {
-                            for (int i = 0; i < num_cameras; ++i) {
-                                if (!gui_camera_has_acquisition_work(cameras_select[i])) {
-                                    continue;
-                                }
-                                orange::gui::GuiStartupTimingScope timing_scope(
-                                    &gui_startup_timing,
-                                    "camera_resource_and_ipc_initialization",
-                                    cameras_params[i].camera_serial);
-                                std::cout << "Initializing resources for camera " << i << " on GPU " << cameras_params[i].gpu_id << std::endl;
-                                camera_resources[i].initialize(
-                                    cameras_params[i].gpu_id,
-                                    max_frame_size_bytes,
-                                    cameras_select[i].yolo,
-                                    cameras_params[i].recording.resources.acquire_work_entries);
-                                if (cameras_select[i].send_frame_ipc) {
-                                    frame_ipc_managers[i] = std::make_unique<FrameIPCManager>(&cameras_params[i]);
-                                    if (!frame_ipc_managers[i]->isEnabled()) {
-                                        frame_ipc_init_errors[i] = frame_ipc_managers[i]->getInitError();
-                                        frame_ipc_managers[i].reset();
-                                    }
-                                }
-                            }
-                            // Create worker thread objects and GPU textures.
-                            // Worker constructors (YoloWorker, CropAndEncodeWorker, ...)
-                            // and CHECK() throw on CUDA/TensorRT failures; library code
-                            // never exits. Catch construction-time throws here at the
-                            // pipeline construction boundary: print and exit nonzero
-                            // (exiting from main is fine).
-                            const uint64_t worker_storage_allocation_started_ns =
-                                orange::gui::GuiStartupTimingRecorder::NowNs();
-                            openGLDisplayWorkers = new COpenGLDisplay*[num_cameras]();
-                            cropProducerWorkers = new CropProducerWorker*[num_cameras]();
-                            cropAndEncodeWorkers = new CropAndEncodeWorker*[num_cameras]();
-                            cropPreviewWorkers = new CropPreviewWorker*[num_cameras]();
-                            spatialSnapshotWorkers = new SpatialSnapshotWorker*[num_cameras]();
-                            poseWorkers = new PoseWorker*[num_cameras]();
-                            tex = new GL_Texture[num_cameras];
-                            crop_tex = new GL_Texture[num_cameras];
-                            display_uploaded_serials.assign(
-                                num_cameras,
-                                std::numeric_limits<uint64_t>::max());
-                            crop_preview_uploaded_serials.assign(
-                                num_cameras,
-                                std::numeric_limits<uint64_t>::max());
-                            live_preview_texture_ids.assign(
-                                num_cameras,
-                                0);
-                            primary_video_canvas_views.assign(
-                                num_cameras,
-                                {});
-                            yolo_workers.assign(num_cameras, nullptr);
-                            // Initialize all worker pointers to nullptr
-                            for(int i = 0; i < num_cameras; ++i) {
-                                openGLDisplayWorkers[i] = nullptr;
-                                cropProducerWorkers[i] = nullptr;
-                                cropAndEncodeWorkers[i] = nullptr;
-                                cropPreviewWorkers[i] = nullptr;
-                                spatialSnapshotWorkers[i] = nullptr;
-                                poseWorkers[i] = nullptr;
-                            }
-                            cudaSetDevice(display_gpu_id);
-                            gui_startup_timing.RecordGlobalInterval(
-                                "worker_storage_allocation",
-                                worker_storage_allocation_started_ns,
-                                orange::gui::GuiStartupTimingRecorder::NowNs());
-
-                            // Allocate main textures for each camera's OpenGL display
-                            for (int i = 0; i < num_cameras; i++) {
-                                if (cameras_select[i].stream_on) {
-                                    orange::gui::GuiStartupTimingScope timing_scope(
-                                        &gui_startup_timing,
-                                        "display_texture_setup",
-                                        cameras_params[i].camera_serial);
-                                    int w = (int)(cameras_params[i].width / cameras_select[i].downsample);
-                                    int h = (int)(cameras_params[i].height / cameras_select[i].downsample);
-                                    setup_texture(tex[i], w, h);
-                                    if (static_cast<int>(live_preview_texture_ids.size()) < num_cameras) {
-                                        live_preview_texture_ids.resize(num_cameras, 0);
-                                    }
-                                    live_preview_texture_ids[i] = tex[i].texture;
-                                }
-                            }
-
-                            // Setup cropped textures for each crop/encode worker
-                            for (int i = 0; i < num_cameras; i++) {
-                                if (cameras_select[i].crop_and_encode) {
-                                    orange::gui::GuiStartupTimingScope timing_scope(
-                                        &gui_startup_timing,
-                                        "crop_texture_setup",
-                                        cameras_params[i].camera_serial);
-                                    setup_texture(
-                                        crop_tex[i],
-                                        crop_size_px,
-                                        crop_size_px);
-                                }
-                            }
-
-                            // CREATE AND LINK ALL WORKER THREADS
-                            for (int i = 0; i < num_cameras; i++) {
-                                orange::gui::GuiStartupTimingScope timing_scope(
-                                    &gui_startup_timing,
-                                    "worker_construction",
-                                    cameras_params[i].camera_serial);
-                                if (cameras_select[i].stream_on) {
-                                    std::string name = "OpenGLDisplay_Cam_" + cameras_params[i].camera_serial;
-                                    openGLDisplayWorkers[i] = new COpenGLDisplay(name.c_str(), &cameras_params[i], &cameras_select[i], tex[i].cuda_buffer, &indigo_signal_builder, *camera_resources[i].recycle_queue);
-                                }
-                                if (cameras_select[i].yolo) {
-                                    std::string name = "YoloWorker_Cam_" + cameras_params[i].camera_serial;
-                                    cameras_select[i].yolo_model = yolo_model.c_str();
-                                    yolo_workers[i] = new YoloWorker(
-                                        name.c_str(),
-                                        &cameras_params[i],
-                                        &cameras_select[i],
-                                        camera_control,
-                                        *camera_resources[i].recycle_queue
-                                    );
-                                    if (openGLDisplayWorkers[i]) {
-                                        yolo_workers[i]->SetDisplayWorker(openGLDisplayWorkers[i]);
-                                    }
-                                }
-                                if (cameras_select[i].crop_and_encode || cameras_select[i].pose) {
-                                    std::string name = "CropProducer_Cam_" + cameras_params[i].camera_serial;
-                                    cropProducerWorkers[i] = new CropProducerWorker(
-                                        name.c_str(),
-                                        &cameras_params[i],
-                                        *camera_resources[i].recycle_queue,
-                                        camera_control,
-                                        crop_size_px
-                                    );
-                                    if (yolo_workers[i]) {
-                                        yolo_workers[i]->SetCropProducerWorker(cropProducerWorkers[i]);
-                                    }
-                                }
-                                if (cameras_select[i].crop_and_encode) {
-                                    std::string name = "CropEncode_Cam_" + cameras_params[i].camera_serial;
-                                    cropAndEncodeWorkers[i] = new CropAndEncodeWorker(
-                                        name.c_str(),
-                                        &cameras_params[i],
-                                        encoder_config->folder_name,
-                                        *camera_resources[i].recycle_queue,
-                                        crop_tex[i].cuda_buffer,
-                                        camera_control,
-                                        crop_size_px
-                                    );
-                                    if (cropProducerWorkers[i]) {
-                                        std::string preview_name = "CropPreview_Cam_" + cameras_params[i].camera_serial;
-                                        cropPreviewWorkers[i] = new CropPreviewWorker(
-                                            preview_name.c_str(),
-                                            &cameras_params[i],
-                                            crop_tex[i].cuda_buffer,
-                                            cropProducerWorkers[i]->GetCropProducer(),
-                                            crop_size_px);
-                                        cropPreviewWorkers[i]->SetPreviewDisplayEnabled(
-                                            show_crop_preview_windows);
-                                        cropAndEncodeWorkers[i]->SetCropProducer(
-                                            cropProducerWorkers[i]->GetCropProducer());
-                                        cropAndEncodeWorkers[i]->SetCropProducerWorker(
-                                            cropProducerWorkers[i]);
-                                        cropAndEncodeWorkers[i]->SetCropPreviewWorker(
-                                            cropPreviewWorkers[i]);
-                                        cropProducerWorkers[i]->SetCropPreviewWorker(
-                                            cropPreviewWorkers[i]);
-                                        cropProducerWorkers[i]->SetCropAndEncodeWorker(cropAndEncodeWorkers[i]);
-                                    }
-                                }
-                                if (cameras_select[i].pose && cropProducerWorkers[i]) {
-                                    std::string name = "PoseWorker_Cam_" + cameras_params[i].camera_serial;
-                                    poseWorkers[i] = new PoseWorker(
-                                        name.c_str(),
-                                        &cameras_params[i],
-                                        cropProducerWorkers[i]->GetCropProducer(),
-                                        frame_ipc_managers[i].get());
-                                    cropProducerWorkers[i]->SetPoseWorker(poseWorkers[i]);
-                                }
-                                if (gui_camera_has_acquisition_work(cameras_select[i])) {
-                                    std::string name =
-                                        "SpatialSnapshot_Cam_" + cameras_params[i].camera_serial;
-                                    spatialSnapshotWorkers[i] = new SpatialSnapshotWorker(
-                                        name.c_str(),
-                                        &cameras_params[i],
-                                        *camera_resources[i].recycle_queue);
-                                }
-                            }
-
-                            {
-                                orange::gui::GuiStartupTimingScope timing_scope(
-                                    &gui_startup_timing,
-                                    "recording_pipeline_construction");
-                                orange::session::create_recording_pipelines_for_stream(
-                                    &recording_session,
-                                    cameras_params,
-                                    cameras_select,
-                                    num_cameras,
-                                    *encoder_config,
-                                    camera_resources.data(),
-                                    camera_control,
-                                    &app_storage_config);
-                            }
-                            } catch (const std::exception& ex) {
-                                std::cerr << "FATAL: pipeline construction failed: "
-                                          << ex.what() << std::endl;
-                                gui_startup_timing.MarkHandlerComplete();
-                                gui_startup_timing.MarkFailed(
-                                    std::string("pipeline_construction_failed: ") + ex.what());
-                                gui_startup_timing.FlushPending();
-                                return 1;
-                            }
-
-                            // START ALL WORKER THREADS
-                            for (int i = 0; i < num_cameras; i++) {
-                                orange::gui::GuiStartupTimingScope timing_scope(
-                                    &gui_startup_timing,
-                                    "worker_thread_start",
-                                    cameras_params[i].camera_serial);
-                                if (openGLDisplayWorkers[i]) {
-                                    openGLDisplayWorkers[i]->SetMaxQueueSize(240); 
-                                    openGLDisplayWorkers[i]->StartThread();
-                                }
-                                if (cropAndEncodeWorkers[i]) {
-                                    cropAndEncodeWorkers[i]->SetMaxQueueSize(240);
-                                    cropAndEncodeWorkers[i]->StartThread();
-                                }
-                                if (cropPreviewWorkers[i]) {
-                                    cropPreviewWorkers[i]->SetMaxQueueSize(
-                                        CropPreviewWorker::kDefaultQueueSize);
-                                    cropPreviewWorkers[i]->StartThread();
-                                }
-                                if (poseWorkers[i]) {
-                                    poseWorkers[i]->SetMaxQueueSize(32);
-                                    poseWorkers[i]->StartThread();
-                                }
-                                if (spatialSnapshotWorkers[i]) {
-                                    spatialSnapshotWorkers[i]->SetMaxQueueSize(2);
-                                    spatialSnapshotWorkers[i]->StartThread();
-                                }
-                                if (cropProducerWorkers[i]) {
-                                    cropProducerWorkers[i]->SetMaxQueueSize(240);
-                                    cropProducerWorkers[i]->StartThread();
-                                }
-                                if (yolo_workers[i]) {
-                                    yolo_workers[i]->SetMaxQueueSize(240);
-                                    yolo_workers[i]->StartThread();
-                                }
-                                orange::session::start_recording_pipeline_for_camera(&recording_session, i);
-                            }
-
-                            // PREPARE CAMERAS
-                            for (int i = 0; i < num_cameras; i++) {
-                                if (!gui_camera_has_acquisition_work(cameras_select[i])) {
-                                    continue;
-                                }
-                                {
-                                    orange::gui::GuiStartupTimingScope timing_scope(
-                                        &gui_startup_timing,
-                                        "stream_open",
-                                        cameras_params[i].camera_serial);
-                                    camera_open_stream(
-                                        &ecams[i].camera,
-                                        &cameras_params[i],
-                                        "gui_start_streaming");
-                                }
-                                {
-                                    orange::gui::GuiStartupTimingScope timing_scope(
-                                        &gui_startup_timing,
-                                        "frame_buffer_allocate_and_queue",
-                                        cameras_params[i].camera_serial);
-                                    ecams[i].evt_frame =
-                                        new Emergent::CEmergentFrame[evt_buffer_size];
-                                    ecams[i].evt_frame_count = evt_buffer_size;
-                                    allocate_frame_buffer(
-                                        &ecams[i].camera,
-                                        ecams[i].evt_frame,
-                                        &cameras_params[i],
-                                        evt_buffer_size);
-                                }
-                            }
-                            if (ptp_stream_sync) {
-                                for (int i = 0; i < num_cameras; i++) {
-                                    if (!gui_camera_has_acquisition_work(cameras_select[i])) {
-                                        continue;
-                                    }
-                                    orange::gui::GuiStartupTimingScope timing_scope(
-                                        &gui_startup_timing,
-                                        "ptp_mode_configuration",
-                                        cameras_params[i].camera_serial);
-                                    ptp_camera_sync(&ecams[i].camera, &cameras_params[i]);
-                                }
-                                camera_control->sync_camera = true;
-                            }
-
-                            // Start acquisition threads
-                            for (int i = 0; i < num_cameras; i++) {
-                                if (!gui_camera_has_acquisition_work(cameras_select[i])) {
-                                    continue;
-                                }
-                                // Thread boundary (docs/error_handling_convention.md):
-                                // an exception escaping a raw std::thread would
-                                // std::terminate the whole process. Catch, log
-                                // loudly, and let the thread exit cleanly so
-                                // other cameras keep streaming and recordings
-                                // can still be finalized.
-                                CameraEmergent* acquire_ecam = &ecams[i];
-                                CameraParams* acquire_params = &cameras_params[i];
-                                CameraEachSelect* acquire_select = &cameras_select[i];
-                                INDIGOSignalBuilder* acquire_indigo = &indigo_signal_builder;
-                                COpenGLDisplay* acquire_display = openGLDisplayWorkers[i];
-                                RecordingIngress* acquire_ingress =
-                                    orange::session::recording_ingress_for_camera(recording_session, i);
-                                YoloWorker* acquire_yolo = yolo_workers[i];
-                                CameraResources* acquire_resources = &camera_resources[i];
-                                FrameIPCManager* acquire_ipc = frame_ipc_managers[i].get();
-                                SpatialSnapshotWorker* acquire_snapshot =
-                                    spatialSnapshotWorkers ? spatialSnapshotWorkers[i] : nullptr;
-                                orange::gui::GuiStartupTimingRecorder*
-                                    acquire_startup_timing = &gui_startup_timing;
-                                {
-                                    orange::gui::GuiStartupTimingScope timing_scope(
-                                        &gui_startup_timing,
-                                        "acquisition_thread_launch",
-                                        cameras_params[i].camera_serial);
-                                    camera_threads.emplace_back(
-                                        [=]() {
-                                        try {
-                                            acquire_frames(
-                                                acquire_ecam,
-                                                acquire_params,
-                                                acquire_select,
-                                                camera_control,
-                                                ptp_params,
-                                                acquire_indigo,
-                                                acquire_display,
-                                                acquire_ingress,
-                                                acquire_yolo,
-                                                image_writer,
-                                                acquire_resources,
-                                                acquire_ipc,
-                                                nullptr,
-                                                acquire_snapshot,
-                                                acquire_startup_timing);
-                                        } catch (const std::exception& ex) {
-                                            acquire_startup_timing->MarkCameraInstant(
-                                                acquire_params->camera_serial,
-                                                "acquisition_thread_failed",
-                                                0,
-                                                {{"error", ex.what()}});
-                                            std::cerr << "[FATAL] acquisition thread for camera "
-                                                      << acquire_params->camera_serial
-                                                      << " failed: " << ex.what() << std::endl;
-                                        } catch (...) {
-                                            acquire_startup_timing->MarkCameraInstant(
-                                                acquire_params->camera_serial,
-                                                "acquisition_thread_failed",
-                                                0,
-                                                {{"error", "non_std_exception"}});
-                                            std::cerr << "[FATAL] acquisition thread for camera "
-                                                      << acquire_params->camera_serial
-                                                      << " failed with a non-std exception" << std::endl;
-                                        }
-                                        });
-                                }
-                            }
-                            gui_startup_timing.MarkHandlerComplete();
-                        }
+                            std::cout << "STARTING STREAMING SESSION..."
+                                      << std::endl;
                         } else {
-                            stop_streaming_and_teardown();
+                            recording_preflight_errors = {
+                                start_error.empty()
+                                    ? "Could not start the asynchronous stream controller."
+                                    : start_error};
+                            std::cerr << "[GUI][stream] "
+                                      << recording_preflight_errors.front()
+                                      << std::endl;
                         }
+                    } else {
+                        if (stream_startup_status.busy) {
+                            gui_camera_startup.RequestCancel(
+                                "stream_stop_requested_during_first_frame_wait");
+                        }
+                        stop_streaming_and_teardown();
                     }
                 }
                 if (calibration_tool_busy) {
                     ImGui::EndDisabled();
+                }
+                if (stream_startup_status.busy) {
+                    ImGui::TextDisabled(
+                        "Stream startup: %s",
+                        stream_startup_status.message.c_str());
                 }
             }
 
@@ -7335,8 +6798,20 @@ int main(int /*argc*/, char ** /*args*/) {
                 if (calibration_tool_busy) {
                     ImGui::BeginDisabled();
                 }
-                if (ImGui::Button(camera_control->record_video ? ICON_FK_PAUSE : ICON_FK_PLAY) ||
-                    gui_autorun_requests.toggle_recording) {
+                const bool recording_control_startup_locked =
+                    gui_camera_startup.busy();
+                if (recording_control_startup_locked) {
+                    ImGui::BeginDisabled();
+                }
+                const bool recording_toggle_requested =
+                    ImGui::Button(
+                        camera_control->record_video ? ICON_FK_PAUSE : ICON_FK_PLAY) ||
+                    (!recording_control_startup_locked &&
+                     gui_autorun_requests.toggle_recording);
+                if (recording_control_startup_locked) {
+                    ImGui::EndDisabled();
+                }
+                if (recording_toggle_requested) {
                     if (gui_async_recording_start.active) {
                         // Debounce: a background external-recorder start is
                         // still pending; ignore the press until it resolves.
@@ -7872,6 +7347,17 @@ int main(int /*argc*/, char ** /*args*/) {
                      " window-close shutdown." << std::endl;
     }
 
+    const orange::gui::GuiCameraStartupStatus shutdown_startup_status =
+        gui_camera_startup.status();
+    if (shutdown_startup_status.busy &&
+        !shutdown_startup_status.stream_runtime_installed) {
+        // Join and roll back a pre-activation camera/stream startup before the
+        // ordinary teardown touches runtime arrays that do not exist yet.
+        gui_camera_startup.ShutdownGuiThread();
+    } else if (shutdown_startup_status.busy) {
+        gui_camera_startup.RequestCancel("gui_shutdown");
+    }
+
     if (camera_control->subscribe) {
         std::cout << "Window closed while streaming; running stream shutdown..." << std::endl;
         stop_streaming_and_teardown();
@@ -7927,6 +7413,7 @@ int main(int /*argc*/, char ** /*args*/) {
             }
         }
     }
+    gui_camera_startup.ShutdownGuiThread();
     gui_startup_timing.FlushPending();
 
     if (camera_control->open) {

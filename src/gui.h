@@ -1,6 +1,7 @@
 #ifndef ORANGE_GUI
 #define ORANGE_GUI
 #include "gx_helper.h"
+#include "gui/texture_resources.h"
 #include "camera.h"
 #include "project.h"
 #include <math.h>
@@ -10,64 +11,6 @@
 #include "yolo_worker.h" // Include the YoloWorker header
 #include "network_base.h"
 #include "enet_thread.h"
-
-struct GL_Texture {
-    GLuint texture;
-    GLuint pbo;
-    cudaGraphicsResource_t cuda_resource;
-    unsigned char* cuda_buffer;
-    size_t cuda_pbo_storage_buffer_size;
-    cudaStream_t streams;
-    int num_channels;
-};
-
-void setup_texture(GL_Texture& tex, int width, int height) {
-    cudaStreamCreate(&tex.streams);
-    create_pbo(&tex.pbo, width, height);
-    register_pbo_to_cuda(&tex.pbo, &tex.cuda_resource);
-    map_cuda_resource(&tex.cuda_resource, tex.streams);
-    cuda_pointer_from_resource(&tex.cuda_buffer, &tex.cuda_pbo_storage_buffer_size, &tex.cuda_resource);
-    if (tex.cuda_buffer) {
-        cudaMemsetAsync(tex.cuda_buffer, 0, static_cast<size_t>(width) * height * 4, tex.streams);
-        cudaStreamSynchronize(tex.streams);
-    }
-    create_texture(&tex.texture, width, height);
-}
-
-void upload_texture_from_pbo(GL_Texture& tex, int width, int height) {
-    bind_pbo(&tex.pbo);
-    bind_texture(&tex.texture);
-    upload_image_pbo_to_texture(width, height);  // Uses currently bound PBO and texture
-    unbind_pbo();
-    unbind_texture();
-}
-
-void clear_upload_and_cleanup(GL_Texture& tex, int width, int height) {
-    // Clear the CUDA buffer
-    int size_pic = width * height * sizeof(unsigned char) * 4;
-    if (tex.cuda_buffer) { // Check if buffer was actually allocated (e.g. stream_on was true)
-      cudaMemset(tex.cuda_buffer, 0, size_pic);
-    }
-
-    // Upload from PBO to texture
-    upload_texture_from_pbo(tex, width, height);
-
-    // Cleanup resources
-    gx_delete_buffer(&tex.pbo);
-    if (tex.cuda_resource) { // Check if resource was registered
-      unmap_cuda_resource(&tex.cuda_resource);
-      cuda_unregister_pbo(tex.cuda_resource);
-    }
-    if (tex.streams) {
-      cudaStreamDestroy(tex.streams);
-      tex.streams = nullptr;
-    }
-    if (tex.texture) {
-      glDeleteTextures(1, &tex.texture);
-      tex.texture = 0;
-    }
-    tex.cuda_buffer = nullptr;
-}
 
 // utility structure for realtime plot
 struct ScrollingBuffer {
