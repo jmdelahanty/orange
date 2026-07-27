@@ -369,11 +369,67 @@
         },
         "source": {"type": "object"},
         "available_for_downstream_detection_gating": {"const": true},
-        "active_in_orange_live_detection_pipeline": {"const": false},
+        "active_in_orange_live_detection_pipeline": {"type": "boolean"},
+        "orange_live_detection_pipeline_mode": {
+          "enum": ["off", "audit", "gate_only", "gate_and_input_mask"]
+        },
+        "active_in_orange_neural_input_mask": {"type": "boolean"},
         "gating_semantics": {
           "const": "bounding_box_centroid_inside_valid_detection_region"
         }
       },
+      "oneOf": [
+        {
+          "description": "Persisted geometry that was not armed for this recording.",
+          "not": {
+            "required": ["orange_live_detection_pipeline_mode"]
+          },
+          "properties": {
+            "active_in_orange_live_detection_pipeline": {"const": false},
+            "active_in_orange_neural_input_mask": {"const": false}
+          }
+        },
+        {
+          "description": "Off and audit-only modes do not enforce the dish mask.",
+          "required": [
+            "orange_live_detection_pipeline_mode",
+            "active_in_orange_neural_input_mask"
+          ],
+          "properties": {
+            "orange_live_detection_pipeline_mode": {
+              "enum": ["off", "audit"]
+            },
+            "active_in_orange_live_detection_pipeline": {"const": false},
+            "active_in_orange_neural_input_mask": {"const": false}
+          }
+        },
+        {
+          "description": "Centroid-gate mode enforces the registered region without changing the neural-network input.",
+          "required": [
+            "orange_live_detection_pipeline_mode",
+            "active_in_orange_neural_input_mask"
+          ],
+          "properties": {
+            "orange_live_detection_pipeline_mode": {"const": "gate_only"},
+            "active_in_orange_live_detection_pipeline": {"const": true},
+            "active_in_orange_neural_input_mask": {"const": false}
+          }
+        },
+        {
+          "description": "Combined mode both masks neural-network input and enforces the centroid gate.",
+          "required": [
+            "orange_live_detection_pipeline_mode",
+            "active_in_orange_neural_input_mask"
+          ],
+          "properties": {
+            "orange_live_detection_pipeline_mode": {
+              "const": "gate_and_input_mask"
+            },
+            "active_in_orange_live_detection_pipeline": {"const": true},
+            "active_in_orange_neural_input_mask": {"const": true}
+          }
+        }
+      ],
       "additionalProperties": true
     }
   },

@@ -962,10 +962,14 @@ recording geometry contract. Source paths and checksums remain present for
 provenance.
 
 This is intentionally separate from claiming that Orange used the region as a
-live detector gate. Until Slice 3 is implemented,
-`active_in_orange_live_detection_pipeline` remains `false`. Citrus records its
-own exact daily-registration application state independently; Orange only marks
-the selected mask as applied by Citrus after the returned camera, arena,
+live detector gate. The persisted source snapshot starts with
+`active_in_orange_live_detection_pipeline = false`. At recording arm, Orange
+changes the recording-local copy to `true` only for the enforcing `gate_only`
+or `gate_and_input_mask` modes and records the exact mode alongside it. Audit
+and off modes remain `false`; only `gate_and_input_mask` sets
+`active_in_orange_neural_input_mask = true`. Citrus records its own exact
+daily-registration application state independently; Orange only marks the
+selected mask as applied by Citrus after the returned camera, arena,
 registration path, and checksum all match.
 
 Representative `recording_snapshot.json` block:

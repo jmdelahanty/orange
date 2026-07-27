@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -22,6 +23,7 @@
 #include <map>
 #include <sstream>
 #include <thread>
+#include <utility>
 
 namespace orange::session {
 
@@ -1100,6 +1102,403 @@ nlohmann::json build_camera_artifact_json(
     return out;
 }
 
+constexpr int64_t kTaiMinusUtcSecondsForClockRuleV1 = 37;
+constexpr int64_t kNanosecondsPerSecond = 1000000000LL;
+constexpr int64_t kCameraRealtimeOffsetToleranceNs = 1000000000LL;
+constexpr int64_t kCameraRealtimeOffsetMaxSpanNs = 1000000000LL;
+constexpr int64_t kPtpOffsetMaxAbsNs = 10000000LL;
+constexpr int64_t kLatchMinusFrameMinNs = -10000000LL;
+constexpr int64_t kLatchMinusFrameMaxNs = 1000000000LL;
+
+bool json_integer(const nlohmann::json& object,
+                  const char* key,
+                  int64_t* value_out)
+{
+    if (!object.is_object() || !key || !value_out || !object.contains(key) ||
+        (!object[key].is_number_integer() && !object[key].is_number_unsigned())) {
+        return false;
+    }
+    try {
+        *value_out = object[key].get<int64_t>();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool json_number(const nlohmann::json& object,
+                 const char* key,
+                 long double* value_out)
+{
+    if (!object.is_object() || !key || !value_out || !object.contains(key) ||
+        !object[key].is_number()) {
+        return false;
+    }
+    try {
+        *value_out = object[key].get<long double>();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+uint64_t stats_samples(const nlohmann::json& stats)
+{
+    if (!stats.is_object() || !stats.contains("samples") ||
+        (!stats["samples"].is_number_unsigned() &&
+         !stats["samples"].is_number_integer())) {
+        return 0;
+    }
+    try {
+        return stats["samples"].get<uint64_t>();
+    } catch (...) {
+        return 0;
+    }
+}
+
+std::string lower_ascii_copy(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+bool readback_is_stable_and_enabled(const nlohmann::json& readback,
+                                    const bool mode_readback)
+{
+    if (!readback.is_object() || readback.value("samples", 0ULL) == 0) {
+        return false;
+    }
+    if (readback.value("changes", 0ULL) != 0 ||
+        !readback.contains("last") || !readback["last"].is_string()) {
+        return false;
+    }
+    const std::string value = lower_ascii_copy(readback["last"].get<std::string>());
+    if (mode_readback) {
+        return !value.empty() && value != "off" && value != "disabled";
+    }
+    return value == "slave" || value == "master";
+}
+
+std::pair<uint64_t, uint64_t> recording_frame_range_for_camera(
+    const nlohmann::json& manifest,
+    const std::string& camera_serial,
+    const nlohmann::json& camera_evidence)
+{
+    uint64_t first = 0;
+    uint64_t last = 0;
+    const auto include_artifact = [&](const nlohmann::json& artifact) {
+        if (!artifact.is_object()) {
+            return;
+        }
+        const uint64_t artifact_first = artifact.value(
+            "first_recording_frame_id", 0ULL);
+        const uint64_t artifact_last = artifact.value(
+            "last_recording_frame_id", 0ULL);
+        if (artifact_first > 0 && (first == 0 || artifact_first < first)) {
+            first = artifact_first;
+        }
+        if (artifact_last > last) {
+            last = artifact_last;
+        }
+    };
+
+    const nlohmann::json camera_artifacts = manifest.value(
+        "camera_artifacts", nlohmann::json::object());
+    if (camera_artifacts.is_object() && camera_artifacts.contains(camera_serial)) {
+        include_artifact(camera_artifacts[camera_serial]);
+    }
+
+    const nlohmann::json clips = manifest.value("clips", nlohmann::json::array());
+    if (clips.is_array()) {
+        for (const nlohmann::json& clip : clips) {
+            if (!clip.is_object()) {
+                continue;
+            }
+            const nlohmann::json clip_camera_artifacts = clip.value(
+                "camera_artifacts", nlohmann::json::object());
+            if (clip_camera_artifacts.is_object() &&
+                clip_camera_artifacts.contains(camera_serial)) {
+                include_artifact(clip_camera_artifacts[camera_serial]);
+                continue;
+            }
+            const nlohmann::json artifacts = clip.value(
+                "artifacts", nlohmann::json::object());
+            const nlohmann::json metadata = artifacts.value(
+                "metadata", nlohmann::json::object());
+            if (metadata.is_object() && metadata.contains(camera_serial)) {
+                const nlohmann::json rollover = clip.value(
+                    "rollover", nlohmann::json::object());
+                include_artifact(rollover);
+            }
+        }
+    }
+
+    if (last == 0 && camera_evidence.is_object()) {
+        last = camera_evidence.value("last_recording_frame_id", 0ULL);
+        if (last > 0) {
+            first = 1;
+        }
+    }
+    return {first, last};
+}
+
+nlohmann::json build_camera_clock_descriptor(
+    const std::string& camera_serial,
+    const nlohmann::json& session_sync,
+    const nlohmann::json& camera_evidence)
+{
+    const nlohmann::json empty_object = nlohmann::json::object();
+    const nlohmann::json& ptp_offset = camera_evidence.is_object()
+        ? camera_evidence.value("ptp_offset_ns", empty_object) : empty_object;
+    const nlohmann::json& latch_minus_frame = camera_evidence.is_object()
+        ? camera_evidence.value("latch_minus_frame_ns", empty_object) : empty_object;
+    const nlohmann::json& camera_minus_realtime = camera_evidence.is_object()
+        ? camera_evidence.value("recording_camera_minus_realtime_ns", empty_object)
+        : empty_object;
+    const nlohmann::json& ptp_mode_readback = camera_evidence.is_object()
+        ? camera_evidence.value("ptp_mode_readback", empty_object) : empty_object;
+    const nlohmann::json& ptp_status_readback = camera_evidence.is_object()
+        ? camera_evidence.value("ptp_status_readback", empty_object) : empty_object;
+
+    const bool session_ptp_enabled =
+        session_sync.is_object() && session_sync.value("camera_sync_enabled", false) &&
+        session_sync.value("mode", std::string("none")) != "none";
+    const bool camera_ptp_enabled =
+        camera_evidence.is_object() &&
+        camera_evidence.value("sync_camera_enabled", false);
+    const bool camera_evidence_available = camera_evidence.is_object() &&
+        !camera_evidence.empty();
+    const bool source_summary_finalized =
+        camera_evidence_available && camera_evidence.value("finalized", false);
+
+    int64_t ptp_offset_min = 0;
+    int64_t ptp_offset_max = 0;
+    const bool ptp_offset_bounded =
+        stats_samples(ptp_offset) > 0 &&
+        json_integer(ptp_offset, "min", &ptp_offset_min) &&
+        json_integer(ptp_offset, "max", &ptp_offset_max) &&
+        std::fabs(static_cast<long double>(ptp_offset_min)) <= kPtpOffsetMaxAbsNs &&
+        std::fabs(static_cast<long double>(ptp_offset_max)) <= kPtpOffsetMaxAbsNs;
+
+    int64_t latch_min = 0;
+    int64_t latch_max = 0;
+    const bool latch_agreement =
+        stats_samples(latch_minus_frame) > 0 &&
+        json_integer(latch_minus_frame, "min", &latch_min) &&
+        json_integer(latch_minus_frame, "max", &latch_max) &&
+        latch_min >= kLatchMinusFrameMinNs && latch_max <= kLatchMinusFrameMaxNs;
+
+    long double camera_realtime_mean = 0.0;
+    int64_t camera_realtime_min = 0;
+    int64_t camera_realtime_max = 0;
+    const int64_t expected_offset_ns =
+        kTaiMinusUtcSecondsForClockRuleV1 * kNanosecondsPerSecond;
+    const bool camera_realtime_offset_matches =
+        stats_samples(camera_minus_realtime) > 0 &&
+        json_number(camera_minus_realtime, "mean", &camera_realtime_mean) &&
+        json_integer(camera_minus_realtime, "min", &camera_realtime_min) &&
+        json_integer(camera_minus_realtime, "max", &camera_realtime_max) &&
+        std::fabs(camera_realtime_mean - expected_offset_ns) <=
+            kCameraRealtimeOffsetToleranceNs &&
+        camera_realtime_max >= camera_realtime_min &&
+        camera_realtime_max - camera_realtime_min <=
+            kCameraRealtimeOffsetMaxSpanNs;
+
+    const bool ptp_readbacks_stable =
+        readback_is_stable_and_enabled(ptp_mode_readback, true) &&
+        readback_is_stable_and_enabled(ptp_status_readback, false);
+    const bool inferred_tai =
+        session_ptp_enabled && camera_ptp_enabled && camera_evidence_available &&
+        ptp_offset_bounded && latch_agreement && camera_realtime_offset_matches &&
+        ptp_readbacks_stable;
+
+    nlohmann::json descriptor = {
+        {"clock_id", "camera_" + camera_serial},
+        {"unit", "nanosecond"},
+        {"clock_domain", inferred_tai ? "camera_hardware_ptp" : "camera_hardware"},
+        {"source_field", "Emergent::CEmergentFrame.timestamp"},
+        {"producer", "camera_firmware_via_emergent_esdk"},
+        {"orange_transformation", "none"},
+        {"classification", inferred_tai ? "ieee1588_tai" : "device_defined"},
+        {"origin", inferred_tai
+            ? nlohmann::json("1970-01-01T00:00:00 TAI") : nlohmann::json(nullptr)},
+        {"timescale", inferred_tai ? "TAI" : "device_defined"},
+        {"semantic_authority", inferred_tai
+            ? "inferred_from_recording_evidence" : "epoch_unspecified"},
+        {"semantic_authority_by_property", {
+            {"unit", "orange_deployment_contract"},
+            {"source_field", "orange_producer_declared"},
+            {"clock_domain", inferred_tai
+                ? "inferred_from_recording_evidence" : "device_declared"},
+            {"origin", inferred_tai
+                ? "inferred_from_recording_evidence" : "unspecified"},
+            {"timescale", inferred_tai
+                ? "inferred_from_recording_evidence" : "unspecified"}
+        }},
+        {"inference", {
+            {"rule_id", "orange_camera_clock_classification_v1"},
+            {"result", inferred_tai ? "pass" : "insufficient_evidence"},
+            {"expected_tai_minus_utc_seconds", kTaiMinusUtcSecondsForClockRuleV1},
+            {"checks", {
+                {"session_ptp_enabled", session_ptp_enabled},
+                {"camera_ptp_enabled", camera_ptp_enabled},
+                {"camera_evidence_available", camera_evidence_available},
+                {"source_summary_finalized", source_summary_finalized},
+                {"ptp_offset_bounded", ptp_offset_bounded},
+                {"latch_agreement", latch_agreement},
+                {"camera_minus_realtime_matches", camera_realtime_offset_matches},
+                {"ptp_readbacks_stable", ptp_readbacks_stable}
+            }},
+            {"thresholds_ns", {
+                {"camera_minus_realtime_tolerance", kCameraRealtimeOffsetToleranceNs},
+                {"camera_minus_realtime_max_span", kCameraRealtimeOffsetMaxSpanNs},
+                {"ptp_offset_max_abs", kPtpOffsetMaxAbsNs},
+                {"latch_minus_frame_min", kLatchMinusFrameMinNs},
+                {"latch_minus_frame_max", kLatchMinusFrameMaxNs}
+            }}
+        }},
+        {"evidence_snapshot", {
+            {"sync_camera_enabled", camera_evidence.value("sync_camera_enabled", false)},
+            {"finalized", camera_evidence.value("finalized", false)},
+            {"ptp_offset_ns", ptp_offset},
+            {"latch_minus_frame_ns", latch_minus_frame},
+            {"recording_camera_minus_realtime_ns", camera_minus_realtime},
+            {"ptp_mode_readback", ptp_mode_readback},
+            {"ptp_status_readback", ptp_status_readback},
+            {"ptp_readback_observations", camera_evidence.value(
+                "ptp_readback_observations", nlohmann::json::array())}
+        }}
+    };
+    return descriptor;
+}
+
+void add_finalized_timestamp_clock_contract(
+    nlohmann::json* manifest,
+    const std::filesystem::path& manifest_path)
+{
+    if (!manifest || !manifest->is_object()) {
+        return;
+    }
+    const auto existing_contract = manifest->find("timestamp_clock_contract");
+    if (existing_contract != manifest->end() && existing_contract->is_object() &&
+        existing_contract->value("schema_id", std::string()) ==
+            "orange.recording.timestamp_clocks" &&
+        existing_contract->value("schema_version", 0) == 1 &&
+        existing_contract->value("status", std::string()) == "finalized") {
+        return;
+    }
+
+    const std::filesystem::path summary_path =
+        manifest_path.parent_path() / "ptp_sync_summary.json";
+    std::string summary_bytes;
+    std::string summary_read_error;
+    nlohmann::json ptp_summary = nlohmann::json::object();
+    bool summary_valid = false;
+    if (orange::gui::spatial_layout::checksum::read_file(
+            summary_path, &summary_bytes, &summary_read_error)) {
+        ptp_summary = nlohmann::json::parse(summary_bytes, nullptr, false);
+        summary_valid = ptp_summary.is_object();
+    }
+
+    nlohmann::json contract = {
+        {"schema_id", "orange.recording.timestamp_clocks"},
+        {"schema_version", 1},
+        {"status", "finalized"},
+        {"timestamp_fields", {
+            {"timestamp", {
+                {"semantic_name", "camera_timestamp_ns"},
+                {"unit", "nanosecond"},
+                {"clock_assignment", "camera_serial"},
+                {"csv_columns", {"timestamp"}}
+            }},
+            {"timestamp_sys", {
+                {"semantic_name", "host_receive_timestamp_posix_ns"},
+                {"unit", "nanosecond"},
+                {"clock_id", "host_realtime"},
+                {"csv_columns", {"timestamp_sys"}}
+            }}
+        }},
+        {"clocks", {
+            {"host_realtime", {
+                {"clock_id", "host_realtime"},
+                {"unit", "nanosecond"},
+                {"origin", "1970-01-01T00:00:00 UTC"},
+                {"timescale", "POSIX"},
+                {"clock_domain", "host_system_realtime"},
+                {"source_field", "clock_gettime(CLOCK_REALTIME)"},
+                {"producer", "orange_acquisition"},
+                {"sample_event", "immediately_after_EVT_CameraGetFrame_returns"},
+                {"semantic_authority", "producer_declared"},
+                {"monotonic", false},
+                {"recording_relative", false}
+            }}
+        }},
+        {"camera_assignments", nlohmann::json::object()},
+        {"clock_state_intervals", nlohmann::json::object()},
+        {"evidence", {
+            {"ptp_sync_summary", {
+                {"relative_path", "ptp_sync_summary.json"},
+                {"available", summary_valid},
+                {"sha256", summary_valid
+                    ? nlohmann::json("sha256:" +
+                        orange::gui::spatial_layout::checksum::sha256_hex(summary_bytes))
+                    : nlohmann::json(nullptr)}
+            }}
+        }}
+    };
+
+    const nlohmann::json session_sync = summary_valid
+        ? ptp_summary.value("sync", nlohmann::json::object())
+        : nlohmann::json::object();
+    const nlohmann::json summary_cameras = summary_valid
+        ? ptp_summary.value("cameras", nlohmann::json::object())
+        : nlohmann::json::object();
+    const nlohmann::json cameras = manifest->value("cameras", nlohmann::json::array());
+    if (cameras.is_array()) {
+        for (const nlohmann::json& camera_value : cameras) {
+            if (!camera_value.is_string()) {
+                continue;
+            }
+            const std::string serial = camera_value.get<std::string>();
+            if (serial.empty()) {
+                continue;
+            }
+            const nlohmann::json camera_evidence =
+                summary_cameras.is_object() && summary_cameras.contains(serial) &&
+                summary_cameras[serial].is_object()
+                    ? summary_cameras[serial] : nlohmann::json::object();
+            nlohmann::json descriptor = build_camera_clock_descriptor(
+                serial, session_sync, camera_evidence);
+            const std::string clock_id = descriptor.value(
+                "clock_id", "camera_" + serial);
+            contract["clocks"][clock_id] = descriptor;
+            contract["camera_assignments"][serial] = {
+                {"timestamp", clock_id},
+                {"timestamp_sys", "host_realtime"}
+            };
+
+            const auto [first_recording_frame_id, last_recording_frame_id] =
+                recording_frame_range_for_camera(
+                    *manifest, serial, camera_evidence);
+            if (first_recording_frame_id > 0 && last_recording_frame_id > 0) {
+                contract["clock_state_intervals"][serial] = nlohmann::json::array({{
+                    {"first_recording_frame_id", first_recording_frame_id},
+                    {"last_recording_frame_id", last_recording_frame_id},
+                    {"camera_clock_id", clock_id},
+                    {"classification", descriptor.value(
+                        "classification", std::string("device_defined"))},
+                    {"semantic_authority", descriptor.value(
+                        "semantic_authority", std::string("epoch_unspecified"))}
+                }});
+            }
+        }
+    }
+
+    (*manifest)["timestamp_clock_contract"] = std::move(contract);
+}
+
 nlohmann::json build_clip_artifacts_json(
     const std::vector<RecordingSessionCameraArtifact>& cameras,
     nlohmann::json* camera_artifacts_out = nullptr,
@@ -1538,7 +1937,10 @@ bool write_recording_session_manifest(const std::string& path,
         }
         return false;
     }
-    return write_json_file(std::filesystem::path(path), manifest, error_out);
+    const std::filesystem::path manifest_path(path);
+    nlohmann::json finalized_manifest = manifest;
+    add_finalized_timestamp_clock_contract(&finalized_manifest, manifest_path);
+    return write_json_file(manifest_path, finalized_manifest, error_out);
 }
 
 bool write_rolling_clip_index_artifacts(const std::string& recording_folder,

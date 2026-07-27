@@ -3,6 +3,12 @@
 Purpose: define the concrete output contracts currently produced by Orange so
 downstream analysis consumers can parse artifacts without guessing.
 
+A possible future finalization-time consolidation is documented in
+[unified_recording_metadata_dataset_option.md](./unified_recording_metadata_dataset_option.md).
+That design is explicitly deferred until multi-arena-per-camera geometry and
+one-to-many detection/crop/pose relationships are stable library contracts; it
+does not describe current runtime output.
+
 Date anchored: 2026-02-27.
 
 Scope:
@@ -704,6 +710,14 @@ Current emitted top-level fields:
   - `latch_minus_frame_ns.{samples,min,max,last,mean}`
   - `frame_delta_ns.{samples,min,max,last,mean}`
   - `latch_delta_ns.{samples,min,max,last,mean}`
+  - `recording_camera_minus_realtime_ns.{samples,min,max,last,mean}`
+    (paired `timestamp - timestamp_sys` values for frames assigned a
+    `recording_frame_id`)
+  - `recording_timestamp_pair_source.{camera,host,population}`
+  - `ptp_mode_readback.{samples,first,last,changes}`
+  - `ptp_status_readback.{samples,first,last,changes}`
+  - `ptp_readback_observations[]` with compact low-rate mode/status state runs,
+    sample counts, and first/last UTC, local-frame, and recording-frame bounds
   - `delta_samples`
   - `avg_frame_delta_ns_running`
   - `avg_latch_delta_ns_running`
@@ -711,7 +725,10 @@ Current emitted top-level fields:
 Contract notes:
 - This sidecar is updated during acquisition and finalized when the active
   recording folder lifetime ends for that camera thread.
-- It is a summarized diagnostic artifact, not a per-frame timing trace.
+- It is primarily a summarized diagnostic artifact, not a per-frame timing
+  trace. `ptp_readback_observations[]` is intentionally low-rate, run-compacted
+  control-plane evidence; Orange does not add per-frame PTP register reads to
+  the hot path.
 - Its frame population is acquisition/sync-observed frames, not encoded MP4
   frames. Use `recording_session.json` camera `frame_count`,
   `Cam*_meta.csv` data rows, or `Cam*_keyframe.json.total_frames` for
@@ -813,10 +830,21 @@ Field semantics:
   absolute camera frame counter.
 - `timestamp`: camera/acquisition timestamp from the SDK (`uint64`). In current
   Orange terminology this is the `camera_timestamp_ns` domain and is distinct
-  from any Orange SHM publish timestamp. Current Orange/Emergent deployments
-  treat this timestamp domain as nanoseconds.
+  from any Orange SHM publish timestamp. Orange copies
+  `Emergent::CEmergentFrame::timestamp` without conversion. Current
+  Orange/Emergent deployments treat this timestamp domain as nanoseconds. When
+  the camera is PTP-synchronized, runtime comparison with the camera's latched
+  PTP clock shows that the field is in the camera PTP clock domain. Its observed
+  37-second lead over `CLOCK_REALTIME` is consistent with IEEE-1588/TAI
+  nanoseconds from `1970-01-01T00:00:00 TAI`; that epoch/timescale is currently
+  inferred from runtime behavior and the PTP standard rather than declared by
+  the installed Emergent SDK header. When PTP is disabled or unlocked, do not
+  assume this field is epoch-based TAI time.
 - `timestamp_sys`: system wall-clock timestamp from `CLOCK_REALTIME` in
-  nanoseconds (`uint64`).
+  nanoseconds (`uint64`), captured by Orange immediately after
+  `EVT_CameraGetFrame` returns. It is POSIX epoch time beginning
+  `1970-01-01T00:00:00 UTC`; it is not a monotonic or recording-relative
+  timestamp and, like `CLOCK_REALTIME`, can follow host clock adjustments.
 
 ### Crop Metadata CSV (`Cam<serial>_crop_meta.csv`)
 
@@ -832,8 +860,11 @@ Field semantics:
 - `camera_frame_id`: camera SDK frame id (`uint64`).
 - `timestamp`: camera/acquisition timestamp from the SDK (`uint64`), in the
   `camera_timestamp_ns` domain used by Orange docs and diagnostics. Current
-  Orange/Emergent deployments treat this timestamp domain as nanoseconds.
-- `timestamp_sys`: realtime nanoseconds (`uint64`).
+  Orange/Emergent deployments treat this timestamp domain as nanoseconds. The
+  PTP epoch/timescale interpretation is conditional and has the provenance
+  qualification documented for the main metadata CSV above.
+- `timestamp_sys`: POSIX epoch nanoseconds from `CLOCK_REALTIME` (`uint64`),
+  with the capture semantics documented for the main metadata CSV above.
 - `has_detection`: integer boolean (`0|1`).
 - `blank_frame`: integer boolean (`0|1`), true when the encoded crop frame is
   an explicit no-detection blank frame.
@@ -1673,10 +1704,38 @@ Current runtime note:
   are distinct.
 - Main/crop metadata CSV `frame_id` currently means `recording_frame_id`.
 - Main/crop metadata `timestamp` is the camera/acquisition timestamp
-  (`camera_timestamp_ns` terminology in current Orange docs/diagnostics). In the
-  current Orange/Emergent path this is treated as nanoseconds.
-- `timestamp_sys` in metadata rows is Orange realtime nanoseconds captured at
-  frame receive.
+  (`camera_timestamp_ns` terminology in current Orange docs/diagnostics), copied
+  unchanged from `Emergent::CEmergentFrame::timestamp`. In the current
+  Orange/Emergent path this is treated as nanoseconds. For a PTP-synchronized
+  camera, Orange treats it as a camera-hardware PTP timestamp; the more specific
+  IEEE-1588/TAI epoch interpretation is currently inferred, not explicitly
+  declared by the installed SDK header. Do not apply that interpretation to an
+  unsynchronized or non-PTP camera timestamp.
+- `timestamp_sys` in metadata rows is Orange host-system POSIX epoch time in
+  nanoseconds, sampled from `CLOCK_REALTIME` immediately after frame receive.
+- Neither `timestamp` nor `timestamp_sys` is time since process, stream, or
+  recording start.
+- Richer derived formats such as Zarr must describe each clock separately with
+  its unit, origin, timescale, clock domain, source field, producer, and whether
+  those semantics are producer-declared or inferred. Do not collapse the two
+  fields into a generic `producer_clock_domain` label.
+- Finalized `recording_session.json` files written through the shared session
+  manifest writer contain `timestamp_clock_contract` schema
+  `orange.recording.timestamp_clocks` version `1`. It maps the unchanged CSV
+  columns to stable clock IDs, declares the producer-defined host
+  `CLOCK_REALTIME` clock, freezes the available per-camera PTP evidence, and
+  fingerprints the source `ptp_sync_summary.json`.
+- Camera clocks default to `classification = "device_defined"`, `origin =
+  null`, and `timescale = "device_defined"`. The version-1 classifier emits
+  `classification = "ieee1588_tai"` only when session/camera PTP is enabled,
+  PTP offset and camera-latch checks are bounded, low-rate PTP readbacks are
+  stable, and recording-frame `timestamp - timestamp_sys` statistics match the
+  expected TAI-minus-UTC offset. The resulting epoch/timescale authority is
+  `inferred_from_recording_evidence`, never producer-declared.
+- `timestamp_clock_contract.clock_state_intervals` binds each camera clock
+  classification to recording-frame IDs. The PTP readback observations remain
+  available inside the frozen evidence snapshot so downstream conversion can
+  reject or subdivide a recording if the readback changed.
 - IPC `timestamp_us_epoch` is the current ABI field name for
   `orange_shm_publish_timestamp_us_epoch`.
 - IPC `timestamp_us_monotonic` is the current ABI field name for

@@ -701,6 +701,30 @@ Current emitted `ptp_sync_summary.json` shape:
       "latch_minus_frame_ns": {"samples": 20, "min": 9000000, "max": 9300000, "last": 9123456, "mean": 9160000.0},
       "frame_delta_ns": {"samples": 20, "min": 16666650, "max": 16666680, "last": 16666665, "mean": 16666665.2},
       "latch_delta_ns": {"samples": 20, "min": 16500000, "max": 16800000, "last": 16670000, "mean": 16666670.1},
+      "recording_camera_minus_realtime_ns": {"samples": 12000, "min": 36980000000, "max": 36995000000, "last": 36990000000, "mean": 36990000000.0},
+      "recording_timestamp_pair_source": {
+        "camera": "Emergent::CEmergentFrame.timestamp",
+        "host": "clock_gettime(CLOCK_REALTIME)",
+        "population": "frames_with_recording_frame_id"
+      },
+      "ptp_mode_readback": {"samples": 20, "first": "TwoStep", "last": "TwoStep", "changes": 0},
+      "ptp_status_readback": {"samples": 20, "first": "Slave", "last": "Slave", "changes": 0},
+      "ptp_readback_observations": [
+        {
+          "sampled_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
+          "first_sampled_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
+          "last_sampled_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
+          "local_frame_id": 100,
+          "recording_frame_id": 50,
+          "first_local_frame_id": 100,
+          "last_local_frame_id": 500,
+          "first_recording_frame_id": 50,
+          "last_recording_frame_id": 450,
+          "samples": 5,
+          "ptp_mode": "TwoStep",
+          "ptp_status": "Slave"
+        }
+      ],
       "delta_samples": 12344,
       "avg_frame_delta_ns_running": 16666665,
       "avg_latch_delta_ns_running": 16666670
@@ -729,6 +753,15 @@ Notes:
   `Cam*_keyframe.json.total_frames` for encoded/video ingest counts.
 - The summary is intended for session-level diagnostics and cross-camera timing
   comparisons, not for reconstructing exact per-frame order.
+- `recording_camera_minus_realtime_ns` summarizes the exact paired timestamp
+  fields carried by frames assigned a recording-local ID. It makes the
+  camera/host epoch relationship machine-checkable without changing the
+  per-frame CSV contract.
+- PTP mode/status readbacks are sampled at recording-folder activation and at
+  the existing low-rate diagnostics cadence. They are not polled for every
+  frame. Consecutive samples with the same mode/status are compacted into one
+  observation with first/last frame bounds; the array grows only when the
+  observed state changes.
 
 ## Headless Experiment Run Metrics
 
@@ -773,6 +806,46 @@ Notes:
 - `video_content_*` fields summarize the first decoded full-frame video frame.
   They are intended to catch invalid black/blank output that can otherwise pass
   throughput counters.
+
+## Finalized Timestamp Clock Contract
+
+The shared recording-session writer adds a top-level
+`timestamp_clock_contract` object to `recording_session.json`. Orange does not
+write Zarr; this record is intended to give downstream converters such as
+Palette a stable, machine-readable interpretation of the unchanged timestamp
+CSV columns.
+
+The contract uses schema `orange.recording.timestamp_clocks` version `1` and
+contains:
+
+- `timestamp_fields`: maps `timestamp` to per-camera clock IDs and
+  `timestamp_sys` to `host_realtime`.
+- `clocks.host_realtime`: declares nanoseconds, POSIX epoch/time semantics,
+  `CLOCK_REALTIME`, the host clock domain, and producer-declared authority.
+- `clocks.camera_<serial>`: records the camera SDK source and either an inferred
+  `ieee1588_tai` interpretation or the fail-safe `device_defined` /
+  epoch-unspecified interpretation.
+- `camera_assignments`: maps each camera's two CSV timestamp fields to their
+  clock IDs.
+- `clock_state_intervals`: binds the frozen classification to recording-frame
+  ranges.
+- `evidence.ptp_sync_summary`: records availability and a SHA-256 fingerprint
+  of the PTP summary used by the classifier.
+
+Each camera clock embeds the PTP evidence snapshot and the complete versioned
+inference result, including individual checks and thresholds. Schema version 1
+expects a 37-second TAI-minus-UTC offset. It classifies a clock as
+`ieee1588_tai` only when PTP is enabled, the camera's PTP offset and latched
+clock agreement are bounded, PTP readbacks are stable, and the recording-frame
+camera-minus-host statistics match that expected offset. The authority remains
+`inferred_from_recording_evidence`; Orange does not describe it as an SDK- or
+camera-declared epoch. Missing or insufficient evidence produces
+`device_defined`, `origin = null`, and an unspecified epoch.
+
+Once a valid version-1 clock contract has `status = "finalized"`, later shared
+manifest updates preserve it verbatim. For example, copying a local-control
+event log into `recording_session.json` does not silently reclassify clocks or
+change the PTP-summary fingerprint.
 
 ## Headless Recording Session Manifest
 
