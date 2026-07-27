@@ -131,7 +131,8 @@ GuiAutorunRequests gui_autorun_update(
     int* local_config_select,
     const CameraControl* camera_control,
     const GuiRecordingRunState* recording_run,
-    const bool calibration_tool_busy)
+    const bool calibration_tool_busy,
+    const GuiStartupTimingStatus* stream_startup_status)
 {
     GuiAutorunRequests requests;
     if (!state || !config.enabled || !camera_control) {
@@ -174,17 +175,58 @@ GuiAutorunRequests gui_autorun_update(
             }
             break;
 
-        case GuiAutorunStage::kStartStreaming:
-            if (camera_control->subscribe) {
+        case GuiAutorunStage::kStartStreaming: {
+            const bool has_stream_report =
+                stream_startup_status && stream_startup_status->available &&
+                stream_startup_status->operation == "stream_start";
+            const std::string startup_status = has_stream_report
+                ? stream_startup_status->status
+                : std::string();
+            const bool first_frame_counts_complete = has_stream_report &&
+                stream_startup_status->expected_first_frame_camera_count > 0 &&
+                stream_startup_status->observed_first_frame_camera_count >=
+                    stream_startup_status->expected_first_frame_camera_count;
+            if (has_stream_report &&
+                (startup_status == "failed" || startup_status == "stopped")) {
+                const std::string detail = startup_status == "failed"
+                    ? stream_startup_status->failure_reason
+                    : stream_startup_status->stop_reason;
+                gui_autorun_fail(
+                    state,
+                    "stream startup timing reported " + startup_status +
+                        (detail.empty() ? std::string() : ": " + detail));
+            } else if (has_stream_report && startup_status == "complete" &&
+                       !first_frame_counts_complete) {
+                gui_autorun_fail(
+                    state,
+                    "stream startup timing was complete without all expected first frames");
+            } else if (has_stream_report && startup_status == "complete" &&
+                       !camera_control->subscribe) {
+                gui_autorun_fail(
+                    state,
+                    "stream stopped before completed startup could enter warmup");
+            } else if (camera_control->subscribe && has_stream_report &&
+                       startup_status == "complete" &&
+                       first_frame_counts_complete) {
+                std::cout << "[GUI][autorun] stream startup ready transaction_id="
+                          << stream_startup_status->transaction_id
+                          << " first_frames="
+                          << stream_startup_status->observed_first_frame_camera_count
+                          << "/"
+                          << stream_startup_status->expected_first_frame_camera_count
+                          << std::endl;
                 gui_autorun_enter_stage(state, GuiAutorunStage::kStreamWarmup);
             } else if (!calibration_tool_busy && !state->action_requested) {
                 requests.toggle_streaming = true;
                 state->action_requested = true;
                 std::cout << "[GUI][autorun] requesting stream start" << std::endl;
             } else if (gui_autorun_stage_elapsed_s(*state) > 45.0) {
-                gui_autorun_fail(state, "timed out starting stream");
+                gui_autorun_fail(
+                    state,
+                    "timed out waiting for complete stream startup timing");
             }
             break;
+        }
 
         case GuiAutorunStage::kStreamWarmup:
             if (!camera_control->subscribe) {

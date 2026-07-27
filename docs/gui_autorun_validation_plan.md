@@ -544,6 +544,7 @@ select_config
   -> open_cameras
   -> apply stream/record/YOLO/crop camera selections
   -> start_streaming
+  -> wait for stream-start timing status=complete (all first frames)
   -> stream_warmup
   -> start_recording
   -> recording

@@ -4,7 +4,8 @@
 //   - disabled config (or null state/camera_control) never emits requests;
 //   - each action stage emits its request exactly once (guarded by
 //     state->action_requested) and advances when the corresponding
-//     CameraControl flag flips;
+//     CameraControl flag flips, with stream readiness additionally requiring a
+//     complete startup-timing report;
 //   - stage timeouts are hardcoded wall-clock checks against
 //     state->stage_started_at (std::chrono::steady_clock::now() is read
 //     directly); tests exercise them by backdating stage_started_at.
@@ -23,6 +24,7 @@ using orange::gui::GuiAutorunRequests;
 using orange::gui::GuiAutorunStage;
 using orange::gui::GuiAutorunState;
 using orange::gui::GuiRecordingRunState;
+using orange::gui::GuiStartupTimingStatus;
 using orange::gui::gui_autorun_stage_name;
 using orange::gui::gui_autorun_update;
 using orange::gui::resolve_gui_autorun_config;
@@ -148,13 +150,14 @@ void test_disabled_config_never_emits_requests()
     camera_control.subscribe = true;
     camera_control.record_video = true;
     GuiRecordingRunState recording_run;
+    GuiStartupTimingStatus startup_status;
     const std::vector<std::string> folders = {"/tmp/orange_autorun_cfg"};
     int select = -1;
 
     for (int frame = 0; frame < 10; ++frame) {
         const GuiAutorunRequests requests = gui_autorun_update(
             &state, config, folders, &select, &camera_control,
-            &recording_run, false);
+            &recording_run, false, &startup_status);
         require(no_requests(requests), "disabled config emits no requests");
         require(state.stage == GuiAutorunStage::kDisabled,
                 "disabled config never leaves kDisabled");
@@ -175,6 +178,7 @@ void test_happy_path_progression()
     GuiAutorunState state;
     CameraControl camera_control;
     GuiRecordingRunState recording_run;
+    GuiStartupTimingStatus startup_status;
     const std::vector<std::string> folders = {"/tmp/other_cfg", config_dir};
     int select = -1;
     RequestTotals totals;
@@ -182,7 +186,7 @@ void test_happy_path_progression()
     const auto step = [&]() {
         const GuiAutorunRequests requests = gui_autorun_update(
             &state, config, folders, &select, &camera_control,
-            &recording_run, false);
+            &recording_run, false, &startup_status);
         totals.Add(requests);
         return requests;
     };
@@ -207,7 +211,18 @@ void test_happy_path_progression()
     require(step().toggle_streaming, "kStartStreaming requests stream start");
     require(no_requests(step()), "stream start is requested only once");
     camera_control.subscribe = true;
-    require(no_requests(step()), "stream start transition emits no request");
+    startup_status.available = true;
+    startup_status.transaction_id = "stream_start_test";
+    startup_status.operation = "stream_start";
+    startup_status.status = "awaiting_first_frames";
+    startup_status.expected_first_frame_camera_count = 2;
+    startup_status.observed_first_frame_camera_count = 1;
+    require(no_requests(step()), "pending first frames emit no request");
+    require(state.stage == GuiAutorunStage::kStartStreaming,
+            "subscribe alone does not satisfy stream readiness");
+    startup_status.status = "complete";
+    startup_status.observed_first_frame_camera_count = 2;
+    require(no_requests(step()), "complete stream startup emits no request");
     require(state.stage == GuiAutorunStage::kStreamWarmup, "enters kStreamWarmup");
 
     // kStreamWarmup: zero-second warmup advances immediately.
@@ -334,13 +349,14 @@ void test_warmup_abort_and_calibration_busy_gate()
     GuiAutorunState state;
     CameraControl camera_control;
     GuiRecordingRunState recording_run;
+    GuiStartupTimingStatus startup_status;
     const std::vector<std::string> folders = {config_dir};
     int select = -1;
 
     const auto step = [&](const bool calibration_busy) {
         return gui_autorun_update(
             &state, config, folders, &select, &camera_control,
-            &recording_run, calibration_busy);
+            &recording_run, calibration_busy, &startup_status);
     };
 
     require(no_requests(step(false)), "kDisabled transition emits no request");
@@ -356,6 +372,11 @@ void test_warmup_abort_and_calibration_busy_gate()
     require(no_requests(step(false)), "camera open transition emits no request");
     require(step(false).toggle_streaming, "stream start requested");
     camera_control.subscribe = true;
+    startup_status.available = true;
+    startup_status.operation = "stream_start";
+    startup_status.status = "complete";
+    startup_status.expected_first_frame_camera_count = 4;
+    startup_status.observed_first_frame_camera_count = 4;
     require(no_requests(step(false)), "stream start transition emits no request");
     require(state.stage == GuiAutorunStage::kStreamWarmup, "enters kStreamWarmup");
 
@@ -366,6 +387,69 @@ void test_warmup_abort_and_calibration_busy_gate()
             "stream drop during warmup reaches kFailed");
     require(state.error_message == "stream stopped during warmup",
             "warmup failure records its message");
+}
+
+void test_stream_startup_failure_fails_immediately()
+{
+    const std::string config_dir = "/tmp/orange_autorun_cfg";
+    const GuiAutorunConfig config = make_enabled_config(config_dir);
+    GuiAutorunState state;
+    state.stage = GuiAutorunStage::kStartStreaming;
+    state.stage_started_at = std::chrono::steady_clock::now();
+    state.action_requested = true;
+    CameraControl camera_control;
+    camera_control.open = true;
+    GuiRecordingRunState recording_run;
+    GuiStartupTimingStatus startup_status;
+    startup_status.available = true;
+    startup_status.operation = "stream_start";
+    startup_status.status = "failed";
+    startup_status.failure_reason = "recording_preflight_failed";
+    const std::vector<std::string> folders = {config_dir};
+    int select = 0;
+
+    const GuiAutorunRequests requests = gui_autorun_update(
+        &state, config, folders, &select, &camera_control,
+        &recording_run, false, &startup_status);
+    require(no_requests(requests), "failed startup emits no further request");
+    require(state.stage == GuiAutorunStage::kFailed,
+            "failed timing report fails autorun immediately");
+    require(state.error_message.find("recording_preflight_failed") !=
+                std::string::npos,
+            "autorun failure includes startup failure evidence");
+}
+
+void test_stream_startup_completion_timeout_fails()
+{
+    const std::string config_dir = "/tmp/orange_autorun_cfg";
+    const GuiAutorunConfig config = make_enabled_config(config_dir);
+    GuiAutorunState state;
+    state.stage = GuiAutorunStage::kStartStreaming;
+    state.stage_started_at =
+        std::chrono::steady_clock::now() - std::chrono::seconds(46);
+    state.action_requested = true;
+    CameraControl camera_control;
+    camera_control.open = true;
+    camera_control.subscribe = true;
+    GuiRecordingRunState recording_run;
+    GuiStartupTimingStatus startup_status;
+    startup_status.available = true;
+    startup_status.operation = "stream_start";
+    startup_status.status = "awaiting_first_frames";
+    startup_status.expected_first_frame_camera_count = 4;
+    startup_status.observed_first_frame_camera_count = 3;
+    const std::vector<std::string> folders = {config_dir};
+    int select = 0;
+
+    const GuiAutorunRequests requests = gui_autorun_update(
+        &state, config, folders, &select, &camera_control,
+        &recording_run, false, &startup_status);
+    require(no_requests(requests), "startup readiness timeout emits no request");
+    require(state.stage == GuiAutorunStage::kFailed,
+            "missing first frame fails autorun after its startup timeout");
+    require(state.error_message ==
+                "timed out waiting for complete stream startup timing",
+            "startup timeout identifies the readiness barrier");
 }
 
 void test_wait_finalize_stage()
@@ -414,6 +498,10 @@ int main()
         {"open_cameras_timeout_fails", test_open_cameras_timeout_fails},
         {"warmup_abort_and_calibration_busy_gate",
          test_warmup_abort_and_calibration_busy_gate},
+        {"stream_startup_failure_fails_immediately",
+         test_stream_startup_failure_fails_immediately},
+        {"stream_startup_completion_timeout_fails",
+         test_stream_startup_completion_timeout_fails},
         {"wait_finalize_stage", test_wait_finalize_stage},
     };
 

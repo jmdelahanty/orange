@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gui/recording_run_state.h"
+#include "gui/startup_timing.h"
 #include "json.hpp"
 #include "video_capture.h"
 
@@ -71,7 +72,8 @@ GuiAutorunRequests gui_autorun_update(
     int* local_config_select,
     const CameraControl* camera_control,
     const GuiRecordingRunState* recording_run,
-    bool calibration_tool_busy);
+    bool calibration_tool_busy,
+    const GuiStartupTimingStatus* stream_startup_status = nullptr);
 
 void apply_gui_autorun_camera_selection(const GuiAutorunConfig& config,
                                         CameraEachSelect* cameras_select,

@@ -46,17 +46,43 @@ Cut user-visible startup time (open cameras + start streaming) while preserving 
 - No startup executor, feature flag, or per-stage timing instrumentation exists yet.
 - The newer focus-bootstrap logic in `src/camera.cpp` adds more per-camera work during open/configure, which increases the value of baseline timing before parallelization.
 
+## Instrumentation Update (2026-07-27)
+
+Phase 0 startup timing is implemented for the GUI path while retaining the
+existing serial startup order and PTP gate behavior. Each camera-open attempt
+and stream-start attempt writes an atomic, user-owned JSON report under:
+
+```text
+<orange_root>/diagnostics/camera_startup/
+```
+
+The reports include per-camera stages, global stages, GUI-handler duration,
+acquisition-thread entry/setup, PTP arm/gate wait, first valid frame, time until
+all selected cameras have produced a frame, host first-frame spread, and the
+slowest global/per-camera stage. Failed preflight and construction attempts are
+also retained. Acquisition threads only update an in-memory record; JSON I/O
+is performed by the GUI thread.
+
+Implementation and interpretation details are in
+[`gui_camera_startup_timing.md`](gui_camera_startup_timing.md).
+
+This does **not** yet parallelize camera calls, change readiness semantics, or
+instrument the headless camera-open/stream-start lifecycle. The next decision
+should be based on live one-, two-, and four-camera reports rather than on the
+length of the visible GUI pause alone.
+
 ## Parallelization Plan
 
 ## Phase 0: Baseline and Safety Checks
 
-- [ ] Add startup timing instrumentation per stage and per camera:
+- [x] Add GUI startup timing instrumentation per stage and per camera:
   - discover/select config
   - camera open/configure
   - stream open
   - frame buffer allocation
   - ptp mode setup
   - first frame received.
+- [ ] Add equivalent operation-level timing to the headless startup path.
 - [ ] Record baseline P50/P95 startup times for 1, 2, 4, 8+ cameras.
 - [ ] Verify SDK behavior under concurrent per-camera API calls:
   - if safe: proceed with bounded parallelism
