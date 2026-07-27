@@ -1,15 +1,16 @@
 # GUI Camera Startup Timing
 
 Date: 2026-07-27
-Status: matched four-camera baseline and four width-four startup-only trials passed; fault and full-load validation pending
+Status: bounded camera-open and stream-preparation startup-only trials passed; fault and full-load validation pending
 
 ## Purpose
 
 Orange measures the GUI camera-open and stream-start lifecycle and runs its
-blocking preparation stages outside the GUI thread. Camera open/configuration
-now has an opt-in bounded-concurrency experiment. The safe default remains one
-worker, preserving serial Emergent SDK call order. PTP setup and the
-first-frame readiness barrier retain their existing semantics.
+blocking preparation stages outside the GUI thread. Camera open/configuration,
+per-camera CUDA/IPC initialization, and stream-open/buffer preparation now have
+an opt-in bounded-concurrency experiment. The safe default remains one worker,
+preserving serial Emergent SDK call order. Worker construction, PTP setup, and
+the first-frame readiness barrier retain their existing ordered semantics.
 
 Each attempted operation produces one schema-versioned JSON artifact in:
 
@@ -104,10 +105,10 @@ startup state machine to `orange.cpp`:
 
 Stream startup has two background phases separated by a short GUI phase:
 
-1. recording preflight plus per-camera CUDA/IPC resource initialization;
+1. recording preflight plus bounded per-camera CUDA/IPC resource initialization;
 2. GUI-thread display/crop texture creation;
-3. worker construction, serial stream open, frame-buffer allocation, and PTP
-   configuration in the startup worker;
+3. serial worker construction, bounded per-camera stream open/frame-buffer
+   allocation, and serial PTP configuration in the startup worker;
 4. atomic GUI-thread ownership handoff, recording-pipeline construction,
    worker/acquisition thread launch, then first-frame observation.
 
@@ -127,10 +128,17 @@ worker, and rolls back pre-activation resources. A late cancel is checked again
 at both background completion boundaries so it cannot accidentally activate a
 completed product.
 
-The experiment does not parallelize stream open, frame-buffer allocation, PTP
-configuration, worker construction, or acquisition launch. Those remain in
-their existing ordered startup phase. It also does not change the headless
-startup path.
+Each bounded task writes only to its camera's pre-sized result slots. Tasks
+select their camera's CUDA device before resource work, and every task is joined
+before cleanup or ownership transfer. Partial frame-buffer allocation is
+tracked exactly so rollback releases only successfully allocated buffers,
+closes every opened stream, and cleans each initialized per-camera resource.
+The final runtime owns these products; acquisition threads borrow pointers only
+after the atomic GUI handoff. Shutdown preserves the inverse order: stop and
+join acquisition first, then destroy the owning runtime resources.
+
+The experiment does not parallelize PTP configuration, worker construction, or
+acquisition launch. It also does not change the headless startup path.
 
 ## Autorun readiness barrier
 
@@ -273,6 +281,52 @@ recording, YOLO, crop, or pose work. Concurrency one therefore remains the
 default; width four is a validated startup-only candidate rather than a
 production default.
 
+## Four-camera stream-preparation evidence (2026-07-27)
+
+A same-binary width-one/width-four comparison then exercised bounded CUDA/IPC
+resource initialization and stream-open/frame-buffer preparation. It used all
+four `100_cam4_ptp_fourcam` cameras, retained serial worker construction and PTP
+configuration, and disabled recording, YOLO, crop, and pose.
+
+Stream-start artifacts:
+
+```text
+width 1: /home/jeremy/orange_data/diagnostics/camera_startup/stream_start_20260727T232036Z_4157758_2.json
+width 4: /home/jeremy/orange_data/diagnostics/camera_startup/stream_start_20260727T231910Z_4157314_2.json
+```
+
+| Measurement | Width 1 | Width 4 | Change |
+| --- | ---: | ---: | ---: |
+| Resource task-group wall time | 497.392 ms | 475.201 ms | -4.5% |
+| Serial worker-construction span | 189.592 ms | 190.916 ms | +0.7% |
+| Stream-open/buffer task-group wall time | 339.083 ms | 231.991 ms | -31.6% |
+| Serial PTP-configuration span | 6.562 ms | 11.482 ms | +4.920 ms |
+| GUI-handler duration | 1163.798 ms | 1035.473 ms | -11.0% |
+| Time to all first frames | 4374.463 ms | 4289.877 ms | -1.9% |
+| First-frame host spread | 0.005028 ms | 0.005029 ms | unchanged |
+
+Both bounded task groups reported requested/effective/peak concurrency four,
+four completed tasks, no launch failure, and no cancellation. Every camera
+acquired 208 frames at approximately 100 FPS with zero frame-ID gaps, GetFrame
+errors, preprocessing drops, or encode failures. Shutdown was clean. Resource
+initialization overlapped but showed little wall-time gain, while stream-open
+and buffer preparation saved 107.092 ms. The end-to-end reduction is smaller
+because the unchanged shared PTP future gate still contributes about 3.24
+seconds.
+
+One additional diagnostic tried bounded worker construction:
+
+```text
+/home/jeremy/orange_data/diagnostics/camera_startup/stream_start_20260727T232334Z_4158703_2.json
+```
+
+Its four-camera worker task group took 219.351 ms versus 189.592 ms for the
+serial baseline, a 15.7% regression. These workers allocate large pinned host
+buffers and shared-GPU resources, so parallel construction introduced
+contention without useful overlap. The experiment remained healthy at runtime,
+but the code was reverted and the timing context now records
+`worker_construction_policy = "serial"`.
+
 ## Live validation
 
 First preserve a serial baseline, then run the same startup with width two.
@@ -319,7 +373,10 @@ operation
 status
 gui_handler_duration_ms
 context.camera_open_concurrency
+context.stream_preparation_concurrency
 global_instants.camera_open_task_group_complete
+global_instants.camera_resource_task_group_complete
+global_instants.stream_open_buffer_task_group_complete
 time_to_all_first_frames_ms
 first_frame_spread_ms
 slowest_global_stage
@@ -342,7 +399,7 @@ before `stream runtime activated`, and autorun records only after
 - Equivalent operation reports for the headless startup lifecycle.
 - P50/P95 aggregation across repeated starts.
 - Per-camera progress rather than the current phase-level GUI message.
-- Live SDK safety and latency validation for widths two and four.
+- Full recording/YOLO/crop/pose validation at widths two and four.
 - A production-default decision; concurrency one remains the default.
 - Any per-NIC or SDK-call-class lock domain found necessary by live testing.
 - Hardware-injected partial open/stream/buffer failure tests.

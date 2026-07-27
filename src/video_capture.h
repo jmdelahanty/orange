@@ -260,7 +260,10 @@ struct CameraResources {
                       << DEFAULT_ACQUIRE_WORK_ENTRIES_MAX << std::endl;
         }
 
-        worker_entry_pool = new WORKER_ENTRY[acquire_work_entries_max];
+        // Value-initialize every entry so cleanup remains safe if a later
+        // CUDA allocation or event creation throws partway through this
+        // initialization transaction.
+        worker_entry_pool = new WORKER_ENTRY[acquire_work_entries_max]{};
         for (int i = 0; i < acquire_work_entries_max; ++i) {
             ck(cudaMalloc(&worker_entry_pool[i].d_image, frame_size));
             worker_entry_pool[i].d_image_pool = worker_entry_pool[i].d_image;

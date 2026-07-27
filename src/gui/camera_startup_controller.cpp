@@ -34,7 +34,7 @@ namespace orange::gui {
 namespace {
 
 constexpr double kFirstFrameTimeoutSeconds = 45.0;
-constexpr const char* kCameraOpenConcurrencyEnv =
+constexpr const char* kCameraStartupConcurrencyEnv =
     "ORANGE_GUI_CAMERA_STARTUP_CONCURRENCY";
 
 uint64_t now_ns() noexcept
@@ -91,6 +91,77 @@ std::string summarize_errors(const std::vector<std::string>& errors)
     return summary.str();
 }
 
+std::vector<int> acquisition_camera_indices(
+    const GuiStreamStartupBindings& bindings)
+{
+    std::vector<int> indices;
+    indices.reserve(static_cast<std::size_t>(bindings.camera_count));
+    for (int i = 0; i < bindings.camera_count; ++i) {
+        if (gui_camera_has_acquisition_work(bindings.camera_selection[i])) {
+            indices.push_back(i);
+        }
+    }
+    return indices;
+}
+
+void record_bounded_task_group(
+    GuiStartupTimingRecorder* timing,
+    const char* interval_name,
+    const char* completion_name,
+    const uint64_t started_ns,
+    const uint64_t finished_ns,
+    const GuiBoundedStartupTaskGroupResult& group)
+{
+    if (!timing) return;
+    timing->RecordGlobalInterval(
+        interval_name,
+        started_ns,
+        finished_ns,
+        group.all_succeeded());
+    timing->MarkGlobalInstant(
+        completion_name,
+        finished_ns,
+        {
+            {"requested_concurrency", group.requested_concurrency},
+            {"effective_concurrency", group.effective_concurrency},
+            {"peak_concurrency", group.peak_concurrency},
+            {"started_task_count", group.started_task_count},
+            {"completed_task_count", group.completed_task_count},
+            {"external_cancel_observed", group.external_cancel_observed},
+            {"launch_failed", group.launch_failed},
+        });
+}
+
+std::vector<std::string> bounded_camera_task_errors(
+    const GuiBoundedStartupTaskGroupResult& group,
+    const std::vector<int>& camera_indices,
+    const CameraParams* camera_params,
+    const std::string& operation)
+{
+    std::vector<std::string> errors;
+    if (group.launch_failed) {
+        errors.push_back(
+            operation + " worker launch failed: " + group.launch_error);
+    }
+    for (std::size_t task_index = 0;
+         task_index < group.task_states.size();
+         ++task_index) {
+        if (group.task_states[task_index] !=
+            GuiBoundedStartupTaskState::kFailed) {
+            continue;
+        }
+        const int camera_index = camera_indices[task_index];
+        const std::string serial = camera_params
+            ? camera_params[camera_index].camera_serial
+            : ("camera_index_" + std::to_string(camera_index));
+        const std::string& error = group.task_results[task_index].error;
+        errors.push_back(
+            serial + ": " +
+            (error.empty() ? (operation + " failed") : error));
+    }
+    return errors;
+}
+
 void close_open_product_cameras(GuiCameraOpenProduct* product) noexcept
 {
     if (!product || !product->cameras || !product->camera_params) {
@@ -120,7 +191,8 @@ struct StreamStartupProduct {
           display_texture_initialized(static_cast<std::size_t>(count), false),
           crop_texture_initialized(static_cast<std::size_t>(count), false),
           stream_opened(static_cast<std::size_t>(count), false),
-          frame_buffers_allocated(static_cast<std::size_t>(count), false),
+          frame_array_allocated(static_cast<std::size_t>(count), 0),
+          frame_buffers_allocated_count(static_cast<std::size_t>(count), 0),
           camera_resources(static_cast<std::size_t>(count)),
           frame_ipc_managers(static_cast<std::size_t>(count)),
           frame_ipc_init_errors(static_cast<std::size_t>(count)),
@@ -137,11 +209,15 @@ struct StreamStartupProduct {
     }
 
     int camera_count = 0;
-    std::vector<bool> resource_initialized;
-    std::vector<bool> display_texture_initialized;
-    std::vector<bool> crop_texture_initialized;
-    std::vector<bool> stream_opened;
-    std::vector<bool> frame_buffers_allocated;
+    // These flags are written by distinct bounded startup tasks. Do not use
+    // std::vector<bool>: its packed words make concurrent per-index writes a
+    // data race even when every task owns a different camera index.
+    std::vector<std::uint8_t> resource_initialized;
+    std::vector<std::uint8_t> display_texture_initialized;
+    std::vector<std::uint8_t> crop_texture_initialized;
+    std::vector<std::uint8_t> stream_opened;
+    std::vector<std::uint8_t> frame_array_allocated;
+    std::vector<int> frame_buffers_allocated_count;
     std::vector<CameraResources> camera_resources;
     std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
     std::vector<std::string> frame_ipc_init_errors;
@@ -180,23 +256,45 @@ void cleanup_background_stream_product(
     if (bindings.cameras && bindings.camera_params) {
         for (int i = product->camera_count - 1; i >= 0; --i) {
             const std::size_t index = static_cast<std::size_t>(i);
-            if (product->frame_buffers_allocated[index]) {
-                try {
-                    destroy_frame_buffer(
+            if (product->frame_array_allocated[index] ||
+                product->stream_opened[index]) {
+                const cudaError_t set_device_status = cudaSetDevice(
+                    bindings.camera_params[i].gpu_id);
+                if (set_device_status != cudaSuccess) {
+                    std::cerr
+                        << "[GUI][camera_startup] CUDA stream rollback device select failed"
+                        << " camera="
+                        << bindings.camera_params[i].camera_serial
+                        << " gpu=" << bindings.camera_params[i].gpu_id
+                        << " error="
+                        << cudaGetErrorString(set_device_status)
+                        << std::endl;
+                }
+            }
+            if (product->frame_array_allocated[index]) {
+                const int allocated_count =
+                    product->frame_buffers_allocated_count[index];
+                for (int frame_index = 0;
+                     frame_index < allocated_count;
+                     ++frame_index) {
+                    const EVT_ERROR error = EVT_ReleaseFrameBuffer(
                         &bindings.cameras[i].camera,
-                        bindings.cameras[i].evt_frame,
-                        bindings.evt_buffer_size,
-                        &bindings.camera_params[i]);
-                } catch (const std::exception& error) {
-                    std::cerr << "[GUI][camera_startup] frame-buffer rollback failed"
-                              << " camera=" << bindings.camera_params[i].camera_serial
-                              << " error=" << error.what() << std::endl;
-                } catch (...) {
+                        &bindings.cameras[i].evt_frame[frame_index]);
+                    if (error != EVT_SUCCESS) {
+                        std::cerr
+                            << "[GUI][camera_startup] frame-buffer rollback failed"
+                            << " camera="
+                            << bindings.camera_params[i].camera_serial
+                            << " frame_index=" << frame_index
+                            << " error=" << get_evt_error_string(error)
+                            << std::endl;
+                    }
                 }
                 delete[] bindings.cameras[i].evt_frame;
                 bindings.cameras[i].evt_frame = nullptr;
                 bindings.cameras[i].evt_frame_count = 0;
-                product->frame_buffers_allocated[index] = false;
+                product->frame_buffers_allocated_count[index] = 0;
+                product->frame_array_allocated[index] = 0;
             }
             if (product->stream_opened[index]) {
                 const EVT_ERROR error =
@@ -206,7 +304,7 @@ void cleanup_background_stream_product(
                               << " camera=" << bindings.camera_params[i].camera_serial
                               << " error=" << get_evt_error_string(error) << std::endl;
                 }
-                product->stream_opened[index] = false;
+                product->stream_opened[index] = 0;
             }
         }
     }
@@ -218,10 +316,24 @@ void cleanup_background_stream_product(
             continue;
         }
         try {
+            if (bindings.camera_params) {
+                const cudaError_t set_device_status = cudaSetDevice(
+                    bindings.camera_params[i].gpu_id);
+                if (set_device_status != cudaSuccess) {
+                    std::cerr
+                        << "[GUI][camera_startup] CUDA rollback device select failed"
+                        << " camera="
+                        << bindings.camera_params[i].camera_serial
+                        << " gpu=" << bindings.camera_params[i].gpu_id
+                        << " error="
+                        << cudaGetErrorString(set_device_status)
+                        << std::endl;
+                }
+            }
             product->camera_resources[index].cleanup();
         } catch (...) {
         }
-        product->resource_initialized[index] = false;
+        product->resource_initialized[index] = 0;
     }
     product->background_resources_cleaned = true;
 }
@@ -298,6 +410,25 @@ bool validate_stream_bindings(
             *error_out = "stream runtime storage is not empty";
         }
         return false;
+    }
+    if (bindings.evt_buffer_size <= 0) {
+        if (error_out) {
+            *error_out = "stream frame-buffer count must be positive";
+        }
+        return false;
+    }
+    for (int i = 0; i < bindings.camera_count; ++i) {
+        if (!gui_camera_has_acquisition_work(bindings.camera_selection[i])) {
+            continue;
+        }
+        if (bindings.cameras[i].evt_frame != nullptr ||
+            bindings.cameras[i].evt_frame_count != 0) {
+            if (error_out) {
+                *error_out = bindings.camera_params[i].camera_serial +
+                    ": stream frame-buffer storage is not empty";
+            }
+            return false;
+        }
     }
     return true;
 }
@@ -553,42 +684,115 @@ struct GuiCameraStartupController::Impl {
                 allocation_started_ns,
                 now_ns());
 
-            for (int i = 0; i < bindings.camera_count; ++i) {
-                if (!gui_camera_has_acquisition_work(
-                        bindings.camera_selection[i])) {
-                    continue;
-                }
-                if (cancel_requested.load(std::memory_order_acquire)) {
-                    cleanup_background_stream_product(product.get(), bindings);
-                    return GuiAsyncStartupWorkResult::Canceled(
-                        current_cancel_reason());
-                }
-                GuiStartupTimingScope scope(
-                    bindings.timing,
-                    "camera_resource_and_ipc_initialization",
-                    bindings.camera_params[i].camera_serial);
-                std::cout << "Initializing resources for camera " << i
-                          << " on GPU " << bindings.camera_params[i].gpu_id
-                          << std::endl;
-                product->camera_resources[static_cast<std::size_t>(i)].initialize(
-                    bindings.camera_params[i].gpu_id,
-                    maximum_frame_bytes,
-                    bindings.camera_selection[i].yolo,
-                    bindings.camera_params[i].recording.resources
-                        .acquire_work_entries);
-                product->resource_initialized[static_cast<std::size_t>(i)] = true;
-                if (bindings.camera_selection[i].send_frame_ipc) {
-                    auto manager =
-                        std::make_unique<FrameIPCManager>(
-                            &bindings.camera_params[i]);
-                    if (!manager->isEnabled()) {
-                        product->frame_ipc_init_errors[static_cast<std::size_t>(i)] =
-                            manager->getInitError();
-                    } else {
-                        product->frame_ipc_managers[static_cast<std::size_t>(i)] =
-                            std::move(manager);
+            const std::vector<int> camera_indices =
+                acquisition_camera_indices(bindings);
+            const uint64_t task_group_started_ns = now_ns();
+            const GuiBoundedStartupTaskGroupResult task_group =
+                RunGuiBoundedStartupTasks(
+                    camera_indices.size(),
+                    static_cast<std::size_t>(std::max(
+                        1,
+                        bindings.max_parallel_stream_workers)),
+                    cancel_requested,
+                    [&](const std::size_t task_index,
+                        const GuiStartupCancellation& cancellation) {
+                        const int i = camera_indices[task_index];
+                        const std::size_t index =
+                            static_cast<std::size_t>(i);
+                        const std::string& serial =
+                            bindings.camera_params[i].camera_serial;
+                        if (cancellation.requested()) {
+                            return GuiAsyncStartupWorkResult::Canceled(
+                                current_cancel_reason());
+                        }
+                        bindings.timing->MarkCameraInstant(
+                            serial,
+                            "camera_resource_task_started",
+                            0,
+                            {
+                                {"camera_index", i},
+                                {"gpu_id", bindings.camera_params[i].gpu_id},
+                            });
+                        try {
+                            GuiStartupTimingScope scope(
+                                bindings.timing,
+                                "camera_resource_and_ipc_initialization",
+                                serial);
+                            std::cout
+                                << "Initializing resources for camera " << i
+                                << " on GPU "
+                                << bindings.camera_params[i].gpu_id
+                                << std::endl;
+                            // Mark ownership before entering the potentially
+                            // throwing initializer. CameraResources is
+                            // value-initialized and cleanup is idempotent, so
+                            // partial CUDA allocation is rolled back too.
+                            product->resource_initialized[index] = 1;
+                            product->camera_resources[index].initialize(
+                                bindings.camera_params[i].gpu_id,
+                                maximum_frame_bytes,
+                                bindings.camera_selection[i].yolo,
+                                bindings.camera_params[i].recording.resources
+                                    .acquire_work_entries);
+                            if (cancellation.requested()) {
+                                return GuiAsyncStartupWorkResult::Canceled(
+                                    current_cancel_reason());
+                            }
+                            if (bindings.camera_selection[i].send_frame_ipc) {
+                                auto manager =
+                                    std::make_unique<FrameIPCManager>(
+                                        &bindings.camera_params[i]);
+                                if (!manager->isEnabled()) {
+                                    product->frame_ipc_init_errors[index] =
+                                        manager->getInitError();
+                                } else {
+                                    product->frame_ipc_managers[index] =
+                                        std::move(manager);
+                                }
+                            }
+                            bindings.timing->MarkCameraInstant(
+                                serial,
+                                "camera_resource_task_succeeded");
+                            return GuiAsyncStartupWorkResult::Succeeded();
+                        } catch (...) {
+                            const std::string error = exception_message();
+                            bindings.timing->MarkCameraInstant(
+                                serial,
+                                "camera_resource_task_failed",
+                                0,
+                                {{"error", error}});
+                            return GuiAsyncStartupWorkResult::Failed(
+                                "resource/IPC initialization failed: " +
+                                error);
+                        }
+                    });
+            const uint64_t task_group_finished_ns = now_ns();
+            record_bounded_task_group(
+                bindings.timing,
+                "camera_resource_task_group",
+                "camera_resource_task_group_complete",
+                task_group_started_ns,
+                task_group_finished_ns,
+                task_group);
+            if (!task_group.all_succeeded()) {
+                const std::vector<std::string> errors =
+                    bounded_camera_task_errors(
+                        task_group,
+                        camera_indices,
+                        bindings.camera_params,
+                        "camera resource preparation");
+                cleanup_background_stream_product(product.get(), bindings);
+                if (task_group.any_failed()) {
+                    {
+                        std::lock_guard<std::mutex> lock(mutex);
+                        pending_errors = errors;
                     }
+                    return GuiAsyncStartupWorkResult::Failed(
+                        "stream resource preparation failed: " +
+                        summarize_errors(errors));
                 }
+                return GuiAsyncStartupWorkResult::Canceled(
+                    current_cancel_reason());
             }
             {
                 std::lock_guard<std::mutex> lock(mutex);
@@ -814,53 +1018,154 @@ struct GuiCameraStartupController::Impl {
                 }
             }
 
-            for (int i = 0; i < stream_bindings.camera_count; ++i) {
-                if (!gui_camera_has_acquisition_work(
-                        stream_bindings.camera_selection[i])) {
-                    continue;
+            const std::vector<int> camera_indices =
+                acquisition_camera_indices(stream_bindings);
+            const uint64_t task_group_started_ns = now_ns();
+            const GuiBoundedStartupTaskGroupResult task_group =
+                RunGuiBoundedStartupTasks(
+                    camera_indices.size(),
+                    static_cast<std::size_t>(std::max(
+                        1,
+                        stream_bindings.max_parallel_stream_workers)),
+                    cancel_requested,
+                    [&](const std::size_t task_index,
+                        const GuiStartupCancellation& cancellation) {
+                        const int i = camera_indices[task_index];
+                        const std::size_t index =
+                            static_cast<std::size_t>(i);
+                        const std::string& serial =
+                            stream_bindings.camera_params[i].camera_serial;
+                        if (cancellation.requested()) {
+                            return GuiAsyncStartupWorkResult::Canceled(
+                                current_cancel_reason());
+                        }
+                        stream_bindings.timing->MarkCameraInstant(
+                            serial,
+                            "stream_open_buffer_task_started",
+                            0,
+                            {
+                                {"camera_index", i},
+                                {"gpu_id",
+                                 stream_bindings.camera_params[i].gpu_id},
+                            });
+                        try {
+                            {
+                                GuiStartupTimingScope scope(
+                                    stream_bindings.timing,
+                                    "stream_open",
+                                    serial);
+                                camera_open_stream(
+                                    &stream_bindings.cameras[i].camera,
+                                    &stream_bindings.camera_params[i],
+                                    "gui_async_start_streaming");
+                                stream_product->stream_opened[index] = 1;
+                            }
+                            if (cancellation.requested()) {
+                                return GuiAsyncStartupWorkResult::Canceled(
+                                    current_cancel_reason());
+                            }
+                            {
+                                GuiStartupTimingScope scope(
+                                    stream_bindings.timing,
+                                    "frame_buffer_allocate_and_queue",
+                                    serial);
+                                CameraEmergent& camera =
+                                    stream_bindings.cameras[i];
+                                camera.evt_frame =
+                                    new Emergent::CEmergentFrame[
+                                        stream_bindings.evt_buffer_size];
+                                stream_product->frame_array_allocated[index] = 1;
+                                camera.evt_frame_count = 0;
+                                for (int frame_index = 0;
+                                     frame_index <
+                                         stream_bindings.evt_buffer_size;
+                                     ++frame_index) {
+                                    if (cancellation.requested()) {
+                                        return GuiAsyncStartupWorkResult::Canceled(
+                                            current_cancel_reason());
+                                    }
+                                    set_frame_buffer(
+                                        &camera.evt_frame[frame_index],
+                                        &stream_bindings.camera_params[i]);
+                                    check_camera_errors(
+                                        EVT_AllocateFrameBuffer(
+                                            &camera.camera,
+                                            &camera.evt_frame[frame_index],
+                                            EVT_FRAME_BUFFER_ZERO_COPY),
+                                        serial.c_str());
+                                    // Record ownership before queueing: a queue
+                                    // failure still leaves an allocated SDK
+                                    // buffer that rollback must release.
+                                    stream_product
+                                        ->frame_buffers_allocated_count[index] =
+                                        frame_index + 1;
+                                    camera.evt_frame_count = frame_index + 1;
+                                    check_camera_errors(
+                                        EVT_CameraQueueFrame(
+                                            &camera.camera,
+                                            &camera.evt_frame[frame_index]),
+                                        serial.c_str());
+                                }
+                            }
+                            stream_bindings.timing->MarkCameraInstant(
+                                serial,
+                                "stream_open_buffer_task_succeeded",
+                                0,
+                                {{"frame_buffer_count",
+                                  stream_bindings.evt_buffer_size}});
+                            return GuiAsyncStartupWorkResult::Succeeded();
+                        } catch (...) {
+                            const std::string error = exception_message();
+                            stream_bindings.timing->MarkCameraInstant(
+                                serial,
+                                "stream_open_buffer_task_failed",
+                                0,
+                                {{"error", error}});
+                            return GuiAsyncStartupWorkResult::Failed(
+                                "stream open/frame-buffer preparation failed: " +
+                                error);
+                        }
+                    });
+            const uint64_t task_group_finished_ns = now_ns();
+            record_bounded_task_group(
+                stream_bindings.timing,
+                "stream_open_buffer_task_group",
+                "stream_open_buffer_task_group_complete",
+                task_group_started_ns,
+                task_group_finished_ns,
+                task_group);
+            if (!task_group.all_succeeded()) {
+                const std::vector<std::string> errors =
+                    bounded_camera_task_errors(
+                        task_group,
+                        camera_indices,
+                        stream_bindings.camera_params,
+                        "stream open/frame-buffer preparation");
+                cleanup_background_stream_product(
+                    stream_product.get(), stream_bindings);
+                if (task_group.any_failed()) {
+                    {
+                        std::lock_guard<std::mutex> lock(mutex);
+                        pending_errors = errors;
+                    }
+                    return GuiAsyncStartupWorkResult::Failed(
+                        "stream runtime construction failed: " +
+                        summarize_errors(errors));
                 }
-                if (cancel_requested.load(std::memory_order_acquire)) {
-                    cleanup_background_stream_product(
-                        stream_product.get(), stream_bindings);
-                    return GuiAsyncStartupWorkResult::Canceled(
-                        current_cancel_reason());
-                }
-                {
-                    GuiStartupTimingScope scope(
-                        stream_bindings.timing,
-                        "stream_open",
-                        stream_bindings.camera_params[i].camera_serial);
-                    camera_open_stream(
-                        &stream_bindings.cameras[i].camera,
-                        &stream_bindings.camera_params[i],
-                        "gui_async_start_streaming");
-                    stream_product->stream_opened[static_cast<std::size_t>(i)] =
-                        true;
-                }
-                {
-                    GuiStartupTimingScope scope(
-                        stream_bindings.timing,
-                        "frame_buffer_allocate_and_queue",
-                        stream_bindings.camera_params[i].camera_serial);
-                    stream_bindings.cameras[i].evt_frame =
-                        new Emergent::CEmergentFrame[stream_bindings.evt_buffer_size];
-                    stream_bindings.cameras[i].evt_frame_count =
-                        stream_bindings.evt_buffer_size;
-                    allocate_frame_buffer(
-                        &stream_bindings.cameras[i].camera,
-                        stream_bindings.cameras[i].evt_frame,
-                        &stream_bindings.camera_params[i],
-                        stream_bindings.evt_buffer_size);
-                    stream_product
-                        ->frame_buffers_allocated[static_cast<std::size_t>(i)] =
-                        true;
-                }
+                return GuiAsyncStartupWorkResult::Canceled(
+                    current_cancel_reason());
             }
             if (stream_bindings.ptp_stream_sync) {
                 for (int i = 0; i < stream_bindings.camera_count; ++i) {
                     if (!gui_camera_has_acquisition_work(
                             stream_bindings.camera_selection[i])) {
                         continue;
+                    }
+                    if (cancel_requested.load(std::memory_order_acquire)) {
+                        cleanup_background_stream_product(
+                            stream_product.get(), stream_bindings);
+                        return GuiAsyncStartupWorkResult::Canceled(
+                            current_cancel_reason());
                     }
                     GuiStartupTimingScope scope(
                         stream_bindings.timing,
@@ -1174,20 +1479,20 @@ bool GuiCameraStartupController::StartCameraOpen(
         return false;
     }
 
-    const char* concurrency_env = std::getenv(kCameraOpenConcurrencyEnv);
+    const char* concurrency_env = std::getenv(kCameraStartupConcurrencyEnv);
     const bool concurrency_override = request.max_parallel_open_workers > 0;
     const int requested_concurrency = concurrency_override
         ? request.max_parallel_open_workers
-        : gui_env_int(kCameraOpenConcurrencyEnv, 1, 1);
+        : gui_env_int(kCameraStartupConcurrencyEnv, 1, 1);
     bool concurrency_supported = false;
     const std::size_t effective_concurrency =
-        SanitizeGuiCameraOpenConcurrency(
+        SanitizeGuiStartupConcurrency(
             requested_concurrency,
             request.selected_devices.size(),
             &concurrency_supported);
     if (!concurrency_supported) {
         std::cerr << "[GUI][camera_startup] Ignoring unsupported "
-                  << kCameraOpenConcurrencyEnv << "=" << requested_concurrency
+                  << kCameraStartupConcurrencyEnv << "=" << requested_concurrency
                   << "; supported experimental values are 1, 2, and 4."
                   << std::endl;
     }
@@ -1201,7 +1506,7 @@ bool GuiCameraStartupController::StartCameraOpen(
         request.timing_context = nlohmann::json::object();
     }
     request.timing_context["camera_open_concurrency"] = {
-        {"environment_key", kCameraOpenConcurrencyEnv},
+        {"environment_key", kCameraStartupConcurrencyEnv},
         {"setting_source", concurrency_override
             ? "request_override"
             : ((concurrency_env && *concurrency_env) ? "environment" : "default")},
@@ -1523,6 +1828,31 @@ bool GuiCameraStartupController::StartStream(
     if (!impl_ || !validate_stream_bindings(bindings, error_out)) {
         return false;
     }
+    const std::vector<int> active_camera_indices =
+        acquisition_camera_indices(bindings);
+    const char* concurrency_env = std::getenv(kCameraStartupConcurrencyEnv);
+    const bool concurrency_override =
+        bindings.max_parallel_stream_workers > 0;
+    const int requested_concurrency = concurrency_override
+        ? bindings.max_parallel_stream_workers
+        : gui_env_int(kCameraStartupConcurrencyEnv, 1, 1);
+    bool concurrency_supported = false;
+    const std::size_t effective_concurrency =
+        SanitizeGuiStartupConcurrency(
+            requested_concurrency,
+            active_camera_indices.size(),
+            &concurrency_supported);
+    if (!concurrency_supported) {
+        std::cerr << "[GUI][camera_startup] Ignoring unsupported "
+                  << kCameraStartupConcurrencyEnv << "="
+                  << requested_concurrency
+                  << "; supported experimental values are 1, 2, and 4."
+                  << std::endl;
+    }
+    // Preserve the accepted requested width. Each bounded group records its
+    // own camera-count clamp and observed peak concurrency.
+    bindings.max_parallel_stream_workers =
+        concurrency_supported ? requested_concurrency : 1;
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         if ((impl_->phase != GuiCameraStartupPhase::kIdle &&
@@ -1536,7 +1866,8 @@ bool GuiCameraStartupController::StartStream(
         impl_->stream_bindings = bindings;
         impl_->phase = GuiCameraStartupPhase::kPreparingStreamResources;
         impl_->operation = "stream_start";
-        impl_->message = "Preparing stream resources...";
+        impl_->message = "Preparing stream resources (concurrency " +
+            std::to_string(effective_concurrency) + ")...";
         impl_->cancel_pending = false;
         impl_->cancel_reason.clear();
         impl_->pending_errors.clear();
@@ -1583,7 +1914,26 @@ bool GuiCameraStartupController::StartStream(
             {"evt_buffer_size", bindings.evt_buffer_size},
             {"selected_camera_count", timing_cameras.size()},
             {"yolo_model", *bindings.yolo_model},
-            {"execution_model", "async_controller_two_phase"},
+            {"execution_model", "async_controller_bounded_stream_preparation"},
+            {"stream_preparation_concurrency",
+             {
+                 {"environment_key", kCameraStartupConcurrencyEnv},
+                 {"setting_source", concurrency_override
+                      ? "request_override"
+                      : ((concurrency_env && *concurrency_env)
+                             ? "environment"
+                             : "default")},
+                 {"requested", requested_concurrency},
+                 {"requested_value_supported", concurrency_supported},
+                 {"effective", effective_concurrency},
+                 {"selected_camera_count", active_camera_indices.size()},
+                 {"resource_initialization_policy", "bounded_per_camera"},
+                 {"worker_construction_policy", "serial"},
+                 {"stream_open_buffer_policy", "bounded_per_camera"},
+                 {"gui_texture_policy", "gui_thread_serial"},
+                 {"ptp_configuration_policy", "serial"},
+                 {"ptp_gate_policy", "unchanged_shared_barrier"},
+             }},
         },
         impl_->stream_request_started_ns);
 

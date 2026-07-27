@@ -55,9 +55,10 @@ using GuiBoundedStartupTask = std::function<GuiAsyncStartupWorkResult(
     std::size_t task_index,
     const GuiStartupCancellation& cancellation)>;
 
-// Supported experimental camera-open widths. Invalid values deliberately fall
-// back to one worker rather than silently enabling an untested topology.
-std::size_t SanitizeGuiCameraOpenConcurrency(
+// Supported experimental per-camera startup widths. Invalid values
+// deliberately fall back to one worker rather than silently enabling an
+// untested topology.
+std::size_t SanitizeGuiStartupConcurrency(
     int requested_concurrency,
     std::size_t task_count,
     bool* requested_value_supported = nullptr) noexcept;

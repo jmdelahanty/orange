@@ -85,7 +85,7 @@ bool GuiBoundedStartupTaskGroupResult::any_failed() const noexcept
         });
 }
 
-std::size_t SanitizeGuiCameraOpenConcurrency(
+std::size_t SanitizeGuiStartupConcurrency(
     const int requested_concurrency,
     const std::size_t task_count,
     bool* requested_value_supported) noexcept

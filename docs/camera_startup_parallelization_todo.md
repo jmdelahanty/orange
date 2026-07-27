@@ -68,16 +68,18 @@ Implementation and interpretation details are in
 
 Camera open/configuration, CUDA/IPC preparation, worker construction, stream
 open, buffer allocation, and PTP configuration run off the GUI thread.
-Open/configuration can use a bounded per-camera task group; concurrency one is
-the default and preserves serial order, while two and four are opt-in values.
+Open/configuration, per-camera CUDA/IPC initialization, and per-camera stream
+open/buffer preparation can use bounded task groups. Concurrency one is the
+default and preserves serial order, while two and four are opt-in values.
 OpenGL/CUDA display texture creation and the final ownership handoff remain on
-the GUI thread. The GUI exposes phase progress and cancellation, and
-`CameraControl::subscribe` is not asserted until runtime arrays are complete.
+the GUI thread. Worker construction and PTP configuration remain serial. The
+GUI exposes phase progress and cancellation, and `CameraControl::subscribe` is
+not asserted until runtime arrays are complete.
 
-Stream open, buffer allocation, PTP configuration, and the headless lifecycle
-remain serial. The bounded implementation does not by itself prove every
-Emergent SDK call class safe under concurrency, but live camera open/configure
-has now succeeded at measured width four across repeated close/reopen trials.
+The headless lifecycle remains serial. The bounded implementation does not by
+itself prove every Emergent SDK call class safe under concurrency, but live
+camera open/configure and stream-open/buffer preparation have now succeeded at
+measured width four.
 
 The first two-camera startup-only A/B on 2026-07-27 passed. Width two reduced
 the camera-open task-group wall time from 1920.238 ms to 1241.067 ms (35.37%)
@@ -92,16 +94,23 @@ and pose disabled, so they are not yet a rollout result. Exact artifacts and
 interpretation are in
 [`gui_camera_startup_timing.md`](gui_camera_startup_timing.md).
 
-The measured stream-start trace identifies the next safe slice. Before the
-acquisition threads launch, per-camera CUDA resource initialization consumes
-about 0.50 seconds and serial stream-open/buffer preparation about 0.32 seconds.
-Those independent, per-camera products are candidates for the same bounded task
-model with deterministic rollback. GUI OpenGL texture work stays on the GUI
-thread; the roughly 7 ms PTP-mode configuration remains serial initially. The
-four acquisition threads already enter `start_ptp_sync` concurrently, and the
-remaining roughly 3.24 seconds is the intentional shared future-gate countdown,
-not serial work. Its barrier and gate semantics must not be weakened merely to
-improve startup timing.
+The stream-start slice is now implemented with deterministic result slots and
+partial-allocation rollback. In a matched four-camera startup-only comparison,
+width four reduced stream-open/buffer wall time from 339.083 ms to 231.991 ms
+(31.6%) and reduced GUI-handler time from 1163.798 ms to 1035.473 ms (11.0%).
+CUDA/IPC initialization overlapped safely but improved only from 497.392 ms to
+475.201 ms (4.5%), indicating shared GPU/host-allocation contention. The four
+streams sustained about 100 FPS with zero reported acquisition or encode
+errors. The roughly 3.24-second interval remains the intentional shared PTP
+future-gate countdown, not serial work, and its barrier semantics were not
+changed.
+
+An additional live experiment parallelized worker construction. It regressed
+that phase from about 189.6 ms serial to 219.4 ms at width four, consistent with
+contention while the workers allocate pinned host and shared-GPU resources.
+That experiment was reverted; worker construction remains serial by policy.
+Exact artifacts and interpretation are in
+[`gui_camera_startup_timing.md`](gui_camera_startup_timing.md).
 
 ## Parallelization Plan
 
@@ -142,24 +151,25 @@ improve startup timing.
 
 ## Phase 3: Parallelize Stream Prep
 
-- [ ] Initialize each camera's `CameraResources` in a bounded per-camera task:
+- [x] Initialize each camera's `CameraResources` in a bounded per-camera task:
   - one distinct result slot and CUDA device per task
   - no shared `cudaSetDevice` state across threads
   - join all tasks before ownership handoff or cleanup.
-- [ ] Refactor stream prep helper (`allocate_camera_frame_buffers`) to per-camera tasks:
+- [ ] Refactor the shared headless stream-prep helper
+  (`allocate_camera_frame_buffers`) to per-camera tasks.
+- [x] Apply the bounded model to the equivalent GUI stream-prep operations:
   - `camera_open_stream`
   - frame allocation + queueing
-  - optional reorder buffer allocation.
-- [ ] Apply same model to GUI startup path where equivalent logic is inlined.
-- [ ] Keep OpenGL/display texture creation on the GUI thread that owns the
+- [x] Keep OpenGL/display texture creation on the GUI thread that owns the
   context; do not include it in the task group.
-- [ ] Keep worker construction serial for the first stream-prep experiment;
-  reconsider it only after the resource and stream-open slices are measured.
-- [ ] Ensure rollback on partial failure:
+- [x] Keep worker construction serial after a measured width-four parallel
+  experiment regressed phase wall time.
+- [x] Implement GUI rollback on partial failure:
   - release allocated buffers
   - close opened streams
   - clean every initialized CUDA resource product
   - return to clean pre-start state.
+- [ ] Add the equivalent bounded preparation and rollback to headless startup.
 
 ## Phase 4: PTP Setup Strategy
 
@@ -199,6 +209,7 @@ improve startup timing.
   - mixed success/failure should leave clean state.
 - [ ] Soak test parallel startup/stop loops (100+ cycles) for leaks/hangs.
 - [x] A/B compare startup latency against sequential baseline.
+- [ ] Full recording/YOLO/crop/pose validation of bounded stream preparation.
 - [ ] Rollout:
   - enable feature flag in test environments first
   - switch default on only after stability criteria are met.

@@ -7,6 +7,7 @@
 #include "video_capture.h"
 
 #include <filesystem>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <thread>
@@ -112,6 +113,10 @@ struct GuiStreamStartupBindings {
     const AppStorageConfig* app_storage_config = nullptr;
     GuiStartupTimingRecorder* timing = nullptr;
     std::filesystem::path timing_artifact_directory;
+    // Zero resolves ORANGE_GUI_CAMERA_STARTUP_CONCURRENCY. The same validated
+    // width controls independent resource and stream-preparation task groups;
+    // it does not alter PTP barrier semantics.
+    int max_parallel_stream_workers = 0;
 
     std::vector<CameraResources>* camera_resources = nullptr;
     std::vector<std::unique_ptr<FrameIPCManager>>* frame_ipc_managers = nullptr;

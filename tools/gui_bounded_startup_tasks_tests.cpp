@@ -16,7 +16,7 @@ using orange::gui::GuiBoundedStartupTaskGroupResult;
 using orange::gui::GuiBoundedStartupTaskState;
 using orange::gui::GuiStartupCancellation;
 using orange::gui::RunGuiBoundedStartupTasks;
-using orange::gui::SanitizeGuiCameraOpenConcurrency;
+using orange::gui::SanitizeGuiStartupConcurrency;
 
 void require(const bool condition, const std::string& message)
 {
@@ -34,23 +34,23 @@ void wait_until(Predicate predicate, const std::string& description)
     require(predicate(), "timed out waiting for " + description);
 }
 
-void test_camera_open_concurrency_sanitization()
+void test_startup_concurrency_sanitization()
 {
     bool supported = false;
     require(
-        SanitizeGuiCameraOpenConcurrency(1, 4, &supported) == 1 && supported,
+        SanitizeGuiStartupConcurrency(1, 4, &supported) == 1 && supported,
         "one worker is supported");
     require(
-        SanitizeGuiCameraOpenConcurrency(2, 4, &supported) == 2 && supported,
+        SanitizeGuiStartupConcurrency(2, 4, &supported) == 2 && supported,
         "two workers are supported");
     require(
-        SanitizeGuiCameraOpenConcurrency(4, 3, &supported) == 3 && supported,
+        SanitizeGuiStartupConcurrency(4, 3, &supported) == 3 && supported,
         "four workers clamp to selected camera count");
     require(
-        SanitizeGuiCameraOpenConcurrency(3, 4, &supported) == 1 && !supported,
+        SanitizeGuiStartupConcurrency(3, 4, &supported) == 1 && !supported,
         "untested widths fall back to serial");
     require(
-        SanitizeGuiCameraOpenConcurrency(4, 0, &supported) == 0 && supported,
+        SanitizeGuiStartupConcurrency(4, 0, &supported) == 0 && supported,
         "an empty task set has no workers");
 }
 
@@ -200,8 +200,8 @@ void test_task_exception_becomes_indexed_failure()
 int main()
 {
     const std::pair<const char*, std::function<void()>> tests[] = {
-        {"camera_open_concurrency_sanitization",
-         test_camera_open_concurrency_sanitization},
+        {"startup_concurrency_sanitization",
+         test_startup_concurrency_sanitization},
         {"bounded_parallelism_and_complete_results",
          test_bounded_parallelism_and_complete_results},
         {"peer_failure_stops_pending_work_and_joins_running_work",
