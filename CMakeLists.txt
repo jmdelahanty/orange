@@ -259,9 +259,12 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/network_base.cpp"
     "${SRC_DIR}/FFmpegWriter.cpp"
     "${SRC_DIR}/camera.cpp"
+    "${SRC_DIR}/camera_sensor_pipeline_state.cpp"
+    "${SRC_DIR}/calibration_transaction.cpp"
     "${SRC_DIR}/camera_preview_utils.cpp"
     "${SRC_DIR}/video_capture.cpp"
     "${SRC_DIR}/acquire_frames.cpp"
+    "${SRC_DIR}/gui/startup_timing.cpp"
     "${SRC_DIR}/offthreadmachine.cpp"
     "${SRC_DIR}/opengldisplay.cpp"
     "${SRC_DIR}/imgui_glfw_size_cache.cpp"
@@ -299,6 +302,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/session_status.cpp"
     "${SRC_DIR}/gui/session_status_render.cpp"
     "${SRC_DIR}/gui/spatial_layout/calibration_metadata.cpp"
+    "${SRC_DIR}/gui/spatial_layout/calibration_transaction_bridge.cpp"
     "${SRC_DIR}/gui/spatial_layout/canvas_edit.cpp"
     "${SRC_DIR}/gui/spatial_layout/capture_panel.cpp"
     "${SRC_DIR}/gui/spatial_layout/citrus_import.cpp"
@@ -352,6 +356,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/shared_recording_output.cpp"
     "${SRC_DIR}/encoder_preprocess_worker.cpp"
     "${SRC_DIR}/encoder_hw_worker.cpp"
+    "${SRC_DIR}/encoder_qp_map.cpp"
     "${SRC_DIR}/modern_recording_pipeline.cpp"
     "${SRC_DIR}/pre_encoder_reference_writer.cpp"
     ${NVENCODER_SOURCES}
@@ -366,8 +371,10 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/network_base.cpp"
     "${SRC_DIR}/FFmpegWriter.cpp"
     "${SRC_DIR}/camera.cpp"
+    "${SRC_DIR}/camera_sensor_pipeline_state.cpp"
     "${SRC_DIR}/video_capture.cpp"
     "${SRC_DIR}/acquire_frames.cpp"
+    "${SRC_DIR}/gui/startup_timing.cpp"
     "${SRC_DIR}/offthreadmachine.cpp"
     "${SRC_DIR}/recording_ingress.cpp"
     "${SRC_DIR}/external_recorder_contract_utils.cpp"
@@ -382,6 +389,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/shared_recording_output.cpp"
     "${SRC_DIR}/encoder_preprocess_worker.cpp"
     "${SRC_DIR}/encoder_hw_worker.cpp"
+    "${SRC_DIR}/encoder_qp_map.cpp"
     "${SRC_DIR}/modern_recording_pipeline.cpp"
     "${SRC_DIR}/pre_encoder_reference_writer.cpp"
     "${SRC_DIR}/global.cpp"
@@ -414,12 +422,14 @@ set(YOLO_OFFLINE_SOURCES
 
 set(EVT_LENS_PROBE_SOURCES
     "tools/evt_lens_probe.cpp"
+    "${SRC_DIR}/camera_sensor_pipeline_state.cpp"
 )
 
 set(EVT_APERTURE_CHARACTERIZE_SOURCES
     "tools/evt_aperture_characterize.cpp"
     "${SRC_DIR}/aperture_characterization.cpp"
     "${SRC_DIR}/camera.cpp"
+    "${SRC_DIR}/camera_sensor_pipeline_state.cpp"
     "${SRC_DIR}/project.cpp"
     "${SRC_DIR}/spatial_calibration_snapshot.cpp"
     "${SRC_DIR}/spatial_layout_schema.cpp"
@@ -428,6 +438,7 @@ set(EVT_APERTURE_CHARACTERIZE_SOURCES
 set(EVT_STREAM_SMOKE_SOURCES
     "tools/evt_stream_smoke.cpp"
     "${SRC_DIR}/camera.cpp"
+    "${SRC_DIR}/camera_sensor_pipeline_state.cpp"
     "${SRC_DIR}/project.cpp"
     "${SRC_DIR}/spatial_calibration_snapshot.cpp"
     "${SRC_DIR}/spatial_layout_schema.cpp"
@@ -446,12 +457,14 @@ set(NV12_PREFILL_VALIDATION_SOURCES
 set(EXTERNAL_RECORDER_IPC_PROBE_SOURCES
     "tools/external_recorder_ipc_probe.cpp"
     "${SRC_DIR}/FFmpegWriter.cpp"
+    "${SRC_DIR}/encoder_qp_map.cpp"
     "${SRC_DIR}/video_encode_profile.cpp"
     ${NVENCODER_SOURCES}
 )
 
 set(EXTERNAL_RECORDER_SUPERVISOR_PLAN_SOURCES
     "tools/external_recorder_supervisor_plan.cpp"
+    "${SRC_DIR}/encoder_qp_map.cpp"
     "${SRC_DIR}/external_recorder_supervisor.cpp"
 )
 
@@ -849,12 +862,38 @@ if(BUILD_TESTING)
     target_compile_features(yolo_spatial_mask_tests PRIVATE cxx_std_17)
     add_test(NAME yolo_spatial_mask_tests COMMAND yolo_spatial_mask_tests)
 
+    add_executable(calibration_transaction_tests
+        "tools/calibration_transaction_tests.cpp"
+        "${SRC_DIR}/calibration_transaction.cpp"
+        "${SRC_DIR}/gui/spatial_layout/calibration_transaction_bridge.cpp"
+    )
+    target_include_directories(calibration_transaction_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(calibration_transaction_tests PRIVATE cxx_std_17)
+    add_test(NAME calibration_transaction_tests COMMAND calibration_transaction_tests)
+
     add_executable(camera_config_validation_tests
         "tools/camera_config_validation_tests.cpp"
     )
     target_include_directories(camera_config_validation_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(camera_config_validation_tests PRIVATE cxx_std_17)
     add_test(NAME camera_config_validation_tests COMMAND camera_config_validation_tests)
+
+    add_executable(camera_sensor_pipeline_state_tests
+        "tools/camera_sensor_pipeline_state_tests.cpp"
+        "${SRC_DIR}/camera_sensor_pipeline_state.cpp"
+    )
+    target_include_directories(camera_sensor_pipeline_state_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(camera_sensor_pipeline_state_tests PRIVATE cxx_std_17)
+    target_link_libraries(camera_sensor_pipeline_state_tests PRIVATE
+        ${EVT_CAMERA_LIBRARY}
+        ${EVT_GENICAM_LIBRARY}
+        ${EVT_GIGE_LIBRARY}
+    )
+    add_test(NAME camera_sensor_pipeline_state_tests COMMAND camera_sensor_pipeline_state_tests)
+
+    add_test(
+        NAME sensor_baseline_characterization_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/sensor_baseline_characterization_tests.py")
 
     add_test(
         NAME make_guided_calibration_timing_config_tests
@@ -864,6 +903,7 @@ if(BUILD_TESTING)
         "tools/app_storage_config_tests.cpp"
         "${SRC_DIR}/project.cpp"
         "${SRC_DIR}/camera.cpp"
+        "${SRC_DIR}/camera_sensor_pipeline_state.cpp"
         "${SRC_DIR}/spatial_calibration_snapshot.cpp"
         "${SRC_DIR}/spatial_layout_schema.cpp"
     )
@@ -886,6 +926,7 @@ if(BUILD_TESTING)
         "${SRC_DIR}/gui/spatial_layout/projection_snapshot_client.cpp"
         "${SRC_DIR}/project.cpp"
         "${SRC_DIR}/camera.cpp"
+        "${SRC_DIR}/camera_sensor_pipeline_state.cpp"
         "${SRC_DIR}/spatial_calibration_snapshot.cpp"
         "${SRC_DIR}/spatial_layout_schema.cpp"
     )
@@ -904,6 +945,10 @@ if(BUILD_TESTING)
     add_test(
         NAME validate_recording_geometry_assets_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/validate_recording_geometry_assets_tests.py")
+
+    add_test(
+        NAME vbr_cq_quality_matrix_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/vbr_cq_quality_matrix_tests.py")
 
     add_test(
         NAME calibration_package_tests
@@ -936,6 +981,15 @@ if(BUILD_TESTING)
     target_compile_features(gui_autorun_tests PRIVATE cxx_std_17)
     target_link_libraries(gui_autorun_tests PRIVATE Threads::Threads)
     add_test(NAME gui_autorun_tests COMMAND gui_autorun_tests)
+
+    add_executable(gui_startup_timing_tests
+        "tools/gui_startup_timing_tests.cpp"
+        "${SRC_DIR}/gui/startup_timing.cpp"
+    )
+    target_include_directories(gui_startup_timing_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(gui_startup_timing_tests PRIVATE cxx_std_17)
+    target_link_libraries(gui_startup_timing_tests PRIVATE Threads::Threads)
+    add_test(NAME gui_startup_timing_tests COMMAND gui_startup_timing_tests)
 
     add_executable(guided_capture_autorun_config_tests
         "tools/guided_capture_autorun_config_tests.cpp"
@@ -1070,8 +1124,17 @@ if(BUILD_TESTING)
     target_compile_features(shaman_v2_tests PRIVATE cxx_std_17)
     add_test(NAME shaman_v2_tests COMMAND shaman_v2_tests)
 
+    add_executable(encoder_qp_map_tests
+        "tools/encoder_qp_map_tests.cpp"
+        "${SRC_DIR}/encoder_qp_map.cpp"
+    )
+    target_include_directories(encoder_qp_map_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(encoder_qp_map_tests PRIVATE cxx_std_17)
+    add_test(NAME encoder_qp_map_tests COMMAND encoder_qp_map_tests)
+
     add_executable(external_recorder_supervisor_tests
         "tools/external_recorder_supervisor_tests.cpp"
+        "${SRC_DIR}/encoder_qp_map.cpp"
         "${SRC_DIR}/external_recorder_contract_utils.cpp"
         "${SRC_DIR}/external_recorder_lifecycle.cpp"
         "${SRC_DIR}/external_recorder_supervisor.cpp"
@@ -1082,6 +1145,7 @@ if(BUILD_TESTING)
 
     add_executable(external_recorder_contract_utils_tests
         "tools/external_recorder_contract_utils_tests.cpp"
+        "${SRC_DIR}/encoder_qp_map.cpp"
         "${SRC_DIR}/external_recorder_contract_utils.cpp"
         "${SRC_DIR}/external_recorder_supervisor.cpp"
     )

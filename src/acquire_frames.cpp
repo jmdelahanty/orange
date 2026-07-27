@@ -20,6 +20,7 @@
 #include "cuda_context_debug.h"
 #include "frame_ipc_manager.h"
 #include "fsuid_guard.h"
+#include "gui/startup_timing.h"
 #include "latency_stats.h"
 #include "project.h"
 #include "worker_entry_release.h"
@@ -1076,8 +1077,17 @@ void acquire_frames(
     CameraResources* resources,
     FrameIPCManager* frame_ipc_manager,
     yolo_event_log::SyntheticYoloEventEmitter* synthetic_yolo_event_emitter,
-    SpatialSnapshotWorker* spatial_snapshot_worker
+    SpatialSnapshotWorker* spatial_snapshot_worker,
+    orange::gui::GuiStartupTimingRecorder* startup_timing
 ){
+    const uint64_t acquisition_thread_entered_ns =
+        orange::gui::GuiStartupTimingRecorder::NowNs();
+    if (startup_timing) {
+        startup_timing->MarkCameraInstant(
+            camera_params->camera_serial,
+            "acquisition_thread_entered",
+            acquisition_thread_entered_ns);
+    }
     ck(cudaSetDevice(camera_params->gpu_id));
     NVTX_CAMERA("AcquireFrames_Main");
     std::cout << "Starting acquisition loop for camera " << camera_params->camera_serial << std::endl;
@@ -1118,6 +1128,16 @@ void acquire_frames(
     RunningInt64Stats latch_minus_frame_stats{};
     RunningInt64Stats frame_delta_stats{};
     RunningInt64Stats latch_delta_stats{};
+    RunningInt64Stats recording_camera_minus_realtime_stats{};
+    std::string ptp_mode_first;
+    std::string ptp_mode_last;
+    uint64_t ptp_mode_samples = 0;
+    uint64_t ptp_mode_changes = 0;
+    std::string ptp_status_first;
+    std::string ptp_status_last;
+    uint64_t ptp_status_samples = 0;
+    uint64_t ptp_status_changes = 0;
+    nlohmann::json ptp_readback_observations = nlohmann::json::array();
     std::string ptp_summary_recording_folder;
     StopWatch w;
     auto last_fps_update_time = std::chrono::steady_clock::now();
@@ -1204,6 +1224,94 @@ void acquire_frames(
         latch_minus_frame_stats.reset();
         frame_delta_stats.reset();
         latch_delta_stats.reset();
+        recording_camera_minus_realtime_stats.reset();
+        ptp_mode_first.clear();
+        ptp_mode_last.clear();
+        ptp_mode_samples = 0;
+        ptp_mode_changes = 0;
+        ptp_status_first.clear();
+        ptp_status_last.clear();
+        ptp_status_samples = 0;
+        ptp_status_changes = 0;
+        ptp_readback_observations = nlohmann::json::array();
+    };
+
+    auto sample_ptp_enum_readback = [](Emergent::CEmergentCamera* camera,
+                                       const char* name,
+                                       std::string* first,
+                                       std::string* last,
+                                       uint64_t* samples,
+                                       uint64_t* changes) {
+        if (!camera || !name || !first || !last || !samples || !changes) {
+            return;
+        }
+        char value[128] = {};
+        unsigned long value_size = 0;
+        if (EVT_CameraGetEnumParam(camera, name, value, sizeof(value), &value_size) !=
+            EVT_SUCCESS) {
+            return;
+        }
+        const std::string observed(value);
+        if (*samples == 0) {
+            *first = observed;
+        } else if (observed != *last) {
+            ++(*changes);
+        }
+        *last = observed;
+        ++(*samples);
+    };
+
+    auto sample_ptp_readbacks = [&]() {
+        const uint64_t mode_samples_before = ptp_mode_samples;
+        const uint64_t status_samples_before = ptp_status_samples;
+        sample_ptp_enum_readback(
+            &ecam->camera,
+            "PtpMode",
+            &ptp_mode_first,
+            &ptp_mode_last,
+            &ptp_mode_samples,
+            &ptp_mode_changes);
+        sample_ptp_enum_readback(
+            &ecam->camera,
+            "PtpStatus",
+            &ptp_status_first,
+            &ptp_status_last,
+            &ptp_status_samples,
+            &ptp_status_changes);
+        if (ptp_mode_samples != mode_samples_before ||
+            ptp_status_samples != status_samples_before) {
+            const nlohmann::json mode = ptp_mode_samples > 0
+                ? nlohmann::json(ptp_mode_last) : nlohmann::json(nullptr);
+            const nlohmann::json status = ptp_status_samples > 0
+                ? nlohmann::json(ptp_status_last) : nlohmann::json(nullptr);
+            const std::string sampled_at_utc = get_current_utc_timestamp();
+            const bool same_state = !ptp_readback_observations.empty() &&
+                ptp_readback_observations.back().value("ptp_mode", nlohmann::json(nullptr)) == mode &&
+                ptp_readback_observations.back().value("ptp_status", nlohmann::json(nullptr)) == status;
+            if (same_state) {
+                nlohmann::json& observation = ptp_readback_observations.back();
+                observation["sampled_at_utc"] = sampled_at_utc;
+                observation["last_sampled_at_utc"] = sampled_at_utc;
+                observation["last_local_frame_id"] = camera_state.frame_count;
+                observation["last_recording_frame_id"] = last_recording_frame_count;
+                observation["samples"] = observation.value("samples", 0ULL) + 1;
+            } else {
+                ptp_readback_observations.push_back({
+                    {"sampled_at_utc", sampled_at_utc},
+                    {"first_sampled_at_utc", sampled_at_utc},
+                    {"last_sampled_at_utc", sampled_at_utc},
+                    {"local_frame_id", camera_state.frame_count},
+                    {"recording_frame_id", last_recording_frame_count},
+                    {"first_local_frame_id", camera_state.frame_count},
+                    {"last_local_frame_id", camera_state.frame_count},
+                    {"first_recording_frame_id", last_recording_frame_count},
+                    {"last_recording_frame_id", last_recording_frame_count},
+                    {"samples", 1},
+                    {"ptp_mode", mode},
+                    {"ptp_status", status}
+                });
+            }
+        }
     };
 
     auto build_ptp_camera_summary_json = [&](bool finalized) {
@@ -1276,6 +1384,26 @@ void acquire_frames(
         summary["latch_minus_frame_ns"] = latch_minus_frame_stats.to_json();
         summary["frame_delta_ns"] = frame_delta_stats.to_json();
         summary["latch_delta_ns"] = latch_delta_stats.to_json();
+        summary["recording_camera_minus_realtime_ns"] =
+            recording_camera_minus_realtime_stats.to_json();
+        summary["recording_timestamp_pair_source"] = {
+            {"camera", "Emergent::CEmergentFrame.timestamp"},
+            {"host", "clock_gettime(CLOCK_REALTIME)"},
+            {"population", "frames_with_recording_frame_id"}
+        };
+        summary["ptp_mode_readback"] = {
+            {"samples", ptp_mode_samples},
+            {"first", ptp_mode_samples > 0 ? nlohmann::json(ptp_mode_first) : nlohmann::json(nullptr)},
+            {"last", ptp_mode_samples > 0 ? nlohmann::json(ptp_mode_last) : nlohmann::json(nullptr)},
+            {"changes", ptp_mode_changes}
+        };
+        summary["ptp_status_readback"] = {
+            {"samples", ptp_status_samples},
+            {"first", ptp_status_samples > 0 ? nlohmann::json(ptp_status_first) : nlohmann::json(nullptr)},
+            {"last", ptp_status_samples > 0 ? nlohmann::json(ptp_status_last) : nlohmann::json(nullptr)},
+            {"changes", ptp_status_changes}
+        };
+        summary["ptp_readback_observations"] = ptp_readback_observations;
         const uint64_t delta_samples = (camera_state.frame_count > 1) ? (camera_state.frame_count - 1) : 0;
         summary["delta_samples"] = delta_samples;
         summary["latch_delta_samples"] = ptp_state.ptp_time_delta_samples;
@@ -1386,7 +1514,17 @@ void acquire_frames(
         return true;
     };
 
+    if (startup_timing) {
+        startup_timing->RecordCameraInterval(
+            camera_params->camera_serial,
+            "acquisition_thread_setup",
+            acquisition_thread_entered_ns,
+            orange::gui::GuiStartupTimingRecorder::NowNs());
+    }
+
     {
+        const uint64_t acquisition_start_setup_ns =
+            orange::gui::GuiStartupTimingRecorder::NowNs();
         NVTX_RANGE("Camera_Initialization");
         if (camera_control->sync_camera) {
             NVTX_RANGE_PUSH("PTP_Sync_Setup");
@@ -1397,6 +1535,11 @@ void acquire_frames(
 
         NVTX_CAMERA("Camera_Acquisition_Start");
         check_camera_errors(EVT_CameraExecuteCommand(&ecam->camera, "AcquisitionStart"), camera_params->camera_serial.c_str());
+        if (startup_timing) {
+            startup_timing->MarkCameraInstant(
+                camera_params->camera_serial,
+                "acquisition_start_command_issued");
+        }
 
         if (camera_control->sync_camera) {
             NVTX_RANGE_PUSH("PTP_Countdown");
@@ -1404,6 +1547,18 @@ void acquire_frames(
             NVTX_RANGE_POP();
         } else {
             try_start_timer();
+        }
+        if (startup_timing) {
+            startup_timing->RecordCameraInterval(
+                camera_params->camera_serial,
+                camera_control->sync_camera
+                    ? "ptp_arm_and_gate_wait"
+                    : "acquisition_start",
+                acquisition_start_setup_ns,
+                orange::gui::GuiStartupTimingRecorder::NowNs());
+            startup_timing->MarkCameraInstant(
+                camera_params->camera_serial,
+                "acquisition_loop_ready");
         }
     }
 
@@ -1445,6 +1600,7 @@ void acquire_frames(
     static thread_local int copy_prof_count = 0;
 #endif
 
+    bool startup_first_frame_reported = false;
     while (camera_control->subscribe) {
         NVTX_RANGE_PUSH("Frame_Processing_Loop");
 
@@ -1568,6 +1724,15 @@ void acquire_frames(
                 frame_to_requeue = received_frame;
             }
             const uint64_t receive_host_ns = steady_clock_now_ns();
+            if (!startup_first_frame_reported && startup_timing) {
+                startup_first_frame_reported = true;
+                startup_timing->MarkFirstFrame(
+                    camera_params->camera_serial,
+                    camera_state.frame_count + 1,
+                    received_frame->frame_id,
+                    received_frame->timestamp,
+                    receive_host_ns);
+            }
             const uint64_t get_frame_wait_ns =
                 receive_host_ns > get_frame_call_host_ns
                     ? receive_host_ns - get_frame_call_host_ns
@@ -1727,6 +1892,9 @@ void acquire_frames(
                 }
                 ptp_summary_recording_folder = live_recording_folder;
                 reset_ptp_summary_stats();
+                if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera) {
+                    sample_ptp_readbacks();
+                }
             }
 
             int dispatch_count = 0;
@@ -1897,6 +2065,26 @@ void acquire_frames(
             current_entry->yolo_input_detach_requested = yolo_detach_input && will_yolo;
             current_entry->detections_ready.store(false);
             current_entry->ipc_frame_id = 0;
+
+            if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera) {
+                if (current_entry->recording_frame_id > 0) {
+                    recording_camera_minus_realtime_stats.add(
+                        static_cast<int64_t>(current_entry->timestamp) -
+                        static_cast<int64_t>(current_entry->timestamp_sys));
+                }
+                if (camera_state.frame_count > 1) {
+                    frame_delta_stats.add(static_cast<int64_t>(ptp_state.frame_ts_delta));
+                }
+                if (ptp_state.ptp_register_read_this_frame) {
+                    const int64_t latch_minus_frame_ns =
+                        static_cast<int64_t>(ptp_state.ptp_time) -
+                        static_cast<int64_t>(ptp_state.frame_ts);
+                    latch_minus_frame_stats.add(latch_minus_frame_ns);
+                    if (ptp_state.ptp_time_delta_samples > 0) {
+                        latch_delta_stats.add(static_cast<int64_t>(ptp_state.ptp_time_delta));
+                    }
+                }
+            }
 
             if (camera_control->sync_camera) {
                 const int64_t latch_minus_frame_ns =
@@ -2331,14 +2519,7 @@ void acquire_frames(
                     if (ptp_offset_ret == EVT_SUCCESS) {
                         ptp_offset_stats.add(current_ptp_offset);
                     }
-                    if (ptp_state.ptp_register_read_this_frame) {
-                        latch_minus_frame_stats.add(latch_minus_frame_ns);
-                    }
-                    frame_delta_stats.add(static_cast<int64_t>(ptp_state.frame_ts_delta));
-                    if (ptp_state.ptp_register_read_this_frame &&
-                        ptp_state.ptp_time_delta_samples > 0) {
-                        latch_delta_stats.add(static_cast<int64_t>(ptp_state.ptp_time_delta));
-                    }
+                    sample_ptp_readbacks();
                     if (!ptp_summary_recording_folder.empty()) {
                         update_ptp_sync_summary_camera(
                             ptp_summary_recording_folder,
