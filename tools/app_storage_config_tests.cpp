@@ -638,6 +638,18 @@ void test_recording_snapshot_includes_camera_coordinate_frame()
     params.pixel_format = "Mono8";
     params.gpu_direct = true;
     params.config_path = config_path.string();
+    params.sensor_pipeline_state = {
+        {"schema_id", "orange.camera.sensor_pipeline_state"},
+        {"schema_version", 1},
+        {"capture_stage", "post_configuration_pre_stream"},
+        {"applied_state_status", "confirmed"},
+        {"features", {
+            {"Gain", {
+                {"status", "readable"},
+                {"value", 256},
+            }},
+        }},
+    };
 
     require(
         write_recording_snapshot(
@@ -652,6 +664,20 @@ void test_recording_snapshot_includes_camera_coordinate_frame()
     const nlohmann::json snapshot = read_json(recording_folder / "recording_snapshot.json");
     const nlohmann::json& frame =
         snapshot.at("camera_runtime").at("2010096").at("coordinate_frame");
+    const nlohmann::json& sensor_pipeline =
+        snapshot.at("camera_runtime").at("2010096").at("sensor_pipeline");
+
+    require(
+        sensor_pipeline.value("schema_id", "") ==
+            "orange.camera.sensor_pipeline_state",
+        "recording snapshot embeds sensor-pipeline state");
+    require(
+        sensor_pipeline.value("capture_stage", "") ==
+            "post_configuration_pre_stream",
+        "recording snapshot preserves sensor-pipeline capture stage");
+    require(
+        sensor_pipeline.at("features").at("Gain").value("value", 0) == 256,
+        "recording snapshot preserves applied Gain readback");
 
     require(frame.value("schema_version", 0) == 1, "coordinate frame schema version");
     require(

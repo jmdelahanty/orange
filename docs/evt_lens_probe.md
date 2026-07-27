@@ -4,6 +4,8 @@
 - Is the camera exposing usable GenICam `Focus`/`Iris` nodes?
 - Are UART/GPIO lens communication nodes present and writable?
 - Does behavior change after enabling UART-related settings?
+- Does this camera/firmware expose `HCG`, `PGAGain`, black-level, LUT/gamma,
+  ADC, DualADC, and pixel-format controls, and what are their current values?
 
 Use this tool to gather evidence for the EF focus issue before changing app code.
 
@@ -73,6 +75,68 @@ At runtime the utility:
 - Optionally restores `GPO_0` to the Cam2010096 active-low exposure-pulse
   strobe mode and requires matching camera readback.
 - Prints a summary (`PASS`/`FAIL`/`NOT_RUN`) for each probe class.
+
+## Read-only sensor-pipeline evidence
+
+`--sensor-pipeline` is a getter-only evidence mode. It inventories the camera's
+applied image geometry, exposure, digital/analog gain candidates, black-level
+controls, LUT/gamma state, ADC/DualADC candidates, and output `PixelFormat`.
+Every candidate is recorded as `readable`, `unsupported`, or `read_error`.
+
+The evidence deliberately keeps these concepts separate:
+
+- `OffsetX` and `OffsetY` are ROI-origin coordinates;
+- `Offset`, `OffsetSigned`, or `BlackLevel*` are black-level controls;
+- `PixelFormat` is the output/transport format; and
+- `ADC`, `AdcBitDepth`, `DualADC`, and `DualADC_MODE` are separate conversion
+  controls when the camera firmware exposes them.
+
+The probe never changes `LUTIndex`, so it records only the current selector and
+current `LUTValue`; it does not claim to have collected the whole LUT. It also
+hashes the exact GenICam XML. The XML itself is written only when explicitly
+requested.
+
+Run one camera (Orange and Citrus must be stopped so the camera can be opened
+exclusively):
+
+```bash
+./targets/release/evt_lens_probe \
+  --serial 2010096 \
+  --sensor-pipeline \
+  --sensor-pipeline-json /tmp/cam2010096_sensor_pipeline.json \
+  --genicam-xml-out /tmp/cam2010096_genicam.xml
+```
+
+Run the four-camera getter-only inventory:
+
+```bash
+scripts/run_evt_lens_probe_all.sh \
+  --sensor-pipeline \
+  --serials 2010093,2010094,2010095,2010096
+```
+
+Per-camera JSON, XML, and text logs are written beneath
+`/tmp/evt_lens_probe/` by default. Evidence paths are unique by timestamp and
+the probe refuses to overwrite an existing JSON or XML file.
+
+For safety, sensor-pipeline mode rejects every focus, iris, UART, GPIO restore,
+or other exercise/mutation option on the same invocation.
+
+Orange separately performs the same getter-only inventory after applying its
+startup configuration and before streaming. The resulting
+`orange.camera.sensor_pipeline_state` object is embedded at:
+
+```text
+recording_snapshot.json
+  camera_runtime
+    <camera serial>
+      sensor_pipeline
+```
+
+That runtime object compares requested and applied `Width`, `Height`, ROI
+offsets, frame rate, exposure, `Gain`, `PixelFormat`, `LUTEnable`, and
+`AutoGain`. Capability-only probe output is marked `not_requested`; it is not
+misrepresented as an applied-configuration confirmation.
 
 ## Build
 

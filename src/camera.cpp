@@ -1,4 +1,5 @@
 #include "camera.h"
+#include "camera_sensor_pipeline_state.h"
 #include <iostream>
 #include <cctype>
 #include <cstdio>
@@ -1880,6 +1881,75 @@ void open_camera_with_params(Emergent::CEmergentCamera *camera,
     }
 
     apply_configured_runtime_mode(camera, camera_params, "open_camera_with_params");
+
+    // Preserve what the camera actually reports after every startup write has
+    // been applied. Failure to collect optional metadata must not stop camera
+    // acquisition; the state contract records unsupported/read_error values.
+    try {
+        const nlohmann::json requested_values = {
+            {"Width", camera_params->width},
+            {"Height", camera_params->height},
+            {"OffsetX", camera_params->offsetx},
+            {"OffsetY", camera_params->offsety},
+            {"FrameRate", camera_params->frame_rate},
+            {"Exposure", camera_params->exposure},
+            {"Gain", camera_params->gain},
+            {"PixelFormat", camera_params->pixel_format},
+            {"LUTEnable", false},
+            {"AutoGain", false},
+        };
+        const nlohmann::json requested_sources = {
+            {"Width", "camera_config"},
+            {"Height", "camera_config"},
+            {"OffsetX", "camera_config"},
+            {"OffsetY", "camera_config"},
+            {"FrameRate", "camera_config"},
+            {"Exposure", "camera_config"},
+            {"Gain", "camera_config"},
+            {"PixelFormat", "camera_config"},
+            {"LUTEnable", "orange_factory_defaults"},
+            {"AutoGain", "orange_factory_defaults"},
+        };
+        camera_params->sensor_pipeline_state =
+            orange::camera_sensor_pipeline::capture_state(
+                camera,
+                {
+                    camera_params->camera_serial,
+                    device_info != nullptr ? std::string(device_info->modelName)
+                                           : camera_params->device_model,
+                    device_info != nullptr ? std::string(device_info->deviceVersion)
+                                           : std::string(),
+                },
+                "post_configuration_pre_stream",
+                requested_values,
+                requested_sources);
+        const std::string status = camera_params->sensor_pipeline_state.value(
+            "applied_state_status", std::string("incomplete"));
+        std::cout << camera_params->camera_serial
+                  << " [sensor_pipeline] applied-state readback=" << status
+                  << " readable="
+                  << camera_params->sensor_pipeline_state["inventory_summary"].value(
+                         "readable_count", 0)
+                  << " unsupported="
+                  << camera_params->sensor_pipeline_state["inventory_summary"].value(
+                         "unsupported_count", 0)
+                  << " errors="
+                  << camera_params->sensor_pipeline_state["inventory_summary"].value(
+                         "error_count", 0)
+                  << std::endl;
+    } catch (const std::exception& error) {
+        camera_params->sensor_pipeline_state = {
+            {"schema_id", "orange.camera.sensor_pipeline_state"},
+            {"schema_version", 1},
+            {"capture_stage", "post_configuration_pre_stream"},
+            {"read_only", true},
+            {"applied_state_status", "capture_error"},
+            {"capture_error", error.what()},
+        };
+        std::cerr << camera_params->camera_serial
+                  << " [sensor_pipeline] metadata capture failed: "
+                  << error.what() << std::endl;
+    }
 }
 
 void update_camera_params(Emergent::CEmergentCamera *camera, GigEVisionDeviceInfo *device_info, CameraParams *camera_params)

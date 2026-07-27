@@ -3,10 +3,15 @@
 #include <emergenterrors.h>
 #include <gigevisiondeviceinfo.h>
 
+#include "camera_sensor_pipeline_state.h"
+#include "fsuid_guard.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -27,6 +32,9 @@ struct Options {
     bool index_set = false;
     std::string xml_path;
     bool list_only = false;
+    bool sensor_pipeline = false;
+    std::string sensor_pipeline_json_path;
+    std::string genicam_xml_output_path;
 
     bool exercise_genicam = false;
     bool set_focus_target = false;
@@ -188,6 +196,9 @@ void print_usage(const char* argv0) {
         << "  --index <n>                   Select camera by index from device list (default 0).\n"
         << "  --xml <path>                  Optional local XML path for EVT_CameraOpen.\n"
         << "  --list-only                   Only list discovered cameras.\n"
+        << "  --sensor-pipeline             Getter-only sensor/ADC/pixel-pipeline inventory.\n"
+        << "  --sensor-pipeline-json <path> Write the inventory as immutable JSON evidence.\n"
+        << "  --genicam-xml-out <path>      Write the exact camera GenICam XML document.\n"
         << "  --exercise-genicam            Write Focus/Iris current values back and read back latency.\n"
         << "  --focus-target <value>        Set Focus to a specific value.\n"
         << "  --iris-target <value>         Set Iris to a specific value.\n"
@@ -238,6 +249,18 @@ bool parse_args(int argc, char** argv, Options* options) {
             options->xml_path = v;
         } else if (arg == "--list-only") {
             options->list_only = true;
+        } else if (arg == "--sensor-pipeline") {
+            options->sensor_pipeline = true;
+        } else if (arg == "--sensor-pipeline-json") {
+            const char* v = require_next("--sensor-pipeline-json");
+            if (!v) return false;
+            options->sensor_pipeline_json_path = v;
+            options->sensor_pipeline = true;
+        } else if (arg == "--genicam-xml-out") {
+            const char* v = require_next("--genicam-xml-out");
+            if (!v) return false;
+            options->genicam_xml_output_path = v;
+            options->sensor_pipeline = true;
         } else if (arg == "--exercise-genicam") {
             options->exercise_genicam = true;
         } else if (arg == "--focus-target") {
@@ -367,6 +390,76 @@ bool get_string_value(CEmergentCamera* camera, const char* name, std::string* ou
     }
     *out_value = trim_copy(std::string(buffer.data()));
     return true;
+}
+
+bool write_new_evidence_file(
+    const std::filesystem::path& path,
+    const std::string& contents,
+    std::string* error_out)
+{
+    // Match Orange recording/calibration ownership behavior when the camera
+    // probe itself is launched through sudo.
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    std::error_code filesystem_error;
+    if (std::filesystem::exists(path, filesystem_error)) {
+        if (error_out) *error_out = "refusing to overwrite existing evidence: " + path.string();
+        return false;
+    }
+    if (filesystem_error) {
+        if (error_out) *error_out = "could not inspect output path: " + filesystem_error.message();
+        return false;
+    }
+    if (path.has_parent_path()) {
+        std::filesystem::create_directories(path.parent_path(), filesystem_error);
+        if (filesystem_error) {
+            if (error_out) *error_out = "could not create output directory: " + filesystem_error.message();
+            return false;
+        }
+    }
+    std::ofstream output(path, std::ios::binary | std::ios::out);
+    if (!output) {
+        if (error_out) *error_out = "could not open output: " + path.string();
+        return false;
+    }
+    output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    output.flush();
+    if (!output) {
+        if (error_out) *error_out = "could not finish output: " + path.string();
+        return false;
+    }
+    return true;
+}
+
+void print_sensor_pipeline_state(const nlohmann::json& state)
+{
+    std::cout << "\n[Sensor/ADC/Pixel Pipeline — Read Only]\n";
+    const nlohmann::json& features = state.at("features");
+    for (const auto& spec : orange::camera_sensor_pipeline::feature_specs()) {
+        const nlohmann::json& feature = features.at(spec.name);
+        std::cout << "  - " << std::left << std::setw(28) << spec.name;
+        std::cout << feature.value("status", std::string("unknown"));
+        if (feature.contains("node_type")) {
+            std::cout << " [" << feature["node_type"].get<std::string>() << "]";
+        }
+        if (feature.contains("value")) {
+            std::cout << " value=" << feature["value"].dump();
+        }
+        if (feature.contains("min") && feature.contains("max")) {
+            std::cout << " range=[" << feature["min"].dump()
+                      << "," << feature["max"].dump() << "]";
+        }
+        std::cout << "\n";
+    }
+    const nlohmann::json& summary = state.at("inventory_summary");
+    std::cout << "  readable=" << summary.value("readable_count", 0)
+              << " unsupported=" << summary.value("unsupported_count", 0)
+              << " errors=" << summary.value("error_count", 0) << "\n";
+    const nlohmann::json& xml = state.at("genicam_xml");
+    std::cout << "  GenICam XML: " << xml.value("status", std::string("unknown"));
+    if (xml.contains("sha256")) std::cout << " " << xml["sha256"].get<std::string>();
+    if (xml.contains("byte_count")) std::cout << " bytes=" << xml["byte_count"].dump();
+    std::cout << "\n";
 }
 
 void print_node_probe_prefix(const std::string& name) {
@@ -877,6 +970,54 @@ int run_probe(const Options& options) {
     cam_guard.opened = true;
     std::cout << "Camera opened successfully.\n";
 
+    // Keep this evidence path isolated from the legacy lens/UART probe below.
+    // Some nominal getters (for example UartRxData) can consume device state,
+    // so sensor-pipeline mode performs only the explicitly audited getter set.
+    if (options.sensor_pipeline) {
+        nlohmann::json sensor_state =
+            orange::camera_sensor_pipeline::capture_state(
+                &cam_guard.camera,
+                {
+                    selected.serialNumber,
+                    selected.modelName,
+                    selected.deviceVersion,
+                },
+                "standalone_pre_orange_read_only");
+        if (!options.genicam_xml_output_path.empty()) {
+            std::string xml;
+            std::string xml_error;
+            if (!orange::camera_sensor_pipeline::read_genicam_xml(
+                    &cam_guard.camera, &xml, &xml_error)) {
+                std::cerr << "GenICam XML read failed: " << xml_error << "\n";
+                return 7;
+            }
+            std::string write_error;
+            if (!write_new_evidence_file(
+                    options.genicam_xml_output_path, xml, &write_error)) {
+                std::cerr << "GenICam XML write failed: " << write_error << "\n";
+                return 8;
+            }
+            sensor_state["genicam_xml"]["evidence_path"] =
+                std::filesystem::absolute(options.genicam_xml_output_path).string();
+            sensor_state["genicam_xml"]["external_evidence_written"] = true;
+            std::cout << "  XML evidence: " << options.genicam_xml_output_path << "\n";
+        }
+
+        if (!options.sensor_pipeline_json_path.empty()) {
+            std::string write_error;
+            if (!write_new_evidence_file(
+                    options.sensor_pipeline_json_path,
+                    sensor_state.dump(2) + "\n",
+                    &write_error)) {
+                std::cerr << "Sensor-pipeline JSON write failed: " << write_error << "\n";
+                return 6;
+            }
+            std::cout << "  JSON evidence: " << options.sensor_pipeline_json_path << "\n";
+        }
+        print_sensor_pipeline_state(sensor_state);
+        return 0;
+    }
+
     std::map<std::string, NodeProbeResult> node_results;
     const std::vector<std::string> core_nodes = {
         "Focus", "Iris", "LensMountPresent", "LensPresent", "LensBusy",
@@ -996,6 +1137,16 @@ int main(int argc, char** argv) {
     }
     if (options.restore_nir_strobe_pulse && options.serial.empty()) {
         std::cerr << "--restore-nir-strobe-pulse requires an explicit --serial.\n";
+        return 1;
+    }
+    const bool mutation_requested = options.exercise_genicam ||
+        options.set_focus_target || options.set_iris_target ||
+        options.restore_nir_strobe_pulse || options.enable_uart ||
+        options.uart_loopback || options.keep_uart_config;
+    if (options.sensor_pipeline && mutation_requested) {
+        std::cerr
+            << "--sensor-pipeline is a read-only evidence mode and cannot be combined "
+               "with camera mutation/exercise flags.\n";
         return 1;
     }
     return run_probe(options);

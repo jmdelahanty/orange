@@ -19,6 +19,7 @@
 #include <vector>
 #include <numeric>
 #include "encoder_pipeline.h"
+#include "json.hpp"
 
 struct CameraGpioNodeConfig {
     std::string name;
@@ -205,7 +206,10 @@ struct CameraParams{
     int sens_temp_max; 
     int sens_temp_min;
     std::string config_path;
-}; 
+    // Getter-only, post-configuration GenICam readback. This is deliberately
+    // separate from the requested camera config fields above.
+    nlohmann::json sensor_pipeline_state = nlohmann::json::object();
+};
 
 
 std::string get_evt_error_string(EVT_ERROR error);

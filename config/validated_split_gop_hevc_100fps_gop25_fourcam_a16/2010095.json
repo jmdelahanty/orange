@@ -13,7 +13,7 @@
   "gain": 256,
   "iris": 5,
   "focus": 3100,
-  "exposure": 100,
+  "exposure": 50,
   "pixel_format": "Mono8",
   "source_gpu_id": 7,
   "color_temp": "CT_3000K",
