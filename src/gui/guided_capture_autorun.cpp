@@ -2,6 +2,7 @@
 
 #include "gui/env_util.h"
 #include "gui/spatial_layout/calibration_workflow.h"
+#include "gui/spatial_layout/calibration_transaction_bridge.h"
 #include "gui/spatial_layout/citrus_template_workflow.h"
 #include "gui/spatial_layout/group_capture_controller.h"
 #include "gui/spatial_layout/layout_state.h"
@@ -23,6 +24,8 @@
 #include <set>
 #include <sstream>
 #include <system_error>
+
+#include <unistd.h>
 
 namespace orange::gui {
 namespace {
@@ -570,7 +573,10 @@ bool request_current_sweep_sample(
         num_cameras,
         spatial_snapshot_workers,
         config.frame_count,
-        error_out);
+        error_out,
+        std::string(),
+        std::string(),
+        spatial_layout::kGuidedCommissioningTransactionOwner);
 }
 
 bool write_json_atomically(const std::string& path,
@@ -852,6 +858,25 @@ GuidedCaptureAutorunRequests guided_capture_autorun_update(
         spatial_state->group_capture_selected_camera_serials = requested_cameras;
         spatial_state->group_capture_camera_scope_initialized = true;
         state->prepared_camera_serials = requested_cameras;
+
+        state->calibration_transaction_id =
+            "guided_commissioning_" + get_current_utc_timestamp() + "_" +
+            std::to_string(static_cast<long long>(::getpid()));
+        std::string transaction_error;
+        if (!spatial_layout::acquire_spatial_calibration_transaction(
+                spatial_state,
+                spatial_layout::kGuidedCommissioningTransactionOwner,
+                state->calibration_transaction_id,
+                orange::calibration::WorkflowKind::kGuidedCommissioning,
+                requested_cameras,
+                orange::calibration::Mutation::kCameraParameters |
+                    orange::calibration::Mutation::kCameraStreamLifecycle |
+                    orange::calibration::Mutation::kCitrusScene,
+                "Run one guided commissioning capture sequence with stable camera and projector state.",
+                &transaction_error)) {
+            fail(state, transaction_error);
+            break;
+        }
 
         if (config.apply_calibration_preflight) {
             int light_camera_index = -1;
@@ -1349,7 +1374,19 @@ GuidedCaptureAutorunRequests guided_capture_autorun_update(
                 }
             }
         }
-        if (camera_control->subscribe) {
+        if (camera_control->subscribe &&
+            orange::calibration::global_transaction_coordinator().active() &&
+            !spatial_layout::spatial_calibration_transaction_owned_by(
+                *spatial_state,
+                spatial_layout::kGuidedCommissioningTransactionOwner)) {
+            if (state->error_message.empty()) {
+                state->error_message =
+                    orange::calibration::global_transaction_coordinator()
+                        .rejection_message("Guided commissioning stream stop");
+            }
+            state->run_passed = false;
+            enter_stage(state, GuidedCaptureAutorunStage::kWriteResult);
+        } else if (camera_control->subscribe) {
             if (!state->action_requested) {
                 requests.toggle_streaming = true;
                 state->action_requested = true;
@@ -1376,6 +1413,16 @@ GuidedCaptureAutorunRequests guided_capture_autorun_update(
 
     case GuidedCaptureAutorunStage::kWriteResult:
         finish_result(state, config, *spatial_state, !camera_control->subscribe);
+        if (spatial_layout::spatial_calibration_transaction_owned_by(
+                *spatial_state,
+                spatial_layout::kGuidedCommissioningTransactionOwner)) {
+            spatial_layout::release_spatial_calibration_transaction(
+                spatial_state,
+                state->run_passed ? "complete" : "failed",
+                state->error_message.empty()
+                    ? "Guided commissioning finished."
+                    : state->error_message);
+        }
         if (state->result_written) {
             enter_stage(
                 state,
@@ -1413,6 +1460,7 @@ nlohmann::json guided_capture_autorun_result_json(
         {"schema_id", "orange.gui_guided_capture_smoke_result"},
         {"schema_version", 4},
         {"created_utc", get_current_utc_timestamp()},
+        {"calibration_transaction_id", state.calibration_transaction_id},
         {"status", state.run_passed ? "pass" : "fail"},
         {"stage", guided_capture_autorun_stage_name(state.stage)},
         {"elapsed_seconds", elapsed_seconds},

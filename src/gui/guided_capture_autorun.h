@@ -78,6 +78,7 @@ struct GuidedCaptureAutorunState {
     std::string preflight_restore_status;
     nlohmann::json capture_camera_settings = nlohmann::json::array();
     std::vector<std::string> prepared_camera_serials;
+    std::string calibration_transaction_id;
     std::size_t recipe_sequence_index = 0;
     std::size_t sweep_level_index = 0;
     int sweep_repeat_index = 1;

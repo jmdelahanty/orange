@@ -2,12 +2,14 @@
 #define ORANGE_USAF_RESOLUTION_UI_H
 
 #include "camera.h"
+#include "calibration_transaction.h"
 #include "video_capture.h"
 #include "usaf_resolution_calibration.h"
 #include "image_canvas.h"
 
 #include <atomic>
 #include <mutex>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -77,6 +79,8 @@ struct UsafResolutionUiState {
     std::string output_fingerprint;
     std::string output_json_path;
     std::string output_positions_csv_path;
+    std::unique_ptr<orange::calibration::TransactionLease> transaction_lease;
+    std::string transaction_owner_kind;
     bool has_result = false;
     UsafResolutionResult last_result;
     FovCalibrationData last_fov_calibration;

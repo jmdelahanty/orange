@@ -2,6 +2,7 @@
 
 #include "camera_preview_utils.h"
 #include "gui/spatial_layout/calibration_metadata.h"
+#include "gui/spatial_layout/calibration_transaction_bridge.h"
 #include "gui/spatial_layout/calibration_workflow.h"
 #include "gui/spatial_layout/canvas_edit.h"
 #include "gui/spatial_layout/capture_panel.h"
@@ -988,17 +989,37 @@ void render_spatial_layout_window(
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     ImGui::BeginChild("SpatialLayoutControlsPanel", ImVec2(0.0f, 0.0f), false);
+    if (other_calibration_tool_busy) {
+        ImGui::BeginDisabled();
+    }
 
+    const bool spatial_calibration_transaction_active =
+        ui_state->calibration_transaction_lease &&
+        ui_state->calibration_transaction_lease->active();
+    const bool manual_spatial_capture_controls_available =
+        !spatial_calibration_transaction_active ||
+        orange::gui::spatial_layout::spatial_calibration_transaction_owned_by(
+            *ui_state,
+            orange::gui::spatial_layout::kManualCameraPreflightTransactionOwner);
+    const bool manual_authority_controls_available =
+        !spatial_calibration_transaction_active;
+    const bool projected_scale_authority_controls_available =
+        manual_authority_controls_available ||
+        orange::gui::spatial_layout::spatial_calibration_transaction_owned_by(
+            *ui_state,
+            orange::gui::spatial_layout::kGuidedCommissioningTransactionOwner);
     const bool can_capture =
         !camera_control->subscribe &&
         !camera_control->record_video &&
-        !other_calibration_tool_busy;
+        !other_calibration_tool_busy &&
+        manual_spatial_capture_controls_available;
     const bool group_capture_pending =
         group_capture_workflow_active(*ui_state);
     const bool can_capture_live_preview =
         camera_control->subscribe &&
         !camera_control->record_video &&
         !other_calibration_tool_busy &&
+        manual_spatial_capture_controls_available &&
         !group_capture_pending &&
         cameras_select[ui_state->selected_camera].stream_on &&
         live_preview_texture_ids != nullptr &&
@@ -1018,6 +1039,7 @@ void render_spatial_layout_window(
         camera_control->subscribe &&
         !camera_control->record_video &&
         !other_calibration_tool_busy &&
+        manual_spatial_capture_controls_available &&
         cameras_select[ui_state->selected_camera].stream_on &&
         selected_snapshot_worker != nullptr &&
         !full_res_request_pending_for_selected &&
@@ -1026,6 +1048,7 @@ void render_spatial_layout_window(
         camera_control->subscribe &&
         !camera_control->record_video &&
         !other_calibration_tool_busy &&
+        manual_spatial_capture_controls_available &&
         eligible_group_camera_count > 0 &&
         !ui_state->group_capture_selected_camera_serials.empty() &&
         ui_state->pending_full_res_snapshot_request_id == 0 &&
@@ -1213,6 +1236,13 @@ void render_spatial_layout_window(
     ImGui::TextDisabled(
         "Orange asks Citrus to present this scene, waits for one shared display fence, then requests fresh frames from exactly this camera set.");
 
+    const std::string manual_group_parent_owner =
+        orange::gui::spatial_layout::spatial_calibration_transaction_owned_by(
+            *ui_state,
+            orange::gui::spatial_layout::kManualCameraPreflightTransactionOwner)
+        ? orange::gui::spatial_layout::kManualCameraPreflightTransactionOwner
+        : std::string();
+
     ImGui::BeginDisabled(!can_capture_group_full_resolution_stream_snapshot);
     if (ImGui::Button("Run Guided Group Capture")) {
         std::string request_error;
@@ -1223,7 +1253,10 @@ void render_spatial_layout_window(
                 num_cameras,
                 spatial_snapshot_workers,
                 1,
-                &request_error)) {
+                &request_error,
+                std::string(),
+                std::string(),
+                manual_group_parent_owner)) {
             ui_state->group_capture_error = request_error;
             ui_state->group_capture_status = "Grouped full-resolution capture request failed.";
         }
@@ -1240,7 +1273,10 @@ void render_spatial_layout_window(
                 num_cameras,
                 spatial_snapshot_workers,
                 static_cast<uint32_t>(ui_state->calibration_average_frame_count),
-                &request_error)) {
+                &request_error,
+                std::string(),
+                std::string(),
+                manual_group_parent_owner)) {
             ui_state->group_capture_error = request_error;
             ui_state->group_capture_status = "Grouped averaged capture request failed.";
         }
@@ -1574,6 +1610,7 @@ void render_spatial_layout_window(
         "Promotion is a separate, explicitly armed step. Citrus revalidates the "
         "persisted evidence against the currently loaded canvas before it can "
         "replace the active homographies.");
+    ImGui::BeginDisabled(!manual_authority_controls_available);
     if (ImGui::Button("Choose Persisted Candidate Set...")) {
         IGFD::FileDialogConfig config;
         config.path = "/home/jeremy/citrus/targets/rigs";
@@ -1584,6 +1621,7 @@ void render_spatial_layout_window(
             ".json",
             config);
     }
+    ImGui::EndDisabled();
     if (!ui_state->homography_candidate_review_manifest_path.empty()) {
         ImGui::TextDisabled(
             "%s",
@@ -1595,7 +1633,8 @@ void render_spatial_layout_window(
             "schema_id", "") == "citrus.homography_candidate.status" &&
         ui_state->homography_candidate_review_manifest.value(
             "state", "") == "ready_for_review";
-    ImGui::BeginDisabled(!has_review_manifest);
+    ImGui::BeginDisabled(
+        !has_review_manifest || !manual_authority_controls_available);
     if (ImGui::Button("Revalidate In Citrus")) {
         const auto& manifest = ui_state->homography_candidate_review_manifest;
         const auto result = load_citrus_homography_candidate_set_for_review(
@@ -1619,7 +1658,9 @@ void render_spatial_layout_window(
                 "processed the candidate set.";
         }
     }
+    ImGui::EndDisabled();
     ImGui::SameLine();
+    ImGui::BeginDisabled(!has_review_manifest);
     if (ImGui::Button("Refresh Review Status")) {
         const std::string transaction_id =
             ui_state->homography_candidate_review_manifest.value(
@@ -1754,7 +1795,9 @@ void render_spatial_layout_window(
         ImGui::EndTable();
     }
 
-    ImGui::BeginDisabled(!ui_state->homography_candidate_review_revalidated);
+    ImGui::BeginDisabled(
+        !ui_state->homography_candidate_review_revalidated ||
+        !manual_authority_controls_available);
     ImGui::Checkbox(
         "I reviewed all detection, reprojection, coordinate-frame, and canvas-layout evidence",
         &ui_state->accept_reviewed_homographies_armed);
@@ -1814,6 +1857,10 @@ void render_spatial_layout_window(
         }
     }
     ImGui::EndDisabled();
+    if (!manual_authority_controls_available) {
+        ImGui::TextDisabled(
+            "Homography review and promotion are disabled until the active calibration transaction resolves.");
+    }
     if (!ui_state->homography_candidate_review_message.empty()) {
         ImGui::TextWrapped(
             "%s", ui_state->homography_candidate_review_message.c_str());
@@ -1829,6 +1876,7 @@ void render_spatial_layout_window(
         "Orange detects the 5 mm physical target and writes overlays; Citrus "
         "independently re-fits the correspondences and owns runtime activation. "
         "The 25 mm C-to-XPLUS span and 77 mm outer diameter are validation-only.");
+    ImGui::BeginDisabled(!manual_authority_controls_available);
     if (ImGui::Button("Choose Persisted Physical-Scale Candidate Set...")) {
         IGFD::FileDialogConfig config;
         config.path = "/home/jeremy/citrus/targets/rigs";
@@ -1839,6 +1887,7 @@ void render_spatial_layout_window(
             ".json",
             config);
     }
+    ImGui::EndDisabled();
     if (!ui_state->projected_surface_scale_candidate_manifest_path.empty()) {
         ImGui::TextDisabled(
             "Citrus candidates: %s",
@@ -1846,6 +1895,7 @@ void render_spatial_layout_window(
         ImGui::TextDisabled(
             "Orange QC: %s",
             ui_state->projected_surface_scale_review_manifest_path.c_str());
+        ImGui::BeginDisabled(!manual_authority_controls_available);
         if (ImGui::Button("Revalidate Persisted Physical Scales In Citrus")) {
             const auto& manifest =
                 ui_state->projected_surface_scale_candidate_manifest;
@@ -1871,6 +1921,7 @@ void render_spatial_layout_window(
                     "Refresh after its main thread processes the candidate set.";
             }
         }
+        ImGui::EndDisabled();
     }
     if (!ui_state->projected_surface_scale_review_manifest_path.empty()) {
         ImGui::TextDisabled(
@@ -1964,7 +2015,9 @@ void render_spatial_layout_window(
             "state", "") == "ready_for_review" &&
         (!persisted_scale_review_selected ||
          ui_state->projected_surface_scale_review_revalidated);
-    ImGui::BeginDisabled(!scale_ready_for_review);
+    ImGui::BeginDisabled(
+        !scale_ready_for_review ||
+        !projected_scale_authority_controls_available);
     ImGui::Checkbox(
         "I reviewed all scale overlays, orientation markers, holdout errors, and independent dimensions",
         &ui_state->accept_reviewed_projected_surface_scales_armed);
@@ -2024,6 +2077,10 @@ void render_spatial_layout_window(
         }
     }
     ImGui::EndDisabled();
+    if (!projected_scale_authority_controls_available) {
+        ImGui::TextDisabled(
+            "Physical-scale review and promotion are disabled until the active calibration transaction resolves.");
+    }
     if (!ui_state->projected_surface_scale_review_message.empty()) {
         ImGui::TextWrapped(
             "%s", ui_state->projected_surface_scale_review_message.c_str());
@@ -2112,7 +2169,8 @@ void render_spatial_layout_window(
     }
     const bool commissioning_ready =
         commissioning_status.value("ready_to_finalize", false);
-    ImGui::BeginDisabled(!commissioning_ready);
+    ImGui::BeginDisabled(
+        !commissioning_ready || !manual_authority_controls_available);
     ImGui::Checkbox(
         "I accept this rig revision, canvas snapshot, homographies, scales, QC, and source sessions as commissioning authority",
         &ui_state->accept_rig_canvas_commissioning_armed);
@@ -2152,6 +2210,10 @@ void render_spatial_layout_window(
     }
     ImGui::EndDisabled();
     ImGui::EndDisabled();
+    if (!manual_authority_controls_available) {
+        ImGui::TextDisabled(
+            "Commissioning finalization is disabled until the active calibration transaction resolves.");
+    }
     if (!ui_state->rig_canvas_commissioning_message.empty()) {
         ImGui::TextWrapped("%s",
             ui_state->rig_canvas_commissioning_message.c_str());
@@ -2197,7 +2259,12 @@ void render_spatial_layout_window(
     ImGui::Checkbox(
         "I intend to use commissioned base geometry without daily registration",
         &ui_state->base_only_runtime_mode_armed);
-    ImGui::BeginDisabled(!ui_state->base_only_runtime_mode_armed);
+    const bool manual_runtime_selection_blocked =
+        ui_state->calibration_transaction_lease &&
+        ui_state->calibration_transaction_lease->active();
+    ImGui::BeginDisabled(
+        !ui_state->base_only_runtime_mode_armed ||
+        manual_runtime_selection_blocked);
     if (ImGui::Button("Select Base-Only Runtime Mode")) {
         const std::string operation_id =
             next_commissioning_operation_id("select-base-only");
@@ -2215,6 +2282,10 @@ void render_spatial_layout_window(
         ui_state->base_only_runtime_mode_armed = false;
     }
     ImGui::EndDisabled();
+    if (manual_runtime_selection_blocked) {
+        ImGui::TextDisabled(
+            "Manual runtime-mode changes are disabled until the active calibration transaction resolves.");
+    }
     if (!ui_state->daily_registration_message.empty()) {
         ImGui::TextWrapped("%s", ui_state->daily_registration_message.c_str());
     }
@@ -2229,7 +2300,8 @@ void render_spatial_layout_window(
         cameras_select,
         num_cameras,
         spatial_snapshot_workers,
-        artifact_root_dir);
+        artifact_root_dir,
+        camera_control->record_video || camera_control->recording_draining);
 
     ImGui::SeparatorText("Detection And Canonical Layout");
     ImGui::InputText("Layout ID", &ui_state->layout_artifact.layout_id);
@@ -2371,6 +2443,9 @@ void render_spatial_layout_window(
         num_cameras,
         artifact_root_dir);
 
+    if (other_calibration_tool_busy) {
+        ImGui::EndDisabled();
+    }
     ImGui::EndChild();
     ImGui::TableNextColumn();
     ImGui::BeginChild("SpatialLayoutFitPreviewPanel", ImVec2(0.0f, 0.0f), true);

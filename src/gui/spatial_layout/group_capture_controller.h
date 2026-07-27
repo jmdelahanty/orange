@@ -62,7 +62,8 @@ bool request_group_full_resolution_snapshots(
     uint32_t target_frame_count,
     std::string* error_out,
     const std::string& transaction_id_override = std::string(),
-    const std::string& operation_id_override = std::string());
+    const std::string& operation_id_override = std::string(),
+    const std::string& parent_transaction_owner_kind = std::string());
 
 bool request_group_full_resolution_snapshots_for_arena_centering(
     SpatialLayoutUiState* ui_state,
@@ -74,7 +75,8 @@ bool request_group_full_resolution_snapshots_for_arena_centering(
     const std::string& centering_transaction_id,
     const std::string& centering_stage_id,
     const std::string& centering_operation_id,
-    std::string* error_out);
+    std::string* error_out,
+    const std::string& parent_transaction_owner_kind);
 
 // Captures a transient candidate preview that was already presented by the
 // Citrus daily-registration controller. Unlike a normal calibration-scene

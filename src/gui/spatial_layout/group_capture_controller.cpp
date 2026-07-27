@@ -2,6 +2,7 @@
 
 #include "camera_preview_utils.h"
 #include "gui/spatial_layout/calibration_metadata.h"
+#include "gui/spatial_layout/calibration_transaction_bridge.h"
 #include "gui/spatial_layout/layout_state.h"
 #include "gui/spatial_layout/preview_capture.h"
 #include "gui/spatial_layout/projection_snapshot_client.h"
@@ -719,6 +720,67 @@ void append_group_capture_error(SpatialLayoutUiState* ui_state, const std::strin
     ui_state->group_capture_error += error;
 }
 
+bool ensure_group_capture_transaction(
+    SpatialLayoutUiState* ui_state,
+    const std::string& owner_id,
+    const std::vector<std::string>& camera_serials,
+    const std::string& parent_transaction_owner_kind,
+    std::string* error_out)
+{
+    if (ui_state == nullptr) {
+        if (error_out) {
+            *error_out = "Spatial calibration transaction state is unavailable.";
+        }
+        return false;
+    }
+    if (ui_state->calibration_transaction_lease) {
+        ui_state->group_capture_owns_calibration_transaction = false;
+        if (parent_transaction_owner_kind.empty() ||
+            !spatial_calibration_transaction_owned_by(
+                *ui_state, parent_transaction_owner_kind)) {
+            if (error_out) {
+                *error_out = parent_transaction_owner_kind.empty()
+                    ? "A parent calibration transaction is active; a manual grouped capture cannot borrow it."
+                    : "The grouped capture does not match its declared parent calibration transaction.";
+            }
+            return false;
+        }
+        return require_spatial_calibration_transaction(
+            *ui_state,
+            camera_serials,
+            orange::calibration::Mutation::kCitrusScene,
+            error_out);
+    }
+
+    const bool acquired = acquire_spatial_calibration_transaction(
+        ui_state,
+        kManualGroupTransactionOwner,
+        owner_id,
+        orange::calibration::WorkflowKind::kSpatialGroupedCapture,
+        camera_serials,
+        orange::calibration::mutation_set(
+            orange::calibration::Mutation::kCitrusScene),
+        "Present, capture, verify, and restore one grouped calibration scene.",
+        error_out);
+    ui_state->group_capture_owns_calibration_transaction = acquired;
+    return acquired;
+}
+
+void release_group_capture_transaction_if_owned(
+    SpatialLayoutUiState* ui_state,
+    const std::string& terminal_status,
+    const std::string& terminal_reason)
+{
+    if (ui_state == nullptr ||
+        !ui_state->group_capture_owns_calibration_transaction ||
+        !spatial_calibration_transaction_owned_by(
+            *ui_state, kManualGroupTransactionOwner)) {
+        return;
+    }
+    release_spatial_calibration_transaction(
+        ui_state, terminal_status, terminal_reason);
+}
+
 bool begin_group_scene_restore(SpatialLayoutUiState* ui_state)
 {
     if (ui_state == nullptr || !ui_state->group_capture_restore_required) {
@@ -762,6 +824,10 @@ void fail_group_workflow_and_restore(
         !begin_group_scene_restore(ui_state)) {
         if (!ui_state->group_capture_restore_required) {
             ui_state->group_capture_workflow_state = "failed";
+            release_group_capture_transaction_if_owned(
+                ui_state,
+                "failed",
+                ui_state->group_capture_error);
         }
     }
 }
@@ -1179,7 +1245,8 @@ bool request_group_full_resolution_snapshots(
     uint32_t target_frame_count,
     std::string* error_out,
     const std::string& transaction_id_override,
-    const std::string& operation_id_override)
+    const std::string& operation_id_override,
+    const std::string& parent_transaction_owner_kind)
 {
     if (ui_state == nullptr || cameras_params == nullptr || cameras_select == nullptr ||
         spatial_snapshot_workers == nullptr || num_cameras <= 0) {
@@ -1287,6 +1354,22 @@ bool request_group_full_resolution_snapshots(
     ui_state->group_capture_metadata.capture_group_membership =
         nlohmann::json::object();
 
+    std::string transaction_error;
+    if (!ensure_group_capture_transaction(
+            ui_state,
+            ui_state->group_capture_transaction_id,
+            expected_camera_serials,
+            parent_transaction_owner_kind,
+            &transaction_error)) {
+        ui_state->group_capture_workflow_state = "failed";
+        ui_state->group_capture_terminal_outcome = "failed";
+        ui_state->group_capture_error = transaction_error;
+        if (error_out) {
+            *error_out = transaction_error;
+        }
+        return false;
+    }
+
     const CitrusCalibrationSceneControlResult scene_request =
         set_citrus_calibration_scene(
             ui_state->group_capture_transaction_id,
@@ -1302,6 +1385,10 @@ bool request_group_full_resolution_snapshots(
         if (error_out) {
             *error_out = ui_state->group_capture_error;
         }
+        release_group_capture_transaction_if_owned(
+            ui_state,
+            "failed",
+            ui_state->group_capture_error);
         return false;
     }
 
@@ -1332,7 +1419,8 @@ bool request_group_full_resolution_snapshots_for_arena_centering(
     const std::string& centering_transaction_id,
     const std::string& centering_stage_id,
     const std::string& centering_operation_id,
-    std::string* error_out)
+    std::string* error_out,
+    const std::string& parent_transaction_owner_kind)
 {
     if (ui_state == nullptr || cameras_params == nullptr || cameras_select == nullptr ||
         spatial_snapshot_workers == nullptr || num_cameras <= 0) {
@@ -1380,6 +1468,24 @@ bool request_group_full_resolution_snapshots_for_arena_centering(
     std::vector<std::string> arena_ids;
     if (!resolve_group_capture_arena_ids(
             *ui_state, expected_camera_serials, &arena_ids, error_out)) {
+        return false;
+    }
+
+    std::string transaction_error;
+    if (!spatial_calibration_transaction_owned_by(
+            *ui_state, parent_transaction_owner_kind) ||
+        !require_spatial_calibration_transaction(
+            *ui_state,
+            expected_camera_serials,
+            orange::calibration::Mutation::kCitrusScene,
+            &transaction_error)) {
+        if (transaction_error.empty()) {
+            transaction_error =
+                "The grouped capture does not match its declared parent calibration transaction.";
+        }
+        if (error_out) {
+            *error_out = transaction_error;
+        }
         return false;
     }
 
@@ -1483,7 +1589,8 @@ bool request_group_full_resolution_snapshots_for_daily_registration_preview(
             daily_transaction_id,
             candidate_sha256,
             preview_operation_id,
-            error_out)) {
+            error_out,
+            "daily_registration")) {
         return false;
     }
     ui_state->group_capture_mode = target_frame_count > 1
@@ -1953,6 +2060,10 @@ void advance_group_capture_workflow(
                         << ui_state->group_capture_expected_camera_serials.size()
                         << " expected camera(s) captured; Citrus prior scene restored.";
         ui_state->group_capture_status = complete_status.str();
+        release_group_capture_transaction_if_owned(
+            ui_state,
+            failed ? "failed" : "complete",
+            ui_state->group_capture_status);
     }
 }
 

@@ -2,6 +2,7 @@
 
 #include "fsuid_guard.h"
 #include "gui/spatial_layout/calibration_workflow.h"
+#include "gui/spatial_layout/calibration_transaction_bridge.h"
 #include "gui/spatial_layout/citrus_import.h"
 #include "gui/spatial_layout/citrus_template_workflow.h"
 #include "gui/spatial_layout/group_capture_controller.h"
@@ -1422,6 +1423,21 @@ ArenaCenteringAutorunRequests arena_centering_autorun_update(
         spatial_state->group_capture_selected_camera_serials = cameras;
         spatial_state->group_capture_camera_scope_initialized = true;
         state->transaction_id = make_identity("arena_centering");
+        std::string transaction_error;
+        if (!spatial_layout::acquire_spatial_calibration_transaction(
+                spatial_state,
+                spatial_layout::kArenaCenteringTransactionOwner,
+                state->transaction_id,
+                orange::calibration::WorkflowKind::kArenaCenteringCommissioning,
+                cameras,
+                orange::calibration::Mutation::kCameraParameters |
+                    orange::calibration::Mutation::kCameraStreamLifecycle |
+                    orange::calibration::Mutation::kCitrusScene,
+                "Center and optionally resize commissioned arenas, verify them, and resolve all Citrus candidates.",
+                &transaction_error)) {
+            schedule_abort(state, transaction_error);
+            break;
+        }
         if (config.apply_calibration_preflight) {
             int light_index = -1;
             for (int i = 0; i < num_cameras; ++i) {
@@ -1566,7 +1582,8 @@ ArenaCenteringAutorunRequests arena_centering_autorun_update(
                 state->transaction_id,
                 state->current_stage_id,
                 state->current_operation_id,
-                &error)) {
+                &error,
+                spatial_layout::kArenaCenteringTransactionOwner)) {
             schedule_abort(state, "arena-centering grouped capture request failed: " + error);
             break;
         }
@@ -2140,7 +2157,10 @@ ArenaCenteringAutorunRequests arena_centering_autorun_update(
                 num_cameras,
                 spatial_snapshot_workers,
                 config.frame_count,
-                &error)) {
+                &error,
+                std::string(),
+                std::string(),
+                spatial_layout::kArenaCenteringTransactionOwner)) {
             state->run_passed = false;
             state->error_message =
                 "homography grouped capture request failed: " + error;
@@ -2410,7 +2430,19 @@ ArenaCenteringAutorunRequests arena_centering_autorun_update(
     }
 
     case ArenaCenteringAutorunStage::kStopStream:
-        if (camera_control->subscribe) {
+        if (camera_control->subscribe &&
+            orange::calibration::global_transaction_coordinator().active() &&
+            !spatial_layout::spatial_calibration_transaction_owned_by(
+                *spatial_state,
+                spatial_layout::kArenaCenteringTransactionOwner)) {
+            if (state->error_message.empty()) {
+                state->error_message =
+                    orange::calibration::global_transaction_coordinator()
+                        .rejection_message("Arena-centering stream stop");
+            }
+            state->run_passed = false;
+            enter_stage(state, ArenaCenteringAutorunStage::kWriteResult);
+        } else if (camera_control->subscribe) {
             requests.toggle_streaming = true;
             enter_stage(state, ArenaCenteringAutorunStage::kWaitForStreamStop);
         } else {
@@ -2440,6 +2472,28 @@ ArenaCenteringAutorunRequests arena_centering_autorun_update(
             if (state->error_message.empty()) {
                 state->error_message = state->result_write_error;
             }
+        }
+        const bool centering_resolved =
+            !state->transaction_started || state->transaction_terminal;
+        const std::string homography_state =
+            state->homography_candidate_status.value(
+                "state", std::string());
+        const bool homography_resolved =
+            !state->homography_fit_requested ||
+            (!state->homography_candidate_status.empty() &&
+             !state->homography_candidate_status.value("active", true) &&
+             (homography_state == "committed" ||
+              homography_state == "rejected"));
+        if (centering_resolved && homography_resolved &&
+            spatial_layout::spatial_calibration_transaction_owned_by(
+                *spatial_state,
+                spatial_layout::kArenaCenteringTransactionOwner)) {
+            spatial_layout::release_spatial_calibration_transaction(
+                spatial_state,
+                state->run_passed ? "complete" : "failed",
+                state->error_message.empty()
+                    ? "Arena-centering commissioning finished."
+                    : state->error_message);
         }
         enter_stage(
             state,

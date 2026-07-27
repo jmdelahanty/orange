@@ -5,6 +5,7 @@
 #include "gui/arena_centering_analysis.h"
 #include "gui/daily_registration_geometry.h"
 #include "gui/spatial_layout/calibration_workflow.h"
+#include "gui/spatial_layout/calibration_transaction_bridge.h"
 #include "gui/spatial_layout/citrus_import.h"
 #include "gui/spatial_layout/group_capture_controller.h"
 #include "gui/spatial_layout/metadata_panel.h"
@@ -1569,11 +1570,19 @@ bool BeginWorkflow(
     int camera_count,
     SpatialSnapshotWorker* const* workers,
     const std::string& artifact_root_dir,
+    const bool recording_mutation_locked,
     std::string* error_out)
 {
     if (ui_state == nullptr || cameras == nullptr || selections == nullptr ||
         workers == nullptr || camera_count <= 0) {
         if (error_out) *error_out = "Open and stream cameras before daily registration.";
+        return false;
+    }
+    if (recording_mutation_locked) {
+        if (error_out) {
+            *error_out =
+                "Stop and finalize the active recording before daily registration.";
+        }
         return false;
     }
     initialize_group_capture_camera_scope(
@@ -1656,6 +1665,21 @@ bool BeginWorkflow(
     if (!ensure_directory_for_spatial_session(
             workflow.transaction_dir, error_out)) return false;
 
+    std::string transaction_error;
+    if (!acquire_spatial_calibration_transaction(
+            ui_state,
+            kDailyRegistrationTransactionOwner,
+            workflow.transaction_id,
+            orange::calibration::WorkflowKind::kDailyRegistration,
+            ui_state->group_capture_selected_camera_serials,
+            orange::calibration::Mutation::kCameraParameters |
+                orange::calibration::Mutation::kCitrusScene,
+            "Measure today's dish placement and select one translation-only runtime registration.",
+            &transaction_error)) {
+        if (error_out) *error_out = transaction_error;
+        return false;
+    }
+
     const std::string operation = NextOperationId("select_base_only_for_measurement");
     const auto base = select_citrus_daily_registration_runtime_mode(
         "base_only", "", "", true, operation);
@@ -1663,6 +1687,11 @@ bool BeginWorkflow(
         if (error_out) *error_out =
             "Could not select commissioned base geometry for measurement: " +
             base.reason;
+        release_spatial_calibration_transaction(
+            ui_state,
+            "failed",
+            "Could not select commissioned base geometry for measurement: " +
+                base.reason);
         return false;
     }
     workflow.pending_operation_id = operation;
@@ -1717,7 +1746,8 @@ bool RequestSceneCapture(
     if (!request_group_full_resolution_snapshots(
             ui_state, cameras, selections, camera_count, workers,
             std::max(1, ui_state->calibration_average_frame_count),
-            error_out, workflow.transaction_id, operation)) {
+            error_out, workflow.transaction_id, operation,
+            kDailyRegistrationTransactionOwner)) {
         return false;
     }
     workflow.pending_operation_id = operation;
@@ -2108,6 +2138,8 @@ void advance_daily_registration_workflow(
         if (!RequestAbort(&workflow, error, "failed", &ignored) &&
             workflow.stage != "abort_request_failed") {
             SetFailure(&workflow, error);
+            release_spatial_calibration_transaction(
+                ui_state, "failed", error);
         }
     };
 
@@ -2138,6 +2170,10 @@ void advance_daily_registration_workflow(
         workflow.pending_terminal_stage.clear();
         workflow.pending_terminal_reason.clear();
         Checkpoint(&workflow);
+        release_spatial_calibration_transaction(
+            ui_state,
+            workflow.stage,
+            workflow.status);
         return;
     }
 
@@ -2164,6 +2200,8 @@ void advance_daily_registration_workflow(
             workflow.transaction_id, targets, operation);
         if (!result.ok) {
             SetFailure(&workflow, result.reason);
+            release_spatial_calibration_transaction(
+                ui_state, "failed", result.reason);
             return;
         }
         workflow.pending_operation_id = operation;
@@ -2387,6 +2425,11 @@ void advance_daily_registration_workflow(
             SetFailure(&workflow,
                 "registration_accepted_but_runtime_selection_failed:" +
                 selection.reason);
+            release_spatial_calibration_transaction(
+                ui_state,
+                "failed",
+                "registration_accepted_but_runtime_selection_failed:" +
+                    selection.reason);
             return;
         }
         workflow.pending_operation_id = operation;
@@ -2439,6 +2482,8 @@ void advance_daily_registration_workflow(
             fs::path(workflow.transaction_dir) / "manifest.json",
             WorkflowSnapshot(workflow), &ignored);
         ui_state->daily_registration_status = status.daily_registration;
+        release_spatial_calibration_transaction(
+            ui_state, "complete", workflow.status);
     }
 }
 
@@ -2448,7 +2493,8 @@ void render_daily_registration_workflow_panel(
     const CameraEachSelect* selections,
     int camera_count,
     SpatialSnapshotWorker* const* workers,
-    const std::string& artifact_root_dir)
+    const std::string& artifact_root_dir,
+    const bool recording_mutation_locked)
 {
     if (ui_state == nullptr) return;
     auto& workflow = ui_state->daily_registration_workflow;
@@ -2465,16 +2511,21 @@ void render_daily_registration_workflow_panel(
         ImGui::Checkbox(
             "Holder and dishes installed; water is settled; normal IR filters and illumination are in place",
             &workflow.start_physical_state_armed);
-        ImGui::BeginDisabled(!workflow.start_physical_state_armed);
+        ImGui::BeginDisabled(
+            !workflow.start_physical_state_armed || recording_mutation_locked);
         if (ImGui::Button("Start Guided Daily Registration")) {
             std::string error;
             if (!BeginWorkflow(
                     ui_state, cameras, selections, camera_count, workers,
-                    artifact_root_dir, &error)) {
+                    artifact_root_dir, recording_mutation_locked, &error)) {
                 workflow.error = error;
             }
         }
         ImGui::EndDisabled();
+        if (recording_mutation_locked) {
+            ImGui::TextDisabled(
+                "Daily registration is unavailable while recording or finalization is active.");
+        }
     }
     ImGui::Text("Stage: %s", workflow.stage.c_str());
     if (!workflow.transaction_id.empty()) {

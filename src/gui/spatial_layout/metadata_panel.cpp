@@ -1,6 +1,7 @@
 #include "gui/spatial_layout/metadata_panel.h"
 
 #include "dish_top_rim_observation.h"
+#include "gui/spatial_layout/calibration_transaction_bridge.h"
 #include "gui/spatial_layout/preflight.h"
 #include "imgui.h"
 #include "misc/cpp/imgui_stdlib.h"
@@ -8,6 +9,7 @@
 #include <algorithm>
 #include <iterator>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 namespace orange::gui::spatial_layout {
@@ -336,41 +338,106 @@ void render_calibration_capture_metadata_panel(
         mapped_strobe_connection != nullptr;
     const bool light_output_mutation_locked =
         camera_control->record_video || camera_control->recording_draining;
+    const bool manual_preflight_owns_transaction =
+        spatial_calibration_transaction_owned_by(
+            *ui_state, kManualCameraPreflightTransactionOwner);
+    const bool another_calibration_transaction_active =
+        ui_state->calibration_transaction_lease &&
+        ui_state->calibration_transaction_lease->active() &&
+        !manual_preflight_owns_transaction;
+    const auto ensure_manual_preflight_transaction =
+        [&](std::vector<std::string> camera_serials,
+            std::string* status_out) {
+            if (spatial_calibration_transaction_owned_by(
+                    *ui_state, kManualCameraPreflightTransactionOwner)) {
+                return require_spatial_calibration_transaction(
+                    *ui_state,
+                    camera_serials,
+                    orange::calibration::Mutation::kCameraParameters,
+                    status_out);
+            }
+            return acquire_spatial_calibration_transaction(
+                ui_state,
+                kManualCameraPreflightTransactionOwner,
+                std::string(kManualCameraPreflightTransactionOwner) + "_Cam" +
+                    selected_camera.camera_serial,
+                orange::calibration::WorkflowKind::kManualCameraPreflight,
+                camera_serials,
+                orange::calibration::Mutation::kCameraParameters |
+                    orange::calibration::Mutation::kCameraStreamLifecycle |
+                    orange::calibration::Mutation::kCitrusScene,
+                "Temporarily apply calibration camera/light settings, capture evidence, and restore the saved settings.",
+                status_out);
+        };
+    const auto release_manual_preflight_if_resolved =
+        [&](const bool action_ok, const std::string& status) {
+            if (!spatial_calibration_transaction_owned_by(
+                    *ui_state, kManualCameraPreflightTransactionOwner)) {
+                return;
+            }
+            const bool restore_pending =
+                !ui_state->calibration_capture_restore_states.empty() ||
+                !ui_state->calibration_light_restore_key.empty();
+            if (!restore_pending) {
+                release_spatial_calibration_transaction(
+                    ui_state,
+                    action_ok ? "complete" : "failed",
+                    status);
+            }
+        };
     const bool can_prepare_calibration_capture =
-        !light_output_mutation_locked &&
+        !light_output_mutation_locked && !another_calibration_transaction_active &&
         (!light_handling_needs_mapped_strobe || mapped_strobe_available);
     ImGui::BeginDisabled(!can_prepare_calibration_capture);
     if (ImGui::Button("Prepare Calibration Capture")) {
         std::string status;
-        const bool ok = prepare_calibration_capture_preflight(
-            ui_state,
-            &ecams[ui_state->selected_camera],
-            &selected_camera,
-            light_control_ecam,
-            light_control_params,
-            mapped_strobe_available,
-            light_output_mutation_locked,
-            selected_light_handling,
-            &status);
+        std::vector<std::string> transaction_cameras = {
+            selected_camera.camera_serial};
+        if (mapped_strobe_available && light_control_params != nullptr &&
+            light_control_params->camera_serial != selected_camera.camera_serial) {
+            transaction_cameras.push_back(light_control_params->camera_serial);
+        }
+        const bool transaction_ok = ensure_manual_preflight_transaction(
+            std::move(transaction_cameras), &status);
+        const bool ok = transaction_ok && prepare_calibration_capture_preflight(
+                ui_state,
+                &ecams[ui_state->selected_camera],
+                &selected_camera,
+                light_control_ecam,
+                light_control_params,
+                mapped_strobe_available,
+                light_output_mutation_locked,
+                selected_light_handling,
+                &status);
         set_calibration_preflight_result(ui_state, ok, status);
+        if (!ok) release_manual_preflight_if_resolved(false, status);
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(!can_prepare_calibration_capture);
     if (ImGui::Button("Prepare All Cameras")) {
         std::string status;
-        const bool ok = prepare_calibration_capture_preflight_all_cameras(
-            ui_state,
-            ecams,
-            cameras_params,
-            num_cameras,
-            light_control_ecam,
-            light_control_params,
-            mapped_strobe_available,
-            light_output_mutation_locked,
-            selected_light_handling,
-            &status);
+        std::vector<std::string> transaction_cameras;
+        transaction_cameras.reserve(static_cast<std::size_t>(num_cameras));
+        for (int index = 0; index < num_cameras; ++index) {
+            transaction_cameras.push_back(cameras_params[index].camera_serial);
+        }
+        const bool transaction_ok = ensure_manual_preflight_transaction(
+            std::move(transaction_cameras), &status);
+        const bool ok = transaction_ok &&
+            prepare_calibration_capture_preflight_all_cameras(
+                ui_state,
+                ecams,
+                cameras_params,
+                num_cameras,
+                light_control_ecam,
+                light_control_params,
+                mapped_strobe_available,
+                light_output_mutation_locked,
+                selected_light_handling,
+                &status);
         set_calibration_preflight_result(ui_state, ok, status);
+        if (!ok) release_manual_preflight_if_resolved(false, status);
     }
     ImGui::EndDisabled();
     const bool has_any_capture_restore =
@@ -378,41 +445,59 @@ void render_calibration_capture_metadata_panel(
     const bool has_selected_capture_restore =
         has_calibration_capture_restore_state(ui_state, selected_camera.camera_serial);
     const bool can_restore_calibration_capture =
-        !light_output_mutation_locked &&
+        !light_output_mutation_locked && !another_calibration_transaction_active &&
         (has_selected_capture_restore || mapped_strobe_available);
     const bool can_restore_all_calibration_capture =
-        !light_output_mutation_locked &&
+        !light_output_mutation_locked && !another_calibration_transaction_active &&
         (has_any_capture_restore || mapped_strobe_available);
     ImGui::BeginDisabled(!can_restore_calibration_capture);
     if (ImGui::Button("Restore Camera Config State")) {
         std::string status;
-        const bool ok = restore_calibration_capture_preflight(
-            ui_state,
-            &ecams[ui_state->selected_camera],
-            &selected_camera,
-            light_control_ecam,
-            light_control_params,
-            mapped_strobe_available,
-            light_output_mutation_locked,
-            &status);
+        std::vector<std::string> transaction_cameras = {
+            selected_camera.camera_serial};
+        if (mapped_strobe_available && light_control_params != nullptr &&
+            light_control_params->camera_serial != selected_camera.camera_serial) {
+            transaction_cameras.push_back(light_control_params->camera_serial);
+        }
+        const bool transaction_ok = ensure_manual_preflight_transaction(
+            std::move(transaction_cameras), &status);
+        const bool ok = transaction_ok && restore_calibration_capture_preflight(
+                ui_state,
+                &ecams[ui_state->selected_camera],
+                &selected_camera,
+                light_control_ecam,
+                light_control_params,
+                mapped_strobe_available,
+                light_output_mutation_locked,
+                &status);
         set_calibration_preflight_result(ui_state, ok, status);
+        release_manual_preflight_if_resolved(ok, status);
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
     ImGui::BeginDisabled(!can_restore_all_calibration_capture);
     if (ImGui::Button("Restore All Camera Config States")) {
         std::string status;
-        const bool ok = restore_calibration_capture_preflight_all_cameras(
-            ui_state,
-            ecams,
-            cameras_params,
-            num_cameras,
-            light_control_ecam,
-            light_control_params,
-            mapped_strobe_available,
-            light_output_mutation_locked,
-            &status);
+        std::vector<std::string> transaction_cameras;
+        transaction_cameras.reserve(static_cast<std::size_t>(num_cameras));
+        for (int index = 0; index < num_cameras; ++index) {
+            transaction_cameras.push_back(cameras_params[index].camera_serial);
+        }
+        const bool transaction_ok = ensure_manual_preflight_transaction(
+            std::move(transaction_cameras), &status);
+        const bool ok = transaction_ok &&
+            restore_calibration_capture_preflight_all_cameras(
+                ui_state,
+                ecams,
+                cameras_params,
+                num_cameras,
+                light_control_ecam,
+                light_control_params,
+                mapped_strobe_available,
+                light_output_mutation_locked,
+                &status);
         set_calibration_preflight_result(ui_state, ok, status);
+        release_manual_preflight_if_resolved(ok, status);
     }
     ImGui::EndDisabled();
     if (ui_state->calibration_capture_profile_active) {

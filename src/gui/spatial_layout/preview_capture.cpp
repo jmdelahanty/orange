@@ -1,6 +1,7 @@
 #include "gui/spatial_layout/preview_capture.h"
 
 #include "camera_preview_utils.h"
+#include "gui/spatial_layout/calibration_transaction_bridge.h"
 #include "gui/spatial_layout/layout_state.h"
 #include "gui/spatial_layout/projection_snapshot_client.h"
 
@@ -34,6 +35,41 @@ bool capture_single_camera_frame(
     CameraEmergent* ecam = &ecams[selected_camera];
     CameraParams* camera_params = &cameras_params[selected_camera];
 
+    bool owns_transaction = false;
+    std::string transaction_error;
+    if (ui_state->calibration_transaction_lease) {
+        if (!spatial_calibration_transaction_owned_by(
+                *ui_state, kManualCameraPreflightTransactionOwner) ||
+            !require_spatial_calibration_transaction(
+                *ui_state,
+                {camera_params->camera_serial},
+                orange::calibration::Mutation::kCameraStreamLifecycle,
+                &transaction_error)) {
+            if (transaction_error.empty()) {
+                transaction_error =
+                    "Direct still capture cannot borrow the active calibration transaction.";
+            }
+            if (error_out) *error_out = transaction_error;
+            return false;
+        }
+    } else {
+        owns_transaction = acquire_spatial_calibration_transaction(
+            ui_state,
+            kSpatialDirectCaptureTransactionOwner,
+            std::string(kSpatialDirectCaptureTransactionOwner) + "_Cam" +
+                camera_params->camera_serial,
+            orange::calibration::WorkflowKind::kSpatialDirectCapture,
+            {camera_params->camera_serial},
+            orange::calibration::mutation_set(
+                orange::calibration::Mutation::kCameraStreamLifecycle),
+            "Open one camera stream, capture one calibration still, and restore the stream state.",
+            &transaction_error);
+        if (!owns_transaction) {
+            if (error_out) *error_out = transaction_error;
+            return false;
+        }
+    }
+
     const CitrusProjectionSnapshotQueryResult pre_snapshot =
         query_citrus_active_projection_snapshot(
             "pre_capture",
@@ -55,6 +91,10 @@ bool capture_single_camera_frame(
             &capture_error)) {
         if (error_out) {
             *error_out = capture_error;
+        }
+        if (owns_transaction) {
+            release_spatial_calibration_transaction(
+                ui_state, "failed", capture_error);
         }
         return false;
     }
@@ -94,6 +134,10 @@ bool capture_single_camera_frame(
         status << " (dropped " << dropped_frames << " buffered frames)";
     }
     ui_state->preview_status = status.str();
+    if (owns_transaction) {
+        release_spatial_calibration_transaction(
+            ui_state, "complete", ui_state->preview_status);
+    }
     return true;
 }
 

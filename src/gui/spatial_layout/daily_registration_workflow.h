@@ -26,6 +26,7 @@ void render_daily_registration_workflow_panel(
     const CameraEachSelect* cameras_select,
     int num_cameras,
     SpatialSnapshotWorker* const* spatial_snapshot_workers,
-    const std::string& artifact_root_dir);
+    const std::string& artifact_root_dir,
+    bool recording_mutation_locked);
 
 }  // namespace orange::gui::spatial_layout

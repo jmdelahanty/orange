@@ -1,5 +1,6 @@
 #pragma once
 
+#include "calibration_transaction.h"
 #include "camera.h"
 #include "image_canvas.h"
 #include "spatial_layout_schema.h"
@@ -9,6 +10,7 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -507,6 +509,10 @@ struct SpatialLayoutUiState {
     std::vector<SpatialLayoutGroupCaptureFrame> group_captures;
     std::string group_capture_status;
     std::string group_capture_error;
+    std::unique_ptr<orange::calibration::TransactionLease>
+        calibration_transaction_lease;
+    std::string calibration_transaction_owner_kind;
+    bool group_capture_owns_calibration_transaction = false;
     std::vector<SpatialLayoutSessionReviewImage> session_review_images;
     std::vector<SpatialLayoutSessionReviewCameraGroup> session_review_camera_groups;
     std::vector<std::string> session_review_warnings;
