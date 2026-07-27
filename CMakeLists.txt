@@ -265,6 +265,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/video_capture.cpp"
     "${SRC_DIR}/acquire_frames.cpp"
     "${SRC_DIR}/gui/async_startup_worker.cpp"
+    "${SRC_DIR}/gui/bounded_startup_tasks.cpp"
     "${SRC_DIR}/gui/camera_startup_controller.cpp"
     "${SRC_DIR}/gui/texture_resources.cpp"
     "${SRC_DIR}/gui/startup_timing.cpp"
@@ -1002,6 +1003,16 @@ if(BUILD_TESTING)
     target_compile_features(gui_async_startup_worker_tests PRIVATE cxx_std_17)
     target_link_libraries(gui_async_startup_worker_tests PRIVATE Threads::Threads)
     add_test(NAME gui_async_startup_worker_tests COMMAND gui_async_startup_worker_tests)
+
+    add_executable(gui_bounded_startup_tasks_tests
+        "tools/gui_bounded_startup_tasks_tests.cpp"
+        "${SRC_DIR}/gui/async_startup_worker.cpp"
+        "${SRC_DIR}/gui/bounded_startup_tasks.cpp"
+    )
+    target_include_directories(gui_bounded_startup_tasks_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(gui_bounded_startup_tasks_tests PRIVATE cxx_std_17)
+    target_link_libraries(gui_bounded_startup_tasks_tests PRIVATE Threads::Threads)
+    add_test(NAME gui_bounded_startup_tasks_tests COMMAND gui_bounded_startup_tasks_tests)
 
     add_executable(guided_capture_autorun_config_tests
         "tools/guided_capture_autorun_config_tests.cpp"

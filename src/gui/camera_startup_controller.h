@@ -67,6 +67,10 @@ struct GuiCameraOpenRequest {
     nlohmann::json timing_context = nlohmann::json::object();
     uint64_t request_started_ns = 0;
     uint64_t selection_finished_ns = 0;
+    // Zero resolves ORANGE_GUI_CAMERA_STARTUP_CONCURRENCY. Only 1, 2, and 4
+    // are accepted during the experimental rollout; invalid values fail safe
+    // to one worker.
+    int max_parallel_open_workers = 0;
     GuiStartupTimingRecorder* timing = nullptr;
 };
 
@@ -147,6 +151,8 @@ struct GuiCameraStartupStatus {
     bool stream_runtime_installed = false;
     std::string operation;
     std::string message;
+    int requested_camera_open_concurrency = 1;
+    int effective_camera_open_concurrency = 1;
 };
 
 class GuiCameraStartupController {

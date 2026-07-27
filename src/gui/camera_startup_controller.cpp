@@ -6,6 +6,8 @@
 #include "frame_ipc_manager.h"
 #include "acquire_frames.h"
 #include "gui/async_startup_worker.h"
+#include "gui/bounded_startup_tasks.h"
+#include "gui/env_util.h"
 #include "gui/recording_snapshots.h"
 #include "gui/texture_resources.h"
 #include "image_writer_worker.h"
@@ -20,6 +22,7 @@
 #include "yolo_worker.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <exception>
 #include <iostream>
 #include <mutex>
@@ -31,6 +34,8 @@ namespace orange::gui {
 namespace {
 
 constexpr double kFirstFrameTimeoutSeconds = 45.0;
+constexpr const char* kCameraOpenConcurrencyEnv =
+    "ORANGE_GUI_CAMERA_STARTUP_CONCURRENCY";
 
 uint64_t now_ns() noexcept
 {
@@ -69,6 +74,21 @@ std::string exception_message()
     } catch (...) {
         return "non-standard exception";
     }
+}
+
+std::string summarize_errors(const std::vector<std::string>& errors)
+{
+    if (errors.empty()) {
+        return "camera open task group did not complete";
+    }
+    std::ostringstream summary;
+    summary << errors.front();
+    if (errors.size() > 1) {
+        summary << " (and " << (errors.size() - 1) << " more camera startup error";
+        if (errors.size() != 2) summary << "s";
+        summary << ")";
+    }
+    return summary.str();
 }
 
 void close_open_product_cameras(GuiCameraOpenProduct* product) noexcept
@@ -466,6 +486,8 @@ struct GuiCameraStartupController::Impl {
     std::unique_ptr<StreamStartupProduct> stream_product;
     GuiStreamStartupBindings stream_bindings;
     std::vector<std::string> pending_errors;
+    int requested_camera_open_concurrency = 1;
+    int effective_camera_open_concurrency = 1;
 
     void set_phase(
         const GuiCameraStartupPhase new_phase,
@@ -1151,6 +1173,46 @@ bool GuiCameraStartupController::StartCameraOpen(
         if (error_out) *error_out = "camera-open request is incomplete";
         return false;
     }
+
+    const char* concurrency_env = std::getenv(kCameraOpenConcurrencyEnv);
+    const bool concurrency_override = request.max_parallel_open_workers > 0;
+    const int requested_concurrency = concurrency_override
+        ? request.max_parallel_open_workers
+        : gui_env_int(kCameraOpenConcurrencyEnv, 1, 1);
+    bool concurrency_supported = false;
+    const std::size_t effective_concurrency =
+        SanitizeGuiCameraOpenConcurrency(
+            requested_concurrency,
+            request.selected_devices.size(),
+            &concurrency_supported);
+    if (!concurrency_supported) {
+        std::cerr << "[GUI][camera_startup] Ignoring unsupported "
+                  << kCameraOpenConcurrencyEnv << "=" << requested_concurrency
+                  << "; supported experimental values are 1, 2, and 4."
+                  << std::endl;
+    }
+    // Preserve the accepted requested width for the task-group artifact. The
+    // executor performs the camera-count clamp itself, so a four-worker
+    // request over three selected cameras is recorded as requested=4 and
+    // effective=3 rather than losing the operator's requested topology.
+    request.max_parallel_open_workers =
+        concurrency_supported ? requested_concurrency : 1;
+    if (!request.timing_context.is_object()) {
+        request.timing_context = nlohmann::json::object();
+    }
+    request.timing_context["camera_open_concurrency"] = {
+        {"environment_key", kCameraOpenConcurrencyEnv},
+        {"setting_source", concurrency_override
+            ? "request_override"
+            : ((concurrency_env && *concurrency_env) ? "environment" : "default")},
+        {"requested", requested_concurrency},
+        {"requested_value_supported", concurrency_supported},
+        {"effective", effective_concurrency},
+        {"selected_camera_count", request.selected_devices.size()},
+        {"ownership_policy", "one_startup_task_per_distinct_camera_handle"},
+        {"stream_open_policy", "serial"},
+        {"ptp_configuration_policy", "serial"},
+    };
     {
         std::lock_guard<std::mutex> lock(impl_->mutex);
         if ((impl_->phase != GuiCameraStartupPhase::kIdle &&
@@ -1161,11 +1223,16 @@ bool GuiCameraStartupController::StartCameraOpen(
         }
         impl_->phase = GuiCameraStartupPhase::kOpeningCameras;
         impl_->operation = "camera_open";
-        impl_->message = "Opening and configuring selected cameras...";
+        impl_->message = "Opening and configuring selected cameras (concurrency " +
+            std::to_string(effective_concurrency) + ")...";
         impl_->cancel_pending = false;
         impl_->cancel_reason.clear();
         impl_->open_timing = request.timing;
         impl_->open_background_finished_ns = 0;
+        impl_->pending_errors.clear();
+        impl_->requested_camera_open_concurrency = requested_concurrency;
+        impl_->effective_camera_open_concurrency =
+            static_cast<int>(effective_concurrency);
     }
 
     std::vector<GuiStartupTimingCamera> timing_cameras;
@@ -1174,7 +1241,11 @@ bool GuiCameraStartupController::StartCameraOpen(
         GuiStartupTimingCamera camera;
         camera.serial = request.selected_devices[i].device.serialNumber;
         camera.camera_index = static_cast<int>(i);
-        camera.context = {{"device_index", request.selected_devices[i].device_index}};
+        camera.context = {
+            {"device_index", request.selected_devices[i].device_index},
+            {"camera_ip", request.selected_devices[i].device.currentIp},
+            {"nic_ip", request.selected_devices[i].device.nic.ip4Address},
+        };
         timing_cameras.push_back(std::move(camera));
     }
     request.timing->Begin(
@@ -1190,6 +1261,7 @@ bool GuiCameraStartupController::StartCameraOpen(
             ? request.selection_finished_ns
             : now_ns());
 
+    GuiStartupTimingRecorder* const open_timing = request.timing;
     const bool started = impl_->worker.Start(
         "camera_open",
         [impl = impl_.get(), request = std::move(request)](
@@ -1205,11 +1277,9 @@ bool GuiCameraStartupController::StartCameraOpen(
                 std::make_unique<CameraEmergent[]>(product->camera_count);
             std::vector<bool> skip_setting_params(
                 static_cast<std::size_t>(product->camera_count), false);
-            int opened_camera_count = 0;
             try {
                 for (int i = 0; i < product->camera_count; ++i) {
                     if (cancel_requested.load(std::memory_order_acquire)) {
-                        product->camera_count = opened_camera_count;
                         close_open_product_cameras(product.get());
                         request.timing->MarkHandlerComplete();
                         const std::string reason =
@@ -1250,37 +1320,143 @@ bool GuiCameraStartupController::StartCameraOpen(
                     }
                 }
 
-                for (int i = 0; i < product->camera_count; ++i) {
-                    if (cancel_requested.load(std::memory_order_acquire)) {
-                        product->camera_count = opened_camera_count;
-                        close_open_product_cameras(product.get());
-                        request.timing->MarkHandlerComplete();
-                        const std::string reason =
-                            impl->current_cancel_reason();
-                        request.timing->MarkStopped(reason);
-                        return GuiAsyncStartupWorkResult::Canceled(
-                            reason);
+                const uint64_t task_group_started_ns = now_ns();
+                const GuiBoundedStartupTaskGroupResult task_group =
+                    RunGuiBoundedStartupTasks(
+                        static_cast<std::size_t>(product->camera_count),
+                        static_cast<std::size_t>(
+                            request.max_parallel_open_workers),
+                        cancel_requested,
+                        [&](const std::size_t task_index,
+                            const GuiStartupCancellation& cancellation) {
+                            const int i = static_cast<int>(task_index);
+                            const std::string serial =
+                                product->camera_params[i].camera_serial;
+                            if (cancellation.requested()) {
+                                return GuiAsyncStartupWorkResult::Canceled(
+                                    cancellation.external_requested()
+                                        ? impl->current_cancel_reason()
+                                        : "peer_camera_open_failed");
+                            }
+                            request.timing->MarkCameraInstant(
+                                serial,
+                                "camera_open_task_started",
+                                0,
+                                {{"task_index", task_index}});
+                            const uint64_t started_ns = now_ns();
+                            try {
+                                const auto& selected =
+                                    request.selected_devices[task_index];
+                                GigEVisionDeviceInfo device = selected.device;
+                                if (!skip_setting_params[task_index]) {
+                                    open_camera_with_params(
+                                        &product->cameras[i].camera,
+                                        &device,
+                                        &product->camera_params[i],
+                                        "gui_bounded_parallel_open_selected_cameras");
+                                } else {
+                                    update_camera_params(
+                                        &product->cameras[i].camera,
+                                        &device,
+                                        &product->camera_params[i]);
+                                }
+                                const uint64_t finished_ns = now_ns();
+                                request.timing->RecordCameraInterval(
+                                    serial,
+                                    "open_and_configure_camera",
+                                    started_ns,
+                                    finished_ns,
+                                    true);
+                                request.timing->MarkCameraInstant(
+                                    serial,
+                                    "camera_open_task_succeeded",
+                                    finished_ns,
+                                    {{"task_index", task_index}});
+                                return GuiAsyncStartupWorkResult::Succeeded();
+                            } catch (...) {
+                                const uint64_t finished_ns = now_ns();
+                                const std::string error = exception_message();
+                                request.timing->RecordCameraInterval(
+                                    serial,
+                                    "open_and_configure_camera",
+                                    started_ns,
+                                    finished_ns,
+                                    false);
+                                request.timing->MarkCameraInstant(
+                                    serial,
+                                    "camera_open_task_failed",
+                                    finished_ns,
+                                    {
+                                        {"task_index", task_index},
+                                        {"error", error},
+                                    });
+                                return GuiAsyncStartupWorkResult::Failed(
+                                    serial + ": " + error);
+                            }
+                        });
+                const uint64_t task_group_finished_ns = now_ns();
+                request.timing->RecordGlobalInterval(
+                    "camera_open_task_group",
+                    task_group_started_ns,
+                    task_group_finished_ns,
+                    !task_group.any_failed());
+                request.timing->MarkGlobalInstant(
+                    "camera_open_task_group_complete",
+                    task_group_finished_ns,
+                    {
+                        {"requested_concurrency",
+                         task_group.requested_concurrency},
+                        {"effective_concurrency",
+                         task_group.effective_concurrency},
+                        {"peak_concurrency", task_group.peak_concurrency},
+                        {"started_task_count",
+                         task_group.started_task_count},
+                        {"completed_task_count",
+                         task_group.completed_task_count},
+                        {"external_cancel_observed",
+                         task_group.external_cancel_observed},
+                        {"launch_failed", task_group.launch_failed},
+                    });
+
+                std::vector<std::string> task_errors;
+                if (task_group.launch_failed) {
+                    task_errors.push_back(
+                        "camera startup worker launch failed: " +
+                        task_group.launch_error);
+                }
+                for (std::size_t i = 0;
+                     i < task_group.task_states.size(); ++i) {
+                    if (task_group.task_states[i] ==
+                        GuiBoundedStartupTaskState::kFailed) {
+                        const std::string& error =
+                            task_group.task_results[i].error;
+                        task_errors.push_back(
+                            error.empty()
+                                ? (std::string(
+                                       request.selected_devices[i]
+                                           .device.serialNumber) +
+                                   ": camera open task failed")
+                                : error);
                     }
-                    const auto& selected =
-                        request.selected_devices[static_cast<std::size_t>(i)];
-                    GigEVisionDeviceInfo device = selected.device;
-                    GuiStartupTimingScope scope(
-                        request.timing,
-                        "open_and_configure_camera",
-                        product->camera_params[i].camera_serial);
-                    if (!skip_setting_params[static_cast<std::size_t>(i)]) {
-                        open_camera_with_params(
-                            &product->cameras[i].camera,
-                            &device,
-                            &product->camera_params[i],
-                            "gui_async_open_selected_cameras");
-                    } else {
-                        update_camera_params(
-                            &product->cameras[i].camera,
-                            &device,
-                            &product->camera_params[i]);
+                }
+                if (!task_errors.empty()) {
+                    close_open_product_cameras(product.get());
+                    {
+                        std::lock_guard<std::mutex> lock(impl->mutex);
+                        impl->pending_errors = task_errors;
                     }
-                    opened_camera_count = i + 1;
+                    const std::string summary = summarize_errors(task_errors);
+                    request.timing->MarkHandlerComplete();
+                    request.timing->MarkFailed(
+                        "camera_open_failed: " + summary);
+                    return GuiAsyncStartupWorkResult::Failed(summary);
+                }
+                if (!task_group.all_succeeded()) {
+                    close_open_product_cameras(product.get());
+                    request.timing->MarkHandlerComplete();
+                    const std::string reason = impl->current_cancel_reason();
+                    request.timing->MarkStopped(reason);
+                    return GuiAsyncStartupWorkResult::Canceled(reason);
                 }
 
                 int ptp_count = 0;
@@ -1312,9 +1488,12 @@ bool GuiCameraStartupController::StartCameraOpen(
                 }
                 return GuiAsyncStartupWorkResult::Succeeded();
             } catch (...) {
-                product->camera_count = opened_camera_count;
                 close_open_product_cameras(product.get());
                 const std::string error = exception_message();
+                {
+                    std::lock_guard<std::mutex> lock(impl->mutex);
+                    impl->pending_errors = {error};
+                }
                 request.timing->MarkHandlerComplete();
                 request.timing->MarkFailed(
                     "camera_open_failed: " + error);
@@ -1323,8 +1502,16 @@ bool GuiCameraStartupController::StartCameraOpen(
         },
         error_out);
     if (!started) {
+        const std::string failure =
+            error_out && !error_out->empty()
+                ? *error_out
+                : "could not start camera worker";
+        open_timing->MarkHandlerComplete();
+        open_timing->MarkFailed(failure);
         impl_->set_phase(GuiCameraStartupPhase::kFailed, {},
-                         error_out ? *error_out : "could not start camera worker");
+                         failure);
+        std::lock_guard<std::mutex> lock(impl_->mutex);
+        impl_->open_timing = nullptr;
     }
     return started;
 }
@@ -1481,11 +1668,16 @@ GuiCameraStartupEvent GuiCameraStartupController::PollGuiThread()
                         : GuiCameraStartupPhase::kFailed,
                     {},
                     event.message);
+                {
+                    std::lock_guard<std::mutex> lock(impl_->mutex);
+                    event.errors = impl_->pending_errors;
+                }
             }
             {
                 std::lock_guard<std::mutex> lock(impl_->mutex);
                 impl_->cancel_pending = false;
                 impl_->cancel_reason.clear();
+                impl_->pending_errors.clear();
             }
             return event;
         }
@@ -1712,6 +1904,10 @@ GuiCameraStartupStatus GuiCameraStartupController::status() const
     status.stream_runtime_installed = impl_->stream_runtime_installed;
     status.operation = impl_->operation;
     status.message = impl_->message;
+    status.requested_camera_open_concurrency =
+        impl_->requested_camera_open_concurrency;
+    status.effective_camera_open_concurrency =
+        impl_->effective_camera_open_concurrency;
     return status;
 }
 

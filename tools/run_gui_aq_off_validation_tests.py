@@ -154,6 +154,10 @@ def test_discovers_all_camera_json_files() -> None:
             "launcher output should show the default speed graph setting",
         )
         require(
+            "ORANGE_GUI_CAMERA_STARTUP_CONCURRENCY=1" in result.stdout,
+            "launcher output should show serial camera open as the safe default",
+        )
+        require(
             "ORANGE_GUI_AUTORUN=0" in result.stdout,
             "launcher output should show autorun disabled by default",
         )
@@ -1966,6 +1970,78 @@ def test_gui_privilege_wrapper_accepts_local_control_envs() -> None:
     )
 
 
+def test_camera_startup_concurrency_is_validated_and_forwarded() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            validate_only=False,
+            print_exec_env=True,
+            extra_env={"ORANGE_GUI_CAMERA_STARTUP_CONCURRENCY": "2"},
+        )
+        require(result.returncode == 0, f"launcher failed: {result.stderr}")
+        require(
+            "ORANGE_GUI_CAMERA_STARTUP_CONCURRENCY=2" in result.stdout,
+            "launcher should forward the bounded camera-open width",
+        )
+
+        rejected = run_launcher(
+            config_dir,
+            detect_engine,
+            extra_env={"ORANGE_GUI_CAMERA_STARTUP_CONCURRENCY": "3"},
+        )
+        require(rejected.returncode != 0, "launcher should reject untested width 3")
+        require(
+            "must be 1, 2, or 4" in rejected.stderr,
+            "launcher should explain the supported startup widths",
+        )
+
+    wrapper = subprocess.run(
+        [
+            str(GUI_WRAPPER_SCRIPT),
+            "--dry-run",
+            "--env",
+            "ORANGE_GUI_CAMERA_STARTUP_CONCURRENCY=4",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    require(wrapper.returncode == 0, f"wrapper should accept width 4: {wrapper.stderr}")
+    require(
+        "ORANGE_GUI_CAMERA_STARTUP_CONCURRENCY=4" in wrapper.stdout,
+        "wrapper should retain the validated startup width",
+    )
+
+    wrapper_rejected = subprocess.run(
+        [
+            str(GUI_WRAPPER_SCRIPT),
+            "--dry-run",
+            "--env",
+            "ORANGE_GUI_CAMERA_STARTUP_CONCURRENCY=8",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    require(wrapper_rejected.returncode != 0, "wrapper should reject width 8")
+    require(
+        "must be 1, 2, or 4" in wrapper_rejected.stderr,
+        "wrapper should explain its concurrency allowlist",
+    )
+
+
 def test_gui_privilege_wrapper_rejects_missing_app_config_env() -> None:
     missing_path = Path("/tmp/orange_missing_app_config_for_wrapper_test.json")
     result = subprocess.run(
@@ -2006,6 +2082,7 @@ def main() -> int:
         test_gui_privilege_wrapper_accepts_inprocess_sink_alias,
         test_gui_privilege_wrapper_accepts_app_config_envs,
         test_gui_privilege_wrapper_accepts_local_control_envs,
+        test_camera_startup_concurrency_is_validated_and_forwarded,
         test_gui_privilege_wrapper_rejects_missing_app_config_env,
         test_external_crop_queue_validation_limits_are_printed,
         test_source_version_validation_flags_are_printed,

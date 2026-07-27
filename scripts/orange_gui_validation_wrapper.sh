@@ -32,8 +32,9 @@ Allowed Orange binaries:
 Allowed env values are intentionally limited to the GUI validation launcher
 contract: display/session variables, GUI autorun controls such as
 ORANGE_GUI_AUTORUN, recording sink and recording-control values such as
-ORANGE_GUI_CLIP_SECONDS, local-control start/stop gates, crop-recorder
-controls, YOLO/PTP diagnostics, and known path roots.
+ORANGE_GUI_CLIP_SECONDS, bounded camera-startup concurrency, local-control
+start/stop gates, crop-recorder controls, YOLO/PTP diagnostics, and known path
+roots.
 
 PTP stack modes:
   off      Do not check the host linuxptp stack.
@@ -402,6 +403,12 @@ validate_env_item() {
     ORANGE_YOLO_PERF_SAMPLE)
       is_positive_integer "$value" || {
         echo "$key must be a positive integer" >&2
+        return 2
+      }
+      ;;
+    ORANGE_GUI_CAMERA_STARTUP_CONCURRENCY)
+      [[ "$value" =~ ^(1|2|4)$ ]] || {
+        echo "$key must be 1, 2, or 4" >&2
         return 2
       }
       ;;

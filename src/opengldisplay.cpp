@@ -56,15 +56,9 @@ COpenGLDisplay::COpenGLDisplay(const char* name, CameraParams *camera_params, Ca
 {
     std::cout << "[OPENGL_DISPLAY] CONSTRUCTOR for " << camera_params->camera_name << " on display GPU " << display_gpu_id << std::endl;
 
-    // Display-only output queue: the fast mono path in WorkerFunction returns
-    // true, pushing the entry pointer onto the base-class output queue, but
-    // nothing in-tree drains it, so it would otherwise grow one pointer per
-    // displayed frame for the whole session. Dropping is always acceptable
-    // here (preview data only). No ReleaseDroppedQueueOutEntry override is
-    // needed: WorkerFunction releases the entry's pool reference to
-    // m_recycle_queue BEFORE returning true, so pointers on the output queue
-    // own no pool reference and the base-class no-op release is correct.
-    SetMaxQueueOutSize(8);
+    // Display completion is communicated through PreviewSerial(). No caller
+    // consumes this worker's base-class output queue, so WorkerFunction must
+    // return false after releasing its pool reference.
 
     ck(cudaSetDevice(display_gpu_id));
     ck(cudaStreamCreate(&m_stream));
@@ -247,7 +241,11 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
             WorkerEntryReleaseContext{
                 camera_params ? camera_params->camera_serial.c_str() : nullptr,
                 "opengl_display"});
-        return true;
+        // The PBO and PreviewSerial() are already updated, and the pool
+        // reference was released above. Publishing this pointer to the
+        // base-class output queue would create an unused, unowned entry and
+        // eventually a misleading "dropped oldest entry" warning.
+        return false;
     }
 
     // Debayer or duplicate mono channel to get a 4-channel RGBA image in debayer_gpu_.d_debayer
