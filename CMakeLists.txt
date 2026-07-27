@@ -1019,6 +1019,7 @@ if(BUILD_TESTING)
 
     add_executable(daily_registration_preview_tests
         "tools/daily_registration_preview_tests.cpp"
+        "${SRC_DIR}/calibration_transaction.cpp"
         "${SRC_DIR}/gui/daily_registration_geometry.cpp"
         "${SRC_DIR}/gui/spatial_layout/daily_registration_preview.cpp"
     )
