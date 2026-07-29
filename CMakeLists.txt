@@ -1015,6 +1015,20 @@ if(BUILD_TESTING)
     target_link_libraries(gui_bounded_startup_tasks_tests PRIVATE Threads::Threads)
     add_test(NAME gui_bounded_startup_tasks_tests COMMAND gui_bounded_startup_tasks_tests)
 
+    add_executable(gui_startup_ownership_transaction_tests
+        "tools/gui_startup_ownership_transaction_tests.cpp"
+        "${SRC_DIR}/gui/async_startup_worker.cpp"
+        "${SRC_DIR}/gui/bounded_startup_tasks.cpp"
+    )
+    target_include_directories(gui_startup_ownership_transaction_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(gui_startup_ownership_transaction_tests PRIVATE cxx_std_17)
+    target_link_libraries(gui_startup_ownership_transaction_tests PRIVATE
+        Threads::Threads)
+    add_test(
+        NAME gui_startup_ownership_transaction_tests
+        COMMAND gui_startup_ownership_transaction_tests)
+
     add_executable(per_camera_stream_runtime_contract_tests
         "tools/per_camera_stream_runtime_contract_tests.cpp"
     )

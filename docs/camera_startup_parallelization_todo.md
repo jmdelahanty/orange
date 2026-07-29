@@ -206,7 +206,11 @@ Exact artifacts and interpretation are in
   fallback sanitization.
 - [x] Compile-test the per-camera runtime's deleted-copy and noexcept-move
   contract.
-- [ ] Unit-test hardware-independent controller result aggregation and rollback.
+- [x] Unit-test the production startup ownership transaction with fake runtimes:
+  partial-stage failure, cancellation, destructor fallback, rejected install,
+  and activation failure after address-preserving ownership transfer.
+- [ ] Unit-test the remaining controller event/result aggregation independently
+  of the ownership transaction.
 - [ ] Integration tests:
   - one camera fails open
   - one camera fails stream open

@@ -10,6 +10,7 @@
 #include "gui/env_util.h"
 #include "gui/per_camera_stream_runtime.h"
 #include "gui/recording_snapshots.h"
+#include "gui/startup_ownership_transaction.h"
 #include "gui/texture_resources.h"
 #include "image_writer_worker.h"
 #include "network_base.h"
@@ -190,7 +191,7 @@ struct StreamStartupProduct {
         : camera_count(count),
           display_texture_initialized(static_cast<std::size_t>(count), false),
           crop_texture_initialized(static_cast<std::size_t>(count), false),
-          runtimes(static_cast<std::size_t>(count)),
+          runtime_ownership(static_cast<std::size_t>(count)),
           display_textures(std::make_unique<GL_Texture[]>(count)),
           crop_textures(std::make_unique<GL_Texture[]>(count))
     {
@@ -199,27 +200,23 @@ struct StreamStartupProduct {
     int camera_count = 0;
     std::vector<std::uint8_t> display_texture_initialized;
     std::vector<std::uint8_t> crop_texture_initialized;
-    std::vector<PerCameraStreamRuntime> runtimes;
+    GuiStartupOwnershipTransaction<PerCameraStreamRuntime> runtime_ownership;
     std::unique_ptr<GL_Texture[]> display_textures;
     std::unique_ptr<GL_Texture[]> crop_textures;
-    bool background_resources_cleaned = false;
 };
 
 void cleanup_background_stream_product(
     StreamStartupProduct* product,
     const GuiStreamStartupBindings&) noexcept
 {
-    if (!product || product->background_resources_cleaned) {
+    if (!product) {
         return;
     }
 
     // No worker thread is started before activation. Reset is therefore
     // bounded and cannot race live queues. Every SDK/CUDA cleanup operation is
     // delegated to the same owner used by normal stream teardown.
-    for (int i = product->camera_count - 1; i >= 0; --i) {
-        product->runtimes[static_cast<std::size_t>(i)].Reset();
-    }
-    product->background_resources_cleaned = true;
+    product->runtime_ownership.Rollback();
 }
 
 void cleanup_gui_stream_textures(
@@ -568,7 +565,8 @@ struct GuiCameraStartupController::Impl {
                     maximum_frame_bytes,
                     static_cast<std::size_t>(bindings.camera_params[i].width) *
                         static_cast<std::size_t>(bindings.camera_params[i].height));
-                product->runtimes[static_cast<std::size_t>(i)].Bind(
+                product->runtime_ownership.staged_runtimes()[
+                    static_cast<std::size_t>(i)].Bind(
                     &bindings.cameras[i],
                     &bindings.camera_params[i]);
             }
@@ -617,7 +615,8 @@ struct GuiCameraStartupController::Impl {
                                 << bindings.camera_params[i].gpu_id
                                 << std::endl;
                             PerCameraStreamRuntime& runtime =
-                                product->runtimes[index];
+                                product->runtime_ownership
+                                    .staged_runtimes()[index];
                             runtime.InitializeCameraResources(
                                 maximum_frame_bytes,
                                 bindings.camera_selection[i].yolo,
@@ -775,7 +774,8 @@ struct GuiCameraStartupController::Impl {
                     "worker_construction",
                     stream_bindings.camera_params[i].camera_serial);
                 PerCameraStreamRuntime& runtime =
-                    stream_product->runtimes[static_cast<std::size_t>(i)];
+                    stream_product->runtime_ownership.staged_runtimes()[
+                        static_cast<std::size_t>(i)];
                 CameraResources& resources = runtime.camera_resources();
                 if (stream_bindings.camera_selection[i].stream_on) {
                     const std::string name =
@@ -918,7 +918,8 @@ struct GuiCameraStartupController::Impl {
                             });
                         try {
                             PerCameraStreamRuntime& runtime =
-                                stream_product->runtimes[index];
+                                stream_product->runtime_ownership
+                                    .staged_runtimes()[index];
                             {
                                 GuiStartupTimingScope scope(
                                     stream_bindings.timing,
@@ -1109,7 +1110,7 @@ struct GuiCameraStartupController::Impl {
             for (int i = 0; i < count; ++i) {
                 const std::size_t index = static_cast<std::size_t>(i);
                 PerCameraStreamRuntime& runtime =
-                    stream_product->runtimes[index];
+                    stream_product->runtime_ownership.staged_runtimes()[index];
                 display_worker_slots[index] = runtime.display_worker();
                 crop_producer_slots[index] = runtime.crop_producer_worker();
                 crop_encode_slots[index] = runtime.crop_encode_worker();
@@ -1123,7 +1124,11 @@ struct GuiCameraStartupController::Impl {
                 camera_resource_slots[index] = &runtime.camera_resources();
             }
 
-            stream_bindings.stream_runtimes->swap(stream_product->runtimes);
+            if (!stream_product->runtime_ownership.InstallInto(
+                    stream_bindings.stream_runtimes)) {
+                throw std::logic_error(
+                    "stream runtime ownership installation was rejected");
+            }
             stream_bindings.display_workers->swap(display_worker_slots);
             stream_bindings.crop_producer_workers->swap(crop_producer_slots);
             stream_bindings.crop_encode_workers->swap(crop_encode_slots);

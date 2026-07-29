@@ -102,6 +102,8 @@ startup state machine to `orange.cpp`:
   deterministic results, and join-before-return;
 - `gui/per_camera_stream_runtime`: move-only per-camera ownership of the EVT
   stream/buffers, CUDA resources, IPC manager, and worker objects;
+- `gui/startup_ownership_transaction`: fixed staged ownership, reverse-order
+  rollback, and the no-allocation ownership handoff into the GUI runtime;
 - `gui/texture_resources`: OpenGL/CUDA texture ownership, which must remain on
   the GUI thread that owns the OpenGL context.
 
@@ -136,11 +138,21 @@ before cleanup or ownership transfer. Partial frame-buffer allocation is
 tracked exactly so rollback releases only successfully allocated buffers,
 closes every opened stream, and cleans each initialized per-camera resource.
 `PerCameraStreamRuntime` is the sole deleter for the stream-scoped products.
-The controller swaps the completed runtime vector into the GUI without moving
-individual allocations, then builds raw-pointer vectors strictly as
-compatibility views for existing panels and workflow functions. Those views
-never delete objects. Acquisition threads borrow pointers only after the atomic
-GUI handoff, and the runtime vector is not resized while acquisition is live.
+`GuiStartupOwnershipTransaction` holds the fixed runtime vector throughout all
+fallible preparation stages. A failed or canceled stage resets every slot in
+reverse camera order; its destructor provides the same cleanup if an exception
+bypasses explicit rollback. The controller installs a completed vector with a
+single `std::vector::swap`, without moving individual runtimes or invalidating
+their addresses. It then builds raw-pointer vectors strictly as compatibility
+views for existing panels and workflow functions. Those views never delete
+objects. Acquisition threads borrow pointers only after the atomic GUI handoff,
+and the runtime vector is not resized while acquisition is live.
+
+The ownership transaction is covered without hardware using fake runtimes and
+the production bounded task executor. The tests inject partial stage failure,
+cancellation, destructor-only unwinding, rejected installation, and an
+activation failure after ownership transfer. Real EVT allocation/release and
+camera stream behavior still require the live GUI start/stop validation.
 
 Shutdown preserves the inverse lifetime order:
 
