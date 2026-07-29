@@ -2124,7 +2124,7 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
                                            CameraEachSelect* cameras_select,
                                            const int num_cameras,
                                            const EncoderConfig& encoder_config,
-                                           CameraResources* camera_resources,
+                                           CameraResources* const* camera_resources,
                                            CameraControl* camera_control,
                                            const AppStorageConfig* app_storage_config)
 {
@@ -2199,7 +2199,7 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
         state->recording_pipelines[i] = std::make_unique<ModernRecordingPipeline>(
             &cameras_params[i],
             resolved_recording_config,
-            *camera_resources[i].recycle_queue,
+            *camera_resources[i]->recycle_queue,
             camera_control,
             state->recording_sink_mode);
     }

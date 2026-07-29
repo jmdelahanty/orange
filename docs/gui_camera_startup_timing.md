@@ -100,6 +100,8 @@ startup state machine to `orange.cpp`:
 - `gui/async_startup_worker`: generic joinable worker and exception boundary;
 - `gui/bounded_startup_tasks`: bounded indexed execution, peer-stop behavior,
   deterministic results, and join-before-return;
+- `gui/per_camera_stream_runtime`: move-only per-camera ownership of the EVT
+  stream/buffers, CUDA resources, IPC manager, and worker objects;
 - `gui/texture_resources`: OpenGL/CUDA texture ownership, which must remain on
   the GUI thread that owns the OpenGL context.
 
@@ -133,9 +135,28 @@ select their camera's CUDA device before resource work, and every task is joined
 before cleanup or ownership transfer. Partial frame-buffer allocation is
 tracked exactly so rollback releases only successfully allocated buffers,
 closes every opened stream, and cleans each initialized per-camera resource.
-The final runtime owns these products; acquisition threads borrow pointers only
-after the atomic GUI handoff. Shutdown preserves the inverse order: stop and
-join acquisition first, then destroy the owning runtime resources.
+`PerCameraStreamRuntime` is the sole deleter for the stream-scoped products.
+The controller swaps the completed runtime vector into the GUI without moving
+individual allocations, then builds raw-pointer vectors strictly as
+compatibility views for existing panels and workflow functions. Those views
+never delete objects. Acquisition threads borrow pointers only after the atomic
+GUI handoff, and the runtime vector is not resized while acquisition is live.
+
+Shutdown preserves the inverse lifetime order:
+
+1. clear `subscribe`, stop acquisition, and join every acquisition thread;
+2. signal every per-camera worker, then finalize and destroy workers in reverse
+   pipeline order;
+3. shut down recording pipelines;
+4. release the IPC manager, allocated EVT buffers, and camera stream;
+5. destroy GUI-owned OpenGL textures on the context thread; and
+6. select each camera GPU and release its CUDA queues, buffers, and events.
+
+The runtime destructor performs the same worker/stream/CUDA phases as a
+fail-safe, which makes startup cancellation and partial construction unwind
+through the normal ownership contract. Explicit normal-shutdown phases remain
+because recording-pipeline and OpenGL teardown have cross-object/context
+ordering requirements outside the per-camera owner.
 
 The experiment does not parallelize PTP configuration, worker construction, or
 acquisition launch. It also does not change the headless startup path.

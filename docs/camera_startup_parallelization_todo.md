@@ -169,6 +169,9 @@ Exact artifacts and interpretation are in
   - close opened streams
   - clean every initialized CUDA resource product
   - return to clean pre-start state.
+- [x] Consolidate GUI stream ownership in a move-only
+  `PerCameraStreamRuntime`; retain raw worker/IPC pointers only as non-owning
+  compatibility views.
 - [ ] Add the equivalent bounded preparation and rollback to headless startup.
 
 ## Phase 4: PTP Setup Strategy
@@ -201,6 +204,8 @@ Exact artifacts and interpretation are in
 - [x] Unit-test bounded overlap, deterministic result slots, peer failure,
   external cancellation, thread joining, exception conversion, and serial
   fallback sanitization.
+- [x] Compile-test the per-camera runtime's deleted-copy and noexcept-move
+  contract.
 - [ ] Unit-test hardware-independent controller result aggregation and rollback.
 - [ ] Integration tests:
   - one camera fails open

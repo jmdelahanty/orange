@@ -713,9 +713,9 @@ void gui_collect_worker_fatal_error(
 }
 
 // Sweeps every live worker the GUI owns. Only call while
-// camera_control->subscribe is true: the pointer arrays exist solely for the
-// duration of a streaming session (allocated at stream start, deleted and
-// nulled by the stop-streaming teardown before this runs in the same frame).
+// camera_control->subscribe is true: these pointers are non-owning views into
+// PerCameraStreamRuntime objects and are cleared before those owners release
+// the workers during stop-streaming teardown.
 std::vector<GuiWorkerFatalErrorEntry> gui_collect_worker_fatal_errors(
     int num_cameras,
     COpenGLDisplay** display_workers,
@@ -4781,21 +4781,21 @@ int main(int /*argc*/, char ** /*args*/) {
 
     int evt_buffer_size{100};
     PTPParams *ptp_params = new PTPParams{0, 0, 0, 0, false, false, false, false};
-    COpenGLDisplay** openGLDisplayWorkers = nullptr;
-    CropProducerWorker** cropProducerWorkers = nullptr;
-    CropAndEncodeWorker** cropAndEncodeWorkers = nullptr;
-    CropPreviewWorker** cropPreviewWorkers = nullptr;
-    SpatialSnapshotWorker** spatialSnapshotWorkers = nullptr;
+    std::vector<COpenGLDisplay*> openGLDisplayWorkers;
+    std::vector<CropProducerWorker*> cropProducerWorkers;
+    std::vector<CropAndEncodeWorker*> cropAndEncodeWorkers;
+    std::vector<CropPreviewWorker*> cropPreviewWorkers;
+    std::vector<SpatialSnapshotWorker*> spatialSnapshotWorkers;
     std::vector<uint64_t> display_uploaded_serials;
     std::vector<uint64_t> crop_preview_uploaded_serials;
     std::vector<GLuint> live_preview_texture_ids;
     std::vector<orange::ui::ImageCanvasViewState> primary_video_canvas_views;
-    PoseWorker** poseWorkers = nullptr;
+    std::vector<PoseWorker*> poseWorkers;
     ImageWriterWorker* image_writer = new ImageWriterWorker("ImageSaverThread");
     image_writer->StartThread();
     std::set<std::string> gui_worker_fatal_errors_logged; // once-per-worker stderr log
 
-    std::vector<CameraResources> camera_resources;
+    std::vector<orange::gui::PerCameraStreamRuntime> stream_runtimes;
     orange::session::RecordingSessionState recording_session;
     GuiSessionTimingState gui_session_timing;
     orange::gui::GuiStartupTimingRecorder gui_startup_timing;
@@ -4863,7 +4863,7 @@ int main(int /*argc*/, char ** /*args*/) {
     } else {
         std::cout << "[GUI][local_control] disabled by environment" << std::endl;
     }
-    std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
+    std::vector<FrameIPCManager*> frame_ipc_managers;
     std::vector<std::string> frame_ipc_init_errors;
     std::vector<std::string> recording_preflight_errors;
     std::string recording_config_defaults_status;
@@ -5073,91 +5073,47 @@ int main(int /*argc*/, char ** /*args*/) {
         // 2. Signal all worker threads to stop processing NEW data from their queues.
         // They will finish processing whatever is currently in their queue.
         for (int i = 0; i < num_cameras; i++) {
-            if (yolo_workers[i]) yolo_workers[i]->StopThread();
-            if (openGLDisplayWorkers[i]) openGLDisplayWorkers[i]->StopThread();
-            if (cropProducerWorkers[i]) cropProducerWorkers[i]->StopThread();
-            if (cropPreviewWorkers[i]) cropPreviewWorkers[i]->StopThread();
-            if (cropAndEncodeWorkers[i]) cropAndEncodeWorkers[i]->StopThread();
-            if (poseWorkers[i]) poseWorkers[i]->StopThread();
-            if (spatialSnapshotWorkers && spatialSnapshotWorkers[i]) {
-                spatialSnapshotWorkers[i]->StopThread();
+            if (static_cast<std::size_t>(i) < stream_runtimes.size()) {
+                stream_runtimes[static_cast<std::size_t>(i)].StopWorkers();
             }
             orange::session::request_stop_recording_pipeline_for_camera(&recording_session, i);
         }
         std::cout << "All worker threads signaled to stop. Waiting for queues to drain..." << std::endl;
 
-        // 3. Join and delete workers in REVERSE pipeline order to ensure the pipeline is drained.
+        // 3. Join and destroy workers in reverse pipeline order. The
+        // per-camera move-only owner is the only code that deletes them.
         for (int i = 0; i < num_cameras; i++) {
-            // Endpoints are first.
-            if (openGLDisplayWorkers[i]) {
-                delete openGLDisplayWorkers[i];
-                openGLDisplayWorkers[i] = nullptr;
-            }
-
-            if (cropAndEncodeWorkers[i]) {
+            if (static_cast<std::size_t>(i) < cropAndEncodeWorkers.size() &&
+                cropAndEncodeWorkers[static_cast<std::size_t>(i)]) {
                 std::cout << "Flushing final packets for crop encoder " << cameras_params[i].camera_serial << "..." << std::endl;
-                cropAndEncodeWorkers[i]->finalize_recording();
-                delete cropAndEncodeWorkers[i];
-                cropAndEncodeWorkers[i] = nullptr;
             }
-
-            if (cropPreviewWorkers[i]) {
-                delete cropPreviewWorkers[i];
-                cropPreviewWorkers[i] = nullptr;
-            }
-
-            if (poseWorkers[i]) {
-                poseWorkers[i]->CloseRecording();
-                delete poseWorkers[i];
-                poseWorkers[i] = nullptr;
-            }
-
-            if (spatialSnapshotWorkers && spatialSnapshotWorkers[i]) {
-                delete spatialSnapshotWorkers[i];
-                spatialSnapshotWorkers[i] = nullptr;
-            }
-
-            if (cropProducerWorkers[i]) {
-                cropProducerWorkers[i]->CloseRecording();
-                delete cropProducerWorkers[i];
-                cropProducerWorkers[i] = nullptr;
-            }
-            
-            // Now the hardware encoder, which is fed by the preprocessor.
-            // The YOLO worker can be deleted now.
-            if (yolo_workers[i]) {
-                delete yolo_workers[i];
-                yolo_workers[i] = nullptr;
+            if (static_cast<std::size_t>(i) < stream_runtimes.size()) {
+                stream_runtimes[static_cast<std::size_t>(i)]
+                    .FinalizeAndDestroyWorkers();
             }
 
             orange::session::shutdown_recording_pipeline_for_camera(&recording_session, i);
         }
-        
-        // Clear the worker pointer vectors
+
+        // Clear non-owning compatibility views after their owners destroy the
+        // workers. No delete is permitted through these vectors.
         yolo_workers.clear();
+        openGLDisplayWorkers.clear();
+        cropProducerWorkers.clear();
+        cropAndEncodeWorkers.clear();
+        cropPreviewWorkers.clear();
+        spatialSnapshotWorkers.clear();
+        poseWorkers.clear();
         orange::session::clear_recording_pipelines(&recording_session);
-        if(openGLDisplayWorkers) { delete[] openGLDisplayWorkers; openGLDisplayWorkers = nullptr; }
-        if(cropProducerWorkers) { delete[] cropProducerWorkers; cropProducerWorkers = nullptr; }
-        if(cropAndEncodeWorkers) { delete[] cropAndEncodeWorkers; cropAndEncodeWorkers = nullptr; }
-        if(cropPreviewWorkers) { delete[] cropPreviewWorkers; cropPreviewWorkers = nullptr; }
-        if(spatialSnapshotWorkers) { delete[] spatialSnapshotWorkers; spatialSnapshotWorkers = nullptr; }
-        if(poseWorkers) { delete[] poseWorkers; poseWorkers = nullptr; }
         std::cout << "Worker threads all cleaned up." << std::endl;
+
+        for (auto& runtime : stream_runtimes) {
+            runtime.ReleaseStreamAndIpc();
+        }
         frame_ipc_managers.clear();
         frame_ipc_init_errors.clear();
 
-        // 4. Final resource cleanup
-        for (int i = 0; i < num_cameras; i++) {
-            if (!gui_camera_has_acquisition_work(cameras_select[i])) {
-                continue;
-            }
-            destroy_frame_buffer(&ecams[i].camera, ecams[i].evt_frame, evt_buffer_size, &cameras_params[i]);
-            delete[] ecams[i].evt_frame;
-            ecams[i].evt_frame = nullptr;
-            ecams[i].evt_frame_count = 0;
-            check_camera_errors(EVT_CameraCloseStream(&ecams[i].camera), cameras_params[i].camera_serial.c_str());
-        }
-
+        // 4. OpenGL teardown remains on this GUI/context thread.
         for (int i = 0; i < num_cameras; i++) {
             if (cameras_select[i].stream_on) {
                 int w = int(cameras_params[i].width / cameras_select[i].downsample);
@@ -5182,10 +5138,10 @@ int main(int /*argc*/, char ** /*args*/) {
         live_preview_texture_ids.clear();
         primary_video_canvas_views.clear();
 
-        for(int i = 0; i < num_cameras; ++i) {
-            camera_resources[i].cleanup();
+        for (auto& runtime : stream_runtimes) {
+            runtime.ReleaseCameraResources();
         }
-        camera_resources.clear();
+        stream_runtimes.clear();
         std::cout << "Cleaned up all per-camera resources." << std::endl;
         if (gui_finalize_recording_session_if_ready(
                 &gui_recording_run,
@@ -5403,10 +5359,10 @@ int main(int /*argc*/, char ** /*args*/) {
             yolo_model,
             crop_size_px,
             ptp_params,
-            cropProducerWorkers,
-            cropPreviewWorkers,
-            cropAndEncodeWorkers,
-            poseWorkers,
+            cropProducerWorkers.empty() ? nullptr : cropProducerWorkers.data(),
+            cropPreviewWorkers.empty() ? nullptr : cropPreviewWorkers.data(),
+            cropAndEncodeWorkers.empty() ? nullptr : cropAndEncodeWorkers.data(),
+            poseWorkers.empty() ? nullptr : poseWorkers.data(),
             &recording_preflight_errors,
             gui_local_control_event_log_path);
         // Worker-initiated stop reconciliation. Pipeline workers may stop a
@@ -5481,7 +5437,9 @@ int main(int /*argc*/, char ** /*args*/) {
                 cameras_params,
                 cameras_select,
                 num_cameras,
-                spatialSnapshotWorkers,
+                spatialSnapshotWorkers.empty()
+                    ? nullptr
+                    : spatialSnapshotWorkers.data(),
                 spatial_calibration_sessions_folder);
         const orange::gui::ArenaCenteringAutorunRequests arena_centering_requests =
             orange::gui::arena_centering_autorun_update(
@@ -5493,7 +5451,9 @@ int main(int /*argc*/, char ** /*args*/) {
                 cameras_params,
                 cameras_select,
                 num_cameras,
-                spatialSnapshotWorkers,
+                spatialSnapshotWorkers.empty()
+                    ? nullptr
+                    : spatialSnapshotWorkers.data(),
                 spatial_calibration_sessions_folder);
         const bool calibration_workflow_toggle_streaming =
             guided_capture_requests.toggle_streaming ||
@@ -5620,10 +5580,16 @@ int main(int /*argc*/, char ** /*args*/) {
                     input_folder,
                     spatial_layout_ui_state.citrus_canvas_config_path,
                     ptp_params,
-                    cropProducerWorkers,
-                    cropPreviewWorkers,
-                    cropAndEncodeWorkers,
-                    poseWorkers,
+                    cropProducerWorkers.empty()
+                        ? nullptr
+                        : cropProducerWorkers.data(),
+                    cropPreviewWorkers.empty()
+                        ? nullptr
+                        : cropPreviewWorkers.data(),
+                    cropAndEncodeWorkers.empty()
+                        ? nullptr
+                        : cropAndEncodeWorkers.data(),
+                    poseWorkers.empty() ? nullptr : poseWorkers.data(),
                     &recording_preflight_errors,
                     gui_local_control_event_log_path);
             if (local_control_start_triggered) {
@@ -5933,7 +5899,7 @@ int main(int /*argc*/, char ** /*args*/) {
                     crop_preview_config_status.c_str());
             }
             if (ImGui::Checkbox("show crop previews", &show_crop_preview_windows)) {
-                if (cropPreviewWorkers) {
+                if (!cropPreviewWorkers.empty()) {
                     for (int i = 0; i < num_cameras; ++i) {
                         if (cropPreviewWorkers[i]) {
                             cropPreviewWorkers[i]->SetPreviewDisplayEnabled(
@@ -6365,7 +6331,9 @@ int main(int /*argc*/, char ** /*args*/) {
             spatial_calibration_sessions_folder,
             live_preview_texture_ids.empty() ? nullptr : live_preview_texture_ids.data(),
             display_uploaded_serials.empty() ? nullptr : display_uploaded_serials.data(),
-            spatialSnapshotWorkers);
+            spatialSnapshotWorkers.empty()
+                ? nullptr
+                : spatialSnapshotWorkers.data());
 
         calibration_transaction_snapshot =
             orange::calibration::global_transaction_coordinator().snapshot();
@@ -6730,7 +6698,7 @@ int main(int /*argc*/, char ** /*args*/) {
                         bindings.timing = &gui_startup_timing;
                         bindings.timing_artifact_directory =
                             gui_startup_timing_artifact_dir;
-                        bindings.camera_resources = &camera_resources;
+                        bindings.stream_runtimes = &stream_runtimes;
                         bindings.frame_ipc_managers = &frame_ipc_managers;
                         bindings.frame_ipc_init_errors =
                             &frame_ipc_init_errors;
@@ -6880,10 +6848,18 @@ int main(int /*argc*/, char ** /*args*/) {
                                     input_folder,
                                     spatial_layout_ui_state.citrus_canvas_config_path,
                                     ptp_params,
-                                    cropProducerWorkers,
-                                    cropPreviewWorkers,
-                                    cropAndEncodeWorkers,
-                                    poseWorkers,
+                                    cropProducerWorkers.empty()
+                                        ? nullptr
+                                        : cropProducerWorkers.data(),
+                                    cropPreviewWorkers.empty()
+                                        ? nullptr
+                                        : cropPreviewWorkers.data(),
+                                    cropAndEncodeWorkers.empty()
+                                        ? nullptr
+                                        : cropAndEncodeWorkers.data(),
+                                    poseWorkers.empty()
+                                        ? nullptr
+                                        : poseWorkers.data(),
                                     &recording_preflight_errors,
                                     gui_autorun_requests.toggle_recording
                                         ? "autorun_start_recording"
@@ -7016,20 +6992,29 @@ int main(int /*argc*/, char ** /*args*/) {
             }
 
             if (camera_control->subscribe) {
-                // The worker arrays only exist while streaming. The
-                // stop-streaming teardown (same GUI thread, earlier in this
-                // frame) clears subscribe first and then deletes the workers
-                // and nulls the arrays, so when this guard passes the
-                // pointers are either live or nullptr - never freed.
+                // Worker vectors are non-owning views into the move-only
+                // per-camera runtime owners. Stop-streaming clears subscribe,
+                // joins acquisition, destroys workers through those owners,
+                // and then clears these views on the same GUI thread.
                 const std::vector<GuiWorkerFatalErrorEntry> worker_fatal_errors =
                     gui_collect_worker_fatal_errors(
                         num_cameras,
-                        openGLDisplayWorkers,
-                        cropProducerWorkers,
-                        cropAndEncodeWorkers,
-                        cropPreviewWorkers,
-                        spatialSnapshotWorkers,
-                        poseWorkers,
+                        openGLDisplayWorkers.empty()
+                            ? nullptr
+                            : openGLDisplayWorkers.data(),
+                        cropProducerWorkers.empty()
+                            ? nullptr
+                            : cropProducerWorkers.data(),
+                        cropAndEncodeWorkers.empty()
+                            ? nullptr
+                            : cropAndEncodeWorkers.data(),
+                        cropPreviewWorkers.empty()
+                            ? nullptr
+                            : cropPreviewWorkers.data(),
+                        spatialSnapshotWorkers.empty()
+                            ? nullptr
+                            : spatialSnapshotWorkers.data(),
+                        poseWorkers.empty() ? nullptr : poseWorkers.data(),
                         image_writer,
                         recording_session);
                 gui_note_new_worker_fatal_errors(
@@ -7059,7 +7044,8 @@ int main(int /*argc*/, char ** /*args*/) {
                             std::numeric_limits<uint64_t>::max());
                     }
                     bool should_upload_display = true;
-                    if (openGLDisplayWorkers && openGLDisplayWorkers[i]) {
+                    if (!openGLDisplayWorkers.empty() &&
+                        openGLDisplayWorkers[static_cast<std::size_t>(i)]) {
                         const uint64_t preview_serial =
                             openGLDisplayWorkers[i]->PreviewSerial();
                         should_upload_display =
@@ -7086,7 +7072,8 @@ int main(int /*argc*/, char ** /*args*/) {
                             std::numeric_limits<uint64_t>::max());
                     }
                     bool should_upload_crop_preview = true;
-                    if (cropPreviewWorkers && cropPreviewWorkers[i]) {
+                    if (!cropPreviewWorkers.empty() &&
+                        cropPreviewWorkers[static_cast<std::size_t>(i)]) {
                         const uint64_t preview_serial =
                             cropPreviewWorkers[i]->PreviewSerial();
                         should_upload_crop_preview =

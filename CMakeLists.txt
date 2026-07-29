@@ -267,6 +267,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/async_startup_worker.cpp"
     "${SRC_DIR}/gui/bounded_startup_tasks.cpp"
     "${SRC_DIR}/gui/camera_startup_controller.cpp"
+    "${SRC_DIR}/gui/per_camera_stream_runtime.cpp"
     "${SRC_DIR}/gui/texture_resources.cpp"
     "${SRC_DIR}/gui/startup_timing.cpp"
     "${SRC_DIR}/offthreadmachine.cpp"
@@ -1013,6 +1014,16 @@ if(BUILD_TESTING)
     target_compile_features(gui_bounded_startup_tasks_tests PRIVATE cxx_std_17)
     target_link_libraries(gui_bounded_startup_tasks_tests PRIVATE Threads::Threads)
     add_test(NAME gui_bounded_startup_tasks_tests COMMAND gui_bounded_startup_tasks_tests)
+
+    add_executable(per_camera_stream_runtime_contract_tests
+        "tools/per_camera_stream_runtime_contract_tests.cpp"
+    )
+    target_include_directories(per_camera_stream_runtime_contract_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(per_camera_stream_runtime_contract_tests PRIVATE cxx_std_17)
+    add_test(
+        NAME per_camera_stream_runtime_contract_tests
+        COMMAND per_camera_stream_runtime_contract_tests)
 
     add_executable(guided_capture_autorun_config_tests
         "tools/guided_capture_autorun_config_tests.cpp"

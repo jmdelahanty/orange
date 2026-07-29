@@ -301,7 +301,7 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
                                            CameraEachSelect* cameras_select,
                                            int num_cameras,
                                            const EncoderConfig& encoder_config,
-                                           CameraResources* camera_resources,
+                                           CameraResources* const* camera_resources,
                                            CameraControl* camera_control,
                                            const AppStorageConfig* app_storage_config = nullptr);
 // --- Unified recording stop/drain core -------------------------------------

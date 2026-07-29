@@ -8,6 +8,7 @@
 #include "gui/async_startup_worker.h"
 #include "gui/bounded_startup_tasks.h"
 #include "gui/env_util.h"
+#include "gui/per_camera_stream_runtime.h"
 #include "gui/recording_snapshots.h"
 #include "gui/texture_resources.h"
 #include "image_writer_worker.h"
@@ -187,47 +188,18 @@ void close_open_product_cameras(GuiCameraOpenProduct* product) noexcept
 struct StreamStartupProduct {
     explicit StreamStartupProduct(const int count)
         : camera_count(count),
-          resource_initialized(static_cast<std::size_t>(count), false),
           display_texture_initialized(static_cast<std::size_t>(count), false),
           crop_texture_initialized(static_cast<std::size_t>(count), false),
-          stream_opened(static_cast<std::size_t>(count), false),
-          frame_array_allocated(static_cast<std::size_t>(count), 0),
-          frame_buffers_allocated_count(static_cast<std::size_t>(count), 0),
-          camera_resources(static_cast<std::size_t>(count)),
-          frame_ipc_managers(static_cast<std::size_t>(count)),
-          frame_ipc_init_errors(static_cast<std::size_t>(count)),
-          display_workers(static_cast<std::size_t>(count)),
-          crop_producer_workers(static_cast<std::size_t>(count)),
-          crop_encode_workers(static_cast<std::size_t>(count)),
-          crop_preview_workers(static_cast<std::size_t>(count)),
-          spatial_snapshot_workers(static_cast<std::size_t>(count)),
-          pose_workers(static_cast<std::size_t>(count)),
-          yolo_workers(static_cast<std::size_t>(count)),
+          runtimes(static_cast<std::size_t>(count)),
           display_textures(std::make_unique<GL_Texture[]>(count)),
           crop_textures(std::make_unique<GL_Texture[]>(count))
     {
     }
 
     int camera_count = 0;
-    // These flags are written by distinct bounded startup tasks. Do not use
-    // std::vector<bool>: its packed words make concurrent per-index writes a
-    // data race even when every task owns a different camera index.
-    std::vector<std::uint8_t> resource_initialized;
     std::vector<std::uint8_t> display_texture_initialized;
     std::vector<std::uint8_t> crop_texture_initialized;
-    std::vector<std::uint8_t> stream_opened;
-    std::vector<std::uint8_t> frame_array_allocated;
-    std::vector<int> frame_buffers_allocated_count;
-    std::vector<CameraResources> camera_resources;
-    std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
-    std::vector<std::string> frame_ipc_init_errors;
-    std::vector<std::unique_ptr<COpenGLDisplay>> display_workers;
-    std::vector<std::unique_ptr<CropProducerWorker>> crop_producer_workers;
-    std::vector<std::unique_ptr<CropAndEncodeWorker>> crop_encode_workers;
-    std::vector<std::unique_ptr<CropPreviewWorker>> crop_preview_workers;
-    std::vector<std::unique_ptr<SpatialSnapshotWorker>> spatial_snapshot_workers;
-    std::vector<std::unique_ptr<PoseWorker>> pose_workers;
-    std::vector<std::unique_ptr<YoloWorker>> yolo_workers;
+    std::vector<PerCameraStreamRuntime> runtimes;
     std::unique_ptr<GL_Texture[]> display_textures;
     std::unique_ptr<GL_Texture[]> crop_textures;
     bool background_resources_cleaned = false;
@@ -235,105 +207,17 @@ struct StreamStartupProduct {
 
 void cleanup_background_stream_product(
     StreamStartupProduct* product,
-    const GuiStreamStartupBindings& bindings) noexcept
+    const GuiStreamStartupBindings&) noexcept
 {
     if (!product || product->background_resources_cleaned) {
         return;
     }
 
-    // No worker thread is started before activation. Destruction is therefore
-    // bounded and cannot race live queues.
+    // No worker thread is started before activation. Reset is therefore
+    // bounded and cannot race live queues. Every SDK/CUDA cleanup operation is
+    // delegated to the same owner used by normal stream teardown.
     for (int i = product->camera_count - 1; i >= 0; --i) {
-        product->pose_workers[static_cast<std::size_t>(i)].reset();
-        product->spatial_snapshot_workers[static_cast<std::size_t>(i)].reset();
-        product->crop_preview_workers[static_cast<std::size_t>(i)].reset();
-        product->crop_encode_workers[static_cast<std::size_t>(i)].reset();
-        product->crop_producer_workers[static_cast<std::size_t>(i)].reset();
-        product->yolo_workers[static_cast<std::size_t>(i)].reset();
-        product->display_workers[static_cast<std::size_t>(i)].reset();
-    }
-
-    if (bindings.cameras && bindings.camera_params) {
-        for (int i = product->camera_count - 1; i >= 0; --i) {
-            const std::size_t index = static_cast<std::size_t>(i);
-            if (product->frame_array_allocated[index] ||
-                product->stream_opened[index]) {
-                const cudaError_t set_device_status = cudaSetDevice(
-                    bindings.camera_params[i].gpu_id);
-                if (set_device_status != cudaSuccess) {
-                    std::cerr
-                        << "[GUI][camera_startup] CUDA stream rollback device select failed"
-                        << " camera="
-                        << bindings.camera_params[i].camera_serial
-                        << " gpu=" << bindings.camera_params[i].gpu_id
-                        << " error="
-                        << cudaGetErrorString(set_device_status)
-                        << std::endl;
-                }
-            }
-            if (product->frame_array_allocated[index]) {
-                const int allocated_count =
-                    product->frame_buffers_allocated_count[index];
-                for (int frame_index = 0;
-                     frame_index < allocated_count;
-                     ++frame_index) {
-                    const EVT_ERROR error = EVT_ReleaseFrameBuffer(
-                        &bindings.cameras[i].camera,
-                        &bindings.cameras[i].evt_frame[frame_index]);
-                    if (error != EVT_SUCCESS) {
-                        std::cerr
-                            << "[GUI][camera_startup] frame-buffer rollback failed"
-                            << " camera="
-                            << bindings.camera_params[i].camera_serial
-                            << " frame_index=" << frame_index
-                            << " error=" << get_evt_error_string(error)
-                            << std::endl;
-                    }
-                }
-                delete[] bindings.cameras[i].evt_frame;
-                bindings.cameras[i].evt_frame = nullptr;
-                bindings.cameras[i].evt_frame_count = 0;
-                product->frame_buffers_allocated_count[index] = 0;
-                product->frame_array_allocated[index] = 0;
-            }
-            if (product->stream_opened[index]) {
-                const EVT_ERROR error =
-                    EVT_CameraCloseStream(&bindings.cameras[i].camera);
-                if (error != EVT_SUCCESS) {
-                    std::cerr << "[GUI][camera_startup] stream-close rollback failed"
-                              << " camera=" << bindings.camera_params[i].camera_serial
-                              << " error=" << get_evt_error_string(error) << std::endl;
-                }
-                product->stream_opened[index] = 0;
-            }
-        }
-    }
-
-    product->frame_ipc_managers.clear();
-    for (int i = product->camera_count - 1; i >= 0; --i) {
-        const std::size_t index = static_cast<std::size_t>(i);
-        if (!product->resource_initialized[index]) {
-            continue;
-        }
-        try {
-            if (bindings.camera_params) {
-                const cudaError_t set_device_status = cudaSetDevice(
-                    bindings.camera_params[i].gpu_id);
-                if (set_device_status != cudaSuccess) {
-                    std::cerr
-                        << "[GUI][camera_startup] CUDA rollback device select failed"
-                        << " camera="
-                        << bindings.camera_params[i].camera_serial
-                        << " gpu=" << bindings.camera_params[i].gpu_id
-                        << " error="
-                        << cudaGetErrorString(set_device_status)
-                        << std::endl;
-                }
-            }
-            product->camera_resources[index].cleanup();
-        } catch (...) {
-        }
-        product->resource_initialized[index] = 0;
+        product->runtimes[static_cast<std::size_t>(i)].Reset();
     }
     product->background_resources_cleaned = true;
 }
@@ -388,7 +272,7 @@ bool validate_stream_bindings(
         !bindings.encoder_config || !bindings.yolo_model ||
         !bindings.indigo_signal_builder || !bindings.image_writer ||
         !bindings.recording_session || !bindings.app_storage_config ||
-        !bindings.timing || !bindings.camera_resources ||
+        !bindings.timing || !bindings.stream_runtimes ||
         !bindings.frame_ipc_managers || !bindings.frame_ipc_init_errors ||
         !bindings.display_workers || !bindings.crop_producer_workers ||
         !bindings.crop_encode_workers || !bindings.crop_preview_workers ||
@@ -400,11 +284,17 @@ bool validate_stream_bindings(
         }
         return false;
     }
-    if (*bindings.display_workers || *bindings.crop_producer_workers ||
-        *bindings.crop_encode_workers || *bindings.crop_preview_workers ||
-        *bindings.spatial_snapshot_workers || *bindings.pose_workers ||
+    if (!bindings.display_workers->empty() ||
+        !bindings.crop_producer_workers->empty() ||
+        !bindings.crop_encode_workers->empty() ||
+        !bindings.crop_preview_workers->empty() ||
+        !bindings.spatial_snapshot_workers->empty() ||
+        !bindings.pose_workers->empty() ||
+        !bindings.yolo_workers->empty() ||
+        !bindings.frame_ipc_managers->empty() ||
+        !bindings.frame_ipc_init_errors->empty() ||
         *bindings.display_textures || *bindings.crop_textures ||
-        !bindings.camera_resources->empty() ||
+        !bindings.stream_runtimes->empty() ||
         !bindings.acquisition_threads->empty()) {
         if (error_out) {
             *error_out = "stream runtime storage is not empty";
@@ -678,6 +568,9 @@ struct GuiCameraStartupController::Impl {
                     maximum_frame_bytes,
                     static_cast<std::size_t>(bindings.camera_params[i].width) *
                         static_cast<std::size_t>(bindings.camera_params[i].height));
+                product->runtimes[static_cast<std::size_t>(i)].Bind(
+                    &bindings.cameras[i],
+                    &bindings.camera_params[i]);
             }
             bindings.timing->RecordGlobalInterval(
                 "pipeline_session_allocation",
@@ -723,13 +616,9 @@ struct GuiCameraStartupController::Impl {
                                 << " on GPU "
                                 << bindings.camera_params[i].gpu_id
                                 << std::endl;
-                            // Mark ownership before entering the potentially
-                            // throwing initializer. CameraResources is
-                            // value-initialized and cleanup is idempotent, so
-                            // partial CUDA allocation is rolled back too.
-                            product->resource_initialized[index] = 1;
-                            product->camera_resources[index].initialize(
-                                bindings.camera_params[i].gpu_id,
+                            PerCameraStreamRuntime& runtime =
+                                product->runtimes[index];
+                            runtime.InitializeCameraResources(
                                 maximum_frame_bytes,
                                 bindings.camera_selection[i].yolo,
                                 bindings.camera_params[i].recording.resources
@@ -743,11 +632,11 @@ struct GuiCameraStartupController::Impl {
                                     std::make_unique<FrameIPCManager>(
                                         &bindings.camera_params[i]);
                                 if (!manager->isEnabled()) {
-                                    product->frame_ipc_init_errors[index] =
-                                        manager->getInitError();
+                                    runtime.SetFrameIpcInitError(
+                                        manager->getInitError());
                                 } else {
-                                    product->frame_ipc_managers[index] =
-                                        std::move(manager);
+                                    runtime.SetFrameIpcManager(
+                                        std::move(manager));
                                 }
                             }
                             bindings.timing->MarkCameraInstant(
@@ -885,38 +774,36 @@ struct GuiCameraStartupController::Impl {
                     stream_bindings.timing,
                     "worker_construction",
                     stream_bindings.camera_params[i].camera_serial);
-                CameraResources& resources =
-                    stream_product->camera_resources[static_cast<std::size_t>(i)];
+                PerCameraStreamRuntime& runtime =
+                    stream_product->runtimes[static_cast<std::size_t>(i)];
+                CameraResources& resources = runtime.camera_resources();
                 if (stream_bindings.camera_selection[i].stream_on) {
                     const std::string name =
                         "OpenGLDisplay_Cam_" +
                         stream_bindings.camera_params[i].camera_serial;
-                    stream_product->display_workers[static_cast<std::size_t>(i)] =
+                    runtime.SetDisplayWorker(
                         std::make_unique<COpenGLDisplay>(
                             name.c_str(),
                             &stream_bindings.camera_params[i],
                             &stream_bindings.camera_selection[i],
                             stream_product->display_textures[i].cuda_buffer,
                             stream_bindings.indigo_signal_builder,
-                            *resources.recycle_queue);
+                            *resources.recycle_queue));
                 }
                 if (stream_bindings.camera_selection[i].yolo) {
                     const std::string name =
                         "YoloWorker_Cam_" +
                         stream_bindings.camera_params[i].camera_serial;
-                    stream_product->yolo_workers[static_cast<std::size_t>(i)] =
+                    runtime.SetYoloWorker(
                         std::make_unique<YoloWorker>(
                             name.c_str(),
                             &stream_bindings.camera_params[i],
                             &stream_bindings.camera_selection[i],
                             stream_bindings.camera_control,
-                            *resources.recycle_queue);
-                    if (stream_product->display_workers[static_cast<std::size_t>(i)]) {
-                        stream_product->yolo_workers[static_cast<std::size_t>(i)]
-                            ->SetDisplayWorker(
-                                stream_product
-                                    ->display_workers[static_cast<std::size_t>(i)]
-                                    .get());
+                            *resources.recycle_queue));
+                    if (runtime.display_worker()) {
+                        runtime.yolo_worker()->SetDisplayWorker(
+                            runtime.display_worker());
                     }
                 }
                 if (stream_bindings.camera_selection[i].crop_and_encode ||
@@ -924,27 +811,23 @@ struct GuiCameraStartupController::Impl {
                     const std::string name =
                         "CropProducer_Cam_" +
                         stream_bindings.camera_params[i].camera_serial;
-                    stream_product
-                        ->crop_producer_workers[static_cast<std::size_t>(i)] =
+                    runtime.SetCropProducerWorker(
                         std::make_unique<CropProducerWorker>(
                             name.c_str(),
                             &stream_bindings.camera_params[i],
                             *resources.recycle_queue,
                             stream_bindings.camera_control,
-                            stream_bindings.crop_size_px);
-                    if (stream_product->yolo_workers[static_cast<std::size_t>(i)]) {
-                        stream_product->yolo_workers[static_cast<std::size_t>(i)]
-                            ->SetCropProducerWorker(
-                                stream_product
-                                    ->crop_producer_workers[static_cast<std::size_t>(i)]
-                                    .get());
+                            stream_bindings.crop_size_px));
+                    if (runtime.yolo_worker()) {
+                        runtime.yolo_worker()->SetCropProducerWorker(
+                            runtime.crop_producer_worker());
                     }
                 }
                 if (stream_bindings.camera_selection[i].crop_and_encode) {
                     const std::string name =
                         "CropEncode_Cam_" +
                         stream_bindings.camera_params[i].camera_serial;
-                    stream_product->crop_encode_workers[static_cast<std::size_t>(i)] =
+                    runtime.SetCropEncodeWorker(
                         std::make_unique<CropAndEncodeWorker>(
                             name.c_str(),
                             &stream_bindings.camera_params[i],
@@ -952,28 +835,21 @@ struct GuiCameraStartupController::Impl {
                             *resources.recycle_queue,
                             stream_product->crop_textures[i].cuda_buffer,
                             stream_bindings.camera_control,
-                            stream_bindings.crop_size_px);
-                    auto* producer = stream_product
-                        ->crop_producer_workers[static_cast<std::size_t>(i)]
-                        .get();
+                            stream_bindings.crop_size_px));
+                    auto* producer = runtime.crop_producer_worker();
                     if (producer) {
                         const std::string preview_name =
                             "CropPreview_Cam_" +
                             stream_bindings.camera_params[i].camera_serial;
-                        stream_product
-                            ->crop_preview_workers[static_cast<std::size_t>(i)] =
+                        runtime.SetCropPreviewWorker(
                             std::make_unique<CropPreviewWorker>(
                                 preview_name.c_str(),
                                 &stream_bindings.camera_params[i],
                                 stream_product->crop_textures[i].cuda_buffer,
                                 producer->GetCropProducer(),
-                                stream_bindings.crop_size_px);
-                        auto* crop_preview = stream_product
-                            ->crop_preview_workers[static_cast<std::size_t>(i)]
-                            .get();
-                        auto* crop_encode = stream_product
-                            ->crop_encode_workers[static_cast<std::size_t>(i)]
-                            .get();
+                                stream_bindings.crop_size_px));
+                        auto* crop_preview = runtime.crop_preview_worker();
+                        auto* crop_encode = runtime.crop_encode_worker();
                         crop_preview->SetPreviewDisplayEnabled(
                             stream_bindings.show_crop_preview_windows);
                         crop_encode->SetCropProducer(producer->GetCropProducer());
@@ -984,37 +860,29 @@ struct GuiCameraStartupController::Impl {
                     }
                 }
                 if (stream_bindings.camera_selection[i].pose &&
-                    stream_product
-                        ->crop_producer_workers[static_cast<std::size_t>(i)]) {
+                    runtime.crop_producer_worker()) {
                     const std::string name =
                         "PoseWorker_Cam_" +
                         stream_bindings.camera_params[i].camera_serial;
-                    auto* producer = stream_product
-                        ->crop_producer_workers[static_cast<std::size_t>(i)]
-                        .get();
-                    stream_product->pose_workers[static_cast<std::size_t>(i)] =
+                    auto* producer = runtime.crop_producer_worker();
+                    runtime.SetPoseWorker(
                         std::make_unique<PoseWorker>(
                             name.c_str(),
                             &stream_bindings.camera_params[i],
                             producer->GetCropProducer(),
-                            stream_product
-                                ->frame_ipc_managers[static_cast<std::size_t>(i)]
-                                .get());
-                    producer->SetPoseWorker(
-                        stream_product->pose_workers[static_cast<std::size_t>(i)]
-                            .get());
+                            runtime.frame_ipc_manager()));
+                    producer->SetPoseWorker(runtime.pose_worker());
                 }
                 if (gui_camera_has_acquisition_work(
                         stream_bindings.camera_selection[i])) {
                     const std::string name =
                         "SpatialSnapshot_Cam_" +
                         stream_bindings.camera_params[i].camera_serial;
-                    stream_product
-                        ->spatial_snapshot_workers[static_cast<std::size_t>(i)] =
+                    runtime.SetSpatialSnapshotWorker(
                         std::make_unique<SpatialSnapshotWorker>(
                             name.c_str(),
                             &stream_bindings.camera_params[i],
-                            *resources.recycle_queue);
+                            *resources.recycle_queue));
                 }
             }
 
@@ -1049,16 +917,15 @@ struct GuiCameraStartupController::Impl {
                                  stream_bindings.camera_params[i].gpu_id},
                             });
                         try {
+                            PerCameraStreamRuntime& runtime =
+                                stream_product->runtimes[index];
                             {
                                 GuiStartupTimingScope scope(
                                     stream_bindings.timing,
                                     "stream_open",
                                     serial);
-                                camera_open_stream(
-                                    &stream_bindings.cameras[i].camera,
-                                    &stream_bindings.camera_params[i],
+                                runtime.OpenCameraStream(
                                     "gui_async_start_streaming");
-                                stream_product->stream_opened[index] = 1;
                             }
                             if (cancellation.requested()) {
                                 return GuiAsyncStartupWorkResult::Canceled(
@@ -1069,13 +936,8 @@ struct GuiCameraStartupController::Impl {
                                     stream_bindings.timing,
                                     "frame_buffer_allocate_and_queue",
                                     serial);
-                                CameraEmergent& camera =
-                                    stream_bindings.cameras[i];
-                                camera.evt_frame =
-                                    new Emergent::CEmergentFrame[
-                                        stream_bindings.evt_buffer_size];
-                                stream_product->frame_array_allocated[index] = 1;
-                                camera.evt_frame_count = 0;
+                                runtime.AllocateFrameArray(
+                                    stream_bindings.evt_buffer_size);
                                 for (int frame_index = 0;
                                      frame_index <
                                          stream_bindings.evt_buffer_size;
@@ -1084,27 +946,8 @@ struct GuiCameraStartupController::Impl {
                                         return GuiAsyncStartupWorkResult::Canceled(
                                             current_cancel_reason());
                                     }
-                                    set_frame_buffer(
-                                        &camera.evt_frame[frame_index],
-                                        &stream_bindings.camera_params[i]);
-                                    check_camera_errors(
-                                        EVT_AllocateFrameBuffer(
-                                            &camera.camera,
-                                            &camera.evt_frame[frame_index],
-                                            EVT_FRAME_BUFFER_ZERO_COPY),
-                                        serial.c_str());
-                                    // Record ownership before queueing: a queue
-                                    // failure still leaves an allocated SDK
-                                    // buffer that rollback must release.
-                                    stream_product
-                                        ->frame_buffers_allocated_count[index] =
-                                        frame_index + 1;
-                                    camera.evt_frame_count = frame_index + 1;
-                                    check_camera_errors(
-                                        EVT_CameraQueueFrame(
-                                            &camera.camera,
-                                            &camera.evt_frame[frame_index]),
-                                        serial.c_str());
+                                    runtime.AllocateAndQueueFrameBuffer(
+                                        frame_index);
                                 }
                             }
                             stream_bindings.timing->MarkCameraInstant(
@@ -1239,60 +1082,63 @@ struct GuiCameraStartupController::Impl {
         event.message = "stream runtime activated; awaiting first frames";
         try {
             const int count = stream_bindings.camera_count;
-            // Allocate every main-owned slot under local RAII first. The GUI
-            // must see either an entirely empty runtime or a complete one;
-            // allocation failure cannot leave partially installed arrays.
-            auto display_worker_slots =
-                std::make_unique<COpenGLDisplay*[]>(count);
-            auto crop_producer_slots =
-                std::make_unique<CropProducerWorker*[]>(count);
-            auto crop_encode_slots =
-                std::make_unique<CropAndEncodeWorker*[]>(count);
-            auto crop_preview_slots =
-                std::make_unique<CropPreviewWorker*[]>(count);
-            auto spatial_snapshot_slots =
-                std::make_unique<SpatialSnapshotWorker*[]>(count);
-            auto pose_slots = std::make_unique<PoseWorker*[]>(count);
+            // Allocate every non-owning compatibility view before the
+            // no-throw ownership swap. The GUI sees either an empty runtime
+            // or a complete move-only per-camera runtime collection.
+            std::vector<COpenGLDisplay*> display_worker_slots(
+                static_cast<std::size_t>(count), nullptr);
+            std::vector<CropProducerWorker*> crop_producer_slots(
+                static_cast<std::size_t>(count), nullptr);
+            std::vector<CropAndEncodeWorker*> crop_encode_slots(
+                static_cast<std::size_t>(count), nullptr);
+            std::vector<CropPreviewWorker*> crop_preview_slots(
+                static_cast<std::size_t>(count), nullptr);
+            std::vector<SpatialSnapshotWorker*> spatial_snapshot_slots(
+                static_cast<std::size_t>(count), nullptr);
+            std::vector<PoseWorker*> pose_slots(
+                static_cast<std::size_t>(count), nullptr);
             std::vector<YoloWorker*> yolo_slots(
+                static_cast<std::size_t>(count), nullptr);
+            std::vector<FrameIPCManager*> frame_ipc_slots(
+                static_cast<std::size_t>(count), nullptr);
+            std::vector<std::string> frame_ipc_error_slots(
+                static_cast<std::size_t>(count));
+            std::vector<CameraResources*> camera_resource_slots(
                 static_cast<std::size_t>(count), nullptr);
 
             for (int i = 0; i < count; ++i) {
                 const std::size_t index = static_cast<std::size_t>(i);
-                display_worker_slots[i] =
-                    stream_product->display_workers[index].release();
-                crop_producer_slots[i] =
-                    stream_product->crop_producer_workers[index].release();
-                crop_encode_slots[i] =
-                    stream_product->crop_encode_workers[index].release();
-                crop_preview_slots[i] =
-                    stream_product->crop_preview_workers[index].release();
-                spatial_snapshot_slots[i] =
-                    stream_product->spatial_snapshot_workers[index].release();
-                pose_slots[i] =
-                    stream_product->pose_workers[index].release();
-                yolo_slots[index] =
-                    stream_product->yolo_workers[index].release();
+                PerCameraStreamRuntime& runtime =
+                    stream_product->runtimes[index];
+                display_worker_slots[index] = runtime.display_worker();
+                crop_producer_slots[index] = runtime.crop_producer_worker();
+                crop_encode_slots[index] = runtime.crop_encode_worker();
+                crop_preview_slots[index] = runtime.crop_preview_worker();
+                spatial_snapshot_slots[index] =
+                    runtime.spatial_snapshot_worker();
+                pose_slots[index] = runtime.pose_worker();
+                yolo_slots[index] = runtime.yolo_worker();
+                frame_ipc_slots[index] = runtime.frame_ipc_manager();
+                frame_ipc_error_slots[index] = runtime.frame_ipc_init_error();
+                camera_resource_slots[index] = &runtime.camera_resources();
             }
 
-            *stream_bindings.display_workers = display_worker_slots.release();
-            *stream_bindings.crop_producer_workers =
-                crop_producer_slots.release();
-            *stream_bindings.crop_encode_workers = crop_encode_slots.release();
-            *stream_bindings.crop_preview_workers = crop_preview_slots.release();
-            *stream_bindings.spatial_snapshot_workers =
-                spatial_snapshot_slots.release();
-            *stream_bindings.pose_workers = pose_slots.release();
-            *stream_bindings.yolo_workers = std::move(yolo_slots);
+            stream_bindings.stream_runtimes->swap(stream_product->runtimes);
+            stream_bindings.display_workers->swap(display_worker_slots);
+            stream_bindings.crop_producer_workers->swap(crop_producer_slots);
+            stream_bindings.crop_encode_workers->swap(crop_encode_slots);
+            stream_bindings.crop_preview_workers->swap(crop_preview_slots);
+            stream_bindings.spatial_snapshot_workers->swap(
+                spatial_snapshot_slots);
+            stream_bindings.pose_workers->swap(pose_slots);
+            stream_bindings.yolo_workers->swap(yolo_slots);
+            stream_bindings.frame_ipc_managers->swap(frame_ipc_slots);
+            stream_bindings.frame_ipc_init_errors->swap(
+                frame_ipc_error_slots);
             *stream_bindings.display_textures =
                 stream_product->display_textures.release();
             *stream_bindings.crop_textures =
                 stream_product->crop_textures.release();
-            *stream_bindings.camera_resources =
-                std::move(stream_product->camera_resources);
-            *stream_bindings.frame_ipc_managers =
-                std::move(stream_product->frame_ipc_managers);
-            *stream_bindings.frame_ipc_init_errors =
-                std::move(stream_product->frame_ipc_init_errors);
             {
                 std::lock_guard<std::mutex> lock(mutex);
                 stream_runtime_installed = true;
@@ -1319,7 +1165,7 @@ struct GuiCameraStartupController::Impl {
                     stream_bindings.camera_selection,
                     count,
                     *stream_bindings.encoder_config,
-                    stream_bindings.camera_resources->data(),
+                    camera_resource_slots.data(),
                     stream_bindings.camera_control,
                     stream_bindings.app_storage_config);
             }
@@ -1384,11 +1230,12 @@ struct GuiCameraStartupController::Impl {
                         *stream_bindings.recording_session, i);
                 YoloWorker* acquire_yolo =
                     (*stream_bindings.yolo_workers)[static_cast<std::size_t>(i)];
+                PerCameraStreamRuntime& runtime =
+                    (*stream_bindings.stream_runtimes)[
+                        static_cast<std::size_t>(i)];
                 CameraResources* acquire_resources =
-                    &(*stream_bindings.camera_resources)[static_cast<std::size_t>(i)];
-                FrameIPCManager* acquire_ipc =
-                    (*stream_bindings.frame_ipc_managers)[static_cast<std::size_t>(i)]
-                        .get();
+                    &runtime.camera_resources();
+                FrameIPCManager* acquire_ipc = runtime.frame_ipc_manager();
                 SpatialSnapshotWorker* acquire_snapshot =
                     (*stream_bindings.spatial_snapshot_workers)[i];
                 GuiStartupTimingRecorder* timing = stream_bindings.timing;

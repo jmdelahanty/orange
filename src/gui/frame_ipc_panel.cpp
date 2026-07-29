@@ -9,7 +9,7 @@ void render_frame_ipc_status_panel(
     CameraEachSelect* cameras_select,
     CameraParams* cameras_params,
     const int num_cameras,
-    const std::vector<std::unique_ptr<FrameIPCManager>>& frame_ipc_managers,
+    const std::vector<FrameIPCManager*>& frame_ipc_managers,
     const std::vector<std::string>& frame_ipc_init_errors)
 {
     if (!streaming_active || !cameras_select || !cameras_params || num_cameras <= 0) {
@@ -37,7 +37,7 @@ void render_frame_ipc_status_panel(
 
         FrameIPCManager* ipc_manager =
             (i < static_cast<int>(frame_ipc_managers.size()))
-                ? frame_ipc_managers[i].get()
+                ? frame_ipc_managers[i]
                 : nullptr;
         const std::string expected_queue_name =
             "/shm_cam_" + cameras_params[i].camera_serial;

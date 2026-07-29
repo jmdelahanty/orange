@@ -1,6 +1,7 @@
 #pragma once
 
 #include "camera.h"
+#include "gui/per_camera_stream_runtime.h"
 #include "gui/startup_timing.h"
 #include "json.hpp"
 #include "recording_validation.h"
@@ -88,10 +89,10 @@ struct GuiCameraOpenProduct {
     bool mixed_crop_preview_max_fps = false;
 };
 
-// Existing GUI runtime storage remains owned by main, but all slow startup
-// construction is performed by this module. Pointer-to-pointer fields are
-// populated atomically on the GUI thread only after the background product is
-// complete, so the UI never observes a partially constructed pipeline.
+// The move-only per-camera runtimes remain owned by main, while all slow
+// startup construction is performed by this module. Raw-pointer vectors are
+// non-owning compatibility views populated atomically on the GUI thread only
+// after the background product is complete.
 struct GuiStreamStartupBindings {
     CameraEmergent* cameras = nullptr;
     CameraParams* camera_params = nullptr;
@@ -118,15 +119,15 @@ struct GuiStreamStartupBindings {
     // it does not alter PTP barrier semantics.
     int max_parallel_stream_workers = 0;
 
-    std::vector<CameraResources>* camera_resources = nullptr;
-    std::vector<std::unique_ptr<FrameIPCManager>>* frame_ipc_managers = nullptr;
+    std::vector<PerCameraStreamRuntime>* stream_runtimes = nullptr;
+    std::vector<FrameIPCManager*>* frame_ipc_managers = nullptr;
     std::vector<std::string>* frame_ipc_init_errors = nullptr;
-    COpenGLDisplay*** display_workers = nullptr;
-    CropProducerWorker*** crop_producer_workers = nullptr;
-    CropAndEncodeWorker*** crop_encode_workers = nullptr;
-    CropPreviewWorker*** crop_preview_workers = nullptr;
-    SpatialSnapshotWorker*** spatial_snapshot_workers = nullptr;
-    PoseWorker*** pose_workers = nullptr;
+    std::vector<COpenGLDisplay*>* display_workers = nullptr;
+    std::vector<CropProducerWorker*>* crop_producer_workers = nullptr;
+    std::vector<CropAndEncodeWorker*>* crop_encode_workers = nullptr;
+    std::vector<CropPreviewWorker*>* crop_preview_workers = nullptr;
+    std::vector<SpatialSnapshotWorker*>* spatial_snapshot_workers = nullptr;
+    std::vector<PoseWorker*>* pose_workers = nullptr;
     GL_Texture** display_textures = nullptr;
     GL_Texture** crop_textures = nullptr;
     std::vector<YoloWorker*>* yolo_workers = nullptr;
