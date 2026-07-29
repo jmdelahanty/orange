@@ -314,6 +314,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/spatial_layout/citrus_template_workflow.cpp"
     "${SRC_DIR}/gui/spatial_layout/calibration_workflow.cpp"
     "${SRC_DIR}/gui/spatial_layout/daily_registration_preview.cpp"
+    "${SRC_DIR}/gui/spatial_layout/daily_registration_runtime_selection.cpp"
     "${SRC_DIR}/gui/spatial_layout/daily_registration_workflow.cpp"
     "${SRC_DIR}/gui/spatial_layout/geometry.cpp"
     "${SRC_DIR}/gui/spatial_layout/group_capture_controller.cpp"
@@ -1074,6 +1075,16 @@ if(BUILD_TESTING)
     target_include_directories(daily_registration_preview_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(daily_registration_preview_tests PRIVATE cxx_std_17)
     add_test(NAME daily_registration_preview_tests COMMAND daily_registration_preview_tests)
+
+    add_executable(daily_registration_runtime_selection_tests
+        "tools/daily_registration_runtime_selection_tests.cpp"
+        "${SRC_DIR}/gui/spatial_layout/daily_registration_runtime_selection.cpp"
+    )
+    target_include_directories(daily_registration_runtime_selection_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(daily_registration_runtime_selection_tests PRIVATE cxx_std_17)
+    add_test(
+        NAME daily_registration_runtime_selection_tests
+        COMMAND daily_registration_runtime_selection_tests)
 
     add_executable(projected_surface_scale_analysis_tests
         "tools/projected_surface_scale_analysis_tests.cpp"

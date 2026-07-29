@@ -4,6 +4,7 @@
 #include "fsuid_guard.h"
 #include "gui/arena_centering_analysis.h"
 #include "gui/daily_registration_geometry.h"
+#include "gui/spatial_layout/daily_registration_runtime_selection.h"
 #include "gui/spatial_layout/calibration_workflow.h"
 #include "gui/spatial_layout/calibration_transaction_bridge.h"
 #include "gui/spatial_layout/citrus_import.h"
@@ -45,6 +46,47 @@ namespace daily_geometry = orange::gui::daily_registration;
 
 constexpr const char* kRimOnlyAlignmentBasis =
     "commissioned_homography_and_canonical_experimental_center";
+constexpr double kRuntimeSelectionPollIntervalSeconds = 0.1;
+constexpr double kRuntimeSelectionTimeoutSeconds = 15.0;
+
+double MonotonicSeconds()
+{
+    return std::chrono::duration<double>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void StartRuntimeSelectionWait(DailyRegistrationWorkflowUiState* workflow)
+{
+    if (workflow == nullptr) return;
+    const double now = MonotonicSeconds();
+    workflow->runtime_selection_started_monotonic_seconds = now;
+    workflow->runtime_selection_next_poll_monotonic_seconds = now;
+    workflow->runtime_selection_timeout_seconds =
+        kRuntimeSelectionTimeoutSeconds;
+    workflow->runtime_selection_confirmation.clear();
+}
+
+bool RuntimeSelectionPollDue(
+    DailyRegistrationWorkflowUiState* workflow,
+    const double now)
+{
+    if (workflow == nullptr ||
+        now < workflow->runtime_selection_next_poll_monotonic_seconds) {
+        return false;
+    }
+    workflow->runtime_selection_next_poll_monotonic_seconds =
+        now + kRuntimeSelectionPollIntervalSeconds;
+    return true;
+}
+
+bool RuntimeSelectionDeadlineExpired(
+    const DailyRegistrationWorkflowUiState& workflow,
+    const double now)
+{
+    return workflow.runtime_selection_started_monotonic_seconds > 0.0 &&
+        now - workflow.runtime_selection_started_monotonic_seconds >=
+            workflow.runtime_selection_timeout_seconds;
+}
 
 std::string JsonString(const nlohmann::json& value, const char* key)
 {
@@ -391,6 +433,9 @@ nlohmann::json WorkflowSnapshot(const DailyRegistrationWorkflowUiState& workflow
         {"accepted_registration_ref", {
             {"path", workflow.accepted_registration_path},
             {"sha256", workflow.accepted_registration_sha256}}},
+        {"runtime_selection", {
+            {"confirmation", workflow.runtime_selection_confirmation},
+            {"timeout_seconds", workflow.runtime_selection_timeout_seconds}}},
         {"valid_until_utc", workflow.valid_until_utc},
         {"quality_policy", {
             {"maximum_residual_beyond_integer_translation_quantization_camera_px",
@@ -474,6 +519,53 @@ bool RequestAbort(
     workflow->status =
         "Abort requested; waiting for Citrus to restore projection state and acknowledge the transaction as inactive.";
     workflow->error = terminal_stage == "failed" ? reason : std::string();
+    Checkpoint(workflow);
+    return true;
+}
+
+bool RequestBaseOnlyAfterAcceptance(
+    DailyRegistrationWorkflowUiState* workflow,
+    const std::string& reason,
+    std::string* error_out)
+{
+    if (workflow == nullptr ||
+        workflow->accepted_registration_path.empty() ||
+        workflow->accepted_registration_sha256.empty()) {
+        if (error_out != nullptr) {
+            *error_out = "accepted_daily_registration_identity_missing";
+        }
+        return false;
+    }
+    const std::string operation = NextOperationId("restore_base_only");
+    const auto result = select_citrus_daily_registration_runtime_mode(
+        "base_only", "", "", true, operation);
+    if (!result.ok) {
+        const std::string error =
+            "Citrus did not accept the base-only recovery request: " +
+            result.reason;
+        workflow->error = error;
+        workflow->status =
+            "The accepted registration is preserved, but runtime selection "
+            "is unresolved. Retry safe cancellation or inspect Citrus status; "
+            "do not start an experiment yet.";
+        workflow->stage = "base_only_recovery_request_failed";
+        workflow->active = true;
+        workflow->pending_terminal_stage = "aborted";
+        workflow->pending_terminal_reason = reason;
+        Checkpoint(workflow);
+        if (error_out != nullptr) *error_out = error;
+        return false;
+    }
+    workflow->pending_operation_id = operation;
+    workflow->pending_terminal_stage = "aborted";
+    workflow->pending_terminal_reason = reason;
+    workflow->stage = "waiting_post_accept_base_only";
+    workflow->active = true;
+    workflow->status =
+        "Registration acceptance is immutable. Waiting for Citrus to deselect "
+        "it and restore commissioned base-only runtime geometry.";
+    workflow->error.clear();
+    StartRuntimeSelectionWait(workflow);
     Checkpoint(workflow);
     return true;
 }
@@ -1548,6 +1640,13 @@ void AbortWorkflow(
     const std::string& reason)
 {
     if (workflow == nullptr) return;
+    if ((!workflow->accepted_registration_path.empty() &&
+         workflow->stage == "waiting_runtime_selection") ||
+        workflow->stage == "base_only_recovery_request_failed") {
+        std::string ignored;
+        (void)RequestBaseOnlyAfterAcceptance(workflow, reason, &ignored);
+        return;
+    }
     const std::string terminal_stage =
         workflow->stage == "abort_request_failed" &&
             !workflow->pending_terminal_stage.empty()
@@ -2143,6 +2242,86 @@ void advance_daily_registration_workflow(
         }
     };
 
+    if (workflow.stage == "waiting_post_accept_base_only") {
+        const double now = MonotonicSeconds();
+        if (!RuntimeSelectionPollDue(&workflow, now)) return;
+        const bool deadline_expired =
+            RuntimeSelectionDeadlineExpired(workflow, now);
+        const auto status = query_citrus_daily_registration_status(
+            "guided_daily_waiting_post_accept_base_only");
+        if (!status.ok) {
+            if (!deadline_expired) return;
+            const std::string error =
+                "daily_registration_base_only_recovery_timeout:" +
+                status.reason;
+            SetFailure(&workflow, error);
+            workflow.status =
+                "Citrus did not confirm base-only runtime recovery before the "
+                "deadline. The accepted artifact is preserved and runtime "
+                "selection remains unresolved.";
+            Checkpoint(&workflow);
+            release_spatial_calibration_transaction(
+                ui_state, "failed", error);
+            return;
+        }
+        const auto& daily = status.daily_registration;
+        if (JsonString(daily, "operation_id") !=
+                workflow.pending_operation_id ||
+            JsonString(daily, "transition") != "base_only_selected") {
+            if (!deadline_expired) return;
+            const std::string error =
+                "daily_registration_base_only_recovery_timeout";
+            SetFailure(&workflow, error);
+            workflow.status =
+                "Citrus did not confirm base-only runtime recovery before the "
+                "deadline. The accepted artifact is preserved and runtime "
+                "selection remains unresolved.";
+            Checkpoint(&workflow);
+            release_spatial_calibration_transaction(
+                ui_state, "failed", error);
+            return;
+        }
+        nlohmann::json runtime = nlohmann::json::object();
+        if (daily.is_object()) {
+            const auto runtime_it = daily.find("runtime");
+            if (runtime_it != daily.end() && runtime_it->is_object()) {
+                runtime = *runtime_it;
+            }
+        }
+        workflow.citrus_runtime_selection_status = runtime;
+        const bool base_only_safe = runtime.is_object() &&
+            runtime.value("mode", std::string()) == "base_only" &&
+            runtime.value("all_selected_runtime_safe", false) &&
+            !runtime.value("blocking", true) &&
+            runtime.value("applied", false) &&
+            runtime.value("runtime_geometry_matches_selection", false);
+        if (!base_only_safe) {
+            const std::string error =
+                "daily_registration_base_only_recovery_invalid";
+            SetFailure(&workflow, error);
+            workflow.status =
+                "Citrus acknowledged base-only selection but did not report "
+                "safe applied base geometry. Runtime selection remains unresolved.";
+            Checkpoint(&workflow);
+            release_spatial_calibration_transaction(
+                ui_state, "failed", error);
+            return;
+        }
+        workflow.active = false;
+        workflow.stage = "aborted";
+        workflow.runtime_selection_confirmation =
+            "accepted_artifact_deselected_base_only_acknowledged";
+        workflow.status =
+            "Daily registration acceptance was preserved, and Citrus restored "
+            "commissioned base-only runtime geometry.";
+        workflow.pending_terminal_stage.clear();
+        workflow.pending_terminal_reason.clear();
+        Checkpoint(&workflow);
+        release_spatial_calibration_transaction(
+            ui_state, "aborted", workflow.status);
+        return;
+    }
+
     if (workflow.stage == "waiting_abort" ||
         workflow.stage == "waiting_reject") {
         const auto status = query_citrus_daily_registration_status(
@@ -2436,41 +2615,73 @@ void advance_daily_registration_workflow(
         workflow.stage = "waiting_runtime_selection";
         workflow.status =
             "Registration accepted; explicitly selecting that exact artifact for runtime.";
+        StartRuntimeSelectionWait(&workflow);
         Checkpoint(&workflow);
         return;
     }
     if (workflow.stage == "waiting_runtime_selection") {
+        const double now = MonotonicSeconds();
+        if (!RuntimeSelectionPollDue(&workflow, now)) return;
+        const bool deadline_expired =
+            RuntimeSelectionDeadlineExpired(workflow, now);
         const auto status = query_citrus_daily_registration_status(
             "guided_daily_waiting_runtime_selection");
-        if (!status.ok) return;
-        if (JsonString(status.daily_registration, "operation_id") !=
-                workflow.pending_operation_id ||
-            JsonString(status.daily_registration, "transition") !=
-                "daily_registration_selected") {
+        if (!status.ok) {
+            if (!deadline_expired) return;
+            const std::string error =
+                "daily_registration_runtime_selection_timeout:" +
+                status.reason;
+            workflow.citrus_runtime_selection_status =
+                nlohmann::json::object();
+            SetFailure(&workflow, error);
+            workflow.status =
+                "Citrus did not confirm runtime selection before the deadline. "
+                "The accepted registration artifact is preserved; runtime "
+                "selection remains unresolved.";
+            Checkpoint(&workflow);
+            release_spatial_calibration_transaction(
+                ui_state, "failed", error);
             return;
         }
-        const auto runtime = status.daily_registration.value(
-            "runtime", nlohmann::json::object());
-        bool exact_registration =
-            runtime.value("mode", std::string()) ==
-                "selected_daily_registration" &&
-            runtime.value("all_selected_runtime_safe", false) &&
-            runtime.contains("targets") && runtime["targets"].is_array() &&
-            !runtime["targets"].empty();
-        if (exact_registration) {
-            for (const auto& target : runtime["targets"]) {
-                exact_registration = exact_registration && target.is_object() &&
-                    target.value("registration_sha256", std::string()) ==
-                        workflow.accepted_registration_sha256 &&
-                    target.value("state", std::string()) == "selected_valid";
-            }
+        const auto assessment = assess_daily_registration_runtime_selection(
+            status.daily_registration,
+            workflow.pending_operation_id,
+            workflow.accepted_registration_path,
+            workflow.accepted_registration_sha256,
+            deadline_expired);
+        if (assessment.disposition ==
+            DailyRegistrationRuntimeSelectionDisposition::kPending) {
+            return;
         }
-        if (!exact_registration) return;
-        workflow.citrus_runtime_selection_status = runtime;
+        workflow.citrus_runtime_selection_status = assessment.runtime;
+        if (assessment.disposition ==
+                DailyRegistrationRuntimeSelectionDisposition::kSelectedInvalid ||
+            assessment.disposition ==
+                DailyRegistrationRuntimeSelectionDisposition::kTimedOut) {
+            SetFailure(&workflow, assessment.error);
+            workflow.status = assessment.disposition ==
+                    DailyRegistrationRuntimeSelectionDisposition::kSelectedInvalid
+                ? "Citrus rejected the selected registration as runtime-unsafe. "
+                  "The accepted artifact is preserved and the target errors "
+                  "are recorded; runtime selection remains unresolved."
+                : "Citrus did not confirm runtime selection before the deadline. "
+                  "The accepted registration artifact is preserved; runtime "
+                  "selection remains unresolved.";
+            Checkpoint(&workflow);
+            release_spatial_calibration_transaction(
+                ui_state, "failed", assessment.error);
+            return;
+        }
+        workflow.runtime_selection_confirmation =
+            assessment.reconciled_exact_artifact
+            ? "reconciled_exact_live_artifact"
+            : "operation_acknowledged";
         workflow.stage = "complete";
         workflow.active = false;
-        workflow.status =
-            "Daily registration accepted and selected for runtime.";
+        workflow.status = assessment.reconciled_exact_artifact
+            ? "Daily registration accepted; Orange reconciled the exact "
+              "already-selected live artifact after missing its original acknowledgement."
+            : "Daily registration accepted and selected for runtime.";
         for (auto& target : workflow.targets) {
             ClearCapturePixels(&target.rim_capture);
             target.rim_gray.clear();
@@ -2728,7 +2939,8 @@ void render_daily_registration_workflow_panel(
             generic_calibration_image_set_save_worker_is_busy();
         ImGui::BeginDisabled(capture_or_save_active ||
                              workflow.stage == "waiting_abort" ||
-                             workflow.stage == "waiting_reject");
+                             workflow.stage == "waiting_reject" ||
+                             workflow.stage == "waiting_post_accept_base_only");
         if (ImGui::Button("Abort Daily Registration Safely")) {
             AbortWorkflow(&workflow, "operator_aborted");
         }

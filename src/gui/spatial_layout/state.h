@@ -349,6 +349,10 @@ struct DailyRegistrationWorkflowUiState {
     std::string candidate_sha256;
     std::string accepted_registration_path;
     std::string accepted_registration_sha256;
+    std::string runtime_selection_confirmation;
+    double runtime_selection_started_monotonic_seconds = 0.0;
+    double runtime_selection_next_poll_monotonic_seconds = 0.0;
+    double runtime_selection_timeout_seconds = 15.0;
     std::string valid_until_utc;
     bool start_physical_state_armed = false;
     bool physical_state_confirmed = false;
