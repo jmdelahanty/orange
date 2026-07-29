@@ -4693,6 +4693,10 @@ int main(int /*argc*/, char ** /*args*/) {
                   << " enable_yolo=" << gui_autorun_config.enable_yolo
                   << " enable_crop=" << gui_autorun_config.enable_crop
                   << " start_recording=" << gui_autorun_config.start_recording
+                  << " stop_streaming_after_warmup="
+                  << gui_autorun_config.stop_streaming_after_warmup
+                  << " cancel_stream_startup_after_ms="
+                  << gui_autorun_config.cancel_stream_startup_after_ms
                   << std::endl;
     }
     const orange::gui::GuidedCaptureAutorunConfig guided_capture_autorun_config =
@@ -6658,7 +6662,9 @@ int main(int /*argc*/, char ** /*args*/) {
                                 ? "Stop streaming"
                                 : "Start streaming")) ||
                     (!stream_startup_status.busy &&
-                     gui_autorun_requests.toggle_streaming)) {
+                     gui_autorun_requests.toggle_streaming) ||
+                    (stream_startup_status.busy &&
+                     gui_autorun_requests.cancel_stream_startup)) {
                     if (calibration_tool_busy &&
                         !calibration_workflow_stream_request_authorized) {
                         const std::string error =
@@ -7450,4 +7456,11 @@ int main(int /*argc*/, char ** /*args*/) {
     free(window);
 
     std::cout << "Cleanup completed, exiting..." << std::endl;
+    if (gui_autorun_config.enabled &&
+        gui_autorun_state.stage == GuiAutorunStage::kFailed) {
+        std::cerr << "[GUI][autorun] exiting nonzero after failed workflow: "
+                  << gui_autorun_state.error_message << std::endl;
+        return 1;
+    }
+    return 0;
 }

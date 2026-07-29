@@ -28,6 +28,8 @@ GUI_AUTORUN_ENABLE_RECORD="${ORANGE_GUI_AUTORUN_ENABLE_RECORD:-1}"
 GUI_AUTORUN_ENABLE_YOLO="${ORANGE_GUI_AUTORUN_ENABLE_YOLO:-1}"
 GUI_AUTORUN_ENABLE_CROP="${ORANGE_GUI_AUTORUN_ENABLE_CROP:-1}"
 GUI_AUTORUN_START_RECORDING="${ORANGE_GUI_AUTORUN_START_RECORDING:-1}"
+GUI_AUTORUN_STOP_STREAMING_AFTER_WARMUP="${ORANGE_GUI_AUTORUN_STOP_STREAMING_AFTER_WARMUP:-0}"
+GUI_AUTORUN_CANCEL_STREAM_STARTUP_AFTER_MS="${ORANGE_GUI_AUTORUN_CANCEL_STREAM_STARTUP_AFTER_MS:--1}"
 GUI_RECORD_FOR_SECONDS="${ORANGE_GUI_RECORD_FOR_SECONDS:-}"
 GUI_CLIP_SECONDS="${ORANGE_GUI_CLIP_SECONDS:-}"
 if [[ -n "${ORANGE_GUI_PTP_STACK_MODE:-}" ]]; then
@@ -338,6 +340,8 @@ python3 - \
   "${GUI_AUTORUN_ENABLE_YOLO}" \
   "${GUI_AUTORUN_ENABLE_CROP}" \
   "${GUI_AUTORUN_START_RECORDING}" \
+  "${GUI_AUTORUN_STOP_STREAMING_AFTER_WARMUP}" \
+  "${GUI_AUTORUN_CANCEL_STREAM_STARTUP_AFTER_MS}" \
   "${GUI_RECORD_FOR_SECONDS}" \
   "${GUI_CLIP_SECONDS}" <<'PY'
 import json
@@ -367,8 +371,10 @@ gui_autorun_enable_record_raw = sys.argv[19]
 gui_autorun_enable_yolo_raw = sys.argv[20]
 gui_autorun_enable_crop_raw = sys.argv[21]
 gui_autorun_start_recording_raw = sys.argv[22]
-gui_record_for_seconds_raw = sys.argv[23]
-gui_clip_seconds_raw = sys.argv[24]
+gui_autorun_stop_streaming_after_warmup_raw = sys.argv[23]
+gui_autorun_cancel_stream_startup_after_ms_raw = sys.argv[24]
+gui_record_for_seconds_raw = sys.argv[25]
+gui_clip_seconds_raw = sys.argv[26]
 expect_ptp_enabled = None
 if expect_ptp_enabled_raw:
     expect_ptp_enabled = expect_ptp_enabled_raw not in {"0", "false", "False", "no", "No"}
@@ -463,6 +469,34 @@ if gui_autorun_enable_crop_raw not in {"0", "1"}:
     errors.append("ORANGE_GUI_AUTORUN_ENABLE_CROP must be 0 or 1")
 if gui_autorun_start_recording_raw not in {"0", "1"}:
     errors.append("ORANGE_GUI_AUTORUN_START_RECORDING must be 0 or 1")
+if gui_autorun_stop_streaming_after_warmup_raw not in {"0", "1"}:
+    errors.append("ORANGE_GUI_AUTORUN_STOP_STREAMING_AFTER_WARMUP must be 0 or 1")
+gui_autorun_cancel_stream_startup_after_ms = -1
+try:
+    gui_autorun_cancel_stream_startup_after_ms = int(
+        gui_autorun_cancel_stream_startup_after_ms_raw
+    )
+    if gui_autorun_cancel_stream_startup_after_ms < -1:
+        errors.append(
+            "ORANGE_GUI_AUTORUN_CANCEL_STREAM_STARTUP_AFTER_MS must be >= -1"
+        )
+except ValueError:
+    errors.append(
+        "ORANGE_GUI_AUTORUN_CANCEL_STREAM_STARTUP_AFTER_MS must be an integer"
+    )
+if gui_autorun_cancel_stream_startup_after_ms >= 0:
+    if gui_autorun_raw != "1":
+        errors.append(
+            "startup cancellation requires ORANGE_GUI_AUTORUN=1"
+        )
+    if gui_autorun_enable_stream_raw != "1":
+        errors.append(
+            "startup cancellation requires ORANGE_GUI_AUTORUN_ENABLE_STREAM=1"
+        )
+    if gui_autorun_start_recording_raw != "0":
+        errors.append(
+            "startup cancellation requires ORANGE_GUI_AUTORUN_START_RECORDING=0"
+        )
 try:
     gui_autorun_stream_warmup_seconds = int(gui_autorun_stream_warmup_seconds_raw)
     if gui_autorun_stream_warmup_seconds < 0:
@@ -723,6 +757,8 @@ Validation environment:
   ORANGE_GUI_AUTORUN_ENABLE_YOLO=${GUI_AUTORUN_ENABLE_YOLO}
   ORANGE_GUI_AUTORUN_ENABLE_CROP=${GUI_AUTORUN_ENABLE_CROP}
   ORANGE_GUI_AUTORUN_START_RECORDING=${GUI_AUTORUN_START_RECORDING}
+  ORANGE_GUI_AUTORUN_STOP_STREAMING_AFTER_WARMUP=${GUI_AUTORUN_STOP_STREAMING_AFTER_WARMUP}
+  ORANGE_GUI_AUTORUN_CANCEL_STREAM_STARTUP_AFTER_MS=${GUI_AUTORUN_CANCEL_STREAM_STARTUP_AFTER_MS}
   ORANGE_GUI_RECORD_FOR_SECONDS=${GUI_RECORD_FOR_SECONDS:-<app config/disabled>}
   ORANGE_GUI_CLIP_SECONDS=${GUI_CLIP_SECONDS:-<app config/disabled>}
   ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=${LOCAL_CONTROL_RECORDING_START_DISPLAY}
@@ -882,6 +918,8 @@ ENV_ARGS+=("ORANGE_GUI_AUTORUN_ENABLE_RECORD=${GUI_AUTORUN_ENABLE_RECORD}")
 ENV_ARGS+=("ORANGE_GUI_AUTORUN_ENABLE_YOLO=${GUI_AUTORUN_ENABLE_YOLO}")
 ENV_ARGS+=("ORANGE_GUI_AUTORUN_ENABLE_CROP=${GUI_AUTORUN_ENABLE_CROP}")
 ENV_ARGS+=("ORANGE_GUI_AUTORUN_START_RECORDING=${GUI_AUTORUN_START_RECORDING}")
+ENV_ARGS+=("ORANGE_GUI_AUTORUN_STOP_STREAMING_AFTER_WARMUP=${GUI_AUTORUN_STOP_STREAMING_AFTER_WARMUP}")
+ENV_ARGS+=("ORANGE_GUI_AUTORUN_CANCEL_STREAM_STARTUP_AFTER_MS=${GUI_AUTORUN_CANCEL_STREAM_STARTUP_AFTER_MS}")
 if [[ -n "${WAYLAND_DISPLAY_ENV}" ]]; then
   ENV_ARGS+=("WAYLAND_DISPLAY=${WAYLAND_DISPLAY_ENV}")
 fi

@@ -375,8 +375,9 @@ ORANGE_GUI_CAMERA_STARTUP_CONCURRENCY=2 \
   ./scripts/run_gui_aq_off_validation.sh
 ```
 
-Width four has passed four startup-only trials. Continue to use it as an
-explicit validation setting until cancellation/fault recovery, soak, and
+Width four has passed repeated startup-only trials, a 30-second stream-only
+soak, and the cancellation/restart validation recorded below. Continue to use
+it as an explicit validation setting until fault injection and full
 recording/analytics runs also pass:
 
 ```bash
@@ -394,10 +395,35 @@ The existing four-camera autorun can exercise only the startup lifecycle,
 without creating a recording:
 
 ```bash
-ORANGE_GUI_AUTORUN_START_RECORDING=0 \
-  ./scripts/run_gui_fourcam_external_ipc_validation.sh \
-  --hidden-crop-preview --warmup-seconds 3
+./scripts/run_gui_fourcam_external_ipc_validation.sh \
+  --startup-lifecycle-only --disable-crop-preview --warmup-seconds 3
 ```
+
+This mode selects streaming only, waits for the complete startup timing report
+and all expected first frames, requests the ordinary `Stop streaming` path,
+waits for teardown, and only then closes the GUI. It does not start recording,
+YOLO, crop processing, or an external recorder. The explicit stop is important:
+window close remains a fail-safe, but is not the lifecycle-test contract.
+
+Exercise expected cancellation and rollback with:
+
+```bash
+./scripts/run_gui_fourcam_external_ipc_validation.sh \
+  --cancel-stream-startup-after-ms 500 --disable-crop-preview
+```
+
+The cancellation request is emitted through the same stream-toggle path as the
+GUI's `Cancel stream startup` button. Autorun waits for a `stream_start` timing
+report with `status = "stopped"`, verifies that the stream is not active, and
+then exits successfully. An unsolicited `stopped` report remains a failure.
+If startup reaches `complete` instead of the expected cancellation, or any
+other autorun stage fails, Orange finishes cleanup and returns a nonzero process
+status so the launcher cannot silently pass the diagnostic.
+Follow the cancellation run with `--startup-lifecycle-only` to prove that every
+camera, EVT buffer, CUDA resource, and worker can be reacquired after rollback.
+The delay is diagnostic-only and defaults to disabled; ordinary
+`ORANGE_GUI_AUTORUN_START_RECORDING=0` orchestration continues to leave the
+stream active for local-control clients.
 
 Useful fields are:
 
@@ -426,6 +452,37 @@ cancel or fault, unchanged PTP/first-frame behavior, and no new stream or frame
 drops. Confirm that the window continues redrawing, `subscribe` is not asserted
 before `stream runtime activated`, and autorun records only after
 `status = "complete"`.
+
+### Cancellation and graceful-close evidence (2026-07-29)
+
+The four-camera cancellation command above was run with startup concurrency
+four and a 500 ms cancellation delay. Its immutable stream report is:
+
+```text
+/home/jeremy/orange_data/diagnostics/camera_startup/stream_start_20260729T055451Z_135980_2.json
+```
+
+It reports `status = "stopped"`,
+`stop_reason = "stream_stop_requested_during_startup"`, and zero observed
+first frames. Cancellation arrived during camera resource construction. The
+partially constructed display worker was destroyed, all four cameras closed,
+and Orange exited successfully only after rollback completed.
+
+The immediate `--startup-lifecycle-only` restart produced:
+
+```text
+/home/jeremy/orange_data/diagnostics/camera_startup/stream_start_20260729T055531Z_136286_2.json
+```
+
+All four cameras delivered first frames. Time to all first frames was
+4198.762 ms and their spread was 0.005029 ms. During the two-second warmup,
+each camera acquired 206 frames at approximately 100 fps with zero camera
+frame-ID gaps, `GetFrame` errors, preprocess drops, or encode failures. Autorun
+then requested the ordinary stream-stop path; all four acquisition threads and
+workers joined, all four display objects and per-camera resources were
+destroyed, all cameras closed, and only then did the GUI window close. No
+recording, YOLO worker, crop pipeline, or external recorder was enabled in
+either run.
 
 ## Scope still open
 

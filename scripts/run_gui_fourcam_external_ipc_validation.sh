@@ -34,6 +34,11 @@ Options:
   --gui-frame-max-fps <fps>   Override GUI loop frame cap; 0 disables cap.
   --record-seconds <seconds>  Override autorun recording duration.
   --warmup-seconds <seconds>  Override autorun stream warmup duration.
+  --startup-lifecycle-only   Start all four streams, warm up, explicitly stop
+                             streaming, then close without recording or YOLO.
+  --cancel-stream-startup-after-ms <ms>
+                             Request the normal startup-cancel path after the
+                             given delay, wait for rollback, then close.
   --clip-seconds <seconds>    Enable GUI rolling clips with this clip duration.
   --manual-local-control      Disable autorun, keep the GUI operator-owned,
                               and enable generic stop_recording plus Citrus
@@ -125,6 +130,36 @@ while [[ $# -gt 0 ]]; do
       [[ $# -gt 0 ]] || { echo "--warmup-seconds requires a value" >&2; exit 2; }
       is_nonnegative_integer "$1" || { echo "--warmup-seconds must be a non-negative integer" >&2; exit 2; }
       export ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS="$1"
+      shift
+      ;;
+    --startup-lifecycle-only)
+      export ORANGE_GUI_AUTORUN=1
+      export ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=1
+      export ORANGE_GUI_AUTORUN_ENABLE_STREAM=1
+      export ORANGE_GUI_AUTORUN_ENABLE_RECORD=0
+      export ORANGE_GUI_AUTORUN_ENABLE_YOLO=0
+      export ORANGE_GUI_AUTORUN_ENABLE_CROP=0
+      export ORANGE_GUI_AUTORUN_START_RECORDING=0
+      export ORANGE_GUI_AUTORUN_STOP_STREAMING_AFTER_WARMUP=1
+      export ORANGE_GUI_AUTORUN_CANCEL_STREAM_STARTUP_AFTER_MS=-1
+      shift
+      ;;
+    --cancel-stream-startup-after-ms)
+      shift
+      [[ $# -gt 0 ]] || { echo "--cancel-stream-startup-after-ms requires a value" >&2; exit 2; }
+      is_nonnegative_integer "$1" || {
+        echo "--cancel-stream-startup-after-ms must be a non-negative integer" >&2
+        exit 2
+      }
+      export ORANGE_GUI_AUTORUN=1
+      export ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=1
+      export ORANGE_GUI_AUTORUN_ENABLE_STREAM=1
+      export ORANGE_GUI_AUTORUN_ENABLE_RECORD=0
+      export ORANGE_GUI_AUTORUN_ENABLE_YOLO=0
+      export ORANGE_GUI_AUTORUN_ENABLE_CROP=0
+      export ORANGE_GUI_AUTORUN_START_RECORDING=0
+      export ORANGE_GUI_AUTORUN_STOP_STREAMING_AFTER_WARMUP=0
+      export ORANGE_GUI_AUTORUN_CANCEL_STREAM_STARTUP_AFTER_MS="$1"
       shift
       ;;
     --clip-seconds)

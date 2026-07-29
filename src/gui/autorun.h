@@ -37,6 +37,13 @@ struct GuiAutorunConfig {
     bool enable_yolo = true;
     bool enable_crop = true;
     bool start_recording = true;
+    // Stream-only lifecycle diagnostics can request an ordinary stream stop
+    // after warmup instead of leaving the GUI streaming for local control.
+    bool stop_streaming_after_warmup = false;
+    // Negative disables the expected-cancellation diagnostic. A non-negative
+    // value requests the normal stream toggle after this many milliseconds in
+    // kStartStreaming and treats the resulting stopped timing report as success.
+    int cancel_stream_startup_after_ms = -1;
     std::string config_dir;
 };
 
@@ -44,6 +51,7 @@ struct GuiAutorunState {
     GuiAutorunStage stage = GuiAutorunStage::kDisabled;
     std::chrono::steady_clock::time_point stage_started_at{};
     bool action_requested = false;
+    bool startup_cancel_requested = false;
     bool close_requested = false;
     std::string error_message;
 };
@@ -51,6 +59,9 @@ struct GuiAutorunState {
 struct GuiAutorunRequests {
     bool open_cameras = false;
     bool toggle_streaming = false;
+    // Kept separate from toggle_streaming because ordinary automated stream
+    // toggles are intentionally ignored while asynchronous startup is busy.
+    bool cancel_stream_startup = false;
     bool toggle_recording = false;
     bool close_window = false;
 };

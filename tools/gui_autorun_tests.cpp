@@ -73,6 +73,7 @@ bool no_requests(const GuiAutorunRequests& requests)
 {
     return !requests.open_cameras &&
            !requests.toggle_streaming &&
+           !requests.cancel_stream_startup &&
            !requests.toggle_recording &&
            !requests.close_window;
 }
@@ -80,6 +81,7 @@ bool no_requests(const GuiAutorunRequests& requests)
 struct RequestTotals {
     int open_cameras = 0;
     int toggle_streaming = 0;
+    int cancel_stream_startup = 0;
     int toggle_recording = 0;
     int close_window = 0;
 
@@ -87,6 +89,7 @@ struct RequestTotals {
     {
         open_cameras += requests.open_cameras ? 1 : 0;
         toggle_streaming += requests.toggle_streaming ? 1 : 0;
+        cancel_stream_startup += requests.cancel_stream_startup ? 1 : 0;
         toggle_recording += requests.toggle_recording ? 1 : 0;
         close_window += requests.close_window ? 1 : 0;
     }
@@ -115,6 +118,10 @@ void test_resolve_config_defaults_and_env_overrides()
     ScopedEnv record("ORANGE_GUI_AUTORUN_RECORD_SECONDS");
     ScopedEnv exit_after("ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE");
     ScopedEnv start_recording("ORANGE_GUI_AUTORUN_START_RECORDING");
+    ScopedEnv stop_after_warmup(
+        "ORANGE_GUI_AUTORUN_STOP_STREAMING_AFTER_WARMUP");
+    ScopedEnv cancel_startup_after(
+        "ORANGE_GUI_AUTORUN_CANCEL_STREAM_STARTUP_AFTER_MS");
     ScopedEnv config_dir("ORANGE_GUI_CONFIG_DIR");
 
     const GuiAutorunConfig defaults = resolve_gui_autorun_config();
@@ -122,6 +129,10 @@ void test_resolve_config_defaults_and_env_overrides()
     require(defaults.stream_warmup_seconds == 3, "default warmup is 3s");
     require(defaults.record_seconds == 10, "default record window is 10s");
     require(defaults.start_recording, "recording defaults to on");
+    require(!defaults.stop_streaming_after_warmup,
+            "stream-only autorun defaults to leaving the stream active");
+    require(defaults.cancel_stream_startup_after_ms == -1,
+            "startup cancellation diagnostic defaults to disabled");
     require(defaults.config_dir.empty(), "config dir defaults to empty");
 
     autorun.Set("1");
@@ -129,6 +140,8 @@ void test_resolve_config_defaults_and_env_overrides()
     record.Set("0");  // below the minimum of 1; must be raised
     exit_after.Set("true");
     start_recording.Set("off");
+    stop_after_warmup.Set("on");
+    cancel_startup_after.Set("250");
     config_dir.Set("/tmp/orange_autorun_cfg");
 
     const GuiAutorunConfig overridden = resolve_gui_autorun_config();
@@ -137,6 +150,10 @@ void test_resolve_config_defaults_and_env_overrides()
     require(overridden.record_seconds == 1, "record seconds clamps to minimum 1");
     require(overridden.exit_after_finalize, "exit_after_finalize override applies");
     require(!overridden.start_recording, "start_recording=off applies");
+    require(overridden.stop_streaming_after_warmup,
+            "explicit stream-only teardown applies");
+    require(overridden.cancel_stream_startup_after_ms == 250,
+            "startup cancellation delay applies");
     require(overridden.config_dir == "/tmp/orange_autorun_cfg",
             "config dir override applies");
 }
@@ -452,6 +469,156 @@ void test_stream_startup_completion_timeout_fails()
             "startup timeout identifies the readiness barrier");
 }
 
+void test_stream_only_autorun_stops_before_done()
+{
+    const std::string config_dir = "/tmp/orange_autorun_cfg";
+    GuiAutorunConfig config = make_enabled_config(config_dir);
+    config.start_recording = false;
+    config.stop_streaming_after_warmup = true;
+    GuiAutorunState state;
+    state.stage = GuiAutorunStage::kStreamWarmup;
+    state.stage_started_at = std::chrono::steady_clock::now();
+    CameraControl camera_control;
+    camera_control.open = true;
+    camera_control.subscribe = true;
+    GuiRecordingRunState recording_run;
+    const std::vector<std::string> folders = {config_dir};
+    int select = 0;
+
+    GuiAutorunRequests requests = gui_autorun_update(
+        &state, config, folders, &select, &camera_control,
+        &recording_run, false);
+    require(no_requests(requests), "warmup-to-stop transition emits no request");
+    require(state.stage == GuiAutorunStage::kStopStreaming,
+            "stream-only lifecycle enters explicit stop stage");
+
+    requests = gui_autorun_update(
+        &state, config, folders, &select, &camera_control,
+        &recording_run, false);
+    require(requests.toggle_streaming,
+            "stream-only lifecycle requests ordinary stream stop");
+    camera_control.subscribe = false;
+    requests = gui_autorun_update(
+        &state, config, folders, &select, &camera_control,
+        &recording_run, false);
+    require(no_requests(requests), "completed stream stop emits no request");
+    require(state.stage == GuiAutorunStage::kDone,
+            "stream-only lifecycle finishes only after stream teardown");
+}
+
+void test_expected_stream_startup_cancellation_is_terminal_success()
+{
+    const std::string config_dir = "/tmp/orange_autorun_cfg";
+    GuiAutorunConfig config = make_enabled_config(config_dir);
+    config.start_recording = false;
+    config.cancel_stream_startup_after_ms = 100;
+    config.exit_after_finalize = true;
+    GuiAutorunState state;
+    state.stage = GuiAutorunStage::kStartStreaming;
+    state.stage_started_at =
+        std::chrono::steady_clock::now() - std::chrono::seconds(1);
+    state.action_requested = true;
+    CameraControl camera_control;
+    camera_control.open = true;
+    GuiRecordingRunState recording_run;
+    GuiStartupTimingStatus startup_status;
+    startup_status.available = true;
+    startup_status.transaction_id = "stream_start_cancel_test";
+    startup_status.operation = "stream_start";
+    startup_status.status = "running";
+    const std::vector<std::string> folders = {config_dir};
+    int select = 0;
+
+    GuiAutorunRequests requests = gui_autorun_update(
+        &state, config, folders, &select, &camera_control,
+        &recording_run, false, &startup_status);
+    require(requests.cancel_stream_startup,
+            "cancellation diagnostic requests the startup-cancel path");
+    require(!requests.toggle_streaming,
+            "startup cancellation is distinct from an ordinary stream toggle");
+    require(state.startup_cancel_requested,
+            "cancellation diagnostic latches its request");
+
+    requests = gui_autorun_update(
+        &state, config, folders, &select, &camera_control,
+        &recording_run, false, &startup_status);
+    require(no_requests(requests), "cancellation request is emitted only once");
+
+    startup_status.status = "stopped";
+    startup_status.stop_reason = "stream_stop_requested_during_startup";
+    requests = gui_autorun_update(
+        &state, config, folders, &select, &camera_control,
+        &recording_run, false, &startup_status);
+    require(no_requests(requests), "expected stopped report emits no new action");
+    require(state.stage == GuiAutorunStage::kDone,
+            "expected startup cancellation is a successful terminal state");
+    require(state.error_message.empty(),
+            "expected startup cancellation does not create an autorun error");
+
+    requests = gui_autorun_update(
+        &state, config, folders, &select, &camera_control,
+        &recording_run, false, &startup_status);
+    require(requests.close_window,
+            "successful cancellation closes through the autorun exit path");
+}
+
+void test_unexpected_stream_startup_stop_still_fails()
+{
+    const std::string config_dir = "/tmp/orange_autorun_cfg";
+    const GuiAutorunConfig config = make_enabled_config(config_dir);
+    GuiAutorunState state;
+    state.stage = GuiAutorunStage::kStartStreaming;
+    state.stage_started_at = std::chrono::steady_clock::now();
+    state.action_requested = true;
+    CameraControl camera_control;
+    camera_control.open = true;
+    GuiRecordingRunState recording_run;
+    GuiStartupTimingStatus startup_status;
+    startup_status.available = true;
+    startup_status.operation = "stream_start";
+    startup_status.status = "stopped";
+    startup_status.stop_reason = "unexpected_stop";
+    const std::vector<std::string> folders = {config_dir};
+    int select = 0;
+
+    const GuiAutorunRequests requests = gui_autorun_update(
+        &state, config, folders, &select, &camera_control,
+        &recording_run, false, &startup_status);
+    require(no_requests(requests), "unexpected stopped report emits no action");
+    require(state.stage == GuiAutorunStage::kFailed,
+            "unexpected stopped report remains a hard autorun failure");
+}
+
+void test_expected_cancellation_rejects_completed_startup()
+{
+    const std::string config_dir = "/tmp/orange_autorun_cfg";
+    GuiAutorunConfig config = make_enabled_config(config_dir);
+    config.start_recording = false;
+    config.cancel_stream_startup_after_ms = 500;
+    GuiAutorunState state;
+    state.stage = GuiAutorunStage::kStartStreaming;
+    state.stage_started_at = std::chrono::steady_clock::now();
+    CameraControl camera_control;
+    camera_control.open = true;
+    camera_control.subscribe = true;
+    GuiRecordingRunState recording_run;
+    GuiStartupTimingStatus startup_status;
+    startup_status.available = true;
+    startup_status.operation = "stream_start";
+    startup_status.status = "complete";
+    startup_status.expected_first_frame_camera_count = 4;
+    startup_status.observed_first_frame_camera_count = 4;
+    const std::vector<std::string> folders = {config_dir};
+    int select = 0;
+
+    const GuiAutorunRequests requests = gui_autorun_update(
+        &state, config, folders, &select, &camera_control,
+        &recording_run, false, &startup_status);
+    require(no_requests(requests), "completed startup emits no cancellation action");
+    require(state.stage == GuiAutorunStage::kFailed,
+            "cancellation diagnostic rejects an ordinary completed startup");
+}
+
 void test_wait_finalize_stage()
 {
     const std::string config_dir = "/tmp/orange_autorun_cfg";
@@ -502,6 +669,14 @@ int main()
          test_stream_startup_failure_fails_immediately},
         {"stream_startup_completion_timeout_fails",
          test_stream_startup_completion_timeout_fails},
+        {"stream_only_autorun_stops_before_done",
+         test_stream_only_autorun_stops_before_done},
+        {"expected_stream_startup_cancellation_is_terminal_success",
+         test_expected_stream_startup_cancellation_is_terminal_success},
+        {"unexpected_stream_startup_stop_still_fails",
+         test_unexpected_stream_startup_stop_still_fails},
+        {"expected_cancellation_rejects_completed_startup",
+         test_expected_cancellation_rejects_completed_startup},
         {"wait_finalize_stage", test_wait_finalize_stage},
     };
 

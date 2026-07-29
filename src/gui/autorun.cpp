@@ -67,6 +67,10 @@ GuiAutorunConfig resolve_gui_autorun_config()
         gui_env_flag_enabled("ORANGE_GUI_AUTORUN_ENABLE_CROP", true);
     config.start_recording =
         gui_env_flag_enabled("ORANGE_GUI_AUTORUN_START_RECORDING", true);
+    config.stop_streaming_after_warmup = gui_env_flag_enabled(
+        "ORANGE_GUI_AUTORUN_STOP_STREAMING_AFTER_WARMUP", false);
+    config.cancel_stream_startup_after_ms = gui_env_int(
+        "ORANGE_GUI_AUTORUN_CANCEL_STREAM_STARTUP_AFTER_MS", -1, -1);
     const char* config_dir = std::getenv("ORANGE_GUI_CONFIG_DIR");
     if (config_dir && *config_dir) {
         config.config_dir = config_dir;
@@ -186,15 +190,29 @@ GuiAutorunRequests gui_autorun_update(
                 stream_startup_status->expected_first_frame_camera_count > 0 &&
                 stream_startup_status->observed_first_frame_camera_count >=
                     stream_startup_status->expected_first_frame_camera_count;
-            if (has_stream_report &&
-                (startup_status == "failed" || startup_status == "stopped")) {
-                const std::string detail = startup_status == "failed"
-                    ? stream_startup_status->failure_reason
-                    : stream_startup_status->stop_reason;
+            if (has_stream_report && startup_status == "failed") {
+                const std::string detail =
+                    stream_startup_status->failure_reason;
                 gui_autorun_fail(
                     state,
                     "stream startup timing reported " + startup_status +
                         (detail.empty() ? std::string() : ": " + detail));
+            } else if (has_stream_report && startup_status == "stopped") {
+                if (state->startup_cancel_requested &&
+                    !camera_control->subscribe) {
+                    std::cout << "[GUI][autorun] expected stream startup cancellation"
+                              << " completed transaction_id="
+                              << stream_startup_status->transaction_id
+                              << " reason=" << stream_startup_status->stop_reason
+                              << std::endl;
+                    gui_autorun_enter_stage(state, GuiAutorunStage::kDone);
+                } else {
+                    const std::string detail = stream_startup_status->stop_reason;
+                    gui_autorun_fail(
+                        state,
+                        "stream startup timing reported stopped" +
+                            (detail.empty() ? std::string() : ": " + detail));
+                }
             } else if (has_stream_report && startup_status == "complete" &&
                        !first_frame_counts_complete) {
                 gui_autorun_fail(
@@ -208,18 +226,37 @@ GuiAutorunRequests gui_autorun_update(
             } else if (camera_control->subscribe && has_stream_report &&
                        startup_status == "complete" &&
                        first_frame_counts_complete) {
-                std::cout << "[GUI][autorun] stream startup ready transaction_id="
-                          << stream_startup_status->transaction_id
-                          << " first_frames="
-                          << stream_startup_status->observed_first_frame_camera_count
-                          << "/"
-                          << stream_startup_status->expected_first_frame_camera_count
-                          << std::endl;
-                gui_autorun_enter_stage(state, GuiAutorunStage::kStreamWarmup);
+                if (config.cancel_stream_startup_after_ms >= 0) {
+                    gui_autorun_fail(
+                        state,
+                        "stream startup completed instead of producing the expected"
+                        " cancellation");
+                } else {
+                    std::cout << "[GUI][autorun] stream startup ready transaction_id="
+                              << stream_startup_status->transaction_id
+                              << " first_frames="
+                              << stream_startup_status->observed_first_frame_camera_count
+                              << "/"
+                              << stream_startup_status->expected_first_frame_camera_count
+                              << std::endl;
+                    gui_autorun_enter_stage(
+                        state, GuiAutorunStage::kStreamWarmup);
+                }
             } else if (!calibration_tool_busy && !state->action_requested) {
                 requests.toggle_streaming = true;
                 state->action_requested = true;
                 std::cout << "[GUI][autorun] requesting stream start" << std::endl;
+            } else if (!calibration_tool_busy && state->action_requested &&
+                       !state->startup_cancel_requested &&
+                       config.cancel_stream_startup_after_ms >= 0 &&
+                       gui_autorun_stage_elapsed_s(*state) * 1000.0 >=
+                           static_cast<double>(
+                               config.cancel_stream_startup_after_ms)) {
+                requests.cancel_stream_startup = true;
+                state->startup_cancel_requested = true;
+                std::cout << "[GUI][autorun] requesting expected stream startup"
+                          << " cancellation after_ms="
+                          << config.cancel_stream_startup_after_ms << std::endl;
             } else if (gui_autorun_stage_elapsed_s(*state) > 45.0) {
                 gui_autorun_fail(
                     state,
@@ -237,7 +274,9 @@ GuiAutorunRequests gui_autorun_update(
                     state,
                     config.start_recording
                         ? GuiAutorunStage::kStartRecording
-                        : GuiAutorunStage::kDone);
+                        : (config.stop_streaming_after_warmup
+                               ? GuiAutorunStage::kStopStreaming
+                               : GuiAutorunStage::kDone));
             }
             break;
 
