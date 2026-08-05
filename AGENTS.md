@@ -259,20 +259,41 @@ The current one-camera external-recorder smoke is:
 
 ```bash
 cd /home/jeremy/orange-gop-split-a16
-scripts/run_external_recorder_smoke.sh --duration 3 --warmup 1 --encode-fps 60 --output-dir /tmp
+scripts/run_external_recorder_smoke.sh --output-dir /tmp
 ```
 
 Default shape:
 
 - Camera `2010096`.
 - Analytics/YOLO GPU `5`.
-- External recorder GPU `5`.
+- Split-GOP recorder GPUs `5,6` with `gop_modulo` routing.
 - `recording_sink_mode = "external_ipc"`.
-- External HEVC encode capped at `60 fps`.
+- Orange supervises the recorder and owns the timed single-clip lifecycle.
+- External HEVC encode runs at the full source rate of `100 fps` with no
+  diagnostic frame-rate cap and queue depth `32`.
+- Finalization requires the video, per-frame metadata CSV, recorder status,
+  `recording_session.json`, and terminal packet/frame/metadata parity.
 - Socket path uses the production default:
   `/tmp/orange_external_recorder_2010096.sock`.
 
-Latest short smoke:
+Current full-rate supervised acceptance:
+
+- Recorder artifact:
+  `/tmp/orange_external_recorder_2010096_20260804_215201`.
+- Analytics artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_external_ipc_supervised_encode_smoke_2010096_20260804_215201`.
+- The recorder received and encoded `303/303` frames with `0` skips and `0`
+  drops across GPUs `5,6`; decoded-video sanity passed.
+- `Cam2010096_external_meta.csv` contains `303` data rows, recording frame IDs
+  `1-303`, no ID gaps, and no zero camera or system timestamps.
+- `recording_session.json` is `completed`, references the metadata CSV and
+  merged MP4, and records `packet_count = frame_count = 303`.
+- The final verifier passed terminal packet/frame/metadata parity. Queue depth
+  was `32` and high-water was `21`; this short first-use run had recorder
+  enqueue-age p95 of about `157 ms`, so it validates correctness rather than a
+  steady-state latency bound.
+
+Earlier capped-60 diagnostic smoke:
 
 - Analytics root:
   `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_external_ipc_encode_smoke_2010096_20260425_212327`

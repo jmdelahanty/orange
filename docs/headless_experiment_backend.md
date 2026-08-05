@@ -454,13 +454,20 @@ The first supervised smoke spec is:
 experiment_specs/2010096_headless_real_yolo_external_ipc_supervised_encode_smoke.json
 ```
 
+The checked-in one-camera fixture now uses the production-valid single-clip
+shape: a three-second timed recording inside a five-second run, nominal/source
+rate `100 fps`, no encode cap, queue depth `32`, and split-GOP routing across
+GPUs `5,6`. Orange supervises the recorder and finalizes the authoritative
+`recording_session.json`; the shell runner no longer launches a second recorder
+authority.
+
 The two-camera PTP supervised smoke spec is:
 
 ```text
 experiment_specs/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_supervised.json
 ```
 
-Validated supervised smokes:
+Historical and current validated supervised smokes:
 
 - One-camera artifact:
   `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_external_ipc_supervised_encode_smoke`

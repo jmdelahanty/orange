@@ -51,10 +51,39 @@ def test_runner_help_lists_queue_verifier_options() -> None:
         )
 
 
+def test_one_camera_runner_defaults_to_supervised_full_rate_split_gop() -> None:
+    runner = RUNNERS[0]
+    source = runner.read_text(encoding="utf-8")
+    require('ENCODE_FPS=100' in source, "one-camera smoke must default to 100 FPS")
+    require('ENCODE_MAX_FPS=0' in source, "one-camera smoke must default to uncapped encode")
+    require('QUEUE_DEPTH=32' in source, "one-camera smoke must default to a GOP-burst-safe queue")
+    require(
+        'SHARD_GPU_IDS="5,6"' in source,
+        "default camera/GPU topology must materialize two split-GOP shards",
+    )
+    require(
+        '"supervise_processes": True' in source,
+        "Orange must supervise the recorder lifecycle",
+    )
+    require(
+        'fixed["recording_control"]' in source,
+        "smoke must request a timed single-clip recording so Orange writes the manifest",
+    )
+    require(
+        '"clip_seconds": 0' in source,
+        "one-camera acceptance smoke must remain non-rolling",
+    )
+    require(
+        '"$RECORDER_TOOL" "${RECORDER_ARGS[@]}"' not in source,
+        "runner must not independently launch a competing recorder process",
+    )
+
+
 def main() -> int:
     tests = [
         test_runner_shell_syntax,
         test_runner_help_lists_queue_verifier_options,
+        test_one_camera_runner_defaults_to_supervised_full_rate_split_gop,
     ]
     for test in tests:
         test()

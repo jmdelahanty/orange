@@ -1,6 +1,6 @@
 {
   "experiment_id": "2010096_headless_real_yolo_external_ipc_encode_smoke",
-  "notes": "Single-camera headless real-YOLO smoke using recording_sink_mode=external_ipc. The analytics process exports frame IPC descriptors and ACKs after the external process detaches each selected frame; the external recorder process performs NVENC encode at a capped 60 FPS.",
+  "notes": "Base single-camera headless real-YOLO external-IPC spec. The supervised smoke runner materializes the authoritative full-rate 100 FPS split-GOP recorder contract and timed recording lifecycle around this camera/analytics configuration.",
   "selection": {
     "camera_serials": ["2010096"],
     "gpu_ids": [5]

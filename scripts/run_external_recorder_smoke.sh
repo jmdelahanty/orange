@@ -7,8 +7,8 @@ Usage:
   run_external_recorder_smoke.sh [options]
 
 Runs a one-camera headless real-YOLO external-recorder smoke:
-  Process A: orange_client with recording_sink_mode=external_ipc.
-  Process B: external_recorder_ipc_probe detach + external NVENC + MP4 output.
+  orange_client supervises external_recorder_ipc_probe and owns the recording,
+  finalization, manifest, and verification lifecycle.
 
 Options:
   --spec <path>              Base experiment spec.
@@ -17,24 +17,24 @@ Options:
   --camera-serial <serial>   Camera serial. Default 2010096.
   --analytics-gpu-id <int>   GPU id selected for camera/YOLO. Default 5.
   --recorder-gpu-id <int>    GPU id used by external recorder. Default: analytics GPU.
-  --shard-gpu-ids <csv>      Diagnostic multi-shard recorder GPUs, e.g. 5,6.
-  --duration <sec>           Headless run duration. Default 6.
-  --warmup <sec>             Headless warmup. Default 2.
-  --encode-fps <int>         External encode cap and nominal MP4 FPS. Default 60.
+  --shard-gpu-ids <csv>      Split-GOP recorder GPUs. Default 5,6 on the default rig.
+  --duration <sec>           Timed recording duration. Default 3.
+  --warmup <sec>             Headless warmup before recording. Default 1.
+  --encode-fps <int>         Source and nominal MP4 FPS. Default 100.
   --encode-max-fps <int>     External encode cap only. Use 0 for uncapped.
-                             Default: same as --encode-fps.
-  --queue-depth <int>        External recorder-owned frame slots. Default 8.
+                             Default 0 (uncapped).
+  --queue-depth <int>        External recorder-owned frame slots. Default 32.
   --prewarm-slots <int>      Prewarm encode detach slots per shard. Default 4.
   --prewarm-bytes <int|auto> Pre-listen prewarm byte size. Default auto from spec config.
   --no-prewarm-peer-copy     Do not warm the first source-to-shard peer copy.
-  --direct-input-source      Copy IPC source directly into NVENC input. Experimental.
-  --deferred-source-release  ACK accepted work, then RELEASE after source consumption. Experimental.
+  --direct-input-source      Legacy diagnostic option; rejected by this supervised runner.
+  --deferred-source-release  Legacy diagnostic option; rejected by this supervised runner.
   --yolo-prewarm-iterations <int> Synthetic YOLO prewarm iterations. Default 3.
   --ptp-register-read-decimate <n> Read GevTimestampValue every n frames. Default 1.
   --socket <path>            Unix socket path. Default /tmp/orange_external_recorder_<serial>.sock.
                              Non-default paths require matching client env outside this script.
   --output-dir <path>        External recorder artifact root. Default /tmp.
-  --bitstream-out <path>     Optional raw elementary stream output.
+  --bitstream-out <path>     Legacy diagnostic option; rejected by this supervised runner.
   --skip-video-sanity        Do not decode/check external MP4 content.
   --max-encode-queue-high-water <int>
                              Verifier threshold for recorder encode queue high-water.
@@ -48,18 +48,18 @@ EOF
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-SPEC="$REPO_ROOT/experiment_specs/2010096_headless_real_yolo_external_ipc_encode_smoke.json"
+SPEC="$REPO_ROOT/experiment_specs/2010096_headless_real_yolo_external_ipc_supervised_encode_smoke.json"
 ORANGE_CLIENT="$REPO_ROOT/targets/release/orange_client"
 RECORDER_TOOL="$REPO_ROOT/targets/release/external_recorder_ipc_probe"
 CAMERA_SERIAL=2010096
 ANALYTICS_GPU_ID=5
 RECORDER_GPU_ID=""
 SHARD_GPU_IDS=""
-DURATION=6
-WARMUP=2
-ENCODE_FPS=60
-ENCODE_MAX_FPS=""
-QUEUE_DEPTH=8
+DURATION=3
+WARMUP=1
+ENCODE_FPS=100
+ENCODE_MAX_FPS=0
+QUEUE_DEPTH=32
 PREWARM_SLOTS=4
 PREWARM_BYTES=auto
 PREWARM_PEER_COPY=1
@@ -238,10 +238,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for value_name in ANALYTICS_GPU_ID DURATION WARMUP ENCODE_FPS QUEUE_DEPTH PREWARM_SLOTS YOLO_PREWARM_ITERATIONS PTP_REGISTER_READ_DECIMATE; do
+for value_name in ANALYTICS_GPU_ID DURATION WARMUP ENCODE_FPS ENCODE_MAX_FPS QUEUE_DEPTH PREWARM_SLOTS YOLO_PREWARM_ITERATIONS PTP_REGISTER_READ_DECIMATE; do
   value="${!value_name}"
   [[ "$value" =~ ^[0-9]+$ ]] || { echo "$value_name must be a non-negative integer." >&2; exit 2; }
 done
+if [[ "$DURATION" -lt 1 || "$ENCODE_FPS" -lt 1 || "$QUEUE_DEPTH" -lt 1 ]]; then
+  echo "DURATION, ENCODE_FPS, and QUEUE_DEPTH must be positive." >&2
+  exit 2
+fi
 if [[ "$PTP_REGISTER_READ_DECIMATE" -lt 1 ]]; then
   echo "PTP_REGISTER_READ_DECIMATE must be >= 1." >&2
   exit 2
@@ -254,11 +258,26 @@ if [[ -n "$RECORDER_GPU_ID" ]]; then
 else
   RECORDER_GPU_ID="$ANALYTICS_GPU_ID"
 fi
+if [[ -z "$SHARD_GPU_IDS" && "$RECORDER_GPU_ID" == "5" ]]; then
+  SHARD_GPU_IDS="5,6"
+fi
 if [[ -n "$SHARD_GPU_IDS" ]]; then
   [[ "$SHARD_GPU_IDS" =~ ^[0-9]+(,[0-9]+)+$ ]] || {
     echo "SHARD_GPU_IDS must be a comma-separated list of at least two GPU ids." >&2
     exit 2
   }
+  if [[ "${SHARD_GPU_IDS%%,*}" != "$RECORDER_GPU_ID" ]]; then
+    echo "RECORDER_GPU_ID must match the first SHARD_GPU_IDS entry." >&2
+    exit 2
+  fi
+fi
+if [[ "$DIRECT_INPUT_SOURCE" != "0" || "$DEFERRED_SOURCE_RELEASE" != "0" ]]; then
+  echo "Direct-input/deferred-release diagnostics are not supported by the supervised smoke runner." >&2
+  exit 2
+fi
+if [[ -n "$BITSTREAM_OUT" ]]; then
+  echo "Raw bitstream output is not supported by the supervised smoke runner." >&2
+  exit 2
 fi
 if [[ -n "$VERIFY_MAX_ENCODE_QUEUE_HIGH_WATER" ]]; then
   [[ "$VERIFY_MAX_ENCODE_QUEUE_HIGH_WATER" =~ ^[0-9]+$ ]] || {
@@ -282,9 +301,6 @@ OUTPUT_DIR="$(realpath -m "$OUTPUT_DIR")"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 RUN_DIR="$OUTPUT_DIR/orange_external_recorder_${CAMERA_SERIAL}_${STAMP}"
 mkdir -p "$RUN_DIR"
-if [[ -z "$ENCODE_MAX_FPS" ]]; then
-  ENCODE_MAX_FPS="$ENCODE_FPS"
-fi
 if [[ -z "$SOCKET_PATH" ]]; then
   SOCKET_PATH="/tmp/orange_external_recorder_${CAMERA_SERIAL}.sock"
 fi
@@ -297,11 +313,11 @@ SUMMARY_JSON="$RUN_DIR/external_recorder_summary.json"
 STATUS_JSON="$RUN_DIR/external_recorder_status.json"
 VIDEO_SANITY_JSON="$RUN_DIR/external_video_sanity.json"
 MP4_OUT="$RUN_DIR/Cam${CAMERA_SERIAL}_external.mp4"
-KEYFRAME_OUT="$RUN_DIR/Cam${CAMERA_SERIAL}_external_keyframes.csv"
+KEYFRAME_OUT="$RUN_DIR/Cam${CAMERA_SERIAL}_external_keyframes.json"
 RECORDER_LOG="$RUN_DIR/external_recorder.log"
 SESSION_CONTRACT_JSON="$RUN_DIR/external_recorder_session.json"
 
-python3 - "$SPEC" "$TEMP_SPEC" "$SESSION_CONTRACT_JSON" "$STAMP" "$CAMERA_SERIAL" "$ANALYTICS_GPU_ID" "$RECORDER_GPU_ID" "$SHARD_GPU_IDS" "$DURATION" "$WARMUP" "$YOLO_PREWARM_ITERATIONS" "$PTP_REGISTER_READ_DECIMATE" "$RUN_DIR" "$SUMMARY_JSON" "$STATUS_JSON" "$VIDEO_SANITY_JSON" "$MP4_OUT" "$GOP_ROUTING_CSV" "$ENCODE_FPS" "$ENCODE_MAX_FPS" "$SKIP_VIDEO_SANITY" <<'PY'
+python3 - "$SPEC" "$TEMP_SPEC" "$SESSION_CONTRACT_JSON" "$STAMP" "$CAMERA_SERIAL" "$ANALYTICS_GPU_ID" "$RECORDER_GPU_ID" "$SHARD_GPU_IDS" "$DURATION" "$WARMUP" "$YOLO_PREWARM_ITERATIONS" "$PTP_REGISTER_READ_DECIMATE" "$RUN_DIR" "$SUMMARY_JSON" "$STATUS_JSON" "$VIDEO_SANITY_JSON" "$MP4_OUT" "$GOP_ROUTING_CSV" "$ENCODE_FPS" "$ENCODE_MAX_FPS" "$SKIP_VIDEO_SANITY" "$QUEUE_DEPTH" "$PREWARM_SLOTS" "$PREWARM_BYTES" "$PREWARM_PEER_COPY" "$RECORDER_TOOL" "$SOCKET_PATH" "$DETACH_CSV" "$ENCODE_CSV" "$KEYFRAME_OUT" "$RECORDER_LOG" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -327,6 +343,16 @@ gop_routing_csv = Path(sys.argv[18])
 encode_fps = int(sys.argv[19])
 encode_max_fps = int(sys.argv[20])
 skip_video_sanity = int(sys.argv[21])
+queue_depth = int(sys.argv[22])
+prewarm_slots = int(sys.argv[23])
+prewarm_bytes_arg = sys.argv[24]
+prewarm_peer_copy = bool(int(sys.argv[25]))
+recorder_tool = Path(sys.argv[26])
+socket_path = Path(sys.argv[27])
+detach_csv = Path(sys.argv[28])
+encode_csv = Path(sys.argv[29])
+keyframe_out = Path(sys.argv[30])
+recorder_log = Path(sys.argv[31])
 
 with source.open("r", encoding="utf-8") as f:
     spec = json.load(f)
@@ -340,12 +366,16 @@ spec["notes"] = (
 spec.setdefault("selection", {})["camera_serials"] = [camera_serial]
 spec.setdefault("selection", {})["gpu_ids"] = [gpu_id]
 fixed = spec.setdefault("fixed", {})
-fixed["duration_s"] = duration
+fixed["duration_s"] = duration + warmup + 1
 fixed["warmup_s"] = warmup
 fixed["display"] = False
 fixed["stream_only"] = False
 fixed["recording_sink_mode"] = "external_ipc"
 fixed["ptp_register_read_decimate"] = ptp_register_read_decimate
+fixed["recording_control"] = {
+    "record_for_seconds": duration,
+    "clip_seconds": 0,
+}
 if isinstance(fixed.get("yolo_worker"), dict):
     fixed["yolo_worker"]["prewarm_iterations"] = yolo_prewarm_iterations
 expected_shard_gpu_ids = (
@@ -358,15 +388,22 @@ contract = {
     "schema_id": "orange.external_recorder.contract",
     "schema_version": 1,
     "mode": "diagnostic_ipc_v1",
+    "recorder_tool_path": str(recorder_tool),
+    "supervise_processes": True,
     "artifact_root": str(run_dir),
     "session_id": spec["experiment_id"],
     "require_summary": True,
     "require_status": True,
     "require_storage_preflight": True,
+    "require_protocol_hello": True,
     "require_video_sanity": skip_video_sanity == 0,
     "require_merged_mp4": len(expected_shard_gpu_ids) > 1,
     "require_gop_routing": True,
     "preserve_shard_mp4s": False,
+    "recording_control": {
+        "record_for_seconds": duration,
+        "clip_seconds": 0,
+    },
     "streams": {
         camera_serial: {
             "stream_id": camera_serial,
@@ -375,16 +412,35 @@ contract = {
             "recorder_gpu_id": recorder_gpu_id,
             "expected_shard_gpu_ids": expected_shard_gpu_ids,
             "routing_policy": routing_policy,
+            "socket_path": str(socket_path),
             "summary_json": str(summary_json),
             "status_json": str(status_json),
             "video_sanity_json": str(video_sanity_json),
             "mp4": str(mp4_out),
+            "mp4_keyframe": str(keyframe_out),
+            "detach_csv": str(detach_csv),
+            "encode_csv": str(encode_csv),
             "gop_routing_csv": str(gop_routing_csv),
+            "recorder_log": str(recorder_log),
             "encode_fps": encode_fps,
             "encode_max_fps": encode_max_fps,
+            "encode_queue_depth": queue_depth,
+            "prewarm_slots": prewarm_slots,
+            "prewarm_peer_copy": prewarm_peer_copy,
+            "codec": "hevc",
+            "preset": "p1",
+            "tuning": "ll",
+            "rate_control_mode": "vbr",
+            "quality_value": 20,
+            "gop": 25,
+            "bitrate_bps": 150000000,
+            "max_bitrate_bps": 150000000,
+            "vbv_buffer_size": 150000000,
         }
     },
 }
+if prewarm_bytes_arg != "auto":
+    contract["streams"][camera_serial]["prewarm_bytes"] = int(prewarm_bytes_arg)
 fixed["external_recorder_contract"] = contract
 
 with dest.open("w", encoding="utf-8") as f:
@@ -455,80 +511,7 @@ echo "[external-recorder] direct_input_source=$DIRECT_INPUT_SOURCE deferred_sour
 echo "[external-recorder] yolo_prewarm_iterations=$YOLO_PREWARM_ITERATIONS"
 echo "[external-recorder] ptp_register_read_decimate=$PTP_REGISTER_READ_DECIMATE"
 echo "[external-recorder] analytics_early_owned_frame=$ANALYTICS_EARLY_OWNED_FRAME yolo_ready_event_fastpath=$YOLO_READY_EVENT_FASTPATH yolo_detach_input=$YOLO_DETACH_INPUT"
-
-ROUTING_POLICY="single_shard"
-if [[ -n "$SHARD_GPU_IDS" ]]; then
-  ROUTING_POLICY="gop_modulo"
-fi
-
-RECORDER_ARGS=(
-  --socket "$SOCKET_PATH"
-  --gpu-id "$RECORDER_GPU_ID"
-  --csv "$DETACH_CSV"
-  --encode
-  --encode-max-fps "$ENCODE_MAX_FPS"
-  --encode-queue-depth "$QUEUE_DEPTH"
-  --prewarm-slots "$PREWARM_SLOTS"
-  --fps "$ENCODE_FPS"
-  --codec hevc
-  --preset p1
-  --tuning ll
-  --gop 25
-  --bitrate-bps 150000000
-  --max-bitrate-bps 150000000
-  --vbv-buffer-size 150000000
-  --mp4-out "$MP4_OUT"
-  --mp4-keyframe "$KEYFRAME_OUT"
-  --encode-csv "$ENCODE_CSV"
-  --gop-routing-csv "$GOP_ROUTING_CSV"
-  --summary-json "$SUMMARY_JSON"
-  --status-json "$STATUS_JSON"
-  --session-id "$EXPERIMENT_ID"
-  --stream-id "$CAMERA_SERIAL"
-  --shard-id 0
-  --routing-policy "$ROUTING_POLICY"
-)
-if [[ "$PREWARM_BYTES" =~ ^[0-9]+$ && "$PREWARM_BYTES" -gt 0 ]]; then
-  RECORDER_ARGS+=(--prewarm-bytes "$PREWARM_BYTES")
-fi
-if [[ "$PREWARM_PEER_COPY" -eq 1 ]]; then
-  RECORDER_ARGS+=(--prewarm-peer-copy)
-fi
-if [[ "$DIRECT_INPUT_SOURCE" != "0" ]]; then
-  RECORDER_ARGS+=(--direct-input-source)
-fi
-if [[ "$DEFERRED_SOURCE_RELEASE" != "0" ]]; then
-  RECORDER_ARGS+=(--deferred-source-release)
-fi
-if [[ -n "$SHARD_GPU_IDS" ]]; then
-  RECORDER_ARGS+=(--shard-gpu-ids "$SHARD_GPU_IDS")
-fi
-if [[ -n "$BITSTREAM_OUT" ]]; then
-  RECORDER_ARGS+=(--bitstream-out "$BITSTREAM_OUT")
-fi
-
-"$RECORDER_TOOL" "${RECORDER_ARGS[@]}" >"$RECORDER_LOG" 2>&1 &
-RECORDER_PID=$!
-
-for _ in {1..100}; do
-  if [[ -S "$SOCKET_PATH" ]]; then
-    break
-  fi
-  if ! kill -0 "$RECORDER_PID" >/dev/null 2>&1; then
-    echo "external recorder exited before creating socket." >&2
-    cat "$RECORDER_LOG" >&2 || true
-    exit 1
-  fi
-  sleep 0.05
-done
-[[ -S "$SOCKET_PATH" ]] || { echo "external recorder socket was not created: $SOCKET_PATH" >&2; exit 1; }
-
-echo "[external-recorder] starting headless external_ipc run camera=$CAMERA_SERIAL analytics_gpu=$ANALYTICS_GPU_ID recorder_gpu=$RECORDER_GPU_ID shard_gpu_ids=${SHARD_GPU_IDS:-none} encode_fps=$ENCODE_FPS encode_max_fps=$ENCODE_MAX_FPS"
-if [[ "$SOCKET_PATH" != "/tmp/orange_external_recorder_${CAMERA_SERIAL}.sock" ]]; then
-  echo "Custom socket paths require passing ORANGE_EXTERNAL_RECORDER_SOCKET_CAM_${CAMERA_SERIAL} to the benchmark process." >&2
-  echo "Use the default socket path for the sudo -n smoke runner." >&2
-  exit 2
-fi
+echo "[external-recorder] starting supervised headless external_ipc run camera=$CAMERA_SERIAL analytics_gpu=$ANALYTICS_GPU_ID recorder_gpu=$RECORDER_GPU_ID shard_gpu_ids=${SHARD_GPU_IDS:-none} encode_fps=$ENCODE_FPS encode_max_fps=$ENCODE_MAX_FPS record_for_seconds=$DURATION"
 sudo -n /usr/local/bin/orange-local-benchmark \
   --orange-client "$ORANGE_CLIENT" \
   --yolo-perf-log \
@@ -539,7 +522,6 @@ sudo -n /usr/local/bin/orange-local-benchmark \
   "$TEMP_SPEC"
 
 echo "[external-recorder] analytics complete"
-wait "$RECORDER_PID"
 trap - EXIT
 rm -f "$SOCKET_PATH"
 if [[ "$KEEP_TEMP_SPEC" -eq 0 ]]; then
@@ -587,202 +569,6 @@ for shard in summary.get("external_encode_shards", []):
         f"prewarm_ms={shard.get('prewarm_ms')} "
         f"mp4_retention={retention.get('status')} mp4={shard.get('mp4')}"
     )
-PY
-fi
-
-if [[ "$SKIP_VIDEO_SANITY" -eq 0 ]]; then
-  VIDEO_SANITY_MP4="$(python3 - "$SUMMARY_JSON" "$MP4_OUT" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-summary_path = Path(sys.argv[1])
-fallback = sys.argv[2]
-try:
-    summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    rolling = summary.get("rolling_output") or {}
-    clips = rolling.get("clips") or [] if rolling.get("enabled") else []
-    print(clips[0].get("mp4") if clips else fallback)
-except Exception:
-    print(fallback)
-PY
-)"
-  python3 - "$VIDEO_SANITY_MP4" "$VIDEO_SANITY_JSON" <<'PY'
-import json
-import math
-import subprocess
-import sys
-from pathlib import Path
-
-mp4_path = Path(sys.argv[1])
-summary_path = Path(sys.argv[2])
-
-def fail(status, detail):
-    result = {
-        "schema_version": 1,
-        "video_path": str(mp4_path),
-        "content_checked": True,
-        "content_valid": False,
-        "status": status,
-        "detail": detail,
-        "sampled_frames": [],
-    }
-    summary_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-    print(f"[external-recorder] video_sanity status={status} detail={detail}")
-    raise SystemExit(1)
-
-if not mp4_path.exists() or mp4_path.stat().st_size == 0:
-    fail("missing_video", "MP4 output is missing or empty")
-
-probe_cmd = [
-    "ffprobe",
-    "-v",
-    "error",
-    "-select_streams",
-    "v:0",
-    "-show_entries",
-    "stream=width,height,nb_frames,avg_frame_rate,duration",
-    "-show_entries",
-    "format=size,duration",
-    "-of",
-    "json",
-    str(mp4_path),
-]
-try:
-    probe = subprocess.run(
-        probe_cmd,
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-    fail("ffprobe_failed", str(exc))
-
-metadata = json.loads(probe.stdout)
-streams = metadata.get("streams") or []
-if not streams:
-    fail("no_video_stream", "ffprobe found no video stream")
-
-stream = streams[0]
-width = int(stream.get("width") or 0)
-height = int(stream.get("height") or 0)
-if width <= 0 or height <= 0:
-    fail("invalid_dimensions", f"width={width} height={height}")
-
-nb_frames_value = stream.get("nb_frames")
-try:
-    frame_count = int(nb_frames_value)
-except (TypeError, ValueError):
-    frame_count = 0
-
-if frame_count > 0:
-    sample_indices = sorted({
-        0,
-        max(0, frame_count // 4),
-        max(0, frame_count // 2),
-        max(0, (3 * frame_count) // 4),
-        max(0, frame_count - 1),
-    })
-else:
-    sample_indices = [0]
-
-select_expr = "+".join(f"eq(n\\,{index})" for index in sample_indices)
-decode_cmd = [
-    "ffmpeg",
-    "-v",
-    "error",
-    "-i",
-    str(mp4_path),
-    "-vf",
-    f"select='{select_expr}'",
-    "-vsync",
-    "0",
-    "-pix_fmt",
-    "gray",
-    "-f",
-    "rawvideo",
-    "-",
-]
-try:
-    decoded = subprocess.run(
-        decode_cmd,
-        check=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    ).stdout
-except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-    fail("decode_failed", str(exc))
-
-frame_bytes = width * height
-decoded_frames = len(decoded) // frame_bytes if frame_bytes > 0 else 0
-if decoded_frames == 0:
-    fail("decode_empty", "ffmpeg returned no decoded sample frames")
-
-measurements = []
-for i in range(decoded_frames):
-    frame = decoded[i * frame_bytes:(i + 1) * frame_bytes]
-    hist = [0] * 256
-    for value in frame:
-        hist[value] += 1
-    pixel_count = sum(hist)
-    total = sum(value * count for value, count in enumerate(hist))
-    total_sq = sum(value * value * count for value, count in enumerate(hist))
-    mean = total / pixel_count
-    variance = max(0.0, total_sq / pixel_count - mean * mean)
-    min_value = next(value for value, count in enumerate(hist) if count)
-    max_value = 255 - next(value for value, count in enumerate(reversed(hist)) if count)
-    measurements.append({
-        "requested_frame_index": sample_indices[min(i, len(sample_indices) - 1)],
-        "mean": mean,
-        "stddev": math.sqrt(variance),
-        "min": min_value,
-        "max": max_value,
-        "black_fraction_lt8": sum(hist[:8]) / pixel_count,
-        "white_fraction_gt247": sum(hist[248:]) / pixel_count,
-        "decoded_bytes": pixel_count,
-    })
-
-max_black_fraction = max(item["black_fraction_lt8"] for item in measurements)
-max_stddev = max(item["stddev"] for item in measurements)
-mean_luma = sum(item["mean"] for item in measurements) / len(measurements)
-content_valid = max_black_fraction < 0.98 and max_stddev >= 5.0
-if max_black_fraction >= 0.98:
-    status = "black_frame"
-elif max_stddev < 5.0:
-    status = "flat_frame"
-else:
-    status = "pass"
-
-result = {
-    "schema_version": 1,
-    "video_path": str(mp4_path),
-    "content_checked": True,
-    "content_valid": content_valid,
-    "status": status,
-    "width": width,
-    "height": height,
-    "nb_frames": frame_count,
-    "container": metadata.get("format", {}),
-    "sampled_frame_count": len(measurements),
-    "mean_luma": mean_luma,
-    "max_stddev": max_stddev,
-    "max_black_fraction_lt8": max_black_fraction,
-    "thresholds": {
-        "max_black_fraction_lt8": 0.98,
-        "min_max_stddev": 5.0,
-    },
-    "sampled_frames": measurements,
-}
-summary_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
-print(
-    "[external-recorder] video_sanity "
-    f"status={status} frames={frame_count} samples={len(measurements)} "
-    f"mean_luma={mean_luma:.3f} max_stddev={max_stddev:.3f} "
-    f"max_black_fraction_lt8={max_black_fraction:.6f}"
-)
-if not content_valid:
-    raise SystemExit(1)
 PY
 fi
 
