@@ -45,6 +45,10 @@ void test_writer_tracks_rows_and_gaps()
     expect(summary.recording_frame_id_gaps == 1, "summary gap count");
     expect(summary.zero_camera_timestamp_rows == 0, "camera timestamps are populated");
     expect(summary.zero_system_timestamp_rows == 0, "system timestamps are populated");
+    expect(
+        !orange::external_recorder::ValidateAuthoritativeFrameMetadata(
+            summary, 2, 2, &error),
+        "terminal validation rejects a recording-frame gap");
 
     std::ifstream input(path);
     std::string header;
@@ -58,6 +62,37 @@ void test_writer_tracks_rows_and_gaps()
 
     std::error_code ec;
     std::filesystem::remove_all(root, ec);
+}
+
+void test_terminal_validation_requires_packet_and_clock_parity()
+{
+    orange::external_recorder::FrameMetadataSummary summary;
+    summary.path = "/tmp/Cam2010096_external_meta.csv";
+    summary.rows_written = 2;
+    summary.first_recording_frame_id = 1;
+    summary.last_recording_frame_id = 2;
+
+    std::string error;
+    expect(
+        orange::external_recorder::ValidateAuthoritativeFrameMetadata(
+            summary, 2, 2, &error),
+        "clean summary passes terminal validation: " + error);
+    expect(
+        !orange::external_recorder::ValidateAuthoritativeFrameMetadata(
+            summary, 2, 1, &error),
+        "packet/frame mismatch fails terminal validation");
+
+    summary.zero_camera_timestamp_rows = 1;
+    expect(
+        !orange::external_recorder::ValidateAuthoritativeFrameMetadata(
+            summary, 2, 2, &error),
+        "zero camera timestamp fails terminal validation");
+    summary.zero_camera_timestamp_rows = 0;
+    summary.zero_system_timestamp_rows = 1;
+    expect(
+        !orange::external_recorder::ValidateAuthoritativeFrameMetadata(
+            summary, 2, 2, &error),
+        "zero system timestamp fails terminal validation");
 }
 
 void test_path_derivation()
@@ -74,6 +109,7 @@ void test_path_derivation()
 int main()
 {
     test_writer_tracks_rows_and_gaps();
+    test_terminal_validation_requires_packet_and_clock_parity();
     test_path_derivation();
     if (failures != 0) {
         std::cerr << failures << " test(s) failed\n";

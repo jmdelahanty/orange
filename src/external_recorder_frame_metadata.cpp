@@ -148,4 +148,52 @@ std::string DeriveFrameMetadataPath(const std::string& mp4_path)
     return path.string();
 }
 
+bool ValidateAuthoritativeFrameMetadata(
+    const FrameMetadataSummary& summary,
+    const uint64_t frames_encoded,
+    const uint64_t packets_written,
+    std::string* error)
+{
+    auto fail = [&](const std::string& reason) {
+        set_error(error, "authoritative frame metadata is incomplete: " + reason);
+        return false;
+    };
+    if (frames_encoded == 0) {
+        return fail("frames_encoded is zero");
+    }
+    if (packets_written != frames_encoded) {
+        return fail(
+            "packets_written=" + std::to_string(packets_written) +
+            " frames_encoded=" + std::to_string(frames_encoded));
+    }
+    if (summary.path.empty()) {
+        return fail("path is empty");
+    }
+    if (summary.rows_written != frames_encoded) {
+        return fail(
+            "rows_written=" + std::to_string(summary.rows_written) +
+            " frames_encoded=" + std::to_string(frames_encoded));
+    }
+    if (summary.first_recording_frame_id == 0 ||
+        summary.last_recording_frame_id == 0) {
+        return fail("first or last recording_frame_id is zero");
+    }
+    if (summary.recording_frame_id_gaps != 0) {
+        return fail(
+            "recording_frame_id_gaps=" +
+            std::to_string(summary.recording_frame_id_gaps));
+    }
+    if (summary.zero_camera_timestamp_rows != 0) {
+        return fail(
+            "zero_camera_timestamp_rows=" +
+            std::to_string(summary.zero_camera_timestamp_rows));
+    }
+    if (summary.zero_system_timestamp_rows != 0) {
+        return fail(
+            "zero_system_timestamp_rows=" +
+            std::to_string(summary.zero_system_timestamp_rows));
+    }
+    return true;
+}
+
 }  // namespace orange::external_recorder

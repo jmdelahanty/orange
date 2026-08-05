@@ -6008,6 +6008,7 @@ std::string format_external_recorder_clip_id(const int clip_index)
 
 bool write_supervised_external_recorder_single_clip_manifest(
     const ExperimentRunPlan& run,
+    const std::string& manifest_status,
     nlohmann::json* bridge_out,
     std::string* error_out)
 {
@@ -6105,7 +6106,8 @@ bool write_supervised_external_recorder_single_clip_manifest(
         if (summary.value("worker_failed", false) || frames_received == 0 ||
             frames_encoded != frames_received || metadata_rows != frames_encoded ||
             metadata_gaps != 0 || zero_camera_timestamps != 0 ||
-            zero_system_timestamps != 0 || packets_written == 0 || mp4.empty() ||
+            zero_system_timestamps != 0 || packets_written != frames_encoded ||
+            mp4.empty() ||
             metadata.empty() || !std::filesystem::exists(mp4) ||
             !std::filesystem::exists(metadata)) {
             if (error_out) {
@@ -6151,7 +6153,7 @@ bool write_supervised_external_recorder_single_clip_manifest(
         local_manifest.value("created_at_utc", std::string());
     manifest_options.updated_at_utc = get_current_utc_timestamp();
     manifest_options.recording_folder = run.recording_folder;
-    manifest_options.status = "completed";
+    manifest_options.status = manifest_status;
     manifest_options.requested_stream_duration_seconds = run.options.duration_seconds;
     manifest_options.stream_start_delay_seconds =
         local_stream.value(
@@ -6194,7 +6196,7 @@ bool write_supervised_external_recorder_single_clip_manifest(
         manifest_options.recording_stop_reason == "record_for_seconds_elapsed";
     manifest_options.recording_backend = {
         {"mode", "external_ipc"},
-        {"status", "completed"},
+        {"status", manifest_status},
         {"artifact_root", config.artifact_root},
         {"source", "external_recorder_summary"},
         {"summary_json", summary_paths},
@@ -6236,7 +6238,8 @@ bool write_supervised_external_recorder_single_clip_manifest(
     }
     if (bridge_out) {
         *bridge_out = {
-            {"pass", true},
+            {"pass", manifest_status == "completed"},
+            {"status", manifest_status},
             {"path", manifest_path.string()},
             {"mode", "single_clip"},
             {"producer", "orange_headless_external_ipc"},
@@ -6250,6 +6253,7 @@ bool write_supervised_external_recorder_single_clip_manifest(
 
 bool write_supervised_external_recorder_recording_session_manifest(
     const ExperimentRunPlan& run,
+    const std::string& manifest_status,
     nlohmann::json* bridge_out,
     std::string* error_out)
 {
@@ -6269,7 +6273,7 @@ bool write_supervised_external_recorder_recording_session_manifest(
     }
     if (run.options.recording_control.clip_seconds <= 0) {
         return write_supervised_external_recorder_single_clip_manifest(
-            run, bridge_out, error_out);
+            run, manifest_status, bridge_out, error_out);
     }
 
     const std::filesystem::path run_folder(run.recording_folder);
@@ -6453,7 +6457,7 @@ bool write_supervised_external_recorder_recording_session_manifest(
         local_manifest.value("created_at_utc", std::string());
     manifest_options.updated_at_utc = get_current_utc_timestamp();
     manifest_options.recording_folder = run.recording_folder;
-    manifest_options.status = all_clips_ok ? "completed" : "incomplete";
+    manifest_options.status = all_clips_ok ? manifest_status : "incomplete";
     manifest_options.requested_stream_duration_seconds = run.options.duration_seconds;
     manifest_options.stream_start_delay_seconds =
         local_stream.value("stream_start_delay_seconds", run.options.stream_start_delay_seconds);
@@ -6498,7 +6502,7 @@ bool write_supervised_external_recorder_recording_session_manifest(
     manifest_options.rollover_next_writer_preopened = false;
     manifest_options.recording_backend = {
         {"mode", "external_ipc"},
-        {"status", all_clips_ok ? "completed" : "incomplete"},
+        {"status", all_clips_ok ? manifest_status : "incomplete"},
         {"artifact_root", config.artifact_root},
         {"source", "external_recorder_summary"},
         {"summary_json", summary_paths},
@@ -6559,7 +6563,8 @@ bool write_supervised_external_recorder_recording_session_manifest(
 
     if (bridge_out) {
         *bridge_out = {
-            {"pass", all_clips_ok},
+            {"pass", all_clips_ok && manifest_status == "completed"},
+            {"status", all_clips_ok ? manifest_status : "incomplete"},
             {"path", manifest_path.string()},
             {"mode", "rolling_clips"},
             {"producer", "orange_headless_external_ipc"},
@@ -6597,6 +6602,7 @@ bool finalize_supervised_external_recorder_run(
         orange::external_recorder::BuildExternalRecorderFinalizationManifest(
             finalization_options);
     nlohmann::json recording_session_bridge;
+    bool candidate_manifest_written = false;
 
     bool ok = run_supervised_external_recorder_video_sanity(
         config,
@@ -6605,8 +6611,10 @@ bool finalize_supervised_external_recorder_run(
     if (ok) {
         ok = write_supervised_external_recorder_recording_session_manifest(
             run,
+            "finalizing",
             &recording_session_bridge,
             error_out);
+        candidate_manifest_written = ok;
     }
     if (ok) {
         ok = run_supervised_external_recorder_verifier(
@@ -6614,6 +6622,36 @@ bool finalize_supervised_external_recorder_run(
             experiment_root,
             &finalization,
             error_out);
+    }
+    if (ok) {
+        ok = write_supervised_external_recorder_recording_session_manifest(
+            run,
+            "completed",
+            &recording_session_bridge,
+            error_out);
+    }
+    if (!ok && candidate_manifest_written) {
+        const std::string verification_error =
+            error_out ? *error_out : std::string{};
+        nlohmann::json failed_bridge;
+        std::string failed_manifest_error;
+        if (write_supervised_external_recorder_recording_session_manifest(
+                run,
+                "failed",
+                &failed_bridge,
+                &failed_manifest_error)) {
+            recording_session_bridge = std::move(failed_bridge);
+        } else if (error_out) {
+            *error_out = verification_error;
+            if (!failed_manifest_error.empty()) {
+                if (!error_out->empty()) {
+                    *error_out += "; ";
+                }
+                *error_out +=
+                    "failed to publish failed recording_session manifest: " +
+                    failed_manifest_error;
+            }
+        }
     }
 
     finalization_options.status = ok ? "pass" : "fail";

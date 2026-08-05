@@ -55,4 +55,14 @@ private:
 
 std::string DeriveFrameMetadataPath(const std::string& mp4_path);
 
+// Validates the terminal join-table proof against the authoritative encoded
+// video. This is intentionally a finalization gate rather than a per-row
+// rejection so the CSV and summary retain diagnostic evidence about gaps or
+// missing clocks when a recording fails.
+bool ValidateAuthoritativeFrameMetadata(
+    const FrameMetadataSummary& summary,
+    uint64_t frames_encoded,
+    uint64_t packets_written,
+    std::string* error);
+
 }  // namespace orange::external_recorder

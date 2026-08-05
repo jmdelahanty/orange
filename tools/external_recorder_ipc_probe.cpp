@@ -5714,14 +5714,51 @@ int main(int argc, char** argv)
                 shard_summaries.push_back(worker->summary());
             }
         }
-        const MergedOutputSummary merged_summary =
+        MergedOutputSummary merged_summary =
             merged_output ? merged_output->summary() : MergedOutputSummary{};
+        EncodeSummary encode_summary = aggregate_encode_summaries(shard_summaries);
+        std::string authoritative_output_error;
+        if (!encode_workers.empty()) {
+            const uint64_t packets_written = merged_output
+                ? merged_summary.packets_written
+                : encode_summary.mp4_packets;
+            bool authoritative_output_valid =
+                packets_written == encode_summary.frames_encoded;
+            if (!authoritative_output_valid) {
+                authoritative_output_error =
+                    "authoritative video packet count does not match frames_encoded: packets=" +
+                    std::to_string(packets_written) + " frames_encoded=" +
+                    std::to_string(encode_summary.frames_encoded);
+            } else if (!merged_summary.rolling.enabled) {
+                authoritative_output_valid =
+                    orange::external_recorder::ValidateAuthoritativeFrameMetadata(
+                        merged_output
+                            ? merged_summary.frame_metadata
+                            : encode_summary.frame_metadata,
+                        encode_summary.frames_encoded,
+                        packets_written,
+                        &authoritative_output_error);
+            }
+            if (!authoritative_output_valid) {
+                if (merged_output) {
+                    merged_summary.failed = true;
+                    if (merged_summary.error_message.empty()) {
+                        merged_summary.error_message = authoritative_output_error;
+                    } else {
+                        merged_summary.error_message +=
+                            "; " + authoritative_output_error;
+                    }
+                } else if (!shard_summaries.empty()) {
+                    shard_summaries.front().failed = true;
+                }
+            }
+        }
         apply_shard_mp4_retention(
             options,
             merged_summary,
             protocol_state.descriptor_intake_completed_cleanly,
             &shard_summaries);
-        const EncodeSummary encode_summary = aggregate_encode_summaries(shard_summaries);
+        encode_summary = aggregate_encode_summaries(shard_summaries);
         write_summary_json(
             options,
             observed_session_id,
@@ -5741,7 +5778,7 @@ int main(int argc, char** argv)
             shard_summaries,
             merged_output ? &merged_summary : nullptr,
             protocol_state);
-        bool any_worker_failed = false;
+        bool any_worker_failed = encode_summary.failed;
         if (merged_output && merged_summary.failed) {
             any_worker_failed = true;
         }
@@ -5755,11 +5792,18 @@ int main(int argc, char** argv)
         }
         const bool intake_failed =
             !protocol_state.descriptor_intake_completed_cleanly;
-        const std::string terminal_error =
-            intake_failed
-                ? ("descriptor intake ended without clean finalize: " +
-                   protocol_state.descriptor_intake_end_reason)
-                : std::string{};
+        std::string terminal_error;
+        if (intake_failed) {
+            terminal_error =
+                "descriptor intake ended without clean finalize: " +
+                protocol_state.descriptor_intake_end_reason;
+        }
+        if (!authoritative_output_error.empty()) {
+            if (!terminal_error.empty()) {
+                terminal_error += "; ";
+            }
+            terminal_error += authoritative_output_error;
+        }
         write_status(
             (any_worker_failed || intake_failed) ? "failed" : "completed",
             terminal_error,

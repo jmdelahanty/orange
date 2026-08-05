@@ -344,8 +344,9 @@ def ffprobe_video(path: Path, ffprobe: str) -> dict[str, Any]:
         "error",
         "-select_streams",
         "v:0",
+        "-count_packets",
         "-show_entries",
-        "stream=width,height,duration:format=size,duration:format_tags=title,comment",
+        "stream=width,height,duration,nb_read_packets:format=size,duration:format_tags=title,comment",
         "-of",
         "json",
         str(path),
@@ -370,10 +371,15 @@ def ffprobe_video(path: Path, ffprobe: str) -> dict[str, Any]:
     stream = streams[0]
     require(as_int(stream.get("width"), "ffprobe width") > 0, f"invalid MP4 width: {path}")
     require(as_int(stream.get("height"), "ffprobe height") > 0, f"invalid MP4 height: {path}")
+    packet_count = as_int(stream.get("nb_read_packets"), "ffprobe nb_read_packets")
+    require(packet_count > 0, f"ffprobe found no video packets in {path}")
     fmt = payload.get("format")
     fmt = fmt if isinstance(fmt, dict) else {}
     tags = fmt.get("tags")
-    return {"tags": tags if isinstance(tags, dict) else {}}
+    return {
+        "tags": tags if isinstance(tags, dict) else {},
+        "packet_count": packet_count,
+    }
 
 
 def ffprobe_packet_key_flags(path: Path, ffprobe: str) -> list[str]:
@@ -514,8 +520,16 @@ def verify_frame_metadata_csv(path: Path, expected_rows: int) -> dict[str, int]:
         raise VerificationError(f"missing frame metadata CSV: {path}") from exc
     with handle:
         reader = csv.DictReader(handle)
-        required = {"recording_frame_id", "timestamp", "timestamp_sys"}
-        columns = set(reader.fieldnames or [])
+        fieldnames = list(reader.fieldnames or [])
+        require(
+            fieldnames[:3] == ["frame_id", "timestamp", "timestamp_sys"],
+            (
+                "frame metadata CSV does not preserve legacy leading columns "
+                f"frame_id,timestamp,timestamp_sys: {path}"
+            ),
+        )
+        required = {"frame_id", "recording_frame_id", "timestamp", "timestamp_sys"}
+        columns = set(fieldnames)
         require(
             required <= columns,
             f"frame metadata CSV lacks {sorted(required)}: {path}",
@@ -525,12 +539,17 @@ def verify_frame_metadata_csv(path: Path, expected_rows: int) -> dict[str, int]:
         last_frame = 0
         gaps = 0
         for row_index, row in enumerate(reader, start=2):
+            legacy_frame_id = csv_int(row, "frame_id", path, row_index)
             frame_id = csv_int(row, "recording_frame_id", path, row_index)
             timestamp = csv_int(row, "timestamp", path, row_index)
             timestamp_sys = csv_int(row, "timestamp_sys", path, row_index)
             require(
                 frame_id is not None and frame_id > 0,
                 f"invalid recording_frame_id row {row_index} in {path}",
+            )
+            require(
+                legacy_frame_id == frame_id,
+                f"frame_id != recording_frame_id row {row_index} in {path}",
             )
             require(
                 timestamp is not None and timestamp > 0,
@@ -1599,6 +1618,28 @@ def verify_summary(
         )
     require(mp4_path.exists() and mp4_path.stat().st_size > 0, f"missing or empty external MP4: {mp4_path}")
     mp4_probe = ffprobe_video(mp4_path, ffprobe)
+    if not rolling_requested:
+        reported_packets = as_int(
+            merged.get("packets_written")
+            if merged.get("enabled") is True
+            else external_encode.get("mp4_packets"),
+            "authoritative packets_written",
+        )
+        require(
+            reported_packets == frames_encoded,
+            (
+                f"authoritative packet count != frames_encoded for {serial}: "
+                f"{reported_packets} != {frames_encoded}"
+            ),
+        )
+        require(
+            as_int(mp4_probe.get("packet_count"), "ffprobe packet_count")
+            == frames_encoded,
+            (
+                f"MP4 packet count != frames_encoded for {serial}: "
+                f"{mp4_probe.get('packet_count')} != {frames_encoded}"
+            ),
+        )
     output_kind = str(summary.get("output_kind") or stream.get("output_kind") or "full")
     if output_kind == "crop":
         require_crop_mp4_key_samples(

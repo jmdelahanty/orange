@@ -180,6 +180,7 @@ def write_summary(
         "external_encode": {
             "frames_dropped": 0,
             "enqueue_age_p95_ms": enqueue_age_p95_ms,
+            "mp4_packets": 3,
         },
         "external_encode_shards": [
             {
@@ -457,6 +458,7 @@ def verify_one(
     require_runtime_status: bool = False,
     require_storage_preflight: bool = False,
     require_protocol_hello: bool = False,
+    ffprobe_packet_count: int | None = None,
 ) -> dict:
     serial = "2010096"
     stream = {
@@ -480,7 +482,12 @@ def verify_one(
     original_ffprobe = verifier.ffprobe_video
     original_ffprobe_key_flags = verifier.ffprobe_packet_key_flags
     verifier.ffprobe_video = lambda path, ffprobe: {
-        "tags": video_metadata_payload(serial)["mp4_tags_expected"]
+        "tags": video_metadata_payload(serial)["mp4_tags_expected"],
+        "packet_count": (
+            int(ffprobe_packet_count)
+            if ffprobe_packet_count is not None
+            else int(summary_payload["frames_encoded"])
+        ),
     }
     verifier.ffprobe_packet_key_flags = lambda path, ffprobe: ["K_", "K_", "K_"]
     try:
@@ -529,9 +536,9 @@ def test_single_clip_frame_metadata_is_required_and_complete() -> None:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         metadata_path = Path(summary["frame_metadata"]["path"])
         metadata_path.write_text(
-            "recording_frame_id,timestamp,timestamp_sys\n"
-            "1,1770000000000000037,1770000000000000000\n"
-            "2,1770000000033333370,1770000000033333333\n",
+            "frame_id,timestamp,timestamp_sys,recording_frame_id\n"
+            "1,1770000000000000037,1770000000000000000,1\n"
+            "2,1770000000033333370,1770000000033333333,2\n",
             encoding="utf-8",
         )
         try:
@@ -543,6 +550,89 @@ def test_single_clip_frame_metadata_is_required_and_complete() -> None:
             )
         else:
             raise AssertionError("expected incomplete single-clip metadata to fail")
+
+
+def test_single_clip_frame_metadata_identity_contract() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary_path, mp4_path = write_summary(root, "2010096")
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        metadata_path = Path(summary["frame_metadata"]["path"])
+        original = metadata_path.read_text(encoding="utf-8")
+
+        metadata_path.write_text(
+            original.replace(
+                "frame_id,timestamp,timestamp_sys",
+                "recording_frame_id,timestamp,timestamp_sys",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        try:
+            verify_one(root, summary_path, mp4_path)
+        except verifier.VerificationError as exc:
+            require(
+                "legacy leading columns" in str(exc),
+                f"unexpected legacy-column failure: {exc}",
+            )
+        else:
+            raise AssertionError("expected legacy-column order mismatch to fail")
+
+        metadata_path.write_text(
+            original.replace(
+                "2,1770000000033333370,1770000000033333333,2,",
+                "9,1770000000033333370,1770000000033333333,2,",
+                1,
+            ),
+            encoding="utf-8",
+        )
+        try:
+            verify_one(root, summary_path, mp4_path)
+        except verifier.VerificationError as exc:
+            require(
+                "frame_id != recording_frame_id" in str(exc),
+                f"unexpected frame-identity failure: {exc}",
+            )
+        else:
+            raise AssertionError("expected frame identity mismatch to fail")
+
+
+def test_single_clip_packet_parity_is_required() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary_path, mp4_path = write_summary(root, "2010096")
+        rewrite_summary(
+            summary_path,
+            lambda payload: payload["external_encode"].update({"mp4_packets": 2}),
+        )
+        try:
+            verify_one(root, summary_path, mp4_path)
+        except verifier.VerificationError as exc:
+            require(
+                "authoritative packet count != frames_encoded" in str(exc),
+                f"unexpected reported-packet failure: {exc}",
+            )
+        else:
+            raise AssertionError("expected reported packet mismatch to fail")
+
+        rewrite_summary(
+            summary_path,
+            lambda payload: payload["external_encode"].update({"mp4_packets": 3}),
+        )
+        try:
+            verify_one(
+                root,
+                summary_path,
+                mp4_path,
+                ffprobe_packet_count=2,
+            )
+        except verifier.VerificationError as exc:
+            require(
+                "MP4 packet count != frames_encoded" in str(exc),
+                f"unexpected actual-packet failure: {exc}",
+            )
+        else:
+            raise AssertionError("expected actual MP4 packet mismatch to fail")
 
 
 def test_queue_threshold_failures() -> None:
@@ -864,7 +954,8 @@ def test_crop_external_mp4_requires_all_packet_key_samples() -> None:
         original_ffprobe = verifier.ffprobe_video
         original_ffprobe_key_flags = verifier.ffprobe_packet_key_flags
         verifier.ffprobe_video = lambda path, ffprobe: {
-            "tags": video_metadata_payload(serial, output_kind="crop")["mp4_tags_expected"]
+            "tags": video_metadata_payload(serial, output_kind="crop")["mp4_tags_expected"],
+            "packet_count": 3,
         }
         verifier.ffprobe_packet_key_flags = lambda path, ffprobe: ["K_", "__", "K_"]
         try:
@@ -1112,7 +1203,8 @@ def test_multi_shard_shard_mp4_retention_contract() -> None:
         }
         original_ffprobe = verifier.ffprobe_video
         verifier.ffprobe_video = lambda path, ffprobe: {
-            "tags": video_metadata_payload(serial)["mp4_tags_expected"]
+            "tags": video_metadata_payload(serial)["mp4_tags_expected"],
+            "packet_count": 4,
         }
         try:
             result = verifier.verify_summary(
@@ -1167,6 +1259,8 @@ def main() -> int:
     tests = [
         test_queue_thresholds_pass_and_summarize,
         test_single_clip_frame_metadata_is_required_and_complete,
+        test_single_clip_frame_metadata_identity_contract,
+        test_single_clip_packet_parity_is_required,
         test_queue_threshold_failures,
         test_video_metadata_comment_mismatch_fails,
         test_queue_high_water_falls_back_to_detach_csv,
