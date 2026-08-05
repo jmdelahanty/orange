@@ -304,13 +304,12 @@ bool gui_validate_frame_metadata_csv(const std::string& path,
         stats.last_recording_frame_id = frame_id;
         stats.rows++;
     }
-    if (stats.rows != expected_rows || stats.recording_frame_id_gaps != 0) {
+    if (stats.rows != expected_rows) {
         if (error_out) {
             *error_out =
                 "frame metadata CSV is incomplete: rows=" +
                 std::to_string(stats.rows) + " expected=" +
-                std::to_string(expected_rows) + " gaps=" +
-                std::to_string(stats.recording_frame_id_gaps) + " path=" + path;
+                std::to_string(expected_rows) + " path=" + path;
         }
         return false;
     }
@@ -630,6 +629,7 @@ bool gui_write_external_rolling_recording_session_manifest(
         const int fps = std::max(
             1,
             summary.value("fps", stream.encode_fps > 0 ? stream.encode_fps : 100));
+        uint64_t previous_clip_last_frame = 0;
 
         for (const nlohmann::json& clip : summary_clips) {
             if (!clip.is_object()) {
@@ -648,6 +648,7 @@ bool gui_write_external_rolling_recording_session_manifest(
                 clips_by_index[clip_index];
             if (manifest_clip.clip_id.empty()) {
                 manifest_clip.producer = "orange_gui_external_ipc";
+                manifest_clip.output_backend = "external_ipc";
                 manifest_clip.session_id = session_id;
                 manifest_clip.clip_index = clip_index;
                 manifest_clip.clip_id =
@@ -675,6 +676,8 @@ bool gui_write_external_rolling_recording_session_manifest(
                 gui_json_u64_or(clip, "first_recording_frame_id", 0ULL);
             const uint64_t last_frame =
                 gui_json_u64_or(clip, "last_recording_frame_id", 0ULL);
+            const uint64_t frame_id_gaps =
+                gui_json_u64_or(clip, "recording_frame_id_gaps", 0ULL);
             const uint64_t packets_written =
                 gui_json_u64_or(clip, "packets_written", 0ULL);
             const std::string mp4 =
@@ -683,13 +686,33 @@ bool gui_write_external_rolling_recording_session_manifest(
                 clip.value("metadata", std::string());
             const std::string keyframes =
                 clip.value("keyframes", std::string());
-            const bool clip_artifacts_ok =
-                frame_count > 0 &&
-                packets_written > 0 &&
-                !mp4.empty() &&
-                std::filesystem::exists(mp4) &&
+            GuiFrameMetadataCsvStats clip_metadata_stats;
+            std::string clip_metadata_error;
+            const uint64_t gap_before_clip =
+                first_frame > previous_clip_last_frame + 1
+                    ? first_frame - previous_clip_last_frame - 1
+                    : 0;
+            const bool clip_metadata_ok =
                 !metadata.empty() &&
                 std::filesystem::exists(metadata) &&
+                gui_validate_frame_metadata_csv(
+                    metadata,
+                    frame_count,
+                    &clip_metadata_stats,
+                    &clip_metadata_error) &&
+                clip_metadata_stats.first_recording_frame_id == first_frame &&
+                clip_metadata_stats.last_recording_frame_id == last_frame &&
+                clip_metadata_stats.recording_frame_id_gaps + gap_before_clip ==
+                    frame_id_gaps;
+            previous_clip_last_frame = std::max(
+                previous_clip_last_frame,
+                last_frame);
+            const bool clip_artifacts_ok =
+                frame_count > 0 &&
+                packets_written == frame_count &&
+                !mp4.empty() &&
+                std::filesystem::exists(mp4) &&
+                clip_metadata_ok &&
                 !keyframes.empty() &&
                 std::filesystem::exists(keyframes);
             if (!clip_artifacts_ok) {
@@ -719,7 +742,7 @@ bool gui_write_external_rolling_recording_session_manifest(
             camera_artifact.frame_count = frame_count;
             camera_artifact.first_recording_frame_id = first_frame;
             camera_artifact.last_recording_frame_id = last_frame;
-            camera_artifact.recording_frame_id_gaps = 0;
+            camera_artifact.recording_frame_id_gaps = frame_id_gaps;
             camera_artifact.packet_count = packets_written;
             camera_artifact.packet_count_source =
                 "external_recorder_summary.packets_written";
@@ -740,7 +763,7 @@ bool gui_write_external_rolling_recording_session_manifest(
             output.frame_count = frame_count;
             output.first_recording_frame_id = first_frame;
             output.last_recording_frame_id = last_frame;
-            output.recording_frame_id_gaps = 0;
+            output.recording_frame_id_gaps = frame_id_gaps;
             output.packet_count = packets_written;
             output.packet_count_source =
                 "external_recorder_summary.packets_written";
@@ -1569,6 +1592,14 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                     summary.value("frames_received", 0ULL);
                 const uint64_t frames_encoded =
                     summary.value("frames_encoded", frames_received);
+                const uint64_t encode_skipped =
+                    summary.value("encode_skipped", 0ULL);
+                const uint64_t encode_dropped =
+                    summary.value("encode_dropped", 0ULL);
+                const bool encode_accounting_complete =
+                    frames_encoded <= frames_received &&
+                    encode_skipped == frames_received - frames_encoded &&
+                    encode_dropped == 0;
                 const uint64_t external_packets =
                     json_u64_or(external_encode, "mp4_packets", 0ULL);
                 uint64_t rolling_packets = 0;
@@ -1615,9 +1646,6 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                 if (!rolling_enabled) {
                     const uint64_t summary_metadata_rows =
                         json_u64_or(frame_metadata, "rows_written", 0ULL);
-                    const uint64_t summary_metadata_gaps =
-                        json_u64_or(
-                            frame_metadata, "recording_frame_id_gaps", 0ULL);
                     const uint64_t zero_camera_timestamps =
                         json_u64_or(
                             frame_metadata, "zero_camera_timestamp_rows", 0ULL);
@@ -1627,7 +1655,6 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                     metadata_complete =
                         !metadata.empty() &&
                         summary_metadata_rows == frames_encoded &&
-                        summary_metadata_gaps == 0 &&
                         zero_camera_timestamps == 0 &&
                         zero_system_timestamps == 0 &&
                         gui_validate_frame_metadata_csv(
@@ -1643,7 +1670,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                 }
 
                 if (worker_failed || merged_failed || frames_received == 0 ||
-                    frames_encoded == 0 || frames_encoded != frames_received ||
+                    frames_encoded == 0 || !encode_accounting_complete ||
                     packets_written != frames_encoded || mp4.empty() ||
                     !metadata_complete ||
                     !std::filesystem::exists(mp4)) {

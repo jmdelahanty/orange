@@ -46,9 +46,9 @@ void test_writer_tracks_rows_and_gaps()
     expect(summary.zero_camera_timestamp_rows == 0, "camera timestamps are populated");
     expect(summary.zero_system_timestamp_rows == 0, "system timestamps are populated");
     expect(
-        !orange::external_recorder::ValidateAuthoritativeFrameMetadata(
+        orange::external_recorder::ValidateAuthoritativeFrameMetadata(
             summary, 2, 2, &error),
-        "terminal validation rejects a recording-frame gap");
+        "terminal validation permits an intentional recording-frame gap: " + error);
 
     std::ifstream input(path);
     std::string header;

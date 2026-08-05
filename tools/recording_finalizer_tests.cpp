@@ -414,7 +414,20 @@ void test_write_external_rolling_manifest_success()
         const std::string metadata = (dir / "Cam700001_meta.csv").string();
         const std::string keyframes = (dir / "Cam700001_keyframe.json").string();
         write_text_file(mp4, "mp4");
-        write_text_file(metadata, "meta");
+        std::ostringstream metadata_csv;
+        metadata_csv
+            << "frame_id,timestamp,timestamp_sys,recording_frame_id,local_frame_id,"
+               "gop_index,frame_index_within_gop,source_gpu_id,assigned_gpu_id,"
+               "assigned_shard_id,bytes\n";
+        for (uint64_t frame_id = first_frame; frame_id <= last_frame; ++frame_id) {
+            metadata_csv
+                << frame_id << ','
+                << (1000000 + frame_id) << ','
+                << (2000000 + frame_id) << ','
+                << frame_id << ','
+                << frame_id << ",0,0,5,6,0,256\n";
+        }
+        write_text_file(metadata, metadata_csv.str());
         write_text_file(keyframes, "{}");
         const uint64_t frame_count = last_frame - first_frame + 1;
         return nlohmann::json{
@@ -496,6 +509,10 @@ void test_write_external_rolling_manifest_success()
             "manifest status should be completed");
     require(manifest_on_disk.value("clips", nlohmann::json::array()).size() == 2,
             "manifest should describe both clips");
+    require(
+        manifest_on_disk["clips"][0]["recording_outputs"]["700001"]["full"]
+                .value("backend", std::string()) == "external_ipc",
+        "rolling clip full output should preserve the external_ipc backend");
     require(manifest == manifest_on_disk,
             "manifest_out should match the manifest on disk");
 

@@ -214,14 +214,16 @@ def write_summary(
         first_clip_mp4.write_bytes(b"rolling-clip-0")
         second_clip_mp4.write_bytes(b"rolling-clip-1")
         first_clip_metadata.write_text(
-            "recording_frame_id,timestamp,timestamp_sys\n"
-            "1,100,1000\n"
-            "2,200,2000\n",
+            "frame_id,timestamp,timestamp_sys,recording_frame_id,local_frame_id,"
+            "gop_index,frame_index_within_gop,source_gpu_id,assigned_gpu_id,assigned_shard_id,bytes\n"
+            "1,100,1000,1,1,0,0,5,5,0,256\n"
+            "2,200,2000,2,2,0,1,5,5,0,256\n",
             encoding="utf-8",
         )
         second_clip_metadata.write_text(
-            "recording_frame_id,timestamp,timestamp_sys\n"
-            "3,300,3000\n",
+            "frame_id,timestamp,timestamp_sys,recording_frame_id,local_frame_id,"
+            "gop_index,frame_index_within_gop,source_gpu_id,assigned_gpu_id,assigned_shard_id,bytes\n"
+            "3,300,3000,3,3,1,0,5,5,0,256\n",
             encoding="utf-8",
         )
         first_clip_keyframes.write_text(
@@ -269,6 +271,7 @@ def write_summary(
                     "clip_id": "clip_000000",
                     "first_recording_frame_id": 1,
                     "last_recording_frame_id": 2,
+                    "recording_frame_id_gaps": 0,
                     "frame_count": 2,
                     "packets_written": 2,
                     "failed": False,
@@ -281,6 +284,7 @@ def write_summary(
                     "clip_id": "clip_000001",
                     "first_recording_frame_id": 3,
                     "last_recording_frame_id": 3,
+                    "recording_frame_id_gaps": 0,
                     "frame_count": 1,
                     "packets_written": 1,
                     "failed": False,
@@ -597,6 +601,42 @@ def test_single_clip_frame_metadata_identity_contract() -> None:
             raise AssertionError("expected frame identity mismatch to fail")
 
 
+def test_single_clip_frame_metadata_permits_intentional_rate_cap_gaps() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary_path, mp4_path = write_summary(root, "2010096")
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        metadata_path = Path(summary["frame_metadata"]["path"])
+        metadata_path.write_text(
+            "frame_id,timestamp,timestamp_sys,recording_frame_id,local_frame_id,"
+            "gop_index,frame_index_within_gop,source_gpu_id,assigned_gpu_id,assigned_shard_id,bytes\n"
+            "1,100,1000,1,1,0,0,5,5,0,256\n"
+            "3,300,3000,3,3,0,2,5,5,0,256\n"
+            "5,500,5000,5,5,0,4,5,5,0,256\n",
+            encoding="utf-8",
+        )
+        summary.update(
+            {
+                "frames_received": 5,
+                "acks_sent": 5,
+                "encode_skipped": 2,
+            }
+        )
+        summary["frame_metadata"].update(
+            {
+                "last_recording_frame_id": 5,
+                "recording_frame_id_gaps": 2,
+            }
+        )
+        summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+
+        result = verify_one(root, summary_path, mp4_path)
+        require(
+            result["frame_metadata"]["recording_frame_id_gaps"] == 2,
+            "intentional rate-cap gaps should remain reported",
+        )
+
+
 def test_single_clip_packet_parity_is_required() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -879,6 +919,28 @@ def test_rolling_output_requires_keyframe_zero() -> None:
             )
         else:
             raise AssertionError("expected rolling keyframe-zero verification failure")
+
+
+def test_rolling_full_frame_metadata_requires_canonical_leading_columns() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary_path, mp4_path = write_summary(root, "2010096", rolling=True)
+        metadata = root / "clips" / "clip_000000" / "Cam2010096_external_meta.csv"
+        metadata.write_text(
+            "recording_frame_id,timestamp,timestamp_sys\n"
+            "1,100,1000\n"
+            "2,200,2000\n",
+            encoding="utf-8",
+        )
+        try:
+            verify_one(root, summary_path, mp4_path)
+        except verifier.VerificationError as exc:
+            require(
+                "does not preserve legacy leading columns" in str(exc),
+                f"unexpected rolling metadata schema failure: {exc}",
+            )
+        else:
+            raise AssertionError("expected rolling metadata schema verification failure")
 
 
 def test_status_sidecar_passes_and_summarizes() -> None:
@@ -1260,6 +1322,7 @@ def main() -> int:
         test_queue_thresholds_pass_and_summarize,
         test_single_clip_frame_metadata_is_required_and_complete,
         test_single_clip_frame_metadata_identity_contract,
+        test_single_clip_frame_metadata_permits_intentional_rate_cap_gaps,
         test_single_clip_packet_parity_is_required,
         test_queue_threshold_failures,
         test_video_metadata_comment_mismatch_fails,
@@ -1268,6 +1331,7 @@ def main() -> int:
         test_storage_preflight_failures,
         test_rolling_output_uses_summary_recording_control,
         test_rolling_output_requires_keyframe_zero,
+        test_rolling_full_frame_metadata_requires_canonical_leading_columns,
         test_status_sidecar_passes_and_summarizes,
         test_stream_kind_and_output_kind_match_contract,
         test_crop_external_mp4_requires_all_packet_key_samples,

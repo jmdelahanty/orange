@@ -1550,7 +1550,7 @@ nlohmann::json build_rolling_clip_entry_json(
     std::vector<RecordingOutputDescriptor> recording_outputs =
         build_full_recording_output_descriptors(
             clip.cameras,
-            "in_process",
+            clip.output_backend.empty() ? "in_process" : clip.output_backend,
             clip.status);
     recording_outputs.insert(
         recording_outputs.end(),

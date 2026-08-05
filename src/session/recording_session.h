@@ -190,6 +190,7 @@ struct SingleClipRecordingSessionManifestOptions {
 
 struct RollingClipManifestOptions {
     std::string producer = "orange";
+    std::string output_backend = "in_process";
     std::string session_id;
     int clip_index = 0;
     std::string clip_id;

@@ -29,9 +29,11 @@ struct FrameMetadataSummary {
     uint64_t zero_system_timestamp_rows = 0;
 };
 
-// Writes the authoritative frame-clock join table for a non-rolling external
-// recorder video. Rows are accepted only in strictly increasing recording
-// frame order so a successful summary proves both row count and continuity.
+// Writes the authoritative frame-clock join table for an external recorder
+// video, including each authoritative rolling clip. Rows are accepted only in
+// strictly increasing recording-frame order so a successful summary proves
+// row identity and encoded-frame parity. Numeric gaps remain valid when the
+// recorder intentionally skips source frames (for example, a rate cap).
 class FrameMetadataCsvWriter {
 public:
     FrameMetadataCsvWriter() = default;

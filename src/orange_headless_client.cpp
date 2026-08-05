@@ -6074,6 +6074,8 @@ bool write_supervised_external_recorder_single_clip_manifest(
             merged.is_object() && merged.value("enabled", false);
         const uint64_t frames_received = summary.value("frames_received", 0ULL);
         const uint64_t frames_encoded = summary.value("frames_encoded", 0ULL);
+        const uint64_t encode_skipped = summary.value("encode_skipped", 0ULL);
+        const uint64_t encode_dropped = summary.value("encode_dropped", 0ULL);
         const uint64_t metadata_rows =
             frame_metadata.value("rows_written", 0ULL);
         const uint64_t metadata_gaps =
@@ -6103,9 +6105,13 @@ bool write_supervised_external_recorder_single_clip_manifest(
             ? merged.value("packets_written", 0ULL)
             : external_encode.value("mp4_packets", 0ULL);
 
+        const bool encode_accounting_complete =
+            frames_encoded <= frames_received &&
+            encode_skipped == frames_received - frames_encoded &&
+            encode_dropped == 0;
         if (summary.value("worker_failed", false) || frames_received == 0 ||
-            frames_encoded != frames_received || metadata_rows != frames_encoded ||
-            metadata_gaps != 0 || zero_camera_timestamps != 0 ||
+            frames_encoded == 0 || !encode_accounting_complete ||
+            metadata_rows != frames_encoded || zero_camera_timestamps != 0 ||
             zero_system_timestamps != 0 || packets_written != frames_encoded ||
             mp4.empty() ||
             metadata.empty() || !std::filesystem::exists(mp4) ||
@@ -6350,6 +6356,7 @@ bool write_supervised_external_recorder_recording_session_manifest(
                 clips_by_index[clip_index];
             if (manifest_clip.clip_id.empty()) {
                 manifest_clip.producer = "orange_headless_external_ipc";
+                manifest_clip.output_backend = "external_ipc";
                 manifest_clip.session_id = run.run_id;
                 manifest_clip.clip_index = clip_index;
                 manifest_clip.clip_id =
@@ -6370,6 +6377,8 @@ bool write_supervised_external_recorder_recording_session_manifest(
             const uint64_t frame_count = clip.value("frame_count", 0ULL);
             const uint64_t first_frame = clip.value("first_recording_frame_id", 0ULL);
             const uint64_t last_frame = clip.value("last_recording_frame_id", 0ULL);
+            const uint64_t frame_id_gaps =
+                clip.value("recording_frame_id_gaps", 0ULL);
             if (first_frame > 0 &&
                 (manifest_clip.first_recording_frame_id == 0 ||
                  first_frame < manifest_clip.first_recording_frame_id)) {
@@ -6391,7 +6400,7 @@ bool write_supervised_external_recorder_recording_session_manifest(
             camera_artifact.frame_count = frame_count;
             camera_artifact.first_recording_frame_id = first_frame;
             camera_artifact.last_recording_frame_id = last_frame;
-            camera_artifact.recording_frame_id_gaps = 0;
+            camera_artifact.recording_frame_id_gaps = frame_id_gaps;
             camera_artifact.packet_count = clip.value("packets_written", 0ULL);
             camera_artifact.packet_count_source = "external_recorder_summary.packets_written";
             manifest_clip.cameras.push_back(std::move(camera_artifact));

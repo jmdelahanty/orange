@@ -178,11 +178,6 @@ bool ValidateAuthoritativeFrameMetadata(
         summary.last_recording_frame_id == 0) {
         return fail("first or last recording_frame_id is zero");
     }
-    if (summary.recording_frame_id_gaps != 0) {
-        return fail(
-            "recording_frame_id_gaps=" +
-            std::to_string(summary.recording_frame_id_gaps));
-    }
     if (summary.zero_camera_timestamp_rows != 0) {
         return fail(
             "zero_camera_timestamp_rows=" +

@@ -573,7 +573,6 @@ def verify_frame_metadata_csv(path: Path, expected_rows: int) -> dict[str, int]:
         rows == expected_rows,
         f"frame metadata rows do not match frames_encoded for {path}: {rows} != {expected_rows}",
     )
-    require(gaps == 0, f"frame metadata has {gaps} recording-frame gaps: {path}")
     return {
         "rows": rows,
         "first_recording_frame_id": first_frame,
@@ -921,9 +920,22 @@ def verify_rolling_output(
                 label=f"rolling crop clip {expected_index} MP4 for {serial}",
                 expected_packet_count=frame_count,
             )
-        require(first_frame == expected_next_frame, f"rolling frame continuity break for {serial}: expected {expected_next_frame}, got {first_frame}")
-        require(last_frame == first_frame + frame_count - 1, f"rolling frame range mismatch for {serial}: {clip.get('clip_id')}")
+        if output_kind == "full":
+            require(
+                first_frame >= expected_next_frame,
+                f"rolling frame order break for {serial}: previous end {expected_next_frame - 1}, got {first_frame}",
+            )
+            require(
+                last_frame >= first_frame + frame_count - 1,
+                f"rolling frame range cannot contain {frame_count} encoded frames for {serial}: {clip.get('clip_id')}",
+            )
+        else:
+            require(first_frame == expected_next_frame, f"rolling frame continuity break for {serial}: expected {expected_next_frame}, got {first_frame}")
+            require(last_frame == first_frame + frame_count - 1, f"rolling frame range mismatch for {serial}: {clip.get('clip_id')}")
         metadata_rows = read_metadata_frame_rows(metadata_path)
+        full_metadata_result: dict[str, int] | None = None
+        if output_kind == "full":
+            full_metadata_result = verify_frame_metadata_csv(metadata_path, frame_count)
         require(
             len(metadata_rows) == frame_count,
             f"rolling metadata rows mismatch for {serial}: {metadata_path}",
@@ -977,16 +989,31 @@ def verify_rolling_output(
                 expected_next_session_index = (
                     first_session_index + len(clip_session_indexes)
                 )
-        for left, right in zip(metadata_rows, metadata_rows[1:]):
-            left_frame = left["recording_frame_id"]
-            right_frame = right["recording_frame_id"]
-            require(
-                right_frame == left_frame + 1,
-                (
-                    f"rolling metadata frame gap inside {metadata_path}: "
-                    f"{left_frame} -> {right_frame}"
-                ),
-            )
+        if output_kind == "full":
+            require(full_metadata_result is not None, "full-frame metadata result missing")
+            if "recording_frame_id_gaps" in clip:
+                gap_before_clip = max(0, first_frame - expected_next_frame)
+                require(
+                    as_int(
+                        clip.get("recording_frame_id_gaps"),
+                        "rolling clip recording_frame_id_gaps",
+                    ) == (
+                        full_metadata_result["recording_frame_id_gaps"]
+                        + gap_before_clip
+                    ),
+                    f"rolling clip metadata gap summary mismatch for {serial}: {metadata_path}",
+                )
+        else:
+            for left, right in zip(metadata_rows, metadata_rows[1:]):
+                left_frame = left["recording_frame_id"]
+                right_frame = right["recording_frame_id"]
+                require(
+                    right_frame == left_frame + 1,
+                    (
+                        f"rolling metadata frame gap inside {metadata_path}: "
+                        f"{left_frame} -> {right_frame}"
+                    ),
+                )
         verified_clips.append(
             {
                 "clip_index": expected_index,
@@ -1599,8 +1626,8 @@ def verify_summary(
             as_int(
                 frame_metadata_summary.get("recording_frame_id_gaps"),
                 "frame_metadata.recording_frame_id_gaps",
-            ) == 0,
-            f"frame metadata summary reports frame gaps for {serial}",
+            ) == frame_metadata_result["recording_frame_id_gaps"],
+            f"frame metadata summary gap count mismatch for {serial}",
         )
         require(
             as_int(

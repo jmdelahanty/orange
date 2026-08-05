@@ -2025,6 +2025,7 @@ struct RollingClipOutputSummary {
     std::string keyframe_path;
     uint64_t first_recording_frame_id = 0;
     uint64_t last_recording_frame_id = 0;
+    uint64_t recording_frame_id_gaps = 0;
     uint64_t frame_count = 0;
     uint64_t packets_written = 0;
     uint64_t bytes_written = 0;
@@ -2876,12 +2877,37 @@ private:
             clip_writer_.reset();
         }
         if (clip_metadata_) {
-            clip_metadata_->flush();
+            std::string metadata_error;
+            const orange::external_recorder::FrameMetadataSummary metadata_summary =
+                clip_metadata_->summary();
+            if (!clip_metadata_->Close(&metadata_error)) {
+                fail_locked(metadata_error);
+            }
+            if (current_clip_summary_.frame_count > 0 &&
+                !orange::external_recorder::ValidateAuthoritativeFrameMetadata(
+                    metadata_summary,
+                    current_clip_summary_.frame_count,
+                    current_clip_summary_.packets_written,
+                    &metadata_error)) {
+                fail_locked(metadata_error);
+            }
+            current_clip_summary_.recording_frame_id_gaps =
+                metadata_summary.recording_frame_id_gaps;
             clip_metadata_.reset();
         }
         if (current_clip_index_ >= 0 &&
             (current_clip_summary_.frame_count > 0 ||
              current_clip_summary_.packets_written > 0)) {
+            const uint64_t previous_recording_frame_id =
+                clip_summaries_.empty()
+                    ? 0
+                    : clip_summaries_.back().last_recording_frame_id;
+            if (current_clip_summary_.first_recording_frame_id >
+                previous_recording_frame_id + 1) {
+                current_clip_summary_.recording_frame_id_gaps +=
+                    current_clip_summary_.first_recording_frame_id -
+                    previous_recording_frame_id - 1;
+            }
             clip_summaries_.push_back(current_clip_summary_);
         }
         current_clip_summary_ = RollingClipOutputSummary{};
@@ -2914,21 +2940,18 @@ private:
         ensure_parent_directory(current_clip_summary_.mp4_path);
         ensure_parent_directory(current_clip_summary_.metadata_path);
         ensure_parent_directory(current_clip_summary_.keyframe_path);
+        clip_metadata_ =
+            std::make_unique<orange::external_recorder::FrameMetadataCsvWriter>();
+        std::string metadata_error;
         {
             orange::ScopedFsuid fsuid_guard;
             (void)fsuid_guard;
-            clip_metadata_ = std::make_unique<std::ofstream>(
-                current_clip_summary_.metadata_path,
-                std::ios::out | std::ios::trunc);
+            if (!clip_metadata_->Open(
+                    current_clip_summary_.metadata_path,
+                    &metadata_error)) {
+                throw std::runtime_error(metadata_error);
+            }
         }
-        if (!clip_metadata_ || !*clip_metadata_) {
-            throw std::runtime_error(
-                "failed to open rolling clip metadata: " +
-                current_clip_summary_.metadata_path);
-        }
-        *clip_metadata_
-            << "recording_frame_id,local_frame_id,gop_index,frame_index_within_gop,"
-               "timestamp,timestamp_sys,source_gpu_id,assigned_gpu_id,assigned_shard_id,bytes\n";
 
         const AVCodecID codec_id =
             options_.codec == "h264" ? AV_CODEC_ID_H264 : AV_CODEC_ID_HEVC;
@@ -2972,17 +2995,22 @@ private:
                 return lhs.recording_frame_id < rhs.recording_frame_id;
             });
         for (const SubmittedFrame& frame : gop.frames) {
-            *clip_metadata_
-                << frame.recording_frame_id << ","
-                << frame.local_frame_id << ","
-                << frame.gop_index << ","
-                << frame.frame_index_within_gop << ","
-                << frame.timestamp << ","
-                << frame.timestamp_sys << ","
-                << frame.source_gpu_id << ","
-                << frame.assigned_gpu_id << ","
-                << frame.assigned_shard_id << ","
-                << frame.bytes << "\n";
+            std::string metadata_error;
+            if (!clip_metadata_->Write(
+                    orange::external_recorder::FrameMetadataRecord{
+                        frame.recording_frame_id,
+                        frame.local_frame_id,
+                        frame.gop_index,
+                        frame.frame_index_within_gop,
+                        frame.timestamp,
+                        frame.timestamp_sys,
+                        frame.source_gpu_id,
+                        frame.assigned_gpu_id,
+                        frame.assigned_shard_id,
+                        frame.bytes},
+                    &metadata_error)) {
+                fail_locked(metadata_error);
+            }
             if (current_clip_summary_.first_recording_frame_id == 0 ||
                 frame.recording_frame_id <
                     current_clip_summary_.first_recording_frame_id) {
@@ -2994,6 +3022,10 @@ private:
                     current_clip_summary_.last_recording_frame_id,
                     frame.recording_frame_id);
             current_clip_summary_.frame_count++;
+        }
+        std::string metadata_error;
+        if (!clip_metadata_->Flush(&metadata_error)) {
+            fail_locked(metadata_error);
         }
     }
 
@@ -3179,7 +3211,8 @@ private:
     orange::external_recorder::ipc::SubmittedFrameIdentityRegistry submitted_identities_;
     std::unique_ptr<FFmpegWriter> writer_;
     std::unique_ptr<FFmpegWriter> clip_writer_;
-    std::unique_ptr<std::ofstream> clip_metadata_;
+    std::unique_ptr<orange::external_recorder::FrameMetadataCsvWriter>
+        clip_metadata_;
     orange::external_recorder::FrameMetadataCsvWriter session_frame_metadata_;
     std::vector<RollingClipOutputSummary> clip_summaries_;
     RollingClipOutputSummary current_clip_summary_;
@@ -4968,6 +5001,8 @@ void write_summary_json(const Options& options,
             << clip.first_recording_frame_id << ",\n";
         out << "        \"last_recording_frame_id\": "
             << clip.last_recording_frame_id << ",\n";
+        out << "        \"recording_frame_id_gaps\": "
+            << clip.recording_frame_id_gaps << ",\n";
         out << "        \"frame_count\": " << clip.frame_count << ",\n";
         out << "        \"packets_written\": " << clip.packets_written << ",\n";
         out << "        \"bytes_written\": " << clip.bytes_written << ",\n";

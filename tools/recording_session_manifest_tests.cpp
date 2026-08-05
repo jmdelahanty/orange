@@ -189,6 +189,7 @@ void test_rolling_manifest_emits_session_aggregate_and_clip_crop_outputs()
 
     orange::session::RollingClipManifestOptions clip;
     clip.producer = "orange_gui_external_ipc";
+    clip.output_backend = "external_ipc";
     clip.session_id = "session_rolling";
     clip.clip_index = 0;
     clip.clip_id = "clip_000000";
@@ -224,6 +225,8 @@ void test_rolling_manifest_emits_session_aggregate_and_clip_crop_outputs()
         clip_outputs.value("2010096", nlohmann::json::object());
     require(clip_camera_outputs.contains("full"),
             "rolling clip should include clip-scoped full output");
+    require(clip_camera_outputs["full"].value("backend", std::string()) == "external_ipc",
+            "external rolling clip full output should preserve external_ipc backend");
     require(clip_camera_outputs.contains("crop"),
             "rolling clip should include clip-scoped crop output");
     require(clip_camera_outputs["crop"]["details"].value("scope", std::string()) == "clip",
