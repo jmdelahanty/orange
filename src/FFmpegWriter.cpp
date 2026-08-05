@@ -3,13 +3,19 @@
 #include "FFmpegWriter.h"
 #include "fsuid_guard.h"
 #include "nvtx_profiling.h"
+#include "video_container_finalization.h"
 #include <algorithm>
+#include <array>
 #include <stdexcept>
 #include <unistd.h>
 #include <filesystem>
 #ifdef __linux__
 #include <pthread.h>
 #endif
+
+extern "C" {
+#include <libavutil/error.h>
+}
 
 namespace {
 bool is_start_code(const uint8_t* data, size_t size, size_t* start_code_len) {
@@ -37,6 +43,37 @@ void update_peak(std::atomic<size_t>& peak, size_t value) {
            !peak.compare_exchange_weak(observed, value, std::memory_order_relaxed)) {
     }
 }
+
+std::string av_error_string(int error_code)
+{
+    std::array<char, AV_ERROR_MAX_STRING_SIZE> buffer{};
+    if (av_strerror(error_code, buffer.data(), buffer.size()) < 0) {
+        return "ffmpeg_error_" + std::to_string(error_code);
+    }
+    return buffer.data();
+}
+
+void persist_finalization_status(
+    const std::string& output_path,
+    int fps,
+    OrangeVideoContainerFinalization::Status status,
+    const OrangeVideoContainerFinalization::Outcome& outcome,
+    bool log_success)
+{
+    std::filesystem::path sidecar_path;
+    std::string error;
+    if (!OrangeVideoContainerFinalization::Persist(
+            output_path, fps, status, outcome, &sidecar_path, &error)) {
+        std::cerr << "FFMPEG: could not persist container finalization status for "
+                  << output_path << ": " << error << std::endl;
+        return;
+    }
+    if (log_success) {
+        std::cout << "FFMPEG: container finalization status="
+                  << OrangeVideoContainerFinalization::StatusName(status)
+                  << " sidecar=" << sidecar_path << std::endl;
+    }
+}
 } // namespace
 
 FFmpegWriterLatencyStats FFmpegWriter::latency_stats() const
@@ -53,7 +90,10 @@ FFmpegWriter::FFmpegWriter(
     const char *szOutFilePath,
     const char *metadata_file,
     const std::vector<std::pair<std::string, std::string>>& metadata_tags,
-    FFmpegWriterQueueConfig queue_config) : nFps(nFps), queue_config_(queue_config)
+    FFmpegWriterQueueConfig queue_config)
+    : nFps(nFps),
+      output_path_(szOutFilePath ? szOutFilePath : ""),
+      queue_config_(queue_config)
 {
     // Ensure output files are created as the invoking user even when running under sudo.
     orange::ScopedFsuid fsuid_guard;
@@ -90,6 +130,16 @@ FFmpegWriter::FFmpegWriter(
             av_dict_set(&oc->metadata, tag.first.c_str(), tag.second.c_str(), 0);
         }
     }
+    if (av_dict_set(&oc->metadata,
+                    OrangeVideoContainerFinalization::
+                        kFullFrameRatePlaybackIntentKey,
+                    "1", 0) < 0) {
+        avformat_free_context(oc);
+        oc = NULL;
+        throw std::runtime_error(
+            "FFmpegWriter: could not set full-frame-rate playback intent for " +
+            output_path_);
+    }
 
     vs = avformat_new_stream(oc, NULL);
     if (!vs) {
@@ -123,31 +173,108 @@ FFmpegWriter::FFmpegWriter(
             (szOutFilePath ? szOutFilePath : "(null)"));
     }
 
-    if (avformat_write_header(oc, NULL)) {
+    AVDictionary* muxer_options = nullptr;
+    if (av_dict_set(&muxer_options, "movflags", "use_metadata_tags", 0) < 0) {
         avio_closep(&oc->pb);
         avformat_free_context(oc);
         oc = NULL;
         throw std::runtime_error(
-            std::string("FFmpegWriter: avformat_write_header failed for ") +
-            (szOutFilePath ? szOutFilePath : "(null)"));
+            "FFmpegWriter: could not configure QuickTime mdta metadata for " +
+            output_path_);
+    }
+    const int header_result = avformat_write_header(oc, &muxer_options);
+    const bool movflags_unconsumed =
+        av_dict_get(muxer_options, "movflags", nullptr, 0) != nullptr;
+    av_dict_free(&muxer_options);
+    if (header_result < 0 || movflags_unconsumed) {
+        const std::string failure_detail = header_result < 0
+            ? av_error_string(header_result)
+            : "movflags=use_metadata_tags was not consumed by the MP4 muxer";
+        avio_closep(&oc->pb);
+        avformat_free_context(oc);
+        oc = NULL;
+        throw std::runtime_error(
+            std::string("FFmpegWriter: avformat_write_header or mdta option failed for ") +
+            (szOutFilePath ? szOutFilePath : "(null)") +
+            ": " + failure_detail);
     }
     open_ = true;
+
+    OrangeVideoContainerFinalization::Outcome recording_outcome;
+    recording_outcome.header_written = true;
+    persist_finalization_status(
+        output_path_, nFps,
+        OrangeVideoContainerFinalization::Status::RecordingOpen,
+        recording_outcome, false);
 }
 
 FFmpegWriter::~FFmpegWriter()
 {
+    OrangeVideoContainerFinalization::Outcome outcome;
+    outcome.header_written = open_;
+    persist_finalization_status(
+        output_path_, nFps,
+        OrangeVideoContainerFinalization::Status::Finalizing,
+        outcome, false);
+
     if (oc) {
         if (open_) {
             write_keyframe_sidecar();
             // Send a NULL packet to muxer for flushing any internally buffered frames.
-            av_interleaved_write_frame(oc, NULL);
-            av_write_trailer(oc);
+            const int flush_result = av_interleaved_write_frame(oc, NULL);
+            if (flush_result < 0) {
+                std::cerr << "FFMPEG: muxer flush failed for " << output_path_
+                          << ": " << av_error_string(flush_result) << std::endl;
+            }
+            outcome.trailer_attempted = true;
+            const int trailer_result = av_write_trailer(oc);
+            outcome.trailer_written = trailer_result >= 0;
+            if (trailer_result < 0) {
+                outcome.trailer_error_code = trailer_result;
+                outcome.trailer_error = av_error_string(trailer_result);
+                std::cerr << "FFMPEG: av_write_trailer failed for " << output_path_
+                          << ": " << outcome.trailer_error << std::endl;
+            }
+        } else {
+            outcome.trailer_error = "header_not_written";
         }
         if (oc->pb) {
-            avio_closep(&oc->pb);
+            outcome.output_close_attempted = true;
+            const int close_result = avio_closep(&oc->pb);
+            outcome.output_closed = close_result >= 0;
+            if (close_result < 0) {
+                outcome.output_close_error_code = close_result;
+                outcome.output_close_error = av_error_string(close_result);
+                std::cerr << "FFMPEG: avio_closep failed for " << output_path_
+                          << ": " << outcome.output_close_error << std::endl;
+            }
+        } else {
+            outcome.output_close_error = "output_io_context_unavailable";
         }
         avformat_free_context(oc);
+        oc = nullptr;
+        open_ = false;
+    } else {
+        outcome.trailer_error = "format_context_unavailable";
+        outcome.output_close_error = "format_context_unavailable";
     }
+
+    if (outcome.trailer_written && outcome.output_closed) {
+        outcome.playback_intent_patch_attempted = true;
+        if (!OrangeVideoContainerFinalization::
+                PatchFullFrameRatePlaybackIntent(
+                    output_path_, &outcome.playback_intent_patch_error)) {
+            std::cerr << "FFMPEG: " << outcome.playback_intent_patch_error
+                      << " for " << output_path_ << std::endl;
+        } else {
+            outcome.playback_intent_patch_applied = true;
+        }
+    }
+
+    const auto terminal_status =
+        OrangeVideoContainerFinalization::ClassifyTerminalStatus(outcome);
+    persist_finalization_status(
+        output_path_, nFps, terminal_status, outcome, true);
 }
 
 void FFmpegWriter::push_packet(uint8_t* pData,

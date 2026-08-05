@@ -5,9 +5,12 @@
 // open/close container paths only; no real encoding is required.
 
 #include "FFmpegWriter.h"
+#include "json.hpp"
+#include "video_container_finalization.h"
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -29,6 +32,17 @@ std::filesystem::path make_temp_dir()
     char* created = mkdtemp(tmpl.data());
     expect(created != nullptr, "mkdtemp failed");
     return std::filesystem::path(created);
+}
+
+nlohmann::json read_json(const std::filesystem::path& path)
+{
+    std::ifstream input(path);
+    expect(input.is_open(), "could not open JSON sidecar: " + path.string());
+    nlohmann::json value;
+    input >> value;
+    expect(input.good() || input.eof(),
+           "could not parse JSON sidecar: " + path.string());
+    return value;
 }
 
 void test_open_failure_throws()
@@ -54,12 +68,23 @@ void test_successful_open_and_finalize()
 {
     const std::filesystem::path dir = make_temp_dir();
     const std::string out_path = (dir / "out.mp4").string();
+    const std::filesystem::path finalization_path =
+        OrangeVideoContainerFinalization::SidecarPathFor(out_path);
 
     {
-        FFmpegWriter writer(AV_CODEC_ID_H264, 640, 480, 30, out_path.c_str(), nullptr);
+        const std::vector<std::pair<std::string, std::string>> metadata_tags = {
+            {"title", "Orange 700 fps container test"},
+            {"comment", "high-frame-rate scientific acquisition"},
+        };
+        FFmpegWriter writer(AV_CODEC_ID_H264, 640, 480, 700,
+                            out_path.c_str(), nullptr, metadata_tags);
         expect(writer.is_open(), "a constructed writer must be open");
         expect(!writer.writer_thread_failed(),
                "a fresh writer must not report a writer-thread failure");
+        const nlohmann::json open_status = read_json(finalization_path);
+        expect(open_status.at("status") == "recording_open" &&
+                   !open_status.at("terminal").get<bool>(),
+               "an open writer must have a nonterminal lifecycle sidecar");
         writer.create_thread();
         writer.quit_thread();
         writer.join_thread();
@@ -68,6 +93,114 @@ void test_successful_open_and_finalize()
     expect(std::filesystem::exists(out_path), "output container must exist");
     expect(std::filesystem::file_size(out_path) > 0,
            "output container must be finalized (non-empty)");
+
+    const nlohmann::json finalization = read_json(finalization_path);
+    expect(finalization.at("schema_id") ==
+               "orange.video_container_finalization",
+           "finalization sidecar has the wrong schema identity");
+    expect(finalization.at("status") == "complete" &&
+               finalization.at("terminal").get<bool>(),
+           "finalization sidecar must reach terminal-complete");
+    expect(finalization.at("recording_fps") == 700,
+           "finalization sidecar must preserve the 700 fps rate");
+    expect(finalization.at("container").at("finalized").get<bool>(),
+           "finalization sidecar must prove trailer and close success");
+    expect(finalization.at("quicktime_full_frame_rate_playback_intent")
+               .at("patch_applied")
+               .get<bool>(),
+           "finalization sidecar must prove the typed playback-intent patch");
+
+    AVFormatContext* input = nullptr;
+    expect(avformat_open_input(&input, out_path.c_str(), nullptr, nullptr) >= 0,
+           "FFmpeg could not reopen the finalized MP4");
+    const AVDictionaryEntry* intent = av_dict_get(
+        input->metadata,
+        OrangeVideoContainerFinalization::kFullFrameRatePlaybackIntentKey,
+        nullptr, 0);
+    expect(intent != nullptr && std::string(intent->value) == "1",
+           "demuxer did not recover full-frame-rate playback intent");
+    const AVDictionaryEntry* title =
+        av_dict_get(input->metadata, "title", nullptr, 0);
+    const AVDictionaryEntry* comment =
+        av_dict_get(input->metadata, "comment", nullptr, 0);
+    expect(title != nullptr &&
+               std::string(title->value) == "Orange 700 fps container test",
+           "existing title metadata was not preserved through mdta encoding");
+    expect(comment != nullptr &&
+               std::string(comment->value) ==
+                   "high-frame-rate scientific acquisition",
+           "existing comment metadata was not preserved through mdta encoding");
+    avformat_close_input(&input);
+
+    std::filesystem::remove_all(dir);
+}
+
+void test_finalization_status_classification()
+{
+    using OrangeVideoContainerFinalization::ClassifyTerminalStatus;
+    using OrangeVideoContainerFinalization::Outcome;
+    using OrangeVideoContainerFinalization::Status;
+
+    Outcome complete;
+    complete.header_written = true;
+    complete.trailer_written = true;
+    complete.output_closed = true;
+    complete.playback_intent_patch_applied = true;
+    expect(ClassifyTerminalStatus(complete) == Status::Complete,
+           "successful finalization must classify complete");
+
+    Outcome degraded = complete;
+    degraded.playback_intent_patch_applied = false;
+    expect(ClassifyTerminalStatus(degraded) ==
+               Status::DegradedPlaybackIntentUnpatched,
+           "patch-only failure must classify as degraded");
+
+    Outcome failed = complete;
+    failed.trailer_written = false;
+    expect(ClassifyTerminalStatus(failed) ==
+               Status::ContainerFinalizationFailed,
+           "trailer failure must classify as container failure");
+}
+
+void test_queue_byte_limit_fails_closed_before_enqueuing()
+{
+    const std::filesystem::path dir = make_temp_dir();
+    const std::string out_path = (dir / "bounded.mp4").string();
+    FFmpegWriterQueueConfig queue_config;
+    queue_config.max_queued_packets = 1;
+    queue_config.max_queued_bytes = 3;
+
+    {
+        FFmpegWriter writer(
+            AV_CODEC_ID_H264,
+            640,
+            480,
+            30,
+            out_path.c_str(),
+            nullptr,
+            {},
+            queue_config);
+        const uint8_t oversized_packet[] = {0, 0, 1, 0x65};
+        writer.push_packet(
+            const_cast<uint8_t*>(oversized_packet),
+            static_cast<int>(sizeof(oversized_packet)),
+            0);
+        expect(writer.has_queue_overflowed(),
+               "an encoded packet above the byte ceiling must latch overflow");
+        expect(writer.queue_overflow_events() == 1,
+               "the rejected packet must produce one overflow event");
+        expect(writer.queued_packets() == 0 && writer.queued_bytes() == 0,
+               "an over-limit packet must not enter the writer queue");
+        expect(writer.peak_queued_packets() == 0 &&
+                   writer.peak_queued_bytes() == 0,
+               "a rejected packet must not inflate queue peaks");
+        expect(writer.queue_config().max_queued_packets == 1 &&
+                   writer.queue_config().max_queued_bytes == 3,
+               "the writer must preserve its explicit hard queue contract");
+        writer.create_thread();
+        writer.quit_thread();
+        writer.join_thread();
+    }
 
     std::filesystem::remove_all(dir);
 }
@@ -100,6 +233,10 @@ int main()
     const TestCase tests[] = {
         {"open_failure_throws", &test_open_failure_throws},
         {"successful_open_and_finalize", &test_successful_open_and_finalize},
+        {"finalization_status_classification",
+         &test_finalization_status_classification},
+        {"queue_byte_limit_fails_closed_before_enqueuing",
+         &test_queue_byte_limit_fails_closed_before_enqueuing},
         {"failed_construction_leaves_no_object",
          &test_failed_construction_leaves_no_file_behind_null_path_guard},
     };

@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange_video_container_finalization.schema.json",
+  "title": "Orange video-container finalization lifecycle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "generated_at_utc",
+    "status",
+    "terminal",
+    "video_path",
+    "sidecar_path",
+    "recording_fps",
+    "container",
+    "quicktime_full_frame_rate_playback_intent"
+  ],
+  "properties": {
+    "schema_id": { "const": "orange.video_container_finalization" },
+    "schema_version": { "const": 1 },
+    "generated_at_utc": { "type": "string", "format": "date-time" },
+    "status": {
+      "enum": [
+        "recording_open",
+        "finalizing",
+        "complete",
+        "degraded_playback_intent_unpatched",
+        "container_finalization_failed"
+      ]
+    },
+    "terminal": { "type": "boolean" },
+    "video_path": { "type": "string", "minLength": 1 },
+    "sidecar_path": { "type": "string", "minLength": 1 },
+    "recording_fps": { "type": "integer", "minimum": 1 },
+    "container": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "header_written",
+        "trailer_attempted",
+        "trailer_written",
+        "output_close_attempted",
+        "output_closed",
+        "finalized",
+        "trailer_error_code",
+        "trailer_error",
+        "output_close_error_code",
+        "output_close_error",
+        "file_size_bytes",
+        "file_size_error"
+      ],
+      "properties": {
+        "header_written": { "type": "boolean" },
+        "trailer_attempted": { "type": "boolean" },
+        "trailer_written": { "type": "boolean" },
+        "output_close_attempted": { "type": "boolean" },
+        "output_closed": { "type": "boolean" },
+        "finalized": { "type": "boolean" },
+        "trailer_error_code": { "type": ["integer", "null"] },
+        "trailer_error": { "type": ["string", "null"] },
+        "output_close_error_code": { "type": ["integer", "null"] },
+        "output_close_error": { "type": ["string", "null"] },
+        "file_size_bytes": { "type": ["integer", "null"], "minimum": 0 },
+        "file_size_error": { "type": ["string", "null"] }
+      }
+    },
+    "quicktime_full_frame_rate_playback_intent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "requested_value",
+        "required_data_type",
+        "quicktime_data_atom_type",
+        "patch_attempted",
+        "patch_applied",
+        "error"
+      ],
+      "properties": {
+        "key": {
+          "const": "com.apple.quicktime.full-frame-rate-playback-intent"
+        },
+        "requested_value": { "const": 1 },
+        "required_data_type": { "const": "UInt8" },
+        "quicktime_data_atom_type": { "const": 22 },
+        "patch_attempted": { "type": "boolean" },
+        "patch_applied": { "type": "boolean" },
+        "error": { "type": ["string", "null"] }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": { "enum": ["recording_open", "finalizing"] }
+        },
+        "required": ["status"]
+      },
+      "then": { "properties": { "terminal": { "const": false } } },
+      "else": { "properties": { "terminal": { "const": true } } }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "complete" } },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "container": {
+            "properties": { "finalized": { "const": true } },
+            "required": ["finalized"]
+          },
+          "quicktime_full_frame_rate_playback_intent": {
+            "properties": { "patch_applied": { "const": true } },
+            "required": ["patch_applied"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": { "const": "degraded_playback_intent_unpatched" }
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "container": {
+            "properties": { "finalized": { "const": true } },
+            "required": ["finalized"]
+          },
+          "quicktime_full_frame_rate_playback_intent": {
+            "properties": { "patch_applied": { "const": false } },
+            "required": ["patch_applied"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": { "const": "container_finalization_failed" }
+        },
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "container": {
+            "properties": { "finalized": { "const": false } },
+            "required": ["finalized"]
+          }
+        }
+      }
+    }
+  ]
+}

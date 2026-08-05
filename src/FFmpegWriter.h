@@ -89,6 +89,7 @@ private:
     int64_t sequential_frame_counter_ = 0; // Counter for sequential frame numbers
     AVCodecID codec_id_ = AV_CODEC_ID_NONE;
     std::string output_label_;
+    std::string output_path_;
     std::string keyframe_file_;
     std::vector<int64_t> keyframe_frames_;
     FFmpegWriterQueueConfig queue_config_;

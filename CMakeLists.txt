@@ -257,6 +257,7 @@ endif()
 set(ORANGE_SOURCES
     "${SRC_DIR}/orange.cpp"
     "${SRC_DIR}/network_base.cpp"
+    "${SRC_DIR}/video_container_finalization.cpp"
     "${SRC_DIR}/FFmpegWriter.cpp"
     "${SRC_DIR}/camera.cpp"
     "${SRC_DIR}/camera_sensor_pipeline_state.cpp"
@@ -375,6 +376,7 @@ set(ORANGE_SOURCES
 set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/orange_headless_client.cpp"
     "${SRC_DIR}/network_base.cpp"
+    "${SRC_DIR}/video_container_finalization.cpp"
     "${SRC_DIR}/FFmpegWriter.cpp"
     "${SRC_DIR}/camera.cpp"
     "${SRC_DIR}/camera_sensor_pipeline_state.cpp"
@@ -462,6 +464,7 @@ set(NV12_PREFILL_VALIDATION_SOURCES
 
 set(EXTERNAL_RECORDER_IPC_PROBE_SOURCES
     "tools/external_recorder_ipc_probe.cpp"
+    "${SRC_DIR}/video_container_finalization.cpp"
     "${SRC_DIR}/FFmpegWriter.cpp"
     "${SRC_DIR}/encoder_qp_map.cpp"
     "${SRC_DIR}/video_encode_profile.cpp"
@@ -778,6 +781,7 @@ if(BUILD_TESTING)
 
     add_executable(ffmpeg_writer_failure_tests
         "tools/ffmpeg_writer_failure_tests.cpp"
+        "${SRC_DIR}/video_container_finalization.cpp"
         "${SRC_DIR}/FFmpegWriter.cpp"
     )
     target_include_directories(ffmpeg_writer_failure_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
