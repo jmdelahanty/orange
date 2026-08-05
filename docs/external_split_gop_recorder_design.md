@@ -507,9 +507,9 @@ Implemented on 2026-04-26:
   `2010096 -> analytics GPU 7, recorder shards 7,8`.
 - The runner uses the local `100_cam4_ptp` config folder, uncapped external
   encode (`--encode-max-fps 0`), nominal MP4 `100 fps`, and queue depth `32`.
-- The runner writes one merged MP4 plus one summary JSON per camera. It records
-  per-shard diagnostic paths in the summary, but deletes the duplicate shard
-  MP4s by default after clean merged finalization.
+- The runner writes one merged MP4 plus one summary JSON per camera. With the
+  default `preserve_shard_mp4s = false`, per-shard MP4 writers are not opened;
+  diagnostic shard media requires explicit opt-in.
 - Video sanity runs on both merged camera MP4s.
 
 Validation smoke:

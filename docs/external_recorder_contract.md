@@ -75,16 +75,33 @@ When the Unix socket connects, the recorder now sends a versioned protocol
 hello before accepting frames:
 
 ```text
-RECORDER_HELLO protocol=orange.external_recorder.ipc version=1 ...
-CLIENT_HELLO protocol=orange.external_recorder.ipc version=1 ...
+RECORDER_HELLO protocol=orange.external_recorder.ipc version=1 frame_rate=100 resolved_gop_length=25 recording_config_fingerprint_scope=frame_rate_and_gop_v1 recording_config_fingerprint=fnv1a64:... ...
+CLIENT_HELLO protocol=orange.external_recorder.ipc version=1 frame_rate=100 resolved_gop_length=25 recording_config_fingerprint_scope=frame_rate_and_gop_v1 recording_config_fingerprint=fnv1a64:... ...
 RECORDER_STATUS protocol=orange.external_recorder.ipc version=1 ...
 CLIENT_CONTROL protocol=orange.external_recorder.ipc version=1 command=drain ...
 CLIENT_CONTROL protocol=orange.external_recorder.ipc version=1 command=finalize ...
 ```
 
 This is intentionally separate from per-frame ACK/RELEASE. It proves the peer
-is the expected recorder protocol before Orange starts handing out CUDA IPC
-frame descriptors, and the recorder writes the observed handshake into
+is the expected recorder protocol and that both processes resolved the same
+frame rate and GOP before Orange starts handing out CUDA IPC frame descriptors.
+The fingerprint scope is deliberately explicit: `frame_rate_and_gop_v1` binds
+the two values that define frame grouping; it is not yet a fingerprint of every
+NVENC option. Both peers recompute it independently and reject missing or
+mismatched values. The recorder also checks every descriptor against the
+declared GOP, so a 25/30 disagreement is rejected at frame 26 even if a future
+handshake regression allowed it through.
+
+For merged split-GOP output, the descriptor's
+`{recording_frame_id, gop_index, frame_index_within_gop}` is registered at
+encoder submission. NVENC returns `recording_frame_id` in its output timestamp;
+the merger uses it only to retrieve and consume that exact submitted identity.
+It does not calculate a second GOP from the timestamp. A missing, duplicate, or
+unknown output identity fails the recording, as does finalization with a
+submitted frame that never produced a packet. This preserves one grouping
+authority even when two encoder shards complete out of order.
+
+The recorder writes the observed handshake into
 `ipc_protocol` fields in both `status_json` and summary JSON. After the hello,
 the diagnostic recorder can also send low-rate in-band `RECORDER_STATUS`
 messages with the same heartbeat sequence and frame counters that are written
@@ -175,10 +192,15 @@ GOP 2 -> shard 0 -> GPU 5
 GOP 3 -> shard 1 -> GPU 6
 ```
 
-Each shard writes diagnostic CSV/keyframe/log sidecars. In multi-shard mode, a
-coordinator writes the merged GOP-ordered MP4 for the camera. Per-shard MP4s are
-temporary diagnostic outputs by default: after a clean merged finalization they
-are deleted unless the contract sets `preserve_shard_mp4s = true`.
+Each shard writes diagnostic CSV/log sidecars. In continuous multi-shard mode,
+a coordinator writes the single GOP-ordered MP4 for the camera. Shard MP4
+writers are not opened unless the contract explicitly sets
+`preserve_shard_mp4s = true` for diagnostics.
+
+In rolling mode, the same coordinator orders GOPs but opens only the active
+clip writer. It does not write a monolithic session MP4. The finalized clip
+list in `recording_session.json` and `recording_clip_index.json` is the logical
+recording.
 
 ### Contract Stream
 
@@ -205,7 +227,9 @@ The verifier uses the stream contract to ask concrete questions:
 - Did it route by the expected policy?
 - Did it ACK the frames Orange submitted?
 - Did it encode without drops or worker failures?
-- Did the merged MP4 exist when multi-shard output was expected?
+- For continuous multi-shard output, did the merged MP4 exist?
+- For rolling output, was the merged MP4 absent and were the clips declared
+  authoritative?
 - Did the MP4 pass video sanity?
 - Did the GOP routing CSV have one row per received frame?
 - For rolling sessions, did the recorder write multiple GOP-boundary clip MP4s
@@ -272,6 +296,11 @@ This contract covers the current diagnostic external recorder path:
         "preset": "p1",
         "tuning": "ll",
         "gop": 25,
+        "recording_config_source": "resolved_recording_config",
+        "recording_config_fingerprint_scope": "frame_rate_and_gop_v1",
+        "recording_config_fingerprint": "fnv1a64:...",
+        "max_pending_gops": 8,
+        "max_pending_bytes": 268435456,
         "bitrate_bps": 150000000,
         "max_bitrate_bps": 150000000,
         "vbv_buffer_size": 150000000,
@@ -334,18 +363,44 @@ Current semantics:
   Orange, then use recorder summaries to write shared recording-session
   metadata. Supervised headless also records verifier/finalization status in
   the external-recorder lifecycle artifacts.
-- `require_merged_mp4` only applies to multi-shard runs. Single-shard runs use
-  the shard output as the final MP4.
-- `preserve_shard_mp4s` defaults to `false`. When a shard MP4 is distinct from
-  the final merged MP4, the recorder deletes
-  `Cam<serial>_external_shard*_gpu*.mp4` after the merged MP4 finalizes cleanly
-  with no pending GOPs. It keeps shard MP4s when this field is `true`, when
-  merged finalization is incomplete, or when a shard reports a failure.
+- `require_merged_mp4` applies to continuous multi-shard runs. Rolling
+  contracts must set it to `false`; the supervisor rejects the contradictory
+  `clip_seconds > 0` plus `require_merged_mp4 = true` shape.
+- `preserve_shard_mp4s` defaults to `false`. With that production default,
+  shard MP4 writers are never opened when an ordered coordinator owns the
+  output. Setting it to `true` explicitly creates and retains diagnostic shard
+  MP4s in addition to the authoritative output.
+- An explicitly requested raw bitstream path is also diagnostic. Generated
+  production supervisor commands do not request one.
 - `expected_shard_gpu_ids` is ordered by shard id. For GOP modulo routing,
   shard id is `gop_index % shard_count`.
 - `encode_queue_depth`, `prewarm_*`, codec, GOP, and bitrate fields are
   optional launch-plan fields. If a stream omits them, the dry-run supervisor
   plan tool fills in production-like defaults.
+- `max_pending_gops`, `max_pending_bytes`, and
+  `max_pending_frontier_age_ms` are hard merger reorder limits, not desired
+  queue depths. The defaults are 8 GOPs, 256 MiB, and 2000 ms. A healthy
+  two-shard stream normally needs only one or two pending GOPs while a later
+  shard waits for the earlier release frontier. At GOP 25 and 100 fps, eight
+  GOPs represent up to 200 unresolved frames (about two seconds), so reaching
+  the cap is evidence of a missing/stalled frontier rather than normal
+  buffering. The ninth pending GOP, first byte above 256 MiB, or a pending
+  release frontier older than two seconds fails the recorder instead of
+  allowing memory to grow with recording duration.
+- `max_writer_queue_packets` and `max_writer_queue_bytes` bound each external
+  recorder `FFmpegWriter` independently. The defaults are 512 encoded packets
+  and 128 MiB for each shard, merged-session, and rolling-clip writer. These
+  are safety ceilings, not buffering targets. A push that would cross either
+  limit latches overflow and immediately fails the recorder; it is not deferred
+  until finalization.
+- Live status JSON exposes current and peak merger bytes/GOPs, release-frontier
+  age, merged/rolling writer queue occupancy and peaks, plus process `VmRSS` and
+  `VmHWM`. Final summary JSON preserves the peaks and process memory snapshot.
+- Recorder latency percentiles use a deterministic run-wide reservoir capped at
+  65,536 samples per metric. Summary JSON records the observed, retained, and
+  capacity counts. This keeps long-run timing telemetry bounded while retaining
+  an approximate whole-run p95 rather than silently switching to a recent-only
+  window.
 - `min_free_bytes` is an optional hard recorder preflight threshold. When it is
   greater than zero, `external_recorder_ipc_probe` checks available bytes on
   the output directories before listening and exits failed if the minimum is
@@ -367,8 +422,8 @@ Current semantics:
   recorder when `clip_seconds > 0`. The recorder owns GOP-boundary writer
   rotation and reports
   `rollover.implementation = "external_recorder_gop_boundary_writer_rotation"`.
-  It writes the merged session MP4 plus per-clip outputs under
-  `clips/clip_%06d/`.
+  It writes only per-clip media under `clips/clip_%06d/`; the ordered
+  coordinator does not also write a merged session MP4.
 - After supervised external recorder finalization, Orange mirrors the external
   clip list into the analytics `recording_session.json` using the shared
   `orange.recording_session` contract. The manifest records
@@ -514,6 +569,17 @@ GUI/session status:
   `recording_backend.mode = "external_ipc"`. For rolling contracts, the GUI
   mirrors recorder `rolling_output.clips[]` into a `rolling_clips` manifest
   and session clip indexes.
+- For non-rolling streams, the materialized contract carries `metadata_csv`
+  (default `Cam<serial>_external_meta.csv`). The recorder writes one row only
+  after a frame is accepted by NVENC, preserving the descriptor's camera
+  `timestamp` and host `timestamp_sys`. Summary JSON reports the path, row
+  count, first/last recording frame ID, gaps, and zero-timestamp counts. GUI
+  and headless finalization fail closed unless the CSV exists, contains both
+  clock columns, and matches `frames_encoded` exactly.
+  The CSV begins with the legacy-compatible
+  `frame_id,timestamp,timestamp_sys` columns and also carries
+  `recording_frame_id` plus GOP/shard routing fields; `frame_id` and
+  `recording_frame_id` are identical for this full-frame output.
 - Recorder child-process, socket state, parsed `status_json` heartbeat state,
   and storage preflight state are visible in the GUI. The status line shows
   heartbeat coverage plus recorder-side received/encoded frame totals when

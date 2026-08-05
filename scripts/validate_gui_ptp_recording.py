@@ -2620,6 +2620,39 @@ def check_external_recorder_rolling_status(
     if rolling.get("enabled") is not True:
         return {}
 
+    authoritative = summary.get("authoritative_video_output")
+    authoritative = authoritative if isinstance(authoritative, dict) else {}
+    reporter.check(
+        authoritative.get("mode") == "rolling_clips",
+        f"{prefix} rolling clips are authoritative",
+        f"{prefix} authoritative video mode={authoritative.get('mode')!r}",
+    )
+    reporter.check(
+        authoritative.get("session_mp4_written") is False,
+        f"{prefix} duplicate session MP4 not written",
+        f"{prefix} session_mp4_written={authoritative.get('session_mp4_written')!r}",
+    )
+    merged = summary.get("merged_output")
+    merged = merged if isinstance(merged, dict) else {}
+    reporter.check(
+        merged.get("enabled") is False and not merged.get("mp4"),
+        f"{prefix} rolling merged MP4 absent",
+        f"{prefix} rolling merged output enabled={merged.get('enabled')!r} mp4={merged.get('mp4')!r}",
+    )
+    if summary.get("preserve_shard_mp4s") is False:
+        shards = summary.get("external_encode_shards")
+        shards = shards if isinstance(shards, list) else []
+        shard_mp4s = [
+            str(shard.get("mp4"))
+            for shard in shards
+            if isinstance(shard, dict) and shard.get("mp4")
+        ]
+        reporter.check(
+            not shard_mp4s,
+            f"{prefix} duplicate shard MP4s not written",
+            f"{prefix} duplicate shard MP4 paths={shard_mp4s}",
+        )
+
     status_rolling = status.get("rolling")
     status_rolling = status_rolling if isinstance(status_rolling, dict) else {}
     reporter.check(

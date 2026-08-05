@@ -551,10 +551,11 @@ Latest GUI external IPC single-clip validation:
 - `camera_artifacts.<serial>.video` points at
   `external_recorder/Cam<serial>_external.mp4`; root-level `Cam*.mp4` files
   are not required for this GUI external IPC layout
-- `camera_artifacts.<serial>.metadata` points at the external recorder summary
-  JSON, not a per-frame `Cam*_meta.csv`; frame-count validation must therefore
-  compare `camera_artifacts.<serial>.frame_count` to the external summary's
-  `frames_received`, `acks_sent`, and `frames_encoded`
+- Historical artifact note: this 2026-05-21 run predates the external
+  single-clip frame-clock sidecar, so its metadata pointer targets the recorder
+  summary JSON. New recordings instead point at
+  `external_recorder/Cam<serial>_external_meta.csv`; completion requires one
+  continuous row per encoded frame with both `timestamp` and `timestamp_sys`.
 - both cameras recorded `1645` submitted/ACKed/encoded frames with no frame
   gaps, GetFrame errors, external IPC failures, or ACK timeouts
 - the standard GUI validator now accepts this manifest shape and

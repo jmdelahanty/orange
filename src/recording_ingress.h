@@ -55,6 +55,7 @@ public:
                      int source_gpu_id,
                      int primary_encode_gpu_id,
                      uint32_t recording_gop_length,
+                     uint32_t recording_frame_rate,
                      const ResolvedRecordingConfig& resolved_recording_config,
                      SafeQueue<WORKER_ENTRY*>* recycle_queue = nullptr,
                      const std::string& recording_sink_mode = "real",
@@ -90,6 +91,7 @@ private:
     int source_gpu_id_ = -1;
     int primary_encode_gpu_id_ = -1;
     uint32_t recording_gop_length_ = 1;
+    uint32_t recording_frame_rate_ = 1;
     ResolvedRecordingConfig resolved_recording_config_;
     SafeQueue<WORKER_ENTRY*>* recycle_queue_ = nullptr;
     std::string recording_sink_mode_ = "real";

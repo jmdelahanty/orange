@@ -6,6 +6,7 @@
 
 struct CameraEachSelect;
 struct CameraParams;
+struct ResolvedRecordingConfig;
 
 namespace orange::external_recorder {
 
@@ -39,6 +40,8 @@ struct CameraContractMaterializationInput {
     const CameraParams* cameras_params = nullptr;
     const CameraEachSelect* cameras_select = nullptr;
     int num_cameras = 0;
+    const ResolvedRecordingConfig* resolved_recording_configs = nullptr;
+    int num_resolved_recording_configs = 0;
     RecordingControlIntent recording_control;
 };
 

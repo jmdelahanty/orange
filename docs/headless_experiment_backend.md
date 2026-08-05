@@ -351,8 +351,9 @@ GOP-boundary writer rotation:
 
 - Orange owns recorder process startup/shutdown and passes
   `--record-for-seconds` / `--clip-seconds` to `external_recorder_ipc_probe`.
-- The recorder writes the merged session MP4 plus clip MP4/metadata/keyframe
-  sidecars under `clips/clip_%06d/`.
+- The recorder uses its GOP-order coordinator to write only clip
+  MP4/metadata/keyframe sidecars under `clips/clip_%06d/`; it does not also
+  write a merged session MP4.
 - `scripts/verify_external_recorder_session.py` validates rolling clip count,
   clip file existence, ffprobe readability, per-clip metadata row counts, and
   continuous `recording_frame_id` coverage across clips.

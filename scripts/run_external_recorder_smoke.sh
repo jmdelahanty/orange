@@ -591,7 +591,23 @@ PY
 fi
 
 if [[ "$SKIP_VIDEO_SANITY" -eq 0 ]]; then
-  python3 - "$MP4_OUT" "$VIDEO_SANITY_JSON" <<'PY'
+  VIDEO_SANITY_MP4="$(python3 - "$SUMMARY_JSON" "$MP4_OUT" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+summary_path = Path(sys.argv[1])
+fallback = sys.argv[2]
+try:
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    rolling = summary.get("rolling_output") or {}
+    clips = rolling.get("clips") or [] if rolling.get("enabled") else []
+    print(clips[0].get("mp4") if clips else fallback)
+except Exception:
+    print(fallback)
+PY
+)"
+  python3 - "$VIDEO_SANITY_MP4" "$VIDEO_SANITY_JSON" <<'PY'
 import json
 import math
 import subprocess

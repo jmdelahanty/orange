@@ -598,7 +598,7 @@ PY
 done
 
 if [[ "$SKIP_VIDEO_SANITY" -eq 0 ]]; then
-  python3 - "$RUN_DIR" "${MP4_OUTS[@]}" "${VIDEO_SANITY_JSONS[@]}" <<'PY'
+  python3 - "$RUN_DIR" "${MP4_OUTS[@]}" "${SUMMARY_JSONS[@]}" "${VIDEO_SANITY_JSONS[@]}" <<'PY'
 import json
 import math
 import subprocess
@@ -607,9 +607,20 @@ from pathlib import Path
 
 run_dir = Path(sys.argv[1])
 arg_count = len(sys.argv) - 2
-half = arg_count // 2
-mp4_paths = [Path(p) for p in sys.argv[2:2 + half]]
-summary_paths = [Path(p) for p in sys.argv[2 + half:]]
+group_size = arg_count // 3
+mp4_paths = [Path(p) for p in sys.argv[2:2 + group_size]]
+recorder_summary_paths = [Path(p) for p in sys.argv[2 + group_size:2 + 2 * group_size]]
+summary_paths = [Path(p) for p in sys.argv[2 + 2 * group_size:]]
+
+for index, recorder_summary_path in enumerate(recorder_summary_paths):
+    try:
+        recorder_summary = json.loads(recorder_summary_path.read_text(encoding="utf-8"))
+        rolling = recorder_summary.get("rolling_output") or {}
+        clips = rolling.get("clips") or [] if rolling.get("enabled") else []
+        if clips:
+            mp4_paths[index] = Path(clips[0]["mp4"])
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
 
 def write_result(path, result):
     path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

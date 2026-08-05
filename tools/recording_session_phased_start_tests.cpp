@@ -171,6 +171,14 @@ void test_prepare_creates_run_scaffolding()
     orange::session::RecordingSessionState state;
     state.recording_sink_mode = "external_ipc";
     CameraParams camera = make_camera_params();
+    state.resolved_recording_configs.resize(1);
+    state.resolved_recording_configs[0].encode = camera.recording.encode;
+    state.resolved_recording_configs[0].encode.codec = "hevc";
+    state.resolved_recording_configs[0].encode.preset = "p3";
+    state.resolved_recording_configs[0].encode.tuning = "ll";
+    state.resolved_recording_configs[0].encode.rate_control_mode = "vbr";
+    state.resolved_recording_configs[0].encode.quality_value = 22;
+    state.resolved_recording_configs[0].encode.gop_length = 30;
     CameraEachSelect select;
     select.record = true;
     PTPParams ptp{};
@@ -209,6 +217,30 @@ void test_prepare_creates_run_scaffolding()
     require(state.external_recorder_contract_path ==
                 prepared.external_recorder_contract_path,
             "prepare must record the contract path in the session state");
+    const nlohmann::json materialized_contract = nlohmann::json::parse(
+        read_file(prepared.external_recorder_contract_path));
+    const nlohmann::json& stream = materialized_contract["streams"]["990001"];
+    require(stream.value("gop", 0) == 30,
+            "prepare must materialize the frozen resolved GOP");
+    require(stream.value("preset", "") == "p3",
+            "prepare must materialize the frozen resolved encoder profile");
+    require(stream.value("recording_config_source", "") ==
+                "resolved_recording_config",
+            "prepare must identify the immutable runtime config source");
+    const nlohmann::json recording_snapshot = nlohmann::json::parse(
+        read_file(std::filesystem::path(prepared.recording_folder) /
+                  "recording_snapshot.json"));
+    const nlohmann::json& snapshot_authority =
+        recording_snapshot["camera_runtime"]["990001"]["recording_config_authority"];
+    require(snapshot_authority.value("source", "") ==
+                "frozen_resolved_recording_config",
+            "recording snapshot must identify the frozen runtime authority");
+    require(snapshot_authority.value("frame_rate", 0) == 100 &&
+                snapshot_authority.value("resolved_gop_length", 0) == 30,
+            "recording snapshot must persist the exact frame-rate/GOP identity");
+    require(snapshot_authority.value("recording_config_fingerprint", "") ==
+                stream.value("recording_config_fingerprint", ""),
+            "snapshot and recorder contract must share one config fingerprint");
 
     // Cancel the never-started run; nothing was spawned, so this only
     // releases the folder claim.

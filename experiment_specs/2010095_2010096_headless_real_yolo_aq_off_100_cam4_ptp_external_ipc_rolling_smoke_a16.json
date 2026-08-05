@@ -30,7 +30,7 @@
       "session_id": "2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_rolling_smoke_a16",
       "require_summary": true,
       "require_video_sanity": true,
-      "require_merged_mp4": true,
+      "require_merged_mp4": false,
       "require_gop_routing": true,
       "preserve_shard_mp4s": false,
       "streams": {

@@ -1,6 +1,7 @@
 #include "NvEncoder/NvEncoderCuda.h"
 #include "FFmpegWriter.h"
 #include "external_recorder_ipc_protocol.h"
+#include "external_recorder_frame_metadata.h"
 #include "encoder_qp_map.h"
 #include "fsuid_guard.h"
 #include "video_encode_profile.h"
@@ -65,6 +66,11 @@ struct Options {
     std::string rate_control_mode = "vbr";
     uint32_t quality_value = 20;
     uint32_t gop = 25;
+    uint32_t max_pending_gops = 8;
+    uint64_t max_pending_bytes = 268435456;
+    uint64_t max_pending_frontier_age_ms = 2000;
+    uint64_t max_writer_queue_packets = 512;
+    uint64_t max_writer_queue_bytes = 134217728;
     uint32_t bitrate_bps = 150000000;
     uint32_t max_bitrate_bps = 150000000;
     uint32_t vbv_buffer_size = 150000000;
@@ -73,6 +79,8 @@ struct Options {
     std::string bitstream_out_path;
     std::string mp4_out_path;
     std::string mp4_keyframe_path;
+    std::string metadata_csv_path;
+    bool write_frame_metadata = true;
     std::string encode_csv_path;
     std::string summary_json_path;
     std::string status_json_path;
@@ -193,6 +201,11 @@ void signal_handler(int)
         << "  --rate-control <vbr|vbr_cq|cqp> Default vbr. Ignored for lossless tuning.\n"
         << "  --quality <0..51>     VBR-CQ target quality or CQP quantizer. Default 20.\n"
         << "  --gop <int>           GOP length. Default 25.\n"
+        << "  --max-pending-gops <int> Fail if merged output buffers more GOPs. Default 8.\n"
+        << "  --max-pending-bytes <int> Fail if merged output buffers more bytes. Default 268435456.\n"
+        << "  --max-pending-frontier-age-ms <int> Fail if the next releasable GOP stalls longer. Default 2000.\n"
+        << "  --max-writer-queue-packets <int> Per-MP4-writer packet limit. Default 512.\n"
+        << "  --max-writer-queue-bytes <int> Per-MP4-writer byte limit. Default 134217728.\n"
         << "  --bitrate-bps <int>   Average bitrate. Default 150000000.\n"
         << "  --max-bitrate-bps <int> Max bitrate. Default 150000000.\n"
         << "  --vbv-buffer-size <int> VBV buffer size. Default 150000000.\n"
@@ -200,6 +213,7 @@ void signal_handler(int)
         << "  --bitstream-out <path> Optional raw elementary stream output.\n"
         << "  --mp4-out <path>       Optional MP4 output. Implies --encode.\n"
         << "  --mp4-keyframe <path>  Optional keyframe sidecar path for --mp4-out.\n"
+        << "  --metadata-csv <path>  Per-video-frame timestamp CSV. Defaults to <mp4-stem>_meta.csv.\n"
         << "  --encode-csv <path>   Optional external encode timing CSV.\n"
         << "  --summary-json <path>  Optional run summary JSON.\n"
         << "  --status-json <path>   Optional live status/heartbeat JSON.\n"
@@ -413,6 +427,16 @@ Options parse_options(int argc, char** argv)
             options.quality_value = parse_u32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--gop") {
             options.gop = parse_u32(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--max-pending-gops") {
+            options.max_pending_gops = parse_u32(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--max-pending-bytes") {
+            options.max_pending_bytes = parse_u64(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--max-pending-frontier-age-ms") {
+            options.max_pending_frontier_age_ms = parse_u64(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--max-writer-queue-packets") {
+            options.max_writer_queue_packets = parse_u64(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--max-writer-queue-bytes") {
+            options.max_writer_queue_bytes = parse_u64(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--bitrate-bps") {
             options.bitrate_bps = parse_u32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--max-bitrate-bps") {
@@ -429,6 +453,8 @@ Options parse_options(int argc, char** argv)
             options.encode = true;
         } else if (arg == "--mp4-keyframe" || arg == "--mp4-keyframe-path") {
             options.mp4_keyframe_path = consume(arg.c_str());
+        } else if (arg == "--metadata-csv") {
+            options.metadata_csv_path = consume(arg.c_str());
         } else if (arg == "--encode-csv") {
             options.encode_csv_path = consume(arg.c_str());
         } else if (arg == "--summary-json") {
@@ -514,6 +540,30 @@ Options parse_options(int argc, char** argv)
     }
     if (options.encode_queue_depth == 0) {
         throw std::runtime_error("--encode-queue-depth must be positive");
+    }
+    if (options.gop == 0) {
+        throw std::runtime_error("--gop must be positive");
+    }
+    if (options.max_pending_gops == 0) {
+        throw std::runtime_error("--max-pending-gops must be positive");
+    }
+    if (options.max_pending_bytes == 0) {
+        throw std::runtime_error("--max-pending-bytes must be positive");
+    }
+    if (options.max_pending_frontier_age_ms == 0) {
+        throw std::runtime_error("--max-pending-frontier-age-ms must be positive");
+    }
+    if (options.max_writer_queue_packets == 0) {
+        throw std::runtime_error("--max-writer-queue-packets must be positive");
+    }
+    if (options.max_writer_queue_bytes == 0) {
+        throw std::runtime_error("--max-writer-queue-bytes must be positive");
+    }
+    if (options.max_writer_queue_packets >
+            static_cast<uint64_t>(std::numeric_limits<size_t>::max()) ||
+        options.max_writer_queue_bytes >
+            static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        throw std::runtime_error("MP4 writer queue limit exceeds platform size_t");
     }
     if (options.encode_prewarm_slots > options.encode_queue_depth) {
         throw std::runtime_error("--prewarm-slots must be less than or equal to --encode-queue-depth");
@@ -896,6 +946,7 @@ std::vector<std::string> storage_probe_paths(const Options& options)
     append_storage_output_path(options.bitstream_out_path, &seen, &paths);
     append_storage_output_path(options.mp4_out_path, &seen, &paths);
     append_storage_output_path(options.mp4_keyframe_path, &seen, &paths);
+    append_storage_output_path(options.metadata_csv_path, &seen, &paths);
     append_storage_output_path(options.encode_csv_path, &seen, &paths);
     append_storage_output_path(options.summary_json_path, &seen, &paths);
     append_storage_output_path(options.status_json_path, &seen, &paths);
@@ -1077,6 +1128,56 @@ double percentile_ms(std::vector<double> values, double percentile)
     return values[index];
 }
 
+class BoundedLatencySamples {
+public:
+    static constexpr size_t kDefaultCapacity = 65536;
+
+    explicit BoundedLatencySamples(size_t capacity = kDefaultCapacity)
+        : capacity_(std::max<size_t>(1, capacity))
+    {
+        samples_.reserve(capacity_);
+    }
+
+    void observe(double value)
+    {
+        ++observed_count_;
+        if (samples_.size() < capacity_) {
+            samples_.push_back(value);
+            return;
+        }
+
+        // Deterministic Algorithm-R-style reservoir selection. This preserves
+        // a bounded, run-wide sample instead of silently changing p95 into a
+        // recent-window statistic for long recordings.
+        const uint64_t replacement = mix64(observed_count_) % observed_count_;
+        if (replacement < capacity_) {
+            samples_[static_cast<size_t>(replacement)] = value;
+        }
+    }
+
+    double percentile(double value) const
+    {
+        return percentile_ms(samples_, value);
+    }
+
+    uint64_t observed_count() const { return observed_count_; }
+    size_t retained_count() const { return samples_.size(); }
+    size_t capacity() const { return capacity_; }
+
+private:
+    static uint64_t mix64(uint64_t value)
+    {
+        value += 0x9e3779b97f4a7c15ULL;
+        value = (value ^ (value >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+        value = (value ^ (value >> 27U)) * 0x94d049bb133111ebULL;
+        return value ^ (value >> 31U);
+    }
+
+    size_t capacity_ = kDefaultCapacity;
+    uint64_t observed_count_ = 0;
+    std::vector<double> samples_;
+};
+
 uint64_t elapsed_ns(std::chrono::steady_clock::time_point start)
 {
     return static_cast<uint64_t>(
@@ -1108,6 +1209,54 @@ struct RollingStatusSnapshot {
     uint64_t last_completed_clip_packets_written = 0;
     std::string last_rollover_status = "none";
 };
+
+struct RecorderBufferHealthSnapshot {
+    uint64_t pending_gops = 0;
+    uint64_t pending_bytes = 0;
+    uint64_t peak_pending_gops = 0;
+    uint64_t peak_pending_bytes = 0;
+    uint64_t frontier_age_ms = 0;
+    uint64_t peak_frontier_age_ms = 0;
+    uint64_t merged_writer_queued_packets = 0;
+    uint64_t merged_writer_queued_bytes = 0;
+    uint64_t merged_writer_peak_queued_packets = 0;
+    uint64_t merged_writer_peak_queued_bytes = 0;
+    uint64_t rolling_writer_queued_packets = 0;
+    uint64_t rolling_writer_queued_bytes = 0;
+    uint64_t rolling_writer_peak_queued_packets = 0;
+    uint64_t rolling_writer_peak_queued_bytes = 0;
+    bool writer_queue_overflowed = false;
+};
+
+struct ProcessMemorySnapshot {
+    uint64_t rss_kib = 0;
+    uint64_t peak_rss_kib = 0;
+};
+
+ProcessMemorySnapshot collect_process_memory_snapshot()
+{
+    ProcessMemorySnapshot snapshot;
+#ifdef __linux__
+    std::ifstream status("/proc/self/status");
+    std::string key;
+    while (status >> key) {
+        if (key == "VmRSS:" || key == "VmHWM:") {
+            uint64_t value_kib = 0;
+            std::string unit;
+            status >> value_kib >> unit;
+            if (key == "VmRSS:") {
+                snapshot.rss_kib = value_kib;
+            } else {
+                snapshot.peak_rss_kib = value_kib;
+            }
+        } else {
+            std::string remainder;
+            std::getline(status, remainder);
+        }
+    }
+#endif
+    return snapshot;
+}
 
 RollingStatusSnapshot rolling_status_from_progress(const Options& options,
                                                    const uint64_t frames_received)
@@ -1186,6 +1335,7 @@ bool write_recorder_status_json(const Options& options,
                                 const std::string& error_message,
                                 const RollingStatusSnapshot& rolling_status,
                                 const IpcProtocolState& protocol_state,
+                                const RecorderBufferHealthSnapshot* buffer_health = nullptr,
                                 const StoragePreflightSnapshot* storage_override = nullptr)
 {
     if (options.status_json_path.empty()) {
@@ -1234,6 +1384,24 @@ bool write_recorder_status_json(const Options& options,
                 << json_escape(options.rate_control_mode) << "\",\n";
             out << "  \"rate_control_quality_value\": "
                 << options.quality_value << ",\n";
+            out << "  \"frame_rate\": " << options.fps << ",\n";
+            out << "  \"resolved_gop_length\": " << options.gop << ",\n";
+            out << "  \"recording_config_fingerprint_scope\": \""
+                << orange::external_recorder::ipc::kRecordingConfigFingerprintScope
+                << "\",\n";
+            out << "  \"recording_config_fingerprint\": \""
+                << orange::external_recorder::ipc::build_recording_config_fingerprint(
+                       static_cast<int>(options.fps),
+                       static_cast<int>(options.gop))
+                << "\",\n";
+            out << "  \"max_pending_gops\": " << options.max_pending_gops << ",\n";
+            out << "  \"max_pending_bytes\": " << options.max_pending_bytes << ",\n";
+            out << "  \"max_pending_frontier_age_ms\": "
+                << options.max_pending_frontier_age_ms << ",\n";
+            out << "  \"max_writer_queue_packets\": "
+                << options.max_writer_queue_packets << ",\n";
+            out << "  \"max_writer_queue_bytes\": "
+                << options.max_writer_queue_bytes << ",\n";
             out << "  \"recording_control\": {\n";
             out << "    \"record_for_seconds\": " << options.record_for_seconds << ",\n";
             out << "    \"clip_seconds\": " << options.clip_seconds << "\n";
@@ -1282,6 +1450,42 @@ bool write_recorder_status_json(const Options& options,
             out << "  \"frames_encoded\": " << frames_encoded << ",\n";
             out << "  \"frames_dropped\": " << frames_dropped << ",\n";
             out << "  \"worker_failed\": " << (worker_failed ? "true" : "false") << ",\n";
+            const RecorderBufferHealthSnapshot empty_buffer_health;
+            const RecorderBufferHealthSnapshot& buffers =
+                buffer_health ? *buffer_health : empty_buffer_health;
+            out << "  \"buffer_health\": {\n";
+            out << "    \"pending_gops\": " << buffers.pending_gops << ",\n";
+            out << "    \"pending_bytes\": " << buffers.pending_bytes << ",\n";
+            out << "    \"peak_pending_gops\": " << buffers.peak_pending_gops << ",\n";
+            out << "    \"peak_pending_bytes\": " << buffers.peak_pending_bytes << ",\n";
+            out << "    \"frontier_age_ms\": " << buffers.frontier_age_ms << ",\n";
+            out << "    \"peak_frontier_age_ms\": "
+                << buffers.peak_frontier_age_ms << ",\n";
+            out << "    \"merged_writer_queued_packets\": "
+                << buffers.merged_writer_queued_packets << ",\n";
+            out << "    \"merged_writer_queued_bytes\": "
+                << buffers.merged_writer_queued_bytes << ",\n";
+            out << "    \"merged_writer_peak_queued_packets\": "
+                << buffers.merged_writer_peak_queued_packets << ",\n";
+            out << "    \"merged_writer_peak_queued_bytes\": "
+                << buffers.merged_writer_peak_queued_bytes << ",\n";
+            out << "    \"rolling_writer_queued_packets\": "
+                << buffers.rolling_writer_queued_packets << ",\n";
+            out << "    \"rolling_writer_queued_bytes\": "
+                << buffers.rolling_writer_queued_bytes << ",\n";
+            out << "    \"rolling_writer_peak_queued_packets\": "
+                << buffers.rolling_writer_peak_queued_packets << ",\n";
+            out << "    \"rolling_writer_peak_queued_bytes\": "
+                << buffers.rolling_writer_peak_queued_bytes << ",\n";
+            out << "    \"writer_queue_overflowed\": "
+                << (buffers.writer_queue_overflowed ? "true" : "false") << "\n";
+            out << "  },\n";
+            const ProcessMemorySnapshot process_memory =
+                collect_process_memory_snapshot();
+            out << "  \"process_memory\": {\n";
+            out << "    \"rss_kib\": " << process_memory.rss_kib << ",\n";
+            out << "    \"peak_rss_kib\": " << process_memory.peak_rss_kib << "\n";
+            out << "  },\n";
             write_ipc_protocol_json(out, protocol_state, "  ");
             out << ",\n";
             const StoragePreflightSnapshot storage =
@@ -1329,6 +1533,16 @@ GUID resolve_preset_guid(const std::string& preset)
         return NV_ENC_PRESET_P7_GUID;
     }
     return NV_ENC_PRESET_P3_GUID;
+}
+
+FFmpegWriterQueueConfig external_writer_queue_config(const Options& options)
+{
+    FFmpegWriterQueueConfig config;
+    config.max_queued_packets =
+        static_cast<size_t>(options.max_writer_queue_packets);
+    config.max_queued_bytes =
+        static_cast<size_t>(options.max_writer_queue_bytes);
+    return config;
 }
 
 NV_ENC_TUNING_INFO resolve_tuning_info(const std::string& tuning)
@@ -1692,6 +1906,9 @@ struct EncodeSummary {
     uint64_t mp4_queue_overflow_events = 0;
     size_t mp4_peak_queued_packets = 0;
     size_t mp4_peak_queued_bytes = 0;
+    uint64_t latency_samples_observed = 0;
+    uint64_t latency_samples_retained = 0;
+    uint64_t latency_sample_capacity = 0;
     double enqueue_age_p95_ms = 0.0;
     double prepare_p95_ms = 0.0;
     double slot_reuse_wait_p95_ms = 0.0;
@@ -1710,6 +1927,7 @@ struct EncodeSummary {
     std::string bitstream_out_path;
     std::string mp4_path;
     std::string mp4_keyframe_path;
+    orange::external_recorder::FrameMetadataSummary frame_metadata;
     std::string mp4_retention_status = "not_evaluated";
     bool mp4_retained = false;
     bool mp4_removed_after_merge = false;
@@ -1828,6 +2046,7 @@ struct RollingOutputSummary {
 };
 
 struct MergedOutputSummary {
+    bool coordinator_enabled = false;
     bool enabled = false;
     bool failed = false;
     std::string camera_serial;
@@ -1841,16 +2060,29 @@ struct MergedOutputSummary {
     uint64_t gops_released = 0;
     uint64_t pending_gops = 0;
     uint64_t pending_bytes = 0;
+    uint64_t peak_pending_gops = 0;
+    uint64_t peak_pending_bytes = 0;
+    uint64_t frontier_age_ms = 0;
+    uint64_t peak_frontier_age_ms = 0;
     bool mp4_queue_overflowed = false;
     uint64_t mp4_queue_overflow_events = 0;
+    size_t mp4_queued_packets = 0;
+    size_t mp4_queued_bytes = 0;
     size_t mp4_peak_queued_packets = 0;
     size_t mp4_peak_queued_bytes = 0;
+    bool rolling_mp4_queue_overflowed = false;
+    uint64_t rolling_mp4_queue_overflow_events = 0;
+    size_t rolling_mp4_queued_packets = 0;
+    size_t rolling_mp4_queued_bytes = 0;
+    size_t rolling_mp4_peak_queued_packets = 0;
+    size_t rolling_mp4_peak_queued_bytes = 0;
     double mp4_push_mean_ms = 0.0;
     double mp4_push_max_ms = 0.0;
     double mp4_write_mean_ms = 0.0;
     double mp4_write_max_ms = 0.0;
     std::string mp4_path;
     std::string mp4_keyframe_path;
+    orange::external_recorder::FrameMetadataSummary frame_metadata;
     std::string error_message;
     RollingOutputSummary rolling;
 };
@@ -1891,6 +2123,9 @@ EncodeSummary aggregate_encode_summaries(const std::vector<EncodeSummary>& summa
             std::max(out.mp4_peak_queued_packets, summary.mp4_peak_queued_packets);
         out.mp4_peak_queued_bytes =
             std::max(out.mp4_peak_queued_bytes, summary.mp4_peak_queued_bytes);
+        out.latency_samples_observed += summary.latency_samples_observed;
+        out.latency_samples_retained += summary.latency_samples_retained;
+        out.latency_sample_capacity += summary.latency_sample_capacity;
         out.enqueue_age_p95_ms =
             std::max(out.enqueue_age_p95_ms, summary.enqueue_age_p95_ms);
         out.prepare_p95_ms =
@@ -1922,6 +2157,7 @@ EncodeSummary aggregate_encode_summaries(const std::vector<EncodeSummary>& summa
         out.bitstream_out_path = summaries.front().bitstream_out_path;
         out.mp4_path = summaries.front().mp4_path;
         out.mp4_keyframe_path = summaries.front().mp4_keyframe_path;
+        out.frame_metadata = summaries.front().frame_metadata;
     }
     return out;
 }
@@ -2094,9 +2330,15 @@ public:
           mp4_keyframe_path_(
               options_.mp4_keyframe_path.empty()
                   ? derive_keyframe_path(options_.mp4_out_path)
-                  : normalize_keyframe_sidecar_path(options_.mp4_keyframe_path))
+                  : normalize_keyframe_sidecar_path(options_.mp4_keyframe_path)),
+          metadata_path_(
+              options_.metadata_csv_path.empty()
+                  ? orange::external_recorder::DeriveFrameMetadataPath(
+                        options_.mp4_out_path)
+                  : options_.metadata_csv_path)
     {
         rolling_enabled_ = options_.clip_seconds > 0;
+        session_mp4_enabled_ = !rolling_enabled_;
         if (rolling_enabled_) {
             const uint64_t requested_clip_frames =
                 static_cast<uint64_t>(std::max<uint32_t>(1, options_.clip_seconds)) *
@@ -2124,10 +2366,22 @@ public:
             return;
         }
         std::lock_guard<std::mutex> lock(mutex_);
+        std::string identity_error;
+        if (!submitted_identities_.note(
+                orange::external_recorder::ipc::SubmittedFrameIdentity{
+                    desc.recording_frame_id,
+                    desc.gop_index,
+                    desc.frame_index_within_gop},
+                &identity_error)) {
+            fail_locked("invalid submitted frame identity: " + identity_error);
+        }
         ensure_writer_locked(desc);
         mark_older_gops_complete_locked(desc.gop_index);
         PendingGop& gop = pending_gops_[desc.gop_index];
         gop.gop_index = desc.gop_index;
+        if (gop.first_seen_ns == 0) {
+            gop.first_seen_ns = steady_clock_now_ns();
+        }
         gop.submitted_count++;
         gop.frames.push_back(SubmittedFrame{
             desc.camera_serial,
@@ -2150,35 +2404,49 @@ public:
             gop.submitted_complete = true;
         }
         refresh_complete_locked(gop);
+        enforce_pending_limits_locked("submitted descriptor");
         flush_ready_locked(false);
     }
 
     void submit_packets(const std::vector<std::vector<uint8_t>>& packets,
-                        const std::vector<uint64_t>& output_timestamps,
-                        const FrameDescriptor& fallback_desc)
+                        const std::vector<uint64_t>& output_timestamps)
     {
         if (mp4_path_.empty() || packets.empty()) {
             return;
         }
         std::lock_guard<std::mutex> lock(mutex_);
-        ensure_writer_locked(fallback_desc);
+        if (output_timestamps.size() != packets.size()) {
+            std::ostringstream error;
+            error << "NVENC packet identity count mismatch: packets="
+                  << packets.size()
+                  << " output_timestamps=" << output_timestamps.size();
+            fail_locked(error.str());
+        }
         for (size_t i = 0; i < packets.size(); ++i) {
-            const uint64_t output_timestamp =
-                i < output_timestamps.size() ? output_timestamps[i] : fallback_desc.recording_frame_id;
-            const uint64_t zero_based_frame =
-                output_timestamp > 0 ? output_timestamp - 1 :
-                (fallback_desc.recording_frame_id > 0 ? fallback_desc.recording_frame_id - 1 : 0);
-            const uint64_t gop_index = zero_based_frame / static_cast<uint64_t>(gop_length_);
-            PendingGop& gop = pending_gops_[gop_index];
-            gop.gop_index = gop_index;
+            orange::external_recorder::ipc::SubmittedFrameIdentity identity;
+            std::string identity_error;
+            if (!submitted_identities_.consume(
+                    output_timestamps[i],
+                    &identity,
+                    &identity_error)) {
+                fail_locked("invalid NVENC packet identity: " + identity_error);
+            }
+            PendingGop& gop = pending_gops_[identity.gop_index];
+            gop.gop_index = identity.gop_index;
+            if (gop.first_seen_ns == 0) {
+                gop.first_seen_ns = steady_clock_now_ns();
+            }
             BufferedPacket packet;
             packet.bytes = packets[i];
-            packet.zero_based_frame = zero_based_frame;
+            packet.recording_frame_id = identity.recording_frame_id;
+            packet.gop_index = identity.gop_index;
+            packet.frame_index_within_gop = identity.frame_index_within_gop;
             gop.total_bytes += packet.bytes.size();
             pending_bytes_ += packet.bytes.size();
             gop.packets.push_back(std::move(packet));
             gop.emitted_count++;
             refresh_complete_locked(gop);
+            enforce_pending_limits_locked("encoded packet");
         }
         flush_ready_locked(false);
     }
@@ -2189,32 +2457,113 @@ public:
             return;
         }
         std::lock_guard<std::mutex> lock(mutex_);
-        flush_ready_locked(true);
+        for (auto& [unused_gop_index, gop] : pending_gops_) {
+            (void)unused_gop_index;
+            gop.submitted_complete = true;
+            refresh_complete_locked(gop);
+        }
+        std::string finalization_error;
+        if (!submitted_identities_.empty()) {
+            finalization_error =
+                "encoder finalization left " +
+                std::to_string(submitted_identities_.size()) +
+                " submitted frame identity record(s) without output packets";
+        }
+        if (finalization_error.empty()) {
+            for (const auto& [gop_index, gop] : pending_gops_) {
+                if (!gop.complete || gop.emitted_count != gop.submitted_count) {
+                    std::ostringstream error;
+                    error << "encoder finalization found incomplete GOP " << gop_index
+                          << ": submitted=" << gop.submitted_count
+                          << " emitted=" << gop.emitted_count;
+                    finalization_error = error.str();
+                    break;
+                }
+            }
+        }
+        if (finalization_error.empty()) {
+            flush_ready_locked(true);
+        } else {
+            failed_ = true;
+            error_message_ = finalization_error;
+        }
         finish_writer_locked();
         finish_clip_writer_locked();
+        finish_session_frame_metadata_locked();
+        if (!finalization_error.empty()) {
+            throw std::runtime_error(finalization_error);
+        }
     }
 
     MergedOutputSummary summary() const
     {
         std::lock_guard<std::mutex> lock(mutex_);
         MergedOutputSummary out;
-        out.enabled = !mp4_path_.empty();
+        out.coordinator_enabled = !mp4_path_.empty();
+        out.enabled = session_mp4_enabled_ && !mp4_path_.empty();
         out.failed = failed_;
         out.packets_written = packets_written_;
         out.bytes_written = bytes_written_;
         out.gops_released = gops_released_;
         out.pending_gops = pending_gops_.size();
         out.pending_bytes = pending_bytes_;
+        out.peak_pending_gops = peak_pending_gops_;
+        out.peak_pending_bytes = peak_pending_bytes_;
+        out.frontier_age_ms =
+            current_frontier_age_ms_locked(steady_clock_now_ns());
+        out.peak_frontier_age_ms = std::max(
+            peak_frontier_age_ms_, out.frontier_age_ms);
         out.mp4_queue_overflowed = mp4_queue_overflowed_;
         out.mp4_queue_overflow_events = mp4_queue_overflow_events_;
-        out.mp4_peak_queued_packets = mp4_peak_queued_packets_;
-        out.mp4_peak_queued_bytes = mp4_peak_queued_bytes_;
+        if (writer_) {
+            out.mp4_queue_overflowed =
+                out.mp4_queue_overflowed || writer_->has_queue_overflowed();
+            out.mp4_queue_overflow_events = std::max<uint64_t>(
+                out.mp4_queue_overflow_events,
+                writer_->queue_overflow_events());
+            out.mp4_queued_packets = writer_->queued_packets();
+            out.mp4_queued_bytes = writer_->queued_bytes();
+            out.mp4_peak_queued_packets = std::max(
+                out.mp4_peak_queued_packets,
+                writer_->peak_queued_packets());
+            out.mp4_peak_queued_bytes = std::max(
+                out.mp4_peak_queued_bytes,
+                writer_->peak_queued_bytes());
+        }
+        out.rolling_mp4_queue_overflowed = rolling_mp4_queue_overflowed_;
+        out.rolling_mp4_queue_overflow_events = rolling_mp4_queue_overflow_events_;
+        out.rolling_mp4_peak_queued_packets = rolling_mp4_peak_queued_packets_;
+        out.rolling_mp4_peak_queued_bytes = rolling_mp4_peak_queued_bytes_;
+        if (clip_writer_) {
+            out.rolling_mp4_queue_overflowed =
+                out.rolling_mp4_queue_overflowed ||
+                clip_writer_->has_queue_overflowed();
+            out.rolling_mp4_queue_overflow_events +=
+                clip_writer_->queue_overflow_events();
+            out.rolling_mp4_queued_packets = clip_writer_->queued_packets();
+            out.rolling_mp4_queued_bytes = clip_writer_->queued_bytes();
+            out.rolling_mp4_peak_queued_packets = std::max(
+                out.rolling_mp4_peak_queued_packets,
+                clip_writer_->peak_queued_packets());
+            out.rolling_mp4_peak_queued_bytes = std::max(
+                out.rolling_mp4_peak_queued_bytes,
+                clip_writer_->peak_queued_bytes());
+        }
+        out.mp4_peak_queued_packets = std::max(
+            out.mp4_peak_queued_packets,
+            mp4_peak_queued_packets_);
+        out.mp4_peak_queued_bytes = std::max(
+            out.mp4_peak_queued_bytes,
+            mp4_peak_queued_bytes_);
         out.mp4_push_mean_ms = writer_latency_.push_packet_total.mean_ms();
         out.mp4_push_max_ms = writer_latency_.push_packet_total.max_ms();
         out.mp4_write_mean_ms = writer_latency_.packet_write.mean_ms();
         out.mp4_write_max_ms = writer_latency_.packet_write.max_ms();
-        out.mp4_path = mp4_path_;
-        out.mp4_keyframe_path = mp4_keyframe_path_;
+        out.mp4_path = out.enabled ? mp4_path_ : std::string();
+        out.mp4_keyframe_path = out.enabled ? mp4_keyframe_path_ : std::string();
+        if (out.enabled) {
+            out.frame_metadata = session_frame_metadata_.summary();
+        }
         out.error_message = error_message_;
         if (have_first_desc_) {
             out.camera_serial = first_desc_.camera_serial;
@@ -2241,7 +2590,9 @@ public:
 private:
     struct BufferedPacket {
         std::vector<uint8_t> bytes;
-        uint64_t zero_based_frame = 0;
+        uint64_t recording_frame_id = 0;
+        uint64_t gop_index = 0;
+        uint32_t frame_index_within_gop = 0;
     };
 
     struct SubmittedFrame {
@@ -2268,16 +2619,85 @@ private:
         uint64_t submitted_count = 0;
         uint64_t emitted_count = 0;
         uint64_t total_bytes = 0;
+        uint64_t first_seen_ns = 0;
         bool submitted_complete = false;
         bool complete = false;
         std::vector<BufferedPacket> packets;
         std::vector<SubmittedFrame> frames;
     };
 
+    [[noreturn]] void fail_locked(const std::string& message)
+    {
+        failed_ = true;
+        error_message_ = message;
+        throw std::runtime_error(error_message_);
+    }
+
+    uint64_t current_frontier_age_ms_locked(uint64_t now_ns) const
+    {
+        if (pending_gops_.empty()) {
+            return 0;
+        }
+        auto frontier = pending_gops_.find(next_gop_to_release_);
+        if (frontier == pending_gops_.end()) {
+            frontier = pending_gops_.begin();
+        }
+        const uint64_t first_seen_ns = frontier->second.first_seen_ns;
+        if (first_seen_ns == 0 || now_ns <= first_seen_ns) {
+            return 0;
+        }
+        return (now_ns - first_seen_ns) / 1000000ULL;
+    }
+
+    void enforce_pending_limits_locked(const char* context)
+    {
+        peak_pending_gops_ = std::max<uint64_t>(
+            peak_pending_gops_, pending_gops_.size());
+        peak_pending_bytes_ = std::max(peak_pending_bytes_, pending_bytes_);
+        const uint64_t frontier_age_ms =
+            current_frontier_age_ms_locked(steady_clock_now_ns());
+        peak_frontier_age_ms_ = std::max(peak_frontier_age_ms_, frontier_age_ms);
+        std::string budget_error;
+        const bool within_count_and_bytes =
+            orange::external_recorder::ipc::validate_pending_gop_budget(
+                pending_gops_.size(),
+                pending_bytes_,
+                options_.max_pending_gops,
+                options_.max_pending_bytes,
+                &budget_error);
+        std::string frontier_error;
+        const bool within_frontier_age =
+            orange::external_recorder::ipc::validate_pending_frontier_age(
+                pending_gops_.size(),
+                frontier_age_ms,
+                options_.max_pending_frontier_age_ms,
+                &frontier_error);
+        if (within_count_and_bytes && within_frontier_age) {
+            return;
+        }
+        std::ostringstream error;
+        error << "merged GOP pending budget exceeded after "
+              << (context ? context : "update")
+              << ": pending_gops=" << pending_gops_.size()
+              << " limit_gops=" << options_.max_pending_gops
+              << " pending_bytes=" << pending_bytes_
+              << " limit_bytes=" << options_.max_pending_bytes
+              << " frontier_age_ms=" << frontier_age_ms
+              << " limit_frontier_age_ms="
+              << options_.max_pending_frontier_age_ms;
+        if (!budget_error.empty()) {
+            error << " reason=" << budget_error;
+        } else if (!frontier_error.empty()) {
+            error << " reason=" << frontier_error;
+        }
+        fail_locked(error.str());
+    }
+
     void ensure_writer_locked(const FrameDescriptor& desc)
     {
         note_first_descriptor_locked(desc);
-        if (writer_ || mp4_path_.empty()) {
+        ensure_session_frame_metadata_locked();
+        if (!session_mp4_enabled_ || writer_ || mp4_path_.empty()) {
             return;
         }
         ensure_parent_directory(mp4_path_);
@@ -2300,13 +2720,75 @@ private:
             static_cast<int>(std::max<uint32_t>(1, options_.fps)),
             mp4_path_.c_str(),
             mp4_keyframe_path_.c_str(),
-            metadata_tags);
+            metadata_tags,
+            external_writer_queue_config(options_));
         if (!writer_->is_open()) {
             failed_ = true;
             error_message_ = "failed to open merged MP4 output: " + mp4_path_;
             throw std::runtime_error(error_message_);
         }
         writer_->create_thread();
+    }
+
+    void ensure_session_frame_metadata_locked()
+    {
+        if (!session_mp4_enabled_ || !options_.write_frame_metadata ||
+            mp4_path_.empty() || session_frame_metadata_.is_open()) {
+            return;
+        }
+        ensure_parent_directory(metadata_path_);
+        std::string error;
+        {
+            orange::ScopedFsuid fsuid_guard;
+            (void)fsuid_guard;
+            if (session_frame_metadata_.Open(metadata_path_, &error)) {
+                return;
+            }
+        }
+        fail_locked(error);
+    }
+
+    void write_session_frame_metadata_rows_locked(PendingGop& gop)
+    {
+        if (!session_mp4_enabled_ || !session_frame_metadata_.is_open()) {
+            return;
+        }
+        std::stable_sort(
+            gop.frames.begin(),
+            gop.frames.end(),
+            [](const SubmittedFrame& lhs, const SubmittedFrame& rhs) {
+                return lhs.recording_frame_id < rhs.recording_frame_id;
+            });
+        for (const SubmittedFrame& frame : gop.frames) {
+            std::string error;
+            if (!session_frame_metadata_.Write(
+                    orange::external_recorder::FrameMetadataRecord{
+                        frame.recording_frame_id,
+                        frame.local_frame_id,
+                        frame.gop_index,
+                        frame.frame_index_within_gop,
+                        frame.timestamp,
+                        frame.timestamp_sys,
+                        frame.source_gpu_id,
+                        frame.assigned_gpu_id,
+                        frame.assigned_shard_id,
+                        frame.bytes},
+                    &error)) {
+                fail_locked(error);
+            }
+        }
+        std::string error;
+        if (!session_frame_metadata_.Flush(&error)) {
+            fail_locked(error);
+        }
+    }
+
+    void finish_session_frame_metadata_locked()
+    {
+        std::string error;
+        if (!session_frame_metadata_.Close(&error)) {
+            fail_locked(error);
+        }
     }
 
     int raw_clip_index_for_zero_based_frame(uint64_t zero_based_frame) const
@@ -2372,10 +2854,24 @@ private:
             clip_writer_->quit_thread();
             clip_writer_->join_thread();
             const bool overflowed = clip_writer_->has_queue_overflowed();
-            current_clip_summary_.failed = current_clip_summary_.failed || overflowed;
-            failed_ = failed_ || overflowed;
-            if (overflowed && error_message_.empty()) {
-                error_message_ = "rolling clip MP4 writer queue overflowed";
+            const bool writer_failed = clip_writer_->writer_thread_failed();
+            rolling_mp4_queue_overflowed_ =
+                rolling_mp4_queue_overflowed_ || overflowed;
+            rolling_mp4_queue_overflow_events_ +=
+                clip_writer_->queue_overflow_events();
+            rolling_mp4_peak_queued_packets_ = std::max(
+                rolling_mp4_peak_queued_packets_,
+                clip_writer_->peak_queued_packets());
+            rolling_mp4_peak_queued_bytes_ = std::max(
+                rolling_mp4_peak_queued_bytes_,
+                clip_writer_->peak_queued_bytes());
+            current_clip_summary_.failed =
+                current_clip_summary_.failed || overflowed || writer_failed;
+            failed_ = failed_ || overflowed || writer_failed;
+            if ((overflowed || writer_failed) && error_message_.empty()) {
+                error_message_ = overflowed
+                    ? "rolling clip MP4 writer queue overflowed"
+                    : "rolling clip MP4 writer thread failed";
             }
             clip_writer_.reset();
         }
@@ -2453,7 +2949,8 @@ private:
             static_cast<int>(std::max<uint32_t>(1, options_.fps)),
             current_clip_summary_.mp4_path.c_str(),
             current_clip_summary_.keyframe_path.c_str(),
-            metadata_tags);
+            metadata_tags,
+            external_writer_queue_config(options_));
         if (!clip_writer_->is_open()) {
             failed_ = true;
             error_message_ = "failed to open rolling clip MP4 output: " +
@@ -2545,23 +3042,26 @@ private:
 
     void release_gop_locked(PendingGop& gop)
     {
-        if (!writer_) {
+        if (!writer_ && !rolling_enabled_) {
             return;
         }
         std::stable_sort(
             gop.packets.begin(),
             gop.packets.end(),
             [](const BufferedPacket& lhs, const BufferedPacket& rhs) {
-                return lhs.zero_based_frame < rhs.zero_based_frame;
+                return lhs.recording_frame_id < rhs.recording_frame_id;
             });
         const uint64_t first_zero_based_frame =
             !gop.packets.empty()
-                ? gop.packets.front().zero_based_frame
+                ? gop.packets.front().recording_frame_id - 1
                 : gop.gop_index * static_cast<uint64_t>(gop_length_);
         const int raw_clip_index =
             raw_clip_index_for_zero_based_frame(first_zero_based_frame);
         const int assigned_clip_index =
             clip_index_for_zero_based_frame(first_zero_based_frame);
+        if (!rolling_enabled_) {
+            write_session_frame_metadata_rows_locked(gop);
+        }
         if (rolling_enabled_) {
             FrameDescriptor clip_desc;
             if (!gop.frames.empty()) {
@@ -2596,13 +3096,21 @@ private:
         const uint64_t release_started_ns = steady_clock_now_ns();
         for (size_t i = 0; i < gop.packets.size(); ++i) {
             const BufferedPacket& packet = gop.packets[i];
-            writer_->push_packet(
-                const_cast<uint8_t*>(packet.bytes.data()),
-                static_cast<int>(packet.bytes.size()),
-                static_cast<int64_t>(merged_pts_counter_++),
-                gop.gop_index,
-                i + 1 == gop.packets.size(),
-                release_started_ns);
+            if (writer_) {
+                writer_->push_packet(
+                    const_cast<uint8_t*>(packet.bytes.data()),
+                    static_cast<int>(packet.bytes.size()),
+                    static_cast<int64_t>(merged_pts_counter_++),
+                    gop.gop_index,
+                    i + 1 == gop.packets.size(),
+                    release_started_ns);
+                if (writer_->has_queue_overflowed() || writer_->writer_thread_failed()) {
+                    fail_locked(
+                        writer_->has_queue_overflowed()
+                            ? "merged MP4 writer queue exceeded its hard limit"
+                            : "merged MP4 writer thread failed");
+                }
+            }
             if (rolling_enabled_ && clip_writer_) {
                 clip_writer_->push_packet(
                     const_cast<uint8_t*>(packet.bytes.data()),
@@ -2611,6 +3119,13 @@ private:
                     gop.gop_index,
                     i + 1 == gop.packets.size(),
                     release_started_ns);
+                if (clip_writer_->has_queue_overflowed() ||
+                    clip_writer_->writer_thread_failed()) {
+                    fail_locked(
+                        clip_writer_->has_queue_overflowed()
+                            ? "rolling MP4 writer queue exceeded its hard limit"
+                            : "rolling MP4 writer thread failed");
+                }
                 current_clip_summary_.packets_written++;
                 current_clip_summary_.bytes_written += packet.bytes.size();
             }
@@ -2635,9 +3150,12 @@ private:
         mp4_queue_overflow_events_ = writer_->queue_overflow_events();
         mp4_peak_queued_packets_ = writer_->peak_queued_packets();
         mp4_peak_queued_bytes_ = writer_->peak_queued_bytes();
-        failed_ = failed_ || mp4_queue_overflowed_;
-        if (mp4_queue_overflowed_ && error_message_.empty()) {
-            error_message_ = "merged MP4 writer queue overflowed";
+        const bool writer_failed = writer_->writer_thread_failed();
+        failed_ = failed_ || mp4_queue_overflowed_ || writer_failed;
+        if ((mp4_queue_overflowed_ || writer_failed) && error_message_.empty()) {
+            error_message_ = mp4_queue_overflowed_
+                ? "merged MP4 writer queue overflowed"
+                : "merged MP4 writer thread failed";
         }
         writer_.reset();
     }
@@ -2655,16 +3173,20 @@ private:
     uint32_t gop_length_ = 1;
     std::string mp4_path_;
     std::string mp4_keyframe_path_;
+    std::string metadata_path_;
     mutable std::mutex mutex_;
     std::map<uint64_t, PendingGop> pending_gops_;
+    orange::external_recorder::ipc::SubmittedFrameIdentityRegistry submitted_identities_;
     std::unique_ptr<FFmpegWriter> writer_;
     std::unique_ptr<FFmpegWriter> clip_writer_;
     std::unique_ptr<std::ofstream> clip_metadata_;
+    orange::external_recorder::FrameMetadataCsvWriter session_frame_metadata_;
     std::vector<RollingClipOutputSummary> clip_summaries_;
     RollingClipOutputSummary current_clip_summary_;
     int current_clip_index_ = -1;
     uint64_t current_clip_pts_counter_ = 0;
     bool rolling_enabled_ = false;
+    bool session_mp4_enabled_ = true;
     uint64_t clip_span_frames_ = 0;
     uint64_t clip_span_gops_ = 0;
     uint64_t target_frame_count_ = 0;
@@ -2676,11 +3198,18 @@ private:
     uint64_t bytes_written_ = 0;
     uint64_t gops_released_ = 0;
     uint64_t pending_bytes_ = 0;
+    uint64_t peak_pending_gops_ = 0;
+    uint64_t peak_pending_bytes_ = 0;
+    uint64_t peak_frontier_age_ms_ = 0;
     bool failed_ = false;
     bool mp4_queue_overflowed_ = false;
     uint64_t mp4_queue_overflow_events_ = 0;
     size_t mp4_peak_queued_packets_ = 0;
     size_t mp4_peak_queued_bytes_ = 0;
+    bool rolling_mp4_queue_overflowed_ = false;
+    uint64_t rolling_mp4_queue_overflow_events_ = 0;
+    size_t rolling_mp4_peak_queued_packets_ = 0;
+    size_t rolling_mp4_peak_queued_bytes_ = 0;
     FFmpegWriterLatencyStats writer_latency_;
     std::string error_message_;
     FrameDescriptor first_desc_;
@@ -2876,13 +3405,16 @@ public:
         out.mp4_queue_overflow_events = mp4_queue_overflow_events_;
         out.mp4_peak_queued_packets = mp4_peak_queued_packets_;
         out.mp4_peak_queued_bytes = mp4_peak_queued_bytes_;
-        out.enqueue_age_p95_ms = percentile_ms(enqueue_age_samples_, 95.0);
-        out.prepare_p95_ms = percentile_ms(prepare_samples_, 95.0);
-        out.slot_reuse_wait_p95_ms = percentile_ms(slot_reuse_wait_samples_, 95.0);
-        out.encode_total_p95_ms = percentile_ms(encode_total_samples_, 95.0);
-        out.encode_picture_p95_ms = percentile_ms(encode_picture_samples_, 95.0);
-        out.lock_bitstream_p95_ms = percentile_ms(lock_bitstream_samples_, 95.0);
-        out.bitstream_fetch_p95_ms = percentile_ms(bitstream_fetch_samples_, 95.0);
+        out.latency_samples_observed = enqueue_age_samples_.observed_count();
+        out.latency_samples_retained = enqueue_age_samples_.retained_count();
+        out.latency_sample_capacity = enqueue_age_samples_.capacity();
+        out.enqueue_age_p95_ms = enqueue_age_samples_.percentile(95.0);
+        out.prepare_p95_ms = prepare_samples_.percentile(95.0);
+        out.slot_reuse_wait_p95_ms = slot_reuse_wait_samples_.percentile(95.0);
+        out.encode_total_p95_ms = encode_total_samples_.percentile(95.0);
+        out.encode_picture_p95_ms = encode_picture_samples_.percentile(95.0);
+        out.lock_bitstream_p95_ms = lock_bitstream_samples_.percentile(95.0);
+        out.bitstream_fetch_p95_ms = bitstream_fetch_samples_.percentile(95.0);
         out.mp4_push_mean_ms = writer_latency_.push_packet_total.mean_ms();
         out.mp4_push_max_ms = writer_latency_.push_packet_total.max_ms();
         out.mp4_write_mean_ms = writer_latency_.packet_write.mean_ms();
@@ -2894,6 +3426,7 @@ public:
         out.bitstream_out_path = options_.bitstream_out_path;
         out.mp4_path = options_.mp4_out_path;
         out.mp4_keyframe_path = resolved_mp4_keyframe_path_;
+        out.frame_metadata = frame_metadata_.summary();
         out.mp4_retained = file_exists(options_.mp4_out_path);
         out.importance_map = importance_map_;
         return out;
@@ -3204,12 +3737,27 @@ private:
                 static_cast<int>(std::max<uint32_t>(1, options_.fps)),
                 options_.mp4_out_path.c_str(),
                 resolved_mp4_keyframe_path_.c_str(),
-                metadata_tags);
+                metadata_tags,
+                external_writer_queue_config(options_));
             if (!mp4_writer_->is_open()) {
                 throw std::runtime_error(
                     "Failed to open MP4 output: " + options_.mp4_out_path);
             }
             mp4_writer_->create_thread();
+            if (options_.write_frame_metadata) {
+                const std::string metadata_path =
+                    options_.metadata_csv_path.empty()
+                        ? orange::external_recorder::DeriveFrameMetadataPath(
+                              options_.mp4_out_path)
+                        : options_.metadata_csv_path;
+                ensure_parent_directory(metadata_path);
+                std::string metadata_error;
+                orange::ScopedFsuid fsuid_guard;
+                (void)fsuid_guard;
+                if (!frame_metadata_.Open(metadata_path, &metadata_error)) {
+                    throw std::runtime_error(metadata_error);
+                }
+            }
         }
         if (!options_.encode_csv_path.empty()) {
             ensure_parent_directory(options_.encode_csv_path);
@@ -3465,6 +4013,7 @@ private:
             }
         }
         record_encode_sample(encode_sample);
+        write_frame_metadata(desc);
         frames_encoded_.fetch_add(1, std::memory_order_relaxed);
 
         {
@@ -3498,6 +4047,14 @@ private:
                 const_cast<uint8_t*>(packet.data()),
                 static_cast<int>(packet.size()),
                 mp4_pts_counter_++);
+            if (mp4_writer_->has_queue_overflowed() ||
+                mp4_writer_->writer_thread_failed()) {
+                failed_.store(true, std::memory_order_release);
+                throw std::runtime_error(
+                    mp4_writer_->has_queue_overflowed()
+                        ? "external shard MP4 writer queue exceeded its hard limit"
+                        : "external shard MP4 writer thread failed");
+            }
             mp4_packets_++;
             mp4_bytes_ += packet.size();
         }
@@ -3511,13 +4068,48 @@ private:
     {
         returned_packets_ += sample.returned_packets;
         returned_bytes_ += sample.returned_bytes;
-        enqueue_age_samples_.push_back(sample.enqueue_age_ms);
-        prepare_samples_.push_back(sample.prepare_ms);
-        slot_reuse_wait_samples_.push_back(sample.slot_reuse_wait_ms);
-        encode_total_samples_.push_back(sample.encode_total_ms);
-        encode_picture_samples_.push_back(sample.encode_picture_ms);
-        lock_bitstream_samples_.push_back(sample.lock_bitstream_ms);
-        bitstream_fetch_samples_.push_back(sample.bitstream_fetch_ms);
+        enqueue_age_samples_.observe(sample.enqueue_age_ms);
+        prepare_samples_.observe(sample.prepare_ms);
+        slot_reuse_wait_samples_.observe(sample.slot_reuse_wait_ms);
+        encode_total_samples_.observe(sample.encode_total_ms);
+        encode_picture_samples_.observe(sample.encode_picture_ms);
+        lock_bitstream_samples_.observe(sample.lock_bitstream_ms);
+        bitstream_fetch_samples_.observe(sample.bitstream_fetch_ms);
+    }
+
+    void write_frame_metadata(const FrameDescriptor& desc)
+    {
+        if (!frame_metadata_.is_open()) {
+            return;
+        }
+        std::string error;
+        if (!frame_metadata_.Write(
+                orange::external_recorder::FrameMetadataRecord{
+                    desc.recording_frame_id,
+                    desc.local_frame_id,
+                    desc.gop_index,
+                    desc.frame_index_within_gop,
+                    desc.timestamp,
+                    desc.timestamp_sys,
+                    desc.source_gpu_id,
+                    desc.assigned_gpu_id,
+                    desc.assigned_shard_id,
+                    desc.bytes},
+                &error)) {
+            throw std::runtime_error(error);
+        }
+        if ((frame_metadata_.summary().rows_written % 60) == 0 &&
+            !frame_metadata_.Flush(&error)) {
+            throw std::runtime_error(error);
+        }
+    }
+
+    void finish_frame_metadata()
+    {
+        std::string error;
+        if (!frame_metadata_.Close(&error)) {
+            throw std::runtime_error(error);
+        }
     }
 
     void finish_mp4_writer()
@@ -3532,7 +4124,7 @@ private:
         mp4_queue_overflow_events_ = mp4_writer_->queue_overflow_events();
         mp4_peak_queued_packets_ = mp4_writer_->peak_queued_packets();
         mp4_peak_queued_bytes_ = mp4_writer_->peak_queued_bytes();
-        if (mp4_queue_overflowed_) {
+        if (mp4_queue_overflowed_ || mp4_writer_->writer_thread_failed()) {
             failed_.store(true, std::memory_order_release);
         }
         mp4_writer_.reset();
@@ -3613,7 +4205,7 @@ private:
         sample.output_bytes = timing.output_bytes;
         sample.returned_packets = static_cast<uint32_t>(packets.size());
         if (merged_output_) {
-            merged_output_->submit_packets(packets, output_timestamps, item.desc);
+            merged_output_->submit_packets(packets, output_timestamps);
         }
         for (const auto& packet : packets) {
             sample.returned_bytes += packet.size();
@@ -3629,6 +4221,7 @@ private:
             }
         }
         record_encode_sample(sample);
+        write_frame_metadata(item.desc);
         frames_encoded_.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -3652,23 +4245,16 @@ private:
             return false;
         }
 
-        FrameDescriptor fallback_desc;
-        bool has_fallback_desc = false;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            fallback_desc = last_desc_;
-            has_fallback_desc = has_last_desc_;
-        }
-        if (merged_output_ && has_fallback_desc) {
-            merged_output_->submit_packets(packets, output_timestamps, fallback_desc);
+        if (merged_output_) {
+            merged_output_->submit_packets(packets, output_timestamps);
         }
         for (const auto& packet : packets) {
             returned_bytes_ += packet.size();
             push_packet_to_outputs(packet, false);
         }
         returned_packets_ += packets.size();
-        lock_bitstream_samples_.push_back(ns_to_ms(timing.lock_bitstream_ns));
-        bitstream_fetch_samples_.push_back(
+        lock_bitstream_samples_.observe(ns_to_ms(timing.lock_bitstream_ns));
+        bitstream_fetch_samples_.observe(
             ns_to_ms(fetch_ns > 0 ? fetch_ns : timing.bitstream_fetch_ns));
         return true;
     }
@@ -3748,7 +4334,7 @@ private:
         wait_for_slot_reusable(item.slot_index);
         sample.slot_reuse_wait_ms = ns_to_ms(elapsed_ns(slot_wait_start));
         if (merged_output_) {
-            merged_output_->submit_packets(packets, output_timestamps, item.desc);
+            merged_output_->submit_packets(packets, output_timestamps);
         }
         for (const auto& packet : packets) {
             sample.returned_bytes += packet.size();
@@ -3764,6 +4350,7 @@ private:
             }
         }
         record_encode_sample(sample);
+        write_frame_metadata(item.desc);
         frames_encoded_.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -3777,8 +4364,8 @@ private:
         NvEncoderEncodeFrameTiming timing;
         uint64_t fetch_ns = 0;
         encoder_->EndEncode(packets, nullptr, &output_timestamps, &fetch_ns, &timing);
-        if (merged_output_ && has_last_desc_) {
-            merged_output_->submit_packets(packets, output_timestamps, last_desc_);
+        if (merged_output_) {
+            merged_output_->submit_packets(packets, output_timestamps);
         }
         for (const auto& packet : packets) {
             push_packet_to_outputs(packet, true);
@@ -3790,6 +4377,7 @@ private:
             encode_csv_.flush();
         }
         finish_mp4_writer();
+        finish_frame_metadata();
     }
 
     void run_direct_source()
@@ -3923,6 +4511,7 @@ private:
     std::unique_ptr<FFmpegWriter> mp4_writer_;
     std::ofstream bitstream_out_;
     std::ofstream encode_csv_;
+    orange::external_recorder::FrameMetadataCsvWriter frame_metadata_;
     int64_t mp4_pts_counter_ = 0;
     uint64_t returned_packets_ = 0;
     uint64_t returned_bytes_ = 0;
@@ -3938,13 +4527,13 @@ private:
     size_t mp4_peak_queued_bytes_ = 0;
     FFmpegWriterLatencyStats writer_latency_;
     std::string resolved_mp4_keyframe_path_;
-    std::vector<double> enqueue_age_samples_;
-    std::vector<double> prepare_samples_;
-    std::vector<double> slot_reuse_wait_samples_;
-    std::vector<double> encode_total_samples_;
-    std::vector<double> encode_picture_samples_;
-    std::vector<double> lock_bitstream_samples_;
-    std::vector<double> bitstream_fetch_samples_;
+    BoundedLatencySamples enqueue_age_samples_;
+    BoundedLatencySamples prepare_samples_;
+    BoundedLatencySamples slot_reuse_wait_samples_;
+    BoundedLatencySamples encode_total_samples_;
+    BoundedLatencySamples encode_picture_samples_;
+    BoundedLatencySamples lock_bitstream_samples_;
+    BoundedLatencySamples bitstream_fetch_samples_;
     bool prewarmed_ = false;
     uint64_t prewarmed_slots_ = 0;
     double prewarm_ms_ = 0.0;
@@ -3976,7 +4565,8 @@ std::vector<int> effective_shard_gpu_ids(const Options& options)
 Options make_shard_options(const Options& base,
                            size_t shard_index,
                            size_t shard_count,
-                           int gpu_id)
+                           int gpu_id,
+                           bool persist_shard_mp4)
 {
     Options out = base;
     out.gpu_id = gpu_id;
@@ -3988,6 +4578,10 @@ Options make_shard_options(const Options& base,
         out.bitstream_out_path = add_suffix_to_path_stem(base.bitstream_out_path, suffix);
         out.mp4_out_path = add_suffix_to_path_stem(base.mp4_out_path, suffix);
         out.mp4_keyframe_path = add_suffix_to_path_stem(base.mp4_keyframe_path, suffix);
+    }
+    if (!persist_shard_mp4) {
+        out.mp4_out_path.clear();
+        out.mp4_keyframe_path.clear();
     }
     out.shard_gpu_ids.clear();
     return out;
@@ -4004,9 +4598,9 @@ void write_summary_json(const Options& options,
                         uint64_t encode_skipped,
                         uint64_t encode_dropped,
                         uint64_t encode_queue_high_water,
-                        const std::vector<double>& detach_total_samples,
-                        const std::vector<double>& detach_open_samples,
-                        const std::vector<double>& detach_copy_samples,
+                        const BoundedLatencySamples& detach_total_samples,
+                        const BoundedLatencySamples& detach_open_samples,
+                        const BoundedLatencySamples& detach_copy_samples,
                         const EncodeSummary* encode_summary,
                         const std::vector<EncodeSummary>& shard_summaries,
                         const MergedOutputSummary* merged_summary,
@@ -4031,10 +4625,25 @@ void write_summary_json(const Options& options,
     const MergedOutputSummary empty_merged_summary;
     const MergedOutputSummary& merged =
         merged_summary ? *merged_summary : empty_merged_summary;
+    const bool rolling_clips_authoritative = merged.rolling.enabled;
     const std::string output_mp4_path =
-        merged.enabled ? merged.mp4_path : enc.mp4_path;
+        rolling_clips_authoritative
+            ? std::string()
+            : (merged.enabled ? merged.mp4_path : enc.mp4_path);
     const std::string output_mp4_keyframe_path =
-        merged.enabled ? merged.mp4_keyframe_path : enc.mp4_keyframe_path;
+        rolling_clips_authoritative
+            ? std::string()
+            : (merged.enabled ? merged.mp4_keyframe_path : enc.mp4_keyframe_path);
+    const orange::external_recorder::FrameMetadataSummary empty_frame_metadata;
+    const orange::external_recorder::FrameMetadataSummary& frame_metadata =
+        rolling_clips_authoritative
+            ? empty_frame_metadata
+            : (merged.enabled ? merged.frame_metadata : enc.frame_metadata);
+    const std::string output_metadata_path = frame_metadata.path;
+    const std::string representative_mp4_path =
+        rolling_clips_authoritative && !merged.rolling.clips.empty()
+            ? merged.rolling.clips.front().mp4_path
+            : output_mp4_path;
     const std::string metadata_camera_serial =
         merged.enabled && !merged.camera_serial.empty()
             ? merged.camera_serial
@@ -4061,11 +4670,11 @@ void write_summary_json(const Options& options,
             metadata_source_gpu_id,
             metadata_encode_gpu_id);
     const bool mp4_metadata_supplied =
-        options.encode && !output_mp4_path.empty();
+        options.encode && !representative_mp4_path.empty();
     const nlohmann::json video_metadata =
         build_video_metadata_json(
             video_metadata_profile,
-            output_mp4_path,
+            representative_mp4_path,
             metadata_stream_id,
             mp4_metadata_supplied,
             mp4_metadata_supplied,
@@ -4094,6 +4703,21 @@ void write_summary_json(const Options& options,
         << (options.deferred_source_release ? "true" : "false") << ",\n";
     out << "  \"preserve_shard_mp4s\": "
         << (options.preserve_shard_mp4s ? "true" : "false") << ",\n";
+    out << "  \"authoritative_video_output\": {\n";
+    out << "    \"mode\": \""
+        << (rolling_clips_authoritative ? "rolling_clips" : "single_mp4")
+        << "\",\n";
+    out << "    \"session_mp4_written\": "
+        << (merged.enabled || (!merged.coordinator_enabled && !enc.mp4_path.empty())
+                ? "true" : "false")
+        << ",\n";
+    out << "    \"frame_metadata_written\": "
+        << (!output_metadata_path.empty() && frame_metadata.rows_written > 0
+                ? "true" : "false")
+        << ",\n";
+    out << "    \"shard_mp4s_requested\": "
+        << (options.preserve_shard_mp4s ? "true" : "false") << "\n";
+    out << "  },\n";
     write_ipc_protocol_json(out, protocol_state, "  ");
     out << ",\n";
     out << "  \"codec\": \"" << json_escape(options.codec) << "\",\n";
@@ -4105,6 +4729,23 @@ void write_summary_json(const Options& options,
         << json_dump_for_inline_value(rate_control_summary_json(options), "  ")
         << ",\n";
     out << "  \"fps\": " << options.fps << ",\n";
+    out << "  \"resolved_gop_length\": " << options.gop << ",\n";
+    out << "  \"recording_config_fingerprint_scope\": \""
+        << orange::external_recorder::ipc::kRecordingConfigFingerprintScope
+        << "\",\n";
+    out << "  \"recording_config_fingerprint\": \""
+        << orange::external_recorder::ipc::build_recording_config_fingerprint(
+               static_cast<int>(options.fps),
+               static_cast<int>(options.gop))
+        << "\",\n";
+    out << "  \"max_pending_gops\": " << options.max_pending_gops << ",\n";
+    out << "  \"max_pending_bytes\": " << options.max_pending_bytes << ",\n";
+    out << "  \"max_pending_frontier_age_ms\": "
+        << options.max_pending_frontier_age_ms << ",\n";
+    out << "  \"max_writer_queue_packets\": "
+        << options.max_writer_queue_packets << ",\n";
+    out << "  \"max_writer_queue_bytes\": "
+        << options.max_writer_queue_bytes << ",\n";
     out << "  \"encode_max_fps\": " << options.encode_max_fps << ",\n";
     out << "  \"encode_queue_depth\": " << options.encode_queue_depth << ",\n";
     out << "  \"encode_prewarm_slots\": " << options.encode_prewarm_slots << ",\n";
@@ -4144,6 +4785,20 @@ void write_summary_json(const Options& options,
     out << "  \"encode_dropped\": " << encode_dropped << ",\n";
     out << "  \"encode_queue_high_water\": " << encode_queue_high_water << ",\n";
     out << "  \"frames_encoded\": " << enc.frames_encoded << ",\n";
+    out << "  \"frame_metadata\": {\n";
+    out << "    \"path\": \"" << json_escape(output_metadata_path) << "\",\n";
+    out << "    \"rows_written\": " << frame_metadata.rows_written << ",\n";
+    out << "    \"first_recording_frame_id\": "
+        << frame_metadata.first_recording_frame_id << ",\n";
+    out << "    \"last_recording_frame_id\": "
+        << frame_metadata.last_recording_frame_id << ",\n";
+    out << "    \"recording_frame_id_gaps\": "
+        << frame_metadata.recording_frame_id_gaps << ",\n";
+    out << "    \"zero_camera_timestamp_rows\": "
+        << frame_metadata.zero_camera_timestamp_rows << ",\n";
+    out << "    \"zero_system_timestamp_rows\": "
+        << frame_metadata.zero_system_timestamp_rows << "\n";
+    out << "  },\n";
     out << "  \"worker_failed\": " << ((enc.failed || merged.failed) ? "true" : "false") << ",\n";
     out << "  \"external_encode\": {\n";
     out << "    \"frames_dropped\": " << enc.frames_dropped << ",\n";
@@ -4168,6 +4823,12 @@ void write_summary_json(const Options& options,
     out << "    \"mp4_push_max_ms\": " << enc.mp4_push_max_ms << ",\n";
     out << "    \"mp4_write_mean_ms\": " << enc.mp4_write_mean_ms << ",\n";
     out << "    \"mp4_write_max_ms\": " << enc.mp4_write_max_ms << ",\n";
+    out << "    \"latency_sampling\": {\n";
+    out << "      \"policy\": \"deterministic_reservoir\",\n";
+    out << "      \"observed\": " << enc.latency_samples_observed << ",\n";
+    out << "      \"retained\": " << enc.latency_samples_retained << ",\n";
+    out << "      \"capacity\": " << enc.latency_sample_capacity << "\n";
+    out << "    },\n";
     out << "    \"prewarm_slots\": " << enc.prewarm_slots << ",\n";
     out << "    \"prewarm_ms\": " << enc.prewarm_ms << ",\n";
     out << "    \"prewarm_peer_copy\": " << (enc.prewarm_peer_copy ? "true" : "false") << ",\n";
@@ -4212,6 +4873,12 @@ void write_summary_json(const Options& options,
             << shard.mp4_peak_queued_packets << ",\n";
         out << "      \"mp4_peak_queued_bytes\": "
             << shard.mp4_peak_queued_bytes << ",\n";
+        out << "      \"latency_sampling\": {\n";
+        out << "        \"policy\": \"deterministic_reservoir\",\n";
+        out << "        \"observed\": " << shard.latency_samples_observed << ",\n";
+        out << "        \"retained\": " << shard.latency_samples_retained << ",\n";
+        out << "        \"capacity\": " << shard.latency_sample_capacity << "\n";
+        out << "      },\n";
         out << "      \"encode_csv\": \"" << json_escape(shard.encode_csv_path) << "\",\n";
         out << "      \"raw_bitstream\": \"" << json_escape(shard.bitstream_out_path) << "\",\n";
         out << "      \"mp4\": \"" << json_escape(shard.mp4_path) << "\",\n";
@@ -4228,6 +4895,8 @@ void write_summary_json(const Options& options,
     }
     out << "  ],\n";
     out << "  \"merged_output\": {\n";
+    out << "    \"coordinator_enabled\": "
+        << (merged.coordinator_enabled ? "true" : "false") << ",\n";
     out << "    \"enabled\": " << (merged.enabled ? "true" : "false") << ",\n";
     out << "    \"failed\": " << (merged.failed ? "true" : "false") << ",\n";
     out << "    \"packets_written\": " << merged.packets_written << ",\n";
@@ -4235,16 +4904,41 @@ void write_summary_json(const Options& options,
     out << "    \"gops_released\": " << merged.gops_released << ",\n";
     out << "    \"pending_gops\": " << merged.pending_gops << ",\n";
     out << "    \"pending_bytes\": " << merged.pending_bytes << ",\n";
+    out << "    \"peak_pending_gops\": " << merged.peak_pending_gops << ",\n";
+    out << "    \"peak_pending_bytes\": " << merged.peak_pending_bytes << ",\n";
+    out << "    \"frontier_age_ms\": " << merged.frontier_age_ms << ",\n";
+    out << "    \"peak_frontier_age_ms\": "
+        << merged.peak_frontier_age_ms << ",\n";
     out << "    \"mp4_queue_overflowed\": " << (merged.mp4_queue_overflowed ? "true" : "false") << ",\n";
     out << "    \"mp4_queue_overflow_events\": " << merged.mp4_queue_overflow_events << ",\n";
+    out << "    \"mp4_queued_packets\": " << merged.mp4_queued_packets << ",\n";
+    out << "    \"mp4_queued_bytes\": " << merged.mp4_queued_bytes << ",\n";
     out << "    \"mp4_peak_queued_packets\": " << merged.mp4_peak_queued_packets << ",\n";
     out << "    \"mp4_peak_queued_bytes\": " << merged.mp4_peak_queued_bytes << ",\n";
+    out << "    \"rolling_mp4_queue_overflowed\": "
+        << (merged.rolling_mp4_queue_overflowed ? "true" : "false") << ",\n";
+    out << "    \"rolling_mp4_queue_overflow_events\": "
+        << merged.rolling_mp4_queue_overflow_events << ",\n";
+    out << "    \"rolling_mp4_queued_packets\": "
+        << merged.rolling_mp4_queued_packets << ",\n";
+    out << "    \"rolling_mp4_queued_bytes\": "
+        << merged.rolling_mp4_queued_bytes << ",\n";
+    out << "    \"rolling_mp4_peak_queued_packets\": "
+        << merged.rolling_mp4_peak_queued_packets << ",\n";
+    out << "    \"rolling_mp4_peak_queued_bytes\": "
+        << merged.rolling_mp4_peak_queued_bytes << ",\n";
     out << "    \"mp4_push_mean_ms\": " << merged.mp4_push_mean_ms << ",\n";
     out << "    \"mp4_push_max_ms\": " << merged.mp4_push_max_ms << ",\n";
     out << "    \"mp4_write_mean_ms\": " << merged.mp4_write_mean_ms << ",\n";
     out << "    \"mp4_write_max_ms\": " << merged.mp4_write_max_ms << ",\n";
     out << "    \"mp4\": \"" << json_escape(merged.mp4_path) << "\",\n";
     out << "    \"mp4_keyframe\": \"" << json_escape(merged.mp4_keyframe_path) << "\",\n";
+    out << "    \"metadata\": \""
+        << json_escape(merged.frame_metadata.path) << "\",\n";
+    out << "    \"metadata_rows\": "
+        << merged.frame_metadata.rows_written << ",\n";
+    out << "    \"metadata_recording_frame_id_gaps\": "
+        << merged.frame_metadata.recording_frame_id_gaps << ",\n";
     out << "    \"error_message\": \"" << json_escape(merged.error_message) << "\"\n";
     out << "  },\n";
     out << "  \"rolling_output\": {\n";
@@ -4289,9 +4983,15 @@ void write_summary_json(const Options& options,
     out << "    ]\n";
     out << "  },\n";
     out << "  \"detach_timing\": {\n";
-    out << "    \"total_p95_ms\": " << percentile_ms(detach_total_samples, 95.0) << ",\n";
-    out << "    \"open_handle_p95_ms\": " << percentile_ms(detach_open_samples, 95.0) << ",\n";
-    out << "    \"copy_p95_ms\": " << percentile_ms(detach_copy_samples, 95.0) << "\n";
+    out << "    \"total_p95_ms\": " << detach_total_samples.percentile(95.0) << ",\n";
+    out << "    \"open_handle_p95_ms\": " << detach_open_samples.percentile(95.0) << ",\n";
+    out << "    \"copy_p95_ms\": " << detach_copy_samples.percentile(95.0) << ",\n";
+    out << "    \"sampling\": {\n";
+    out << "      \"policy\": \"deterministic_reservoir\",\n";
+    out << "      \"observed\": " << detach_total_samples.observed_count() << ",\n";
+    out << "      \"retained\": " << detach_total_samples.retained_count() << ",\n";
+    out << "      \"capacity\": " << detach_total_samples.capacity() << "\n";
+    out << "    }\n";
     out << "  },\n";
     out << "  \"outputs\": {\n";
     out << "    \"detach_csv\": \"" << json_escape(options.csv_path) << "\",\n";
@@ -4299,7 +4999,8 @@ void write_summary_json(const Options& options,
     out << "    \"gop_routing_csv\": \"" << json_escape(options.gop_routing_csv_path) << "\",\n";
     out << "    \"raw_bitstream\": \"" << json_escape(options.bitstream_out_path) << "\",\n";
     out << "    \"mp4\": \"" << json_escape(output_mp4_path) << "\",\n";
-    out << "    \"mp4_keyframe\": \"" << json_escape(output_mp4_keyframe_path) << "\"\n";
+    out << "    \"mp4_keyframe\": \"" << json_escape(output_mp4_keyframe_path) << "\",\n";
+    out << "    \"metadata\": \"" << json_escape(output_metadata_path) << "\"\n";
     out << "  },\n";
     out << "  \"output_file_sizes\": {\n";
     out << "    \"detach_csv_bytes\": " << file_size_or_zero(options.csv_path) << ",\n";
@@ -4307,11 +5008,17 @@ void write_summary_json(const Options& options,
     out << "    \"gop_routing_csv_bytes\": " << file_size_or_zero(options.gop_routing_csv_path) << ",\n";
     out << "    \"raw_bitstream_bytes\": " << file_size_or_zero(options.bitstream_out_path) << ",\n";
     out << "    \"mp4_bytes\": " << file_size_or_zero(output_mp4_path) << ",\n";
-    out << "    \"mp4_keyframe_bytes\": " << file_size_or_zero(output_mp4_keyframe_path) << "\n";
+    out << "    \"mp4_keyframe_bytes\": " << file_size_or_zero(output_mp4_keyframe_path) << ",\n";
+    out << "    \"metadata_bytes\": " << file_size_or_zero(output_metadata_path) << "\n";
     out << "  },\n";
     out << "  \"video_metadata\": "
         << json_dump_for_inline_value(video_metadata, "  ")
         << ",\n";
+    const ProcessMemorySnapshot process_memory = collect_process_memory_snapshot();
+    out << "  \"process_memory\": {\n";
+    out << "    \"rss_kib\": " << process_memory.rss_kib << ",\n";
+    out << "    \"peak_rss_kib\": " << process_memory.peak_rss_kib << "\n";
+    out << "  },\n";
     const StoragePreflightSnapshot storage = collect_storage_preflight(options);
     write_storage_preflight_json(out, storage, "  ");
     out << "\n";
@@ -4356,6 +5063,7 @@ int main(int argc, char** argv)
                 message,
                 rolling_status_from_progress(options, 0),
                 protocol_state,
+                nullptr,
                 &initial_storage);
             throw std::runtime_error(message);
         }
@@ -4382,12 +5090,21 @@ int main(int argc, char** argv)
             }
             encode_workers.reserve(shard_gpu_ids.size());
             for (size_t shard_index = 0; shard_index < shard_gpu_ids.size(); ++shard_index) {
+                const bool persist_shard_mp4 =
+                    !merged_output || options.preserve_shard_mp4s;
                 Options shard_options = make_shard_options(
                     options,
                     shard_index,
                     shard_gpu_ids.size(),
-                    shard_gpu_ids[shard_index]);
-                if (merged_output && shard_gpu_ids.size() == 1) {
+                    shard_gpu_ids[shard_index],
+                    persist_shard_mp4);
+                if (merged_output) {
+                    // The GOP-order coordinator owns the one authoritative
+                    // frame-clock sidecar; shard writers must not duplicate it.
+                    shard_options.write_frame_metadata = false;
+                    shard_options.metadata_csv_path.clear();
+                }
+                if (merged_output && shard_gpu_ids.size() == 1 && persist_shard_mp4) {
                     const std::string suffix =
                         shard_suffix(shard_index, shard_gpu_ids[shard_index]);
                     shard_options.mp4_out_path =
@@ -4442,7 +5159,9 @@ int main(int argc, char** argv)
                 &protocol_write_mutex,
                 orange::external_recorder::ipc::build_recorder_hello_line(
                     options.session_id,
-                    options.stream_id))) {
+                    options.stream_id,
+                    static_cast<int>(options.fps),
+                    static_cast<int>(options.gop)))) {
             throw std::runtime_error("failed to send external recorder protocol hello");
         }
         protocol_state.recorder_hello_sent = true;
@@ -4512,9 +5231,9 @@ int main(int argc, char** argv)
         uint64_t encode_queue_high_water = 0;
         std::string observed_session_id = options.session_id;
         std::string observed_stream_id = options.stream_id;
-        std::vector<double> detach_total_samples;
-        std::vector<double> detach_open_samples;
-        std::vector<double> detach_copy_samples;
+        BoundedLatencySamples detach_total_samples;
+        BoundedLatencySamples detach_open_samples;
+        BoundedLatencySamples detach_copy_samples;
         auto collect_encode_progress =
             [&encode_workers](uint64_t* frames_encoded,
                               uint64_t* frames_dropped,
@@ -4550,8 +5269,35 @@ int main(int argc, char** argv)
                 collect_encode_progress(&frames_encoded, &frames_dropped, &worker_failed);
                 RollingStatusSnapshot rolling_status =
                     rolling_status_from_progress(options, frame_count);
+                RecorderBufferHealthSnapshot buffer_health;
                 if (merged_output) {
                     const MergedOutputSummary merged_summary = merged_output->summary();
+                    buffer_health.pending_gops = merged_summary.pending_gops;
+                    buffer_health.pending_bytes = merged_summary.pending_bytes;
+                    buffer_health.peak_pending_gops = merged_summary.peak_pending_gops;
+                    buffer_health.peak_pending_bytes = merged_summary.peak_pending_bytes;
+                    buffer_health.frontier_age_ms = merged_summary.frontier_age_ms;
+                    buffer_health.peak_frontier_age_ms =
+                        merged_summary.peak_frontier_age_ms;
+                    buffer_health.merged_writer_queued_packets =
+                        merged_summary.mp4_queued_packets;
+                    buffer_health.merged_writer_queued_bytes =
+                        merged_summary.mp4_queued_bytes;
+                    buffer_health.merged_writer_peak_queued_packets =
+                        merged_summary.mp4_peak_queued_packets;
+                    buffer_health.merged_writer_peak_queued_bytes =
+                        merged_summary.mp4_peak_queued_bytes;
+                    buffer_health.rolling_writer_queued_packets =
+                        merged_summary.rolling_mp4_queued_packets;
+                    buffer_health.rolling_writer_queued_bytes =
+                        merged_summary.rolling_mp4_queued_bytes;
+                    buffer_health.rolling_writer_peak_queued_packets =
+                        merged_summary.rolling_mp4_peak_queued_packets;
+                    buffer_health.rolling_writer_peak_queued_bytes =
+                        merged_summary.rolling_mp4_peak_queued_bytes;
+                    buffer_health.writer_queue_overflowed =
+                        merged_summary.mp4_queue_overflowed ||
+                        merged_summary.rolling_mp4_queue_overflowed;
                     const std::vector<RollingClipOutputSummary>& clips =
                         merged_summary.rolling.clips;
                     rolling_status.completed_clip_count = clips.size();
@@ -4611,7 +5357,8 @@ int main(int argc, char** argv)
                     worker_failed,
                     error_message,
                     rolling_status,
-                    protocol_state);
+                    protocol_state,
+                    &buffer_health);
             };
         auto last_status_write = std::chrono::steady_clock::now();
         auto mark_intake_end = [&](const char* reason, bool clean) {
@@ -4620,6 +5367,15 @@ int main(int argc, char** argv)
                 protocol_state.descriptor_intake_end_reason =
                     reason ? reason : "unknown";
                 protocol_state.descriptor_intake_completed_cleanly = clean;
+            }
+        };
+        auto fail_if_encode_worker_failed = [&]() {
+            for (const auto& worker : encode_workers) {
+                if (worker && worker->failed()) {
+                    mark_intake_end("encoder_worker_failed", false);
+                    throw std::runtime_error(
+                        "external encoder worker failed; refusing further frame intake");
+                }
             }
         };
 
@@ -4631,9 +5387,14 @@ int main(int argc, char** argv)
                 mark_intake_end("socket_eof", false);
                 break;
             }
+            fail_if_encode_worker_failed();
             if (orange::external_recorder::ipc::starts_with_kind(
                     line,
                     orange::external_recorder::ipc::kClientHelloKind)) {
+                if (protocol_state.client_hello_received) {
+                    throw std::runtime_error(
+                        "duplicate external recorder client protocol hello");
+                }
                 orange::external_recorder::ipc::HelloFields client_hello;
                 if (!orange::external_recorder::ipc::parse_client_hello_line(
                         line,
@@ -4641,6 +5402,37 @@ int main(int argc, char** argv)
                     throw std::runtime_error(
                         "invalid external recorder client protocol hello: " +
                         client_hello.error);
+                }
+                const std::string expected_role =
+                    options.stream_kind == "crop" ? "orange_crop" : "orange_full_frame";
+                if (client_hello.role != expected_role) {
+                    throw std::runtime_error(
+                        "external recorder client role mismatch: peer=" +
+                        client_hello.role + " expected=" + expected_role);
+                }
+                if (!options.session_id.empty() &&
+                    client_hello.session_id !=
+                        orange::external_recorder::ipc::token_value(options.session_id)) {
+                    throw std::runtime_error(
+                        "external recorder client session mismatch: peer=" +
+                        client_hello.session_id + " expected=" + options.session_id);
+                }
+                if (!options.stream_id.empty() &&
+                    client_hello.stream_id !=
+                        orange::external_recorder::ipc::token_value(options.stream_id)) {
+                    throw std::runtime_error(
+                        "external recorder client stream mismatch: peer=" +
+                        client_hello.stream_id + " expected=" + options.stream_id);
+                }
+                std::string identity_error;
+                if (!orange::external_recorder::ipc::validate_recording_config_identity(
+                        client_hello,
+                        static_cast<int>(options.fps),
+                        static_cast<int>(options.gop),
+                        &identity_error)) {
+                    throw std::runtime_error(
+                        "external recorder client recording-config identity rejected: " +
+                        identity_error);
                 }
                 protocol_state.client_hello_received = true;
                 write_status("connected");
@@ -4686,11 +5478,26 @@ int main(int argc, char** argv)
                     control.command);
             }
 
+            if (!protocol_state.client_hello_received) {
+                throw std::runtime_error(
+                    "external recorder FRAME received before validated CLIENT_HELLO");
+            }
+
             FrameDescriptor desc;
             if (!parse_frame_descriptor(line, &desc)) {
                 std::cerr << "Malformed frame descriptor: " << line << std::endl;
                 mark_intake_end("malformed_descriptor", false);
                 break;
+            }
+            std::string grouping_error;
+            if (!orange::external_recorder::ipc::validate_frame_grouping(
+                    desc.recording_frame_id,
+                    desc.gop_index,
+                    desc.frame_index_within_gop,
+                    options.gop,
+                    &grouping_error)) {
+                throw std::runtime_error(
+                    "external recorder descriptor rejected: " + grouping_error);
             }
             apply_descriptor_defaults(options, &desc);
             ExternalEncodeWorker* target_encode_worker = nullptr;
@@ -4807,6 +5614,7 @@ int main(int argc, char** argv)
                 sample.detach_copied = false;
                 sample.encode_skipped = true;
             }
+            fail_if_encode_worker_failed();
             sample.total_ms = elapsed_ms(total_start);
 
             if (!write_protocol_line(
@@ -4852,9 +5660,9 @@ int main(int argc, char** argv)
             }
             encode_queue_high_water =
                 std::max<uint64_t>(encode_queue_high_water, sample.encode_queue_depth);
-            detach_total_samples.push_back(sample.total_ms);
-            detach_open_samples.push_back(sample.open_handle_ms);
-            detach_copy_samples.push_back(sample.copy_ms);
+            detach_total_samples.observe(sample.total_ms);
+            detach_open_samples.observe(sample.open_handle_ms);
+            detach_copy_samples.observe(sample.copy_ms);
             if (csv) {
                 write_csv_row(csv, sample);
                 if ((frame_count % 60) == 0) {

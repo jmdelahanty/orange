@@ -26,6 +26,7 @@ struct RecordingControlConfig {
 
 struct RecordingSessionState {
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
+    std::vector<ResolvedRecordingConfig> resolved_recording_configs;
     std::string recording_sink_mode = "real";
     RecordingControlConfig gui_recording_control;
     std::string external_recorder_config_status;

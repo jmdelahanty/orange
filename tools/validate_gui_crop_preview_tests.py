@@ -1293,6 +1293,17 @@ def write_external_recorder_status_fixture(
         "ipc_protocol": external_ipc_protocol_payload(),
     }
     if rolling:
+        summary_payload["preserve_shard_mp4s"] = False
+        summary_payload["authoritative_video_output"] = {
+            "mode": "rolling_clips",
+            "session_mp4_written": False,
+            "shard_mp4s_requested": False,
+        }
+        summary_payload["merged_output"].update({
+            "coordinator_enabled": True,
+            "enabled": False,
+            "mp4": "",
+        })
         summary_payload["rolling_output"] = {
             "enabled": True,
             "implementation": "external_recorder_gop_boundary_writer_rotation",

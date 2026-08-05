@@ -59,6 +59,8 @@ struct AppStorageConfig {
     std::string run_pointer_path;
 };
 
+struct CameraEachSelect;
+
 // Function Declarations
 void prepare_application_folders(std::string orange_root_dir_str);
 std::string build_default_orange_root_dir(std::string* warning_out = nullptr);
@@ -115,7 +117,10 @@ bool write_recording_snapshot(const std::string& recording_folder,
                               bool update_latest_pointer = true,
                               bool sync_camera_enabled = false,
                               const PTPParams* ptp_params = nullptr,
-                              const std::string& recording_sink_mode = "real");
+                              const std::string& recording_sink_mode = "real",
+                              const ResolvedRecordingConfig* resolved_recording_configs = nullptr,
+                              int num_resolved_recording_configs = 0,
+                              const CameraEachSelect* cameras_select = nullptr);
 bool publish_latest_recording_pointer(const std::string& base_folder,
                                       const std::string& recording_folder,
                                       const std::string& recording_id);

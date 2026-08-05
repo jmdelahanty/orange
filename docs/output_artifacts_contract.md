@@ -51,6 +51,7 @@ Default configured base path in runtime:
 | Latest pointer (canonical) | `<canonical_pointer_root>/latest_recording.json` | Required when configured | Recording started |
 | Latest pointer (shared) | `/run/orange/latest_recording.json` | Required (best-effort write) | Recording started |
 | Main video | `<recording_folder>/Cam<serial>.mp4` | Typical | Per-camera HW encoding active |
+| Main video finalization | `<video-path>.finalization.json` | Typical for newly written MP4s | MP4 writer opened; terminal at clean close |
 | Main metadata CSV | `<recording_folder>/Cam<serial>_meta.csv` | Typical | Per-camera HW encoding active |
 | Main keyframe sidecar | `<recording_folder>/Cam<serial>_keyframe.json` | Typical | Per-camera HW encoding active |
 | Pipeline perf CSV | `<recording_folder>/Cam<serial>_pipeline_perf.csv` | Optional | Per-camera recording folder active |
@@ -61,6 +62,7 @@ Default configured base path in runtime:
 | GPU dmon output | `<recording_folder>/nvidia_smi_dmon.csv` | Optional | Headless recording session with best-effort GPU monitoring |
 | GPU dmon stderr log | `<recording_folder>/nvidia_smi_dmon.stderr.log` | Optional | Headless recording session with best-effort GPU monitoring |
 | Crop video | `<recording_folder>/Cam<serial>_crop.mp4` | Optional | Crop-and-encode active |
+| Crop video finalization | `<crop-video-path>.finalization.json` | Optional for newly written crop MP4s | Crop MP4 writer opened; terminal at clean close |
 | Crop metadata CSV | `<recording_folder>/Cam<serial>_crop_meta.csv` | Optional | Crop-and-encode active |
 | Crop keyframe sidecar | `<recording_folder>/Cam<serial>_crop_keyframe.json` | Optional | Crop-and-encode active |
 | Crop perf CSV | `<recording_folder>/Cam<serial>_crop_perf.csv` | Optional | Crop-and-encode active |
@@ -73,6 +75,7 @@ Default configured base path in runtime:
 | Full external recorder contract | `<recording_folder>/external_recorder_contract.json` | Optional | Full-frame `recording_sink_mode = external_ipc` |
 | Full external recorder supervisor plan | `<recording_folder>/external_recorder_supervisor_plan.json` | Optional | Supervised full-frame external IPC |
 | Full external recorder artifact root | `<recording_folder>/external_recorder/` | Optional | Supervised full-frame external IPC |
+| Full external single-clip frame metadata | `<recording_folder>/external_recorder/Cam<serial>_external_meta.csv` | Required for completed external IPC single clips | One row per encoded video frame; carries `recording_frame_id`, camera `timestamp`, and host `timestamp_sys` |
 | Crop external recorder contract | `<recording_folder>/external_crop_recorder_contract.json` | Optional | Crop `recording_sink_mode = external_ipc` |
 | Crop external recorder supervisor plan | `<recording_folder>/external_crop_recorder_supervisor_plan.json` | Optional | Supervised crop external IPC |
 | Crop external recorder artifact root | `<recording_folder>/external_crop_recorder/` | Optional | Supervised crop external IPC |
@@ -87,19 +90,24 @@ A recording payload has four classes of files:
    `recording_snapshot.json`, then follow `recording_outputs`.
 2. Durable media.
    These are the videos consumers should load for analysis. In in-process
-   full-frame mode this is root `Cam<serial>.mp4`; in full-frame external IPC
-   mode it is `external_recorder/Cam<serial>_external.mp4`. Crop videos are
+   full-frame mode this is root `Cam<serial>.mp4`; in continuous full-frame
+   external IPC mode it is `external_recorder/Cam<serial>_external.mp4`; and in
+   rolling external IPC mode it is the ordered clip set referenced by
+   `recording_session.json` and `recording_clip_index.json`. Crop videos are
    sidecar media and may be root `Cam<serial>_crop.mp4` or external
    `external_crop_recorder/Cam<serial>_crop_external.mp4`.
+   A continuous external IPC full-frame video is paired with
+   `external_recorder/Cam<serial>_external_meta.csv`; consumers should follow
+   the manifest path rather than infer a root-level `Cam*_meta.csv` name.
 3. Telemetry and sidecars.
    CSV/JSON/JSONL files record timing, routing, keyframes, queue pressure,
    event rows, local-control state, PTP state, and validation summaries. These
    are durable diagnostics but are not alternate copies of the recorded video.
 4. Temporary/opt-in diagnostics.
    Full-frame split-GOP shard MP4s are not part of the durable payload by
-   default. The recorder may create `Cam<serial>_external_shard*_gpu*.mp4`
-   while assembling the merged MP4, but deletes those files after clean merged
-   finalization unless `preserve_shard_mp4s = true`.
+   default and their writers are not opened. The recorder creates
+   `Cam<serial>_external_shard*_gpu*.mp4` only when
+   `preserve_shard_mp4s = true` explicitly requests diagnostic copies.
 
 For the current production-like GUI shape with both full-frame external IPC and
 external crop recording enabled, the high-level payload looks like:
@@ -125,16 +133,16 @@ external crop recording enabled, the high-level payload looks like:
   Cam<serial>_crop_sidecar_perf.csv
 
   external_recorder/
-    Cam<serial>_external.mp4                 # durable full-frame media
+    Cam<serial>_external.mp4                 # durable continuous-mode media
     Cam<serial>_external_keyframes.json
     Cam<serial>_external_summary.json
     Cam<serial>_external_status.json
     Cam<serial>_external_gop_routing.csv
     Cam<serial>_external_detach.csv
     Cam<serial>_external_encode_shard*_gpu*.csv
-    Cam<serial>_external_keyframes_shard*_gpu*.json
     Cam<serial>_external_recorder.log
-    Cam<serial>_external_shard*_gpu*.mp4     # temporary unless preserved
+    clips/clip_<index>/                      # authoritative rolling-mode media
+    Cam<serial>_external_shard*_gpu*.mp4     # explicit diagnostic opt-in only
     external_recorder_session.json
     external_recorder_supervisor_runtime.json
     external_recorder_verifier_handoff.json
@@ -161,9 +169,10 @@ authoritative full-frame video is the path recorded in
 `recording_outputs[serial].full.video` and
 `recording_session.json camera_artifacts[serial].video`.
 
-`external_encode_shards[].mp4` in `Cam<serial>_external_summary.json` may point
-at a deleted shard MP4. Consumers should read
-`external_encode_shards[].mp4_retention`:
+With the current default, `external_encode_shards[].mp4` is empty and
+`external_encode_shards[].mp4_retention.status` is
+`not_applicable_no_mp4_path`. Older summaries or explicit diagnostic runs can
+contain the legacy retention states:
 
 - `deleted_after_merged_finalization` or
   `already_absent_after_merged_finalization`: expected default for a clean

@@ -1,6 +1,7 @@
 #include "external_recorder_contract_utils.h"
 #include "external_recorder_ipc_protocol.h"
 #include "external_recorder_supervisor.h"
+#include "encoder_pipeline.h"
 #include "video_capture.h"
 
 #include <filesystem>
@@ -46,7 +47,9 @@ void parses_ipc_protocol_hello_lines()
     const std::string recorder_hello =
         orange::external_recorder::ipc::build_recorder_hello_line(
             "session 001",
-            "2010095");
+            "2010095",
+            100,
+            25);
     orange::external_recorder::ipc::HelloFields recorder_fields;
     require(orange::external_recorder::ipc::parse_recorder_hello_line(
                 recorder_hello,
@@ -58,13 +61,19 @@ void parses_ipc_protocol_hello_lines()
             "recorder hello version mismatch");
     require(recorder_fields.role == "recorder",
             "recorder hello role mismatch");
+    std::string identity_error;
+    require(orange::external_recorder::ipc::validate_recording_config_identity(
+                recorder_fields, 100, 25, &identity_error),
+            "recorder identity should validate: " + identity_error);
 
     const std::string client_hello =
         orange::external_recorder::ipc::build_client_hello_line(
             "2010095",
             "session 001",
             "2010095_crop",
-            "orange crop");
+            "orange crop",
+            100,
+            1);
     orange::external_recorder::ipc::HelloFields client_fields;
     require(orange::external_recorder::ipc::parse_client_hello_line(
                 client_hello,
@@ -74,6 +83,9 @@ void parses_ipc_protocol_hello_lines()
             "client hello role should be tokenized");
     require(client_fields.session_id == "session_001",
             "client hello session should be tokenized");
+    require(orange::external_recorder::ipc::validate_recording_config_identity(
+                client_fields, 100, 1, &identity_error),
+            "client identity should validate: " + identity_error);
 
     const std::string recorder_status =
         orange::external_recorder::ipc::build_recorder_status_line(
@@ -160,6 +172,93 @@ void parses_ipc_protocol_hello_lines()
             "invalid protocol should fail");
 }
 
+void rejects_gop_25_30_contract_mismatch_before_unbounded_buffering()
+{
+    const std::string sender_hello =
+        orange::external_recorder::ipc::build_client_hello_line(
+            "2010095",
+            "session_mismatch",
+            "2010095",
+            "orange_full_frame",
+            100,
+            30);
+    orange::external_recorder::ipc::HelloFields sender_fields;
+    require(orange::external_recorder::ipc::parse_client_hello_line(
+                sender_hello, &sender_fields),
+            "30-frame sender hello should parse");
+    std::string error;
+    require(!orange::external_recorder::ipc::validate_recording_config_identity(
+                sender_fields, 100, 25, &error),
+            "25-frame recorder must reject a 30-frame sender during HELLO");
+    require(error.find("resolved_gop_length mismatch") != std::string::npos,
+            "HELLO mismatch should identify the GOP disagreement");
+
+    for (uint64_t frame_id = 1; frame_id <= 25; ++frame_id) {
+        const uint64_t zero_based = frame_id - 1;
+        require(orange::external_recorder::ipc::validate_frame_grouping(
+                    frame_id,
+                    zero_based / 30,
+                    static_cast<uint32_t>(zero_based % 30),
+                    25,
+                    &error),
+                "25/30 descriptor mismatch must not appear before frame 26");
+    }
+    require(!orange::external_recorder::ipc::validate_frame_grouping(
+                26, 0, 25, 25, &error),
+            "descriptor validation must reject the first mismatched boundary frame");
+    require(error.find("recording_frame_id=26") != std::string::npos,
+            "descriptor mismatch should identify frame 26");
+
+    orange::external_recorder::ipc::SubmittedFrameIdentityRegistry identities;
+    require(identities.note({26, 0, 25}, &error),
+            "submission identity should accept the sender's canonical assignment");
+    require(identities.note({27, 1, 0}, &error),
+            "submission identity should accept the following GOP assignment");
+    orange::external_recorder::ipc::SubmittedFrameIdentity returned_identity;
+    require(identities.consume(27, &returned_identity, &error),
+            "NVENC completion may arrive out of submission order");
+    require(returned_identity.recording_frame_id == 27 &&
+                returned_identity.gop_index == 1 &&
+                returned_identity.frame_index_within_gop == 0,
+            "completion must preserve the exact submitted identity");
+    require(identities.consume(26, &returned_identity, &error),
+            "NVENC output timestamp should resolve the earlier submission");
+    require(returned_identity.gop_index == 0 &&
+                returned_identity.frame_index_within_gop == 25,
+            "merger must not recompute GOP identity from its own GOP length");
+    require(identities.empty(),
+            "every emitted packet should consume one submitted identity");
+    require(!identities.consume(26, &returned_identity, &error),
+            "a duplicate NVENC completion must fail closed");
+    require(error.find("unknown or already-consumed") != std::string::npos,
+            "duplicate completion should identify the missing registry entry");
+    require(identities.note({28, 1, 1}, &error),
+            "new submitted identity should be accepted");
+    require(!identities.note({28, 99, 99}, &error),
+            "duplicate submitted frame identity must fail closed");
+
+    require(orange::external_recorder::ipc::validate_pending_gop_budget(
+                8, 268435456, 8, 268435456, &error),
+            "pending budget should allow its exact configured boundary");
+    require(!orange::external_recorder::ipc::validate_pending_gop_budget(
+                9, 1, 8, 268435456, &error),
+            "pending budget must reject a ninth GOP");
+    require(!orange::external_recorder::ipc::validate_pending_gop_budget(
+                1, 268435457, 8, 268435456, &error),
+            "pending budget must reject bytes above the hard limit");
+    require(orange::external_recorder::ipc::validate_pending_frontier_age(
+                1, 2000, 2000, &error),
+            "frontier-age budget should allow its exact configured boundary");
+    require(!orange::external_recorder::ipc::validate_pending_frontier_age(
+                1, 2001, 2000, &error),
+            "frontier-age budget must reject a stalled pending GOP");
+    require(error.find("frontier age") != std::string::npos,
+            "frontier-age rejection should identify the stalled frontier");
+    require(orange::external_recorder::ipc::validate_pending_frontier_age(
+                0, 60000, 2000, &error),
+            "an empty pending frontier must not fail based on elapsed wall time");
+}
+
 void materializes_contract_and_supervisor_plan()
 {
     const nlohmann::json wrapped = {
@@ -199,6 +298,14 @@ void materializes_contract_and_supervisor_plan()
     input.cameras_select = selected;
     input.num_cameras = 2;
 
+    ResolvedRecordingConfig resolved[2];
+    resolved[0].encode = cameras[0].recording.encode;
+    resolved[1].encode = cameras[1].recording.encode;
+    resolved[0].encode.gop_length = 30;
+    resolved[0].encode.preset = "p3";
+    input.resolved_recording_configs = resolved;
+    input.num_resolved_recording_configs = 2;
+
     const nlohmann::json contract =
         orange::external_recorder::MaterializeExternalRecorderContractForCameras(input);
     require(contract.value("schema_id", "") == "orange.external_recorder.contract",
@@ -235,9 +342,32 @@ void materializes_contract_and_supervisor_plan()
     require(contract["streams"]["2010095"].value("status_json", "") ==
                 "/tmp/orange_contract_utils_test/external_recorder/Cam2010095_external_status.json",
             "2010095 status sidecar path mismatch");
+    require(contract["streams"]["2010095"].value("metadata_csv", "") ==
+                "/tmp/orange_contract_utils_test/external_recorder/Cam2010095_external_meta.csv",
+            "2010095 frame metadata sidecar path mismatch");
     require(contract["streams"]["2010096"].value("status_json", "") ==
                 "/tmp/orange_contract_utils_test/external_recorder/Cam2010096_external_status.json",
             "2010096 status sidecar path mismatch");
+    require(contract["streams"]["2010095"].value("gop", 0) == 30,
+            "materialization must use the frozen resolved GOP");
+    require(contract["streams"]["2010095"].value("preset", "") == "p3",
+            "materialization must use the frozen resolved encoder profile");
+    require(contract["streams"]["2010095"].value("recording_config_source", "") ==
+                "resolved_recording_config",
+            "materialization should identify the frozen runtime source");
+    require(contract["streams"]["2010095"].value(
+                "recording_config_fingerprint", "") ==
+                orange::external_recorder::ipc::build_recording_config_fingerprint(100, 30),
+            "materialized fingerprint must bind frame rate and resolved GOP");
+    require(contract["streams"]["2010095"].value(
+                "max_pending_frontier_age_ms", 0) == 2000,
+            "materialized contract must bound pending-frontier age");
+    require(contract["streams"]["2010095"].value(
+                "max_writer_queue_packets", 0) == 512,
+            "materialized contract must bound writer packets");
+    require(contract["streams"]["2010095"].value(
+                "max_writer_queue_bytes", 0) == 134217728,
+            "materialized contract must bound writer bytes");
 
     orange::external_recorder::SupervisorPlanOptions plan_options;
     orange::external_recorder::SupervisorPlan plan;
@@ -249,6 +379,18 @@ void materializes_contract_and_supervisor_plan()
                 &error),
             "supervisor plan failed: " + error);
     require(plan.streams.size() == 2, "expected two supervisor streams");
+    require(plan.streams[0].gop == 30,
+            "supervisor plan must preserve the frozen resolved GOP");
+    require(plan.streams[0].max_pending_gops == 8,
+            "supervisor plan must carry the hard pending-GOP limit");
+    require(plan.streams[0].max_pending_bytes == 268435456,
+            "supervisor plan must carry the hard pending-byte limit");
+    require(plan.streams[0].max_pending_frontier_age_ms == 2000,
+            "supervisor plan must carry the pending-frontier age limit");
+    require(plan.streams[0].max_writer_queue_packets == 512,
+            "supervisor plan must carry the writer packet limit");
+    require(plan.streams[0].max_writer_queue_bytes == 134217728,
+            "supervisor plan must carry the writer byte limit");
     require(plan.streams[0].stream_kind == "full_frame",
             "supervisor stream kind should default to full_frame");
     require(plan.streams[0].output_kind == "full",
@@ -296,6 +438,8 @@ void preserves_configured_recording_control_when_input_is_default()
             "configured clip_seconds should be preserved");
     require(contract["rollover"]["requested"] == true,
             "configured rollover should be preserved");
+    require(contract.value("require_merged_mp4", true) == false,
+            "rolling clips should be authoritative without a merged session MP4");
     require(contract["streams"]["2010096"]["recording_control"]["record_for_seconds"] == 6,
             "configured record_for_seconds should propagate to materialized stream");
     require(contract["streams"]["2010096"]["recording_control"]["clip_seconds"] == 2,
@@ -351,6 +495,8 @@ void explicit_input_recording_control_overrides_config()
             "explicit input record_for_seconds should propagate to stream");
     require(contract["streams"]["2010096"]["recording_control"]["clip_seconds"] == 3,
             "explicit input clip_seconds should propagate to stream");
+    require(contract.value("require_merged_mp4", true) == false,
+            "explicit rolling control should disable the merged-session requirement");
 }
 
 void binds_selected_daily_circle_to_static_dish_prior()
@@ -657,6 +803,8 @@ int main()
     try {
         parses_ipc_protocol_hello_lines();
         std::cout << "[PASS] parses_ipc_protocol_hello_lines\n";
+        rejects_gop_25_30_contract_mismatch_before_unbounded_buffering();
+        std::cout << "[PASS] rejects_gop_25_30_contract_mismatch_before_unbounded_buffering\n";
         materializes_contract_and_supervisor_plan();
         std::cout << "[PASS] materializes_contract_and_supervisor_plan\n";
         preserves_configured_recording_control_when_input_is_default();

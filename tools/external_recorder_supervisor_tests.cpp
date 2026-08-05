@@ -134,6 +134,18 @@ void test_single_shard_plan_builds_command()
             "encode csv should derive from gop routing path");
     require(stream.status_json.find("Cam2010096_external_status.json") != std::string::npos,
             "status json should derive from summary path");
+    require(stream.metadata_csv.find("Cam2010096_external_meta.csv") != std::string::npos,
+            "frame metadata CSV should derive from the MP4 path");
+    require(stream.max_pending_gops == 8,
+            "recorder plan should default to eight pending GOPs");
+    require(stream.max_pending_bytes == 268435456,
+            "recorder plan should default to a 256 MiB pending-byte budget");
+    require(stream.max_pending_frontier_age_ms == 2000,
+            "recorder plan should default to a two-second frontier-age budget");
+    require(stream.max_writer_queue_packets == 512,
+            "recorder plan should default to 512 packets per writer queue");
+    require(stream.max_writer_queue_bytes == 134217728,
+            "recorder plan should default to 128 MiB per writer queue");
 
     const std::vector<std::string> argv = BuildRecorderCommand(plan, stream);
     require(argv.front() == options.recorder_tool_path, "command should start with recorder tool");
@@ -148,10 +160,24 @@ void test_single_shard_plan_builds_command()
             "command should include single_shard policy");
     require(has_arg_pair(argv, "--prewarm-bytes", "20358144"),
             "command should include prewarm bytes");
+    require(has_arg_pair(argv, "--max-pending-gops", "8"),
+            "command should include the pending-GOP hard limit");
+    require(has_arg_pair(argv, "--max-pending-bytes", "268435456"),
+            "command should include the pending-byte hard limit");
+    require(has_arg_pair(argv, "--max-pending-frontier-age-ms", "2000"),
+            "command should include the pending-frontier age hard limit");
+    require(has_arg_pair(argv, "--max-writer-queue-packets", "512"),
+            "command should include the writer packet hard limit");
+    require(has_arg_pair(argv, "--max-writer-queue-bytes", "134217728"),
+            "command should include the writer byte hard limit");
     require(has_arg_pair(argv,
                          "--status-json",
                          "/tmp/orange_external_recorder_supervisor_tests/Cam2010096_external_status.json"),
             "command should include live status sidecar path");
+    require(has_arg_pair(argv,
+                         "--metadata-csv",
+                         "/tmp/orange_external_recorder_supervisor_tests/Cam2010096_external_meta.csv"),
+            "command should include the authoritative frame metadata path");
     require(!has_arg(argv, "--shard-gpu-ids"),
             "single shard command should not include --shard-gpu-ids");
     require(has_arg_pair(argv, "--importance-map-mode", "off"),
@@ -490,6 +516,7 @@ void test_spec_selected_stream_ignores_crop_output()
 void test_spec_recording_control_flows_to_command()
 {
     nlohmann::json contract = make_contract({5, 6}, "gop_modulo");
+    contract["require_merged_mp4"] = false;
     contract["streams"]["2010096"]["terminal_tail_coalesce_frames"] = 25;
     nlohmann::json spec = {
         {"experiment_id", "rolling_control"},
@@ -531,6 +558,23 @@ void test_spec_recording_control_flows_to_command()
             "plan json should include clip duration");
     require(json_plan["streams"][0]["terminal_tail_coalesce_frames"] == 25,
             "plan json should include terminal tail coalesce frame count");
+}
+
+void test_rolling_rejects_merged_session_mp4_requirement()
+{
+    nlohmann::json contract = make_contract({5, 6}, "gop_modulo");
+    contract["require_merged_mp4"] = true;
+    contract["recording_control"] = {
+        {"record_for_seconds", 60},
+        {"clip_seconds", 10},
+    };
+
+    SupervisorPlan plan;
+    std::string error;
+    require(!BuildSupervisorPlanFromContract(contract, {}, &plan, &error),
+            "rolling contract must reject a duplicate merged-session requirement");
+    require(error.find("rolling clips are authoritative") != std::string::npos,
+            "rolling/merged contradiction should identify the authoritative output");
 }
 
 void test_storage_thresholds_flow_to_command_and_plan()
@@ -1113,6 +1157,8 @@ int main(int argc, char** argv)
         {"spec_requires_selected_stream", test_spec_requires_selected_stream},
         {"spec_selected_stream_ignores_crop_output", test_spec_selected_stream_ignores_crop_output},
         {"spec_recording_control_flows_to_command", test_spec_recording_control_flows_to_command},
+        {"rolling_rejects_merged_session_mp4_requirement",
+         test_rolling_rejects_merged_session_mp4_requirement},
         {"storage_thresholds_flow_to_command_and_plan", test_storage_thresholds_flow_to_command_and_plan},
         {"invalid_shard_policy_fails", test_invalid_shard_policy_fails},
         {"process_lifecycle_waits_socket_and_stops", test_process_lifecycle_waits_socket_and_stops},

@@ -1,4 +1,5 @@
 #include "external_recorder_contract_utils.h"
+#include "external_recorder_ipc_protocol.h"
 
 #include "external_recorder_supervisor.h"
 #include "fsuid_guard.h"
@@ -273,7 +274,14 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
         (std::filesystem::path(input.recording_folder) / "external_recorder").string());
     set_json_default(&contract, "require_summary", true);
     set_json_default(&contract, "require_video_sanity", true);
-    set_json_default(&contract, "require_merged_mp4", true);
+    bool rolling_requested = input.recording_control.rolling_requested();
+    if (!input.recording_control.enabled() &&
+        contract.contains("recording_control") &&
+        contract["recording_control"].is_object()) {
+        rolling_requested =
+            contract["recording_control"].value("clip_seconds", 0) > 0;
+    }
+    set_json_default(&contract, "require_merged_mp4", !rolling_requested);
     set_json_default(&contract, "require_gop_routing", true);
     set_json_default(&contract, "require_status", true);
     set_json_default(&contract, "require_status_runtime", true);
@@ -306,6 +314,11 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
             continue;
         }
         const CameraParams& camera = input.cameras_params[i];
+        const ResolvedRecordingConfig* resolved =
+            input.resolved_recording_configs &&
+                    i < input.num_resolved_recording_configs
+                ? &input.resolved_recording_configs[i]
+                : nullptr;
         const std::string serial = camera.camera_serial;
         if (serial.empty()) {
             continue;
@@ -339,6 +352,7 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
         set_json_default(&stream, "status_json", prefix + "_status.json");
         set_json_default(&stream, "video_sanity_json", prefix + "_video_sanity.json");
         set_json_default(&stream, "mp4", prefix + ".mp4");
+        set_json_default(&stream, "metadata_csv", prefix + "_meta.csv");
         set_json_default(&stream, "gop_routing_csv", prefix + "_gop_routing.csv");
         set_json_default(&stream, "socket_path", "/tmp/orange_external_recorder_" + serial + ".sock");
         const int camera_frame_rate = static_cast<int>(camera.frame_rate);
@@ -348,14 +362,56 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
         set_json_default(&stream, "prewarm_slots", 4);
         set_json_default(&stream, "prewarm_bytes", frame_bytes(camera));
         set_json_default(&stream, "prewarm_peer_copy", true);
-        set_json_default(&stream, "codec", camera.recording.encode.codec);
-        set_json_default(&stream, "preset", camera.recording.encode.preset);
-        set_json_default(&stream, "tuning", camera.recording.encode.tuning);
-        set_json_default(&stream, "rate_control_mode", camera.recording.encode.rate_control_mode);
-        set_json_default(&stream, "quality_value", camera.recording.encode.quality_value);
-        set_json_default(&stream, "gop", camera.recording.encode.gop_length > 0
-                                     ? camera.recording.encode.gop_length
-                                     : std::max(1, camera_frame_rate));
+        if (resolved) {
+            // The in-process pipeline and the external recorder must consume
+            // the same immutable runtime decision. A configured stream may
+            // still choose bitrate/VBV and recorder resources, but it cannot
+            // silently override the frame grouping or encoder profile that
+            // Orange already resolved for this camera.
+            stream["encode_fps"] = std::max(1, camera_frame_rate);
+            stream["codec"] = resolved->encode.codec;
+            stream["preset"] = resolved->encode.preset;
+            stream["tuning"] = resolved->encode.tuning;
+            stream["rate_control_mode"] = resolved->encode.rate_control_mode;
+            stream["quality_value"] = resolved->encode.quality_value;
+            stream["gop"] = resolved->encode.gop_length > 0
+                ? resolved->encode.gop_length
+                : std::max(1, camera_frame_rate);
+            stream["recording_config_source"] = "resolved_recording_config";
+        } else {
+            set_json_default(&stream, "codec", camera.recording.encode.codec);
+            set_json_default(&stream, "preset", camera.recording.encode.preset);
+            set_json_default(&stream, "tuning", camera.recording.encode.tuning);
+            set_json_default(&stream, "rate_control_mode", camera.recording.encode.rate_control_mode);
+            set_json_default(&stream, "quality_value", camera.recording.encode.quality_value);
+            set_json_default(&stream, "gop", camera.recording.encode.gop_length > 0
+                                         ? camera.recording.encode.gop_length
+                                         : std::max(1, camera_frame_rate));
+            set_json_default(&stream, "recording_config_source", "camera_config_fallback");
+        }
+        set_json_default(&stream, "max_pending_gops", 8);
+        set_json_default(&stream, "max_pending_bytes", 268435456);
+        set_json_default(&stream, "max_pending_frontier_age_ms", 2000);
+        const uint64_t configured_writer_packets =
+            resolved && resolved->strategy.split_gop.writer_queue.max_packets > 0
+                ? resolved->strategy.split_gop.writer_queue.max_packets
+                : 512;
+        const uint64_t configured_writer_bytes =
+            resolved && resolved->strategy.split_gop.writer_queue.max_bytes > 0
+                ? resolved->strategy.split_gop.writer_queue.max_bytes
+                : 134217728;
+        set_json_default(
+            &stream, "max_writer_queue_packets", configured_writer_packets);
+        set_json_default(
+            &stream, "max_writer_queue_bytes", configured_writer_bytes);
+        const int materialized_fps = stream.value("encode_fps", std::max(1, camera_frame_rate));
+        const int materialized_gop = stream.value("gop", std::max(1, camera_frame_rate));
+        stream["recording_config_fingerprint_scope"] =
+            orange::external_recorder::ipc::kRecordingConfigFingerprintScope;
+        stream["recording_config_fingerprint"] =
+            orange::external_recorder::ipc::build_recording_config_fingerprint(
+                materialized_fps,
+                materialized_gop);
         set_json_default(&stream, "bitrate_bps", 150000000);
         set_json_default(&stream, "max_bitrate_bps", 150000000);
         set_json_default(&stream, "vbv_buffer_size", 150000000);
@@ -366,6 +422,7 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
                  "status_json",
                  "video_sanity_json",
                  "mp4",
+                 "metadata_csv",
                  "gop_routing_csv",
                  "socket_path"}) {
             if (stream.contains(key) && stream[key].is_string()) {

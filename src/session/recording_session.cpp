@@ -666,7 +666,7 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
         {"artifact_root", (std::filesystem::path(recording_folder) / "external_crop_recorder").string()},
         {"require_summary", true},
         {"require_video_sanity", false},
-        {"require_merged_mp4", true},
+        {"require_merged_mp4", recording_control.clip_seconds <= 0},
         {"require_gop_routing", true},
         {"require_status", true},
         {"require_status_runtime", true},
@@ -754,6 +754,11 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
             {"preset", "p7"},
             {"tuning", "lossless"},
             {"gop", 1},
+            {"max_pending_gops", 8},
+            {"max_pending_bytes", 268435456},
+            {"max_pending_frontier_age_ms", 2000},
+            {"max_writer_queue_packets", 512},
+            {"max_writer_queue_bytes", 134217728},
             {"terminal_tail_coalesce_frames",
              recording_control.clip_seconds > 0
                  ? static_cast<uint64_t>(std::max(1, full_frame_gop))
@@ -2134,6 +2139,8 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
 
     state->recording_pipelines.clear();
     state->recording_pipelines.resize(num_cameras);
+    state->resolved_recording_configs.clear();
+    state->resolved_recording_configs.resize(num_cameras);
     state->recording_sink_mode =
         resolve_gui_recording_sink_mode(
             app_storage_config,
@@ -2196,6 +2203,7 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
 
         const ResolvedRecordingConfig resolved_recording_config =
             build_resolved_recording_config(cameras_params[i], recording_overrides);
+        state->resolved_recording_configs[i] = resolved_recording_config;
         state->recording_pipelines[i] = std::make_unique<ModernRecordingPipeline>(
             &cameras_params[i],
             resolved_recording_config,
@@ -2381,7 +2389,13 @@ PreparedRecordingRunStart prepare_recording_run(
         !external_recorder_requested,
         camera_control->sync_camera,
         ptp_params,
-        prepared.recording_sink_mode);
+        prepared.recording_sink_mode,
+        state && state->resolved_recording_configs.size() ==
+                         static_cast<size_t>(num_cameras)
+            ? state->resolved_recording_configs.data()
+            : nullptr,
+        state ? static_cast<int>(state->resolved_recording_configs.size()) : 0,
+        cameras_select);
     initialize_ptp_sync_summary(
         recording_folder,
         recording_id,
@@ -2410,6 +2424,12 @@ PreparedRecordingRunStart prepare_recording_run(
         contract_input.cameras_params = cameras_params;
         contract_input.cameras_select = cameras_select;
         contract_input.num_cameras = num_cameras;
+        if (state->resolved_recording_configs.size() ==
+            static_cast<size_t>(num_cameras)) {
+            contract_input.resolved_recording_configs =
+                state->resolved_recording_configs.data();
+            contract_input.num_resolved_recording_configs = num_cameras;
+        }
         if (state->gui_recording_control.enabled()) {
             contract_input.recording_control.record_for_seconds =
                 state->gui_recording_control.record_for_seconds;

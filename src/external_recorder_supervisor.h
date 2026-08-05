@@ -25,6 +25,11 @@ struct SupervisorPlanOptions {
     std::string default_rate_control_mode = "vbr";
     int default_quality_value = 20;
     int default_gop = 25;
+    uint64_t default_max_pending_gops = 8;
+    uint64_t default_max_pending_bytes = 268435456;
+    uint64_t default_max_pending_frontier_age_ms = 2000;
+    uint64_t default_max_writer_queue_packets = 512;
+    uint64_t default_max_writer_queue_bytes = 134217728;
     uint64_t default_bitrate_bps = 150000000;
     uint64_t default_max_bitrate_bps = 150000000;
     uint64_t default_vbv_buffer_size = 150000000;
@@ -49,6 +54,7 @@ struct RecorderStreamPlan {
     std::string video_sanity_json;
     std::string mp4;
     std::string mp4_keyframe;
+    std::string metadata_csv;
     std::string detach_csv;
     std::string encode_csv;
     std::string gop_routing_csv;
@@ -67,6 +73,11 @@ struct RecorderStreamPlan {
     std::string rate_control_mode = "vbr";
     int quality_value = 20;
     int gop = 25;
+    uint64_t max_pending_gops = 8;
+    uint64_t max_pending_bytes = 268435456;
+    uint64_t max_pending_frontier_age_ms = 2000;
+    uint64_t max_writer_queue_packets = 512;
+    uint64_t max_writer_queue_bytes = 134217728;
     uint64_t terminal_tail_coalesce_frames = 0;
     uint64_t bitrate_bps = 150000000;
     uint64_t max_bitrate_bps = 150000000;

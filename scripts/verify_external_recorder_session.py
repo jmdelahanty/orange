@@ -507,6 +507,62 @@ def count_csv_data_rows(path: Path) -> int:
         raise VerificationError(f"missing CSV file: {path}") from exc
 
 
+def verify_frame_metadata_csv(path: Path, expected_rows: int) -> dict[str, int]:
+    try:
+        handle = path.open("r", encoding="utf-8", newline="")
+    except FileNotFoundError as exc:
+        raise VerificationError(f"missing frame metadata CSV: {path}") from exc
+    with handle:
+        reader = csv.DictReader(handle)
+        required = {"recording_frame_id", "timestamp", "timestamp_sys"}
+        columns = set(reader.fieldnames or [])
+        require(
+            required <= columns,
+            f"frame metadata CSV lacks {sorted(required)}: {path}",
+        )
+        rows = 0
+        first_frame = 0
+        last_frame = 0
+        gaps = 0
+        for row_index, row in enumerate(reader, start=2):
+            frame_id = csv_int(row, "recording_frame_id", path, row_index)
+            timestamp = csv_int(row, "timestamp", path, row_index)
+            timestamp_sys = csv_int(row, "timestamp_sys", path, row_index)
+            require(
+                frame_id is not None and frame_id > 0,
+                f"invalid recording_frame_id row {row_index} in {path}",
+            )
+            require(
+                timestamp is not None and timestamp > 0,
+                f"missing camera timestamp row {row_index} in {path}",
+            )
+            require(
+                timestamp_sys is not None and timestamp_sys > 0,
+                f"missing system timestamp row {row_index} in {path}",
+            )
+            if rows == 0:
+                first_frame = frame_id
+            else:
+                require(
+                    frame_id > last_frame,
+                    f"non-monotonic recording_frame_id row {row_index} in {path}",
+                )
+                gaps += max(0, frame_id - last_frame - 1)
+            last_frame = frame_id
+            rows += 1
+    require(
+        rows == expected_rows,
+        f"frame metadata rows do not match frames_encoded for {path}: {rows} != {expected_rows}",
+    )
+    require(gaps == 0, f"frame metadata has {gaps} recording-frame gaps: {path}")
+    return {
+        "rows": rows,
+        "first_recording_frame_id": first_frame,
+        "last_recording_frame_id": last_frame,
+        "recording_frame_id_gaps": gaps,
+    }
+
+
 def read_csv_rows(path: Path) -> tuple[list[str], list[dict[str, str]]]:
     try:
         with path.open("r", encoding="utf-8", newline="") as handle:
@@ -1411,6 +1467,16 @@ def verify_summary(
     merged = summary.get("merged_output")
     require(isinstance(merged, dict), f"summary missing merged_output in {summary_path}")
     require_no_mp4_queue_overflow(merged, f"merged_output for {serial}")
+    recording_control = recording_control_for(contract, stream)
+    summary_recording_control = recording_control_from_summary(summary)
+    if summary_recording_control:
+        merged_recording_control = dict(summary_recording_control)
+        merged_recording_control.update(recording_control)
+        recording_control = merged_recording_control
+    rolling_requested = as_int(
+        recording_control.get("clip_seconds", 0),
+        "recording_control.clip_seconds",
+    ) > 0
     merged_mp4 = str(merged.get("mp4", ""))
     has_duplicate_shard_mp4 = any(
         isinstance(shard, dict)
@@ -1418,13 +1484,119 @@ def verify_summary(
         and str(shard.get("mp4", "")) != merged_mp4
         for shard in shards
     )
-    if bool(contract.get("require_merged_mp4", True)) and (len(shards) > 1 or has_duplicate_shard_mp4):
+    if rolling_requested:
+        authoritative_output = summary.get("authoritative_video_output")
+        require(
+            isinstance(authoritative_output, dict),
+            f"rolling summary missing authoritative_video_output for {serial}",
+        )
+        require(
+            authoritative_output.get("mode") == "rolling_clips",
+            f"rolling summary has wrong authoritative video mode for {serial}",
+        )
+        require(
+            authoritative_output.get("session_mp4_written") is False,
+            f"rolling summary reports a duplicate session MP4 for {serial}",
+        )
+        require(
+            bool(contract.get("require_merged_mp4", True)) is False,
+            f"rolling contract incorrectly requires a merged session MP4 for {serial}",
+        )
+        require(merged.get("enabled") is False, f"rolling run wrote a duplicate merged MP4 for {serial}")
+        require(
+            merged.get("coordinator_enabled") is True,
+            f"rolling run did not report its GOP-order coordinator for {serial}",
+        )
+        require(not merged_mp4, f"rolling run reports a duplicate merged MP4 path for {serial}: {merged_mp4}")
+        configured_session_mp4 = str(stream.get("mp4", ""))
+        if configured_session_mp4:
+            configured_session_mp4_path = path_from(
+                configured_session_mp4,
+                artifact_root,
+            )
+            require(
+                not configured_session_mp4_path.exists(),
+                f"rolling run left a duplicate session MP4 for {serial}: {configured_session_mp4_path}",
+            )
+        if not bool(contract.get("preserve_shard_mp4s", False)):
+            duplicate_paths = [
+                str(shard.get("mp4", ""))
+                for shard in shards
+                if isinstance(shard, dict) and str(shard.get("mp4", ""))
+            ]
+            require(
+                not duplicate_paths,
+                f"rolling run wrote duplicate shard MP4s for {serial}: {duplicate_paths}",
+            )
+    elif bool(contract.get("require_merged_mp4", True)) and (len(shards) > 1 or has_duplicate_shard_mp4):
         require(merged.get("enabled") is True, f"merged output disabled for {serial}")
         require(merged.get("failed") is False, f"merged output failed for {serial}")
         require(as_int(merged.get("pending_gops"), "merged pending_gops") == 0, f"merged output has pending GOPs for {serial}")
         require(as_int(merged.get("packets_written"), "merged packets_written") > 0, f"merged output wrote no packets for {serial}")
 
-    mp4_path = path_from(stream.get("mp4") or summary.get("outputs", {}).get("mp4"), artifact_root)
+    rolling_clips = verify_rolling_output(
+        artifact_root,
+        serial,
+        summary,
+        stream,
+        contract,
+        frames_encoded,
+        ffprobe,
+    )
+    if rolling_requested:
+        require(rolling_clips, f"rolling output has no authoritative clips for {serial}")
+        mp4_path = Path(str(rolling_clips[0]["mp4"]))
+    else:
+        mp4_path = path_from(stream.get("mp4") or summary.get("outputs", {}).get("mp4"), artifact_root)
+    frame_metadata_path: Path | None = None
+    frame_metadata_result: dict[str, int] | None = None
+    frame_metadata_summary = summary.get("frame_metadata")
+    frame_metadata_declared = (
+        isinstance(frame_metadata_summary, dict) or bool(stream.get("metadata_csv"))
+    )
+    if not rolling_requested and frame_metadata_declared:
+        frame_metadata_summary = (
+            frame_metadata_summary if isinstance(frame_metadata_summary, dict) else {}
+        )
+        outputs = summary.get("outputs")
+        outputs = outputs if isinstance(outputs, dict) else {}
+        metadata_value = (
+            frame_metadata_summary.get("path")
+            or outputs.get("metadata")
+            or stream.get("metadata_csv")
+        )
+        require(bool(metadata_value), f"single-clip frame metadata path missing for {serial}")
+        frame_metadata_path = path_from(metadata_value, artifact_root)
+        frame_metadata_result = verify_frame_metadata_csv(
+            frame_metadata_path,
+            frames_encoded,
+        )
+        require(
+            as_int(frame_metadata_summary.get("rows_written"), "frame_metadata.rows_written")
+            == frames_encoded,
+            f"frame metadata summary row count mismatch for {serial}",
+        )
+        require(
+            as_int(
+                frame_metadata_summary.get("recording_frame_id_gaps"),
+                "frame_metadata.recording_frame_id_gaps",
+            ) == 0,
+            f"frame metadata summary reports frame gaps for {serial}",
+        )
+        require(
+            as_int(
+                frame_metadata_summary.get("zero_camera_timestamp_rows"),
+                "frame_metadata.zero_camera_timestamp_rows",
+            ) == 0,
+            f"frame metadata summary reports missing camera timestamps for {serial}",
+        )
+        require(
+            as_int(
+                frame_metadata_summary.get("zero_system_timestamp_rows"),
+                "frame_metadata.zero_system_timestamp_rows",
+            ) == 0,
+            f"frame metadata summary reports missing system timestamps for {serial}",
+        )
     require(mp4_path.exists() and mp4_path.stat().st_size > 0, f"missing or empty external MP4: {mp4_path}")
     mp4_probe = ffprobe_video(mp4_path, ffprobe)
     output_kind = str(summary.get("output_kind") or stream.get("output_kind") or "full")
@@ -1467,20 +1639,12 @@ def verify_summary(
         contract=contract,
         merged=merged,
     )
-    rolling_clips = verify_rolling_output(
-        artifact_root,
-        serial,
-        summary,
-        stream,
-        contract,
-        frames_encoded,
-        ffprobe,
-    )
-
     return {
         "serial": serial,
         "summary_path": str(summary_path),
         "mp4_path": str(mp4_path),
+        "frame_metadata_path": str(frame_metadata_path) if frame_metadata_path else None,
+        "frame_metadata": frame_metadata_result,
         "frames_received": frames_received,
         "frames_encoded": frames_encoded,
         "encode_queue_depth": encode_queue_depth,
@@ -1665,6 +1829,57 @@ def verify_analytics_recording_session_manifests(
 ) -> None:
     rolling_summaries = [item for item in summaries if item.get("rolling_clip_count", 0) > 0]
     if not rolling_summaries:
+        single_clip_summaries = [
+            item for item in summaries if item.get("frame_metadata_path")
+        ]
+        if not single_clip_summaries:
+            return
+        require(
+            bool(recording_folders),
+            "single-clip external recorder verification has no analytics recording folder",
+        )
+        for recording_folder in recording_folders:
+            manifest_path = recording_folder / "recording_session.json"
+            manifest = read_json(manifest_path)
+            require(
+                manifest.get("mode") == "single_clip",
+                f"analytics recording_session.json is not single_clip: {manifest_path}",
+            )
+            require(
+                manifest.get("producer") in (
+                    "orange_headless_external_ipc",
+                    "orange_gui_external_ipc",
+                    "orange_gui",
+                ),
+                f"unexpected recording_session producer for external IPC single clip: {manifest.get('producer')!r}",
+            )
+            camera_artifacts = manifest.get("camera_artifacts")
+            require(
+                isinstance(camera_artifacts, dict),
+                f"recording_session missing camera_artifacts: {manifest_path}",
+            )
+            for item in single_clip_summaries:
+                serial = str(item["serial"])
+                artifact = camera_artifacts.get(serial)
+                require(
+                    isinstance(artifact, dict),
+                    f"recording_session missing camera {serial}: {manifest_path}",
+                )
+                require(
+                    as_int(artifact.get("frame_count"), "camera frame_count")
+                    == as_int(item.get("frames_encoded"), "expected frames_encoded"),
+                    f"recording_session frame_count mismatch for {serial}",
+                )
+                metadata_path = path_from(artifact.get("metadata"), recording_folder)
+                expected_metadata_path = Path(str(item["frame_metadata_path"]))
+                require(
+                    path_key(metadata_path) == path_key(expected_metadata_path),
+                    f"recording_session metadata path mismatch for {serial}",
+                )
+                require(
+                    metadata_path.exists() and metadata_path.stat().st_size > 0,
+                    f"recording_session metadata path missing: {metadata_path}",
+                )
         return
     require(bool(recording_folders), "rolling external recorder verification has no analytics recording folder")
     for recording_folder in recording_folders:

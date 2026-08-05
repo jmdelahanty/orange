@@ -106,11 +106,13 @@ public:
                           int source_gpu_id,
                           int crop_width,
                           int crop_height,
+                          int frame_rate,
                           int gop_length)
         : camera_serial_(std::move(camera_serial)),
           source_gpu_id_(source_gpu_id),
           crop_width_(crop_width),
           crop_height_(crop_height),
+          frame_rate_(std::max(1, frame_rate)),
           gop_length_(std::max(1, gop_length))
     {
     }
@@ -448,11 +450,30 @@ private:
                         hello.error + " line='" + line + "'");
             return false;
         }
+        if (hello.session_id != orange::external_recorder::ipc::token_value(session_id_) ||
+            hello.stream_id != orange::external_recorder::ipc::token_value(stream_id_)) {
+            log_limited("external crop recorder protocol identity mismatch: peer session=" +
+                        hello.session_id + " stream=" + hello.stream_id +
+                        " expected session=" + session_id_ + " stream=" + stream_id_);
+            return false;
+        }
+        std::string identity_error;
+        if (!orange::external_recorder::ipc::validate_recording_config_identity(
+                hello,
+                frame_rate_,
+                gop_length_,
+                &identity_error)) {
+            log_limited("external crop recorder recording-config identity rejected: " +
+                        identity_error);
+            return false;
+        }
         if (!send_all(orange::external_recorder::ipc::build_client_hello_line(
                 camera_serial_,
                 session_id_,
                 stream_id_,
-                "orange_crop"))) {
+                "orange_crop",
+                frame_rate_,
+                gop_length_))) {
             log_limited("send crop client protocol hello failed: " +
                         std::string(std::strerror(errno)));
             return false;
@@ -556,6 +577,7 @@ private:
     int source_gpu_id_ = -1;
     int crop_width_ = 0;
     int crop_height_ = 0;
+    int frame_rate_ = 1;
     int gop_length_ = 1;
     std::string session_id_;
     std::string stream_id_;
@@ -604,6 +626,7 @@ camera_control_(camera_control)
             camera_params_->gpu_id,
             crop_width_,
             crop_height_,
+            std::max(1, static_cast<int>(camera_params_->frame_rate)),
             gop_length);
         ck(cudaMalloc(
             &d_blank_frame_,

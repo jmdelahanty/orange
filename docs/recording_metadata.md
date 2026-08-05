@@ -968,14 +968,20 @@ Notes:
   `recording_backend.mode = "external_ipc"`. In that layout,
   `camera_artifacts.<serial>.video` points at
   `external_recorder/Cam<serial>_external.mp4`, and
-  `camera_artifacts.<serial>.metadata` points at the external recorder summary
-  JSON instead of a per-frame `Cam*_meta.csv`. Consumers should compare
-  `camera_artifacts.<serial>.frame_count` to external summary fields such as
-  `frames_received`, `acks_sent`, and `frames_encoded`.
+  `camera_artifacts.<serial>.metadata` points at
+  `external_recorder/Cam<serial>_external_meta.csv`. That CSV is the
+  authoritative one-row-per-encoded-frame clock join and includes
+  `recording_frame_id`, `timestamp`, and `timestamp_sys`. Finalization requires
+  its row count to equal `frames_encoded`, requires continuous recording frame
+  IDs, and rejects zero values for either timestamp clock. The external
+  summary JSON remains recorder telemetry and records the same path/counts; it
+  is not the frame-clock table.
 - If the supervised GUI full-frame external recorder contract requests
   `clip_seconds > 0`, GUI finalization writes an
   `orange_gui_external_ipc` `rolling_clips` manifest instead of the single-clip
-  shape. The GUI mirrors external `rolling_output.clips[]` into per-clip
+  shape. Those clips are the only production video writes: no flat merged MP4
+  or shard MP4 is written unless diagnostic shard preservation was explicitly
+  requested. The GUI mirrors external `rolling_output.clips[]` into per-clip
   `clip_manifest.json`, `recording_clip_index.json/csv`, and
   `recording_snapshot.json` session pointers. The external recorder summaries
   remain the per-stream truth for encoded clip counts and packet counts.
@@ -1405,7 +1411,59 @@ Notes:
 - If detect model, pose model, or skeleton changes during a recording,
   append/update with an effective frame range marker.
 
-## Keyframe sidecar
+## Embedded Playback Intent And Container Finalization
+
+Every Orange MP4 now embeds this movie-level QuickTime metadata key:
+
+```text
+com.apple.quicktime.full-frame-rate-playback-intent = UInt8(1)
+```
+
+The value means that the configured acquisition rate is the intended playback
+rate. It applies to full-frame and crop videos, including 120--700 fps modes;
+it does not retime frames or change their timestamps. FFmpeg 4.x initially
+writes arbitrary `mdta` values as UTF-8, so after a clean close Orange replaces
+the same-sized UTF-8 `"1"` data atom with QuickTime unsigned-integer type `22`
+and the one-byte value `1`. The edit is confined to the trailing `moov`; it does
+not rewrite or hash `mdat` and its cost is independent of recording length.
+
+Each MP4 has an adjacent lifecycle artifact:
+
+```text
+<video-path>.finalization.json
+```
+
+The schema is
+[`orange_video_container_finalization.schema.json`](schemas/orange_video_container_finalization.schema.json).
+The writer atomically advances the sidecar through `recording_open`,
+`finalizing`, and one terminal state:
+
+- `complete`: trailer, close, typed playback-intent patch, and byte-for-byte
+  patch verification all succeeded;
+- `degraded_playback_intent_unpatched`: the MP4 container finalized, but the
+  Apple compatibility value was not patched or verified;
+- `container_finalization_failed`: Orange cannot claim that the MP4 trailer and
+  close completed.
+
+An interrupted process leaves a nonterminal sidecar rather than stale
+`complete` evidence. The embedded MP4 value controls player behavior; the JSON
+sidecar only records whether finalization produced and verified that value.
+
+For a newly recorded file or complete recording folder, independently validate
+the typed MP4 atom, lifecycle sidecar, and bounded sync-sample evidence with:
+
+```bash
+scripts/validate_video_container_finalization.py /path/to/video.mp4
+scripts/validate_video_container_finalization.py --recursive /path/to/recording
+```
+
+The sync check reports `stss=present` for ordinary inter-frame video. When an
+all-I crop omits `stss`, it requires every sampled demuxed packet to be a sync
+sample and cross-checks the same prefix against Orange's packet-level IDR
+sidecar. The default bound is 4096 packets so validation remains practical for
+high-rate and long-duration recordings.
+
+## Keyframe And Sync-Sample Semantics
 
 Each recording also writes a keyframe index sidecar alongside the video:
 
@@ -1426,6 +1484,14 @@ This file is emitted by the writer and contains:
 
 The writer sets `AV_PKT_FLAG_KEY` for H.264 IDR (NAL type 5) and HEVC IDR
 (NAL types 19/20), and uses that to populate the keyframe list.
+
+For an inter-frame stream, FFmpeg writes those flags into the MP4 `stss`
+sync-sample table. Crop video currently uses lossless HEVC with `GOP=1`, so
+every packet is an independently decodable key/sync sample. MP4 permits `stss`
+to be absent when every sample is a sync sample; absence in that all-I case is
+therefore correct. Validation requires every crop packet to carry the demuxed
+key flag. If crop encoding later uses a GOP greater than one, its MP4 must carry
+a truthful `stss` table instead.
 
 Important: these camera configs are read from the static JSON config files at
 recording start. The snapshot does not query live camera state from the SDK, and

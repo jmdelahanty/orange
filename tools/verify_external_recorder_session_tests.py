@@ -235,6 +235,22 @@ def write_summary(
             "record_for_seconds": 6,
             "clip_seconds": 2,
         }
+        summary["authoritative_video_output"] = {
+            "mode": "rolling_clips",
+            "session_mp4_written": False,
+            "shard_mp4s_requested": False,
+        }
+        summary["merged_output"] = {
+            "coordinator_enabled": True,
+            "enabled": False,
+            "failed": False,
+            "pending_gops": 0,
+            "packets_written": 3,
+            "mp4": "",
+            "mp4_keyframe": "",
+        }
+        summary["outputs"]["mp4"] = ""
+        mp4_path.unlink()
         summary["rolling_output"] = {
             "enabled": True,
             "implementation": "external_recorder_gop_boundary_writer_rotation",
@@ -273,6 +289,26 @@ def write_summary(
                 },
             ],
         }
+    else:
+        metadata_path = root / f"Cam{serial}_external_meta.csv"
+        metadata_path.write_text(
+            "frame_id,timestamp,timestamp_sys,recording_frame_id,local_frame_id,"
+            "gop_index,frame_index_within_gop,source_gpu_id,assigned_gpu_id,assigned_shard_id,bytes\n"
+            "1,1770000000000000037,1770000000000000000,1,1,0,0,5,5,0,256\n"
+            "2,1770000000033333370,1770000000033333333,2,2,0,1,5,5,0,256\n"
+            "3,1770000000066666703,1770000000066666666,3,3,0,2,5,5,0,256\n",
+            encoding="utf-8",
+        )
+        summary["frame_metadata"] = {
+            "path": str(metadata_path),
+            "rows_written": 3,
+            "first_recording_frame_id": 1,
+            "last_recording_frame_id": 3,
+            "recording_frame_id_gaps": 0,
+            "zero_camera_timestamp_rows": 0,
+            "zero_system_timestamp_rows": 0,
+        }
+        summary["outputs"]["metadata"] = str(metadata_path)
     if queue_high_water is not None:
         summary["encode_queue_high_water"] = queue_high_water
     summary_path = root / f"Cam{serial}_external_summary.json"
@@ -432,9 +468,13 @@ def verify_one(
     }
     if stream_fields:
         stream.update(stream_fields)
+    summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    rolling_requested = int(
+        summary_payload.get("recording_control", {}).get("clip_seconds", 0)
+    ) > 0
     contract = {
         "require_gop_routing": False,
-        "require_merged_mp4": True,
+        "require_merged_mp4": not rolling_requested,
         "require_video_sanity": False,
     }
     original_ffprobe = verifier.ffprobe_video
@@ -479,6 +519,30 @@ def test_queue_thresholds_pass_and_summarize() -> None:
         require(result["encode_queue_depth"] == 64, "queue depth should be returned")
         require(result["encode_queue_high_water"] == 12, "queue high-water should be returned")
         require(result["enqueue_age_p95_ms"] == 2.5, "enqueue age p95 should be returned")
+        require(result["frame_metadata"]["rows"] == 3, "frame metadata should be verified")
+
+
+def test_single_clip_frame_metadata_is_required_and_complete() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary_path, mp4_path = write_summary(root, "2010096")
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        metadata_path = Path(summary["frame_metadata"]["path"])
+        metadata_path.write_text(
+            "recording_frame_id,timestamp,timestamp_sys\n"
+            "1,1770000000000000037,1770000000000000000\n"
+            "2,1770000000033333370,1770000000033333333\n",
+            encoding="utf-8",
+        )
+        try:
+            verify_one(root, summary_path, mp4_path)
+        except verifier.VerificationError as exc:
+            require(
+                "rows do not match frames_encoded" in str(exc),
+                f"unexpected incomplete metadata failure: {exc}",
+            )
+        else:
+            raise AssertionError("expected incomplete single-clip metadata to fail")
 
 
 def test_queue_threshold_failures() -> None:
@@ -1102,6 +1166,7 @@ def test_multi_shard_shard_mp4_retention_contract() -> None:
 def main() -> int:
     tests = [
         test_queue_thresholds_pass_and_summarize,
+        test_single_clip_frame_metadata_is_required_and_complete,
         test_queue_threshold_failures,
         test_video_metadata_comment_mismatch_fails,
         test_queue_high_water_falls_back_to_detach_csv,

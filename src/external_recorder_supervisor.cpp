@@ -947,6 +947,14 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
         stream_plan.rate_control_mode = options.default_rate_control_mode;
         stream_plan.quality_value = options.default_quality_value;
         stream_plan.gop = options.default_gop;
+        stream_plan.max_pending_gops = options.default_max_pending_gops;
+        stream_plan.max_pending_bytes = options.default_max_pending_bytes;
+        stream_plan.max_pending_frontier_age_ms =
+            options.default_max_pending_frontier_age_ms;
+        stream_plan.max_writer_queue_packets =
+            options.default_max_writer_queue_packets;
+        stream_plan.max_writer_queue_bytes =
+            options.default_max_writer_queue_bytes;
         stream_plan.bitrate_bps = options.default_bitrate_bps;
         stream_plan.max_bitrate_bps = options.default_max_bitrate_bps;
         stream_plan.vbv_buffer_size = options.default_vbv_buffer_size;
@@ -1002,6 +1010,11 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
             !read_string_field(stream,
                                "mp4_keyframe",
                                &stream_plan.mp4_keyframe,
+                               error_out,
+                               context) ||
+            !read_string_field(stream,
+                               "metadata_csv",
+                               &stream_plan.metadata_csv,
                                error_out,
                                context) ||
             !read_string_field(stream,
@@ -1084,6 +1097,31 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
                             0) ||
             !read_int_field(stream, "gop", &stream_plan.gop, error_out, context, 1) ||
             !read_u64_field(stream,
+                            "max_pending_gops",
+                            &stream_plan.max_pending_gops,
+                            error_out,
+                            context) ||
+            !read_u64_field(stream,
+                            "max_pending_bytes",
+                            &stream_plan.max_pending_bytes,
+                            error_out,
+                            context) ||
+            !read_u64_field(stream,
+                            "max_pending_frontier_age_ms",
+                            &stream_plan.max_pending_frontier_age_ms,
+                            error_out,
+                            context) ||
+            !read_u64_field(stream,
+                            "max_writer_queue_packets",
+                            &stream_plan.max_writer_queue_packets,
+                            error_out,
+                            context) ||
+            !read_u64_field(stream,
+                            "max_writer_queue_bytes",
+                            &stream_plan.max_writer_queue_bytes,
+                            error_out,
+                            context) ||
+            !read_u64_field(stream,
                             "terminal_tail_coalesce_frames",
                             &stream_plan.terminal_tail_coalesce_frames,
                             error_out,
@@ -1144,6 +1182,31 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
                 error_out,
                 context + ".quality_value must be within [0, 51]");
         }
+        if (stream_plan.max_pending_gops == 0) {
+            return set_error(
+                error_out,
+                context + ".max_pending_gops must be positive");
+        }
+        if (stream_plan.max_pending_bytes == 0) {
+            return set_error(
+                error_out,
+                context + ".max_pending_bytes must be positive");
+        }
+        if (stream_plan.max_pending_frontier_age_ms == 0) {
+            return set_error(
+                error_out,
+                context + ".max_pending_frontier_age_ms must be positive");
+        }
+        if (stream_plan.max_writer_queue_packets == 0) {
+            return set_error(
+                error_out,
+                context + ".max_writer_queue_packets must be positive");
+        }
+        if (stream_plan.max_writer_queue_bytes == 0) {
+            return set_error(
+                error_out,
+                context + ".max_writer_queue_bytes must be positive");
+        }
         if ((stream_plan.rate_control_mode == "vbr" ||
              stream_plan.rate_control_mode == "vbr_cq") &&
             stream_plan.max_bitrate_bps < stream_plan.bitrate_bps) {
@@ -1196,6 +1259,13 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
                              context +
                                  ".recording_control.clip_seconds requires record_for_seconds > 0");
         }
+        if (stream_plan.clip_seconds > 0 && plan.require_merged_mp4) {
+            return set_error(
+                error_out,
+                context +
+                    ".recording_control.clip_seconds is incompatible with "
+                    "require_merged_mp4=true; rolling clips are authoritative");
+        }
         if (plan.require_summary && stream_plan.summary_json.empty()) {
             return set_error(error_out, context + ".summary_json is required");
         }
@@ -1215,6 +1285,10 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
         }
         if (stream_plan.mp4_keyframe.empty()) {
             stream_plan.mp4_keyframe = derive_keyframe_path(stream_plan.mp4);
+        }
+        if (stream_plan.metadata_csv.empty()) {
+            stream_plan.metadata_csv =
+                replace_suffix(stream_plan.mp4, ".mp4", "_meta.csv");
         }
         if (stream_plan.status_json.empty()) {
             stream_plan.status_json =
@@ -1356,6 +1430,16 @@ std::vector<std::string> BuildRecorderCommand(const SupervisorPlan& plan,
         std::to_string(stream.quality_value),
         "--gop",
         std::to_string(stream.gop),
+        "--max-pending-gops",
+        std::to_string(stream.max_pending_gops),
+        "--max-pending-bytes",
+        std::to_string(stream.max_pending_bytes),
+        "--max-pending-frontier-age-ms",
+        std::to_string(stream.max_pending_frontier_age_ms),
+        "--max-writer-queue-packets",
+        std::to_string(stream.max_writer_queue_packets),
+        "--max-writer-queue-bytes",
+        std::to_string(stream.max_writer_queue_bytes),
         "--bitrate-bps",
         std::to_string(stream.bitrate_bps),
         "--max-bitrate-bps",
@@ -1366,6 +1450,8 @@ std::vector<std::string> BuildRecorderCommand(const SupervisorPlan& plan,
         stream.mp4,
         "--mp4-keyframe",
         stream.mp4_keyframe,
+        "--metadata-csv",
+        stream.metadata_csv,
         "--encode-csv",
         stream.encode_csv,
         "--gop-routing-csv",
@@ -1471,6 +1557,7 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
             {"video_sanity_json", stream.video_sanity_json},
             {"mp4", stream.mp4},
             {"mp4_keyframe", stream.mp4_keyframe},
+            {"metadata_csv", stream.metadata_csv},
             {"detach_csv", stream.detach_csv},
             {"encode_csv", stream.encode_csv},
             {"gop_routing_csv", stream.gop_routing_csv},
@@ -1491,6 +1578,11 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
             {"rate_control_mode", stream.rate_control_mode},
             {"quality_value", stream.quality_value},
             {"gop", stream.gop},
+            {"max_pending_gops", stream.max_pending_gops},
+            {"max_pending_bytes", stream.max_pending_bytes},
+            {"max_pending_frontier_age_ms", stream.max_pending_frontier_age_ms},
+            {"max_writer_queue_packets", stream.max_writer_queue_packets},
+            {"max_writer_queue_bytes", stream.max_writer_queue_bytes},
             {"terminal_tail_coalesce_frames", stream.terminal_tail_coalesce_frames},
             {"bitrate_bps", stream.bitrate_bps},
             {"max_bitrate_bps", stream.max_bitrate_bps},

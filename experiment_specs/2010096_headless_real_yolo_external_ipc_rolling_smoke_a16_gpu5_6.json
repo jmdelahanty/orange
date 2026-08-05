@@ -29,7 +29,7 @@
       "session_id": "2010096_headless_real_yolo_external_ipc_rolling_smoke_a16_gpu5_6",
       "require_summary": true,
       "require_video_sanity": true,
-      "require_merged_mp4": true,
+      "require_merged_mp4": false,
       "require_gop_routing": true,
       "preserve_shard_mp4s": false,
       "streams": {

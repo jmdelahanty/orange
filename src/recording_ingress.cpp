@@ -146,13 +146,15 @@ public:
                              std::string camera_serial,
                              int source_gpu_id,
                              int route_hint_gpu_id,
-                             uint32_t recording_gop_length)
+                             uint32_t recording_gop_length,
+                             uint32_t recording_frame_rate)
         : CThreadWorker<WORKER_ENTRY>(("ExternalIpcRecorder_Cam_" + camera_serial).c_str()),
           recycle_queue_(recycle_queue),
           camera_serial_(std::move(camera_serial)),
           source_gpu_id_(source_gpu_id),
           route_hint_gpu_id_(route_hint_gpu_id),
           recording_gop_length_(std::max<uint32_t>(1u, recording_gop_length)),
+          recording_frame_rate_(std::max<uint32_t>(1u, recording_frame_rate)),
           session_id_("external_ipc_" + camera_serial_),
           stream_id_(camera_serial_),
           socket_path_("/tmp/orange_external_recorder_" + camera_serial_ + ".sock"),
@@ -606,11 +608,30 @@ private:
                         hello.error + " line='" + line + "'");
             return false;
         }
+        if (hello.session_id != orange::external_recorder::ipc::token_value(session_id_) ||
+            hello.stream_id != orange::external_recorder::ipc::token_value(stream_id_)) {
+            log_limited("external recorder protocol identity mismatch: peer session=" +
+                        hello.session_id + " stream=" + hello.stream_id +
+                        " expected session=" + session_id_ + " stream=" + stream_id_);
+            return false;
+        }
+        std::string identity_error;
+        if (!orange::external_recorder::ipc::validate_recording_config_identity(
+                hello,
+                static_cast<int>(recording_frame_rate_),
+                static_cast<int>(recording_gop_length_),
+                &identity_error)) {
+            log_limited("external recorder recording-config identity rejected: " +
+                        identity_error);
+            return false;
+        }
         if (!send_all(orange::external_recorder::ipc::build_client_hello_line(
                 camera_serial_,
                 session_id_,
                 stream_id_,
-                "orange_full_frame"))) {
+                "orange_full_frame",
+                static_cast<int>(recording_frame_rate_),
+                static_cast<int>(recording_gop_length_)))) {
             log_limited("send client protocol hello failed: " +
                         std::string(std::strerror(errno)));
             return false;
@@ -866,6 +887,7 @@ private:
     int source_gpu_id_ = -1;
     int route_hint_gpu_id_ = -1;
     uint32_t recording_gop_length_ = 1;
+    uint32_t recording_frame_rate_ = 1;
     std::string session_id_;
     std::string stream_id_;
     std::string socket_path_;
@@ -898,6 +920,7 @@ RecordingIngress::RecordingIngress(EncoderPreprocessWorker* primary_preprocess_w
                                    int source_gpu_id,
                                    int primary_encode_gpu_id,
                                    uint32_t recording_gop_length,
+                                   uint32_t recording_frame_rate,
                                    const ResolvedRecordingConfig& resolved_recording_config,
                                    SafeQueue<WORKER_ENTRY*>* recycle_queue,
                                    const std::string& recording_sink_mode,
@@ -906,6 +929,7 @@ RecordingIngress::RecordingIngress(EncoderPreprocessWorker* primary_preprocess_w
       source_gpu_id_(source_gpu_id),
       primary_encode_gpu_id_(primary_encode_gpu_id),
       recording_gop_length_(std::max<uint32_t>(1u, recording_gop_length)),
+      recording_frame_rate_(std::max<uint32_t>(1u, recording_frame_rate)),
       resolved_recording_config_(resolved_recording_config),
       recycle_queue_(recycle_queue),
       recording_sink_mode_(normalize_recording_sink_mode(recording_sink_mode)),
@@ -933,7 +957,8 @@ RecordingIngress::RecordingIngress(EncoderPreprocessWorker* primary_preprocess_w
                 serial,
                 source_gpu_id_,
                 primary_encode_gpu_id_,
-                recording_gop_length_);
+                recording_gop_length_,
+                recording_frame_rate_);
     }
 
     if (recording_sink_mode_ != "real") {

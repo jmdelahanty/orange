@@ -24,6 +24,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <sstream>
@@ -171,6 +172,134 @@ uint64_t gui_json_u64_or(const nlohmann::json& object,
         }
     }
     return fallback;
+}
+
+struct GuiFrameMetadataCsvStats {
+    uint64_t rows = 0;
+    uint64_t first_recording_frame_id = 0;
+    uint64_t last_recording_frame_id = 0;
+    uint64_t recording_frame_id_gaps = 0;
+};
+
+std::vector<std::string> gui_split_csv_row(const std::string& row)
+{
+    std::vector<std::string> cells;
+    std::istringstream input(row);
+    std::string cell;
+    while (std::getline(input, cell, ',')) {
+        cells.push_back(cell);
+    }
+    return cells;
+}
+
+bool gui_parse_u64_cell(const std::string& value, uint64_t* out)
+{
+    if (!out || value.empty()) {
+        return false;
+    }
+    try {
+        size_t consumed = 0;
+        const uint64_t parsed = std::stoull(value, &consumed, 10);
+        if (consumed != value.size()) {
+            return false;
+        }
+        *out = parsed;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool gui_validate_frame_metadata_csv(const std::string& path,
+                                     const uint64_t expected_rows,
+                                     GuiFrameMetadataCsvStats* stats_out,
+                                     std::string* error_out)
+{
+    std::ifstream input(path);
+    if (!input) {
+        if (error_out) {
+            *error_out = "missing frame metadata CSV: " + path;
+        }
+        return false;
+    }
+    std::string header_line;
+    if (!std::getline(input, header_line)) {
+        if (error_out) {
+            *error_out = "empty frame metadata CSV: " + path;
+        }
+        return false;
+    }
+    const std::vector<std::string> header = gui_split_csv_row(header_line);
+    auto column_index = [&](const std::string& name) -> size_t {
+        const auto it = std::find(header.begin(), header.end(), name);
+        return it == header.end()
+            ? std::numeric_limits<size_t>::max()
+            : static_cast<size_t>(std::distance(header.begin(), it));
+    };
+    const size_t frame_column = column_index("recording_frame_id");
+    const size_t timestamp_column = column_index("timestamp");
+    const size_t timestamp_sys_column = column_index("timestamp_sys");
+    const size_t missing = std::numeric_limits<size_t>::max();
+    if (frame_column == missing || timestamp_column == missing ||
+        timestamp_sys_column == missing) {
+        if (error_out) {
+            *error_out =
+                "frame metadata CSV lacks recording_frame_id/timestamp/timestamp_sys: " +
+                path;
+        }
+        return false;
+    }
+
+    GuiFrameMetadataCsvStats stats;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line.empty()) {
+            continue;
+        }
+        const std::vector<std::string> cells = gui_split_csv_row(line);
+        const size_t required_column =
+            std::max({frame_column, timestamp_column, timestamp_sys_column});
+        uint64_t frame_id = 0;
+        uint64_t timestamp = 0;
+        uint64_t timestamp_sys = 0;
+        if (cells.size() <= required_column ||
+            !gui_parse_u64_cell(cells[frame_column], &frame_id) ||
+            !gui_parse_u64_cell(cells[timestamp_column], &timestamp) ||
+            !gui_parse_u64_cell(cells[timestamp_sys_column], &timestamp_sys) ||
+            frame_id == 0 || timestamp == 0 || timestamp_sys == 0) {
+            if (error_out) {
+                *error_out = "invalid frame metadata row in " + path;
+            }
+            return false;
+        }
+        if (stats.rows == 0) {
+            stats.first_recording_frame_id = frame_id;
+        } else if (frame_id <= stats.last_recording_frame_id) {
+            if (error_out) {
+                *error_out = "non-monotonic recording_frame_id in " + path;
+            }
+            return false;
+        } else if (frame_id > stats.last_recording_frame_id + 1) {
+            stats.recording_frame_id_gaps +=
+                frame_id - stats.last_recording_frame_id - 1;
+        }
+        stats.last_recording_frame_id = frame_id;
+        stats.rows++;
+    }
+    if (stats.rows != expected_rows || stats.recording_frame_id_gaps != 0) {
+        if (error_out) {
+            *error_out =
+                "frame metadata CSV is incomplete: rows=" +
+                std::to_string(stats.rows) + " expected=" +
+                std::to_string(expected_rows) + " gaps=" +
+                std::to_string(stats.recording_frame_id_gaps) + " path=" + path;
+        }
+        return false;
+    }
+    if (stats_out) {
+        *stats_out = stats;
+    }
+    return true;
 }
 
 bool gui_external_recorder_plan_requests_rolling(
@@ -870,7 +999,18 @@ bool gui_write_external_rolling_recording_session_manifest(
     }
 
     if (manifest_out) {
-        *manifest_out = manifest;
+        nlohmann::json persisted_manifest;
+        std::string read_error;
+        if (!gui_read_json_file(
+                manifest_path.string(),
+                &persisted_manifest,
+                &read_error)) {
+            if (error_out) {
+                *error_out = read_error;
+            }
+            return false;
+        }
+        *manifest_out = std::move(persisted_manifest);
     }
     if (bridge_out) {
         *bridge_out = {
@@ -1343,6 +1483,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
             nlohmann::json summary_paths = nlohmann::json::object();
             nlohmann::json merged_mp4s = nlohmann::json::object();
             nlohmann::json keyframe_paths = nlohmann::json::object();
+            nlohmann::json metadata_paths = nlohmann::json::object();
             nlohmann::json gop_routing_paths = nlohmann::json::object();
 
             for (const auto& stream : inputs->external_recorder_lifecycle.plan.streams) {
@@ -1391,6 +1532,16 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                     summary.value("outputs", nlohmann::json::object());
                 const nlohmann::json external_encode =
                     summary.value("external_encode", nlohmann::json::object());
+                const nlohmann::json rolling =
+                    summary.value("rolling_output", nlohmann::json::object());
+                const nlohmann::json frame_metadata =
+                    summary.value("frame_metadata", nlohmann::json::object());
+                const bool rolling_enabled =
+                    rolling.is_object() && rolling.value("enabled", false);
+                const nlohmann::json rolling_clips =
+                    rolling_enabled
+                        ? rolling.value("clips", nlohmann::json::array())
+                        : nlohmann::json::array();
                 const bool worker_failed = summary.value("worker_failed", false);
                 const bool merged_enabled =
                     merged.is_object() && merged.value("enabled", false);
@@ -1402,23 +1553,80 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                     summary.value("frames_encoded", frames_received);
                 const uint64_t external_packets =
                     json_u64_or(external_encode, "mp4_packets", 0ULL);
-                const uint64_t packets_written = merged_enabled
-                    ? json_u64_or(merged, "packets_written", external_packets)
-                    : external_packets;
+                uint64_t rolling_packets = 0;
+                if (rolling_clips.is_array()) {
+                    for (const nlohmann::json& clip : rolling_clips) {
+                        rolling_packets += json_u64_or(clip, "packets_written", 0ULL);
+                    }
+                }
+                const uint64_t packets_written = rolling_enabled
+                    ? rolling_packets
+                    : (merged_enabled
+                           ? json_u64_or(merged, "packets_written", external_packets)
+                           : external_packets);
                 const std::string output_mp4 =
                     json_string_or(outputs, "mp4", stream.mp4);
                 const std::string output_keyframes =
                     json_string_or(outputs, "mp4_keyframe", stream.mp4_keyframe);
-                const std::string mp4 = merged_enabled
-                    ? json_string_or(merged, "mp4", output_mp4)
-                    : output_mp4;
-                const std::string keyframes = merged_enabled
-                    ? json_string_or(merged, "mp4_keyframe", output_keyframes)
-                    : output_keyframes;
+                const std::string output_metadata =
+                    json_string_or(outputs, "metadata", stream.metadata_csv);
+                const nlohmann::json first_rolling_clip =
+                    rolling_clips.is_array() && !rolling_clips.empty() &&
+                            rolling_clips.front().is_object()
+                        ? rolling_clips.front()
+                        : nlohmann::json::object();
+                const std::string mp4 = rolling_enabled
+                    ? json_string_or(first_rolling_clip, "mp4", std::string())
+                    : (merged_enabled
+                           ? json_string_or(merged, "mp4", output_mp4)
+                           : output_mp4);
+                const std::string keyframes = rolling_enabled
+                    ? json_string_or(first_rolling_clip, "keyframes", std::string())
+                    : (merged_enabled
+                           ? json_string_or(merged, "mp4_keyframe", output_keyframes)
+                           : output_keyframes);
+                const std::string metadata = rolling_enabled
+                    ? std::string()
+                    : (merged_enabled
+                           ? json_string_or(merged, "metadata", output_metadata)
+                           : json_string_or(frame_metadata, "path", output_metadata));
+
+                GuiFrameMetadataCsvStats metadata_stats;
+                std::string metadata_error;
+                bool metadata_complete = rolling_enabled;
+                if (!rolling_enabled) {
+                    const uint64_t summary_metadata_rows =
+                        json_u64_or(frame_metadata, "rows_written", 0ULL);
+                    const uint64_t summary_metadata_gaps =
+                        json_u64_or(
+                            frame_metadata, "recording_frame_id_gaps", 0ULL);
+                    const uint64_t zero_camera_timestamps =
+                        json_u64_or(
+                            frame_metadata, "zero_camera_timestamp_rows", 0ULL);
+                    const uint64_t zero_system_timestamps =
+                        json_u64_or(
+                            frame_metadata, "zero_system_timestamp_rows", 0ULL);
+                    metadata_complete =
+                        !metadata.empty() &&
+                        summary_metadata_rows == frames_encoded &&
+                        summary_metadata_gaps == 0 &&
+                        zero_camera_timestamps == 0 &&
+                        zero_system_timestamps == 0 &&
+                        gui_validate_frame_metadata_csv(
+                            metadata,
+                            frames_encoded,
+                            &metadata_stats,
+                            &metadata_error);
+                    if (!metadata_complete && metadata_error.empty()) {
+                        metadata_error =
+                            "external recorder frame metadata summary is incomplete for camera " +
+                            serial;
+                    }
+                }
 
                 if (worker_failed || merged_failed || frames_received == 0 ||
                     frames_encoded == 0 || frames_encoded != frames_received ||
-                    packets_written == 0 || mp4.empty() ||
+                    packets_written == 0 || mp4.empty() || !metadata_complete ||
                     !std::filesystem::exists(mp4)) {
                     external_recorder_ok = false;
                     if (!external_recorder_error.empty()) {
@@ -1426,23 +1634,36 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                     }
                     external_recorder_error +=
                         "external recorder output incomplete for camera " + serial;
+                    if (!metadata_error.empty()) {
+                        external_recorder_error += ": " + metadata_error;
+                    }
                 }
 
                 orange::session::RecordingSessionCameraArtifact artifact;
                 artifact.camera_serial = serial;
                 artifact.video_path = mp4;
-                artifact.metadata_path = stream.summary_json;
+                artifact.metadata_path =
+                    rolling_enabled ? stream.summary_json : metadata;
                 artifact.keyframe_path = keyframes;
                 artifact.frame_count = frames_encoded;
-                artifact.first_recording_frame_id = frames_encoded > 0 ? 1 : 0;
-                artifact.last_recording_frame_id = frames_encoded;
-                artifact.recording_frame_id_gaps = 0;
+                artifact.first_recording_frame_id = rolling_enabled
+                    ? (frames_encoded > 0 ? 1 : 0)
+                    : metadata_stats.first_recording_frame_id;
+                artifact.last_recording_frame_id = rolling_enabled
+                    ? frames_encoded
+                    : metadata_stats.last_recording_frame_id;
+                artifact.recording_frame_id_gaps = rolling_enabled
+                    ? 0
+                    : metadata_stats.recording_frame_id_gaps;
                 artifact.packet_count = packets_written;
                 artifact.packet_count_source = "external_recorder_summary.packets_written";
                 camera_artifacts.push_back(std::move(artifact));
 
                 summary_paths[serial] = stream.summary_json;
-                merged_mp4s[serial] = mp4;
+                if (!rolling_enabled) {
+                    merged_mp4s[serial] = mp4;
+                    metadata_paths[serial] = metadata;
+                }
                 keyframe_paths[serial] = keyframes;
                 gop_routing_paths[serial] = stream.gop_routing_csv;
             }
@@ -1462,6 +1683,12 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                  }},
                 {"summary_json", summary_paths},
                 {"merged_mp4", merged_mp4s},
+                {"frame_metadata_csv", metadata_paths},
+                {"authoritative_video_mode",
+                 inputs->external_recorder_lifecycle.plan.streams.empty() ||
+                         inputs->external_recorder_lifecycle.plan.streams.front().clip_seconds <= 0
+                     ? "single_mp4"
+                     : "rolling_clips"},
                 {"keyframes", keyframe_paths},
                 {"gop_routing_csv", gop_routing_paths},
                 {"external_recorder_contract_path", inputs->external_recorder_contract_path},

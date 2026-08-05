@@ -2,10 +2,12 @@
 #include "project.h"
 #include "camera_config_schema.h"
 #include "citrus_recording_geometry.h"
+#include "external_recorder_ipc_protocol.h"
 #include "fnv1a64_fingerprint.h"
 #include "fsuid_guard.h"
 #include "gui/spatial_layout/sha256.h"
 #include "spatial_calibration_snapshot.h"
+#include "video_capture.h"
 #include <unistd.h>      // For gethostname in client_send_bringup_message
 #include <pwd.h>
 #include <sys/stat.h>    // For mkdir
@@ -5516,7 +5518,10 @@ bool write_recording_snapshot(const std::string& recording_folder,
                               bool update_latest_pointer,
                               bool sync_camera_enabled,
                               const PTPParams* ptp_params,
-                              const std::string& recording_sink_mode) {
+                              const std::string& recording_sink_mode,
+                              const ResolvedRecordingConfig* resolved_recording_configs,
+                              int num_resolved_recording_configs,
+                              const CameraEachSelect* cameras_select) {
     if (!cameras_params || num_cameras <= 0) {
         return false;
     }
@@ -5584,6 +5589,50 @@ bool write_recording_snapshot(const std::string& recording_folder,
             }
         }
         camera_runtime[camera_key] = build_camera_runtime_snapshot(params);
+        if (resolved_recording_configs &&
+            i < num_resolved_recording_configs &&
+            (!cameras_select || cameras_select[i].record)) {
+            const ResolvedRecordingConfig& resolved = resolved_recording_configs[i];
+            const int frame_rate = std::max(1, static_cast<int>(params.frame_rate));
+            const int resolved_gop_length = resolved.encode.gop_length > 0
+                ? resolved.encode.gop_length
+                : frame_rate;
+            camera_runtime[camera_key]["recording_config_authority"] = {
+                {"source", "frozen_resolved_recording_config"},
+                {"frame_rate", frame_rate},
+                {"requested_gop_length", resolved.encode.gop_length},
+                {"resolved_gop_length", resolved_gop_length},
+                {"recording_config_fingerprint_scope",
+                 orange::external_recorder::ipc::kRecordingConfigFingerprintScope},
+                {"recording_config_fingerprint",
+                 orange::external_recorder::ipc::build_recording_config_fingerprint(
+                     frame_rate,
+                     resolved_gop_length)},
+                {"source_gpu_id", resolved.source_gpu_id},
+                {"recording_gpu_id", resolved.recording_gpu_id},
+                {"encode", {
+                    {"codec", resolved.encode.codec},
+                    {"preset", resolved.encode.preset},
+                    {"tuning", resolved.encode.tuning},
+                    {"rate_control_mode", resolved.encode.rate_control_mode},
+                    {"quality_value", resolved.encode.quality_value},
+                    {"gop_length", resolved_gop_length},
+                    {"aq", resolved.encode.aq},
+                    {"temporal_aq", resolved.encode.temporal_aq},
+                    {"nvenc_direct_input", resolved.encode.nvenc_direct_input}
+                }},
+                {"output", {
+                    {"mode", resolved.output.mode},
+                    {"downsample_factor", resolved.output.downsample_factor},
+                    {"requested_width", resolved.output.requested_width},
+                    {"requested_height", resolved.output.requested_height},
+                    {"resolved_width", resolved.output.resolved_width},
+                    {"resolved_height", resolved.output.resolved_height},
+                    {"resize_enabled", resolved.output.resize_enabled}
+                }},
+                {"strategy", build_recording_strategy_json(resolved.strategy)}
+            };
+        }
     }
 
     snapshot["cameras"] = cameras;

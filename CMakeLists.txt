@@ -464,6 +464,7 @@ set(NV12_PREFILL_VALIDATION_SOURCES
 
 set(EXTERNAL_RECORDER_IPC_PROBE_SOURCES
     "tools/external_recorder_ipc_probe.cpp"
+    "${SRC_DIR}/external_recorder_frame_metadata.cpp"
     "${SRC_DIR}/video_container_finalization.cpp"
     "${SRC_DIR}/FFmpegWriter.cpp"
     "${SRC_DIR}/encoder_qp_map.cpp"
@@ -511,6 +512,14 @@ add_executable(external_recorder_ipc_probe EXCLUDE_FROM_ALL ${EXTERNAL_RECORDER_
 add_executable(external_recorder_supervisor_plan EXCLUDE_FROM_ALL ${EXTERNAL_RECORDER_SUPERVISOR_PLAN_SOURCES})
 
 if(BUILD_TESTING)
+    add_executable(external_recorder_frame_metadata_tests
+        "tools/external_recorder_frame_metadata_tests.cpp"
+        "${SRC_DIR}/external_recorder_frame_metadata.cpp"
+    )
+    target_include_directories(external_recorder_frame_metadata_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(external_recorder_frame_metadata_tests PRIVATE cxx_std_17)
+    add_test(NAME external_recorder_frame_metadata_tests COMMAND external_recorder_frame_metadata_tests)
+
     add_executable(recording_validation_tests
         "tools/recording_validation_tests.cpp"
         "${SRC_DIR}/recording_validation.cpp"
