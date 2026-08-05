@@ -70,8 +70,12 @@ def test_one_camera_runner_defaults_to_supervised_full_rate_split_gop() -> None:
         "smoke must request a timed single-clip recording so Orange writes the manifest",
     )
     require(
-        '"clip_seconds": 0' in source,
-        "one-camera acceptance smoke must remain non-rolling",
+        'CLIP_SECONDS=0' in source,
+        "one-camera acceptance smoke must default to non-rolling",
+    )
+    require(
+        '"clip_seconds": clip_seconds' in source,
+        "runner must propagate an explicit rolling clip duration into the contract",
     )
     require(
         '"$RECORDER_TOOL" "${RECORDER_ARGS[@]}"' not in source,

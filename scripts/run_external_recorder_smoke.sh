@@ -19,6 +19,7 @@ Options:
   --recorder-gpu-id <int>    GPU id used by external recorder. Default: analytics GPU.
   --shard-gpu-ids <csv>      Split-GOP recorder GPUs. Default 5,6 on the default rig.
   --duration <sec>           Timed recording duration. Default 3.
+  --clip-seconds <sec>       Rolling clip duration. Default 0 (single clip).
   --warmup <sec>             Headless warmup before recording. Default 1.
   --encode-fps <int>         Source and nominal MP4 FPS. Default 100.
   --encode-max-fps <int>     External encode cap only. Use 0 for uncapped.
@@ -56,6 +57,7 @@ ANALYTICS_GPU_ID=5
 RECORDER_GPU_ID=""
 SHARD_GPU_IDS=""
 DURATION=3
+CLIP_SECONDS=0
 WARMUP=1
 ENCODE_FPS=100
 ENCODE_MAX_FPS=0
@@ -130,6 +132,12 @@ while [[ $# -gt 0 ]]; do
       shift
       [[ $# -gt 0 ]] || { echo "--duration requires a value." >&2; exit 2; }
       DURATION="$1"
+      shift
+      ;;
+    --clip-seconds)
+      shift
+      [[ $# -gt 0 ]] || { echo "--clip-seconds requires a value." >&2; exit 2; }
+      CLIP_SECONDS="$1"
       shift
       ;;
     --warmup)
@@ -238,12 +246,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for value_name in ANALYTICS_GPU_ID DURATION WARMUP ENCODE_FPS ENCODE_MAX_FPS QUEUE_DEPTH PREWARM_SLOTS YOLO_PREWARM_ITERATIONS PTP_REGISTER_READ_DECIMATE; do
+for value_name in ANALYTICS_GPU_ID DURATION CLIP_SECONDS WARMUP ENCODE_FPS ENCODE_MAX_FPS QUEUE_DEPTH PREWARM_SLOTS YOLO_PREWARM_ITERATIONS PTP_REGISTER_READ_DECIMATE; do
   value="${!value_name}"
   [[ "$value" =~ ^[0-9]+$ ]] || { echo "$value_name must be a non-negative integer." >&2; exit 2; }
 done
 if [[ "$DURATION" -lt 1 || "$ENCODE_FPS" -lt 1 || "$QUEUE_DEPTH" -lt 1 ]]; then
   echo "DURATION, ENCODE_FPS, and QUEUE_DEPTH must be positive." >&2
+  exit 2
+fi
+if [[ "$CLIP_SECONDS" -gt "$DURATION" ]]; then
+  echo "CLIP_SECONDS must not exceed DURATION." >&2
   exit 2
 fi
 if [[ "$PTP_REGISTER_READ_DECIMATE" -lt 1 ]]; then
@@ -317,7 +329,7 @@ KEYFRAME_OUT="$RUN_DIR/Cam${CAMERA_SERIAL}_external_keyframes.json"
 RECORDER_LOG="$RUN_DIR/external_recorder.log"
 SESSION_CONTRACT_JSON="$RUN_DIR/external_recorder_session.json"
 
-python3 - "$SPEC" "$TEMP_SPEC" "$SESSION_CONTRACT_JSON" "$STAMP" "$CAMERA_SERIAL" "$ANALYTICS_GPU_ID" "$RECORDER_GPU_ID" "$SHARD_GPU_IDS" "$DURATION" "$WARMUP" "$YOLO_PREWARM_ITERATIONS" "$PTP_REGISTER_READ_DECIMATE" "$RUN_DIR" "$SUMMARY_JSON" "$STATUS_JSON" "$VIDEO_SANITY_JSON" "$MP4_OUT" "$GOP_ROUTING_CSV" "$ENCODE_FPS" "$ENCODE_MAX_FPS" "$SKIP_VIDEO_SANITY" "$QUEUE_DEPTH" "$PREWARM_SLOTS" "$PREWARM_BYTES" "$PREWARM_PEER_COPY" "$RECORDER_TOOL" "$SOCKET_PATH" "$DETACH_CSV" "$ENCODE_CSV" "$KEYFRAME_OUT" "$RECORDER_LOG" <<'PY'
+python3 - "$SPEC" "$TEMP_SPEC" "$SESSION_CONTRACT_JSON" "$STAMP" "$CAMERA_SERIAL" "$ANALYTICS_GPU_ID" "$RECORDER_GPU_ID" "$SHARD_GPU_IDS" "$DURATION" "$WARMUP" "$YOLO_PREWARM_ITERATIONS" "$PTP_REGISTER_READ_DECIMATE" "$RUN_DIR" "$SUMMARY_JSON" "$STATUS_JSON" "$VIDEO_SANITY_JSON" "$MP4_OUT" "$GOP_ROUTING_CSV" "$ENCODE_FPS" "$ENCODE_MAX_FPS" "$SKIP_VIDEO_SANITY" "$QUEUE_DEPTH" "$PREWARM_SLOTS" "$PREWARM_BYTES" "$PREWARM_PEER_COPY" "$RECORDER_TOOL" "$SOCKET_PATH" "$DETACH_CSV" "$ENCODE_CSV" "$KEYFRAME_OUT" "$RECORDER_LOG" "$CLIP_SECONDS" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -353,6 +365,7 @@ detach_csv = Path(sys.argv[28])
 encode_csv = Path(sys.argv[29])
 keyframe_out = Path(sys.argv[30])
 recorder_log = Path(sys.argv[31])
+clip_seconds = int(sys.argv[32])
 
 with source.open("r", encoding="utf-8") as f:
     spec = json.load(f)
@@ -374,7 +387,7 @@ fixed["recording_sink_mode"] = "external_ipc"
 fixed["ptp_register_read_decimate"] = ptp_register_read_decimate
 fixed["recording_control"] = {
     "record_for_seconds": duration,
-    "clip_seconds": 0,
+    "clip_seconds": clip_seconds,
 }
 if isinstance(fixed.get("yolo_worker"), dict):
     fixed["yolo_worker"]["prewarm_iterations"] = yolo_prewarm_iterations
@@ -397,12 +410,12 @@ contract = {
     "require_storage_preflight": True,
     "require_protocol_hello": True,
     "require_video_sanity": skip_video_sanity == 0,
-    "require_merged_mp4": len(expected_shard_gpu_ids) > 1,
+    "require_merged_mp4": clip_seconds == 0 and len(expected_shard_gpu_ids) > 1,
     "require_gop_routing": True,
     "preserve_shard_mp4s": False,
     "recording_control": {
         "record_for_seconds": duration,
-        "clip_seconds": 0,
+        "clip_seconds": clip_seconds,
     },
     "streams": {
         camera_serial: {
@@ -511,7 +524,7 @@ echo "[external-recorder] direct_input_source=$DIRECT_INPUT_SOURCE deferred_sour
 echo "[external-recorder] yolo_prewarm_iterations=$YOLO_PREWARM_ITERATIONS"
 echo "[external-recorder] ptp_register_read_decimate=$PTP_REGISTER_READ_DECIMATE"
 echo "[external-recorder] analytics_early_owned_frame=$ANALYTICS_EARLY_OWNED_FRAME yolo_ready_event_fastpath=$YOLO_READY_EVENT_FASTPATH yolo_detach_input=$YOLO_DETACH_INPUT"
-echo "[external-recorder] starting supervised headless external_ipc run camera=$CAMERA_SERIAL analytics_gpu=$ANALYTICS_GPU_ID recorder_gpu=$RECORDER_GPU_ID shard_gpu_ids=${SHARD_GPU_IDS:-none} encode_fps=$ENCODE_FPS encode_max_fps=$ENCODE_MAX_FPS record_for_seconds=$DURATION"
+echo "[external-recorder] starting supervised headless external_ipc run camera=$CAMERA_SERIAL analytics_gpu=$ANALYTICS_GPU_ID recorder_gpu=$RECORDER_GPU_ID shard_gpu_ids=${SHARD_GPU_IDS:-none} encode_fps=$ENCODE_FPS encode_max_fps=$ENCODE_MAX_FPS record_for_seconds=$DURATION clip_seconds=$CLIP_SECONDS"
 sudo -n /usr/local/bin/orange-local-benchmark \
   --orange-client "$ORANGE_CLIENT" \
   --yolo-perf-log \
