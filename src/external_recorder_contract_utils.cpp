@@ -287,6 +287,7 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
     set_json_default(&contract, "require_status_runtime", true);
     set_json_default(&contract, "require_storage_preflight", true);
     set_json_default(&contract, "require_protocol_hello", true);
+    set_json_default(&contract, "require_frame_identity_proof", true);
     set_json_default(&contract, "preserve_shard_mp4s", false);
 
     contract["artifact_root"] = expand_path_template(
@@ -412,9 +413,35 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
             orange::external_recorder::ipc::build_recording_config_fingerprint(
                 materialized_fps,
                 materialized_gop);
-        set_json_default(&stream, "bitrate_bps", 150000000);
-        set_json_default(&stream, "max_bitrate_bps", 150000000);
-        set_json_default(&stream, "vbv_buffer_size", 150000000);
+        EncoderControlOverrides configured_rate;
+        if (resolved) {
+            configured_rate = resolved->encoder_control_overrides;
+        } else {
+            configured_rate.target_bitrate_bps =
+                camera.recording.encode.target_bitrate_bps;
+            configured_rate.max_bitrate_bps =
+                camera.recording.encode.max_bitrate_bps;
+            configured_rate.vbv_buffer_size =
+                camera.recording.encode.vbv_buffer_size;
+        }
+        set_json_default(
+            &stream,
+            "bitrate_bps",
+            configured_rate.target_bitrate_bps > 0
+                ? configured_rate.target_bitrate_bps
+                : 150000000);
+        set_json_default(
+            &stream,
+            "max_bitrate_bps",
+            configured_rate.max_bitrate_bps > 0
+                ? configured_rate.max_bitrate_bps
+                : 150000000);
+        set_json_default(
+            &stream,
+            "vbv_buffer_size",
+            configured_rate.vbv_buffer_size > 0
+                ? configured_rate.vbv_buffer_size
+                : 150000000);
         set_json_default(&stream, "importance_map", default_importance_map);
 
         for (const char* key : {

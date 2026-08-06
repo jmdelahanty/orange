@@ -618,6 +618,80 @@ void test_recording_fail_on_drop_flag_parsing()
     require(resolved.fail_on_drop, "fail_on_drop should resolve into ResolvedRecordingConfig");
 }
 
+void test_recording_encode_bitrate_parsing_and_resolution()
+{
+    const nlohmann::json configured = {
+        {"encode", {
+            {"codec", "hevc"},
+            {"rate_control_mode", "vbr"},
+            {"target_bitrate_bps", 45000000},
+            {"max_bitrate_bps", 60000000},
+            {"vbv_buffer_size", 60000000},
+        }},
+    };
+    CameraRecordingConfig recording;
+    std::string error;
+    require(
+        parse_camera_recording_json(configured, &recording, &error),
+        "explicit bitrate recording config should parse: " + error);
+    require(recording.encode.target_bitrate_bps == 45000000,
+            "target bitrate should load");
+    require(recording.encode.max_bitrate_bps == 60000000,
+            "maximum bitrate should load");
+    require(recording.encode.vbv_buffer_size == 60000000,
+            "VBV buffer should load");
+
+    const nlohmann::json serialized = build_camera_recording_json(recording);
+    require(serialized["encode"]["target_bitrate_bps"] == 45000000,
+            "target bitrate should serialize");
+    require(serialized["encode"]["max_bitrate_bps"] == 60000000,
+            "maximum bitrate should serialize");
+    require(serialized["encode"]["vbv_buffer_size"] == 60000000,
+            "VBV buffer should serialize");
+
+    CameraRecordingConfig round_tripped;
+    require(parse_camera_recording_json(serialized, &round_tripped, &error),
+            "serialized bitrate config should re-parse: " + error);
+    CameraParams params{};
+    params.recording = round_tripped;
+    const ResolvedRecordingConfig resolved = build_resolved_recording_config(params);
+    require(resolved.encoder_control_overrides.target_bitrate_bps == 45000000,
+            "target bitrate should resolve into the runtime encoder authority");
+    require(resolved.encoder_control_overrides.max_bitrate_bps == 60000000,
+            "maximum bitrate should resolve into the runtime encoder authority");
+    require(resolved.encoder_control_overrides.vbv_buffer_size == 60000000,
+            "VBV should resolve into the runtime encoder authority");
+
+    CameraRecordingConfig automatic;
+    require(
+        parse_camera_recording_json(
+            nlohmann::json{{"encode", {
+                {"target_bitrate_bps", "auto"},
+                {"max_bitrate_bps", "inherit"},
+                {"vbv_buffer_size", "default"},
+            }}},
+            &automatic,
+            &error),
+        "automatic bitrate aliases should parse: " + error);
+    require(automatic.encode.target_bitrate_bps == -1 &&
+                automatic.encode.max_bitrate_bps == -1 &&
+                automatic.encode.vbv_buffer_size == -1,
+            "automatic bitrate aliases should preserve legacy behavior");
+
+    CameraRecordingConfig invalid;
+    require(
+        !parse_camera_recording_json(
+            nlohmann::json{{"encode", {
+                {"target_bitrate_bps", 75000000},
+                {"max_bitrate_bps", 60000000},
+            }}},
+            &invalid,
+            &error),
+        "maximum bitrate below target must fail closed");
+    require(error.find("max_bitrate_bps") != std::string::npos,
+            "invalid maximum bitrate error should name the field");
+}
+
 void test_recording_snapshot_includes_camera_coordinate_frame()
 {
     const std::filesystem::path root = make_temp_dir();
@@ -888,6 +962,8 @@ int main()
         {"camera_config_lens_control_defaults_enabled",
          &test_camera_config_lens_control_defaults_enabled},
         {"recording_fail_on_drop_flag_parsing", &test_recording_fail_on_drop_flag_parsing},
+        {"recording_encode_bitrate_parsing_and_resolution",
+         &test_recording_encode_bitrate_parsing_and_resolution},
         {"recording_snapshot_includes_camera_coordinate_frame",
          &test_recording_snapshot_includes_camera_coordinate_frame},
         {"invalid_crop_sink_fails", &test_invalid_crop_sink_fails},

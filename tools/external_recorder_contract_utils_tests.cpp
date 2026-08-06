@@ -303,6 +303,9 @@ void materializes_contract_and_supervisor_plan()
     resolved[1].encode = cameras[1].recording.encode;
     resolved[0].encode.gop_length = 30;
     resolved[0].encode.preset = "p3";
+    resolved[0].encoder_control_overrides.target_bitrate_bps = 45000000;
+    resolved[0].encoder_control_overrides.max_bitrate_bps = 60000000;
+    resolved[0].encoder_control_overrides.vbv_buffer_size = 60000000;
     input.resolved_recording_configs = resolved;
     input.num_resolved_recording_configs = 2;
 
@@ -321,6 +324,8 @@ void materializes_contract_and_supervisor_plan()
             "materialized contract should require storage preflight telemetry");
     require(contract.value("require_protocol_hello", false),
             "materialized contract should require IPC protocol hello telemetry");
+    require(contract.value("require_frame_identity_proof", false),
+            "materialized contract should require returned-NVENC frame identity proof");
     require(contract.value("preserve_shard_mp4s", true) == false,
             "materialized contract should delete shard MP4s by default after merge");
     require(contract["streams"].size() == 2, "expected two contract streams");
@@ -352,6 +357,12 @@ void materializes_contract_and_supervisor_plan()
             "materialization must use the frozen resolved GOP");
     require(contract["streams"]["2010095"].value("preset", "") == "p3",
             "materialization must use the frozen resolved encoder profile");
+    require(contract["streams"]["2010095"].value("bitrate_bps", 0) == 45000000,
+            "materialization must use the frozen target bitrate");
+    require(contract["streams"]["2010095"].value("max_bitrate_bps", 0) == 60000000,
+            "materialization must use the frozen maximum bitrate");
+    require(contract["streams"]["2010095"].value("vbv_buffer_size", 0) == 60000000,
+            "materialization must use the frozen VBV buffer");
     require(contract["streams"]["2010095"].value("recording_config_source", "") ==
                 "resolved_recording_config",
             "materialization should identify the frozen runtime source");
@@ -391,6 +402,12 @@ void materializes_contract_and_supervisor_plan()
             "supervisor plan must carry the writer packet limit");
     require(plan.streams[0].max_writer_queue_bytes == 134217728,
             "supervisor plan must carry the writer byte limit");
+    require(plan.streams[0].bitrate_bps == 45000000,
+            "supervisor plan must carry the configured target bitrate");
+    require(plan.streams[0].max_bitrate_bps == 60000000,
+            "supervisor plan must carry the configured maximum bitrate");
+    require(plan.streams[0].vbv_buffer_size == 60000000,
+            "supervisor plan must carry the configured VBV buffer");
     require(plan.streams[0].stream_kind == "full_frame",
             "supervisor stream kind should default to full_frame");
     require(plan.streams[0].output_kind == "full",

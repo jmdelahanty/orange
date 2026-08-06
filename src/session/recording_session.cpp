@@ -21,6 +21,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <set>
 #include <sstream>
 #include <thread>
 #include <utility>
@@ -247,20 +248,46 @@ bool count_video_packets(const std::filesystem::path& video_path,
     }
 }
 
+bool parse_strict_positive_recording_frame_id(
+    const std::string& text,
+    uint64_t* frame_id_out)
+{
+    if (text.empty()) {
+        return false;
+    }
+    for (const unsigned char c : text) {
+        if (std::isdigit(c) == 0) {
+            return false;
+        }
+    }
+    try {
+        std::size_t parsed = 0;
+        const uint64_t frame_id = std::stoull(text, &parsed, 10);
+        if (parsed != text.size() || frame_id == 0) {
+            return false;
+        }
+        if (frame_id_out) {
+            *frame_id_out = frame_id;
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 struct MetadataFrameStats {
     uint64_t frame_count = 0;
+    uint64_t metadata_row_count = 0;
+    uint64_t malformed_metadata_row_count = 0;
     uint64_t first_recording_frame_id = 0;
     uint64_t last_recording_frame_id = 0;
     uint64_t recording_frame_id_gaps = 0;
 };
 
-MetadataFrameStats read_metadata_frame_stats(const std::filesystem::path& metadata_path)
+MetadataFrameStats read_metadata_frame_stats_from_bytes(const std::string& metadata_bytes)
 {
     MetadataFrameStats stats;
-    std::ifstream input(metadata_path);
-    if (!input) {
-        return stats;
-    }
+    std::istringstream input(metadata_bytes);
 
     std::string header;
     if (!std::getline(input, header)) {
@@ -273,11 +300,12 @@ MetadataFrameStats read_metadata_frame_stats(const std::filesystem::path& metada
         if (line.empty()) {
             continue;
         }
+        ++stats.metadata_row_count;
         const std::size_t comma = line.find(',');
         const std::string frame_text =
             comma == std::string::npos ? line : line.substr(0, comma);
-        try {
-            const uint64_t frame_id = static_cast<uint64_t>(std::stoull(frame_text));
+        uint64_t frame_id = 0;
+        if (parse_strict_positive_recording_frame_id(frame_text, &frame_id)) {
             if (stats.frame_count == 0) {
                 stats.first_recording_frame_id = frame_id;
             } else if (frame_id > previous_frame_id + 1) {
@@ -286,10 +314,22 @@ MetadataFrameStats read_metadata_frame_stats(const std::filesystem::path& metada
             previous_frame_id = frame_id;
             stats.last_recording_frame_id = frame_id;
             ++stats.frame_count;
-        } catch (...) {
+        } else {
+            ++stats.malformed_metadata_row_count;
         }
     }
     return stats;
+}
+
+MetadataFrameStats read_metadata_frame_stats(const std::filesystem::path& metadata_path)
+{
+    std::ifstream input(metadata_path, std::ios::binary);
+    if (!input) {
+        return {};
+    }
+    std::ostringstream bytes;
+    bytes << input.rdbuf();
+    return read_metadata_frame_stats_from_bytes(bytes.str());
 }
 
 std::string artifact_path_string(const std::filesystem::path& folder,
@@ -1252,7 +1292,8 @@ std::pair<uint64_t, uint64_t> recording_frame_range_for_camera(
 nlohmann::json build_camera_clock_descriptor(
     const std::string& camera_serial,
     const nlohmann::json& session_sync,
-    const nlohmann::json& camera_evidence)
+    const nlohmann::json& camera_evidence,
+    const nlohmann::json& host_ptp_evidence)
 {
     const nlohmann::json empty_object = nlohmann::json::object();
     const nlohmann::json& ptp_offset = camera_evidence.is_object()
@@ -1298,8 +1339,30 @@ nlohmann::json build_camera_clock_descriptor(
     long double camera_realtime_mean = 0.0;
     int64_t camera_realtime_min = 0;
     int64_t camera_realtime_max = 0;
+    const nlohmann::json host_time_properties = host_ptp_evidence.is_object()
+        ? host_ptp_evidence.value(
+            "time_properties", nlohmann::json::object())
+        : nlohmann::json::object();
+    const bool host_management_available =
+        host_ptp_evidence.is_object() &&
+        host_ptp_evidence.value("available", false);
+    const bool host_ptp_timescale =
+        host_management_available &&
+        host_time_properties.value("ptpTimescale", false);
+    const bool host_utc_offset_valid =
+        host_ptp_timescale &&
+        host_time_properties.value("currentUtcOffsetValid", false);
+    const int64_t advertised_utc_offset_seconds =
+        host_time_properties.value(
+            "currentUtcOffset", kTaiMinusUtcSecondsForClockRuleV1);
+    nlohmann::json host_ptp_evidence_snapshot = host_ptp_evidence;
+    if (host_ptp_evidence_snapshot.is_object()) {
+        host_ptp_evidence_snapshot.erase("raw_output");
+    }
+    const int64_t expected_offset_seconds = host_utc_offset_valid
+        ? advertised_utc_offset_seconds : kTaiMinusUtcSecondsForClockRuleV1;
     const int64_t expected_offset_ns =
-        kTaiMinusUtcSecondsForClockRuleV1 * kNanosecondsPerSecond;
+        expected_offset_seconds * kNanosecondsPerSecond;
     const bool camera_realtime_offset_matches =
         stats_samples(camera_minus_realtime) > 0 &&
         json_number(camera_minus_realtime, "mean", &camera_realtime_mean) &&
@@ -1314,38 +1377,64 @@ nlohmann::json build_camera_clock_descriptor(
     const bool ptp_readbacks_stable =
         readback_is_stable_and_enabled(ptp_mode_readback, true) &&
         readback_is_stable_and_enabled(ptp_status_readback, false);
-    const bool inferred_tai =
+    const bool base_camera_ptp_evidence =
         session_ptp_enabled && camera_ptp_enabled && camera_evidence_available &&
         ptp_offset_bounded && latch_agreement && camera_realtime_offset_matches &&
         ptp_readbacks_stable;
+    const bool direct_tai =
+        base_camera_ptp_evidence && host_ptp_timescale && host_utc_offset_valid;
+    const bool ptp_timescale_untraceable =
+        base_camera_ptp_evidence && host_ptp_timescale && !host_utc_offset_valid;
+    const bool inferred_tai =
+        base_camera_ptp_evidence && !host_management_available;
+    const bool classified_tai = direct_tai || inferred_tai;
+    const bool classified_ptp = classified_tai || ptp_timescale_untraceable;
+    const std::string classification = classified_tai
+        ? "ieee1588_tai"
+        : (ptp_timescale_untraceable
+            ? "ieee1588_ptp_timescale_untraceable" : "device_defined");
+    const std::string semantic_authority = direct_tai
+        ? "host_ptp_management_dataset_plus_camera_lock_evidence"
+        : (inferred_tai
+            ? "inferred_from_recording_evidence"
+            : (ptp_timescale_untraceable
+                ? "ptp_timescale_advertised_utc_relationship_unvalidated"
+                : "epoch_unspecified"));
 
     nlohmann::json descriptor = {
         {"clock_id", "camera_" + camera_serial},
         {"unit", "nanosecond"},
-        {"clock_domain", inferred_tai ? "camera_hardware_ptp" : "camera_hardware"},
+        {"clock_domain", classified_ptp ? "camera_hardware_ptp" : "camera_hardware"},
         {"source_field", "Emergent::CEmergentFrame.timestamp"},
         {"producer", "camera_firmware_via_emergent_esdk"},
         {"orange_transformation", "none"},
-        {"classification", inferred_tai ? "ieee1588_tai" : "device_defined"},
-        {"origin", inferred_tai
-            ? nlohmann::json("1970-01-01T00:00:00 TAI") : nlohmann::json(nullptr)},
-        {"timescale", inferred_tai ? "TAI" : "device_defined"},
-        {"semantic_authority", inferred_tai
-            ? "inferred_from_recording_evidence" : "epoch_unspecified"},
+        {"classification", classification},
+        {"origin", classified_tai
+            ? nlohmann::json("1970-01-01T00:00:00 TAI")
+            : (ptp_timescale_untraceable
+                ? nlohmann::json("1970-01-01T00:00:00 PTP epoch")
+                : nlohmann::json(nullptr))},
+        {"timescale", classified_tai
+            ? "TAI" : (ptp_timescale_untraceable ? "PTP" : "device_defined")},
+        {"semantic_authority", semantic_authority},
         {"semantic_authority_by_property", {
             {"unit", "orange_deployment_contract"},
             {"source_field", "orange_producer_declared"},
-            {"clock_domain", inferred_tai
-                ? "inferred_from_recording_evidence" : "device_declared"},
-            {"origin", inferred_tai
-                ? "inferred_from_recording_evidence" : "unspecified"},
-            {"timescale", inferred_tai
-                ? "inferred_from_recording_evidence" : "unspecified"}
+            {"clock_domain", classified_ptp
+                ? semantic_authority : "device_declared"},
+            {"origin", classified_ptp ? semantic_authority : "unspecified"},
+            {"timescale", classified_ptp ? semantic_authority : "unspecified"}
         }},
         {"inference", {
-            {"rule_id", "orange_camera_clock_classification_v1"},
-            {"result", inferred_tai ? "pass" : "insufficient_evidence"},
-            {"expected_tai_minus_utc_seconds", kTaiMinusUtcSecondsForClockRuleV1},
+            {"rule_id", "orange_camera_clock_classification_v2"},
+            {"result", direct_tai
+                ? "direct_ptp_time_properties_pass"
+                : (inferred_tai
+                    ? "fallback_inference_pass"
+                    : (ptp_timescale_untraceable
+                        ? "ptp_timescale_present_utc_offset_invalid"
+                        : "insufficient_evidence"))},
+            {"expected_tai_minus_utc_seconds", expected_offset_seconds},
             {"checks", {
                 {"session_ptp_enabled", session_ptp_enabled},
                 {"camera_ptp_enabled", camera_ptp_enabled},
@@ -1354,7 +1443,10 @@ nlohmann::json build_camera_clock_descriptor(
                 {"ptp_offset_bounded", ptp_offset_bounded},
                 {"latch_agreement", latch_agreement},
                 {"camera_minus_realtime_matches", camera_realtime_offset_matches},
-                {"ptp_readbacks_stable", ptp_readbacks_stable}
+                {"ptp_readbacks_stable", ptp_readbacks_stable},
+                {"host_management_evidence_available", host_management_available},
+                {"host_ptp_timescale", host_ptp_timescale},
+                {"host_current_utc_offset_valid", host_utc_offset_valid}
             }},
             {"thresholds_ns", {
                 {"camera_minus_realtime_tolerance", kCameraRealtimeOffsetToleranceNs},
@@ -1372,11 +1464,474 @@ nlohmann::json build_camera_clock_descriptor(
             {"recording_camera_minus_realtime_ns", camera_minus_realtime},
             {"ptp_mode_readback", ptp_mode_readback},
             {"ptp_status_readback", ptp_status_readback},
+            {"host_ptp_management_evidence", host_ptp_evidence_snapshot},
             {"ptp_readback_observations", camera_evidence.value(
                 "ptp_readback_observations", nlohmann::json::array())}
         }}
     };
     return descriptor;
+}
+
+std::filesystem::path resolve_manifest_artifact_path(
+    const std::filesystem::path& manifest_path,
+    const std::string& value)
+{
+    if (value.empty()) {
+        return {};
+    }
+    const std::filesystem::path path(value);
+    return path.is_absolute() ? path : manifest_path.parent_path() / path;
+}
+
+bool add_finalized_frame_identity_contract(
+    nlohmann::json* manifest,
+    const std::filesystem::path& manifest_path,
+    std::string* error_out)
+{
+    if (!manifest || !manifest->is_object()) {
+        return true;
+    }
+    const auto existing = manifest->find("frame_identity_contract");
+    if (existing != manifest->end() && existing->is_object() &&
+        existing->value("schema_id", std::string()) ==
+            "orange.recording.frame_identity" &&
+        existing->value("schema_version", 0) == 1 &&
+        existing->value("status", std::string()) == "finalized") {
+        return true;
+    }
+
+    const bool recording_finalized =
+        manifest->value("status", std::string()) == "completed";
+    const nlohmann::json backend = manifest->value(
+        "recording_backend", nlohmann::json::object());
+    const bool external_ipc =
+        backend.is_object() && backend.value("mode", std::string()) == "external_ipc";
+
+    bool proof_required = false;
+    const std::filesystem::path external_contract_path =
+        manifest_path.parent_path() / "external_recorder_contract.json";
+    std::string external_contract_bytes;
+    std::string external_contract_error;
+    if (orange::gui::spatial_layout::checksum::read_file(
+            external_contract_path,
+            &external_contract_bytes,
+            &external_contract_error)) {
+        const nlohmann::json external_contract = nlohmann::json::parse(
+            external_contract_bytes, nullptr, false);
+        if (external_contract.is_object()) {
+            proof_required = external_contract.value(
+                "require_frame_identity_proof", false);
+        }
+    }
+
+    nlohmann::json contract = {
+        {"schema_id", "orange.recording.frame_identity"},
+        {"schema_version", 1},
+        {"status", recording_finalized ? "finalized" : "pending"},
+        {"canonical_field", "recording_frame_id"},
+        {"scope", "recording_session_and_camera_stream"},
+        {"assignment_event", "orange_acquisition_recording_frame_sequence"},
+        {"legacy_aliases", {{"frame_id", "recording_frame_id"}}},
+        {"timestamp_fields", {"timestamp", "timestamp_sys"}},
+        {"continuity_policy", "encoded_subset"},
+        {"recording_frame_id_gaps_allowed", true},
+        {"camera_streams", nlohmann::json::object()},
+        {"verification", {
+            {"required", proof_required},
+            {"result", recording_finalized ? "not_evaluated" : "pending"},
+        }},
+    };
+
+    const nlohmann::json summary_paths =
+        backend.is_object()
+            ? backend.value("summary_json", nlohmann::json::object())
+            : nlohmann::json::object();
+    const nlohmann::json cameras = manifest->value(
+        "cameras", nlohmann::json::array());
+    bool all_verified = true;
+    bool any_proof = false;
+    if (cameras.is_array()) {
+        for (const nlohmann::json& camera_value : cameras) {
+            if (!camera_value.is_string()) {
+                continue;
+            }
+            const std::string serial = camera_value.get<std::string>();
+            nlohmann::json stream = {
+                {"camera_serial", serial},
+                {"backend", external_ipc ? "external_ipc" : "in_process"},
+                {"verification_status", external_ipc
+                    ? "summary_unavailable" : "producer_declared"},
+            };
+            if (external_ipc && summary_paths.is_object() &&
+                summary_paths.contains(serial) && summary_paths[serial].is_string()) {
+                const std::filesystem::path summary_path =
+                    resolve_manifest_artifact_path(
+                        manifest_path, summary_paths[serial].get<std::string>());
+                std::string summary_bytes;
+                std::string summary_error;
+                if (orange::gui::spatial_layout::checksum::read_file(
+                        summary_path, &summary_bytes, &summary_error)) {
+                    const nlohmann::json summary = nlohmann::json::parse(
+                        summary_bytes, nullptr, false);
+                    const nlohmann::json proof = summary.is_object()
+                        ? summary.value(
+                            "frame_identity_proof", nlohmann::json::object())
+                        : nlohmann::json::object();
+                    const nlohmann::json binding = proof.is_object()
+                        ? proof.value("video_binding", nlohmann::json::object())
+                        : nlohmann::json::object();
+                    const uint64_t frames_encoded = summary.is_object()
+                        ? summary.value("frames_encoded", 0ULL) : 0ULL;
+                    const bool proof_present =
+                        proof.is_object() && !proof.empty();
+                    const bool proof_valid =
+                        proof_present &&
+                        proof.value("schema_id", std::string()) ==
+                            "orange.external_recorder.frame_identity_proof" &&
+                        proof.value("schema_version", 0) == 1 &&
+                        proof.value("status", std::string()) == "passed" &&
+                        proof.value("canonical_field", std::string()) ==
+                            "recording_frame_id" &&
+                        binding.is_object() &&
+                        binding.value("verified", false) &&
+                        binding.value("encoded_video_frames", 0ULL) == frames_encoded &&
+                        binding.value("submitted_frame_identities", 0ULL) == frames_encoded &&
+                        binding.value("returned_identity_matches", 0ULL) == frames_encoded &&
+                        binding.value("identity_mismatches", 1ULL) == 0 &&
+                        binding.value("outstanding_submitted_identities", 1ULL) == 0 &&
+                        binding.value("metadata_rows", 0ULL) == frames_encoded &&
+                        binding.value("packets_written", 0ULL) == frames_encoded;
+                    any_proof = any_proof || proof_present;
+                    all_verified = all_verified && proof_valid;
+                    stream["summary"] = {
+                        {"path", summary_path.string()},
+                        {"sha256", "sha256:" +
+                            orange::gui::spatial_layout::checksum::sha256_hex(
+                                summary_bytes)},
+                    };
+                    stream["verification_status"] = proof_valid
+                        ? "passed"
+                        : (proof_present ? "invalid" : "legacy_unproven");
+                    if (proof_present) {
+                        stream["proof"] = proof;
+                    }
+                } else {
+                    all_verified = false;
+                    stream["summary"] = {
+                        {"path", summary_path.string()},
+                        {"available", false},
+                    };
+                }
+            } else if (external_ipc) {
+                all_verified = false;
+            }
+            contract["camera_streams"][serial] = std::move(stream);
+        }
+    }
+
+    if (external_ipc && recording_finalized) {
+        const bool accepted = all_verified && any_proof;
+        contract["verification"]["result"] = accepted
+            ? "passed"
+            : (any_proof ? "failed" : "legacy_unproven");
+        if (!accepted && (proof_required || any_proof)) {
+            if (error_out) {
+                *error_out =
+                    "finalized external recording lacks a complete returned-NVENC "
+                    "frame identity proof";
+            }
+            return false;
+        }
+    } else if (recording_finalized) {
+        contract["verification"]["result"] = "producer_declared";
+    }
+
+    (*manifest)["frame_identity_contract"] = std::move(contract);
+    return true;
+}
+
+// This is deliberately a sibling of (rather than an amendment to)
+// orange.recording.frame_identity v1.  The latter is already an emitted
+// artifact contract.  The mapping below is the narrower, dense-recording
+// authority Citrus needs to turn a current recording_frame_id into a
+// zero-based source_acquisition_frame_index.
+std::string canonical_json_sha256(const nlohmann::json& value)
+{
+    // nlohmann::json objects use ordered keys.  This is therefore compact,
+    // sorted-key UTF-8 JSON with no trailing newline.  Do not hash pretty
+    // printed manifest bytes here: this is a semantic-record digest.
+    return "sha256:" + orange::gui::spatial_layout::checksum::sha256_hex(
+        value.dump(-1, ' ', false, nlohmann::json::error_handler_t::strict));
+}
+
+bool recording_relative_artifact_path(
+    const std::filesystem::path& manifest_path,
+    const std::string& artifact_value,
+    std::filesystem::path* resolved_out,
+    std::string* relative_out)
+{
+    if (artifact_value.empty()) {
+        return false;
+    }
+    std::error_code ec;
+    const std::filesystem::path manifest_folder = std::filesystem::weakly_canonical(
+        manifest_path.parent_path(), ec);
+    if (ec) {
+        return false;
+    }
+    const std::filesystem::path artifact = resolve_manifest_artifact_path(
+        manifest_path, artifact_value);
+    const std::filesystem::path resolved = std::filesystem::weakly_canonical(
+        artifact, ec);
+    if (ec) {
+        return false;
+    }
+    const std::filesystem::path relative = resolved.lexically_relative(manifest_folder);
+    if (relative.empty() || relative.is_absolute()) {
+        return false;
+    }
+    for (const std::filesystem::path& component : relative) {
+        if (component == "..") {
+            return false;
+        }
+    }
+    if (resolved_out) {
+        *resolved_out = resolved;
+    }
+    if (relative_out) {
+        *relative_out = relative.generic_string();
+    }
+    return true;
+}
+
+nlohmann::json acquisition_mapping_coverage_json(const MetadataFrameStats& stats)
+{
+    return {
+        {"first_recording_frame_id", stats.first_recording_frame_id},
+        {"last_recording_frame_id", stats.last_recording_frame_id},
+        {"total_acquisitions", stats.frame_count},
+        {"metadata_row_count", stats.metadata_row_count},
+        {"gap_count", stats.recording_frame_id_gaps},
+        {"gap_policy", stats.recording_frame_id_gaps == 0 ? "none" : "unsealed"},
+    };
+}
+
+bool has_duplicate_camera_serials(const nlohmann::json& cameras)
+{
+    if (!cameras.is_array()) {
+        return false;
+    }
+    std::set<std::string> seen;
+    for (const nlohmann::json& camera_value : cameras) {
+        if (!camera_value.is_string()) {
+            continue;
+        }
+        const std::string serial = camera_value.get<std::string>();
+        if (!serial.empty() && !seen.insert(serial).second) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool add_acquisition_index_mapping_contract(
+    nlohmann::json* manifest,
+    const std::filesystem::path& manifest_path,
+    std::string* error_out)
+{
+    if (!manifest || !manifest->is_object()) {
+        return true;
+    }
+    const auto existing = manifest->find("acquisition_index_mapping");
+    if (existing != manifest->end() && existing->is_object() &&
+        existing->value("schema_id", std::string()) ==
+            "orange.recording.acquisition_index_mapping" &&
+        existing->value("schema_version", 0) == 1 &&
+        existing->value("status", std::string()) == "finalized") {
+        const auto digest = manifest->find("acquisition_index_mapping_sha256");
+        if (digest != manifest->end() && digest->is_string() &&
+            digest->get<std::string>() == canonical_json_sha256(*existing)) {
+            // The source artifact could have changed after finalization.
+            // Preserve a verified sealed historical record exactly.
+            return true;
+        }
+        if (error_out) {
+            *error_out =
+                "finalized acquisition index mapping is missing or has an invalid "
+                "semantic-record digest";
+        }
+        return false;
+    }
+
+    const nlohmann::json frame_identity = manifest->value(
+        "frame_identity_contract", nlohmann::json::object());
+    const std::string recording_id = manifest->value("session_id", std::string());
+    const nlohmann::json cameras = manifest->value("cameras", nlohmann::json::array());
+    const nlohmann::json camera_artifacts = manifest->value(
+        "camera_artifacts", nlohmann::json::object());
+    const bool finalized_frame_identity =
+        frame_identity.is_object() &&
+        frame_identity.value("schema_id", std::string()) ==
+            "orange.recording.frame_identity" &&
+        frame_identity.value("schema_version", 0) == 1 &&
+        frame_identity.value("status", std::string()) == "finalized";
+
+    nlohmann::json mapping = {
+        {"schema_id", "orange.recording.acquisition_index_mapping"},
+        {"schema_version", 1},
+        {"status", "unsealed"},
+        {"recording_id", recording_id},
+        {"canonicalization", "canonical_json_utf8_sort_keys_compact_v1"},
+        {"camera_streams", nlohmann::json::object()},
+    };
+    if (finalized_frame_identity) {
+        mapping["frame_identity_contract_ref"] = "#/frame_identity_contract";
+        mapping["frame_identity_contract_sha256"] = canonical_json_sha256(frame_identity);
+    }
+
+    std::string root_reason;
+    if (manifest->value("status", std::string()) != "completed") {
+        root_reason = "recording_not_completed";
+    } else if (recording_id.empty()) {
+        root_reason = "missing_recording_id";
+    } else if (!finalized_frame_identity) {
+        root_reason = "frame_identity_contract_unavailable";
+    } else if (!cameras.is_array() || cameras.empty() || !camera_artifacts.is_object()) {
+        root_reason = "missing_camera_streams";
+    } else if (has_duplicate_camera_serials(cameras)) {
+        root_reason = "duplicate_camera_serial";
+    }
+
+    bool all_streams_sealed = root_reason.empty();
+    if (cameras.is_array()) {
+        for (const nlohmann::json& camera_value : cameras) {
+            if (!camera_value.is_string() || camera_value.get<std::string>().empty()) {
+                all_streams_sealed = false;
+                if (root_reason.empty()) {
+                    root_reason = "invalid_camera_serial";
+                }
+                continue;
+            }
+            const std::string serial = camera_value.get<std::string>();
+            const nlohmann::json artifact =
+                camera_artifacts.value(serial, nlohmann::json::object());
+            const std::string metadata_value = artifact.is_object()
+                ? artifact.value("metadata", std::string())
+                : std::string();
+            std::filesystem::path metadata_path;
+            std::string relative_metadata_path;
+            std::string metadata_bytes;
+            std::string metadata_error;
+            bool metadata_readable = false;
+            std::string stream_reason = root_reason;
+            if (stream_reason.empty() && finalized_frame_identity) {
+                const nlohmann::json frame_streams = frame_identity.value(
+                    "camera_streams", nlohmann::json::object());
+                if (!frame_streams.is_object()) {
+                    stream_reason = "frame_identity_camera_binding_mismatch";
+                } else {
+                    const auto identity_stream = frame_streams.find(serial);
+                    if (identity_stream == frame_streams.end() ||
+                        !identity_stream->is_object() ||
+                        identity_stream->value("camera_serial", std::string()) != serial) {
+                        stream_reason = "frame_identity_camera_binding_mismatch";
+                    }
+                }
+            }
+            if (!recording_relative_artifact_path(
+                    manifest_path, metadata_value, &metadata_path, &relative_metadata_path)) {
+                if (stream_reason.empty()) {
+                    stream_reason = metadata_value.empty()
+                        ? "missing_metadata_artifact"
+                        : "metadata_artifact_outside_recording_bundle";
+                }
+            } else if (!orange::gui::spatial_layout::checksum::read_file(
+                           metadata_path, &metadata_bytes, &metadata_error)) {
+                if (stream_reason.empty()) {
+                    stream_reason = "metadata_artifact_unreadable";
+                }
+            } else {
+                metadata_readable = true;
+            }
+
+            MetadataFrameStats stats;
+            if (metadata_readable) {
+                // Parse the exact bytes that are checksum-bound below.  Do not
+                // reopen the path after hashing: the mapping's range evidence
+                // and its artifact digest must describe one captured payload.
+                stats = read_metadata_frame_stats_from_bytes(metadata_bytes);
+                if (stream_reason.empty() &&
+                    (stats.frame_count == 0 ||
+                    stats.malformed_metadata_row_count != 0 ||
+                    stats.first_recording_frame_id != 1 ||
+                    stats.recording_frame_id_gaps != 0 ||
+                    stats.metadata_row_count != stats.frame_count ||
+                    stats.last_recording_frame_id != stats.frame_count ||
+                    stats.last_recording_frame_id >
+                        static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))) {
+                    stream_reason = "noncontiguous_recording_frame_ids";
+                }
+            }
+
+            nlohmann::json stream = {
+                {"camera_serial", serial},
+                {"coverage", acquisition_mapping_coverage_json(stats)},
+            };
+            if (metadata_readable) {
+                nlohmann::json source_artifact = {
+                    {"relative_path", relative_metadata_path},
+                    {"media_type", "text/csv"},
+                    {"sha256", "sha256:" +
+                        orange::gui::spatial_layout::checksum::sha256_hex(metadata_bytes)},
+                };
+                stream["source_metadata_artifact"] = std::move(source_artifact);
+            }
+            if (stream_reason.empty()) {
+                stream["producer_identity"] = {
+                    {"field", "recording_frame_id"},
+                    {"dtype", "uint64"},
+                    {"index_base", 1},
+                    {"scope", "recording_session_and_camera_stream"},
+                    {"assignment_event", "orange_acquisition_recording_frame_sequence"},
+                };
+                stream["destination_identity"] = {
+                    {"field", "source_acquisition_frame_index"},
+                    {"dtype", "int64"},
+                    {"index_base", 0},
+                };
+                stream["conversion"] = {
+                    {"method", "subtract_constant_v1"},
+                    {"expression",
+                     "source_acquisition_frame_index = recording_frame_id - 1"},
+                    {"constant", 1},
+                };
+            } else {
+                stream["status"] = "unsealed";
+                stream["reason_code"] = stream_reason;
+                all_streams_sealed = false;
+                if (root_reason.empty()) {
+                    root_reason = "camera_stream_not_sealable_v1";
+                }
+            }
+            mapping["camera_streams"][serial] = std::move(stream);
+        }
+    }
+
+    if (all_streams_sealed && !mapping["camera_streams"].empty()) {
+        mapping["status"] = "finalized";
+        (*manifest)["acquisition_index_mapping"] = mapping;
+        (*manifest)["acquisition_index_mapping_sha256"] = canonical_json_sha256(mapping);
+    } else {
+        mapping["reason_code"] = root_reason.empty()
+            ? "camera_stream_not_sealable_v1"
+            : root_reason;
+        (*manifest)["acquisition_index_mapping"] = std::move(mapping);
+        // Deliberately remove any old seal if a caller supplied an unsealed
+        // replacement record.  v1 must never leave a dense-mapping digest next
+        // to evidence that no longer satisfies the dense-sequence predicate.
+        manifest->erase("acquisition_index_mapping_sha256");
+    }
+    return true;
 }
 
 void add_finalized_timestamp_clock_contract(
@@ -1460,6 +2015,10 @@ void add_finalized_timestamp_clock_contract(
     const nlohmann::json summary_cameras = summary_valid
         ? ptp_summary.value("cameras", nlohmann::json::object())
         : nlohmann::json::object();
+    const nlohmann::json host_ptp_evidence = summary_valid
+        ? ptp_summary.value(
+            "host_ptp_management_evidence", nlohmann::json::object())
+        : nlohmann::json::object();
     const nlohmann::json cameras = manifest->value("cameras", nlohmann::json::array());
     if (cameras.is_array()) {
         for (const nlohmann::json& camera_value : cameras) {
@@ -1475,7 +2034,7 @@ void add_finalized_timestamp_clock_contract(
                 summary_cameras[serial].is_object()
                     ? summary_cameras[serial] : nlohmann::json::object();
             nlohmann::json descriptor = build_camera_clock_descriptor(
-                serial, session_sync, camera_evidence);
+                serial, session_sync, camera_evidence, host_ptp_evidence);
             const std::string clock_id = descriptor.value(
                 "clock_id", "camera_" + serial);
             contract["clocks"][clock_id] = descriptor;
@@ -1944,6 +2503,14 @@ bool write_recording_session_manifest(const std::string& path,
     }
     const std::filesystem::path manifest_path(path);
     nlohmann::json finalized_manifest = manifest;
+    if (!add_finalized_frame_identity_contract(
+            &finalized_manifest, manifest_path, error_out)) {
+        return false;
+    }
+    if (!add_acquisition_index_mapping_contract(
+            &finalized_manifest, manifest_path, error_out)) {
+        return false;
+    }
     add_finalized_timestamp_clock_contract(&finalized_manifest, manifest_path);
     return write_json_file(manifest_path, finalized_manifest, error_out);
 }

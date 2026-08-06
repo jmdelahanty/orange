@@ -90,6 +90,11 @@ struct CameraRecordingEncodeConfig {
     int gop_length = 0;
     int aq = -1;
     int temporal_aq = -1;
+    // Optional explicit rate-control values. A negative value preserves the
+    // encoder's existing automatic/default bitrate behavior.
+    int target_bitrate_bps = -1;
+    int max_bitrate_bps = -1;
+    int vbv_buffer_size = -1;
     bool nvenc_direct_input = false;
 };
 

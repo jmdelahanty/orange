@@ -44,6 +44,7 @@
 #include "external_recorder_contract_utils.h"
 #include "external_recorder_lifecycle.h"
 #include "external_recorder_supervisor.h"
+#include "headless_recording_profile.h"
 #include "fsuid_guard.h"
 #include "yolov8_det.h"
 #include "yolo_worker.h"
@@ -169,6 +170,7 @@ struct HeadlessExternalRecorderContractConfig {
     bool require_status_runtime = false;
     bool require_storage_preflight = true;
     bool require_protocol_hello = true;
+    bool require_frame_identity_proof = true;
     bool preserve_shard_mp4s = false;
     nlohmann::json streams = nlohmann::json::object();
 
@@ -181,6 +183,7 @@ struct HeadlessCliOptions {
     HeadlessMode mode = HeadlessMode::Remote;
     bool show_help = false;
     bool list_cameras = false;
+    bool validate_experiment_spec_only = false;
     bool stream_only = false;
     bool nvenc_direct_input = false;
     std::string config_folder;
@@ -244,6 +247,8 @@ struct ExperimentSpec {
     HeadlessPoseWorkerConfig pose_worker;
     HeadlessRecordingControlConfig recording_control;
     HeadlessExternalRecorderContractConfig external_recorder_contract;
+    bool has_recording_profile = false;
+    orange::headless::RecordingProfile recording_profile;
     bool has_recording_override = false;
     nlohmann::json recording_override = nlohmann::json::object();
     std::unordered_map<std::string, nlohmann::json> recording_overrides_by_camera;
@@ -870,6 +875,7 @@ nlohmann::json build_headless_external_recorder_contract_config_json(
         {"require_status_runtime", config.require_status_runtime},
         {"require_storage_preflight", config.require_storage_preflight},
         {"require_protocol_hello", config.require_protocol_hello},
+        {"require_frame_identity_proof", config.require_frame_identity_proof},
         {"preserve_shard_mp4s", config.preserve_shard_mp4s},
         {"streams", config.streams.is_object() ? config.streams : nlohmann::json::object()}
     };
@@ -2148,6 +2154,7 @@ void print_headless_usage(const char* argv0)
         << "  --yolo-decimate <int>       Optional. Process 1/N frames when real YOLO is enabled.\n"
         << "  --yolo-publish-live-ipc     Optional. Let real YOLO publish detections to frame IPC.\n"
         << "  --experiment-spec <path>     Run a local single-host experiment matrix.\n"
+        << "  --validate-experiment-spec   Parse and resolve the experiment spec without opening cameras.\n"
         << "  --list-cameras               List local cameras and exit.\n"
         << "  --help\n";
 }
@@ -2997,6 +3004,10 @@ bool parse_headless_external_recorder_contract_json(
             contract_node.value(
                 "require_protocol_hello",
                 config.require_protocol_hello);
+        config.require_frame_identity_proof =
+            contract_node.value(
+                "require_frame_identity_proof",
+                config.require_frame_identity_proof);
         config.preserve_shard_mp4s =
             contract_node.value("preserve_shard_mp4s", config.preserve_shard_mp4s);
         if (contract_node.contains("require_status_runtime")) {
@@ -3514,6 +3525,10 @@ bool parse_headless_cli_options(int argc, char* argv[], HeadlessCliOptions* opti
             if (options->experiment_spec_path.empty() && error_out && !error_out->empty()) {
                 return false;
             }
+            continue;
+        }
+        if (arg == "--validate-experiment-spec") {
+            options->validate_experiment_spec_only = true;
             continue;
         }
 
@@ -5157,6 +5172,7 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
     if (options.mode == HeadlessMode::Remote) {
         if (!options.record_folder.empty() || !options.config_folder.empty() ||
             options.list_cameras || options.stream_only || !options.experiment_spec_path.empty() ||
+            options.validate_experiment_spec_only ||
             options.duration_seconds > 0 || options.stream_start_delay_seconds > 0 ||
             options.record_start_delay_seconds > 0 ||
             options.nvenc_direct_input ||
@@ -5210,6 +5226,13 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
             return false;
         }
         return true;
+    }
+
+    if (options.validate_experiment_spec_only) {
+        if (error_out) {
+            *error_out = "--validate-experiment-spec requires --experiment-spec <path>";
+        }
+        return false;
     }
 
     if (!validate_pre_encoder_reference_capture_config(
@@ -6275,6 +6298,19 @@ bool write_supervised_external_recorder_recording_session_manifest(
         if (error_out) {
             *error_out = "external recorder rolling manifest bridge requires stream contracts";
         }
+        return false;
+    }
+    const std::filesystem::path materialized_contract_path =
+        std::filesystem::path(run.recording_folder) /
+        "external_recorder_contract.json";
+    const nlohmann::json materialized_contract =
+        build_headless_external_recorder_contract_config_json(
+            config,
+            &run.options.recording_control);
+    if (!write_json_file(
+            materialized_contract_path,
+            materialized_contract,
+            error_out)) {
         return false;
     }
     if (run.options.recording_control.clip_seconds <= 0) {
@@ -7393,6 +7429,149 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
     return stats;
 }
 
+template <typename T>
+bool apply_recording_profile_matrix_value(std::vector<T>* values,
+                                          const T& profile_value,
+                                          const char* field,
+                                          std::string* error_out)
+{
+    if (!values) {
+        if (error_out) {
+            *error_out = "Internal error: null matrix destination for " +
+                         std::string(field);
+        }
+        return false;
+    }
+    if (values->empty()) {
+        values->push_back(profile_value);
+        return true;
+    }
+    if (values->size() != 1 || values->front() != profile_value) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec matrix." + std::string(field) +
+                " conflicts with fixed.recording_profile; when a recording profile is "
+                "present the matrix field must be omitted or contain exactly the same value";
+        }
+        return false;
+    }
+    return true;
+}
+
+std::string lowercase_ascii_copy(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+}
+
+bool validate_external_stream_recording_profile(
+    const HeadlessExternalRecorderContractConfig& contract,
+    const orange::headless::RecordingProfile& profile,
+    std::string* error_out)
+{
+    if (!contract.enabled() || !contract.streams.is_object()) {
+        return true;
+    }
+
+    auto fail_conflict = [&](const std::string& stream_name,
+                             const std::string& field) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.external_recorder_contract.streams." +
+                stream_name + "." + field +
+                " conflicts with fixed.recording_profile";
+        }
+        return false;
+    };
+
+    for (auto it = contract.streams.begin(); it != contract.streams.end(); ++it) {
+        const nlohmann::json& stream = it.value();
+        if (!stream.is_object() ||
+            lowercase_ascii_copy(stream.value("stream_kind", std::string("full_frame"))) ==
+                "crop") {
+            continue;
+        }
+
+        auto check_string = [&](const char* field, const std::string& expected) {
+            if (!stream.contains(field)) {
+                return true;
+            }
+            return stream[field].is_string() &&
+                   lowercase_ascii_copy(stream[field].get<std::string>()) == expected
+                       ? true
+                       : fail_conflict(it.key(), field);
+        };
+        auto check_int = [&](const char* field, int expected) {
+            if (!stream.contains(field)) {
+                return true;
+            }
+            return (stream[field].is_number_integer() ||
+                    stream[field].is_number_unsigned()) &&
+                   stream[field].get<int>() == expected
+                       ? true
+                       : fail_conflict(it.key(), field);
+        };
+        auto check_toggle = [&](const char* field, int expected) {
+            if (!stream.contains(field)) {
+                return true;
+            }
+            int parsed = -2;
+            const nlohmann::json& value = stream[field];
+            bool parsed_ok = false;
+            if (value.is_boolean()) {
+                parsed = value.get<bool>() ? 1 : 0;
+                parsed_ok = true;
+            } else if (value.is_number_integer()) {
+                parsed = value.get<int>();
+                parsed_ok = parsed >= -1 && parsed <= 1;
+            } else if (value.is_string()) {
+                parsed_ok = parse_headless_toggle_override(value.get<std::string>(), &parsed);
+            }
+            return parsed_ok && parsed == expected
+                       ? true
+                       : fail_conflict(it.key(), field);
+        };
+
+        if (!check_string("codec", profile.codec) ||
+            !check_string("preset", profile.preset) ||
+            !check_string("tuning", profile.tuning) ||
+            !check_string("rate_control_mode", profile.rate_control_mode) ||
+            !check_int("quality_value", profile.quality_value) ||
+            !check_int("gop", profile.gop_length) ||
+            !check_int("bitrate_bps", profile.control.target_bitrate_bps) ||
+            !check_int("max_bitrate_bps", profile.control.max_bitrate_bps) ||
+            !check_int("vbv_buffer_size", profile.control.vbv_buffer_size) ||
+            !check_toggle("aq", profile.control.aq) ||
+            !check_toggle("temporal_aq", profile.control.temporal_aq) ||
+            !check_toggle("lookahead", profile.control.lookahead) ||
+            !check_int("lookahead_depth", profile.control.lookahead_depth)) {
+            return false;
+        }
+
+        if (stream.contains("importance_map")) {
+            const nlohmann::json& importance_map = stream["importance_map"];
+            if (!importance_map.is_object()) {
+                return fail_conflict(it.key(), "importance_map");
+            }
+            if (importance_map.contains("mode") &&
+                (!importance_map["mode"].is_string() ||
+                 lowercase_ascii_copy(importance_map["mode"].get<std::string>()) !=
+                     profile.importance_map.mode)) {
+                return fail_conflict(it.key(), "importance_map.mode");
+            }
+            if (importance_map.contains("roi_size_px") &&
+                (!importance_map["roi_size_px"].is_number_integer() ||
+                 importance_map["roi_size_px"].get<int>() !=
+                     profile.importance_map.roi_size_px)) {
+                return fail_conflict(it.key(), "importance_map.roi_size_px");
+            }
+        }
+    }
+    return true;
+}
+
 bool load_experiment_spec(const HeadlessCliOptions& cli_options,
                           ExperimentSpec* spec,
                           std::string* error_out)
@@ -7461,6 +7640,16 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->warmup_s = fixed.value("warmup_s", 0);
     spec->stream_start_delay_s = fixed.value("stream_start_delay_s", 0);
     spec->nvenc_direct_input = fixed.value("nvenc_direct_input", false);
+    if (fixed.contains("recording_profile")) {
+        if (!orange::headless::ParseRecordingProfile(
+                fixed["recording_profile"],
+                &spec->recording_profile,
+                error_out,
+                "Experiment spec fixed.recording_profile")) {
+            return false;
+        }
+        spec->has_recording_profile = true;
+    }
     if (fixed.contains("pre_encoder_reference_capture")) {
         if (!parse_pre_encoder_reference_capture_json(
                 fixed["pre_encoder_reference_capture"],
@@ -7761,22 +7950,131 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->importance_map_modes = parse_string_list_field(matrix, "importance_map_mode");
     spec->importance_map_roi_size_px_values = parse_int_list_field(matrix, "importance_map_roi_size_px");
 
-    if (spec->codecs.empty()) spec->codecs.push_back("h264");
-    if (spec->presets.empty()) spec->presets.push_back("p1");
-    if (spec->tunings.empty()) spec->tunings.push_back("ll");
-    if (spec->rate_control_modes.empty()) spec->rate_control_modes.push_back("vbr");
-    if (spec->quality_values.empty()) spec->quality_values.push_back(20);
-    if (spec->gop_lengths.empty()) spec->gop_lengths.push_back(0);
-    if (spec->aq_values.empty()) spec->aq_values.push_back(-1);
-    if (spec->temporal_aq_values.empty()) spec->temporal_aq_values.push_back(-1);
-    if (spec->lookahead_values.empty()) spec->lookahead_values.push_back(-1);
-    if (spec->lookahead_depth_values.empty()) spec->lookahead_depth_values.push_back(-1);
-    if (spec->target_bitrate_bps_values.empty()) spec->target_bitrate_bps_values.push_back(-1);
-    if (spec->max_bitrate_bps_values.empty()) spec->max_bitrate_bps_values.push_back(-1);
-    if (spec->vbv_buffer_size_values.empty()) spec->vbv_buffer_size_values.push_back(-1);
-    if (spec->importance_map_modes.empty()) spec->importance_map_modes.push_back("off");
-    if (spec->importance_map_roi_size_px_values.empty()) {
-        spec->importance_map_roi_size_px_values.push_back(ImportanceMapConfig::kDefaultRoiSizePx);
+    auto reject_malformed_declared_matrix_field =
+        [&](const char* field, bool parsed_empty) {
+            if (matrix.contains(field) && parsed_empty) {
+                if (error_out) {
+                    *error_out = "Experiment spec matrix." + std::string(field) +
+                                 " is present but has no valid values";
+                }
+                return false;
+            }
+            return true;
+        };
+    if (!reject_malformed_declared_matrix_field("codec", spec->codecs.empty()) ||
+        !reject_malformed_declared_matrix_field("preset", spec->presets.empty()) ||
+        !reject_malformed_declared_matrix_field("tuning", spec->tunings.empty()) ||
+        !reject_malformed_declared_matrix_field(
+            "rate_control_mode", spec->rate_control_modes.empty()) ||
+        !reject_malformed_declared_matrix_field(
+            "quality_value", spec->quality_values.empty()) ||
+        !reject_malformed_declared_matrix_field("gop_length", spec->gop_lengths.empty()) ||
+        !reject_malformed_declared_matrix_field("aq", spec->aq_values.empty()) ||
+        !reject_malformed_declared_matrix_field(
+            "temporal_aq", spec->temporal_aq_values.empty()) ||
+        !reject_malformed_declared_matrix_field(
+            "lookahead", spec->lookahead_values.empty()) ||
+        !reject_malformed_declared_matrix_field(
+            "lookahead_depth", spec->lookahead_depth_values.empty()) ||
+        !reject_malformed_declared_matrix_field(
+            "target_bitrate_bps", spec->target_bitrate_bps_values.empty()) ||
+        !reject_malformed_declared_matrix_field(
+            "max_bitrate_bps", spec->max_bitrate_bps_values.empty()) ||
+        !reject_malformed_declared_matrix_field(
+            "vbv_buffer_size", spec->vbv_buffer_size_values.empty()) ||
+        !reject_malformed_declared_matrix_field(
+            "importance_map_mode", spec->importance_map_modes.empty()) ||
+        !reject_malformed_declared_matrix_field(
+            "importance_map_roi_size_px",
+            spec->importance_map_roi_size_px_values.empty())) {
+        return false;
+    }
+
+    if (spec->has_recording_profile) {
+        const orange::headless::RecordingProfile& profile = spec->recording_profile;
+        if (!apply_recording_profile_matrix_value(
+                &spec->codecs, profile.codec, "codec", error_out) ||
+            !apply_recording_profile_matrix_value(
+                &spec->presets, profile.preset, "preset", error_out) ||
+            !apply_recording_profile_matrix_value(
+                &spec->tunings, profile.tuning, "tuning", error_out) ||
+            !apply_recording_profile_matrix_value(
+                &spec->rate_control_modes,
+                profile.rate_control_mode,
+                "rate_control_mode",
+                error_out) ||
+            !apply_recording_profile_matrix_value(
+                &spec->quality_values,
+                profile.quality_value,
+                "quality_value",
+                error_out) ||
+            !apply_recording_profile_matrix_value(
+                &spec->gop_lengths, profile.gop_length, "gop_length", error_out) ||
+            !apply_recording_profile_matrix_value(
+                &spec->aq_values, profile.control.aq, "aq", error_out) ||
+            !apply_recording_profile_matrix_value(
+                &spec->temporal_aq_values,
+                profile.control.temporal_aq,
+                "temporal_aq",
+                error_out) ||
+            !apply_recording_profile_matrix_value(
+                &spec->lookahead_values,
+                profile.control.lookahead,
+                "lookahead",
+                error_out) ||
+            !apply_recording_profile_matrix_value(
+                &spec->lookahead_depth_values,
+                profile.control.lookahead_depth,
+                "lookahead_depth",
+                error_out) ||
+            !apply_recording_profile_matrix_value(
+                &spec->target_bitrate_bps_values,
+                profile.control.target_bitrate_bps,
+                "target_bitrate_bps",
+                error_out) ||
+            !apply_recording_profile_matrix_value(
+                &spec->max_bitrate_bps_values,
+                profile.control.max_bitrate_bps,
+                "max_bitrate_bps",
+                error_out) ||
+            !apply_recording_profile_matrix_value(
+                &spec->vbv_buffer_size_values,
+                profile.control.vbv_buffer_size,
+                "vbv_buffer_size",
+                error_out) ||
+            !apply_recording_profile_matrix_value(
+                &spec->importance_map_modes,
+                profile.importance_map.mode,
+                "importance_map_mode",
+                error_out) ||
+            !apply_recording_profile_matrix_value(
+                &spec->importance_map_roi_size_px_values,
+                profile.importance_map.roi_size_px,
+                "importance_map_roi_size_px",
+                error_out) ||
+            !validate_external_stream_recording_profile(
+                spec->external_recorder_contract, profile, error_out)) {
+            return false;
+        }
+    } else {
+        if (spec->codecs.empty()) spec->codecs.push_back("h264");
+        if (spec->presets.empty()) spec->presets.push_back("p1");
+        if (spec->tunings.empty()) spec->tunings.push_back("ll");
+        if (spec->rate_control_modes.empty()) spec->rate_control_modes.push_back("vbr");
+        if (spec->quality_values.empty()) spec->quality_values.push_back(20);
+        if (spec->gop_lengths.empty()) spec->gop_lengths.push_back(0);
+        if (spec->aq_values.empty()) spec->aq_values.push_back(-1);
+        if (spec->temporal_aq_values.empty()) spec->temporal_aq_values.push_back(-1);
+        if (spec->lookahead_values.empty()) spec->lookahead_values.push_back(-1);
+        if (spec->lookahead_depth_values.empty()) spec->lookahead_depth_values.push_back(-1);
+        if (spec->target_bitrate_bps_values.empty()) spec->target_bitrate_bps_values.push_back(-1);
+        if (spec->max_bitrate_bps_values.empty()) spec->max_bitrate_bps_values.push_back(-1);
+        if (spec->vbv_buffer_size_values.empty()) spec->vbv_buffer_size_values.push_back(-1);
+        if (spec->importance_map_modes.empty()) spec->importance_map_modes.push_back("off");
+        if (spec->importance_map_roi_size_px_values.empty()) {
+            spec->importance_map_roi_size_px_values.push_back(
+                ImportanceMapConfig::kDefaultRoiSizePx);
+        }
     }
 
     for (std::string& importance_map_mode : spec->importance_map_modes) {
@@ -8014,6 +8312,13 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                      run.options.external_recorder_contract,
                                                                      &run.options.recording_control)},
                                                             };
+                                                            if (spec.has_recording_profile) {
+                                                                run.config_json["recording_profile"] =
+                                                                    orange::headless::BuildRecordingProfileJson(
+                                                                        spec.recording_profile);
+                                                                run.config_json["recording_profile_source"] =
+                                                                    "fixed.recording_profile";
+                                                            }
                                                             if (spec.has_recording_override) {
                                                                 run.config_json["recording"] =
                                                                     spec.recording_override;
@@ -8040,6 +8345,39 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
         }
     }
     return runs;
+}
+
+int validate_local_experiment_spec_plan(const HeadlessCliOptions& options)
+{
+    ExperimentSpec spec;
+    std::string error;
+    if (!load_experiment_spec(options, &spec, &error)) {
+        std::cerr << error << std::endl;
+        return 2;
+    }
+    const std::vector<ExperimentRunPlan> runs = build_experiment_run_plans(spec);
+    if (runs.empty()) {
+        std::cerr << "Experiment spec produced zero runs." << std::endl;
+        return 2;
+    }
+
+    std::cout << "[EXPERIMENT VALIDATION] status=pass"
+              << " experiment_id=" << spec.experiment_id
+              << " runs=" << runs.size()
+              << " recording_profile="
+              << (spec.has_recording_profile ? "fixed.recording_profile" : "legacy_matrix")
+              << std::endl;
+    for (const ExperimentRunPlan& run : runs) {
+        std::cout << "[EXPERIMENT VALIDATION] run=" << run.run_id
+                  << " target_bitrate_bps="
+                  << run.options.encoder_settings.control_overrides.target_bitrate_bps
+                  << " max_bitrate_bps="
+                  << run.options.encoder_settings.control_overrides.max_bitrate_bps
+                  << " vbv_buffer_size="
+                  << run.options.encoder_settings.control_overrides.vbv_buffer_size
+                  << std::endl;
+    }
+    return 0;
 }
 
 struct HeadlessRollingClipRuntime {
@@ -10756,6 +11094,9 @@ int main(int argc, char *argv[])
 
     if (options.mode == HeadlessMode::Local) {
         if (!options.experiment_spec_path.empty()) {
+            if (options.validate_experiment_spec_only) {
+                return validate_local_experiment_spec_plan(options);
+            }
             return run_local_experiment(options);
         }
         return run_local_mode(options);

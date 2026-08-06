@@ -23,6 +23,9 @@ bool encode_defaults_match(const CameraRecordingEncodeConfig& lhs,
            lhs.gop_length == rhs.gop_length &&
            lhs.aq == rhs.aq &&
            lhs.temporal_aq == rhs.temporal_aq &&
+           lhs.target_bitrate_bps == rhs.target_bitrate_bps &&
+           lhs.max_bitrate_bps == rhs.max_bitrate_bps &&
+           lhs.vbv_buffer_size == rhs.vbv_buffer_size &&
            lhs.nvenc_direct_input == rhs.nvenc_direct_input;
 }
 

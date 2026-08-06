@@ -2334,12 +2334,47 @@ bool try_parse_encoder_toggle_field(const nlohmann::json& object,
     return true;
 }
 
+bool try_parse_optional_positive_encoder_int_field(
+    const nlohmann::json& object,
+    const char* key,
+    int* out_value,
+    std::string* error_out) {
+    if (!out_value || !object.contains(key)) {
+        return true;
+    }
+    const nlohmann::json& value = object[key];
+    if (value.is_string()) {
+        const std::string normalized =
+            lower_ascii_copy(trim_ascii_copy(value.get<std::string>()));
+        if (normalized == "auto" || normalized == "default" ||
+            normalized == "inherit") {
+            *out_value = -1;
+            return true;
+        }
+    }
+    if (value.is_number_integer() || value.is_number_unsigned()) {
+        const long long parsed = value.get<long long>();
+        if (parsed > 0 && parsed <= std::numeric_limits<int>::max()) {
+            *out_value = static_cast<int>(parsed);
+            return true;
+        }
+    }
+    if (error_out) {
+        *error_out = std::string("recording.encode.") + key +
+                     " must be a positive integer number of bits per second or auto";
+    }
+    return false;
+}
+
 EncoderControlOverrides resolve_encoder_control_overrides(
     const CameraRecordingEncodeConfig& encode,
     const EncoderControlOverrides& runtime_overrides) {
     EncoderControlOverrides resolved;
     resolved.aq = normalize_encoder_toggle_value(encode.aq);
     resolved.temporal_aq = normalize_encoder_toggle_value(encode.temporal_aq);
+    resolved.target_bitrate_bps = encode.target_bitrate_bps;
+    resolved.max_bitrate_bps = encode.max_bitrate_bps;
+    resolved.vbv_buffer_size = encode.vbv_buffer_size;
 
     if (runtime_overrides.aq >= 0) {
         resolved.aq = runtime_overrides.aq;
@@ -2466,6 +2501,15 @@ void normalize_camera_recording_config(CameraRecordingConfig* config) {
     config->encode.rate_control_mode = lower_ascii_copy(config->encode.rate_control_mode);
     config->encode.aq = normalize_encoder_toggle_value(config->encode.aq);
     config->encode.temporal_aq = normalize_encoder_toggle_value(config->encode.temporal_aq);
+    if (config->encode.target_bitrate_bps <= 0) {
+        config->encode.target_bitrate_bps = -1;
+    }
+    if (config->encode.max_bitrate_bps <= 0) {
+        config->encode.max_bitrate_bps = -1;
+    }
+    if (config->encode.vbv_buffer_size <= 0) {
+        config->encode.vbv_buffer_size = -1;
+    }
     config->output.mode = normalize_recording_output_mode_string(config->output.mode);
     config->constraints.preferred_topology_class =
         normalize_preferred_topology_class_string(config->constraints.preferred_topology_class);
@@ -2616,7 +2660,26 @@ bool parse_camera_recording_json_impl(const nlohmann::json& recording_json,
         if (!try_parse_encoder_toggle_field(
                 encode, "aq", &recording.encode.aq, error_out) ||
             !try_parse_encoder_toggle_field(
-                encode, "temporal_aq", &recording.encode.temporal_aq, error_out)) {
+                encode, "temporal_aq", &recording.encode.temporal_aq, error_out) ||
+            !try_parse_optional_positive_encoder_int_field(
+                encode, "target_bitrate_bps",
+                &recording.encode.target_bitrate_bps, error_out) ||
+            !try_parse_optional_positive_encoder_int_field(
+                encode, "max_bitrate_bps",
+                &recording.encode.max_bitrate_bps, error_out) ||
+            !try_parse_optional_positive_encoder_int_field(
+                encode, "vbv_buffer_size",
+                &recording.encode.vbv_buffer_size, error_out)) {
+            return false;
+        }
+        if (recording.encode.target_bitrate_bps > 0 &&
+            recording.encode.max_bitrate_bps > 0 &&
+            recording.encode.max_bitrate_bps < recording.encode.target_bitrate_bps) {
+            if (error_out) {
+                *error_out =
+                    "recording.encode.max_bitrate_bps must be greater than or equal to "
+                    "recording.encode.target_bitrate_bps";
+            }
             return false;
         }
         recording.encode.nvenc_direct_input =
@@ -2736,6 +2799,15 @@ nlohmann::json build_camera_recording_json_impl(const CameraRecordingConfig& rec
         {"gop_length", recording.encode.gop_length},
         {"aq", format_encoder_toggle_value(recording.encode.aq)},
         {"temporal_aq", format_encoder_toggle_value(recording.encode.temporal_aq)},
+        {"target_bitrate_bps", recording.encode.target_bitrate_bps > 0
+             ? nlohmann::json(recording.encode.target_bitrate_bps)
+             : nlohmann::json("auto")},
+        {"max_bitrate_bps", recording.encode.max_bitrate_bps > 0
+             ? nlohmann::json(recording.encode.max_bitrate_bps)
+             : nlohmann::json("auto")},
+        {"vbv_buffer_size", recording.encode.vbv_buffer_size > 0
+             ? nlohmann::json(recording.encode.vbv_buffer_size)
+             : nlohmann::json("auto")},
         {"nvenc_direct_input", recording.encode.nvenc_direct_input}
     };
     recording_json["output"] = {
@@ -3778,6 +3850,159 @@ nlohmann::json build_recording_sync_snapshot(bool sync_camera_enabled,
     return sync;
 }
 
+bool ptp_evidence_bool(const std::string& value, bool* value_out) {
+    if (!value_out) {
+        return false;
+    }
+    if (value == "1" || value == "true") {
+        *value_out = true;
+        return true;
+    }
+    if (value == "0" || value == "false") {
+        *value_out = false;
+        return true;
+    }
+    return false;
+}
+
+nlohmann::json build_host_ptp_management_evidence() {
+    const char* configured_path = std::getenv("ORANGE_PTP_MANAGEMENT_EVIDENCE_PATH");
+    const std::filesystem::path evidence_path =
+        configured_path && *configured_path
+            ? std::filesystem::path(configured_path)
+            : std::filesystem::path("/tmp/ptp-stack/management_evidence.txt");
+    nlohmann::json evidence = {
+        {"schema_id", "orange.host_ptp.management_evidence"},
+        {"schema_version", 1},
+        {"available", false},
+        {"source_path", evidence_path.string()},
+        {"capture_method", "linuxptp_pmc_management_socket"},
+        {"time_properties", nlohmann::json::object()},
+        {"parent", nlohmann::json::object()},
+        {"default", nlohmann::json::object()},
+    };
+
+    std::string read_error;
+    const std::string bytes = read_file_to_string(evidence_path.string(), &read_error);
+    if (bytes.empty()) {
+        evidence["unavailable_reason"] = read_error.empty()
+            ? "empty_evidence_file" : read_error;
+        return evidence;
+    }
+
+    evidence["raw_sha256"] = "sha256:" +
+        orange::gui::spatial_layout::checksum::sha256_hex(bytes);
+    evidence["raw_output"] = bytes;
+    enum class Dataset { None, TimeProperties, Parent, Default };
+    Dataset dataset = Dataset::None;
+    bool saw_time_properties = false;
+    bool saw_parent = false;
+    bool saw_default = false;
+    std::istringstream input(bytes);
+    std::string line;
+    while (std::getline(input, line)) {
+        line = trim_ascii_copy(line);
+        if (line.empty()) {
+            continue;
+        }
+        if (line.rfind("captured_at_utc=", 0) == 0) {
+            evidence["captured_at_utc"] = line.substr(std::strlen("captured_at_utc="));
+            continue;
+        }
+        if (line.rfind("socket=", 0) == 0) {
+            evidence["socket"] = line.substr(std::strlen("socket="));
+            continue;
+        }
+        if (line.rfind("pmc_exit_status=", 0) == 0) {
+            try {
+                evidence["pmc_exit_status"] = std::stoi(
+                    line.substr(std::strlen("pmc_exit_status=")));
+            } catch (...) {
+                evidence["pmc_exit_status"] = nullptr;
+            }
+            continue;
+        }
+        if (line.find("RESPONSE MANAGEMENT TIME_PROPERTIES_DATA_SET") !=
+            std::string::npos) {
+            dataset = Dataset::TimeProperties;
+            saw_time_properties = true;
+            continue;
+        }
+        if (line.find("RESPONSE MANAGEMENT PARENT_DATA_SET") != std::string::npos) {
+            dataset = Dataset::Parent;
+            saw_parent = true;
+            continue;
+        }
+        if (line.find("RESPONSE MANAGEMENT DEFAULT_DATA_SET") != std::string::npos) {
+            dataset = Dataset::Default;
+            saw_default = true;
+            continue;
+        }
+        if (line.rfind("sending:", 0) == 0 || dataset == Dataset::None) {
+            continue;
+        }
+        std::istringstream fields(line);
+        std::string key;
+        std::string value;
+        fields >> key >> value;
+        if (key.empty() || value.empty()) {
+            continue;
+        }
+        nlohmann::json* destination = nullptr;
+        if (dataset == Dataset::TimeProperties) {
+            destination = &evidence["time_properties"];
+        } else if (dataset == Dataset::Parent) {
+            destination = &evidence["parent"];
+        } else if (dataset == Dataset::Default) {
+            destination = &evidence["default"];
+        }
+        if (!destination) {
+            continue;
+        }
+        bool boolean_value = false;
+        if ((key == "currentUtcOffsetValid" || key == "ptpTimescale" ||
+             key == "timeTraceable" || key == "frequencyTraceable" ||
+             key == "twoStepFlag" || key == "slaveOnly") &&
+            ptp_evidence_bool(value, &boolean_value)) {
+            (*destination)[key] = boolean_value;
+            continue;
+        }
+        try {
+            std::size_t consumed = 0;
+            const long long integer_value = std::stoll(value, &consumed, 0);
+            if (consumed == value.size()) {
+                (*destination)[key] = integer_value;
+                continue;
+            }
+        } catch (...) {
+        }
+        (*destination)[key] = value;
+    }
+
+    evidence["available"] = saw_time_properties && saw_parent && saw_default;
+    evidence["datasets_received"] = {
+        {"time_properties", saw_time_properties},
+        {"parent", saw_parent},
+        {"default", saw_default},
+    };
+    const nlohmann::json& time_properties = evidence["time_properties"];
+    const bool ptp_timescale = time_properties.value("ptpTimescale", false);
+    const bool utc_offset_valid = time_properties.value(
+        "currentUtcOffsetValid", false);
+    const bool time_traceable = time_properties.value("timeTraceable", false);
+    evidence["classification"] = {
+        {"ptp_timescale_advertised", ptp_timescale},
+        {"utc_offset_authoritative", ptp_timescale && utc_offset_valid},
+        {"time_traceable", time_traceable},
+        {"result", ptp_timescale && utc_offset_valid
+            ? "ptp_timescale_with_valid_utc_offset"
+            : (ptp_timescale
+                ? "ptp_timescale_utc_offset_unvalidated"
+                : "timescale_unclassified")},
+    };
+    return evidence;
+}
+
 nlohmann::json build_ptp_sync_summary_base(const std::string& recording_folder,
                                           const std::string& recording_id,
                                           int num_cameras,
@@ -3791,6 +4016,7 @@ nlohmann::json build_ptp_sync_summary_base(const std::string& recording_folder,
     summary["created_at_utc"] = get_current_utc_timestamp();
     summary["updated_at_utc"] = summary["created_at_utc"];
     summary["sync"] = build_recording_sync_snapshot(sync_camera_enabled, ptp_params, num_cameras);
+    summary["host_ptp_management_evidence"] = build_host_ptp_management_evidence();
     summary["cameras"] = nlohmann::json::object();
     return summary;
 }
@@ -5619,6 +5845,12 @@ bool write_recording_snapshot(const std::string& recording_folder,
                     {"gop_length", resolved_gop_length},
                     {"aq", resolved.encode.aq},
                     {"temporal_aq", resolved.encode.temporal_aq},
+                    {"target_bitrate_bps",
+                     resolved.encoder_control_overrides.target_bitrate_bps},
+                    {"max_bitrate_bps",
+                     resolved.encoder_control_overrides.max_bitrate_bps},
+                    {"vbv_buffer_size",
+                     resolved.encoder_control_overrides.vbv_buffer_size},
                     {"nvenc_direct_input", resolved.encode.nvenc_direct_input}
                 }},
                 {"output", {

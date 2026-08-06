@@ -1,0 +1,120 @@
+{
+  "camera_scan_type": "area_scan",
+  "color": false,
+  "color_temp": "CT_3000K",
+  "crop_pipeline": {
+    "crop_size_px": 384
+  },
+  "device_model_name": "HB-20000SBM",
+  "device_serial_number": "2010096",
+  "exposure": 50,
+  "focus": 3172,
+  "focus_uart_bootstrap": true,
+  "frame_rate": 30,
+  "gain": 256,
+  "gpio": {
+    "nodes": []
+  },
+  "gpio_connector_variant": "area_scan_12_pin",
+  "gpio_recipe": "",
+  "gpu_direct": true,
+  "height": 4512,
+  "iris": 11,
+  "name": "Cam2010096",
+  "offset_x": 0,
+  "offset_y": 0,
+  "pixel_format": "Mono8",
+  "ptp": {
+    "enabled": true,
+    "mode": "TwoStep"
+  },
+  "recording": {
+    "constraints": {
+      "preferred_topology_class": "PIX",
+      "require_peer_access": true
+    },
+    "encode": {
+      "aq": "off",
+      "codec": "hevc",
+      "gop_length": 30,
+      "max_bitrate_bps": 150000000,
+      "nvenc_direct_input": false,
+      "preset": "p1",
+      "quality_value": 20,
+      "rate_control_mode": "vbr",
+      "target_bitrate_bps": 150000000,
+      "temporal_aq": "off",
+      "tuning": "ll",
+      "vbv_buffer_size": 150000000
+    },
+    "mode": "split_gop",
+    "output": {
+      "downsample_factor": 1,
+      "mode": "factor",
+      "requested_height": 4512,
+      "requested_width": 4512
+    },
+    "profile_name": "encoding_quality_screen_2010096_30fps",
+    "resources": {
+      "acquire_work_entries": 64,
+      "encoder_entry_pool_size": 32
+    },
+    "split_gop": {
+      "encoder_gpu_ids": [
+        7,
+        8
+      ],
+      "max_buffered_bytes": 134217728,
+      "max_inflight_gops": 2,
+      "placement": "multi_gpu",
+      "source_encoder_policy": "hybrid_split",
+      "strict": true,
+      "transfer_mode": "raw",
+      "writer_queue": {
+        "fail_on_overflow": true,
+        "max_bytes": 134217728,
+        "max_packets": 4096
+      }
+    }
+  },
+  "schema_id": "orange.camera.config",
+  "schema_version": 4,
+  "source_gpu_id": 7,
+  "sync_mode": "ptp_gate",
+  "trigger": {
+    "activation": "RisingEdge",
+    "enabled": false,
+    "selector": "AcquisitionStart",
+    "source": "Software"
+  },
+  "width": 4512,
+  "optics": {
+    "schema_id": "orange.camera.optics",
+    "schema_version": 1,
+    "lens": {
+      "present": true,
+      "manufacturer": "Canon",
+      "model": "EF 100mm f/2.8L Macro IS USM",
+      "mount": "EF",
+      "focal_length_mm": 100.0,
+      "aperture_f_number": 2.8,
+      "focus_control": "camera_focus",
+      "iris_control": "camera_iris",
+      "notes": "Single-camera 30 fps bitrate-screen fixture derived from the 100_cam4_ptp Cam2010096 operating point."
+    },
+    "filter_stack": [
+      {
+        "id": "hoya_r72_67mm",
+        "manufacturer": "HOYA / Kenko Tokina Co., Ltd.",
+        "model": "Creative Filter Infrared R72",
+        "label": "67",
+        "type": "infrared_longpass_filter",
+        "thread_size": "67 mm",
+        "state": "installed",
+        "runtime_role": "normal_experiment_filter",
+        "cutoff_wavelength_nm": 720.0,
+        "notes": "Normal runtime camera filter; remove only for visible-projector calibration captures."
+      }
+    ]
+  }
+}

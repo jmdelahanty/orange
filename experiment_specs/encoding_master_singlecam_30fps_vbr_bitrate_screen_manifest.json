@@ -1,0 +1,85 @@
+{
+  "schema_id": "orange.encoding_master_experiment.manifest",
+  "schema_version": 1,
+  "experiment_id": "encoding_master_singlecam_30fps_vbr_bitrate_screen",
+  "notes": "Visual-quality and throughput screen for the planned 30 fps long-duration workload. Every run uses HEVC, GOP 30, normal IR/PTP camera settings, split-GOP external recording, AQ off, temporal AQ off, lookahead off, and QP map off. P1 rows isolate bitrate. P3 repeats 60 and 45 Mbps to test whether the modestly slower preset improves fish detail or delivered size while sustaining 30 fps. Runs are sequential live captures, so use obvious quality/throughput failures for rejection and use an identical-source replay before treating small quality differences as definitive.",
+  "defaults": {
+    "camera_serials": ["2010096"],
+    "analytics_gpu_id": 7,
+    "artifact_root": "/home/jeremy/orange_data/benchmarks/encoding_quality_30fps",
+    "analytics_output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "duration_s": 30,
+    "warmup_s": 2,
+    "orange_client": "/home/jeremy/orange-gop-split-a16/targets/release/orange_client",
+    "benchmark": "/usr/local/bin/orange-local-benchmark",
+    "sudo": true,
+    "verify_external_recorder": true,
+    "yolo_perf_log": true,
+    "yolo_perf_sample": 1
+  },
+  "runs": [
+    {
+      "run_id": "p1_vbr150_control",
+      "stage": "bitrate_screen",
+      "description": "Legacy fixed-rate control at 150 Mbps; intentionally generous at 30 fps.",
+      "base_spec": "experiment_specs/2010096_external_ipc_vbr_quality_base_30fps_a16_gpu7_8.json",
+      "tags": ["control", "p1", "vbr", "map_off"],
+      "stream_overrides": {"2010096": {"preset": "p1", "rate_control_mode": "vbr", "bitrate_bps": 150000000, "max_bitrate_bps": 150000000, "vbv_buffer_size": 150000000, "importance_map": {"mode": "off"}}},
+      "matrix_overrides": {"preset": ["p1"], "rate_control_mode": ["vbr"], "target_bitrate_bps": [150000000], "max_bitrate_bps": [150000000], "vbv_buffer_size": [150000000], "importance_map_mode": ["off"]}
+    },
+    {
+      "run_id": "p1_vbr75_max100",
+      "stage": "bitrate_screen",
+      "description": "P1 VBR 75 Mbps average with a 100 Mbps ceiling.",
+      "base_spec": "experiment_specs/2010096_external_ipc_vbr_quality_base_30fps_a16_gpu7_8.json",
+      "tags": ["p1", "vbr", "75mbps", "map_off"],
+      "stream_overrides": {"2010096": {"preset": "p1", "rate_control_mode": "vbr", "bitrate_bps": 75000000, "max_bitrate_bps": 100000000, "vbv_buffer_size": 100000000, "importance_map": {"mode": "off"}}},
+      "matrix_overrides": {"preset": ["p1"], "rate_control_mode": ["vbr"], "target_bitrate_bps": [75000000], "max_bitrate_bps": [100000000], "vbv_buffer_size": [100000000], "importance_map_mode": ["off"]}
+    },
+    {
+      "run_id": "p1_vbr60_max80",
+      "stage": "bitrate_screen",
+      "description": "P1 VBR 60 Mbps average with an 80 Mbps ceiling.",
+      "base_spec": "experiment_specs/2010096_external_ipc_vbr_quality_base_30fps_a16_gpu7_8.json",
+      "tags": ["p1", "vbr", "60mbps", "map_off"],
+      "stream_overrides": {"2010096": {"preset": "p1", "rate_control_mode": "vbr", "bitrate_bps": 60000000, "max_bitrate_bps": 80000000, "vbv_buffer_size": 80000000, "importance_map": {"mode": "off"}}},
+      "matrix_overrides": {"preset": ["p1"], "rate_control_mode": ["vbr"], "target_bitrate_bps": [60000000], "max_bitrate_bps": [80000000], "vbv_buffer_size": [80000000], "importance_map_mode": ["off"]}
+    },
+    {
+      "run_id": "p1_vbr45_max60",
+      "stage": "bitrate_screen",
+      "description": "P1 VBR 45 Mbps average, matching the current 150 Mbps at 100 fps bits-per-frame budget.",
+      "base_spec": "experiment_specs/2010096_external_ipc_vbr_quality_base_30fps_a16_gpu7_8.json",
+      "tags": ["p1", "vbr", "45mbps", "same_bits_per_frame", "map_off"],
+      "stream_overrides": {"2010096": {"preset": "p1", "rate_control_mode": "vbr", "bitrate_bps": 45000000, "max_bitrate_bps": 60000000, "vbv_buffer_size": 60000000, "importance_map": {"mode": "off"}}},
+      "matrix_overrides": {"preset": ["p1"], "rate_control_mode": ["vbr"], "target_bitrate_bps": [45000000], "max_bitrate_bps": [60000000], "vbv_buffer_size": [60000000], "importance_map_mode": ["off"]}
+    },
+    {
+      "run_id": "p1_vbr30_max45",
+      "stage": "bitrate_screen",
+      "description": "P1 VBR 30 Mbps lower-bound quality stress test.",
+      "base_spec": "experiment_specs/2010096_external_ipc_vbr_quality_base_30fps_a16_gpu7_8.json",
+      "tags": ["p1", "vbr", "30mbps", "stress", "map_off"],
+      "stream_overrides": {"2010096": {"preset": "p1", "rate_control_mode": "vbr", "bitrate_bps": 30000000, "max_bitrate_bps": 45000000, "vbv_buffer_size": 45000000, "importance_map": {"mode": "off"}}},
+      "matrix_overrides": {"preset": ["p1"], "rate_control_mode": ["vbr"], "target_bitrate_bps": [30000000], "max_bitrate_bps": [45000000], "vbv_buffer_size": [45000000], "importance_map_mode": ["off"]}
+    },
+    {
+      "run_id": "p3_vbr60_max80",
+      "stage": "preset_screen",
+      "description": "P3 comparison at 60 Mbps; must sustain 30 fps with no queue growth or drops.",
+      "base_spec": "experiment_specs/2010096_external_ipc_vbr_quality_base_30fps_a16_gpu7_8.json",
+      "tags": ["p3", "vbr", "60mbps", "preset_screen", "map_off"],
+      "stream_overrides": {"2010096": {"preset": "p3", "rate_control_mode": "vbr", "bitrate_bps": 60000000, "max_bitrate_bps": 80000000, "vbv_buffer_size": 80000000, "importance_map": {"mode": "off"}}},
+      "matrix_overrides": {"preset": ["p3"], "rate_control_mode": ["vbr"], "target_bitrate_bps": [60000000], "max_bitrate_bps": [80000000], "vbv_buffer_size": [80000000], "importance_map_mode": ["off"]}
+    },
+    {
+      "run_id": "p3_vbr45_max60",
+      "stage": "preset_screen",
+      "description": "P3 comparison at the 45 Mbps same-bits-per-frame candidate; must sustain 30 fps with no queue growth or drops.",
+      "base_spec": "experiment_specs/2010096_external_ipc_vbr_quality_base_30fps_a16_gpu7_8.json",
+      "tags": ["p3", "vbr", "45mbps", "preset_screen", "same_bits_per_frame", "map_off"],
+      "stream_overrides": {"2010096": {"preset": "p3", "rate_control_mode": "vbr", "bitrate_bps": 45000000, "max_bitrate_bps": 60000000, "vbv_buffer_size": 60000000, "importance_map": {"mode": "off"}}},
+      "matrix_overrides": {"preset": ["p3"], "rate_control_mode": ["vbr"], "target_bitrate_bps": [45000000], "max_bitrate_bps": [60000000], "vbv_buffer_size": [60000000], "importance_map_mode": ["off"]}
+    }
+  ]
+}

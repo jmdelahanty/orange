@@ -104,6 +104,7 @@ struct SupervisorPlan {
     bool require_status_runtime = false;
     bool require_storage_preflight = true;
     bool require_protocol_hello = true;
+    bool require_frame_identity_proof = true;
     bool preserve_shard_mp4s = false;
     std::vector<RecorderStreamPlan> streams;
 };

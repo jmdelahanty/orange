@@ -836,6 +836,11 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
                          error_out,
                          "external_recorder_contract") ||
         !read_bool_field(contract,
+                         "require_frame_identity_proof",
+                         &plan.require_frame_identity_proof,
+                         error_out,
+                         "external_recorder_contract") ||
+        !read_bool_field(contract,
                          "preserve_shard_mp4s",
                          &plan.preserve_shard_mp4s,
                          error_out,
@@ -1615,6 +1620,7 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
         {"require_status_runtime", plan.require_status_runtime},
         {"require_storage_preflight", plan.require_storage_preflight},
         {"require_protocol_hello", plan.require_protocol_hello},
+        {"require_frame_identity_proof", plan.require_frame_identity_proof},
         {"preserve_shard_mp4s", plan.preserve_shard_mp4s},
         {"streams", streams},
     };

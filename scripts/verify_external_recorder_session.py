@@ -581,6 +581,97 @@ def verify_frame_metadata_csv(path: Path, expected_rows: int) -> dict[str, int]:
     }
 
 
+def verify_frame_identity_proof(
+    summary: dict[str, Any],
+    contract: dict[str, Any],
+    frames_encoded: int,
+    packets_written: int,
+) -> dict[str, Any] | None:
+    proof = summary.get("frame_identity_proof")
+    required = bool(contract.get("require_frame_identity_proof", False))
+    if not isinstance(proof, dict):
+        require(not required, "required frame_identity_proof is missing")
+        return None
+
+    require(
+        proof.get("schema_id") == "orange.external_recorder.frame_identity_proof",
+        "unexpected frame_identity_proof schema_id",
+    )
+    require(proof.get("schema_version") == 1, "unexpected frame_identity_proof schema_version")
+    require(proof.get("status") == "passed", "frame_identity_proof did not pass")
+    require(proof.get("canonical_field") == "recording_frame_id", "unexpected canonical frame field")
+    require(
+        proof.get("scope") == "recording_session_and_camera_stream",
+        "unexpected frame identity scope",
+    )
+    require(
+        proof.get("row_granularity") == "one_encoded_video_frame",
+        "unexpected frame identity row granularity",
+    )
+    aliases = proof.get("legacy_aliases")
+    require(
+        isinstance(aliases, dict) and aliases.get("frame_id") == "recording_frame_id",
+        "frame_identity_proof lacks the legacy frame_id alias",
+    )
+    require(proof.get("continuity_policy") == "encoded_subset", "unexpected continuity policy")
+
+    binding = proof.get("video_binding")
+    require(isinstance(binding, dict), "frame_identity_proof.video_binding is missing")
+    require(
+        binding.get("method") == "nvenc_input_timestamp_to_output_timestamp_registry",
+        "unexpected encoded-frame binding method",
+    )
+    for field in (
+        "submitted_frame_identities",
+        "returned_identity_matches",
+        "encoded_video_frames",
+        "metadata_rows",
+    ):
+        require(
+            as_int(binding.get(field), f"frame_identity_proof.video_binding.{field}")
+            == frames_encoded,
+            f"frame identity {field} does not match frames_encoded",
+        )
+    require(
+        as_int(binding.get("packets_written"), "frame_identity_proof.video_binding.packets_written")
+        == packets_written,
+        "frame identity proof packet count mismatch",
+    )
+    require(
+        as_int(binding.get("identity_mismatches"), "frame_identity_proof.video_binding.identity_mismatches")
+        == 0,
+        "frame identity proof reports identity mismatches",
+    )
+    require(
+        as_int(
+            binding.get("outstanding_submitted_identities"),
+            "frame_identity_proof.video_binding.outstanding_submitted_identities",
+        ) == 0,
+        "frame identity proof reports unreturned submitted identities",
+    )
+    require(binding.get("verified") is True, "frame identity proof is not verified")
+    merged = summary.get("merged_output")
+    require(
+        isinstance(merged, dict) and merged.get("coordinator_enabled") is True,
+        "returned frame identity proof requires the authoritative GOP coordinator",
+    )
+    require(
+        as_int(merged.get("pending_gops"), "merged_output.pending_gops") == 0,
+        "returned frame identity proof has pending GOPs",
+    )
+    require(
+        as_int(proof.get("source_frames_skipped_by_policy"), "source_frames_skipped_by_policy")
+        == as_int(summary.get("encode_skipped"), "encode_skipped"),
+        "frame identity proof skipped-frame count mismatch",
+    )
+    require(
+        as_int(proof.get("source_frames_dropped"), "source_frames_dropped")
+        == as_int(summary.get("encode_dropped"), "encode_dropped"),
+        "frame identity proof dropped-frame count mismatch",
+    )
+    return proof
+
+
 def read_csv_rows(path: Path) -> tuple[list[str], list[dict[str, str]]]:
     try:
         with path.open("r", encoding="utf-8", newline="") as handle:
@@ -1645,13 +1736,17 @@ def verify_summary(
         )
     require(mp4_path.exists() and mp4_path.stat().st_size > 0, f"missing or empty external MP4: {mp4_path}")
     mp4_probe = ffprobe_video(mp4_path, ffprobe)
-    if not rolling_requested:
-        reported_packets = as_int(
+    reported_packets = (
+        sum(as_int(clip.get("packet_count"), "rolling clip packet_count") for clip in rolling_clips)
+        if rolling_requested
+        else as_int(
             merged.get("packets_written")
             if merged.get("enabled") is True
             else external_encode.get("mp4_packets"),
             "authoritative packets_written",
         )
+    )
+    if not rolling_requested:
         require(
             reported_packets == frames_encoded,
             (
@@ -1667,6 +1762,12 @@ def verify_summary(
                 f"{mp4_probe.get('packet_count')} != {frames_encoded}"
             ),
         )
+    verify_frame_identity_proof(
+        summary,
+        contract,
+        frames_encoded,
+        reported_packets,
+    )
     output_kind = str(summary.get("output_kind") or stream.get("output_kind") or "full")
     if output_kind == "crop":
         require_crop_mp4_key_samples(

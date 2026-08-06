@@ -2059,6 +2059,10 @@ struct MergedOutputSummary {
     uint64_t packets_written = 0;
     uint64_t bytes_written = 0;
     uint64_t gops_released = 0;
+    uint64_t frame_identities_submitted = 0;
+    uint64_t frame_identities_returned = 0;
+    uint64_t frame_identity_mismatches = 0;
+    uint64_t outstanding_frame_identities = 0;
     uint64_t pending_gops = 0;
     uint64_t pending_bytes = 0;
     uint64_t peak_pending_gops = 0;
@@ -2087,6 +2091,57 @@ struct MergedOutputSummary {
     std::string error_message;
     RollingOutputSummary rolling;
 };
+
+nlohmann::json frame_identity_proof_json(
+    const MergedOutputSummary& merged,
+    const EncodeSummary& encoded,
+    uint64_t encode_skipped,
+    uint64_t encode_dropped)
+{
+    uint64_t metadata_rows = merged.frame_metadata.rows_written;
+    if (merged.rolling.enabled) {
+        metadata_rows = 0;
+        for (const RollingClipOutputSummary& clip : merged.rolling.clips) {
+            metadata_rows += clip.frame_count;
+        }
+    }
+    const bool verified =
+        merged.coordinator_enabled &&
+        !merged.failed &&
+        merged.frame_identities_submitted == encoded.frames_encoded &&
+        merged.frame_identities_returned == encoded.frames_encoded &&
+        merged.frame_identity_mismatches == 0 &&
+        merged.outstanding_frame_identities == 0 &&
+        merged.packets_written == encoded.frames_encoded &&
+        metadata_rows == encoded.frames_encoded;
+    return {
+        {"schema_id", "orange.external_recorder.frame_identity_proof"},
+        {"schema_version", 1},
+        {"status", verified ? "passed" : "failed"},
+        {"canonical_field", "recording_frame_id"},
+        {"scope", "recording_session_and_camera_stream"},
+        {"assignment_event", "orange_acquisition_recording_frame_sequence"},
+        {"row_granularity", "one_encoded_video_frame"},
+        {"legacy_aliases", {{"frame_id", "recording_frame_id"}}},
+        {"continuity_policy", "encoded_subset"},
+        {"recording_frame_id_gaps_allowed", true},
+        {"source_frames_skipped_by_policy", encode_skipped},
+        {"source_frames_dropped", encode_dropped},
+        {"video_binding", {
+            {"method", "nvenc_input_timestamp_to_output_timestamp_registry"},
+            {"metadata_write_event", "completed_gop_after_returned_identity_match"},
+            {"submitted_frame_identities", merged.frame_identities_submitted},
+            {"returned_identity_matches", merged.frame_identities_returned},
+            {"identity_mismatches", merged.frame_identity_mismatches},
+            {"outstanding_submitted_identities", merged.outstanding_frame_identities},
+            {"encoded_video_frames", encoded.frames_encoded},
+            {"packets_written", merged.packets_written},
+            {"metadata_rows", metadata_rows},
+            {"verification_rule_id", "orange.external_recorder.frame_identity.v1"},
+            {"verified", verified},
+        }},
+    };
+}
 
 EncodeSummary aggregate_encode_summaries(const std::vector<EncodeSummary>& summaries)
 {
@@ -2374,8 +2429,10 @@ public:
                     desc.gop_index,
                     desc.frame_index_within_gop},
                 &identity_error)) {
+            frame_identity_mismatches_++;
             fail_locked("invalid submitted frame identity: " + identity_error);
         }
+        frame_identities_submitted_++;
         ensure_writer_locked(desc);
         mark_older_gops_complete_locked(desc.gop_index);
         PendingGop& gop = pending_gops_[desc.gop_index];
@@ -2421,6 +2478,7 @@ public:
             error << "NVENC packet identity count mismatch: packets="
                   << packets.size()
                   << " output_timestamps=" << output_timestamps.size();
+            frame_identity_mismatches_++;
             fail_locked(error.str());
         }
         for (size_t i = 0; i < packets.size(); ++i) {
@@ -2430,8 +2488,10 @@ public:
                     output_timestamps[i],
                     &identity,
                     &identity_error)) {
+                frame_identity_mismatches_++;
                 fail_locked("invalid NVENC packet identity: " + identity_error);
             }
+            frame_identities_returned_++;
             PendingGop& gop = pending_gops_[identity.gop_index];
             gop.gop_index = identity.gop_index;
             if (gop.first_seen_ns == 0) {
@@ -2506,6 +2566,10 @@ public:
         out.packets_written = packets_written_;
         out.bytes_written = bytes_written_;
         out.gops_released = gops_released_;
+        out.frame_identities_submitted = frame_identities_submitted_;
+        out.frame_identities_returned = frame_identities_returned_;
+        out.frame_identity_mismatches = frame_identity_mismatches_;
+        out.outstanding_frame_identities = submitted_identities_.size();
         out.pending_gops = pending_gops_.size();
         out.pending_bytes = pending_bytes_;
         out.peak_pending_gops = peak_pending_gops_;
@@ -3230,6 +3294,9 @@ private:
     uint64_t packets_written_ = 0;
     uint64_t bytes_written_ = 0;
     uint64_t gops_released_ = 0;
+    uint64_t frame_identities_submitted_ = 0;
+    uint64_t frame_identities_returned_ = 0;
+    uint64_t frame_identity_mismatches_ = 0;
     uint64_t pending_bytes_ = 0;
     uint64_t peak_pending_gops_ = 0;
     uint64_t peak_pending_bytes_ = 0;
@@ -4832,6 +4899,12 @@ void write_summary_json(const Options& options,
     out << "    \"zero_system_timestamp_rows\": "
         << frame_metadata.zero_system_timestamp_rows << "\n";
     out << "  },\n";
+    out << "  \"frame_identity_proof\": "
+        << json_dump_for_inline_value(
+               frame_identity_proof_json(
+                   merged, enc, encode_skipped, encode_dropped),
+               "  ")
+        << ",\n";
     out << "  \"worker_failed\": " << ((enc.failed || merged.failed) ? "true" : "false") << ",\n";
     out << "  \"external_encode\": {\n";
     out << "    \"frames_dropped\": " << enc.frames_dropped << ",\n";
@@ -4935,6 +5008,14 @@ void write_summary_json(const Options& options,
     out << "    \"packets_written\": " << merged.packets_written << ",\n";
     out << "    \"bytes_written\": " << merged.bytes_written << ",\n";
     out << "    \"gops_released\": " << merged.gops_released << ",\n";
+    out << "    \"frame_identities_submitted\": "
+        << merged.frame_identities_submitted << ",\n";
+    out << "    \"frame_identities_returned\": "
+        << merged.frame_identities_returned << ",\n";
+    out << "    \"frame_identity_mismatches\": "
+        << merged.frame_identity_mismatches << ",\n";
+    out << "    \"outstanding_frame_identities\": "
+        << merged.outstanding_frame_identities << ",\n";
     out << "    \"pending_gops\": " << merged.pending_gops << ",\n";
     out << "    \"pending_bytes\": " << merged.pending_bytes << ",\n";
     out << "    \"peak_pending_gops\": " << merged.peak_pending_gops << ",\n";
@@ -5118,9 +5199,7 @@ int main(int argc, char** argv)
         bool encode_workers_peer_prewarmed = false;
         if (options.encode) {
             const std::vector<int> shard_gpu_ids = effective_shard_gpu_ids(options);
-            const bool rolling_requested = options.clip_seconds > 0;
-            if ((shard_gpu_ids.size() > 1 || rolling_requested) &&
-                !options.mp4_out_path.empty()) {
+            if (!options.mp4_out_path.empty()) {
                 merged_output = std::make_unique<MergedGopOutput>(options);
             }
             encode_workers.reserve(shard_gpu_ids.size());

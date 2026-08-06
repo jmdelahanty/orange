@@ -1,5 +1,6 @@
 #include "session/recording_session.h"
 #include "NvEncoder/Logger.h"
+#include "gui/spatial_layout/sha256.h"
 
 #include <cstdlib>
 #include <filesystem>
@@ -8,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <unistd.h>
+#include <vector>
 
 simplelogger::Logger* logger =
     simplelogger::LoggerFactory::CreateConsoleLogger();
@@ -37,6 +39,21 @@ orange::session::RecordingSessionCameraArtifact make_camera_artifact(
     artifact.packet_count = frame_count;
     artifact.packet_count_source = "external_recorder_summary.packets_written";
     return artifact;
+}
+
+std::string write_metadata_csv(
+    const std::filesystem::path& path,
+    const std::vector<uint64_t>& recording_frame_ids)
+{
+    std::string bytes = "recording_frame_id,timestamp\n";
+    for (const uint64_t frame_id : recording_frame_ids) {
+        bytes += std::to_string(frame_id) + ",1000\n";
+    }
+    std::ofstream output(path, std::ios::binary);
+    require(static_cast<bool>(output), "failed to open metadata fixture " + path.string());
+    output << bytes;
+    require(static_cast<bool>(output), "failed to write metadata fixture " + path.string());
+    return bytes;
 }
 
 orange::session::RecordingOutputDescriptor make_external_crop_output(
@@ -86,6 +103,51 @@ nlohmann::json read_json(const std::filesystem::path& path)
     nlohmann::json value;
     input >> value;
     return value;
+}
+
+std::string canonical_semantic_sha256(const nlohmann::json& value)
+{
+    return "sha256:" + orange::gui::spatial_layout::checksum::sha256_hex(
+        value.dump(-1, ' ', false, nlohmann::json::error_handler_t::strict));
+}
+
+nlohmann::json make_locked_camera_ptp_evidence(const uint64_t frame_count)
+{
+    return {
+        {"camera_serial", "2010096"},
+        {"sync_camera_enabled", true},
+        {"finalized", true},
+        {"last_recording_frame_id", frame_count},
+        {"ptp_offset_ns", {
+            {"samples", 5}, {"min", -700}, {"max", 900},
+            {"last", 300}, {"mean", 125.0}
+        }},
+        {"latch_minus_frame_ns", {
+            {"samples", 5}, {"min", 4000000}, {"max", 7000000},
+            {"last", 5000000}, {"mean", 5100000.0}
+        }},
+        {"recording_camera_minus_realtime_ns", {
+            {"samples", frame_count},
+            {"min", 36985000000LL},
+            {"max", 36995000000LL},
+            {"last", 36990000000LL},
+            {"mean", 36990000000.0}
+        }},
+        {"ptp_mode_readback", {
+            {"samples", 5}, {"first", "TwoStep"},
+            {"last", "TwoStep"}, {"changes", 0}
+        }},
+        {"ptp_status_readback", {
+            {"samples", 5}, {"first", "Slave"},
+            {"last", "Slave"}, {"changes", 0}
+        }},
+        {"ptp_readback_observations", nlohmann::json::array({{
+            {"local_frame_id", 1},
+            {"recording_frame_id", 1},
+            {"ptp_mode", "TwoStep"},
+            {"ptp_status", "Slave"}
+        }})}
+    };
 }
 
 void test_single_clip_manifest_preserves_full_and_crop_outputs()
@@ -349,41 +411,7 @@ void test_manifest_freezes_inferred_ptp_tai_clock_contract()
             {"mode", "ptp_local"}
         }},
         {"cameras", {
-            {"2010096", {
-                {"camera_serial", "2010096"},
-                {"sync_camera_enabled", true},
-                {"finalized", true},
-                {"last_recording_frame_id", 100},
-                {"ptp_offset_ns", {
-                    {"samples", 5}, {"min", -700}, {"max", 900},
-                    {"last", 300}, {"mean", 125.0}
-                }},
-                {"latch_minus_frame_ns", {
-                    {"samples", 5}, {"min", 4000000}, {"max", 7000000},
-                    {"last", 5000000}, {"mean", 5100000.0}
-                }},
-                {"recording_camera_minus_realtime_ns", {
-                    {"samples", 100},
-                    {"min", 36985000000LL},
-                    {"max", 36995000000LL},
-                    {"last", 36990000000LL},
-                    {"mean", 36990000000.0}
-                }},
-                {"ptp_mode_readback", {
-                    {"samples", 5}, {"first", "TwoStep"},
-                    {"last", "TwoStep"}, {"changes", 0}
-                }},
-                {"ptp_status_readback", {
-                    {"samples", 5}, {"first", "Slave"},
-                    {"last", "Slave"}, {"changes", 0}
-                }},
-                {"ptp_readback_observations", nlohmann::json::array({{
-                    {"local_frame_id", 1},
-                    {"recording_frame_id", 1},
-                    {"ptp_mode", "TwoStep"},
-                    {"ptp_status", "Slave"}
-                }})}
-            }}
+            {"2010096", make_locked_camera_ptp_evidence(100)}
         }}
     };
     {
@@ -430,8 +458,9 @@ void test_manifest_freezes_inferred_ptp_tai_clock_contract()
     require(camera_clock.at("semantic_authority") ==
                 "inferred_from_recording_evidence",
             "camera TAI semantics should remain explicitly inferred");
-    require(camera_clock.at("inference").at("result") == "pass",
-            "camera clock should preserve the inference result");
+    require(camera_clock.at("inference").at("result") ==
+                "fallback_inference_pass",
+            "camera clock should preserve the fallback inference result");
     require(camera_clock.at("evidence_snapshot")
                 .at("recording_camera_minus_realtime_ns").at("samples") == 100,
             "final manifest should freeze paired timestamp evidence");
@@ -507,6 +536,544 @@ void test_manifest_keeps_camera_epoch_unspecified_without_ptp_evidence()
     std::filesystem::remove_all(folder);
 }
 
+void test_manifest_preserves_untraceable_ptp_timescale_evidence()
+{
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_session_ptp_management_" +
+         std::to_string(static_cast<long long>(::getpid())));
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder);
+    const std::filesystem::path evidence_path = folder / "management_evidence.txt";
+    {
+        std::ofstream output(evidence_path);
+        output
+            << "captured_at_utc=2026-08-04T22:00:00Z\n"
+            << "socket=/var/run/ptp4l\n"
+            << "pmc_exit_status=0\n"
+            << "a088c2.fffe.69119e-0 seq 0 RESPONSE MANAGEMENT TIME_PROPERTIES_DATA_SET\n"
+            << "currentUtcOffset 37\n"
+            << "currentUtcOffsetValid 0\n"
+            << "ptpTimescale 1\n"
+            << "timeTraceable 0\n"
+            << "frequencyTraceable 0\n"
+            << "timeSource 0xa0\n"
+            << "a088c2.fffe.69119e-0 seq 1 RESPONSE MANAGEMENT PARENT_DATA_SET\n"
+            << "grandmasterIdentity a088c2.fffe.69119e\n"
+            << "a088c2.fffe.69119e-0 seq 2 RESPONSE MANAGEMENT DEFAULT_DATA_SET\n"
+            << "twoStepFlag 1\n"
+            << "clockIdentity a088c2.fffe.69119e\n"
+            << "domainNumber 0\n";
+    }
+    require(
+        ::setenv(
+            "ORANGE_PTP_MANAGEMENT_EVIDENCE_PATH",
+            evidence_path.c_str(),
+            1) == 0,
+        "failed to set PTP evidence test path");
+    require(
+        initialize_ptp_sync_summary(folder.string(), "ptp_direct", 1, true, nullptr),
+        "PTP summary initialization should capture management evidence");
+    require(
+        update_ptp_sync_summary_camera(
+            folder.string(), "2010096", make_locked_camera_ptp_evidence(100)),
+        "PTP summary should accept camera evidence");
+    ::unsetenv("ORANGE_PTP_MANAGEMENT_EVIDENCE_PATH");
+
+    const nlohmann::json summary = read_json(folder / "ptp_sync_summary.json");
+    const nlohmann::json& host = summary.at("host_ptp_management_evidence");
+    require(host.at("available") == true,
+            "all three pmc datasets should be available");
+    require(host.at("time_properties").at("ptpTimescale") == true,
+            "pmc ptpTimescale should parse as a boolean");
+    require(host.at("time_properties").at("currentUtcOffsetValid") == false,
+            "invalid UTC-offset evidence must remain invalid");
+    require(host.at("default").at("domainNumber") == 0,
+            "PTP domain should be preserved");
+    require(host.at("parent").at("grandmasterIdentity") ==
+                "a088c2.fffe.69119e",
+            "grandmaster identity should be preserved");
+
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "test";
+    options.session_id = "ptp_direct";
+    options.recording_folder = folder.string();
+    options.status = "completed";
+    options.cameras.push_back(make_camera_artifact("2010096", 100));
+    const nlohmann::json manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    std::string error;
+    require(
+        orange::session::write_recording_session_manifest(
+            (folder / "recording_session.json").string(), manifest, &error),
+        "PTP management manifest write should succeed: " + error);
+    const nlohmann::json written = read_json(folder / "recording_session.json");
+    const nlohmann::json& camera_clock = written.at("timestamp_clock_contract")
+        .at("clocks").at("camera_2010096");
+    require(camera_clock.at("classification") ==
+                "ieee1588_ptp_timescale_untraceable",
+            "invalid UTC-offset flag must prevent authoritative TAI classification");
+    require(camera_clock.at("timescale") == "PTP",
+            "the advertised PTP timescale should still be preserved");
+    require(camera_clock.at("semantic_authority") ==
+                "ptp_timescale_advertised_utc_relationship_unvalidated",
+            "untraceable PTP evidence should remain explicitly qualified");
+
+    std::filesystem::remove_all(folder);
+}
+
+void test_manifest_freezes_external_returned_identity_proof()
+{
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_session_frame_identity_" +
+         std::to_string(static_cast<long long>(::getpid())));
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder / "external_recorder");
+
+    {
+        std::ofstream output(folder / "external_recorder_contract.json");
+        output << nlohmann::json{
+            {"schema_id", "orange.external_recorder.contract"},
+            {"schema_version", 1},
+            {"require_frame_identity_proof", true},
+        }.dump(2) << '\n';
+    }
+    const std::filesystem::path summary_path =
+        folder / "external_recorder" / "Cam2010096_external_summary.json";
+    const nlohmann::json proof = {
+        {"schema_id", "orange.external_recorder.frame_identity_proof"},
+        {"schema_version", 1},
+        {"status", "passed"},
+        {"canonical_field", "recording_frame_id"},
+        {"scope", "recording_session_and_camera_stream"},
+        {"assignment_event", "orange_acquisition_recording_frame_sequence"},
+        {"row_granularity", "one_encoded_video_frame"},
+        {"legacy_aliases", {{"frame_id", "recording_frame_id"}}},
+        {"continuity_policy", "encoded_subset"},
+        {"recording_frame_id_gaps_allowed", true},
+        {"source_frames_skipped_by_policy", 0},
+        {"source_frames_dropped", 0},
+        {"video_binding", {
+            {"method", "nvenc_input_timestamp_to_output_timestamp_registry"},
+            {"metadata_write_event", "completed_gop_after_returned_identity_match"},
+            {"submitted_frame_identities", 100},
+            {"returned_identity_matches", 100},
+            {"identity_mismatches", 0},
+            {"outstanding_submitted_identities", 0},
+            {"encoded_video_frames", 100},
+            {"packets_written", 100},
+            {"metadata_rows", 100},
+            {"verification_rule_id", "orange.external_recorder.frame_identity.v1"},
+            {"verified", true},
+        }},
+    };
+    {
+        std::ofstream output(summary_path);
+        output << nlohmann::json{
+            {"schema_id", "orange.external_recorder.summary"},
+            {"schema_version", 1},
+            {"frames_encoded", 100},
+            {"frame_identity_proof", proof},
+        }.dump(2) << '\n';
+    }
+
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "test";
+    options.session_id = "identity_session";
+    options.recording_folder = folder.string();
+    options.status = "completed";
+    options.recording_backend = {
+        {"mode", "external_ipc"},
+        {"summary_json", {{"2010096", summary_path.string()}}},
+    };
+    options.cameras.push_back(make_camera_artifact("2010096", 100));
+    const nlohmann::json manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+
+    std::string error;
+    const std::filesystem::path manifest_path = folder / "recording_session.json";
+    require(
+        orange::session::write_recording_session_manifest(
+            manifest_path.string(), manifest, &error),
+        "returned identity manifest write should succeed: " + error);
+    const nlohmann::json written = read_json(manifest_path);
+    const nlohmann::json& contract = written.at("frame_identity_contract");
+    require(contract.at("status") == "finalized",
+            "frame identity contract should finalize with the session");
+    require(contract.at("verification").at("result") == "passed",
+            "returned identity contract should pass");
+    require(contract.at("camera_streams").at("2010096")
+                .at("verification_status") == "passed",
+            "camera stream should preserve its returned identity proof");
+    require(contract.at("camera_streams").at("2010096").at("summary")
+                .at("sha256").get<std::string>().rfind("sha256:", 0) == 0,
+            "frame identity source summary should be checksummed");
+
+    const nlohmann::json frozen_contract = contract;
+    {
+        std::ofstream output(summary_path);
+        output << nlohmann::json{{"frames_encoded", 100}}.dump(2) << '\n';
+    }
+    require(
+        orange::session::write_recording_session_manifest(
+            manifest_path.string(), written, &error),
+        "rewriting should preserve a finalized frame identity contract: " + error);
+    require(read_json(manifest_path).at("frame_identity_contract") == frozen_contract,
+            "finalized frame identity evidence should be immutable");
+
+    std::filesystem::remove_all(folder);
+}
+
+void test_manifest_seals_dense_acquisition_index_mapping_and_exact_metadata_checksum()
+{
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_session_acquisition_mapping_dense_" +
+         std::to_string(static_cast<long long>(::getpid())));
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder);
+    const std::string metadata_bytes = write_metadata_csv(
+        folder / "Cam2010096_meta.csv", {1, 2, 3});
+
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "test";
+    options.session_id = "acquisition_mapping_dense";
+    options.recording_folder = folder.string();
+    options.status = "completed";
+    options.cameras.push_back(make_camera_artifact("2010096", 3));
+    const nlohmann::json manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    const std::filesystem::path manifest_path = folder / "recording_session.json";
+    std::string error;
+    require(
+        orange::session::write_recording_session_manifest(
+            manifest_path.string(), manifest, &error),
+        "dense acquisition mapping manifest write should succeed: " + error);
+
+    const nlohmann::json written = read_json(manifest_path);
+    const nlohmann::json& mapping = written.at("acquisition_index_mapping");
+    require(mapping.at("schema_id") == "orange.recording.acquisition_index_mapping",
+            "acquisition mapping should use the closed Orange schema");
+    require(mapping.at("schema_version") == 1,
+            "acquisition mapping should use schema v1");
+    require(mapping.at("status") == "finalized",
+            "a dense recording sequence should receive a mapping seal");
+    require(mapping.at("recording_id") == "acquisition_mapping_dense",
+            "mapping must bind the recording session id");
+    require(mapping.at("frame_identity_contract_ref") == "#/frame_identity_contract",
+            "mapping must bind the immutable frame identity sibling");
+    require(mapping.at("frame_identity_contract_sha256") ==
+                canonical_semantic_sha256(written.at("frame_identity_contract")),
+            "mapping must bind the exact canonical frame-identity digest");
+    const nlohmann::json& stream = mapping.at("camera_streams").at("2010096");
+    require(stream.at("coverage").at("first_recording_frame_id") == 1 &&
+                stream.at("coverage").at("last_recording_frame_id") == 3 &&
+                stream.at("coverage").at("total_acquisitions") == 3 &&
+                stream.at("coverage").at("metadata_row_count") == 3 &&
+                stream.at("coverage").at("gap_count") == 0,
+            "dense mapping coverage should faithfully report metadata rows and range");
+    require(stream.at("conversion").at("expression") ==
+                "source_acquisition_frame_index = recording_frame_id - 1",
+            "mapping must declare the one-based to zero-based subtraction");
+    require(stream.at("source_metadata_artifact").at("relative_path") ==
+                "Cam2010096_meta.csv",
+            "mapping metadata evidence must remain recording-relative");
+    require(stream.at("source_metadata_artifact").at("sha256") ==
+                "sha256:" + orange::gui::spatial_layout::checksum::sha256_hex(metadata_bytes),
+            "mapping must checksum exact metadata artifact bytes");
+    require(written.at("acquisition_index_mapping_sha256") ==
+                canonical_semantic_sha256(mapping),
+            "a finalized mapping must publish its exact canonical semantic digest");
+
+    const nlohmann::json frozen_mapping = mapping;
+    const std::string frozen_mapping_digest =
+        written.at("acquisition_index_mapping_sha256").get<std::string>();
+    {
+        std::ofstream output(folder / "Cam2010096_meta.csv", std::ios::binary);
+        output << "recording_frame_id,timestamp\n1,1001\n2,1001\n3,1001\n";
+    }
+    require(
+        orange::session::write_recording_session_manifest(
+            manifest_path.string(), written, &error),
+        "rewriting a sealed acquisition mapping should succeed: " + error);
+    const nlohmann::json rewritten = read_json(manifest_path);
+    require(rewritten.at("acquisition_index_mapping") == frozen_mapping &&
+                rewritten.at("acquisition_index_mapping_sha256") == frozen_mapping_digest,
+            "finalized acquisition mapping evidence must remain immutable on rewrite");
+
+    std::filesystem::remove_all(folder);
+}
+
+void test_manifest_leaves_gapped_acquisition_index_mapping_unsealed()
+{
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_session_acquisition_mapping_gap_" +
+         std::to_string(static_cast<long long>(::getpid())));
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder);
+    write_metadata_csv(folder / "Cam2010096_meta.csv", {1, 3});
+
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "test";
+    options.session_id = "acquisition_mapping_gap";
+    options.recording_folder = folder.string();
+    options.status = "completed";
+    options.cameras.push_back(make_camera_artifact("2010096", 2));
+    const nlohmann::json manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    const std::filesystem::path manifest_path = folder / "recording_session.json";
+    std::string error;
+    require(
+        orange::session::write_recording_session_manifest(
+            manifest_path.string(), manifest, &error),
+        "gapped acquisition mapping manifest write should retain provenance: " + error);
+
+    const nlohmann::json written = read_json(manifest_path);
+    const nlohmann::json& mapping = written.at("acquisition_index_mapping");
+    const nlohmann::json& stream = mapping.at("camera_streams").at("2010096");
+    require(mapping.at("status") == "unsealed" &&
+                mapping.at("reason_code") == "camera_stream_not_sealable_v1",
+            "a gapped source sequence must fail closed at mapping scope");
+    require(stream.at("status") == "unsealed" &&
+                stream.at("reason_code") == "noncontiguous_recording_frame_ids",
+            "a gapped source sequence must state the stable stream reason");
+    require(stream.at("coverage").at("first_recording_frame_id") == 1 &&
+                stream.at("coverage").at("last_recording_frame_id") == 3 &&
+                stream.at("coverage").at("metadata_row_count") == 2 &&
+                stream.at("coverage").at("gap_count") == 1,
+            "unsealed evidence must preserve the observed sparse coverage");
+    require(!stream.contains("conversion") &&
+                !written.contains("acquisition_index_mapping_sha256"),
+            "v1 must omit a conversion seal and digest for a gapped recording");
+
+    std::filesystem::remove_all(folder);
+}
+
+void test_manifest_rejects_malformed_acquisition_metadata_ids()
+{
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_session_acquisition_mapping_malformed_" +
+         std::to_string(static_cast<long long>(::getpid())));
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder);
+    {
+        std::ofstream output(folder / "Cam2010096_meta.csv", std::ios::binary);
+        output << "recording_frame_id,timestamp\n1,1000\n1junk,1001\n-2,1002\n 3,1003\n0,1004\n";
+    }
+
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "test";
+    options.session_id = "acquisition_mapping_malformed";
+    options.recording_folder = folder.string();
+    options.status = "completed";
+    options.cameras.push_back(make_camera_artifact("2010096", 2));
+    const std::filesystem::path manifest_path = folder / "recording_session.json";
+    std::string error;
+    require(
+        orange::session::write_recording_session_manifest(
+            manifest_path.string(),
+            orange::session::build_single_clip_recording_session_manifest(options),
+            &error),
+        "malformed metadata should be retained as unsealed provenance: " + error);
+
+    const nlohmann::json written = read_json(manifest_path);
+    const nlohmann::json& stream = written.at("acquisition_index_mapping")
+        .at("camera_streams").at("2010096");
+    require(stream.at("status") == "unsealed" &&
+                stream.at("reason_code") == "noncontiguous_recording_frame_ids" &&
+                stream.at("coverage").at("metadata_row_count") == 5 &&
+                stream.at("coverage").at("total_acquisitions") == 1,
+            "trailing, signed, whitespace-prefixed, and zero IDs must not be dense evidence");
+    require(!stream.contains("conversion"),
+            "malformed recording IDs must not receive a conversion declaration");
+
+    std::filesystem::remove_all(folder);
+}
+
+void test_manifest_rejects_frame_identity_camera_binding_mismatch()
+{
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_session_acquisition_mapping_identity_mismatch_" +
+         std::to_string(static_cast<long long>(::getpid())));
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder);
+    write_metadata_csv(folder / "Cam2010096_meta.csv", {1, 2});
+
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "test";
+    options.session_id = "acquisition_mapping_identity_mismatch";
+    options.recording_folder = folder.string();
+    options.status = "completed";
+    options.cameras.push_back(make_camera_artifact("2010096", 2));
+    nlohmann::json manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    // This has the recognized v1 outer identity so the existing writer must
+    // preserve it, but the declared stream is bound to another camera.
+    manifest["frame_identity_contract"] = {
+        {"schema_id", "orange.recording.frame_identity"},
+        {"schema_version", 1},
+        {"status", "finalized"},
+        {"camera_streams", {
+            {"2010096", {{"camera_serial", "2010095"}}},
+        }},
+    };
+    const std::filesystem::path manifest_path = folder / "recording_session.json";
+    std::string error;
+    require(
+        orange::session::write_recording_session_manifest(
+            manifest_path.string(), manifest, &error),
+        "identity mismatch should be retained as unsealed provenance: " + error);
+
+    const nlohmann::json written = read_json(manifest_path);
+    const nlohmann::json& mapping = written.at("acquisition_index_mapping");
+    const nlohmann::json& stream = mapping.at("camera_streams").at("2010096");
+    require(mapping.at("status") == "unsealed" &&
+                stream.at("reason_code") == "frame_identity_camera_binding_mismatch" &&
+                !stream.contains("conversion"),
+            "a mismatched frame-identity camera binding must fail closed");
+    require(mapping.contains("frame_identity_contract_ref") &&
+                mapping.contains("frame_identity_contract_sha256"),
+            "a supported finalized identity remains digest-bound even when a stream mismatches");
+
+    std::filesystem::remove_all(folder);
+}
+
+void test_manifest_rejects_corrupt_finalized_acquisition_mapping()
+{
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_session_acquisition_mapping_corrupt_" +
+         std::to_string(static_cast<long long>(::getpid())));
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder);
+    write_metadata_csv(folder / "Cam2010096_meta.csv", {1, 2});
+
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "test";
+    options.session_id = "acquisition_mapping_corrupt";
+    options.recording_folder = folder.string();
+    options.status = "completed";
+    options.cameras.push_back(make_camera_artifact("2010096", 2));
+    const std::filesystem::path manifest_path = folder / "recording_session.json";
+    std::string error;
+    require(
+        orange::session::write_recording_session_manifest(
+            manifest_path.string(),
+            orange::session::build_single_clip_recording_session_manifest(options),
+            &error),
+        "initial sealed mapping write should succeed: " + error);
+    const nlohmann::json sealed = read_json(manifest_path);
+
+    nlohmann::json corrupt = sealed;
+    corrupt["acquisition_index_mapping_sha256"] = "sha256:" + std::string(64, '0');
+    error.clear();
+    require(
+        !orange::session::write_recording_session_manifest(
+            manifest_path.string(), corrupt, &error),
+        "a finalized mapping with a mismatched digest must be rejected");
+    require(error.find("invalid semantic-record digest") != std::string::npos &&
+                read_json(manifest_path) == sealed,
+            "a corrupt finalized mapping must not rewrite the existing manifest");
+
+    corrupt = sealed;
+    corrupt.erase("acquisition_index_mapping_sha256");
+    error.clear();
+    require(
+        !orange::session::write_recording_session_manifest(
+            manifest_path.string(), corrupt, &error),
+        "a finalized mapping without its sibling digest must be rejected");
+    require(read_json(manifest_path) == sealed,
+            "a missing finalized mapping digest must not rewrite the existing manifest");
+
+    std::filesystem::remove_all(folder);
+}
+
+void test_manifest_rejects_duplicate_camera_serial_mapping()
+{
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_session_acquisition_mapping_duplicate_camera_" +
+         std::to_string(static_cast<long long>(::getpid())));
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder);
+    write_metadata_csv(folder / "Cam2010096_meta.csv", {1, 2});
+
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "test";
+    options.session_id = "acquisition_mapping_duplicate_camera";
+    options.recording_folder = folder.string();
+    options.status = "completed";
+    options.cameras.push_back(make_camera_artifact("2010096", 2));
+    options.cameras.push_back(make_camera_artifact("2010096", 2));
+    const std::filesystem::path manifest_path = folder / "recording_session.json";
+    std::string error;
+    require(
+        orange::session::write_recording_session_manifest(
+            manifest_path.string(),
+            orange::session::build_single_clip_recording_session_manifest(options),
+            &error),
+        "duplicate camera provenance should be retained as unsealed mapping: " + error);
+
+    const nlohmann::json written = read_json(manifest_path);
+    const nlohmann::json& mapping = written.at("acquisition_index_mapping");
+    require(mapping.at("status") == "unsealed" &&
+                mapping.at("reason_code") == "duplicate_camera_serial" &&
+                !mapping.contains("acquisition_index_mapping_sha256") &&
+                !written.contains("acquisition_index_mapping_sha256") &&
+                !mapping.at("camera_streams").at("2010096").contains("conversion"),
+            "duplicate camera entries must not silently collapse into a dense mapping");
+
+    std::filesystem::remove_all(folder);
+}
+
+void test_manifest_omits_identity_digest_when_identity_is_unfinalized()
+{
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_session_acquisition_mapping_identity_pending_" +
+         std::to_string(static_cast<long long>(::getpid())));
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder);
+    {
+        std::ofstream output(folder / "Cam2010096_meta.csv", std::ios::binary);
+    }
+
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "test";
+    options.session_id = "acquisition_mapping_identity_pending";
+    options.recording_folder = folder.string();
+    options.status = "recording";
+    options.cameras.push_back(make_camera_artifact("2010096", 1));
+    const std::filesystem::path manifest_path = folder / "recording_session.json";
+    std::string error;
+    require(
+        orange::session::write_recording_session_manifest(
+            manifest_path.string(),
+            orange::session::build_single_clip_recording_session_manifest(options),
+            &error),
+        "pending identity manifest write should retain provenance: " + error);
+
+    const nlohmann::json written = read_json(manifest_path);
+    const nlohmann::json& mapping = written.at("acquisition_index_mapping");
+    require(mapping.at("status") == "unsealed" &&
+                mapping.at("reason_code") == "recording_not_completed" &&
+                !mapping.contains("frame_identity_contract_ref") &&
+                !mapping.contains("frame_identity_contract_sha256"),
+            "an unfinalized identity must not be represented by a placeholder digest");
+    const nlohmann::json& stream = mapping.at("camera_streams").at("2010096");
+    require(stream.at("source_metadata_artifact").at("sha256") ==
+                "sha256:" + orange::gui::spatial_layout::checksum::sha256_hex(""),
+            "a readable zero-byte metadata artifact must retain its exact byte digest");
+    require(!stream.at("source_metadata_artifact").contains("available"),
+            "closed source metadata artifacts must not gain undeclared availability fields");
+
+    std::filesystem::remove_all(folder);
+}
+
 }  // namespace
 
 int main()
@@ -529,6 +1096,24 @@ int main()
          test_manifest_freezes_inferred_ptp_tai_clock_contract},
         {"manifest_keeps_camera_epoch_unspecified_without_ptp_evidence",
          test_manifest_keeps_camera_epoch_unspecified_without_ptp_evidence},
+        {"manifest_preserves_untraceable_ptp_timescale_evidence",
+         test_manifest_preserves_untraceable_ptp_timescale_evidence},
+        {"manifest_freezes_external_returned_identity_proof",
+         test_manifest_freezes_external_returned_identity_proof},
+        {"manifest_seals_dense_acquisition_index_mapping_and_exact_metadata_checksum",
+         test_manifest_seals_dense_acquisition_index_mapping_and_exact_metadata_checksum},
+        {"manifest_leaves_gapped_acquisition_index_mapping_unsealed",
+         test_manifest_leaves_gapped_acquisition_index_mapping_unsealed},
+        {"manifest_rejects_malformed_acquisition_metadata_ids",
+         test_manifest_rejects_malformed_acquisition_metadata_ids},
+        {"manifest_rejects_frame_identity_camera_binding_mismatch",
+         test_manifest_rejects_frame_identity_camera_binding_mismatch},
+        {"manifest_rejects_corrupt_finalized_acquisition_mapping",
+         test_manifest_rejects_corrupt_finalized_acquisition_mapping},
+        {"manifest_rejects_duplicate_camera_serial_mapping",
+         test_manifest_rejects_duplicate_camera_serial_mapping},
+        {"manifest_omits_identity_digest_when_identity_is_unfinalized",
+         test_manifest_omits_identity_digest_when_identity_is_unfinalized},
     };
 
     for (const TestCase& test : tests) {

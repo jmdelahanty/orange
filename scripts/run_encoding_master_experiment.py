@@ -360,6 +360,60 @@ def patch_matrix(spec: dict[str, Any], run: dict[str, Any]) -> None:
             matrix[key] = value if isinstance(value, list) else [value]
 
 
+def patch_recording_profile_from_matrix(spec: dict[str, Any]) -> None:
+    fixed = spec.get("fixed", {})
+    if not isinstance(fixed, dict):
+        return
+    profile = fixed.get("recording_profile")
+    if not isinstance(profile, dict):
+        return
+    matrix = spec.get("matrix", {})
+    if not isinstance(matrix, dict):
+        return
+
+    direct_fields = (
+        "codec",
+        "preset",
+        "tuning",
+        "rate_control_mode",
+        "quality_value",
+        "gop_length",
+        "aq",
+        "temporal_aq",
+        "lookahead",
+        "lookahead_depth",
+        "target_bitrate_bps",
+        "max_bitrate_bps",
+        "vbv_buffer_size",
+    )
+    for field in direct_fields:
+        if field not in matrix:
+            continue
+        values = as_list(matrix[field])
+        if len(values) != 1:
+            raise ValueError(
+                f"fixed.recording_profile requires matrix.{field} to resolve to exactly one value"
+            )
+        profile[field] = values[0]
+
+    importance_map = profile.setdefault("importance_map", {})
+    if not isinstance(importance_map, dict):
+        raise ValueError("fixed.recording_profile.importance_map must be an object")
+    nested_fields = {
+        "importance_map_mode": "mode",
+        "importance_map_roi_size_px": "roi_size_px",
+    }
+    for matrix_field, profile_field in nested_fields.items():
+        if matrix_field not in matrix:
+            continue
+        values = as_list(matrix[matrix_field])
+        if len(values) != 1:
+            raise ValueError(
+                f"fixed.recording_profile requires matrix.{matrix_field} to resolve to exactly one value"
+            )
+        importance_map[profile_field] = values[0]
+
+
 def patch_stream_paths(contract: dict[str, Any], artifact_root: Path) -> None:
     streams = contract.get("streams", {})
     if not isinstance(streams, dict):
@@ -460,6 +514,7 @@ def resolve_run(
     apply_stream_overrides(contract, run)
     patch_stream_paths(contract, artifact_root)
     patch_matrix(spec, run)
+    patch_recording_profile_from_matrix(spec)
 
     spec_path = matrix_root / "resolved_specs" / f"{run_id}.json"
     analytics_root = analytics_output_root / spec_experiment_id

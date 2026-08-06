@@ -375,6 +375,7 @@ set(ORANGE_SOURCES
 
 set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/orange_headless_client.cpp"
+    "${SRC_DIR}/headless_recording_profile.cpp"
     "${SRC_DIR}/network_base.cpp"
     "${SRC_DIR}/video_container_finalization.cpp"
     "${SRC_DIR}/FFmpegWriter.cpp"
@@ -512,6 +513,14 @@ add_executable(external_recorder_ipc_probe EXCLUDE_FROM_ALL ${EXTERNAL_RECORDER_
 add_executable(external_recorder_supervisor_plan EXCLUDE_FROM_ALL ${EXTERNAL_RECORDER_SUPERVISOR_PLAN_SOURCES})
 
 if(BUILD_TESTING)
+    add_executable(headless_recording_profile_tests
+        "tools/headless_recording_profile_tests.cpp"
+        "${SRC_DIR}/headless_recording_profile.cpp"
+    )
+    target_include_directories(headless_recording_profile_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(headless_recording_profile_tests PRIVATE cxx_std_17)
+    add_test(NAME headless_recording_profile_tests COMMAND headless_recording_profile_tests)
+
     add_executable(external_recorder_frame_metadata_tests
         "tools/external_recorder_frame_metadata_tests.cpp"
         "${SRC_DIR}/external_recorder_frame_metadata.cpp"
@@ -968,6 +977,10 @@ if(BUILD_TESTING)
     add_test(
         NAME vbr_cq_quality_matrix_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/vbr_cq_quality_matrix_tests.py")
+
+    add_test(
+        NAME encoding_master_recording_profile_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/encoding_master_recording_profile_tests.py")
 
     add_test(
         NAME calibration_package_tests

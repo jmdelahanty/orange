@@ -79,6 +79,7 @@ nlohmann::json make_contract(const std::vector<int>& shard_gpu_ids,
         {"require_status_runtime", true},
         {"require_storage_preflight", true},
         {"require_protocol_hello", true},
+        {"require_frame_identity_proof", true},
         {"streams", {
             {"2010096", {
                 {"stream_id", "2010096"},
@@ -122,6 +123,8 @@ void test_single_shard_plan_builds_command()
             "plan should require recorder storage preflight telemetry");
     require(plan.require_protocol_hello,
             "plan should require IPC protocol hello telemetry");
+    require(plan.require_frame_identity_proof,
+            "plan should require returned-NVENC frame identity proof");
     const auto& stream = plan.streams[0];
     require(stream.stream_kind == "full_frame", "default full stream kind should parse");
     require(stream.output_kind == "full", "default full output kind should parse");
@@ -413,6 +416,8 @@ void test_two_shard_plan_builds_gop_modulo_command()
             "plan json should expose storage preflight requirement");
     require(json_plan.value("require_protocol_hello", false),
             "plan json should expose IPC protocol hello requirement");
+    require(json_plan.value("require_frame_identity_proof", false),
+            "plan json should expose returned-NVENC frame identity proof requirement");
     require(json_plan.value("preserve_shard_mp4s", true) == false,
             "plan json should expose default shard MP4 retention policy");
     require(json_plan["streams"][0].value("status_json", "").find(

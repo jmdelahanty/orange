@@ -139,6 +139,36 @@ def video_metadata_payload(serial: str, *, output_kind: str = "full") -> dict:
     }
 
 
+def frame_identity_proof_payload(frames: int = 3) -> dict:
+    return {
+        "schema_id": "orange.external_recorder.frame_identity_proof",
+        "schema_version": 1,
+        "status": "passed",
+        "canonical_field": "recording_frame_id",
+        "scope": "recording_session_and_camera_stream",
+        "assignment_event": "orange_acquisition_recording_frame_sequence",
+        "row_granularity": "one_encoded_video_frame",
+        "legacy_aliases": {"frame_id": "recording_frame_id"},
+        "continuity_policy": "encoded_subset",
+        "recording_frame_id_gaps_allowed": True,
+        "source_frames_skipped_by_policy": 0,
+        "source_frames_dropped": 0,
+        "video_binding": {
+            "method": "nvenc_input_timestamp_to_output_timestamp_registry",
+            "metadata_write_event": "completed_gop_after_returned_identity_match",
+            "submitted_frame_identities": frames,
+            "returned_identity_matches": frames,
+            "identity_mismatches": 0,
+            "outstanding_submitted_identities": 0,
+            "encoded_video_frames": frames,
+            "packets_written": frames,
+            "metadata_rows": frames,
+            "verification_rule_id": "orange.external_recorder.frame_identity.v1",
+            "verified": True,
+        },
+    }
+
+
 def write_summary(
     root: Path,
     serial: str,
@@ -463,6 +493,7 @@ def verify_one(
     require_storage_preflight: bool = False,
     require_protocol_hello: bool = False,
     ffprobe_packet_count: int | None = None,
+    contract_fields: dict | None = None,
 ) -> dict:
     serial = "2010096"
     stream = {
@@ -483,6 +514,8 @@ def verify_one(
         "require_merged_mp4": not rolling_requested,
         "require_video_sanity": False,
     }
+    if contract_fields:
+        contract.update(contract_fields)
     original_ffprobe = verifier.ffprobe_video
     original_ffprobe_key_flags = verifier.ffprobe_packet_key_flags
     verifier.ffprobe_video = lambda path, ffprobe: {
@@ -599,6 +632,72 @@ def test_single_clip_frame_metadata_identity_contract() -> None:
             )
         else:
             raise AssertionError("expected frame identity mismatch to fail")
+
+
+def test_returned_nvenc_frame_identity_proof_is_required_and_verified() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary_path, mp4_path = write_summary(root, "2010096")
+
+        try:
+            verify_one(
+                root,
+                summary_path,
+                mp4_path,
+                contract_fields={"require_frame_identity_proof": True},
+            )
+        except verifier.VerificationError as exc:
+            require(
+                "required frame_identity_proof is missing" in str(exc),
+                f"unexpected missing proof failure: {exc}",
+            )
+        else:
+            raise AssertionError("expected required returned-identity proof to fail")
+
+        rewrite_summary(
+            summary_path,
+            lambda payload: payload.update({
+                "frame_identity_proof": frame_identity_proof_payload(),
+                "merged_output": {
+                    "coordinator_enabled": True,
+                    "enabled": True,
+                    "failed": False,
+                    "pending_gops": 0,
+                    "packets_written": 3,
+                },
+            }),
+        )
+        result = verify_one(
+            root,
+            summary_path,
+            mp4_path,
+            contract_fields={"require_frame_identity_proof": True},
+        )
+        require(
+            result["frames_encoded"] == 3,
+            "valid returned-identity proof should preserve the frame count",
+        )
+
+        rewrite_summary(
+            summary_path,
+            lambda payload: payload["frame_identity_proof"]["video_binding"].update(
+                {"returned_identity_matches": 2}
+            ),
+        )
+        try:
+            verify_one(
+                root,
+                summary_path,
+                mp4_path,
+                contract_fields={"require_frame_identity_proof": True},
+            )
+        except verifier.VerificationError as exc:
+            require(
+                "returned_identity_matches does not match frames_encoded" in str(exc),
+                f"unexpected returned identity mismatch failure: {exc}",
+            )
+        else:
+            raise AssertionError("expected returned identity mismatch to fail")
 
 
 def test_single_clip_frame_metadata_permits_intentional_rate_cap_gaps() -> None:
@@ -1322,6 +1421,7 @@ def main() -> int:
         test_queue_thresholds_pass_and_summarize,
         test_single_clip_frame_metadata_is_required_and_complete,
         test_single_clip_frame_metadata_identity_contract,
+        test_returned_nvenc_frame_identity_proof_is_required_and_verified,
         test_single_clip_frame_metadata_permits_intentional_rate_cap_gaps,
         test_single_clip_packet_parity_is_required,
         test_queue_threshold_failures,

@@ -274,8 +274,8 @@ if [[ -z "$SHARD_GPU_IDS" && "$RECORDER_GPU_ID" == "5" ]]; then
   SHARD_GPU_IDS="5,6"
 fi
 if [[ -n "$SHARD_GPU_IDS" ]]; then
-  [[ "$SHARD_GPU_IDS" =~ ^[0-9]+(,[0-9]+)+$ ]] || {
-    echo "SHARD_GPU_IDS must be a comma-separated list of at least two GPU ids." >&2
+  [[ "$SHARD_GPU_IDS" =~ ^[0-9]+(,[0-9]+)*$ ]] || {
+    echo "SHARD_GPU_IDS must contain one or more comma-separated GPU ids." >&2
     exit 2
   }
   if [[ "${SHARD_GPU_IDS%%,*}" != "$RECORDER_GPU_ID" ]]; then
@@ -410,7 +410,8 @@ contract = {
     "require_storage_preflight": True,
     "require_protocol_hello": True,
     "require_video_sanity": skip_video_sanity == 0,
-    "require_merged_mp4": clip_seconds == 0 and len(expected_shard_gpu_ids) > 1,
+    "require_merged_mp4": clip_seconds == 0,
+    "require_frame_identity_proof": True,
     "require_gop_routing": True,
     "preserve_shard_mp4s": False,
     "recording_control": {
