@@ -148,6 +148,27 @@ detach copy, the recorder must advertise deferred release in ACK and send a
 separate RELEASE only after every recorder-side operation that can read the
 source frame has completed.
 
+### Encoded-frame identity authority
+
+`recording_frame_id` is assigned once by Orange acquisition while recording is
+active. The recorder passes that value to NVENC as `inputTimeStamp`; NVENC's
+returned `outputTimeStamp` is used only to consume the corresponding submitted
+identity. Unknown, duplicate, zero, or outstanding returned identities are
+fatal finalization errors.
+
+The GOP-order output coordinator is authoritative for single-shard,
+multi-shard, and rolling output alike. This uniform path is important because
+NVENC may delay packets until a later submission or `EndEncode`. A metadata row
+is emitted only from a completed, returned-identity-bound GOP. Single-shard
+recording therefore does not use the older input-submission-time CSV writer.
+
+The recorder summary's `frame_identity_proof` records submitted and returned
+identity counts, mismatches, outstanding identities, packet count, metadata
+row count, and encoded-frame count. New contracts require the proof; verifier
+success requires equality across those populations. Intentional rate caps may
+leave gaps in `recording_frame_id`, but cannot leave an encoded packet without
+exactly one metadata row.
+
 ## Routing Policy
 
 Required routing modes:
@@ -386,7 +407,8 @@ cd /home/jeremy/orange-gop-split-a16
 scripts/run_external_recorder_smoke.sh \
   --duration 3 \
   --warmup 1 \
-  --encode-fps 60 \
+  --encode-fps 100 \
+  --encode-max-fps 60 \
   --output-dir /tmp \
   --shard-gpu-ids 5,6
 ```
@@ -434,7 +456,8 @@ cd /home/jeremy/orange-gop-split-a16
 scripts/run_external_recorder_smoke.sh \
   --duration 3 \
   --warmup 1 \
-  --encode-fps 60 \
+  --encode-fps 100 \
+  --encode-max-fps 60 \
   --output-dir /tmp \
   --shard-gpu-ids 5,6
 ```

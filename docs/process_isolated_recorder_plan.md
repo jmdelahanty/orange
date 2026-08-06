@@ -388,9 +388,9 @@ External-process NVENC first slice:
 30-second GPU placement comparison:
 
 - Same-GPU run:
-  `scripts/run_external_recorder_smoke.sh --duration 30 --warmup 2 --encode-fps 60 --output-dir /tmp`
+  `scripts/run_external_recorder_smoke.sh --duration 30 --warmup 2 --encode-fps 100 --encode-max-fps 60 --output-dir /tmp`
 - Paired-GPU run:
-  `scripts/run_external_recorder_smoke.sh --duration 30 --warmup 2 --encode-fps 60 --recorder-gpu-id 6 --output-dir /tmp`
+  `scripts/run_external_recorder_smoke.sh --duration 30 --warmup 2 --encode-fps 100 --encode-max-fps 60 --recorder-gpu-id 6 --output-dir /tmp`
 - Both runs used camera `2010096`, analytics/YOLO on A16 GPU `5`, real live
   frames, external HEVC `p1/ll`, and a `60 fps` external encode cap.
 - Both runs received/ACKed `3203` descriptors, encoded `1922` frames, skipped

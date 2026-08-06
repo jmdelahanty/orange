@@ -670,6 +670,27 @@ Current emitted `ptp_sync_summary.json` shape:
   "created_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
   "updated_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
   "sync": { "...": "same session-level sync snapshot shape as recording_snapshot.json" },
+  "host_ptp_management_evidence": {
+    "schema_id": "orange.host_ptp.management_evidence",
+    "schema_version": 1,
+    "available": true,
+    "capture_method": "linuxptp_pmc_management_socket",
+    "captured_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
+    "raw_sha256": "sha256:...",
+    "time_properties": {
+      "currentUtcOffset": 37,
+      "currentUtcOffsetValid": false,
+      "ptpTimescale": true,
+      "timeTraceable": false
+    },
+    "parent": {"grandmasterIdentity": "a088c2.fffe.69119e"},
+    "default": {"twoStepFlag": true, "domainNumber": 0},
+    "classification": {
+      "ptp_timescale_advertised": true,
+      "utc_offset_authoritative": false,
+      "result": "ptp_timescale_utc_offset_unvalidated"
+    }
+  },
   "cameras": {
     "02010093": {
       "camera_serial": "02010093",
@@ -762,6 +783,19 @@ Notes:
   frame. Consecutive samples with the same mode/status are compacted into one
   observation with first/last frame bounds; the array grows only when the
   observed state changes.
+- `scripts/ptp_stack.sh start` and `status` capture the three LinuxPTP
+  management datasets into `/tmp/ptp-stack/management_evidence.txt`. Orange
+  snapshots the parsed fields, raw response, and SHA-256 into each recording's
+  PTP summary. If the file or any dataset is unavailable, recording continues
+  and the evidence block says so explicitly.
+- `status` uses non-interactive sudo so an unattended evidence refresh cannot
+  block waiting for a password. Run `sudo -v` first when an operator refresh is
+  needed. A failed refresh does not replace the last valid evidence file.
+- `ptpTimescale=true` does not by itself establish a valid UTC relationship.
+  `currentUtcOffsetValid=false` or `timeTraceable=false` is preserved rather
+  than promoted to authoritative TAI/UTC evidence. For example, a host acting
+  as its own clock-class-248 grandmaster may advertise offset `37` while also
+  declaring that offset invalid.
 
 ## Headless Experiment Run Metrics
 
@@ -833,19 +867,50 @@ contains:
   of the PTP summary used by the classifier.
 
 Each camera clock embeds the PTP evidence snapshot and the complete versioned
-inference result, including individual checks and thresholds. Schema version 1
-expects a 37-second TAI-minus-UTC offset. It classifies a clock as
-`ieee1588_tai` only when PTP is enabled, the camera's PTP offset and latched
-clock agreement are bounded, PTP readbacks are stable, and the recording-frame
-camera-minus-host statistics match that expected offset. The authority remains
-`inferred_from_recording_evidence`; Orange does not describe it as an SDK- or
-camera-declared epoch. Missing or insufficient evidence produces
-`device_defined`, `origin = null`, and an unspecified epoch.
+classification result, including individual checks and thresholds. Rule v2
+uses a valid LinuxPTP `currentUtcOffset` when the management dataset declares
+both `ptpTimescale=true` and `currentUtcOffsetValid=true`. It still requires
+bounded camera PTP/latch evidence, stable camera PTP readbacks, and matching
+recording-frame camera-minus-host statistics. When direct management evidence
+is absent, v2 retains the prior 37-second evidence-inference fallback. When the
+PTP timescale is advertised but the UTC offset is invalid, the result is
+`ieee1588_ptp_timescale_untraceable`, with `timescale=PTP`; it is not promoted
+to authoritative TAI. Missing or insufficient evidence produces
+`device_defined`, `origin=null`, and an unspecified epoch.
 
 Once a valid version-1 clock contract has `status = "finalized"`, later shared
 manifest updates preserve it verbatim. For example, copying a local-control
 event log into `recording_session.json` does not silently reclassify clocks or
 change the PTP-summary fingerprint.
+
+## Finalized Frame Identity Contract
+
+The shared session writer also adds `frame_identity_contract` using schema
+`orange.recording.frame_identity` version `1`. The canonical field is
+`recording_frame_id`, scoped to one recording session and camera stream.
+`frame_id` remains a legacy CSV alias and must equal the canonical value.
+
+For external full-frame recording, Orange passes `recording_frame_id` to NVENC
+as `inputTimeStamp`. The authoritative output coordinator accepts an encoded
+packet only after NVENC returns the same ID through `outputTimeStamp`. Metadata
+is written when that identity-bound GOP is complete, including packets returned
+during delayed output and final encoder flush. The recorder summary contains
+`orange.external_recorder.frame_identity_proof` with submitted, returned,
+mismatched, outstanding, packet, metadata-row, and encoded-frame counts.
+
+Newly materialized external-recorder contracts set
+`require_frame_identity_proof=true`. Finalization and the external-session
+verifier require all submitted identities to be returned exactly once, no
+unknown or duplicate identities, zero outstanding identities, and equality of
+metadata rows, packets, and encoded frames. A configured frame-rate cap may
+produce gaps because the continuity policy is `encoded_subset`; every encoded
+frame must still have exactly one row. Historical contracts without the new
+requirement remain inspectable and are labeled `legacy_unproven` rather than
+silently acquiring evidence they never recorded.
+
+Once the session-level frame identity contract reaches `status=finalized`,
+later manifest rewrites preserve its per-camera recorder-summary checksum and
+proof verbatim.
 
 ## Headless Recording Session Manifest
 
@@ -1462,6 +1527,20 @@ all-I crop omits `stss`, it requires every sampled demuxed packet to be a sync
 sample and cross-checks the same prefix against Orange's packet-level IDR
 sidecar. The default bound is 4096 packets so validation remains practical for
 high-rate and long-duration recordings.
+
+Camera schema-4 `recording.encode` may also declare explicit rate-control
+values:
+
+- `target_bitrate_bps`: positive integer average target, or `"auto"`;
+- `max_bitrate_bps`: positive integer VBR ceiling, or `"auto"`; and
+- `vbv_buffer_size`: positive integer NVENC VBV size, or `"auto"`.
+
+When both bitrate fields are explicit, `max_bitrate_bps` must be greater than
+or equal to `target_bitrate_bps`. These values become part of the frozen
+resolved recording authority and materialize into the external-recorder
+contract. Omitted/automatic fields preserve the historical 150 Mbps external
+recorder fallback. A stream-specific external contract can still override the
+camera default for an isolated experiment matrix.
 
 ## Keyframe And Sync-Sample Semantics
 

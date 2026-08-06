@@ -160,7 +160,7 @@ Command:
 
 ```bash
 cd /home/jeremy/orange-gop-split-a16
-scripts/run_external_recorder_smoke.sh --duration 3 --warmup 1 --encode-fps 60 --output-dir /tmp
+scripts/run_external_recorder_smoke.sh --duration 3 --warmup 1 --encode-fps 100 --encode-max-fps 60 --output-dir /tmp
 ```
 
 Result from `2026_04_25_212327`:
@@ -197,8 +197,8 @@ Commands:
 
 ```bash
 cd /home/jeremy/orange-gop-split-a16
-scripts/run_external_recorder_smoke.sh --duration 30 --warmup 2 --encode-fps 60 --output-dir /tmp
-scripts/run_external_recorder_smoke.sh --duration 30 --warmup 2 --encode-fps 60 --recorder-gpu-id 6 --output-dir /tmp
+scripts/run_external_recorder_smoke.sh --duration 30 --warmup 2 --encode-fps 100 --encode-max-fps 60 --output-dir /tmp
+scripts/run_external_recorder_smoke.sh --duration 30 --warmup 2 --encode-fps 100 --encode-max-fps 60 --recorder-gpu-id 6 --output-dir /tmp
 ```
 
 Artifacts:

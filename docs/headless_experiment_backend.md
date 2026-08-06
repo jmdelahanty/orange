@@ -124,6 +124,48 @@ Experiment specs now support two useful fixed-mode toggles:
 - `fixed.recording_control.record_for_seconds = 0 | <positive seconds>`
 - `fixed.recording_control.clip_seconds = 0 | <positive seconds>`
 - `fixed.external_recorder_contract.mode = "off" | "diagnostic_ipc_v1"`
+- `fixed.recording_profile = { ... }` for one authoritative, fully specified
+  encoder policy shared by the headless run and its external full-frame recorder
+
+`fixed.recording_profile` is opt-in so existing matrix specs remain compatible.
+When present, it is strict and fail-closed: matrix encoder fields may be omitted
+and inherit from it, or may contain exactly one identical value. Explicit
+full-frame stream fields under `fixed.external_recorder_contract.streams` must
+also agree. This prevents the analytics run, materialized camera configuration,
+and external recorder command from silently using different bitrates or encoder
+controls.
+
+```json
+"recording_profile": {
+  "codec": "hevc",
+  "preset": "p1",
+  "tuning": "ll",
+  "rate_control_mode": "vbr",
+  "quality_value": 20,
+  "gop_length": 30,
+  "aq": "off",
+  "temporal_aq": "off",
+  "lookahead": "off",
+  "lookahead_depth": 0,
+  "target_bitrate_bps": 45000000,
+  "max_bitrate_bps": 60000000,
+  "vbv_buffer_size": 60000000,
+  "importance_map": {
+    "mode": "off",
+    "roi_size_px": 512
+  }
+}
+```
+
+Use the parser-only validation mode before a live run. It resolves the matrix
+and checks profile/recorder agreement without opening cameras or creating an
+experiment folder:
+
+```bash
+targets/release/orange_client --mode local \
+  --experiment-spec experiment_specs/example.json \
+  --validate-experiment-spec
+```
 
 `fixed.stream_only = true` keeps the experiment runner in acquisition-only mode
 for that run:
