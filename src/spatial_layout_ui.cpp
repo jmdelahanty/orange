@@ -8,6 +8,7 @@
 #include "gui/spatial_layout/capture_panel.h"
 #include "gui/spatial_layout/citrus_import.h"
 #include "gui/spatial_layout/citrus_template_workflow.h"
+#include "gui/spatial_layout/commissioning_finalization.h"
 #include "gui/spatial_layout/daily_registration_workflow.h"
 #include "gui/spatial_layout/geometry.h"
 #include "gui/spatial_layout/group_capture_controller.h"
@@ -134,6 +135,11 @@ using orange::gui::spatial_layout::load_citrus_projected_surface_scale_candidate
 using orange::gui::spatial_layout::reject_citrus_projected_surface_scale_candidates;
 using orange::gui::spatial_layout::finalize_citrus_rig_canvas_commissioning;
 using orange::gui::spatial_layout::query_citrus_rig_canvas_commissioning_status;
+using orange::gui::spatial_layout::CommissioningControlReply;
+using orange::gui::spatial_layout::CommissioningFinalizationDisposition;
+using orange::gui::spatial_layout::CommissioningFinalizationRequest;
+using orange::gui::spatial_layout::CommissioningFinalizationResult;
+using orange::gui::spatial_layout::CommissioningFinalizationWorker;
 using orange::gui::spatial_layout::query_citrus_daily_registration_status;
 using orange::gui::spatial_layout::select_citrus_daily_registration_runtime_mode;
 using orange::gui::spatial_layout::submit_generic_calibration_image_set_save_job;
@@ -2119,6 +2125,35 @@ void render_spatial_layout_window(
         "homography and physical scale. Citrus writes an immutable release "
         "with frozen rig/canvas snapshots and atomically activates a small "
         "pointer. Daily dish registration must not edit this canvas geometry.");
+    if (!ui_state->rig_canvas_commissioning_finalization_worker) {
+        ui_state->rig_canvas_commissioning_finalization_worker =
+            std::make_shared<CommissioningFinalizationWorker>();
+    }
+    CommissioningFinalizationResult finalization_result;
+    if (ui_state->rig_canvas_commissioning_finalization_worker->Poll(
+            &finalization_result)) {
+        if (!finalization_result.commissioning.empty()) {
+            ui_state->rig_canvas_commissioning_status =
+                finalization_result.commissioning;
+        }
+        if (finalization_result.disposition ==
+            CommissioningFinalizationDisposition::kPublished) {
+            ui_state->rig_canvas_commissioning_error.clear();
+            ui_state->rig_canvas_commissioning_message =
+                "Published and activated stable commissioning release " +
+                finalization_result.release_id + ". Manifest: " +
+                finalization_result.manifest_path;
+        } else {
+            ui_state->rig_canvas_commissioning_message.clear();
+            ui_state->rig_canvas_commissioning_error =
+                finalization_result.error.empty()
+                ? "Commissioning finalization did not complete."
+                : finalization_result.error;
+        }
+    }
+    const bool commissioning_finalization_running =
+        ui_state->rig_canvas_commissioning_finalization_worker->running();
+    ImGui::BeginDisabled(commissioning_finalization_running);
     if (ImGui::Button("Refresh Commissioning Readiness / Active Release")) {
         const auto result = query_citrus_rig_canvas_commissioning_status(
             "operator-commissioning-refresh");
@@ -2130,6 +2165,12 @@ void render_spatial_layout_window(
             ui_state->rig_canvas_commissioning_message =
                 "Citrus commissioning authority status refreshed.";
         }
+    }
+    ImGui::EndDisabled();
+    if (commissioning_finalization_running) {
+        ImGui::SameLine();
+        ImGui::TextDisabled(
+            "Publishing and verifying the exact active release...");
     }
     const auto& commissioning_status =
         ui_state->rig_canvas_commissioning_status;
@@ -2192,9 +2233,10 @@ void render_spatial_layout_window(
     const bool commissioning_ready =
         commissioning_status.value("ready_to_finalize", false);
     ImGui::BeginDisabled(
-        !commissioning_ready || !manual_authority_controls_available);
+        !commissioning_ready || !manual_authority_controls_available ||
+        commissioning_finalization_running);
     ImGui::Checkbox(
-        "I accept this rig revision, canvas snapshot, homographies, scales, QC, and source sessions as commissioning authority",
+        "I accept this rig revision, canvas snapshot, homographies, scales, QC, and Citrus-derived source sessions as commissioning authority",
         &ui_state->accept_rig_canvas_commissioning_armed);
     ImGui::BeginDisabled(!ui_state->accept_rig_canvas_commissioning_armed);
     if (ImGui::Button("Finalize And Activate Immutable Canvas Commissioning")) {
@@ -2212,20 +2254,50 @@ void render_spatial_layout_window(
         } else {
             const std::string operation_id =
                 next_commissioning_operation_id("finalize");
-            nlohmann::json session_dirs = nlohmann::json::array();
-            if (!ui_state->calibration_session_dir.empty()) {
-                session_dirs.push_back(ui_state->calibration_session_dir);
-            }
-            const auto result = finalize_citrus_rig_canvas_commissioning(
-                operation_id, canvas_path, canvas_checksum, session_dirs, true,
-                operation_id);
-            if (!result.ok) {
-                ui_state->rig_canvas_commissioning_error = result.reason;
+            CommissioningFinalizationRequest request;
+            request.transaction_id = operation_id;
+            request.operation_id = operation_id;
+            request.canvas_path = canvas_path;
+            request.expected_canvas_checksum = canvas_checksum;
+            request.accept_commissioning_armed = true;
+            std::string start_error;
+            const bool started =
+                ui_state->rig_canvas_commissioning_finalization_worker->Start(
+                    request,
+                    [](const CommissioningFinalizationRequest& input) {
+                        const auto result =
+                            finalize_citrus_rig_canvas_commissioning(
+                                input.transaction_id,
+                                input.canvas_path,
+                                input.expected_canvas_checksum,
+                                input.accept_commissioning_armed,
+                                input.operation_id);
+                        CommissioningControlReply reply;
+                        reply.ok = result.ok;
+                        reply.definitive_rejection =
+                            result.attempted && !result.accepted &&
+                            !result.response.empty();
+                        reply.commissioning = result.commissioning;
+                        reply.error = result.reason;
+                        return reply;
+                    },
+                    [](const std::string& phase) {
+                        const auto result =
+                            query_citrus_rig_canvas_commissioning_status(phase);
+                        CommissioningControlReply reply;
+                        reply.ok = result.ok;
+                        reply.commissioning = result.commissioning;
+                        reply.error = result.reason;
+                        return reply;
+                    },
+                    &start_error);
+            if (!started) {
+                ui_state->rig_canvas_commissioning_error = start_error;
             } else {
                 ui_state->rig_canvas_commissioning_error.clear();
                 ui_state->rig_canvas_commissioning_message =
-                    "Finalize request accepted. Refresh status to see the "
-                    "committed release or an evidence-gate rejection.";
+                    "Publishing stable commissioning in the background; "
+                    "Orange will verify the exact active release automatically.";
             }
         }
         ui_state->accept_rig_canvas_commissioning_armed = false;

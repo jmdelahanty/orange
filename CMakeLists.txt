@@ -294,6 +294,8 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/guided_capture_autorun_config.cpp"
     "${SRC_DIR}/gui/arena_centering_analysis.cpp"
     "${SRC_DIR}/gui/daily_registration_geometry.cpp"
+    "${SRC_DIR}/gui/spatial_layout/commissioning_finalize_request.cpp"
+    "${SRC_DIR}/gui/spatial_layout/commissioning_finalization.cpp"
     "${SRC_DIR}/gui/projected_surface_scale_analysis.cpp"
     "${SRC_DIR}/gui/projected_surface_scale_artifact.cpp"
     "${SRC_DIR}/gui/arena_centering_autorun.cpp"
@@ -1103,6 +1105,29 @@ if(BUILD_TESTING)
     target_include_directories(daily_registration_geometry_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(daily_registration_geometry_tests PRIVATE cxx_std_17)
     add_test(NAME daily_registration_geometry_tests COMMAND daily_registration_geometry_tests)
+
+    add_executable(commissioning_finalize_request_tests
+        "tools/commissioning_finalize_request_tests.cpp"
+        "${SRC_DIR}/gui/spatial_layout/commissioning_finalize_request.cpp"
+    )
+    target_include_directories(commissioning_finalize_request_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(commissioning_finalize_request_tests PRIVATE cxx_std_17)
+    add_test(
+        NAME commissioning_finalize_request_tests
+        COMMAND commissioning_finalize_request_tests)
+
+    add_executable(commissioning_finalization_tests
+        "tools/commissioning_finalization_tests.cpp"
+        "${SRC_DIR}/gui/spatial_layout/commissioning_finalization.cpp"
+    )
+    target_include_directories(commissioning_finalization_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(commissioning_finalization_tests PRIVATE cxx_std_17)
+    target_link_libraries(commissioning_finalization_tests PRIVATE Threads::Threads)
+    add_test(
+        NAME commissioning_finalization_tests
+        COMMAND commissioning_finalization_tests)
 
     add_executable(daily_registration_preview_tests
         "tools/daily_registration_preview_tests.cpp"
