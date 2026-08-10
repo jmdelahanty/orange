@@ -295,6 +295,42 @@ def resolve_artifact_root(
     raise VerificationError("artifact_root is required unless it can be derived from --analytics-root")
 
 
+def load_materialized_contract(
+    analytics_root: Path | None,
+    artifact_root: Path,
+) -> dict[str, Any] | None:
+    """Load the immutable contract whose declared root matches this artifact.
+
+    GUI recordings materialize the contract beside, rather than inside, the
+    external-recorder artifact directory.  Falling back directly to a
+    synthesized contract loses authoritative routing and stream-kind fields.
+    """
+    candidates: list[Path] = []
+    for parent in (analytics_root, artifact_root.parent, artifact_root):
+        if parent is None:
+            continue
+        for filename in (
+            "external_recorder_contract.json",
+            "external_crop_recorder_contract.json",
+        ):
+            candidate = parent / filename
+            if candidate not in candidates:
+                candidates.append(candidate)
+
+    expected_root = path_key(artifact_root)
+    for candidate in candidates:
+        if not candidate.exists():
+            continue
+        payload = read_json(candidate)
+        if payload.get("schema_id") != CONTRACT_SCHEMA_ID:
+            continue
+        declared_root = artifact_root_from_payload(payload, candidate.parent)
+        if declared_root is None or path_key(declared_root) != expected_root:
+            continue
+        return payload
+    return None
+
+
 def synthesize_contract(artifact_root: Path, cameras: list[str] | None) -> dict[str, Any]:
     summaries = sorted(artifact_root.glob("Cam*_external_summary.json"))
     streams: dict[str, Any] = {}
@@ -302,14 +338,15 @@ def synthesize_contract(artifact_root: Path, cameras: list[str] | None) -> dict[
         serial = summary_path.name.removeprefix("Cam").removesuffix("_external_summary.json")
         if cameras and serial not in cameras:
             continue
+        summary = read_json(summary_path)
         streams[serial] = {
-            "stream_id": serial,
+            "stream_id": str(summary.get("stream_id", serial)),
             "summary_json": str(summary_path),
             "status_json": str(derive_status_path(summary_path)),
             "video_sanity_json": str(artifact_root / f"Cam{serial}_external_video_sanity.json"),
             "mp4": str(artifact_root / f"Cam{serial}_external.mp4"),
             "gop_routing_csv": str(artifact_root / f"Cam{serial}_external_gop_routing.csv"),
-            "routing_policy": "gop_modulo",
+            "routing_policy": str(summary.get("routing_policy", "single_shard")),
         }
     return {
         "schema_id": CONTRACT_SCHEMA_ID,
@@ -761,6 +798,52 @@ def require_storage_preflight_ok(
             )
 
 
+def verify_duration_safety_limit(
+    payload: dict[str, Any],
+    label: str,
+    *,
+    record_for_seconds: int,
+    fps: int,
+    gop: int,
+    frames_received: int,
+    require_present: bool,
+) -> dict[str, int | bool | str] | None:
+    limit = payload.get("duration_safety_limit")
+    if not isinstance(limit, dict):
+        require(not require_present, f"{label} missing duration_safety_limit")
+        return None
+    if record_for_seconds <= 0:
+        require(limit.get("enabled") is False, f"{label} unbounded duration limit is enabled")
+        return limit
+
+    require(fps > 0, f"{label} finite duration has invalid fps={fps}")
+    require(gop > 0, f"{label} finite duration has invalid gop={gop}")
+    target = record_for_seconds * fps
+    grace = max(2 * fps, gop)
+    ceiling = target + grace
+    require(limit.get("enabled") is True, f"{label} duration safety limit is disabled")
+    for field, expected in (
+        ("target_frame_count", target),
+        ("grace_frame_count", grace),
+        ("ceiling_frame_count", ceiling),
+    ):
+        require(
+            as_int(limit.get(field), f"{label} duration_safety_limit.{field}") == expected,
+            f"{label} duration_safety_limit.{field} does not match {expected}",
+        )
+    require(
+        frames_received <= ceiling,
+        f"{label} accepted {frames_received} frames beyond duration ceiling {ceiling}",
+    )
+    protocol = payload.get("ipc_protocol")
+    if isinstance(protocol, dict) and "duration_safety_ceiling_exceeded" in protocol:
+        require(
+            protocol.get("duration_safety_ceiling_exceeded") is False,
+            f"{label} reports duration_safety_ceiling_exceeded=true",
+        )
+    return limit
+
+
 def require_ipc_protocol_hello(payload: dict[str, Any], label: str) -> None:
     protocol = payload.get("ipc_protocol")
     require(isinstance(protocol, dict), f"{label} missing ipc_protocol")
@@ -831,6 +914,11 @@ def require_ipc_protocol_hello(payload: dict[str, Any], label: str) -> None:
         require(
             protocol.get("descriptor_intake_end_reason") == "client_finalize",
             f"{label} descriptor_intake_end_reason={protocol.get('descriptor_intake_end_reason')!r}",
+        )
+    if "duration_safety_ceiling_exceeded" in protocol:
+        require(
+            protocol.get("duration_safety_ceiling_exceeded") is False,
+            f"{label} duration_safety_ceiling_exceeded=true",
         )
     drain_frame_count = optional_int(
         protocol.get("client_drain_first_frame_count"),
@@ -951,21 +1039,34 @@ def verify_rolling_output(
     )
     if record_for_seconds > clip_seconds:
         require(len(clips) >= 2, f"expected multiple rolling clips for {serial}")
-    if (
-        target_frame_count > 0
-        and clip_span_frames > 0
-        and frames_encoded > target_frame_count
-        and frames_encoded - target_frame_count <= terminal_tail_coalesce_frames
-    ):
+    if target_frame_count > 0 and clip_span_frames > 0:
         expected_clip_count = math.ceil(target_frame_count / clip_span_frames)
+        final_requested_clip_capacity = expected_clip_count * clip_span_frames
+        expected_coalesced_frames = max(
+            0,
+            frames_encoded - final_requested_clip_capacity,
+        )
+    else:
+        expected_clip_count = 0
+        expected_coalesced_frames = 0
+    if (
+        expected_coalesced_frames > 0
+        and expected_coalesced_frames <= terminal_tail_coalesce_frames
+    ):
         require(
             len(clips) == expected_clip_count,
             f"terminal tail was not coalesced for {serial}: clips={len(clips)} expected={expected_clip_count}",
         )
         require(
-            terminal_tail_coalesced_frames == frames_encoded - target_frame_count,
+            terminal_tail_coalesced_frames == expected_coalesced_frames,
             f"terminal tail coalesced frame count mismatch for {serial}: "
-            f"{terminal_tail_coalesced_frames} vs {frames_encoded - target_frame_count}",
+            f"{terminal_tail_coalesced_frames} vs {expected_coalesced_frames}",
+        )
+    else:
+        require(
+            terminal_tail_coalesced_frames == 0,
+            f"unexpected terminal tail coalesced frames for {serial}: "
+            f"{terminal_tail_coalesced_frames}",
         )
 
     expected_next_frame = 1
@@ -1040,14 +1141,22 @@ def verify_rolling_output(
             f"rolling metadata last frame mismatch for {serial}: {metadata_path}",
         )
         if output_kind == "crop":
-            for expected_frame_index, row in enumerate(metadata_rows):
-                require(
-                    row.get("crop_video_frame_index") == expected_frame_index,
-                    (
-                        f"rolling crop metadata crop_video_frame_index mismatch for "
-                        f"{serial}: {metadata_path} row {expected_frame_index + 2}"
-                    ),
-                )
+            # The recorder-owned timestamp sidecar intentionally has only the
+            # canonical frame/timestamp columns.  Orange's richer analytics
+            # crop sidecar adds crop_video_frame_index.  Validate that index
+            # when present without requiring it in the recorder artifact.
+            clip_video_indexes = [
+                row.get("crop_video_frame_index") for row in metadata_rows
+            ]
+            if any(value is not None for value in clip_video_indexes):
+                for expected_frame_index, frame_index in enumerate(clip_video_indexes):
+                    require(
+                        frame_index == expected_frame_index,
+                        (
+                            f"rolling crop metadata crop_video_frame_index mismatch for "
+                            f"{serial}: {metadata_path} row {expected_frame_index + 2}"
+                        ),
+                    )
             # session_crop_video_frame_index is optional (appended by newer
             # recorders). When present it is preserved verbatim by the crop
             # sidecar split, so it must continue the session-global count
@@ -1199,6 +1308,25 @@ def verify_status_sidecar(
                 as_int(status.get(field), f"status {field}") == as_int(summary.get(field), field),
                 f"status {field} does not match summary for {serial}",
             )
+
+    if isinstance(summary.get("duration_safety_limit"), dict):
+        summary_control = recording_control_from_summary(summary)
+        status_limit = verify_duration_safety_limit(
+            status,
+            f"status for {serial}",
+            record_for_seconds=as_int(
+                summary_control.get("record_for_seconds", 0),
+                "summary recording_control.record_for_seconds",
+            ),
+            fps=as_int(summary.get("fps"), "summary fps"),
+            gop=as_int(summary.get("resolved_gop_length"), "summary resolved_gop_length"),
+            frames_received=as_int(status.get("frames_received"), "status frames_received"),
+            require_present=True,
+        )
+        require(
+            status_limit == summary.get("duration_safety_limit"),
+            f"status duration safety limit does not match summary for {serial}",
+        )
 
     status_rolling_summary = verify_status_rolling_progress(serial, status, summary)
 
@@ -1610,6 +1738,22 @@ def verify_summary(
         merged_recording_control = dict(summary_recording_control)
         merged_recording_control.update(recording_control)
         recording_control = merged_recording_control
+    if isinstance(summary.get("duration_safety_limit"), dict):
+        verify_duration_safety_limit(
+            summary,
+            f"summary for {serial}",
+            record_for_seconds=as_int(
+                recording_control.get("record_for_seconds", 0),
+                "recording_control.record_for_seconds",
+            ),
+            fps=as_int(summary.get("fps"), "summary fps"),
+            gop=as_int(
+                summary.get("resolved_gop_length"),
+                "summary resolved_gop_length",
+            ),
+            frames_received=frames_received,
+            require_present=True,
+        )
     rolling_requested = as_int(
         recording_control.get("clip_seconds", 0),
         "recording_control.clip_seconds",
@@ -1769,7 +1913,7 @@ def verify_summary(
         reported_packets,
     )
     output_kind = str(summary.get("output_kind") or stream.get("output_kind") or "full")
-    if output_kind == "crop":
+    if output_kind == "crop" and not rolling_requested:
         require_crop_mp4_key_samples(
             mp4_path,
             ffprobe,
@@ -2123,6 +2267,8 @@ def verify(args: argparse.Namespace) -> None:
     contract = contract_from_spec(spec)
     artifact_root = resolve_artifact_root(args, analytics_root, contract)
     require(artifact_root.exists(), f"artifact root does not exist: {artifact_root}")
+    if contract is None:
+        contract = load_materialized_contract(analytics_root, artifact_root)
     if contract is None:
         contract = synthesize_contract(artifact_root, requested_cameras)
     require(contract.get("schema_id") in (None, CONTRACT_SCHEMA_ID), "unexpected external recorder contract schema_id")

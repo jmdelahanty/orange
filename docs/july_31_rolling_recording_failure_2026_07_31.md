@@ -2,8 +2,9 @@
 
 - Date investigated: 2026-08-04
 - Incident recording: `2026_07_31_18_05_12`
-- Status: root cause confirmed; GOP-authority, bounded-buffer, and
-  single-write rolling fixes implemented; live multi-shard soak still pending
+- Status: root cause confirmed; GOP-authority, bounded-buffer, single-write
+  rolling, storage-preflight, and duration-enforcement fixes implemented; live
+  multi-shard soak still pending
 - Safety status: do not use the affected rolling full-frame recorder for
   another long acquisition until the fail-fast and bounded-memory gates below
   pass
@@ -31,6 +32,26 @@ map or its compressed bytes.
 
 The recording contract also requested `record_for_seconds = 93600`, which is
 26 hours. This does not match the operator's intended 24 hours.
+
+## Follow-up 24-Hour Overrun
+
+The later GUI run `2026_08_06_19_13_35` corrected the configured duration to
+`86400` seconds but exposed a separate lifecycle gap: in the manual GUI path,
+`record_for_seconds` was still only contract/rollover metadata. Each camera
+recorded 2,937,604 frames at 30 FPS (about 27 h 12 min), producing 55 clips
+instead of the expected 48, until the operator manually stopped it. All eight
+full-frame/crop recorder streams retained exact frame/packet parity and zero
+drops, so this was not an encoder slowdown or finalization truncation. It was a
+missing GUI duration authority.
+
+The corrected lifecycle now has two independent layers. Orange arms a
+monotonic session deadline at successful recording start and sends one normal
+operator-path stop at expiry. Each recorder also enforces a frame ceiling of
+`target + max(2 * fps, gop)` and rejects the next descriptor before importing
+or encoding it if the primary stop is lost. Finalization marks a timed run
+incomplete for a greater-than-two-second monotonic overrun, a recorder ceiling
+violation, unclean descriptor intake, or a violated final `min_free_bytes`
+check.
 
 ## Evidence
 
@@ -327,15 +348,19 @@ sufficient media-validity claim.
 
 ### Storage and artifact topology
 
-- [ ] Add duration/rate/camera-count/copy-multiplier storage estimation.
-- [ ] Enforce a nonzero reserved-free-space policy.
+- [x] Add duration/rate/camera-count/copy-multiplier storage estimation.
+- [x] Enforce a nonzero reserved-free-space policy.
 - [x] Make rolling clips the only production video write in rolling mode.
 - [x] Make shard preservation explicitly diagnostic.
 - [ ] Make monolithic reconstruction an optional offline remux.
-- [ ] Correct the 24-hour profile to `86400` seconds.
+- [x] Correct the 24-hour profile to `86400` seconds.
 
 ### Lifecycle and validation
 
+- [x] Enforce GUI `record_for_seconds` with a one-shot monotonic deadline.
+- [x] Add a bounded independent recorder frame ceiling and persist its proof.
+- [x] Fail closed on meaningful duration overrun and final minimum-free-space
+      violation.
 - [ ] Propagate one required-recorder failure to a coordinated recording stop.
 - [ ] Persist the common failure boundary and each stream's last accepted frame.
 - [ ] Prevent creation of an empty terminal clip.
@@ -347,8 +372,10 @@ sufficient media-validity claim.
 - [ ] A 25/30 mismatch fixture fails at the first bad boundary with bounded RSS.
 - [ ] An accelerated many-clip test demonstrates flat pending bytes and bounded
       process RSS.
-- [ ] A four-camera storage-preflight test covers 24- and 26-hour plans and
-      retained versus peak copy counts.
+- [x] A four-camera storage-preflight test covers the 24- and 26-hour bitrate
+      arithmetic, full-frame plus lossless-crop aggregation, retained versus
+      peak copy counts, fail-closed capacity behavior, and finite-duration
+      policy.
 - [ ] Killing one recorder produces a coordinated, bounded four-camera stop.
 - [ ] Every finalized clip passes open, first/middle/last decode, count, and
       metadata-alignment checks.

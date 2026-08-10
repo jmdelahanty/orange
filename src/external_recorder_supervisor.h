@@ -88,6 +88,20 @@ struct RecorderStreamPlan {
     orange::encoding::QpMapPolicy importance_map;
 };
 
+// Session-level storage budgeting is deliberately separate from the recorder's
+// path-writability check.  Every recorder process sees the same filesystem free
+// space, so per-process checks cannot safely add the requirements of multiple
+// cameras or the full-frame and crop products.
+struct StorageBudgetPolicy {
+    bool enabled = true;
+    double safety_headroom_ratio = 0.10;
+    uint64_t reserved_free_bytes = 500000000000ULL;
+    uint64_t metadata_bytes_per_frame = 1024;
+    double raw_nv12_expansion_ratio = 1.10;
+    bool require_finite_duration = false;
+    uint64_t planned_duration_seconds = 0;
+};
+
 struct SupervisorPlan {
     std::string schema_id = "orange.external_recorder.supervisor_plan";
     int schema_version = 1;
@@ -106,7 +120,59 @@ struct SupervisorPlan {
     bool require_protocol_hello = true;
     bool require_frame_identity_proof = true;
     bool preserve_shard_mp4s = false;
+    StorageBudgetPolicy storage_budget;
     std::vector<RecorderStreamPlan> streams;
+};
+
+struct StorageBudgetStreamEstimate {
+    std::string plan_artifact_root;
+    std::string stream_id;
+    std::string camera_serial;
+    std::string stream_kind;
+    std::string output_kind;
+    std::string output_path;
+    std::string filesystem_key;
+    std::string rate_basis;
+    uint64_t duration_seconds = 0;
+    uint64_t encode_fps = 0;
+    uint64_t conservative_rate_bps = 0;
+    uint64_t video_bytes = 0;
+    uint64_t metadata_bytes = 0;
+    uint64_t retained_copy_multiplier = 1;
+    uint64_t peak_copy_multiplier = 1;
+    uint64_t estimated_retained_bytes = 0;
+    uint64_t estimated_peak_bytes = 0;
+    bool bounded = false;
+    std::string error;
+};
+
+struct StorageBudgetFilesystemEstimate {
+    std::string filesystem_key;
+    std::string probe_path;
+    uint64_t capacity_bytes = 0;
+    uint64_t available_bytes = 0;
+    uint64_t estimated_retained_bytes = 0;
+    uint64_t estimated_peak_bytes = 0;
+    uint64_t safety_headroom_bytes = 0;
+    uint64_t reserved_free_bytes = 0;
+    uint64_t configured_min_free_bytes = 0;
+    uint64_t required_available_bytes = 0;
+    uint64_t projected_available_after_bytes = 0;
+    bool ok = false;
+    std::string error;
+};
+
+struct DurationAwareStoragePreflight {
+    std::string schema_id = "orange.duration_aware_storage_preflight";
+    int schema_version = 1;
+    bool checked = false;
+    bool ok = true;
+    bool hard_guarantee = false;
+    std::string status = "not_checked";
+    std::string error;
+    StorageBudgetPolicy policy;
+    std::vector<StorageBudgetStreamEstimate> streams;
+    std::vector<StorageBudgetFilesystemEstimate> filesystems;
 };
 
 struct SupervisorProcessOptions {
@@ -222,6 +288,22 @@ bool BuildSupervisorPlanFromExperimentSpec(const nlohmann::json& experiment_spec
                                            const SupervisorPlanOptions& options,
                                            SupervisorPlan* plan_out,
                                            std::string* error_out);
+
+// Computes one aggregate reservation across every supplied plan and every
+// filesystem they target.  The plans are mutable so the computed aggregate
+// minimum can be forwarded to each recorder's existing startup check.
+bool RunDurationAwareStoragePreflight(
+    const std::vector<SupervisorPlan*>& plans,
+    DurationAwareStoragePreflight* preflight_out,
+    std::string* error_out = nullptr);
+
+nlohmann::json DurationAwareStoragePreflightToJson(
+    const DurationAwareStoragePreflight& preflight);
+
+bool WriteDurationAwareStoragePreflightArtifact(
+    const std::string& path,
+    const DurationAwareStoragePreflight& preflight,
+    std::string* error_out = nullptr);
 
 std::vector<std::string> BuildRecorderCommand(const SupervisorPlan& plan,
                                               const RecorderStreamPlan& stream);

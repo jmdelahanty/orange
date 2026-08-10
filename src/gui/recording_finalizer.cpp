@@ -10,6 +10,7 @@
 
 #include "crop_and_encode_worker.h"
 #include "external_recorder_contract_utils.h"
+#include "external_recorder_duration_limit.h"
 #include "project.h"
 #include "recording_ingress.h"
 #include "session/crop_rolling_sidecars.h"
@@ -172,6 +173,71 @@ uint64_t gui_json_u64_or(const nlohmann::json& object,
         }
     }
     return fallback;
+}
+
+bool gui_external_summary_runtime_contract_ok(
+    const nlohmann::json& summary,
+    const orange::external_recorder::RecorderStreamPlan& stream,
+    const bool require_storage_preflight,
+    std::string* error_out)
+{
+    auto fail = [&](const std::string& message) {
+        if (error_out) {
+            *error_out = message;
+        }
+        return false;
+    };
+
+    if (require_storage_preflight) {
+        const nlohmann::json storage =
+            summary.value("storage_preflight", nlohmann::json::object());
+        if (!storage.is_object() || !storage.value("checked", false)) {
+            return fail("final recorder storage preflight is missing or unchecked");
+        }
+        if (!storage.value("ok", false)) {
+            return fail("final recorder storage preflight violates min_free_bytes");
+        }
+    }
+
+    if (stream.record_for_seconds > 0) {
+        orange::external_recorder::DurationSafetyLimit expected;
+        std::string resolve_error;
+        if (!orange::external_recorder::ResolveDurationSafetyLimit(
+                static_cast<uint64_t>(stream.record_for_seconds),
+                static_cast<uint64_t>(std::max(0, stream.encode_fps)),
+                static_cast<uint64_t>(std::max(0, stream.gop)),
+                &expected,
+                &resolve_error)) {
+            return fail("invalid configured recorder duration limit: " + resolve_error);
+        }
+        const nlohmann::json actual =
+            summary.value("duration_safety_limit", nlohmann::json::object());
+        if (!actual.is_object() || !actual.value("enabled", false) ||
+            gui_json_u64_or(actual, "target_frame_count", 0) !=
+                expected.target_frame_count ||
+            gui_json_u64_or(actual, "grace_frame_count", 0) !=
+                expected.grace_frame_count ||
+            gui_json_u64_or(actual, "ceiling_frame_count", 0) !=
+                expected.ceiling_frame_count) {
+            return fail("recorder duration safety limit is missing or inconsistent");
+        }
+        const nlohmann::json ipc =
+            summary.value("ipc_protocol", nlohmann::json::object());
+        if (!ipc.is_object() ||
+            ipc.value("duration_safety_ceiling_exceeded", false) ||
+            !ipc.value("descriptor_intake_completed_cleanly", false)) {
+            return fail("recorder duration backstop or descriptor intake failed");
+        }
+        if (gui_json_u64_or(summary, "frames_received", 0) >
+            expected.ceiling_frame_count) {
+            return fail("recorder accepted frames beyond its duration safety ceiling");
+        }
+    }
+
+    if (error_out) {
+        error_out->clear();
+    }
+    return true;
 }
 
 struct GuiFrameMetadataCsvStats {
@@ -1326,6 +1392,10 @@ GuiRecordingFinalizeInputs gui_prepare_recording_finalize(
             std::move(recording_session->external_crop_recorder_lifecycle);
         recording_session->external_crop_recorder_lifecycle =
             orange::external_recorder::SupervisedRecorderLifecycleState{};
+        inputs.nic_thermal_monitor =
+            std::move(recording_session->nic_thermal_monitor);
+        recording_session->nic_thermal_monitor =
+            orange::monitoring::NicThermalMonitorProcess{};
         inputs.external_recorder_last_error =
             recording_session->external_recorder_last_error;
         inputs.external_crop_recorder_last_error =
@@ -1435,6 +1505,30 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
             }
             target += message;
         };
+
+    std::string nic_thermal_stop_error;
+    const bool nic_thermal_stop_ok =
+        orange::monitoring::StopNicThermalMonitorProcess(
+            &inputs->nic_thermal_monitor,
+            &nic_thermal_stop_error);
+    const nlohmann::json nic_thermal_monitoring =
+        orange::monitoring::NicThermalMonitorProcessToJson(
+            inputs->nic_thermal_monitor);
+    const bool nic_thermal_monitor_declared =
+        !inputs->nic_thermal_monitor.recording_folder.empty() ||
+        inputs->nic_thermal_monitor.status != "not_started";
+    if (nic_thermal_monitor_declared &&
+        !update_recording_snapshot_system_monitoring(
+            run.recording_folder,
+            "nic_thermal",
+            nic_thermal_monitoring)) {
+        std::cerr << "[GUI][recording] Failed to publish final NIC thermal monitor metadata."
+                  << std::endl;
+    }
+    if (!nic_thermal_stop_ok) {
+        std::cerr << "[GUI][recording] NIC thermal monitor shutdown warning: "
+                  << nic_thermal_stop_error << std::endl;
+    }
 
     // Crop recorder env overrides are stacked after full-frame recorder
     // overrides. Stop crop first so scoped environment restoration unwinds in
@@ -1592,6 +1686,14 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                     summary.value("frames_received", 0ULL);
                 const uint64_t frames_encoded =
                     summary.value("frames_encoded", frames_received);
+                std::string runtime_contract_error;
+                const bool runtime_contract_ok =
+                    gui_external_summary_runtime_contract_ok(
+                        summary,
+                        stream,
+                        inputs->external_recorder_lifecycle.plan
+                            .require_storage_preflight,
+                        &runtime_contract_error);
                 const uint64_t encode_skipped =
                     summary.value("encode_skipped", 0ULL);
                 const uint64_t encode_dropped =
@@ -1669,7 +1771,8 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                     }
                 }
 
-                if (worker_failed || merged_failed || frames_received == 0 ||
+                if (!runtime_contract_ok || worker_failed || merged_failed ||
+                    frames_received == 0 ||
                     frames_encoded == 0 || !encode_accounting_complete ||
                     packets_written != frames_encoded || mp4.empty() ||
                     !metadata_complete ||
@@ -1680,8 +1783,13 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                     }
                     external_recorder_error +=
                         "external recorder output incomplete for camera " + serial;
+                    if (!runtime_contract_error.empty()) {
+                        external_recorder_error += ": " + runtime_contract_error;
+                    }
                     if (!metadata_error.empty()) {
-                        external_recorder_error += ": " + metadata_error;
+                        external_recorder_error +=
+                            (runtime_contract_error.empty() ? ": " : "; ") +
+                            metadata_error;
                     }
                 }
 
@@ -1740,6 +1848,9 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                 {"external_recorder_contract_path", inputs->external_recorder_contract_path},
                 {"external_recorder_supervisor_plan_path",
                  inputs->external_recorder_supervisor_plan_path},
+                {"duration_aware_storage_preflight_path",
+                 (std::filesystem::path(inputs->external_recorder_lifecycle.plan.artifact_root) /
+                  "duration_aware_storage_preflight.json").string()},
                 {"external_recorder_session_json",
                  (std::filesystem::path(inputs->external_recorder_lifecycle.plan.artifact_root) /
                   "external_recorder_session.json").string()},
@@ -1954,6 +2065,14 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                 summary.value("outputs", nlohmann::json::object());
             const nlohmann::json external_encode =
                 summary.value("external_encode", nlohmann::json::object());
+            const nlohmann::json rolling =
+                summary.value("rolling_output", nlohmann::json::object());
+            const bool summary_rolling_enabled =
+                rolling.is_object() && rolling.value("enabled", false);
+            const nlohmann::json summary_clips =
+                summary_rolling_enabled
+                    ? rolling.value("clips", nlohmann::json::array())
+                    : nlohmann::json::array();
             const bool worker_failed = summary.value("worker_failed", false);
             const bool merged_enabled =
                 merged.is_object() && merged.value("enabled", false);
@@ -1963,6 +2082,14 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                 summary.value("frames_received", 0ULL);
             const uint64_t frames_encoded =
                 summary.value("frames_encoded", frames_received);
+            std::string runtime_contract_error;
+            const bool runtime_contract_ok =
+                gui_external_summary_runtime_contract_ok(
+                    summary,
+                    stream,
+                    inputs->external_crop_recorder_lifecycle.plan
+                        .require_storage_preflight,
+                    &runtime_contract_error);
             const uint64_t summary_encode_dropped =
                 json_u64_or(summary, "encode_dropped", 0ULL);
             const uint64_t summary_external_frames_dropped =
@@ -1980,32 +2107,49 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                 json_double_or(external_encode, "enqueue_age_p95_ms", -1.0);
             const uint64_t external_packets =
                 json_u64_or(external_encode, "mp4_packets", 0ULL);
-            const uint64_t packets_written = merged_enabled
-                ? json_u64_or(merged, "packets_written", external_packets)
-                : external_packets;
+            uint64_t rolling_packets = 0;
+            if (summary_clips.is_array()) {
+                for (const nlohmann::json& clip : summary_clips) {
+                    rolling_packets += json_u64_or(clip, "packets_written", 0ULL);
+                }
+            }
+            const uint64_t packets_written = summary_rolling_enabled
+                ? rolling_packets
+                : (merged_enabled
+                       ? json_u64_or(merged, "packets_written", external_packets)
+                       : external_packets);
             const std::string output_mp4 =
                 json_string_or(outputs, "mp4", stream.mp4);
             const std::string output_keyframes =
                 json_string_or(outputs, "mp4_keyframe", stream.mp4_keyframe);
-            const std::string mp4 = merged_enabled
-                ? json_string_or(merged, "mp4", output_mp4)
-                : output_mp4;
-            const std::string keyframes = merged_enabled
-                ? json_string_or(merged, "mp4_keyframe", output_keyframes)
-                : output_keyframes;
-            const nlohmann::json rolling =
-                summary.value("rolling_output", nlohmann::json::object());
-            const bool summary_rolling_enabled =
-                rolling.is_object() && rolling.value("enabled", false);
+            const nlohmann::json first_rolling_clip =
+                summary_clips.is_array() && !summary_clips.empty() &&
+                        summary_clips.front().is_object()
+                    ? summary_clips.front()
+                    : nlohmann::json::object();
+            const std::string mp4 = summary_rolling_enabled
+                ? json_string_or(first_rolling_clip, "mp4", std::string())
+                : (merged_enabled
+                       ? json_string_or(merged, "mp4", output_mp4)
+                       : output_mp4);
+            const std::string keyframes = summary_rolling_enabled
+                ? json_string_or(first_rolling_clip, "keyframes", std::string())
+                : (merged_enabled
+                       ? json_string_or(merged, "mp4_keyframe", output_keyframes)
+                       : output_keyframes);
 
-            if (worker_failed || merged_failed || frames_received == 0 ||
+            if (!runtime_contract_ok || worker_failed || merged_failed ||
+                frames_received == 0 ||
                 frames_encoded == 0 || frames_encoded != frames_received ||
-                packets_written == 0 || mp4.empty() ||
+                packets_written != frames_encoded || mp4.empty() ||
                 !std::filesystem::exists(mp4)) {
                 stream_ok = false;
                 crop_external_recorder_ok = false;
                 stream_error =
                     "external crop recorder output incomplete for camera " + serial;
+                if (!runtime_contract_error.empty()) {
+                    stream_error += ": " + runtime_contract_error;
+                }
                 if (!crop_external_recorder_error.empty()) {
                     crop_external_recorder_error += "; ";
                 }
@@ -2021,8 +2165,6 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                     append_error_message(crop_external_recorder_error, stream_error);
                 }
 
-                const nlohmann::json summary_clips =
-                    rolling.value("clips", nlohmann::json::array());
                 if (!summary_clips.is_array() || summary_clips.empty()) {
                     stream_ok = false;
                     crop_external_recorder_ok = false;
@@ -2286,6 +2428,9 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
             {"external_crop_recorder_contract_path", inputs->external_crop_recorder_contract_path},
             {"external_crop_recorder_supervisor_plan_path",
              inputs->external_crop_recorder_supervisor_plan_path},
+            {"duration_aware_storage_preflight_path",
+             (std::filesystem::path(inputs->external_crop_recorder_lifecycle.plan.artifact_root) /
+              "duration_aware_storage_preflight.json").string()},
             {"external_crop_recorder_session_json",
              (std::filesystem::path(inputs->external_crop_recorder_lifecycle.plan.artifact_root) /
               "external_recorder_session.json").string()},
@@ -2302,8 +2447,89 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
         }
     }
 
+    if (external_ipc || crop_external_recorder_active) {
+        recording_backend["session_duration_aware_storage_preflight_path"] =
+            (std::filesystem::path(run.recording_folder) /
+             "duration_aware_storage_preflight.json").string();
+    }
+
+    constexpr double kMeaningfulDurationOverrunSeconds = 2.0;
+    bool duration_enforcement_ok = true;
+    bool duration_stop_time_present = true;
+    bool duration_stop_reason_consistent = true;
+    double actual_recording_duration_s = 0.0;
+    double duration_overrun_s = 0.0;
+    if (run.requested_record_for_seconds > 0) {
+        duration_stop_time_present =
+            run.recording_stop_requested_at.time_since_epoch() !=
+            std::chrono::steady_clock::duration::zero();
+        actual_recording_duration_s = duration_stop_time_present
+            ? gui_elapsed_seconds_between(
+                  run.recording_started_at,
+                  run.recording_stop_requested_at)
+            : 0.0;
+        duration_overrun_s = std::max(
+            0.0,
+            actual_recording_duration_s -
+                static_cast<double>(run.requested_record_for_seconds));
+        duration_enforcement_ok =
+            duration_stop_time_present &&
+            duration_overrun_s <= kMeaningfulDurationOverrunSeconds;
+        duration_stop_reason_consistent =
+            !run.duration_deadline_stop_issued ||
+            run.stop_reason == "record_for_seconds_elapsed";
+        if (!duration_stop_reason_consistent) {
+            duration_enforcement_ok = false;
+        }
+    }
+    recording_backend["duration_enforcement"] = {
+        {"enabled", run.requested_record_for_seconds > 0},
+        {"status",
+         run.requested_record_for_seconds <= 0
+             ? "not_requested"
+             : (duration_enforcement_ok ? "pass" : "fail")},
+        {"clock_basis", "std::chrono::steady_clock"},
+        {"requested_duration_seconds", run.requested_record_for_seconds},
+        {"actual_recording_duration_s", actual_recording_duration_s},
+        {"deadline_stop_issued", run.duration_deadline_stop_issued},
+        {"stop_time_present", duration_stop_time_present},
+        {"stop_reason_consistent", duration_stop_reason_consistent},
+        {"stop_reason", run.stop_reason},
+        {"overrun_s", duration_overrun_s},
+        {"meaningful_overrun_threshold_s", kMeaningfulDurationOverrunSeconds},
+    };
+    if (nic_thermal_monitor_declared) {
+        recording_backend["system_monitoring"]["nic_thermal"] =
+            nic_thermal_monitoring;
+    }
+    if (!duration_enforcement_ok) {
+        std::string duration_error;
+        if (!duration_stop_time_present) {
+            duration_error =
+                "recording duration contract is missing its monotonic stop timestamp";
+        } else if (!duration_stop_reason_consistent) {
+            duration_error =
+                "recording duration deadline was issued but its stop reason was overwritten";
+        } else {
+            duration_error =
+                "recording duration exceeded the configured deadline by " +
+                std::to_string(duration_overrun_s) +
+                " seconds (allowed " +
+                std::to_string(kMeaningfulDurationOverrunSeconds) + ")";
+        }
+        recording_backend["duration_enforcement"]["error"] = duration_error;
+        if (external_ipc) {
+            external_recorder_ok = false;
+            append_error_message(external_recorder_error, duration_error);
+        }
+        if (crop_external_recorder_active) {
+            crop_external_recorder_ok = false;
+            append_error_message(crop_external_recorder_error, duration_error);
+        }
+    }
+
     const bool recording_session_ok =
-        external_recorder_ok &&
+        duration_enforcement_ok && external_recorder_ok &&
         (!crop_external_recorder_active || crop_external_recorder_ok);
 
     publish_stage(GuiRecordingFinalizeStage::kWritingClipManifests);
@@ -2357,10 +2583,14 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
         manifest_options.updated_at_utc = run.recording_drained_at_utc;
         manifest_options.recording_folder = run.recording_folder;
         manifest_options.status = recording_session_ok ? "completed" : "incomplete";
+        manifest_options.requested_stream_duration_seconds =
+            run.requested_record_for_seconds;
         manifest_options.stream_started_at_utc = run.recording_started_at_utc;
         manifest_options.stream_finished_at_utc = run.recording_drained_at_utc;
         manifest_options.stream_actual_elapsed_s =
             gui_elapsed_seconds_between(run.recording_started_at, run.recording_drained_at);
+        manifest_options.recording_control.record_for_seconds =
+            run.requested_record_for_seconds;
         manifest_options.recording_started = true;
         manifest_options.recording_started_at_utc = run.recording_started_at_utc;
         manifest_options.recording_started_at_elapsed_s = 0.0;
@@ -2377,7 +2607,8 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
             gui_elapsed_seconds_between(run.recording_started_at, run.recording_stop_requested_at);
         manifest_options.drain_duration_s =
             gui_elapsed_seconds_between(run.recording_stop_requested_at, run.recording_drained_at);
-        manifest_options.timed_stop_hit = false;
+        manifest_options.timed_stop_hit =
+            run.stop_reason == "record_for_seconds_elapsed";
         manifest_options.recording_stop_control = run.stop_control;
         manifest_options.recording_backend = recording_backend;
         manifest_options.cameras = std::move(camera_artifacts);
@@ -2608,6 +2839,8 @@ bool gui_complete_recording_finalize(
             std::move(inputs->external_recorder_lifecycle);
         recording_session->external_crop_recorder_lifecycle =
             std::move(inputs->external_crop_recorder_lifecycle);
+        recording_session->nic_thermal_monitor =
+            std::move(inputs->nic_thermal_monitor);
     }
 
     if (!outcome.ok) {

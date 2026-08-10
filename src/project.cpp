@@ -6175,6 +6175,56 @@ bool update_recording_snapshot_gpu_monitoring(const std::string& recording_folde
     return true;
 }
 
+bool update_recording_snapshot_system_monitoring(
+    const std::string& recording_folder,
+    const std::string& monitor_name,
+    const nlohmann::json& monitor_info) {
+    if (recording_folder.empty() || monitor_name.empty()) {
+        return false;
+    }
+
+    const std::filesystem::path snapshot_path =
+        std::filesystem::path(recording_folder) / "recording_snapshot.json";
+
+    std::lock_guard<std::mutex> lock(recording_snapshot_mutex());
+
+    std::string error;
+    std::string contents = read_file_to_string(snapshot_path.string(), &error);
+    if (contents.empty()) {
+        std::cerr << "Failed to read recording snapshot: " << snapshot_path.string()
+                  << " (" << (error.empty() ? "empty file" : error) << ")" << std::endl;
+        return false;
+    }
+
+    nlohmann::json snapshot;
+    try {
+        snapshot = nlohmann::json::parse(contents);
+    } catch (const std::exception& ex) {
+        std::cerr << "Failed to parse recording snapshot: " << snapshot_path.string()
+                  << " (" << ex.what() << ")" << std::endl;
+        return false;
+    }
+
+    if (!snapshot.is_object()) {
+        snapshot = nlohmann::json::object();
+    }
+    if (!snapshot.contains("system_monitoring") ||
+        !snapshot["system_monitoring"].is_object()) {
+        snapshot["system_monitoring"] = nlohmann::json::object();
+    }
+
+    snapshot["system_monitoring"][monitor_name] = monitor_info;
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    return write_json_atomic(
+        snapshot_path,
+        snapshot,
+        std::filesystem::perms::unknown,
+        false,
+        "recording snapshot");
+}
+
 bool update_recording_snapshot_session_artifacts(const std::string& recording_folder,
                                                  const nlohmann::json& session_info) {
     if (recording_folder.empty() || !session_info.is_object()) {

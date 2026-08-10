@@ -144,6 +144,9 @@ bool update_recording_snapshot_pipeline_metrics(const std::string& recording_fol
 bool update_recording_snapshot_gpu_monitoring(const std::string& recording_folder,
                                               const std::string& monitor_name,
                                               const nlohmann::json& monitor_info);
+bool update_recording_snapshot_system_monitoring(const std::string& recording_folder,
+                                                 const std::string& monitor_name,
+                                                 const nlohmann::json& monitor_info);
 bool update_recording_snapshot_session_artifacts(const std::string& recording_folder,
                                                  const nlohmann::json& session_info);
 bool update_recording_snapshot_recording_outputs(const std::string& recording_folder,

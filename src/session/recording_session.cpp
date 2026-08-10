@@ -713,6 +713,15 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
         {"require_storage_preflight", true},
         {"require_protocol_hello", true},
         {"preserve_shard_mp4s", false},
+        {"storage_budget", {
+            {"enabled", true},
+            {"safety_headroom_ratio", 0.10},
+            {"reserved_free_bytes", 500000000000ULL},
+            {"metadata_bytes_per_frame", 1024},
+            {"raw_nv12_expansion_ratio", 1.10},
+            {"require_finite_duration", false},
+            {"planned_duration_seconds", 0},
+        }},
         {"recording_control", crop_recording_control},
         {"rollover", crop_rollover},
         {"require_recorder_gpu_separate_from_analytics",
@@ -2816,6 +2825,9 @@ void cleanup_failed_recording_run_start(RecordingSessionState* state,
                 &state->external_recorder_lifecycle,
                 &ignored_error);
         }
+        (void)orange::monitoring::StopNicThermalMonitorProcess(
+            &state->nic_thermal_monitor,
+            &ignored_error);
     }
 }
 
@@ -3104,6 +3116,79 @@ RecordingRunSupervisorStartOutcome start_prepared_recording_run_supervisors(
         return outcome;
     }
 
+    // Perform one aggregate capacity calculation before starting either the
+    // full-frame or crop recorder family.  Starting them independently and
+    // relying on each child process's free-space query is unsafe: every child
+    // observes the same available bytes but cannot see the other streams'
+    // planned consumption.
+    if (prepared.requires_supervisor_start()) {
+        std::vector<orange::external_recorder::SupervisorPlan> storage_plan_storage;
+        storage_plan_storage.reserve(2);
+        auto append_storage_plan = [&](
+                                       const orange::external_recorder::SupervisedRecorderLifecycleOptions& options,
+                                       const char* label) -> bool {
+            orange::external_recorder::SupervisorPlanOptions plan_options;
+            plan_options.recorder_tool_path =
+                orange::external_recorder::ResolveExternalRecorderToolPath(
+                    options.recorder_tool_path);
+            plan_options.default_session_id = options.default_session_id;
+            orange::external_recorder::SupervisorPlan plan;
+            std::string plan_error;
+            if (!orange::external_recorder::BuildSupervisorPlanFromContract(
+                    options.contract,
+                    plan_options,
+                    &plan,
+                    &plan_error)) {
+                outcome.error_message = std::string("failed to build ") + label +
+                                        " storage plan: " + plan_error;
+                return false;
+            }
+            storage_plan_storage.push_back(std::move(plan));
+            return true;
+        };
+        if (prepared.external_recorder_requested &&
+            !append_storage_plan(
+                prepared.external_recorder_lifecycle_options,
+                "full-frame recorder")) {
+            return outcome;
+        }
+        if (prepared.external_crop_recorder_requested &&
+            !append_storage_plan(
+                prepared.external_crop_recorder_lifecycle_options,
+                "crop recorder")) {
+            return outcome;
+        }
+        std::vector<orange::external_recorder::SupervisorPlan*> storage_plans;
+        storage_plans.reserve(storage_plan_storage.size());
+        for (auto& plan : storage_plan_storage) {
+            storage_plans.push_back(&plan);
+        }
+        orange::external_recorder::DurationAwareStoragePreflight storage_preflight;
+        std::string storage_error;
+        const bool storage_ok =
+            orange::external_recorder::RunDurationAwareStoragePreflight(
+                storage_plans,
+                &storage_preflight,
+                &storage_error);
+        const std::filesystem::path storage_artifact =
+            std::filesystem::path(prepared.recording_folder) /
+            "duration_aware_storage_preflight.json";
+        std::string artifact_error;
+        if (!orange::external_recorder::WriteDurationAwareStoragePreflightArtifact(
+                storage_artifact.string(),
+                storage_preflight,
+                &artifact_error)) {
+            outcome.error_message = artifact_error;
+            return outcome;
+        }
+        if (!storage_ok) {
+            outcome.error_message = storage_error.empty()
+                ? "duration-aware storage preflight failed"
+                : storage_error;
+            return outcome;
+        }
+    }
+
     if (prepared.external_recorder_requested) {
         outcome.external_recorder_attempted = true;
         std::string supervisor_error;
@@ -3278,6 +3363,25 @@ RecordingRunStartResult complete_recording_run(
                   << " streams=" << state->external_crop_recorder_lifecycle.plan.streams.size()
                   << " artifact_root=" << state->external_crop_recorder_lifecycle.plan.artifact_root
                   << std::endl;
+    }
+
+    if (state) {
+        std::string thermal_error;
+        if (!orange::monitoring::StartNicThermalMonitorProcess(
+                prepared.recording_folder,
+                &state->nic_thermal_monitor,
+                &thermal_error)) {
+            std::cerr << "[recording_session] NIC thermal monitoring is unavailable: "
+                      << thermal_error << std::endl;
+        }
+        if (!update_recording_snapshot_system_monitoring(
+                prepared.recording_folder,
+                "nic_thermal",
+                orange::monitoring::NicThermalMonitorProcessToJson(
+                    state->nic_thermal_monitor))) {
+            std::cerr << "[recording_session] Failed to publish NIC thermal monitor metadata."
+                      << std::endl;
+        }
     }
 
     camera_control->record_video = true;

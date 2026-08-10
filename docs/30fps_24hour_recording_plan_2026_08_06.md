@@ -2,8 +2,8 @@
 
 Date: 2026-08-06
 
-Status: bitrate/preset matrix and headless recording-profile contract ready; no
-production profile promoted
+Status: bitrate/preset matrix, recording-profile contract, and duration-aware
+storage preflight ready; no lower-bitrate production profile promoted
 
 ## Goal
 
@@ -55,10 +55,11 @@ At the measured 6.1 TB available on 2026-08-06:
 - two 150 Mbps masters fit arithmetically, but consume 3.24 TB before crops,
   metadata, and headroom;
 - four 150 Mbps masters do not fit safely;
-- 45/60 Mbps is conservative for either a two- or four-camera 24-hour run if
-  visual and task-level quality passes; and
-- the chosen profile still needs an explicit manual storage calculation until
-  Orange implements duration-aware storage preflight.
+- 45/60 Mbps is comfortable for two cameras, but four cameras are close to the
+  current capacity once the conservative lossless-crop bound, 10% margin, and
+  500 GB reserve are included; and
+- the chosen profile must pass the duration-aware storage preflight for the
+  exact selected outputs.
 
 ## Matrix Artifacts
 
@@ -118,13 +119,55 @@ folder under `~/orange_data/benchmarks/encoding_quality_30fps`.
    row. Do not overwrite `100_cam4_ptp`.
 6. Use rolling clips as the authoritative long-run representation and set the
    requested duration to exactly `86400` seconds.
-7. Before arming, calculate the maximum-rate byte requirement for the exact
-   camera count, add crop/metadata estimates and reserved headroom, and compare
-   it with current available space.
+7. Before arming, require the session-level duration-aware storage preflight to
+   pass for the exact camera count and selected full-frame/crop outputs.
 
-## Current Lifecycle Gap
+## Duration-Aware Preflight
 
-The recorder currently checks path writability and a configured minimum-free
-byte threshold. It does not yet calculate the complete duration-, camera-,
-maximum-bitrate-, copy-, and headroom-aware budget. That implementation remains
-required before the UI can claim a 24-hour plan is automatically storage-safe.
+Orange now performs one session-level calculation before starting any recorder.
+It groups all full-frame and lossless-crop streams by destination filesystem so
+four independent recorder processes cannot each pass by observing the same free
+bytes. Capped streams use `max_bitrate_bps`; lossless and constant-QP streams use
+a conservative raw-NV12 upper bound derived from their frame bytes and FPS.
+
+The default policy adds:
+
+- 1,024 metadata bytes per possible encoded frame;
+- a 10% safety margin on estimated peak retained data;
+- 500 GB of space that must remain free; and
+- a second copy only when diagnostic shard preservation is explicitly enabled.
+
+Normal rolling recording has a retained and peak video-copy multiplier of one.
+The decision and per-stream arithmetic are written to
+`duration_aware_storage_preflight.json` in the recording folder, with additional
+per-recorder copies inside the external recorder artifact roots. The aggregate
+required byte count is also forwarded to the recorder processes' existing
+startup checks. A finite-duration plan fails before acquisition when the
+aggregate does not fit. Operator-timed recordings without a declared duration
+remain allowed but are explicitly reported as not carrying a hard capacity
+guarantee. Headless experiments use their total planned run duration (including
+warmup) as the bound when they do not declare a shorter recording-control
+interval.
+
+This preflight establishes capacity correctness, not image quality. The next
+step is still the real-fish bitrate screen before promoting a lower-bitrate
+24-hour profile.
+
+## Duration Enforcement
+
+The configured `86400` seconds is now an enforced recording lifetime rather
+than recorder rollover metadata:
+
+- the GUI arms one monotonic deadline when the run actually starts;
+- expiry uses the ordinary operator drain/finalize path and records
+  `record_for_seconds_elapsed` plus the observed deadline polling overrun;
+- every full-frame and crop recorder independently rejects intake beyond the
+  target plus `max(2 * fps, gop)` frames; and
+- finalization marks the run incomplete for a greater-than-two-second
+  monotonic overrun, a recorder ceiling violation, unclean descriptor intake,
+  or a final `min_free_bytes` violation.
+
+At 30 FPS and GOP 30, the recorder backstop is 2,592,060 accepted descriptors:
+the requested 2,592,000 frames plus a bounded 60-frame drain allowance. This
+backstop is not expected to fire during a healthy run; it exists to prevent a
+lost GUI stop from becoming another multi-hour recording.

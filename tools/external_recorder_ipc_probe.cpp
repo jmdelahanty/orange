@@ -2,6 +2,7 @@
 #include "FFmpegWriter.h"
 #include "external_recorder_ipc_protocol.h"
 #include "external_recorder_frame_metadata.h"
+#include "external_recorder_duration_limit.h"
 #include "encoder_qp_map.h"
 #include "fsuid_guard.h"
 #include "video_encode_profile.h"
@@ -166,6 +167,9 @@ struct IpcProtocolState {
     std::string client_control_state = "open";
     std::string descriptor_intake_end_reason = "not_started";
     bool descriptor_intake_completed_cleanly = false;
+    bool duration_safety_ceiling_exceeded = false;
+    uint64_t duration_safety_rejected_descriptor_ordinal = 0;
+    uint64_t duration_safety_rejected_recording_frame_id = 0;
     std::string last_client_control_command;
     std::string last_client_control_reason;
 };
@@ -543,6 +547,16 @@ Options parse_options(int argc, char** argv)
     }
     if (options.gop == 0) {
         throw std::runtime_error("--gop must be positive");
+    }
+    orange::external_recorder::DurationSafetyLimit duration_limit;
+    std::string duration_limit_error;
+    if (!orange::external_recorder::ResolveDurationSafetyLimit(
+            options.record_for_seconds,
+            options.fps,
+            options.gop,
+            &duration_limit,
+            &duration_limit_error)) {
+        throw std::runtime_error(duration_limit_error);
     }
     if (options.max_pending_gops == 0) {
         throw std::runtime_error("--max-pending-gops must be positive");
@@ -1109,6 +1123,12 @@ void write_ipc_protocol_json(std::ostream& out,
         << json_escape(state.descriptor_intake_end_reason) << "\",\n";
     out << indent << "  \"descriptor_intake_completed_cleanly\": "
         << (state.descriptor_intake_completed_cleanly ? "true" : "false") << ",\n";
+    out << indent << "  \"duration_safety_ceiling_exceeded\": "
+        << (state.duration_safety_ceiling_exceeded ? "true" : "false") << ",\n";
+    out << indent << "  \"duration_safety_rejected_descriptor_ordinal\": "
+        << state.duration_safety_rejected_descriptor_ordinal << ",\n";
+    out << indent << "  \"duration_safety_rejected_recording_frame_id\": "
+        << state.duration_safety_rejected_recording_frame_id << ",\n";
     out << indent << "  \"last_client_control_command\": \""
         << json_escape(state.last_client_control_command) << "\",\n";
     out << indent << "  \"last_client_control_reason\": \""
@@ -1315,6 +1335,37 @@ RollingStatusSnapshot rolling_status_from_progress(const Options& options,
     return status;
 }
 
+orange::external_recorder::DurationSafetyLimit duration_safety_limit(
+    const Options& options)
+{
+    orange::external_recorder::DurationSafetyLimit limit;
+    std::string error;
+    if (!orange::external_recorder::ResolveDurationSafetyLimit(
+            options.record_for_seconds,
+            options.fps,
+            options.gop,
+            &limit,
+            &error)) {
+        throw std::runtime_error(error);
+    }
+    return limit;
+}
+
+void write_duration_safety_limit_json(std::ostream& out,
+                                      const Options& options,
+                                      const std::string& indent)
+{
+    const auto limit = duration_safety_limit(options);
+    out << indent << "\"duration_safety_limit\": {\n";
+    out << indent << "  \"enabled\": " << (limit.enabled ? "true" : "false") << ",\n";
+    out << indent << "  \"clock_role\": \"independent_frame_count_backstop\",\n";
+    out << indent << "  \"target_frame_count\": " << limit.target_frame_count << ",\n";
+    out << indent << "  \"grace_frame_count\": " << limit.grace_frame_count << ",\n";
+    out << indent << "  \"ceiling_frame_count\": " << limit.ceiling_frame_count << ",\n";
+    out << indent << "  \"policy\": \"" << json_escape(limit.policy) << "\"\n";
+    out << indent << "}";
+}
+
 std::vector<int> effective_shard_gpu_ids(const Options& options);
 
 bool write_recorder_status_json(const Options& options,
@@ -1406,6 +1457,8 @@ bool write_recorder_status_json(const Options& options,
             out << "    \"record_for_seconds\": " << options.record_for_seconds << ",\n";
             out << "    \"clip_seconds\": " << options.clip_seconds << "\n";
             out << "  },\n";
+            write_duration_safety_limit_json(out, options, "  ");
+            out << ",\n";
             out << "  \"rolling\": {\n";
             out << "    \"enabled\": " << (rolling_status.enabled ? "true" : "false") << ",\n";
             out << "    \"implementation\": \""
@@ -2481,15 +2534,33 @@ public:
             frame_identity_mismatches_++;
             fail_locked(error.str());
         }
+        std::set<uint64_t> batch_timestamps;
         for (size_t i = 0; i < packets.size(); ++i) {
             orange::external_recorder::ipc::SubmittedFrameIdentity identity;
             std::string identity_error;
+            const bool duplicate_in_batch =
+                !batch_timestamps.insert(output_timestamps[i]).second;
             if (!submitted_identities_.consume(
                     output_timestamps[i],
                     &identity,
                     &identity_error)) {
                 frame_identity_mismatches_++;
-                fail_locked("invalid NVENC packet identity: " + identity_error);
+                std::ostringstream error;
+                error << "invalid NVENC packet identity: " << identity_error
+                      << " packet_index=" << i
+                      << " packet_count=" << packets.size()
+                      << " duplicate_in_batch="
+                      << (duplicate_in_batch ? "true" : "false")
+                      << " outstanding_submitted_identities="
+                      << submitted_identities_.size()
+                      << " batch_output_timestamps=";
+                for (size_t j = 0; j < output_timestamps.size(); ++j) {
+                    if (j > 0) {
+                        error << ",";
+                    }
+                    error << output_timestamps[j];
+                }
+                fail_locked(error.str());
             }
             frame_identities_returned_++;
             PendingGop& gop = pending_gops_[identity.gop_index];
@@ -3458,9 +3529,6 @@ public:
                 sample->encode_enqueued = true;
                 sample->encode_queue_depth = queue_.size();
             }
-            if (merged_output_) {
-                merged_output_->note_submitted(desc);
-            }
         }
         cv_.notify_one();
         return true;
@@ -4407,6 +4475,15 @@ private:
         pic_params.inputDuration = 1;
         apply_importance_map(&pic_params);
 
+        // The merger's pending-GOP budget covers work submitted to NVENC,
+        // not descriptors waiting in this worker's separately bounded queue.
+        // In particular, all-intra crop recording uses GOP=1; registering at
+        // enqueue time made an ordinary queue burst look like unbounded
+        // encoder output retention.
+        if (merged_output_) {
+            merged_output_->note_submitted(item.desc);
+        }
+
         std::vector<std::vector<uint8_t>> packets;
         std::vector<uint64_t> output_timestamps;
         NvEncoderEncodeFrameTiming timing;
@@ -4862,6 +4939,8 @@ void write_summary_json(const Options& options,
     out << "    \"record_for_seconds\": " << options.record_for_seconds << ",\n";
     out << "    \"clip_seconds\": " << options.clip_seconds << "\n";
     out << "  },\n";
+    write_duration_safety_limit_json(out, options, "  ");
+    out << ",\n";
     out << "  \"rollover\": {\n";
     out << "    \"requested\": " << (options.clip_seconds > 0 ? "true" : "false") << ",\n";
     out << "    \"status\": \""
@@ -5152,6 +5231,8 @@ int main(int argc, char** argv)
     uint64_t status_heartbeat_sequence = 0;
     try {
         options = parse_options(argc, argv);
+        const orange::external_recorder::DurationSafetyLimit duration_limit =
+            duration_safety_limit(options);
         std::signal(SIGINT, signal_handler);
         std::signal(SIGTERM, signal_handler);
 
@@ -5192,8 +5273,11 @@ int main(int argc, char** argv)
         check_cuda(cudaSetDevice(options.gpu_id), "cudaSetDevice");
         check_cuda(cudaFree(nullptr), "cudaFree(0)");
 
-        std::vector<std::unique_ptr<ExternalEncodeWorker>> encode_workers;
         std::unique_ptr<MergedGopOutput> merged_output;
+        // Workers retain a non-owning pointer to the merger.  Declare the
+        // merger first so reverse destruction order always stops and destroys
+        // every worker before destroying its output coordinator.
+        std::vector<std::unique_ptr<ExternalEncodeWorker>> encode_workers;
         std::mutex protocol_write_mutex;
         bool encode_workers_prewarmed = false;
         bool encode_workers_peer_prewarmed = false;
@@ -5601,6 +5685,31 @@ int main(int argc, char** argv)
             if (!parse_frame_descriptor(line, &desc)) {
                 std::cerr << "Malformed frame descriptor: " << line << std::endl;
                 mark_intake_end("malformed_descriptor", false);
+                break;
+            }
+            if (duration_limit.enabled &&
+                frame_count >= duration_limit.ceiling_frame_count) {
+                protocol_state.duration_safety_ceiling_exceeded = true;
+                protocol_state.duration_safety_rejected_descriptor_ordinal =
+                    frame_count + 1;
+                protocol_state.duration_safety_rejected_recording_frame_id =
+                    desc.recording_frame_id;
+                mark_intake_end("duration_safety_ceiling_exceeded", false);
+                const std::string message =
+                    "recording duration safety ceiling exceeded before normal "
+                    "client finalization: accepted=" +
+                    std::to_string(frame_count) +
+                    " target=" +
+                    std::to_string(duration_limit.target_frame_count) +
+                    " grace=" +
+                    std::to_string(duration_limit.grace_frame_count) +
+                    " ceiling=" +
+                    std::to_string(duration_limit.ceiling_frame_count) +
+                    " rejected_recording_frame_id=" +
+                    std::to_string(desc.recording_frame_id);
+                std::cerr << "external_recorder_ipc_probe: " << message
+                          << std::endl;
+                write_status("duration_safety_ceiling_exceeded", message, false);
                 break;
             }
             std::string grouping_error;

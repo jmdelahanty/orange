@@ -555,6 +555,12 @@ GUI/session status:
   `ORANGE_GUI_RECORD_FOR_SECONDS` / `ORANGE_GUI_CLIP_SECONDS` env overrides are
   applied to the materialized full-frame contract. `clip_seconds > 0` requests
   rolling external recorder clips and requires `record_for_seconds > 0`.
+- A finite `record_for_seconds` also materializes
+  `duration_safety_limit` in the supervisor plan and recorder artifacts. The
+  recorder accepts at most `record_for_seconds * fps + max(2 * fps, gop)`
+  descriptors. This is a frame-count backstop for a missing GUI stop, not the
+  primary duration clock; the GUI owns the monotonic session deadline and sends
+  the normal `DRAIN`/`FINALIZE` controls.
 - On record start, the GUI uses `src/external_recorder_contract_utils.*` to
   materialize the same contract shape into the proposed recording folder as
   `external_recorder_contract.json`, starts supervised diagnostic recorder
@@ -569,6 +575,10 @@ GUI/session status:
   `recording_backend.mode = "external_ipc"`. For rolling contracts, the GUI
   mirrors recorder `rolling_output.clips[]` into a `rolling_clips` manifest
   and session clip indexes.
+- Finalization requires clean descriptor intake, a non-exceeded duration
+  backstop for finite runs, and a final recorder storage preflight that still
+  satisfies `min_free_bytes`. A meaningful session overrun (more than two
+  seconds at the monotonic stop-request boundary) is persisted as incomplete.
 - For non-rolling streams, the materialized contract carries `metadata_csv`
   (default `Cam<serial>_external_meta.csv`). The recorder writes one row only
   after a frame is accepted by NVENC, preserving the descriptor's camera

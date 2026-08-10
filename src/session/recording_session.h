@@ -2,6 +2,7 @@
 
 #include "modern_recording_pipeline.h"
 #include "external_recorder_lifecycle.h"
+#include "nic_thermal_monitor.h"
 #include "project.h"
 #include "recording_config_state.h"
 #include "recording_output_descriptor.h"
@@ -43,6 +44,7 @@ struct RecordingSessionState {
     std::string external_crop_recorder_contract_path;
     std::string external_crop_recorder_supervisor_plan_path;
     std::string external_crop_recorder_last_error;
+    orange::monitoring::NicThermalMonitorProcess nic_thermal_monitor;
 };
 
 struct RecordingRunStartResult {

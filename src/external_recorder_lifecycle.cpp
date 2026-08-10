@@ -154,6 +154,37 @@ bool StartSupervisedRecorderLifecycle(const SupervisedRecorderLifecycleOptions& 
     }
     state.artifact_root = state.plan.artifact_root;
 
+    if (state.plan.require_storage_preflight && state.plan.storage_budget.enabled) {
+        DurationAwareStoragePreflight storage_preflight;
+        std::vector<SupervisorPlan*> storage_plans = {&state.plan};
+        std::string storage_error;
+        const bool storage_ok = RunDurationAwareStoragePreflight(
+            storage_plans,
+            &storage_preflight,
+            &storage_error);
+        const std::filesystem::path storage_artifact =
+            std::filesystem::path(state.artifact_root) /
+            "duration_aware_storage_preflight.json";
+        std::string artifact_error;
+        if (!WriteDurationAwareStoragePreflightArtifact(
+                storage_artifact.string(),
+                storage_preflight,
+                &artifact_error)) {
+            set_error(error_out, artifact_error);
+            *state_out = std::move(state);
+            return false;
+        }
+        if (!storage_ok) {
+            set_error(
+                error_out,
+                storage_error.empty()
+                    ? "duration-aware storage preflight failed"
+                    : storage_error);
+            *state_out = std::move(state);
+            return false;
+        }
+    }
+
     SupervisedSessionArtifactOptions artifact_options;
     artifact_options.artifact_root = state.artifact_root;
     artifact_options.contract = options.contract;

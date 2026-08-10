@@ -1,4 +1,5 @@
 #include "external_recorder_contract_utils.h"
+#include "external_recorder_duration_limit.h"
 #include "external_recorder_ipc_protocol.h"
 #include "external_recorder_supervisor.h"
 #include "encoder_pipeline.h"
@@ -20,6 +21,38 @@ void require(bool condition, const std::string& message)
     if (!condition) {
         throw std::runtime_error(message);
     }
+}
+
+void resolves_duration_safety_limit()
+{
+    orange::external_recorder::DurationSafetyLimit limit;
+    std::string error;
+    require(orange::external_recorder::ResolveDurationSafetyLimit(
+                86400, 30, 30, &limit, &error),
+            "24-hour duration safety limit should resolve: " + error);
+    require(limit.enabled && limit.target_frame_count == 2592000ULL,
+            "duration target should be duration times nominal FPS");
+    require(limit.grace_frame_count == 60ULL &&
+                limit.ceiling_frame_count == 2592060ULL,
+            "duration ceiling should admit exactly two seconds/GOP of drain grace");
+
+    require(orange::external_recorder::ResolveDurationSafetyLimit(
+                10, 30, 60, &limit, &error),
+            "long-GOP duration safety limit should resolve: " + error);
+    require(limit.grace_frame_count == 60ULL &&
+                limit.ceiling_frame_count == 360ULL,
+            "the larger of two seconds and one GOP defines bounded grace");
+
+    require(orange::external_recorder::ResolveDurationSafetyLimit(
+                0, 0, 0, &limit, &error),
+            "an unbounded manual run should not require FPS");
+    require(!limit.enabled && limit.target_frame_count == 0 &&
+                limit.ceiling_frame_count == 0,
+            "zero duration disables the recorder frame ceiling");
+
+    require(!orange::external_recorder::ResolveDurationSafetyLimit(
+                10, 0, 25, &limit, &error) && !error.empty(),
+            "a finite duration with zero FPS must fail closed");
 }
 
 CameraParams make_camera(const std::string& serial,
@@ -328,6 +361,13 @@ void materializes_contract_and_supervisor_plan()
             "materialized contract should require returned-NVENC frame identity proof");
     require(contract.value("preserve_shard_mp4s", true) == false,
             "materialized contract should delete shard MP4s by default after merge");
+    require(contract.contains("storage_budget") && contract["storage_budget"].is_object(),
+            "materialized contract should persist the duration-aware storage policy");
+    require(contract["storage_budget"].value("reserved_free_bytes", 0ULL) ==
+                500000000000ULL,
+            "materialized contract should reserve nonzero free space");
+    require(contract["storage_budget"].value("safety_headroom_ratio", 0.0) == 0.10,
+            "materialized contract should persist the safety headroom ratio");
     require(contract["streams"].size() == 2, "expected two contract streams");
     require(contract["streams"]["2010095"].value("routing_policy", "") == "gop_modulo",
             "2010095 should route by GOP modulo");
@@ -818,6 +858,8 @@ void writes_runtime_handoff_and_finalization_artifacts()
 int main()
 {
     try {
+        resolves_duration_safety_limit();
+        std::cout << "[PASS] resolves_duration_safety_limit\n";
         parses_ipc_protocol_hello_lines();
         std::cout << "[PASS] parses_ipc_protocol_hello_lines\n";
         rejects_gop_25_30_contract_mismatch_before_unbounded_buffering();

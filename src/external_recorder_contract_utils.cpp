@@ -289,6 +289,15 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
     set_json_default(&contract, "require_protocol_hello", true);
     set_json_default(&contract, "require_frame_identity_proof", true);
     set_json_default(&contract, "preserve_shard_mp4s", false);
+    set_json_default(&contract, "storage_budget", {
+        {"enabled", true},
+        {"safety_headroom_ratio", 0.10},
+        {"reserved_free_bytes", 500000000000ULL},
+        {"metadata_bytes_per_frame", 1024},
+        {"raw_nv12_expansion_ratio", 1.10},
+        {"require_finite_duration", false},
+        {"planned_duration_seconds", 0},
+    });
 
     contract["artifact_root"] = expand_path_template(
         contract.value("artifact_root", std::string()),

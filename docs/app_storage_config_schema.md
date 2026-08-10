@@ -466,6 +466,31 @@ and finalization mirrors recorder `rolling_output.clips[]` into
 `recording_session.json`, `recording_clip_index.json/csv`, and
 `recording_snapshot.json` pointers.
 
+For every GUI recording with `record_for_seconds > 0`, Orange arms a
+`std::chrono::steady_clock` deadline only after the recording run has actually
+started. Reaching it claims one stop request and routes that request through the
+same drain/finalize path as the operator button, with
+`stop_reason = record_for_seconds_elapsed`. This check is GUI control-plane
+work; camera acquisition and recorder workers do not poll a wall clock.
+
+Each supervised external recorder also derives an independent frame ceiling:
+
+```text
+target_frames = record_for_seconds * fps
+grace_frames = max(2 * fps, gop)
+ceiling_frames = target_frames + grace_frames
+```
+
+The grace covers bounded frames already in flight while the normal stop drains.
+It is not permission for a longer requested recording. A descriptor beyond the
+ceiling is rejected before CUDA import/encode, descriptor intake is marked
+failed, and the already accepted media is finalized as an incomplete run. The
+derived values and any rejection identity are persisted in the supervisor plan,
+recorder status, and recorder summary. GUI finalization also marks a timed run
+incomplete if its monotonic stop-request time exceeds the configured duration
+by more than two seconds, or if a required recorder's final storage check
+violates `min_free_bytes`.
+
 The GUI Recording panel exposes in-memory controls for these same values when
 the effective full-frame sink mode is `external_ipc`. The controls are locked
 while streaming is active and do not rewrite the JSON file.
@@ -872,6 +897,13 @@ They are internal runtime-path toggles, not operator preferences. Use
 These should stay outside durable app config unless a separate operator product
 surface is designed for them:
 
+- recording-scoped hardware observation:
+  - `ORANGE_NIC_THERMAL_MONITOR_ENABLED` defaults to enabled; set it to `0` to
+    disable the helper without changing recording validity
+  - `ORANGE_NIC_THERMAL_SAMPLE_SECONDS` defaults to `5` and is clamped to
+    `1..3600`
+  - `ORANGE_NIC_THERMAL_MONITOR_BIN` overrides the sibling helper executable
+    path for packaging and integration tests
 - GUI automation and validation control:
   - `ORANGE_GUI_AUTORUN*`
   - `ORANGE_GUI_VALIDATE_ONLY`

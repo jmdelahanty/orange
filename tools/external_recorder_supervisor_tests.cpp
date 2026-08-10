@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -22,7 +23,10 @@ namespace {
 using orange::external_recorder::BuildRecorderCommand;
 using orange::external_recorder::BuildSupervisorPlanFromContract;
 using orange::external_recorder::BuildSupervisorPlanFromExperimentSpec;
+using orange::external_recorder::DurationAwareStoragePreflight;
+using orange::external_recorder::DurationAwareStoragePreflightToJson;
 using orange::external_recorder::PollSupervisorProcesses;
+using orange::external_recorder::RunDurationAwareStoragePreflight;
 using orange::external_recorder::StartSupervisedRecorderLifecycle;
 using orange::external_recorder::StartSupervisorProcesses;
 using orange::external_recorder::StopSupervisedRecorderLifecycle;
@@ -106,6 +110,47 @@ nlohmann::json make_contract(const std::vector<int>& shard_gpu_ids,
     };
 }
 
+SupervisorPlan make_storage_plan(const std::filesystem::path& root,
+                                 const std::string& plan_name,
+                                 const int stream_count,
+                                 const uint64_t max_bitrate_bps,
+                                 const int duration_seconds,
+                                 const bool crop_lossless = false)
+{
+    SupervisorPlan plan;
+    plan.artifact_root = (root / plan_name).string();
+    plan.session_id = "storage_budget_session";
+    plan.require_storage_preflight = true;
+    plan.preserve_shard_mp4s = false;
+    plan.storage_budget.enabled = true;
+    plan.storage_budget.safety_headroom_ratio = 0.0;
+    plan.storage_budget.reserved_free_bytes = 0;
+    plan.storage_budget.metadata_bytes_per_frame = 0;
+    plan.storage_budget.raw_nv12_expansion_ratio = 1.10;
+    for (int i = 0; i < stream_count; ++i) {
+        orange::external_recorder::RecorderStreamPlan stream;
+        stream.stream_id = plan_name + "_" + std::to_string(i);
+        stream.camera_serial = std::to_string(2010093 + i);
+        stream.stream_kind = crop_lossless ? "crop" : "full_frame";
+        stream.output_kind = crop_lossless ? "crop" : "full";
+        stream.mp4 =
+            (root / plan_name / ("stream_" + std::to_string(i) + ".mp4")).string();
+        stream.record_for_seconds = duration_seconds;
+        stream.encode_fps = 30;
+        stream.bitrate_bps = max_bitrate_bps;
+        stream.max_bitrate_bps = max_bitrate_bps;
+        stream.rate_control_mode = "vbr";
+        stream.tuning = "ll";
+        if (crop_lossless) {
+            stream.tuning = "lossless";
+            stream.rate_control_mode = "vbr";
+            stream.prewarm_bytes = 384ULL * 384ULL;
+        }
+        plan.streams.push_back(std::move(stream));
+    }
+    return plan;
+}
+
 void test_single_shard_plan_builds_command()
 {
     SupervisorPlanOptions options;
@@ -185,6 +230,184 @@ void test_single_shard_plan_builds_command()
             "single shard command should not include --shard-gpu-ids");
     require(has_arg_pair(argv, "--importance-map-mode", "off"),
             "importance maps must be explicitly disabled by default");
+}
+
+void test_duration_storage_budget_aggregates_four_cameras()
+{
+    const std::filesystem::path root =
+        "/tmp/orange_duration_storage_budget_four_camera_tests";
+    std::filesystem::remove_all(root);
+    SupervisorPlan plan = make_storage_plan(
+        root,
+        "full",
+        4,
+        150000000ULL,
+        86400);
+    std::vector<SupervisorPlan*> plans = {&plan};
+    DurationAwareStoragePreflight preflight;
+    std::string error;
+    (void)RunDurationAwareStoragePreflight(plans, &preflight, &error);
+    require(preflight.checked, "finite four-camera plan should be checked");
+    require(preflight.streams.size() == 4, "four-camera plan should expose four estimates");
+    uint64_t aggregate_video_bytes = 0;
+    for (const auto& stream : preflight.streams) {
+        aggregate_video_bytes += stream.video_bytes;
+        require(stream.rate_basis == "configured_max_bitrate_bps",
+                "capped VBR should budget the configured maximum bitrate");
+        require(stream.peak_copy_multiplier == 1,
+                "authoritative rolling output should have one peak copy");
+    }
+    require(aggregate_video_bytes == 6480000000000ULL,
+            "four 150 Mbps cameras for 24 hours should budget 6.48 TB");
+    const nlohmann::json payload = DurationAwareStoragePreflightToJson(preflight);
+    require(payload["streams"][0]["duration_hours"].get<double>() == 24.0,
+            "storage artifact should expose requested hours");
+    require(payload["summary"]["camera_count"].get<size_t>() == 4,
+            "storage artifact should expose the aggregate camera count");
+    require(payload["summary"]["aggregate_estimated_peak_bytes"].get<uint64_t>() ==
+                6480000000000ULL,
+            "storage artifact should expose aggregate peak bytes");
+
+    SupervisorPlan twenty_six_hour = make_storage_plan(
+        root,
+        "full_26h",
+        4,
+        150000000ULL,
+        93600);
+    plans = {&twenty_six_hour};
+    (void)RunDurationAwareStoragePreflight(plans, &preflight, &error);
+    uint64_t twenty_six_hour_video_bytes = 0;
+    for (const auto& stream : preflight.streams) {
+        twenty_six_hour_video_bytes += stream.video_bytes;
+    }
+    require(twenty_six_hour_video_bytes == 7020000000000ULL,
+            "four 150 Mbps cameras for 26 hours should budget 7.02 TB");
+    std::filesystem::remove_all(root);
+}
+
+void test_duration_storage_budget_policy_parses_and_persists()
+{
+    nlohmann::json contract = make_contract({5}, "single_shard");
+    contract["storage_budget"] = {
+        {"enabled", true},
+        {"safety_headroom_ratio", 0.25},
+        {"reserved_free_bytes", 123456789ULL},
+        {"metadata_bytes_per_frame", 2048},
+        {"raw_nv12_expansion_ratio", 1.20},
+        {"require_finite_duration", true},
+        {"planned_duration_seconds", 86400},
+    };
+    SupervisorPlan plan;
+    SupervisorPlanOptions options;
+    std::string error;
+    require(BuildSupervisorPlanFromContract(contract, options, &plan, &error),
+            "storage policy should parse: " + error);
+    require(plan.storage_budget.safety_headroom_ratio == 0.25,
+            "storage safety headroom should parse");
+    require(plan.storage_budget.reserved_free_bytes == 123456789ULL,
+            "storage reserve should parse");
+    require(plan.storage_budget.require_finite_duration,
+            "finite duration policy should parse");
+    require(plan.storage_budget.planned_duration_seconds == 86400,
+            "headless planned duration should parse");
+    const nlohmann::json json_plan = SupervisorPlanToJson(plan);
+    require(json_plan["storage_budget"]["metadata_bytes_per_frame"] == 2048,
+            "supervisor plan should persist storage budget policy");
+}
+
+void test_duration_storage_budget_includes_lossless_crops_once()
+{
+    const std::filesystem::path root =
+        "/tmp/orange_duration_storage_budget_crop_tests";
+    std::filesystem::remove_all(root);
+    SupervisorPlan full = make_storage_plan(
+        root,
+        "full",
+        4,
+        60000000ULL,
+        86400);
+    SupervisorPlan crop = make_storage_plan(
+        root,
+        "crop",
+        4,
+        150000000ULL,
+        86400,
+        true);
+    std::vector<SupervisorPlan*> plans = {&full, &crop};
+    DurationAwareStoragePreflight preflight;
+    std::string error;
+    (void)RunDurationAwareStoragePreflight(plans, &preflight, &error);
+    require(preflight.streams.size() == 8,
+            "combined full/crop plan should expose all eight streams");
+    uint64_t full_bytes = 0;
+    uint64_t crop_bytes = 0;
+    for (const auto& stream : preflight.streams) {
+        if (stream.output_kind == "crop") {
+            crop_bytes += stream.video_bytes;
+            require(stream.rate_basis == "raw_nv12_upper_bound",
+                    "lossless crop should use a raw NV12 upper bound");
+        } else {
+            full_bytes += stream.video_bytes;
+        }
+        require(stream.peak_copy_multiplier == 1,
+                "non-preserved shards must not be counted as duplicate files");
+    }
+    require(full_bytes == 2592000000000ULL,
+            "four 60 Mbps full-frame streams should budget 2.592 TB");
+    require(crop_bytes > 2500000000000ULL && crop_bytes < 2600000000000ULL,
+            "four 384px lossless crop streams should use a conservative raw bound");
+    std::filesystem::remove_all(root);
+}
+
+void test_duration_storage_budget_fails_closed_and_propagates_minimum()
+{
+    const std::filesystem::path root =
+        "/tmp/orange_duration_storage_budget_failure_tests";
+    std::filesystem::remove_all(root);
+    SupervisorPlan plan = make_storage_plan(root, "full", 1, 8ULL, 1);
+    plan.streams[0].min_free_bytes = std::numeric_limits<uint64_t>::max();
+    std::vector<SupervisorPlan*> plans = {&plan};
+    DurationAwareStoragePreflight preflight;
+    std::string error;
+    require(!RunDurationAwareStoragePreflight(plans, &preflight, &error),
+            "impossible configured minimum should fail closed");
+    require(preflight.status == "failed", "failed capacity check should be explicit");
+    require(!error.empty(), "failed capacity check should explain the shortage");
+    require(plan.streams[0].min_free_bytes == std::numeric_limits<uint64_t>::max(),
+            "aggregate minimum should propagate to the recorder startup check");
+    std::filesystem::remove_all(root);
+}
+
+void test_duration_storage_budget_handles_operator_timed_recording()
+{
+    const std::filesystem::path root =
+        "/tmp/orange_duration_storage_budget_unbounded_tests";
+    std::filesystem::remove_all(root);
+    SupervisorPlan plan = make_storage_plan(root, "full", 1, 150000000ULL, 0);
+    std::vector<SupervisorPlan*> plans = {&plan};
+    DurationAwareStoragePreflight preflight;
+    std::string error;
+    require(RunDurationAwareStoragePreflight(plans, &preflight, &error),
+            "operator-timed recording should retain the legacy path check by default");
+    require(preflight.status == "not_checked_no_finite_duration",
+            "operator-timed recording must not be mislabeled as capacity guaranteed");
+    require(!preflight.hard_guarantee,
+            "unbounded recording cannot carry a hard capacity guarantee");
+
+    plan.storage_budget.planned_duration_seconds = 30;
+    require(RunDurationAwareStoragePreflight(plans, &preflight, &error),
+            "headless planned duration should provide a finite storage bound");
+    require(preflight.checked && preflight.hard_guarantee,
+            "headless duration fallback should produce a hard guarantee");
+    require(preflight.streams[0].duration_seconds == 30,
+            "headless duration fallback should reach the stream estimate");
+
+    plan.storage_budget.planned_duration_seconds = 0;
+    plan.storage_budget.require_finite_duration = true;
+    require(!RunDurationAwareStoragePreflight(plans, &preflight, &error),
+            "finite-duration policy should reject an unbounded recording");
+    require(preflight.status == "failed", "finite-duration rejection should fail closed");
+    std::filesystem::remove_all(root);
 }
 
 void test_static_dish_prior_builds_geometry_command()
@@ -561,6 +784,14 @@ void test_spec_recording_control_flows_to_command()
             "plan json should include record duration");
     require(json_plan["streams"][0]["recording_control"]["clip_seconds"] == 2,
             "plan json should include clip duration");
+    const nlohmann::json duration_limit =
+        json_plan["streams"][0]["duration_safety_limit"];
+    require(duration_limit.value("enabled", false),
+            "finite recorder duration should arm the independent frame ceiling");
+    require(duration_limit.value("target_frame_count", 0ULL) == 600ULL &&
+                duration_limit.value("grace_frame_count", 0ULL) == 200ULL &&
+                duration_limit.value("ceiling_frame_count", 0ULL) == 800ULL,
+            "plan should materialize target plus two-second/GOP safety ceiling");
     require(json_plan["streams"][0]["terminal_tail_coalesce_frames"] == 25,
             "plan json should include terminal tail coalesce frame count");
 }
@@ -1091,6 +1322,8 @@ void test_supervised_lifecycle_writes_artifacts_and_env()
             "lifecycle session artifact should exist");
     require(std::filesystem::exists(root / "external_recorder_supervisor_plan.json"),
             "lifecycle plan artifact should exist");
+    require(std::filesystem::exists(root / "duration_aware_storage_preflight.json"),
+            "lifecycle should persist its duration-aware storage decision");
 
     const char* session_env = std::getenv("ORANGE_EXTERNAL_RECORDER_SESSION_ID");
     require(session_env && std::string(session_env) == "lifecycle_session",
@@ -1146,6 +1379,16 @@ int main(int argc, char** argv)
 
     const TestCase tests[] = {
         {"single_shard_plan_builds_command", test_single_shard_plan_builds_command},
+        {"duration_storage_budget_aggregates_four_cameras",
+         test_duration_storage_budget_aggregates_four_cameras},
+        {"duration_storage_budget_policy_parses_and_persists",
+         test_duration_storage_budget_policy_parses_and_persists},
+        {"duration_storage_budget_includes_lossless_crops_once",
+         test_duration_storage_budget_includes_lossless_crops_once},
+        {"duration_storage_budget_fails_closed_and_propagates_minimum",
+         test_duration_storage_budget_fails_closed_and_propagates_minimum},
+        {"duration_storage_budget_handles_operator_timed_recording",
+         test_duration_storage_budget_handles_operator_timed_recording},
         {"static_dish_prior_builds_geometry_command",
          test_static_dish_prior_builds_geometry_command},
         {"static_dish_prior_requires_valid_circle",

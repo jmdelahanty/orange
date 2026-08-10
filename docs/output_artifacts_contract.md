@@ -61,6 +61,9 @@ Default configured base path in runtime:
 | Pre-encoder reference metadata | `<recording_folder>/Cam<serial>_preenc_ref.json` | Optional | `pre_encoder_reference_capture.enabled = true` |
 | GPU dmon output | `<recording_folder>/nvidia_smi_dmon.csv` | Optional | Headless recording session with best-effort GPU monitoring |
 | GPU dmon stderr log | `<recording_folder>/nvidia_smi_dmon.stderr.log` | Optional | Headless recording session with best-effort GPU monitoring |
+| NIC thermal samples | `<recording_folder>/nic_thermal_monitor.csv` | Optional | GUI or headless recording with the recording-scoped NIC thermal helper enabled |
+| NIC thermal summary | `<recording_folder>/nic_thermal_monitor_summary.json` | Optional | Same; atomically refreshed while running and terminal at helper shutdown |
+| NIC thermal stderr log | `<recording_folder>/nic_thermal_monitor.stderr.log` | Optional | Same; helper startup/runtime diagnostics |
 | Crop video | `<recording_folder>/Cam<serial>_crop.mp4` | Optional | Crop-and-encode active |
 | Crop video finalization | `<crop-video-path>.finalization.json` | Optional for newly written crop MP4s | Crop MP4 writer opened; terminal at clean close |
 | Crop metadata CSV | `<recording_folder>/Cam<serial>_crop_meta.csv` | Optional | Crop-and-encode active |
@@ -299,6 +302,7 @@ Current emitted top-level fields:
   coordinate-frame contract keyed by camera id/serial)
 - `gpu_inventory: object` (runtime GPU metadata keyed by GPU id string)
 - `gpu_monitoring: object` (optional host-level GPU monitor sidecars keyed by monitor name)
+- `system_monitoring: object` (optional recording-scoped host hardware monitors keyed by monitor name)
 - `encoders: object` (added later by encoder worker updates)
 - `pipeline_metrics: object` (optional, added when acquisition worker finalizes per-camera pipeline summaries)
 
@@ -608,6 +612,25 @@ Important:
     - `signal: integer`
     - `error: string`
   - `command: string[]`
+
+`system_monitoring.nic_thermal` is emitted by GUI and headless recording
+lifecycles. Its process record identifies the helper executable, CSV, summary,
+stderr log, sampling period, start/stop times, and terminal exit status. The
+helper reads Linux hwmon sysfs directly in its own process; Orange never runs
+sensor reads on the GUI, acquisition, inference, or encoder threads. The child
+also requests a Linux parent-death signal, so an abnormal Orange exit does not
+leave an unbounded orphan monitor.
+
+The CSV contains one row per discovered mlx5 temperature sensor per sampling
+batch, with raw millidegree Celsius input/maximum/critical/highest values plus
+PCI BDF and network-interface identity. A missing mlx5 hwmon device produces a
+`no_mlx5_hwmon` sentinel row. An mlx5 `temp*_input` value less than or equal to
+zero is invalid and is recorded with `status = unavailable_zero`; it must not
+be interpreted as a measured 0 degrees Celsius. The summary uses schema
+`orange.nic_thermal_monitor_summary` version 1 and aggregates valid minima,
+maxima, warnings, critical samples, invalid reasons, and sensor-set changes.
+Monitoring is observational in this first slice: failure is preserved in the
+artifacts but does not reject or stop a recording.
 
 `pipeline_metrics` object (current shape):
 - Key: camera identifier string (serial or camera_id string).

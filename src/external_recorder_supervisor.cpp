@@ -1,5 +1,6 @@
 #include "external_recorder_supervisor.h"
 
+#include "external_recorder_duration_limit.h"
 #include "fsuid_guard.h"
 
 #include <algorithm>
@@ -14,6 +15,8 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <map>
+#include <set>
 #include <signal.h>
 #include <sstream>
 #include <sys/stat.h>
@@ -52,6 +55,33 @@ bool ends_with(const std::string& value, const std::string& suffix)
 {
     return value.size() >= suffix.size() &&
            value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+nlohmann::json duration_safety_limit_json(const RecorderStreamPlan& stream)
+{
+    DurationSafetyLimit limit;
+    std::string error;
+    if (!ResolveDurationSafetyLimit(
+            static_cast<uint64_t>(std::max(0, stream.record_for_seconds)),
+            static_cast<uint64_t>(std::max(0, stream.encode_fps)),
+            static_cast<uint64_t>(std::max(0, stream.gop)),
+            &limit,
+            &error)) {
+        return {
+            {"enabled", false},
+            {"status", "invalid"},
+            {"error", error},
+        };
+    }
+    return {
+        {"enabled", limit.enabled},
+        {"status", limit.enabled ? "armed" : "disabled"},
+        {"clock_role", "independent_frame_count_backstop"},
+        {"target_frame_count", limit.target_frame_count},
+        {"grace_frame_count", limit.grace_frame_count},
+        {"ceiling_frame_count", limit.ceiling_frame_count},
+        {"policy", limit.policy},
+    };
 }
 
 std::string replace_suffix(const std::string& value,
@@ -672,6 +702,74 @@ bool read_recording_control(const nlohmann::json& node,
                           0);
 }
 
+bool read_storage_budget_policy(const nlohmann::json& contract,
+                                StorageBudgetPolicy* policy,
+                                std::string* error_out)
+{
+    if (!policy || !contract.contains("storage_budget")) {
+        return true;
+    }
+    if (!contract["storage_budget"].is_object()) {
+        return set_error(
+            error_out,
+            "external_recorder_contract.storage_budget must be an object");
+    }
+    const nlohmann::json& node = contract["storage_budget"];
+    const std::string context = "external_recorder_contract.storage_budget";
+    if (!read_bool_field(node, "enabled", &policy->enabled, error_out, context) ||
+        !read_double_field(
+            node,
+            "safety_headroom_ratio",
+            &policy->safety_headroom_ratio,
+            error_out,
+            context) ||
+        !read_u64_field(
+            node,
+            "reserved_free_bytes",
+            &policy->reserved_free_bytes,
+            error_out,
+            context) ||
+        !read_u64_field(
+            node,
+            "metadata_bytes_per_frame",
+            &policy->metadata_bytes_per_frame,
+            error_out,
+            context) ||
+        !read_double_field(
+            node,
+            "raw_nv12_expansion_ratio",
+            &policy->raw_nv12_expansion_ratio,
+            error_out,
+            context) ||
+        !read_bool_field(
+            node,
+            "require_finite_duration",
+            &policy->require_finite_duration,
+            error_out,
+            context) ||
+        !read_u64_field(
+            node,
+            "planned_duration_seconds",
+            &policy->planned_duration_seconds,
+            error_out,
+            context)) {
+        return false;
+    }
+    if (policy->safety_headroom_ratio < 0.0 ||
+        policy->safety_headroom_ratio > 10.0) {
+        return set_error(
+            error_out,
+            context + ".safety_headroom_ratio must be between 0 and 10");
+    }
+    if (policy->raw_nv12_expansion_ratio < 1.0 ||
+        policy->raw_nv12_expansion_ratio > 10.0) {
+        return set_error(
+            error_out,
+            context + ".raw_nv12_expansion_ratio must be between 1 and 10");
+    }
+    return true;
+}
+
 bool append_selection_camera_serials(const nlohmann::json& experiment_spec,
                                      std::vector<std::string>* camera_serials,
                                      std::string* error_out)
@@ -845,6 +943,9 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
                          &plan.preserve_shard_mp4s,
                          error_out,
                          "external_recorder_contract")) {
+        return false;
+    }
+    if (!read_storage_budget_policy(contract, &plan.storage_budget, error_out)) {
         return false;
     }
     int contract_record_for_seconds = 0;
@@ -1264,6 +1365,19 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
                              context +
                                  ".recording_control.clip_seconds requires record_for_seconds > 0");
         }
+        DurationSafetyLimit duration_limit;
+        std::string duration_limit_error;
+        if (!ResolveDurationSafetyLimit(
+                static_cast<uint64_t>(std::max(0, stream_plan.record_for_seconds)),
+                static_cast<uint64_t>(std::max(0, stream_plan.encode_fps)),
+                static_cast<uint64_t>(std::max(0, stream_plan.gop)),
+                &duration_limit,
+                &duration_limit_error)) {
+            return set_error(
+                error_out,
+                context + ".recording_control duration safety limit is invalid: " +
+                    duration_limit_error);
+        }
         if (stream_plan.clip_seconds > 0 && plan.require_merged_mp4) {
             return set_error(
                 error_out,
@@ -1571,6 +1685,7 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
                 {"record_for_seconds", stream.record_for_seconds},
                 {"clip_seconds", stream.clip_seconds},
             }},
+            {"duration_safety_limit", duration_safety_limit_json(stream)},
             {"encode_fps", stream.encode_fps},
             {"encode_max_fps", stream.encode_max_fps},
             {"encode_queue_depth", stream.encode_queue_depth},
@@ -1622,8 +1737,550 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
         {"require_protocol_hello", plan.require_protocol_hello},
         {"require_frame_identity_proof", plan.require_frame_identity_proof},
         {"preserve_shard_mp4s", plan.preserve_shard_mp4s},
+        {"storage_budget", {
+            {"enabled", plan.storage_budget.enabled},
+            {"safety_headroom_ratio", plan.storage_budget.safety_headroom_ratio},
+            {"reserved_free_bytes", plan.storage_budget.reserved_free_bytes},
+            {"metadata_bytes_per_frame", plan.storage_budget.metadata_bytes_per_frame},
+            {"raw_nv12_expansion_ratio", plan.storage_budget.raw_nv12_expansion_ratio},
+            {"require_finite_duration", plan.storage_budget.require_finite_duration},
+            {"planned_duration_seconds", plan.storage_budget.planned_duration_seconds},
+        }},
         {"streams", streams},
     };
+}
+
+namespace {
+
+uint64_t ceil_u64_saturated(const long double value)
+{
+    if (!(value > 0.0L)) {
+        return 0;
+    }
+    const long double limit =
+        static_cast<long double>(std::numeric_limits<uint64_t>::max());
+    if (value >= limit) {
+        return std::numeric_limits<uint64_t>::max();
+    }
+    return static_cast<uint64_t>(std::ceil(value));
+}
+
+uint64_t add_u64_saturated(const uint64_t a, const uint64_t b)
+{
+    if (b > std::numeric_limits<uint64_t>::max() - a) {
+        return std::numeric_limits<uint64_t>::max();
+    }
+    return a + b;
+}
+
+uint64_t multiply_u64_saturated(const uint64_t a, const uint64_t b)
+{
+    if (a == 0 || b == 0) {
+        return 0;
+    }
+    if (a > std::numeric_limits<uint64_t>::max() / b) {
+        return std::numeric_limits<uint64_t>::max();
+    }
+    return a * b;
+}
+
+std::string storage_output_parent(const std::string& output_path)
+{
+    std::filesystem::path parent = std::filesystem::path(output_path).parent_path();
+    if (!parent.empty()) {
+        return parent.string();
+    }
+    std::error_code ec;
+    const std::filesystem::path cwd = std::filesystem::current_path(ec);
+    return ec ? std::string(".") : cwd.string();
+}
+
+std::string decimal_tb_string(const uint64_t bytes)
+{
+    std::ostringstream out;
+    out.setf(std::ios::fixed);
+    out.precision(3);
+    out << static_cast<long double>(bytes) / 1000000000000.0L << " TB";
+    return out.str();
+}
+
+bool write_json_atomic(const std::string& path,
+                       const nlohmann::json& payload,
+                       std::string* error_out)
+{
+    if (path.empty()) {
+        return set_error(error_out, "storage preflight artifact path is empty");
+    }
+    try {
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
+        const std::filesystem::path output(path);
+        if (!output.parent_path().empty()) {
+            std::error_code create_error;
+            std::filesystem::create_directories(output.parent_path(), create_error);
+            if (create_error) {
+                return set_error(
+                    error_out,
+                    "failed to create storage preflight artifact directory: " +
+                        create_error.message());
+            }
+        }
+        const std::filesystem::path temporary = output.string() + ".tmp";
+        {
+            std::ofstream stream(temporary, std::ios::trunc);
+            if (!stream) {
+                return set_error(
+                    error_out,
+                    "failed to open storage preflight artifact " + temporary.string());
+            }
+            stream << payload.dump(2) << '\n';
+            if (!stream) {
+                return set_error(
+                    error_out,
+                    "failed to write storage preflight artifact " + temporary.string());
+            }
+        }
+        std::error_code rename_error;
+        std::filesystem::rename(temporary, output, rename_error);
+        if (rename_error) {
+            std::error_code ignored;
+            std::filesystem::remove(temporary, ignored);
+            return set_error(
+                error_out,
+                "failed to publish storage preflight artifact " + output.string() +
+                    ": " + rename_error.message());
+        }
+        return true;
+    } catch (const std::exception& ex) {
+        return set_error(
+            error_out,
+            std::string("failed to write storage preflight artifact: ") + ex.what());
+    }
+}
+
+}  // namespace
+
+bool RunDurationAwareStoragePreflight(
+    const std::vector<SupervisorPlan*>& plans,
+    DurationAwareStoragePreflight* preflight_out,
+    std::string* error_out)
+{
+    if (!preflight_out) {
+        return set_error(error_out, "internal error: null storage preflight destination");
+    }
+
+    DurationAwareStoragePreflight result;
+    bool any_enabled_plan = false;
+    bool saw_unbounded_duration = false;
+    result.policy.enabled = false;
+    result.policy.safety_headroom_ratio = 0.0;
+    result.policy.reserved_free_bytes = 0;
+    result.policy.metadata_bytes_per_frame = 0;
+    result.policy.raw_nv12_expansion_ratio = 1.0;
+    result.policy.require_finite_duration = false;
+    result.policy.planned_duration_seconds = 0;
+
+    for (const SupervisorPlan* plan : plans) {
+        if (!plan || !plan->require_storage_preflight || !plan->storage_budget.enabled) {
+            continue;
+        }
+        any_enabled_plan = true;
+        result.policy.enabled = true;
+        result.policy.safety_headroom_ratio = std::max(
+            result.policy.safety_headroom_ratio,
+            plan->storage_budget.safety_headroom_ratio);
+        result.policy.reserved_free_bytes = std::max(
+            result.policy.reserved_free_bytes,
+            plan->storage_budget.reserved_free_bytes);
+        result.policy.metadata_bytes_per_frame = std::max(
+            result.policy.metadata_bytes_per_frame,
+            plan->storage_budget.metadata_bytes_per_frame);
+        result.policy.raw_nv12_expansion_ratio = std::max(
+            result.policy.raw_nv12_expansion_ratio,
+            plan->storage_budget.raw_nv12_expansion_ratio);
+        result.policy.require_finite_duration =
+            result.policy.require_finite_duration ||
+            plan->storage_budget.require_finite_duration;
+        result.policy.planned_duration_seconds = std::max(
+            result.policy.planned_duration_seconds,
+            plan->storage_budget.planned_duration_seconds);
+    }
+
+    if (!any_enabled_plan) {
+        result.status = "not_required";
+        result.ok = true;
+        *preflight_out = std::move(result);
+        if (error_out) {
+            error_out->clear();
+        }
+        return true;
+    }
+
+    struct FilesystemAccumulator {
+        StorageBudgetFilesystemEstimate estimate;
+        std::vector<std::pair<SupervisorPlan*, RecorderStreamPlan*>> streams;
+    };
+    std::map<std::string, FilesystemAccumulator> filesystem_accumulators;
+
+    for (SupervisorPlan* plan : plans) {
+        if (!plan || !plan->require_storage_preflight || !plan->storage_budget.enabled) {
+            continue;
+        }
+        for (RecorderStreamPlan& stream : plan->streams) {
+            StorageBudgetStreamEstimate estimate;
+            estimate.plan_artifact_root = plan->artifact_root;
+            estimate.stream_id = stream.stream_id;
+            estimate.camera_serial = stream.camera_serial;
+            estimate.stream_kind = stream.stream_kind;
+            estimate.output_kind = stream.output_kind;
+            estimate.output_path = stream.mp4;
+            estimate.duration_seconds =
+                stream.record_for_seconds > 0
+                    ? static_cast<uint64_t>(stream.record_for_seconds)
+                    : plan->storage_budget.planned_duration_seconds;
+            estimate.encode_fps =
+                static_cast<uint64_t>(std::max(0, stream.encode_fps));
+            estimate.retained_copy_multiplier = plan->preserve_shard_mp4s ? 2 : 1;
+            estimate.peak_copy_multiplier = estimate.retained_copy_multiplier;
+
+            if (estimate.duration_seconds == 0) {
+                estimate.error = "finite recording duration is not configured";
+                saw_unbounded_duration = true;
+                result.streams.push_back(std::move(estimate));
+                continue;
+            }
+            if (estimate.encode_fps == 0) {
+                estimate.error = "encode_fps must be positive for storage budgeting";
+                result.streams.push_back(std::move(estimate));
+                continue;
+            }
+            if (stream.mp4.empty()) {
+                estimate.error = "output MP4 path is missing";
+                result.streams.push_back(std::move(estimate));
+                continue;
+            }
+
+            const std::string tuning = normalize_token(stream.tuning);
+            const std::string rate_control = normalize_token(stream.rate_control_mode);
+            const bool raw_bound =
+                tuning == "lossless" || rate_control == "constqp" ||
+                rate_control == "cqp" || rate_control == "cq";
+            if (raw_bound) {
+                if (stream.prewarm_bytes == 0) {
+                    estimate.error =
+                        "unbounded/lossless rate control requires nonzero frame bytes";
+                    result.streams.push_back(std::move(estimate));
+                    continue;
+                }
+                estimate.rate_basis = "raw_nv12_upper_bound";
+                const long double rate_bytes_per_second =
+                    static_cast<long double>(stream.prewarm_bytes) * 1.5L *
+                    static_cast<long double>(estimate.encode_fps) *
+                    static_cast<long double>(result.policy.raw_nv12_expansion_ratio);
+                estimate.conservative_rate_bps =
+                    ceil_u64_saturated(rate_bytes_per_second * 8.0L);
+            } else {
+                estimate.rate_basis = "configured_max_bitrate_bps";
+                estimate.conservative_rate_bps =
+                    std::max(stream.max_bitrate_bps, stream.bitrate_bps);
+                if (estimate.conservative_rate_bps == 0) {
+                    estimate.error = "capped rate control has no positive bitrate bound";
+                    result.streams.push_back(std::move(estimate));
+                    continue;
+                }
+            }
+
+            estimate.video_bytes = ceil_u64_saturated(
+                static_cast<long double>(estimate.conservative_rate_bps) *
+                static_cast<long double>(estimate.duration_seconds) / 8.0L);
+            const uint64_t frames = multiply_u64_saturated(
+                estimate.duration_seconds,
+                estimate.encode_fps);
+            estimate.metadata_bytes = multiply_u64_saturated(
+                frames,
+                result.policy.metadata_bytes_per_frame);
+            estimate.estimated_retained_bytes = add_u64_saturated(
+                multiply_u64_saturated(
+                    estimate.video_bytes,
+                    estimate.retained_copy_multiplier),
+                estimate.metadata_bytes);
+            estimate.estimated_peak_bytes = add_u64_saturated(
+                multiply_u64_saturated(
+                    estimate.video_bytes,
+                    estimate.peak_copy_multiplier),
+                estimate.metadata_bytes);
+
+            const std::string probe_path = storage_output_parent(stream.mp4);
+            try {
+                orange::ScopedFsuid fsuid_guard;
+                (void)fsuid_guard;
+                std::error_code create_error;
+                std::filesystem::create_directories(probe_path, create_error);
+                if (create_error) {
+                    estimate.error =
+                        "failed to create output directory: " + create_error.message();
+                    result.streams.push_back(std::move(estimate));
+                    continue;
+                }
+                struct stat st {};
+                if (::stat(probe_path.c_str(), &st) != 0) {
+                    estimate.error =
+                        std::string("failed to identify output filesystem: ") +
+                        std::strerror(errno);
+                    result.streams.push_back(std::move(estimate));
+                    continue;
+                }
+                estimate.filesystem_key = "st_dev:" + std::to_string(st.st_dev);
+                FilesystemAccumulator& accumulator =
+                    filesystem_accumulators[estimate.filesystem_key];
+                accumulator.estimate.filesystem_key = estimate.filesystem_key;
+                if (accumulator.estimate.probe_path.empty()) {
+                    accumulator.estimate.probe_path = probe_path;
+                }
+                accumulator.estimate.estimated_retained_bytes = add_u64_saturated(
+                    accumulator.estimate.estimated_retained_bytes,
+                    estimate.estimated_retained_bytes);
+                accumulator.estimate.estimated_peak_bytes = add_u64_saturated(
+                    accumulator.estimate.estimated_peak_bytes,
+                    estimate.estimated_peak_bytes);
+                accumulator.estimate.configured_min_free_bytes = std::max(
+                    accumulator.estimate.configured_min_free_bytes,
+                    stream.min_free_bytes);
+                accumulator.streams.emplace_back(plan, &stream);
+                estimate.bounded = true;
+            } catch (const std::exception& ex) {
+                estimate.error = ex.what();
+            }
+            result.streams.push_back(std::move(estimate));
+        }
+    }
+
+    bool stream_error = false;
+    bool any_bounded_stream = false;
+    for (const StorageBudgetStreamEstimate& stream : result.streams) {
+        any_bounded_stream = any_bounded_stream || stream.bounded;
+        if (!stream.error.empty() &&
+            (stream.duration_seconds > 0 || result.policy.require_finite_duration)) {
+            stream_error = true;
+            if (result.error.empty()) {
+                result.error = "storage budget for stream " + stream.stream_id +
+                               " is not bounded: " + stream.error;
+            }
+        }
+    }
+
+    for (auto& entry : filesystem_accumulators) {
+        FilesystemAccumulator& accumulator = entry.second;
+        StorageBudgetFilesystemEstimate& filesystem = accumulator.estimate;
+        try {
+            orange::ScopedFsuid fsuid_guard;
+            (void)fsuid_guard;
+            std::error_code space_error;
+            const std::filesystem::space_info space =
+                std::filesystem::space(filesystem.probe_path, space_error);
+            if (space_error) {
+                filesystem.error =
+                    "failed to query available storage: " + space_error.message();
+            } else {
+                filesystem.capacity_bytes = static_cast<uint64_t>(space.capacity);
+                filesystem.available_bytes = static_cast<uint64_t>(space.available);
+                filesystem.safety_headroom_bytes = ceil_u64_saturated(
+                    static_cast<long double>(filesystem.estimated_peak_bytes) *
+                    static_cast<long double>(result.policy.safety_headroom_ratio));
+                filesystem.reserved_free_bytes = result.policy.reserved_free_bytes;
+                uint64_t calculated_required = add_u64_saturated(
+                    filesystem.estimated_peak_bytes,
+                    filesystem.safety_headroom_bytes);
+                calculated_required = add_u64_saturated(
+                    calculated_required,
+                    filesystem.reserved_free_bytes);
+                filesystem.required_available_bytes = std::max(
+                    calculated_required,
+                    filesystem.configured_min_free_bytes);
+                filesystem.ok =
+                    filesystem.available_bytes >= filesystem.required_available_bytes;
+                filesystem.projected_available_after_bytes =
+                    filesystem.available_bytes >= filesystem.estimated_peak_bytes
+                        ? filesystem.available_bytes - filesystem.estimated_peak_bytes
+                        : 0;
+                if (!filesystem.ok) {
+                    filesystem.error =
+                        "required " + decimal_tb_string(filesystem.required_available_bytes) +
+                        " but only " + decimal_tb_string(filesystem.available_bytes) +
+                        " is available";
+                }
+            }
+        } catch (const std::exception& ex) {
+            filesystem.error = ex.what();
+        }
+        if (!filesystem.error.empty()) {
+            filesystem.ok = false;
+        }
+        if (!filesystem.ok && result.error.empty()) {
+            result.error = "storage capacity preflight failed for " +
+                           filesystem.probe_path + ": " + filesystem.error;
+        }
+        for (const auto& stream_entry : accumulator.streams) {
+            if (stream_entry.second) {
+                stream_entry.second->min_free_bytes = std::max(
+                    stream_entry.second->min_free_bytes,
+                    filesystem.required_available_bytes);
+            }
+        }
+        result.filesystems.push_back(filesystem);
+    }
+
+    if (!any_bounded_stream) {
+        result.checked = false;
+        result.hard_guarantee = false;
+        if (result.policy.require_finite_duration || stream_error) {
+            result.ok = false;
+            result.status = "failed";
+            if (result.error.empty()) {
+                result.error = "storage preflight requires a finite recording duration";
+            }
+        } else {
+            result.ok = true;
+            result.status = "not_checked_no_finite_duration";
+        }
+    } else {
+        result.checked = true;
+        result.hard_guarantee = !saw_unbounded_duration && !stream_error;
+        result.ok = !stream_error;
+        for (const StorageBudgetFilesystemEstimate& filesystem : result.filesystems) {
+            result.ok = result.ok && filesystem.ok;
+        }
+        result.status = result.ok
+            ? (result.hard_guarantee ? "pass" : "warning_unbounded_duration")
+            : "failed";
+    }
+
+    if (!result.ok && result.error.empty()) {
+        result.error = "duration-aware storage preflight failed";
+    }
+    const bool ok = result.ok;
+    const std::string final_error = result.error;
+    *preflight_out = std::move(result);
+    if (error_out) {
+        *error_out = ok ? std::string() : final_error;
+    }
+    return ok;
+}
+
+nlohmann::json DurationAwareStoragePreflightToJson(
+    const DurationAwareStoragePreflight& preflight)
+{
+    nlohmann::json streams = nlohmann::json::array();
+    std::set<std::string> camera_serials;
+    uint64_t requested_duration_seconds = 0;
+    uint64_t full_frame_stream_count = 0;
+    uint64_t crop_stream_count = 0;
+    for (const StorageBudgetStreamEstimate& stream : preflight.streams) {
+        if (!stream.camera_serial.empty()) {
+            camera_serials.insert(stream.camera_serial);
+        }
+        requested_duration_seconds = std::max(
+            requested_duration_seconds,
+            stream.duration_seconds);
+        if (stream.output_kind == "crop") {
+            ++crop_stream_count;
+        } else {
+            ++full_frame_stream_count;
+        }
+        streams.push_back({
+            {"plan_artifact_root", stream.plan_artifact_root},
+            {"stream_id", stream.stream_id},
+            {"camera_serial", stream.camera_serial},
+            {"stream_kind", stream.stream_kind},
+            {"output_kind", stream.output_kind},
+            {"output_path", stream.output_path},
+            {"filesystem_key", stream.filesystem_key},
+            {"rate_basis", stream.rate_basis},
+            {"duration_seconds", stream.duration_seconds},
+            {"duration_hours", static_cast<double>(stream.duration_seconds) / 3600.0},
+            {"encode_fps", stream.encode_fps},
+            {"conservative_rate_bps", stream.conservative_rate_bps},
+            {"video_bytes", stream.video_bytes},
+            {"metadata_bytes", stream.metadata_bytes},
+            {"retained_copy_multiplier", stream.retained_copy_multiplier},
+            {"peak_copy_multiplier", stream.peak_copy_multiplier},
+            {"estimated_retained_bytes", stream.estimated_retained_bytes},
+            {"estimated_peak_bytes", stream.estimated_peak_bytes},
+            {"bounded", stream.bounded},
+            {"error", stream.error},
+        });
+    }
+    nlohmann::json filesystems = nlohmann::json::array();
+    uint64_t aggregate_retained_bytes = 0;
+    uint64_t aggregate_peak_bytes = 0;
+    uint64_t aggregate_required_available_bytes = 0;
+    for (const StorageBudgetFilesystemEstimate& filesystem : preflight.filesystems) {
+        aggregate_retained_bytes = add_u64_saturated(
+            aggregate_retained_bytes,
+            filesystem.estimated_retained_bytes);
+        aggregate_peak_bytes = add_u64_saturated(
+            aggregate_peak_bytes,
+            filesystem.estimated_peak_bytes);
+        aggregate_required_available_bytes = add_u64_saturated(
+            aggregate_required_available_bytes,
+            filesystem.required_available_bytes);
+        filesystems.push_back({
+            {"filesystem_key", filesystem.filesystem_key},
+            {"probe_path", filesystem.probe_path},
+            {"capacity_bytes", filesystem.capacity_bytes},
+            {"available_bytes", filesystem.available_bytes},
+            {"estimated_retained_bytes", filesystem.estimated_retained_bytes},
+            {"estimated_peak_bytes", filesystem.estimated_peak_bytes},
+            {"safety_headroom_bytes", filesystem.safety_headroom_bytes},
+            {"reserved_free_bytes", filesystem.reserved_free_bytes},
+            {"configured_min_free_bytes", filesystem.configured_min_free_bytes},
+            {"required_available_bytes", filesystem.required_available_bytes},
+            {"projected_available_after_bytes", filesystem.projected_available_after_bytes},
+            {"ok", filesystem.ok},
+            {"error", filesystem.error},
+        });
+    }
+    return {
+        {"schema_id", preflight.schema_id},
+        {"schema_version", preflight.schema_version},
+        {"checked", preflight.checked},
+        {"ok", preflight.ok},
+        {"hard_guarantee", preflight.hard_guarantee},
+        {"status", preflight.status},
+        {"error", preflight.error},
+        {"summary", {
+            {"requested_duration_seconds", requested_duration_seconds},
+            {"requested_duration_hours",
+             static_cast<double>(requested_duration_seconds) / 3600.0},
+            {"camera_count", camera_serials.size()},
+            {"stream_count", preflight.streams.size()},
+            {"full_frame_stream_count", full_frame_stream_count},
+            {"crop_stream_count", crop_stream_count},
+            {"filesystem_count", preflight.filesystems.size()},
+            {"aggregate_estimated_retained_bytes", aggregate_retained_bytes},
+            {"aggregate_estimated_peak_bytes", aggregate_peak_bytes},
+            {"aggregate_required_available_bytes", aggregate_required_available_bytes},
+        }},
+        {"policy", {
+            {"enabled", preflight.policy.enabled},
+            {"safety_headroom_ratio", preflight.policy.safety_headroom_ratio},
+            {"reserved_free_bytes", preflight.policy.reserved_free_bytes},
+            {"metadata_bytes_per_frame", preflight.policy.metadata_bytes_per_frame},
+            {"raw_nv12_expansion_ratio", preflight.policy.raw_nv12_expansion_ratio},
+            {"require_finite_duration", preflight.policy.require_finite_duration},
+            {"planned_duration_seconds", preflight.policy.planned_duration_seconds},
+        }},
+        {"streams", streams},
+        {"filesystems", filesystems},
+    };
+}
+
+bool WriteDurationAwareStoragePreflightArtifact(
+    const std::string& path,
+    const DurationAwareStoragePreflight& preflight,
+    std::string* error_out)
+{
+    return write_json_atomic(path, DurationAwareStoragePreflightToJson(preflight), error_out);
 }
 
 bool StartSupervisorProcesses(const SupervisorPlan& plan,

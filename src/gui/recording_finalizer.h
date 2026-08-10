@@ -2,6 +2,7 @@
 
 #include "gui/recording_run_state.h"
 #include "external_recorder_lifecycle.h"
+#include "nic_thermal_monitor.h"
 #include "json.hpp"
 
 #include <atomic>
@@ -173,6 +174,7 @@ struct GuiRecordingFinalizeInputs {
     std::string external_recorder_supervisor_plan_path;
     std::string external_crop_recorder_contract_path;
     std::string external_crop_recorder_supervisor_plan_path;
+    orange::monitoring::NicThermalMonitorProcess nic_thermal_monitor;
 
     // Ingress stats snapshot (reads live pipeline objects; GUI thread only).
     nlohmann::json ingress_stats = nlohmann::json::object();

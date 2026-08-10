@@ -774,6 +774,11 @@ void test_abort_pending_start_stops_recorders_and_restores_state()
 
 int main(int, char** argv)
 {
+    // These tests exercise the phased recorder lifecycle, not the optional
+    // recording-scoped hardware observer. Keep them hermetic and avoid
+    // leaving a helper alive when a successful-start test intentionally does
+    // not run the normal recording finalizer.
+    setenv("ORANGE_NIC_THERMAL_MONITOR_ENABLED", "0", 1);
     if (argv && argv[0]) {
         g_binary_dir = std::filesystem::absolute(argv[0]).parent_path();
     }

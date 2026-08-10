@@ -493,6 +493,7 @@ def verify_one(
     require_storage_preflight: bool = False,
     require_protocol_hello: bool = False,
     ffprobe_packet_count: int | None = None,
+    ffprobe_key_flags=None,
     contract_fields: dict | None = None,
 ) -> dict:
     serial = "2010096"
@@ -518,15 +519,20 @@ def verify_one(
         contract.update(contract_fields)
     original_ffprobe = verifier.ffprobe_video
     original_ffprobe_key_flags = verifier.ffprobe_packet_key_flags
+    output_kind = str(summary_payload.get("output_kind", "full"))
     verifier.ffprobe_video = lambda path, ffprobe: {
-        "tags": video_metadata_payload(serial)["mp4_tags_expected"],
+        "tags": video_metadata_payload(serial, output_kind=output_kind)["mp4_tags_expected"],
         "packet_count": (
             int(ffprobe_packet_count)
             if ffprobe_packet_count is not None
             else int(summary_payload["frames_encoded"])
         ),
     }
-    verifier.ffprobe_packet_key_flags = lambda path, ffprobe: ["K_", "K_", "K_"]
+    verifier.ffprobe_packet_key_flags = (
+        ffprobe_key_flags
+        if ffprobe_key_flags is not None
+        else lambda path, ffprobe: ["K_", "K_", "K_"]
+    )
     try:
         return verifier.verify_summary(
             root,
@@ -1148,6 +1154,33 @@ def test_crop_external_mp4_requires_all_packet_key_samples() -> None:
             verifier.ffprobe_packet_key_flags = original_ffprobe_key_flags
 
 
+def test_rolling_crop_recorder_timestamp_sidecar_need_not_have_analytics_indexes() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010096"
+        summary_path, mp4_path = write_summary(root, serial, rolling=True)
+        rewrite_summary(
+            summary_path,
+            lambda payload: payload.update(
+                {
+                    "output_kind": "crop",
+                    "stream_kind": "crop",
+                    "video_metadata": video_metadata_payload(serial, output_kind="crop"),
+                }
+            ),
+        )
+        result = verify_one(
+            root,
+            summary_path,
+            mp4_path,
+            stream_fields={"stream_kind": "crop", "output_kind": "crop"},
+            ffprobe_key_flags=lambda path, ffprobe: (
+                ["K_", "K_"] if "clip_000000" in str(path) else ["K_"]
+            ),
+        )
+        require(result["rolling_clip_count"] == 2, "raw crop recorder clips should verify")
+
+
 def test_status_sidecar_checks_rolling_progress() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1416,6 +1449,99 @@ def test_multi_shard_shard_mp4_retention_contract() -> None:
             verifier.ffprobe_video = original_ffprobe
 
 
+def test_materialized_contract_is_loaded_by_matching_artifact_root() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        analytics_root = Path(tmp)
+        full_root = analytics_root / "external_recorder"
+        crop_root = analytics_root / "external_crop_recorder"
+        full_root.mkdir()
+        crop_root.mkdir()
+        full_contract = {
+            "schema_id": verifier.CONTRACT_SCHEMA_ID,
+            "schema_version": 1,
+            "mode": "diagnostic_ipc_v1",
+            "artifact_root": str(full_root),
+            "streams": {"2010096": {"routing_policy": "gop_modulo"}},
+        }
+        crop_contract = {
+            "schema_id": verifier.CONTRACT_SCHEMA_ID,
+            "schema_version": 1,
+            "mode": "diagnostic_ipc_v1",
+            "artifact_root": str(crop_root),
+            "streams": {"2010096_crop": {"routing_policy": "single_shard"}},
+        }
+        (analytics_root / "external_recorder_contract.json").write_text(
+            json.dumps(full_contract), encoding="utf-8"
+        )
+        (analytics_root / "external_crop_recorder_contract.json").write_text(
+            json.dumps(crop_contract), encoding="utf-8"
+        )
+
+        loaded_full = verifier.load_materialized_contract(analytics_root, full_root)
+        loaded_crop = verifier.load_materialized_contract(analytics_root, crop_root)
+        require(loaded_full == full_contract, "full recorder contract was not selected")
+        require(loaded_crop == crop_contract, "crop recorder contract was not selected")
+
+
+def test_synthesized_contract_preserves_summary_routing_policy() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary_path = root / "Cam2010096_external_summary.json"
+        summary_path.write_text(
+            json.dumps({"stream_id": "2010096", "routing_policy": "single_shard"}),
+            encoding="utf-8",
+        )
+        contract = verifier.synthesize_contract(root, None)
+        require(
+            contract["streams"]["2010096"]["routing_policy"] == "single_shard",
+            "synthesized contract replaced the recorded routing policy",
+        )
+
+
+def test_duration_safety_limit_contract() -> None:
+    payload = {
+        "duration_safety_limit": {
+            "enabled": True,
+            "clock_role": "independent_frame_count_backstop",
+            "target_frame_count": 300,
+            "grace_frame_count": 60,
+            "ceiling_frame_count": 360,
+            "policy": "target_plus_max_two_seconds_or_one_gop",
+        },
+        "ipc_protocol": {
+            "duration_safety_ceiling_exceeded": False,
+        },
+    }
+    verified = verifier.verify_duration_safety_limit(
+        payload,
+        "duration fixture",
+        record_for_seconds=10,
+        fps=30,
+        gop=30,
+        frames_received=301,
+        require_present=True,
+    )
+    require(verified == payload["duration_safety_limit"],
+            "valid duration safety limit should be returned")
+
+    payload["ipc_protocol"]["duration_safety_ceiling_exceeded"] = True
+    try:
+        verifier.verify_duration_safety_limit(
+            payload,
+            "duration fixture",
+            record_for_seconds=10,
+            fps=30,
+            gop=30,
+            frames_received=301,
+            require_present=True,
+        )
+    except verifier.VerificationError as exc:
+        require("duration_safety_ceiling_exceeded" in str(exc),
+                f"unexpected duration-ceiling failure: {exc}")
+    else:
+        raise AssertionError("expected an exceeded duration ceiling to fail")
+
+
 def main() -> int:
     tests = [
         test_queue_thresholds_pass_and_summarize,
@@ -1435,11 +1561,15 @@ def main() -> int:
         test_status_sidecar_passes_and_summarizes,
         test_stream_kind_and_output_kind_match_contract,
         test_crop_external_mp4_requires_all_packet_key_samples,
+        test_rolling_crop_recorder_timestamp_sidecar_need_not_have_analytics_indexes,
         test_status_sidecar_checks_rolling_progress,
         test_status_sidecar_failures,
         test_runtime_status_is_checked_when_required,
         test_runtime_status_checks_rolling_progress,
         test_multi_shard_shard_mp4_retention_contract,
+        test_materialized_contract_is_loaded_by_matching_artifact_root,
+        test_synthesized_contract_preserves_summary_routing_policy,
+        test_duration_safety_limit_contract,
     ]
     for test in tests:
         test()

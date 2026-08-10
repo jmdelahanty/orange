@@ -46,6 +46,7 @@
 #include "external_recorder_supervisor.h"
 #include "headless_recording_profile.h"
 #include "fsuid_guard.h"
+#include "nic_thermal_monitor.h"
 #include "yolov8_det.h"
 #include "yolo_worker.h"
 #include "yolo_event_log.h"
@@ -857,7 +858,8 @@ nlohmann::json build_headless_recording_control_config_json(
 
 nlohmann::json build_headless_external_recorder_contract_config_json(
     const HeadlessExternalRecorderContractConfig& config,
-    const HeadlessRecordingControlConfig* recording_control = nullptr)
+    const HeadlessRecordingControlConfig* recording_control = nullptr,
+    const int planned_duration_seconds = 0)
 {
     nlohmann::json contract = {
         {"schema_id", config.schema_id},
@@ -877,6 +879,15 @@ nlohmann::json build_headless_external_recorder_contract_config_json(
         {"require_protocol_hello", config.require_protocol_hello},
         {"require_frame_identity_proof", config.require_frame_identity_proof},
         {"preserve_shard_mp4s", config.preserve_shard_mp4s},
+        {"storage_budget", {
+            {"enabled", true},
+            {"safety_headroom_ratio", 0.10},
+            {"reserved_free_bytes", 500000000000ULL},
+            {"metadata_bytes_per_frame", 1024},
+            {"raw_nv12_expansion_ratio", 1.10},
+            {"require_finite_duration", false},
+            {"planned_duration_seconds", std::max(0, planned_duration_seconds)},
+        }},
         {"streams", config.streams.is_object() ? config.streams : nlohmann::json::object()}
     };
     if (recording_control) {
@@ -951,6 +962,11 @@ void start_headless_gpu_dmon_monitor(HeadlessGpuDmonMonitor* monitor,
                                      const std::string& recording_folder,
                                      const std::vector<int>& gpu_ids);
 void stop_headless_gpu_dmon_monitor(HeadlessGpuDmonMonitor* monitor);
+void start_headless_nic_thermal_monitor(
+    orange::monitoring::NicThermalMonitorProcess* monitor,
+    const std::string& recording_folder);
+void stop_headless_nic_thermal_monitor(
+    orange::monitoring::NicThermalMonitorProcess* monitor);
 
 std::string shell_single_quote(const std::string& value)
 {
@@ -3838,6 +3854,8 @@ void shutdown_headless_run(std::vector<std::thread>& camera_threads,
                            std::vector<std::unique_ptr<CropProducerWorker>>& crop_producer_workers,
                            std::vector<std::unique_ptr<PoseWorker>>& pose_workers,
                            HeadlessGpuDmonMonitor* gpu_dmon_monitor,
+                           orange::monitoring::NicThermalMonitorProcess*
+                               nic_thermal_monitor,
                            CameraEmergent* ecams,
                            CameraParams* cameras_params,
                            int num_cameras,
@@ -3880,6 +3898,7 @@ void shutdown_headless_run(std::vector<std::thread>& camera_threads,
             std::chrono::seconds(10),
             "Headless recording drain");
         stop_headless_gpu_dmon_monitor(gpu_dmon_monitor);
+        stop_headless_nic_thermal_monitor(nic_thermal_monitor);
         if (camera_control->sync_camera) {
             for (int idx : active_camera_indices) {
                 ptp_sync_off(&ecams[idx].camera, &cameras_params[idx]);
@@ -3888,6 +3907,7 @@ void shutdown_headless_run(std::vector<std::thread>& camera_threads,
         camera_control->sync_camera = false;
     } else {
         stop_headless_gpu_dmon_monitor(gpu_dmon_monitor);
+        stop_headless_nic_thermal_monitor(nic_thermal_monitor);
     }
     recording_pipelines.clear();
 
@@ -4300,6 +4320,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     const HeadlessFrameIpcConfig& frame_ipc_config,
     HeadlessThreadFailureState* thread_failure_state,
     HeadlessGpuDmonMonitor* gpu_dmon_monitor,
+    orange::monitoring::NicThermalMonitorProcess* nic_thermal_monitor,
     CameraParams *cameras_params, CameraEmergent *ecams, CameraControl *camera_control, CameraEachSelect *cameras_select,
     GigEVisionDeviceInfo *device_info, int num_cameras, PTPParams *ptp_params,
     const std::vector<int>& required_gpu_ids,
@@ -4614,6 +4635,9 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     cameras_params,
                     selected_indices,
                     external_recorder_contract));
+            start_headless_nic_thermal_monitor(
+                nic_thermal_monitor,
+                record_folder);
         }
 
         if (enable_recording) {
@@ -4885,6 +4909,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                 std::chrono::seconds(10),
                 "Headless recording drain");
             stop_headless_gpu_dmon_monitor(gpu_dmon_monitor);
+            stop_headless_nic_thermal_monitor(nic_thermal_monitor);
         }
         cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
         camera_resources.clear();
@@ -5033,6 +5058,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
     HeadlessFrameIpcRuntime frame_ipc_runtime;
     HeadlessThreadFailureState thread_failure_state;
     HeadlessGpuDmonMonitor gpu_dmon_monitor;
+    orange::monitoring::NicThermalMonitorProcess nic_thermal_monitor;
     CameraEachSelect *cameras_select = nullptr;
     CameraControl *camera_control = new CameraControl;
 
@@ -5070,6 +5096,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                         HeadlessFrameIpcConfig{},
                         &thread_failure_state,
                         &gpu_dmon_monitor,
+                        &nic_thermal_monitor,
                         cameras_params,
                         ecams,
                         camera_control,
@@ -5101,6 +5128,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                         crop_producer_workers,
                         pose_workers,
                         &gpu_dmon_monitor,
+                        &nic_thermal_monitor,
                         ecams,
                         cameras_params,
                         *cam_count,
@@ -5128,6 +5156,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                 gpu_dmon_monitor.error = thread_failure_state.get_first_error();
             }
             stop_headless_gpu_dmon_monitor(&gpu_dmon_monitor);
+            stop_headless_nic_thermal_monitor(&nic_thermal_monitor);
             manager_context->state = FetchGame::ManagerState_ERROR;
         }
 
@@ -5142,6 +5171,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                 crop_producer_workers,
                 pose_workers,
                 &gpu_dmon_monitor,
+                &nic_thermal_monitor,
                 ecams,
                 cameras_params,
                 *cam_count,
@@ -6233,6 +6263,9 @@ bool write_supervised_external_recorder_single_clip_manifest(
         {"merged_mp4", mp4_paths},
         {"frame_metadata_csv", metadata_paths},
         {"keyframes", keyframe_paths},
+        {"duration_aware_storage_preflight_path",
+         (std::filesystem::path(config.artifact_root) /
+          "duration_aware_storage_preflight.json").string()},
         {"external_recorder_session_json",
          (std::filesystem::path(config.artifact_root) /
           "external_recorder_session.json").string()},
@@ -6240,6 +6273,11 @@ bool write_supervised_external_recorder_single_clip_manifest(
          (std::filesystem::path(config.artifact_root) /
           "external_recorder_finalization.json").string()}
     };
+    const nlohmann::json recording_snapshot =
+        read_json_file_best_effort(run_folder / "recording_snapshot.json");
+    manifest_options.recording_backend["system_monitoring"] =
+        recording_snapshot.value(
+            "system_monitoring", nlohmann::json::object());
     manifest_options.cameras = std::move(camera_artifacts);
 
     const nlohmann::json manifest =
@@ -6306,7 +6344,8 @@ bool write_supervised_external_recorder_recording_session_manifest(
     const nlohmann::json materialized_contract =
         build_headless_external_recorder_contract_config_json(
             config,
-            &run.options.recording_control);
+            &run.options.recording_control,
+            run.options.duration_seconds);
     if (!write_json_file(
             materialized_contract_path,
             materialized_contract,
@@ -6553,6 +6592,9 @@ bool write_supervised_external_recorder_recording_session_manifest(
         {"summary_json", summary_paths},
         {"authoritative_video_mode", "rolling_clips"},
         {"merged_mp4", nlohmann::json::object()},
+        {"duration_aware_storage_preflight_path",
+         (std::filesystem::path(config.artifact_root) /
+          "duration_aware_storage_preflight.json").string()},
         {"external_recorder_session_json",
          (std::filesystem::path(config.artifact_root) /
           "external_recorder_session.json").string()},
@@ -6560,6 +6602,11 @@ bool write_supervised_external_recorder_recording_session_manifest(
          (std::filesystem::path(config.artifact_root) /
           "external_recorder_finalization.json").string()}
     };
+    const nlohmann::json recording_snapshot =
+        read_json_file_best_effort(run_folder / "recording_snapshot.json");
+    manifest_options.recording_backend["system_monitoring"] =
+        recording_snapshot.value(
+            "system_monitoring", nlohmann::json::object());
     manifest_options.camera_serials = std::move(camera_serials);
     manifest_options.clips = std::move(clip_options);
 
@@ -6786,6 +6833,52 @@ void update_headless_gpu_dmon_snapshot(const HeadlessGpuDmonMonitor& monitor)
         std::cerr << "Failed to update recording snapshot with nvidia-smi dmon metadata for "
                   << monitor.recording_folder << std::endl;
     }
+}
+
+void update_headless_nic_thermal_snapshot(
+    const orange::monitoring::NicThermalMonitorProcess& monitor)
+{
+    if (monitor.recording_folder.empty()) {
+        return;
+    }
+    if (!update_recording_snapshot_system_monitoring(
+            monitor.recording_folder,
+            "nic_thermal",
+            orange::monitoring::NicThermalMonitorProcessToJson(monitor))) {
+        std::cerr << "Failed to update recording snapshot with NIC thermal metadata for "
+                  << monitor.recording_folder << std::endl;
+    }
+}
+
+void start_headless_nic_thermal_monitor(
+    orange::monitoring::NicThermalMonitorProcess* monitor,
+    const std::string& recording_folder)
+{
+    if (!monitor) {
+        return;
+    }
+    std::string error;
+    if (!orange::monitoring::StartNicThermalMonitorProcess(
+            recording_folder, monitor, &error)) {
+        std::cerr << "NIC thermal monitoring is unavailable: " << error
+                  << std::endl;
+    }
+    update_headless_nic_thermal_snapshot(*monitor);
+}
+
+void stop_headless_nic_thermal_monitor(
+    orange::monitoring::NicThermalMonitorProcess* monitor)
+{
+    if (!monitor) {
+        return;
+    }
+    std::string error;
+    if (!orange::monitoring::StopNicThermalMonitorProcess(monitor, &error) &&
+        !error.empty()) {
+        std::cerr << "NIC thermal monitor shutdown warning: " << error
+                  << std::endl;
+    }
+    update_headless_nic_thermal_snapshot(*monitor);
 }
 
 void stop_headless_gpu_dmon_monitor(HeadlessGpuDmonMonitor* monitor)
@@ -8310,7 +8403,8 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                 {"external_recorder_contract",
                                                                  build_headless_external_recorder_contract_config_json(
                                                                      run.options.external_recorder_contract,
-                                                                     &run.options.recording_control)},
+                                                                     &run.options.recording_control,
+                                                                     run.options.duration_seconds)},
                                                             };
                                                             if (spec.has_recording_profile) {
                                                                 run.config_json["recording_profile"] =
@@ -8786,6 +8880,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     HeadlessFrameIpcRuntime frame_ipc_runtime;
     HeadlessThreadFailureState thread_failure_state;
     HeadlessGpuDmonMonitor gpu_dmon_monitor;
+    orange::monitoring::NicThermalMonitorProcess nic_thermal_monitor;
     const bool enable_recording = !options.stream_only;
     const std::string active_record_folder = options.record_folder;
     const bool supervise_external_recorder =
@@ -8822,7 +8917,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         lifecycle_options.contract =
             build_headless_external_recorder_contract_config_json(
                 options.external_recorder_contract,
-                &options.recording_control);
+                &options.recording_control,
+                options.duration_seconds);
         lifecycle_options.recorder_tool_path =
             options.external_recorder_contract.recorder_tool_path;
         lifecycle_options.default_session_id =
@@ -8935,6 +9031,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         options.frame_ipc,
         &thread_failure_state,
         &gpu_dmon_monitor,
+        &nic_thermal_monitor,
         cameras_params.get(),
         ecams.get(),
         &camera_control,
@@ -9380,6 +9477,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     }
     if (thread_failure_state.has_failure()) {
         stop_headless_gpu_dmon_monitor(&gpu_dmon_monitor);
+        stop_headless_nic_thermal_monitor(&nic_thermal_monitor);
     }
 
     shutdown_headless_run(
@@ -9391,6 +9489,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         crop_producer_workers,
         pose_workers,
         &gpu_dmon_monitor,
+        &nic_thermal_monitor,
         ecams.get(),
         cameras_params.get(),
         discovered_cam_count,
@@ -9581,6 +9680,9 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             manifest_options.sum_clip_actual_duration_s = sum_clip_actual_duration_s;
             manifest_options.camera_serials = std::move(camera_serials);
             manifest_options.clips = std::move(clip_options);
+            manifest_options.recording_backend["system_monitoring"]["nic_thermal"] =
+                orange::monitoring::NicThermalMonitorProcessToJson(
+                    nic_thermal_monitor);
             manifest =
                 orange::session::build_rolling_clip_recording_session_manifest(manifest_options);
             std::string index_error;
@@ -9632,6 +9734,9 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             manifest_options.actual_recording_duration_s = actual_recording_duration_s;
             manifest_options.drain_duration_s = drain_duration_s;
             manifest_options.timed_stop_hit = timed_stop_hit;
+            manifest_options.recording_backend["system_monitoring"]["nic_thermal"] =
+                orange::monitoring::NicThermalMonitorProcessToJson(
+                    nic_thermal_monitor);
             manifest_options.cameras = std::move(camera_artifacts);
             manifest =
                 orange::session::build_single_clip_recording_session_manifest(manifest_options);

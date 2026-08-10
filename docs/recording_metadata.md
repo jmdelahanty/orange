@@ -64,7 +64,7 @@ never see partial JSON.
 }
 ```
 
-Notes:
+The following notes concern the `nvidia_smi_dmon` GPU sidecar:
 - `recording_id` uses local time formatting for folder naming.
 - `timestamp_utc` is UTC ISO-8601.
 
@@ -105,6 +105,7 @@ Top-level fields:
   "calibrations": { ... },
   "gpu_inventory": { ... },
   "gpu_monitoring": { ... },
+  "system_monitoring": { ... },
   "encoders": { ... },
   "pipeline_metrics": { ... },
   "models": { ... }
@@ -149,6 +150,14 @@ consumer can tell that `gpu_id = 0` mapped to a concrete device such as
 `gpu_monitoring` is an optional dictionary keyed by monitor name. It currently
 records best-effort host-level GPU sidecars such as `nvidia-smi dmon` for
 headless benchmark runs.
+
+`system_monitoring` is an optional dictionary keyed by monitor name. Current
+GUI and headless recordings use `system_monitoring.nic_thermal` to reference a
+recording-scoped helper process and its `nic_thermal_monitor.csv`,
+`nic_thermal_monitor_summary.json`, and stderr artifacts. The helper samples
+Linux mlx5 hwmon sysfs directly every five seconds by default. mlx5 zero input
+values are explicitly classified as unavailable rather than valid 0 C
+measurements. This first contract is evidence-only and does not gate recording.
 
 When pre-encoder reference capture is enabled, the recording folder may also
 contain:
@@ -268,6 +277,34 @@ Current headless `gpu_monitoring` shape:
   }
 }
 ```
+
+Current GUI/headless `system_monitoring` process shape:
+
+```json
+{
+  "system_monitoring": {
+    "nic_thermal": {
+      "schema_id": "orange.nic_thermal_monitor_process",
+      "schema_version": 1,
+      "enabled": true,
+      "status": "running|completed|failed_to_start|exited_with_error|stopped_with_signal",
+      "isolation": "helper_process",
+      "sensor_backend": "linux_hwmon_sysfs",
+      "driver_name": "mlx5",
+      "sample_period_seconds": 5,
+      "csv_path": "/abs/path/to/recording/nic_thermal_monitor.csv",
+      "summary_path": "/abs/path/to/recording/nic_thermal_monitor_summary.json",
+      "stderr_path": "/abs/path/to/recording/nic_thermal_monitor.stderr.log"
+    }
+  }
+}
+```
+
+The CSV stores both monotonic elapsed time and host POSIX realtime nanoseconds.
+Temperatures remain raw integer millidegrees in the CSV. The atomically
+published summary includes Celsius convenience values only for valid readings,
+and preserves `unavailable_zero`, `read_error`, or `no_mlx5_hwmon` counts when
+telemetry cannot be trusted.
 
 Notes:
 - This sidecar is host-level, not Orange-process-only.
