@@ -652,33 +652,32 @@ void apply_video_encode_profile_to_nvenc_config(
         encode_config->rcParams.enableTemporalAQ = 0;
         encode_config->rcParams.enableLookahead = 0;
         encode_config->rcParams.lowDelayKeyFrameScale = 0;
-        return;
-    }
-
-    const bool low_latency = video_encode_tuning_is_low_latency(profile.tuning);
-    const bool lossless = video_encode_tuning_is_lossless(profile.tuning);
-    if (lossless) {
-        encode_config->rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
-        encode_config->rcParams.constQP = {0, 0, 0};
-        encode_config->rcParams.averageBitRate = 0;
-        encode_config->rcParams.maxBitRate = 0;
-        encode_config->rcParams.vbvBufferSize = 0;
-        encode_config->rcParams.targetQuality = 0;
-        encode_config->rcParams.targetQualityLSB = 0;
-        encode_config->rcParams.enableAQ = 0;
-        encode_config->rcParams.enableTemporalAQ = 0;
-        encode_config->rcParams.enableLookahead = 0;
-        encode_config->rcParams.lowDelayKeyFrameScale = 0;
-        encode_config->gopLength = 1;
-        encode_config->frameIntervalP = 1;
-    } else if (is_cqp_rate_control(profile.rate_control_mode)) {
-        apply_cqp_recording_profile(*encode_config, profile);
-    } else if (is_cbr_rate_control(profile.rate_control_mode)) {
-        apply_cbr_recording_profile(*encode_config, profile, low_latency);
-    } else if (is_vbr_cq_rate_control(profile.rate_control_mode)) {
-        apply_vbr_cq_recording_profile(*encode_config, profile, low_latency);
     } else {
-        apply_quality_recording_profile(*encode_config, profile, low_latency);
+        const bool low_latency = video_encode_tuning_is_low_latency(profile.tuning);
+        const bool lossless = video_encode_tuning_is_lossless(profile.tuning);
+        if (lossless) {
+            encode_config->rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
+            encode_config->rcParams.constQP = {0, 0, 0};
+            encode_config->rcParams.averageBitRate = 0;
+            encode_config->rcParams.maxBitRate = 0;
+            encode_config->rcParams.vbvBufferSize = 0;
+            encode_config->rcParams.targetQuality = 0;
+            encode_config->rcParams.targetQualityLSB = 0;
+            encode_config->rcParams.enableAQ = 0;
+            encode_config->rcParams.enableTemporalAQ = 0;
+            encode_config->rcParams.enableLookahead = 0;
+            encode_config->rcParams.lowDelayKeyFrameScale = 0;
+            encode_config->gopLength = 1;
+            encode_config->frameIntervalP = 1;
+        } else if (is_cqp_rate_control(profile.rate_control_mode)) {
+            apply_cqp_recording_profile(*encode_config, profile);
+        } else if (is_cbr_rate_control(profile.rate_control_mode)) {
+            apply_cbr_recording_profile(*encode_config, profile, low_latency);
+        } else if (is_vbr_cq_rate_control(profile.rate_control_mode)) {
+            apply_vbr_cq_recording_profile(*encode_config, profile, low_latency);
+        } else {
+            apply_quality_recording_profile(*encode_config, profile, low_latency);
+        }
     }
 
     encode_config->rcParams.enableMinQP = 0;

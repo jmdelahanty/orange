@@ -268,6 +268,13 @@ void test_crop_profile()
     require(encode_config.rcParams.constQP.qpInterP == 0, "crop P QP 0");
     require(encode_config.rcParams.constQP.qpInterB == 0, "crop B QP 0");
     require(encode_config.rcParams.constQP.qpIntra == 0, "crop I QP 0");
+    require(encode_config.monoChromeEncoding == 1, "crop output marks monochrome");
+    require(
+        encode_config.encodeCodecConfig.hevcConfig.idrPeriod == 1,
+        "crop HEVC IDR period follows all-intra GOP");
+    require(
+        encode_config.encodeCodecConfig.hevcConfig.repeatSPSPPS == 1,
+        "crop HEVC repeats SPS/PPS for independent frames");
     require(
         encode_config.encodeCodecConfig.hevcConfig.hevcVUIParameters.videoSignalTypePresentFlag == 1,
         "crop HEVC VUI video signal type present");
