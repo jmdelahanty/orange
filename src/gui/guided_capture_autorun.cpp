@@ -199,9 +199,10 @@ bool prepare_homography_fit_request(
 }
 
 nlohmann::json holder_homography_quality_thresholds(
-    const GuidedCaptureAutorunConfig& config)
+    const GuidedCaptureAutorunConfig& config,
+    const GuidedCaptureAutorunState& state)
 {
-    return {
+    nlohmann::json thresholds = {
         {"maximum_rms_reprojection_error_canvas_px", 0.5},
         {"maximum_point_reprojection_error_canvas_px", 1.5},
         {"minimum_inlier_ratio", 0.95},
@@ -212,6 +213,24 @@ nlohmann::json holder_homography_quality_thresholds(
         {"minimum_dot_background_contrast_u8", 20.0},
         {"commissioned_foreground_gray_u8", config.foreground_gray_u8},
     };
+    const std::string support_recipe = config.fixture_aperture_shape == "rectangle"
+        ? "homography_grid"
+        : "homography_rings";
+    const nlohmann::json* sample = completed_sample_for_recipe(
+        state, support_recipe);
+    if (sample == nullptr) return thresholds;
+    const auto commissioning = sample->value(
+        "workflow", nlohmann::json::object()).value(
+            "capture_group_membership", nlohmann::json::object()).value(
+                "projector_intensity_commissioning",
+                nlohmann::json::object());
+    const std::string report_path = commissioning.value("report_path", "");
+    const std::string report_sha256 = commissioning.value("report_sha256", "");
+    if (!report_path.empty() && !report_sha256.empty()) {
+        thresholds["projector_intensity_report_path"] = report_path;
+        thresholds["projector_intensity_report_sha256"] = report_sha256;
+    }
+    return thresholds;
 }
 
 int find_camera_index(const CameraParams* cameras_params,
@@ -926,6 +945,8 @@ GuidedCaptureAutorunRequests guided_capture_autorun_update(
                     {"camera_serial", serial},
                     {"frame_rate_hz", cameras_params[index].frame_rate},
                     {"exposure_us", cameras_params[index].exposure},
+                    {"focus", cameras_params[index].focus},
+                    {"iris", cameras_params[index].iris},
                     {"sync_mode", cameras_params[index].sync_mode},
                     {"ptp_mode", cameras_params[index].ptp_mode},
                     {"ptp_gate_offset_ns", cameras_params[index].ptp_gate_offset_ns},
@@ -1108,7 +1129,7 @@ GuidedCaptureAutorunRequests guided_capture_autorun_update(
             spatial_state->calibration_session_dir,
             state->homography_capture_group_id,
             state->homography_targets,
-            holder_homography_quality_thresholds(config),
+            holder_homography_quality_thresholds(config, *state),
             state->homography_transaction_id + "_fit");
         state->homography_candidate_status = fit.candidate;
         state->homography_fit_requested = fit.ok;

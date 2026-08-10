@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <sstream>
+#include <string_view>
 
 namespace orange::gui::spatial_layout {
 namespace {
@@ -21,6 +22,24 @@ constexpr const char* kAcrylicPhysicalTargetDesign =
     "opaque_acrylic_hole_mask_78mm_pitch5_margin3_v002";
 constexpr const char* kDryPhysicalTargetHeightParallaxDiagnosticPurpose =
     "dry_physical_target_height_parallax_diagnostic";
+
+constexpr const char* rings_homography_role_for_capture_stage(
+    const std::string_view capture_stage)
+{
+    return capture_stage == "projected_surface_dry_reference"
+        ? "commissioning_reference"
+        : "operational_candidate";
+}
+
+static_assert(
+    std::string_view(rings_homography_role_for_capture_stage(
+        "projected_surface_holder_installed")) == "operational_candidate");
+static_assert(
+    std::string_view(rings_homography_role_for_capture_stage(
+        "projected_surface_wet_runtime_stack")) == "operational_candidate");
+static_assert(
+    std::string_view(rings_homography_role_for_capture_stage(
+        "projected_surface_dry_reference")) == "commissioning_reference");
 
 void ensure_wet_runtime_stack_parity_group_id(SpatialLayoutUiState* ui_state)
 {
@@ -453,15 +472,9 @@ void apply_rings_homography_task_defaults(
     ui_state->calibration_image_set_scale_target_type = "unknown";
     ui_state->calibration_pattern_type = "circular_rings";
     ui_state->calibration_target_method = "projected_pattern_on_diffuser";
-    if (ui_state->calibration_capture_stage ==
-        "projected_surface_holder_installed") {
-        ui_state->calibration_homography_role = "validation_only";
-    } else {
-        ui_state->calibration_homography_role =
-            ui_state->calibration_capture_stage == "projected_surface_dry_reference"
-                ? "commissioning_reference"
-                : "operational_candidate";
-    }
+    ui_state->calibration_homography_role =
+        rings_homography_role_for_capture_stage(
+            ui_state->calibration_capture_stage);
     apply_common_visible_projection_defaults(ui_state);
     ui_state->calibration_projector_state = projector_state;
 }

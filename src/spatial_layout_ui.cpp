@@ -1236,6 +1236,28 @@ void render_spatial_layout_window(
     ImGui::TextDisabled(
         "Orange asks Citrus to present this scene, waits for one shared display fence, then requests fresh frames from exactly this camera set.");
 
+    if (ui_state->calibration_capture_stage ==
+            "projected_surface_holder_installed" &&
+        (resolve_group_capture_scene_recipe(*ui_state) == "homography_grid" ||
+         resolve_group_capture_scene_recipe(*ui_state) == "homography_rings")) {
+        const nlohmann::json intensity_authority =
+            ui_state->group_capture_scene_options.value(
+                "projector_intensity_commissioning",
+                nlohmann::json::object());
+        if (intensity_authority.value("status", std::string()) == "validated") {
+            ImGui::Text(
+                "Projector foreground: %d (validated commissioning report)",
+                ui_state->group_capture_scene_options.value(
+                    "foreground_gray_u8", -1));
+            ImGui::TextDisabled(
+                "Report: %s",
+                intensity_authority.value("report_path", std::string()).c_str());
+        } else {
+            ImGui::TextDisabled(
+                "Projector foreground will be resolved from the immutable commissioning report when capture starts.");
+        }
+    }
+
     const std::string manual_group_parent_owner =
         orange::gui::spatial_layout::spatial_calibration_transaction_owned_by(
             *ui_state,

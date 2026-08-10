@@ -1011,6 +1011,19 @@ bool prepare_generic_calibration_image_set_save_job_from_spatial_layout(
     request.citrus_daily_registration_consistency =
         capture_metadata.citrus_daily_registration_consistency;
     request.capture_group_membership = capture_metadata.capture_group_membership;
+    if (!request.projected_pattern.empty() &&
+        request.capture_group_membership.is_object() &&
+        request.capture_group_membership.contains(
+            "projector_intensity_commissioning")) {
+        const nlohmann::json authority =
+            request.capture_group_membership.at(
+                "projector_intensity_commissioning");
+        request.projected_pattern["photometry"] = {
+            {"foreground_gray_u8", authority.value(
+                 "recommended_foreground_gray_u8", -1)},
+            {"commissioning_authority", authority},
+        };
+    }
     attach_runtime_role_metadata(&request);
     attach_projection_surface_authored_domain_hint(&request);
     attach_calibration_domain_observation(&request, capture_metadata);

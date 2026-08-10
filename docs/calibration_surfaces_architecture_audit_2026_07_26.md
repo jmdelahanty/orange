@@ -24,6 +24,7 @@ Related documents:
 - [Target-derived calibration plan](target_derived_calibration_plan.md)
 - [Production-baseline sensor characterization](sensor_baseline_characterization.md)
 - [Calibration transaction lease](calibration_transaction_lease.md)
+- [Calibration operator workflow simplification checklist](calibration_operator_workflow_simplification_checklist.md)
 
 ## Executive conclusion
 

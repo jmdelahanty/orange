@@ -5,6 +5,7 @@
 #include "gui/spatial_layout/calibration_transaction_bridge.h"
 #include "gui/spatial_layout/layout_state.h"
 #include "gui/spatial_layout/preview_capture.h"
+#include "gui/spatial_layout/projector_intensity_authority.h"
 #include "gui/spatial_layout/projection_snapshot_client.h"
 #include "gui/spatial_layout/session_io.h"
 #include "gui/spatial_layout/session_review.h"
@@ -21,6 +22,81 @@
 
 namespace orange::gui::spatial_layout {
 namespace {
+
+const CitrusSpatialTemplateState* template_for_camera(
+    const SpatialLayoutUiState& ui_state,
+    const std::string& camera_serial)
+{
+    for (const CitrusSpatialTemplateState& candidate :
+         ui_state.citrus_canvas_templates) {
+        if (candidate.available &&
+            candidate.source_camera_id == camera_serial) {
+            return &candidate;
+        }
+    }
+    if (ui_state.citrus_template.available &&
+        ui_state.citrus_template.source_camera_id == camera_serial) {
+        return &ui_state.citrus_template;
+    }
+    return nullptr;
+}
+
+bool apply_holder_projector_intensity_authority(
+    SpatialLayoutUiState* ui_state,
+    const std::vector<std::string>& camera_serials,
+    std::string* error_out)
+{
+    if (ui_state == nullptr ||
+        ui_state->calibration_capture_stage !=
+            "projected_surface_holder_installed") {
+        return true;
+    }
+    const std::string recipe = resolve_group_capture_scene_recipe(*ui_state);
+    if (recipe != "homography_grid" && recipe != "homography_rings") {
+        return true;
+    }
+
+    std::vector<ProjectorIntensityCameraAuthorityRef> refs;
+    refs.reserve(camera_serials.size());
+    for (const std::string& camera_serial : camera_serials) {
+        const CitrusSpatialTemplateState* template_state =
+            template_for_camera(*ui_state, camera_serial);
+        if (template_state == nullptr) {
+            if (error_out != nullptr) {
+                *error_out = "No imported Citrus arena template is available for "
+                    "selected camera " + camera_serial + ".";
+            }
+            return false;
+        }
+        refs.push_back({
+            camera_serial,
+            template_state->source_config_name,
+            template_state->source_rig_name,
+            template_state->source_canvas_name,
+            template_state->source_config_path,
+            template_state->homography_projector_intensity_report_path,
+            template_state->homography_projector_intensity_report_sha256,
+        });
+    }
+
+    const ProjectorIntensityAuthorityResult authority =
+        resolve_projector_intensity_authority(refs);
+    if (!authority.ok) {
+        if (error_out != nullptr) {
+            *error_out = "Holder homography capture requires a valid commissioned "
+                "projector intensity: " + authority.error;
+        }
+        return false;
+    }
+    if (!ui_state->group_capture_scene_options.is_object()) {
+        ui_state->group_capture_scene_options = nlohmann::json::object();
+    }
+    ui_state->group_capture_scene_options["foreground_gray_u8"] =
+        authority.foreground_gray_u8;
+    ui_state->group_capture_scene_options[
+        "projector_intensity_commissioning"] = authority.provenance;
+    return true;
+}
 
 SpatialLayoutGroupCaptureFrame make_group_capture_from_snapshot(
     const SpatialSnapshotResult& result,
@@ -690,7 +766,7 @@ nlohmann::json make_group_membership(const SpatialLayoutUiState& ui_state)
          daily_status != "same_candidate_preview")) {
         status = completed.empty() ? "failed" : "invalid_scene";
     }
-    return {
+    nlohmann::json membership = {
         {"schema_id", "orange.calibration.capture_group_membership"},
         {"schema_version", 1},
         {"capture_group_id", ui_state.group_capture_id},
@@ -707,6 +783,15 @@ nlohmann::json make_group_membership(const SpatialLayoutUiState& ui_state)
         {"arena_centering_consistency_status", centering_status},
         {"daily_registration_consistency_status", daily_status}
     };
+    membership["scene_options"] = ui_state.group_capture_scene_options;
+    if (ui_state.group_capture_scene_options.is_object() &&
+        ui_state.group_capture_scene_options.contains(
+            "projector_intensity_commissioning")) {
+        membership["projector_intensity_commissioning"] =
+            ui_state.group_capture_scene_options.at(
+                "projector_intensity_commissioning");
+    }
+    return membership;
 }
 
 void append_group_capture_error(SpatialLayoutUiState* ui_state, const std::string& error)
@@ -1287,6 +1372,11 @@ bool request_group_full_resolution_snapshots(
             }
             return false;
         }
+    }
+
+    if (!apply_holder_projector_intensity_authority(
+            ui_state, expected_camera_serials, error_out)) {
+        return false;
     }
 
     std::vector<std::string> arena_ids;

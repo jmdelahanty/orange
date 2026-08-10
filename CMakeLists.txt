@@ -330,6 +330,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/spatial_layout/preflight.cpp"
     "${SRC_DIR}/gui/spatial_layout/preview_capture.cpp"
     "${SRC_DIR}/gui/spatial_layout/preview_overlay.cpp"
+    "${SRC_DIR}/gui/spatial_layout/projector_intensity_authority.cpp"
     "${SRC_DIR}/gui/spatial_layout/projection_snapshot_client.cpp"
     "${SRC_DIR}/gui/spatial_layout/runtime_builder.cpp"
     "${SRC_DIR}/gui/spatial_layout/save_job_preparation.cpp"
@@ -1083,6 +1084,17 @@ if(BUILD_TESTING)
     target_compile_features(arena_centering_analysis_tests PRIVATE cxx_std_17)
     target_link_libraries(arena_centering_analysis_tests PRIVATE ${OpenCV_LIBS} Threads::Threads)
     add_test(NAME arena_centering_analysis_tests COMMAND arena_centering_analysis_tests)
+
+    add_executable(projector_intensity_authority_tests
+        "tools/projector_intensity_authority_tests.cpp"
+        "${SRC_DIR}/gui/spatial_layout/projector_intensity_authority.cpp"
+    )
+    target_include_directories(projector_intensity_authority_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(projector_intensity_authority_tests PRIVATE cxx_std_17)
+    add_test(
+        NAME projector_intensity_authority_tests
+        COMMAND projector_intensity_authority_tests)
 
     add_executable(daily_registration_geometry_tests
         "tools/daily_registration_geometry_tests.cpp"

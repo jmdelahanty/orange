@@ -76,11 +76,22 @@ scripts/run_holder_fixture_validation.py \
   --confirm-holder-installed-dish-absent
 ```
 
-The default foreground is the holder-plane validated gray value `72`, at
-`5 fps` and `100000 us`. Gray `76` retained good geometry but saturated dot
-cores on cameras 2010094 and 2010095; gray `64` was below the circular
-detector's reliable range. Use `--foreground-gray-u8` only when deliberately
-testing a different intensity.
+The default foreground is not a compiled or script-level literal. Both the
+manual Orange holder-homography capture and the permanent runner resolve it
+from the immutable projector-intensity commissioning report referenced by the
+selected cameras' commissioning-reference homographies. They verify the
+report checksum, passing status, all-camera gate, and each selected camera's
+quality result before asking Citrus to render. Missing or contradictory
+authority fails closed. The current qualified Shadow report resolves to gray
+`72`; gray `76` retained good geometry but saturated dot cores on cameras
+2010094 and 2010095, while gray `64` was below the circular detector's reliable
+range. Use `--foreground-gray-u8` only when deliberately testing a different
+intensity; the override and the commissioned reference are both recorded.
+
+Grouped image-set evidence records the actual `foreground_gray_u8`, immutable
+report path/checksum, selected-camera validation scope, and the
+commissioning-reference pointer checksums under both capture-group membership
+and projected-pattern photometry.
 
 The runner writes beneath:
 

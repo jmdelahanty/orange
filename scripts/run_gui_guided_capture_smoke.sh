@@ -15,6 +15,7 @@ FRAME_COUNT=1
 APPLY_CALIBRATION_PREFLIGHT=1
 CALIBRATION_FRAME_RATE_HZ=5
 CALIBRATION_EXPOSURE_US=100000
+CAMERA_IRIS_OVERRIDES=""
 FOREGROUND_GRAY_U8=255
 FOREGROUND_GRAY_EXPLICIT=0
 SWEEP_FOREGROUND_GRAYS_U8=""
@@ -39,6 +40,7 @@ PROJECTED_SURFACE_TARGETS_READY=0
 ACCEPT_PROJECTED_SURFACE_SCALES=0
 FIT_HOMOGRAPHIES=0
 TIMING_CONFIG_DIR=""
+TIMING_OVERRIDE_ARGS=()
 
 usage() {
   cat <<'EOF'
@@ -65,6 +67,7 @@ Options:
   --include-arena-outline-reference
   --calibration-frame-rate-hz <hz>
   --calibration-exposure-us <microseconds>
+  --camera-iris-overrides <serial=value[,serial=value...]>
   --no-start-at-calibration-timing
   --no-calibration-preflight
   --save
@@ -181,6 +184,12 @@ while [[ $# -gt 0 ]]; do
       shift
       require_value --calibration-exposure-us "$#"
       CALIBRATION_EXPOSURE_US="$1"
+      shift
+      ;;
+    --camera-iris-overrides)
+      shift
+      require_value --camera-iris-overrides "$#"
+      CAMERA_IRIS_OVERRIDES="$1"
       shift
       ;;
     --no-calibration-preflight)
@@ -390,11 +399,15 @@ if (( START_AT_CALIBRATION_TIMING )); then
   # select it before the cameras are opened and the shared PTP gate is formed.
   TIMING_CONFIG_DIR="$(dirname "${ORANGE_CONFIG_SOURCE}")/guided_calibration_runtime_${STAMP}_$$"
   if (( EXECUTE )); then
+    if [[ -n "${CAMERA_IRIS_OVERRIDES}" ]]; then
+      TIMING_OVERRIDE_ARGS=(--camera-iris-overrides "${CAMERA_IRIS_OVERRIDES}")
+    fi
     python3 "${REPO_ROOT}/scripts/make_guided_calibration_timing_config.py" \
       "${ORANGE_CONFIG_SOURCE}" \
       "${TIMING_CONFIG_DIR}" \
       --frame-rate-hz "${CALIBRATION_FRAME_RATE_HZ}" \
-      --exposure-us "${CALIBRATION_EXPOSURE_US}" >/dev/null
+      --exposure-us "${CALIBRATION_EXPOSURE_US}" \
+      "${TIMING_OVERRIDE_ARGS[@]}" >/dev/null
     ORANGE_CONFIG_DIR="${TIMING_CONFIG_DIR}"
   fi
 fi
@@ -453,7 +466,7 @@ ORANGE_ENV=(
   "ORANGE_GUI_GUIDED_CAPTURE_SAVE=${SAVE}"
   "ORANGE_GUI_GUIDED_CAPTURE_EXIT_AFTER_COMPLETION=1"
   "ORANGE_GUI_GUIDED_CAPTURE_STARTUP_TIMEOUT_SECONDS=120"
-  "ORANGE_GUI_GUIDED_CAPTURE_WORKFLOW_TIMEOUT_SECONDS=60"
+  "ORANGE_GUI_GUIDED_CAPTURE_WORKFLOW_TIMEOUT_SECONDS=${TIMEOUT_SECONDS}"
   "ORANGE_GUI_GUIDED_CAPTURE_RESULT_JSON=${RESULT_JSON}"
 )
 if [[ -n "${SWEEP_FOREGROUND_GRAYS_U8}" ]]; then

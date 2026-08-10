@@ -41,6 +41,7 @@ def camera_payload(*, include_startup_nodes: bool) -> dict:
 
 def run_generator(
     payload: dict,
+    extra_args: list[str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path, tempfile.TemporaryDirectory[str]]:
     temp_dir = tempfile.TemporaryDirectory()
     root = Path(temp_dir.name)
@@ -48,8 +49,7 @@ def run_generator(
     output = root / "output"
     source.mkdir()
     (source / "2010096.json").write_text(json.dumps(payload), encoding="utf-8")
-    result = subprocess.run(
-        [
+    command = [
             "python3",
             str(SCRIPT),
             str(source),
@@ -58,7 +58,10 @@ def run_generator(
             "5",
             "--exposure-us",
             "100000",
-        ],
+        ]
+    command.extend(extra_args or [])
+    result = subprocess.run(
+        command,
         text=True,
         capture_output=True,
         check=False,
@@ -87,7 +90,22 @@ def test_rejects_mapped_strobe_without_startup_nodes() -> None:
         temp_dir.cleanup()
 
 
+def test_applies_explicit_camera_iris_override() -> None:
+    payload = camera_payload(include_startup_nodes=True)
+    payload["iris"] = 24
+    result, output, temp_dir = run_generator(
+        payload, ["--camera-iris-overrides", "2010096=15"]
+    )
+    try:
+        assert result.returncode == 0, result.stderr
+        generated = json.loads((output / "2010096.json").read_text(encoding="utf-8"))
+        assert generated["iris"] == 15
+    finally:
+        temp_dir.cleanup()
+
+
 if __name__ == "__main__":
     test_preserves_verified_startup_nodes()
     test_rejects_mapped_strobe_without_startup_nodes()
+    test_applies_explicit_camera_iris_override()
     print("make_guided_calibration_timing_config tests passed")

@@ -758,6 +758,7 @@ def persist_holder_fixture_evidence(
             "producer": "analyze_holder_fixture_validation.py",
             "status": camera.get("status"),
             "errors": camera.get("errors", []),
+            "warnings": camera.get("warnings", []),
             "session": {
                 "session_id": session_id,
                 "session_dir": str(session_dir),
@@ -984,6 +985,13 @@ def main() -> int:
         )
         if isinstance(item, dict)
     }
+    citrus_candidate_rows = {
+        (str(row.get("arena_id", "")), str(row.get("camera_id", ""))): row
+        for row in result.get("homography", {}).get(
+            "citrus_candidate_status", {}
+        ).get("candidates", [])
+        if isinstance(row, dict)
+    }
 
     samples = {
         recipe: sample_result(result, recipe)
@@ -999,6 +1007,7 @@ def main() -> int:
         )
     for camera in cameras:
         camera_errors: list[str] = []
+        camera_warnings: list[str] = []
         camera_reference_errors: list[str] = []
         image_paths: dict[str, Path] = {}
         image_metadata: dict[str, dict[str, Any]] = {}
@@ -1013,6 +1022,7 @@ def main() -> int:
             images[recipe] = image
         target = target_for_camera(samples[primary_recipe], camera)
         arena_id = str(target["arena_id"])
+        citrus_candidate = citrus_candidate_rows.get((arena_id, camera), {})
         arena_config = citrus.get("arenas", {}).get(arena_id, {})
         active_pointer = (
             citrus_path.parent / "calibration_artifacts" /
@@ -1081,15 +1091,42 @@ def main() -> int:
             str(error)
             for error in operational_candidate_assessment.get("errors", [])
         )
+        candidate_source = citrus_candidate.get("source", {})
+        candidate_quality = citrus_candidate.get("quality", {})
+        exact_source_candidate_passed = (
+            citrus_candidate.get("status") == "ready_for_review"
+            and candidate_quality.get("status") == "passed"
+            and candidate_quality.get("full_fit", {}).get("passed") is True
+            and candidate_quality.get("holdout", {}).get("passed") is True
+            and citrus_candidate.get("orientation_validation", {}).get("status")
+            == "passed"
+            and citrus_candidate.get("source_photometry", {}).get("status")
+            == "passed"
+            and int(citrus_candidate.get("point_count", 0))
+            == int(citrus_candidate.get("projected_pattern", {}).get("point_count", -1))
+            and candidate_source.get("capture_group_id")
+            == image_metadata[primary_recipe].get("capture", {}).get(
+                "capture_group_id"
+            )
+            and Path(str(candidate_source.get("image_path", ""))).resolve()
+            == image_paths[primary_recipe].resolve()
+        )
         for label, metrics in (("primary_support", primary), ("verification", verification)):
             if metrics["expected_visible_count"] < 4:
                 camera_errors.append(f"{label} has fewer than four visible expected points")
             if metrics["visible_detection_fraction"] < args.min_visible_detection_fraction:
-                camera_errors.append(
-                    f"{label} visible detection fraction "
+                message = (
+                    f"{label} diagnostic visible detection fraction "
                     f"{metrics['visible_detection_fraction']:.3f} is below "
                     f"{args.min_visible_detection_fraction:.3f}"
                 )
+                if label == "primary_support" and exact_source_candidate_passed:
+                    camera_warnings.append(
+                        message + "; superseded for candidate acceptance by the "
+                        "exact-source Citrus full-fit and holdout gates"
+                    )
+                else:
+                    camera_errors.append(message)
             rms = metrics["active_homography_rms_canvas_px"]
             maximum = metrics["active_homography_max_canvas_px"]
             if rms is None or rms > args.max_rms_canvas_px:
@@ -1137,6 +1174,7 @@ def main() -> int:
             "arena_id": arena_id,
             "status": status,
             "errors": camera_errors,
+            "warnings": camera_warnings,
             "commissioning_reference_comparison": {
                 "status": reference_status,
                 "within_operational_tolerance": not camera_reference_errors,
@@ -1238,6 +1276,14 @@ def main() -> int:
             "verification": {"recipe": "verification_dots", **verification},
             "diagnostic_refit": refit,
             "operational_candidate_assessment": operational_candidate_assessment,
+            "exact_source_citrus_candidate": {
+                "status": "passed" if exact_source_candidate_passed else "not_passed",
+                "candidate_id": citrus_candidate.get("candidate_id"),
+                "candidate_set_id": citrus_candidate.get("candidate_set_id"),
+                "point_count": citrus_candidate.get("point_count"),
+                "source_capture_group_id": candidate_source.get("capture_group_id"),
+                "source_image_path": candidate_source.get("image_path"),
+            },
             "homography_qc_images": {
                 "active_primary_reprojection": str(primary_qc_path.resolve()),
                 "active_heldout_reprojection": str(
