@@ -975,6 +975,7 @@ if(BUILD_TESTING)
         "tools/recording_snapshots_tests.cpp"
         "${SRC_DIR}/citrus_recording_geometry.cpp"
         "${SRC_DIR}/gui/recording_snapshots.cpp"
+        "${SRC_DIR}/gui/spatial_layout/commissioning_finalize_request.cpp"
         "${SRC_DIR}/gui/spatial_layout/projection_snapshot_client.cpp"
         "${SRC_DIR}/project.cpp"
         "${SRC_DIR}/camera.cpp"
