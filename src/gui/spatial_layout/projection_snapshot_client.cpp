@@ -1,5 +1,7 @@
 #include "gui/spatial_layout/projection_snapshot_client.h"
 
+#include "gui/spatial_layout/commissioning_finalize_request.h"
+
 #include "calibration_image_set.h"
 #include "project.h"
 
@@ -933,20 +935,15 @@ finalize_citrus_rig_canvas_commissioning(
     const std::string& transaction_id,
     const std::string& canvas_path,
     const std::string& expected_canvas_checksum,
-    const nlohmann::json& orange_session_dirs,
     bool accept_commissioning_armed,
     const std::string& operation_id)
 {
     return send_rig_canvas_commissioning_request(
         "finalize_rig_canvas_commissioning",
         operation_id,
-        {
-            {"transaction_id", transaction_id},
-            {"canvas_path", canvas_path},
-            {"expected_canvas_checksum", expected_canvas_checksum},
-            {"orange_session_dirs", orange_session_dirs},
-            {"accept_commissioning_armed", accept_commissioning_armed},
-        });
+        build_commissioning_finalize_params(
+            transaction_id, canvas_path, expected_canvas_checksum,
+            accept_commissioning_armed));
 }
 
 CitrusDailyRegistrationControlResult query_citrus_daily_registration_status(
@@ -983,6 +980,41 @@ CitrusDailyRegistrationControlResult preview_citrus_daily_registration_candidate
     return send_daily_registration_request(
         "preview_daily_registration_candidate", operation_id,
         {{"transaction_id", transaction_id}});
+}
+
+CitrusDailyRegistrationControlResult
+set_citrus_daily_registration_preview_adjustments(
+    const std::string& transaction_id,
+    const std::string& expected_automatic_candidate_sha256,
+    const nlohmann::json& adjustments,
+    const std::string& operation_id)
+{
+    return send_daily_registration_request(
+        "set_daily_registration_preview_adjustments", operation_id,
+        {
+            {"transaction_id", transaction_id},
+            {"expected_candidate_sha256",
+             expected_automatic_candidate_sha256},
+            {"adjustments", adjustments},
+        });
+}
+
+CitrusDailyRegistrationControlResult
+freeze_citrus_adjusted_daily_registration_candidate(
+    const std::string& transaction_id,
+    const std::string& expected_automatic_candidate_sha256,
+    const nlohmann::json& adjustments,
+    const std::string& operation_id)
+{
+    return send_daily_registration_request(
+        "freeze_adjusted_daily_registration_candidate", operation_id,
+        {
+            {"transaction_id", transaction_id},
+            {"expected_candidate_sha256",
+             expected_automatic_candidate_sha256},
+            {"adjustments", adjustments},
+            {"freeze_adjusted_candidate_armed", true},
+        });
 }
 
 CitrusDailyRegistrationControlResult restore_citrus_daily_registration_preview(

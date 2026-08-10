@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -101,6 +102,76 @@ void TestSingularProjectionFailsClosed()
             "singular projection should expose a stable error");
 }
 
+void TestAutomaticAndManualTranslationsComposeInCanvasCoordinates()
+{
+    daily::TranslationCompositionInput input;
+    input.base_center_canvas_x_px = 100.0;
+    input.base_center_canvas_y_px = 100.0;
+    input.automatic_x_canvas_px = 6;
+    input.automatic_y_canvas_px = 5;
+    input.manual_delta_x_canvas_px = -7;
+    input.manual_delta_y_canvas_px = -13;
+
+    const auto translation = daily::ComposeTranslation(input);
+    Require(translation.ok, "valid translation composition should succeed");
+    Require(translation.applied_x_canvas_px == -1,
+            "manual x is an absolute delta from the automatic result");
+    Require(translation.applied_y_canvas_px == -8,
+            "manual y is an absolute delta from the automatic result");
+    RequireNear(translation.effective_center_canvas_x_px, 99.0, 1e-9,
+                "final x center should use the composed canvas translation");
+    RequireNear(translation.effective_center_canvas_y_px, 92.0, 1e-9,
+                "final y center should use the composed canvas translation");
+
+    daily::GeometryReviewInput review;
+    review.desired_experimental_center_canvas_x_px = 99.0;
+    review.desired_experimental_center_canvas_y_px = 92.0;
+    review.effective_experimental_center_canvas_x_px =
+        translation.effective_center_canvas_x_px;
+    review.effective_experimental_center_canvas_y_px =
+        translation.effective_center_canvas_y_px;
+    review.canonical_experimental_radius_canvas_px = 40.0;
+    review.accepted_rim_center_camera_x_px = 99.0;
+    review.accepted_rim_center_camera_y_px = 92.0;
+    review.accepted_rim_radius_camera_px = 40.0;
+    const auto geometry = daily::ComputeGeometryReview(review);
+    Require(geometry.ok, "composed translation should produce valid geometry");
+    RequireNear(geometry.center_residual_norm_camera_px, 0.0, 1e-9,
+                "identity projection should preserve composed direction");
+    RequireNear(geometry.predicted_radius_mean_camera_px, 40.0, 1e-9,
+                "translation must not resize the canonical radius");
+}
+
+void TestZeroManualDeltaRestoresAutomaticResult()
+{
+    daily::TranslationCompositionInput input;
+    input.base_center_canvas_x_px = 258.0;
+    input.base_center_canvas_y_px = 331.0;
+    input.automatic_x_canvas_px = 7;
+    input.automatic_y_canvas_px = -5;
+    const auto translation = daily::ComposeTranslation(input);
+    Require(translation.ok, "automatic-only translation should succeed");
+    Require(translation.applied_x_canvas_px == 7 &&
+                translation.applied_y_canvas_px == -5,
+            "zero manual delta should exactly restore automatic translation");
+    RequireNear(translation.effective_center_canvas_x_px, 265.0, 1e-9,
+                "automatic-only x center mismatch");
+    RequireNear(translation.effective_center_canvas_y_px, 326.0, 1e-9,
+                "automatic-only y center mismatch");
+}
+
+void TestTranslationOverflowFailsClosed()
+{
+    daily::TranslationCompositionInput input;
+    input.automatic_x_canvas_px = std::numeric_limits<int>::max();
+    input.manual_delta_x_canvas_px = 1;
+    const auto translation = daily::ComposeTranslation(input);
+    Require(!translation.ok, "integer overflow must fail closed");
+    Require(translation.error ==
+                "daily_registration_translation_integer_overflow",
+            "overflow should expose a stable error");
+}
+
 }  // namespace
 
 int main()
@@ -109,6 +180,9 @@ int main()
         TestIdentityReviewPreservesCanonicalRadius();
         TestAffineCameraScaleProducesCameraSpaceQc();
         TestSingularProjectionFailsClosed();
+        TestAutomaticAndManualTranslationsComposeInCanvasCoordinates();
+        TestZeroManualDeltaRestoresAutomaticResult();
+        TestTranslationOverflowFailsClosed();
         std::cout << "daily registration geometry tests passed\n";
         return 0;
     } catch (const std::exception& error) {

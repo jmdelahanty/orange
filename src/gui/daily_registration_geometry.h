@@ -11,6 +11,30 @@ struct Point2d {
     double y = 0.0;
 };
 
+struct TranslationCompositionInput {
+    double base_center_canvas_x_px = 0.0;
+    double base_center_canvas_y_px = 0.0;
+    int automatic_x_canvas_px = 0;
+    int automatic_y_canvas_px = 0;
+    int manual_delta_x_canvas_px = 0;
+    int manual_delta_y_canvas_px = 0;
+};
+
+struct TranslationCompositionResult {
+    bool ok = false;
+    std::string error;
+    int applied_x_canvas_px = 0;
+    int applied_y_canvas_px = 0;
+    double effective_center_canvas_x_px = 0.0;
+    double effective_center_canvas_y_px = 0.0;
+};
+
+// The operator delta is absolute relative to the immutable automatic result.
+// Keeping this arithmetic in one checked helper prevents UI preview, artifact
+// validation, and acceptance from developing different sign conventions.
+TranslationCompositionResult ComposeTranslation(
+    const TranslationCompositionInput& input);
+
 struct GeometryReviewInput {
     std::array<double, 9> canvas_to_camera_homography{
         1.0, 0.0, 0.0,

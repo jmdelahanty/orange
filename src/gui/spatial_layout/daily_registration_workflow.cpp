@@ -383,6 +383,14 @@ nlohmann::json WorkflowSnapshot(const DailyRegistrationWorkflowUiState& workflow
                 {"ok", target.geometry_review_ok},
                 {"error", target.geometry_review_error},
                 {"translation_canvas_px", {
+                    {"automatic_applied_x",
+                     target.automatic_applied_translation_x_canvas_px},
+                    {"automatic_applied_y",
+                     target.automatic_applied_translation_y_canvas_px},
+                    {"manual_delta_x",
+                     target.manual_alignment_delta_x_canvas_px},
+                    {"manual_delta_y",
+                     target.manual_alignment_delta_y_canvas_px},
                     {"requested_x", target.requested_translation_x_canvas_px},
                     {"requested_y", target.requested_translation_y_canvas_px},
                     {"applied_x", target.applied_translation_x_canvas_px},
@@ -411,12 +419,27 @@ nlohmann::json WorkflowSnapshot(const DailyRegistrationWorkflowUiState& workflow
                 {"observation_path", target.geometry_review_observation_path},
                 {"observation_sha256", target.geometry_review_observation_sha256},
                 {"overlay_path", target.geometry_review_overlay_path},
-                {"overlay_sha256", target.geometry_review_overlay_sha256}}},
+                {"overlay_sha256", target.geometry_review_overlay_sha256},
+                {"automatic_observation_path",
+                 target.automatic_geometry_review_observation_path},
+                {"automatic_observation_sha256",
+                 target.automatic_geometry_review_observation_sha256},
+                {"automatic_overlay_path",
+                 target.automatic_geometry_review_overlay_path},
+                {"automatic_overlay_sha256",
+                 target.automatic_geometry_review_overlay_sha256}}},
+            {"operator_visual_alignment", {
+                {"evidence_type", "operator_visual_alignment"},
+                {"manual_delta_canvas_px", {
+                    {"x", target.manual_alignment_delta_x_canvas_px},
+                    {"y", target.manual_alignment_delta_y_canvas_px}}},
+                {"operator_confirmed",
+                 target.manual_alignment_operator_confirmed}}},
         });
     }
     return {
         {"schema_id", "orange.calibration.guided_daily_registration_transaction"},
-        {"schema_version", 2},
+        {"schema_version", 3},
         {"transaction_id", workflow.transaction_id},
         {"created_utc", workflow.created_utc},
         {"stage", workflow.stage},
@@ -430,6 +453,13 @@ nlohmann::json WorkflowSnapshot(const DailyRegistrationWorkflowUiState& workflow
         {"candidate_ref", {
             {"path", workflow.candidate_path},
             {"sha256", workflow.candidate_sha256}}},
+        {"automatic_candidate_ref", {
+            {"path", workflow.automatic_candidate_path},
+            {"sha256", workflow.automatic_candidate_sha256}}},
+        {"operator_adjusted_candidate_frozen",
+         workflow.operator_adjusted_candidate_frozen},
+        {"automatic_geometry_review_passed",
+         workflow.automatic_geometry_review_passed},
         {"accepted_registration_ref", {
             {"path", workflow.accepted_registration_path},
             {"sha256", workflow.accepted_registration_sha256}}},
@@ -615,6 +645,27 @@ bool GeometryReviewPasses(const DailyRegistrationWorkflowUiState& workflow)
                 !target.geometry_review_observation_sha256.empty() &&
                 !target.geometry_review_overlay_sha256.empty();
         });
+}
+
+bool AllManualAlignmentsConfirmed(
+    const DailyRegistrationWorkflowUiState& workflow)
+{
+    return !workflow.targets.empty() && std::all_of(
+        workflow.targets.begin(), workflow.targets.end(), [](const auto& target) {
+            return target.manual_alignment_operator_confirmed;
+        });
+}
+
+bool FinalGeometryReviewAvailable(
+    const DailyRegistrationWorkflowUiState& workflow)
+{
+    return workflow.operator_adjusted_candidate_frozen &&
+        !workflow.targets.empty() && std::all_of(
+            workflow.targets.begin(), workflow.targets.end(), [](const auto& target) {
+                return target.geometry_review_ok &&
+                    !target.geometry_review_observation_sha256.empty() &&
+                    !target.geometry_review_overlay_sha256.empty();
+            });
 }
 
 void ClearCapturePixels(SpatialLayoutGroupCaptureFrame* capture)
@@ -1236,8 +1287,11 @@ bool DrawAndWriteGeometryReviewOverlay(
         overlay, rim_center, cv::Scalar(255, 165, 32, 255),
         cv::MARKER_TILTED_CROSS, 38, 6, cv::LINE_AA);
 
+    const char* review_kind = workflow->operator_adjusted_candidate_frozen
+        ? "operator_adjusted" : "automatic";
     target->geometry_review_overlay_path =
-        (target_dir / "rim_only_geometry_review_overlay.png").string();
+        (target_dir /
+         (std::string(review_kind) + "_geometry_review_overlay.png")).string();
     std::vector<unsigned char> overlay_rgba(
         overlay.data, overlay.data + overlay.total() * overlay.elemSize());
     return WriteReviewOverlay(
@@ -1262,12 +1316,15 @@ bool WriteGeometryReviewObservation(
     const fs::path target_dir = fs::path(workflow->transaction_dir) /
         "targets" / sanitize_artifact_component(
             target->camera_serial + "_" + target->arena_id);
+    const char* review_kind = workflow->operator_adjusted_candidate_frozen
+        ? "operator_adjusted" : "automatic";
     target->geometry_review_observation_path =
-        (target_dir / "rim_only_geometry_review.json").string();
+        (target_dir /
+         (std::string(review_kind) + "_geometry_review.json")).string();
     nlohmann::json observation = {
         {"schema_id", "orange.calibration.daily_registration_geometry_review"},
         {"schema_version", 1},
-        {"artifact_id", "daily_geometry_review_" +
+        {"artifact_id", std::string("daily_geometry_review_") + review_kind + "_" +
             sanitize_artifact_component(
                 workflow->transaction_id + "_" + target->camera_serial)},
         {"transaction_id", workflow->transaction_id},
@@ -1280,6 +1337,14 @@ bool WriteGeometryReviewObservation(
         {"translation_policy",
          "integer_canvas_translation_move_arena_and_experimental_area_together"},
         {"translation_canvas_px", {
+            {"automatic_applied_x",
+             target->automatic_applied_translation_x_canvas_px},
+            {"automatic_applied_y",
+             target->automatic_applied_translation_y_canvas_px},
+            {"manual_delta_x",
+             target->manual_alignment_delta_x_canvas_px},
+            {"manual_delta_y",
+             target->manual_alignment_delta_y_canvas_px},
             {"requested_x", target->requested_translation_x_canvas_px},
             {"requested_y", target->requested_translation_y_canvas_px},
             {"applied_x", target->applied_translation_x_canvas_px},
@@ -1356,6 +1421,15 @@ bool WriteGeometryReviewObservation(
             {"daily_scope", "translation_only"},
             {"warning",
              "The commissioned projected-surface homography maps the fitted rim center; radius comparison is QC only."}}},
+        {"operator_visual_alignment", {
+            {"evidence_type", "operator_visual_alignment"},
+            {"operator_adjusted",
+             workflow->operator_adjusted_candidate_frozen},
+            {"operator_confirmed",
+             target->manual_alignment_operator_confirmed},
+            {"manual_delta_canvas_px", {
+                {"x", target->manual_alignment_delta_x_canvas_px},
+                {"y", target->manual_alignment_delta_y_canvas_px}}}}},
     };
     if (!WriteJsonAtomically(
             target->geometry_review_observation_path,
@@ -1544,6 +1618,51 @@ bool LoadCandidateAndBuildGeometryReview(
             translation["applied_x"].get<int>();
         target.applied_translation_y_canvas_px =
             translation["applied_y"].get<int>();
+        target.automatic_applied_translation_x_canvas_px =
+            translation.value(
+                "automatic_applied_x",
+                target.applied_translation_x_canvas_px);
+        target.automatic_applied_translation_y_canvas_px =
+            translation.value(
+                "automatic_applied_y",
+                target.applied_translation_y_canvas_px);
+        target.manual_alignment_delta_x_canvas_px =
+            translation.value("manual_delta_x", 0);
+        target.manual_alignment_delta_y_canvas_px =
+            translation.value("manual_delta_y", 0);
+        const auto operator_alignment = candidate_target->value(
+            "operator_visual_alignment", nlohmann::json::object());
+        target.manual_alignment_operator_confirmed =
+            operator_alignment.value("operator_confirmed", false);
+        daily_geometry::TranslationCompositionInput composition_input;
+        composition_input.base_center_canvas_x_px =
+            target.base_experimental_center_x_canvas_px;
+        composition_input.base_center_canvas_y_px =
+            target.base_experimental_center_y_canvas_px;
+        composition_input.automatic_x_canvas_px =
+            target.automatic_applied_translation_x_canvas_px;
+        composition_input.automatic_y_canvas_px =
+            target.automatic_applied_translation_y_canvas_px;
+        composition_input.manual_delta_x_canvas_px =
+            target.manual_alignment_delta_x_canvas_px;
+        composition_input.manual_delta_y_canvas_px =
+            target.manual_alignment_delta_y_canvas_px;
+        const auto composition =
+            daily_geometry::ComposeTranslation(composition_input);
+        if (!composition.ok) {
+            if (error_out) *error_out =
+                composition.error + ":" + target.arena_id;
+            return false;
+        }
+        if (target.applied_translation_x_canvas_px !=
+                composition.applied_x_canvas_px ||
+            target.applied_translation_y_canvas_px !=
+                composition.applied_y_canvas_px) {
+            if (error_out) *error_out =
+                "daily_candidate_manual_translation_mismatch:" +
+                target.arena_id;
+            return false;
+        }
         const double imported_origin_x =
             template_state.arena_center_x_px -
             static_cast<double>(
@@ -1561,11 +1680,9 @@ bool LoadCandidateAndBuildGeometryReview(
             std::abs(imported_base_y -
                      target.base_experimental_center_y_canvas_px) > 1e-6 ||
             std::abs(target.effective_experimental_center_x_canvas_px -
-                     (target.base_experimental_center_x_canvas_px +
-                      target.applied_translation_x_canvas_px)) > 1e-6 ||
+                     composition.effective_center_canvas_x_px) > 1e-6 ||
             std::abs(target.effective_experimental_center_y_canvas_px -
-                     (target.base_experimental_center_y_canvas_px +
-                      target.applied_translation_y_canvas_px)) > 1e-6) {
+                     composition.effective_center_canvas_y_px) > 1e-6) {
             if (error_out) *error_out =
                 "daily_candidate_imported_geometry_mismatch:" +
                 target.arena_id;
@@ -1631,6 +1748,137 @@ bool LoadCandidateAndBuildGeometryReview(
                 workflow, &target, template_state, error_out)) {
             return false;
         }
+    }
+    return true;
+}
+
+bool UpdateManualAlignmentPreviewGeometry(
+    const SpatialLayoutUiState& ui_state,
+    DailyRegistrationWorkflowUiState* workflow,
+    std::string* error_out)
+{
+    if (workflow == nullptr) {
+        if (error_out) *error_out = "daily_manual_preview_workflow_missing";
+        return false;
+    }
+    const auto copy_outline = [](const auto& source, auto* destination) {
+        destination->clear();
+        destination->reserve(source.size());
+        for (const auto& point : source) {
+            destination->push_back({point.x, point.y});
+        }
+    };
+    for (auto& target : workflow->targets) {
+        const int template_index = find_citrus_template_index_for_camera(
+            ui_state, target.camera_serial);
+        if (template_index < 0 ||
+            template_index >= static_cast<int>(
+                ui_state.citrus_canvas_templates.size())) {
+            if (error_out) *error_out =
+                "daily_manual_preview_template_missing:" +
+                target.camera_serial;
+            return false;
+        }
+        const auto& template_state =
+            ui_state.citrus_canvas_templates[template_index];
+        auto compute = [&](double effective_x, double effective_y) {
+            daily_geometry::GeometryReviewInput input;
+            input.canvas_to_camera_homography =
+                template_state.canvas_to_camera_homography;
+            input.desired_experimental_center_canvas_x_px =
+                target.desired_experimental_center_x_canvas_px;
+            input.desired_experimental_center_canvas_y_px =
+                target.desired_experimental_center_y_canvas_px;
+            input.effective_experimental_center_canvas_x_px = effective_x;
+            input.effective_experimental_center_canvas_y_px = effective_y;
+            input.canonical_experimental_radius_canvas_px =
+                template_state.experimental_area_radius_px;
+            input.accepted_rim_center_camera_x_px =
+                target.accepted_rim_center_x_camera_px;
+            input.accepted_rim_center_camera_y_px =
+                target.accepted_rim_center_y_camera_px;
+            input.accepted_rim_radius_camera_px =
+                target.accepted_rim_radius_camera_px;
+            return daily_geometry::ComputeGeometryReview(input);
+        };
+        const auto base = compute(
+            target.base_experimental_center_x_canvas_px,
+            target.base_experimental_center_y_canvas_px);
+        const auto automatic = compute(
+            target.base_experimental_center_x_canvas_px +
+                target.automatic_applied_translation_x_canvas_px,
+            target.base_experimental_center_y_canvas_px +
+                target.automatic_applied_translation_y_canvas_px);
+        daily_geometry::TranslationCompositionInput composition_input;
+        composition_input.base_center_canvas_x_px =
+            target.base_experimental_center_x_canvas_px;
+        composition_input.base_center_canvas_y_px =
+            target.base_experimental_center_y_canvas_px;
+        composition_input.automatic_x_canvas_px =
+            target.automatic_applied_translation_x_canvas_px;
+        composition_input.automatic_y_canvas_px =
+            target.automatic_applied_translation_y_canvas_px;
+        composition_input.manual_delta_x_canvas_px =
+            target.manual_alignment_delta_x_canvas_px;
+        composition_input.manual_delta_y_canvas_px =
+            target.manual_alignment_delta_y_canvas_px;
+        const auto composition =
+            daily_geometry::ComposeTranslation(composition_input);
+        if (!composition.ok) {
+            if (error_out) *error_out =
+                composition.error + ":" + target.arena_id;
+            return false;
+        }
+        const auto final = compute(
+            composition.effective_center_canvas_x_px,
+            composition.effective_center_canvas_y_px);
+        if (!base.ok || !automatic.ok || !final.ok) {
+            if (error_out) *error_out =
+                "daily_manual_preview_projection_failed:" +
+                target.arena_id;
+            return false;
+        }
+        copy_outline(
+            base.canonical_outline_camera_px,
+            &target.base_geometry_outline_camera_px);
+        copy_outline(
+            automatic.canonical_outline_camera_px,
+            &target.automatic_geometry_outline_camera_px);
+        copy_outline(
+            final.canonical_outline_camera_px,
+            &target.geometry_outline_camera_px);
+        target.effective_experimental_center_x_canvas_px =
+            composition.effective_center_canvas_x_px;
+        target.effective_experimental_center_y_canvas_px =
+            composition.effective_center_canvas_y_px;
+        target.applied_translation_x_canvas_px =
+            composition.applied_x_canvas_px;
+        target.applied_translation_y_canvas_px =
+            composition.applied_y_canvas_px;
+        target.geometry_review_ok = final.ok;
+        target.geometry_review_error = final.error;
+        target.geometry_corrected_center_x_camera_px =
+            final.corrected_center_camera_px.x;
+        target.geometry_corrected_center_y_camera_px =
+            final.corrected_center_camera_px.y;
+        target.geometry_center_residual_x_camera_px =
+            final.center_residual_x_camera_px;
+        target.geometry_center_residual_y_camera_px =
+            final.center_residual_y_camera_px;
+        target.geometry_center_residual_norm_camera_px =
+            final.center_residual_norm_camera_px;
+        target.geometry_center_quantization_bound_camera_px =
+            final.integer_translation_quantization_bound_camera_px;
+        target.geometry_predicted_radius_min_camera_px =
+            final.predicted_radius_min_camera_px;
+        target.geometry_predicted_radius_mean_camera_px =
+            final.predicted_radius_mean_camera_px;
+        target.geometry_predicted_radius_max_camera_px =
+            final.predicted_radius_max_camera_px;
+        target.geometry_rim_radial_rms_error_camera_px =
+            final.rim_radial_rms_error_camera_px;
+        target.geometry_maximum_outside_rim_camera_px =
+            final.maximum_outside_rim_camera_px;
     }
     return true;
 }
@@ -1900,6 +2148,91 @@ bool RequestPreview(
     return true;
 }
 
+nlohmann::json ManualAlignmentAdjustments(
+    const DailyRegistrationWorkflowUiState& workflow)
+{
+    nlohmann::json adjustments = nlohmann::json::array();
+    for (const auto& target : workflow.targets) {
+        adjustments.push_back({
+            {"arena_id", target.arena_id},
+            {"camera_id", target.camera_serial},
+            {"manual_delta_x_canvas_px",
+             target.manual_alignment_delta_x_canvas_px},
+            {"manual_delta_y_canvas_px",
+             target.manual_alignment_delta_y_canvas_px},
+            {"operator_confirmed",
+             target.manual_alignment_operator_confirmed},
+        });
+    }
+    return adjustments;
+}
+
+bool RequestManualPreview(
+    DailyRegistrationWorkflowUiState* workflow,
+    std::string* error_out)
+{
+    const std::string operation = NextOperationId("preview_automatic_alignment");
+    const auto result = preview_citrus_daily_registration_candidate(
+        workflow->transaction_id, operation);
+    if (!result.ok) {
+        if (error_out) *error_out = result.reason;
+        return false;
+    }
+    workflow->pending_operation_id = operation;
+    workflow->stage = "waiting_manual_preview_presented";
+    workflow->status =
+        "Waiting for Citrus to present the automatic translated outline and center crosshair.";
+    Checkpoint(workflow);
+    return true;
+}
+
+bool RequestManualAdjustment(
+    DailyRegistrationWorkflowUiState* workflow,
+    std::string* error_out)
+{
+    const std::string operation = NextOperationId("set_manual_alignment");
+    const auto result = set_citrus_daily_registration_preview_adjustments(
+        workflow->transaction_id,
+        workflow->automatic_candidate_sha256,
+        ManualAlignmentAdjustments(*workflow), operation);
+    if (!result.ok) {
+        if (error_out) *error_out = result.reason;
+        return false;
+    }
+    workflow->pending_operation_id = operation;
+    workflow->stage = "waiting_manual_adjustment";
+    workflow->status =
+        "Waiting for Citrus to apply the absolute operator preview offsets.";
+    Checkpoint(workflow);
+    return true;
+}
+
+bool FreezeManualAlignment(
+    DailyRegistrationWorkflowUiState* workflow,
+    std::string* error_out)
+{
+    if (!AllManualAlignmentsConfirmed(*workflow)) {
+        if (error_out) *error_out =
+            "Confirm the projected alignment for every arena before freezing.";
+        return false;
+    }
+    const std::string operation = NextOperationId("freeze_manual_alignment");
+    const auto result = freeze_citrus_adjusted_daily_registration_candidate(
+        workflow->transaction_id,
+        workflow->automatic_candidate_sha256,
+        ManualAlignmentAdjustments(*workflow), operation);
+    if (!result.ok) {
+        if (error_out) *error_out = result.reason;
+        return false;
+    }
+    workflow->pending_operation_id = operation;
+    workflow->stage = "waiting_adjusted_candidate";
+    workflow->status =
+        "Citrus is freezing an immutable candidate derived from the automatic candidate and confirmed visual offsets.";
+    Checkpoint(workflow);
+    return true;
+}
+
 bool AcceptAndSelect(
     DailyRegistrationWorkflowUiState* workflow,
     std::string* error_out)
@@ -1911,6 +2244,14 @@ bool AcceptAndSelect(
             {"camera_id", target.camera_serial},
             {"alignment_basis", target.alignment_basis},
             {"translation_canvas_px", {
+                {"automatic_applied_x",
+                 target.automatic_applied_translation_x_canvas_px},
+                {"automatic_applied_y",
+                 target.automatic_applied_translation_y_canvas_px},
+                {"manual_delta_x",
+                 target.manual_alignment_delta_x_canvas_px},
+                {"manual_delta_y",
+                 target.manual_alignment_delta_y_canvas_px},
                 {"requested_x", target.requested_translation_x_canvas_px},
                 {"requested_y", target.requested_translation_y_canvas_px},
                 {"applied_x", target.applied_translation_x_canvas_px},
@@ -1934,20 +2275,64 @@ bool AcceptAndSelect(
             {"geometry_review_observation", {
                 {"path", target.geometry_review_observation_path},
                 {"sha256", target.geometry_review_observation_sha256}}},
+            {"automatic_geometry_review", {
+                {"observation_path",
+                 target.automatic_geometry_review_observation_path},
+                {"observation_sha256",
+                 target.automatic_geometry_review_observation_sha256},
+                {"overlay_path",
+                 target.automatic_geometry_review_overlay_path},
+                {"overlay_sha256",
+                 target.automatic_geometry_review_overlay_sha256}}},
+            {"operator_visual_alignment", {
+                {"evidence_type", "operator_visual_alignment"},
+                {"manual_delta_canvas_px", {
+                    {"x", target.manual_alignment_delta_x_canvas_px},
+                    {"y", target.manual_alignment_delta_y_canvas_px}}},
+                {"operator_confirmed",
+                 target.manual_alignment_operator_confirmed}}},
         });
     }
-    const nlohmann::json verification = {
-        {"result", "passed"},
-        {"policy", "orange_guided_daily_registration_rim_only_v2"},
-        {"alignment_basis", kRimOnlyAlignmentBasis},
-        {"maximum_residual_beyond_integer_translation_quantization_camera_px",
-         workflow->maximum_geometry_residual_beyond_quantization_camera_px},
-        {"operator_confirmed_outline_containment",
-         workflow->geometry_outline_operator_confirmed},
-        {"runtime_optical_path_changed", false},
-        {"canonical_experimental_area_resized", false},
-        {"targets", std::move(target_checks)},
-    };
+    nlohmann::json verification;
+    if (workflow->operator_adjusted_candidate_frozen) {
+        verification = {
+            {"result", "passed"},
+            {"policy",
+             "orange_guided_daily_registration_automatic_plus_operator_visual_v3"},
+            {"alignment_basis", kRimOnlyAlignmentBasis},
+            {"automatic_candidate", {
+                {"path", workflow->automatic_candidate_path},
+                {"sha256", workflow->automatic_candidate_sha256},
+                {"geometry_review_passed",
+                 workflow->automatic_geometry_review_passed}}},
+            {"adjusted_candidate", {
+                {"path", workflow->candidate_path},
+                {"sha256", workflow->candidate_sha256}}},
+            {"operator_visual_alignment", {
+                {"evidence_type", "operator_visual_alignment"},
+                {"all_targets_confirmed",
+                 AllManualAlignmentsConfirmed(*workflow)},
+                {"final_computed_camera_overlay_is_diagnostic_only", true}}},
+            {"operator_confirmed_physical_projection_alignment",
+             workflow->geometry_outline_operator_confirmed},
+            {"runtime_optical_path_changed", false},
+            {"canonical_experimental_area_resized", false},
+            {"targets", std::move(target_checks)},
+        };
+    } else {
+        verification = {
+            {"result", "passed"},
+            {"policy", "orange_guided_daily_registration_rim_only_v2"},
+            {"alignment_basis", kRimOnlyAlignmentBasis},
+            {"maximum_residual_beyond_integer_translation_quantization_camera_px",
+             workflow->maximum_geometry_residual_beyond_quantization_camera_px},
+            {"operator_confirmed_outline_containment",
+             workflow->geometry_outline_operator_confirmed},
+            {"runtime_optical_path_changed", false},
+            {"canonical_experimental_area_resized", false},
+            {"targets", std::move(target_checks)},
+        };
+    }
     const std::string operation = NextOperationId("accept_candidate");
     const auto result = accept_citrus_daily_registration(
         workflow->transaction_id,
@@ -2029,6 +2414,18 @@ void RenderDailyReviewImages(
                 ImVec2(center.x, center.y - arm),
                 ImVec2(center.x, center.y + arm), color, 2.0f);
         };
+        const auto outline = [&](
+            const std::vector<Point2d>& points,
+            ImU32 color,
+            float thickness) {
+            for (std::size_t index = 0; index < points.size(); ++index) {
+                const auto& a = points[index];
+                const auto& b = points[(index + 1) % points.size()];
+                draw->AddLine(
+                    point(a.x, a.y), point(b.x, b.y),
+                    color, thickness);
+            }
+        };
         if (mode == "rim") {
             circle(
                 target.detected_rim_center_x_camera_px,
@@ -2055,6 +2452,20 @@ void RenderDailyReviewImages(
                 target.preview_center_y_camera_px,
                 pass ? IM_COL32(40, 230, 100, 255)
                      : IM_COL32(255, 70, 50, 255));
+        } else if (mode == "manual_alignment") {
+            outline(
+                target.base_geometry_outline_camera_px,
+                IM_COL32(70, 150, 255, 255), 1.8f);
+            outline(
+                target.automatic_geometry_outline_camera_px,
+                IM_COL32(255, 215, 40, 255), 2.1f);
+            outline(
+                target.geometry_outline_camera_px,
+                IM_COL32(70, 255, 150, 255), 2.7f);
+            cross(
+                target.geometry_corrected_center_x_camera_px,
+                target.geometry_corrected_center_y_camera_px,
+                IM_COL32(70, 255, 150, 255));
         } else if (mode == "geometry") {
             const bool pass = target.geometry_review_ok &&
                 target.geometry_center_residual_norm_camera_px <=
@@ -2086,6 +2497,9 @@ void RenderDailyReviewImages(
     } else if (mode == "base_center") {
         ImGui::TextDisabled(
             "Orange: accepted physical inner rim. Cyan cross: detected commissioned/base projected center.");
+    } else if (mode == "manual_alignment") {
+        ImGui::TextDisabled(
+            "Orange: accepted inner rim. Blue: commissioned base. Gold: automatic rim registration. Green: current manual result; this overlay updates with every acknowledged nudge.");
     } else if (mode == "geometry") {
         ImGui::TextDisabled(
             "Orange: accepted physical inner rim. Green/red: unchanged canonical experimental area inverse-projected through the accepted commissioning homography after Citrus's exact integer translation.");
@@ -2503,6 +2917,9 @@ void advance_daily_registration_workflow(
             JsonString(status.daily_registration, "candidate_path");
         workflow.candidate_sha256 =
             JsonString(status.daily_registration, "candidate_sha256");
+        workflow.automatic_candidate_path = workflow.candidate_path;
+        workflow.automatic_candidate_sha256 = workflow.candidate_sha256;
+        workflow.operator_adjusted_candidate_frozen = false;
         std::string error;
         if (!LoadCandidateAndBuildGeometryReview(
                 *ui_state, &workflow, &error)) {
@@ -2511,9 +2928,110 @@ void advance_daily_registration_workflow(
                 : error);
             return;
         }
+        workflow.automatic_geometry_review_passed =
+            GeometryReviewPasses(workflow);
+        for (auto& target : workflow.targets) {
+            target.automatic_geometry_review_observation_path =
+                target.geometry_review_observation_path;
+            target.automatic_geometry_review_observation_sha256 =
+                target.geometry_review_observation_sha256;
+            target.automatic_geometry_review_overlay_path =
+                target.geometry_review_overlay_path;
+            target.automatic_geometry_review_overlay_sha256 =
+                target.geometry_review_overlay_sha256;
+        }
         workflow.stage = "review_geometry_candidate";
         workflow.status =
-            "Translation-only candidate ready. Review the inverse-projected canonical outline; no visible marker or runtime preview was required.";
+            "Automatic translation candidate ready. Review its computed QC, then project it for physical visual alignment.";
+        Checkpoint(&workflow);
+        return;
+    }
+    if (workflow.stage == "waiting_manual_preview_presented") {
+        const auto status = query_citrus_daily_registration_status(
+            "guided_daily_waiting_manual_preview");
+        if (!status.ok) return;
+        const auto& daily = status.daily_registration;
+        if (!daily.value("preview_active", false) ||
+            !daily.value("visible", false) ||
+            JsonString(daily, "transaction_id") != workflow.transaction_id ||
+            JsonString(daily, "candidate_sha256") !=
+                workflow.automatic_candidate_sha256 ||
+            JsonString(daily, "operation_id") !=
+                workflow.pending_operation_id ||
+            JsonString(daily, "transition") != "candidate_previewed") {
+            return;
+        }
+        std::string error;
+        if (!UpdateManualAlignmentPreviewGeometry(
+                *ui_state, &workflow, &error)) {
+            fail(error);
+            return;
+        }
+        workflow.stage = "manual_alignment";
+        workflow.status =
+            "Automatic preview is visible. Nudge each arena in canvas pixels while looking directly at the physical projection, then confirm every target.";
+        workflow.error.clear();
+        Checkpoint(&workflow);
+        return;
+    }
+    if (workflow.stage == "waiting_manual_adjustment") {
+        const auto status = query_citrus_daily_registration_status(
+            "guided_daily_waiting_manual_adjustment");
+        if (!status.ok) return;
+        const auto& daily = status.daily_registration;
+        if (!daily.value("preview_active", false) ||
+            !daily.value("visible", false) ||
+            JsonString(daily, "transaction_id") != workflow.transaction_id ||
+            JsonString(daily, "candidate_sha256") !=
+                workflow.automatic_candidate_sha256 ||
+            JsonString(daily, "operation_id") !=
+                workflow.pending_operation_id ||
+            JsonString(daily, "transition") != "manual_preview_adjusted") {
+            return;
+        }
+        workflow.stage = "manual_alignment";
+        workflow.status =
+            "Citrus applied the absolute manual offsets. Continue nudging or confirm each arena.";
+        workflow.error.clear();
+        Checkpoint(&workflow);
+        return;
+    }
+    if (workflow.stage == "waiting_adjusted_candidate") {
+        const auto status = query_citrus_daily_registration_status(
+            "guided_daily_waiting_adjusted_candidate");
+        if (!status.ok) return;
+        const auto& daily = status.daily_registration;
+        const std::string adjusted_path =
+            JsonString(daily, "candidate_path");
+        const std::string adjusted_sha =
+            JsonString(daily, "candidate_sha256");
+        if (!daily.value("preview_active", false) ||
+            JsonString(daily, "transaction_id") != workflow.transaction_id ||
+            JsonString(daily, "operation_id") !=
+                workflow.pending_operation_id ||
+            JsonString(daily, "transition") !=
+                "operator_adjusted_candidate_created" ||
+            !daily.value("operator_adjusted_candidate_frozen", false) ||
+            adjusted_path.empty() || adjusted_sha.empty() ||
+            adjusted_sha == workflow.automatic_candidate_sha256) {
+            return;
+        }
+        workflow.citrus_candidate_status = daily;
+        workflow.candidate_path = adjusted_path;
+        workflow.candidate_sha256 = adjusted_sha;
+        workflow.operator_adjusted_candidate_frozen = true;
+        std::string error;
+        if (!LoadCandidateAndBuildGeometryReview(
+                *ui_state, &workflow, &error)) {
+            fail(error.empty()
+                ? "adjusted_daily_geometry_review_generation_failed"
+                : error);
+            return;
+        }
+        workflow.stage = "review_operator_adjusted_candidate";
+        workflow.status =
+            "The operator-adjusted candidate is immutable. Review the recorded automatic-versus-manual deltas and accept this exact artifact.";
+        workflow.error.clear();
         Checkpoint(&workflow);
         return;
     }
@@ -2714,8 +3232,9 @@ void render_daily_registration_workflow_panel(
         "This opt-in procedure measures only today's dish-placement translation. "
         "It never rewrites commissioned canvas geometry, homographies, scale, "
         "arena size, or the canonical 40 mm experimental-area radius. It runs "
-        "with the normal IR filters and experiment illumination path; no visible "
-        "projector marker or filter change is required.");
+        "with the normal IR filters and experiment illumination path. After the "
+        "automatic rim fit, Citrus shows the translated outline and center for "
+        "direct operator alignment; no camera-filter change is required.");
     if (workflow.stage == "idle" || workflow.stage == "complete" ||
         workflow.stage == "failed" || workflow.stage == "aborted" ||
         workflow.stage == "rejected") {
@@ -2778,35 +3297,29 @@ void render_daily_registration_workflow_panel(
         ImGui::EndDisabled();
     } else if (workflow.stage == "review_geometry_candidate") {
         ImGui::TextWrapped(
-            "Candidate: %s. Orange has inverse-projected the unchanged canonical "
+            "Automatic candidate: %s. Orange has inverse-projected the unchanged canonical "
             "experimental area using the accepted commissioning homography and "
             "Citrus's exact integer canvas translation.",
-            workflow.candidate_sha256.c_str());
+            workflow.automatic_candidate_sha256.c_str());
         RenderDailyReviewImages(*ui_state, workflow, "geometry");
         RenderGeometryReviewTable(workflow);
         ImGui::InputDouble(
             "Allowed residual beyond integer-translation quantization (camera px)",
             &workflow.maximum_geometry_residual_beyond_quantization_camera_px,
             0.1, 0.5, "%.3f");
-        ImGui::Checkbox(
-            "I confirm each computed canonical outline is acceptable relative to the physical inner rim",
-            &workflow.geometry_outline_operator_confirmed);
-        ImGui::InputText("Valid until UTC", &workflow.valid_until_utc);
-        ImGui::Checkbox(
-            "I accept this exact candidate and its computed geometry evidence",
-            &workflow.accept_registration_armed);
-        ImGui::Checkbox(
-            "After acceptance, select this exact registration for runtime",
-            &workflow.select_runtime_mode_armed);
-        const bool ready = GeometryReviewPasses(workflow) &&
-            workflow.geometry_outline_operator_confirmed &&
-            workflow.accept_registration_armed &&
-            workflow.select_runtime_mode_armed &&
-            !workflow.valid_until_utc.empty();
-        ImGui::BeginDisabled(!ready);
-        if (ImGui::Button("Accept And Select Daily Registration")) {
+        const bool automatic_passes = GeometryReviewPasses(workflow);
+        if (!automatic_passes) {
+            ImGui::TextColored(
+                ImVec4(1.0f, 0.45f, 0.25f, 1.0f),
+                "Automatic homography-based QC failed; manual alignment cannot hide this failure.");
+        }
+        ImGui::BeginDisabled(!automatic_passes);
+        if (ImGui::Button("Project Automatic Alignment For Manual Review")) {
+            workflow.automatic_geometry_review_passed = automatic_passes;
             std::string error;
-            if (!AcceptAndSelect(&workflow, &error)) workflow.error = error;
+            if (!RequestManualPreview(&workflow, &error)) {
+                workflow.error = error;
+            }
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
@@ -2824,6 +3337,192 @@ void render_daily_registration_workflow_panel(
                 workflow.stage = "waiting_reject";
                 workflow.status =
                     "Candidate rejection requested; waiting for Citrus acknowledgement.";
+                workflow.error.clear();
+                Checkpoint(&workflow);
+            }
+        }
+    } else if (workflow.stage == "manual_alignment") {
+        ImGui::TextWrapped(
+            "Look directly at the physical projected outline and center crosshair. "
+            "Offsets are integer Citrus canvas pixels (about 0.24 mm here), are "
+            "absolute relative to the automatic result, and never edit shadow.json, "
+            "the commissioned homography, arena size, or radius.");
+        RenderDailyReviewImages(*ui_state, workflow, "manual_alignment");
+        ImGui::Checkbox(
+            "I can see and am judging the physical projected outlines",
+            &workflow.visible_projection_path_confirmed);
+        if (ImGui::BeginTable(
+                "daily-manual-alignment", 7,
+                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                    ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Target");
+            ImGui::TableSetupColumn("Automatic");
+            ImGui::TableSetupColumn("Manual delta");
+            ImGui::TableSetupColumn("Final");
+            ImGui::TableSetupColumn("Adjust X");
+            ImGui::TableSetupColumn("Adjust Y");
+            ImGui::TableSetupColumn("Confirm");
+            ImGui::TableHeadersRow();
+            for (auto& target : workflow.targets) {
+                ImGui::PushID(
+                    ("manual-" + target.camera_serial + target.arena_id).c_str());
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::Text("%s / Cam%s", target.arena_id.c_str(),
+                            target.camera_serial.c_str());
+                ImGui::TableSetColumnIndex(1);
+                ImGui::Text("%+d, %+d",
+                    target.automatic_applied_translation_x_canvas_px,
+                    target.automatic_applied_translation_y_canvas_px);
+                ImGui::TableSetColumnIndex(2);
+                ImGui::Text("%+d, %+d",
+                    target.manual_alignment_delta_x_canvas_px,
+                    target.manual_alignment_delta_y_canvas_px);
+                ImGui::TableSetColumnIndex(3);
+                ImGui::Text("%+d, %+d",
+                    target.automatic_applied_translation_x_canvas_px +
+                        target.manual_alignment_delta_x_canvas_px,
+                    target.automatic_applied_translation_y_canvas_px +
+                        target.manual_alignment_delta_y_canvas_px);
+                auto apply_delta = [&](int dx, int dy) {
+                    const int old_x = target.manual_alignment_delta_x_canvas_px;
+                    const int old_y = target.manual_alignment_delta_y_canvas_px;
+                    const bool old_confirmed =
+                        target.manual_alignment_operator_confirmed;
+                    target.manual_alignment_delta_x_canvas_px =
+                        std::clamp(old_x + dx, -64, 64);
+                    target.manual_alignment_delta_y_canvas_px =
+                        std::clamp(old_y + dy, -64, 64);
+                    target.manual_alignment_operator_confirmed = false;
+                    std::string error;
+                    if (!UpdateManualAlignmentPreviewGeometry(
+                            *ui_state, &workflow, &error) ||
+                        !RequestManualAdjustment(&workflow, &error)) {
+                        target.manual_alignment_delta_x_canvas_px = old_x;
+                        target.manual_alignment_delta_y_canvas_px = old_y;
+                        target.manual_alignment_operator_confirmed = old_confirmed;
+                        std::string ignored;
+                        UpdateManualAlignmentPreviewGeometry(
+                            *ui_state, &workflow, &ignored);
+                        workflow.error = error;
+                    } else {
+                        workflow.error.clear();
+                    }
+                };
+                ImGui::TableSetColumnIndex(4);
+                if (ImGui::SmallButton("-5##x")) apply_delta(-5, 0);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("-1##x")) apply_delta(-1, 0);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("+1##x")) apply_delta(1, 0);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("+5##x")) apply_delta(5, 0);
+                ImGui::TableSetColumnIndex(5);
+                if (ImGui::SmallButton("-5##y")) apply_delta(0, -5);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("-1##y")) apply_delta(0, -1);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("+1##y")) apply_delta(0, 1);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("+5##y")) apply_delta(0, 5);
+                ImGui::TableSetColumnIndex(6);
+                ImGui::Checkbox(
+                    "Physical outline aligned",
+                    &target.manual_alignment_operator_confirmed);
+                ImGui::PopID();
+            }
+            ImGui::EndTable();
+        }
+        if (ImGui::Button("Reset All To Automatic")) {
+            std::vector<std::pair<int, int>> old;
+            std::vector<bool> old_confirmed;
+            old.reserve(workflow.targets.size());
+            old_confirmed.reserve(workflow.targets.size());
+            for (auto& target : workflow.targets) {
+                old.emplace_back(
+                    target.manual_alignment_delta_x_canvas_px,
+                    target.manual_alignment_delta_y_canvas_px);
+                old_confirmed.push_back(
+                    target.manual_alignment_operator_confirmed);
+                target.manual_alignment_delta_x_canvas_px = 0;
+                target.manual_alignment_delta_y_canvas_px = 0;
+                target.manual_alignment_operator_confirmed = false;
+            }
+            std::string error;
+            if (!UpdateManualAlignmentPreviewGeometry(
+                    *ui_state, &workflow, &error) ||
+                !RequestManualAdjustment(&workflow, &error)) {
+                for (std::size_t index = 0;
+                     index < workflow.targets.size(); ++index) {
+                    workflow.targets[index].manual_alignment_delta_x_canvas_px =
+                        old[index].first;
+                    workflow.targets[index].manual_alignment_delta_y_canvas_px =
+                        old[index].second;
+                    workflow.targets[index].manual_alignment_operator_confirmed =
+                        old_confirmed[index];
+                }
+                std::string ignored;
+                UpdateManualAlignmentPreviewGeometry(
+                    *ui_state, &workflow, &ignored);
+                workflow.error = error;
+            }
+        }
+        const bool ready = workflow.visible_projection_path_confirmed &&
+            AllManualAlignmentsConfirmed(workflow);
+        ImGui::BeginDisabled(!ready);
+        if (ImGui::Button("Freeze Confirmed Operator Alignment")) {
+            std::string error;
+            if (!FreezeManualAlignment(&workflow, &error)) {
+                workflow.error = error;
+            }
+        }
+        ImGui::EndDisabled();
+    } else if (workflow.stage == "review_operator_adjusted_candidate") {
+        ImGui::TextWrapped(
+            "Adjusted candidate: %s. The overlay below records how the final "
+            "operator-selected translation differs from the rim-plane prediction. "
+            "Its residual is diagnostic, because reusing the same projected-surface "
+            "homography as an acceptance gate would simply recreate the original error.",
+            workflow.candidate_sha256.c_str());
+        RenderDailyReviewImages(*ui_state, workflow, "geometry");
+        RenderGeometryReviewTable(workflow);
+        ImGui::Checkbox(
+            "I confirm the final physical projected outline alignment for every arena",
+            &workflow.geometry_outline_operator_confirmed);
+        ImGui::InputText("Valid until UTC", &workflow.valid_until_utc);
+        ImGui::Checkbox(
+            "I accept this exact derived candidate and its automatic/manual provenance",
+            &workflow.accept_registration_armed);
+        ImGui::Checkbox(
+            "After acceptance, select this exact registration for runtime",
+            &workflow.select_runtime_mode_armed);
+        const bool ready = FinalGeometryReviewAvailable(workflow) &&
+            AllManualAlignmentsConfirmed(workflow) &&
+            workflow.geometry_outline_operator_confirmed &&
+            workflow.accept_registration_armed &&
+            workflow.select_runtime_mode_armed &&
+            !workflow.valid_until_utc.empty();
+        ImGui::BeginDisabled(!ready);
+        if (ImGui::Button("Accept And Select Operator-Aligned Registration")) {
+            std::string error;
+            if (!AcceptAndSelect(&workflow, &error)) workflow.error = error;
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Reject Adjusted Candidate")) {
+            const std::string operation = NextOperationId("reject_adjusted_candidate");
+            const auto result = reject_citrus_daily_registration(
+                workflow.transaction_id,
+                "operator_rejected_adjusted_candidate", operation);
+            if (!result.ok) workflow.error = result.reason;
+            else {
+                workflow.pending_operation_id = operation;
+                workflow.pending_terminal_stage = "rejected";
+                workflow.pending_terminal_reason =
+                    "operator_rejected_adjusted_candidate";
+                workflow.stage = "waiting_reject";
+                workflow.status =
+                    "Adjusted candidate rejection requested; waiting for Citrus acknowledgement.";
                 workflow.error.clear();
                 Checkpoint(&workflow);
             }

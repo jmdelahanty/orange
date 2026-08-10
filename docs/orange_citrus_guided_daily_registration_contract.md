@@ -438,12 +438,15 @@ The only expected pauses are physical steps that software cannot perform:
 
 - confirm the correct dish and water state;
 - confirm the proposed water-side inner-rim feature;
-- approve or reject the computed canonical-outline overlay.
+- approve or reject the computed automatic canonical-outline overlay;
+- visually align the Citrus-projected outline and center to the physical dish.
 
-The normal daily path does not ask the operator to remove filters or change
-illumination. It explicitly records the runtime IR filter state and retains the
-mapped pulse/strobe path used for experiments. Visible projected patterns may
-still be run as a separate, explicitly chosen commissioning-health diagnostic.
+The normal daily path does not ask the operator to remove camera filters or
+change illumination. It explicitly records the runtime IR filter state and
+retains the mapped pulse/strobe path used for experiments. Citrus does show the
+translated experimental-area outline and center to the human operator after
+the automatic fit. That visible review is not a camera calibration capture and
+does not claim camera-plane validation.
 
 ## Guided Daily Workflow
 
@@ -1171,6 +1174,44 @@ transaction until the persisted resume API is added.
 - optional transient candidate scene retained for independent diagnostics;
 - bounded candidate revision for manual nudge.
 
+### Step 4: physical visual alignment and derived candidate
+
+The automatic candidate must first pass the existing homography and integer-
+translation QC. Citrus then presents that automatic translation as a transient
+experimental-area outline and center crosshair. Orange pauses at an explicit
+manual-alignment stage.
+
+For every arena, Orange shows three outlines over the accepted rim capture:
+
+- commissioned base geometry;
+- automatic rim-registration geometry; and
+- the current operator-adjusted geometry.
+
+Orange supplies coarse and fine integer controls (`±5` and `±1` final-display
+canvas pixels). Each request carries the complete absolute offset set relative
+to the automatic candidate, so retrying a request is idempotent and never
+accumulates a delta twice. Citrus updates only the transient preview. It does
+not edit the canvas JSON, commissioned homography, scale, arena size,
+experimental-area local center, or radius.
+
+The operator confirms every arena independently and explicitly arms the freeze
+action. Citrus then writes a new immutable candidate that contains:
+
+- the automatic candidate path and SHA-256;
+- automatic applied translation;
+- manual X/Y delta;
+- final applied translation;
+- per-arena operator confirmation; and
+- an explicit `operator_visual_alignment` evidence classification.
+
+The original automatic candidate remains unchanged. Orange regenerates the
+camera-space overlay for the exact derived candidate, but its residual against
+the rim-plane prediction is diagnostic rather than an acceptance gate. Using
+the projected-surface homography as that final gate would recreate the known
+plane mismatch that the physical review is intended to measure. Acceptance
+and runtime selection remain separate explicit actions bound to the derived
+candidate checksum.
+
 ### Slice 4: acceptance and runtime overlay — implemented backend
 
 - immutable accepted daily-registration artifact;
@@ -1233,6 +1274,13 @@ The design is implemented only when all of the following are demonstrated:
     resizing or refitting the daily model.
 12. A Cam2010093-only run never claims completion for cameras that did not
     capture and confirm a rim observation.
+13. The automatic candidate remains immutable and independently addressable
+    after manual alignment.
+14. Every final target records automatic, manual, and final integer
+    translations, and the final runtime selection references the exact derived
+    candidate.
+15. Live review shows base, automatic, and current manual outlines while the
+    physical Citrus projection updates after each acknowledged nudge.
 
 ## Proposed Decisions To Confirm Before Coding
 

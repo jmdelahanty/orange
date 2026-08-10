@@ -200,7 +200,6 @@ finalize_citrus_rig_canvas_commissioning(
     const std::string& transaction_id,
     const std::string& canvas_path,
     const std::string& expected_canvas_checksum,
-    const nlohmann::json& orange_session_dirs,
     bool accept_commissioning_armed,
     const std::string& operation_id);
 
@@ -219,6 +218,20 @@ CitrusDailyRegistrationControlResult create_citrus_daily_registration_candidate(
 
 CitrusDailyRegistrationControlResult preview_citrus_daily_registration_candidate(
     const std::string& transaction_id,
+    const std::string& operation_id);
+
+CitrusDailyRegistrationControlResult
+set_citrus_daily_registration_preview_adjustments(
+    const std::string& transaction_id,
+    const std::string& expected_automatic_candidate_sha256,
+    const nlohmann::json& adjustments,
+    const std::string& operation_id);
+
+CitrusDailyRegistrationControlResult
+freeze_citrus_adjusted_daily_registration_candidate(
+    const std::string& transaction_id,
+    const std::string& expected_automatic_candidate_sha256,
+    const nlohmann::json& adjustments,
     const std::string& operation_id);
 
 CitrusDailyRegistrationControlResult restore_citrus_daily_registration_preview(

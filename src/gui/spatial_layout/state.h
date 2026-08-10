@@ -16,6 +16,8 @@
 
 namespace orange::gui::spatial_layout {
 
+class CommissioningFinalizationWorker;
+
 struct Point2d {
     double x = 0.0;
     double y = 0.0;
@@ -266,6 +268,11 @@ struct DailyRegistrationTargetUiState {
     double requested_translation_y_canvas_px = 0.0;
     int applied_translation_x_canvas_px = 0;
     int applied_translation_y_canvas_px = 0;
+    int automatic_applied_translation_x_canvas_px = 0;
+    int automatic_applied_translation_y_canvas_px = 0;
+    int manual_alignment_delta_x_canvas_px = 0;
+    int manual_alignment_delta_y_canvas_px = 0;
+    bool manual_alignment_operator_confirmed = false;
     double base_experimental_center_x_canvas_px = 0.0;
     double base_experimental_center_y_canvas_px = 0.0;
     double desired_experimental_center_x_canvas_px = 0.0;
@@ -292,10 +299,18 @@ struct DailyRegistrationTargetUiState {
     double geometry_maximum_outside_rim_camera_px = 0.0;
     std::vector<orange::gui::spatial_layout::Point2d>
         geometry_outline_camera_px;
+    std::vector<orange::gui::spatial_layout::Point2d>
+        base_geometry_outline_camera_px;
+    std::vector<orange::gui::spatial_layout::Point2d>
+        automatic_geometry_outline_camera_px;
     std::string geometry_review_observation_path;
     std::string geometry_review_observation_sha256;
     std::string geometry_review_overlay_path;
     std::string geometry_review_overlay_sha256;
+    std::string automatic_geometry_review_observation_path;
+    std::string automatic_geometry_review_observation_sha256;
+    std::string automatic_geometry_review_overlay_path;
+    std::string automatic_geometry_review_overlay_sha256;
 
     bool projected_center_detection_ok = false;
     std::string projected_center_detection_error;
@@ -347,6 +362,10 @@ struct DailyRegistrationWorkflowUiState {
     std::string pending_terminal_reason;
     std::string candidate_path;
     std::string candidate_sha256;
+    std::string automatic_candidate_path;
+    std::string automatic_candidate_sha256;
+    bool automatic_geometry_review_passed = false;
+    bool operator_adjusted_candidate_frozen = false;
     std::string accepted_registration_path;
     std::string accepted_registration_sha256;
     std::string runtime_selection_confirmation;
@@ -590,6 +609,8 @@ struct SpatialLayoutUiState {
     std::string projected_surface_scale_review_message;
     std::string projected_surface_scale_review_error;
     nlohmann::json rig_canvas_commissioning_status = nlohmann::json::object();
+    std::shared_ptr<orange::gui::spatial_layout::CommissioningFinalizationWorker>
+        rig_canvas_commissioning_finalization_worker;
     bool accept_rig_canvas_commissioning_armed = false;
     std::string rig_canvas_commissioning_message;
     std::string rig_canvas_commissioning_error;

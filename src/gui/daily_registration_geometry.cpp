@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <cstdint>
 
 namespace orange::gui::daily_registration {
 namespace {
@@ -38,6 +39,51 @@ bool FiniteInput(const GeometryReviewInput& input)
 }
 
 }  // namespace
+
+TranslationCompositionResult ComposeTranslation(
+    const TranslationCompositionInput& input)
+{
+    TranslationCompositionResult result;
+    if (!std::isfinite(input.base_center_canvas_x_px) ||
+        !std::isfinite(input.base_center_canvas_y_px)) {
+        result.error = "invalid_daily_registration_translation_base_center";
+        return result;
+    }
+
+    const auto compose_axis = [](int automatic, int manual, int* output) {
+        const std::int64_t value = static_cast<std::int64_t>(automatic) +
+            static_cast<std::int64_t>(manual);
+        if (value < std::numeric_limits<int>::min() ||
+            value > std::numeric_limits<int>::max()) {
+            return false;
+        }
+        *output = static_cast<int>(value);
+        return true;
+    };
+    if (!compose_axis(
+            input.automatic_x_canvas_px,
+            input.manual_delta_x_canvas_px,
+            &result.applied_x_canvas_px) ||
+        !compose_axis(
+            input.automatic_y_canvas_px,
+            input.manual_delta_y_canvas_px,
+            &result.applied_y_canvas_px)) {
+        result.error = "daily_registration_translation_integer_overflow";
+        return result;
+    }
+
+    result.effective_center_canvas_x_px =
+        input.base_center_canvas_x_px + result.applied_x_canvas_px;
+    result.effective_center_canvas_y_px =
+        input.base_center_canvas_y_px + result.applied_y_canvas_px;
+    if (!std::isfinite(result.effective_center_canvas_x_px) ||
+        !std::isfinite(result.effective_center_canvas_y_px)) {
+        result.error = "daily_registration_translation_effective_center_invalid";
+        return result;
+    }
+    result.ok = true;
+    return result;
+}
 
 GeometryReviewResult ComputeGeometryReview(const GeometryReviewInput& input)
 {
