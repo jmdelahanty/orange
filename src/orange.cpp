@@ -3698,6 +3698,7 @@ void gui_log_recording_start_failure(
 // once the background supervisor start completed.
 void gui_finish_recording_start_through_operator_path(
     const orange::session::RecordingRunStartResult& start_result,
+    const int record_for_seconds,
     CameraControl* camera_control,
     GuiRecordingRunState* recording_run,
     GuiSessionTimingState* timing,
@@ -3769,7 +3770,8 @@ void gui_finish_recording_start_through_operator_path(
         recording_run,
         camera_control,
         resolved_recording_folder,
-        resolved_recording_sink_mode);
+        resolved_recording_sink_mode,
+        record_for_seconds);
     gui_reset_local_control_stop_scheduler_for_recording_start(stop_scheduler);
     std::cout << "[GUI][recording] Recording started"
               << " context=" << context
@@ -4073,6 +4075,9 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
         }
         gui_finish_recording_start_through_operator_path(
             start_result,
+            recording_session
+                ? recording_session->gui_recording_control.record_for_seconds
+                : 0,
             camera_control,
             recording_run,
             timing,
@@ -4180,6 +4185,9 @@ bool gui_poll_async_recording_start(
     if (started) {
         gui_finish_recording_start_through_operator_path(
             start_result,
+            recording_session
+                ? recording_session->gui_recording_control.record_for_seconds
+                : 0,
             camera_control,
             recording_run,
             timing,
@@ -5369,6 +5377,26 @@ int main(int /*argc*/, char ** /*args*/) {
             poseWorkers.empty() ? nullptr : poseWorkers.data(),
             &recording_preflight_errors,
             gui_local_control_event_log_path);
+        nlohmann::json duration_stop_control;
+        if (camera_control && camera_control->record_video &&
+            gui_claim_recording_duration_deadline_stop(
+                &gui_recording_run,
+                std::chrono::steady_clock::now(),
+                &duration_stop_control)) {
+            std::cout << "[GUI][recording] Configured recording duration elapsed; "
+                         "routing one stop through the operator drain path."
+                      << " duration_seconds="
+                      << gui_recording_run.requested_record_for_seconds
+                      << " folder=" << gui_recording_run.recording_folder
+                      << std::endl;
+            gui_request_recording_stop_through_operator_path(
+                &recording_session,
+                camera_control,
+                &gui_recording_run,
+                &gui_session_timing,
+                "record_for_seconds_elapsed",
+                std::move(duration_stop_control));
+        }
         // Worker-initiated stop reconciliation. Pipeline workers may stop a
         // recording themselves (recording.fail_on_drop in acquire_frames /
         // EncoderPreprocessWorker flips record_video false and latches the

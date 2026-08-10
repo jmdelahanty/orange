@@ -18,6 +18,8 @@
 //   - gui_note_recording_stop_requested latches the stop timestamp and
 //     stop_control on the first request only; a re-request while finalizing
 //     updates stop_reason but not the latched fields.
+//   - A positive record_for_seconds arms one monotonic deadline per run;
+//     claiming it is edge-triggered and does not depend on wall-clock time.
 //   - gui_format_storage_bytes: binary units B..TiB, precision 0 for the
 //     byte unit or values >= 100, 1 decimal for >= 10, else 2 decimals.
 
@@ -229,6 +231,64 @@ void test_note_recording_run()
     require(empty_reason_run.stop_control == nlohmann::json::object(),
             "non-object stop_control is replaced with an empty object");
     std::cout << "PASS test_note_recording_run" << std::endl;
+}
+
+void test_recording_duration_deadline()
+{
+    CameraControl camera_control;
+    GuiRecordingRunState run;
+    gui_note_recording_started(
+        &run, &camera_control, "/data/rec_timed", "external_ipc", 24);
+    require(run.duration_deadline_armed,
+            "positive record_for_seconds arms a duration deadline");
+    require(run.requested_record_for_seconds == 24,
+            "duration deadline preserves the requested duration");
+    require(run.duration_deadline == run.recording_started_at + seconds{24},
+            "duration deadline is derived from the monotonic recording start");
+
+    nlohmann::json stop_control;
+    require(!gui_claim_recording_duration_deadline_stop(
+                &run, run.duration_deadline - std::chrono::milliseconds{1},
+                &stop_control),
+            "duration deadline does not fire early");
+    require(stop_control == nlohmann::json::object(),
+            "an unclaimed deadline returns empty stop control");
+    require(gui_claim_recording_duration_deadline_stop(
+                &run, run.duration_deadline + std::chrono::milliseconds{7},
+                &stop_control),
+            "duration deadline fires at or after its monotonic deadline");
+    require(run.duration_deadline_stop_issued,
+            "duration deadline records that its one stop was issued");
+    require(stop_control.value("schema_id", "") ==
+                "orange.recording_duration_stop" &&
+                stop_control.value("requested_duration_seconds", 0) == 24 &&
+                stop_control.value("clock_basis", "") ==
+                    "std::chrono::steady_clock",
+            "duration stop control preserves its source and clock contract");
+    require(stop_control.value("deadline_overrun_ms", -1.0) >= 6.9,
+            "duration stop control records deadline polling overrun");
+    require(!gui_claim_recording_duration_deadline_stop(
+                &run, run.duration_deadline + seconds{1}, nullptr),
+            "duration deadline can be claimed only once");
+
+    GuiRecordingRunState unbounded;
+    gui_note_recording_started(
+        &unbounded, &camera_control, "/data/rec_unbounded", "real", 0);
+    require(!unbounded.duration_deadline_armed &&
+                unbounded.duration_deadline == steady_clock::time_point{},
+            "zero record_for_seconds leaves manual recordings unbounded");
+    require(!gui_claim_recording_duration_deadline_stop(
+                &unbounded, steady_clock::now() + seconds{100}, nullptr),
+            "an unbounded run never claims a duration stop");
+
+    GuiRecordingRunState finalizing;
+    gui_note_recording_started(
+        &finalizing, &camera_control, "/data/rec_manual", "real", 1);
+    gui_note_recording_stop_requested(&finalizing, "manual_stop");
+    require(!gui_claim_recording_duration_deadline_stop(
+                &finalizing, finalizing.duration_deadline + seconds{1}, nullptr),
+            "an operator stop wins if finalization began before the deadline poll");
+    std::cout << "PASS test_recording_duration_deadline" << std::endl;
 }
 
 // --- gui_detect_externally_requested_stop --------------------------------------
@@ -916,6 +976,7 @@ int main()
         test_format_storage_bytes();
         test_mark_transitions();
         test_note_recording_run();
+        test_recording_duration_deadline();
         test_detect_externally_requested_stop();
         test_snapshot_idle();
         test_snapshot_streaming_only();

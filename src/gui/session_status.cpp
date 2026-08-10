@@ -36,7 +36,8 @@ std::chrono::seconds gui_elapsed_since(
 void gui_note_recording_started(GuiRecordingRunState* run,
                                 CameraControl* camera_control,
                                 const std::string& recording_folder,
-                                const std::string& recording_sink_mode)
+                                const std::string& recording_sink_mode,
+                                const int record_for_seconds)
 {
     if (!run) {
         return;
@@ -54,6 +55,13 @@ void gui_note_recording_started(GuiRecordingRunState* run,
     run->recording_drained_at_utc.clear();
     run->stop_reason = "manual_stop";
     run->stop_control = nlohmann::json::object();
+    run->requested_record_for_seconds = std::max(0, record_for_seconds);
+    run->duration_deadline_armed = run->requested_record_for_seconds > 0;
+    run->duration_deadline_stop_issued = false;
+    run->duration_deadline = run->duration_deadline_armed
+        ? run->recording_started_at +
+              std::chrono::seconds(run->requested_record_for_seconds)
+        : std::chrono::steady_clock::time_point{};
     run->diagnostic_finalize_stall_reported = false;
     // The cross-check summary describes the PREVIOUS finalized run; a new
     // run starts with no shadow verdict.
@@ -61,6 +69,43 @@ void gui_note_recording_started(GuiRecordingRunState* run,
     if (camera_control) {
         camera_control->preserve_recording_session_state = true;
     }
+}
+
+bool gui_claim_recording_duration_deadline_stop(
+    GuiRecordingRunState* run,
+    const std::chrono::steady_clock::time_point& now,
+    nlohmann::json* stop_control_out)
+{
+    if (stop_control_out) {
+        *stop_control_out = nlohmann::json::object();
+    }
+    if (!run || !run->active || run->finalizing ||
+        !run->duration_deadline_armed || run->duration_deadline_stop_issued ||
+        now < run->duration_deadline) {
+        return false;
+    }
+
+    run->duration_deadline_stop_issued = true;
+    const auto elapsed = now >= run->recording_started_at
+        ? now - run->recording_started_at
+        : std::chrono::steady_clock::duration::zero();
+    const auto overrun = now >= run->duration_deadline
+        ? now - run->duration_deadline
+        : std::chrono::steady_clock::duration::zero();
+    if (stop_control_out) {
+        *stop_control_out = {
+            {"schema_id", "orange.recording_duration_stop"},
+            {"schema_version", 1},
+            {"source", "recording_control.record_for_seconds"},
+            {"clock_basis", "std::chrono::steady_clock"},
+            {"requested_duration_seconds", run->requested_record_for_seconds},
+            {"observed_elapsed_ms",
+             std::chrono::duration<double, std::milli>(elapsed).count()},
+            {"deadline_overrun_ms",
+             std::chrono::duration<double, std::milli>(overrun).count()},
+        };
+    }
+    return true;
 }
 
 void gui_note_recording_stop_requested(GuiRecordingRunState* run,

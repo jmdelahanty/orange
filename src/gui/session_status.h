@@ -106,7 +106,17 @@ std::chrono::seconds gui_elapsed_since(
 void gui_note_recording_started(GuiRecordingRunState* run,
                                 CameraControl* camera_control,
                                 const std::string& recording_folder,
-                                const std::string& recording_sink_mode);
+                                const std::string& recording_sink_mode,
+                                int record_for_seconds = 0);
+
+// Atomically claims the configured session-duration stop exactly once.  The
+// caller must route a true result through
+// gui_request_recording_stop_through_operator_path so manual, local-control,
+// and duration stops all share the same drain/finalize lifecycle.
+bool gui_claim_recording_duration_deadline_stop(
+    GuiRecordingRunState* run,
+    const std::chrono::steady_clock::time_point& now,
+    nlohmann::json* stop_control_out = nullptr);
 
 void gui_note_recording_stop_requested(GuiRecordingRunState* run,
                                        const std::string& stop_reason,

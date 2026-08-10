@@ -24,6 +24,10 @@ struct GuiRecordingRunState {
     std::chrono::steady_clock::time_point recording_started_at{};
     std::chrono::steady_clock::time_point recording_stop_requested_at{};
     std::chrono::steady_clock::time_point recording_drained_at{};
+    int requested_record_for_seconds = 0;
+    bool duration_deadline_armed = false;
+    bool duration_deadline_stop_issued = false;
+    std::chrono::steady_clock::time_point duration_deadline{};
     bool diagnostic_finalize_stall_reported = false;
     // Shadow-mode incremental clip split cross-check result for the last
     // finalized run (stage 4, ORANGE_GUI_INCREMENTAL_CLIP_SHADOW); empty
