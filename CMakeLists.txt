@@ -279,6 +279,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/yolo_event_log.cpp"
     "${SRC_DIR}/enet_thread.cpp"
     "${SRC_DIR}/project.cpp"
+    "${SRC_DIR}/nic_thermal_monitor.cpp"
     "${SRC_DIR}/recording_validation.cpp"
     "${SRC_DIR}/recording_output_descriptor.cpp"
     "${SRC_DIR}/video_encode_profile.cpp"
@@ -406,6 +407,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/pre_encoder_reference_writer.cpp"
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/project.cpp"
+    "${SRC_DIR}/nic_thermal_monitor.cpp"
     "${SRC_DIR}/citrus_recording_geometry.cpp"
     "${SRC_DIR}/spatial_calibration_snapshot.cpp"
     "${SRC_DIR}/spatial_layout_schema.cpp"
@@ -514,8 +516,27 @@ add_executable(nvenc_stress_load EXCLUDE_FROM_ALL ${NVENC_STRESS_LOAD_SOURCES})
 add_executable(nv12_prefill_validation EXCLUDE_FROM_ALL ${NV12_PREFILL_VALIDATION_SOURCES})
 add_executable(external_recorder_ipc_probe EXCLUDE_FROM_ALL ${EXTERNAL_RECORDER_IPC_PROBE_SOURCES})
 add_executable(external_recorder_supervisor_plan EXCLUDE_FROM_ALL ${EXTERNAL_RECORDER_SUPERVISOR_PLAN_SOURCES})
+add_executable(nic_thermal_monitor
+    "tools/nic_thermal_monitor.cpp"
+    "${SRC_DIR}/nic_thermal_monitor.cpp"
+)
+target_include_directories(nic_thermal_monitor PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+target_compile_features(nic_thermal_monitor PRIVATE cxx_std_17)
+target_link_libraries(nic_thermal_monitor PRIVATE Threads::Threads)
+add_dependencies(orange nic_thermal_monitor)
+add_dependencies(orange_client nic_thermal_monitor)
 
 if(BUILD_TESTING)
+    add_executable(nic_thermal_monitor_tests
+        "tools/nic_thermal_monitor_tests.cpp"
+        "${SRC_DIR}/nic_thermal_monitor.cpp"
+    )
+    target_include_directories(nic_thermal_monitor_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(nic_thermal_monitor_tests PRIVATE cxx_std_17)
+    target_link_libraries(nic_thermal_monitor_tests PRIVATE Threads::Threads)
+    add_dependencies(nic_thermal_monitor_tests nic_thermal_monitor)
+    add_test(NAME nic_thermal_monitor_tests COMMAND nic_thermal_monitor_tests)
+
     add_executable(headless_recording_profile_tests
         "tools/headless_recording_profile_tests.cpp"
         "${SRC_DIR}/headless_recording_profile.cpp"
