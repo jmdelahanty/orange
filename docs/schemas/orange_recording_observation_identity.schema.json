@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.recording.observation_identity.v1",
+  "title": "Orange Recording Observation Edge Identity",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "identity_scope",
+    "canonicalization",
+    "observation_context_id",
+    "identity_sha256",
+    "identity"
+  ],
+  "properties": {
+    "schema_id": {"const": "orange.recording.observation_identity"},
+    "schema_version": {"const": 1},
+    "identity_scope": {"const": "recording_camera_arena_observation_edge"},
+    "canonicalization": {
+      "const": "canonical_json_utf8_sort_keys_compact_v1"
+    },
+    "observation_context_id": {
+      "type": "string",
+      "pattern": "^obsctx_[0-9a-f]{64}$"
+    },
+    "identity_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "identity": {"$ref": "#/$defs/identityPayload"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!\\s)[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f]$"
+    },
+    "identityPayload": {
+      "type": "object",
+      "required": [
+        "schema_id",
+        "schema_version",
+        "identity_scope",
+        "recording_id",
+        "camera",
+        "arena"
+      ],
+      "properties": {
+        "schema_id": {"const": "orange.recording.observation_identity"},
+        "schema_version": {"const": 1},
+        "identity_scope": {
+          "const": "recording_camera_arena_observation_edge"
+        },
+        "recording_id": {"$ref": "#/$defs/identifier"},
+        "camera": {
+          "type": "object",
+          "required": [
+            "camera_id",
+            "source_camera_stream_id",
+            "source_camera_stream_identity_policy"
+          ],
+          "properties": {
+            "camera_id": {"$ref": "#/$defs/identifier"},
+            "source_camera_stream_id": {"$ref": "#/$defs/identifier"},
+            "source_camera_stream_identity_policy": {
+              "const": "camera_serial_unique_source_frame_stream_within_recording_v1"
+            }
+          },
+          "additionalProperties": false
+        },
+        "arena": {
+          "type": "object",
+          "required": ["rig_id", "canvas_name", "arena_id"],
+          "properties": {
+            "rig_id": {"$ref": "#/$defs/identifier"},
+            "canvas_name": {"$ref": "#/$defs/identifier"},
+            "arena_id": {"$ref": "#/$defs/identifier"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

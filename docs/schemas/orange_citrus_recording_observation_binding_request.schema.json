@@ -1,0 +1,161 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.citrus.recording_observation_binding_request.v1",
+  "title": "Orange to Citrus Recording Observation Binding Request",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "canonicalization",
+    "request_id",
+    "contract_sha256",
+    "contract"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "orange.citrus.recording_observation_binding_request"
+    },
+    "schema_version": {"const": 1},
+    "canonicalization": {
+      "const": "canonical_json_utf8_sort_keys_compact_v1"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^obsbindreq_[0-9a-f]{64}$"
+    },
+    "contract_sha256": {"$ref": "#/$defs/sha256"},
+    "contract": {"$ref": "#/$defs/contract"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!\\s)[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f]$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*(?:^|/)\\.(?:/|$)).+$"
+    },
+    "target": {
+      "type": "object",
+      "required": [
+        "rig_id",
+        "canvas_name",
+        "arena_id",
+        "camera_id",
+        "source_camera_stream_id"
+      ],
+      "properties": {
+        "rig_id": {"$ref": "#/$defs/identifier"},
+        "canvas_name": {"$ref": "#/$defs/identifier"},
+        "arena_id": {"$ref": "#/$defs/identifier"},
+        "camera_id": {"$ref": "#/$defs/identifier"},
+        "source_camera_stream_id": {"$ref": "#/$defs/identifier"}
+      },
+      "additionalProperties": false
+    },
+    "geometryReference": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["status", "relative_path", "sha256"],
+          "properties": {
+            "status": {"const": "available"},
+            "relative_path": {"$ref": "#/$defs/relativePath"},
+            "sha256": {"$ref": "#/$defs/sha256"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["status", "reason"],
+          "properties": {
+            "status": {"const": "not_available"},
+            "reason": {
+              "enum": [
+                "not_configured",
+                "contract_unavailable",
+                "contract_invalid"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "contract": {
+      "type": "object",
+      "required": [
+        "schema_id",
+        "schema_version",
+        "observation_context_id",
+        "observation_identity_sha256",
+        "observation_identity",
+        "binding_mode",
+        "requested_at_utc",
+        "recording",
+        "target",
+        "recording_geometry_contract"
+      ],
+      "properties": {
+        "schema_id": {
+          "const": "orange.citrus.recording_observation_binding_request"
+        },
+        "schema_version": {"const": 1},
+        "observation_context_id": {
+          "type": "string",
+          "pattern": "^obsctx_[0-9a-f]{64}$"
+        },
+        "observation_identity_sha256": {"$ref": "#/$defs/sha256"},
+        "observation_identity": {
+          "$ref": "orange_recording_observation_identity.schema.json"
+        },
+        "binding_mode": {"enum": ["required", "optional"]},
+        "requested_at_utc": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "recording": {
+          "type": "object",
+          "required": [
+            "recording_id",
+            "recording_folder",
+            "recording_snapshot"
+          ],
+          "properties": {
+            "recording_id": {"$ref": "#/$defs/identifier"},
+            "recording_folder": {
+              "type": "string",
+              "minLength": 2,
+              "pattern": "^/(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*(?:^|/)\\.(?:/|$)).+$"
+            },
+            "recording_snapshot": {
+              "type": "object",
+              "required": ["role", "relative_path", "sha256"],
+              "properties": {
+                "role": {"const": "immutable_recording_start_snapshot"},
+                "relative_path": {"$ref": "#/$defs/relativePath"},
+                "sha256": {"$ref": "#/$defs/sha256"}
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "target": {"$ref": "#/$defs/target"},
+        "recording_geometry_contract": {
+          "$ref": "#/$defs/geometryReference"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

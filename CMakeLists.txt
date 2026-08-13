@@ -363,6 +363,8 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/external_recorder_supervisor.cpp"
     "${SRC_DIR}/session/external_crop_recorder_config.cpp"
     "${SRC_DIR}/session/crop_rolling_sidecars.cpp"
+    "${SRC_DIR}/session/recording_observation_binding.cpp"
+    "${SRC_DIR}/session/recording_observation_identity.cpp"
     "${SRC_DIR}/session/recording_session.cpp"
     "${SRC_DIR}/shared_recording_output.cpp"
     "${SRC_DIR}/encoder_preprocess_worker.cpp"
@@ -395,6 +397,8 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/external_recorder_supervisor.cpp"
     "${SRC_DIR}/session/external_crop_recorder_config.cpp"
     "${SRC_DIR}/session/crop_rolling_sidecars.cpp"
+    "${SRC_DIR}/session/recording_observation_binding.cpp"
+    "${SRC_DIR}/session/recording_observation_identity.cpp"
     "${SRC_DIR}/session/recording_session.cpp"
     "${SRC_DIR}/recording_output_descriptor.cpp"
     "${SRC_DIR}/video_encode_profile.cpp"
@@ -576,6 +580,23 @@ if(BUILD_TESTING)
     target_include_directories(acquisition_index_authority_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(acquisition_index_authority_tests PRIVATE cxx_std_17)
     add_test(NAME acquisition_index_authority_tests COMMAND acquisition_index_authority_tests)
+
+    add_executable(recording_observation_identity_tests
+        "tools/recording_observation_identity_tests.cpp"
+        "${SRC_DIR}/session/recording_observation_identity.cpp"
+    )
+    target_include_directories(recording_observation_identity_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(recording_observation_identity_tests PRIVATE cxx_std_17)
+    add_test(NAME recording_observation_identity_tests COMMAND recording_observation_identity_tests)
+
+    add_executable(recording_observation_binding_tests
+        "tools/recording_observation_binding_tests.cpp"
+        "${SRC_DIR}/session/recording_observation_binding.cpp"
+        "${SRC_DIR}/session/recording_observation_identity.cpp"
+    )
+    target_include_directories(recording_observation_binding_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(recording_observation_binding_tests PRIVATE cxx_std_17)
+    add_test(NAME recording_observation_binding_tests COMMAND recording_observation_binding_tests)
 
     add_executable(crop_rolling_sidecars_tests
         "tools/crop_rolling_sidecars_tests.cpp"
