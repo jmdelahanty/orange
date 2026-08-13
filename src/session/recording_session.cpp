@@ -279,10 +279,30 @@ struct MetadataFrameStats {
     uint64_t frame_count = 0;
     uint64_t metadata_row_count = 0;
     uint64_t malformed_metadata_row_count = 0;
+    uint64_t frame_identity_alias_mismatches = 0;
     uint64_t first_recording_frame_id = 0;
     uint64_t last_recording_frame_id = 0;
     uint64_t recording_frame_id_gaps = 0;
+    bool metadata_header_valid = false;
+    bool frame_id_column_present = false;
+    bool recording_frame_id_column_present = false;
 };
+
+std::vector<std::string> split_simple_csv_row(const std::string& row)
+{
+    std::vector<std::string> fields;
+    std::size_t begin = 0;
+    while (begin <= row.size()) {
+        const std::size_t comma = row.find(',', begin);
+        if (comma == std::string::npos) {
+            fields.push_back(row.substr(begin));
+            break;
+        }
+        fields.push_back(row.substr(begin, comma - begin));
+        begin = comma + 1;
+    }
+    return fields;
+}
 
 MetadataFrameStats read_metadata_frame_stats_from_bytes(const std::string& metadata_bytes)
 {
@@ -293,6 +313,30 @@ MetadataFrameStats read_metadata_frame_stats_from_bytes(const std::string& metad
     if (!std::getline(input, header)) {
         return stats;
     }
+    if (!header.empty() && header.back() == '\r') {
+        header.pop_back();
+    }
+    const std::vector<std::string> header_fields = split_simple_csv_row(header);
+    std::set<std::string> unique_header_fields;
+    stats.metadata_header_valid = !header_fields.empty();
+    std::size_t frame_id_column = header_fields.size();
+    std::size_t recording_frame_id_column = header_fields.size();
+    for (std::size_t index = 0; index < header_fields.size(); ++index) {
+        if (header_fields[index].empty() ||
+            !unique_header_fields.insert(header_fields[index]).second) {
+            stats.metadata_header_valid = false;
+        }
+        if (header_fields[index] == "frame_id") {
+            frame_id_column = index;
+            stats.frame_id_column_present = true;
+        } else if (header_fields[index] == "recording_frame_id") {
+            recording_frame_id_column = index;
+            stats.recording_frame_id_column_present = true;
+        }
+    }
+    const std::size_t canonical_column = stats.recording_frame_id_column_present
+        ? recording_frame_id_column
+        : (stats.frame_id_column_present ? frame_id_column : 0);
 
     std::string line;
     uint64_t previous_frame_id = 0;
@@ -300,12 +344,27 @@ MetadataFrameStats read_metadata_frame_stats_from_bytes(const std::string& metad
         if (line.empty()) {
             continue;
         }
+        if (line.back() == '\r') {
+            line.pop_back();
+        }
         ++stats.metadata_row_count;
-        const std::size_t comma = line.find(',');
-        const std::string frame_text =
-            comma == std::string::npos ? line : line.substr(0, comma);
+        const std::vector<std::string> fields = split_simple_csv_row(line);
+        if (fields.size() != header_fields.size() || canonical_column >= fields.size()) {
+            ++stats.malformed_metadata_row_count;
+            continue;
+        }
+        const std::string& frame_text = fields[canonical_column];
         uint64_t frame_id = 0;
         if (parse_strict_positive_recording_frame_id(frame_text, &frame_id)) {
+            if (stats.frame_id_column_present &&
+                stats.recording_frame_id_column_present) {
+                uint64_t legacy_frame_id = 0;
+                if (!parse_strict_positive_recording_frame_id(
+                        fields[frame_id_column], &legacy_frame_id) ||
+                    legacy_frame_id != frame_id) {
+                    ++stats.frame_identity_alias_mismatches;
+                }
+            }
             if (stats.frame_count == 0) {
                 stats.first_recording_frame_id = frame_id;
             } else if (frame_id > previous_frame_id + 1) {
@@ -1783,7 +1842,15 @@ bool add_acquisition_index_mapping_contract(
         frame_identity.value("schema_id", std::string()) ==
             "orange.recording.frame_identity" &&
         frame_identity.value("schema_version", 0) == 1 &&
-        frame_identity.value("status", std::string()) == "finalized";
+        frame_identity.value("status", std::string()) == "finalized" &&
+        frame_identity.value("canonical_field", std::string()) ==
+            "recording_frame_id" &&
+        frame_identity.value("scope", std::string()) ==
+            "recording_session_and_camera_stream" &&
+        frame_identity.value("assignment_event", std::string()) ==
+            "orange_acquisition_recording_frame_sequence" &&
+        frame_identity.value("legacy_aliases", nlohmann::json::object()) ==
+            nlohmann::json{{"frame_id", "recording_frame_id"}};
 
     nlohmann::json mapping = {
         {"schema_id", "orange.recording.acquisition_index_mapping"},
@@ -1844,6 +1911,22 @@ bool add_acquisition_index_mapping_contract(
                         !identity_stream->is_object() ||
                         identity_stream->value("camera_serial", std::string()) != serial) {
                         stream_reason = "frame_identity_camera_binding_mismatch";
+                    } else {
+                        const std::string identity_backend =
+                            identity_stream->value("backend", std::string());
+                        const std::string verification_status =
+                            identity_stream->value(
+                                "verification_status", std::string());
+                        const bool verified_external =
+                            identity_backend == "external_ipc" &&
+                            verification_status == "passed";
+                        const bool declared_in_process =
+                            identity_backend == "in_process" &&
+                            verification_status == "producer_declared";
+                        if (!verified_external && !declared_in_process) {
+                            stream_reason =
+                                "frame_identity_camera_authority_unverified";
+                        }
                     }
                 }
             }
@@ -1870,6 +1953,16 @@ bool add_acquisition_index_mapping_contract(
                 // and its artifact digest must describe one captured payload.
                 stats = read_metadata_frame_stats_from_bytes(metadata_bytes);
                 if (stream_reason.empty() &&
+                    !stats.metadata_header_valid) {
+                    stream_reason = "metadata_header_invalid";
+                } else if (stream_reason.empty() &&
+                    (!stats.frame_id_column_present ||
+                     !stats.recording_frame_id_column_present)) {
+                    stream_reason = "metadata_identity_alias_unavailable";
+                } else if (stream_reason.empty() &&
+                           stats.frame_identity_alias_mismatches != 0) {
+                    stream_reason = "metadata_identity_alias_mismatch";
+                } else if (stream_reason.empty() &&
                     (stats.frame_count == 0 ||
                     stats.malformed_metadata_row_count != 0 ||
                     stats.first_recording_frame_id != 1 ||

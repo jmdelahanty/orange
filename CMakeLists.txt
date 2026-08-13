@@ -569,6 +569,14 @@ if(BUILD_TESTING)
     target_compile_features(recording_output_descriptor_tests PRIVATE cxx_std_17)
     add_test(NAME recording_output_descriptor_tests COMMAND recording_output_descriptor_tests)
 
+    add_executable(acquisition_index_authority_tests
+        "tools/acquisition_index_authority_tests.cpp"
+        "${SRC_DIR}/session/acquisition_index_authority.cpp"
+    )
+    target_include_directories(acquisition_index_authority_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(acquisition_index_authority_tests PRIVATE cxx_std_17)
+    add_test(NAME acquisition_index_authority_tests COMMAND acquisition_index_authority_tests)
+
     add_executable(crop_rolling_sidecars_tests
         "tools/crop_rolling_sidecars_tests.cpp"
         "${SRC_DIR}/session/crop_rolling_sidecars.cpp"
@@ -599,6 +607,7 @@ if(BUILD_TESTING)
          "${SRC_DIR}/orange_headless_client.cpp")
     add_executable(recording_session_manifest_tests EXCLUDE_FROM_ALL
         "tools/recording_session_manifest_tests.cpp"
+        "${SRC_DIR}/session/acquisition_index_authority.cpp"
         ${RECORDING_SESSION_MANIFEST_TEST_SOURCES}
     )
     target_include_directories(recording_session_manifest_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})

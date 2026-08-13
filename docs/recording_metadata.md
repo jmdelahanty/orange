@@ -949,6 +949,12 @@ Once the session-level frame identity contract reaches `status=finalized`,
 later manifest rewrites preserve its per-camera recorder-summary checksum and
 proof verbatim.
 
+The narrower dense acquisition authority used by the future Citrus/Palette
+schema-v5 finalizer is documented in
+[`palette_stimulus_v5_producer_compliance.md`](palette_stimulus_v5_producer_compliance.md).
+Orange resolves that authority only from the finalized, digest-sealed mapping;
+camera-frame identifiers are never reinterpreted as acquisition indices.
+
 ## Headless Recording Session Manifest
 
 Headless experiment specs that use `fixed.recording_control` write:

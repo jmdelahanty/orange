@@ -1,4 +1,5 @@
 #include "session/recording_session.h"
+#include "session/acquisition_index_authority.h"
 #include "NvEncoder/Logger.h"
 #include "gui/spatial_layout/sha256.h"
 
@@ -45,9 +46,11 @@ std::string write_metadata_csv(
     const std::filesystem::path& path,
     const std::vector<uint64_t>& recording_frame_ids)
 {
-    std::string bytes = "recording_frame_id,timestamp\n";
+    std::string bytes =
+        "frame_id,timestamp,timestamp_sys,recording_frame_id,local_frame_id\n";
     for (const uint64_t frame_id : recording_frame_ids) {
-        bytes += std::to_string(frame_id) + ",1000\n";
+        const std::string frame_text = std::to_string(frame_id);
+        bytes += frame_text + ",1000,2000," + frame_text + ",3000\n";
     }
     std::ofstream output(path, std::ios::binary);
     require(static_cast<bool>(output), "failed to open metadata fixture " + path.string());
@@ -786,6 +789,22 @@ void test_manifest_seals_dense_acquisition_index_mapping_and_exact_metadata_chec
                 canonical_semantic_sha256(mapping),
             "a finalized mapping must publish its exact canonical semantic digest");
 
+    orange::session::AcquisitionIndexAuthority authority;
+    require(
+        orange::session::resolve_acquisition_index_authority(
+            written,
+            manifest_path,
+            "2010096",
+            &authority,
+            &error),
+        "the emitted manifest must resolve through the strict acquisition authority: " +
+            error);
+    std::int64_t source_index = -1;
+    require(
+        authority.recording_frame_id_to_source_acquisition_index(
+            3, &source_index, &error) && source_index == 2,
+        "the emitted dense recording domain must map recording frame 3 to index 2");
+
     const nlohmann::json frozen_mapping = mapping;
     const std::string frozen_mapping_digest =
         written.at("acquisition_index_mapping_sha256").get<std::string>();
@@ -861,7 +880,13 @@ void test_manifest_rejects_malformed_acquisition_metadata_ids()
     std::filesystem::create_directories(folder);
     {
         std::ofstream output(folder / "Cam2010096_meta.csv", std::ios::binary);
-        output << "recording_frame_id,timestamp\n1,1000\n1junk,1001\n-2,1002\n 3,1003\n0,1004\n";
+        output
+            << "frame_id,timestamp,timestamp_sys,recording_frame_id\n"
+            << "1,1000,2000,1\n"
+            << "1junk,1001,2001,1junk\n"
+            << "-2,1002,2002,-2\n"
+            << " 3,1003,2003, 3\n"
+            << "0,1004,2004,0\n";
     }
 
     orange::session::SingleClipRecordingSessionManifestOptions options;
@@ -893,6 +918,69 @@ void test_manifest_rejects_malformed_acquisition_metadata_ids()
     std::filesystem::remove_all(folder);
 }
 
+void test_manifest_requires_explicit_equal_frame_identity_aliases()
+{
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_session_acquisition_mapping_aliases_" +
+         std::to_string(static_cast<long long>(::getpid())));
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder);
+
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "test";
+    options.session_id = "acquisition_mapping_aliases";
+    options.recording_folder = folder.string();
+    options.status = "completed";
+    options.cameras.push_back(make_camera_artifact("2010096", 2));
+    const std::filesystem::path manifest_path = folder / "recording_session.json";
+    std::string error;
+
+    {
+        std::ofstream output(folder / "Cam2010096_meta.csv", std::ios::binary);
+        output << "frame_id,timestamp,timestamp_sys\n"
+               << "1,1000,2000\n"
+               << "2,1001,2001\n";
+    }
+    require(
+        orange::session::write_recording_session_manifest(
+            manifest_path.string(),
+            orange::session::build_single_clip_recording_session_manifest(options),
+            &error),
+        "legacy-only frame metadata should remain inspectable: " + error);
+    nlohmann::json written = read_json(manifest_path);
+    require(
+        written.at("acquisition_index_mapping").at("camera_streams")
+                .at("2010096").at("reason_code") ==
+            "metadata_identity_alias_unavailable" &&
+            !written.contains("acquisition_index_mapping_sha256"),
+        "a metadata CSV without both aliases must not receive an authority seal");
+
+    {
+        std::ofstream output(folder / "Cam2010096_meta.csv", std::ios::binary);
+        output << "frame_id,timestamp,timestamp_sys,recording_frame_id\n"
+               << "1,1000,2000,1\n"
+               << "9,1001,2001,2\n";
+    }
+    // Start from the original manifest shape so the prior unsealed diagnostic
+    // does not influence construction of the next candidate.
+    require(
+        orange::session::write_recording_session_manifest(
+            manifest_path.string(),
+            orange::session::build_single_clip_recording_session_manifest(options),
+            &error),
+        "mismatched aliases should remain inspectable: " + error);
+    written = read_json(manifest_path);
+    require(
+        written.at("acquisition_index_mapping").at("camera_streams")
+                .at("2010096").at("reason_code") ==
+            "metadata_identity_alias_mismatch" &&
+            !written.contains("acquisition_index_mapping_sha256"),
+        "checksum-valid but unequal aliases must not receive an authority seal");
+
+    std::filesystem::remove_all(folder);
+}
+
 void test_manifest_rejects_frame_identity_camera_binding_mismatch()
 {
     const std::filesystem::path folder =
@@ -917,6 +1005,10 @@ void test_manifest_rejects_frame_identity_camera_binding_mismatch()
         {"schema_id", "orange.recording.frame_identity"},
         {"schema_version", 1},
         {"status", "finalized"},
+        {"canonical_field", "recording_frame_id"},
+        {"scope", "recording_session_and_camera_stream"},
+        {"assignment_event", "orange_acquisition_recording_frame_sequence"},
+        {"legacy_aliases", {{"frame_id", "recording_frame_id"}}},
         {"camera_streams", {
             {"2010096", {{"camera_serial", "2010095"}}},
         }},
@@ -1106,6 +1198,8 @@ int main()
          test_manifest_leaves_gapped_acquisition_index_mapping_unsealed},
         {"manifest_rejects_malformed_acquisition_metadata_ids",
          test_manifest_rejects_malformed_acquisition_metadata_ids},
+        {"manifest_requires_explicit_equal_frame_identity_aliases",
+         test_manifest_requires_explicit_equal_frame_identity_aliases},
         {"manifest_rejects_frame_identity_camera_binding_mismatch",
          test_manifest_rejects_frame_identity_camera_binding_mismatch},
         {"manifest_rejects_corrupt_finalized_acquisition_mapping",
