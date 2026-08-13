@@ -501,6 +501,80 @@ semantic JSON are different products and must be named accordingly.
 The items below are intentionally ordered. Each decision constrains the next
 one.
 
+Checklist semantics:
+
+- `[x]` means the decision is frozen and, where code is required, implemented
+  with focused validation.
+- `[ ]` means material implementation or a still-open design decision remains.
+- A frozen policy whose runtime enforcement is still missing stays unchecked
+  and is labeled accordingly; documentation alone is not treated as producer
+  compliance.
+
+### Current execution track: reciprocal Orange/Citrus binding
+
+This is the immediate correctness track. It closes the mutable-pointer
+time-of-check/time-of-use gap before the broader observation-context envelope
+is frozen. Checkpoints 2 through 9 below can proceed incrementally, but they do
+not need to delay this producer-native association chain.
+
+#### Foundation
+
+- [x] Implement and test the stable observation-edge identity, canonical
+      digest, general edge-collection validation, and current one-arena-per-
+      source-camera-stream producer restriction.
+- [x] Freeze strict schemas for the Orange request, Citrus acceptance or
+      rejection, and finalized-H5 receipt.
+- [x] Implement and test canonical sealing and reciprocal-chain validation for
+      those three records.
+- [x] Correct current crop-media vocabulary and coordinate-space semantics
+      while preserving historical schema-v1 interpretation.
+
+#### Phase A: immutable request and pre-arm acceptance
+
+- [ ] Materialize an immutable recording-start snapshot, distinct from the
+      ordinary `recording_snapshot.json` that finalization may patch.
+- [ ] Have Orange create one sealed binding request per observation edge from
+      recording-bound inputs only.
+- [ ] Persist the identities and request references/digests in the Orange
+      recording-start envelope.
+- [ ] Transport the exact request to Citrus before experiment activation.
+- [ ] Have Citrus validate the request against its selected rig, canvas,
+      arena, active camera, frozen output folder, and exact Orange geometry
+      mirror.
+- [ ] Generate and persist one shared Citrus experiment-group ID plus one
+      per-arena session UUID.
+- [ ] Embed the exact accepted request and Citrus acceptance in every matching
+      H5; do not reread `latest_recording.json` for association authority.
+- [ ] Enforce `required`, `optional`, and `not_applicable` arm behavior without
+      relabeling a failed Citrus handshake as Orange-only.
+- [ ] Add focused producer tests for acceptance, rejection, stale/mismatched
+      pointers, output-path containment, and four-camera Shadow association.
+
+#### Phase B: finalized H5 receipt and parent manifest
+
+- [ ] After successful H5 flush and close, compute its byte size and SHA-256
+      and seal the finalized receipt.
+- [ ] Return the receipt to Orange through a bounded finalization handshake.
+- [ ] Have Orange verify the complete request/acceptance/receipt chain before
+      accepting `bound` status.
+- [ ] Atomically write a parent-level observation-edge collection into
+      finalized `recording_session.json`.
+- [ ] Make rolling clips reference the parent observation contexts rather than
+      minting or duplicating identities.
+- [ ] Preserve explicit terminal `unbound` reasons for incomplete optional or
+      required finalization.
+- [ ] Add restart, partial-write, invalid-receipt, and multi-H5 finalization
+      tests.
+
+#### Consumer handoff
+
+- [ ] Teach Palette to consume and verify the producer-native edge and exact H5
+      receipt before treating the Citrus association as bound.
+- [ ] Keep mask eligibility independent from Citrus binding eligibility: a
+      valid binding does not itself prove an accepted dish mask, and an
+      Orange-only recording may still carry a valid recording-bound mask.
+- [ ] Run one modern Citrus-backed semantic canary and one Orange-only canary.
+
 ### Checkpoint 1: Scope and identity key
 
 - [x] Define v1 identity as one stable recording-bound camera-to-arena
@@ -681,7 +755,7 @@ The eventual implementation should prove at least:
 12. An offline Hough mismatch creates review evidence without rewriting the
     acquisition mask.
 
-## Immediate next decision
+## Current decision and next implementation slice
 
 Checkpoint 1's observation-edge scope is accepted. The stable v1 identity is:
 
@@ -749,6 +823,13 @@ This is a narrow sub-contract, not a freeze of
 immutable request per edge, Citrus returns an acceptance or rejection before
 activation, and a complete H5 becomes authoritative only through a final
 post-close receipt.
+
+The next implementation slice is Phase A above: create the immutable
+recording-start evidence and materialize the Orange request before wiring its
+transport to Citrus. The full context schema, optical/illumination additions,
+historical adapters, and Palette publication binding remain subsequent tracks;
+they must not be represented as already materialized merely because the
+narrower identity and handshake schemas exist.
 
 Current production geometry materialization still contains maps such as
 `arena_by_camera` and explicitly rejects a camera appearing under more than one
@@ -1005,9 +1086,10 @@ rejected evidence; it must not be relabeled as Orange-only.
 ### Revised safe implementation order
 
 1. Keep the stable observation identity separate from binding lifecycle.
+   **Complete.**
 2. Freeze the request, acceptance, and final-receipt schemas, IDs,
-   canonicalization, and
-   comparison rules before wiring either producer.
+   canonicalization, and comparison rules before wiring either producer.
+   **Complete.**
 3. Remove the Citrus pointer reread from association authority by passing one
    frozen request into every selected arena/session logger.
 4. Persist the accepted binding and shared Citrus experiment group ID in each
