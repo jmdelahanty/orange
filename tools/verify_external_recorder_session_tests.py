@@ -33,7 +33,7 @@ def storage_preflight_payload(
     meets_min_free: bool = True,
     below_warning: bool = False,
 ) -> dict:
-    return {
+    payload = {
         "checked": True,
         "ok": ok,
         "low_space": low_space,
@@ -50,6 +50,7 @@ def storage_preflight_payload(
             }
         ],
     }
+    return payload
 
 
 def ipc_protocol_payload() -> dict:
@@ -93,14 +94,24 @@ def video_metadata_payload(serial: str, *, output_kind: str = "full") -> dict:
     )
     if output_kind == "crop":
         comment = comment.replace("source_origin=camera_dma", "source_origin=analytics_crop")
-    return {
+        comment += (
+            "; role=runtime_derived_acquisition_input"
+            "; coordinate_space=full_frame_pixels"
+            "; video_pixel_coordinate_space=crop_frame_pixels"
+            "; source_geometry_coordinate_space=full_frame_pixels"
+        )
+    payload = {
         "schema_id": "orange.video_metadata",
-        "schema_version": 1,
+        "schema_version": 2 if output_kind == "crop" else 1,
         "video_path": f"Cam{serial}_external.mp4",
         "stream_id": serial,
         "camera_serial": serial,
         "output_kind": output_kind,
-        "role": "sidecar" if output_kind == "crop" else "ingest_authoritative",
+        "role": (
+            "runtime_derived_acquisition_input"
+            if output_kind == "crop"
+            else "ingest_authoritative"
+        ),
         "encoder": {
             "name": "nvenc",
             "codec": "hevc",
@@ -137,6 +148,11 @@ def video_metadata_payload(serial: str, *, output_kind: str = "full") -> dict:
             "validated_with_ffprobe": False,
         },
     }
+    if output_kind == "crop":
+        payload["coordinate_space"] = "full_frame_pixels"
+        payload["video_pixel_coordinate_space"] = "crop_frame_pixels"
+        payload["source_geometry_coordinate_space"] = "full_frame_pixels"
+    return payload
 
 
 def frame_identity_proof_payload(frames: int = 3) -> dict:

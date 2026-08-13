@@ -266,7 +266,11 @@ void test_attach_crop_rolling_outputs()
         clips_by_index[0].recording_outputs.front();
     require(output.camera_serial == "700001", "crop output camera serial");
     require(output.output_kind == "crop", "crop output kind");
-    require(output.role == "sidecar", "crop output role");
+    require(output.role == "runtime_derived_acquisition_input", "crop output role");
+    require(output.video_pixel_coordinate_space == "crop_frame_pixels",
+            "crop video pixel coordinate space");
+    require(output.source_geometry_coordinate_space == "full_frame_pixels",
+            "crop source geometry coordinate space");
     require(output.backend == "external_ipc", "crop output backend");
     require(output.frame_count == 10, "crop output frame count");
     require(output.video_path == "/tmp/clip0/Cam700001_crop.mp4",

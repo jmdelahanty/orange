@@ -44,6 +44,10 @@ void test_full_output_descriptor_from_camera_artifact()
     require(json.value("keyframes", std::string()) == "Cam2010096_keyframe.json", "full keyframe path");
     require(json.value("container", std::string()) == "mp4", "full container");
     require(json.value("coordinate_space", std::string()) == "full_frame_pixels", "full coordinate space");
+    require(!json.contains("video_pixel_coordinate_space"),
+            "full output does not need split crop coordinate fields");
+    require(!json.contains("source_geometry_coordinate_space"),
+            "full output does not need source placement geometry");
     require(json.value("frame_count", 0) == 601, "full frame count");
     require(json.value("packet_count", 0) == 601, "full packet count");
     require(json.value("packet_count_source", std::string()) == "ffprobe_nb_read_packets",
@@ -54,8 +58,7 @@ void test_crop_output_descriptor_serialization()
 {
     orange::session::RecordingOutputDescriptor crop;
     crop.camera_serial = "2010096";
-    crop.output_kind = "crop";
-    crop.role = "sidecar";
+    orange::session::apply_crop_recording_output_media_contract(&crop);
     crop.backend = "in_process";
     crop.status = "completed";
     crop.video_path = "Cam2010096_crop.mp4";
@@ -71,7 +74,6 @@ void test_crop_output_descriptor_serialization()
     crop.tuning = "lossless";
     crop.pixel_source_format = "mono8";
     crop.encoded_format = "nv12";
-    crop.coordinate_space = "full_frame_pixels";
     crop.details = {
         {"selection_policy", "largest_detection_by_confidence"},
         {"blank_frame_policy", "encode_black_frame_when_no_detection"}
@@ -81,7 +83,19 @@ void test_crop_output_descriptor_serialization()
     require(grouped.contains("2010096"), "grouped crop camera key");
     require(grouped["2010096"].contains("crop"), "grouped crop output key");
     const auto& json = grouped["2010096"]["crop"];
-    require(json.value("role", std::string()) == "sidecar", "crop role");
+    require(json.value("schema_version", 0) == 2, "crop descriptor schema version");
+    require(json.value("role", std::string()) ==
+                "runtime_derived_acquisition_input",
+            "crop role");
+    require(json.value("coordinate_space", std::string()) ==
+                "full_frame_pixels",
+            "crop legacy coordinate alias");
+    require(json.value("video_pixel_coordinate_space", std::string()) ==
+                "crop_frame_pixels",
+            "crop video pixel coordinate space");
+    require(json.value("source_geometry_coordinate_space", std::string()) ==
+                "full_frame_pixels",
+            "crop source geometry coordinate space");
     require(json.value("video", std::string()) == "Cam2010096_crop.mp4", "crop video path");
     require(json.value("perf", std::string()) == "Cam2010096_crop_perf.csv", "crop perf path");
     require(json.value("sidecar_perf", std::string()) == "Cam2010096_crop_sidecar_perf.csv",
@@ -107,8 +121,7 @@ void test_full_and_crop_statuses_are_independent()
 
     orange::session::RecordingOutputDescriptor crop;
     crop.camera_serial = "2010096";
-    crop.output_kind = "crop";
-    crop.role = "sidecar";
+    orange::session::apply_crop_recording_output_media_contract(&crop);
     crop.backend = "external_ipc";
     crop.status = "incomplete";
     crop.metadata_path = "Cam2010096_crop_meta.csv";

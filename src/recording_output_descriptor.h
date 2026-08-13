@@ -8,6 +8,13 @@
 
 namespace orange::session {
 
+inline constexpr const char* kRuntimeDerivedAcquisitionInputRole =
+    "runtime_derived_acquisition_input";
+inline constexpr const char* kCropFramePixelCoordinateSpace =
+    "crop_frame_pixels";
+inline constexpr const char* kFullFramePixelCoordinateSpace =
+    "full_frame_pixels";
+
 struct RecordingSessionCameraArtifact {
     std::string camera_serial;
     std::string video_path;
@@ -47,7 +54,11 @@ struct RecordingOutputDescriptor {
     std::string tuning;
     std::string pixel_source_format;
     std::string encoded_format;
+    // Deprecated compatibility alias. For crop outputs this describes the
+    // source/placement geometry, not the encoded crop-video raster.
     std::string coordinate_space;
+    std::string video_pixel_coordinate_space;
+    std::string source_geometry_coordinate_space;
     nlohmann::json details = nlohmann::json::object();
 };
 
@@ -63,5 +74,7 @@ std::vector<RecordingOutputDescriptor> build_full_recording_output_descriptors(
     const std::vector<RecordingSessionCameraArtifact>& artifacts,
     const std::string& backend,
     const std::string& status);
+void apply_crop_recording_output_media_contract(
+    RecordingOutputDescriptor* output);
 
 }  // namespace orange::session

@@ -2274,8 +2274,7 @@ RecordingOutputDescriptor build_crop_recording_output_descriptor(
 {
     RecordingOutputDescriptor output;
     output.camera_serial = camera_serial;
-    output.output_kind = "crop";
-    output.role = "sidecar";
+    apply_crop_recording_output_media_contract(&output);
     output.backend = "in_process";
     output.status = status.empty() ? "finalized" : status;
     output.width = crop_size_px;
@@ -2286,7 +2285,6 @@ RecordingOutputDescriptor build_crop_recording_output_descriptor(
     output.tuning = "lossless";
     output.pixel_source_format = "mono8";
     output.encoded_format = "nv12";
-    output.coordinate_space = "full_frame_pixels";
     output.details = {
         {"selection_policy", "largest_detection_by_confidence"},
         {"blank_frame_policy", "encode_black_frame_when_no_detection"}

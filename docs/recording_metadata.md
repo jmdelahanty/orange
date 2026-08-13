@@ -130,7 +130,8 @@ value is the original camera config JSON loaded at recording start (or `null` if
 
 `recording_outputs` is a schema-2 dictionary keyed by camera serial, then output
 kind. `full` describes the ingest-authoritative full-frame MP4 path and sidecars;
-`crop` describes optional YOLO crop sidecar videos. Legacy locations such as
+`crop` describes the optional runtime-derived acquisition crop-video stream.
+Legacy locations such as
 `encoders[serial]`, `camera_artifacts`, and `crop_outputs[serial]` are still
 emitted for compatibility, but schema-2 consumers should prefer
 `recording_outputs` when it is present.
@@ -1105,6 +1106,13 @@ Notes:
   source/crop-production GPU and `recorder_gpu_id` is the external process
   encode GPU; they can differ when crop recorder GPU placement is intentionally
   overridden for NVENC load-routing diagnostics.
+- Newly written crop output descriptors use descriptor `schema_version = 2`,
+  `role = "runtime_derived_acquisition_input"`,
+  `video_pixel_coordinate_space = "crop_frame_pixels"`, and
+  `source_geometry_coordinate_space = "full_frame_pixels"`. The retained
+  `coordinate_space = "full_frame_pixels"` value is a deprecated alias for
+  source/placement geometry only. Historical schema-v1 descriptors with
+  `role = "sidecar"` remain readable.
 - GUI external crop recorder contracts now declare `require_status = true` and
   `require_status_runtime = true`, matching the full-frame supervised external
   recorder health contract. Strict GUI validation checks the crop recorder

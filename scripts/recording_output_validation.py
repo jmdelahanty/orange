@@ -82,6 +82,7 @@ def mp4_source_pixel_tag_errors(
     *,
     output_kind: str,
     label: str,
+    require_crop_media_contract: bool = False,
 ) -> list[str]:
     errors: list[str] = []
     normalized = normalized_mp4_tags(tags)
@@ -127,6 +128,19 @@ def mp4_source_pixel_tag_errors(
         _append_expected_field_error(errors, fields, key=key, expected=expected, label=label)
 
     _append_expected_field_error(errors, fields, key="output_kind", expected=output_kind, label=label)
+    if output_kind == "crop" and require_crop_media_contract:
+        for key, expected in (
+            ("role", "runtime_derived_acquisition_input"),
+            ("video_pixel_coordinate_space", "crop_frame_pixels"),
+            ("source_geometry_coordinate_space", "full_frame_pixels"),
+        ):
+            _append_expected_field_error(
+                errors,
+                fields,
+                key=key,
+                expected=expected,
+                label=label,
+            )
     for key in ("source_width", "source_height"):
         value = fields.get(key)
         try:
@@ -152,7 +166,7 @@ def video_metadata_contract_errors(
         return [f"{label} missing video_metadata"]
     if metadata.get("schema_id") != "orange.video_metadata":
         errors.append(f"{label} video_metadata.schema_id={metadata.get('schema_id')!r}")
-    if metadata.get("schema_version") != 1:
+    if metadata.get("schema_version") not in {1, 2}:
         errors.append(f"{label} video_metadata.schema_version={metadata.get('schema_version')!r}")
     if metadata.get("output_kind") != output_kind:
         errors.append(
@@ -169,6 +183,29 @@ def video_metadata_contract_errors(
             f"{label} video_metadata.stream_id={metadata.get('stream_id')!r}, "
             f"expected {stream_id!r}"
         )
+    role = metadata.get("role")
+    metadata_version = metadata.get("schema_version")
+    if output_kind == "crop":
+        allowed_roles = (
+            {"runtime_derived_acquisition_input"}
+            if metadata_version == 2
+            else {"runtime_derived_acquisition_input", "sidecar"}
+        )
+        if role not in allowed_roles:
+            errors.append(f"{label} video_metadata.role={role!r}")
+        if metadata_version == 2 or role == "runtime_derived_acquisition_input":
+            if metadata.get("video_pixel_coordinate_space") != "crop_frame_pixels":
+                errors.append(
+                    f"{label} video_metadata.video_pixel_coordinate_space must be "
+                    "'crop_frame_pixels'"
+                )
+            if metadata.get("source_geometry_coordinate_space") != "full_frame_pixels":
+                errors.append(
+                    f"{label} video_metadata.source_geometry_coordinate_space must be "
+                    "'full_frame_pixels'"
+                )
+    elif role != "ingest_authoritative":
+        errors.append(f"{label} video_metadata.role={role!r}")
 
     source = _as_dict(metadata.get("source_pixel_contract"))
     expected_contract = SOURCE_PIXEL_CONTRACT_BY_OUTPUT_KIND.get(output_kind)
@@ -211,6 +248,7 @@ def video_metadata_contract_errors(
             expected_tags,
             output_kind=output_kind,
             label=f"{label} video_metadata.mp4_tags_expected",
+            require_crop_media_contract=(metadata_version == 2),
         )
     )
     if mp4_tags is not None:
@@ -304,8 +342,46 @@ def _append_crop_output_errors(
 ) -> None:
     if output.get("output_kind") != "crop":
         errors.append(f"{source_name} recording_outputs.{serial}.crop output_kind is {output.get('output_kind')!r}")
-    if output.get("role") != "sidecar":
-        errors.append(f"{source_name} recording_outputs.{serial}.crop role is {output.get('role')!r}")
+    role = output.get("role")
+    try:
+        descriptor_version = int(output.get("schema_version", 1))
+    except (TypeError, ValueError):
+        descriptor_version = 0
+        errors.append(
+            f"{source_name} recording_outputs.{serial}.crop invalid schema_version"
+        )
+    if descriptor_version not in {1, 2}:
+        errors.append(
+            f"{source_name} recording_outputs.{serial}.crop unsupported "
+            f"schema_version={output.get('schema_version')!r}"
+        )
+    allowed_roles = (
+        {"runtime_derived_acquisition_input"}
+        if descriptor_version >= 2
+        else {"runtime_derived_acquisition_input", "sidecar"}
+    )
+    if role not in allowed_roles:
+        errors.append(f"{source_name} recording_outputs.{serial}.crop role is {role!r}")
+    # Historical schema-v1 recordings called the crop media stream a sidecar
+    # and exposed only coordinate_space=full_frame_pixels. Preserve their
+    # inspectability. New canonical producer output must split the encoded
+    # crop raster from its placement/detection geometry.
+    if descriptor_version >= 2 or role == "runtime_derived_acquisition_input":
+        if output.get("video_pixel_coordinate_space") != "crop_frame_pixels":
+            errors.append(
+                f"{source_name} recording_outputs.{serial}.crop "
+                "video_pixel_coordinate_space must be 'crop_frame_pixels'"
+            )
+        if output.get("source_geometry_coordinate_space") != "full_frame_pixels":
+            errors.append(
+                f"{source_name} recording_outputs.{serial}.crop "
+                "source_geometry_coordinate_space must be 'full_frame_pixels'"
+            )
+        if output.get("coordinate_space") not in (None, "full_frame_pixels"):
+            errors.append(
+                f"{source_name} recording_outputs.{serial}.crop deprecated "
+                "coordinate_space alias must be 'full_frame_pixels' when present"
+            )
     if crop_output and crop_output.get("enabled") is True:
         runtime = _as_dict(crop_output.get("runtime"))
         files = _as_dict(runtime.get("files"))

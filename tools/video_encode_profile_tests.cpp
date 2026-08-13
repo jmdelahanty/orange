@@ -253,7 +253,7 @@ void test_crop_profile()
         build_video_metadata_json(profile, "/tmp/Cam2010096_crop.mp4", "2010096_crop");
 
     require(profile.output_kind == "crop", "crop profile output kind");
-    require(profile.role == "sidecar", "crop profile role");
+    require(profile.role == "runtime_derived_acquisition_input", "crop profile role");
     require(profile.codec == "hevc", "crop codec");
     require(profile.preset == "p7", "crop preset");
     require(profile.tuning == "lossless", "crop tuning");
@@ -298,9 +298,31 @@ void test_crop_profile()
         comment,
         "encoded_color_range=pc",
         "crop comment encoded color range");
+    require_contains(
+        comment,
+        "role=runtime_derived_acquisition_input",
+        "crop comment role");
+    require_contains(
+        comment,
+        "video_pixel_coordinate_space=crop_frame_pixels",
+        "crop comment video pixel coordinate space");
+    require_contains(
+        comment,
+        "source_geometry_coordinate_space=full_frame_pixels",
+        "crop comment source geometry coordinate space");
     require(
         metadata.at("source_pixel_contract").at("id") == "orange.crop.mono8.v1",
         "crop metadata json source contract id");
+    require(
+        metadata.at("role") == "runtime_derived_acquisition_input",
+        "crop metadata json role");
+    require(metadata.at("schema_version") == 2, "crop metadata schema version");
+    require(
+        metadata.at("video_pixel_coordinate_space") == "crop_frame_pixels",
+        "crop metadata video pixel coordinate space");
+    require(
+        metadata.at("source_geometry_coordinate_space") == "full_frame_pixels",
+        "crop metadata source geometry coordinate space");
     require(
         metadata.at("mp4_tags_expected").at("title") == "Cam2010096 crop",
         "crop metadata json expected title");

@@ -827,10 +827,10 @@ nlohmann::json build_crop_recording_output_from_snapshot(
         runtime.value("files", nlohmann::json::object());
 
     nlohmann::json output = {
-        {"schema_version", 1},
+        {"schema_version", 2},
         {"camera_serial", camera_serial},
         {"output_kind", "crop"},
-        {"role", "sidecar"},
+        {"role", "runtime_derived_acquisition_input"},
         {"backend", "in_process"},
         {"status", "pending"},
         {"width", runtime.value("width", 0)},
@@ -841,7 +841,9 @@ nlohmann::json build_crop_recording_output_from_snapshot(
         {"tuning", runtime.value("tuning", std::string("lossless"))},
         {"pixel_source_format", "mono8"},
         {"encoded_format", "nv12"},
-        {"coordinate_space", runtime.value("coordinate_space", std::string("full_frame_pixels"))},
+        {"coordinate_space", "full_frame_pixels"},
+        {"video_pixel_coordinate_space", "crop_frame_pixels"},
+        {"source_geometry_coordinate_space", "full_frame_pixels"},
         {"details",
          {
              {"mode", crop_output_info.value("mode", std::string("yolo_centered_square"))},

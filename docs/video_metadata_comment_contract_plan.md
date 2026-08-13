@@ -193,6 +193,17 @@ range: HEVC/H264 VUI `video_full_range_flag = 1` and FFmpeg/MP4
 the full-range flag is a numeric range interpretation, not a buffer-layout
 change from Orange's NV12 encoder input.
 
+For current crop media, `orange.video_metadata` schema v2 and the MP4 comment
+also declare:
+
+- `role=runtime_derived_acquisition_input`;
+- `video_pixel_coordinate_space=crop_frame_pixels`; and
+- `source_geometry_coordinate_space=full_frame_pixels`.
+
+The retained `coordinate_space=full_frame_pixels` comment field is a deprecated
+alias for source/placement geometry. Historical crop schema-v1 metadata with
+`role=sidecar` is a legacy contract and is not rewritten.
+
 ## Sidecar Shape
 
 For existing summary JSONs, add a `video_metadata` block rather than creating a

@@ -375,12 +375,15 @@ Current emitted top-level fields:
 - Key: camera identifier string (serial or camera_id string).
 - Value: object keyed by output kind:
   - `full`: ingest-authoritative full-frame output descriptor.
-  - `crop`: optional YOLO crop sidecar descriptor.
+  - `crop`: optional runtime-derived acquisition-media stream descriptor.
 - Each descriptor carries:
   - `schema_version: integer`
   - `camera_serial: string`
   - `output_kind: string`
-  - `role: string` (`ingest_authoritative` or `sidecar`)
+  - `role: string`:
+    - full output: `ingest_authoritative`
+    - current crop output: `runtime_derived_acquisition_input`
+    - historical crop schema v1: `sidecar`
   - `backend: string` (`in_process`, `external_ipc`, or diagnostic sink mode)
   - `status: string` (`pending`, `completed`, `incomplete`, or `disabled`)
   - Optional artifact paths: `video`, `metadata`, `keyframes`, `perf`,
@@ -390,12 +393,26 @@ Current emitted top-level fields:
     `packet_count_source`
   - Optional media details: `width`, `height`, `frame_rate`, `codec`,
     `container`, `tuning`, `pixel_source_format`, `encoded_format`,
-    `coordinate_space`
+    `coordinate_space`, `video_pixel_coordinate_space`,
+    `source_geometry_coordinate_space`
   - Optional `details` object for backend-specific metadata. For GUI external
     crop outputs, `details` includes static recorder routing/config fields such
     as `stream_id`, `stream_kind`, `output_kind`, `camera_serial`, `env_key`,
     `analytics_gpu_id`, `recorder_gpu_id`, `encode_queue_depth`, `socket_path`,
     and `summary_json`.
+
+Current crop descriptors use descriptor `schema_version = 2` and distinguish:
+
+- `video_pixel_coordinate_space = "crop_frame_pixels"`: coordinates within
+  the encoded crop-video raster; and
+- `source_geometry_coordinate_space = "full_frame_pixels"`: the frame in
+  which `crop_x/y/w/h`, detection geometry, and crop placement are expressed.
+
+The legacy `coordinate_space = "full_frame_pixels"` field is retained as a
+deprecated compatibility alias for source/placement geometry. It must not be
+used to interpret crop-video pixel coordinates. Historical schema-v1 crop
+descriptors with `role = "sidecar"` remain inspectable without rewriting their
+artifact bytes.
 
 For GUI external crop recording, `recording_session.json`
 `recording_backend.crop_recording` also carries per-camera maps keyed by serial:

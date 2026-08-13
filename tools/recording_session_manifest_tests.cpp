@@ -66,8 +66,7 @@ orange::session::RecordingOutputDescriptor make_external_crop_output(
 {
     orange::session::RecordingOutputDescriptor output;
     output.camera_serial = serial;
-    output.output_kind = "crop";
-    output.role = "sidecar";
+    orange::session::apply_crop_recording_output_media_contract(&output);
     output.backend = "external_ipc";
     output.status = "completed";
     output.video_path = "external_crop/Cam" + serial + "_crop_external.mp4";
@@ -89,7 +88,6 @@ orange::session::RecordingOutputDescriptor make_external_crop_output(
     output.tuning = "lossless";
     output.pixel_source_format = "mono8";
     output.encoded_format = "nv12";
-    output.coordinate_space = "full_frame_pixels";
     output.details = {
         {"scope", scope},
         {"stream_id", serial + "_crop"},

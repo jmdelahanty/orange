@@ -804,7 +804,9 @@ VideoEncodeProfile build_external_video_encode_profile(
         ? "external_crop_hevc_lossless_gop1"
         : "external_full_hevc_low_latency";
     profile.output_kind = options.output_kind;
-    profile.role = options.output_kind == "crop" ? "sidecar" : "ingest_authoritative";
+    profile.role = options.output_kind == "crop"
+        ? "runtime_derived_acquisition_input"
+        : "ingest_authoritative";
     profile.camera_serial = camera_serial;
     profile.codec = normalize_video_encode_codec(options.codec);
     profile.preset = normalize_video_encode_preset(options.preset);

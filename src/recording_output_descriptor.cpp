@@ -18,10 +18,12 @@ void add_string_if_nonempty(nlohmann::json& out,
 nlohmann::json build_recording_output_descriptor_json(
     const RecordingOutputDescriptor& output)
 {
+    const std::string output_kind =
+        output.output_kind.empty() ? "full" : output.output_kind;
     nlohmann::json out = {
-        {"schema_version", 1},
+        {"schema_version", output_kind == "crop" ? 2 : 1},
         {"camera_serial", output.camera_serial},
-        {"output_kind", output.output_kind.empty() ? "full" : output.output_kind},
+        {"output_kind", output_kind},
         {"role", output.role.empty() ? "sidecar" : output.role},
         {"backend", output.backend.empty() ? "unknown" : output.backend},
         {"status", output.status.empty() ? "unknown" : output.status}
@@ -39,6 +41,14 @@ nlohmann::json build_recording_output_descriptor_json(
     add_string_if_nonempty(out, "pixel_source_format", output.pixel_source_format);
     add_string_if_nonempty(out, "encoded_format", output.encoded_format);
     add_string_if_nonempty(out, "coordinate_space", output.coordinate_space);
+    add_string_if_nonempty(
+        out,
+        "video_pixel_coordinate_space",
+        output.video_pixel_coordinate_space);
+    add_string_if_nonempty(
+        out,
+        "source_geometry_coordinate_space",
+        output.source_geometry_coordinate_space);
 
     if (output.width > 0) {
         out["width"] = output.width;
@@ -108,7 +118,7 @@ RecordingOutputDescriptor build_full_recording_output_descriptor(
     output.packet_count = artifact.packet_count;
     output.packet_count_source = artifact.packet_count_source;
     output.container = "mp4";
-    output.coordinate_space = "full_frame_pixels";
+    output.coordinate_space = kFullFramePixelCoordinateSpace;
     return output;
 }
 
@@ -129,6 +139,21 @@ std::vector<RecordingOutputDescriptor> build_full_recording_output_descriptors(
             status));
     }
     return outputs;
+}
+
+void apply_crop_recording_output_media_contract(
+    RecordingOutputDescriptor* output)
+{
+    if (!output) {
+        return;
+    }
+    output->output_kind = "crop";
+    output->role = kRuntimeDerivedAcquisitionInputRole;
+    // Keep the historical alias so existing consumers continue to locate the
+    // full-frame placement geometry. The two explicit fields are authoritative.
+    output->coordinate_space = kFullFramePixelCoordinateSpace;
+    output->video_pixel_coordinate_space = kCropFramePixelCoordinateSpace;
+    output->source_geometry_coordinate_space = kFullFramePixelCoordinateSpace;
 }
 
 }  // namespace orange::session

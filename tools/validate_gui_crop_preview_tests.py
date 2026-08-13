@@ -16,7 +16,10 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 import validate_gui_ptp_recording as validator  # noqa: E402
 import summarize_gui_validation as gui_summary  # noqa: E402
-from recording_output_validation import recording_output_contract_errors  # noqa: E402
+from recording_output_validation import (  # noqa: E402
+    _append_crop_output_errors,
+    recording_output_contract_errors,
+)
 
 
 HEADER = [
@@ -3325,6 +3328,63 @@ def test_recording_output_contract_allows_external_crop_video_paths() -> None:
         require(not errors, f"external crop output contract should pass: {errors}")
 
 
+def test_recording_output_contract_requires_canonical_crop_v2_spaces() -> None:
+    serial = "2010095"
+    canonical = {
+        "schema_version": 2,
+        "output_kind": "crop",
+        "role": "runtime_derived_acquisition_input",
+        "backend": "external_ipc",
+        "status": "completed",
+        "coordinate_space": "full_frame_pixels",
+        "video_pixel_coordinate_space": "crop_frame_pixels",
+        "source_geometry_coordinate_space": "full_frame_pixels",
+    }
+    errors: list[str] = []
+    _append_crop_output_errors(
+        errors,
+        source_name="fixture",
+        serial=serial,
+        output=canonical,
+        crop_output={},
+    )
+    require(not errors, f"canonical crop-v2 descriptor should pass: {errors}")
+
+    for missing_field in (
+        "video_pixel_coordinate_space",
+        "source_geometry_coordinate_space",
+    ):
+        malformed = dict(canonical)
+        malformed.pop(missing_field)
+        errors = []
+        _append_crop_output_errors(
+            errors,
+            source_name="fixture",
+            serial=serial,
+            output=malformed,
+            crop_output={},
+        )
+        require(
+            any(missing_field in error for error in errors),
+            f"crop-v2 descriptor missing {missing_field} should fail: {errors}",
+        )
+
+    legacy = dict(canonical)
+    legacy["schema_version"] = 1
+    legacy["role"] = "sidecar"
+    legacy.pop("video_pixel_coordinate_space")
+    legacy.pop("source_geometry_coordinate_space")
+    errors = []
+    _append_crop_output_errors(
+        errors,
+        source_name="fixture",
+        serial=serial,
+        output=legacy,
+        crop_output={},
+    )
+    require(not errors, f"historical crop-v1 descriptor should remain inspectable: {errors}")
+
+
 def test_recording_output_contract_allows_external_crop_sidecar_failure() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -4449,6 +4509,7 @@ def main() -> int:
         test_crop_recording_artifacts_use_incomplete_external_descriptor_paths,
         test_crop_recording_artifacts_fail_on_external_crop_drops,
         test_recording_output_contract_allows_external_crop_video_paths,
+        test_recording_output_contract_requires_canonical_crop_v2_spaces,
         test_recording_output_contract_allows_external_crop_sidecar_failure,
         test_recording_session_manifest_accepts_rolling_clips,
         test_recording_session_manifest_checks_expected_rolling_control,

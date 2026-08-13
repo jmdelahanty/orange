@@ -560,7 +560,7 @@ VideoEncodeProfile build_crop_video_encode_profile(
     VideoEncodeProfile profile;
     profile.name = "crop_hevc_lossless_gop1";
     profile.output_kind = "crop";
-    profile.role = "sidecar";
+    profile.role = "runtime_derived_acquisition_input";
     profile.camera_serial = camera_params.camera_serial;
     profile.codec = "hevc";
     profile.preset = "p7";
@@ -842,7 +842,7 @@ nlohmann::json build_video_metadata_json(
 {
     nlohmann::json out = {
         {"schema_id", "orange.video_metadata"},
-        {"schema_version", 1},
+        {"schema_version", profile.output_kind == "crop" ? 2 : 1},
         {"video_path", video_path},
         {"stream_id", stream_id},
         {"camera_serial", profile.camera_serial},
@@ -866,6 +866,12 @@ nlohmann::json build_video_metadata_json(
             {"validated_with_ffprobe", false}
         }}
     };
+    if (profile.output_kind == "crop") {
+        out["video_pixel_coordinate_space"] = "crop_frame_pixels";
+        out["source_geometry_coordinate_space"] = "full_frame_pixels";
+        // Compatibility alias for readers of the pre-split coordinate field.
+        out["coordinate_space"] = "full_frame_pixels";
+    }
     return out;
 }
 
@@ -893,10 +899,12 @@ std::vector<std::pair<std::string, std::string>> build_video_encode_metadata_tag
 
     if (profile.output_kind == "crop") {
         comment << "; output_kind=crop"
-                << "; role=sidecar"
+                << "; role=runtime_derived_acquisition_input"
                 << "; input_format=" << profile.input_format
                 << "; source_format=" << profile.source_format
                 << "; coordinate_space=full_frame_pixels"
+                << "; video_pixel_coordinate_space=crop_frame_pixels"
+                << "; source_geometry_coordinate_space=full_frame_pixels"
                 << "; selection_policy=largest_detection_by_confidence"
                 << "; blank_frame_policy=encode_black_frame_when_no_detection";
         tags.emplace_back("comment", comment.str());

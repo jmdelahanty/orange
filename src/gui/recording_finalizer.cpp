@@ -531,8 +531,7 @@ bool gui_attach_crop_rolling_outputs_to_clips(
 
             orange::session::RecordingOutputDescriptor output;
             output.camera_serial = serial;
-            output.output_kind = "crop";
-            output.role = "sidecar";
+            orange::session::apply_crop_recording_output_media_contract(&output);
             output.backend = "external_ipc";
             output.status = clip.value("status", std::string("completed"));
             output.video_path = clip.value("video", std::string());
@@ -558,7 +557,6 @@ bool gui_attach_crop_rolling_outputs_to_clips(
             output.tuning = clip.value("tuning", std::string("lossless"));
             output.pixel_source_format = "mono8";
             output.encoded_format = "nv12";
-            output.coordinate_space = "full_frame_pixels";
             output.details = {
                 {"clip_index", clip_index},
                 {"clip_id", clip.value("clip_id", std::string())},
@@ -1940,8 +1938,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                 const std::string& stream_error) {
                 orange::session::RecordingOutputDescriptor output;
                 output.camera_serial = serial;
-                output.output_kind = "crop";
-                output.role = "sidecar";
+                orange::session::apply_crop_recording_output_media_contract(&output);
                 output.backend = "external_ipc";
                 output.status = stream_ok ? "completed" : "incomplete";
                 output.video_path = mp4;
@@ -1970,7 +1967,6 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                 output.tuning = stream.tuning;
                 output.pixel_source_format = "mono8";
                 output.encoded_format = "nv12";
-                output.coordinate_space = "full_frame_pixels";
                 output.details = {
                     {"stream_id", stream.stream_id},
                     {"stream_kind", stream.stream_kind},
@@ -2641,8 +2637,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                         (external_crop_root / ("Cam" + camera_serial + "_crop_external")).string();
                     orange::session::RecordingOutputDescriptor output;
                     output.camera_serial = camera_serial;
-                    output.output_kind = "crop";
-                    output.role = "sidecar";
+                    orange::session::apply_crop_recording_output_media_contract(&output);
                     output.backend = "external_ipc";
                     output.status = "incomplete";
                     output.video_path = external_crop_prefix + ".mp4";
@@ -2659,7 +2654,6 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                     output.tuning = "lossless";
                     output.pixel_source_format = "mono8";
                     output.encoded_format = "nv12";
-                    output.coordinate_space = "full_frame_pixels";
                     output.details = {
                         {"video_backend", "external_ipc"},
                         {"metadata_backend", "orange_gui"},
