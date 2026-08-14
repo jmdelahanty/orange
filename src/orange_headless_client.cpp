@@ -41,6 +41,8 @@
 #include "modern_recording_pipeline.h"
 #include "recording_ingress.h"
 #include "session/recording_session.h"
+#include "session/recording_observation_prearm.h"
+#include "session/recording_observation_request_artifacts.h"
 #include "external_recorder_contract_utils.h"
 #include "external_recorder_lifecycle.h"
 #include "external_recorder_supervisor.h"
@@ -4606,15 +4608,13 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
 
     try {
         if (enable_artifacts) {
-            const bool update_latest_pointer =
-                enable_recording && is_real_recording_sink_mode(recording_sink_mode);
             if (!prepare_headless_recording_artifacts(
                     record_folder,
                     camera_control,
                     selected_camera_params.data(),
                     static_cast<int>(selected_camera_params.size()),
                     ptp_params,
-                    update_latest_pointer,
+                    false,
                     recording_sink_mode,
                     &headless_recording_geometry_contract)) {
                 cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
@@ -4889,6 +4889,78 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
             if (crop_producer_workers[idx]) {
                 crop_producer_workers[idx]->SetMaxQueueSize(240);
                 crop_producer_workers[idx]->StartThread();
+            }
+        }
+
+        if (enable_artifacts) {
+            std::string immutable_snapshot_error;
+            if (!seal_immutable_recording_start_snapshot(
+                    record_folder,
+                    nullptr,
+                    &immutable_snapshot_error)) {
+                throw std::runtime_error(
+                    "failed to seal immutable recording-start snapshot: " +
+                    immutable_snapshot_error);
+            }
+            orange::session::RecordingObservationBindingRequestMaterialization
+                observation_requests;
+            std::string observation_binding_mode_error;
+            const std::string observation_binding_mode =
+                orange::session::resolve_recording_observation_binding_mode(
+                    &observation_binding_mode_error);
+            orange::session::RecordingObservationPreArmResult observation_pre_arm;
+            std::string observation_request_error;
+            if (observation_binding_mode.empty() ||
+                !orange::session::prepare_recording_observation_pre_arm(
+                        record_folder,
+                        observation_binding_mode,
+                        get_current_utc_timestamp(),
+                        &observation_requests,
+                        &observation_pre_arm,
+                        &observation_request_error) ||
+                !update_recording_snapshot_observation_binding_requests(
+                    record_folder,
+                    orange::session::
+                        recording_observation_binding_request_collection_reference(
+                            observation_requests),
+                    &observation_request_error) ||
+                !update_recording_snapshot_observation_binding_pre_arm(
+                    record_folder,
+                    orange::session::recording_observation_pre_arm_decision_reference(
+                        observation_pre_arm),
+                    &observation_request_error)) {
+                throw std::runtime_error(
+                    "failed recording observation pre-arm binding: " +
+                    (observation_binding_mode_error.empty()
+                         ? observation_request_error
+                         : observation_binding_mode_error));
+            }
+            if (!observation_pre_arm.arm_allowed) {
+                throw std::runtime_error(
+                    "required Citrus observation binding was not accepted before arm: " +
+                    observation_pre_arm.reason);
+            }
+            std::cout << "Headless observation binding request status="
+                      << observation_requests.status
+                      << " count=" << observation_requests.artifacts.size()
+                      << " pre_arm=" << observation_pre_arm.lifecycle_status
+                      << " mode=" << observation_binding_mode
+                      << (observation_requests.reason.empty()
+                              ? std::string()
+                              : " reason=" + observation_requests.reason)
+                      << std::endl;
+            const std::filesystem::path recording_path(record_folder);
+            const std::filesystem::path base_path =
+                recording_path.parent_path().empty()
+                    ? recording_path
+                    : recording_path.parent_path();
+            if (enable_recording && !publish_latest_recording_pointer(
+                    base_path.string(),
+                    record_folder,
+                    recording_path.filename().string())) {
+                std::cerr << "Failed to publish latest-recording pointer after "
+                             "sealing headless start evidence."
+                          << std::endl;
             }
         }
 

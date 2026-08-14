@@ -121,6 +121,22 @@ bool write_recording_snapshot(const std::string& recording_folder,
                               const ResolvedRecordingConfig* resolved_recording_configs = nullptr,
                               int num_resolved_recording_configs = 0,
                               const CameraEachSelect* cameras_select = nullptr);
+// Seal the current recording_snapshot.json bytes into the create-once
+// recording_snapshot_start.json artifact. The mutable snapshot receives a
+// digest-bound reference, but later snapshot enrichment never rewrites the
+// sealed file. Repeated calls verify and return the existing artifact.
+bool seal_immutable_recording_start_snapshot(
+    const std::string& recording_folder,
+    nlohmann::json* reference_out = nullptr,
+    std::string* error_out = nullptr);
+bool update_recording_snapshot_observation_binding_requests(
+    const std::string& recording_folder,
+    const nlohmann::json& request_collection,
+    std::string* error_out = nullptr);
+bool update_recording_snapshot_observation_binding_pre_arm(
+    const std::string& recording_folder,
+    const nlohmann::json& pre_arm_decision,
+    std::string* error_out = nullptr);
 bool publish_latest_recording_pointer(const std::string& base_folder,
                                       const std::string& recording_folder,
                                       const std::string& recording_id);

@@ -58,6 +58,8 @@
 #include "ruler_alignment.h"
 #include "orange_local_control.h"
 #include "session/crop_rolling_sidecars.h"
+#include "session/recording_observation_prearm.h"
+#include "session/recording_observation_request_artifacts.h"
 #include "session/recording_session.h"
 #include "spatial_layout_ui.h"
 #include "spatial_snapshot_worker.h"
@@ -3704,11 +3706,7 @@ void gui_finish_recording_start_through_operator_path(
     GuiSessionTimingState* timing,
     orange::gui::GuiDisplayFrameRateStats* display_frame_rate_stats,
     GuiLocalControlStopSchedulerState* stop_scheduler,
-    CameraParams* cameras_params,
-    CameraEachSelect* cameras_select,
     const int num_cameras,
-    const std::string& yolo_model,
-    const int crop_size_px,
     CropProducerWorker** crop_producer_workers,
     CropPreviewWorker** crop_preview_workers,
     CropAndEncodeWorker** crop_and_encode_workers,
@@ -3726,29 +3724,6 @@ void gui_finish_recording_start_through_operator_path(
             crop_preview_workers[i]->ResetRunCounters();
         }
     }
-    update_gui_detect_model_snapshots(
-        resolved_recording_folder,
-        cameras_params,
-        cameras_select,
-        num_cameras,
-        yolo_model);
-    update_gui_crop_output_snapshots(
-        resolved_recording_folder,
-        cameras_params,
-        cameras_select,
-        num_cameras,
-        crop_size_px);
-    update_gui_pose_model_snapshots(
-        resolved_recording_folder,
-        cameras_params,
-        cameras_select,
-        num_cameras);
-    update_gui_spatial_calibration_snapshots(
-        resolved_recording_folder,
-        cameras_params,
-        cameras_select,
-        num_cameras);
-    update_gui_citrus_runtime_geometry_snapshot(resolved_recording_folder);
     for (int i = 0; i < num_cameras; ++i) {
         if (crop_and_encode_workers && crop_and_encode_workers[i]) {
             crop_and_encode_workers[i]->RotateRecordingFolder(
@@ -4017,6 +3992,123 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
             std::move(bound_contract);
     }
 
+    // Finish all recording-start evidence before recorder supervisors or
+    // acquisition are activated. recording_snapshot.json remains mutable for
+    // monitoring/finalization, while the create-once start artifact is the
+    // exact evidence future Orange/Citrus binding requests will digest.
+    update_gui_detect_model_snapshots(
+        prepared.recording_folder,
+        cameras_params,
+        cameras_select,
+        num_cameras,
+        yolo_model);
+    update_gui_crop_output_snapshots(
+        prepared.recording_folder,
+        cameras_params,
+        cameras_select,
+        num_cameras,
+        crop_size_px);
+    update_gui_pose_model_snapshots(
+        prepared.recording_folder,
+        cameras_params,
+        cameras_select,
+        num_cameras);
+    update_gui_spatial_calibration_snapshots(
+        prepared.recording_folder,
+        cameras_params,
+        cameras_select,
+        num_cameras);
+    update_gui_citrus_runtime_geometry_snapshot(prepared.recording_folder);
+    std::string immutable_snapshot_error;
+    if (!seal_immutable_recording_start_snapshot(
+            prepared.recording_folder,
+            nullptr,
+            &immutable_snapshot_error)) {
+        const std::string error =
+            "Failed to seal immutable recording-start snapshot: " +
+            immutable_snapshot_error;
+        orange::session::abort_prepared_recording_run(
+            recording_session,
+            camera_control,
+            prepared,
+            orange::session::RecordingRunSupervisorStartOutcome{},
+            error);
+        if (recording_preflight_errors) {
+            *recording_preflight_errors = {error};
+        }
+        std::cerr << "[GUI][recording] Start rejected: " << error << std::endl;
+        return GuiRecordingStartDispatch::kFailed;
+    }
+    std::string observation_binding_mode_error;
+    const std::string observation_binding_mode =
+        orange::session::resolve_recording_observation_binding_mode(
+            &observation_binding_mode_error);
+    orange::session::RecordingObservationBindingRequestMaterialization
+        observation_requests;
+    orange::session::RecordingObservationPreArmResult observation_pre_arm;
+    std::string observation_request_error;
+    if (observation_binding_mode.empty() ||
+        !orange::session::prepare_recording_observation_pre_arm(
+            prepared.recording_folder,
+            observation_binding_mode,
+            get_current_utc_timestamp(),
+            &observation_requests,
+            &observation_pre_arm,
+            &observation_request_error) ||
+        !update_recording_snapshot_observation_binding_requests(
+            prepared.recording_folder,
+            orange::session::
+                recording_observation_binding_request_collection_reference(
+                    observation_requests),
+            &observation_request_error) ||
+        !update_recording_snapshot_observation_binding_pre_arm(
+            prepared.recording_folder,
+            orange::session::recording_observation_pre_arm_decision_reference(
+                observation_pre_arm),
+            &observation_request_error)) {
+        const std::string error =
+            "Failed recording observation pre-arm binding: " +
+            (observation_binding_mode_error.empty()
+                 ? observation_request_error
+                 : observation_binding_mode_error);
+        orange::session::abort_prepared_recording_run(
+            recording_session,
+            camera_control,
+            prepared,
+            orange::session::RecordingRunSupervisorStartOutcome{},
+            error);
+        if (recording_preflight_errors) {
+            *recording_preflight_errors = {error};
+        }
+        std::cerr << "[GUI][recording] Start rejected: " << error << std::endl;
+        return GuiRecordingStartDispatch::kFailed;
+    }
+    if (!observation_pre_arm.arm_allowed) {
+        const std::string error =
+            "Required Citrus observation binding was not accepted before arm: " +
+            observation_pre_arm.reason;
+        orange::session::abort_prepared_recording_run(
+            recording_session,
+            camera_control,
+            prepared,
+            orange::session::RecordingRunSupervisorStartOutcome{},
+            error);
+        if (recording_preflight_errors) {
+            *recording_preflight_errors = {error};
+        }
+        std::cerr << "[GUI][recording] Start rejected: " << error << std::endl;
+        return GuiRecordingStartDispatch::kFailed;
+    }
+    std::cout << "[GUI][recording] Observation binding request status="
+              << observation_requests.status
+              << " count=" << observation_requests.artifacts.size()
+              << " pre_arm=" << observation_pre_arm.lifecycle_status
+              << " mode=" << observation_binding_mode
+              << (observation_requests.reason.empty()
+                      ? std::string()
+                      : " reason=" + observation_requests.reason)
+              << std::endl;
+
     orange::calibration::TransactionRequest recording_start_request;
     recording_start_request.owner_id =
         "recording_start_" + get_current_utc_timestamp() + "_" + context;
@@ -4083,11 +4175,7 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
             timing,
             display_frame_rate_stats,
             stop_scheduler,
-            cameras_params,
-            cameras_select,
             num_cameras,
-            yolo_model,
-            crop_size_px,
             crop_producer_workers,
             crop_preview_workers,
             crop_and_encode_workers,
@@ -4151,10 +4239,7 @@ bool gui_poll_async_recording_start(
     orange::gui::GuiDisplayFrameRateStats* display_frame_rate_stats,
     GuiLocalControlStopSchedulerState* stop_scheduler,
     CameraParams* cameras_params,
-    CameraEachSelect* cameras_select,
     const int num_cameras,
-    const std::string& yolo_model,
-    const int crop_size_px,
     PTPParams* ptp_params,
     CropProducerWorker** crop_producer_workers,
     CropPreviewWorker** crop_preview_workers,
@@ -4193,11 +4278,7 @@ bool gui_poll_async_recording_start(
             timing,
             display_frame_rate_stats,
             stop_scheduler,
-            cameras_params,
-            cameras_select,
             num_cameras,
-            yolo_model,
-            crop_size_px,
             crop_producer_workers,
             crop_preview_workers,
             crop_and_encode_workers,
@@ -5366,10 +5447,7 @@ int main(int /*argc*/, char ** /*args*/) {
             &gui_display_frame_rate_stats,
             &gui_local_control_stop_scheduler,
             cameras_params,
-            cameras_select,
             num_cameras,
-            yolo_model,
-            crop_size_px,
             ptp_params,
             cropProducerWorkers.empty() ? nullptr : cropProducerWorkers.data(),
             cropPreviewWorkers.empty() ? nullptr : cropPreviewWorkers.data(),

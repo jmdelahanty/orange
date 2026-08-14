@@ -8,6 +8,8 @@
 #include "recording_ingress.h"
 #include "recording_output_utils.h"
 #include "session/external_crop_recorder_config.h"
+#include "session/recording_observation_request_artifacts.h"
+#include "session/recording_observation_prearm.h"
 #include "gui/spatial_layout/sha256.h"
 
 #include <algorithm>
@@ -3056,7 +3058,7 @@ PreparedRecordingRunStart prepare_recording_run(
         cameras_params,
         num_cameras,
         resolved_base_folder,
-        !external_recorder_requested,
+        false,
         camera_control->sync_camera,
         ptp_params,
         prepared.recording_sink_mode,
@@ -3387,6 +3389,76 @@ RecordingRunStartResult complete_recording_run(
                 : outcome.error_message);
     }
 
+    // All callers must cross this create-once evidence gate before any frame
+    // can be recorded. GUI callers seal earlier, before supervisor startup;
+    // this idempotent check is the lifecycle-level fail-closed backstop.
+    std::string immutable_snapshot_error;
+    if (!seal_immutable_recording_start_snapshot(
+            prepared.recording_folder,
+            nullptr,
+            &immutable_snapshot_error)) {
+        stop_pending_recording_run_lifecycle(
+            &outcome.external_crop_recorder_lifecycle);
+        stop_pending_recording_run_lifecycle(
+            &outcome.external_recorder_lifecycle);
+        cleanup_failed_recording_run_start(
+            state, camera_control, prepared.recording_folder);
+        return failed_recording_run_start_result(
+            prepared,
+            "failed to verify immutable recording-start snapshot: " +
+                immutable_snapshot_error);
+    }
+    RecordingObservationBindingRequestMaterialization observation_requests;
+    RecordingObservationPreArmResult observation_pre_arm;
+    std::string observation_binding_mode_error;
+    const std::string observation_binding_mode =
+        resolve_recording_observation_binding_mode(
+            &observation_binding_mode_error);
+    std::string observation_request_error;
+    if (observation_binding_mode.empty() ||
+        !prepare_recording_observation_pre_arm(
+            prepared.recording_folder,
+            observation_binding_mode,
+            get_current_utc_timestamp(),
+            &observation_requests,
+            &observation_pre_arm,
+            &observation_request_error) ||
+        !update_recording_snapshot_observation_binding_requests(
+            prepared.recording_folder,
+            recording_observation_binding_request_collection_reference(
+                observation_requests),
+            &observation_request_error) ||
+        !update_recording_snapshot_observation_binding_pre_arm(
+            prepared.recording_folder,
+            recording_observation_pre_arm_decision_reference(
+                observation_pre_arm),
+            &observation_request_error)) {
+        stop_pending_recording_run_lifecycle(
+            &outcome.external_crop_recorder_lifecycle);
+        stop_pending_recording_run_lifecycle(
+            &outcome.external_recorder_lifecycle);
+        cleanup_failed_recording_run_start(
+            state, camera_control, prepared.recording_folder);
+        return failed_recording_run_start_result(
+            prepared,
+            "failed to verify recording observation binding requests: " +
+                (observation_binding_mode_error.empty()
+                     ? observation_request_error
+                     : observation_binding_mode_error));
+    }
+    if (!observation_pre_arm.arm_allowed) {
+        stop_pending_recording_run_lifecycle(
+            &outcome.external_crop_recorder_lifecycle);
+        stop_pending_recording_run_lifecycle(
+            &outcome.external_recorder_lifecycle);
+        cleanup_failed_recording_run_start(
+            state, camera_control, prepared.recording_folder);
+        return failed_recording_run_start_result(
+            prepared,
+            "required Citrus observation binding was not accepted before arm: " +
+                observation_pre_arm.reason);
+    }
+
     result.external_recorder_contract_path = prepared.external_recorder_contract_path;
 
     if (outcome.external_recorder_attempted && state) {
@@ -3416,18 +3488,6 @@ RecordingRunStartResult complete_recording_run(
                   << " artifact_root=" << state->external_recorder_lifecycle.plan.artifact_root
                   << std::endl;
 
-        // The snapshot was created during prepare and may already contain
-        // recording-start extensions such as the immutable geometry-contract
-        // reference and direct daily rim-mask entries. Successful supervisor
-        // startup only needs to publish the latest-recording pointer; rewriting
-        // the base snapshot here would erase those extensions.
-        if (!publish_latest_recording_pointer(
-                prepared.resolved_base_folder,
-                prepared.recording_folder,
-                prepared.recording_id)) {
-            std::cerr << "[recording_session] Failed to refresh latest-recording pointer for GUI external recorder run."
-                      << std::endl;
-        }
     }
 
     if (outcome.external_crop_recorder_attempted && state) {
@@ -3473,6 +3533,18 @@ RecordingRunStartResult complete_recording_run(
             std::cerr << "[recording_session] Failed to publish NIC thermal monitor metadata."
                       << std::endl;
         }
+    }
+
+
+    // Publish only after the create-once start evidence exists. Citrus may
+    // discover the mutable snapshot through this pointer, then verify the
+    // immutable reference before accepting a future binding request.
+    if (!publish_latest_recording_pointer(
+            prepared.resolved_base_folder,
+            prepared.recording_folder,
+            prepared.recording_id)) {
+        std::cerr << "[recording_session] Failed to publish latest-recording pointer after sealing start evidence."
+                  << std::endl;
     }
 
     camera_control->record_video = true;

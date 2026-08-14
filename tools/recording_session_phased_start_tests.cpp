@@ -30,6 +30,7 @@
 #include "session/recording_session.h"
 
 #include "external_recorder_lifecycle.h"
+#include "gui/spatial_layout/sha256.h"
 #include "project.h"
 #include "video_capture.h"
 
@@ -640,6 +641,27 @@ void test_successful_start_flips_record_video_at_completion()
     const std::filesystem::path snapshot_path =
         std::filesystem::path(prepared.recording_folder) /
         "recording_snapshot.json";
+    const std::filesystem::path geometry_path =
+        std::filesystem::path(prepared.recording_folder) /
+        "recording_geometry_contract.json";
+    const std::string geometry_bytes = nlohmann::json{
+        {"schema_id", "orange.recording.geometry_contract"},
+        {"schema_version", 1},
+        {"status", "not_configured"},
+        {"selection", {{"configured", false}}},
+        {"cameras", nlohmann::json::object()},
+    }.dump(2) + "\n";
+    {
+        std::ofstream output(geometry_path, std::ios::binary | std::ios::trunc);
+        require(static_cast<bool>(output),
+                "prepared recording geometry fixture must be writable");
+        output.write(
+            geometry_bytes.data(),
+            static_cast<std::streamsize>(geometry_bytes.size()));
+    }
+    const std::string geometry_sha256 =
+        "sha256:" +
+        orange::gui::spatial_layout::checksum::sha256_hex(geometry_bytes);
     nlohmann::json enriched_snapshot;
     {
         std::ifstream input(snapshot_path);
@@ -649,7 +671,7 @@ void test_successful_start_flips_record_video_at_completion()
     }
     enriched_snapshot["recording_geometry_contract"] = {
         {"relative_path", "recording_geometry_contract.json"},
-        {"sha256", "sha256:must_survive_supervisor_start"},
+        {"sha256", geometry_sha256},
     };
     {
         std::ofstream output(snapshot_path, std::ios::trunc);
@@ -683,6 +705,11 @@ void test_successful_start_flips_record_video_at_completion()
             "the lifecycle must be installed and started after completion");
     require(state.external_recorder_last_error.empty(),
             "a successful completion must leave no error");
+    const std::filesystem::path immutable_snapshot_path =
+        std::filesystem::path(prepared.recording_folder) /
+        "recording_snapshot_start.json";
+    require(std::filesystem::exists(immutable_snapshot_path),
+            "successful completion must seal immutable recording-start evidence");
     require(!result.external_recorder_supervisor_plan_path.empty() &&
                 std::filesystem::exists(
                     result.external_recorder_supervisor_plan_path),
@@ -695,9 +722,28 @@ void test_successful_start_flips_record_video_at_completion()
         input >> completed_snapshot;
     }
     require(completed_snapshot.at("recording_geometry_contract").at(
-                "sha256") == "sha256:must_survive_supervisor_start",
+                "sha256") == geometry_sha256,
             "successful supervisor startup must preserve recording-start"
             " snapshot extensions");
+    require(completed_snapshot.at("observation_binding_requests").at(
+                "status") == "unavailable" &&
+                completed_snapshot.at("observation_binding_requests").at(
+                    "reason") == "citrus_canvas_not_selected",
+            "completion must record that no Citrus request was fabricated for"
+            " an unconfigured optional recording");
+    const auto& immutable_reference =
+        completed_snapshot.at("immutable_recording_start_snapshot");
+    require(immutable_reference.at("role") ==
+                "immutable_recording_start_snapshot" &&
+                immutable_reference.at("relative_path") ==
+                    "recording_snapshot_start.json",
+            "completed mutable snapshot must reference immutable start evidence");
+    const std::string immutable_bytes = read_file(immutable_snapshot_path);
+    require(immutable_reference.at("sha256") ==
+                "sha256:" +
+                    orange::gui::spatial_layout::checksum::sha256_hex(
+                        immutable_bytes),
+            "immutable start reference must checksum its exact bytes");
 
     // Tear down the stub-backed run.
     std::string stop_error;

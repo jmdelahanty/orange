@@ -365,6 +365,8 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/session/crop_rolling_sidecars.cpp"
     "${SRC_DIR}/session/recording_observation_binding.cpp"
     "${SRC_DIR}/session/recording_observation_identity.cpp"
+    "${SRC_DIR}/session/recording_observation_prearm.cpp"
+    "${SRC_DIR}/session/recording_observation_request_artifacts.cpp"
     "${SRC_DIR}/session/recording_session.cpp"
     "${SRC_DIR}/shared_recording_output.cpp"
     "${SRC_DIR}/encoder_preprocess_worker.cpp"
@@ -399,6 +401,8 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/session/crop_rolling_sidecars.cpp"
     "${SRC_DIR}/session/recording_observation_binding.cpp"
     "${SRC_DIR}/session/recording_observation_identity.cpp"
+    "${SRC_DIR}/session/recording_observation_prearm.cpp"
+    "${SRC_DIR}/session/recording_observation_request_artifacts.cpp"
     "${SRC_DIR}/session/recording_session.cpp"
     "${SRC_DIR}/recording_output_descriptor.cpp"
     "${SRC_DIR}/video_encode_profile.cpp"
@@ -593,6 +597,8 @@ if(BUILD_TESTING)
         "tools/recording_observation_binding_tests.cpp"
         "${SRC_DIR}/session/recording_observation_binding.cpp"
         "${SRC_DIR}/session/recording_observation_identity.cpp"
+        "${SRC_DIR}/session/recording_observation_prearm.cpp"
+        "${SRC_DIR}/session/recording_observation_request_artifacts.cpp"
     )
     target_include_directories(recording_observation_binding_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(recording_observation_binding_tests PRIVATE cxx_std_17)
@@ -912,6 +918,10 @@ if(BUILD_TESTING)
     add_test(
         NAME orange_citrus_fourcam_orchestrator_profile_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/orange_citrus_fourcam_orchestrator_profile_tests.py")
+
+    add_test(
+        NAME validate_recording_observation_bindings_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/validate_recording_observation_bindings_tests.py")
 
     add_test(
         NAME update_app_config_display_profile_tests

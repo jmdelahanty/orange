@@ -531,24 +531,27 @@ not need to delay this producer-native association chain.
 
 #### Phase A: immutable request and pre-arm acceptance
 
-- [ ] Materialize an immutable recording-start snapshot, distinct from the
+- [x] Materialize an immutable recording-start snapshot, distinct from the
       ordinary `recording_snapshot.json` that finalization may patch.
-- [ ] Have Orange create one sealed binding request per observation edge from
+- [x] Have Orange create one sealed binding request per observation edge from
       recording-bound inputs only.
-- [ ] Persist the identities and request references/digests in the Orange
+- [x] Persist the identities and request references/digests in the Orange
       recording-start envelope.
-- [ ] Transport the exact request to Citrus before experiment activation.
-- [ ] Have Citrus validate the request against its selected rig, canvas,
+- [x] Transport the exact request to Citrus before experiment activation.
+- [x] Have Citrus validate the request against its selected rig, canvas,
       arena, active camera, frozen output folder, and exact Orange geometry
       mirror.
-- [ ] Generate and persist one shared Citrus experiment-group ID plus one
+- [x] Generate and persist one shared Citrus experiment-group ID plus one
       per-arena session UUID.
-- [ ] Embed the exact accepted request and Citrus acceptance in every matching
+- [x] Embed the exact accepted request and Citrus acceptance in every matching
       H5; do not reread `latest_recording.json` for association authority.
-- [ ] Enforce `required`, `optional`, and `not_applicable` arm behavior without
+- [x] Enforce `required`, `optional`, and `not_applicable` arm behavior without
       relabeling a failed Citrus handshake as Orange-only.
-- [ ] Add focused producer tests for acceptance, rejection, stale/mismatched
-      pointers, output-path containment, and four-camera Shadow association.
+- [x] Add focused producer tests for acceptance, rejection, stale/mismatched
+      evidence and pointers, output-path containment, selected-set coverage,
+      local-control replay, and same-process next-recording lifecycle.
+- [ ] Run a live four-camera Shadow Phase-A association and verify all four
+      accepted request/acceptance pairs in the resulting H5 files.
 
 #### Phase B: finalized H5 receipt and parent manifest
 
@@ -824,12 +827,12 @@ immutable request per edge, Citrus returns an acceptance or rejection before
 activation, and a complete H5 becomes authoritative only through a final
 post-close receipt.
 
-The next implementation slice is Phase A above: create the immutable
-recording-start evidence and materialize the Orange request before wiring its
-transport to Citrus. The full context schema, optical/illumination additions,
-historical adapters, and Palette publication binding remain subsequent tracks;
-they must not be represented as already materialized merely because the
-narrower identity and handshake schemas exist.
+Phase A is implemented in Orange and Citrus through H5 start-time embedding,
+with focused producer tests. A live four-camera Shadow validation remains the
+hardware acceptance check. The next code slice is Phase B: post-close H5
+hashing, finalized receipts, Orange verification, and parent-manifest
+materialization. The full context schema, optical/illumination additions,
+historical adapters, and Palette publication binding remain subsequent tracks.
 
 Current production geometry materialization still contains maps such as
 `arena_by_camera` and explicitly rejects a camera appearing under more than one
@@ -852,12 +855,12 @@ Strong today:
   camera/arena <-> physical rim and gate
   Citrus H5 <-> runtime camera/arena geometry
 
-Missing today:
+Missing at census time:
   one reciprocal, producer-native, digest-bound relation among all three
 ```
 
-The desired association exists as individually trustworthy components, but no
-artifact currently proves the complete edge:
+At census time, the desired association existed as individually trustworthy
+components, but no artifact proved the complete edge:
 
 ```text
 Orange recording
@@ -879,7 +882,7 @@ Orange currently knows:
 - in GUI mode, optional post-start evidence that Citrus applied a matching
   daily-registration artifact.
 
-Orange does not currently obtain or persist:
+At census time Orange did not obtain or persist:
 
 - Citrus `session_uuid`;
 - final Citrus H5 path, file size, or SHA-256;
@@ -887,15 +890,20 @@ Orange does not currently obtain or persist:
 - a reciprocal H5 receipt; or
 - a final observation-edge collection.
 
-GUI association is therefore currently:
+GUI association at census time was therefore:
 
 ```text
 recording_id x camera_serial -> arena_id from selected static canvas
 ```
 
-with optional daily-registration confirmation. Headless recording can resolve
+with optional daily-registration confirmation. Headless recording could resolve
 static Citrus geometry from an explicitly configured canvas path, but it does
 not query a live Citrus process or receive an H5 binding.
+
+Phase A now closes the start-time portion of this gap. Orange persists exact
+Citrus acceptance records containing the reserved `session_uuid`, planned H5
+path, and shared Citrus experiment ID. Final H5 size/SHA-256 receipts and the
+parent observation-edge collection remain Phase B work.
 
 Orange's full-frame `stream_id` equals camera serial today. Its live crop is a
 separate, first-class acquisition media stream (`<serial>_crop`) derived from
@@ -916,7 +924,7 @@ first-class edge collection currently represents them.
 
 ### Citrus findings
 
-Citrus currently discovers the active Orange recording through
+Citrus at census time discovered the active Orange recording through
 `latest_recording.json`, creates one `SessionInfo` and H5 per selected arena,
 resolves one active camera for each arena, and writes the H5 beneath:
 
@@ -932,29 +940,34 @@ Each modern H5 can strongly preserve:
 - exact Orange recording-geometry mirror when available; and
 - protocol definition and semantic hash when supported.
 
-Citrus does not currently:
+Citrus did not at census time:
 
 - persist a Citrus experiment group ID in H5;
 - seal a complete Orange/Citrus binding contract in H5;
 - compute a final H5 file SHA-256/size receipt; or
 - return final H5 identity/path/digest to Orange.
 
-The current completion callback contains experiment ID, terminal state,
+The completion callback still contains experiment ID, terminal state,
 reason, and grace timing only.
 
 #### Pointer time-of-check/time-of-use gap
 
-The Citrus review identified a current correctness risk:
+The Citrus review identified this correctness risk in the pre-Phase-A design:
 
 1. Citrus resolves the output directory from the live Orange pointer.
 2. Each `SessionLogger` later rereads that mutable pointer independently to
    embed Orange snapshot/geometry provenance.
 3. No frozen pointer digest or equality check binds the two reads.
 
-If Orange rotates the latest-recording pointer between these operations,
+If Orange rotated the latest-recording pointer between these operations,
 Citrus could create an H5 under recording folder A while embedding Orange
 provenance from recording B. This is the highest-priority association bug to
 close before claiming producer-native observation bindings.
+
+Phase A closes this race for bound sessions. Citrus validates and retains the
+exact accepted Orange request, uses its immutable recording folder and start
+snapshot for H5 creation, and embeds that request and acceptance in the H5.
+The mutable latest-recording pointer remains only a legacy/unbound fallback.
 
 Current Citrus runtime geometry is one active camera-to-arena edge per H5.
 Additional associated camera IDs are metadata, not separate runtime geometry
@@ -1004,12 +1017,12 @@ Historical behavior remains:
 
 | Association component | Present | Incomplete or missing |
 | --- | --- | --- |
-| Orange recording identity | Recording ID/folder/snapshot/session | No sealed cross-artifact observation collection |
+| Orange recording identity | Recording ID/folder/immutable start snapshot/session plus create-once request collection | No finalized cross-artifact observation collection |
 | Acquisition media streams | Full and crop recorders have distinct `stream_id`; Palette inventories both and frame mapping is strong | The future observation context must bind both to one source-camera frame authority rather than treating crop as absent or as a second arena edge |
 | Camera/arena static association | Digest-bound selected canvas geometry | One-arena-per-camera maps and camera-keyed asset paths |
 | Orange physical mask geometry | Strong digest-bound rim/gate and assets | Producer envelope is camera-keyed rather than edge-keyed |
-| Citrus runtime edge | One H5 has one strong active camera/arena runtime contract | No frozen incoming Orange binding; no shared experiment group persisted |
-| Orange-to-Citrus discovery | Mutable latest-recording pointer | Pointer is reread; no frozen request/acknowledgement digest |
+| Citrus runtime edge | One H5 has one strong active camera/arena runtime contract; bound sessions embed the exact accepted Orange request and shared experiment ID | Final H5 receipt is not yet materialized |
+| Orange-to-Citrus discovery | Digest-bound pre-arm request collection and exact Citrus acceptance | Legacy/unbound sessions may still use the mutable pointer fallback |
 | Citrus-to-Orange finalization | Terminal completion state | No H5 path, session UUID, size, checksum, or edge receipt |
 | Palette mask consumption | Strong fail-closed geometry and camera-frame binding | No general observation-context ID or producer-hashed H5 binding |
 | Historical association | Explicit recovery and legacy-negative states | Cannot be upgraded to producer-native evidence |
@@ -1091,9 +1104,9 @@ rejected evidence; it must not be relabeled as Orange-only.
    canonicalization, and comparison rules before wiring either producer.
    **Complete.**
 3. Remove the Citrus pointer reread from association authority by passing one
-   frozen request into every selected arena/session logger.
+   frozen request into every selected arena/session logger. **Complete.**
 4. Persist the accepted binding and shared Citrus experiment group ID in each
-   H5.
+   H5. **Complete.**
 5. Compute the final H5 artifact receipt only after successful close.
 6. Return receipts to Orange and write a parent-level edge collection into the
    finalized `recording_session.json`; rolling clips reference that parent.

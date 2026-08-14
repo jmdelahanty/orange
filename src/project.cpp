@@ -6,6 +6,7 @@
 #include "fnv1a64_fingerprint.h"
 #include "fsuid_guard.h"
 #include "gui/spatial_layout/sha256.h"
+#include "session/recording_observation_identity.h"
 #include "spatial_calibration_snapshot.h"
 #include "video_capture.h"
 #include <unistd.h>      // For gethostname in client_send_bringup_message
@@ -764,10 +765,40 @@ std::string snapshot_camera_serial(const CameraParams& params)
     return std::to_string(params.camera_id);
 }
 
+nlohmann::json build_source_camera_streams_snapshot(
+    const CameraParams* cameras_params,
+    const int num_cameras,
+    const CameraEachSelect* cameras_select)
+{
+    nlohmann::json streams = nlohmann::json::object();
+    for (int index = 0; index < num_cameras; ++index) {
+        if (cameras_select && !cameras_select[index].record) {
+            continue;
+        }
+        const std::string camera_serial =
+            snapshot_camera_serial(cameras_params[index]);
+        if (camera_serial.empty()) {
+            continue;
+        }
+        streams[camera_serial] = {
+            {"schema_id", "orange.recording.source_camera_stream"},
+            {"schema_version", 1},
+            {"camera_id", camera_serial},
+            {"source_camera_stream_id", camera_serial},
+            {"source_camera_stream_identity_policy",
+             orange::session::
+                 kCameraSerialSourceFrameStreamIdentityPolicy},
+            {"role", "canonical_acquisition_source"},
+        };
+    }
+    return streams;
+}
+
 nlohmann::json build_initial_recording_outputs_snapshot(
     const CameraParams* cameras_params,
     const int num_cameras,
-    const std::string& recording_sink_mode)
+    const std::string& recording_sink_mode,
+    const CameraEachSelect* cameras_select)
 {
     nlohmann::json outputs = nlohmann::json::object();
     const std::string sink_mode = normalize_snapshot_recording_sink_mode(recording_sink_mode);
@@ -775,6 +806,9 @@ nlohmann::json build_initial_recording_outputs_snapshot(
     const std::string backend = snapshot_recording_output_backend(sink_mode);
 
     for (int i = 0; i < num_cameras; ++i) {
+        if (cameras_select && !cameras_select[i].record) {
+            continue;
+        }
         const CameraParams& params = cameras_params[i];
         const std::string camera_serial = snapshot_camera_serial(params);
         if (camera_serial.empty()) {
@@ -4086,6 +4120,152 @@ bool write_json_atomic(const std::filesystem::path& path,
     return true;
 }
 
+constexpr const char* kMutableRecordingSnapshotFileName =
+    "recording_snapshot.json";
+constexpr const char* kImmutableRecordingStartSnapshotFileName =
+    "recording_snapshot_start.json";
+constexpr const char* kImmutableRecordingStartSnapshotRole =
+    "immutable_recording_start_snapshot";
+constexpr const char* kImmutableRecordingStartSnapshotReferenceSchemaId =
+    "orange.recording.immutable_start_snapshot_reference";
+constexpr int kImmutableRecordingStartSnapshotReferenceSchemaVersion = 1;
+
+bool write_all_bytes(const int descriptor,
+                     const std::string& bytes,
+                     std::string* error_out)
+{
+    std::size_t written = 0;
+    while (written < bytes.size()) {
+        const ssize_t result = ::write(
+            descriptor,
+            bytes.data() + written,
+            bytes.size() - written);
+        if (result < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            if (error_out) {
+                *error_out = std::string("failed to write immutable recording-start snapshot: ") +
+                    std::strerror(errno);
+            }
+            return false;
+        }
+        if (result == 0) {
+            if (error_out) {
+                *error_out = "short write while creating immutable recording-start snapshot";
+            }
+            return false;
+        }
+        written += static_cast<std::size_t>(result);
+    }
+    return true;
+}
+
+bool create_immutable_file_once(const std::filesystem::path& destination,
+                                const std::string& bytes,
+                                std::string* error_out)
+{
+    const std::filesystem::path temporary =
+        destination.string() + ".tmp." + std::to_string(
+            static_cast<long long>(::getpid())) + "." +
+        std::to_string(static_cast<long long>(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    const int descriptor = ::open(
+        temporary.c_str(),
+        O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+        S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+    if (descriptor < 0) {
+        if (error_out) {
+            *error_out = std::string("failed to create immutable snapshot temporary file: ") +
+                std::strerror(errno);
+        }
+        return false;
+    }
+
+    bool ok = write_all_bytes(descriptor, bytes, error_out);
+    if (ok && ::fsync(descriptor) != 0) {
+        ok = false;
+        if (error_out) {
+            *error_out = std::string("failed to fsync immutable recording-start snapshot: ") +
+                std::strerror(errno);
+        }
+    }
+    if (ok && ::fchmod(descriptor, S_IRUSR | S_IRGRP | S_IROTH) != 0) {
+        ok = false;
+        if (error_out) {
+            *error_out = std::string("failed to make recording-start snapshot read-only: ") +
+                std::strerror(errno);
+        }
+    }
+    if (::close(descriptor) != 0 && ok) {
+        ok = false;
+        if (error_out) {
+            *error_out = std::string("failed to close immutable recording-start snapshot: ") +
+                std::strerror(errno);
+        }
+    }
+    if (!ok) {
+        (void)::unlink(temporary.c_str());
+        return false;
+    }
+
+    if (::link(temporary.c_str(), destination.c_str()) != 0) {
+        const int link_error = errno;
+        (void)::unlink(temporary.c_str());
+        if (link_error == EEXIST) {
+            std::string read_error;
+            const std::string existing =
+                read_file_to_string(destination.string(), &read_error);
+            if (existing == bytes) {
+                return true;
+            }
+            if (error_out) {
+                *error_out =
+                    "immutable recording-start snapshot already exists with different bytes";
+            }
+            return false;
+        }
+        if (error_out) {
+            *error_out = std::string("failed to publish immutable recording-start snapshot: ") +
+                std::strerror(link_error);
+        }
+        return false;
+    }
+    (void)::unlink(temporary.c_str());
+    return true;
+}
+
+nlohmann::json build_immutable_recording_start_snapshot_reference(
+    const std::string& bytes)
+{
+    return {
+        {"schema_id", kImmutableRecordingStartSnapshotReferenceSchemaId},
+        {"schema_version", kImmutableRecordingStartSnapshotReferenceSchemaVersion},
+        {"role", kImmutableRecordingStartSnapshotRole},
+        {"relative_path", kImmutableRecordingStartSnapshotFileName},
+        {"sha256", "sha256:" +
+            orange::gui::spatial_layout::checksum::sha256_hex(bytes)},
+        {"byte_size", static_cast<std::uint64_t>(bytes.size())},
+        {"source_relative_path", kMutableRecordingSnapshotFileName},
+        {"immutability_policy", "create_once_exact_bytes_v1"},
+    };
+}
+
+bool validate_immutable_recording_start_snapshot_reference(
+    const nlohmann::json& reference,
+    const nlohmann::json& expected,
+    std::string* error_out)
+{
+    if (!reference.is_object() || reference != expected) {
+        if (error_out) {
+            *error_out =
+                "recording snapshot immutable-start reference does not match the sealed artifact";
+        }
+        return false;
+    }
+    return true;
+}
+
 constexpr const char* kRecordingGeometryAssetsSchemaId =
     "orange.recording.geometry_assets";
 constexpr int kRecordingGeometryAssetsSchemaVersion = 1;
@@ -5871,10 +6051,13 @@ bool write_recording_snapshot(const std::string& recording_folder,
 
     snapshot["cameras"] = cameras;
     snapshot["camera_runtime"] = camera_runtime;
+    snapshot["source_camera_streams"] = build_source_camera_streams_snapshot(
+        cameras_params, num_cameras, cameras_select);
     snapshot["recording_outputs"] = build_initial_recording_outputs_snapshot(
         cameras_params,
         num_cameras,
-        recording_sink_mode);
+        recording_sink_mode,
+        cameras_select);
     snapshot["sync"] = build_recording_sync_snapshot(sync_camera_enabled, ptp_params, num_cameras);
 
     nlohmann::json gpu_inventory = nlohmann::json::object();
@@ -5905,6 +6088,261 @@ bool write_recording_snapshot(const std::string& recording_folder,
         }
     }
 
+    return true;
+}
+
+bool seal_immutable_recording_start_snapshot(
+    const std::string& recording_folder,
+    nlohmann::json* reference_out,
+    std::string* error_out)
+{
+    if (reference_out) {
+        *reference_out = nlohmann::json::object();
+    }
+    if (error_out) {
+        error_out->clear();
+    }
+    if (recording_folder.empty()) {
+        if (error_out) {
+            *error_out = "recording folder is required to seal the recording-start snapshot";
+        }
+        return false;
+    }
+
+    const std::filesystem::path folder(recording_folder);
+    const std::filesystem::path mutable_path =
+        folder / kMutableRecordingSnapshotFileName;
+    const std::filesystem::path immutable_path =
+        folder / kImmutableRecordingStartSnapshotFileName;
+
+    std::lock_guard<std::mutex> lock(recording_snapshot_mutex());
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+
+    std::string read_error;
+    const std::string mutable_bytes =
+        read_file_to_string(mutable_path.string(), &read_error);
+    if (mutable_bytes.empty()) {
+        if (error_out) {
+            *error_out = "failed to read mutable recording snapshot before sealing: " +
+                (read_error.empty() ? mutable_path.string() : read_error);
+        }
+        return false;
+    }
+    nlohmann::json mutable_snapshot =
+        nlohmann::json::parse(mutable_bytes, nullptr, false);
+    if (mutable_snapshot.is_discarded() || !mutable_snapshot.is_object()) {
+        if (error_out) {
+            *error_out = "mutable recording snapshot is not valid JSON object evidence";
+        }
+        return false;
+    }
+
+    std::error_code exists_error;
+    const bool immutable_exists =
+        std::filesystem::is_regular_file(immutable_path, exists_error) &&
+        !exists_error;
+    std::string immutable_bytes;
+    if (immutable_exists) {
+        immutable_bytes =
+            read_file_to_string(immutable_path.string(), &read_error);
+        if (immutable_bytes.empty()) {
+            if (error_out) {
+                *error_out = "existing immutable recording-start snapshot is unreadable";
+            }
+            return false;
+        }
+        const nlohmann::json immutable_snapshot =
+            nlohmann::json::parse(immutable_bytes, nullptr, false);
+        if (immutable_snapshot.is_discarded() ||
+            !immutable_snapshot.is_object() ||
+            immutable_snapshot.value("recording_id", "") !=
+                mutable_snapshot.value("recording_id", "")) {
+            if (error_out) {
+                *error_out =
+                "existing immutable recording-start snapshot belongs to a different or invalid recording";
+            }
+            return false;
+        }
+        if (!mutable_snapshot.contains("immutable_recording_start_snapshot") &&
+            immutable_bytes != mutable_bytes) {
+            if (error_out) {
+                *error_out =
+                    "unreferenced immutable recording-start snapshot does not match the current start evidence";
+            }
+            return false;
+        }
+        const std::filesystem::perms permissions =
+            std::filesystem::status(immutable_path, exists_error).permissions();
+        if (exists_error ||
+            (permissions & (std::filesystem::perms::owner_write |
+                            std::filesystem::perms::group_write |
+                            std::filesystem::perms::others_write)) !=
+                std::filesystem::perms::none) {
+            if (error_out) {
+                *error_out =
+                    "immutable recording-start snapshot is writable or its permissions are unavailable";
+            }
+            return false;
+        }
+    } else {
+        if (mutable_snapshot.contains("immutable_recording_start_snapshot")) {
+            if (error_out) {
+                *error_out =
+                    "mutable snapshot references an immutable recording-start snapshot that is missing";
+            }
+            return false;
+        }
+        immutable_bytes = mutable_bytes;
+        if (!create_immutable_file_once(
+                immutable_path, immutable_bytes, error_out)) {
+            return false;
+        }
+    }
+
+    const nlohmann::json reference =
+        build_immutable_recording_start_snapshot_reference(immutable_bytes);
+    if (mutable_snapshot.contains("immutable_recording_start_snapshot")) {
+        if (!validate_immutable_recording_start_snapshot_reference(
+                mutable_snapshot.at("immutable_recording_start_snapshot"),
+                reference,
+                error_out)) {
+            return false;
+        }
+    } else {
+        mutable_snapshot["immutable_recording_start_snapshot"] = reference;
+        std::string write_error;
+        if (!write_json_atomic(
+                mutable_path,
+                mutable_snapshot,
+                std::filesystem::perms::unknown,
+                false,
+                "recording snapshot immutable-start reference",
+                &write_error)) {
+            if (error_out) {
+                *error_out = write_error.empty()
+                    ? "failed to reference immutable recording-start snapshot"
+                    : write_error;
+            }
+            return false;
+        }
+    }
+
+    if (reference_out) {
+        *reference_out = reference;
+    }
+    return true;
+}
+
+bool update_recording_snapshot_observation_binding_requests(
+    const std::string& recording_folder,
+    const nlohmann::json& request_collection,
+    std::string* error_out)
+{
+    if (error_out) {
+        error_out->clear();
+    }
+    if (recording_folder.empty() || !request_collection.is_object()) {
+        if (error_out) {
+            *error_out =
+                "recording folder and observation binding request collection are required";
+        }
+        return false;
+    }
+    const std::filesystem::path snapshot_path =
+        std::filesystem::path(recording_folder) /
+        kMutableRecordingSnapshotFileName;
+    std::lock_guard<std::mutex> lock(recording_snapshot_mutex());
+    nlohmann::json snapshot;
+    if (!read_recording_snapshot_locked(snapshot_path, &snapshot)) {
+        if (error_out) {
+            *error_out = "failed to read recording snapshot";
+        }
+        return false;
+    }
+    const auto existing = snapshot.find("observation_binding_requests");
+    if (existing != snapshot.end() && *existing != request_collection) {
+        if (error_out) {
+            *error_out =
+                "recording snapshot already has a different observation binding request collection";
+        }
+        return false;
+    }
+    snapshot["observation_binding_requests"] = request_collection;
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    std::string write_error;
+    if (!write_json_atomic(
+            snapshot_path,
+            snapshot,
+            std::filesystem::perms::unknown,
+            false,
+            "recording snapshot observation binding requests",
+            &write_error)) {
+        if (error_out) {
+            *error_out = write_error.empty()
+                ? "failed to write observation binding request references"
+                : write_error;
+        }
+        return false;
+    }
+    return true;
+}
+
+bool update_recording_snapshot_observation_binding_pre_arm(
+    const std::string& recording_folder,
+    const nlohmann::json& pre_arm_decision,
+    std::string* error_out)
+{
+    if (error_out) {
+        error_out->clear();
+    }
+    if (recording_folder.empty() || !pre_arm_decision.is_object()) {
+        if (error_out) {
+            *error_out =
+                "recording folder and observation binding pre-arm decision are required";
+        }
+        return false;
+    }
+    const std::filesystem::path snapshot_path =
+        std::filesystem::path(recording_folder) /
+        kMutableRecordingSnapshotFileName;
+    std::lock_guard<std::mutex> lock(recording_snapshot_mutex());
+    nlohmann::json snapshot;
+    if (!read_recording_snapshot_locked(snapshot_path, &snapshot)) {
+        if (error_out) {
+            *error_out = "failed to read recording snapshot";
+        }
+        return false;
+    }
+    const auto existing = snapshot.find("observation_binding_pre_arm");
+    if (existing != snapshot.end() && *existing != pre_arm_decision) {
+        if (error_out) {
+            *error_out =
+                "recording snapshot already has a different observation binding pre-arm decision";
+        }
+        return false;
+    }
+    snapshot["observation_binding_pre_arm"] = pre_arm_decision;
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    std::string write_error;
+    if (!write_json_atomic(
+            snapshot_path,
+            snapshot,
+            std::filesystem::perms::unknown,
+            false,
+            "recording snapshot observation binding pre-arm decision",
+            &write_error)) {
+        if (error_out) {
+            *error_out = write_error.empty()
+                ? "failed to write observation binding pre-arm decision reference"
+                : write_error;
+        }
+        return false;
+    }
     return true;
 }
 

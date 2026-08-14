@@ -6,6 +6,7 @@
 #include "fnv1a64_fingerprint.h"
 #include "gui/spatial_layout/sha256.h"
 #include "project.h"
+#include "session/recording_observation_identity.h"
 #include "video_capture.h"
 
 #include <cstdlib>
@@ -925,6 +926,162 @@ void test_recording_geometry_contract_is_always_written()
     std::filesystem::remove_all(recording_folder);
 }
 
+void test_immutable_recording_start_snapshot_is_exact_and_create_once()
+{
+    const std::filesystem::path recording_folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_recording_start_snapshot_" +
+         std::to_string(static_cast<long long>(getpid())));
+    std::filesystem::remove_all(recording_folder);
+    std::filesystem::create_directories(recording_folder);
+
+    const std::filesystem::path mutable_path =
+        recording_folder / "recording_snapshot.json";
+    const std::filesystem::path immutable_path =
+        recording_folder / "recording_snapshot_start.json";
+    const std::string start_bytes =
+        "{\n  \"schema_version\": 2,\n  \"recording_id\": \"run_start\",\n"
+        "  \"recording_geometry_contract\": {\"sha256\": \"sha256:geometry\"}\n}\n";
+    write_exact_fixture(mutable_path, start_bytes);
+
+    nlohmann::json reference;
+    std::string error;
+    require(
+        seal_immutable_recording_start_snapshot(
+            recording_folder.string(), &reference, &error),
+        "first immutable snapshot seal should pass: " + error);
+    require(read_exact_fixture(immutable_path) == start_bytes,
+            "immutable start artifact must preserve the exact source bytes");
+    require(reference.at("role") == "immutable_recording_start_snapshot",
+            "immutable start artifact role");
+    require(reference.at("relative_path") == "recording_snapshot_start.json",
+            "immutable start artifact relative path");
+    require(reference.at("byte_size").get<std::uint64_t>() == start_bytes.size(),
+            "immutable start artifact byte size");
+    require(reference.at("sha256") == "sha256:" +
+                orange::gui::spatial_layout::checksum::sha256_hex(start_bytes),
+            "immutable start artifact exact-byte checksum");
+
+    const nlohmann::json mutable_after_seal =
+        nlohmann::json::parse(read_exact_fixture(mutable_path));
+    require(mutable_after_seal.at("immutable_recording_start_snapshot") == reference,
+            "mutable snapshot must reference the sealed artifact");
+
+    std::error_code permission_error;
+    const auto immutable_permissions =
+        std::filesystem::status(immutable_path, permission_error).permissions();
+    require(!permission_error,
+            "immutable start artifact permissions must be inspectable");
+    require((immutable_permissions & std::filesystem::perms::owner_write) ==
+                std::filesystem::perms::none,
+            "immutable start artifact must not be owner-writable");
+
+    require(update_recording_snapshot_session_artifacts(
+                recording_folder.string(), {{"finalized", true}}),
+            "mutable recording snapshot should remain enrichable after sealing");
+    require(read_exact_fixture(immutable_path) == start_bytes,
+            "later mutable-snapshot enrichment must not change start evidence");
+
+    nlohmann::json repeated_reference;
+    require(
+        seal_immutable_recording_start_snapshot(
+            recording_folder.string(), &repeated_reference, &error),
+        "idempotent immutable snapshot verification should pass: " + error);
+    require(repeated_reference == reference,
+            "repeated seal should return the original exact reference");
+
+    std::filesystem::permissions(
+        immutable_path,
+        std::filesystem::perms::owner_write,
+        std::filesystem::perm_options::add,
+        permission_error);
+    require(!permission_error, "test must be able to simulate artifact tampering");
+    require(
+        !seal_immutable_recording_start_snapshot(
+            recording_folder.string(), nullptr, &error),
+        "writable immutable start evidence must fail closed");
+    require(error.find("writable") != std::string::npos,
+            "writable immutable start evidence should report its policy violation");
+    write_exact_fixture(
+        immutable_path,
+        "{\"recording_id\":\"run_start\",\"tampered\":true}\n");
+    std::filesystem::permissions(
+        immutable_path,
+        std::filesystem::perms::owner_read |
+            std::filesystem::perms::group_read |
+            std::filesystem::perms::others_read,
+        std::filesystem::perm_options::replace,
+        permission_error);
+    require(!permission_error,
+            "test must restore read-only permissions after byte tampering");
+    require(
+        !seal_immutable_recording_start_snapshot(
+            recording_folder.string(), nullptr, &error),
+        "tampered immutable start evidence must fail closed");
+    require(error.find("does not match") != std::string::npos,
+            "tampered immutable start evidence should report a digest/reference mismatch");
+
+    std::filesystem::remove_all(recording_folder);
+}
+
+void test_recording_snapshot_source_streams_follow_record_selection()
+{
+    const std::filesystem::path recording_folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_source_stream_snapshot_" +
+         std::to_string(static_cast<long long>(getpid())));
+    std::filesystem::remove_all(recording_folder);
+    std::filesystem::create_directories(recording_folder);
+
+    CameraParams cameras[2]{};
+    cameras[0].camera_serial = "2010095";
+    cameras[0].camera_id = 0;
+    cameras[0].width = 4512;
+    cameras[0].height = 4512;
+    cameras[0].frame_rate = 100;
+    cameras[1].camera_serial = "2010096";
+    cameras[1].camera_id = 1;
+    cameras[1].width = 4512;
+    cameras[1].height = 4512;
+    cameras[1].frame_rate = 100;
+    CameraEachSelect selection[2]{};
+    selection[0].record = true;
+    selection[1].record = false;
+    selection[1].yolo = true;
+
+    require(write_recording_snapshot(
+                recording_folder.string(),
+                "source_stream_run",
+                cameras,
+                2,
+                recording_folder.parent_path().string(),
+                false,
+                false,
+                nullptr,
+                "external_ipc",
+                nullptr,
+                0,
+                selection),
+            "recording snapshot with record selection should write");
+    const nlohmann::json snapshot = nlohmann::json::parse(read_exact_fixture(
+        recording_folder / "recording_snapshot.json"));
+    require(snapshot.at("source_camera_streams").size() == 1 &&
+                snapshot.at("source_camera_streams").contains("2010095"),
+            "only record-selected cameras should become canonical source streams");
+    require(!snapshot.at("source_camera_streams").contains("2010096"),
+            "analytics-only camera must not become a recording observation source");
+    const auto& source = snapshot.at("source_camera_streams").at("2010095");
+    require(source.at("source_camera_stream_id") == "2010095" &&
+                source.at("source_camera_stream_identity_policy") ==
+                    orange::session::
+                        kCameraSerialSourceFrameStreamIdentityPolicy,
+            "source stream must freeze the camera-serial identity policy");
+    require(snapshot.at("recording_outputs").size() == 1 &&
+                snapshot.at("recording_outputs").contains("2010095"),
+            "initial recording outputs should follow the same record selection");
+    std::filesystem::remove_all(recording_folder);
+}
+
 }  // namespace
 
 int main()
@@ -953,6 +1110,10 @@ int main()
          &test_recording_geometry_asset_failure_is_nonblocking},
         {"recording_geometry_contract_is_always_written",
          &test_recording_geometry_contract_is_always_written},
+        {"immutable_recording_start_snapshot_is_exact_and_create_once",
+         &test_immutable_recording_start_snapshot_is_exact_and_create_once},
+        {"recording_snapshot_source_streams_follow_record_selection",
+         &test_recording_snapshot_source_streams_follow_record_selection},
     };
 
     for (const auto& test : tests) {

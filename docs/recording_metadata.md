@@ -449,6 +449,75 @@ calibration image sets are normally camera/arena aggregates such as
 `artifacts/Cam2010093_arena_1/`, and top-rim observations may live beneath
 that aggregate in `top_rim_observations/<artifact_id>/`.
 
+For newly started recordings, `recording_snapshot.json` remains the mutable
+session document and carries an `immutable_recording_start_snapshot` reference
+to `recording_snapshot_start.json`. Orange creates that second file exactly
+once after recording-start geometry and runtime selections are frozen but
+before camera acquisition can record a frame. Its bytes are an exact copy of
+the mutable snapshot at that boundary, are written read-only, and are never
+patched by monitoring or finalization. The reference contains:
+
+```json
+{
+  "schema_id": "orange.recording.immutable_start_snapshot_reference",
+  "schema_version": 1,
+  "role": "immutable_recording_start_snapshot",
+  "relative_path": "recording_snapshot_start.json",
+  "sha256": "sha256:<exact-file-bytes>",
+  "byte_size": 12345,
+  "source_relative_path": "recording_snapshot.json",
+  "immutability_policy": "create_once_exact_bytes_v1"
+}
+```
+
+Repeated sealing verifies the existing bytes, digest reference, recording ID,
+and read-only permissions. It never replaces the artifact. Missing, writable,
+or contradictory evidence fails recording activation closed. Future
+Orange/Citrus binding requests use the immutable file's path and digest rather
+than binding to the later mutable `recording_snapshot.json` bytes.
+
+After sealing the start snapshot, Orange materializes one read-only
+`recording_observation_bindings/requests/obsctx_<sha256>.json` request for each
+recording-bound source-camera-to-arena edge. The sealed
+`source_camera_streams` inventory is authoritative for edge participation;
+full-frame and crop videos are media products of that source rather than new
+observation identities. The create-once
+`recording_observation_bindings/request_collection.json` inventories the exact
+observation identity, request ID/contract digest, relative path, file SHA-256,
+and byte size for every request. Mutable `recording_snapshot.json` stores only
+the collection reference and an explicit `materialized` or `unavailable`
+status. Absence of a selected compatible Citrus canvas does not fabricate a
+request and does not block an optional Orange recording; contradictory or
+tampered recording-bound evidence fails activation closed.
+
+Orange then performs one bounded, atomic pre-arm transaction for the complete
+request collection. Configure its policy with:
+
+```text
+ORANGE_CITRUS_OBSERVATION_BINDING_MODE=required|optional|not_applicable
+```
+
+The default is `optional`. `required` rejects arm unless Citrus accepts every
+selected edge; `optional` records a controlled `unbound` state when Citrus is
+unavailable or rejects the request; `not_applicable` deliberately skips all
+Citrus communication for an Orange-only recording. The socket defaults to the
+normal Citrus local-control socket and can be overridden with
+`ORANGE_CITRUS_OBSERVATION_BINDING_SOCKET`; the bounded timeout defaults to
+1500 ms and can be changed with
+`ORANGE_CITRUS_OBSERVATION_BINDING_TIMEOUT_MS`.
+
+Exact acceptance/rejection envelopes are stored read-only under
+`recording_observation_bindings/acceptances/`. The create-once
+`recording_observation_bindings/pre_arm_decision.json` records the binding
+mode, lifecycle (`accepted_pending_finalization`, `unbound`, or
+`not_applicable`), arm decision, request collection, and acceptance references.
+The mutable recording snapshot contains only digest-bound references to these
+artifacts. A Citrus H5 for an accepted edge embeds the exact request and
+acceptance under `/recording_observation_binding` and obtains the frozen Orange
+snapshot/geometry from that request rather than rereading the mutable latest
+pointer. Final `bound` status still requires the unimplemented post-close H5
+receipt and Orange final-manifest verification.
+
 GUI recording hook:
 
 ```bash
