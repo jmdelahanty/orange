@@ -1,7 +1,7 @@
 # Orange/Citrus Recording Observation Binding Contract
 
-Status: schema-v1 identity and handshake freeze; runtime wiring not yet
-implemented
+Status: schema-v1 Phase A implemented and validated; finalized-H5 receipt and
+parent-manifest Phase B remain open
 
 Date: 2026-08-13
 
@@ -327,18 +327,25 @@ and the mismatch occurred before experiment arm.
 
 ## Recording and H5 materialization
 
-Planned producer wiring:
+Current Phase-A producer wiring:
 
 ```text
 recording_snapshot.json
-  observation_identities[]
-  observation_binding_requests[]
+  observation_binding_requests reference
+  observation_binding_pre_arm reference
+
+recording_observation_bindings/
+  request_collection.json
+  requests/obsctx_<sha256>.json
+  acceptances/obsctx_<sha256>.json
+  pre_arm_decision.json
 
 Citrus H5
   /recording_observation_binding/request_json
   /recording_observation_binding/acceptance_json
 
 recording_session.json
+  # Phase B, not yet implemented:
   observation_contexts[]
     identity reference/digest
     request reference/digest
@@ -348,6 +355,56 @@ recording_session.json
 
 Rolling clip manifests reference the parent observation contexts. They do not
 duplicate or mint new observation IDs.
+
+### Automated four-camera acceptance
+
+The noninteractive Orange/Citrus coordinator is the live Phase-A acceptance
+path. It launches both GUI processes under the workstation's existing X11
+session, but all lifecycle control is performed through their local-control
+sockets; no operator interaction with either GUI is required after launch.
+
+The four-camera profile defaults to:
+
+```text
+ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH=/home/jeremy/citrus/targets/rigs/omnifin0/shadow/shadow.json
+ORANGE_CITRUS_OBSERVATION_BINDING_MODE=required
+ORANGE_CITRUS_OBSERVATION_BINDING_SOCKET=/tmp/citrus_local_control.sock
+ORANGE_CITRUS_OBSERVATION_BINDING_TIMEOUT_MS=5000
+```
+
+After Orange and Citrus finalize, the profile runs
+`scripts/validate_recording_observation_bindings.py`. For Shadow it requires
+exactly four request artifacts, four accepted responses sharing one Citrus
+experiment ID, four distinct camera/arena edges, four COMPLETE planned H5
+files, and byte-equivalent request/acceptance JSON embedded in each H5. Any
+optional/unbound fallback, missing H5, target mismatch, digest mismatch, or
+partial embedding fails the orchestrated run.
+
+The live smoke command is:
+
+```bash
+scripts/run_orange_citrus_fourcam_orchestrator.sh \
+  --execute \
+  --record-seconds 8 \
+  --citrus-run-seconds 5 \
+  --daily-registration-mode base_only
+```
+
+The runtime-mode option is intentionally explicit for commissioning-base
+acceptance smokes whose purpose is association validation rather than daily
+dish placement. The generic orchestrator default is `preserve`; it never
+silently clears a valid operator-selected daily registration. If the preserved
+selection is stale, Citrus remains fail-closed and reports that the operator
+must select `base_only` or perform a new daily registration.
+
+The installed Orange privilege wrapper also relays orchestrator cleanup
+signals to the root Orange GUI child and waits for that child to exit. This
+prevents a failed pre-recording readiness check from leaving a streaming GUI
+and root-owned local-control socket behind.
+
+Citrus still requires the real projector OpenGL display and therefore is not
+displayless. The run is nevertheless suitable for SSH/tmux operation through
+the workstation's configured `DISPLAY=:1` and Xauthority.
 
 ## Historical policy
 
@@ -366,7 +423,7 @@ IDs use `<serial>_crop`. This is evidence for the v1 source-frame policy and for
 the separate media-stream inventory—not a promise that recorder transport can
 never carry other identifiers.
 
-## Implementation boundary at this freeze
+## Implementation boundary
 
 Implemented in Orange now:
 
@@ -378,16 +435,52 @@ Implemented in Orange now:
 - pure seal/validation functions for all three digest envelopes and their
   reciprocal chain; and
 - focused failure tests for mismatched targets and digests, unsafe paths,
-  rejected handshakes, and final H5 path disagreement.
+  rejected handshakes, and final H5 path disagreement; and
+- create-once `recording_snapshot_start.json` materialization after
+  recording-start geometry/runtime enrichment and before camera acquisition,
+  with an exact-byte SHA-256 reference in the mutable
+  `recording_snapshot.json`; and
+- one create-once, read-only binding request per recording-bound
+  camera-to-arena edge plus a digest-bound request collection manifest. The
+  current writer intersects resolved Citrus geometry with the sealed canonical
+  source-camera stream inventory, enforces one arena per source stream, and records an
+  explicit unavailable state instead of fabricating an edge when compatible
+  Citrus geometry is absent;
+- a bounded batch request over the existing Citrus local-control Unix socket,
+  with one exact request collection defining the atomic selected-arena set;
+- create-once exact Citrus acceptance artifacts and a create-once pre-arm
+  decision;
+- explicit `required`, `optional`, and `not_applicable` policy, defaulting to
+  `optional` unless `ORANGE_CITRUS_OBSERVATION_BINDING_MODE` is set;
+- Citrus validation of the immutable collection, request envelopes, recording
+  snapshot and geometry bytes, selected rig/canvas/arena, exactly one active
+  camera for each selected arena, protocol filename, and output containment;
+- one shared deterministic Citrus experiment ID and one deterministic
+  per-edge session UUID/H5 path;
+- single-use start reservations that can be replaced only after the previous
+  reservation has been consumed; and
+- exact request and acceptance JSON under each matching H5's
+  `/recording_observation_binding`, with the logger resolving Orange evidence
+  from the accepted immutable request rather than `latest_recording.json`.
 
-These are contract foundations only. They do not yet write recording artifacts
-or communicate with Citrus.
+The Phase-A association remains `accepted_pending_finalization`. It is not
+`bound` until the post-close receipt below is implemented and verified.
 
 Not implemented yet:
 
-- request materialization at Orange recording preparation;
-- Orange-to-Citrus request transport;
-- Citrus validation or H5 embedding;
 - Citrus final H5 hashing and receipt return;
 - Orange final manifest integration; or
 - Palette consumption of the producer-native binding.
+
+Operational controls:
+
+```text
+ORANGE_CITRUS_OBSERVATION_BINDING_MODE=required|optional|not_applicable
+ORANGE_CITRUS_OBSERVATION_BINDING_SOCKET=/tmp/citrus_local_control.sock
+ORANGE_CITRUS_OBSERVATION_BINDING_TIMEOUT_MS=1500
+```
+
+`required` blocks Orange arm unless every selected edge is accepted.
+`optional` persists a controlled unbound reason and permits Orange recording.
+`not_applicable` does not contact Citrus and is reserved for intentionally
+Orange-only recordings.

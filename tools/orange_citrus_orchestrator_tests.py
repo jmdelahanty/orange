@@ -143,15 +143,92 @@ def test_request_builders_and_readiness_helpers() -> None:
     module = load_module()
     orange_start = module.build_orange_start_request("op-1", "req-start", "test")
     citrus_start = module.build_citrus_start_request("op-1", "req-citrus", "test")
+    citrus_base_only = module.build_citrus_daily_registration_mode_request(
+        "op-1", "req-base-only", "test", "base_only"
+    )
 
     require(orange_start["schema_id"] == "orange.local_control.request", "orange schema")
     require(orange_start["method"] == "start_recording", "orange start method")
     require(orange_start["operation_id"] == "op-1", "orange operation id")
     require(citrus_start["schema_id"] == "citrus.local_control.request", "citrus schema")
     require(citrus_start["method"] == "start_experiment", "citrus start method")
+    require(
+        citrus_base_only["method"] == "select_daily_registration_runtime_mode",
+        "Citrus runtime-mode method",
+    )
+    require(
+        citrus_base_only["params"]
+        == {"mode": "base_only", "select_runtime_mode_armed": True},
+        "Citrus base-only request must be explicitly armed",
+    )
     require(module.orange_ready_for_recording(orange_status(False, False)), "orange ready")
+    warming_status = orange_status(False, False)
+    warming_status["autorun_stage"] = "stream_warmup"
+    require(
+        not module.orange_ready_for_recording(warming_status),
+        "orchestrator must not start recording during Orange stream warmup",
+    )
+    warming_status["autorun_stage"] = "done"
+    require(
+        module.orange_ready_for_recording(warming_status),
+        "orchestrator should accept completed Orange stream warmup",
+    )
     require(module.orange_ready_for_citrus(orange_status(True, False)), "orange recording")
     require(module.orange_recording_finalized(orange_status(True, True)), "orange finalized")
+    require(
+        module.orange_wait_failure(
+            {"autorun_stage": "failed"},
+            description="ready_for_recording_request",
+            operation_id="op-1",
+        )
+        == "Orange GUI autorun reported stage=failed",
+        "Orange autorun failure must fail readiness immediately",
+    )
+    require(
+        "recording start failed" in module.orange_wait_failure(
+            {
+                "local_control": {
+                    "recording_start": {
+                        "last_event": "start_failed",
+                        "operation_id": "op-1",
+                    }
+                }
+            },
+            description="ready_for_citrus_experiment",
+            operation_id="op-1",
+        ),
+        "matching asynchronous recording-start failure must fail readiness immediately",
+    )
+    require(
+        module.orange_recording_start_failed_for_operation(
+            {
+                "local_control": {
+                    "recording_start": {
+                        "last_event": "start_failed",
+                        "operation_id": "op-1",
+                    }
+                }
+            },
+            "op-1",
+        ),
+        "GUI start failure must distinguish queued ACK from active recording",
+    )
+    require(
+        module.orange_wait_failure(
+            {
+                "local_control": {
+                    "recording_start": {
+                        "last_event": "start_failed",
+                        "operation_id": "some-other-operation",
+                    }
+                }
+            },
+            description="ready_for_citrus_experiment",
+            operation_id="op-1",
+        )
+        == "",
+        "attach mode must ignore stale recording-start failure from another operation",
+    )
     require(
         not module.orange_ready_for_recording(
             {"readiness": {"ready_for_recording_request": "true"}}
@@ -234,6 +311,13 @@ def test_request_builders_and_readiness_helpers() -> None:
         "explicit Orange stop grace should override policy defaults",
     )
     require(module.citrus_ready_to_start(citrus_status(False, False)), "citrus ready")
+    selectable_status = citrus_status(False, False)
+    selectable_status["experiment"]["loaded"] = True
+    selectable_status["readiness"]["selected_arena_count"] = 4
+    require(
+        module.citrus_ready_for_runtime_selection(selectable_status),
+        "loaded Citrus canvas should be ready for explicit runtime selection",
+    )
     require(
         not module.citrus_ready_to_start({"readiness": {"ready_to_start": "true"}}),
         "citrus readiness helper must reject truthy-string booleans",
@@ -310,6 +394,11 @@ def test_dry_run_default_does_not_open_sockets() -> None:
     require(
         payload["citrus"]["start_request"]["method"] == "start_experiment",
         "dry-run should show Citrus start request",
+    )
+    require(
+        payload["citrus"]["daily_registration_mode"] == "preserve"
+        and payload["citrus"]["daily_registration_mode_request"] is None,
+        "generic orchestrator must preserve the operator's daily selection by default",
     )
     require(
         payload["citrus"]["env_overlay"]["CITRUS_PERF_JSONL"] == "1",
@@ -3218,6 +3307,46 @@ def test_wait_reports_launched_process_exit() -> None:
     )
 
 
+def test_wait_clears_provisional_recording_state_after_gui_start_failure() -> None:
+    module = load_module()
+    args = module.parse_args(
+        [
+            "--execute",
+            "--operation-id",
+            "op-start-failed",
+            "--poll-interval-seconds",
+            "0.01",
+            "--timeout-seconds",
+            "1",
+        ]
+    )
+    orchestrator = module.Orchestrator(args)
+    orchestrator.orange_recording_started = True
+    failed_status = orange_status(False, False, operation_id="op-start-failed")
+    failed_status["local_control"]["recording_start"] = {
+        "last_event": "start_failed",
+        "operation_id": "op-start-failed",
+    }
+    orchestrator.status = lambda label, schema_id, socket_path: ({}, failed_status)
+    try:
+        orchestrator.wait_for_status(
+            "orange",
+            module.ORANGE_REQUEST_SCHEMA_ID,
+            "/tmp/not-used.sock",
+            lambda status: False,
+            1,
+            "ready_for_citrus_experiment",
+        )
+    except module.OrchestratorError as exc:
+        require("recording start failed" in str(exc), "wait should report GUI start failure")
+    else:
+        raise AssertionError("expected GUI recording-start failure")
+    require(
+        not orchestrator.orange_recording_started,
+        "failed queued start must not preserve Orange as though recording were active",
+    )
+
+
 def test_post_terminal_citrus_exit_is_not_an_orange_wait_failure() -> None:
     module = load_module()
     args = module.parse_args(
@@ -3486,6 +3615,7 @@ def main() -> int:
         test_execute_requires_orange_local_control_event_log_when_enabled,
         test_failure_summary_uses_last_known_status_for_artifacts,
         test_wait_reports_launched_process_exit,
+        test_wait_clears_provisional_recording_state_after_gui_start_failure,
         test_post_terminal_citrus_exit_is_not_an_orange_wait_failure,
         test_clean_orange_exit_after_manifest_finalization_is_accepted,
         test_manifest_inferred_status_prefers_command_source,

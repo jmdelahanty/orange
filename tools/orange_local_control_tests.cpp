@@ -145,7 +145,7 @@ LocalControlStatusSnapshot healthy_status()
 LocalControlStatusSnapshot preflight_ready_status()
 {
     LocalControlStatusSnapshot status = healthy_status();
-    status.autorun_stage = "streaming";
+    status.autorun_stage = "done";
     status.recording_active = false;
     status.recording_finalizing = false;
     status.recording_finalized = false;
@@ -260,6 +260,7 @@ void test_status_request_returns_readiness_snapshot()
 void test_status_readiness_matches_expected_camera_sets_without_order_sensitivity()
 {
     LocalControlStatusSnapshot status = healthy_status();
+    status.autorun_stage = "done";
     status.recording_active = false;
     status.active_recorders = 0;
     status.open_camera_serials = {"2010094", "2010093"};
@@ -278,6 +279,16 @@ void test_status_readiness_matches_expected_camera_sets_without_order_sensitivit
             "streaming configured state should be ready for recording request");
     require(!json["readiness"]["ready_for_citrus_experiment"].get<bool>(),
             "Citrus should not start before Orange recording is active");
+
+    status.autorun_stage = "stream_warmup";
+    const nlohmann::json warming_up =
+        orange::control::LocalControlStatusSnapshotToJson(status);
+    require(!warming_up["readiness"]["recording_start_warmup_complete"].get<bool>(),
+            "stream warmup should be explicit in local-control readiness");
+    require(!warming_up["readiness"]["ready_for_recording_request"].get<bool>(),
+            "recording start must remain blocked during stream warmup");
+
+    status.autorun_stage = "done";
 
     status.record_selected_camera_serials = {"2010093"};
     const nlohmann::json mismatch =

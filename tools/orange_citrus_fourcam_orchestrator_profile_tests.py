@@ -119,6 +119,20 @@ def test_default_dry_run_builds_live_profile() -> None:
             "profile should pass the operation-scoped local-control event log to Orange",
         )
         require(
+            orange_env["ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH"]
+            == "/home/jeremy/citrus/targets/rigs/omnifin0/shadow/shadow.json",
+            "profile should bind Orange recording geometry to Shadow",
+        )
+        require(
+            orange_env["ORANGE_CITRUS_OBSERVATION_BINDING_MODE"] == "required",
+            "profile should fail closed on the Phase-A binding handshake",
+        )
+        require(
+            orange_env["ORANGE_CITRUS_OBSERVATION_BINDING_SOCKET"]
+            == "/tmp/citrus_local_control.sock",
+            "profile should bind over the orchestrated Citrus socket",
+        )
+        require(
             citrus_env["CITRUS_GUI_AUTORUN"] == "1",
             "profile should use Citrus autorun as the setup loader",
         )
@@ -129,6 +143,11 @@ def test_default_dry_run_builds_live_profile() -> None:
         require(
             citrus["run_seconds"] == 0.0,
             "profile should not impose a Citrus stop duration by default",
+        )
+        require(
+            citrus["daily_registration_mode"] == "preserve"
+            and citrus["daily_registration_mode_request"] is None,
+            "profile must preserve the operator's daily selection by default",
         )
         require(
             citrus_env["CITRUS_GUI_AUTORUN_RIG"] == "omnifin0",
@@ -150,8 +169,9 @@ def test_default_dry_run_builds_live_profile() -> None:
             citrus_env["CITRUS_ORANGE_COMPLETION_NOTIFY"] == "0",
             "profile should keep Citrus completion notifier disabled by default",
         )
-        require(len(payload["validations"]) == 1, "profile should include default Orange validation")
-        validation = payload["validations"][0]
+        require(len(payload["validations"]) == 2, "profile should include Orange and binding validation")
+        validations = {item["label"]: item for item in payload["validations"]}
+        validation = validations["orange_validation_1"]
         require(validation["label"] == "orange_validation_1", "default validator should be Orange labeled")
         require(
             validation["artifact_paths"] == ["/tmp/profile-dry_orange_gui_validation.json"],
@@ -209,6 +229,25 @@ def test_default_dry_run_builds_live_profile() -> None:
             "--min-crop-frame-pool-size 256" in validation["command"],
             "default validator should match the derived four-camera crop frame pool",
         )
+        binding_validation = validations["observation_binding"]
+        require(
+            binding_validation["label"] == "observation_binding",
+            "profile should label the Phase-A validator explicitly",
+        )
+        require(
+            "validate_recording_observation_bindings.py"
+            in binding_validation["command"],
+            "profile should validate the cross-program binding chain",
+        )
+        require(
+            "{orange_recording_folder}" in binding_validation["command"],
+            "binding validator should target the exact Orange recording",
+        )
+        require(
+            binding_validation["artifact_paths"]
+            == ["/tmp/profile-dry_observation_binding_validation.json"],
+            "profile should preserve the Phase-A validation result",
+        )
 
 
 def test_attach_mode_does_not_launch_processes() -> None:
@@ -246,7 +285,11 @@ def test_attach_mode_does_not_launch_processes() -> None:
         "CITRUS_PERF_JSONL" not in payload["citrus"]["env_overlay"],
         "allow-missing perf option should avoid injecting Citrus perf env",
     )
-    require(payload["validations"] == [], "skip validation should avoid profile validation commands")
+    require(
+        len(payload["validations"]) == 1
+        and payload["validations"][0]["label"] == "observation_binding",
+        "skip Orange validation should retain required Phase-A validation",
+    )
 
 
 def test_rolling_profile_passes_orange_clip_options_to_validation() -> None:
@@ -297,7 +340,10 @@ def test_rolling_profile_passes_orange_clip_options_to_validation() -> None:
         "CITRUS_GUI_AUTORUN_RUN_SECONDS" not in payload["citrus"]["env_overlay"],
         "Citrus run duration should be orchestrator-managed, not autorun-env-managed",
     )
-    validation = payload["validations"][0]
+    validation = next(
+        item for item in payload["validations"]
+        if item["label"] == "orange_validation_1"
+    )
     require(
         "--expect-recording-mode rolling_clips" in validation["command"],
         "rolling profile should validate rolling recording mode",
@@ -349,7 +395,10 @@ def test_citrus_completion_notify_profile_waits_for_citrus_owned_stop() -> None:
         citrus_env["CITRUS_ORANGE_COMPLETION_GRACE_SECONDS"] == "10",
         "notify profile should pass the completion grace to Citrus",
     )
-    validation = payload["validations"][0]
+    validation = next(
+        item for item in payload["validations"]
+        if item["label"] == "orange_validation_1"
+    )
     require(
         "--expect-local-control-stop-method citrus_completion" in validation["command"],
         "notify profile should validate Orange saw a citrus_completion stop",
@@ -387,7 +436,10 @@ def test_citrus_completion_notify_run_seconds_profile_validates_stopped_terminal
     )
     require(result.returncode == 0, f"profile notify stopped dry-run failed: {result.stderr}")
     payload = json.loads(result.stdout)
-    validation = payload["validations"][0]
+    validation = next(
+        item for item in payload["validations"]
+        if item["label"] == "orange_validation_1"
+    )
     require(
         payload["citrus"]["run_seconds"] == 1.0,
         "notify stopped profile should preserve the run-seconds stop trigger",
@@ -462,7 +514,10 @@ def test_allow_orange_drain_timeout_validation_expects_timeout() -> None:
     )
     require(result.returncode == 0, f"profile drain-timeout validation dry-run failed: {result.stderr}")
     payload = json.loads(result.stdout)
-    validation = payload["validations"][0]
+    validation = next(
+        item for item in payload["validations"]
+        if item["label"] == "orange_validation_1"
+    )
     require(
         "--expect-local-control-stop-ack-state failed_timeout" in validation["command"],
         "diagnostic drain-timeout validation should require the timeout ACK state",
@@ -516,6 +571,31 @@ def test_allow_missing_orange_event_log_passes_through() -> None:
     )
 
 
+def test_base_only_mode_is_explicit_and_armed() -> None:
+    result = run_profile(
+        [
+            "--operation-id",
+            "profile-base-only",
+            "--daily-registration-mode",
+            "base_only",
+            "--skip-orange-validation",
+        ]
+    )
+    require(result.returncode == 0, f"profile base-only dry-run failed: {result.stderr}")
+    payload = json.loads(result.stdout)
+    citrus = payload["citrus"]
+    request = citrus["daily_registration_mode_request"]
+    require(citrus["daily_registration_mode"] == "base_only", "base-only mode should pass through")
+    require(
+        request["method"] == "select_daily_registration_runtime_mode",
+        "base-only profile should expose the explicit Citrus method",
+    )
+    require(
+        request["params"] == {"mode": "base_only", "select_runtime_mode_armed": True},
+        "base-only profile request must be separately armed",
+    )
+
+
 def main() -> int:
     tests = [
         test_default_dry_run_builds_live_profile,
@@ -528,6 +608,7 @@ def main() -> int:
         test_allow_orange_drain_timeout_validation_expects_timeout,
         test_diagnostic_drain_timeout_profile_passes_orange_env,
         test_allow_missing_orange_event_log_passes_through,
+        test_base_only_mode_is_explicit_and_armed,
     ]
     for test in tests:
         test()

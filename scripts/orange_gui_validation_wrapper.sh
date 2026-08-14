@@ -298,6 +298,34 @@ validate_env_item() {
         return 2
       }
       ;;
+    ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH)
+      value="$(validate_existing_path_under_allowed_roots "$value" \
+        "/home/jeremy/citrus" \
+        "/tmp")" || {
+        echo "Recording Citrus config is outside allowed roots or missing: $value" >&2
+        return 2
+      }
+      ;;
+    ORANGE_CITRUS_OBSERVATION_BINDING_SOCKET)
+      value="$(validate_path_under_allowed_roots "$value" \
+        "/tmp" \
+        "/run/user/1000")" || {
+        echo "Observation-binding socket is outside allowed roots: $value" >&2
+        return 2
+      }
+      ;;
+    ORANGE_CITRUS_OBSERVATION_BINDING_MODE)
+      [[ "$value" =~ ^(required|optional|not_applicable)$ ]] || {
+        echo "Invalid observation-binding mode: $value" >&2
+        return 2
+      }
+      ;;
+    ORANGE_CITRUS_OBSERVATION_BINDING_TIMEOUT_MS)
+      is_positive_integer "$value" && (( value >= 50 && value <= 5000 )) || {
+        echo "$key must be an integer from 50 through 5000" >&2
+        return 2
+      }
+      ;;
     ORANGE_GUI_ARENA_CENTERING_RESULT_JSON)
       value="$(validate_path_under_allowed_roots "$value" \
         "/tmp" \
@@ -545,10 +573,50 @@ fi
 
 ensure_ptp_stack_for_gui
 
+orange_pid=""
+relay_gui_signal() {
+  local signal_name="$1"
+  if [[ -n "${orange_pid}" ]]; then
+    kill "-${signal_name}" "${orange_pid}" 2>/dev/null || true
+  fi
+}
+trap 'relay_gui_signal TERM' TERM
+trap 'relay_gui_signal INT' INT
+trap 'relay_gui_signal HUP' HUP
+
 set +e
-"$ORANGE_BIN"
-orange_status=$?
+# The orchestrator launches this privileged wrapper as a background process.
+# Bash/background ancestry may leave SIGINT/SIGTERM ignored in the child; an
+# exec preserves ignored dispositions, so merely relaying those signals from
+# the wrapper is insufficient.  Reset the GUI child's shutdown signals to
+# their defaults explicitly.  The wrapper retains its own traps below and
+# relays cancellation to the child PID.
+env \
+  --default-signal=INT \
+  --default-signal=TERM \
+  --default-signal=HUP \
+  "$ORANGE_BIN" &
+orange_pid=$!
+while true; do
+  wait "${orange_pid}"
+  orange_status=$?
+  if ! kill -0 "${orange_pid}" 2>/dev/null; then
+    break
+  fi
+done
+orange_pid=""
 set -e
+trap - TERM INT HUP
+
+# Orange creates this socket as root under the privileged GUI launcher.  Once
+# the child has exited, the unprivileged orchestrator cannot remove a stale
+# inode itself.  Remove only the validated local-control path and only when it
+# is still a Unix socket; never unlink a regular file supplied through the
+# environment.
+orange_control_socket="${ORANGE_GUI_LOCAL_CONTROL_SOCKET:-${ORANGE_LOCAL_CONTROL_SOCKET:-}}"
+if [[ -n "${orange_control_socket}" && -S "${orange_control_socket}" ]]; then
+  rm -f -- "${orange_control_socket}"
+fi
 
 # Calibration outputs are the only non-recording products written by this
 # wrapper. Repair ownership narrowly, using only a validated result path and

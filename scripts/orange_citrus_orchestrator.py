@@ -205,6 +205,25 @@ def build_citrus_start_request(operation_id: str, request_id: str, source: str) 
     )
 
 
+def build_citrus_daily_registration_mode_request(
+    operation_id: str,
+    request_id: str,
+    source: str,
+    mode: str,
+) -> dict[str, Any]:
+    return build_request(
+        CITRUS_REQUEST_SCHEMA_ID,
+        "select_daily_registration_runtime_mode",
+        request_id,
+        operation_id=operation_id,
+        source=source,
+        params={
+            "mode": mode,
+            "select_runtime_mode_armed": True,
+        },
+    )
+
+
 def build_citrus_stop_request(operation_id: str, request_id: str, source: str) -> dict[str, Any]:
     return build_request(
         CITRUS_REQUEST_SCHEMA_ID,
@@ -377,7 +396,45 @@ def render_validation_command(
 
 
 def orange_ready_for_recording(status: dict[str, Any]) -> bool:
-    return json_bool(json_path(status, ["readiness", "ready_for_recording_request"], False))
+    if not json_bool(
+        json_path(status, ["readiness", "ready_for_recording_request"], False)
+    ):
+        return False
+    autorun_stage = str(status.get("autorun_stage", ""))
+    return autorun_stage in ("", "disabled", "done")
+
+
+def orange_wait_failure(
+    status: dict[str, Any],
+    *,
+    description: str,
+    operation_id: str,
+) -> str:
+    autorun_stage = str(status.get("autorun_stage", ""))
+    if autorun_stage == "failed":
+        return "Orange GUI autorun reported stage=failed"
+
+    if description != "ready_for_citrus_experiment":
+        return ""
+    if not orange_recording_start_failed_for_operation(status, operation_id):
+        return ""
+    return (
+        "Orange GUI recording start failed for operation_id="
+        f"{operation_id}"
+    )
+
+
+def orange_recording_start_failed_for_operation(
+    status: dict[str, Any],
+    operation_id: str,
+) -> bool:
+    recording_start = json_path(status, ["local_control", "recording_start"], {})
+    if not isinstance(recording_start, dict):
+        return False
+    if str(recording_start.get("last_event", "")) != "start_failed":
+        return False
+    observed_operation_id = str(recording_start.get("operation_id", ""))
+    return observed_operation_id == operation_id
 
 
 def orange_ready_for_citrus(status: dict[str, Any]) -> bool:
@@ -1914,6 +1971,15 @@ def citrus_ready_to_start(status: dict[str, Any]) -> bool:
     return json_bool(json_path(status, ["readiness", "ready_to_start"], False))
 
 
+def citrus_ready_for_runtime_selection(status: dict[str, Any]) -> bool:
+    return (
+        json_bool(json_path(status, ["experiment", "loaded"], False))
+        and not citrus_active_or_armed(status)
+        and isinstance(json_path(status, ["readiness", "selected_arena_count"], None), int)
+        and json_path(status, ["readiness", "selected_arena_count"], 0) > 0
+    )
+
+
 def citrus_active_or_armed(status: dict[str, Any]) -> bool:
     return json_bool(json_path(status, ["experiment", "active"], False)) or json_bool(
         json_path(status, ["experiment", "armed"], False)
@@ -1965,6 +2031,7 @@ class Orchestrator:
         self.validation_results: list[dict[str, Any]] = []
         self.orange_recording_started = False
         self.citrus_control_complete = False
+        self.citrus_daily_registration_mode_response: dict[str, Any] | None = None
         self.last_orange_status: dict[str, Any] = {}
         self.last_citrus_status: dict[str, Any] = {}
 
@@ -2073,6 +2140,28 @@ class Orchestrator:
                     return status
             except (OSError, TimeoutError, json.JSONDecodeError, OrchestratorError) as exc:
                 last_error = str(exc)
+            if label == "orange" and last_status:
+                failure = orange_wait_failure(
+                    last_status,
+                    description=description,
+                    operation_id=self.args.operation_id,
+                )
+                if failure:
+                    if orange_recording_start_failed_for_operation(
+                        last_status,
+                        self.args.operation_id,
+                    ):
+                        # The local-control socket ACK only queued a GUI command;
+                        # the GUI has now proven that no recording became active.
+                        # Clear the provisional flag so failure cleanup terminates
+                        # an Orange process owned by this orchestration run.
+                        self.orange_recording_started = False
+                    step.finish(
+                        ok=False,
+                        terminal_failure=failure,
+                        last_status=last_status,
+                    )
+                    raise OrchestratorError(failure)
             time.sleep(self.args.poll_interval_seconds)
         step.finish(ok=False, last_error=last_error, last_status=last_status)
         raise OrchestratorError(f"timed out waiting for {label} {description}: {last_error}")
@@ -2355,6 +2444,32 @@ class Orchestrator:
             citrus_env,
             self.args.citrus_log,
         )
+        if self.args.daily_registration_mode != "preserve":
+            final_citrus_status = self.wait_for_status(
+                "citrus",
+                CITRUS_REQUEST_SCHEMA_ID,
+                self.args.citrus_socket,
+                citrus_ready_for_runtime_selection,
+                self.args.timeout_seconds,
+                "ready_for_runtime_selection",
+            )
+            step = self.step("citrus_select_daily_registration_runtime_mode")
+            self.citrus_daily_registration_mode_response = self.send(
+                self.args.citrus_socket,
+                build_citrus_daily_registration_mode_request(
+                    self.args.operation_id,
+                    f"{self.args.operation_id}:citrus:select_daily_registration_runtime_mode",
+                    self.args.source,
+                    self.args.daily_registration_mode,
+                ),
+            )
+            if not response_accepted(self.citrus_daily_registration_mode_response):
+                step.finish(ok=False, response=self.citrus_daily_registration_mode_response)
+                raise OrchestratorError(
+                    "Citrus daily-registration runtime-mode selection was not accepted: "
+                    f"{self.citrus_daily_registration_mode_response}"
+                )
+            step.finish(ok=True, response=self.citrus_daily_registration_mode_response)
         final_citrus_status = self.wait_for_status(
             "citrus",
             CITRUS_REQUEST_SCHEMA_ID,
@@ -2902,6 +3017,8 @@ class Orchestrator:
                 "perf_jsonl_enabled": citrus_perf_jsonl_enabled(citrus_status),
                 "perf_jsonl_path_known": citrus_perf_jsonl_path_known(citrus_status),
                 "perf_jsonl_path": json_path(citrus_status, ["output", "perf_jsonl_path"], ""),
+                "daily_registration_mode": self.args.daily_registration_mode,
+                "daily_registration_mode_response": self.citrus_daily_registration_mode_response,
             },
             "validations": self.validation_results,
             "started_processes": self.started_processes,
@@ -2962,6 +3079,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "If positive, stop Citrus after this many seconds of active/armed "
             "experiment time, then wait for terminal state."
+        ),
+    )
+    parser.add_argument(
+        "--daily-registration-mode",
+        choices=("preserve", "base_only"),
+        default="preserve",
+        help=(
+            "Runtime geometry selection before readiness polling. preserve leaves "
+            "the operator's current selection untouched; base_only performs the "
+            "explicit armed Citrus transition to commissioned base geometry."
         ),
     )
     parser.add_argument("--orange-finalize-timeout-seconds", type=positive_float, default=180.0)
@@ -3077,6 +3204,17 @@ def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
                 "CITRUS_GUI_LOCAL_CONTROL_SOCKET": args.citrus_socket,
                 **({"CITRUS_PERF_JSONL": "1"} if args.require_citrus_perf_jsonl else {}),
             },
+            "daily_registration_mode": args.daily_registration_mode,
+            "daily_registration_mode_request": (
+                build_citrus_daily_registration_mode_request(
+                    args.operation_id,
+                    f"{args.operation_id}:citrus:select_daily_registration_runtime_mode",
+                    args.source,
+                    args.daily_registration_mode,
+                )
+                if args.daily_registration_mode != "preserve"
+                else None
+            ),
             "start_request": build_citrus_start_request(
                 args.operation_id,
                 f"{args.operation_id}:citrus:start_experiment",

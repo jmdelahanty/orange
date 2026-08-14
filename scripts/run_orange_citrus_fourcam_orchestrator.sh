@@ -64,6 +64,10 @@ Options:
                                   Long delay used so local control owns start.
   --citrus-run-seconds <seconds>
                                   Stop Citrus after this active runtime.
+  --daily-registration-mode <mode>
+                                  preserve (default) or base_only. base_only
+                                  performs Citrus's explicit armed transition
+                                  before readiness polling.
   --no-citrus-autorun-loader     Do not set Citrus autorun loader envs.
   --enable-citrus-orange-completion-notify
                                   Let Citrus also notify Orange on terminal state.
@@ -92,6 +96,17 @@ Options:
                                   lifecycle evidence.
   --allow-missing-citrus-perf-jsonl
                                   Do not require Citrus perf JSONL status/path.
+  --citrus-recording-canvas-config <path>
+                                  Citrus canvas Orange seals as recording
+                                  geometry authority. Defaults to Shadow.
+  --observation-binding-mode <mode>
+                                  required, optional, or not_applicable.
+                                  This acceptance profile defaults to required.
+  --observation-binding-timeout-ms <ms>
+                                  Bounded Orange-to-Citrus pre-arm timeout.
+  --skip-observation-binding-validation
+                                  Do not validate Orange requests/acceptances
+                                  and their Citrus H5 embeddings.
   --help
 EOF
 }
@@ -185,6 +200,12 @@ CITRUS_PROTOCOL="${ORANGE_CITRUS_CITRUS_PROTOCOL:-good_cop_bad_cop_demo.json}"
 CITRUS_PROTOCOL_PATH="${ORANGE_CITRUS_CITRUS_PROTOCOL_PATH:-}"
 CITRUS_AUTORUN_START_DELAY_SECONDS="${ORANGE_CITRUS_CITRUS_AUTORUN_START_DELAY_SECONDS:-86400}"
 CITRUS_RUN_SECONDS="${ORANGE_CITRUS_CITRUS_RUN_SECONDS:-}"
+DAILY_REGISTRATION_MODE="${ORANGE_CITRUS_DAILY_REGISTRATION_MODE:-preserve}"
+CITRUS_RECORDING_CANVAS_CONFIG="${ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH:-/home/jeremy/citrus/targets/rigs/omnifin0/shadow/shadow.json}"
+OBSERVATION_BINDING_MODE="${ORANGE_CITRUS_OBSERVATION_BINDING_MODE:-required}"
+OBSERVATION_BINDING_TIMEOUT_MS="${ORANGE_CITRUS_OBSERVATION_BINDING_TIMEOUT_MS:-5000}"
+OBSERVATION_BINDING_VALIDATION_ENABLED="${ORANGE_CITRUS_OBSERVATION_BINDING_VALIDATION_ENABLED:-1}"
+OBSERVATION_BINDING_VALIDATION_JSON="${ORANGE_CITRUS_OBSERVATION_BINDING_VALIDATION_JSON:-}"
 CITRUS_AUTORUN_LOADER=1
 CITRUS_ORANGE_COMPLETION_NOTIFY=0
 ALLOW_PREEXISTING_SOCKETS=0
@@ -384,6 +405,12 @@ while [[ $# -gt 0 ]]; do
       CITRUS_RUN_SECONDS="$1"
       shift
       ;;
+    --daily-registration-mode)
+      shift
+      require_value "--daily-registration-mode" "$#"
+      DAILY_REGISTRATION_MODE="$1"
+      shift
+      ;;
     --no-citrus-autorun-loader)
       CITRUS_AUTORUN_LOADER=0
       shift
@@ -469,6 +496,28 @@ while [[ $# -gt 0 ]]; do
       REQUIRE_CITRUS_PERF_JSONL=0
       shift
       ;;
+    --citrus-recording-canvas-config)
+      shift
+      require_value "--citrus-recording-canvas-config" "$#"
+      CITRUS_RECORDING_CANVAS_CONFIG="$1"
+      shift
+      ;;
+    --observation-binding-mode)
+      shift
+      require_value "--observation-binding-mode" "$#"
+      OBSERVATION_BINDING_MODE="$1"
+      shift
+      ;;
+    --observation-binding-timeout-ms)
+      shift
+      require_value "--observation-binding-timeout-ms" "$#"
+      OBSERVATION_BINDING_TIMEOUT_MS="$1"
+      shift
+      ;;
+    --skip-observation-binding-validation)
+      OBSERVATION_BINDING_VALIDATION_ENABLED=0
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -525,6 +574,38 @@ case "${STOP_POLICY}" in
     exit 2
     ;;
 esac
+case "${OBSERVATION_BINDING_MODE}" in
+  required|optional|not_applicable)
+    ;;
+  *)
+    echo "--observation-binding-mode must be required, optional, or not_applicable" >&2
+    exit 2
+    ;;
+esac
+case "${DAILY_REGISTRATION_MODE}" in
+  preserve|base_only)
+    ;;
+  *)
+    echo "--daily-registration-mode must be preserve or base_only" >&2
+    exit 2
+    ;;
+esac
+is_positive_integer "${OBSERVATION_BINDING_TIMEOUT_MS}" &&
+  (( OBSERVATION_BINDING_TIMEOUT_MS >= 50 && OBSERVATION_BINDING_TIMEOUT_MS <= 5000 )) || {
+    echo "--observation-binding-timeout-ms must be an integer from 50 through 5000" >&2
+    exit 2
+  }
+if [[ "${OBSERVATION_BINDING_MODE}" != "not_applicable" ]]; then
+  [[ -f "${CITRUS_RECORDING_CANVAS_CONFIG}" ]] || {
+    echo "Missing Citrus recording canvas config: ${CITRUS_RECORDING_CANVAS_CONFIG}" >&2
+    exit 1
+  }
+fi
+if [[ "${OBSERVATION_BINDING_VALIDATION_ENABLED}" == "1" &&
+      "${OBSERVATION_BINDING_MODE}" != "required" ]]; then
+  echo "Phase-A binding validation requires --observation-binding-mode required; use --skip-observation-binding-validation for another policy" >&2
+  exit 2
+fi
 if [[ -z "${ORANGE_STOP_GRACE_SECONDS}" ]]; then
   case "${STOP_POLICY}" in
     citrus_completion|citrus_completion_notify)
@@ -541,6 +622,12 @@ fi
 if [[ -n "${ORANGE_RECORD_SECONDS}" ]]; then
   ORANGE_PROFILE_ENV+=("ORANGE_GUI_RECORD_FOR_SECONDS=${ORANGE_RECORD_SECONDS}")
 fi
+ORANGE_PROFILE_ENV+=(
+  "ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH=${CITRUS_RECORDING_CANVAS_CONFIG}"
+  "ORANGE_CITRUS_OBSERVATION_BINDING_MODE=${OBSERVATION_BINDING_MODE}"
+  "ORANGE_CITRUS_OBSERVATION_BINDING_SOCKET=${CITRUS_SOCKET}"
+  "ORANGE_CITRUS_OBSERVATION_BINDING_TIMEOUT_MS=${OBSERVATION_BINDING_TIMEOUT_MS}"
+)
 if [[ -n "${ORANGE_DRAIN_TIMEOUT_SECONDS}" ]]; then
   ORANGE_PROFILE_ENV+=("ORANGE_GUI_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS=${ORANGE_DRAIN_TIMEOUT_SECONDS}")
 fi
@@ -580,6 +667,9 @@ if [[ -z "${CITRUS_LOG}" ]]; then
 fi
 if [[ -z "${ORANGE_VALIDATION_JSON}" ]]; then
   ORANGE_VALIDATION_JSON="/tmp/${OPERATION_ID}_orange_gui_validation.json"
+fi
+if [[ -z "${OBSERVATION_BINDING_VALIDATION_JSON}" ]]; then
+  OBSERVATION_BINDING_VALIDATION_JSON="/tmp/${OPERATION_ID}_observation_binding_validation.json"
 fi
 ORANGE_VALIDATION_MODE_ARGS=()
 if [[ -n "${ORANGE_CLIP_SECONDS}" ]]; then
@@ -672,6 +762,17 @@ if [[ "${ORANGE_VALIDATION_ENABLED}" == "1" && -z "${ORANGE_VALIDATION_COMMAND}"
     "--json-out" "${ORANGE_VALIDATION_JSON}")"
 fi
 
+OBSERVATION_BINDING_VALIDATION_COMMAND=""
+if [[ "${OBSERVATION_BINDING_VALIDATION_ENABLED}" == "1" ]]; then
+  OBSERVATION_BINDING_VALIDATION_COMMAND="$(join_command \
+    "/home/jeremy/miniforge3/envs/juicebox/bin/python" \
+    "${REPO_ROOT}/scripts/validate_recording_observation_bindings.py" \
+    "{orange_recording_folder}" \
+    "--expected-cameras" "2010093,2010094,2010095,2010096" \
+    "--expected-count" "4" \
+    "--json-out" "${OBSERVATION_BINDING_VALIDATION_JSON}")"
+fi
+
 ARGS=(
   "${REPO_ROOT}/scripts/orange_citrus_orchestrator.py"
   "--operation-id" "${OPERATION_ID}"
@@ -688,6 +789,7 @@ ARGS=(
   "--orange-finalize-timeout-seconds" "${ORANGE_FINALIZE_TIMEOUT_SECONDS}"
   "--orange-stop-grace-seconds" "${ORANGE_STOP_GRACE_SECONDS}"
   "--validation-timeout-seconds" "${VALIDATION_TIMEOUT_SECONDS}"
+  "--daily-registration-mode" "${DAILY_REGISTRATION_MODE}"
 )
 
 if (( EXECUTE )); then
@@ -715,6 +817,10 @@ fi
 if [[ "${ORANGE_VALIDATION_ENABLED}" == "1" ]]; then
   ARGS+=("--orange-validation-command" "${ORANGE_VALIDATION_COMMAND}")
   ARGS+=("--validation-artifact" "orange_validation_1=${ORANGE_VALIDATION_JSON}")
+fi
+if [[ "${OBSERVATION_BINDING_VALIDATION_ENABLED}" == "1" ]]; then
+  ARGS+=("--validation-command" "observation_binding=${OBSERVATION_BINDING_VALIDATION_COMMAND}")
+  ARGS+=("--validation-artifact" "observation_binding=${OBSERVATION_BINDING_VALIDATION_JSON}")
 fi
 if [[ -n "${CITRUS_RUN_SECONDS}" ]]; then
   ARGS+=("--citrus-run-seconds" "${CITRUS_RUN_SECONDS}")

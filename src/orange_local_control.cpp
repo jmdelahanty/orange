@@ -585,11 +585,16 @@ nlohmann::json LocalControlStatusSnapshotToJson(
         recorder_ready_when_required(
             snapshot.crop_recorder,
             crop_recorder_required);
+    const bool recording_start_warmup_complete =
+        snapshot.autorun_stage.empty() ||
+        snapshot.autorun_stage == "disabled" ||
+        snapshot.autorun_stage == "done";
     const bool ready_for_recording_request =
         snapshot.cameras_open &&
         snapshot.streaming_active &&
         !snapshot.recording_active &&
         !snapshot.recording_finalizing &&
+        recording_start_warmup_complete &&
         expected_open &&
         selections_match_expected;
     const bool ready_for_citrus_experiment =
@@ -620,6 +625,8 @@ nlohmann::json LocalControlStatusSnapshotToJson(
              {"recording_active", snapshot.recording_active},
              {"recording_finalizing", snapshot.recording_finalizing},
              {"recording_finalized", recording_finalized},
+             {"recording_start_warmup_complete",
+              recording_start_warmup_complete},
              {"active_recorders", snapshot.active_recorders},
              {"open_cameras_match_expected", open_match},
              {"stream_selection_matches_expected", stream_match},

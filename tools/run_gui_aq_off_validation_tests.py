@@ -177,6 +177,40 @@ def test_discovers_all_camera_json_files() -> None:
             "ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW=0" in result.stdout,
             "launcher output should show autorun crop preview hiding disabled by default",
         )
+
+
+def test_forwards_recording_observation_binding_environment() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010096")
+        citrus_config = root / "shadow.json"
+        citrus_config.write_text("{}\n", encoding="utf-8")
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            expect_cameras="2010096",
+            validate_only=False,
+            print_exec_env=True,
+            extra_env={
+                "ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH": str(citrus_config),
+                "ORANGE_CITRUS_OBSERVATION_BINDING_MODE": "required",
+                "ORANGE_CITRUS_OBSERVATION_BINDING_SOCKET": "/tmp/citrus-binding-test.sock",
+                "ORANGE_CITRUS_OBSERVATION_BINDING_TIMEOUT_MS": "5000",
+            },
+        )
+        require(result.returncode == 0, f"binding env forwarding failed: {result.stderr}")
+        for expected in (
+            f"ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH={citrus_config}",
+            "ORANGE_CITRUS_OBSERVATION_BINDING_MODE=required",
+            "ORANGE_CITRUS_OBSERVATION_BINDING_SOCKET=/tmp/citrus-binding-test.sock",
+            "ORANGE_CITRUS_OBSERVATION_BINDING_TIMEOUT_MS=5000",
+        ):
+            require(expected in result.stdout, f"launcher did not forward {expected}")
         require(
             "ORANGE_GUI_AUTORUN_ENABLE_STREAM=1" in result.stdout,
             "launcher output should show autorun streaming enabled by default",
@@ -1802,6 +1836,33 @@ def test_gui_privilege_wrapper_accepts_recording_control_envs() -> None:
     )
 
 
+def test_gui_privilege_wrapper_relays_cleanup_signals_to_orange() -> None:
+    source = GUI_WRAPPER_SCRIPT.read_text(encoding="utf-8")
+    require(
+        "relay_gui_signal" in source,
+        "wrapper must relay orchestrator cleanup signals to its root Orange child",
+    )
+    for signal_name in ("TERM", "INT", "HUP"):
+        require(
+            f"trap 'relay_gui_signal {signal_name}' {signal_name}" in source,
+            f"wrapper must relay {signal_name} to Orange",
+        )
+        require(
+            f"--default-signal={signal_name}" in source,
+            f"wrapper must reset inherited {signal_name} disposition for Orange",
+        )
+    require(
+        'orange_control_socket="${ORANGE_GUI_LOCAL_CONTROL_SOCKET:-${ORANGE_LOCAL_CONTROL_SOCKET:-}}"'
+        in source,
+        "wrapper must resolve the validated root-owned local-control socket",
+    )
+    require(
+        '[[ -n "${orange_control_socket}" && -S "${orange_control_socket}" ]]' in source
+        and 'rm -f -- "${orange_control_socket}"' in source,
+        "wrapper must remove only its stale Unix socket after Orange exits",
+    )
+
+
 def test_gui_privilege_wrapper_accepts_crop_recorder_envs() -> None:
     result = subprocess.run(
         [
@@ -2068,6 +2129,7 @@ def test_gui_privilege_wrapper_rejects_missing_app_config_env() -> None:
 def main() -> int:
     tests = [
         test_discovers_all_camera_json_files,
+        test_forwards_recording_observation_binding_environment,
         test_invalid_gui_privilege_wrapper_mode_fails,
         test_live_launcher_rejects_stale_privilege_wrapper_for_autorun_ptp,
         test_live_launcher_rejects_stale_privilege_wrapper_for_frame_cap_env,
@@ -2078,6 +2140,7 @@ def main() -> int:
         test_gui_privilege_wrapper_help_documents_contract,
         test_gui_privilege_wrapper_rejects_bad_ptp_stack_mode,
         test_gui_privilege_wrapper_accepts_recording_control_envs,
+        test_gui_privilege_wrapper_relays_cleanup_signals_to_orange,
         test_gui_privilege_wrapper_accepts_crop_recorder_envs,
         test_gui_privilege_wrapper_accepts_inprocess_sink_alias,
         test_gui_privilege_wrapper_accepts_app_config_envs,

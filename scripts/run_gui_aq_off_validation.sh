@@ -992,6 +992,15 @@ fi
 if [[ -n "${ORANGE_GUI_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS:-}" ]]; then
   ENV_ARGS+=("ORANGE_GUI_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS=${ORANGE_GUI_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS}")
 fi
+for var_name in \
+  ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH \
+  ORANGE_CITRUS_OBSERVATION_BINDING_MODE \
+  ORANGE_CITRUS_OBSERVATION_BINDING_SOCKET \
+  ORANGE_CITRUS_OBSERVATION_BINDING_TIMEOUT_MS; do
+  if [[ -n "${!var_name:-}" ]]; then
+    ENV_ARGS+=("${var_name}=${!var_name}")
+  fi
+done
 while IFS= read -r var_name; do
   [[ -n "${var_name}" ]] || continue
   ENV_ARGS+=("${var_name}=${!var_name}")

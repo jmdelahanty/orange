@@ -321,8 +321,13 @@ Orange readiness means more than process started. Status reports:
 - streaming active
 - selected/open camera serials and expected serial match
 - recording active or finalizing
+- `recording_start_warmup_complete`, true when manual operation is active
+  (`autorun_stage=disabled`) or the configured autorun stream warmup has
+  completed (`autorun_stage=done`)
 - `ready_for_recording_request`, true only when cameras are open, streaming is
-  active, expected camera selections match, and no recording is active/finalizing
+  active, expected camera selections match, no recording is active/finalizing,
+  and `recording_start_warmup_complete` is true. This prevents local control
+  from racing first-frame YOLO worker initialization and runtime mask arming.
 - `ready_for_citrus_experiment`, true only when cameras are open, streaming is
   active, expected camera selections match, Orange recording is already active,
   and any required external IPC full-frame/crop recorder supervisors are ready
