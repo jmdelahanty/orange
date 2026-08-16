@@ -622,6 +622,9 @@ bool refresh_recording_session_observation_bindings(
     std::error_code status_error;
     const auto status = fs::symlink_status(manifest_path, status_error);
     if (status_error) {
+        if (status_error == std::errc::no_such_file_or_directory) {
+            return true;
+        }
         return fail(error_out,
                     "could not inspect recording_session.json: " +
                         status_error.message());

@@ -771,6 +771,11 @@ void test_post_close_finalization_is_complete_idempotent_and_manifest_bound()
             "finalized collection reference does not bind exact bytes");
     const std::string first_collection_bytes = read_file(collection_path);
 
+    require(orange::session::refresh_recording_session_observation_bindings(
+                root.string(), &error),
+            "receipt ACK should not require recording_session.json to exist: " +
+                error);
+
     const auto repeated =
         orange::session::finalize_recording_observation_bindings(
             root.string(), params);
