@@ -572,6 +572,12 @@ not need to delay this producer-native association chain.
       required finalization.
 - [x] Add restart, partial-write, invalid-receipt, and multi-H5 finalization
       tests.
+- [x] Run a live four-camera Shadow Phase-B association and verify the complete
+      reciprocal receipt/manifest chain. Accepted on 2026-08-16 in
+      `/home/jeremy/orange_data/exp/unsorted/2026_08_16_15_11_46`: four
+      requests, four acceptances, four H5 embeddings, four closed-H5 receipts,
+      a bound finalized collection, a bound `recording_session.json`
+      projection, and a positive Citrus-to-Orange receipt ACK.
 
 Phase B now runs only after every Citrus logger reports a successful COMPLETE
 write, final flush, dataset close, and H5 close. Citrus hashes closed H5 files
@@ -582,6 +588,15 @@ create-once receipt and collection artifacts, and atomically refreshes an
 already-finalized `recording_session.json` when the receipt arrives late.
 Missing or invalid receipts remain explicit `unbound`; they are never inferred
 to be bound.
+
+Acceptance also exposed one separate test-harness cleanup item:
+
+- [ ] Update the general `validate_gui_ptp_recording.py` checks for timed
+      single-clip external recordings. It currently treats
+      `record_for_seconds > 0, clip_seconds = 0` as an invalid rolling request
+      and reads legacy external count locations for this mode. This does not
+      invalidate the recording or the dedicated observation-binding result;
+      the latter passed independently.
 
 #### Consumer handoff
 
@@ -841,11 +856,9 @@ immutable request per edge, Citrus returns an acceptance or rejection before
 activation, and a complete H5 becomes authoritative only through a final
 post-close receipt.
 
-Phase A and Phase B are implemented in Orange and Citrus through H5 start-time
-embedding, post-close reciprocal receipts, and the parent recording manifest.
-Phase A has passed a live four-camera Shadow run. The remaining producer
-hardware acceptance is a live four-camera Phase-B run verifying all receipt
-and parent-manifest bytes. The full context schema, optical/illumination
+Phase A and Phase B are implemented and have passed live four-camera Shadow
+runs through H5 start-time embedding, post-close reciprocal receipts, and the
+parent recording manifest. The full context schema, optical/illumination
 additions, historical adapters, and Palette publication binding remain
 subsequent tracks.
 

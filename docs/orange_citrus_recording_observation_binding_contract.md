@@ -1,7 +1,7 @@
 # Orange/Citrus Recording Observation Binding Contract
 
-Status: schema-v1 Phase A and Phase B implemented with focused validation;
-live four-camera Phase-B acceptance remains
+Status: schema-v1 Phase A and Phase B implemented and accepted in a live
+four-camera run
 
 Date: 2026-08-13
 
@@ -405,6 +405,15 @@ scripts/run_orange_citrus_fourcam_orchestrator.sh \
   --daily-registration-mode base_only
 ```
 
+Live Phase-B acceptance passed on 2026-08-16 in
+`/home/jeremy/orange_data/exp/unsorted/2026_08_16_15_11_46`. The dedicated
+validator confirmed four requests, four acceptances, four reciprocal H5
+embeddings, four independently verified closed-H5 receipts, one bound
+collection, and the identical bound projection in `recording_session.json`.
+The orchestrator summary is preserved under that recording's `orchestrator/`
+directory. Citrus logged the positive Orange ACK for all four receipts before
+the ordinary terminal notification.
+
 The runtime-mode option is intentionally explicit for commissioning-base
 acceptance smokes whose purpose is association validation rather than daily
 dish placement. The generic orchestrator default is `preserve`; it never
@@ -494,7 +503,8 @@ The Phase-A association remains `accepted_pending_finalization` until the
 post-close batch succeeds. Only the verified finalized collection is `bound`.
 
 Not implemented yet is Palette consumption of the producer-native binding.
-The producer side still requires a live four-camera Phase-B acceptance run.
+The Orange/Citrus producer lifecycle has completed its live four-camera
+Phase-B acceptance.
 
 Operational controls:
 
