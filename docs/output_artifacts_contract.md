@@ -49,6 +49,8 @@ Default configured base path in runtime:
 | Per-edge observation binding request | `<recording_folder>/recording_observation_bindings/requests/obsctx_<sha256>.json` | One per materialized recording-camera-arena edge | Inventoried and checksummed by the immutable request collection |
 | Per-edge Citrus binding acceptance/rejection | `<recording_folder>/recording_observation_bindings/acceptances/obsctx_<sha256>.json` | One per edge when Citrus returns a semantic batch response | Create-once exact response bytes before Orange arm |
 | Observation binding pre-arm decision | `<recording_folder>/recording_observation_bindings/pre_arm_decision.json` | Required for newly started recordings under all three binding modes | Create-once before recorder/acquisition activation; records arm policy and controlled unbound reason |
+| Per-edge finalized Citrus H5 receipt | `<recording_folder>/recording_observation_bindings/receipts/obsctx_<sha256>.json` | One per accepted observation edge after successful Citrus H5 close | Create-once exact receipt; Orange independently verifies H5 size/SHA and the reciprocal chain |
+| Finalized observation binding collection | `<recording_folder>/recording_observation_bindings/finalized_collection.json` | Required for final `bound` status | Create-once after the complete receipt batch; projected atomically into `recording_session.json` |
 | Recording session manifest | `<recording_folder>/recording_session.json` | Required for current GUI/headless session finalization | Recording finalization |
 | PTP sync summary | `<recording_folder>/ptp_sync_summary.json` | Required | Recording started |
 | Local-control event log | `<recording_folder>/orange_local_control.events.jsonl` | Optional | Local-control/orchestrated GUI recording |

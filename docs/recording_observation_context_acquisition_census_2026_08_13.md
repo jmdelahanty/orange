@@ -550,24 +550,38 @@ not need to delay this producer-native association chain.
 - [x] Add focused producer tests for acceptance, rejection, stale/mismatched
       evidence and pointers, output-path containment, selected-set coverage,
       local-control replay, and same-process next-recording lifecycle.
-- [ ] Run a live four-camera Shadow Phase-A association and verify all four
+- [x] Run a live four-camera Shadow Phase-A association and verify all four
       accepted request/acceptance pairs in the resulting H5 files.
+      Accepted on 2026-08-14 in
+      `/home/jeremy/orange_data/exp/unsorted/2026_08_14_18_13_15`: four
+      requests, four acceptances, four reciprocal H5 embeddings, and 665/665
+      encoded frames per camera with zero drops.
 
 #### Phase B: finalized H5 receipt and parent manifest
 
-- [ ] After successful H5 flush and close, compute its byte size and SHA-256
+- [x] After successful H5 flush and close, compute its byte size and SHA-256
       and seal the finalized receipt.
-- [ ] Return the receipt to Orange through a bounded finalization handshake.
-- [ ] Have Orange verify the complete request/acceptance/receipt chain before
+- [x] Return the receipt to Orange through a bounded finalization handshake.
+- [x] Have Orange verify the complete request/acceptance/receipt chain before
       accepting `bound` status.
-- [ ] Atomically write a parent-level observation-edge collection into
+- [x] Atomically write a parent-level observation-edge collection into
       finalized `recording_session.json`.
-- [ ] Make rolling clips reference the parent observation contexts rather than
+- [x] Make rolling clips reference the parent observation contexts rather than
       minting or duplicating identities.
-- [ ] Preserve explicit terminal `unbound` reasons for incomplete optional or
+- [x] Preserve explicit terminal `unbound` reasons for incomplete optional or
       required finalization.
-- [ ] Add restart, partial-write, invalid-receipt, and multi-H5 finalization
+- [x] Add restart, partial-write, invalid-receipt, and multi-H5 finalization
       tests.
+
+Phase B now runs only after every Citrus logger reports a successful COMPLETE
+write, final flush, dataset close, and H5 close. Citrus hashes closed H5 files
+in a bounded-memory worker, sends a complete receipt batch through a 5-second
+socket operation with retry, and gives accepted bindings a separate 60-second
+autorun shutdown budget. Orange independently streams each H5 SHA-256, writes
+create-once receipt and collection artifacts, and atomically refreshes an
+already-finalized `recording_session.json` when the receipt arrives late.
+Missing or invalid receipts remain explicit `unbound`; they are never inferred
+to be bound.
 
 #### Consumer handoff
 
@@ -827,12 +841,13 @@ immutable request per edge, Citrus returns an acceptance or rejection before
 activation, and a complete H5 becomes authoritative only through a final
 post-close receipt.
 
-Phase A is implemented in Orange and Citrus through H5 start-time embedding,
-with focused producer tests. A live four-camera Shadow validation remains the
-hardware acceptance check. The next code slice is Phase B: post-close H5
-hashing, finalized receipts, Orange verification, and parent-manifest
-materialization. The full context schema, optical/illumination additions,
-historical adapters, and Palette publication binding remain subsequent tracks.
+Phase A and Phase B are implemented in Orange and Citrus through H5 start-time
+embedding, post-close reciprocal receipts, and the parent recording manifest.
+Phase A has passed a live four-camera Shadow run. The remaining producer
+hardware acceptance is a live four-camera Phase-B run verifying all receipt
+and parent-manifest bytes. The full context schema, optical/illumination
+additions, historical adapters, and Palette publication binding remain
+subsequent tracks.
 
 Current production geometry materialization still contains maps such as
 `arena_by_camera` and explicitly rejects a camera appearing under more than one
@@ -900,10 +915,12 @@ with optional daily-registration confirmation. Headless recording could resolve
 static Citrus geometry from an explicitly configured canvas path, but it does
 not query a live Citrus process or receive an H5 binding.
 
-Phase A now closes the start-time portion of this gap. Orange persists exact
+Phase A closes the start-time portion of this gap. Orange persists exact
 Citrus acceptance records containing the reserved `session_uuid`, planned H5
-path, and shared Citrus experiment ID. Final H5 size/SHA-256 receipts and the
-parent observation-edge collection remain Phase B work.
+path, and shared Citrus experiment ID. Phase B now closes the post-recording
+portion: Citrus returns the exact closed-H5 size/SHA-256 receipts and Orange
+persists the verified parent observation-edge collection. A live four-camera
+Phase-B run remains the producer hardware acceptance step.
 
 Orange's full-frame `stream_id` equals camera serial today. Its live crop is a
 separate, first-class acquisition media stream (`<serial>_crop`) derived from
@@ -1013,17 +1030,22 @@ Historical behavior remains:
 - Sleepyfish: valid inference/storage canary but no modern producer-native
   observation-context or accepted daily-rim authority.
 
-### Complete present/missing/incomplete matrix
+### Census-time present/missing/incomplete matrix
+
+This table preserves the read-only 2026-08-13 baseline. Rows marked as missing
+for reciprocal finalization are now superseded by the Phase-A/Phase-B
+implementation described immediately after the table; they remain here so the
+original census finding is auditable.
 
 | Association component | Present | Incomplete or missing |
 | --- | --- | --- |
-| Orange recording identity | Recording ID/folder/immutable start snapshot/session plus create-once request collection | No finalized cross-artifact observation collection |
+| Orange recording identity | Recording ID/folder/immutable start snapshot/session plus create-once request collection | At census time, no finalized cross-artifact observation collection |
 | Acquisition media streams | Full and crop recorders have distinct `stream_id`; Palette inventories both and frame mapping is strong | The future observation context must bind both to one source-camera frame authority rather than treating crop as absent or as a second arena edge |
 | Camera/arena static association | Digest-bound selected canvas geometry | One-arena-per-camera maps and camera-keyed asset paths |
 | Orange physical mask geometry | Strong digest-bound rim/gate and assets | Producer envelope is camera-keyed rather than edge-keyed |
-| Citrus runtime edge | One H5 has one strong active camera/arena runtime contract; bound sessions embed the exact accepted Orange request and shared experiment ID | Final H5 receipt is not yet materialized |
+| Citrus runtime edge | One H5 has one strong active camera/arena runtime contract; bound sessions embed the exact accepted Orange request and shared experiment ID | At census time, final H5 receipt was not yet materialized |
 | Orange-to-Citrus discovery | Digest-bound pre-arm request collection and exact Citrus acceptance | Legacy/unbound sessions may still use the mutable pointer fallback |
-| Citrus-to-Orange finalization | Terminal completion state | No H5 path, session UUID, size, checksum, or edge receipt |
+| Citrus-to-Orange finalization | Terminal completion state | At census time, no H5 path, session UUID, size, checksum, or edge receipt |
 | Palette mask consumption | Strong fail-closed geometry and camera-frame binding | No general observation-context ID or producer-hashed H5 binding |
 | Historical association | Explicit recovery and legacy-negative states | Cannot be upgraded to producer-native evidence |
 
@@ -1108,8 +1130,10 @@ rejected evidence; it must not be relabeled as Orange-only.
 4. Persist the accepted binding and shared Citrus experiment group ID in each
    H5. **Complete.**
 5. Compute the final H5 artifact receipt only after successful close.
+   **Complete.**
 6. Return receipts to Orange and write a parent-level edge collection into the
    finalized `recording_session.json`; rolling clips reference that parent.
+   **Complete.**
 7. Teach Palette to consume the producer-native edge and verify every referenced
    artifact before publishing masks or other observation products.
 8. Separately migrate camera-keyed geometry maps and asset paths to edge-keyed

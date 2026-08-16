@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate a finalized Phase-A Orange/Citrus observation-binding run."""
+"""Validate the complete Orange/Citrus observation-binding lifecycle."""
 
 from __future__ import annotations
 
@@ -21,8 +21,14 @@ REQUEST_COLLECTION = Path(
     "recording_observation_bindings/request_collection.json"
 )
 PRE_ARM_DECISION = Path("recording_observation_bindings/pre_arm_decision.json")
+FINALIZED_COLLECTION = Path(
+    "recording_observation_bindings/finalized_collection.json"
+)
+RECORDING_SESSION = Path("recording_session.json")
 REQUEST_SCHEMA = "orange.citrus.recording_observation_binding_request"
 ACCEPTANCE_SCHEMA = "citrus.recording_observation_binding_acceptance"
+RECEIPT_SCHEMA = "citrus.recording_observation_finalized_receipt"
+FINALIZATION_SCHEMA = "orange.recording.observation_binding_finalization"
 H5_BINDING_SCHEMA = "citrus.recording_observation_binding_h5"
 
 
@@ -50,6 +56,21 @@ def sha256_bytes(raw: bytes) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
+def sha256_file(path: Path) -> tuple[str, int]:
+    require(path.is_file() and not path.is_symlink(), f"not a regular file: {path}")
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as stream:
+        while True:
+            block = stream.read(1024 * 1024)
+            if not block:
+                break
+            digest.update(block)
+            size += len(block)
+    require(size > 0, f"empty finalized artifact: {path}")
+    return "sha256:" + digest.hexdigest(), size
+
+
 def canonical_contract_sha256(contract: dict[str, Any]) -> str:
     raw = json.dumps(
         contract,
@@ -68,7 +89,12 @@ def resolve_recording_relative(recording: Path, relative: Any) -> Path:
         all(part not in ("", ".", "..") for part in path.parts),
         f"artifact path is not normalized: {relative}",
     )
-    resolved = (recording / path).resolve(strict=False)
+    candidate = recording / path
+    current = recording
+    for part in path.parts:
+        current = current / part
+        require(not current.is_symlink(), f"artifact path traverses a symlink: {relative}")
+    resolved = candidate.resolve(strict=False)
     try:
         resolved.relative_to(recording)
     except ValueError as error:
@@ -116,7 +142,13 @@ def validate_sealed_record(
         f"contract digest mismatch: {schema_id}",
     )
     identifier = value.get(id_field)
-    expected_prefix = "obsbindreq_" if id_field == "request_id" else "obsbindacc_"
+    prefixes = {
+        "request_id": "obsbindreq_",
+        "acceptance_id": "obsbindacc_",
+        "receipt_id": "obsbindfin_",
+    }
+    expected_prefix = prefixes.get(id_field)
+    require(expected_prefix is not None, f"unsupported sealed identifier: {id_field}")
     require(
         identifier == expected_prefix + expected_sha.removeprefix("sha256:"),
         f"derived identifier mismatch: {schema_id}",
@@ -198,6 +230,7 @@ def validate(
     acceptances: dict[str, dict[str, Any]] = {}
     experiment_ids: set[str] = set()
     h5_rows: list[dict[str, Any]] = []
+    h5_paths: dict[str, Path] = {}
     for reference in acceptance_refs:
         require(isinstance(reference, dict), "acceptance reference is not an object")
         context_id = reference.get("observation_context_id")
@@ -242,6 +275,7 @@ def validate(
             require(embedded_acceptance == acceptance, f"H5 acceptance differs from Orange acceptance: {h5_relative}")
 
         acceptances[context_id] = acceptance
+        h5_paths[context_id] = h5_path
         h5_rows.append({
             "observation_context_id": context_id,
             "camera_id": contract["target"]["camera_id"],
@@ -253,7 +287,158 @@ def validate(
         })
 
     require(len(experiment_ids) == 1, "acceptances do not share one Citrus experiment ID")
+    experiment_id = next(iter(experiment_ids))
+
+    finalized, finalized_raw = load_json(recording / FINALIZED_COLLECTION)
+    require(
+        finalized.get("schema_id") == FINALIZATION_SCHEMA,
+        "finalized collection schema is invalid",
+    )
+    require(finalized.get("schema_version") == 1, "finalized collection version is invalid")
+    require(finalized.get("status") == "finalized", "collection is not finalized")
+    require(finalized.get("binding_status") == "bound", "collection is not bound")
+    require(
+        finalized.get("recording_id") == collection.get("recording_id"),
+        "finalized collection recording ID mismatch",
+    )
+    require(
+        finalized.get("citrus_experiment_id") == experiment_id,
+        "finalized collection Citrus experiment mismatch",
+    )
+    finalized_contexts = finalized.get("observation_contexts")
+    require(isinstance(finalized_contexts, list), "finalized contexts are not an array")
+    require(
+        finalized.get("context_count") == len(finalized_contexts) == expected_count,
+        "finalized context count is inconsistent",
+    )
+
+    receipt_rows: list[dict[str, Any]] = []
+    finalized_ids: set[str] = set()
+    for context_row in finalized_contexts:
+        require(isinstance(context_row, dict), "finalized context is not an object")
+        context_id = context_row.get("observation_context_id")
+        require(context_id in requests, f"finalized context is unknown: {context_id}")
+        require(context_id not in finalized_ids, f"duplicate finalized context: {context_id}")
+        finalized_ids.add(context_id)
+        require(context_row.get("status") == "bound", f"context is not bound: {context_id}")
+
+        request = requests[context_id]
+        acceptance = acceptances[context_id]
+        request_contract = request["contract"]
+        acceptance_contract = acceptance["contract"]
+        require(
+            context_row.get("observation_identity_sha256")
+            == request_contract.get("observation_identity_sha256"),
+            f"finalized observation identity digest mismatch: {context_id}",
+        )
+        require(
+            context_row.get("observation_identity")
+            == request_contract.get("observation_identity"),
+            f"finalized observation identity mismatch: {context_id}",
+        )
+
+        request_ref = context_row.get("request")
+        acceptance_ref = context_row.get("acceptance")
+        receipt_ref = context_row.get("finalized_receipt")
+        require(isinstance(request_ref, dict), f"request reference missing: {context_id}")
+        require(isinstance(acceptance_ref, dict), f"acceptance reference missing: {context_id}")
+        require(isinstance(receipt_ref, dict), f"receipt reference missing: {context_id}")
+        require(
+            request_ref.get("request_id") == request.get("request_id")
+            and request_ref.get("contract_sha256") == request.get("contract_sha256")
+            and request_ref.get("relative_path") == request_paths[context_id],
+            f"finalized request reference mismatch: {context_id}",
+        )
+        require(
+            acceptance_ref.get("acceptance_id") == acceptance.get("acceptance_id")
+            and acceptance_ref.get("contract_sha256") == acceptance.get("contract_sha256"),
+            f"finalized acceptance reference mismatch: {context_id}",
+        )
+
+        receipt_path = resolve_recording_relative(
+            recording, receipt_ref.get("relative_path")
+        )
+        receipt, receipt_raw = load_json(receipt_path)
+        require(
+            receipt_ref.get("sha256") == sha256_bytes(receipt_raw),
+            f"receipt file digest mismatch: {context_id}",
+        )
+        validate_sealed_record(receipt, RECEIPT_SCHEMA, "receipt_id")
+        require(
+            receipt_ref.get("receipt_id") == receipt.get("receipt_id")
+            and receipt_ref.get("contract_sha256") == receipt.get("contract_sha256"),
+            f"finalized receipt reference mismatch: {context_id}",
+        )
+        receipt_contract = receipt["contract"]
+        require(
+            receipt_contract.get("request_id") == request.get("request_id")
+            and receipt_contract.get("request_contract_sha256")
+            == request.get("contract_sha256")
+            and receipt_contract.get("acceptance_id") == acceptance.get("acceptance_id")
+            and receipt_contract.get("acceptance_contract_sha256")
+            == acceptance.get("contract_sha256"),
+            f"receipt chain mismatch: {context_id}",
+        )
+        require(
+            receipt_contract.get("observation_context_id") == context_id
+            and receipt_contract.get("target") == acceptance_contract.get("target")
+            and receipt_contract.get("citrus_experiment_id") == experiment_id
+            and receipt_contract.get("citrus_session_uuid")
+            == acceptance_contract.get("citrus_session_uuid")
+            and receipt_contract.get("session_status") == "COMPLETE",
+            f"receipt lifecycle or target mismatch: {context_id}",
+        )
+        require(
+            isinstance(receipt_contract.get("runtime_geometry_contract_sha256"), str)
+            and receipt_contract["runtime_geometry_contract_sha256"].startswith("sha256:"),
+            f"receipt runtime geometry digest missing: {context_id}",
+        )
+        semantic = receipt_contract.get("protocol_semantic")
+        require(
+            isinstance(semantic, dict)
+            and semantic.get("status") in ("available", "unsupported"),
+            f"receipt protocol semantic evidence missing: {context_id}",
+        )
+
+        h5_artifact = receipt_contract.get("h5_artifact")
+        require(isinstance(h5_artifact, dict), f"receipt H5 artifact missing: {context_id}")
+        require(
+            h5_artifact == context_row.get("citrus_h5"),
+            f"collection H5 artifact differs from receipt: {context_id}",
+        )
+        require(
+            h5_artifact.get("relative_path")
+            == acceptance_contract.get("planned_h5_relative_path"),
+            f"receipt H5 path differs from accepted path: {context_id}",
+        )
+        h5_sha, h5_size = sha256_file(h5_paths[context_id])
+        require(
+            h5_artifact.get("sha256") == h5_sha
+            and h5_artifact.get("size_bytes") == h5_size,
+            f"closed H5 size or SHA-256 mismatch: {context_id}",
+        )
+        receipt_rows.append({
+            "observation_context_id": context_id,
+            "receipt_path": str(receipt_path.relative_to(recording)),
+            "receipt_id": receipt["receipt_id"],
+            "h5_sha256": h5_sha,
+            "h5_size_bytes": h5_size,
+        })
+
+    require(finalized_ids == set(requests), "finalized collection does not cover every request")
+
+    session, _ = load_json(recording / RECORDING_SESSION)
+    require(
+        session.get("recording_observation_bindings") == finalized,
+        "recording_session binding projection differs from finalized collection",
+    )
+    require(
+        session.get("observation_contexts") == finalized_contexts,
+        "recording_session observation contexts differ from finalized collection",
+    )
+
     h5_rows.sort(key=lambda row: row["camera_id"])
+    receipt_rows.sort(key=lambda row: row["observation_context_id"])
     return {
         "schema_id": "orange_citrus.recording_observation_binding_validation",
         "schema_version": 1,
@@ -263,10 +448,14 @@ def validate(
         "request_count": len(requests),
         "acceptance_count": len(acceptances),
         "h5_embedding_count": len(h5_rows),
-        "citrus_experiment_id": next(iter(experiment_ids)),
+        "finalized_receipt_count": len(receipt_rows),
+        "finalized_collection_sha256": sha256_bytes(finalized_raw),
+        "recording_session_binding_status": "bound",
+        "citrus_experiment_id": experiment_id,
         "cameras": sorted(cameras),
         "arenas": sorted(arenas),
         "edges": h5_rows,
+        "receipts": receipt_rows,
     }
 
 

@@ -52,7 +52,11 @@ def digest(value: dict[str, Any]) -> str:
 
 def seal(schema: str, id_field: str, contract: dict[str, Any]) -> dict[str, Any]:
     sha = digest(contract)
-    prefix = "obsbindreq_" if id_field == "request_id" else "obsbindacc_"
+    prefix = {
+        "request_id": "obsbindreq_",
+        "acceptance_id": "obsbindacc_",
+        "receipt_id": "obsbindfin_",
+    }[id_field]
     return {
         "schema_id": schema,
         "schema_version": 1,
@@ -75,6 +79,7 @@ def fixture(root: Path) -> None:
 
     request_refs = []
     acceptance_refs = []
+    finalized_contexts = []
     experiment_id = "citexp_fixture"
     for index, camera in enumerate(("2010093", "2010094", "2010095", "2010096"), 1):
         context = "obsctx_" + hashlib.sha256(camera.encode()).hexdigest()
@@ -157,11 +162,69 @@ def fixture(root: Path) -> None:
             group.create_dataset("request_json", data=json.dumps(request), dtype=dtype)
             group.create_dataset("acceptance_json", data=json.dumps(acceptance), dtype=dtype)
 
+        h5_raw = h5_path.read_bytes()
+        h5_artifact = {
+            "relative_path": str(h5_relative),
+            "size_bytes": len(h5_raw),
+            "sha256": "sha256:" + hashlib.sha256(h5_raw).hexdigest(),
+        }
+        receipt_contract = {
+            "schema_id": "citrus.recording_observation_finalized_receipt",
+            "schema_version": 1,
+            "request_id": request["request_id"],
+            "request_contract_sha256": request["contract_sha256"],
+            "acceptance_id": acceptance["acceptance_id"],
+            "acceptance_contract_sha256": acceptance["contract_sha256"],
+            "observation_context_id": context,
+            "finalized_at_utc": "2026-08-13T20:01:00Z",
+            "citrus_experiment_id": experiment_id,
+            "citrus_session_uuid": f"session_{index}",
+            "target": target,
+            "h5_artifact": h5_artifact,
+            "session_status": "COMPLETE",
+            "runtime_geometry_contract_sha256": "sha256:" + "2" * 64,
+            "protocol_semantic": {
+                "status": "available",
+                "semantic_sha256": "sha256:" + "3" * 64,
+            },
+        }
+        receipt = seal(
+            "citrus.recording_observation_finalized_receipt",
+            "receipt_id",
+            receipt_contract,
+        )
+        receipt_path = Path("recording_observation_bindings/receipts") / f"{context}.json"
+        receipt_raw = write_json(root / receipt_path, receipt)
+        finalized_contexts.append({
+            "observation_context_id": context,
+            "observation_identity_sha256": request_contract["observation_identity_sha256"],
+            "observation_identity": request_contract["observation_identity"],
+            "status": "bound",
+            "request": {
+                "request_id": request["request_id"],
+                "contract_sha256": request["contract_sha256"],
+                "relative_path": str(request_path),
+            },
+            "acceptance": {
+                "acceptance_id": acceptance["acceptance_id"],
+                "contract_sha256": acceptance["contract_sha256"],
+                "relative_path": str(acceptance_path),
+            },
+            "finalized_receipt": {
+                "receipt_id": receipt["receipt_id"],
+                "contract_sha256": receipt["contract_sha256"],
+                "relative_path": str(receipt_path),
+                "sha256": "sha256:" + hashlib.sha256(receipt_raw).hexdigest(),
+            },
+            "citrus_h5": h5_artifact,
+        })
+
     write_json(root / "recording_observation_bindings/request_collection.json", {
         "schema_id": "orange.recording.observation_binding_request_collection",
         "schema_version": 1,
         "status": "materialized",
         "binding_mode": "required",
+        "recording_id": "fixture",
         "request_count": 4,
         "requests": request_refs,
     })
@@ -175,6 +238,28 @@ def fixture(root: Path) -> None:
         "acceptance_count": 4,
         "acceptances": acceptance_refs,
     })
+    finalized_contexts.sort(key=lambda row: row["observation_context_id"])
+    finalized = {
+        "schema_id": "orange.recording.observation_binding_finalization",
+        "schema_version": 1,
+        "status": "finalized",
+        "binding_status": "bound",
+        "binding_mode": "required",
+        "recording_id": "fixture",
+        "citrus_experiment_id": experiment_id,
+        "finalized_at_utc": "2026-08-13T20:01:00Z",
+        "context_count": 4,
+        "observation_contexts": finalized_contexts,
+    }
+    write_json(
+        root / "recording_observation_bindings/finalized_collection.json",
+        finalized,
+    )
+    write_json(root / "recording_session.json", {
+        "schema_id": "orange.recording_session",
+        "recording_observation_bindings": finalized,
+        "observation_contexts": finalized_contexts,
+    })
 
 
 def main() -> int:
@@ -187,6 +272,8 @@ def main() -> int:
         result = module.validate(root, expected, 4)
         assert result["status"] == "pass"
         assert result["h5_embedding_count"] == 4
+        assert result["finalized_receipt_count"] == 4
+        assert result["recording_session_binding_status"] == "bound"
 
         import h5py
 
@@ -198,6 +285,22 @@ def main() -> int:
             assert "payloads missing" in str(error)
         else:
             raise AssertionError("missing H5 acceptance payload passed validation")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        fixture(root)
+        receipt = next(
+            (root / "recording_observation_bindings/receipts").glob("*.json")
+        )
+        value = json.loads(receipt.read_text())
+        value["contract"]["h5_artifact"]["sha256"] = "sha256:" + "f" * 64
+        write_json(receipt, value)
+        try:
+            module.validate(root, expected, 4)
+        except module.ValidationError as error:
+            assert "receipt file digest mismatch" in str(error)
+        else:
+            raise AssertionError("tampered finalized receipt passed validation")
     print("validate_recording_observation_bindings_tests passed")
     return 0
 

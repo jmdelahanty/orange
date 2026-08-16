@@ -10,6 +10,7 @@
 #include "session/external_crop_recorder_config.h"
 #include "session/recording_observation_request_artifacts.h"
 #include "session/recording_observation_prearm.h"
+#include "session/recording_observation_finalization.h"
 #include "gui/spatial_layout/sha256.h"
 
 #include <algorithm>
@@ -2614,6 +2615,12 @@ bool write_recording_session_manifest(const std::string& path,
         return false;
     }
     add_finalized_timestamp_clock_contract(&finalized_manifest, manifest_path);
+    if (!apply_recording_observation_finalization_to_manifest(
+            manifest_path.parent_path().string(),
+            &finalized_manifest,
+            error_out)) {
+        return false;
+    }
     return write_json_file(manifest_path, finalized_manifest, error_out);
 }
 

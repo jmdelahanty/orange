@@ -364,6 +364,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/session/external_crop_recorder_config.cpp"
     "${SRC_DIR}/session/crop_rolling_sidecars.cpp"
     "${SRC_DIR}/session/recording_observation_binding.cpp"
+    "${SRC_DIR}/session/recording_observation_finalization.cpp"
     "${SRC_DIR}/session/recording_observation_identity.cpp"
     "${SRC_DIR}/session/recording_observation_prearm.cpp"
     "${SRC_DIR}/session/recording_observation_request_artifacts.cpp"
@@ -400,6 +401,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/session/external_crop_recorder_config.cpp"
     "${SRC_DIR}/session/crop_rolling_sidecars.cpp"
     "${SRC_DIR}/session/recording_observation_binding.cpp"
+    "${SRC_DIR}/session/recording_observation_finalization.cpp"
     "${SRC_DIR}/session/recording_observation_identity.cpp"
     "${SRC_DIR}/session/recording_observation_prearm.cpp"
     "${SRC_DIR}/session/recording_observation_request_artifacts.cpp"
@@ -596,6 +598,7 @@ if(BUILD_TESTING)
     add_executable(recording_observation_binding_tests
         "tools/recording_observation_binding_tests.cpp"
         "${SRC_DIR}/session/recording_observation_binding.cpp"
+        "${SRC_DIR}/session/recording_observation_finalization.cpp"
         "${SRC_DIR}/session/recording_observation_identity.cpp"
         "${SRC_DIR}/session/recording_observation_prearm.cpp"
         "${SRC_DIR}/session/recording_observation_request_artifacts.cpp"

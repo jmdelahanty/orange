@@ -515,8 +515,22 @@ The mutable recording snapshot contains only digest-bound references to these
 artifacts. A Citrus H5 for an accepted edge embeds the exact request and
 acceptance under `/recording_observation_binding` and obtains the frozen Orange
 snapshot/geometry from that request rather than rereading the mutable latest
-pointer. Final `bound` status still requires the unimplemented post-close H5
-receipt and Orange final-manifest verification.
+pointer. Final `bound` status requires the post-close H5 receipt and Orange
+final-manifest verification.
+
+After Citrus closes every accepted H5, it returns a sealed receipt containing
+the exact H5 recording-relative path, byte size, SHA-256, terminal session
+status, protocol semantic digest or explicit unsupported digest, and runtime
+geometry digest. Orange independently verifies the H5 bytes and reciprocal
+chain, then writes create-once artifacts under
+`recording_observation_bindings/receipts/` plus
+`recording_observation_bindings/finalized_collection.json`. The finalized
+`recording_session.json` copies that collection under
+`recording_observation_bindings` and exposes its edge rows as
+`observation_contexts`. If the ordinary recording manifest is written before
+the receipts arrive, Orange atomically refreshes only this projection after
+receipt acceptance. Missing or invalid finalization evidence is represented
+as explicit `unbound`, never inferred as `bound`.
 
 GUI recording hook:
 

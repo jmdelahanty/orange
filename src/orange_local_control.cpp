@@ -95,6 +95,7 @@ bool is_mutating_method(const std::string& method)
     return method == "start_recording" ||
            method == "stop_recording" ||
            method == "citrus_completion" ||
+           method == "finalize_recording_observation_bindings" ||
            IsProjectedCenterPreflightMethod(method);
 }
 
@@ -715,6 +716,7 @@ bool ParseLocalControlRequest(const nlohmann::json& request,
         parsed.method != "start_recording" &&
         parsed.method != "stop_recording" &&
         parsed.method != "citrus_completion" &&
+        parsed.method != "finalize_recording_observation_bindings" &&
         !IsProjectedCenterPreflightMethod(parsed.method)) {
         set_error(error_out, "unsupported method: " + parsed.method);
         return false;
@@ -751,6 +753,36 @@ bool ParseLocalControlRequest(const nlohmann::json& request,
             !experiment_it->is_string() ||
             experiment_it->get<std::string>().empty()) {
             set_error(error_out, "citrus_completion params.experiment_id is required");
+            return false;
+        }
+    }
+    if (parsed.method == "finalize_recording_observation_bindings") {
+        const auto experiment_it = parsed.params.find("experiment_id");
+        const auto recording_folder_it = parsed.params.find("recording_folder");
+        const auto receipts_it = parsed.params.find("receipts");
+        if (experiment_it == parsed.params.end() ||
+            !experiment_it->is_string() ||
+            experiment_it->get<std::string>().empty() ||
+            recording_folder_it == parsed.params.end() ||
+            !recording_folder_it->is_string() ||
+            recording_folder_it->get<std::string>().empty() ||
+            receipts_it == parsed.params.end() ||
+            !receipts_it->is_array() || receipts_it->empty()) {
+            set_error(
+                error_out,
+                "finalize_recording_observation_bindings requires "
+                "params.experiment_id, params.recording_folder, and a "
+                "nonempty params.receipts array");
+            return false;
+        }
+        const std::filesystem::path recording_folder =
+            recording_folder_it->get<std::string>();
+        if (!recording_folder.is_absolute() ||
+            recording_folder.lexically_normal() != recording_folder) {
+            set_error(
+                error_out,
+                "finalize_recording_observation_bindings "
+                "params.recording_folder must be an absolute normalized path");
             return false;
         }
     }
@@ -1245,6 +1277,50 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
              }},
             {"status", LocalControlStatusSnapshotToJson(status_snapshot)},
         };
+        AppendEpochTelemetry(&response, parsed);
+        LogEvent({{"received_at_utc", received_at_utc},
+                  {"request", request},
+                  {"response", response}});
+        return response;
+    }
+
+    if (parsed.method == "finalize_recording_observation_bindings") {
+        if (!options_.recording_observation_finalization_handler) {
+            nlohmann::json response = BuildLocalControlErrorResponse(
+                request,
+                "recording_observation_finalization_unavailable",
+                "recording-observation finalization handler is unavailable");
+            AppendEpochTelemetry(&response, parsed);
+            LogEvent({{"received_at_utc", received_at_utc},
+                      {"request", request},
+                      {"response", response}});
+            return response;
+        }
+        std::string finalization_error;
+        const nlohmann::json effect =
+            options_.recording_observation_finalization_handler(
+                parsed.params, status_snapshot, &finalization_error);
+        const bool accepted = finalization_error.empty();
+        nlohmann::json response = {
+            {"schema_id", kLocalControlResponseSchemaId},
+            {"schema_version", kLocalControlSchemaVersion},
+            {"ok", accepted},
+            {"accepted", accepted},
+            {"duplicate", duplicate},
+            {"queued_for_gui_thread", false},
+            {"request_id", parsed.request_id},
+            {"operation_id", parsed.operation_id},
+            {"method", parsed.method},
+            {"responded_at_utc", utc_now()},
+            {"status", LocalControlStatusSnapshotToJson(status_snapshot)},
+            {"effect", effect},
+        };
+        if (!accepted) {
+            response["error"] = {
+                {"code", "recording_observation_finalization_rejected"},
+                {"message", finalization_error},
+            };
+        }
         AppendEpochTelemetry(&response, parsed);
         LogEvent({{"received_at_utc", received_at_utc},
                   {"request", request},

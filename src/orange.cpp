@@ -59,6 +59,7 @@
 #include "orange_local_control.h"
 #include "session/crop_rolling_sidecars.h"
 #include "session/recording_observation_prearm.h"
+#include "session/recording_observation_finalization.h"
 #include "session/recording_observation_request_artifacts.h"
 #include "session/recording_session.h"
 #include "spatial_layout_ui.h"
@@ -4948,6 +4949,66 @@ int main(int /*argc*/, char ** /*args*/) {
             gui_local_control_stop_scheduler.stop_recording_enabled;
         control_options.allow_gui_citrus_completion_commands =
             gui_local_control_stop_scheduler.citrus_completion_enabled;
+        control_options.recording_observation_finalization_handler =
+            [](const nlohmann::json& params,
+               const orange::control::LocalControlStatusSnapshot& status,
+               std::string* error_out) {
+                const std::string requested_folder =
+                    params.value("recording_folder", "");
+                if (!status.recording_folder.empty() &&
+                    std::filesystem::path(status.recording_folder)
+                            .lexically_normal() !=
+                        std::filesystem::path(requested_folder)
+                            .lexically_normal()) {
+                    if (error_out != nullptr) {
+                        *error_out =
+                            "Citrus receipt folder conflicts with Orange's "
+                            "current recording folder";
+                    }
+                    return nlohmann::json::object();
+                }
+                if (!status.recording_folder.empty() &&
+                    !status.recording_active &&
+                    !status.recording_finalizing &&
+                    !status.recording_finalized) {
+                    if (error_out != nullptr) {
+                        *error_out =
+                            "Orange's current recording is not in a receipt-"
+                            "eligible lifecycle state";
+                    }
+                    return nlohmann::json::object();
+                }
+                const std::string recording_folder =
+                    status.recording_folder.empty()
+                    ? requested_folder
+                    : status.recording_folder;
+                const auto finalized =
+                    orange::session::finalize_recording_observation_bindings(
+                        recording_folder, params);
+                if (!finalized.ok) {
+                    if (error_out != nullptr) {
+                        *error_out = finalized.error;
+                    }
+                    return nlohmann::json::object();
+                }
+                std::string refresh_error;
+                if (!orange::session::
+                        refresh_recording_session_observation_bindings(
+                            recording_folder,
+                            &refresh_error)) {
+                    if (error_out != nullptr) {
+                        *error_out =
+                            "receipts were persisted, but the finalized "
+                            "recording_session.json refresh failed: " +
+                            refresh_error;
+                    }
+                    return nlohmann::json::object();
+                }
+                return nlohmann::json{
+                    {"recording_observation_bindings",
+                     finalized.collection_reference},
+                };
+            };
         std::string control_error;
         if (!gui_local_control_server.Start(control_options, &control_error)) {
             std::cerr << "[GUI][local_control] failed to start: "

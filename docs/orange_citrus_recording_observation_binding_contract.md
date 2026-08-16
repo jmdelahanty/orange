@@ -1,7 +1,7 @@
 # Orange/Citrus Recording Observation Binding Contract
 
-Status: schema-v1 Phase A implemented and validated; finalized-H5 receipt and
-parent-manifest Phase B remain open
+Status: schema-v1 Phase A and Phase B implemented with focused validation;
+live four-camera Phase-B acceptance remains
 
 Date: 2026-08-13
 
@@ -327,7 +327,7 @@ and the mismatch occurred before experiment arm.
 
 ## Recording and H5 materialization
 
-Current Phase-A producer wiring:
+Current producer wiring:
 
 ```text
 recording_snapshot.json
@@ -339,13 +339,15 @@ recording_observation_bindings/
   requests/obsctx_<sha256>.json
   acceptances/obsctx_<sha256>.json
   pre_arm_decision.json
+  receipts/obsctx_<sha256>.json
+  finalized_collection.json
 
 Citrus H5
   /recording_observation_binding/request_json
   /recording_observation_binding/acceptance_json
 
 recording_session.json
-  # Phase B, not yet implemented:
+  recording_observation_bindings
   observation_contexts[]
     identity reference/digest
     request reference/digest
@@ -353,13 +355,23 @@ recording_session.json
     finalized receipt or explicit terminal lifecycle state
 ```
 
-Rolling clip manifests reference the parent observation contexts. They do not
-duplicate or mint new observation IDs.
+For rolling sessions, each clip entry carries a
+`parent_recording_session` reference containing only the parent context IDs and
+identity digests. Clips do not duplicate full context envelopes or mint new
+observation IDs.
+
+After each Citrus H5 has successfully flushed and closed, Citrus computes its
+size and SHA-256 in a bounded-memory worker and returns one sealed receipt per
+accepted edge. Orange revalidates the complete request/acceptance/receipt
+chain, independently streams the closed H5 digest, persists the exact receipts
+and finalized collection with create-once semantics, and atomically refreshes
+`recording_session.json`. The socket operation is bounded and retryable;
+accepted autoruns reserve a separate 60-second post-close finalization budget.
 
 ### Automated four-camera acceptance
 
-The noninteractive Orange/Citrus coordinator is the live Phase-A acceptance
-path. It launches both GUI processes under the workstation's existing X11
+The noninteractive Orange/Citrus coordinator is the live producer-lifecycle
+acceptance path. It launches both GUI processes under the workstation's existing X11
 session, but all lifecycle control is performed through their local-control
 sockets; no operator interaction with either GUI is required after launch.
 
@@ -376,9 +388,12 @@ After Orange and Citrus finalize, the profile runs
 `scripts/validate_recording_observation_bindings.py`. For Shadow it requires
 exactly four request artifacts, four accepted responses sharing one Citrus
 experiment ID, four distinct camera/arena edges, four COMPLETE planned H5
-files, and byte-equivalent request/acceptance JSON embedded in each H5. Any
-optional/unbound fallback, missing H5, target mismatch, digest mismatch, or
-partial embedding fails the orchestrated run.
+files, byte-equivalent request/acceptance JSON embedded in each H5, four exact
+finalized receipts, independently verified H5 size/SHA values, one bound
+parent collection, and an identical `recording_session.json` projection. Any
+optional/unbound fallback, missing H5, target mismatch, digest mismatch,
+partial embedding, incomplete receipt batch, or unbound parent manifest fails
+the orchestrated run.
 
 The live smoke command is:
 
@@ -461,16 +476,25 @@ Implemented in Orange now:
   reservation has been consumed; and
 - exact request and acceptance JSON under each matching H5's
   `/recording_observation_binding`, with the logger resolving Orange evidence
-  from the accepted immutable request rather than `latest_recording.json`.
+  from the accepted immutable request rather than `latest_recording.json`;
+- post-close Citrus receipt construction only after COMPLETE write, final
+  flush, and H5 close, with bounded-memory H5 hashing outside the GUI/render
+  path;
+- a bounded, retryable finalization request carrying the frozen Orange
+  recording folder so byte-idempotent recovery remains possible after an
+  Orange process restart;
+- independent bounded-memory Orange verification of every H5 and reciprocal
+  request/acceptance/receipt link;
+- create-once receipt and finalized-collection artifacts plus atomic late
+  refresh of `recording_session.json`; and
+- parent-context references for rolling clip entries without rekeying the
+  observation identities.
 
-The Phase-A association remains `accepted_pending_finalization`. It is not
-`bound` until the post-close receipt below is implemented and verified.
+The Phase-A association remains `accepted_pending_finalization` until the
+post-close batch succeeds. Only the verified finalized collection is `bound`.
 
-Not implemented yet:
-
-- Citrus final H5 hashing and receipt return;
-- Orange final manifest integration; or
-- Palette consumption of the producer-native binding.
+Not implemented yet is Palette consumption of the producer-native binding.
+The producer side still requires a live four-camera Phase-B acceptance run.
 
 Operational controls:
 

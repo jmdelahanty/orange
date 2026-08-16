@@ -1,4 +1,5 @@
 #include "session/recording_observation_binding.h"
+#include "session/recording_observation_finalization.h"
 #include "session/recording_observation_identity.h"
 #include "session/recording_observation_prearm.h"
 #include "session/recording_observation_request_artifacts.h"
@@ -690,6 +691,187 @@ void test_prearm_not_applicable_never_contacts_citrus()
     std::filesystem::remove_all(root);
 }
 
+void test_post_close_finalization_is_complete_idempotent_and_manifest_bound()
+{
+    const auto root = make_materialization_fixture(resolved_geometry());
+    orange::session::RecordingObservationBindingRequestMaterialization requests;
+    orange::session::RecordingObservationPreArmResult pre_arm;
+    std::string error;
+    require(orange::session::prepare_recording_observation_pre_arm(
+                root.string(), "required", "2026-08-13T16:00:00Z",
+                &requests, &pre_arm, &error,
+                [](const json& request, json* response, std::string*) {
+                    *response = accepted_batch_response(request);
+                    return true;
+                }),
+            "post-close fixture pre-arm failed: " + error);
+
+    json receipts = json::array();
+    for (std::size_t index = 0; index < requests.artifacts.size(); ++index) {
+        const json& request = requests.artifacts[index].request;
+        const json& acceptance = pre_arm.acceptances[index].acceptance;
+        const std::string h5_relative =
+            acceptance.at("contract").at("planned_h5_relative_path");
+        const std::string h5_bytes =
+            "closed-citrus-h5-fixture-" + std::to_string(index);
+        write_file(root / h5_relative, h5_bytes);
+
+        json contract = receipt_contract(request, acceptance);
+        contract["citrus_experiment_id"] = "citexp_transaction_test";
+        contract["citrus_session_uuid"] =
+            acceptance.at("contract").at("citrus_session_uuid");
+        contract["target"] = acceptance.at("contract").at("target");
+        contract["h5_artifact"] = {
+            {"relative_path", h5_relative},
+            {"size_bytes", h5_bytes.size()},
+            {"sha256", file_sha256(root / h5_relative)},
+        };
+        json receipt;
+        require(orange::session::seal_recording_observation_finalized_receipt(
+                    contract, &receipt, &error),
+                "post-close receipt seal failed: " + error);
+        receipts.push_back(std::move(receipt));
+    }
+
+    const json params = {
+        {"experiment_id", "citexp_transaction_test"},
+        {"receipts", receipts},
+    };
+    const auto conflicting_receipt_path =
+        root / "recording_observation_bindings/receipts" /
+        (receipts.front().at("contract")
+             .at("observation_context_id").get<std::string>() + ".json");
+    write_file(conflicting_receipt_path, "partial-write-fixture");
+    const auto partial_write =
+        orange::session::finalize_recording_observation_bindings(
+            root.string(), params);
+    require(!partial_write.ok,
+            "conflicting partial receipt artifact was overwritten");
+    std::filesystem::remove(conflicting_receipt_path);
+    const auto incomplete =
+        orange::session::finalize_recording_observation_bindings(
+            root.string(),
+            {{"experiment_id", "citexp_transaction_test"},
+             {"receipts", json::array({receipts.front()})}});
+    require(!incomplete.ok,
+            "partial multi-H5 receipt set was accepted as bound");
+    const auto finalized =
+        orange::session::finalize_recording_observation_bindings(
+            root.string(), params);
+    require(finalized.ok &&
+                finalized.collection.at("binding_status") == "bound" &&
+                finalized.collection.at("context_count") == 2,
+            "complete post-close receipt set did not bind: " +
+                finalized.error);
+    const auto collection_path = root /
+        orange::session::kObservationBindingFinalizationRelativePath;
+    require(std::filesystem::exists(collection_path) &&
+                file_sha256(collection_path) ==
+                    finalized.collection_reference.at("sha256"),
+            "finalized collection reference does not bind exact bytes");
+    const std::string first_collection_bytes = read_file(collection_path);
+
+    const auto repeated =
+        orange::session::finalize_recording_observation_bindings(
+            root.string(), params);
+    require(repeated.ok &&
+                read_file(collection_path) == first_collection_bytes &&
+                repeated.collection_reference == finalized.collection_reference,
+            "byte-identical finalization retry changed immutable evidence");
+
+    json manifest = {
+        {"schema_id", "orange.recording_session"},
+        {"mode", "rolling_clips"},
+        {"clips", json::array({{{"clip_id", "clip_000000"}}})},
+    };
+    require(orange::session::apply_recording_observation_finalization_to_manifest(
+                root.string(), &manifest, &error),
+            "could not add finalized collection to manifest: " + error);
+    require(manifest.at("recording_observation_bindings")
+                    .at("binding_status") == "bound" &&
+                manifest.at("observation_contexts").size() == 2,
+            "recording manifest did not expose the bound observation contexts");
+    require(
+        manifest.at("clips").at(0).at("observation_contexts")
+                .at("authority") == "parent_recording_session" &&
+            manifest.at("clips").at(0).at("observation_contexts")
+                .at("contexts").size() == 2,
+        "rolling clip did not reference the parent observation contexts");
+
+    write_file(root / "recording_session.json",
+               json{{"schema_id", "orange.recording_session"}}.dump(2) +
+                   "\n");
+    require(orange::session::refresh_recording_session_observation_bindings(
+                root.string(), &error),
+            "could not refresh already-finalized recording manifest: " +
+                error);
+    const json refreshed_manifest = json::parse(
+        read_file(root / "recording_session.json"));
+    require(refreshed_manifest.at("recording_observation_bindings")
+                    .at("binding_status") == "bound" &&
+                refreshed_manifest.at("observation_contexts").size() == 2,
+            "post-finalization manifest refresh omitted bound contexts");
+
+    const std::string first_h5 =
+        receipts.front().at("contract").at("h5_artifact")
+            .at("relative_path");
+    write_file(root / first_h5, "tampered-after-close");
+    const auto tampered =
+        orange::session::finalize_recording_observation_bindings(
+            root.string(), params);
+    require(!tampered.ok,
+            "finalization retry accepted H5 bytes that no longer match receipt");
+    std::filesystem::remove_all(root);
+}
+
+void test_manifest_never_infers_bound_without_final_receipts()
+{
+    const auto root = make_materialization_fixture(resolved_geometry());
+    orange::session::RecordingObservationBindingRequestMaterialization requests;
+    orange::session::RecordingObservationPreArmResult pre_arm;
+    std::string error;
+    require(orange::session::prepare_recording_observation_pre_arm(
+                root.string(), "required", "2026-08-13T16:00:00Z",
+                &requests, &pre_arm, &error,
+                [](const json& request, json* response, std::string*) {
+                    *response = accepted_batch_response(request);
+                    return true;
+                }),
+            "unbound manifest fixture pre-arm failed: " + error);
+    json manifest = {{"schema_id", "orange.recording_session"}};
+    require(orange::session::apply_recording_observation_finalization_to_manifest(
+                root.string(), &manifest, &error),
+            "unbound manifest materialization failed: " + error);
+    require(manifest.at("recording_observation_bindings").at("status") ==
+                "unbound" &&
+                manifest.at("observation_contexts").size() == 2,
+            "missing final receipts were incorrectly inferred as bound");
+    for (const auto& context : manifest.at("observation_contexts")) {
+        require(context.at("status") == "unbound",
+                "unfinalized context was upgraded to bound");
+    }
+    std::filesystem::remove_all(root);
+}
+
+void test_streaming_sha256_matches_known_vector()
+{
+    const auto root = make_materialization_fixture(resolved_geometry());
+    const auto path = root / "sha256_known_vector.bin";
+    write_file(path, "abc");
+    std::string digest;
+    std::string error;
+    require(
+        orange::gui::spatial_layout::checksum::file_sha256(
+            path, &digest, &error),
+        "streaming SHA-256 could not hash the known vector: " + error);
+    require(
+        digest ==
+            "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9c"
+            "b410ff61f20015ad",
+        "streaming SHA-256 did not match the NIST abc vector");
+    std::filesystem::remove_all(root);
+}
+
 }  // namespace
 
 int main()
@@ -709,6 +891,9 @@ int main()
         test_prearm_rejects_non_atomic_or_inconsistent_batch();
         test_prearm_required_and_optional_transport_failure_policy();
         test_prearm_not_applicable_never_contacts_citrus();
+        test_post_close_finalization_is_complete_idempotent_and_manifest_bound();
+        test_manifest_never_infers_bound_without_final_receipts();
+        test_streaming_sha256_matches_known_vector();
         std::cout << "recording_observation_binding_tests: PASS\n";
         return 0;
     } catch (const std::exception& error) {

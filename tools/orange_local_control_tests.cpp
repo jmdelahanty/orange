@@ -1342,6 +1342,86 @@ void test_parse_rejects_invalid_epoch_and_seq()
             "legacy request should parse with epoch=0 and seq=0");
 }
 
+void test_recording_observation_finalization_requires_complete_payload()
+{
+    std::string error;
+    nlohmann::json missing_receipts = request_json(
+        "finalize_recording_observation_bindings",
+        "finalize-parse-req-1",
+        "finalize-parse-op-1",
+        {{"experiment_id", "citexp_fixture"}});
+    require(!ParseLocalControlRequest(missing_receipts, nullptr, &error),
+            "finalization without receipts should fail to parse");
+    require(error.find("receipts") != std::string::npos,
+            "missing receipt failure should identify the receipt set");
+
+    orange::control::ParsedLocalControlRequest parsed;
+    const nlohmann::json complete = request_json(
+        "finalize_recording_observation_bindings",
+        "finalize-parse-req-2",
+        "finalize-parse-op-2",
+        {{"experiment_id", "citexp_fixture"},
+         {"recording_folder", "/tmp/recording_observation_fixture"},
+         {"receipts", nlohmann::json::array({{{"receipt_id", "fixture"}}})}});
+    require(ParseLocalControlRequest(complete, &parsed, &error),
+            "complete finalization payload should parse: " + error);
+    require(parsed.params.at("receipts").size() == 1,
+            "parsed finalization payload lost its receipt");
+}
+
+void test_recording_observation_finalization_uses_synchronous_handler()
+{
+    const auto socket_path = temp_path("observation_finalization.sock");
+    std::filesystem::remove(socket_path);
+    LocalControlServer server;
+    LocalControlServerOptions options;
+    options.socket_path = socket_path.string();
+    int handler_calls = 0;
+    options.recording_observation_finalization_handler =
+        [&handler_calls](const nlohmann::json& params,
+                         const LocalControlStatusSnapshot&,
+                         std::string* error) {
+            ++handler_calls;
+            if (params.value("experiment_id", "") != "citexp_fixture" ||
+                params.value("recording_folder", "") !=
+                    "/tmp/recording_observation_fixture") {
+                *error = "unexpected handler input";
+                return nlohmann::json::object();
+            }
+            return nlohmann::json{{"recording_observation_bindings", {
+                {"status", "finalized"},
+                {"binding_status", "bound"},
+                {"context_count", 1},
+            }}};
+        };
+    std::string error;
+    require(server.Start(options, &error),
+            "finalization server start failed: " + error);
+    wait_until_running(&server);
+    auto status = healthy_status();
+    status.recording_active = true;
+    status.recording_folder = "/tmp/recording_observation_fixture";
+    server.UpdateStatus(status);
+    const nlohmann::json request = request_json(
+        "finalize_recording_observation_bindings",
+        "finalize-handler-req-1",
+        "finalize-handler-op-1",
+        {{"experiment_id", "citexp_fixture"},
+         {"recording_folder", "/tmp/recording_observation_fixture"},
+         {"receipts", nlohmann::json::array({{{"receipt_id", "fixture"}}})}});
+    const nlohmann::json response = send_request(socket_path, request);
+    server.Stop();
+
+    require(response.at("ok") && response.at("accepted") &&
+                !response.at("queued_for_gui_thread") && handler_calls == 1,
+            "finalization was not accepted synchronously exactly once");
+    require(response.at("effect").at("recording_observation_bindings")
+                    .at("binding_status") == "bound",
+            "finalization response did not return the bound collection proof");
+    require(server.DrainPendingCommands().empty(),
+            "finalization must never enter the GUI-thread command queue");
+}
+
 void test_fenced_stop_is_queued_and_reports_epoch_telemetry()
 {
     const auto socket_path = temp_path("fence_fresh.sock");
@@ -1715,6 +1795,10 @@ int main()
          test_start_stop_are_rejected_in_diagnostic_mode},
         {"parse_rejects_invalid_epoch_and_seq",
          test_parse_rejects_invalid_epoch_and_seq},
+        {"recording_observation_finalization_requires_complete_payload",
+         test_recording_observation_finalization_requires_complete_payload},
+        {"recording_observation_finalization_uses_synchronous_handler",
+         test_recording_observation_finalization_uses_synchronous_handler},
         {"fenced_stop_is_queued_and_reports_epoch_telemetry",
          test_fenced_stop_is_queued_and_reports_epoch_telemetry},
         {"stale_epoch_command_is_rejected_and_not_queued",

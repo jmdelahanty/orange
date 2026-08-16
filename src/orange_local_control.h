@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -93,6 +94,12 @@ struct LocalControlStatusSnapshot {
 };
 
 struct LocalControlServerOptions {
+    using RecordingObservationFinalizationHandler =
+        std::function<nlohmann::json(
+            const nlohmann::json&,
+            const LocalControlStatusSnapshot&,
+            std::string*)>;
+
     std::string socket_path;
     std::string event_log_path;
     int socket_mode = 0666;
@@ -102,6 +109,8 @@ struct LocalControlServerOptions {
     bool allow_gui_start_recording_commands = false;
     bool allow_gui_stop_recording_commands = false;
     bool allow_gui_citrus_completion_commands = false;
+    RecordingObservationFinalizationHandler
+        recording_observation_finalization_handler;
 };
 
 struct ParsedLocalControlRequest {
