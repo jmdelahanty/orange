@@ -20,6 +20,7 @@
 #include "gui/spatial_layout/linked_top_rim_layout.h"
 #include "gui/spatial_layout/metadata_panel.h"
 #include "gui/spatial_layout/persistence_panel.h"
+#include "gui/spatial_layout/physical_registration_selection_panel.h"
 #include "gui/spatial_layout/preview_capture.h"
 #include "gui/spatial_layout/preview_overlay.h"
 #include "gui/spatial_layout/session_io.h"
@@ -29,6 +30,7 @@
 #include "gui/spatial_layout/save_jobs.h"
 #include "gui/spatial_layout/session_review.h"
 #include "gui/spatial_layout/sha256.h"
+#include "gui/spatial_layout/standalone_physical_registration_workflow.h"
 #include "imgui.h"
 #include "misc/cpp/imgui_stdlib.h"
 #include <ImGuiFileDialog.h>
@@ -84,6 +86,7 @@ using orange::gui::spatial_layout::eligible_group_capture_camera_count;
 using orange::gui::spatial_layout::evaluate_daily_physical_registration_save_preflight;
 using orange::gui::spatial_layout::advance_daily_registration_workflow;
 using orange::gui::spatial_layout::advance_group_capture_workflow;
+using orange::gui::spatial_layout::advance_standalone_physical_registration_workflow;
 using orange::gui::spatial_layout::find_citrus_template_index_for_camera;
 using orange::gui::spatial_layout::group_capture_workflow_active;
 using orange::gui::spatial_layout::initialize_group_capture_camera_scope;
@@ -100,6 +103,8 @@ using orange::gui::spatial_layout::handle_selected_zone_canvas_edit;
 using orange::gui::spatial_layout::read_json_file;
 using orange::gui::spatial_layout::render_group_capture_panels;
 using orange::gui::spatial_layout::render_daily_registration_workflow_panel;
+using orange::gui::spatial_layout::render_physical_registration_selection_panel;
+using orange::gui::spatial_layout::render_standalone_physical_registration_workflow_panel;
 using orange::gui::spatial_layout::render_layout_geometry_editor;
 using orange::gui::spatial_layout::render_calibration_workflow_tabs;
 using orange::gui::spatial_layout::render_calibration_capture_metadata_panel;
@@ -904,6 +909,13 @@ void render_spatial_layout_window(
         cameras_select,
         num_cameras,
         spatial_snapshot_workers);
+    advance_standalone_physical_registration_workflow(
+        ui_state,
+        cameras_params,
+        cameras_select,
+        num_cameras,
+        spatial_snapshot_workers,
+        artifact_root_dir);
     advance_daily_registration_workflow(
         ui_state,
         cameras_params,
@@ -2319,7 +2331,23 @@ void render_spatial_layout_window(
             ui_state->rig_canvas_commissioning_error.c_str());
     }
 
-    ImGui::SeparatorText("Optional Daily Registration Runtime Mode");
+    const bool recording_mutation_locked =
+        camera_control->record_video || camera_control->recording_draining;
+    render_standalone_physical_registration_workflow_panel(
+        ui_state,
+        cameras_params,
+        cameras_select,
+        num_cameras,
+        spatial_snapshot_workers,
+        artifact_root_dir,
+        recording_mutation_locked);
+    render_physical_registration_selection_panel(
+        ui_state,
+        selected_camera,
+        artifact_root_dir,
+        recording_mutation_locked);
+
+    ImGui::SeparatorText("Optional Citrus Projection Registration Runtime Mode");
     ImGui::TextWrapped(
         "Daily dish registration is optional. Base-only uses the immutable "
         "commissioned canvas, homography, scale, and arena geometry. A missing "
@@ -2397,7 +2425,7 @@ void render_spatial_layout_window(
         num_cameras,
         spatial_snapshot_workers,
         artifact_root_dir,
-        camera_control->record_video || camera_control->recording_draining);
+        recording_mutation_locked);
 
     ImGui::SeparatorText("Detection And Canonical Layout");
     ImGui::InputText("Layout ID", &ui_state->layout_artifact.layout_id);

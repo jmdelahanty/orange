@@ -2,8 +2,9 @@
 
 Date: 2026-08-21
 
-Status: proposed implementation checklist; documentation only; no runtime
-behavior is changed by this plan
+Status: implementation in progress. Standalone schema-v2 persistence, grouped
+camera-only capture/review, and explicit per-camera active selection are
+implemented. Recording pre-arm consumption remains a later phase.
 
 ## Goal
 
@@ -145,26 +146,69 @@ The first standalone persistence slice is now implemented:
 - focused tests prove no-Citrus persistence plus mismatch and raster failure
   behavior.
 
-This is a manual/semi-manual Orange-only path through the existing capture,
-Hough review, metadata confirmation, and persistence panels. The polished
-standalone grouped wizard, active selection pointer, and recording-bound
-metadata remain later phases.
+This initial manual/semi-manual path remains available through the existing
+capture, Hough review, metadata confirmation, and persistence panels.
+
+## Implemented Grouped Workflow And Selection (2026-08-23)
+
+Orange now also provides a guided **Standalone Daily Physical Dish
+Registration** workflow that:
+
+- operates without a Citrus socket, loaded canvas, or projector transaction;
+- uses the existing selected-camera scope and requires every participating
+  camera to be open, streaming, and backed by a snapshot worker;
+- obtains a fresh native-resolution grouped temporal-mean capture from every
+  selected camera while preserving production NIR/filter conditions;
+- records the observed projector state as `off`, `not_in_use`, or
+  `external_static` instead of inventing a Citrus scene;
+- rejects missing frame identities, zero camera/system timestamps,
+  non-native/full-resolution sources, incomplete groups, and a configurable
+  cross-camera timestamp span above the default 1 ms limit;
+- runs the Hough proposals concurrently, then shows raw magenta and
+  operator-adjustable accepted orange fits for every camera;
+- writes one accepted schema-v2 top-rim observation per camera and publishes a
+  grouped manifest only after every exact observation exists and re-hashes;
+  and
+- leaves the new evidence `available_not_selected` until the operator performs
+  a separate selection action.
+
+The adjacent **Physical Registration Selection** surface discovers accepted
+schema-v2 observations for the selected camera, displays compatible and
+incompatible evidence, and writes an atomic pointer at:
+
+```text
+<calibration-base>/active/physical_dish_registration/Cam<serial>.json
+```
+
+The pointer uses schema
+`orange.calibration.active_physical_registration_pointer` v1 and binds the
+exact artifact ID, absolute observation path, SHA-256 digest, camera serial,
+native raster, pixel format, coordinate space, and selection time. Selection
+re-opens and hashes the observation immediately before publication. Restart
+resolution performs the same identity, schema, camera, raster, pixel-format,
+operator-acceptance, containment, and digest checks. Clearing publishes an
+explicit `cleared` pointer and never deletes immutable evidence.
+
+This active pointer is not yet a recording authority. Recording pre-arm must
+consume and revalidate it in Phase E/F before a mask-dependent recording can
+claim that this selection was used.
 
 ## Current Gaps
 
-1. `src/gui/spatial_layout/daily_registration_workflow.cpp` begins by selecting
+1. The Citrus-backed `src/gui/spatial_layout/daily_registration_workflow.cpp`
+   still begins by selecting
    a Citrus runtime mode and acquiring a Citrus lease. Capture, rim fitting,
    persistence, projection translation, and runtime selection are presented as
-   one transaction.
-2. Orange can load a standalone artifact through
-   `ORANGE_SPATIAL_CALIBRATION_ARTIFACT_<serial>`, but has no first-class
-   per-camera UI/session selection surface.
-3. Recording geometry supports `orange_only` and `not_configured`, but does not
+   one transaction; it has not yet been refactored to call the standalone core
+   and then optionally start projection registration.
+2. Recording geometry supports `orange_only` and `not_configured`, but does not
    expose physical and projection registration as independently resolved
    products.
-4. The guided transaction is the only polished operator path. A standalone
-   path should reuse its grouped capture, fitting, adjustment, schema-v2
-   writer, overlays, and validation instead of cloning them.
+3. The active physical pointer is not yet consumed by stream start or recording
+   pre-arm, so dependent features cannot rely on it yet.
+4. The standalone review shows raw and accepted boundaries, while the derived
+   centroid gate is currently preserved in saved review artifacts rather than
+   drawn as a third live review circle.
 5. A production-state context background is not yet a stable recording
    artifact, although its source burst can often be shared with the rim fit.
 
@@ -193,20 +237,22 @@ requiredness without checking whether Citrus happened to be reachable.
 
 - [x] Create a focused, shared physical-registration save-preflight module
       rather than adding this policy to `orange.cpp`.
-- [ ] Extract the remaining reusable physical workflow state rather than
+- [x] Extract the remaining reusable physical workflow state rather than
       adding it to the monolithic UI translation unit.
-- [ ] Extract reusable states for preflight, grouped capture, circle proposal,
+- [x] Extract reusable states for preflight, grouped capture, circle proposal,
       operator adjustment, acceptance, persistence, abort, and retry.
-- [ ] Keep Citrus lease, scene request, homography mapping, candidate creation,
+- [x] Keep Citrus lease, scene request, homography mapping, candidate creation,
       and runtime selection outside the Orange-only state machine.
-- [ ] Allow capture with Citrus absent and persist a versioned projector state
+- [x] Allow capture with Citrus absent and persist a versioned projector state
       such as `off`, `not_in_use`, or `external_static`.
-- [ ] Require cameras streaming, recording idle, and capture/save workers
+- [x] Require cameras streaming, recording idle, and capture/save workers
       drained.
-- [ ] Preserve grouped PTP capture for multiple participating cameras.
-- [ ] Require a fresh post-request full-resolution frame for every camera;
+- [x] Preserve grouped capture for multiple participating cameras and reject
+      groups outside the configured timestamp-span bound. This proves grouped
+      timestamp coherence, not independent PTP lock or grandmaster health.
+- [x] Require a fresh post-request full-resolution frame for every camera;
       never relabel a stale preview frame.
-- [ ] Reuse production NIR/TTL optical state without forcing filter removal or
+- [x] Reuse production NIR/TTL optical state without forcing filter removal or
       visible-light calibration exposure settings.
 
 Exit criterion: Orange reaches an operator-reviewable rim proposal on every
@@ -224,29 +270,35 @@ selected camera while Citrus is stopped and no canvas is selected.
       the schema-v2 artifact.
 - [x] Derive the outward centroid gate from the accepted boundary and persist
       the exact policy and value.
-- [ ] Write source, raw-fit, accepted-fit, and valid-gate overlays with stable
-      roles and SHA-256 digests.
-- [ ] Publish per-camera artifacts and the grouped transaction manifest
+- [x] Write source, raw-fit, accepted-fit, and valid-gate overlays with stable
+      roles and declared FNV-1a checksums; selection additionally binds the
+      observation and completion manifest with SHA-256.
+- [x] Completion-mark each per-camera artifact only after its required files
+      exist, then publish the all-camera grouped transaction manifest
       atomically with safe ownership handling.
 - [x] Reject missing or mismatched capture-camera identities, non-native
       rasters, and downsampled source roles.
-- [ ] Add fail-closed fresh-frame, nonzero timestamp, checksum revalidation,
-      and physical-state contradiction gates to the standalone grouped flow.
+- [x] Add fail-closed fresh-frame, nonzero timestamp, completion-manifest, and
+      source/review checksum revalidation gates to the standalone grouped
+      flow and selector.
+- [ ] Add structured physical-state contradiction gates beyond the explicit
+      operator preparation confirmation.
 
 Exit criterion: a complete accepted schema-v2 artifact saves, reloads, and
 validates without a Citrus config or socket.
 
 ### Phase D: Add first-class Orange selection and review
 
-- [ ] Add a per-camera accepted-artifact selector to the spatial registration
+- [x] Add a per-camera accepted-artifact selector to the spatial registration
       UI; environment variables must not be required for normal operation.
-- [ ] Show artifact ID, time, camera/config identity, physical state, fit QC,
-      validity, and selected/not-selected state.
+- [x] Show artifact ID, time, camera/raster identity, physical state, accepted
+      circle, centroid outset, compatibility, validity, and
+      selected/not-selected state.
 - [ ] Show raw Hough, accepted physical rim, and centroid gate in live and
       saved-image review surfaces.
-- [ ] Keep operator acceptance and runtime selection as separate actions.
-- [ ] Support clearing a selection without deleting immutable evidence.
-- [ ] Persist selection in an atomic Orange active pointer or session
+- [x] Keep operator acceptance and runtime selection as separate actions.
+- [x] Support clearing a selection without deleting immutable evidence.
+- [x] Persist selection in an atomic Orange active pointer or session
       assignment with rollback-safe replacement.
 - [ ] Revalidate the pointer target at stream start and recording pre-arm.
 - [ ] Keep `ORANGE_SPATIAL_CALIBRATION_ARTIFACT_<serial>` as an explicit
@@ -340,10 +392,12 @@ its failure cannot erase or invalidate a valid physical fit.
 - [ ] Test that a mismatched Citrus template does not block physical
       persistence but does block a linked projection operation.
 - [ ] Test raw-versus-accepted geometry and outward-gate derivation.
-- [ ] Test active-pointer atomicity, restart reload, clear, stale selection,
+- [x] Test active-pointer atomicity, restart reload, clear, stale selection,
       and rollback.
 - [ ] Test manifest precedence and contradiction failures.
-- [ ] Test one- and four-camera grouped capture with fresh-frame and PTP checks.
+- [ ] Test one- and four-camera grouped capture with fresh-frame and
+      timestamp-span checks; add a separate PTP-evidence gate if a workflow
+      needs to claim PTP synchronization rather than grouped coherence.
 - [ ] Run an automated Orange GUI flow with Citrus stopped and projector off.
 - [ ] Run the same capture with Citrus active, complete projection
       registration, and compare both independently persisted products.

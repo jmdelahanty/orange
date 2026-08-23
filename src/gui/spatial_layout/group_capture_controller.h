@@ -65,6 +65,22 @@ bool request_group_full_resolution_snapshots(
     const std::string& operation_id_override = std::string(),
     const std::string& parent_transaction_owner_kind = std::string());
 
+// Captures fresh full-resolution frames from the selected streaming cameras
+// without contacting Citrus or requiring a canvas/arena mapping. The current
+// camera, illumination, filter, dish, and projector states are recorded as
+// metadata; this function does not change them.
+bool request_group_full_resolution_snapshots_camera_only(
+    SpatialLayoutUiState* ui_state,
+    const CameraParams* cameras_params,
+    const CameraEachSelect* cameras_select,
+    int num_cameras,
+    SpatialSnapshotWorker* const* spatial_snapshot_workers,
+    uint32_t target_frame_count,
+    std::string* error_out,
+    const std::string& transaction_id_override = std::string(),
+    const std::string& operation_id_override = std::string(),
+    const std::string& parent_transaction_owner_kind = std::string());
+
 bool request_group_full_resolution_snapshots_for_arena_centering(
     SpatialLayoutUiState* ui_state,
     const CameraParams* cameras_params,

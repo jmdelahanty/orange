@@ -9,8 +9,10 @@ writer, Hough-circle proposal, visible overlays, Palette export, spatial
 stream preview plus full-resolution stream snapshot capture now exist.
 The camera-native physical observation can now be saved without a loaded or
 matching Citrus canvas; its artifact explicitly distinguishes accepted Orange
-physical registration from optional Citrus projection registration. Runtime
-detection gating and first-class standalone selection remain future slices.
+physical registration from optional Citrus projection registration. A
+Citrus-independent grouped capture/review workflow and first-class standalone
+active selection now exist. Recording pre-arm consumption and runtime
+detection gating remain future slices.
 
 Related documents:
 
@@ -1455,6 +1457,26 @@ center, so crosshair alignment offsets remain future work.
 - [x] preserve the distinction between an available downstream mask and an
   active Orange live-detection gate
 - [ ] backfill historical recordings; existing recordings remain unchanged
+
+### Slice 2.75: Standalone Group Capture And Selection
+
+- [x] capture fresh native-resolution grouped frames without a Citrus socket,
+  canvas, scene, or projector transaction
+- [x] reject incomplete camera groups, missing frame/timestamp identity, and
+  cross-camera timestamp spans outside policy
+- [x] run per-camera Hough proposals concurrently and expose raw versus
+  operator-accepted circles for review
+- [x] publish a grouped completion manifest only after every schema-v2
+  observation exists and re-hashes
+- [x] discover only complete per-camera artifacts with valid manifests,
+  required source/review files, and matching checksums
+- [x] make operator acceptance and active selection separate actions
+- [x] atomically select or clear an exact per-camera artifact without deleting
+  immutable evidence
+- [x] fail closed on restart when the selected observation, manifest, camera,
+  raster, pixel format, or checksums no longer match
+- [ ] consume the active pointer during recording pre-arm; until then it is a
+  durable operator choice, not proof that a recording used the mask
 
 ### Slice 3: Runtime Gating
 

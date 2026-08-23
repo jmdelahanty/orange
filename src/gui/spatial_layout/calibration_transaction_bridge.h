@@ -17,6 +17,8 @@ inline constexpr const char* kManualGroupTransactionOwner =
     "manual_spatial_group_capture";
 inline constexpr const char* kDailyRegistrationTransactionOwner =
     "daily_registration";
+inline constexpr const char* kStandalonePhysicalRegistrationTransactionOwner =
+    "standalone_physical_registration";
 inline constexpr const char* kGuidedCommissioningTransactionOwner =
     "guided_commissioning";
 inline constexpr const char* kArenaCenteringTransactionOwner =

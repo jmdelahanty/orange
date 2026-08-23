@@ -15,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -724,8 +725,27 @@ nlohmann::json make_group_scene_consistency(
 nlohmann::json make_group_membership(const SpatialLayoutUiState& ui_state)
 {
     nlohmann::json completed = nlohmann::json::array();
+    nlohmann::json capture_timestamps = nlohmann::json::object();
+    std::uint64_t minimum_camera_timestamp_ns =
+        std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t maximum_camera_timestamp_ns = 0;
+    bool all_camera_timestamps_nonzero = true;
     for (const SpatialLayoutGroupCaptureFrame& capture : ui_state.group_captures) {
         completed.push_back(capture.camera_serial);
+        capture_timestamps[capture.camera_serial] = {
+            {"camera_timestamp_ns", capture.camera_timestamp_ns},
+            {"timestamp_sys_ns", capture.timestamp_sys_ns},
+            {"first_camera_frame_id", capture.first_camera_frame_id},
+            {"last_camera_frame_id", capture.last_camera_frame_id},
+        };
+        if (capture.camera_timestamp_ns == 0) {
+            all_camera_timestamps_nonzero = false;
+        } else {
+            minimum_camera_timestamp_ns = std::min(
+                minimum_camera_timestamp_ns, capture.camera_timestamp_ns);
+            maximum_camera_timestamp_ns = std::max(
+                maximum_camera_timestamp_ns, capture.camera_timestamp_ns);
+        }
     }
     nlohmann::json failed = nlohmann::json::array();
     for (const SpatialLayoutPendingGroupSnapshotRequest& request :
@@ -739,8 +759,11 @@ nlohmann::json make_group_membership(const SpatialLayoutUiState& ui_state)
     }
     const size_t expected_count = ui_state.group_capture_expected_camera_serials.size();
     const bool complete = completed.size() == expected_count && failed.empty();
-    const std::string scene_status =
-        ui_state.group_capture_scene_authority == "daily_registration"
+    const bool camera_only =
+        ui_state.group_capture_scene_authority == "camera_only";
+    const std::string scene_status = camera_only
+        ? "not_applicable"
+        : ui_state.group_capture_scene_authority == "daily_registration"
             ? (ui_state.group_capture_metadata.citrus_daily_registration_consistency.value(
                    "status", std::string("unavailable")) ==
                        "same_candidate_preview"
@@ -759,7 +782,7 @@ nlohmann::json make_group_membership(const SpatialLayoutUiState& ui_state)
                   "status", std::string("unavailable"))
             : "not_applicable";
     std::string status = complete ? "complete" : (completed.empty() ? "failed" : "partial");
-    if (scene_status != "same_scene" ||
+    if ((!camera_only && scene_status != "same_scene") ||
         (ui_state.group_capture_scene_authority == "arena_centering" &&
          centering_status != "same_stage") ||
         (ui_state.group_capture_scene_authority == "daily_registration" &&
@@ -782,6 +805,16 @@ nlohmann::json make_group_membership(const SpatialLayoutUiState& ui_state)
         {"scene_authority", ui_state.group_capture_scene_authority},
         {"arena_centering_consistency_status", centering_status},
         {"daily_registration_consistency_status", daily_status}
+    };
+    const std::uint64_t camera_timestamp_span_ns =
+        all_camera_timestamps_nonzero && !ui_state.group_captures.empty()
+            ? maximum_camera_timestamp_ns - minimum_camera_timestamp_ns
+            : 0;
+    membership["capture_timing"] = {
+        {"clock_field", "camera_timestamp_ns"},
+        {"all_camera_timestamps_nonzero", all_camera_timestamps_nonzero},
+        {"camera_timestamp_span_ns", camera_timestamp_span_ns},
+        {"per_camera", capture_timestamps},
     };
     membership["scene_options"] = ui_state.group_capture_scene_options;
     if (ui_state.group_capture_scene_options.is_object() &&
@@ -810,6 +843,7 @@ bool ensure_group_capture_transaction(
     const std::string& owner_id,
     const std::vector<std::string>& camera_serials,
     const std::string& parent_transaction_owner_kind,
+    const bool camera_only,
     std::string* error_out)
 {
     if (ui_state == nullptr) {
@@ -833,7 +867,9 @@ bool ensure_group_capture_transaction(
         return require_spatial_calibration_transaction(
             *ui_state,
             camera_serials,
-            orange::calibration::Mutation::kCitrusScene,
+            camera_only
+                ? orange::calibration::Mutation::kCameraParameters
+                : orange::calibration::Mutation::kCitrusScene,
             error_out);
     }
 
@@ -844,8 +880,12 @@ bool ensure_group_capture_transaction(
         orange::calibration::WorkflowKind::kSpatialGroupedCapture,
         camera_serials,
         orange::calibration::mutation_set(
-            orange::calibration::Mutation::kCitrusScene),
-        "Present, capture, verify, and restore one grouped calibration scene.",
+            camera_only
+                ? orange::calibration::Mutation::kCameraParameters
+                : orange::calibration::Mutation::kCitrusScene),
+        camera_only
+            ? "Capture one fresh camera-only grouped physical-registration image set."
+            : "Present, capture, verify, and restore one grouped calibration scene.",
         error_out);
     ui_state->group_capture_owns_calibration_transaction = acquired;
     return acquired;
@@ -1450,6 +1490,7 @@ bool request_group_full_resolution_snapshots(
             ui_state->group_capture_transaction_id,
             expected_camera_serials,
             parent_transaction_owner_kind,
+            false,
             &transaction_error)) {
         ui_state->group_capture_workflow_state = "failed";
         ui_state->group_capture_terminal_outcome = "failed";
@@ -1496,6 +1537,144 @@ bool request_group_full_resolution_snapshots(
            << ui_state->group_capture_expected_camera_serials.size()
            << " expected camera(s).";
     ui_state->group_capture_status = status.str();
+    return true;
+}
+
+bool request_group_full_resolution_snapshots_camera_only(
+    SpatialLayoutUiState* ui_state,
+    const CameraParams* cameras_params,
+    const CameraEachSelect* cameras_select,
+    int num_cameras,
+    SpatialSnapshotWorker* const* spatial_snapshot_workers,
+    uint32_t target_frame_count,
+    std::string* error_out,
+    const std::string& transaction_id_override,
+    const std::string& operation_id_override,
+    const std::string& parent_transaction_owner_kind)
+{
+    if (ui_state == nullptr || cameras_params == nullptr ||
+        cameras_select == nullptr || spatial_snapshot_workers == nullptr ||
+        num_cameras <= 0) {
+        if (error_out) {
+            *error_out =
+                "Camera-only grouped capture requires open cameras and snapshot workers.";
+        }
+        return false;
+    }
+    if (group_capture_workflow_active(*ui_state) ||
+        pending_group_snapshot_count(*ui_state) > 0) {
+        if (error_out) *error_out = "A guided grouped capture is already active.";
+        return false;
+    }
+
+    const std::vector<std::string> expected_camera_serials =
+        normalized_expected_camera_serials(
+            *ui_state, cameras_params, num_cameras);
+    if (expected_camera_serials.empty()) {
+        if (error_out) {
+            *error_out =
+                "Select at least one expected camera for camera-only grouped capture.";
+        }
+        return false;
+    }
+    for (const std::string& camera_serial : expected_camera_serials) {
+        const int camera_index = find_camera_index_by_serial(
+            cameras_params, num_cameras, camera_serial);
+        if (camera_index < 0 || !camera_is_group_capture_eligible(
+                cameras_select, spatial_snapshot_workers, camera_index)) {
+            if (error_out) {
+                *error_out = "Expected camera " + camera_serial +
+                    " is not streaming or lacks a spatial snapshot worker.";
+            }
+            return false;
+        }
+    }
+
+    clear_group_captures(ui_state);
+    ui_state->group_capture_error.clear();
+    ui_state->group_capture_terminal_outcome.clear();
+    ui_state->group_capture_scene_pre_capture = nlohmann::json::object();
+    ui_state->group_capture_scene_post_capture = nlohmann::json::object();
+    ui_state->group_capture_scene_restore_status = {
+        {"state", "not_applicable"},
+        {"reason", "camera_only_capture_did_not_mutate_projection"},
+    };
+    ui_state->group_capture_restore_required = false;
+    ui_state->group_capture_presented_not_before_seconds = 0.0;
+
+    const std::string timestamp = get_current_utc_timestamp();
+    ui_state->group_capture_metadata =
+        make_calibration_image_set_metadata_from_ui(*ui_state);
+    ui_state->group_capture_id = build_group_capture_id(
+        *ui_state, ui_state->group_capture_metadata, timestamp);
+    ui_state->group_capture_mode = target_frame_count > 1
+        ? "camera_only_group_temporal_mean"
+        : "camera_only_group_next_frame";
+    ui_state->group_capture_target_frame_count =
+        std::max<std::uint32_t>(1u, target_frame_count);
+    ui_state->group_capture_expected_camera_serials =
+        expected_camera_serials;
+    ui_state->group_capture_arena_ids.clear();
+    ui_state->group_capture_resolved_scene_recipe = "none";
+    ui_state->group_capture_scene_authority = "camera_only";
+    ui_state->group_capture_expected_stage_id.clear();
+    ui_state->group_capture_transaction_id =
+        transaction_id_override.empty()
+            ? ui_state->group_capture_id
+            : transaction_id_override;
+    ui_state->group_capture_scene_operation_id =
+        operation_id_override.empty()
+            ? ui_state->group_capture_id + "_camera_only_capture"
+            : operation_id_override;
+    ui_state->group_capture_scene_request_id.clear();
+    ui_state->group_capture_restore_operation_id.clear();
+    ui_state->group_capture_restore_request_id.clear();
+    ui_state->group_capture_metadata.citrus_projection_snapshot_pre_capture =
+        nlohmann::json::object();
+    ui_state->group_capture_metadata.citrus_projection_snapshot_post_capture =
+        nlohmann::json::object();
+    ui_state->group_capture_metadata.citrus_projection_epoch_consistency =
+        nlohmann::json::object();
+    ui_state->group_capture_metadata.citrus_calibration_scene_pre_capture =
+        nlohmann::json::object();
+    ui_state->group_capture_metadata.citrus_calibration_scene_post_capture =
+        nlohmann::json::object();
+    ui_state->group_capture_metadata.citrus_calibration_scene_consistency = {
+        {"status", "not_applicable"},
+        {"reason", "camera_only_capture"},
+    };
+    ui_state->group_capture_metadata.citrus_calibration_scene_restore_status =
+        ui_state->group_capture_scene_restore_status;
+    ui_state->group_capture_metadata.citrus_daily_registration_pre_capture =
+        nlohmann::json::object();
+    ui_state->group_capture_metadata.citrus_daily_registration_post_capture =
+        nlohmann::json::object();
+    ui_state->group_capture_metadata.citrus_daily_registration_consistency =
+        nlohmann::json::object();
+    ui_state->group_capture_metadata.capture_group_membership =
+        nlohmann::json::object();
+
+    std::string transaction_error;
+    if (!ensure_group_capture_transaction(
+            ui_state,
+            ui_state->group_capture_transaction_id,
+            expected_camera_serials,
+            parent_transaction_owner_kind,
+            true,
+            &transaction_error)) {
+        ui_state->group_capture_workflow_state = "failed";
+        ui_state->group_capture_terminal_outcome = "failed";
+        ui_state->group_capture_error = transaction_error;
+        if (error_out) *error_out = transaction_error;
+        return false;
+    }
+
+    ui_state->group_capture_workflow_state = "waiting_scene";
+    ui_state->group_capture_next_scene_poll_at_seconds = 0.0;
+    ui_state->group_capture_scene_deadline_at_seconds =
+        monotonic_seconds() + calibration_scene_timeout_seconds();
+    ui_state->group_capture_status =
+        "Camera-only capture armed; requesting fresh full-resolution frames without contacting Citrus.";
     return true;
 }
 
@@ -1726,7 +1905,19 @@ void advance_group_capture_workflow(
         nlohmann::json scene = nlohmann::json::object();
         std::string status_reason;
         bool status_ok = false;
-        if (ui_state->group_capture_scene_authority == "arena_centering") {
+        if (ui_state->group_capture_scene_authority == "camera_only") {
+            status_ok = true;
+            scene = {
+                {"schema_id", "orange.calibration.camera_only_capture_state"},
+                {"schema_version", 1},
+                {"status", "ready"},
+                {"transaction_id", ui_state->group_capture_transaction_id},
+                {"operation_id", ui_state->group_capture_scene_operation_id},
+                {"projector_state", ui_state->calibration_projector_state},
+                {"projector_visible_to_camera",
+                 ui_state->calibration_projector_visible_to_camera},
+            };
+        } else if (ui_state->group_capture_scene_authority == "arena_centering") {
             const CitrusArenaCenteringControlResult status =
                 query_citrus_arena_centering_status(
                     ui_state->group_capture_transaction_id,
@@ -1827,7 +2018,10 @@ void advance_group_capture_workflow(
             return;
         }
 
-        const int settle_ms = post_presentation_settle_milliseconds();
+        const int settle_ms =
+            ui_state->group_capture_scene_authority == "camera_only"
+                ? 0
+                : post_presentation_settle_milliseconds();
         if (settle_ms > 0) {
             if (ui_state->group_capture_presented_not_before_seconds <= 0.0) {
                 ui_state->group_capture_presented_not_before_seconds =
@@ -1848,14 +2042,17 @@ void advance_group_capture_workflow(
             ui_state->group_capture_metadata.citrus_calibration_scene_pre_capture =
                 scene;
         }
-        const CitrusProjectionSnapshotQueryResult projection_snapshot =
-            query_citrus_active_projection_snapshot(
-                "pre_group_capture",
-                ui_state->group_capture_id);
-        ui_state->group_capture_metadata.citrus_projection_snapshot_pre_capture =
-            projection_snapshot.ok
-                ? projection_snapshot.snapshot
-                : nlohmann::json::object();
+        if (ui_state->group_capture_scene_authority != "camera_only") {
+            const CitrusProjectionSnapshotQueryResult projection_snapshot =
+                query_citrus_active_projection_snapshot(
+                    "pre_group_capture",
+                    ui_state->group_capture_id);
+            ui_state->group_capture_metadata
+                .citrus_projection_snapshot_pre_capture =
+                projection_snapshot.ok
+                    ? projection_snapshot.snapshot
+                    : nlohmann::json::object();
+        }
 
         int requested = 0;
         for (const std::string& camera_serial :
@@ -1904,9 +2101,10 @@ void advance_group_capture_workflow(
         } else {
             ui_state->group_capture_workflow_state = "capturing";
             std::ostringstream capture_status;
-            capture_status << "Citrus scene revision "
-                           << scene.value("scene_revision", uint64_t{0})
-                           << " is presented; collecting fresh frame(s) from "
+            capture_status
+                << (ui_state->group_capture_scene_authority == "camera_only"
+                        ? "Camera-only capture is ready; collecting fresh frame(s) from "
+                        : "Citrus scene is presented; collecting fresh frame(s) from ")
                            << requested << "/"
                            << ui_state->group_capture_expected_camera_serials.size()
                            << " expected camera(s).";
@@ -1919,6 +2117,46 @@ void advance_group_capture_workflow(
     }
 
     if (ui_state->group_capture_workflow_state == "waiting_post_scene") {
+        if (ui_state->group_capture_scene_authority == "camera_only") {
+            ui_state->group_capture_scene_post_capture = {
+                {"schema_id", "orange.calibration.camera_only_capture_state"},
+                {"schema_version", 1},
+                {"status", "complete"},
+                {"transaction_id", ui_state->group_capture_transaction_id},
+                {"operation_id", ui_state->group_capture_scene_operation_id},
+                {"projector_state", ui_state->calibration_projector_state},
+                {"projector_visible_to_camera",
+                 ui_state->calibration_projector_visible_to_camera},
+            };
+            ui_state->group_capture_metadata.capture_group_membership =
+                make_group_membership(*ui_state);
+            for (SpatialLayoutGroupCaptureFrame& capture :
+                 ui_state->group_captures) {
+                capture.metadata = ui_state->group_capture_metadata;
+            }
+            ui_state->captured_group_membership =
+                ui_state->group_capture_metadata.capture_group_membership;
+            ui_state->group_capture_terminal_outcome =
+                ui_state->group_capture_metadata.capture_group_membership.value(
+                    "status", std::string("failed"));
+            const bool failed =
+                ui_state->group_capture_terminal_outcome != "complete";
+            ui_state->group_capture_workflow_state =
+                failed ? "failed" : "complete";
+            std::ostringstream complete_status;
+            complete_status << "Camera-only grouped capture "
+                            << ui_state->group_capture_id << " finished with status "
+                            << ui_state->group_capture_terminal_outcome << ": "
+                            << ui_state->group_captures.size() << "/"
+                            << ui_state->group_capture_expected_camera_serials.size()
+                            << " expected camera(s) captured; Citrus was not contacted.";
+            ui_state->group_capture_status = complete_status.str();
+            release_group_capture_transaction_if_owned(
+                ui_state,
+                failed ? "failed" : "complete",
+                ui_state->group_capture_status);
+            return;
+        }
         bool status_ok = false;
         std::string status_reason;
         if (ui_state->group_capture_scene_authority == "arena_centering") {

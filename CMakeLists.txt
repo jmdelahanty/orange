@@ -330,6 +330,8 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/spatial_layout/layout_state.cpp"
     "${SRC_DIR}/gui/spatial_layout/metadata_panel.cpp"
     "${SRC_DIR}/gui/spatial_layout/persistence_panel.cpp"
+    "${SRC_DIR}/gui/spatial_layout/physical_registration_selection.cpp"
+    "${SRC_DIR}/gui/spatial_layout/physical_registration_selection_panel.cpp"
     "${SRC_DIR}/gui/spatial_layout/physical_target_bundle.cpp"
     "${SRC_DIR}/gui/spatial_layout/preflight.cpp"
     "${SRC_DIR}/gui/spatial_layout/preview_capture.cpp"
@@ -342,6 +344,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/spatial_layout/session_capture_matrix.cpp"
     "${SRC_DIR}/gui/spatial_layout/session_review.cpp"
     "${SRC_DIR}/gui/spatial_layout/session_io.cpp"
+    "${SRC_DIR}/gui/spatial_layout/standalone_physical_registration_workflow.cpp"
     "${SRC_DIR}/aperture_characterization.cpp"
     "${SRC_DIR}/calibration_image_set.cpp"
     "${SRC_DIR}/dish_top_rim_observation.cpp"
@@ -1274,6 +1277,17 @@ if(BUILD_TESTING)
     add_test(
         NAME daily_physical_registration_preflight_tests
         COMMAND daily_physical_registration_preflight_tests
+    )
+
+    add_executable(physical_registration_selection_tests
+        "tools/physical_registration_selection_tests.cpp"
+        "${SRC_DIR}/gui/spatial_layout/physical_registration_selection.cpp"
+    )
+    target_include_directories(physical_registration_selection_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(physical_registration_selection_tests PRIVATE cxx_std_17)
+    add_test(
+        NAME physical_registration_selection_tests
+        COMMAND physical_registration_selection_tests
     )
 
     add_executable(ruler_alignment_tests

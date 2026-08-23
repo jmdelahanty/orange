@@ -244,11 +244,8 @@ struct SpatialLayoutGroupCaptureFrame {
     uint64_t timestamp_sys_ns = 0;
 };
 
-struct DailyRegistrationTargetUiState {
+struct PhysicalDishRegistrationTargetUiState {
     std::string camera_serial;
-    std::string arena_id;
-    std::string alignment_basis =
-        "commissioned_homography_and_canonical_experimental_center";
     bool rim_detection_ok = false;
     std::string rim_detection_error;
     double detected_rim_center_x_camera_px = 0.0;
@@ -263,6 +260,14 @@ struct DailyRegistrationTargetUiState {
     std::string rim_observation_artifact_id;
     std::string rim_observation_path;
     std::string rim_observation_sha256;
+    std::string rim_manifest_path;
+    std::string rim_manifest_sha256;
+};
+
+struct DailyRegistrationTargetUiState : PhysicalDishRegistrationTargetUiState {
+    std::string arena_id;
+    std::string alignment_basis =
+        "commissioned_homography_and_canonical_experimental_center";
 
     double requested_translation_x_canvas_px = 0.0;
     double requested_translation_y_canvas_px = 0.0;
@@ -345,6 +350,56 @@ struct DailyRegistrationTargetUiState {
     std::string preview_manifest_path;
     std::string validation_observation_path;
     std::string validation_observation_sha256;
+};
+
+struct StandalonePhysicalRegistrationWorkflowUiState {
+    bool active = false;
+    std::string stage = "idle";
+    std::string transaction_id;
+    std::string created_utc;
+    std::string transaction_dir;
+    std::string calibration_base_dir;
+    std::string session_artifact_root;
+    std::string grouped_manifest_path;
+    std::string grouped_manifest_sha256;
+    std::string status;
+    std::string error;
+    std::string projector_state = "off";
+    bool physical_state_confirmed = false;
+    bool save_accepted_rims_armed = false;
+    std::uint64_t maximum_group_camera_timestamp_span_ns = 1000000;
+    std::vector<PhysicalDishRegistrationTargetUiState> targets;
+};
+
+struct PhysicalRegistrationArtifactCandidateUiState {
+    std::string artifact_id;
+    std::string camera_serial;
+    std::string created_utc;
+    std::string observation_path;
+    std::string observation_sha256;
+    std::string dish_fill_state;
+    std::string physical_state_summary;
+    int width_px = 0;
+    int height_px = 0;
+    double accepted_center_x_px = 0.0;
+    double accepted_center_y_px = 0.0;
+    double accepted_radius_px = 0.0;
+    double centroid_gate_outset_px = 0.0;
+    bool operator_confirmed = false;
+    bool compatible = false;
+    std::string compatibility_reason;
+};
+
+struct PhysicalRegistrationSelectionUiState {
+    bool initialized = false;
+    std::string loaded_camera_serial;
+    std::vector<PhysicalRegistrationArtifactCandidateUiState> candidates;
+    int selected_candidate_index = -1;
+    nlohmann::json active_pointer = nlohmann::json::object();
+    bool replace_selection_armed = false;
+    bool clear_selection_armed = false;
+    std::string status;
+    std::string error;
 };
 
 struct DailyRegistrationWorkflowUiState {
@@ -615,6 +670,9 @@ struct SpatialLayoutUiState {
     std::string rig_canvas_commissioning_message;
     std::string rig_canvas_commissioning_error;
     nlohmann::json daily_registration_status = nlohmann::json::object();
+    StandalonePhysicalRegistrationWorkflowUiState
+        standalone_physical_registration_workflow;
+    PhysicalRegistrationSelectionUiState physical_registration_selection;
     DailyRegistrationWorkflowUiState daily_registration_workflow;
     bool base_only_runtime_mode_armed = false;
     std::string daily_registration_message;
