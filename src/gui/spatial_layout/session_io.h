@@ -57,6 +57,7 @@ std::filesystem::path calibration_sessions_dir_from_artifact_root(const std::str
 
 std::string build_spatial_calibration_session_id(
     const SpatialLayoutUiState* ui_state,
+    const std::string& selected_camera_serial,
     const std::string& timestamp);
 
 bool ensure_directory_for_spatial_session(const std::filesystem::path& path, std::string* error_out);

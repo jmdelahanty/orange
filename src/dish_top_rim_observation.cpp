@@ -315,6 +315,32 @@ nlohmann::json calibration_ref_json(const std::string& artifact_id, const std::s
     };
 }
 
+nlohmann::json projection_registration_product_json(
+    const DishTopRimObservationRequest& request)
+{
+    const bool has_citrus_projection_context =
+        request.arena_context.contains("canvas_id") ||
+        request.arena_context.contains("citrus_config_ref") ||
+        request.arena_context.contains("citrus_homography_ref");
+    nlohmann::json product = {
+        {"product_id", kDailyProjectionRegistrationProductId},
+        {"authority", "citrus"},
+        {"status", has_citrus_projection_context
+                       ? "available_not_selected"
+                       : "not_applicable"},
+        {"reason", has_citrus_projection_context
+                       ? "physical_artifact_writer_does_not_select_projection_runtime"
+                       : "no_active_projection_canvas"}
+    };
+    if (request.arena_context.contains("projection_registration") &&
+        request.arena_context["projection_registration"].is_object()) {
+        product = request.arena_context["projection_registration"];
+        product["product_id"] = kDailyProjectionRegistrationProductId;
+        product["authority"] = "citrus";
+    }
+    return product;
+}
+
 bool update_local_calibration_registry(const std::filesystem::path& artifact_root_dir,
                                        const nlohmann::json& manifest,
                                        std::string* error_out)
@@ -529,6 +555,13 @@ nlohmann::json dish_top_rim_observation_to_json(
         request.boundary_inclusion_policy.empty()
             ? kDishTopRimBoundaryInclusionPolicy
             : request.boundary_inclusion_policy;
+    const nlohmann::json projection_registration =
+        projection_registration_product_json(request);
+    const std::string citrus_runtime_mapping_status =
+        projection_registration.value("status", "not_applicable") ==
+                "not_applicable"
+            ? "not_applicable"
+            : "proposal_pending_citrus_acceptance";
 
     nlohmann::json accepted_inner_rim_boundary = {
         {"role", accepted_boundary_role},
@@ -665,6 +698,17 @@ nlohmann::json dish_top_rim_observation_to_json(
         {"artifact_id", request.artifact_id},
         {"created_utc", request.created_utc},
         {"calibration_ref", calibration_ref_json(request.artifact_id, fingerprint)},
+        {"registration_products", {
+            {"physical_registration", {
+                {"product_id", kDailyPhysicalDishRegistrationProductId},
+                {"authority", "orange"},
+                {"status", "accepted"},
+                {"runtime_selection_status", "not_selected_by_artifact_writer"},
+                {"coordinate_space", "camera_native_pixels"},
+                {"citrus_required", false}
+            }},
+            {"projection_registration", projection_registration}
+        }},
         {"camera", {
             {"serial", request.camera.serial},
             {"name", request.camera.name},
@@ -728,7 +772,7 @@ nlohmann::json dish_top_rim_observation_to_json(
             {"region", kDishTopRimRegion},
             {"operator_boundary_target", kDishTopRimTargetFeature},
             {"boundary_inclusion_policy", boundary_inclusion_policy},
-            {"citrus_runtime_mapping_status", "proposal_pending_citrus_acceptance"},
+            {"citrus_runtime_mapping_status", citrus_runtime_mapping_status},
             {"valid_detection_region_policy",
              outset > 0.0
                  ? "derived_by_outward_offset_for_bounding_box_centroid_forgiveness"
@@ -840,6 +884,8 @@ nlohmann::json dish_top_rim_observation_manifest_to_json(
     const std::string& valid_detection_overlay_checksum,
     const std::string& fingerprint)
 {
+    const nlohmann::json projection_registration =
+        projection_registration_product_json(request);
     nlohmann::json compatibility = {
         {"camera_serial", request.camera.serial},
         {"pixel_format", request.camera.pixel_format},
@@ -866,7 +912,20 @@ nlohmann::json dish_top_rim_observation_manifest_to_json(
                                           ? kDishTopRimBoundaryInclusionPolicy
                                           : request.boundary_inclusion_policy},
         {"operator_boundary_target", kDishTopRimTargetFeature},
-        {"citrus_runtime_mapping_status", "proposal_pending_citrus_acceptance"},
+        {"physical_registration_product_id",
+         kDailyPhysicalDishRegistrationProductId},
+        {"physical_registration_status", "accepted"},
+        {"projection_registration_product_id",
+         kDailyProjectionRegistrationProductId},
+        {"projection_registration_status",
+         projection_registration.value("status", "not_applicable")},
+        {"projection_registration_reason",
+         projection_registration.value("reason", "unknown")},
+        {"citrus_runtime_mapping_status",
+         projection_registration.value("status", "not_applicable") !=
+                 "not_applicable"
+             ? "proposal_pending_citrus_acceptance"
+             : "not_applicable"},
         {"dish_fill_state", request.capture.dish_fill_state},
         {"coordinate_space", "camera_native_pixels"}
     };

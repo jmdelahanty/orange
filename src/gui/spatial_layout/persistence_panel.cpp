@@ -142,15 +142,20 @@ SpatialLayoutPersistencePanelEvent render_spatial_layout_persistence_panel(
     }
 
     ImGui::BeginDisabled(!panel_state.can_save_top_rim_observation);
-    if (ImGui::Button("Save Top-Rim Observation")) {
+    if (ImGui::Button("Save Physical Dish Registration")) {
         event = SpatialLayoutPersistencePanelEvent::SaveTopRimObservation;
     }
     ImGui::EndDisabled();
     if (panel_state.top_rim_save_busy) {
-        ImGui::TextDisabled("Top-rim observation save is running in the background.");
-    } else if (!ui_state->calibration_inner_rim_target_confirmed) {
+        ImGui::TextDisabled("Physical dish-registration save is running in the background.");
+    } else if (!panel_state.can_save_top_rim_observation &&
+               !panel_state.top_rim_ineligible_reason.empty()) {
         ImGui::TextDisabled(
-            "Confirm the water-side inner-rim target in Capture Metadata to enable schema-v2 save.");
+            "%s",
+            panel_state.top_rim_ineligible_reason.c_str());
+    } else {
+        ImGui::TextDisabled(
+            "Camera-native physical evidence; a Citrus canvas is not required.");
     }
 
     ImGui::SameLine();
@@ -179,13 +184,13 @@ SpatialLayoutPersistencePanelEvent render_spatial_layout_persistence_panel(
             "Top-rim observations and calibration image sets require full-resolution camera coordinates. "
             "This live snapshot is preview/downsample space only.");
     }
-    if (!panel_state.citrus_template_matches_selected_camera) {
+    if (!panel_state.citrus_linked_layout_matches_selected_camera) {
         ImGui::TextDisabled(
-            "Spatial calibration saves are blocked until the active Citrus template camera matches the selected Orange camera.");
+            "Citrus-linked image/layout saves are blocked until the active Citrus template camera matches the selected Orange camera. Physical dish registration remains independent.");
     }
 
     ImGui::SameLine();
-    ImGui::BeginDisabled(!panel_state.citrus_template_matches_selected_camera);
+    ImGui::BeginDisabled(!panel_state.citrus_linked_layout_matches_selected_camera);
     if (ImGui::Button("Save Arena Layout Artifact")) {
         event = SpatialLayoutPersistencePanelEvent::SaveArenaLayoutArtifact;
     }

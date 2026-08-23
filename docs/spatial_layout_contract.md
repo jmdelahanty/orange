@@ -889,6 +889,12 @@ Current implemented slice:
 6. Until a standalone canonical `dish_mask` artifact file exists, the emitted
    `dish_mask.calibration_ref` is a runtime-derived ref tied to the saved arena
    artifact id.
+7. The schema-v2 camera-native top-rim observation can now be saved from the
+   Spatial Layout UI without a Citrus canvas. Its shared preflight requires an
+   exact capture-camera match, native full-resolution raster, confirmed
+   water-side inner-rim target, accepted circle, and preserved raw Hough
+   proposal. Citrus-template compatibility remains a gate only for linked
+   projector/canvas products.
 
 Remaining recommended slice:
 

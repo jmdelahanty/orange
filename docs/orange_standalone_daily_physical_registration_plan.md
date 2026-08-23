@@ -125,25 +125,47 @@ Neither product silently stands in for the other. Reuse requires matching
 camera, raster, stream epoch, camera configuration, optical state, physical
 state, projector state, subject absence, and source checksums.
 
+## Implemented Slice (2026-08-23)
+
+The first standalone persistence slice is now implemented:
+
+- the Spatial Layout UI labels the action **Save Physical Dish Registration**
+  and no longer requires a matching Citrus template for that action;
+- UI enablement and save-job preparation share one fail-closed preflight for
+  capture camera identity, native raster, full-resolution role, operator target
+  confirmation, accepted circle, raw Hough evidence, and writer state;
+- a loaded Citrus template for another camera is not copied into the physical
+  artifact or used to name its camera/arena aggregate;
+- schema-v2 observation JSON now identifies the independent
+  `daily_physical_dish_registration` and `daily_projection_registration`
+  products;
+- a no-canvas artifact records projection registration as
+  `not_applicable/no_active_projection_canvas` rather than pending Citrus
+  acceptance; and
+- focused tests prove no-Citrus persistence plus mismatch and raster failure
+  behavior.
+
+This is a manual/semi-manual Orange-only path through the existing capture,
+Hough review, metadata confirmation, and persistence panels. The polished
+standalone grouped wizard, active selection pointer, and recording-bound
+metadata remain later phases.
+
 ## Current Gaps
 
 1. `src/gui/spatial_layout/daily_registration_workflow.cpp` begins by selecting
    a Citrus runtime mode and acquiring a Citrus lease. Capture, rim fitting,
    persistence, projection translation, and runtime selection are presented as
    one transaction.
-2. The standalone top-rim save surface in `src/spatial_layout_ui.cpp` includes
-   `citrus_template_matches_selected_camera` in persistence eligibility even
-   though the physical observation is camera-native.
-3. Orange can load a standalone artifact through
+2. Orange can load a standalone artifact through
    `ORANGE_SPATIAL_CALIBRATION_ARTIFACT_<serial>`, but has no first-class
    per-camera UI/session selection surface.
-4. Recording geometry supports `orange_only` and `not_configured`, but does not
+3. Recording geometry supports `orange_only` and `not_configured`, but does not
    expose physical and projection registration as independently resolved
    products.
-5. The guided transaction is the only polished operator path. A standalone
+4. The guided transaction is the only polished operator path. A standalone
    path should reuse its grouped capture, fitting, adjustment, schema-v2
    writer, overlays, and validation instead of cloning them.
-6. A production-state context background is not yet a stable recording
+5. A production-state context background is not yet a stable recording
    artifact, although its source burst can often be shared with the rim fit.
 
 ## Implementation Checklist
@@ -169,8 +191,10 @@ requiredness without checking whether Citrus happened to be reachable.
 
 ### Phase B: Extract the Orange-only workflow core
 
-- [ ] Create a focused physical-registration module rather than adding more
-      workflow code to `orange.cpp` or the monolithic UI translation unit.
+- [x] Create a focused, shared physical-registration save-preflight module
+      rather than adding this policy to `orange.cpp`.
+- [ ] Extract the remaining reusable physical workflow state rather than
+      adding it to the monolithic UI translation unit.
 - [ ] Extract reusable states for preflight, grouped capture, circle proposal,
       operator adjustment, acceptance, persistence, abort, and retry.
 - [ ] Keep Citrus lease, scene request, homography mapping, candidate creation,
@@ -190,22 +214,24 @@ selected camera while Citrus is stopped and no canvas is selected.
 
 ### Phase C: Decouple physical persistence from Citrus
 
-- [ ] Remove `citrus_template_matches_selected_camera` from eligibility to save
+- [x] Remove `citrus_template_matches_selected_camera` from eligibility to save
       a standalone camera-native top-rim observation.
-- [ ] Retain Citrus-template matching only for Citrus-linked projection or
+- [x] Retain Citrus-template matching only for Citrus-linked projection or
       imported-layout products.
-- [ ] Replace that gate with camera identity, native raster, full-resolution
+- [x] Replace that gate with camera identity, native raster, full-resolution
       role, accepted target, valid circle, and writer-idle checks.
-- [ ] Preserve raw Hough geometry and operator-accepted geometry separately in
+- [x] Preserve raw Hough geometry and operator-accepted geometry separately in
       the schema-v2 artifact.
-- [ ] Derive the outward centroid gate from the accepted boundary and persist
+- [x] Derive the outward centroid gate from the accepted boundary and persist
       the exact policy and value.
 - [ ] Write source, raw-fit, accepted-fit, and valid-gate overlays with stable
       roles and SHA-256 digests.
 - [ ] Publish per-camera artifacts and the grouped transaction manifest
       atomically with safe ownership handling.
-- [ ] Reject mixed identities or rasters, stale frame IDs, zero timestamps,
-      checksum mismatches, and physical-state contradictions.
+- [x] Reject missing or mismatched capture-camera identities, non-native
+      rasters, and downsampled source roles.
+- [ ] Add fail-closed fresh-frame, nonzero timestamp, checksum revalidation,
+      and physical-state contradiction gates to the standalone grouped flow.
 
 Exit criterion: a complete accepted schema-v2 artifact saves, reloads, and
 validates without a Citrus config or socket.

@@ -4,6 +4,7 @@
 #include "dish_top_rim_observation.h"
 #include "gui/spatial_layout/calibration_metadata.h"
 #include "gui/spatial_layout/citrus_import.h"
+#include "gui/spatial_layout/daily_physical_registration_preflight.h"
 #include "gui/spatial_layout/group_capture_controller.h"
 #include "gui/spatial_layout/layout_state.h"
 #include "gui/spatial_layout/projection_snapshot_client.h"
@@ -450,6 +451,35 @@ bool prepare_dish_top_rim_observation_save_job_from_spatial_layout(
             error_out)) {
         return false;
     }
+    const std::string source_array_role =
+        ui_state->captured_source_array_role.empty()
+            ? "images_full"
+            : ui_state->captured_source_array_role;
+    const DailyPhysicalRegistrationSavePreflightResult preflight =
+        evaluate_daily_physical_registration_save_preflight({
+            false,
+            ui_state->has_capture,
+            selected_camera.camera_serial,
+            ui_state->captured_camera_serial,
+            ui_state->captured_texture_width,
+            ui_state->captured_texture_height,
+            static_cast<int>(selected_camera.width),
+            static_cast<int>(selected_camera.height),
+            source_array_role,
+            ui_state->calibration_inner_rim_target_confirmed,
+            ui_state->dish_mask_runtime.has_geometry &&
+                ui_state->dish_mask_runtime.geometry.outer_geometry.type ==
+                    RuntimeGeometryType::kCircle,
+            ui_state->has_detected_experimental_area_circle &&
+                ui_state->detected_experimental_area_geometry.type ==
+                    RuntimeGeometryType::kCircle
+        });
+    if (!preflight.allowed) {
+        if (error_out) {
+            *error_out = preflight.message;
+        }
+        return false;
+    }
     if (!ui_state->dish_mask_runtime.has_geometry) {
         if (error_out) {
             *error_out = "Resolved dish-mask geometry is not available yet.";
@@ -463,10 +493,6 @@ bool prepare_dish_top_rim_observation_save_job_from_spatial_layout(
         }
         return false;
     }
-    const std::string source_array_role =
-        ui_state->captured_source_array_role.empty()
-            ? "images_full"
-            : ui_state->captured_source_array_role;
     if (source_array_role != "images_full") {
         if (error_out) {
             *error_out =
@@ -630,7 +656,12 @@ bool prepare_dish_top_rim_observation_save_job_from_spatial_layout(
         {"accepted_circle_source", "orange_spatial_layout_runtime.outer_geometry"},
         {"hough_circle_source", request.detected_circle_source}
     };
-    if (ui_state->citrus_template.available) {
+    const bool citrus_template_matches_selected_camera =
+        ui_state->citrus_template.available &&
+        !ui_state->citrus_template.source_camera_id.empty() &&
+        ui_state->citrus_template.source_camera_id ==
+            selected_camera.camera_serial;
+    if (citrus_template_matches_selected_camera) {
         request.dish_design_id =
             ui_state->citrus_template.source_dish_type_name;
         if (ui_state->citrus_template.has_inner_diameter_mm) {
@@ -691,6 +722,19 @@ bool prepare_dish_top_rim_observation_save_job_from_spatial_layout(
         rig_context["associated_image_set_artifact_id"] =
             request.arena_context["associated_image_set_artifact_id"];
         request.image_set_rig_context = rig_context;
+    } else {
+        const std::string projection_reason =
+            !ui_state->citrus_template.available
+                ? "no_active_projection_canvas"
+                : (ui_state->citrus_template.source_camera_id.empty()
+                       ? "loaded_projection_canvas_camera_identity_missing"
+                       : "loaded_projection_canvas_camera_mismatch");
+        request.arena_context["projection_registration"] = {
+            {"product_id", "daily_projection_registration"},
+            {"authority", "citrus"},
+            {"status", "not_applicable"},
+            {"reason", projection_reason}
+        };
     }
 
     job.hough_params = make_top_rim_hough_params(

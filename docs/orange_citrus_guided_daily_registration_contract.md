@@ -16,6 +16,12 @@ rehydration, per-target partial retry, and a real four-camera dish run remain
 before calling the workflow
 production-hardened.
 
+This contract now describes only the optional Citrus projection-registration
+extension. Orange's camera-native physical dish registration can be captured,
+reviewed, and saved independently of Citrus as documented in
+`docs/orange_standalone_daily_physical_registration_plan.md`. A Citrus failure
+or absence must not invalidate that physical artifact.
+
 The real-GUI grouped-capture lifecycle now also has a calibration-specific
 semantic autorun and supervised smoke runner documented in
 `docs/gui_guided_capture_smoke.md`. It validates scene presentation, fresh

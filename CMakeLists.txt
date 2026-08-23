@@ -318,6 +318,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/spatial_layout/citrus_template_workflow.cpp"
     "${SRC_DIR}/gui/spatial_layout/calibration_workflow.cpp"
     "${SRC_DIR}/gui/spatial_layout/daily_registration_preview.cpp"
+    "${SRC_DIR}/gui/spatial_layout/daily_physical_registration_preflight.cpp"
     "${SRC_DIR}/gui/spatial_layout/daily_registration_runtime_selection.cpp"
     "${SRC_DIR}/gui/spatial_layout/daily_registration_workflow.cpp"
     "${SRC_DIR}/gui/spatial_layout/geometry.cpp"
@@ -1263,6 +1264,17 @@ if(BUILD_TESTING)
     target_compile_features(dish_top_rim_observation_tests PRIVATE cxx_std_17)
     target_link_libraries(dish_top_rim_observation_tests PRIVATE ${OpenCV_LIBS})
     add_test(NAME dish_top_rim_observation_tests COMMAND dish_top_rim_observation_tests)
+
+    add_executable(daily_physical_registration_preflight_tests
+        "tools/daily_physical_registration_preflight_tests.cpp"
+        "${SRC_DIR}/gui/spatial_layout/daily_physical_registration_preflight.cpp"
+    )
+    target_include_directories(daily_physical_registration_preflight_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(daily_physical_registration_preflight_tests PRIVATE cxx_std_17)
+    add_test(
+        NAME daily_physical_registration_preflight_tests
+        COMMAND daily_physical_registration_preflight_tests
+    )
 
     add_executable(ruler_alignment_tests
         "tools/ruler_alignment_tests.cpp"

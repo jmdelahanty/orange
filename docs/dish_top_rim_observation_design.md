@@ -1,13 +1,16 @@
 # Dish Top-Rim Observation And Runtime Mask Design
 
 Date: 2026-06-01
-Last updated: 2026-07-18
+Last updated: 2026-08-23
 
 Status: design plus first implementation slice. The Orange-native artifact
 writer, Hough-circle proposal, visible overlays, Palette export, spatial
 `dish_mask_runtime` export, Spatial Layout UI save action, and first live
 stream preview plus full-resolution stream snapshot capture now exist.
-Runtime detection gating and Citrus preview/accept remain future slices.
+The camera-native physical observation can now be saved without a loaded or
+matching Citrus canvas; its artifact explicitly distinguishes accepted Orange
+physical registration from optional Citrus projection registration. Runtime
+detection gating and first-class standalone selection remain future slices.
 
 Related documents:
 
@@ -17,6 +20,7 @@ Related documents:
 - `docs/projected_center_alignment_todo.md`
 - `docs/dish_plane_homography_calibration_todo.md`
 - `docs/calibration_artifact_contract.md`
+- `docs/orange_standalone_daily_physical_registration_plan.md`
 
 ## Purpose
 

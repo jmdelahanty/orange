@@ -209,11 +209,16 @@ std::filesystem::path calibration_sessions_dir_from_artifact_root(const std::str
 
 std::string build_spatial_calibration_session_id(
     const SpatialLayoutUiState* ui_state,
+    const std::string& selected_camera_serial,
     const std::string& timestamp)
 {
     std::ostringstream oss;
     oss << "calsess_" << sanitize_artifact_component(timestamp);
-    if (ui_state != nullptr && ui_state->citrus_template.available) {
+    if (ui_state != nullptr &&
+        ui_state->citrus_template.available &&
+        !ui_state->citrus_template.source_camera_id.empty() &&
+        ui_state->citrus_template.source_camera_id ==
+            selected_camera_serial) {
         if (!ui_state->citrus_template.source_canvas_name.empty()) {
             oss << "_" << sanitize_artifact_component(ui_state->citrus_template.source_canvas_name);
         }
@@ -255,7 +260,10 @@ bool write_spatial_calibration_session_manifest(
         {"initial_camera_serial", selected_camera.camera_serial},
         {"initial_camera_name", selected_camera.camera_name}
     };
-    if (ui_state->citrus_template.available) {
+    if (ui_state->citrus_template.available &&
+        !ui_state->citrus_template.source_camera_id.empty() &&
+        ui_state->citrus_template.source_camera_id ==
+            selected_camera.camera_serial) {
         nlohmann::json citrus = nlohmann::json::object();
         if (!ui_state->citrus_template.source_rig_name.empty()) {
             citrus["rig_id"] = ui_state->citrus_template.source_rig_name;
@@ -333,6 +341,7 @@ bool ensure_spatial_calibration_session(
         ui_state->calibration_session_id =
             build_spatial_calibration_session_id(
                 ui_state,
+                selected_camera.camera_serial,
                 ui_state->calibration_session_created_utc);
         ui_state->calibration_session_dir =
             (sessions_dir / ui_state->calibration_session_id).generic_string();
@@ -756,6 +765,9 @@ std::string build_camera_arena_calibration_image_set_artifact_id(
     std::string arena = "arena_unknown";
     if (ui_state != nullptr &&
         ui_state->citrus_template.available &&
+        !ui_state->citrus_template.source_camera_id.empty() &&
+        ui_state->citrus_template.source_camera_id ==
+            camera_params.camera_serial &&
         !ui_state->citrus_template.source_arena_name.empty()) {
         arena = ui_state->citrus_template.source_arena_name;
     }

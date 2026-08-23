@@ -31,6 +31,10 @@ inline constexpr const char* kDishTopRimBoundaryInterpretation =
     "operator_confirmed_dish_inner_rim_water_side_edge";
 inline constexpr const char* kDishTopRimBoundaryInclusionPolicy =
     "follow_observed_inner_rim_without_silent_offset";
+inline constexpr const char* kDailyPhysicalDishRegistrationProductId =
+    "daily_physical_dish_registration";
+inline constexpr const char* kDailyProjectionRegistrationProductId =
+    "daily_projection_registration";
 inline constexpr const char* kCalibrationFingerprintAlgorithm = "fnv1a64";
 
 struct DishTopRimPoint {

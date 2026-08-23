@@ -804,6 +804,96 @@ void test_rejects_simultaneous_inward_and_outward_offsets()
     std::filesystem::remove_all(root);
 }
 
+void test_standalone_physical_registration_without_citrus()
+{
+    using namespace orange::calibration;
+    const std::filesystem::path root = make_temp_root();
+    DishTopRimObservationRequest request =
+        make_request("dishrim_orange_standalone");
+    request.arena_context = {
+        {"camera_serial", request.camera.serial},
+        {"associated_image_set_artifact_id", "Cam2012632_arena_unknown"},
+        {"projection_registration", {
+            {"product_id", kDailyProjectionRegistrationProductId},
+            {"authority", "citrus"},
+            {"status", "not_applicable"},
+            {"reason", "no_active_projection_canvas"}
+        }}
+    };
+    request.image_set_rig_context = nlohmann::json::object();
+    request.has_physical_inner_diameter_mm = false;
+    request.physical_inner_diameter_mm = 0.0;
+    request.physical_inner_diameter_source.clear();
+    request.dish_design_id.clear();
+    request.has_reference_camera_pixels_per_mm = false;
+    request.reference_camera_pixels_per_mm = 0.0;
+    request.reference_camera_scale_target_plane.clear();
+    request.capture.projector_state = "not_in_use";
+    request.capture.projector_visible_to_camera = false;
+
+    DishTopRimCircle accepted;
+    accepted.center.x = 322.0;
+    accepted.center.y = 254.0;
+    accepted.radius_px = 150.0;
+    request.has_detected_circle = true;
+    request.detected_circle = accepted;
+    request.detected_circle_source = "standalone_fixture_hough";
+
+    DishTopRimObservationWriteResult result;
+    std::string error;
+    require(
+        write_dish_top_rim_observation_artifact(
+            root.string(),
+            request,
+            make_synthetic_dish_frame(),
+            make_hough_params(),
+            accepted,
+            &result,
+            &error),
+        "standalone Orange physical registration should save without Citrus: " +
+            error);
+
+    const nlohmann::json observation =
+        read_json(root / request.artifact_id / "observation.json");
+    const auto& products = observation.at("registration_products");
+    require(
+        products.at("physical_registration").value("product_id", "") ==
+            kDailyPhysicalDishRegistrationProductId,
+        "physical product identity");
+    require(
+        products.at("physical_registration").value("status", "") ==
+            "accepted",
+        "physical product accepted status");
+    require(
+        !products.at("physical_registration").value("citrus_required", true),
+        "physical product must declare Citrus unnecessary");
+    require(
+        products.at("projection_registration").value("status", "") ==
+            "not_applicable",
+        "projection status without canvas");
+    require(
+        products.at("projection_registration").value("reason", "") ==
+            "no_active_projection_canvas",
+        "projection not-applicable reason");
+    require(
+        observation.at("boundary_interpretation")
+                .value("citrus_runtime_mapping_status", "") ==
+            "not_applicable",
+        "physical observation must not claim pending Citrus acceptance");
+
+    const nlohmann::json manifest =
+        read_json(root / request.artifact_id / "manifest.json");
+    require(
+        manifest.at("summary").value("physical_registration_status", "") ==
+            "accepted",
+        "manifest physical status");
+    require(
+        manifest.at("summary").value("citrus_runtime_mapping_status", "") ==
+            "not_applicable",
+        "manifest projection applicability");
+    std::filesystem::remove_all(root);
+}
+
 } // namespace
 
 int main()
@@ -817,6 +907,7 @@ int main()
         test_rejects_ambiguous_v1_boundary_target();
         test_rejects_unconfirmed_inner_rim();
         test_rejects_simultaneous_inward_and_outward_offsets();
+        test_standalone_physical_registration_without_citrus();
     } catch (const std::exception& ex) {
         std::cerr << "dish_top_rim_observation_tests failed: " << ex.what() << std::endl;
         return 1;

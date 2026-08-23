@@ -10,6 +10,7 @@
 #include "gui/spatial_layout/citrus_template_workflow.h"
 #include "gui/spatial_layout/commissioning_finalization.h"
 #include "gui/spatial_layout/daily_registration_workflow.h"
+#include "gui/spatial_layout/daily_physical_registration_preflight.h"
 #include "gui/spatial_layout/geometry.h"
 #include "gui/spatial_layout/group_capture_controller.h"
 #include "gui/spatial_layout/hough_panel.h"
@@ -80,6 +81,7 @@ using orange::gui::spatial_layout::citrus_canvas_to_arena_relative_px;
 using orange::gui::spatial_layout::default_citrus_rigs_root;
 using orange::gui::spatial_layout::ensure_spatial_calibration_session;
 using orange::gui::spatial_layout::eligible_group_capture_camera_count;
+using orange::gui::spatial_layout::evaluate_daily_physical_registration_save_preflight;
 using orange::gui::spatial_layout::advance_daily_registration_workflow;
 using orange::gui::spatial_layout::advance_group_capture_workflow;
 using orange::gui::spatial_layout::find_citrus_template_index_for_camera;
@@ -2502,31 +2504,52 @@ void render_spatial_layout_window(
         generic_calibration_image_set_save_worker_is_busy() ||
         queued_generic_calibration_image_set_save_job_count() > 0;
     const bool spatial_save_busy = top_rim_save_busy || generic_image_set_save_busy;
-    const SpatialLayoutPersistencePanelState persistence_panel_state{
-        citrus_template_matches_selected_camera,
-        captured_in_full_resolution,
-        top_rim_save_busy,
-        generic_image_set_save_busy,
-        ui_state->has_capture &&
-            ui_state->calibration_inner_rim_target_confirmed &&
+    const auto physical_registration_preflight =
+        evaluate_daily_physical_registration_save_preflight({
+            spatial_save_busy,
+            ui_state->has_capture,
+            selected_camera.camera_serial,
+            ui_state->captured_camera_serial,
+            ui_state->captured_texture_width,
+            ui_state->captured_texture_height,
+            static_cast<int>(selected_camera.width),
+            static_cast<int>(selected_camera.height),
+            ui_state->captured_source_array_role,
+            ui_state->calibration_inner_rim_target_confirmed,
             ui_state->dish_mask_runtime.has_geometry &&
+                ui_state->dish_mask_runtime.geometry.outer_geometry.type ==
+                    RuntimeGeometryType::kCircle,
             ui_state->has_detected_experimental_area_circle &&
-            ui_state->detected_experimental_area_geometry.type == RuntimeGeometryType::kCircle &&
-            captured_in_full_resolution &&
-            citrus_template_matches_selected_camera &&
-            !spatial_save_busy,
+                ui_state->detected_experimental_area_geometry.type ==
+                    RuntimeGeometryType::kCircle
+        });
+    SpatialLayoutPersistencePanelState persistence_panel_state;
+    persistence_panel_state.citrus_linked_layout_matches_selected_camera =
+        citrus_template_matches_selected_camera;
+    persistence_panel_state.captured_in_full_resolution =
+        captured_in_full_resolution;
+    persistence_panel_state.top_rim_save_busy = top_rim_save_busy;
+    persistence_panel_state.generic_image_set_save_busy =
+        generic_image_set_save_busy;
+    persistence_panel_state.can_save_top_rim_observation =
+        physical_registration_preflight.allowed;
+    persistence_panel_state.top_rim_ineligible_reason =
+        physical_registration_preflight.message;
+    persistence_panel_state.can_save_generic_image_set =
         ui_state->has_capture &&
-            captured_in_full_resolution &&
-            citrus_template_matches_selected_camera &&
-            !spatial_save_busy,
+        captured_in_full_resolution &&
+        citrus_template_matches_selected_camera &&
+        !spatial_save_busy;
+    persistence_panel_state.can_save_group_image_sets =
         !ui_state->group_captures.empty() &&
-            pending_group_snapshot_count(*ui_state) == 0 &&
-            !group_capture_workflow_active(*ui_state) &&
-            !spatial_save_busy,
+        pending_group_snapshot_count(*ui_state) == 0 &&
+        !group_capture_workflow_active(*ui_state) &&
+        !spatial_save_busy;
+    persistence_panel_state.can_save_linked_arena_layouts =
         !ui_state->calibration_session_dir.empty() &&
-            (ui_state->citrus_template.available ||
-             !ui_state->citrus_canvas_templates.empty()) &&
-            !spatial_save_busy};
+        (ui_state->citrus_template.available ||
+         !ui_state->citrus_canvas_templates.empty()) &&
+        !spatial_save_busy;
     const SpatialLayoutPersistencePanelEvent persistence_event =
         render_spatial_layout_persistence_panel(ui_state, persistence_panel_state);
     handle_spatial_layout_persistence_event(
