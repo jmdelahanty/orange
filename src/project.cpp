@@ -4810,6 +4810,113 @@ nlohmann::json materialize_recording_geometry_assets(
                 if (!tank_id.empty()) tank_cameras[tank_id].push_back(camera_id);
             }
 
+            const nlohmann::json physical = camera_it.value().value(
+                "physical_registration", nlohmann::json::object());
+            if (physical.is_object() &&
+                physical.value("status", "") == "selected_resolved") {
+                nlohmann::json physical_context = context;
+                physical_context.update({
+                    {"artifact_id", physical.value("artifact_id", "")},
+                    {"target_plane", "dish_top_rim"},
+                    {"coordinate_space", "camera_native_pixels"},
+                    {"selection_authority",
+                     "orange_active_physical_registration_pointer"},
+                });
+                const std::filesystem::path destination =
+                    std::filesystem::path("cameras") /
+                    ("Cam" + safe_camera) / "physical_registration";
+                const nlohmann::json pointer = physical.value(
+                    "active_pointer", nlohmann::json::object());
+                copy_asset(
+                    "physical_registration_active_pointer",
+                    pointer.value("source_path", ""),
+                    destination / "active_pointer.json",
+                    pointer.value("sha256", ""), physical_context, true,
+                    kRecordingGeometryCompactAssetMaxBytes);
+                const nlohmann::json observation = physical.value(
+                    "observation", nlohmann::json::object());
+                copy_asset(
+                    "physical_registration_observation",
+                    observation.value("source_path", ""),
+                    destination / "observation.json",
+                    observation.value("sha256", ""), physical_context, true,
+                    kRecordingGeometryCompactAssetMaxBytes);
+                const nlohmann::json manifest = physical.value(
+                    "manifest", nlohmann::json::object());
+                copy_asset(
+                    "physical_registration_manifest",
+                    manifest.value("source_path", ""),
+                    destination / "manifest.json",
+                    manifest.value("sha256", ""), physical_context, true,
+                    kRecordingGeometryCompactAssetMaxBytes);
+
+                const nlohmann::json compact = physical.value(
+                    "compact_artifacts", nlohmann::json::object());
+                struct PhysicalCompactAsset {
+                    const char* key;
+                    const char* role;
+                    const char* relative_path;
+                };
+                static constexpr PhysicalCompactAsset compact_assets[] = {
+                    {"image_set", "physical_registration_image_set",
+                     "image_set.json"},
+                    {"spatial_dish_mask_runtime_v1",
+                     "physical_registration_spatial_mask_export",
+                     "exports/spatial_dish_mask_runtime_v1.json"},
+                    {"palette_dish_mask_v2",
+                     "physical_registration_palette_mask_export",
+                     "exports/palette_dish_mask_v2.json"},
+                };
+                for (const PhysicalCompactAsset& asset : compact_assets) {
+                    const nlohmann::json source = compact.value(
+                        asset.key, nlohmann::json::object());
+                    if (!source.is_object() ||
+                        source.value("source_path", "").empty()) {
+                        continue;
+                    }
+                    copy_asset(
+                        asset.role, source.value("source_path", ""),
+                        destination / asset.relative_path,
+                        source.value("sha256", ""), physical_context, true,
+                        kRecordingGeometryCompactAssetMaxBytes);
+                }
+
+                if (include_images) {
+                    const nlohmann::json evidence = physical.value(
+                        "optional_evidence", nlohmann::json::object());
+                    struct PhysicalEvidenceAsset {
+                        const char* key;
+                        const char* role;
+                        const char* relative_path;
+                    };
+                    static constexpr PhysicalEvidenceAsset evidence_assets[] = {
+                        {"review_overlay", "physical_registration_review_overlay",
+                         "evidence/top_rim_fit.png"},
+                        {"valid_detection_overlay",
+                         "physical_registration_valid_detection_overlay",
+                         "evidence/valid_detection_region.png"},
+                        {"registration_hough_overlay",
+                         "physical_registration_hough_overlay",
+                         "evidence/registration_hough_overlay.png"},
+                        {"source_frame", "physical_registration_source_frame",
+                         "evidence/source_frame.png"},
+                    };
+                    for (const PhysicalEvidenceAsset& asset : evidence_assets) {
+                        const nlohmann::json source = evidence.value(
+                            asset.key, nlohmann::json::object());
+                        if (!source.is_object() ||
+                            source.value("source_path", "").empty()) {
+                            continue;
+                        }
+                        copy_asset(
+                            asset.role, source.value("source_path", ""),
+                            destination / asset.relative_path,
+                            source.value("sha256", ""), physical_context, false,
+                            kRecordingGeometryImageAssetMaxBytes);
+                    }
+                }
+            }
+
             if (selected_daily_registration) {
                 const nlohmann::json daily_camera =
                     daily_cameras.is_object() && daily_cameras.contains(camera_id)
@@ -7211,6 +7318,61 @@ bool write_recording_geometry_contract(
                 std::move(observation);
         }
     }
+    const nlohmann::json physical_registration = materialized_contract.value(
+        "physical_registration_geometry", nlohmann::json::object());
+    const nlohmann::json physical_cameras = physical_registration.is_object()
+        ? physical_registration.value("cameras", nlohmann::json::object())
+        : nlohmann::json::object();
+    if (physical_cameras.is_object()) {
+        auto& calibrations = snapshot["calibrations"];
+        if (!calibrations.is_object()) calibrations = nlohmann::json::object();
+        for (auto camera_it = physical_cameras.begin();
+             camera_it != physical_cameras.end(); ++camera_it) {
+            if (!camera_it.value().is_object() ||
+                camera_it.value().value("status", "") !=
+                    "selected_resolved") {
+                continue;
+            }
+            nlohmann::json observation = camera_it.value().value(
+                "recording_snapshot_entry", nlohmann::json::object());
+            if (!observation.is_object() || observation.empty()) continue;
+            const std::string camera_serial = camera_it.key();
+            const std::string safe_camera =
+                recording_geometry_safe_component(camera_serial);
+            const nlohmann::json pointer = camera_it.value().value(
+                "active_pointer", nlohmann::json::object());
+            observation["physical_registration"] = {
+                {"selection_authority",
+                 "orange_active_physical_registration_pointer"},
+                {"selection_status", "selected_resolved"},
+                {"active_pointer_source_path",
+                 pointer.value("source_path", "")},
+                {"active_pointer_sha256", pointer.value("sha256", "")},
+            };
+            observation["recording_local_assets"] = {
+                {"observation_relative_path",
+                 (std::filesystem::path("recording_geometry_assets") /
+                  "cameras" / ("Cam" + safe_camera) /
+                  "physical_registration" / "observation.json").generic_string()},
+                {"spatial_mask_export_relative_path",
+                 (std::filesystem::path("recording_geometry_assets") /
+                  "cameras" / ("Cam" + safe_camera) /
+                  "physical_registration" / "exports" /
+                  "spatial_dish_mask_runtime_v1.json").generic_string()},
+                {"palette_mask_export_relative_path",
+                 (std::filesystem::path("recording_geometry_assets") /
+                  "cameras" / ("Cam" + safe_camera) /
+                  "physical_registration" / "exports" /
+                  "palette_dish_mask_v2.json").generic_string()},
+                {"asset_bundle_status", materialized_assets.value(
+                    "status", "unavailable")},
+            };
+            // Explicit Orange selection outranks the Citrus daily compatibility
+            // envelope for the camera-native physical mask.
+            calibrations[camera_serial]["dish_top_rim_observation"] =
+                std::move(observation);
+        }
+    }
     if (!write_json_atomic(
             snapshot_path,
             snapshot,
@@ -7222,6 +7384,21 @@ bool write_recording_geometry_contract(
             *error_out = write_error.empty()
                 ? "failed to reference recording geometry contract from recording snapshot"
                 : write_error;
+        }
+        return false;
+    }
+    const nlohmann::json spatial_mask = materialized_contract.value(
+        "analytics_runtime", nlohmann::json::object()).value(
+            "yolo_spatial_mask", nlohmann::json::object());
+    const bool mask_evidence_required = spatial_mask.is_object() &&
+        spatial_mask.value("mode", "off") != "off" &&
+        (spatial_mask.value("status", "") == "armed" ||
+         spatial_mask.value("status", "") == "armed_before_worker_start");
+    if (mask_evidence_required && materialized_status != "complete") {
+        if (error_out) {
+            *error_out = "live spatial masking requires complete recording-local "
+                "physical-registration evidence; materialization status=" +
+                materialized_status;
         }
         return false;
     }

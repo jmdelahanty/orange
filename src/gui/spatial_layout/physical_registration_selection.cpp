@@ -257,6 +257,24 @@ bool validate_completed_artifact(
             return false;
         }
     }
+    static constexpr const char* compact_required[] = {
+        "image_set_json",
+        "spatial_dish_mask_runtime_v1",
+        "palette_dish_mask_v2",
+    };
+    for (const char* file_key : compact_required) {
+        const std::string relative_path = files.value(
+            file_key, std::string());
+        const fs::path resolved = artifact_dir / relative_path;
+        if (relative_path.empty() || !path_is_within(resolved, artifact_dir) ||
+            !fs::is_regular_file(resolved)) {
+            if (error_out) {
+                *error_out = std::string(
+                    "artifact_required_compact_file_missing:") + file_key;
+            }
+            return false;
+        }
+    }
     const std::string observation_relative = files.value(
         "observation_json", std::string());
     if (observation_relative.empty() ||
@@ -339,6 +357,56 @@ PhysicalRegistrationArtifactCandidate parse_candidate_unchecked(
     candidate.centroid_gate_outset_px = object_member(
         observation, "valid_detection_region").value(
             "centroid_gate_outset_px", 0.0);
+    const nlohmann::json accepted_mask = object_member(
+        observation, "accepted_mask");
+    const nlohmann::json accepted_mask_center = object_member(
+        accepted_mask, "center_px");
+    const nlohmann::json valid_region = object_member(
+        observation, "valid_detection_region");
+    const nlohmann::json valid_geometry = object_member(
+        valid_region, "geometry");
+    const nlohmann::json valid_center = object_member(
+        valid_geometry, "center_px");
+    const auto finite_value = [](const nlohmann::json& value,
+                                 const char* key,
+                                 double* out) {
+        const auto it = value.find(key);
+        if (it == value.end() || !it->is_number()) return false;
+        const double parsed = it->get<double>();
+        if (!std::isfinite(parsed)) return false;
+        if (out) *out = parsed;
+        return true;
+    };
+    double mask_x = 0.0;
+    double mask_y = 0.0;
+    double mask_radius = 0.0;
+    double valid_x = 0.0;
+    double valid_y = 0.0;
+    double valid_radius = 0.0;
+    const bool derived_geometry_valid =
+        accepted.value("target_plane", std::string()) == "dish_top_rim" &&
+        accepted_mask.value("shape", std::string()) == "circle" &&
+        accepted_mask.value("coordinate_space", std::string()) ==
+            "camera_native_pixels" &&
+        finite_value(accepted_mask_center, "x", &mask_x) &&
+        finite_value(accepted_mask_center, "y", &mask_y) &&
+        finite_value(accepted_mask, "radius_px", &mask_radius) &&
+        valid_region.value("coordinate_space", std::string()) ==
+            "camera_native_pixels" &&
+        valid_region.value("purpose", std::string()) ==
+            "bounding_box_centroid_detection_gating" &&
+        (valid_region.value("offset_direction", std::string()) == "outward" ||
+         valid_region.value("offset_direction", std::string()) == "none") &&
+        valid_geometry.value("type", std::string()) == "circle" &&
+        finite_value(valid_center, "x", &valid_x) &&
+        finite_value(valid_center, "y", &valid_y) &&
+        finite_value(valid_geometry, "radius_px", &valid_radius) &&
+        object_member(observation, "operator_review").value(
+            "accepted", false);
+    const auto close = [](const double left, const double right) {
+        return std::isfinite(left) && std::isfinite(right) &&
+            std::abs(left - right) <= 1e-6;
+    };
     if (!checksum::file_sha256(path, &candidate.observation_sha256, &error)) {
         candidate.compatibility_reason = error;
         return candidate;
@@ -375,7 +443,16 @@ PhysicalRegistrationArtifactCandidate parse_candidate_unchecked(
                candidate.accepted_center_y_px >= candidate.height_px ||
                candidate.accepted_radius_px <= 0.0 ||
                !std::isfinite(candidate.centroid_gate_outset_px) ||
-               candidate.centroid_gate_outset_px < 0.0) {
+               candidate.centroid_gate_outset_px < 0.0 ||
+               !derived_geometry_valid || mask_radius <= 0.0 ||
+               !close(mask_x, candidate.accepted_center_x_px) ||
+               !close(mask_y, candidate.accepted_center_y_px) ||
+               !close(valid_x, candidate.accepted_center_x_px) ||
+               !close(valid_y, candidate.accepted_center_y_px) ||
+               !close(mask_radius, valid_radius) ||
+               !close(mask_radius,
+                      candidate.accepted_radius_px +
+                          candidate.centroid_gate_outset_px)) {
         candidate.compatibility_reason = "accepted_inner_rim_invalid";
     } else {
         candidate.compatible = true;
@@ -503,9 +580,15 @@ PhysicalRegistrationSelectionResolution resolve_active_physical_registration(
     PhysicalRegistrationSelectionResolution result;
     const fs::path pointer_path = active_physical_registration_pointer_path(
         calibration_base_dir, camera_serial);
+    result.pointer_path = pointer_path;
     std::error_code exists_error;
     result.pointer_exists = fs::is_regular_file(pointer_path, exists_error);
     if (!result.pointer_exists) return result;
+    if (!checksum::file_sha256(
+            pointer_path, &result.pointer_sha256, &result.error)) {
+        result.status = "invalid_pointer";
+        return result;
+    }
     if (!read_json(pointer_path, &result.pointer, &result.error)) {
         result.status = "invalid_pointer";
         return result;

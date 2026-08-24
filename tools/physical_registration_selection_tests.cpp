@@ -1,6 +1,7 @@
 #include "dish_top_rim_observation.h"
 #include "fnv1a64_fingerprint.h"
 #include "gui/spatial_layout/physical_registration_selection.h"
+#include "recording_physical_registration.h"
 
 #include <algorithm>
 #include <array>
@@ -69,6 +70,18 @@ void write_complete_artifact(
         stream << contents;
         require(static_cast<bool>(stream), "could not write " + path.string());
     }
+    write_json(artifact_dir / "image_set.json", {
+        {"schema_id", "orange.calibration.image_set"},
+        {"schema_version", 2},
+    });
+    write_json(artifact_dir / "exports/spatial_dish_mask_runtime_v1.json", {
+        {"schema_id", "orange.spatial.dish_mask_runtime"},
+        {"schema_version", 1},
+    });
+    write_json(artifact_dir / "exports/palette_dish_mask_v2.json", {
+        {"schema_id", "palette.dish_mask"},
+        {"schema_version", 2},
+    });
     const std::string artifact_id = observation.value("artifact_id", "");
     const nlohmann::json manifest = {
         {"schema_id", orange::calibration::kCalibrationManifestSchemaId},
@@ -82,6 +95,11 @@ void write_complete_artifact(
         {"files", {
             {"manifest", "manifest.json"},
             {"observation_json", "observation.json"},
+            {"image_set_json", "image_set.json"},
+            {"spatial_dish_mask_runtime_v1",
+             "exports/spatial_dish_mask_runtime_v1.json"},
+            {"palette_dish_mask_v2",
+             "exports/palette_dish_mask_v2.json"},
             {"source_frame", files[0].first},
             {"review_overlay", files[1].first},
             {"registration_hough_overlay", files[2].first},
@@ -143,6 +161,7 @@ nlohmann::json accepted_observation(
         }},
         {"accepted_inner_rim_boundary", {
             {"coordinate_space", "camera_native_pixels"},
+            {"target_plane", "dish_top_rim"},
             {"operator_confirmed", true},
             {"geometry", {
                 {"type", "circle"},
@@ -150,12 +169,25 @@ nlohmann::json accepted_observation(
                 {"radius_px", 2098.5},
             }},
         }},
+        {"accepted_mask", {
+            {"shape", "circle"},
+            {"coordinate_space", "camera_native_pixels"},
+            {"center_px", {{"x", 2251.25}, {"y", 2248.75}}},
+            {"radius_px", 2103.5},
+        }},
         {"valid_detection_region", {
             {"coordinate_space", "camera_native_pixels"},
             {"derived_from", "accepted_inner_rim_boundary"},
             {"centroid_gate_outset_px", 5.0},
             {"offset_direction", "outward"},
+            {"purpose", "bounding_box_centroid_detection_gating"},
+            {"geometry", {
+                {"type", "circle"},
+                {"center_px", {{"x", 2251.25}, {"y", 2248.75}}},
+                {"radius_px", 2103.5},
+            }},
         }},
+        {"operator_review", {{"accepted", true}}},
     };
 }
 
@@ -346,6 +378,90 @@ void test_malformed_json_fails_closed()
     fs::remove_all(root, ignored);
 }
 
+void test_recording_prearm_snapshot_and_runtime_marking()
+{
+    const fs::path root = make_root();
+    const fs::path observation_path = root / "sessions" / "session_recording" /
+        "artifacts" / "Cam2010095_arena_unknown" /
+        "top_rim_observations" / "rim_recording" / "observation.json";
+    write_complete_artifact(
+        observation_path,
+        accepted_observation(
+            "rim_recording", "2010095", 4512, 4512, "Mono8"));
+    const auto candidate = validate_physical_registration_artifact(
+        root, observation_path, "2010095", 4512, 4512, "Mono8");
+    require(candidate.compatible, "recording candidate must validate");
+    std::string error;
+    require(select_physical_registration_artifact(
+                root, candidate, "2026-08-23T12:04:00Z", &error),
+            "recording selection should succeed: " + error);
+
+    nlohmann::json contract = {
+        {"schema_id", "orange.recording.geometry_contract"},
+        {"schema_version", 1},
+        {"cameras", {{"2010095", {{"camera_serial", "2010095"}}}}},
+    };
+    orange::recording_geometry::append_recording_physical_registrations(
+        &contract, root,
+        {{"2010095", 4512, 4512, "Mono8"}},
+        "2026-08-23T12:05:00Z");
+    const auto& physical = contract["cameras"]["2010095"]
+        ["physical_registration"];
+    require(physical.value("status", "") == "selected_resolved",
+            "recording pre-arm must resolve selected physical evidence");
+    require(physical["active_pointer"].value("sha256", "").rfind(
+                "sha256:", 0) == 0,
+            "recording pre-arm must digest the active pointer");
+    require(physical["recording_snapshot_entry"]
+                ["valid_detection_region"]["geometry"]
+                .value("radius_px", 0.0) == 2103.5,
+            "recording snapshot must embed the exact centroid gate");
+    require(physical["compact_artifacts"].contains(
+                "spatial_dish_mask_runtime_v1"),
+            "recording snapshot must bind the compact runtime mask export");
+    require(orange::recording_geometry::mark_recording_dish_mask_runtime_use(
+                &contract, "2010095", "gate_and_input_mask", true, true),
+            "runtime mask use must mark the selected physical entry");
+    require(physical["recording_snapshot_entry"].value(
+                "active_in_orange_neural_input_mask", false),
+            "runtime marking must preserve neural input-mask use");
+
+    nlohmann::json no_selection_contract = {
+        {"schema_id", "orange.recording.geometry_contract"},
+        {"schema_version", 1},
+        {"cameras", {{"2010096", {{"camera_serial", "2010096"}}}}},
+    };
+    orange::recording_geometry::append_recording_physical_registrations(
+        &no_selection_contract, root,
+        {{"2010096", 4512, 4512, "Mono8"}},
+        "2026-08-23T12:05:00Z");
+    require(no_selection_contract["cameras"]["2010096"]
+                ["physical_registration"].value("status", "") ==
+                "not_performed",
+            "ordinary recording must preserve an explicit optional not-selected state");
+
+    nlohmann::json changed = accepted_observation(
+        "rim_recording", "2010095", 4512, 4512, "Mono8");
+    changed["accepted_inner_rim_boundary"]["geometry"]["radius_px"] = 2000.0;
+    write_json(observation_path, changed);
+    nlohmann::json invalid_contract = {
+        {"schema_id", "orange.recording.geometry_contract"},
+        {"schema_version", 1},
+        {"cameras", {{"2010095", {{"camera_serial", "2010095"}}}}},
+    };
+    orange::recording_geometry::append_recording_physical_registrations(
+        &invalid_contract, root,
+        {{"2010095", 4512, 4512, "Mono8"}},
+        "2026-08-23T12:06:00Z");
+    require(invalid_contract["cameras"]["2010095"]
+                ["physical_registration"].value("status", "") ==
+                "invalid_selected",
+            "a selected artifact changed after selection must remain invalid");
+
+    std::error_code ignored;
+    fs::remove_all(root, ignored);
+}
+
 }  // namespace
 
 int main()
@@ -354,6 +470,7 @@ int main()
         test_selection_lifecycle();
         test_compatibility_and_selection_race();
         test_malformed_json_fails_closed();
+        test_recording_prearm_snapshot_and_runtime_marking();
         std::cout << "physical registration selection tests passed\n";
         return 0;
     } catch (const std::exception& exception) {

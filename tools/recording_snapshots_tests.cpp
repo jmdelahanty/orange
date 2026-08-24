@@ -875,17 +875,181 @@ void test_recording_geometry_asset_failure_is_nonblocking()
     std::filesystem::remove_all(root);
 }
 
+void test_standalone_physical_registration_recording_materialization()
+{
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() /
+        ("orange_recording_physical_materialization_" +
+         std::to_string(static_cast<long long>(getpid())));
+    std::filesystem::remove_all(root);
+    const std::filesystem::path sources = root / "sources";
+    const std::filesystem::path recording = root / "recording";
+    std::filesystem::create_directories(recording);
+    write_exact_fixture(
+        recording / "recording_snapshot.json",
+        nlohmann::json{{"schema_version", 2}}.dump(2) + "\n");
+    const std::filesystem::path pointer = sources / "active.json";
+    const std::filesystem::path observation = sources / "observation.json";
+    const std::filesystem::path manifest = sources / "manifest.json";
+    const std::filesystem::path image_set = sources / "image_set.json";
+    const std::filesystem::path spatial_export =
+        sources / "spatial_dish_mask_runtime_v1.json";
+    const std::filesystem::path palette_export =
+        sources / "palette_dish_mask_v2.json";
+    write_exact_fixture(pointer, "{\"status\":\"selected\"}\n");
+    write_exact_fixture(observation, "{\"artifact_id\":\"rim_physical\"}\n");
+    write_exact_fixture(manifest, "{\"status\":\"complete\"}\n");
+    write_exact_fixture(image_set, "{\"schema_version\":2}\n");
+    write_exact_fixture(spatial_export, "{\"schema_version\":1}\n");
+    write_exact_fixture(palette_export, "{\"schema_version\":2}\n");
+
+    const nlohmann::json snapshot_entry = {
+        {"artifact_id", "rim_physical"},
+        {"artifact_schema_id", "orange.calibration.dish_top_rim_observation"},
+        {"artifact_schema_version", 2},
+        {"camera_serial", "cam1"},
+        {"arena_id", ""},
+        {"coordinate_space", "camera_native_pixels"},
+        {"accepted_inner_rim_boundary", {
+            {"coordinate_space", "camera_native_pixels"},
+            {"target_plane", "dish_top_rim"},
+            {"geometry", {
+                {"type", "circle"},
+                {"center_px", {{"x", 2250.0}, {"y", 2255.0}}},
+                {"radius_px", 2100.0},
+            }},
+        }},
+        {"accepted_mask", {
+            {"shape", "circle"},
+            {"coordinate_space", "camera_native_pixels"},
+            {"center_px", {{"x", 2250.0}, {"y", 2255.0}}},
+            {"radius_px", 2105.0},
+        }},
+        {"valid_detection_region", {
+            {"coordinate_space", "camera_native_pixels"},
+            {"purpose", "bounding_box_centroid_detection_gating"},
+            {"offset_direction", "outward"},
+            {"geometry", {
+                {"type", "circle"},
+                {"center_px", {{"x", 2250.0}, {"y", 2255.0}}},
+                {"radius_px", 2105.0},
+            }},
+        }},
+        {"operator_review", {{"accepted", true}}},
+        {"source", {
+            {"path", observation.string()},
+            {"sha256", sha256_fixture(observation)},
+            {"intended_recording_relative_path",
+             "recording_geometry_assets/cameras/Camcam1/physical_registration/observation.json"},
+        }},
+        {"available_for_downstream_detection_gating", true},
+        {"active_in_orange_live_detection_pipeline", true},
+        {"orange_live_detection_pipeline_mode", "gate_and_input_mask"},
+        {"active_in_orange_neural_input_mask", true},
+        {"gating_semantics",
+         "bounding_box_centroid_inside_valid_detection_region"},
+    };
+    const auto source = [](const std::filesystem::path& path) {
+        return nlohmann::json{
+            {"source_path", path.string()},
+            {"sha256", sha256_fixture(path)},
+        };
+    };
+    const nlohmann::json camera_physical = {
+        {"camera_serial", "cam1"},
+        {"status", "selected_resolved"},
+        {"mode", "selected_physical_registration"},
+        {"recording_blocked", false},
+        {"artifact_id", "rim_physical"},
+        {"active_pointer", source(pointer)},
+        {"observation", source(observation)},
+        {"manifest", source(manifest)},
+        {"compact_artifacts", {
+            {"image_set", source(image_set)},
+            {"spatial_dish_mask_runtime_v1", source(spatial_export)},
+            {"palette_dish_mask_v2", source(palette_export)},
+        }},
+        {"recording_snapshot_entry", snapshot_entry},
+    };
+    nlohmann::json contract = {
+        {"schema_id", "orange.recording.geometry_contract"},
+        {"schema_version", 1},
+        {"status", "orange_only"},
+        {"recording_policy", {{"recording_blocked", false}}},
+        {"cameras", {{"cam1", {
+            {"camera_serial", "cam1"},
+            {"status", "not_configured"},
+            {"physical_registration", camera_physical},
+            {"projection_registration", {{"status", "not_applicable"}}},
+        }}}},
+        {"physical_registration_geometry", {
+            {"status", "selected_resolved"},
+            {"cameras", {{"cam1", camera_physical}}},
+        }},
+        {"warnings", nlohmann::json::array()},
+        {"analytics_runtime", {{"yolo_spatial_mask", {
+            {"status", "armed"},
+            {"mode", "gate_and_input_mask"},
+        }}}},
+    };
+    std::string error;
+    require(write_recording_geometry_contract(
+                recording.string(), contract, &error),
+            "complete selected physical evidence must persist: " + error);
+    require(read_exact_fixture(
+                recording / "recording_geometry_assets" / "cameras" /
+                "Camcam1" / "physical_registration" / "observation.json") ==
+                read_exact_fixture(observation),
+            "physical observation must be copied byte-exactly");
+    const nlohmann::json snapshot = nlohmann::json::parse(
+        read_exact_fixture(recording / "recording_snapshot.json"));
+    const auto& recorded = snapshot.at("calibrations").at("cam1").at(
+        "dish_top_rim_observation");
+    require(recorded.at("physical_registration").at("selection_status") ==
+                "selected_resolved",
+            "snapshot must expose standalone physical selection authority");
+    require(recorded.at("recording_local_assets").at(
+                "observation_relative_path") ==
+                "recording_geometry_assets/cameras/Camcam1/physical_registration/observation.json",
+            "snapshot must point to the standalone recording-local observation");
+
+    const std::filesystem::path failed_recording = root / "failed_recording";
+    std::filesystem::create_directories(failed_recording);
+    write_exact_fixture(
+        failed_recording / "recording_snapshot.json",
+        nlohmann::json{{"schema_version", 2}}.dump(2) + "\n");
+    std::filesystem::remove(spatial_export);
+    require(!write_recording_geometry_contract(
+                failed_recording.string(), contract, &error),
+            "enabled live masking must fail closed on incomplete copied evidence");
+    require(error.find("requires complete") != std::string::npos,
+            "live mask evidence failure must explain the required bundle");
+
+    contract["analytics_runtime"]["yolo_spatial_mask"]["mode"] = "off";
+    const std::filesystem::path optional_recording = root / "optional_recording";
+    std::filesystem::create_directories(optional_recording);
+    write_exact_fixture(
+        optional_recording / "recording_snapshot.json",
+        nlohmann::json{{"schema_version", 2}}.dump(2) + "\n");
+    require(write_recording_geometry_contract(
+                optional_recording.string(), contract, &error),
+            "mask-off full-frame recording must remain valid with partial optional evidence");
+    std::filesystem::remove_all(root);
+}
+
 void test_recording_geometry_contract_is_always_written()
 {
     ScopedEnv explicit_canvas("ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH");
     ScopedEnv guided_canvas("ORANGE_GUI_GUIDED_CAPTURE_CITRUS_CONFIG_PATH");
     ScopedEnv centering_canvas("ORANGE_GUI_ARENA_CENTERING_CITRUS_CONFIG_PATH");
+    ScopedEnv calibration_base("ORANGE_CALIBRATION_BASE_DIR");
     const std::string unique_suffix = std::to_string(static_cast<long long>(getpid()));
     const std::filesystem::path recording_folder =
         std::filesystem::temp_directory_path() /
         ("orange_recording_geometry_" + unique_suffix);
     std::filesystem::remove_all(recording_folder);
     std::filesystem::create_directories(recording_folder);
+    calibration_base.Set((recording_folder / "isolated_calibrations").string());
     {
         std::ofstream output(recording_folder / "recording_snapshot.json");
         output << nlohmann::json{{"schema_version", 2}}.dump(2) << '\n';
@@ -1108,6 +1272,8 @@ int main()
          &test_recording_geometry_assets_materialize_exact_scoped_sources},
         {"recording_geometry_asset_failure_is_nonblocking",
          &test_recording_geometry_asset_failure_is_nonblocking},
+        {"standalone_physical_registration_recording_materialization",
+         &test_standalone_physical_registration_recording_materialization},
         {"recording_geometry_contract_is_always_written",
          &test_recording_geometry_contract_is_always_written},
         {"immutable_recording_start_snapshot_is_exact_and_create_once",

@@ -55,6 +55,7 @@
 #include "yolo_event_log_validation.h"
 #include "crop_producer_worker.h"
 #include "citrus_recording_geometry.h"
+#include "recording_physical_registration.h"
 #include "pose_worker.h"
 #include "pose_event_log_validation.h"
 #include <signal.h>
@@ -4006,20 +4007,42 @@ bool prepare_headless_recording_artifacts(const std::string& record_folder,
         }
         geometry_request.camera_serials.push_back(std::move(serial));
     }
-    const auto geometry_resolution =
+    auto geometry_resolution =
         orange::recording_geometry::resolve_citrus_recording_geometry(geometry_request);
+    std::vector<orange::recording_geometry::RecordingPhysicalCamera>
+        physical_cameras;
+    physical_cameras.reserve(static_cast<std::size_t>(num_cameras));
+    for (int index = 0; index < num_cameras; ++index) {
+        physical_cameras.push_back({
+            geometry_request.camera_serials[static_cast<std::size_t>(index)],
+            static_cast<int>(cameras_params[index].width),
+            static_cast<int>(cameras_params[index].height),
+            cameras_params[index].pixel_format,
+        });
+    }
+    orange::recording_geometry::append_recording_physical_registrations(
+        &geometry_resolution.contract,
+        orange::recording_geometry::resolve_recording_calibration_base_dir(),
+        physical_cameras,
+        geometry_request.captured_at_utc);
     if (geometry_contract_out) {
         *geometry_contract_out = geometry_resolution.contract;
     }
     std::string geometry_error;
-    if (!write_recording_geometry_contract(
-            record_folder, geometry_resolution.contract, &geometry_error)) {
+    if (geometry_contract_out != nullptr) {
+        std::cout << "Headless recording geometry contract resolved; "
+                     "persistence deferred until analytics pre-arm"
+                  << " status="
+                  << geometry_resolution.contract.value("status", "unknown")
+                  << " folder=" << record_folder << std::endl;
+    } else if (!write_recording_geometry_contract(
+                   record_folder, geometry_resolution.contract, &geometry_error)) {
         std::cerr << "Failed to write optional headless recording geometry contract";
         if (!geometry_error.empty()) {
             std::cerr << ": " << geometry_error;
         }
         std::cerr << std::endl;
-    } else {
+    } else if (geometry_contract_out == nullptr) {
         std::cout << "Headless recording geometry contract written"
                   << " status="
                   << geometry_resolution.contract.value("status", "unknown")
@@ -4813,6 +4836,11 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                             spatial_mode,
                             spatial_config.config.input_context_outset_px);
                     if (!resolved.ok) {
+                        spatial_runtime["cameras"][serial] = {
+                            {"status", "resolution_failed"},
+                            {"error_code", resolved.error_code},
+                            {"error", resolved.error},
+                        };
                         throw std::runtime_error(
                             "headless spatial mask camera " + serial + ": " +
                             resolved.error);
@@ -4839,16 +4867,13 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                         ["yolo_spatial_mask_runtime"] =
                             spatial_runtime["cameras"][serial];
                     if (spatial_mode != orange::analytics_mask::Mode::kOff) {
-                        nlohmann::json& daily_entry =
-                            headless_recording_geometry_contract["cameras"][serial]
-                                ["daily_registration_geometry"]
-                                ["recording_snapshot_entry"];
-                        daily_entry["active_in_orange_live_detection_pipeline"] =
-                            orange::analytics_mask::enforces_centroid(spatial_mode);
-                        daily_entry["orange_live_detection_pipeline_mode"] =
-                            orange::analytics_mask::mode_to_string(spatial_mode);
-                        daily_entry["active_in_orange_neural_input_mask"] =
-                            orange::analytics_mask::masks_input(spatial_mode);
+                        orange::recording_geometry::
+                            mark_recording_dish_mask_runtime_use(
+                                &headless_recording_geometry_contract,
+                                serial,
+                                orange::analytics_mask::mode_to_string(spatial_mode),
+                                orange::analytics_mask::enforces_centroid(spatial_mode),
+                                orange::analytics_mask::masks_input(spatial_mode));
                     }
                 }
                 ++armed_spatial_workers;
@@ -4893,6 +4918,16 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
         }
 
         if (enable_artifacts) {
+            if (!yolo_worker_config.enabled()) {
+                std::string geometry_error;
+                if (!write_recording_geometry_contract(
+                        record_folder,
+                        headless_recording_geometry_contract,
+                        &geometry_error)) {
+                    std::cerr << "Failed to persist headless recording geometry "
+                                 "contract: " << geometry_error << std::endl;
+                }
+            }
             std::string immutable_snapshot_error;
             if (!seal_immutable_recording_start_snapshot(
                     record_folder,

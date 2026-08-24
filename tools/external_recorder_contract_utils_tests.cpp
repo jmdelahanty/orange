@@ -3,6 +3,7 @@
 #include "external_recorder_ipc_protocol.h"
 #include "external_recorder_supervisor.h"
 #include "encoder_pipeline.h"
+#include "gui/spatial_layout/sha256.h"
 #include "video_capture.h"
 
 #include <filesystem>
@@ -558,6 +559,31 @@ void explicit_input_recording_control_overrides_config()
 
 void binds_selected_daily_circle_to_static_dish_prior()
 {
+    const std::filesystem::path recording_root = "/tmp/orange_qp_binding";
+    std::filesystem::remove_all(recording_root);
+    const std::filesystem::path daily_local = recording_root /
+        "recording_geometry_assets/cameras/Cam2010096/observation.json";
+    const std::filesystem::path physical_local = recording_root /
+        "recording_geometry_assets/cameras/Cam2010096/physical_registration/observation.json";
+    std::filesystem::create_directories(daily_local.parent_path());
+    std::filesystem::create_directories(physical_local.parent_path());
+    {
+        std::ofstream output(daily_local);
+        output << "daily-observation\n";
+    }
+    {
+        std::ofstream output(physical_local);
+        output << "physical-observation\n";
+    }
+    std::string daily_sha256;
+    std::string physical_sha256;
+    std::string checksum_error;
+    require(orange::gui::spatial_layout::checksum::file_sha256(
+                daily_local, &daily_sha256, &checksum_error),
+            "daily test evidence checksum: " + checksum_error);
+    require(orange::gui::spatial_layout::checksum::file_sha256(
+                physical_local, &physical_sha256, &checksum_error),
+            "physical test evidence checksum: " + checksum_error);
     CameraParams cameras[1] = {
         make_camera("2010096", 7, {7, 8}),
     };
@@ -596,7 +622,7 @@ void binds_selected_daily_circle_to_static_dish_prior()
                         }},
                         {"source", {
                             {"path", "/calibration/original/observation.json"},
-                            {"sha256", "sha256:abc"},
+                            {"sha256", daily_sha256},
                             {"intended_recording_relative_path",
                              "recording_geometry_assets/cameras/Cam2010096/observation.json"},
                         }},
@@ -621,7 +647,7 @@ void binds_selected_daily_circle_to_static_dish_prior()
                 "/tmp/orange_qp_binding/recording_geometry_assets/cameras/"
                 "Cam2010096/observation.json",
             "bound QP map should point at the recording-local immutable source");
-    require(map["source"]["artifact_sha256"] == "sha256:abc",
+    require(map["source"]["artifact_sha256"] == daily_sha256,
             "bound QP map should preserve source checksum");
 
     orange::external_recorder::SupervisorPlan plan;
@@ -630,6 +656,48 @@ void binds_selected_daily_circle_to_static_dish_prior()
             "bound QP contract should build a supervisor plan: " + error);
     require(plan.streams[0].importance_map.enabled(),
             "bound plan should enable the QP map");
+
+    nlohmann::json physical_contract =
+        orange::external_recorder::MaterializeExternalRecorderContractForCameras(input);
+    nlohmann::json physical_geometry = geometry;
+    physical_geometry["cameras"]["2010096"]["physical_registration"] = {
+        {"status", "selected_resolved"},
+        {"recording_snapshot_entry", {
+            {"artifact_id", "dishrim_standalone"},
+            {"accepted_mask", {
+                {"shape", "circle"},
+                {"center_px", {{"x", 2300.0}, {"y", 2310.0}}},
+                {"radius_px", 2101.0},
+            }},
+            {"source", {
+                {"path", "/calibration/standalone/observation.json"},
+                {"sha256", physical_sha256},
+                {"intended_recording_relative_path",
+                 "recording_geometry_assets/cameras/Cam2010096/physical_registration/observation.json"},
+            }},
+        }},
+    };
+    require(orange::external_recorder::BindExternalRecorderDishPriorFromRecordingGeometry(
+                &physical_contract, physical_geometry,
+                input.recording_folder, &error),
+            "standalone physical geometry binding should succeed: " + error);
+    const nlohmann::json& physical_map =
+        physical_contract["streams"]["2010096"]["importance_map"];
+    require(physical_map["geometry_source"] ==
+                "selected_physical_registration",
+            "standalone physical registration must become the explicit QP authority");
+    require(physical_map["geometry"]["center_x_px"] == 2300.0,
+            "standalone physical selection must outrank the Citrus compatibility mask");
+
+    nlohmann::json invalid_contract =
+        orange::external_recorder::MaterializeExternalRecorderContractForCameras(input);
+    physical_geometry["cameras"]["2010096"]["physical_registration"]["status"] =
+        "invalid_selected";
+    require(!orange::external_recorder::BindExternalRecorderDishPriorFromRecordingGeometry(
+                &invalid_contract, physical_geometry,
+                input.recording_folder, &error),
+            "invalid standalone physical selection must not fall back to Citrus");
+    std::filesystem::remove_all(recording_root);
 }
 
 void writes_failfast_artifacts()

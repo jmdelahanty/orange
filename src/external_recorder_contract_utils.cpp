@@ -3,6 +3,7 @@
 
 #include "external_recorder_supervisor.h"
 #include "fsuid_guard.h"
+#include "gui/spatial_layout/sha256.h"
 #include "video_capture.h"
 
 #include <algorithm>
@@ -555,10 +556,13 @@ bool BindExternalRecorderDishPriorFromRecordingGeometry(
         }
         const std::string geometry_source = importance_map.value(
             "geometry_source", "selected_daily_registration");
-        if (geometry_source != "selected_daily_registration") {
+        if (geometry_source != "selected_daily_registration" &&
+            geometry_source != "selected_physical_registration") {
             if (error_out) {
                 *error_out = "external recorder stream " + stream_it.key() +
-                    " importance_map.geometry_source must be selected_daily_registration";
+                    " importance_map.geometry_source must be "
+                    "selected_physical_registration or the legacy "
+                    "selected_daily_registration value";
             }
             return false;
         }
@@ -573,15 +577,37 @@ bool BindExternalRecorderDishPriorFromRecordingGeometry(
             }
             return false;
         }
-        const nlohmann::json daily = camera_it->value(
-            "daily_registration_geometry", nlohmann::json::object());
-        const nlohmann::json snapshot = daily.value(
-            "recording_snapshot_entry", nlohmann::json::object());
+        const nlohmann::json physical = camera_it->value(
+            "physical_registration", nlohmann::json::object());
+        const std::string physical_status = physical.value("status", "");
+        if (physical_status == "invalid_selected" ||
+            physical_status == "invalid_pointer") {
+            if (error_out) {
+                *error_out = "static dish-prior QP map requested, but camera " +
+                    camera_serial + " has an invalid selected physical registration";
+            }
+            return false;
+        }
+        nlohmann::json snapshot;
+        std::string resolved_geometry_source;
+        if (physical_status == "selected_resolved") {
+            snapshot = physical.value(
+                "recording_snapshot_entry", nlohmann::json::object());
+            resolved_geometry_source = "selected_physical_registration";
+        } else if (geometry_source == "selected_daily_registration") {
+            const nlohmann::json daily = camera_it->value(
+                "daily_registration_geometry", nlohmann::json::object());
+            if (daily.value("status", "") == "resolved") {
+                snapshot = daily.value(
+                    "recording_snapshot_entry", nlohmann::json::object());
+                resolved_geometry_source = "selected_daily_registration";
+            }
+        }
         const nlohmann::json accepted_mask = snapshot.value(
             "accepted_mask", nlohmann::json::object());
         const nlohmann::json center = accepted_mask.value(
             "center_px", nlohmann::json::object());
-        if (daily.value("status", "") != "resolved" ||
+        if (resolved_geometry_source.empty() ||
             accepted_mask.value("shape", "") != "circle" ||
             !center.contains("x") || !center["x"].is_number() ||
             !center.contains("y") || !center["y"].is_number() ||
@@ -590,7 +616,7 @@ bool BindExternalRecorderDishPriorFromRecordingGeometry(
             accepted_mask["radius_px"].get<double>() <= 0.0) {
             if (error_out) {
                 *error_out = "static dish-prior QP map requested, but camera " +
-                    camera_serial + " has no resolved accepted daily circle";
+                    camera_serial + " has no resolved accepted physical circle";
             }
             return false;
         }
@@ -604,7 +630,22 @@ bool BindExternalRecorderDishPriorFromRecordingGeometry(
         const std::string bound_source_path = relative_source.empty()
             ? source.value("path", "")
             : (std::filesystem::path(recording_folder) / relative_source).string();
-        importance_map["geometry_source"] = geometry_source;
+        const std::string source_sha256 = source.value("sha256", "");
+        std::string bound_sha256;
+        std::string bound_error;
+        if (relative_source.empty() || source_sha256.empty() ||
+            !orange::gui::spatial_layout::checksum::file_sha256(
+                bound_source_path, &bound_sha256, &bound_error) ||
+            bound_sha256 != source_sha256) {
+            if (error_out) {
+                *error_out = "static dish-prior QP map requested, but camera " +
+                    camera_serial + " recording-local physical evidence is "
+                    "missing or checksum-mismatched";
+                if (!bound_error.empty()) *error_out += ": " + bound_error;
+            }
+            return false;
+        }
+        importance_map["geometry_source"] = resolved_geometry_source;
         importance_map["binding_status"] = "resolved_at_recording_arm";
         importance_map["coordinate_space"] = "camera_native_pixels";
         importance_map["geometry"] = {
@@ -620,7 +661,7 @@ bool BindExternalRecorderDishPriorFromRecordingGeometry(
         set_json_default(&importance_map, "outside_delta_qp", 2);
         importance_map["source"] = {
             {"artifact_path", bound_source_path},
-            {"artifact_sha256", source.value("sha256", "")},
+            {"artifact_sha256", source_sha256},
             {"artifact_fingerprint", calibration_ref.value("fingerprint", "")},
             {"artifact_id", snapshot.value("artifact_id", "")},
             {"recording_relative_path", relative_source},

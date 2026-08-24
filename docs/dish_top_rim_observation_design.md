@@ -1475,8 +1475,10 @@ center, so crosshair alignment offsets remain future work.
   immutable evidence
 - [x] fail closed on restart when the selected observation, manifest, camera,
   raster, pixel format, or checksums no longer match
-- [ ] consume the active pointer during recording pre-arm; until then it is a
-  durable operator choice, not proof that a recording used the mask
+- [x] consume and revalidate the active pointer during recording pre-arm,
+  embed the exact camera-native geometry, and copy its digest-bound evidence
+  into recording-local assets; live mask use additionally fails closed if the
+  evidence bundle cannot be materialized completely
 
 ### Slice 3: Runtime Gating
 

@@ -300,7 +300,9 @@ validates without a Citrus config or socket.
 - [x] Support clearing a selection without deleting immutable evidence.
 - [x] Persist selection in an atomic Orange active pointer or session
       assignment with rollback-safe replacement.
-- [ ] Revalidate the pointer target at stream start and recording pre-arm.
+- [x] Revalidate the pointer target at recording pre-arm. Stream-start preview
+      revalidation remains a UI follow-up; runtime activation never trusts the
+      preview cache.
 - [ ] Keep `ORANGE_SPATIAL_CALIBRATION_ARTIFACT_<serial>` as an explicit
       compatibility path below an intentional UI/session selection.
 
@@ -309,23 +311,25 @@ physical selection without relying on Citrus.
 
 ### Phase E: Split recording-bound metadata
 
-- [ ] Add independent `physical_registration` and
+- [x] Add independent `physical_registration` and
       `projection_registration` members per observation edge.
-- [ ] Embed the physical circle, centroid gate, dish mask, coordinate
+- [x] Embed the physical circle, centroid gate, dish mask, coordinate
       descriptor, artifact identity, schema, digest, and status in
       `recording_geometry_contract.json`.
-- [ ] Copy compact immutable physical evidence into
+- [x] Copy compact immutable physical evidence into
       `recording_geometry_assets` with recording-relative paths and SHA-256.
-- [ ] Project resolved references into `recording_snapshot.json` and
-      `recording_session.json`.
-- [ ] Record projection registration as `not_applicable` when no Citrus canvas
+- [x] Project resolved references into `recording_snapshot.json`. Direct
+      `recording_session.json` projection remains a follow-up; the session
+      already references the recording geometry contract through the sealed
+      snapshot.
+- [x] Record projection registration as `not_applicable` when no Citrus canvas
       participates; never synthesize a canvas identity.
-- [ ] When Citrus participates, bind its selected or `base_only` result without
+- [x] When Citrus participates, bind its selected or `base_only` result without
       changing the Orange physical artifact.
-- [ ] Define precedence and contradiction handling among explicit recording
+- [x] Define precedence and contradiction handling among explicit recording
       selection, Orange active pointer, environment compatibility hook,
       Citrus selection, and unselected nearby artifacts.
-- [ ] Embed only participating observation edges, not every configured camera
+- [x] Embed only participating observation edges, not every configured camera
       or arena.
 
 Exit criterion: a recording made with Citrus stopped contains a digest-bound
@@ -333,17 +337,17 @@ camera-space dish mask and explicitly not-applicable projection status.
 
 ### Phase F: Feature-dependent pre-arm validation
 
-- [ ] Keep ordinary full-frame recording non-blocking for `not_performed` or
+- [x] Keep ordinary full-frame recording non-blocking for `not_performed` or
       `available_not_selected` physical registration.
-- [ ] Require a valid selected physical artifact for live neural-network input
+- [x] Require a valid selected physical artifact for live neural-network input
       masking.
 - [ ] Require it for production crop-only when the profile declares a
       registered mask or reconstructable context.
-- [ ] Fail closed for a selected artifact that is invalid, stale under its
+- [x] Fail closed for a selected artifact that is invalid, stale under its
       policy, or incompatible with the runtime camera snapshot.
-- [ ] Distinguish `missing_required`, `invalid_selected`, `not_performed`, and
+- [x] Distinguish `missing_required`, `invalid_selected`, `not_performed`, and
       `not_applicable` in UI and machine-readable errors.
-- [ ] Never silently fall back from an invalid selection to an older or merely
+- [x] Never silently fall back from an invalid selection to an older or merely
       nearby artifact.
 - [ ] Offer an explicit route to disable the dependent feature or return a
       Citrus experiment to `base_only` where scientifically valid.

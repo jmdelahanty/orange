@@ -476,6 +476,29 @@ or contradictory evidence fails recording activation closed. Future
 Orange/Citrus binding requests use the immutable file's path and digest rather
 than binding to the later mutable `recording_snapshot.json` bytes.
 
+Before that seal, Orange independently resolves each participating camera's
+active physical dish-registration pointer from
+`$HOME/orange_data/calibrations/active/physical_dish_registration/` (or the
+base selected by `ORANGE_CALIBRATION_BASE_DIR`). It revalidates the exact
+schema-v2 observation, completion manifest, required source/review files,
+compact mask exports, camera serial, native raster, pixel format, operator
+acceptance, and circle semantics. The result is embedded as
+`physical_registration` on the camera edge and as
+`physical_registration_geometry` at contract scope. Citrus projection state
+remains a separate `projection_registration` member and is `not_applicable`
+when no canvas participates.
+
+The selected pointer, observation, manifest, image-set JSON, spatial mask
+export, and Palette mask export are copied byte-for-byte beneath
+`recording_geometry_assets/cameras/Cam<serial>/physical_registration/`; their
+recording-time SHA-256 values are recorded in the bundle manifest. A missing
+selection is explicitly non-blocking for ordinary full-frame recording. When
+the configured live YOLO spatial-mask mode is not `off`, however, a missing
+selection is classified `missing_required`, an invalid exact selection is
+classified `invalid_selected`, and incomplete recording-local evidence rejects
+arm. Orange never falls back from an invalid selected pointer to a nearby
+artifact or to a Citrus mask.
+
 After sealing the start snapshot, Orange materializes one read-only
 `recording_observation_bindings/requests/obsctx_<sha256>.json` request for each
 recording-bound source-camera-to-arena edge. The sealed

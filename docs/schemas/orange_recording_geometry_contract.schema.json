@@ -158,6 +158,120 @@
       },
       "additionalProperties": true
     },
+    "physical_registration_geometry": {
+      "type": "object",
+      "required": [
+        "schema_id",
+        "schema_version",
+        "captured_at_utc",
+        "status",
+        "selection_authority",
+        "selection_policy",
+        "recording_blocked",
+        "participating_cameras_only",
+        "cameras",
+        "warnings",
+        "errors"
+      ],
+      "properties": {
+        "schema_id": {
+          "const": "orange.recording.physical_registration_geometry"
+        },
+        "schema_version": {"const": 1},
+        "captured_at_utc": {"type": "string"},
+        "status": {
+          "enum": [
+            "not_performed",
+            "available_not_selected",
+            "selected_resolved",
+            "selected_partial",
+            "invalid_selected"
+          ]
+        },
+        "selection_authority": {
+          "const": "orange_active_physical_registration_pointer"
+        },
+        "selection_policy": {
+          "const": "exact_per_camera_pointer_revalidated_at_recording_prearm"
+        },
+        "recording_blocked": {"const": false},
+        "participating_cameras_only": {"const": true},
+        "selected_camera_count": {"type": "integer", "minimum": 0},
+        "invalid_selected_camera_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "available_not_selected_camera_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cameras": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "camera_serial",
+              "status",
+              "mode",
+              "recording_blocked"
+            ],
+            "properties": {
+              "camera_serial": {"type": "string"},
+              "status": {
+                "enum": [
+                  "not_performed",
+                  "available_not_selected",
+                  "selected_resolved",
+                  "invalid_selected",
+                  "invalid_pointer"
+                ]
+              },
+              "mode": {
+                "enum": [
+                  "not_selected",
+                  "selected_physical_registration"
+                ]
+              },
+              "recording_blocked": {"const": false},
+              "artifact_id": {"type": "string"},
+              "active_pointer": {"$ref": "#/$defs/sourceSnapshot"},
+              "observation": {"$ref": "#/$defs/sourceSnapshot"},
+              "manifest": {"type": "object"},
+              "compact_artifacts": {"type": "object"},
+              "optional_evidence": {"type": "object"},
+              "recording_snapshot_entry": {
+                "$ref": "#/$defs/registeredDishMask"
+              },
+              "error": {"type": "string"}
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "status": {"const": "selected_resolved"}
+                  },
+                  "required": ["status"]
+                },
+                "then": {
+                  "required": [
+                    "artifact_id",
+                    "active_pointer",
+                    "observation",
+                    "manifest",
+                    "compact_artifacts",
+                    "recording_snapshot_entry"
+                  ]
+                }
+              }
+            ],
+            "additionalProperties": true
+          }
+        },
+        "warnings": {"type": "array", "items": {"type": "string"}},
+        "errors": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": true
+    },
     "cameras": {
       "type": "object",
       "additionalProperties": {
@@ -202,6 +316,12 @@
               "recording_snapshot_entry"
             ],
             "additionalProperties": true
+          },
+          "physical_registration": {
+            "type": "object"
+          },
+          "projection_registration": {
+            "type": "object"
           },
           "warnings": {"type": "array", "items": {"type": "string"}},
           "errors": {"type": "array", "items": {"type": "string"}}

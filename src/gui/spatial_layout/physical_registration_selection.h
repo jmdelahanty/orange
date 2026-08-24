@@ -41,6 +41,8 @@ struct PhysicalRegistrationSelectionResolution {
     bool valid = false;
     std::string status = "not_selected";
     std::string error;
+    std::filesystem::path pointer_path;
+    std::string pointer_sha256;
     nlohmann::json pointer = nlohmann::json::object();
     PhysicalRegistrationArtifactCandidate candidate;
 };

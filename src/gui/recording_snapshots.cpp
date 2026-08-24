@@ -6,6 +6,7 @@
 #include "crop_and_encode_worker.h"
 #include "crop_producer.h"
 #include "project.h"
+#include "recording_physical_registration.h"
 #include "spatial_calibration_snapshot.h"
 #include "spatial_layout_schema.h"
 #include "video_capture.h"
@@ -432,6 +433,33 @@ nlohmann::json build_gui_recording_geometry_contract(
         has_orange_spatial_calibration = true;
     }
     if (!resolution.configured && has_orange_spatial_calibration) {
+        resolution.contract["status"] = "orange_only";
+    }
+    std::vector<orange::recording_geometry::RecordingPhysicalCamera>
+        physical_cameras;
+    physical_cameras.reserve(request.camera_serials.size());
+    for (int index = 0; index < num_cameras; ++index) {
+        if (!gui_camera_has_acquisition_work(cameras_select[index])) continue;
+        std::string serial = cameras_params[index].camera_serial;
+        if (serial.empty()) serial = std::to_string(cameras_params[index].camera_id);
+        physical_cameras.push_back({
+            serial,
+            static_cast<int>(cameras_params[index].width),
+            static_cast<int>(cameras_params[index].height),
+            cameras_params[index].pixel_format,
+        });
+    }
+    orange::recording_geometry::append_recording_physical_registrations(
+        &resolution.contract,
+        orange::recording_geometry::resolve_recording_calibration_base_dir(),
+        physical_cameras,
+        request.captured_at_utc);
+    const std::string physical_status = resolution.contract.value(
+        "physical_registration_geometry", nlohmann::json::object()).value(
+            "status", "not_selected");
+    if (!resolution.configured &&
+        (physical_status == "selected_resolved" ||
+         physical_status == "selected_partial")) {
         resolution.contract["status"] = "orange_only";
     }
     return resolution.contract;

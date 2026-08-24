@@ -354,6 +354,7 @@ inline int positive_int_or_zero(const nlohmann::json& object, const char* key)
 struct ResolveResult {
     bool ok = false;
     Policy policy;
+    std::string error_code;
     std::string error;
 };
 
@@ -373,12 +374,14 @@ inline ResolveResult resolve_policy_from_recording_geometry_contract(
         result.ok = true;
         return result;
     }
-    const auto fail = [&](const std::string& error) {
+    const auto fail = [&](const std::string& error,
+                          const std::string& error_code = "invalid_selected") {
+        result.error_code = error_code;
         result.error = error;
         return result;
     };
     if (!contract.is_object()) {
-        return fail("recording geometry contract is missing");
+        return fail("recording geometry contract is missing", "invalid_contract");
     }
     const auto contract_version = contract.find("schema_version");
     if (detail::string_or_empty(contract, "schema_id") !=
@@ -386,31 +389,56 @@ inline ResolveResult resolve_policy_from_recording_geometry_contract(
         contract_version == contract.end() ||
         !contract_version->is_number_integer() ||
         contract_version->get<int>() != 1) {
-        return fail("recording geometry contract schema identity is invalid");
+        return fail("recording geometry contract schema identity is invalid",
+                    "invalid_contract");
     }
     const nlohmann::json* cameras = detail::object_member(contract, "cameras");
     if (!cameras) {
-        return fail("recording geometry contract has no camera map");
+        return fail("recording geometry contract has no camera map",
+                    "invalid_contract");
     }
     const auto camera_it = cameras->find(camera_serial);
     if (camera_it == cameras->end() || !camera_it->is_object()) {
         return fail("recording geometry contract has no entry for camera " +
-                    camera_serial);
+                    camera_serial, "missing_required");
     }
-    const nlohmann::json* daily =
-        detail::object_member(*camera_it, "daily_registration_geometry");
-    if (!daily || detail::string_or_empty(*daily, "status") != "resolved" ||
-        detail::string_or_empty(*daily, "mode") !=
-            "selected_daily_registration") {
-        return fail("camera does not have an exact selected daily registration");
+    const nlohmann::json* registration = nullptr;
+    const nlohmann::json* physical =
+        detail::object_member(*camera_it, "physical_registration");
+    if (physical) {
+        const std::string status = detail::string_or_empty(*physical, "status");
+        if (status == "selected_resolved") {
+            registration = physical;
+        } else if (status == "invalid_selected" ||
+                   status == "invalid_pointer") {
+            return fail("camera has an invalid selected physical registration",
+                        "invalid_selected");
+        }
+    }
+    if (!registration) {
+        const nlohmann::json* daily =
+            detail::object_member(*camera_it, "daily_registration_geometry");
+        if (daily && detail::string_or_empty(*daily, "status") == "resolved" &&
+            detail::string_or_empty(*daily, "mode") ==
+                "selected_daily_registration") {
+            registration = daily;
+        }
+    }
+    if (!registration) {
+        return fail("camera does not have an exact selected physical registration",
+                    "missing_required");
     }
     const nlohmann::json* entry =
-        detail::object_member(*daily, "recording_snapshot_entry");
+        detail::object_member(*registration, "recording_snapshot_entry");
     if (!entry) {
-        return fail("selected daily registration has no embedded rim observation");
+        return fail("selected physical registration has no embedded rim observation");
     }
     result.policy.registration_id =
-        detail::string_or_empty(*daily, "registration_id");
+        detail::string_or_empty(*registration, "registration_id");
+    if (result.policy.registration_id.empty()) {
+        result.policy.registration_id =
+            detail::string_or_empty(*registration, "artifact_id");
+    }
     result.policy.artifact_id = detail::string_or_empty(*entry, "artifact_id");
     result.policy.artifact_schema_id =
         detail::string_or_empty(*entry, "artifact_schema_id");
@@ -423,21 +451,21 @@ inline ResolveResult resolve_policy_from_recording_geometry_contract(
     const std::string entry_camera =
         detail::string_or_empty(*entry, "camera_serial");
     if (!entry_camera.empty() && entry_camera != camera_serial) {
-        return fail("daily rim camera identity does not match the active camera");
+        return fail("physical rim camera identity does not match the active camera");
     }
     if (detail::string_or_empty(*entry, "coordinate_space") !=
         "camera_native_pixels") {
-        return fail("daily rim geometry is not in camera-native pixels");
+        return fail("physical rim geometry is not in camera-native pixels");
     }
     const auto available_it =
         entry->find("available_for_downstream_detection_gating");
     if (available_it == entry->end() || !available_it->is_boolean() ||
         !available_it->get<bool>()) {
-        return fail("daily rim geometry is not approved for detection gating");
+        return fail("physical rim geometry is not approved for detection gating");
     }
     if (detail::string_or_empty(*entry, "gating_semantics") !=
         "bounding_box_centroid_inside_valid_detection_region") {
-        return fail("daily rim gating semantics are missing or unsupported");
+        return fail("physical rim gating semantics are missing or unsupported");
     }
     const nlohmann::json* operator_review =
         detail::object_member(*entry, "operator_review");
@@ -446,7 +474,7 @@ inline ResolveResult resolve_policy_from_recording_geometry_contract(
         : nlohmann::json::const_iterator{};
     if (!operator_review || accepted_it == operator_review->end() ||
         !accepted_it->is_boolean() || !accepted_it->get<bool>()) {
-        return fail("daily rim observation was not accepted by the operator");
+        return fail("physical rim observation was not accepted by the operator");
     }
 
     const nlohmann::json* camera = detail::object_member(*entry, "camera");
@@ -461,7 +489,7 @@ inline ResolveResult resolve_policy_from_recording_geometry_contract(
     if (expected_source_width <= 0 || expected_source_height <= 0 ||
         result.policy.source_width != expected_source_width ||
         result.policy.source_height != expected_source_height) {
-        return fail("daily rim raster does not match the active camera raster");
+        return fail("physical rim raster does not match the active camera raster");
     }
 
     const nlohmann::json* valid_region =
@@ -476,12 +504,12 @@ inline ResolveResult resolve_policy_from_recording_geometry_contract(
             "bounding_box_centroid_detection_gating" ||
         !detail::circle_from_observation_geometry(
             *valid_geometry, &result.policy.centroid_gate_circle)) {
-        return fail("daily rim valid detection circle is missing or invalid");
+        return fail("physical rim valid detection circle is missing or invalid");
     }
     const std::string offset_direction =
         detail::string_or_empty(*valid_region, "offset_direction");
     if (offset_direction != "outward" && offset_direction != "none") {
-        return fail("daily rim centroid gate does not use outward/none semantics");
+        return fail("physical rim centroid gate does not use outward/none semantics");
     }
     if (!std::isfinite(input_context_outset_px) ||
         input_context_outset_px < 0.0f) {
@@ -515,6 +543,7 @@ inline ResolveResult resolve_policy_from_recording_geometry_contract(
         return fail(validation_error);
     }
     result.ok = true;
+    result.error_code.clear();
     return result;
 }
 

@@ -54,6 +54,7 @@
 #include "gui_display_frame_rate.h"
 #include "image_canvas.h"
 #include "recording_output_utils.h"
+#include "recording_physical_registration.h"
 #include "recording_validation.h"
 #include "ruler_alignment.h"
 #include "orange_local_control.h"
@@ -1986,6 +1987,7 @@ GuiYoloSpatialMaskArmResult arm_gui_yolo_spatial_masks(
                 runtime["error"] = result.error;
                 runtime["cameras"][arm.camera_serial] = {
                     {"status", "resolution_failed"},
+                    {"error_code", resolved.error_code},
                     {"error", resolved.error},
                 };
                 (*recording_geometry_contract)["analytics_runtime"]
@@ -2058,15 +2060,12 @@ GuiYoloSpatialMaskArmResult arm_gui_yolo_spatial_masks(
             ["yolo_spatial_mask_runtime"] =
                 runtime["cameras"][arm.camera_serial];
         if (arm.policy.mode != orange::analytics_mask::Mode::kOff) {
-            nlohmann::json& daily_entry =
-                (*recording_geometry_contract)["cameras"][arm.camera_serial]
-                    ["daily_registration_geometry"]["recording_snapshot_entry"];
-            daily_entry["active_in_orange_live_detection_pipeline"] =
-                orange::analytics_mask::enforces_centroid(arm.policy.mode);
-            daily_entry["orange_live_detection_pipeline_mode"] =
-                orange::analytics_mask::mode_to_string(arm.policy.mode);
-            daily_entry["active_in_orange_neural_input_mask"] =
-                orange::analytics_mask::masks_input(arm.policy.mode);
+            orange::recording_geometry::mark_recording_dish_mask_runtime_use(
+                recording_geometry_contract,
+                arm.camera_serial,
+                orange::analytics_mask::mode_to_string(arm.policy.mode),
+                orange::analytics_mask::enforces_centroid(arm.policy.mode),
+                orange::analytics_mask::masks_input(arm.policy.mode));
         }
     }
     runtime["status"] = "armed";
@@ -2075,6 +2074,35 @@ GuiYoloSpatialMaskArmResult arm_gui_yolo_spatial_masks(
         ["yolo_spatial_mask"] = std::move(runtime);
     result.ok = true;
     return result;
+}
+
+void disarm_gui_yolo_spatial_masks_after_failed_start(
+    const CameraParams* cameras_params,
+    const CameraEachSelect* cameras_select,
+    const int num_cameras)
+{
+    if (!cameras_params || !cameras_select || num_cameras <= 0) return;
+    for (int index = 0; index < num_cameras; ++index) {
+        if (!cameras_select[index].yolo) continue;
+        YoloWorker* worker = gui_yolo_worker_at(index);
+        if (!worker) continue;
+        orange::analytics_mask::Policy off;
+        off.mode = orange::analytics_mask::Mode::kOff;
+        off.camera_serial = cameras_params[index].camera_serial.empty()
+            ? std::to_string(cameras_params[index].camera_id)
+            : cameras_params[index].camera_serial;
+        off.source_width = cameras_params[index].width;
+        off.source_height = cameras_params[index].height;
+        std::uint64_t generation = 0;
+        std::string error;
+        if (!worker->RequestSpatialMaskPolicy(off, &generation, &error) ||
+            !worker->WaitForSpatialMaskPolicy(
+                generation, std::chrono::milliseconds(1000), &error)) {
+            std::cerr << "[GUI][recording] Failed to roll back spatial mask "
+                      << "for camera " << off.camera_serial << ": "
+                      << error << std::endl;
+        }
+    }
 }
 
 void log_recording_preflight_failure(const char* context,
@@ -3898,6 +3926,11 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
     }
     if (!spatial_mask_arm.ok ||
         (spatial_mask_arm.explicitly_enabled && !geometry_written)) {
+        if (spatial_mask_arm.ok && spatial_mask_arm.explicitly_enabled &&
+            !geometry_written) {
+            disarm_gui_yolo_spatial_masks_after_failed_start(
+                cameras_params, cameras_select, num_cameras);
+        }
         std::string error = spatial_mask_arm.ok
             ? "Spatial masking was armed, but its recording geometry contract "
               "could not be persisted: " + geometry_write_error

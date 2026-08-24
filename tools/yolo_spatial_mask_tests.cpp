@@ -139,6 +139,46 @@ void test_resolution_and_outset()
             "serialized input mask enabled");
 }
 
+void test_standalone_physical_registration_precedence()
+{
+    using namespace orange::analytics_mask;
+    nlohmann::json contract = valid_contract();
+    nlohmann::json physical = contract["cameras"]["2010095"]
+        ["daily_registration_geometry"];
+    physical["status"] = "selected_resolved";
+    physical["mode"] = "selected_physical_registration";
+    physical["artifact_id"] = "dishrim_fixture_2010095";
+    physical.erase("registration_id");
+    contract["cameras"]["2010095"]["physical_registration"] = physical;
+    contract["cameras"]["2010095"].erase("daily_registration_geometry");
+
+    ResolveResult resolved = resolve_policy_from_recording_geometry_contract(
+        contract, "2010095", 4512, 4512,
+        Mode::kGateAndInputMask, 0.0f);
+    require(resolved.ok, resolved.error);
+    require(resolved.policy.registration_id == "dishrim_fixture_2010095",
+            "standalone physical artifact must provide mask identity");
+
+    contract["cameras"]["2010095"]["daily_registration_geometry"] =
+        valid_contract()["cameras"]["2010095"]["daily_registration_geometry"];
+    contract["cameras"]["2010095"]["physical_registration"]["status"] =
+        "invalid_selected";
+    ResolveResult invalid = resolve_policy_from_recording_geometry_contract(
+        contract, "2010095", 4512, 4512,
+        Mode::kGateOnly, 0.0f);
+    require(!invalid.ok,
+            "invalid explicit physical selection must not fall back to Citrus");
+    require(invalid.error_code == "invalid_selected",
+            "invalid explicit selection needs a machine-readable classification");
+
+    contract["cameras"]["2010095"].erase("physical_registration");
+    contract["cameras"]["2010095"].erase("daily_registration_geometry");
+    ResolveResult missing = resolve_policy_from_recording_geometry_contract(
+        contract, "2010095", 4512, 4512, Mode::kGateOnly, 0.0f);
+    require(!missing.ok && missing.error_code == "missing_required",
+            "an enabled mask without a selection must be classified missing_required");
+}
+
 void test_strict_resolution_failures()
 {
     using namespace orange::analytics_mask;
@@ -188,6 +228,7 @@ int main()
         test_modes();
         test_environment_config();
         test_resolution_and_outset();
+        test_standalone_physical_registration_precedence();
         test_strict_resolution_failures();
         test_centroid_decisions();
         std::cout << "yolo_spatial_mask_tests: PASS\n";

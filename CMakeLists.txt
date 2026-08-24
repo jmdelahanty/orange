@@ -289,6 +289,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/image_writer_worker.cpp"
     "${SRC_DIR}/citrus_recording_geometry.cpp"
+    "${SRC_DIR}/recording_physical_registration.cpp"
     "${SRC_DIR}/gui/autorun.cpp"
     "${SRC_DIR}/gui/env_util.cpp"
     "${SRC_DIR}/gui/guided_capture_autorun.cpp"
@@ -423,6 +424,8 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/project.cpp"
     "${SRC_DIR}/nic_thermal_monitor.cpp"
     "${SRC_DIR}/citrus_recording_geometry.cpp"
+    "${SRC_DIR}/recording_physical_registration.cpp"
+    "${SRC_DIR}/gui/spatial_layout/physical_registration_selection.cpp"
     "${SRC_DIR}/spatial_calibration_snapshot.cpp"
     "${SRC_DIR}/spatial_layout_schema.cpp"
     "${SRC_DIR}/spatial_snapshot_worker.cpp"
@@ -1021,6 +1024,8 @@ if(BUILD_TESTING)
     add_executable(recording_snapshots_tests
         "tools/recording_snapshots_tests.cpp"
         "${SRC_DIR}/citrus_recording_geometry.cpp"
+        "${SRC_DIR}/recording_physical_registration.cpp"
+        "${SRC_DIR}/gui/spatial_layout/physical_registration_selection.cpp"
         "${SRC_DIR}/gui/recording_snapshots.cpp"
         "${SRC_DIR}/gui/spatial_layout/commissioning_finalize_request.cpp"
         "${SRC_DIR}/gui/spatial_layout/projection_snapshot_client.cpp"
@@ -1282,6 +1287,7 @@ if(BUILD_TESTING)
     add_executable(physical_registration_selection_tests
         "tools/physical_registration_selection_tests.cpp"
         "${SRC_DIR}/gui/spatial_layout/physical_registration_selection.cpp"
+        "${SRC_DIR}/recording_physical_registration.cpp"
     )
     target_include_directories(physical_registration_selection_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(physical_registration_selection_tests PRIVATE cxx_std_17)
