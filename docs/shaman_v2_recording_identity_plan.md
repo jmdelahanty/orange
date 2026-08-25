@@ -42,4 +42,4 @@ from their base acquisition state. ABI mismatch remains fail-closed.
       token-mismatch, and manifest validation tests.
 - [x] Update the Shaman-v2 and recording artifact contracts.
 - [x] Run the focused Orange tests and `git diff --check`.
-- [ ] Commit and push the dedicated feature branch without merging or deploying.
+- [x] Commit and push the dedicated feature branch without merging or deploying.
