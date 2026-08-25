@@ -18,7 +18,10 @@
 namespace shaman_v2 {
 
 inline constexpr uint64_t kMagic = 0x4f524e4753484d32ULL; // ORNGSHM2
-inline constexpr uint32_t kSchemaVersion = 2;
+// Protocol generation remains Shaman-v2. This is its pre-authoritative ABI
+// revision: revision 3 adds a closed recording-membership token to every slot.
+// slot_bytes/queue_bytes make revision 2 shared-memory objects fail closed.
+inline constexpr uint32_t kSchemaVersion = 3;
 inline constexpr uint32_t kQueueSize = 64;
 inline constexpr uint32_t kMaxObjects = 64;
 inline constexpr uint32_t kMaxKeypointsPerObject = 32;
@@ -98,6 +101,10 @@ struct Slot {
     uint64_t orange_publish_timestamp_us_epoch = 0;
     uint64_t orange_publish_timestamp_us_monotonic = 0;
 
+    // Empty iff recording_frame_id is zero. Otherwise this is the exact
+    // sha256:<hex> token for recording_session.json.session_id.
+    char recording_identity_token[72]{};
+
     uint32_t camera_id = 0;
     char camera_serial[32]{};
     uint32_t source_width_px = 0;
@@ -152,6 +159,10 @@ inline std::string queue_name_for_camera_serial(const std::string& camera_serial
     if (camera_serial.empty()) {
         throw std::invalid_argument("shaman v2 camera serial is empty");
     }
+    if (camera_serial.size() >= sizeof(Slot::camera_serial)) {
+        throw std::invalid_argument(
+            "shaman v2 camera serial exceeds the fixed ABI field");
+    }
     return "/shm_cam_" + camera_serial + "_v2";
 }
 
@@ -175,6 +186,16 @@ inline void copy_camera_serial(char (&dest)[32], const std::string& serial)
 {
     std::memset(dest, 0, sizeof(dest));
     std::strncpy(dest, serial.c_str(), sizeof(dest) - 1);
+}
+
+inline void copy_recording_identity_token(
+    char (&dest)[72],
+    const std::string& token)
+{
+    std::memset(dest, 0, sizeof(dest));
+    if (!token.empty()) {
+        std::strncpy(dest, token.c_str(), sizeof(dest) - 1);
+    }
 }
 
 inline void unlink_queue(const std::string& queue_name)

@@ -15,6 +15,7 @@ canvas, through `CITRUS_GUI_AUTORUN_SHAMAN_V2_AUTHORITATIVE=1`.
 | ABI | Implicit C++ layout | Magic, schema version, queue/slot byte sizes |
 | Empty result | Ambiguous empty vector | Explicit pending, zero, failed, disabled, or not-scheduled status |
 | Frame identity | One legacy frame ID | Separate state, source, camera, and recording frame IDs |
+| Recording membership | Implicit | Per-slot canonical recording token |
 | Time | Orange publish timestamps | Camera timestamp, host timestamp, and Orange publish timestamps |
 | Camera | Numeric runtime ID only | Runtime ID, stable serial, and native source extent |
 | Payload | Bounding boxes | Bounding boxes, track/flags, pose state, and bounded keypoints |
@@ -90,6 +91,8 @@ Every visible v2 slot must include:
 - `source_frame_id`: the frame id that produced the semantic content.
 - `camera_frame_id`: camera SDK/acquisition frame id when available.
 - `recording_frame_id`: recording-local frame id, or `0` when not recording.
+- `recording_identity_token`: exact `sha256:<64 lowercase hex>` binding to
+  `recording_session.json.session_id`, or empty when not recording.
 - `camera_timestamp_ns`: original camera/acquisition timestamp domain.
 - `timestamp_sys_ns`: original host `CLOCK_REALTIME` timestamp supplied by
   acquisition.
@@ -100,6 +103,9 @@ Rules:
 
 - `sequence_id` must strictly increase.
 - `state_frame_id` must never move backward.
+- `recording_frame_id == 0` requires an empty token; a positive recording
+  frame ID requires the token derived from the closed
+  `orange.shaman_v2.recording_identity` v1 subject.
 - Multiple slots may use the same `state_frame_id` when Orange publishes a base
   state and then a same-frame detection or pose enrichment.
 - A semantic update is live-publishable only when its `source_frame_id` matches
@@ -172,7 +178,8 @@ This is an illustrative C/C++ ABI shape, not final code:
 
 ```cpp
 constexpr uint64_t SHAMAN_V2_MAGIC = 0x4f524e4753484d32ULL; // ORNGSHM2
-constexpr uint32_t SHAMAN_V2_SCHEMA_VERSION = 2;
+// Shaman-v2 protocol, ABI revision 3.
+constexpr uint32_t SHAMAN_V2_SCHEMA_VERSION = 3;
 constexpr uint32_t SHAMAN_V2_QUEUE_SIZE = 64;
 constexpr uint32_t SHAMAN_V2_MAX_OBJECTS = 64;
 constexpr uint32_t SHAMAN_V2_MAX_KEYPOINTS_PER_OBJECT = 32;
@@ -238,6 +245,8 @@ struct ShamanV2Slot {
     uint64_t timestamp_sys_ns;
     uint64_t orange_publish_timestamp_us_epoch;
     uint64_t orange_publish_timestamp_us_monotonic;
+
+    char recording_identity_token[72];
 
     uint32_t camera_id;
     char camera_serial[32];

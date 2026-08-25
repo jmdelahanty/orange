@@ -11,6 +11,7 @@
 #include "session/recording_observation_request_artifacts.h"
 #include "session/recording_observation_prearm.h"
 #include "session/recording_observation_finalization.h"
+#include "shaman_v2_recording_identity.h"
 #include "gui/spatial_layout/sha256.h"
 
 #include <algorithm>
@@ -1735,6 +1736,90 @@ std::string canonical_json_sha256(const nlohmann::json& value)
         value.dump(-1, ' ', false, nlohmann::json::error_handler_t::strict));
 }
 
+bool add_shaman_v2_recording_identity_contract(
+    nlohmann::json* manifest,
+    std::string* error_out)
+{
+    if (!manifest || !manifest->is_object()) {
+        return true;
+    }
+    const std::string recording_id =
+        manifest->value("session_id", std::string());
+    if (recording_id.empty()) {
+        if (error_out) {
+            *error_out = "recording session is missing session_id for Shaman-v2 identity";
+        }
+        return false;
+    }
+    const nlohmann::json record =
+        orange::shaman_v2_recording_identity::binding_record(recording_id);
+    const std::string digest = canonical_json_sha256(record);
+
+    const auto existing = manifest->find("shaman_v2_recording_identity");
+    if (existing != manifest->end() &&
+        (*existing != record ||
+         manifest->value("shaman_v2_recording_identity_sha256", std::string()) !=
+             digest)) {
+        if (error_out) {
+            *error_out = "existing Shaman-v2 recording identity does not match session_id";
+        }
+        return false;
+    }
+    (*manifest)["shaman_v2_recording_identity"] = record;
+    (*manifest)["shaman_v2_recording_identity_sha256"] = digest;
+    return true;
+}
+
+bool add_shaman_v2_camera_identity_contract(
+    nlohmann::json* manifest,
+    const std::filesystem::path& manifest_path,
+    std::string* error_out)
+{
+    if (!manifest || !manifest->is_object()) {
+        return true;
+    }
+    const std::filesystem::path snapshot_path =
+        manifest_path.parent_path() / "recording_snapshot_start.json";
+    std::ifstream input(snapshot_path, std::ios::binary);
+    if (!input) {
+        // Legacy/synthetic manifests retain their existing behavior. Citrus
+        // requires this record before it will seal the v6 companion.
+        return true;
+    }
+    nlohmann::json snapshot = nlohmann::json::parse(input, nullptr, false);
+    if (snapshot.is_discarded() || !snapshot.is_object() ||
+        !snapshot.contains("shaman_v2_camera_identity") ||
+        !snapshot.contains("shaman_v2_camera_identity_sha256")) {
+        if (error_out) {
+            *error_out = "immutable recording-start snapshot lacks Shaman-v2 camera identity";
+        }
+        return false;
+    }
+    const nlohmann::json& record = snapshot.at("shaman_v2_camera_identity");
+    const std::string digest = canonical_json_sha256(record);
+    const std::string recording_id =
+        manifest->value("session_id", std::string());
+    if (!record.is_object() || record.size() != 5 ||
+        record.value("schema_id", std::string()) !=
+            "orange.shaman_v2.camera_identity" ||
+        record.value("schema_version", 0) != 1 ||
+        record.value("canonicalization", std::string()) !=
+            "canonical_json_utf8_sort_keys_compact_v1" ||
+        record.value("recording_id", std::string()) != recording_id ||
+        !record.contains("camera_bindings") ||
+        !record.at("camera_bindings").is_array() ||
+        snapshot.value("shaman_v2_camera_identity_sha256", std::string()) !=
+            digest) {
+        if (error_out) {
+            *error_out = "immutable Shaman-v2 camera identity is invalid or mismatched";
+        }
+        return false;
+    }
+    (*manifest)["shaman_v2_camera_identity"] = record;
+    (*manifest)["shaman_v2_camera_identity_sha256"] = digest;
+    return true;
+}
+
 bool recording_relative_artifact_path(
     const std::filesystem::path& manifest_path,
     const std::string& artifact_value,
@@ -2606,6 +2691,14 @@ bool write_recording_session_manifest(const std::string& path,
     }
     const std::filesystem::path manifest_path(path);
     nlohmann::json finalized_manifest = manifest;
+    if (!add_shaman_v2_recording_identity_contract(
+            &finalized_manifest, error_out)) {
+        return false;
+    }
+    if (!add_shaman_v2_camera_identity_contract(
+            &finalized_manifest, manifest_path, error_out)) {
+        return false;
+    }
     if (!add_finalized_frame_identity_contract(
             &finalized_manifest, manifest_path, error_out)) {
         return false;

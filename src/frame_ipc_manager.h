@@ -28,6 +28,7 @@ struct FrameIPCFrameIdentity {
     uint64_t recording_frame_id = 0;
     uint64_t camera_timestamp_ns = 0;
     uint64_t timestamp_sys_ns = 0;
+    std::string recording_identity_token;
 };
 
 class FrameIPCManager {
@@ -449,6 +450,9 @@ private:
         slot.recording_frame_id = frame.identity.recording_frame_id;
         slot.camera_timestamp_ns = frame.identity.camera_timestamp_ns;
         slot.timestamp_sys_ns = frame.identity.timestamp_sys_ns;
+        shaman_v2::copy_recording_identity_token(
+            slot.recording_identity_token,
+            frame.identity.recording_identity_token);
         slot.camera_id = static_cast<uint32_t>(camera_params_->camera_id);
         shaman_v2::copy_camera_serial(slot.camera_serial, camera_params_->camera_serial);
         slot.source_width_px = static_cast<uint32_t>(camera_params_->width);

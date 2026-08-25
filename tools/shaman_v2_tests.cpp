@@ -1,6 +1,7 @@
 #include "shaman_v2.h"
 #include "shaman_v2_live_state.h"
 #include "frame_ipc_manager.h"
+#include "shaman_v2_recording_identity.h"
 
 #include <chrono>
 #include <cstring>
@@ -35,6 +36,10 @@ shaman_v2::Slot make_slot(uint64_t frame_id)
     slot.source_frame_id = frame_id;
     slot.camera_frame_id = frame_id + 1000;
     slot.recording_frame_id = frame_id + 10;
+    shaman_v2::copy_recording_identity_token(
+        slot.recording_identity_token,
+        orange::shaman_v2_recording_identity::token_for_recording_id(
+            "recording-test"));
     slot.camera_timestamp_ns = 123456789ULL + frame_id;
     slot.timestamp_sys_ns = 987654321ULL + frame_id;
     slot.camera_id = 2010096;
@@ -110,6 +115,11 @@ void test_push_pop_latest_state()
         require(out.state_frame_id == 42, "state frame id should round trip");
         require(out.source_frame_id == 42, "source frame id should round trip");
         require(out.camera_frame_id == 1042, "camera frame id should round trip");
+        require(std::strcmp(
+                    out.recording_identity_token,
+                    orange::shaman_v2_recording_identity::token_for_recording_id(
+                        "recording-test").c_str()) == 0,
+                "recording identity token should round trip");
         require(std::strcmp(out.camera_serial, "2010096") == 0,
                 "camera serial should round trip");
         require(out.object_count == 1, "object count should round trip");
@@ -330,6 +340,9 @@ void test_frame_ipc_manager_opt_in_v2_base_yolo_and_stale()
         identity.state_frame_id = 101;
         identity.camera_frame_id = 900;
         identity.recording_frame_id = 37;
+        identity.recording_identity_token =
+            orange::shaman_v2_recording_identity::token_for_recording_id(
+                "recording-a");
         identity.camera_timestamp_ns = 111;
         identity.timestamp_sys_ns = 222;
         require(manager.sendFrame(identity, true), "base frame enqueue should succeed");
@@ -351,6 +364,10 @@ void test_frame_ipc_manager_opt_in_v2_base_yolo_and_stale()
                 "base v2 state should preserve camera frame identity");
         require(slots[0].recording_frame_id == 37,
                 "base v2 state should preserve recording frame identity");
+        require(std::strcmp(
+                    slots[0].recording_identity_token,
+                    identity.recording_identity_token.c_str()) == 0,
+                "base v2 state should preserve recording membership token");
         require(slots[0].camera_timestamp_ns == 111 && slots[0].timestamp_sys_ns == 222,
                 "base v2 state should preserve both producer timestamps");
         require(slots[0].detection_status ==
@@ -360,6 +377,10 @@ void test_frame_ipc_manager_opt_in_v2_base_yolo_and_stale()
                 "YOLO v2 state should remain bound to local identity");
         require(slots[1].camera_frame_id == 900 && slots[1].recording_frame_id == 37,
                 "YOLO v2 update should retain base-frame identities");
+        require(std::strcmp(
+                    slots[1].recording_identity_token,
+                    identity.recording_identity_token.c_str()) == 0,
+                "YOLO v2 update should retain the base recording token");
         require(slots[1].detection_status ==
                     static_cast<uint32_t>(shaman_v2::DetectionStatus::kDetections),
                 "YOLO v2 detection status should be detections");
@@ -370,6 +391,9 @@ void test_frame_ipc_manager_opt_in_v2_base_yolo_and_stale()
         identity.state_frame_id = 102;
         identity.camera_frame_id = 901;
         identity.recording_frame_id = 38;
+        identity.recording_identity_token =
+            orange::shaman_v2_recording_identity::token_for_recording_id(
+                "recording-b");
         identity.camera_timestamp_ns = 333;
         identity.timestamp_sys_ns = 444;
         require(manager.sendFrame(identity, true), "second base frame enqueue should succeed");
