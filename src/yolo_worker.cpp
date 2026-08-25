@@ -2083,18 +2083,25 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             }
         }
 
-        if (!skip_cpu_results && frame_ipc && entry->has_detections && !synthetic_detection_mode) {
-            if (frame_ipc && frame_ipc->isEnabled()) {
-                // Convert detections to shaman format for IPC
-                std::vector<shaman::Object> shaman_objects = conv_shaman(entry->detections);
-
-                // Update the frame with detection data
-                frame_ipc_update_requested =
-                    frame_ipc->updateFrameWithDetections(frame_id_for_ipc, std::move(shaman_objects));
-                if (!frame_ipc_update_requested) {
-                    frame_ipc_request_status = "not_enabled";
-                }
+        if (frame_ipc_enabled && !synthetic_detection_mode) {
+            std::vector<shaman::Object> shaman_objects;
+            shaman_v2::DetectionStatus live_status =
+                shaman_v2::DetectionStatus::kFailed;
+            if (finished_in_time && !skip_cpu_results) {
+                shaman_objects = conv_shaman(entry->detections);
+                live_status = shaman_objects.empty()
+                    ? shaman_v2::DetectionStatus::kZeroDetections
+                    : shaman_v2::DetectionStatus::kDetections;
             }
+            frame_ipc_update_requested =
+                frame_ipc->updateFrameWithDetectionResult(
+                    frame_id_for_ipc,
+                    entry->frame_id,
+                    live_status,
+                    std::move(shaman_objects));
+            frame_ipc_request_status = frame_ipc_update_requested
+                ? "queued"
+                : "not_enabled";
         } else if (synthetic_detection_mode && frame_ipc_enabled && entry->has_detections) {
             frame_ipc_request_status = "not_requested_synthetic_runtime";
         }

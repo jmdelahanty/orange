@@ -325,7 +325,14 @@ void test_frame_ipc_manager_opt_in_v2_base_yolo_and_stale()
         require(manager.getV2QueueName() == v2_name, "v2 queue name should use camera serial");
 
         shaman_v2::SharedLiveStateQueue reader(v2_name, false);
-        require(manager.sendFrame(1, 111, true), "base frame enqueue should succeed");
+        FrameIPCFrameIdentity identity;
+        identity.legacy_frame_id = 1;
+        identity.state_frame_id = 101;
+        identity.camera_frame_id = 900;
+        identity.recording_frame_id = 37;
+        identity.camera_timestamp_ns = 111;
+        identity.timestamp_sys_ns = 222;
+        require(manager.sendFrame(identity, true), "base frame enqueue should succeed");
 
         shaman::Object detection{};
         detection.rect.x = 10.0f;
@@ -334,27 +341,42 @@ void test_frame_ipc_manager_opt_in_v2_base_yolo_and_stale()
         detection.rect.height = 40.0f;
         detection.label = 3;
         detection.prob = 0.95f;
-        require(manager.updateFrameWithDetections(1, {detection}),
+        require(manager.updateFrameWithDetections(1, 101, {detection}),
                 "same-frame detection enqueue should succeed");
 
         std::vector<shaman_v2::Slot> slots = wait_for_v2_slots(reader, 2);
         require(slots.size() == 2, "v2 reader should receive base and YOLO slots");
-        require(slots[0].state_frame_id == 1, "base v2 state frame should be 1");
+        require(slots[0].state_frame_id == 101, "base v2 state frame should use local identity");
+        require(slots[0].camera_frame_id == 900,
+                "base v2 state should preserve camera frame identity");
+        require(slots[0].recording_frame_id == 37,
+                "base v2 state should preserve recording frame identity");
+        require(slots[0].camera_timestamp_ns == 111 && slots[0].timestamp_sys_ns == 222,
+                "base v2 state should preserve both producer timestamps");
         require(slots[0].detection_status ==
                     static_cast<uint32_t>(shaman_v2::DetectionStatus::kPending),
                 "base v2 detection status should be pending");
-        require(slots[1].state_frame_id == 1, "YOLO v2 state frame should be 1");
+        require(slots[1].state_frame_id == 101,
+                "YOLO v2 state should remain bound to local identity");
+        require(slots[1].camera_frame_id == 900 && slots[1].recording_frame_id == 37,
+                "YOLO v2 update should retain base-frame identities");
         require(slots[1].detection_status ==
                     static_cast<uint32_t>(shaman_v2::DetectionStatus::kDetections),
                 "YOLO v2 detection status should be detections");
         require(slots[1].object_count == 1, "YOLO v2 object count should be 1");
         require(slots[1].objects[0].x_px == 10.0f, "YOLO v2 object should round trip");
 
-        require(manager.sendFrame(2, 222, true), "second base frame enqueue should succeed");
+        identity.legacy_frame_id = 2;
+        identity.state_frame_id = 102;
+        identity.camera_frame_id = 901;
+        identity.recording_frame_id = 38;
+        identity.camera_timestamp_ns = 333;
+        identity.timestamp_sys_ns = 444;
+        require(manager.sendFrame(identity, true), "second base frame enqueue should succeed");
         slots = wait_for_v2_slots(reader, 1);
-        require(slots.size() == 1 && slots[0].state_frame_id == 2,
+        require(slots.size() == 1 && slots[0].state_frame_id == 102,
                 "v2 reader should receive second base frame");
-        require(manager.updateFrameWithDetections(1, {detection}),
+        require(manager.updateFrameWithDetections(1, 101, {detection}),
                 "stale detection enqueue should still be accepted by async manager");
         wait_for_v2_stale_counter(manager, 1);
         slots = wait_for_v2_slots(reader, 1);
@@ -431,6 +453,45 @@ void test_frame_ipc_manager_publishes_v2_pose_update()
     shaman_v2::unlink_queue(v2_name);
 }
 
+void test_frame_ipc_manager_publishes_terminal_zero_detection_state()
+{
+    const std::string serial = "v2zero" + std::to_string(getpid());
+    const std::string v1_name = "/shm_cam_" + serial;
+    const std::string v2_name = shaman_v2::queue_name_for_camera_serial(serial);
+    shaman_v2::unlink_queue(v1_name);
+    shaman_v2::unlink_queue(v2_name);
+
+    {
+        CameraParams camera = make_test_camera(serial);
+        FrameIPCManager manager(&camera, true /* force_v2_live_state */);
+        shaman_v2::SharedLiveStateQueue reader(v2_name, false);
+        require(manager.sendFrame(21, 1234, true),
+                "zero-detection base frame should enqueue");
+        require(manager.updateFrameWithDetectionResult(
+                    21,
+                    21,
+                    shaman_v2::DetectionStatus::kZeroDetections,
+                    {}),
+                "zero-detection terminal update should enqueue");
+
+        const auto slots = wait_for_v2_slots(reader, 2);
+        require(slots.size() == 2,
+                "zero-detection frame should publish base and terminal states");
+        require(slots[0].detection_status ==
+                    static_cast<uint32_t>(shaman_v2::DetectionStatus::kPending),
+                "base state should remain explicitly pending");
+        require(slots[1].detection_status ==
+                    static_cast<uint32_t>(shaman_v2::DetectionStatus::kZeroDetections),
+                "terminal state should explicitly report zero detections");
+        require(slots[1].object_count == 0,
+                "zero-detection terminal state should carry no objects");
+        manager.stop();
+    }
+
+    shaman_v2::unlink_queue(v1_name);
+    shaman_v2::unlink_queue(v2_name);
+}
+
 } // namespace
 
 int main()
@@ -445,6 +506,7 @@ int main()
         test_live_state_publisher_applies_pending_same_frame_updates();
         test_frame_ipc_manager_opt_in_v2_base_yolo_and_stale();
         test_frame_ipc_manager_publishes_v2_pose_update();
+        test_frame_ipc_manager_publishes_terminal_zero_detection_state();
     } catch (const std::exception& ex) {
         std::cerr << "shaman_v2_tests failed: " << ex.what() << std::endl;
         return 1;
