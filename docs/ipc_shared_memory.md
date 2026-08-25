@@ -145,9 +145,17 @@ Orange can create the v2 writer from the existing `FrameIPCManager` by setting:
 ORANGE_SHAMAN_V2_LIVE_STATE=1
 ```
 
-This is currently an implementation smoke switch, not the default production
-GUI/headless contract. Citrus still needs an opt-in v2 reader before the queue
-is useful for live stimulus control.
+This remains an opt-in validation switch, not the production default. Citrus
+now has a matching authoritative reader. For an automated Shadow validation
+without changing `shadow.json`, launch Citrus autorun with:
+
+```bash
+CITRUS_GUI_AUTORUN_SHAMAN_V2_AUTHORITATIVE=1
+```
+
+When enabled for a SHAMAN arena, Citrus suppresses its legacy v1 reader and
+uses v2 as the sole producer of the Arena tracking queue. Without this switch
+or the equivalent per-arena UI selection, current v1 behavior is unchanged.
 
 ## Headless IPC Testing
 

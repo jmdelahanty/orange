@@ -2158,11 +2158,16 @@ void acquire_frames(
                 }
                 last_logged_frame = frame_id_for_ipc;
                 
+                FrameIPCFrameIdentity ipc_identity;
+                ipc_identity.legacy_frame_id = frame_id_for_ipc;
+                ipc_identity.state_frame_id = current_entry->frame_id;
+                ipc_identity.camera_frame_id = current_entry->camera_frame_id;
+                ipc_identity.recording_frame_id = current_entry->recording_frame_id;
+                ipc_identity.camera_timestamp_ns = current_entry->timestamp;
+                ipc_identity.timestamp_sys_ns = current_entry->timestamp_sys;
                 bool ipc_success = ipc_manager->sendFrame(
-                    frame_id_for_ipc,
-                    current_entry->timestamp,
-                    yolo_will_process
-                );
+                    ipc_identity,
+                    yolo_will_process);
                 
                 if (!ipc_success) {
                     // IPC logging disabled: queue full warning.

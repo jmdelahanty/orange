@@ -1,11 +1,28 @@
 # Shaman V2 Live-State Queue Contract
 
-Date: 2026-05-10
-Status: Orange-side queue/publisher slice implemented for base frames, YOLO
-detections, and pose results. Orange `FrameIPCManager` can create the v2
-live-state queue behind `ORANGE_SHAMAN_V2_LIVE_STATE=1`, and headless runs can
-force and verify the v2 writer with `frame_ipc.mode = "verify_drain_v2"`.
-Citrus v2 reader wiring is not implemented yet.
+Date: 2026-08-24
+Status: Orange producer and Citrus opt-in authoritative consumer implemented;
+production default remains v1 pending a four-camera live validation. Orange
+creates the v2 queue behind `ORANGE_SHAMAN_V2_LIVE_STATE=1`. Citrus can select
+it per arena or, for an autorun validation without editing the canonical
+canvas, through `CITRUS_GUI_AUTORUN_SHAMAN_V2_AUTHORITATIVE=1`.
+
+## V1 versus v2
+
+| Property | v1 `/shm_cam_<serial>` | v2 `/shm_cam_<serial>_v2` |
+| --- | --- | --- |
+| Meaning | One object-vector update | Complete latest tracking-state snapshot |
+| ABI | Implicit C++ layout | Magic, schema version, queue/slot byte sizes |
+| Empty result | Ambiguous empty vector | Explicit pending, zero, failed, disabled, or not-scheduled status |
+| Frame identity | One legacy frame ID | Separate state, source, camera, and recording frame IDs |
+| Time | Orange publish timestamps | Camera timestamp, host timestamp, and Orange publish timestamps |
+| Camera | Numeric runtime ID only | Runtime ID, stable serial, and native source extent |
+| Payload | Bounding boxes | Bounding boxes, track/flags, pose state, and bounded keypoints |
+| Ordering | Consumer interprets vector updates | Monotonic sequence/state IDs with producer stale-update suppression |
+| Queue | 8 slots | 64 slots |
+
+V2 remains a best-effort control stream, not a complete scientific event log.
+Orange's persisted YOLO and pose records remain the audit authority.
 
 ## Decision
 
@@ -74,6 +91,8 @@ Every visible v2 slot must include:
 - `camera_frame_id`: camera SDK/acquisition frame id when available.
 - `recording_frame_id`: recording-local frame id, or `0` when not recording.
 - `camera_timestamp_ns`: original camera/acquisition timestamp domain.
+- `timestamp_sys_ns`: original host `CLOCK_REALTIME` timestamp supplied by
+  acquisition.
 - `orange_publish_timestamp_us_epoch`: Orange wall-clock publish time.
 - `orange_publish_timestamp_us_monotonic`: Orange steady-clock publish time.
 
@@ -397,5 +416,24 @@ First headless pose-to-v2 verifier smoke:
 7. [x] Add a headless `verify_drain_v2` mode and runtime integration summary.
 8. [x] Add pose v2 latest-state publishing from `PoseWorker` results with
    source-frame keypoint conversion.
-9. [ ] Add Citrus opt-in `ShamanV2IPCReaderModule` and keep the current reader as
-   the default until v2 is validated.
+9. [x] Add Citrus opt-in `ShamanV2IPCReaderModule`; when selected for a SHAMAN
+   arena it replaces v1 as the sole authoritative Arena tracking producer.
+10. [x] Carry independent stream-state, camera, recording, camera-clock, and
+    host-clock identities from Orange acquisition into each base state.
+11. [x] Publish explicit terminal YOLO status for detections, zero detections,
+    and failures rather than leaving a base state indefinitely pending.
+12. [ ] Run the controlled four-camera Orange/Citrus live validation, inspect
+    queue/identity/status counters and Chaser behavior, then decide whether to
+    change the canonical Shadow default.
+
+The orchestrator exposes the paired switch without altering the saved canvas:
+
+```bash
+scripts/run_orange_citrus_fourcam_orchestrator.sh \
+  --shaman-v2-authoritative
+```
+
+Run it first without `--execute` to inspect the plan. For a live validation,
+add `--execute` and the normal protocol/recording options. Do not combine this
+with Orange's `verify_drain_v2` mode: the queue has one consumer, which must be
+Citrus during the integration run.

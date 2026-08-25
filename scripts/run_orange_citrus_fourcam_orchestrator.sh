@@ -56,6 +56,9 @@ Options:
   --wayland-display <value>      WAYLAND_DISPLAY to pass when needed.
   --orange-env KEY=VALUE         Extra Orange env override; repeatable.
   --citrus-env KEY=VALUE         Extra Citrus env override; repeatable.
+  --shaman-v2-authoritative      Enable the paired Orange writer and in-memory
+                                  Citrus authoritative-v2 reader for this run.
+                                  Does not edit the Citrus canvas JSON.
   --citrus-rig <id>              Citrus autorun loader rig id.
   --citrus-canvas <name>         Citrus autorun loader canvas name.
   --citrus-protocol <name>       Citrus autorun loader protocol name/path.
@@ -366,6 +369,11 @@ while [[ $# -gt 0 ]]; do
       shift
       require_value "--citrus-env" "$#"
       CITRUS_EXTRA_ENV+=("$1")
+      shift
+      ;;
+    --shaman-v2-authoritative)
+      ORANGE_EXTRA_ENV+=("ORANGE_SHAMAN_V2_LIVE_STATE=1")
+      CITRUS_EXTRA_ENV+=("CITRUS_GUI_AUTORUN_SHAMAN_V2_AUTHORITATIVE=1")
       shift
       ;;
     --citrus-rig)

@@ -67,6 +67,29 @@ void render_frame_ipc_status_panel(
             static_cast<unsigned long long>(ipc_manager->getBaseQueueDrops()),
             static_cast<unsigned long long>(ipc_manager->getUpdateQueueDrops()),
             static_cast<unsigned long long>(ipc_manager->getUpdateStaleDrops()));
+        if (ipc_manager->isV2Enabled()) {
+            const auto v2 = ipc_manager->getV2Counters();
+            ImGui::TextColored(
+                ImVec4(0.35f, 0.9f, 0.55f, 1.0f),
+                "    v2 authoritative candidate: %s",
+                ipc_manager->getV2QueueName().c_str());
+            ImGui::TextDisabled(
+                "      base=%llu yolo=%llu pose=%llu stale_yolo=%llu stale_pose=%llu queue_drop=%llu",
+                static_cast<unsigned long long>(v2.frames_published),
+                static_cast<unsigned long long>(v2.yolo_updates_published),
+                static_cast<unsigned long long>(v2.pose_updates_published),
+                static_cast<unsigned long long>(v2.yolo_stale_suppressed),
+                static_cast<unsigned long long>(v2.pose_stale_suppressed),
+                static_cast<unsigned long long>(v2.queue_drops));
+        } else if (!ipc_manager->getV2InitError().empty()) {
+            ImGui::TextColored(
+                ImVec4(1.0f, 0.45f, 0.25f, 1.0f),
+                "    v2 initialization failed: %s",
+                ipc_manager->getV2InitError().c_str());
+        } else {
+            ImGui::TextDisabled(
+                "    v2 disabled (set ORANGE_SHAMAN_V2_LIVE_STATE=1 for validation)");
+        }
     }
     ImGui::TextDisabled(
         "  SHM slot timestamps are Orange publish-time us, not camera_timestamp_ns");
