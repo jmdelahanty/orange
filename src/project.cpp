@@ -30,6 +30,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <map>
+#include <tuple>
 #include <utility>
 #include <mutex>
 #include <set>
@@ -792,6 +793,48 @@ nlohmann::json build_source_camera_streams_snapshot(
         };
     }
     return streams;
+}
+
+nlohmann::json build_shaman_v2_camera_identity_snapshot(
+    const std::string& recording_id,
+    const CameraParams* cameras_params,
+    const int num_cameras,
+    const CameraEachSelect* cameras_select)
+{
+    nlohmann::json bindings = nlohmann::json::array();
+    for (int index = 0; index < num_cameras; ++index) {
+        if (cameras_select && !cameras_select[index].record) {
+            continue;
+        }
+        const CameraParams& params = cameras_params[index];
+        const std::string serial = snapshot_camera_serial(params);
+        if (serial.empty()) {
+            continue;
+        }
+        bindings.push_back({
+            {"acquisition_camera_id", serial},
+            {"camera_serial", serial},
+            {"shaman_numeric_camera_id", params.camera_id},
+        });
+    }
+    std::sort(bindings.begin(), bindings.end(),
+              [](const nlohmann::json& left, const nlohmann::json& right) {
+                  return std::tie(
+                             left.at("acquisition_camera_id"),
+                             left.at("camera_serial"),
+                             left.at("shaman_numeric_camera_id")) <
+                         std::tie(
+                             right.at("acquisition_camera_id"),
+                             right.at("camera_serial"),
+                             right.at("shaman_numeric_camera_id"));
+              });
+    return {
+        {"camera_bindings", std::move(bindings)},
+        {"canonicalization", "canonical_json_utf8_sort_keys_compact_v1"},
+        {"recording_id", recording_id},
+        {"schema_id", "orange.shaman_v2.camera_identity"},
+        {"schema_version", 1},
+    };
 }
 
 nlohmann::json build_initial_recording_outputs_snapshot(
@@ -6160,6 +6203,17 @@ bool write_recording_snapshot(const std::string& recording_folder,
     snapshot["camera_runtime"] = camera_runtime;
     snapshot["source_camera_streams"] = build_source_camera_streams_snapshot(
         cameras_params, num_cameras, cameras_select);
+    snapshot["shaman_v2_camera_identity"] =
+        build_shaman_v2_camera_identity_snapshot(
+            resolved_recording_id,
+            cameras_params,
+            num_cameras,
+            cameras_select);
+    snapshot["shaman_v2_camera_identity_sha256"] =
+        "sha256:" + orange::gui::spatial_layout::checksum::sha256_hex(
+            snapshot["shaman_v2_camera_identity"].dump(
+                -1, ' ', false,
+                nlohmann::json::error_handler_t::strict));
     snapshot["recording_outputs"] = build_initial_recording_outputs_snapshot(
         cameras_params,
         num_cameras,

@@ -19,6 +19,7 @@
 #include "spatial_snapshot_worker.h"
 #include "cuda_context_debug.h"
 #include "frame_ipc_manager.h"
+#include "shaman_v2_recording_identity.h"
 #include "fsuid_guard.h"
 #include "gui/startup_timing.h"
 #include "latency_stats.h"
@@ -30,6 +31,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <fstream>
+#include <filesystem>
 #include <iomanip>
 #include <limits>
 #include <map>
@@ -2165,6 +2167,14 @@ void acquire_frames(
                 ipc_identity.recording_frame_id = current_entry->recording_frame_id;
                 ipc_identity.camera_timestamp_ns = current_entry->timestamp;
                 ipc_identity.timestamp_sys_ns = current_entry->timestamp_sys;
+                if (ipc_identity.recording_frame_id > 0 &&
+                    !current_entry->recording_folder.empty()) {
+                    const std::string recording_id = std::filesystem::path(
+                        current_entry->recording_folder).filename().string();
+                    ipc_identity.recording_identity_token =
+                        orange::shaman_v2_recording_identity::
+                            token_for_recording_id(recording_id);
+                }
                 bool ipc_success = ipc_manager->sendFrame(
                     ipc_identity,
                     yolo_will_process);

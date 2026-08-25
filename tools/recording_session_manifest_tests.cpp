@@ -2,6 +2,7 @@
 #include "session/acquisition_index_authority.h"
 #include "NvEncoder/Logger.h"
 #include "gui/spatial_layout/sha256.h"
+#include "shaman_v2_recording_identity.h"
 
 #include <cstdlib>
 #include <filesystem>
@@ -1164,6 +1165,76 @@ void test_manifest_omits_identity_digest_when_identity_is_unfinalized()
     std::filesystem::remove_all(folder);
 }
 
+void test_manifest_binds_shaman_v2_recording_identity_to_session_id()
+{
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_session_shaman_v2_identity_" +
+         std::to_string(static_cast<long long>(::getpid())));
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder);
+
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "test";
+    options.session_id = "stable-parent-recording";
+    options.recording_folder = folder.string();
+    options.status = "recording";
+    const std::filesystem::path manifest_path = folder / "recording_session.json";
+    const nlohmann::json camera_identity = {
+        {"camera_bindings", nlohmann::json::array({{
+            {"acquisition_camera_id", "CAM-42"},
+            {"camera_serial", "CAM-42"},
+            {"shaman_numeric_camera_id", 0},
+        }})},
+        {"canonicalization", "canonical_json_utf8_sort_keys_compact_v1"},
+        {"recording_id", options.session_id},
+        {"schema_id", "orange.shaman_v2.camera_identity"},
+        {"schema_version", 1},
+    };
+    {
+        std::ofstream snapshot(folder / "recording_snapshot_start.json");
+        snapshot << nlohmann::json{
+            {"recording_id", options.session_id},
+            {"shaman_v2_camera_identity", camera_identity},
+            {"shaman_v2_camera_identity_sha256",
+             canonical_semantic_sha256(camera_identity)},
+        }.dump(2) << '\n';
+    }
+    std::string error;
+    require(
+        orange::session::write_recording_session_manifest(
+            manifest_path.string(),
+            orange::session::build_single_clip_recording_session_manifest(options),
+            &error),
+        "Shaman-v2 recording identity manifest write should succeed: " + error);
+
+    const nlohmann::json written = read_json(manifest_path);
+    const nlohmann::json& identity =
+        written.at("shaman_v2_recording_identity");
+    require(identity ==
+                orange::shaman_v2_recording_identity::binding_record(
+                    options.session_id),
+            "manifest recording identity must be the closed session_id binding");
+    require(written.at("shaman_v2_recording_identity_sha256") ==
+                canonical_semantic_sha256(identity),
+            "manifest recording identity must carry its semantic digest");
+    require(written.at("shaman_v2_camera_identity") == camera_identity &&
+                written.at("shaman_v2_camera_identity_sha256") ==
+                    canonical_semantic_sha256(camera_identity),
+            "manifest must project the immutable acquisition/serial/numeric camera binding");
+
+    nlohmann::json mismatched = written;
+    mismatched["session_id"] = "different-recording";
+    error.clear();
+    require(!orange::session::write_recording_session_manifest(
+                manifest_path.string(), mismatched, &error),
+            "an existing recording token must not survive a session_id change");
+    require(error.find("does not match session_id") != std::string::npos,
+            "session/token mismatch should report a stable diagnostic");
+
+    std::filesystem::remove_all(folder);
+}
+
 }  // namespace
 
 int main()
@@ -1206,6 +1277,8 @@ int main()
          test_manifest_rejects_duplicate_camera_serial_mapping},
         {"manifest_omits_identity_digest_when_identity_is_unfinalized",
          test_manifest_omits_identity_digest_when_identity_is_unfinalized},
+        {"manifest_binds_shaman_v2_recording_identity_to_session_id",
+         test_manifest_binds_shaman_v2_recording_identity_to_session_id},
     };
 
     for (const TestCase& test : tests) {
