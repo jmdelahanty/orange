@@ -3491,6 +3491,82 @@ def test_recording_session_manifest_accepts_rolling_clips() -> None:
         require(not reporter.failures, f"rolling recording_session should pass: {reporter.failures}")
 
 
+def test_recording_session_manifest_reads_external_summary_separately_from_metadata_csv() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        video = root / f"Cam{serial}_external.mp4"
+        metadata = root / f"Cam{serial}_external_meta.csv"
+        keyframes = root / f"Cam{serial}_external_keyframes.json"
+        summary = root / f"Cam{serial}_external_summary.json"
+        video.write_bytes(b"fake mp4 payload\n")
+        metadata.write_text(
+            "frame_id,timestamp,timestamp_sys,recording_frame_id\n"
+            "1,100,200,1\n"
+            "2,101,201,2\n"
+            "3,102,202,3\n",
+            encoding="utf-8",
+        )
+        keyframes.write_text(
+            json.dumps({"total_frames": 3, "keyframe_frames": [0]}) + "\n",
+            encoding="utf-8",
+        )
+        summary.write_text(
+            json.dumps(
+                {
+                    "frames_received": 3,
+                    "acks_sent": 3,
+                    "frames_encoded": 3,
+                    "merged_output": {"packets_written": 3},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        artifact = {
+            "video": str(video),
+            "metadata": str(metadata),
+            "keyframes": str(keyframes),
+            "frame_count": 3,
+            "packet_count": 3,
+            "packet_count_source": "external_recorder_summary.packets_written",
+        }
+        full_output = {
+            "output_kind": "full",
+            "role": "ingest_authoritative",
+            "backend": "external_ipc",
+            "status": "completed",
+            **artifact,
+            "summary": str(summary),
+        }
+        manifest = {
+            "schema_id": "orange.recording_session",
+            "schema_version": 1,
+            "producer": "orange_gui_external_ipc",
+            "mode": "single_clip",
+            "status": "completed",
+            "recording_backend": {"mode": "external_ipc", "status": "completed"},
+            "camera_artifacts": {serial: artifact},
+            "recording_outputs": {serial: {"full": full_output}},
+        }
+        manifest_path = root / "recording_session.json"
+        manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+        snapshot = {
+            "session": {
+                "recording_mode": "single_clip",
+                "recording_session_manifest_path": str(manifest_path),
+            },
+            "recording_outputs": {serial: {"full": full_output}},
+        }
+
+        reporter = validator.Reporter(verbose=False)
+        validator.check_recording_session_manifest(reporter, root, snapshot, [serial])
+        require(
+            not reporter.failures,
+            f"external metadata CSV and separate summary should pass: {reporter.failures}",
+        )
+
+
 def test_recording_session_manifest_checks_expected_rolling_control() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -4512,6 +4588,7 @@ def main() -> int:
         test_recording_output_contract_requires_canonical_crop_v2_spaces,
         test_recording_output_contract_allows_external_crop_sidecar_failure,
         test_recording_session_manifest_accepts_rolling_clips,
+        test_recording_session_manifest_reads_external_summary_separately_from_metadata_csv,
         test_recording_session_manifest_checks_expected_rolling_control,
         test_recording_session_manifest_checks_local_control_stop_metadata,
         test_recording_session_manifest_checks_local_control_drain_timeout_consistency,

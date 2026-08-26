@@ -1402,6 +1402,8 @@ def check_recording_session_manifest(
 
     camera_artifacts = manifest.get("camera_artifacts")
     camera_artifacts = camera_artifacts if isinstance(camera_artifacts, dict) else {}
+    recording_outputs = manifest.get("recording_outputs")
+    recording_outputs = recording_outputs if isinstance(recording_outputs, dict) else {}
     output_errors = recording_output_contract_errors(
         recording_folder,
         manifest,
@@ -1427,6 +1429,10 @@ def check_recording_session_manifest(
         packet_count = integer(artifact.get("packet_count"))
         packet_source = str(artifact.get("packet_count_source", ""))
         metadata_rows = count_csv_data_rows(metadata_path)
+        camera_outputs = recording_outputs.get(serial)
+        camera_outputs = camera_outputs if isinstance(camera_outputs, dict) else {}
+        full_output = camera_outputs.get("full")
+        full_output = full_output if isinstance(full_output, dict) else {}
 
         reporter.check(
             metadata_path.exists(),
@@ -1439,13 +1445,38 @@ def check_recording_session_manifest(
             f"Cam{serial} recording_session video missing: {video_path}",
         )
         if external_ipc:
-            summary = read_json(metadata_path)
+            summary_value = full_output.get("summary")
+            if not summary_value:
+                details = full_output.get("details")
+                details = details if isinstance(details, dict) else {}
+                summary_value = details.get("summary_json")
+            summary_path = (
+                path_from_recording_folder(recording_folder, summary_value)
+                if summary_value
+                else None
+            )
+            # Historical external-IPC manifests used camera_artifacts.metadata
+            # for the recorder summary JSON. Current manifests bind that field
+            # to the authoritative per-frame CSV and expose the summary through
+            # recording_outputs.<serial>.full.summary.
+            if summary_path is None and metadata_path.suffix.lower() == ".json":
+                summary_path = metadata_path
+            summary = read_json(summary_path) if summary_path is not None else {}
             frames_received = integer(summary.get("frames_received"))
             acks_sent = integer(summary.get("acks_sent"))
             frames_encoded = integer(summary.get("frames_encoded"))
             merged_output = summary.get("merged_output")
             merged_output = merged_output if isinstance(merged_output, dict) else {}
             packets_written = integer(merged_output.get("packets_written"))
+            if metadata_path.suffix.lower() == ".csv":
+                reporter.check(
+                    frame_count is not None and metadata_rows == frame_count,
+                    f"Cam{serial} recording_session frame_count matches metadata CSV",
+                    (
+                        f"Cam{serial} recording_session frame_count={frame_count}, "
+                        f"metadata_rows={metadata_rows}"
+                    ),
+                )
             reporter.check(
                 frame_count is not None and frames_received == frame_count,
                 f"Cam{serial} recording_session frame_count matches external frames_received",
