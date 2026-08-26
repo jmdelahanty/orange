@@ -330,6 +330,20 @@ def test_request_builders_and_readiness_helpers() -> None:
         ),
         "citrus perf path-known helper must reject truthy-string booleans",
     )
+    require(
+        module.orange_recording_covers_active_citrus(orange_status(True, False)),
+        "active Orange recording should cover a live Citrus experiment",
+    )
+    require(
+        not module.orange_recording_covers_active_citrus(orange_status(True, True)),
+        "finalized Orange recording must not cover a live Citrus experiment",
+    )
+    require(
+        not module.orange_recording_covers_active_citrus(
+            {"readiness": {"recording_active": "true", "recording_finalized": False}}
+        ),
+        "coverage helper must reject truthy-string recording state",
+    )
 
     rendered = module.render_validation_command(
         "validator {orange_recording_folder} {citrus_perf_jsonl_path} {operation_id}",
@@ -3541,6 +3555,50 @@ def test_cleanup_started_processes_terminates_launched_children() -> None:
                 process.kill()
 
 
+def test_orange_coverage_check_rejects_premature_recording_stop() -> None:
+    module = load_module()
+    args = module.parse_args(
+        [
+            "--execute",
+            "--operation-id",
+            "op-premature-orange-stop",
+            "--orange-socket",
+            "orange-test.sock",
+        ]
+    )
+    orchestrator = module.Orchestrator(args)
+
+    def fake_status(
+        label: str,
+        schema_id: str,
+        socket_path: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        require(label == "orange", "coverage check should query Orange")
+        status = orange_status(True, True)
+        orchestrator.last_orange_status = status
+        return {}, status
+
+    orchestrator.status = fake_status
+    step = orchestrator.step("coverage_test")
+    try:
+        orchestrator.check_orange_recording_coverage(
+            citrus_status(True, False),
+            step,
+        )
+    except module.OrchestratorError as exc:
+        require(
+            "ended before Citrus" in str(exc),
+            "coverage failure should explain the ordering violation",
+        )
+    else:
+        raise AssertionError("premature Orange finalization must fail coverage")
+    require(not step.ok, "coverage failure should be recorded in the step log")
+    require(
+        step.detail.get("outcome") == "orange_recording_ended_before_citrus",
+        "coverage failure should carry a stable outcome code",
+    )
+
+
 def test_launch_socket_preflight_refuses_live_socket() -> None:
     module = load_module()
     args = module.parse_args(
@@ -3620,6 +3678,7 @@ def main() -> int:
         test_clean_orange_exit_after_manifest_finalization_is_accepted,
         test_manifest_inferred_status_prefers_command_source,
         test_cleanup_started_processes_terminates_launched_children,
+        test_orange_coverage_check_rejects_premature_recording_stop,
         test_launch_socket_preflight_refuses_live_socket,
         test_launch_socket_preflight_allows_absent_socket,
     ]

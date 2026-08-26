@@ -298,7 +298,7 @@ def test_rolling_profile_passes_orange_clip_options_to_validation() -> None:
             "--operation-id",
             "profile-rolling",
             "--record-seconds",
-            "6",
+            "20",
             "--warmup-seconds",
             "2",
             "--clip-seconds",
@@ -316,7 +316,7 @@ def test_rolling_profile_passes_orange_clip_options_to_validation() -> None:
             str(REPO_ROOT / "scripts" / "run_gui_fourcam_external_ipc_validation.sh"),
             "--citrus-display-safe",
             "--record-seconds",
-            "6",
+            "20",
             "--warmup-seconds",
             "2",
             "--clip-seconds",
@@ -325,7 +325,7 @@ def test_rolling_profile_passes_orange_clip_options_to_validation() -> None:
         "rolling profile should pass record/warmup/clip options to the Orange launcher",
     )
     require(
-        payload["orange"]["env_overlay"].get("ORANGE_GUI_RECORD_FOR_SECONDS") == "6",
+        payload["orange"]["env_overlay"].get("ORANGE_GUI_RECORD_FOR_SECONDS") == "20",
         "rolling profile should pass explicit GUI record_for_seconds to Orange runtime",
     )
     require(
@@ -349,12 +349,30 @@ def test_rolling_profile_passes_orange_clip_options_to_validation() -> None:
         "rolling profile should validate rolling recording mode",
     )
     require(
-        "--expect-record-for-seconds 6" in validation["command"],
+        "--expect-record-for-seconds 20" in validation["command"],
         "rolling profile should validate recording duration",
     )
     require(
         "--expect-clip-seconds 2" in validation["command"],
         "rolling profile should validate clip duration",
+    )
+
+
+def test_single_clip_rejects_competing_orange_duration_timer() -> None:
+    result = run_profile(
+        [
+            "--operation-id",
+            "profile-conflicting-stop-authority",
+            "--record-seconds",
+            "10",
+            "--citrus-run-seconds",
+            "10",
+        ]
+    )
+    require(result.returncode == 2, "competing single-clip timers must fail preflight")
+    require(
+        "conflicts with an orchestrator-owned stop" in result.stderr,
+        "timer conflict should explain the single-stop-authority rule",
     )
 
 
@@ -364,7 +382,7 @@ def test_citrus_completion_notify_profile_waits_for_citrus_owned_stop() -> None:
             "--operation-id",
             "profile-notify",
             "--record-seconds",
-            "6",
+            "12",
             "--warmup-seconds",
             "2",
             "--clip-seconds",
@@ -423,7 +441,7 @@ def test_citrus_completion_notify_run_seconds_profile_validates_stopped_terminal
             "--operation-id",
             "profile-notify-stopped",
             "--record-seconds",
-            "6",
+            "12",
             "--warmup-seconds",
             "2",
             "--clip-seconds",
@@ -601,6 +619,7 @@ def main() -> int:
         test_default_dry_run_builds_live_profile,
         test_attach_mode_does_not_launch_processes,
         test_rolling_profile_passes_orange_clip_options_to_validation,
+        test_single_clip_rejects_competing_orange_duration_timer,
         test_citrus_completion_notify_profile_waits_for_citrus_owned_stop,
         test_citrus_completion_notify_run_seconds_profile_validates_stopped_terminal,
         test_allow_preexisting_sockets_disables_launch_preflight,
