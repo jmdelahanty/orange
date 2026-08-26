@@ -622,7 +622,7 @@ Recorder summary schema:
 ```json
 {
   "schema_id": "orange.external_recorder.summary",
-  "schema_version": 1,
+  "schema_version": 2,
   "tool": "external_recorder_ipc_probe",
   "session_id": "experiment_id",
   "stream_id": "2010095",
@@ -640,6 +640,24 @@ Recorder summary schema:
   "encode_queue_depth": 32,
   "encode_queue_high_water": 4,
   "frames_encoded": 100,
+  "encoding_budget": {
+    "schema_id": "orange.recording_encoding_budget",
+    "schema_version": 1,
+    "semantics": {
+      "scope": "recording_level_average",
+      "per_frame_allocation_is_uniform": false
+    },
+    "target": {
+      "status": "available",
+      "average_bitrate_bps": 150000000,
+      "average_bits_per_frame": 1500000.0
+    },
+    "achieved": {
+      "status": "available",
+      "average_basis": "encoded_payload_bytes",
+      "encoded_frame_count": 100
+    }
+  },
   "worker_failed": false,
   "external_encode": {
     "frames_dropped": 0,
@@ -668,6 +686,9 @@ When `artifact_root` is omitted, the verifier derives it from
 - ACKed frames are at least submitted frames
 - recorder summary schema, `stream_id`, and declared stream/output kind match
   the contract
+- summary schema 2 carries a valid recording-level `encoding_budget`; rolling
+  schema-2 summaries carry the same validated contract on every authoritative
+  clip. Schema-1 summaries remain readable as historical artifacts.
 - `acks_sent == frames_received`
 - `encode_enqueued + encode_skipped + encode_dropped == frames_received`
 - `detach_copied == encode_enqueued` for the current verifier contract; use

@@ -136,6 +136,28 @@ Legacy locations such as
 emitted for compatibility, but schema-2 consumers should prefer
 `recording_outputs` when it is present.
 
+Every newly finalized encoded `full` or `crop` descriptor also carries
+`encoding_budget` (`schema_id = "orange.recording_encoding_budget"`, version
+1). This is deliberately a recording-level average contract:
+
+- `target.average_bits_per_frame = target.average_bitrate_bps /
+  nominal_frame_rate_fps`;
+- `achieved.average_bits_per_frame = encoded_payload_bytes * 8 /
+  encoded_frame_count` when exact payload bytes are available;
+- otherwise the achieved calculation uses the authoritative MP4 container file
+  size and declares `average_basis = "mp4_container_bytes"`;
+- both target and achieved sections also expose bits per pixel per frame; and
+- `semantics.per_frame_allocation_is_uniform = false`, because keyframes and
+  difficult frames can consume substantially more bits than easy predicted
+  frames.
+
+Lossless and constant-QP streams use `target.status = "not_applicable"` rather
+than inventing a bitrate target, while still recording their achieved averages.
+Unavailable evidence is represented as `null`, not zero. This contract is
+written per encoded stream for full-frame and crop output, in single-clip and
+rolling-clip recordings. Historical output descriptors without it remain
+valid legacy metadata.
+
 `camera_runtime` is an optional dictionary keyed by camera serial number (as a
 string). It records the resolved runtime camera config actually used for that
 run, including runtime placement overrides such as a different `gpu_id` than

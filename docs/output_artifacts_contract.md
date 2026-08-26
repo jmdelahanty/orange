@@ -404,11 +404,43 @@ Current emitted top-level fields:
     `container`, `tuning`, `pixel_source_format`, `encoded_format`,
     `coordinate_space`, `video_pixel_coordinate_space`,
     `source_geometry_coordinate_space`
+  - `encoding_budget: object`: schema-1 recording-level encoding-budget
+    contract. Newly finalized Orange video outputs carry this object for every
+    full-frame and crop stream, including single-clip and rolling-clip output.
   - Optional `details` object for backend-specific metadata. For GUI external
     crop outputs, `details` includes static recorder routing/config fields such
     as `stream_id`, `stream_kind`, `output_kind`, `camera_serial`, `env_key`,
     `analytics_gpu_id`, `recorder_gpu_id`, `encode_queue_depth`, `socket_path`,
     and `summary_json`.
+
+`encoding_budget` uses `schema_id = "orange.recording_encoding_budget"` and
+`schema_version = 1`. It separates configured intent from the bytes actually
+produced:
+
+- `semantics.scope = "recording_level_average"` and
+  `per_frame_allocation_is_uniform = false`. The fields describe averages over
+  the encoded stream; they do not claim that every encoded frame used the same
+  number of bits.
+- `geometry` records nominal FPS, encoded width/height, and pixels per frame.
+- `target` records the resolved average and maximum bitrate, their corresponding
+  average bits per frame, and average bits per pixel per frame. The average
+  conversion is `bitrate_bps / nominal_frame_rate_fps`.
+- `achieved` records encoded frame count, exact encoded-payload bytes when the
+  recorder exposes them, MP4 container bytes, duration, achieved average
+  bitrate, achieved average bits per frame, and achieved average bits per pixel
+  per frame. The object identifies whether its average uses exact encoded
+  payload bytes or the MP4 file size fallback.
+- `target.status = "not_applicable"` for lossless and constant-QP streams,
+  because those modes do not have a target bitrate. Their achieved averages
+  remain measurable.
+- A missing measurement is represented by `status = "unavailable"` and `null`
+  values rather than zero. Historical descriptors without `encoding_budget`
+  remain inspectable.
+
+For example, a 150,000,000 bit/s target at 100 FPS is an average target of
+1,500,000 bits per frame. The same bitrate at 30 FPS is an average target of
+5,000,000 bits per frame. Neither statement says how the rate controller divides
+those bits among individual I/P frames.
 
 Current crop descriptors use descriptor `schema_version = 2` and distinguish:
 
