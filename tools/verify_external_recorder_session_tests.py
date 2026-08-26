@@ -1558,6 +1558,59 @@ def test_duration_safety_limit_contract() -> None:
         raise AssertionError("expected an exceeded duration ceiling to fail")
 
 
+def test_encoding_budget_contract_math() -> None:
+    payload = {
+        "schema_id": "orange.recording_encoding_budget",
+        "schema_version": 1,
+        "semantics": {
+            "scope": "recording_level_average",
+            "per_frame_allocation_is_uniform": False,
+        },
+        "geometry": {
+            "nominal_frame_rate_fps": 20.0,
+            "width_px": 10,
+            "height_px": 5,
+            "pixels_per_frame": 50,
+        },
+        "target": {
+            "status": "available",
+            "average_bitrate_bps": 10000,
+            "average_bits_per_frame": 500.0,
+            "bits_per_pixel_per_frame": 10.0,
+        },
+        "achieved": {
+            "status": "available",
+            "encoded_frame_count": 40,
+            "encoded_payload_bytes": 1000,
+            "average_basis": "encoded_payload_bytes",
+            "average_bits_per_frame": 200.0,
+            "bits_per_pixel_per_frame": 4.0,
+        },
+    }
+    verifier.verify_encoding_budget(
+        payload,
+        expected_frame_count=40,
+        expected_payload_bytes=1000,
+        label="encoding budget fixture",
+    )
+
+    payload["achieved"]["average_bits_per_frame"] = 199.0
+    try:
+        verifier.verify_encoding_budget(
+            payload,
+            expected_frame_count=40,
+            expected_payload_bytes=1000,
+            label="encoding budget fixture",
+        )
+    except verifier.VerificationError as exc:
+        require(
+            "bits/frame math mismatch" in str(exc),
+            f"unexpected encoding budget failure: {exc}",
+        )
+    else:
+        raise AssertionError("expected incorrect encoding budget math to fail")
+
+
 def main() -> int:
     tests = [
         test_queue_thresholds_pass_and_summarize,
@@ -1586,6 +1639,7 @@ def main() -> int:
         test_materialized_contract_is_loaded_by_matching_artifact_root,
         test_synthesized_contract_preserves_summary_routing_policy,
         test_duration_safety_limit_contract,
+        test_encoding_budget_contract_math,
     ]
     for test in tests:
         test()

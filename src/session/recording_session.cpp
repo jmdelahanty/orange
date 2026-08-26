@@ -6,6 +6,7 @@
 #include "fsuid_guard.h"
 #include "project.h"
 #include "recording_ingress.h"
+#include "recording_encoding_budget.h"
 #include "recording_output_utils.h"
 #include "session/external_crop_recorder_config.h"
 #include "session/recording_observation_request_artifacts.h"
@@ -17,7 +18,6 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
-#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -2305,6 +2305,8 @@ nlohmann::json build_rolling_clip_entry_json(
         recording_outputs.end(),
         clip.recording_outputs.begin(),
         clip.recording_outputs.end());
+    populate_recording_output_encoding_budgets(
+        &recording_outputs, clip.recording_folder);
     const nlohmann::json recording_outputs_json =
         build_recording_outputs_json(recording_outputs);
 
@@ -2451,6 +2453,8 @@ nlohmann::json build_single_clip_recording_session_manifest(
         recording_outputs.end(),
         options.recording_outputs.begin(),
         options.recording_outputs.end());
+    populate_recording_output_encoding_budgets(
+        &recording_outputs, options.recording_folder);
     const nlohmann::json recording_outputs_json =
         build_recording_outputs_json(recording_outputs);
 
@@ -2613,8 +2617,12 @@ nlohmann::json build_rolling_clip_recording_session_manifest(
         manifest["recording"]["control"] = options.recording_stop_control;
     }
     if (!options.recording_outputs.empty()) {
+        std::vector<RecordingOutputDescriptor> recording_outputs =
+            options.recording_outputs;
+        populate_recording_output_encoding_budgets(
+            &recording_outputs, options.recording_folder);
         manifest["recording_outputs"] =
-            build_recording_outputs_json(options.recording_outputs);
+            build_recording_outputs_json(recording_outputs);
     }
     add_recording_geometry_contract_reference(
         &manifest, options.recording_folder);

@@ -517,6 +517,10 @@ void test_write_external_rolling_manifest_success()
         manifest_on_disk["clips"][0]["recording_outputs"]["700001"]["full"]
                 .value("backend", std::string()) == "external_ipc",
         "rolling clip full output should preserve the external_ipc backend");
+    require(
+        manifest_on_disk["clips"][0]["recording_outputs"]["700001"]["full"]
+                .contains("encoding_budget"),
+        "rolling clip full output should carry an encoding budget contract");
     require(manifest == manifest_on_disk,
             "manifest_out should match the manifest on disk");
 

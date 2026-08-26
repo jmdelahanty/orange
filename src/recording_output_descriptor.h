@@ -59,6 +59,7 @@ struct RecordingOutputDescriptor {
     std::string coordinate_space;
     std::string video_pixel_coordinate_space;
     std::string source_geometry_coordinate_space;
+    nlohmann::json encoding_budget = nlohmann::json::object();
     nlohmann::json details = nlohmann::json::object();
 };
 

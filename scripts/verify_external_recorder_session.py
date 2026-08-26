@@ -186,6 +186,144 @@ def optional_float(value: Any, field: str) -> float | None:
         raise VerificationError(f"invalid float {field}={value!r}") from exc
 
 
+def verify_encoding_budget(
+    payload: Any,
+    *,
+    expected_frame_count: int,
+    expected_payload_bytes: int,
+    label: str,
+) -> None:
+    require(isinstance(payload, dict), f"{label} missing encoding_budget object")
+    require(
+        payload.get("schema_id") == "orange.recording_encoding_budget",
+        f"{label} has unexpected encoding_budget schema_id",
+    )
+    require(
+        payload.get("schema_version") == 1,
+        f"{label} has unexpected encoding_budget schema_version",
+    )
+    semantics = payload.get("semantics")
+    require(isinstance(semantics, dict), f"{label} encoding_budget missing semantics")
+    require(
+        semantics.get("scope") == "recording_level_average",
+        f"{label} encoding_budget has wrong scope",
+    )
+    require(
+        semantics.get("per_frame_allocation_is_uniform") is False,
+        f"{label} encoding_budget incorrectly claims uniform per-frame allocation",
+    )
+
+    geometry = payload.get("geometry")
+    require(isinstance(geometry, dict), f"{label} encoding_budget missing geometry")
+    fps = optional_float(
+        geometry.get("nominal_frame_rate_fps"),
+        f"{label} encoding_budget.geometry.nominal_frame_rate_fps",
+    )
+    require(fps is not None and fps > 0.0, f"{label} encoding_budget has invalid FPS")
+    width = optional_int(geometry.get("width_px"), f"{label} encoding_budget width")
+    height = optional_int(geometry.get("height_px"), f"{label} encoding_budget height")
+    pixels = optional_int(
+        geometry.get("pixels_per_frame"),
+        f"{label} encoding_budget pixels_per_frame",
+    )
+    require(
+        width is not None and width > 0 and height is not None and height > 0,
+        f"{label} encoding_budget has invalid output geometry",
+    )
+    require(
+        pixels == width * height,
+        f"{label} encoding_budget pixels_per_frame does not match width*height",
+    )
+
+    target = payload.get("target")
+    require(isinstance(target, dict), f"{label} encoding_budget missing target")
+    target_status = target.get("status")
+    require(
+        target_status in ("available", "not_applicable", "unavailable"),
+        f"{label} encoding_budget has invalid target status {target_status!r}",
+    )
+    if target_status == "available":
+        target_bps = optional_int(
+            target.get("average_bitrate_bps"),
+            f"{label} encoding_budget target average_bitrate_bps",
+        )
+        target_bits_per_frame = optional_float(
+            target.get("average_bits_per_frame"),
+            f"{label} encoding_budget target average_bits_per_frame",
+        )
+        target_bpp = optional_float(
+            target.get("bits_per_pixel_per_frame"),
+            f"{label} encoding_budget target bits_per_pixel_per_frame",
+        )
+        require(
+            target_bps is not None and target_bps > 0,
+            f"{label} encoding_budget target bitrate is invalid",
+        )
+        expected_target_bits = target_bps / fps
+        require(
+            target_bits_per_frame is not None
+            and math.isclose(target_bits_per_frame, expected_target_bits, rel_tol=1e-9),
+            f"{label} encoding_budget target bits/frame math mismatch",
+        )
+        require(
+            target_bpp is not None
+            and math.isclose(target_bpp, expected_target_bits / pixels, rel_tol=1e-9),
+            f"{label} encoding_budget target bits/pixel/frame math mismatch",
+        )
+    elif target_status == "not_applicable":
+        require(
+            target.get("average_bitrate_bps") is None
+            and target.get("average_bits_per_frame") is None,
+            f"{label} encoding_budget invents a bitrate target for non-bitrate RC",
+        )
+
+    achieved = payload.get("achieved")
+    require(isinstance(achieved, dict), f"{label} encoding_budget missing achieved")
+    require(
+        achieved.get("status") == "available",
+        f"{label} encoding_budget achieved values are unavailable",
+    )
+    frame_count = as_int(
+        achieved.get("encoded_frame_count"),
+        f"{label} encoding_budget achieved encoded_frame_count",
+    )
+    payload_bytes = as_int(
+        achieved.get("encoded_payload_bytes"),
+        f"{label} encoding_budget achieved encoded_payload_bytes",
+    )
+    require(
+        frame_count == expected_frame_count,
+        f"{label} encoding_budget frame count mismatch: {frame_count} != {expected_frame_count}",
+    )
+    require(
+        payload_bytes == expected_payload_bytes and payload_bytes > 0,
+        f"{label} encoding_budget payload byte mismatch: {payload_bytes} != {expected_payload_bytes}",
+    )
+    require(
+        achieved.get("average_basis") == "encoded_payload_bytes",
+        f"{label} encoding_budget must use exact encoded payload bytes",
+    )
+    average_bits = optional_float(
+        achieved.get("average_bits_per_frame"),
+        f"{label} encoding_budget achieved average_bits_per_frame",
+    )
+    average_bpp = optional_float(
+        achieved.get("bits_per_pixel_per_frame"),
+        f"{label} encoding_budget achieved bits_per_pixel_per_frame",
+    )
+    expected_average_bits = payload_bytes * 8.0 / frame_count
+    require(
+        average_bits is not None
+        and math.isclose(average_bits, expected_average_bits, rel_tol=1e-9),
+        f"{label} encoding_budget achieved bits/frame math mismatch",
+    )
+    require(
+        average_bpp is not None
+        and math.isclose(average_bpp, expected_average_bits / pixels, rel_tol=1e-9),
+        f"{label} encoding_budget achieved bits/pixel/frame math mismatch",
+    )
+
+
 def recording_control_for(contract: dict[str, Any], stream: dict[str, Any]) -> dict[str, Any]:
     value = stream.get("recording_control")
     if isinstance(value, dict):
@@ -1101,6 +1239,16 @@ def verify_rolling_output(
 
         frame_count = as_int(clip.get("frame_count"), "rolling clip frame_count")
         packet_count = as_int(clip.get("packets_written"), "rolling clip packets_written")
+        if summary.get("schema_version") == 2:
+            verify_encoding_budget(
+                clip.get("encoding_budget"),
+                expected_frame_count=frame_count,
+                expected_payload_bytes=as_int(
+                    clip.get("bytes_written"),
+                    "rolling clip bytes_written",
+                ),
+                label=f"rolling clip {expected_index} for {serial}",
+            )
         first_frame = as_int(clip.get("first_recording_frame_id"), "rolling clip first_recording_frame_id")
         last_frame = as_int(clip.get("last_recording_frame_id"), "rolling clip last_recording_frame_id")
         require(frame_count > 0, f"rolling clip has no frames for {serial}: {clip.get('clip_id')}")
@@ -1625,7 +1773,11 @@ def verify_summary(
         schema_id in (None, SUMMARY_SCHEMA_ID),
         f"unexpected external summary schema_id={schema_id!r} in {summary_path}",
     )
-    require(summary.get("schema_version") == 1, f"unexpected summary schema_version in {summary_path}")
+    summary_schema_version = summary.get("schema_version")
+    require(
+        summary_schema_version in (1, 2),
+        f"unexpected summary schema_version in {summary_path}",
+    )
     require(summary.get("tool") == "external_recorder_ipc_probe", f"unexpected recorder tool in {summary_path}")
     require(str(summary.get("stream_id")) == str(stream.get("stream_id", serial)), f"stream_id mismatch in {summary_path}")
     for field in ("stream_kind", "output_kind"):
@@ -1672,6 +1824,26 @@ def verify_summary(
     require(encode_dropped == 0, f"encode_dropped is nonzero in {summary_path}")
     require(frames_encoded == encode_enqueued, f"frames_encoded != encode_enqueued in {summary_path}")
     require(frames_encoded > 0, f"no frames encoded in {summary_path}")
+    if summary_schema_version >= 2:
+        merged_for_budget = summary.get("merged_output")
+        merged_for_budget = (
+            merged_for_budget if isinstance(merged_for_budget, dict) else {}
+        )
+        encoded_payload_bytes = as_int(
+            merged_for_budget.get("bytes_written", 0),
+            "merged_output.bytes_written",
+        )
+        if encoded_payload_bytes <= 0:
+            encoded_payload_bytes = as_int(
+                external_encode.get("returned_bytes"),
+                "external_encode.returned_bytes",
+            )
+        verify_encoding_budget(
+            summary.get("encoding_budget"),
+            expected_frame_count=frames_encoded,
+            expected_payload_bytes=encoded_payload_bytes,
+            label=f"summary for {serial}",
+        )
     if encode_queue_depth is not None and encode_queue_high_water is not None:
         require(
             encode_queue_high_water <= encode_queue_depth,

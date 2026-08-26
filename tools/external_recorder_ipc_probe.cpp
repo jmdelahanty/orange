@@ -5,6 +5,7 @@
 #include "external_recorder_duration_limit.h"
 #include "encoder_qp_map.h"
 #include "fsuid_guard.h"
+#include "recording_encoding_budget.h"
 #include "video_encode_profile.h"
 
 #include <cuda.h>
@@ -2069,6 +2070,43 @@ nlohmann::json rate_control_summary_json(const Options& options)
         {"temporal_aq", false},
         {"lookahead", false},
     };
+}
+
+nlohmann::json external_recording_encoding_budget_json(
+    const Options& options,
+    const int width,
+    const int height,
+    const uint64_t encoded_frame_count,
+    const uint64_t encoded_payload_bytes,
+    const uint64_t container_bytes,
+    const std::string& payload_source,
+    const std::string& container_source)
+{
+    const std::string strategy = resolve_video_encode_rate_control_strategy(
+        options.tuning, options.rate_control_mode);
+    const bool target_bitrate_applicable =
+        strategy != "lossless" && strategy != "cqp";
+    orange::session::RecordingEncodingBudgetInputs budget;
+    budget.rate_control_strategy = strategy;
+    budget.target_bitrate_applicable = target_bitrate_applicable;
+    budget.target_average_bitrate_bps = target_bitrate_applicable
+        ? options.bitrate_bps
+        : 0U;
+    budget.target_maximum_bitrate_bps = target_bitrate_applicable
+        ? std::max(options.max_bitrate_bps, options.bitrate_bps)
+        : 0U;
+    budget.target_source = "external_recorder.resolved_rate_control";
+    budget.nominal_frame_rate_fps = options.fps;
+    budget.width_px = width > 0 ? static_cast<uint32_t>(width) : 0U;
+    budget.height_px = height > 0 ? static_cast<uint32_t>(height) : 0U;
+    budget.encoded_frame_count = encoded_frame_count;
+    budget.encoded_payload_bytes = encoded_payload_bytes;
+    budget.encoded_payload_bytes_source = payload_source;
+    budget.container_bytes = container_bytes;
+    budget.container_bytes_source = container_source;
+    budget.encoded_duration_source =
+        "encoded_frame_count_over_nominal_frame_rate";
+    return orange::session::build_recording_encoding_budget_json(budget);
 }
 
 struct RollingClipOutputSummary {
@@ -4848,6 +4886,31 @@ void write_summary_json(const Options& options,
             metadata_height,
             metadata_source_gpu_id,
             metadata_encode_gpu_id);
+    const uint64_t aggregate_payload_bytes = merged.enabled
+        ? merged.bytes_written
+        : enc.returned_bytes;
+    uint64_t aggregate_container_bytes = 0;
+    if (rolling_clips_authoritative) {
+        for (const RollingClipOutputSummary& clip : merged.rolling.clips) {
+            aggregate_container_bytes += file_size_or_zero(clip.mp4_path);
+        }
+    } else {
+        aggregate_container_bytes = file_size_or_zero(output_mp4_path);
+    }
+    const nlohmann::json aggregate_encoding_budget =
+        external_recording_encoding_budget_json(
+            options,
+            metadata_width,
+            metadata_height,
+            enc.frames_encoded,
+            aggregate_payload_bytes,
+            aggregate_container_bytes,
+            merged.enabled
+                ? "external_recorder.merged_output.bytes_written"
+                : "external_recorder.external_encode.returned_bytes",
+            rolling_clips_authoritative
+                ? "sum_of_authoritative_rolling_clip_mp4_file_sizes"
+                : "authoritative_mp4_file_size");
     const bool mp4_metadata_supplied =
         options.encode && !representative_mp4_path.empty();
     const nlohmann::json video_metadata =
@@ -4863,7 +4926,7 @@ void write_summary_json(const Options& options,
     out << std::fixed << std::setprecision(6);
     out << "{\n";
     out << "  \"schema_id\": \"orange.external_recorder.summary\",\n";
-    out << "  \"schema_version\": 1,\n";
+    out << "  \"schema_version\": 2,\n";
     out << "  \"tool\": \"external_recorder_ipc_probe\",\n";
     out << "  \"session_id\": \"" << json_escape(session_id) << "\",\n";
     out << "  \"stream_id\": \"" << json_escape(stream_id) << "\",\n";
@@ -4966,6 +5029,9 @@ void write_summary_json(const Options& options,
     out << "  \"encode_dropped\": " << encode_dropped << ",\n";
     out << "  \"encode_queue_high_water\": " << encode_queue_high_water << ",\n";
     out << "  \"frames_encoded\": " << enc.frames_encoded << ",\n";
+    out << "  \"encoding_budget\": "
+        << json_dump_for_inline_value(aggregate_encoding_budget, "  ")
+        << ",\n";
     out << "  \"frame_metadata\": {\n";
     out << "    \"path\": \"" << json_escape(output_metadata_path) << "\",\n";
     out << "    \"rows_written\": " << frame_metadata.rows_written << ",\n";
@@ -5168,6 +5234,19 @@ void write_summary_json(const Options& options,
         out << "        \"frame_count\": " << clip.frame_count << ",\n";
         out << "        \"packets_written\": " << clip.packets_written << ",\n";
         out << "        \"bytes_written\": " << clip.bytes_written << ",\n";
+        out << "        \"encoding_budget\": "
+            << json_dump_for_inline_value(
+                   external_recording_encoding_budget_json(
+                       options,
+                       metadata_width,
+                       metadata_height,
+                       clip.frame_count,
+                       clip.bytes_written,
+                       file_size_or_zero(clip.mp4_path),
+                       "external_recorder.rolling_output.clips[].bytes_written",
+                       "authoritative_rolling_clip_mp4_file_size"),
+                   "        ")
+            << ",\n";
         out << "        \"gops_released\": " << clip.gops_released << ",\n";
         out << "        \"failed\": " << (clip.failed ? "true" : "false") << ",\n";
         out << "        \"file_sizes\": {\n";

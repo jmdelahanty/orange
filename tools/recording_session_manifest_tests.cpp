@@ -195,6 +195,13 @@ void test_single_clip_manifest_preserves_full_and_crop_outputs()
             "single-clip full output should inherit external backend");
     require(camera_outputs["crop"].value("backend", std::string()) == "external_ipc",
             "single-clip crop output should keep external backend");
+    require(camera_outputs["full"].contains("encoding_budget"),
+            "single-clip full output should carry an encoding budget contract");
+    require(camera_outputs["crop"].contains("encoding_budget"),
+            "single-clip crop output should carry an encoding budget contract");
+    require(camera_outputs["crop"]["encoding_budget"]["target"].value(
+                "status", std::string()) == "not_applicable",
+            "lossless crop should declare target bitrate not applicable");
 
     const nlohmann::json clip_outputs =
         manifest["clips"][0].value("recording_outputs", nlohmann::json::object());
@@ -295,6 +302,12 @@ void test_rolling_manifest_emits_session_aggregate_and_clip_crop_outputs()
             "rolling clip should include clip-scoped crop output");
     require(clip_camera_outputs["crop"]["details"].value("scope", std::string()) == "clip",
             "rolling clip crop output should remain clip-scoped");
+    require(top_crop.contains("encoding_budget"),
+            "rolling session crop output should carry an encoding budget contract");
+    require(clip_camera_outputs["full"].contains("encoding_budget"),
+            "rolling clip full output should carry an encoding budget contract");
+    require(clip_camera_outputs["crop"].contains("encoding_budget"),
+            "rolling clip crop output should carry an encoding budget contract");
     require(
         manifest["recording"]["control"].value("method", std::string()) == "citrus_completion",
         "rolling manifest should preserve local-control stop method");

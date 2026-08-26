@@ -71,6 +71,10 @@ nlohmann::json build_recording_output_descriptor_json(
         out["packet_count"] = output.packet_count;
         out["packet_count_source"] = output.packet_count_source;
     }
+    if (output.encoding_budget.is_object() &&
+        !output.encoding_budget.empty()) {
+        out["encoding_budget"] = output.encoding_budget;
+    }
     if (output.details.is_object() && !output.details.empty()) {
         out["details"] = output.details;
     }

@@ -6183,6 +6183,7 @@ bool write_supervised_external_recorder_single_clip_manifest(
         local_manifest.value("recording", nlohmann::json::object());
 
     std::vector<orange::session::RecordingSessionCameraArtifact> camera_artifacts;
+    std::vector<orange::session::RecordingOutputDescriptor> recording_outputs;
     nlohmann::json summary_paths = nlohmann::json::object();
     nlohmann::json mp4_paths = nlohmann::json::object();
     nlohmann::json metadata_paths = nlohmann::json::object();
@@ -6298,6 +6299,30 @@ bool write_supervised_external_recorder_single_clip_manifest(
         artifact.packet_count = packets_written;
         artifact.packet_count_source =
             "external_recorder_summary.packets_written";
+
+        orange::session::RecordingOutputDescriptor output =
+            orange::session::build_full_recording_output_descriptor(
+                artifact,
+                "external_ipc",
+                manifest_status);
+        output.summary_path = summary_path;
+        output.frame_rate = summary.value(
+            "fps", stream.value("encode_fps", 0));
+        output.codec = summary.value(
+            "codec", stream.value("codec", std::string("hevc")));
+        output.container = "mp4";
+        output.tuning = summary.value(
+            "tuning", stream.value("tuning", std::string()));
+        output.pixel_source_format = "mono8";
+        output.encoded_format = "nv12";
+        output.encoding_budget = summary.value(
+            "encoding_budget", nlohmann::json::object());
+        output.details = {
+            {"stream_id", stream.value("stream_id", serial)},
+            {"stream_kind", stream.value("stream_kind", "full_frame")},
+            {"output_kind", stream.value("output_kind", "full")}
+        };
+        recording_outputs.push_back(std::move(output));
         camera_artifacts.push_back(std::move(artifact));
         summary_paths[serial] = summary_path;
         mp4_paths[serial] = mp4;
@@ -6386,6 +6411,7 @@ bool write_supervised_external_recorder_single_clip_manifest(
         recording_snapshot.value(
             "system_monitoring", nlohmann::json::object());
     manifest_options.cameras = std::move(camera_artifacts);
+    manifest_options.recording_outputs = std::move(recording_outputs);
 
     const nlohmann::json manifest =
         orange::session::build_single_clip_recording_session_manifest(
@@ -6586,6 +6612,41 @@ bool write_supervised_external_recorder_recording_session_manifest(
             camera_artifact.packet_count = clip.value("packets_written", 0ULL);
             camera_artifact.packet_count_source = "external_recorder_summary.packets_written";
             manifest_clip.cameras.push_back(std::move(camera_artifact));
+
+            orange::session::RecordingOutputDescriptor output;
+            output.camera_serial = serial;
+            output.output_kind = "full";
+            output.role = "ingest_authoritative";
+            output.backend = "external_ipc";
+            output.status = clip_failed ? "incomplete" : "completed";
+            output.video_path = clip.value("mp4", std::string());
+            output.metadata_path = clip.value("metadata", std::string());
+            output.keyframe_path = clip.value("keyframes", std::string());
+            output.summary_path = summary_path;
+            output.frame_count = frame_count;
+            output.first_recording_frame_id = first_frame;
+            output.last_recording_frame_id = last_frame;
+            output.recording_frame_id_gaps = frame_id_gaps;
+            output.packet_count = clip.value("packets_written", 0ULL);
+            output.packet_count_source =
+                "external_recorder_summary.packets_written";
+            output.frame_rate = fps;
+            output.codec = summary.value(
+                "codec", stream.value("codec", std::string("hevc")));
+            output.container = "mp4";
+            output.tuning = summary.value(
+                "tuning", stream.value("tuning", std::string()));
+            output.pixel_source_format = "mono8";
+            output.encoded_format = "nv12";
+            output.coordinate_space = "full_frame_pixels";
+            output.encoding_budget = clip.value(
+                "encoding_budget", nlohmann::json::object());
+            output.details = {
+                {"clip_index", clip_index},
+                {"clip_id", manifest_clip.clip_id},
+                {"stream_id", stream.value("stream_id", serial)}
+            };
+            manifest_clip.recording_outputs.push_back(std::move(output));
         }
     }
 

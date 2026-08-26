@@ -557,6 +557,8 @@ bool gui_attach_crop_rolling_outputs_to_clips(
             output.tuning = clip.value("tuning", std::string("lossless"));
             output.pixel_source_format = "mono8";
             output.encoded_format = "nv12";
+            output.encoding_budget = clip.value(
+                "encoding_budget", nlohmann::json::object());
             output.details = {
                 {"clip_index", clip_index},
                 {"clip_id", clip.value("clip_id", std::string())},
@@ -838,6 +840,8 @@ bool gui_write_external_rolling_recording_session_manifest(
             output.pixel_source_format = "mono8";
             output.encoded_format = "nv12";
             output.coordinate_space = "full_frame_pixels";
+            output.encoding_budget = clip.value(
+                "encoding_budget", nlohmann::json::object());
             output.details = {
                 {"clip_index", clip_index},
                 {"clip_id", manifest_clip.clip_id},
@@ -1442,6 +1446,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
     nlohmann::json recording_backend = nlohmann::json::object();
     bool external_recorder_ok = true;
     std::string external_recorder_error;
+    std::vector<orange::session::RecordingOutputDescriptor> external_full_outputs;
     std::vector<orange::session::RecordingOutputDescriptor> external_crop_outputs;
     const bool crop_external_recorder_active = inputs->crop_external_recorder_active;
     bool crop_external_recorder_lifecycle_ok = true;
@@ -1769,12 +1774,13 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                     }
                 }
 
-                if (!runtime_contract_ok || worker_failed || merged_failed ||
-                    frames_received == 0 ||
-                    frames_encoded == 0 || !encode_accounting_complete ||
-                    packets_written != frames_encoded || mp4.empty() ||
-                    !metadata_complete ||
-                    !std::filesystem::exists(mp4)) {
+                const bool stream_output_complete =
+                    runtime_contract_ok && !worker_failed && !merged_failed &&
+                    frames_received > 0 && frames_encoded > 0 &&
+                    encode_accounting_complete &&
+                    packets_written == frames_encoded && !mp4.empty() &&
+                    metadata_complete && std::filesystem::exists(mp4);
+                if (!stream_output_complete) {
                     external_recorder_ok = false;
                     if (!external_recorder_error.empty()) {
                         external_recorder_error += "; ";
@@ -1809,6 +1815,29 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                     : metadata_stats.recording_frame_id_gaps;
                 artifact.packet_count = packets_written;
                 artifact.packet_count_source = "external_recorder_summary.packets_written";
+
+                orange::session::RecordingOutputDescriptor full_output =
+                    orange::session::build_full_recording_output_descriptor(
+                        artifact,
+                        "external_ipc",
+                        stream_output_complete ? "completed" : "incomplete");
+                full_output.summary_path = stream.summary_json;
+                full_output.frame_rate = stream.encode_fps;
+                full_output.codec = stream.codec;
+                full_output.container = "mp4";
+                full_output.tuning = stream.tuning;
+                full_output.pixel_source_format = "mono8";
+                full_output.encoded_format = "nv12";
+                full_output.encoding_budget = summary.value(
+                    "encoding_budget", nlohmann::json::object());
+                full_output.details = {
+                    {"stream_id", stream.stream_id},
+                    {"stream_kind", stream.stream_kind},
+                    {"output_kind", stream.output_kind},
+                    {"analytics_gpu_id", stream.analytics_gpu_id},
+                    {"recorder_gpu_id", stream.recorder_gpu_id}
+                };
+                external_full_outputs.push_back(std::move(full_output));
                 camera_artifacts.push_back(std::move(artifact));
 
                 summary_paths[serial] = stream.summary_json;
@@ -1934,6 +1963,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                 const std::string& keyframes,
                 const uint64_t frames_encoded,
                 const uint64_t packets_written,
+                const nlohmann::json& encoding_budget,
                 const bool stream_ok,
                 const std::string& stream_error) {
                 orange::session::RecordingOutputDescriptor output;
@@ -1967,6 +1997,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                 output.tuning = stream.tuning;
                 output.pixel_source_format = "mono8";
                 output.encoded_format = "nv12";
+                output.encoding_budget = encoding_budget;
                 output.details = {
                     {"stream_id", stream.stream_id},
                     {"stream_kind", stream.stream_kind},
@@ -2050,6 +2081,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                     stream.mp4_keyframe,
                     0,
                     0,
+                    nlohmann::json::object(),
                     false,
                     stream_error);
                 continue;
@@ -2250,7 +2282,10 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                             {"frame_rate", stream.encode_fps},
                             {"codec", stream.codec},
                             {"container", "mp4"},
-                            {"tuning", stream.tuning}
+                            {"tuning", stream.tuning},
+                            {"encoding_budget",
+                             clip.value(
+                                 "encoding_budget", nlohmann::json::object())}
                         });
                     }
 
@@ -2354,6 +2389,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                 keyframes,
                 frames_encoded,
                 packets_written,
+                summary.value("encoding_budget", nlohmann::json::object()),
                 stream_ok,
                 stream_error);
 
@@ -2541,6 +2577,12 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
         inputs->recording_session_available &&
         gui_external_recorder_plan_requests_rolling(
             inputs->external_recorder_lifecycle.plan);
+    // Rolling full-frame clips are the authoritative outputs and are added by
+    // gui_write_external_rolling_recording_session_manifest below. Do not
+    // invent a session-wide full output by pairing aggregate counts with the
+    // first clip's MP4. Crop outputs retain their existing session aggregate.
+    std::vector<orange::session::RecordingOutputDescriptor>
+        external_session_outputs = external_crop_outputs;
 
     if (external_rolling_requested) {
         std::string rolling_error;
@@ -2548,7 +2590,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                 run,
                 inputs->external_recorder_lifecycle.plan,
                 recording_backend,
-                external_crop_outputs,
+                external_session_outputs,
                 recording_session_ok,
                 gui_display_frame_rate,
                 &manifest,
@@ -2608,6 +2650,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
         manifest_options.recording_stop_control = run.stop_control;
         manifest_options.recording_backend = recording_backend;
         manifest_options.cameras = std::move(camera_artifacts);
+        manifest_options.recording_outputs = external_full_outputs;
         if (!inputs->cameras.empty()) {
             const int resolved_crop_size =
                 CropAndEncodeWorker::SanitizeCropSize(crop_size_px);
