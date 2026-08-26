@@ -4691,10 +4691,15 @@ int main(int /*argc*/, char ** /*args*/) {
     // Initialize the YOLOv8 plugins
     YOLOv8::initialize_plugins();
 
-    std::filesystem::path cwd = std::filesystem::current_path();
-    std::string delimiter = "/";
-    std::vector<std::string> tokenized_path = string_split(cwd, delimiter);
-    std::string orange_root_dir_str = "/home/" + tokenized_path[2] + "/orange_data";
+    std::string orange_root_warning;
+    std::string orange_root_dir_str = build_default_orange_root_dir(&orange_root_warning);
+    if (orange_root_dir_str.empty()) {
+        std::cerr << "Failed to resolve Orange data root: " << orange_root_warning << std::endl;
+        return EXIT_FAILURE;
+    }
+    if (!orange_root_warning.empty()) {
+        std::cerr << "Orange data root warning: " << orange_root_warning << std::endl;
+    }
     prepare_application_folders(orange_root_dir_str);
     AppStorageConfig app_storage_config;
     std::string app_storage_config_error;

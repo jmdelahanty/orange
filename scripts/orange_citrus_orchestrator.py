@@ -441,6 +441,13 @@ def orange_ready_for_citrus(status: dict[str, Any]) -> bool:
     return json_bool(json_path(status, ["readiness", "ready_for_citrus_experiment"], False))
 
 
+def orange_recording_covers_active_citrus(status: dict[str, Any]) -> bool:
+    return (
+        json_bool(json_path(status, ["readiness", "recording_active"], False))
+        and not orange_recording_finalized(status)
+    )
+
+
 def orange_recording_finalized(status: dict[str, Any]) -> bool:
     return json_bool(json_path(status, ["readiness", "recording_finalized"], False))
 
@@ -2034,6 +2041,7 @@ class Orchestrator:
         self.citrus_daily_registration_mode_response: dict[str, Any] | None = None
         self.last_orange_status: dict[str, Any] = {}
         self.last_citrus_status: dict[str, Any] = {}
+        self.last_orange_coverage_check_monotonic = 0.0
 
     def step(self, name: str) -> StepLog:
         item = StepLog(name=name)
@@ -2132,14 +2140,23 @@ class Orchestrator:
                     )
                     return inferred_status
             self.raise_if_started_process_exited(f"waiting for {label} {description}")
+            status_received = False
             try:
                 _, status = self.status(label, schema_id, socket_path)
                 last_status = status
                 if predicate(status):
                     step.finish(ok=True, status=status)
                     return status
+                status_received = True
             except (OSError, TimeoutError, json.JSONDecodeError, OrchestratorError) as exc:
                 last_error = str(exc)
+            if (
+                status_received
+                and label == "citrus"
+                and description == "terminal_state"
+                and self.orange_recording_started
+            ):
+                self.check_orange_recording_coverage(last_status, step)
             if label == "orange" and last_status:
                 failure = orange_wait_failure(
                     last_status,
@@ -2166,6 +2183,33 @@ class Orchestrator:
         step.finish(ok=False, last_error=last_error, last_status=last_status)
         raise OrchestratorError(f"timed out waiting for {label} {description}: {last_error}")
 
+    def check_orange_recording_coverage(
+        self,
+        citrus_status: dict[str, Any],
+        step: StepLog,
+    ) -> None:
+        now = time.monotonic()
+        if now - self.last_orange_coverage_check_monotonic < 1.0:
+            return
+        _, orange_status = self.status(
+            "orange",
+            ORANGE_REQUEST_SCHEMA_ID,
+            self.args.orange_socket,
+        )
+        self.last_orange_coverage_check_monotonic = now
+        if orange_recording_covers_active_citrus(orange_status):
+            return
+        step.finish(
+            ok=False,
+            outcome="orange_recording_ended_before_citrus",
+            status=citrus_status,
+            orange_status=orange_status,
+        )
+        raise OrchestratorError(
+            "Orange recording ended before Citrus reached a terminal state; "
+            "refusing an acquisition interval with unbound Shaman identities"
+        )
+
     def wait_for_citrus_terminal_or_run_duration(self) -> dict[str, Any]:
         if self.args.citrus_run_seconds <= 0.0:
             return self.wait_for_status(
@@ -2184,14 +2228,20 @@ class Orchestrator:
         last_status: dict[str, Any] = {}
         while time.monotonic() <= deadline:
             self.raise_if_started_process_exited("waiting for Citrus terminal state or run duration")
+            status_received = False
             try:
                 _, status = self.status("citrus", CITRUS_REQUEST_SCHEMA_ID, self.args.citrus_socket)
                 last_status = status
                 if citrus_is_terminal(status):
                     step.finish(ok=True, outcome="terminal", status=status)
                     return status
+                status_received = True
+            except (OSError, TimeoutError, json.JSONDecodeError, OrchestratorError) as exc:
+                last_error = str(exc)
+            if status_received:
                 now = time.monotonic()
-                if citrus_active_or_armed(status):
+                self.check_orange_recording_coverage(last_status, step)
+                if citrus_active_or_armed(last_status):
                     if active_since is None:
                         active_since = now
                     active_elapsed_s = now - active_since
@@ -2201,11 +2251,9 @@ class Orchestrator:
                             outcome="run_duration_elapsed",
                             run_seconds=self.args.citrus_run_seconds,
                             active_elapsed_s=active_elapsed_s,
-                            status=status,
+                            status=last_status,
                         )
-                        return status
-            except (OSError, TimeoutError, json.JSONDecodeError, OrchestratorError) as exc:
-                last_error = str(exc)
+                        return last_status
             time.sleep(self.args.poll_interval_seconds)
         step.finish(ok=False, last_error=last_error, last_status=last_status)
         raise OrchestratorError(

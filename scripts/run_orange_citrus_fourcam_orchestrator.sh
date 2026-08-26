@@ -32,8 +32,11 @@ Options:
   --summary-json <path>          Combined orchestrator summary path.
   --orange-command <command>     Override Orange launch command.
   --citrus-command <command>     Override Citrus launch command.
-  --record-seconds <seconds>     Orange recording_control record_for_seconds
-                                  for manifests/rolling contracts.
+  --record-seconds <seconds>     Orange hard duration ceiling. Omit this for
+                                  orchestrator-stopped single-clip runs so the
+                                  Citrus terminal state remains the sole stop
+                                  authority. Rolling runs still require a
+                                  ceiling longer than the Citrus active run.
   --warmup-seconds <seconds>     Orange stream warmup before recording.
   --clip-seconds <seconds>       Enable Orange rolling clips with this duration.
   --attach-orange                Do not launch Orange; attach to its socket.
@@ -561,6 +564,30 @@ if [[ -n "${CITRUS_RUN_SECONDS}" ]]; then
     echo "ORANGE_CITRUS_CITRUS_RUN_SECONDS must be a positive integer" >&2
     exit 2
   }
+fi
+if [[ "${STOP_POLICY}" != "none" &&
+      -n "${ORANGE_RECORD_SECONDS}" &&
+      -z "${ORANGE_CLIP_SECONDS}" ]]; then
+  cat >&2 <<'EOF'
+--record-seconds conflicts with an orchestrator-owned stop for a single-clip run.
+Omit --record-seconds and use --citrus-run-seconds for a bounded smoke test.
+This prevents Orange's duration timer from ending the recording before Citrus is terminal.
+EOF
+  exit 2
+fi
+if [[ "${STOP_POLICY}" != "none" &&
+      -n "${ORANGE_RECORD_SECONDS}" &&
+      -n "${ORANGE_CLIP_SECONDS}" &&
+      -n "${CITRUS_RUN_SECONDS}" ]]; then
+  minimum_rolling_record_seconds=$((CITRUS_RUN_SECONDS + 10))
+  if (( ORANGE_RECORD_SECONDS < minimum_rolling_record_seconds )); then
+    cat >&2 <<EOF
+Rolling orchestration requires --record-seconds to be at least 10 seconds longer
+than --citrus-run-seconds so Orange's duration ceiling remains a watchdog rather
+than a competing stop authority. Required: >= ${minimum_rolling_record_seconds}.
+EOF
+    exit 2
+  fi
 fi
 if [[ -n "${ORANGE_DRAIN_TIMEOUT_SECONDS}" ]]; then
   is_nonnegative_integer "${ORANGE_DRAIN_TIMEOUT_SECONDS}" || {
