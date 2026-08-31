@@ -15,12 +15,13 @@ namespace orange::spatial_roi::ipc {
 // This is deliberately a new protocol namespace.  It is not wire-compatible
 // with external_recorder_ipc_protocol.h (which remains protocol v1 for the
 // existing full-frame and scalar-crop clients).
-// This slice only defines the contract.  The future supervisor must negotiate
-// this protocol on a dedicated ROI-aware endpoint, validate the verified-plan
-// identity before accepting FRAME messages, track the three-part correlation
-// through ACK/RELEASE, and import the two CUDA IPC handles without routing
-// these messages through the legacy probe parser.  The probe needs a separate
-// ROI mode and matching metadata/finalization accounting.
+// This slice defines the closed grammar plus a producer-side exporter and
+// bounded HELLO/FRAME/ACK/RELEASE handoff.  The future supervisor/recorder must
+// negotiate it on a dedicated ROI-aware endpoint, validate the complete
+// verified-plan stream and frame correlation through ACK/RELEASE, and import
+// both CUDA IPC handles without routing these messages through the legacy
+// probe parser.  The recorder needs separate ROI-aware metadata and
+// finalization accounting.
 inline constexpr const char* kSpatialRoiIpcProtocolName =
     "orange.spatial_roi.external_recorder_ipc";
 inline constexpr int kSpatialRoiIpcProtocolVersion = 2;
@@ -29,6 +30,28 @@ inline constexpr const char* kSpatialRoiIpcFrameKind = "FRAME";
 inline constexpr const char* kSpatialRoiIpcAckKind = "ACK";
 inline constexpr const char* kSpatialRoiIpcReleaseKind = "RELEASE";
 inline constexpr const char* kSpatialRoiIpcTerminalErrorKind = "TERMINAL_ERROR";
+inline constexpr const char* kSpatialRoiIpcDrainRequestKind = "DRAIN_REQUEST";
+inline constexpr const char* kSpatialRoiIpcDrainStatusKind = "DRAIN_STATUS";
+inline constexpr const char* kSpatialRoiIpcFinalizeRequestKind =
+    "FINALIZE_REQUEST";
+inline constexpr const char* kSpatialRoiIpcFinalizeStatusKind =
+    "FINALIZE_STATUS";
+
+inline constexpr const char* kSpatialRoiIpcProducerRole = "producer";
+inline constexpr const char* kSpatialRoiIpcRecorderRole = "recorder";
+inline constexpr const char* kSpatialRoiIpcDrainStateDraining = "draining";
+inline constexpr const char* kSpatialRoiIpcDrainStateDrained = "drained";
+inline constexpr const char* kSpatialRoiIpcDrainStateFailed = "failed";
+inline constexpr const char* kSpatialRoiIpcFinalizeStateFinalized =
+    "finalized";
+inline constexpr const char* kSpatialRoiIpcFinalizeStateFailed = "failed";
+
+// FINALIZE_REQUEST uses a fresh 16-byte (32 lower-case hex character) nonce.
+// DRAIN_REQUEST and recorder status messages use positive, strictly increasing
+// sequence numbers in one session.  The nonce makes a finalize request safe to
+// correlate even when a supervisor is restarted; the sequences make duplicate
+// or replayed status records fail at the session state seam.
+inline constexpr std::size_t kSpatialRoiIpcFinalizeNonceHexBytes = 32;
 
 // Messages are compact JSON records sent one per line.  The bound is on the
 // encoded JSON line, not on the device allocation named by a CUDA handle.
@@ -173,11 +196,54 @@ struct SpatialRoiIpcTerminalError {
     std::optional<SpatialRoiIpcCorrelation> correlation;
 };
 
+// The control exchange is intentionally separate from FRAME/ACK/RELEASE:
+// producer requests are sent only producer -> recorder, and recorder status is
+// sent only recorder -> producer.  Each message repeats the complete stream
+// identity, including recording_id and its cryptographic token, so a control
+// record cannot be applied to a different recording or ROI stream.
+struct SpatialRoiIpcDrainRequest {
+    SpatialRoiIpcStreamIdentity stream;
+    std::string sender_role = kSpatialRoiIpcProducerRole;
+    std::uint64_t drain_sequence = 0;
+    std::string reason;
+};
+
+struct SpatialRoiIpcDrainStatus {
+    SpatialRoiIpcStreamIdentity stream;
+    std::string sender_role = kSpatialRoiIpcRecorderRole;
+    std::uint64_t drain_sequence = 0;
+    std::uint64_t status_sequence = 0;
+    std::string state;
+    std::string reason;
+};
+
+struct SpatialRoiIpcFinalizeRequest {
+    SpatialRoiIpcStreamIdentity stream;
+    std::string sender_role = kSpatialRoiIpcProducerRole;
+    std::uint64_t drain_sequence = 0;
+    std::string finalize_nonce;
+    std::string reason;
+};
+
+struct SpatialRoiIpcFinalizeStatus {
+    SpatialRoiIpcStreamIdentity stream;
+    std::string sender_role = kSpatialRoiIpcRecorderRole;
+    std::uint64_t drain_sequence = 0;
+    std::string finalize_nonce;
+    std::uint64_t status_sequence = 0;
+    std::string state;
+    std::string reason;
+};
+
 using SpatialRoiIpcMessage = std::variant<SpatialRoiIpcHello,
                                           SpatialRoiIpcFrame,
                                           SpatialRoiIpcAck,
                                           SpatialRoiIpcRelease,
-                                          SpatialRoiIpcTerminalError>;
+                                          SpatialRoiIpcTerminalError,
+                                          SpatialRoiIpcDrainRequest,
+                                          SpatialRoiIpcDrainStatus,
+                                          SpatialRoiIpcFinalizeRequest,
+                                          SpatialRoiIpcFinalizeStatus>;
 
 bool validate_spatial_roi_ipc_buffer(
     const SpatialRoiCudaIpcBuffer& buffer,
@@ -198,6 +264,18 @@ bool validate_spatial_roi_ipc_release(
 bool validate_spatial_roi_ipc_terminal_error(
     const SpatialRoiIpcTerminalError& terminal_error,
     std::string* error_out = nullptr);
+bool validate_spatial_roi_ipc_drain_request(
+    const SpatialRoiIpcDrainRequest& request,
+    std::string* error_out = nullptr);
+bool validate_spatial_roi_ipc_drain_status(
+    const SpatialRoiIpcDrainStatus& status,
+    std::string* error_out = nullptr);
+bool validate_spatial_roi_ipc_finalize_request(
+    const SpatialRoiIpcFinalizeRequest& request,
+    std::string* error_out = nullptr);
+bool validate_spatial_roi_ipc_finalize_status(
+    const SpatialRoiIpcFinalizeStatus& status,
+    std::string* error_out = nullptr);
 
 nlohmann::json spatial_roi_ipc_message_to_json(
     const SpatialRoiIpcMessage& message);
@@ -216,6 +294,64 @@ bool parse_spatial_roi_ipc_message(
     const std::string& wire,
     SpatialRoiIpcMessage* message_out,
     std::string* error_out = nullptr);
+
+// Stateful validation for the four control messages.  This is deliberately a
+// per-session object: construct a new instance for a new producer generation
+// or recording identity.  It binds the first DRAIN_REQUEST stream identity,
+// requires DRAIN_STATUS before FINALIZE_REQUEST, requires the exact nonce in
+// FINALIZE_STATUS, and rejects duplicates/out-of-order records.
+enum class SpatialRoiIpcControlPhase {
+    kIdle,
+    kDrainRequested,
+    kDraining,
+    kDrained,
+    kFinalizeRequested,
+    kFinalized,
+    kFailed,
+};
+
+class SpatialRoiIpcControlState final {
+public:
+    bool accept(const SpatialRoiIpcMessage& message,
+                std::string* error_out = nullptr);
+    bool accept(const SpatialRoiIpcDrainRequest& request,
+                std::string* error_out = nullptr);
+    bool accept(const SpatialRoiIpcDrainStatus& status,
+                std::string* error_out = nullptr);
+    bool accept(const SpatialRoiIpcFinalizeRequest& request,
+                std::string* error_out = nullptr);
+    bool accept(const SpatialRoiIpcFinalizeStatus& status,
+                std::string* error_out = nullptr);
+
+    SpatialRoiIpcControlPhase phase() const noexcept { return phase_; }
+    std::uint64_t drain_sequence() const noexcept { return drain_sequence_; }
+    std::uint64_t last_status_sequence() const noexcept
+    {
+        return last_status_sequence_;
+    }
+    const std::string& finalize_nonce() const noexcept
+    {
+        return finalize_nonce_;
+    }
+    const std::optional<SpatialRoiIpcStreamIdentity>& stream_identity() const
+        noexcept
+    {
+        return stream_identity_;
+    }
+
+private:
+    bool bind_or_match_stream(
+        const SpatialRoiIpcStreamIdentity& stream,
+        std::string* error_out);
+    bool accept_status_sequence(std::uint64_t status_sequence,
+                                std::string* error_out);
+
+    SpatialRoiIpcControlPhase phase_ = SpatialRoiIpcControlPhase::kIdle;
+    std::optional<SpatialRoiIpcStreamIdentity> stream_identity_;
+    std::uint64_t drain_sequence_ = 0;
+    std::uint64_t last_status_sequence_ = 0;
+    std::string finalize_nonce_;
+};
 
 // Host-only collision guard for a supervisor's outstanding frame table.  It
 // deliberately keys all three routing dimensions and does not consume entries;

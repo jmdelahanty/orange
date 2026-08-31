@@ -4,7 +4,9 @@
 #include "shaman_v2_recording_identity.h"
 
 #include <functional>
+#include <fstream>
 #include <iostream>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -19,6 +21,62 @@ void require(bool condition, const std::string& message)
     if (!condition) {
         throw std::runtime_error(message);
     }
+}
+
+void validates_normative_ipc_v2_schema()
+{
+    const std::string schema_path =
+        std::string(ORANGE_SOURCE_DIR) +
+        "/docs/schemas/orange_spatial_roi_recorder_ipc_v2.schema.json";
+    std::ifstream input(schema_path);
+    require(input.good(), "failed to open normative IPC-v2 schema");
+
+    nlohmann::json schema;
+    input >> schema;
+    require(schema.value("$id", std::string()) ==
+                "orange.spatial_roi_recording.external_recorder_ipc_v2",
+            "normative IPC-v2 schema id mismatch");
+    require(schema.value("additionalProperties", true) == false,
+            "normative IPC-v2 schema must be closed");
+
+    const std::set<std::string> required =
+        schema.at("required").get<std::set<std::string>>();
+    require(required ==
+                std::set<std::string>{"protocol", "version", "features",
+                                      "source_lifetime_mode", "ack", "release",
+                                      "drain_finalize", "bounds"},
+            "normative IPC-v2 schema top-level required set drifted");
+    const nlohmann::json& properties = schema.at("properties");
+    require(properties.at("features").at("const") ==
+                nlohmann::json{"cuda_ipc", "packed_mono8", "ack_release",
+                               "terminal_error"},
+            "normative IPC-v2 feature list drifted");
+    require(properties.at("drain_finalize")
+                    .at("properties")
+                    .at("status")
+                    .at("const") == "defined_not_negotiated" &&
+                properties.at("drain_finalize")
+                    .at("properties")
+                    .at("operational")
+                    .at("const") == false,
+            "drain/finalize grammar must remain explicitly non-operational");
+    require(properties.at("ack")
+                    .at("properties")
+                    .at("accepted_false")
+                    .at("properties")
+                    .at("source_safe_after_ack")
+                    .at("const") == false &&
+                properties.at("ack")
+                    .at("properties")
+                    .at("accepted_false")
+                    .at("properties")
+                    .at("release_required")
+                    .at("const") == true,
+            "rejected ACK must remain non-source-safe until RELEASE");
+    const std::set<std::string> release_required =
+        properties.at("release").at("required").get<std::set<std::string>>();
+    require(release_required.count("required_after_rejected_ack") == 1,
+            "normative release schema omitted rejected-ACK ownership");
 }
 
 std::string digest(char fill)
@@ -124,7 +182,7 @@ void builds_one_strict_nonrolling_stream_per_roi()
                 "independent_lossless_external_ipc",
             "contract backend mismatch");
     require(contract.value("mode", std::string()) ==
-                "spatial_roi_external_ipc_v1",
+                "spatial_roi_external_recorder_v1",
             "contract mode mismatch");
     require(contract.value("recording_id", std::string()) ==
                 plan.at("plan").at("recording_id").get<std::string>(),
@@ -150,8 +208,90 @@ void builds_one_strict_nonrolling_stream_per_roi()
             "spatial ROI contract must be non-rolling");
     require(contract.at("recording_control").at("clip_seconds").get<int>() == 0,
             "spatial ROI contract must set clip_seconds=0");
+    const nlohmann::json expected_ipc_v2 = {
+        {"protocol", "orange.spatial_roi.external_recorder_ipc"},
+        {"version", 2},
+        {"features", {"cuda_ipc", "packed_mono8", "ack_release",
+                       "terminal_error"}},
+        {"source_lifetime_mode", "deferred_release"},
+        {"ack", {
+            {"message_kind", "ACK"},
+            {"accepted_true", {
+                {"means", "recorder_accepted_frame_and_retains_source_access"},
+                {"source_safe_after_ack", false},
+                {"release_required", true},
+            }},
+            {"accepted_false", {
+                {"means", "recorder_rejected_frame_but_source_access_is_not_yet_released"},
+                {"source_safe_after_ack", false},
+                {"release_required", true},
+            }},
+        }},
+        {"release", {
+            {"message_kind", "RELEASE"},
+            {"means", "recorder_finished_with_source_allocation"},
+            {"source_safe_after_release", true},
+            {"required_after_accepted_ack", true},
+            {"required_after_rejected_ack", true},
+            {"does_not_mean_encode_or_disk_complete", true},
+        }},
+        {"drain_finalize", {
+            {"status", "defined_not_negotiated"},
+            {"operational", false},
+            {"message_order", {"DRAIN_REQUEST", "DRAIN_STATUS",
+                                "FINALIZE_REQUEST", "FINALIZE_STATUS"}},
+            {"drain_request", {
+                {"message_kind", "DRAIN_REQUEST"},
+                {"sender", "producer"},
+                {"receiver", "recorder"},
+                {"correlation", "stream_identity_and_drain_sequence"},
+                {"reason_required", true},
+            }},
+            {"drain_status", {
+                {"message_kind", "DRAIN_STATUS"},
+                {"sender", "recorder"},
+                {"receiver", "producer"},
+                {"states", {"draining", "drained", "failed"}},
+                {"correlation", "stream_identity_and_drain_sequence"},
+                {"reason_required", true},
+                {"finalize_request_allowed_only_when", "state=drained"},
+            }},
+            {"finalize_request", {
+                {"message_kind", "FINALIZE_REQUEST"},
+                {"sender", "producer"},
+                {"receiver", "recorder"},
+                {"requires", "matching_drained_status"},
+                {"correlation", "stream_identity_and_drain_sequence"},
+                {"nonce", "fresh_16_byte_lower_hex"},
+                {"reason_required", true},
+            }},
+            {"finalize_status", {
+                {"message_kind", "FINALIZE_STATUS"},
+                {"sender", "recorder"},
+                {"receiver", "producer"},
+                {"states", {"finalized", "failed"}},
+                {"correlation", "stream_identity_drain_sequence_and_finalize_nonce"},
+                {"nonce", "must_equal_request"},
+                {"reason_required", true},
+                {"session_finalized_only_when", "state=finalized"},
+            }},
+        }},
+        {"bounds", {
+            {"queue_capacity_frames_per_stream", 8},
+            {"max_outstanding_frames_per_stream", 8},
+            {"max_queue_capacity_frames_per_stream", 4096},
+            {"queue_capacity_frames_total", 32},
+            {"max_outstanding_frames_total", 32},
+            {"overflow_action", "reject_frame_without_releasing_prior_frames"},
+            {"producer_backpressure", "nonblocking_fail_closed"},
+        }},
+    };
+    require(contract.at("ipc_v2") == expected_ipc_v2,
+            "contract must contain the exact closed IPC-v2 handoff object");
 
     std::vector<std::string> stream_ids;
+    std::set<std::string> recorder_log_paths;
+    std::set<std::string> transport_sidecar_paths;
     for (const auto& roi_id : {"roi_1", "roi_2", "roi_3", "roi_4"}) {
         const std::string roi_name(roi_id);
         const std::string stream_id =
@@ -227,16 +367,47 @@ void builds_one_strict_nonrolling_stream_per_roi()
         require(stream.at("frame_identity").at("roi_stream_frame_index") ==
                     "dense_one_based",
                 "ROI-local frame indices must match the frame contract");
+        require(stream.at("frame_identity").at("key_fields") ==
+                    nlohmann::json{
+                        "recording_identity_token",
+                        "producer_generation",
+                        "logical_stream_id",
+                        "recording_frame_id",
+                        "roi_stream_frame_index",
+                    },
+                "frame identity key fields must include every cross-session dimension");
         require(stream.at("expected_artifacts").at("video").get<std::string>()
                     .find("/tmp/orange_roi_contract_test/") == 0,
                 "video artifact must be rooted under recording_root");
         require(stream.at("expected_artifacts").contains("status") &&
                     stream.at("expected_artifacts").contains("video_sanity"),
                 "strict recorder contract must name status and sanity artifacts");
+        require(stream.at("expected_artifacts").contains("recorder_log") &&
+                    stream.at("expected_artifacts").contains("transport_sidecar"),
+                "strict recorder contract must name recorder log and transport sidecar");
+        require(stream.at("recorder_log") ==
+                    stream.at("expected_artifacts").at("recorder_log") &&
+                    stream.at("transport_sidecar") ==
+                        stream.at("expected_artifacts").at("transport_sidecar"),
+                "stream recorder log and transport sidecar paths must be canonical");
+        require(recorder_log_paths.insert(
+                    stream.at("recorder_log").get<std::string>()).second,
+                "recorder log paths must be unique per logical stream");
+        require(transport_sidecar_paths.insert(
+                    stream.at("transport_sidecar").get<std::string>()).second,
+                "transport sidecar paths must be unique per logical stream");
+        require(stream.at("recorder_log").get<std::string>().find(
+                    "/tmp/orange_roi_contract_test/") == 0 &&
+                    stream.at("transport_sidecar").get<std::string>().find(
+                        "/tmp/orange_roi_contract_test/") == 0,
+                "recorder log and transport sidecar must be rooted under recording_root");
         stream_ids.push_back(stream_id);
     }
     require(contract.at("stream_order") == stream_ids,
             "stream order does not exactly preserve verified plan order");
+    require(recorder_log_paths.size() == stream_ids.size() &&
+                transport_sidecar_paths.size() == stream_ids.size(),
+            "each logical stream must have one unique log and transport sidecar path");
     require(contract.value("require_gop_routing", true) == false,
             "independent GOP-1 ROI streams must not require shard routing");
 }
@@ -311,6 +482,8 @@ void rejects_bad_root_and_tampered_or_duplicate_plan()
 int main()
 {
     const std::vector<std::pair<std::string, std::function<void()>>> tests = {
+        {"validates_normative_ipc_v2_schema",
+         validates_normative_ipc_v2_schema},
         {"builds_one_strict_nonrolling_stream_per_roi",
          builds_one_strict_nonrolling_stream_per_roi},
         {"rejects_missing_extra_and_negative_gpu_mappings",

@@ -414,7 +414,30 @@ bool handle_hex_is_canonical(const std::string& value)
 
 bool role_is_valid(const std::string& role)
 {
-    return role == "producer" || role == "recorder";
+    return role == kSpatialRoiIpcProducerRole ||
+           role == kSpatialRoiIpcRecorderRole;
+}
+
+bool fixed_lower_hex(const std::string& value, const std::size_t length)
+{
+    return value.size() == length &&
+           std::all_of(value.begin(), value.end(), [](const unsigned char ch) {
+               return (ch >= '0' && ch <= '9') ||
+                      (ch >= 'a' && ch <= 'f');
+           });
+}
+
+bool drain_state_is_valid(const std::string& state)
+{
+    return state == kSpatialRoiIpcDrainStateDraining ||
+           state == kSpatialRoiIpcDrainStateDrained ||
+           state == kSpatialRoiIpcDrainStateFailed;
+}
+
+bool finalize_state_is_valid(const std::string& state)
+{
+    return state == kSpatialRoiIpcFinalizeStateFinalized ||
+           state == kSpatialRoiIpcFinalizeStateFailed;
 }
 
 bool features_are_valid(const std::vector<std::string>& features,
@@ -626,6 +649,199 @@ bool parse_terminal_error_payload(const json& payload,
         parsed.correlation = std::move(correlation);
     }
     if (!validate_spatial_roi_ipc_terminal_error(parsed, error_out)) {
+        return false;
+    }
+    *out = std::move(parsed);
+    return true;
+}
+
+bool parse_drain_request_payload(const json& payload,
+                                 SpatialRoiIpcDrainRequest* out,
+                                 std::string* error_out)
+{
+    static const std::set<std::string> keys = {
+        "stream", "sender_role", "drain_sequence", "reason"};
+    if (!out || !exact_keys(payload, keys, "DRAIN_REQUEST.payload", error_out)) {
+        return out ? false : fail(error_out, "DRAIN_REQUEST destination is null");
+    }
+    SpatialRoiIpcDrainRequest parsed;
+    if (!stream_identity_from_json(payload.at("stream"),
+                                   &parsed.stream,
+                                   "DRAIN_REQUEST.payload.stream",
+                                   error_out) ||
+        !read_string(payload,
+                     "sender_role",
+                     "DRAIN_REQUEST.payload",
+                     &parsed.sender_role,
+                     error_out) ||
+        !read_u64(payload,
+                  "drain_sequence",
+                  "DRAIN_REQUEST.payload",
+                  &parsed.drain_sequence,
+                  error_out,
+                  true) ||
+        !read_string(payload,
+                     "reason",
+                     "DRAIN_REQUEST.payload",
+                     &parsed.reason,
+                     error_out) ||
+        !validate_spatial_roi_ipc_drain_request(parsed, error_out)) {
+        return false;
+    }
+    *out = std::move(parsed);
+    return true;
+}
+
+bool parse_drain_status_payload(const json& payload,
+                                SpatialRoiIpcDrainStatus* out,
+                                std::string* error_out)
+{
+    static const std::set<std::string> keys = {"stream",
+                                               "sender_role",
+                                               "drain_sequence",
+                                               "status_sequence",
+                                               "state",
+                                               "reason"};
+    if (!out || !exact_keys(payload, keys, "DRAIN_STATUS.payload", error_out)) {
+        return out ? false : fail(error_out, "DRAIN_STATUS destination is null");
+    }
+    SpatialRoiIpcDrainStatus parsed;
+    if (!stream_identity_from_json(payload.at("stream"),
+                                   &parsed.stream,
+                                   "DRAIN_STATUS.payload.stream",
+                                   error_out) ||
+        !read_string(payload,
+                     "sender_role",
+                     "DRAIN_STATUS.payload",
+                     &parsed.sender_role,
+                     error_out) ||
+        !read_u64(payload,
+                  "drain_sequence",
+                  "DRAIN_STATUS.payload",
+                  &parsed.drain_sequence,
+                  error_out,
+                  true) ||
+        !read_u64(payload,
+                  "status_sequence",
+                  "DRAIN_STATUS.payload",
+                  &parsed.status_sequence,
+                  error_out,
+                  true) ||
+        !read_string(payload,
+                     "state",
+                     "DRAIN_STATUS.payload",
+                     &parsed.state,
+                     error_out) ||
+        !read_string(payload,
+                     "reason",
+                     "DRAIN_STATUS.payload",
+                     &parsed.reason,
+                     error_out) ||
+        !validate_spatial_roi_ipc_drain_status(parsed, error_out)) {
+        return false;
+    }
+    *out = std::move(parsed);
+    return true;
+}
+
+bool parse_finalize_request_payload(const json& payload,
+                                    SpatialRoiIpcFinalizeRequest* out,
+                                    std::string* error_out)
+{
+    static const std::set<std::string> keys = {
+        "stream", "sender_role", "drain_sequence", "finalize_nonce", "reason"};
+    if (!out ||
+        !exact_keys(payload, keys, "FINALIZE_REQUEST.payload", error_out)) {
+        return out ? false
+                   : fail(error_out, "FINALIZE_REQUEST destination is null");
+    }
+    SpatialRoiIpcFinalizeRequest parsed;
+    if (!stream_identity_from_json(payload.at("stream"),
+                                   &parsed.stream,
+                                   "FINALIZE_REQUEST.payload.stream",
+                                   error_out) ||
+        !read_string(payload,
+                     "sender_role",
+                     "FINALIZE_REQUEST.payload",
+                     &parsed.sender_role,
+                     error_out) ||
+        !read_u64(payload,
+                  "drain_sequence",
+                  "FINALIZE_REQUEST.payload",
+                  &parsed.drain_sequence,
+                  error_out,
+                  true) ||
+        !read_string(payload,
+                     "finalize_nonce",
+                     "FINALIZE_REQUEST.payload",
+                     &parsed.finalize_nonce,
+                     error_out) ||
+        !read_string(payload,
+                     "reason",
+                     "FINALIZE_REQUEST.payload",
+                     &parsed.reason,
+                     error_out) ||
+        !validate_spatial_roi_ipc_finalize_request(parsed, error_out)) {
+        return false;
+    }
+    *out = std::move(parsed);
+    return true;
+}
+
+bool parse_finalize_status_payload(const json& payload,
+                                   SpatialRoiIpcFinalizeStatus* out,
+                                   std::string* error_out)
+{
+    static const std::set<std::string> keys = {"stream",
+                                               "sender_role",
+                                               "drain_sequence",
+                                               "finalize_nonce",
+                                               "status_sequence",
+                                               "state",
+                                               "reason"};
+    if (!out ||
+        !exact_keys(payload, keys, "FINALIZE_STATUS.payload", error_out)) {
+        return out ? false
+                   : fail(error_out, "FINALIZE_STATUS destination is null");
+    }
+    SpatialRoiIpcFinalizeStatus parsed;
+    if (!stream_identity_from_json(payload.at("stream"),
+                                   &parsed.stream,
+                                   "FINALIZE_STATUS.payload.stream",
+                                   error_out) ||
+        !read_string(payload,
+                     "sender_role",
+                     "FINALIZE_STATUS.payload",
+                     &parsed.sender_role,
+                     error_out) ||
+        !read_u64(payload,
+                  "drain_sequence",
+                  "FINALIZE_STATUS.payload",
+                  &parsed.drain_sequence,
+                  error_out,
+                  true) ||
+        !read_string(payload,
+                     "finalize_nonce",
+                     "FINALIZE_STATUS.payload",
+                     &parsed.finalize_nonce,
+                     error_out) ||
+        !read_u64(payload,
+                  "status_sequence",
+                  "FINALIZE_STATUS.payload",
+                  &parsed.status_sequence,
+                  error_out,
+                  true) ||
+        !read_string(payload,
+                     "state",
+                     "FINALIZE_STATUS.payload",
+                     &parsed.state,
+                     error_out) ||
+        !read_string(payload,
+                     "reason",
+                     "FINALIZE_STATUS.payload",
+                     &parsed.reason,
+                     error_out) ||
+        !validate_spatial_roi_ipc_finalize_status(parsed, error_out)) {
         return false;
     }
     *out = std::move(parsed);
@@ -918,6 +1134,124 @@ bool validate_spatial_roi_ipc_terminal_error(
     return true;
 }
 
+bool validate_spatial_roi_ipc_drain_request(
+    const SpatialRoiIpcDrainRequest& request,
+    std::string* error_out)
+{
+    if (!validate_spatial_roi_ipc_stream_identity(request.stream, error_out)) {
+        return false;
+    }
+    if (request.sender_role != kSpatialRoiIpcProducerRole) {
+        return fail(error_out,
+                    "DRAIN_REQUEST sender_role must be producer");
+    }
+    if (request.drain_sequence == 0) {
+        return fail(error_out,
+                    "DRAIN_REQUEST drain_sequence must be positive");
+    }
+    if (!is_printable_text(request.reason, kSpatialRoiIpcMaxTextBytes, false)) {
+        return fail(error_out,
+                    "DRAIN_REQUEST reason must be non-empty printable text");
+    }
+    if (error_out) {
+        error_out->clear();
+    }
+    return true;
+}
+
+bool validate_spatial_roi_ipc_drain_status(
+    const SpatialRoiIpcDrainStatus& status,
+    std::string* error_out)
+{
+    if (!validate_spatial_roi_ipc_stream_identity(status.stream, error_out)) {
+        return false;
+    }
+    if (status.sender_role != kSpatialRoiIpcRecorderRole) {
+        return fail(error_out,
+                    "DRAIN_STATUS sender_role must be recorder");
+    }
+    if (status.drain_sequence == 0 || status.status_sequence == 0) {
+        return fail(error_out,
+                    "DRAIN_STATUS sequences must be positive");
+    }
+    if (!drain_state_is_valid(status.state)) {
+        return fail(error_out,
+                    "DRAIN_STATUS state is not a supported drain state");
+    }
+    if (!is_printable_text(status.reason, kSpatialRoiIpcMaxTextBytes, false)) {
+        return fail(error_out,
+                    "DRAIN_STATUS reason must be non-empty printable text");
+    }
+    if (error_out) {
+        error_out->clear();
+    }
+    return true;
+}
+
+bool validate_spatial_roi_ipc_finalize_request(
+    const SpatialRoiIpcFinalizeRequest& request,
+    std::string* error_out)
+{
+    if (!validate_spatial_roi_ipc_stream_identity(request.stream, error_out)) {
+        return false;
+    }
+    if (request.sender_role != kSpatialRoiIpcProducerRole) {
+        return fail(error_out,
+                    "FINALIZE_REQUEST sender_role must be producer");
+    }
+    if (request.drain_sequence == 0) {
+        return fail(error_out,
+                    "FINALIZE_REQUEST drain_sequence must be positive");
+    }
+    if (!fixed_lower_hex(request.finalize_nonce,
+                         kSpatialRoiIpcFinalizeNonceHexBytes)) {
+        return fail(error_out,
+                    "FINALIZE_REQUEST finalize_nonce must be 32 lower-case hex characters");
+    }
+    if (!is_printable_text(request.reason, kSpatialRoiIpcMaxTextBytes, false)) {
+        return fail(error_out,
+                    "FINALIZE_REQUEST reason must be non-empty printable text");
+    }
+    if (error_out) {
+        error_out->clear();
+    }
+    return true;
+}
+
+bool validate_spatial_roi_ipc_finalize_status(
+    const SpatialRoiIpcFinalizeStatus& status,
+    std::string* error_out)
+{
+    if (!validate_spatial_roi_ipc_stream_identity(status.stream, error_out)) {
+        return false;
+    }
+    if (status.sender_role != kSpatialRoiIpcRecorderRole) {
+        return fail(error_out,
+                    "FINALIZE_STATUS sender_role must be recorder");
+    }
+    if (status.drain_sequence == 0 || status.status_sequence == 0) {
+        return fail(error_out,
+                    "FINALIZE_STATUS sequences must be positive");
+    }
+    if (!fixed_lower_hex(status.finalize_nonce,
+                         kSpatialRoiIpcFinalizeNonceHexBytes)) {
+        return fail(error_out,
+                    "FINALIZE_STATUS finalize_nonce must be 32 lower-case hex characters");
+    }
+    if (!finalize_state_is_valid(status.state)) {
+        return fail(error_out,
+                    "FINALIZE_STATUS state is not a supported finalize state");
+    }
+    if (!is_printable_text(status.reason, kSpatialRoiIpcMaxTextBytes, false)) {
+        return fail(error_out,
+                    "FINALIZE_STATUS reason must be non-empty printable text");
+    }
+    if (error_out) {
+        error_out->clear();
+    }
+    return true;
+}
+
 nlohmann::json spatial_roi_ipc_message_to_json(
     const SpatialRoiIpcMessage& message)
 {
@@ -948,7 +1282,7 @@ nlohmann::json spatial_roi_ipc_message_to_json(
                     kSpatialRoiIpcReleaseKind,
                     { {"correlation", correlation_to_json(payload.correlation)},
                       {"reason", payload.reason} });
-            } else {
+            } else if constexpr (std::is_same_v<T, SpatialRoiIpcTerminalError>) {
                 return message_envelope(
                     kSpatialRoiIpcTerminalErrorKind,
                     { {"stream", stream_identity_to_json(payload.stream)},
@@ -958,6 +1292,40 @@ nlohmann::json spatial_roi_ipc_message_to_json(
                       {"correlation", payload.correlation
                                                 ? correlation_to_json(*payload.correlation)
                                                 : json(nullptr)} });
+            } else if constexpr (std::is_same_v<T, SpatialRoiIpcDrainRequest>) {
+                return message_envelope(
+                    kSpatialRoiIpcDrainRequestKind,
+                    { {"stream", stream_identity_to_json(payload.stream)},
+                      {"sender_role", payload.sender_role},
+                      {"drain_sequence", payload.drain_sequence},
+                      {"reason", payload.reason} });
+            } else if constexpr (std::is_same_v<T, SpatialRoiIpcDrainStatus>) {
+                return message_envelope(
+                    kSpatialRoiIpcDrainStatusKind,
+                    { {"stream", stream_identity_to_json(payload.stream)},
+                      {"sender_role", payload.sender_role},
+                      {"drain_sequence", payload.drain_sequence},
+                      {"status_sequence", payload.status_sequence},
+                      {"state", payload.state},
+                      {"reason", payload.reason} });
+            } else if constexpr (std::is_same_v<T, SpatialRoiIpcFinalizeRequest>) {
+                return message_envelope(
+                    kSpatialRoiIpcFinalizeRequestKind,
+                    { {"stream", stream_identity_to_json(payload.stream)},
+                      {"sender_role", payload.sender_role},
+                      {"drain_sequence", payload.drain_sequence},
+                      {"finalize_nonce", payload.finalize_nonce},
+                      {"reason", payload.reason} });
+            } else {
+                return message_envelope(
+                    kSpatialRoiIpcFinalizeStatusKind,
+                    { {"stream", stream_identity_to_json(payload.stream)},
+                      {"sender_role", payload.sender_role},
+                      {"drain_sequence", payload.drain_sequence},
+                      {"finalize_nonce", payload.finalize_nonce},
+                      {"status_sequence", payload.status_sequence},
+                      {"state", payload.state},
+                      {"reason", payload.reason} });
             }
         },
         message);
@@ -1024,6 +1392,54 @@ bool spatial_roi_ipc_message_from_json(const nlohmann::json& value,
             return false;
         }
         *message_out = std::move(parsed);
+    } else if (kind == kSpatialRoiIpcDrainRequestKind) {
+        if (!message_kind_and_payload(value,
+                                      kSpatialRoiIpcDrainRequestKind,
+                                      &payload,
+                                      error_out)) {
+            return false;
+        }
+        SpatialRoiIpcDrainRequest parsed;
+        if (!parse_drain_request_payload(*payload, &parsed, error_out)) {
+            return false;
+        }
+        *message_out = std::move(parsed);
+    } else if (kind == kSpatialRoiIpcDrainStatusKind) {
+        if (!message_kind_and_payload(value,
+                                      kSpatialRoiIpcDrainStatusKind,
+                                      &payload,
+                                      error_out)) {
+            return false;
+        }
+        SpatialRoiIpcDrainStatus parsed;
+        if (!parse_drain_status_payload(*payload, &parsed, error_out)) {
+            return false;
+        }
+        *message_out = std::move(parsed);
+    } else if (kind == kSpatialRoiIpcFinalizeRequestKind) {
+        if (!message_kind_and_payload(value,
+                                      kSpatialRoiIpcFinalizeRequestKind,
+                                      &payload,
+                                      error_out)) {
+            return false;
+        }
+        SpatialRoiIpcFinalizeRequest parsed;
+        if (!parse_finalize_request_payload(*payload, &parsed, error_out)) {
+            return false;
+        }
+        *message_out = std::move(parsed);
+    } else if (kind == kSpatialRoiIpcFinalizeStatusKind) {
+        if (!message_kind_and_payload(value,
+                                      kSpatialRoiIpcFinalizeStatusKind,
+                                      &payload,
+                                      error_out)) {
+            return false;
+        }
+        SpatialRoiIpcFinalizeStatus parsed;
+        if (!parse_finalize_status_payload(*payload, &parsed, error_out)) {
+            return false;
+        }
+        *message_out = std::move(parsed);
     } else {
         return fail(error_out, "unsupported spatial ROI IPC message kind");
     }
@@ -1048,8 +1464,16 @@ std::string serialize_spatial_roi_ipc_message(
                 return validate_spatial_roi_ipc_ack(payload, error_out);
             } else if constexpr (std::is_same_v<T, SpatialRoiIpcRelease>) {
                 return validate_spatial_roi_ipc_release(payload, error_out);
-            } else {
+            } else if constexpr (std::is_same_v<T, SpatialRoiIpcTerminalError>) {
                 return validate_spatial_roi_ipc_terminal_error(payload, error_out);
+            } else if constexpr (std::is_same_v<T, SpatialRoiIpcDrainRequest>) {
+                return validate_spatial_roi_ipc_drain_request(payload, error_out);
+            } else if constexpr (std::is_same_v<T, SpatialRoiIpcDrainStatus>) {
+                return validate_spatial_roi_ipc_drain_status(payload, error_out);
+            } else if constexpr (std::is_same_v<T, SpatialRoiIpcFinalizeRequest>) {
+                return validate_spatial_roi_ipc_finalize_request(payload, error_out);
+            } else {
+                return validate_spatial_roi_ipc_finalize_status(payload, error_out);
             }
         },
         message);
@@ -1103,6 +1527,182 @@ bool parse_spatial_roi_ipc_message(const std::string& wire,
                     std::string("invalid spatial ROI IPC JSON: ") +
                         exception.what());
     }
+}
+
+bool SpatialRoiIpcControlState::bind_or_match_stream(
+    const SpatialRoiIpcStreamIdentity& stream,
+    std::string* error_out)
+{
+    if (!stream_identity_) {
+        stream_identity_ = stream;
+        return true;
+    }
+    if (!stream_identity_equal(*stream_identity_, stream)) {
+        return fail(error_out,
+                    "ROI IPC control message stream identity does not match the session");
+    }
+    return true;
+}
+
+bool SpatialRoiIpcControlState::accept_status_sequence(
+    const std::uint64_t status_sequence,
+    std::string* error_out)
+{
+    if (last_status_sequence_ == std::numeric_limits<std::uint64_t>::max() ||
+        status_sequence != last_status_sequence_ + 1) {
+        return fail(error_out,
+                    "ROI IPC recorder status_sequence must increase by exactly one");
+    }
+    last_status_sequence_ = status_sequence;
+    return true;
+}
+
+bool SpatialRoiIpcControlState::accept(
+    const SpatialRoiIpcDrainRequest& request,
+    std::string* error_out)
+{
+    if (!validate_spatial_roi_ipc_drain_request(request, error_out)) {
+        return false;
+    }
+    if (phase_ != SpatialRoiIpcControlPhase::kIdle) {
+        return fail(error_out,
+                    "duplicate or out-of-order DRAIN_REQUEST for ROI IPC session");
+    }
+    if (!bind_or_match_stream(request.stream, error_out)) {
+        return false;
+    }
+    drain_sequence_ = request.drain_sequence;
+    phase_ = SpatialRoiIpcControlPhase::kDrainRequested;
+    if (error_out) {
+        error_out->clear();
+    }
+    return true;
+}
+
+bool SpatialRoiIpcControlState::accept(
+    const SpatialRoiIpcDrainStatus& status,
+    std::string* error_out)
+{
+    if (!validate_spatial_roi_ipc_drain_status(status, error_out)) {
+        return false;
+    }
+    SpatialRoiIpcControlPhase next_phase;
+    if (status.state == kSpatialRoiIpcDrainStateDraining) {
+        if (phase_ != SpatialRoiIpcControlPhase::kDrainRequested &&
+            phase_ != SpatialRoiIpcControlPhase::kDraining) {
+            return fail(error_out,
+                        "DRAIN_STATUS draining is not valid in the current ROI IPC phase");
+        }
+        next_phase = SpatialRoiIpcControlPhase::kDraining;
+    } else if (status.state == kSpatialRoiIpcDrainStateDrained) {
+        if (phase_ != SpatialRoiIpcControlPhase::kDrainRequested &&
+            phase_ != SpatialRoiIpcControlPhase::kDraining) {
+            return fail(error_out,
+                        "DRAIN_STATUS drained is not valid in the current ROI IPC phase");
+        }
+        next_phase = SpatialRoiIpcControlPhase::kDrained;
+    } else {
+        if (phase_ != SpatialRoiIpcControlPhase::kDrainRequested &&
+            phase_ != SpatialRoiIpcControlPhase::kDraining) {
+            return fail(error_out,
+                        "DRAIN_STATUS failed is not valid in the current ROI IPC phase");
+        }
+        next_phase = SpatialRoiIpcControlPhase::kFailed;
+    }
+    if (status.drain_sequence != drain_sequence_) {
+        return fail(error_out,
+                    "DRAIN_STATUS drain_sequence does not match the request");
+    }
+    if (!bind_or_match_stream(status.stream, error_out)) {
+        return false;
+    }
+    if (!accept_status_sequence(status.status_sequence, error_out)) {
+        return false;
+    }
+    phase_ = next_phase;
+    if (error_out) {
+        error_out->clear();
+    }
+    return true;
+}
+
+bool SpatialRoiIpcControlState::accept(
+    const SpatialRoiIpcFinalizeRequest& request,
+    std::string* error_out)
+{
+    if (!validate_spatial_roi_ipc_finalize_request(request, error_out)) {
+        return false;
+    }
+    if (phase_ != SpatialRoiIpcControlPhase::kDrained) {
+        return fail(error_out,
+                    "FINALIZE_REQUEST requires a completed DRAIN_STATUS");
+    }
+    if (request.drain_sequence != drain_sequence_) {
+        return fail(error_out,
+                    "FINALIZE_REQUEST drain_sequence does not match the request");
+    }
+    if (!bind_or_match_stream(request.stream, error_out)) {
+        return false;
+    }
+    finalize_nonce_ = request.finalize_nonce;
+    phase_ = SpatialRoiIpcControlPhase::kFinalizeRequested;
+    if (error_out) {
+        error_out->clear();
+    }
+    return true;
+}
+
+bool SpatialRoiIpcControlState::accept(
+    const SpatialRoiIpcFinalizeStatus& status,
+    std::string* error_out)
+{
+    if (!validate_spatial_roi_ipc_finalize_status(status, error_out)) {
+        return false;
+    }
+    if (phase_ != SpatialRoiIpcControlPhase::kFinalizeRequested) {
+        return fail(error_out,
+                    "FINALIZE_STATUS is not valid in the current ROI IPC phase");
+    }
+    if (status.drain_sequence != drain_sequence_) {
+        return fail(error_out,
+                    "FINALIZE_STATUS drain_sequence does not match the request");
+    }
+    if (status.finalize_nonce != finalize_nonce_) {
+        return fail(error_out,
+                    "FINALIZE_STATUS finalize_nonce does not match the request");
+    }
+    if (!bind_or_match_stream(status.stream, error_out)) {
+        return false;
+    }
+    if (!accept_status_sequence(status.status_sequence, error_out)) {
+        return false;
+    }
+    phase_ = status.state == kSpatialRoiIpcFinalizeStateFinalized
+                 ? SpatialRoiIpcControlPhase::kFinalized
+                 : SpatialRoiIpcControlPhase::kFailed;
+    if (error_out) {
+        error_out->clear();
+    }
+    return true;
+}
+
+bool SpatialRoiIpcControlState::accept(const SpatialRoiIpcMessage& message,
+                                       std::string* error_out)
+{
+    return std::visit(
+        [&](const auto& payload) {
+            using T = std::decay_t<decltype(payload)>;
+            if constexpr (std::is_same_v<T, SpatialRoiIpcDrainRequest> ||
+                          std::is_same_v<T, SpatialRoiIpcDrainStatus> ||
+                          std::is_same_v<T, SpatialRoiIpcFinalizeRequest> ||
+                          std::is_same_v<T, SpatialRoiIpcFinalizeStatus>) {
+                return accept(payload, error_out);
+            } else {
+                return fail(error_out,
+                            "message kind is not an ROI IPC session-control message");
+            }
+        },
+        message);
 }
 
 bool SpatialRoiIpcCorrelationRegistry::note(

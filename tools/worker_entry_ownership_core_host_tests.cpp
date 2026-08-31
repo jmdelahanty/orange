@@ -1,7 +1,9 @@
 #include "worker_entry_ownership_core.h"
+#include "thread.h"
 
 #include <atomic>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -73,6 +75,72 @@ struct HostRelease {
         release_worker_entry_ref(entry, context, HostRecycle{recycled});
     }
 };
+
+struct ThrowingRecycle {
+    int* calls = nullptr;
+
+    bool operator()(HostWorkerEntry*) const
+    {
+        if (calls) {
+            ++*calls;
+        }
+        throw std::runtime_error("synthetic recycle allocation failure");
+    }
+};
+
+struct FalseRecycle {
+    int* calls = nullptr;
+
+    bool operator()(HostWorkerEntry*) const
+    {
+        if (calls) {
+            ++*calls;
+        }
+        return false;
+    }
+};
+
+struct ThrowingRelease {
+    void operator()(
+        HostWorkerEntry*,
+        const WorkerEntryReleaseContext&) const
+    {
+        throw std::runtime_error("synthetic release callback failure");
+    }
+};
+
+struct QueueValue {
+    static int copies_until_throw;
+    static bool throw_on_assignment;
+
+    int value = 0;
+
+    QueueValue() = default;
+    explicit QueueValue(int value_in) : value(value_in) {}
+
+    QueueValue(const QueueValue& other)
+    {
+        if (copies_until_throw == 0) {
+            throw std::runtime_error("synthetic SafeQueue push allocation failure");
+        }
+        if (copies_until_throw > 0) {
+            --copies_until_throw;
+        }
+        value = other.value;
+    }
+
+    QueueValue& operator=(const QueueValue& other)
+    {
+        if (throw_on_assignment) {
+            throw std::runtime_error("synthetic SafeQueue pop assignment failure");
+        }
+        value = other.value;
+        return *this;
+    }
+};
+
+int QueueValue::copies_until_throw = -1;
+bool QueueValue::throw_on_assignment = false;
 
 void test_retain_from_positive_ref_count_increments()
 {
@@ -451,6 +519,143 @@ void test_ref_guard_releases_on_exception_and_recycles_after_last_ref()
     require(recycled.size() == 1, "double release should not recycle again");
 }
 
+void test_throwing_final_recycle_is_dropped_and_reported()
+{
+    reset_worker_entry_release_diagnostics_for_tests();
+    HostWorkerEntry entry;
+    entry.ref_count.store(1, std::memory_order_release);
+    const WorkerEntryReleaseContext context{"2010096", "host_recycle_failure"};
+    int recycle_calls = 0;
+
+    bool caught = false;
+    bool recycled = true;
+    try {
+        recycled = release_worker_entry_ref(
+            &entry,
+            context,
+            ThrowingRecycle{&recycle_calls});
+    } catch (...) {
+        caught = true;
+    }
+
+    require(!caught, "final recycle exceptions must not escape the release boundary");
+    require(!recycled, "a failed final recycle must return false");
+    require(recycle_calls == 1, "the final recycle callback should be attempted once");
+    require(entry.ref_count.load(std::memory_order_acquire) == 0,
+            "a failed final recycle must leave the entry at zero references");
+    require(worker_entry_recycle_failure_count().load(std::memory_order_acquire) == 1,
+            "a failed final recycle should increment the global diagnostic counter");
+    const WorkerEntryRefCountDiagnosticCounts counts =
+        worker_entry_ref_count_diagnostic_counts_for_context(context);
+    require(counts.recycle_failures == 1,
+            "a failed final recycle should increment the context diagnostic counter");
+
+    require(!release_worker_entry_ref(&entry, context, HostRecycle{}),
+            "a dropped zero-ref entry must reject a later release");
+}
+
+void test_false_final_recycle_is_reported_once()
+{
+    reset_worker_entry_release_diagnostics_for_tests();
+    HostWorkerEntry entry;
+    entry.ref_count.store(1, std::memory_order_release);
+    const WorkerEntryReleaseContext context{"2010096", "host_false_recycle"};
+    int recycle_calls = 0;
+
+    require(
+        !release_worker_entry_ref(
+            &entry,
+            context,
+            FalseRecycle{&recycle_calls}),
+        "a recycle callback returning false must fail the final release");
+    require(recycle_calls == 1, "a false recycle callback should be attempted once");
+    require(entry.ref_count.load(std::memory_order_acquire) == 0,
+            "a false recycle callback must leave the entry at zero references");
+    require(worker_entry_recycle_failure_count().load(std::memory_order_acquire) == 1,
+            "a false recycle callback must increment the failure counter exactly once");
+    const WorkerEntryRefCountDiagnosticCounts counts =
+        worker_entry_ref_count_diagnostic_counts_for_context(context);
+    require(counts.recycle_failures == 1,
+            "a false recycle callback must create one context diagnostic");
+}
+
+void test_recycle_failure_counter_saturates()
+{
+    reset_worker_entry_release_diagnostics_for_tests();
+    worker_entry_recycle_failure_count().store(
+        std::numeric_limits<uint64_t>::max(),
+        std::memory_order_release);
+    HostWorkerEntry entry;
+    entry.ref_count.store(1, std::memory_order_release);
+
+    require(
+        !release_worker_entry_ref(&entry, {}, FalseRecycle{}),
+        "a false recycle should still fail when the counter is saturated");
+    require(
+        worker_entry_recycle_failure_count().load(std::memory_order_acquire) ==
+            std::numeric_limits<uint64_t>::max(),
+        "recycle failure counter must saturate instead of wrapping");
+}
+
+void test_guard_contains_arbitrary_release_callback_exception()
+{
+    reset_worker_entry_release_diagnostics_for_tests();
+    HostWorkerEntry entry;
+    entry.ref_count.store(1, std::memory_order_release);
+    const WorkerEntryReleaseContext context{"2010096", "host_throwing_guard"};
+
+    bool caught = false;
+    try {
+        auto guard = make_worker_entry_ref_guard(
+            &entry,
+            context,
+            ThrowingRelease{},
+            true);
+    } catch (...) {
+        caught = true;
+    }
+
+    require(!caught, "guard destruction must contain arbitrary release exceptions");
+    require(worker_entry_recycle_failure_count().load(std::memory_order_acquire) == 1,
+            "guard release exceptions must increment the failure counter once");
+    const WorkerEntryRefCountDiagnosticCounts counts =
+        worker_entry_ref_count_diagnostic_counts_for_context(context);
+    require(counts.recycle_failures == 1,
+            "guard release exceptions must create one context diagnostic");
+}
+
+void test_safe_queue_unlocks_when_push_or_pop_throws()
+{
+    SafeQueue<QueueValue> queue;
+    QueueValue source(42);
+
+    QueueValue::copies_until_throw = 1;
+    bool push_caught = false;
+    try {
+        queue.push(source);
+    } catch (const std::runtime_error&) {
+        push_caught = true;
+    }
+    QueueValue::copies_until_throw = -1;
+    require(push_caught, "SafeQueue push should expose the synthetic copy failure");
+
+    queue.push(source);
+    QueueValue destination;
+    QueueValue::throw_on_assignment = true;
+    bool pop_caught = false;
+    try {
+        (void)queue.pop(destination);
+    } catch (const std::runtime_error&) {
+        pop_caught = true;
+    }
+    QueueValue::throw_on_assignment = false;
+    require(pop_caught, "SafeQueue pop should expose the synthetic assignment failure");
+
+    require(queue.pop(destination), "SafeQueue should remain usable after a throwing pop");
+    require(destination.value == 42,
+            "SafeQueue should preserve the queued item after a throwing pop");
+}
+
 }  // namespace
 
 int main()
@@ -469,6 +674,11 @@ int main()
         test_lease_transfer_prevents_release();
         test_lease_releases_on_exception_unwind();
         test_ref_guard_releases_on_exception_and_recycles_after_last_ref();
+        test_throwing_final_recycle_is_dropped_and_reported();
+        test_false_final_recycle_is_reported_once();
+        test_recycle_failure_counter_saturates();
+        test_guard_contains_arbitrary_release_callback_exception();
+        test_safe_queue_unlocks_when_push_or_pop_throws();
     } catch (const std::exception& e) {
         std::cerr << "worker_entry_ownership_core_host_tests failed: "
                   << e.what() << std::endl;

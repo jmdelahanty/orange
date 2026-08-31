@@ -15,25 +15,76 @@ inline bool retain_worker_entry(WORKER_ENTRY* entry)
     return retain_worker_entry(entry, WorkerEntryReleaseContext{});
 }
 
+// The camera callback is a deliberately narrow seam: production passes the
+// SDK's EVT_CameraQueueFrame, while host tests can inject its return value
+// without constructing a live camera.  The callback must return the SDK-style
+// EVT_ERROR result so non-success values are handled exactly like production.
+template <typename CameraQueueFn>
+inline bool release_worker_entry_to_recycle_with_camera_queue(
+    SafeQueue<WORKER_ENTRY*>* recycle_queue,
+    WORKER_ENTRY* entry,
+    const WorkerEntryReleaseContext& context,
+    CameraQueueFn&& camera_queue) noexcept
+{
+    try {
+        return release_worker_entry_ref(
+            entry,
+            context,
+            [recycle_queue, context, &camera_queue](WORKER_ENTRY* final_entry) -> bool {
+                if (final_entry->gpu_direct_mode &&
+                    final_entry->camera_instance &&
+                    final_entry->camera_frame_struct) {
+                    try {
+                        const EVT_ERROR queue_result = camera_queue(
+                            final_entry->camera_instance,
+                            final_entry->camera_frame_struct);
+                        if (queue_result != EVT_SUCCESS) {
+                            record_worker_entry_recycle_failure_detail(
+                                context,
+                                WorkerEntryRefCountIssueKind::CameraRequeueFailure);
+                            return false;
+                        }
+                    } catch (...) {
+                        record_worker_entry_recycle_failure_detail(
+                            context,
+                            WorkerEntryRefCountIssueKind::CameraRequeueFailure);
+                        return false;
+                    }
+                }
+                if (recycle_queue) {
+                    try {
+                        recycle_queue->push(final_entry);
+                    } catch (...) {
+                        record_worker_entry_recycle_failure_detail(
+                            context,
+                            WorkerEntryRefCountIssueKind::RecycleQueueFailure);
+                        return false;
+                    }
+                }
+                return true;
+            });
+    } catch (...) {
+        // The ordinary finalization path catches recycle callback failures.
+        // This outer boundary also protects against failures in diagnostic
+        // handling (for example, context-bucket allocation) so guards remain
+        // safe during exception unwinding.
+        record_worker_entry_recycle_failure(entry, context);
+        return false;
+    }
+}
+
 inline bool release_worker_entry_to_recycle(
     SafeQueue<WORKER_ENTRY*>* recycle_queue,
     WORKER_ENTRY* entry,
-    const WorkerEntryReleaseContext& context)
+    const WorkerEntryReleaseContext& context) noexcept
 {
-    return release_worker_entry_ref(
+    return release_worker_entry_to_recycle_with_camera_queue(
+        recycle_queue,
         entry,
         context,
-        [recycle_queue](WORKER_ENTRY* final_entry) {
-            if (final_entry->gpu_direct_mode &&
-                final_entry->camera_instance &&
-                final_entry->camera_frame_struct) {
-                EVT_CameraQueueFrame(
-                    final_entry->camera_instance,
-                    final_entry->camera_frame_struct);
-            }
-            if (recycle_queue) {
-                recycle_queue->push(final_entry);
-            }
+        [](Emergent::CEmergentCamera* camera,
+           Emergent::CEmergentFrame* frame) noexcept -> EVT_ERROR {
+            return EVT_CameraQueueFrame(camera, frame);
         });
 }
 
@@ -65,11 +116,11 @@ inline bool release_worker_entry_to_recycle(
 struct WorkerEntryRecycleReleaseFn {
     SafeQueue<WORKER_ENTRY*>* recycle_queue = nullptr;
 
-    void operator()(
+    bool operator()(
         WORKER_ENTRY* release_entry,
-        const WorkerEntryReleaseContext& release_context) const
+        const WorkerEntryReleaseContext& release_context) const noexcept
     {
-        release_worker_entry_to_recycle(
+        return release_worker_entry_to_recycle(
             recycle_queue,
             release_entry,
             release_context);

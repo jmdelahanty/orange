@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <type_traits>
@@ -18,6 +19,9 @@ struct WorkerEntryRefCountDiagnosticCounts {
     uint64_t release_underflows = 0;
     uint64_t double_releases = 0;
     uint64_t retain_after_release = 0;
+    uint64_t recycle_failures = 0;
+    uint64_t camera_requeue_failures = 0;
+    uint64_t recycle_queue_failures = 0;
 };
 
 struct WorkerEntryRefCountDiagnosticBucket {
@@ -30,7 +34,41 @@ enum class WorkerEntryRefCountIssueKind {
     ReleaseUnderflow,
     DoubleRelease,
     RetainAfterRelease,
+    RecycleFailure,
+    CameraRequeueFailure,
+    RecycleQueueFailure,
 };
+
+inline uint64_t saturating_increment_counter(std::atomic<uint64_t>& counter) noexcept
+{
+    constexpr uint64_t kMax = std::numeric_limits<uint64_t>::max();
+    uint64_t current = counter.load(std::memory_order_relaxed);
+    while (current != kMax &&
+           !counter.compare_exchange_weak(
+               current,
+               current + 1,
+               std::memory_order_acq_rel,
+               std::memory_order_relaxed)) {
+    }
+    return current == kMax ? kMax : current + 1;
+}
+
+inline void saturating_increment_counter(uint64_t& counter) noexcept
+{
+    if (counter != std::numeric_limits<uint64_t>::max()) {
+        ++counter;
+    }
+}
+
+inline void saturating_add_counter(uint64_t& counter, uint64_t value) noexcept
+{
+    constexpr uint64_t kMax = std::numeric_limits<uint64_t>::max();
+    if (value > kMax - counter) {
+        counter = kMax;
+    } else {
+        counter += value;
+    }
+}
 
 inline std::atomic<uint64_t>& worker_entry_release_underflow_count()
 {
@@ -45,6 +83,24 @@ inline std::atomic<uint64_t>& worker_entry_release_double_release_count()
 }
 
 inline std::atomic<uint64_t>& worker_entry_retain_after_release_count()
+{
+    static std::atomic<uint64_t> count{0};
+    return count;
+}
+
+inline std::atomic<uint64_t>& worker_entry_recycle_failure_count()
+{
+    static std::atomic<uint64_t> count{0};
+    return count;
+}
+
+inline std::atomic<uint64_t>& worker_entry_camera_requeue_failure_count()
+{
+    static std::atomic<uint64_t> count{0};
+    return count;
+}
+
+inline std::atomic<uint64_t>& worker_entry_recycle_queue_failure_count()
 {
     static std::atomic<uint64_t> count{0};
     return count;
@@ -118,45 +174,67 @@ inline WorkerEntryRefCountDiagnosticCounts worker_entry_ref_count_diagnostic_cou
         total.release_underflows += bucket.counts.release_underflows;
         total.double_releases += bucket.counts.double_releases;
         total.retain_after_release += bucket.counts.retain_after_release;
+        saturating_add_counter(total.recycle_failures, bucket.counts.recycle_failures);
+        saturating_add_counter(
+            total.camera_requeue_failures,
+            bucket.counts.camera_requeue_failures);
+        saturating_add_counter(
+            total.recycle_queue_failures,
+            bucket.counts.recycle_queue_failures);
     }
     return total;
 }
 
 inline void record_worker_entry_context_diagnostic(
     const WorkerEntryReleaseContext& context,
-    const WorkerEntryRefCountIssueKind kind)
+    const WorkerEntryRefCountIssueKind kind) noexcept
 {
-    const std::string camera_serial = worker_entry_context_part(context.camera_serial);
-    const std::string worker_name = worker_entry_context_part(context.worker_name);
-    if (camera_serial.empty() && worker_name.empty()) {
-        return;
-    }
-
-    constexpr size_t kMaxWorkerEntryDiagnosticContexts = 128;
-    std::lock_guard<std::mutex> lock(worker_entry_context_diagnostic_mutex());
-    auto& buckets = worker_entry_context_diagnostic_buckets();
-    const std::string key = worker_entry_context_key(camera_serial, worker_name);
-    auto it = buckets.find(key);
-    if (it == buckets.end()) {
-        if (buckets.size() >= kMaxWorkerEntryDiagnosticContexts) {
+    try {
+        const std::string camera_serial = worker_entry_context_part(context.camera_serial);
+        const std::string worker_name = worker_entry_context_part(context.worker_name);
+        if (camera_serial.empty() && worker_name.empty()) {
             return;
         }
-        auto inserted = buckets.emplace(
-            key,
-            WorkerEntryRefCountDiagnosticBucket{camera_serial, worker_name, {}});
-        it = inserted.first;
-    }
 
-    switch (kind) {
-    case WorkerEntryRefCountIssueKind::ReleaseUnderflow:
-        it->second.counts.release_underflows++;
-        break;
-    case WorkerEntryRefCountIssueKind::DoubleRelease:
-        it->second.counts.double_releases++;
-        break;
-    case WorkerEntryRefCountIssueKind::RetainAfterRelease:
-        it->second.counts.retain_after_release++;
-        break;
+        constexpr size_t kMaxWorkerEntryDiagnosticContexts = 128;
+        std::lock_guard<std::mutex> lock(worker_entry_context_diagnostic_mutex());
+        auto& buckets = worker_entry_context_diagnostic_buckets();
+        const std::string key = worker_entry_context_key(camera_serial, worker_name);
+        auto it = buckets.find(key);
+        if (it == buckets.end()) {
+            if (buckets.size() >= kMaxWorkerEntryDiagnosticContexts) {
+                return;
+            }
+            auto inserted = buckets.emplace(
+                key,
+                WorkerEntryRefCountDiagnosticBucket{camera_serial, worker_name, {}});
+            it = inserted.first;
+        }
+
+        switch (kind) {
+        case WorkerEntryRefCountIssueKind::ReleaseUnderflow:
+            saturating_increment_counter(it->second.counts.release_underflows);
+            break;
+        case WorkerEntryRefCountIssueKind::DoubleRelease:
+            saturating_increment_counter(it->second.counts.double_releases);
+            break;
+        case WorkerEntryRefCountIssueKind::RetainAfterRelease:
+            saturating_increment_counter(it->second.counts.retain_after_release);
+            break;
+        case WorkerEntryRefCountIssueKind::RecycleFailure:
+            saturating_increment_counter(it->second.counts.recycle_failures);
+            break;
+        case WorkerEntryRefCountIssueKind::CameraRequeueFailure:
+            saturating_increment_counter(it->second.counts.camera_requeue_failures);
+            break;
+        case WorkerEntryRefCountIssueKind::RecycleQueueFailure:
+            saturating_increment_counter(it->second.counts.recycle_queue_failures);
+            break;
+        }
+    } catch (...) {
+        // Diagnostic buckets are intentionally best effort.  This function
+        // is called on release/destructor paths and must never become the
+        // source of a second exception.
     }
 }
 
@@ -165,6 +243,9 @@ inline void reset_worker_entry_release_diagnostics_for_tests()
     worker_entry_release_underflow_count().store(0, std::memory_order_release);
     worker_entry_release_double_release_count().store(0, std::memory_order_release);
     worker_entry_retain_after_release_count().store(0, std::memory_order_release);
+    worker_entry_recycle_failure_count().store(0, std::memory_order_release);
+    worker_entry_camera_requeue_failure_count().store(0, std::memory_order_release);
+    worker_entry_recycle_queue_failure_count().store(0, std::memory_order_release);
     std::lock_guard<std::mutex> lock(worker_entry_context_diagnostic_mutex());
     worker_entry_context_diagnostic_buckets().clear();
 }
@@ -230,30 +311,35 @@ inline void log_worker_entry_ref_count_issue(
     const uint64_t count,
     const EntryT* entry,
     const int current_ref_count,
-    const WorkerEntryReleaseContext& context)
+    const WorkerEntryReleaseContext& context) noexcept
 {
-    if (!should_log_worker_entry_release_issue(count)) {
-        return;
+    try {
+        if (!should_log_worker_entry_release_issue(count)) {
+            return;
+        }
+
+        const char* camera_serial =
+            (context.camera_serial && context.camera_serial[0] != '\0')
+                ? context.camera_serial
+                : "unknown";
+        const char* worker_name =
+            (context.worker_name && context.worker_name[0] != '\0')
+                ? context.worker_name
+                : "unknown";
+
+        std::cerr << "[" << source << "] " << kind
+                  << " count=" << count
+                  << " cam=" << camera_serial
+                  << " worker=" << worker_name
+                  << " frame=" << WorkerEntryDebugFieldAccess<EntryT>::frame_id(entry)
+                  << " recording_frame=" << WorkerEntryDebugFieldAccess<EntryT>::recording_frame_id(entry)
+                  << " camera_frame=" << WorkerEntryDebugFieldAccess<EntryT>::camera_frame_id(entry)
+                  << " current_ref_count=" << current_ref_count
+                  << std::endl;
+    } catch (...) {
+        // Logging is a best-effort release diagnostic and must not throw from
+        // a guard destructor.
     }
-
-    const char* camera_serial =
-        (context.camera_serial && context.camera_serial[0] != '\0')
-            ? context.camera_serial
-            : "unknown";
-    const char* worker_name =
-        (context.worker_name && context.worker_name[0] != '\0')
-            ? context.worker_name
-            : "unknown";
-
-    std::cerr << "[" << source << "] " << kind
-              << " count=" << count
-              << " cam=" << camera_serial
-              << " worker=" << worker_name
-              << " frame=" << WorkerEntryDebugFieldAccess<EntryT>::frame_id(entry)
-              << " recording_frame=" << WorkerEntryDebugFieldAccess<EntryT>::recording_frame_id(entry)
-              << " camera_frame=" << WorkerEntryDebugFieldAccess<EntryT>::camera_frame_id(entry)
-              << " current_ref_count=" << current_ref_count
-              << std::endl;
 }
 
 template <typename EntryT>
@@ -262,7 +348,7 @@ inline void log_worker_entry_release_issue(
     const uint64_t count,
     const EntryT* entry,
     const int current_ref_count,
-    const WorkerEntryReleaseContext& context)
+    const WorkerEntryReleaseContext& context) noexcept
 {
     log_worker_entry_ref_count_issue(
         "WORKER_ENTRY_RELEASE",
@@ -279,7 +365,7 @@ inline void log_worker_entry_retain_issue(
     const uint64_t count,
     const EntryT* entry,
     const int current_ref_count,
-    const WorkerEntryReleaseContext& context)
+    const WorkerEntryReleaseContext& context) noexcept
 {
     log_worker_entry_ref_count_issue(
         "WORKER_ENTRY_RETAIN",
@@ -288,6 +374,57 @@ inline void log_worker_entry_retain_issue(
         entry,
         current_ref_count,
         context);
+}
+
+// Recycle callbacks run from reference guards, including during exception
+// unwinding.  Keep failure accounting independent of allocation and logging:
+// an exhausted pool must be dropped/quarantined at ref_count == 0, never throw
+// out of a destructor, and never strand a SafeQueue mutex.
+template <typename EntryT>
+inline void record_worker_entry_recycle_failure(
+    const EntryT* entry,
+    const WorkerEntryReleaseContext& context) noexcept
+{
+    const uint64_t count = saturating_increment_counter(
+        worker_entry_recycle_failure_count());
+    try {
+        record_worker_entry_context_diagnostic(
+            context,
+            WorkerEntryRefCountIssueKind::RecycleFailure);
+    } catch (...) {
+        // The global saturating counter above is the allocation-free source of
+        // truth.  Context buckets are best-effort diagnostics only.
+    }
+    try {
+        log_worker_entry_release_issue(
+            "recycle_failure",
+            count,
+            entry,
+            0,
+            context);
+    } catch (...) {
+        // Logging must not turn a failed recycle into process termination.
+    }
+}
+
+inline void record_worker_entry_recycle_failure_detail(
+    const WorkerEntryReleaseContext& context,
+    const WorkerEntryRefCountIssueKind kind) noexcept
+{
+    std::atomic<uint64_t>* global_counter = nullptr;
+    switch (kind) {
+    case WorkerEntryRefCountIssueKind::CameraRequeueFailure:
+        global_counter = &worker_entry_camera_requeue_failure_count();
+        break;
+    case WorkerEntryRefCountIssueKind::RecycleQueueFailure:
+        global_counter = &worker_entry_recycle_queue_failure_count();
+        break;
+    default:
+        return;
+    }
+
+    (void)saturating_increment_counter(*global_counter);
+    record_worker_entry_context_diagnostic(context, kind);
 }
 
 template <typename EntryT>
@@ -392,8 +529,27 @@ inline bool release_worker_entry_ref(
         }
     }
 
-    recycle_final(entry);
-    return true;
+    try {
+        if constexpr (std::is_convertible_v<
+                          decltype(recycle_final(entry)),
+                          bool>) {
+            const bool recycle_succeeded =
+                static_cast<bool>(recycle_final(entry));
+            if (!recycle_succeeded) {
+                record_worker_entry_recycle_failure(entry, context);
+            }
+            return recycle_succeeded;
+        } else {
+            recycle_final(entry);
+            return true;
+        }
+    } catch (...) {
+        record_worker_entry_recycle_failure(entry, context);
+        // The reference is already zero.  Do not retry a throwing callback:
+        // the entry is intentionally dropped/quarantined until a higher-level
+        // pool-health policy can account for it.
+        return false;
+    }
 }
 
 template <typename EntryT>
@@ -442,10 +598,17 @@ public:
 
     WorkerEntryRefGuardCore& operator=(WorkerEntryRefGuardCore&& other) noexcept = delete;
 
-    ~WorkerEntryRefGuardCore()
+    ~WorkerEntryRefGuardCore() noexcept
     {
         if (owns_ref_) {
-            release_fn_(entry_, context_);
+            try {
+                release_fn_(entry_, context_);
+            } catch (...) {
+                // Release functions are normally no-throw, but this generic
+                // guard is also used with test/extension functors.  A guard
+                // destructor must never terminate during stack unwinding.
+                record_worker_entry_recycle_failure(entry_, context_);
+            }
         }
     }
 

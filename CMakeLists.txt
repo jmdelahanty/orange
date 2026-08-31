@@ -366,6 +366,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/spatial_roi_batch_producer.cpp"
     "${SRC_DIR}/spatial_roi_frame_contract.cpp"
     "${SRC_DIR}/spatial_roi_ipc_exporter.cpp"
+    "${SRC_DIR}/spatial_roi_ipc_handoff.cpp"
     "${SRC_DIR}/spatial_roi_ipc_protocol.cpp"
     "${SRC_DIR}/spatial_roi_recording_runtime.cpp"
     "${SRC_DIR}/pose_event_log.cpp"
@@ -457,6 +458,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/spatial_roi_batch_producer.cpp"
     "${SRC_DIR}/spatial_roi_frame_contract.cpp"
     "${SRC_DIR}/spatial_roi_ipc_exporter.cpp"
+    "${SRC_DIR}/spatial_roi_ipc_handoff.cpp"
     "${SRC_DIR}/spatial_roi_ipc_protocol.cpp"
     "${SRC_DIR}/spatial_roi_recording_runtime.cpp"
     "${SRC_DIR}/pose_event_log.cpp"
@@ -902,6 +904,8 @@ if(BUILD_TESTING)
     )
     target_include_directories(spatial_roi_recorder_contract_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(spatial_roi_recorder_contract_tests PRIVATE cxx_std_17)
+    target_compile_definitions(spatial_roi_recorder_contract_tests PRIVATE
+        ORANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     add_test(NAME spatial_roi_recorder_contract_tests COMMAND spatial_roi_recorder_contract_tests)
 
     add_executable(spatial_roi_frame_contract_tests
@@ -996,6 +1000,25 @@ if(BUILD_TESTING)
         ${CUDA_CUDART_LIBRARY}
         Threads::Threads)
     add_test(NAME spatial_roi_ipc_exporter_tests COMMAND spatial_roi_ipc_exporter_tests)
+
+    add_executable(spatial_roi_ipc_handoff_tests
+        "tools/spatial_roi_ipc_handoff_tests.cpp"
+        "${SRC_DIR}/spatial_roi_ipc_handoff.cpp"
+        "${SRC_DIR}/spatial_roi_ipc_exporter.cpp"
+        "${SRC_DIR}/spatial_roi_ipc_protocol.cpp"
+        "${SRC_DIR}/spatial_roi_frame_contract.cpp"
+        "${SRC_DIR}/spatial_roi_recording_runtime.cpp"
+        "${SRC_DIR}/spatial_roi_batch_producer.cpp"
+        "${SRC_DIR}/session/spatial_roi_recording_config.cpp"
+    )
+    target_include_directories(spatial_roi_ipc_handoff_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_ipc_handoff_tests PRIVATE cxx_std_17)
+    target_compile_definitions(spatial_roi_ipc_handoff_tests PRIVATE
+        ORANGE_SPATIAL_ROI_HANDOFF_TESTING)
+    target_link_libraries(spatial_roi_ipc_handoff_tests PRIVATE
+        ${CUDA_CUDART_LIBRARY}
+        Threads::Threads)
+    add_test(NAME spatial_roi_ipc_handoff_tests COMMAND spatial_roi_ipc_handoff_tests)
 
     add_executable(ffmpeg_writer_failure_tests
         "tools/ffmpeg_writer_failure_tests.cpp"

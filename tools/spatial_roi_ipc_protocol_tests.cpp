@@ -14,7 +14,13 @@ using orange::spatial_roi::ipc::SpatialRoiCudaIpcBuffer;
 using orange::spatial_roi::ipc::SpatialRoiIpcAck;
 using orange::spatial_roi::ipc::SpatialRoiIpcCorrelation;
 using orange::spatial_roi::ipc::SpatialRoiIpcCorrelationRegistry;
+using orange::spatial_roi::ipc::SpatialRoiIpcControlPhase;
+using orange::spatial_roi::ipc::SpatialRoiIpcControlState;
+using orange::spatial_roi::ipc::SpatialRoiIpcDrainRequest;
+using orange::spatial_roi::ipc::SpatialRoiIpcDrainStatus;
 using orange::spatial_roi::ipc::SpatialRoiIpcFrame;
+using orange::spatial_roi::ipc::SpatialRoiIpcFinalizeRequest;
+using orange::spatial_roi::ipc::SpatialRoiIpcFinalizeStatus;
 using orange::spatial_roi::ipc::SpatialRoiIpcHello;
 using orange::spatial_roi::ipc::SpatialRoiIpcMessage;
 using orange::spatial_roi::ipc::SpatialRoiIpcRelease;
@@ -74,6 +80,12 @@ SpatialRoiCudaIpcBuffer make_buffer(const SpatialRoiFrameDescriptor& descriptor)
     buffer.byte_length = descriptor.bytes;
     buffer.row_pitch_bytes = descriptor.encoded_raster.width;
     return buffer;
+}
+
+orange::spatial_roi::ipc::SpatialRoiIpcStreamIdentity make_stream_identity()
+{
+    return orange::spatial_roi::ipc::spatial_roi_ipc_stream_identity_from_descriptor(
+        make_descriptor());
 }
 
 bool parse(const std::string& wire, SpatialRoiIpcMessage* message)
@@ -242,6 +254,175 @@ void test_ack_release_exact_correlation()
            "logical stream mismatch is rejected");
 }
 
+void test_control_exchange_round_trip_and_closed_schema()
+{
+    const auto stream = make_stream_identity();
+    std::string error;
+    SpatialRoiIpcMessage parsed;
+
+    SpatialRoiIpcDrainRequest drain_request{
+        stream, "producer", 7, "operator_stop"};
+    const std::string drain_wire =
+        orange::spatial_roi::ipc::serialize_spatial_roi_ipc_message(
+            drain_request, &error);
+    expect(!drain_wire.empty(), "DRAIN_REQUEST serializes: " + error);
+    expect(parse(drain_wire, &parsed), "DRAIN_REQUEST parses");
+    expect(std::holds_alternative<SpatialRoiIpcDrainRequest>(parsed),
+           "DRAIN_REQUEST preserves message kind");
+    if (std::holds_alternative<SpatialRoiIpcDrainRequest>(parsed)) {
+        const auto& value = std::get<SpatialRoiIpcDrainRequest>(parsed);
+        expect(value.stream.recording_id == stream.recording_id,
+               "DRAIN_REQUEST preserves exact recording identity");
+        expect(value.drain_sequence == 7,
+               "DRAIN_REQUEST preserves producer sequence");
+    }
+
+    SpatialRoiIpcDrainStatus draining{
+        stream, "recorder", 7, 1, "draining", "frames_in_flight"};
+    const std::string draining_wire =
+        orange::spatial_roi::ipc::serialize_spatial_roi_ipc_message(
+            draining, &error);
+    expect(!draining_wire.empty(), "DRAIN_STATUS serializes: " + error);
+    expect(parse(draining_wire, &parsed), "DRAIN_STATUS parses");
+    expect(std::holds_alternative<SpatialRoiIpcDrainStatus>(parsed),
+           "DRAIN_STATUS preserves message kind");
+
+    SpatialRoiIpcDrainStatus drained{
+        stream, "recorder", 7, 2, "drained", "all frames released"};
+    expect(!orange::spatial_roi::ipc::serialize_spatial_roi_ipc_message(
+                drained, &error)
+                .empty(),
+           "terminal DRAIN_STATUS serializes");
+
+    SpatialRoiIpcFinalizeRequest finalize_request{
+        stream, "producer", 7, std::string(32, 'c'), "finalize_recording"};
+    const std::string finalize_wire =
+        orange::spatial_roi::ipc::serialize_spatial_roi_ipc_message(
+            finalize_request, &error);
+    expect(!finalize_wire.empty(), "FINALIZE_REQUEST serializes: " + error);
+    expect(parse(finalize_wire, &parsed), "FINALIZE_REQUEST parses");
+    expect(std::holds_alternative<SpatialRoiIpcFinalizeRequest>(parsed),
+           "FINALIZE_REQUEST preserves message kind");
+
+    SpatialRoiIpcFinalizeStatus finalized{
+        stream, "recorder", 7, std::string(32, 'c'), 3, "finalized", "complete"};
+    const std::string finalized_wire =
+        orange::spatial_roi::ipc::serialize_spatial_roi_ipc_message(
+            finalized, &error);
+    expect(!finalized_wire.empty(), "FINALIZE_STATUS serializes: " + error);
+    expect(parse(finalized_wire, &parsed), "FINALIZE_STATUS parses");
+    expect(std::holds_alternative<SpatialRoiIpcFinalizeStatus>(parsed),
+           "FINALIZE_STATUS preserves message kind");
+
+    nlohmann::json unknown =
+        orange::spatial_roi::ipc::spatial_roi_ipc_message_to_json(drain_request);
+    unknown["payload"]["future_field"] = true;
+    expect(!orange::spatial_roi::ipc::spatial_roi_ipc_message_from_json(
+               unknown, &parsed, &error),
+           "unknown DRAIN_REQUEST field fails closed");
+
+    nlohmann::json wrong_direction =
+        orange::spatial_roi::ipc::spatial_roi_ipc_message_to_json(drain_request);
+    wrong_direction["payload"]["sender_role"] = "recorder";
+    expect(!orange::spatial_roi::ipc::spatial_roi_ipc_message_from_json(
+               wrong_direction, &parsed, &error),
+           "producer control with recorder direction fails closed");
+
+    SpatialRoiIpcFinalizeRequest bad_nonce = finalize_request;
+    bad_nonce.finalize_nonce = std::string(32, 'C');
+    expect(orange::spatial_roi::ipc::serialize_spatial_roi_ipc_message(
+               bad_nonce, &error)
+               .empty(),
+           "uppercase finalize nonce is rejected");
+
+    nlohmann::json bad_state =
+        orange::spatial_roi::ipc::spatial_roi_ipc_message_to_json(finalized);
+    bad_state["payload"]["state"] = "draining";
+    expect(!orange::spatial_roi::ipc::spatial_roi_ipc_message_from_json(
+               bad_state, &parsed, &error),
+           "unsupported FINALIZE_STATUS state fails closed");
+}
+
+void test_control_exchange_state_machine()
+{
+    const auto stream = make_stream_identity();
+    std::string error;
+    SpatialRoiIpcControlState state;
+
+    const SpatialRoiIpcDrainStatus premature_status{
+        stream, "recorder", 1, 1, "drained", "nothing pending"};
+    expect(!state.accept(premature_status, &error),
+           "recorder status before producer request is rejected");
+    expect(!state.stream_identity(),
+           "rejected premature status does not bind session identity");
+
+    const SpatialRoiIpcDrainRequest request{
+        stream, "producer", 11, "operator_stop"};
+    expect(state.accept(request, &error),
+           "first producer DRAIN_REQUEST is accepted: " + error);
+    expect(state.phase() == SpatialRoiIpcControlPhase::kDrainRequested,
+           "DRAIN_REQUEST enters requested phase");
+    expect(state.drain_sequence() == 11,
+           "state retains exact drain sequence");
+    expect(!state.accept(request, &error),
+           "duplicate DRAIN_REQUEST is rejected");
+
+    const SpatialRoiIpcDrainStatus draining{
+        stream, "recorder", 11, 1, "draining", "one frame pending"};
+    expect(state.accept(draining, &error),
+           "first recorder draining status is accepted: " + error);
+    expect(state.phase() == SpatialRoiIpcControlPhase::kDraining,
+           "draining status enters draining phase");
+    expect(state.last_status_sequence() == 1,
+           "first recorder status has sequence one");
+    expect(!state.accept(draining, &error),
+           "duplicate recorder status is rejected");
+
+    const SpatialRoiIpcDrainStatus drained{
+        stream, "recorder", 11, 2, "drained", "all frames released"};
+    expect(state.accept(drained, &error),
+           "terminal drain status is accepted: " + error);
+    expect(state.phase() == SpatialRoiIpcControlPhase::kDrained,
+           "drained status enters drained phase");
+
+    const SpatialRoiIpcFinalizeRequest finalize_request{
+        stream, "producer", 11, std::string(32, 'd'), "finalize"};
+    expect(state.accept(finalize_request, &error),
+           "FINALIZE_REQUEST after drain is accepted: " + error);
+    expect(state.phase() == SpatialRoiIpcControlPhase::kFinalizeRequested,
+           "FINALIZE_REQUEST enters finalize-requested phase");
+    expect(state.finalize_nonce() == std::string(32, 'd'),
+           "state retains finalize nonce");
+    expect(!state.accept(finalize_request, &error),
+           "duplicate FINALIZE_REQUEST is rejected");
+
+    const SpatialRoiIpcFinalizeStatus wrong_nonce{
+        stream, "recorder", 11, std::string(32, 'e'), 3, "finalized", "complete"};
+    expect(!state.accept(wrong_nonce, &error),
+           "FINALIZE_STATUS with wrong nonce is rejected");
+    expect(state.phase() == SpatialRoiIpcControlPhase::kFinalizeRequested,
+           "wrong nonce does not advance control state");
+
+    const SpatialRoiIpcFinalizeStatus finalized{
+        stream, "recorder", 11, std::string(32, 'd'), 3, "finalized", "complete"};
+    expect(state.accept(finalized, &error),
+           "matching FINALIZE_STATUS is accepted: " + error);
+    expect(state.phase() == SpatialRoiIpcControlPhase::kFinalized,
+           "finalized status enters terminal phase");
+    expect(state.last_status_sequence() == 3,
+           "finalize status continues recorder sequence");
+    expect(!state.accept(finalized, &error),
+           "duplicate FINALIZE_STATUS is rejected");
+
+    SpatialRoiIpcControlState wrong_sequence_state;
+    expect(wrong_sequence_state.accept(request, &error),
+           "second state accepts initial request");
+    const SpatialRoiIpcDrainStatus skipped_sequence{
+        stream, "recorder", 11, 2, "drained", "sequence one was skipped"};
+    expect(!wrong_sequence_state.accept(skipped_sequence, &error),
+           "non-monotonic recorder status sequence is rejected");
+}
+
 void test_terminal_error_and_registry()
 {
     const SpatialRoiFrameDescriptor descriptor = make_descriptor();
@@ -362,7 +543,7 @@ void test_malformed_wire_rejection()
                long_error, &error).empty(),
            "terminal error text length bound is enforced");
     expect(!parse(std::string(
-                       orange::spatial_roi::ipc::kSpatialRoiIpcMaxWireMessageBytes,
+                       orange::spatial_roi::ipc::kSpatialRoiIpcMaxWireMessageBytes + 1,
                        'x'),
                   &parsed),
            "overlong wire message is rejected");
@@ -377,6 +558,8 @@ int main()
     test_hello_round_trip_and_closed_schema();
     test_frame_round_trip_and_packed_cuda_contract();
     test_ack_release_exact_correlation();
+    test_control_exchange_round_trip_and_closed_schema();
+    test_control_exchange_state_machine();
     test_terminal_error_and_registry();
     test_malformed_wire_rejection();
     if (failures != 0) {

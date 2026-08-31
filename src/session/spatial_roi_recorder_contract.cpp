@@ -15,6 +15,12 @@ namespace {
 
 using json = nlohmann::json;
 
+// Keep this in sync with the closed ROI IPC-v2 grammar.  The recorder
+// contract intentionally does not link the wire-protocol implementation, but
+// it must reject a verified plan whose per-stream queue cannot be represented
+// by an IPC-v2 HELLO message.
+constexpr std::uint32_t kMaxSpatialRoiIpcQueueFrames = 4096;
+
 bool fail(std::string* error_out, std::string message)
 {
     if (error_out) {
@@ -262,6 +268,10 @@ bool build_spatial_roi_recorder_contract(
                                error_out)) {
             return false;
         }
+        if (encode_queue_depth > kMaxSpatialRoiIpcQueueFrames) {
+            return fail(error_out,
+                        "spatial ROI recorder queue_frames_per_stream exceeds the IPC-v2 bound");
+        }
 
         const std::filesystem::path artifact_root =
             root / "external_spatial_roi_recorder";
@@ -384,6 +394,8 @@ bool build_spatial_roi_recorder_contract(
                     {"status", stem + "_status.json"},
                     {"video_sanity", stem + "_video_sanity.json"},
                     {"finalization", stem + ".mp4.finalization.json"},
+                    {"recorder_log", stem + "_recorder.log"},
+                    {"transport_sidecar", stem + "_transport.jsonl"},
                 };
                 json expected_artifacts = json::object();
                 for (const auto& [kind, name] : artifact_names) {
@@ -429,7 +441,11 @@ bool build_spatial_roi_recorder_contract(
                     {"producer_generation", plan.producer_generation},
                     {"spatial_roi_plan_sha256", plan.plan_sha256},
                     {"frame_identity", {
-                        {"key_fields", {"logical_stream_id", "recording_frame_id"}},
+                        {"key_fields", {"recording_identity_token",
+                                        "producer_generation",
+                                        "logical_stream_id",
+                                        "recording_frame_id",
+                                        "roi_stream_frame_index"}},
                         {"roi_stream_frame_index", "dense_one_based"},
                         {"recording_frame_id_source", "parent_camera_recording"},
                     }},
@@ -507,6 +523,8 @@ bool build_spatial_roi_recorder_contract(
                     {"status_json", expected_artifacts.at("status")},
                     {"video_sanity_json", expected_artifacts.at("video_sanity")},
                     {"finalization_json", expected_artifacts.at("finalization")},
+                    {"recorder_log", expected_artifacts.at("recorder_log")},
+                    {"transport_sidecar", expected_artifacts.at("transport_sidecar")},
                     {"expected_artifacts", std::move(expected_artifacts)},
                 };
                 streams[roi.logical_stream_id] = stream;
@@ -520,6 +538,16 @@ bool build_spatial_roi_recorder_contract(
             stream_order.size() != plan.admission_usage.roi_count) {
             return fail(error_out,
                         "spatial ROI recorder stream count does not match verified plan");
+        }
+
+        // The verified plan already accounts for one bounded queue per ROI.
+        // Preserve that authenticated aggregate rather than allowing a
+        // recorder supervisor to invent a larger outstanding table.
+        const std::uint64_t expected_total_queue_frames =
+            static_cast<std::uint64_t>(stream_count) * encode_queue_depth;
+        if (expected_total_queue_frames != plan.admission_usage.queue_frames) {
+            return fail(error_out,
+                        "spatial ROI recorder IPC-v2 queue bound disagrees with the verified plan");
         }
 
         json analytics_gpu_json = json::object();
@@ -539,7 +567,7 @@ bool build_spatial_roi_recorder_contract(
             {"contract_scope", "strict_spatial_roi_external_recorder_v1"},
             {"strict", true},
             {"backend", "independent_lossless_external_ipc"},
-            {"mode", "spatial_roi_external_ipc_v1"},
+            {"mode", "spatial_roi_external_recorder_v1"},
             {"supervise_processes", true},
             {"require_summary", true},
             {"require_status", true},
@@ -560,6 +588,85 @@ bool build_spatial_roi_recorder_contract(
             {"source_pixel_format", kSourcePixelFormat},
             {"stream_count", stream_count},
             {"stream_order", std::move(stream_order)},
+            {"ipc_v2", {
+                {"protocol", "orange.spatial_roi.external_recorder_ipc"},
+                {"version", 2},
+                {"features", {"cuda_ipc", "packed_mono8", "ack_release",
+                               "terminal_error"}},
+                {"source_lifetime_mode", "deferred_release"},
+                {"ack", {
+                    {"message_kind", "ACK"},
+                    {"accepted_true", {
+                        {"means", "recorder_accepted_frame_and_retains_source_access"},
+                        {"source_safe_after_ack", false},
+                        {"release_required", true},
+                    }},
+                    {"accepted_false", {
+                        {"means", "recorder_rejected_frame_but_source_access_is_not_yet_released"},
+                        {"source_safe_after_ack", false},
+                        {"release_required", true},
+                    }},
+                }},
+                {"release", {
+                    {"message_kind", "RELEASE"},
+                    {"means", "recorder_finished_with_source_allocation"},
+                    {"source_safe_after_release", true},
+                    {"required_after_accepted_ack", true},
+                    {"required_after_rejected_ack", true},
+                    {"does_not_mean_encode_or_disk_complete", true},
+                }},
+                {"drain_finalize", {
+                    {"status", "defined_not_negotiated"},
+                    {"operational", false},
+                    {"message_order", {"DRAIN_REQUEST", "DRAIN_STATUS",
+                                        "FINALIZE_REQUEST", "FINALIZE_STATUS"}},
+                    {"drain_request", {
+                        {"message_kind", "DRAIN_REQUEST"},
+                        {"sender", "producer"},
+                        {"receiver", "recorder"},
+                        {"correlation", "stream_identity_and_drain_sequence"},
+                        {"reason_required", true},
+                    }},
+                    {"drain_status", {
+                        {"message_kind", "DRAIN_STATUS"},
+                        {"sender", "recorder"},
+                        {"receiver", "producer"},
+                        {"states", {"draining", "drained", "failed"}},
+                        {"correlation", "stream_identity_and_drain_sequence"},
+                        {"reason_required", true},
+                        {"finalize_request_allowed_only_when", "state=drained"},
+                    }},
+                    {"finalize_request", {
+                        {"message_kind", "FINALIZE_REQUEST"},
+                        {"sender", "producer"},
+                        {"receiver", "recorder"},
+                        {"requires", "matching_drained_status"},
+                        {"correlation", "stream_identity_and_drain_sequence"},
+                        {"nonce", "fresh_16_byte_lower_hex"},
+                        {"reason_required", true},
+                    }},
+                    {"finalize_status", {
+                        {"message_kind", "FINALIZE_STATUS"},
+                        {"sender", "recorder"},
+                        {"receiver", "producer"},
+                        {"states", {"finalized", "failed"}},
+                        {"correlation", "stream_identity_drain_sequence_and_finalize_nonce"},
+                        {"nonce", "must_equal_request"},
+                        {"reason_required", true},
+                        {"session_finalized_only_when", "state=finalized"},
+                    }},
+                }},
+                {"bounds", {
+                    {"queue_capacity_frames_per_stream", encode_queue_depth},
+                    {"max_outstanding_frames_per_stream", encode_queue_depth},
+                    {"max_queue_capacity_frames_per_stream",
+                     kMaxSpatialRoiIpcQueueFrames},
+                    {"queue_capacity_frames_total", expected_total_queue_frames},
+                    {"max_outstanding_frames_total", expected_total_queue_frames},
+                    {"overflow_action", "reject_frame_without_releasing_prior_frames"},
+                    {"producer_backpressure", "nonblocking_fail_closed"},
+                }},
+            }},
             {"recording_control", {
                 {"record_for_seconds", 0},
                 {"clip_seconds", 0},

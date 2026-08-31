@@ -444,6 +444,96 @@ void test_negative_ref_count_release_is_detected_without_decrement()
         "negative ref count release should not count as zero double release");
 }
 
+void test_camera_requeue_failure_skips_recycle_queue()
+{
+    reset_worker_entry_release_diagnostics_for_tests();
+    SafeQueue<WORKER_ENTRY*> recycle_queue;
+    WORKER_ENTRY entry{};
+    entry.ref_count.store(1, std::memory_order_release);
+    entry.gpu_direct_mode = true;
+    entry.camera_instance = reinterpret_cast<Emergent::CEmergentCamera*>(0x1);
+    entry.camera_frame_struct = reinterpret_cast<Emergent::CEmergentFrame*>(0x2);
+    const WorkerEntryReleaseContext context{"2010096", "unit_test_camera_requeue_failure"};
+    int camera_queue_calls = 0;
+    bool received_nonnull_handles = false;
+
+    const bool released = release_worker_entry_to_recycle_with_camera_queue(
+        &recycle_queue,
+        &entry,
+        context,
+        [&](Emergent::CEmergentCamera* camera,
+            Emergent::CEmergentFrame* frame) noexcept -> EVT_ERROR {
+            ++camera_queue_calls;
+            received_nonnull_handles = camera != nullptr && frame != nullptr;
+            return EVT_ERROR_DEVICE_LOST_CONNECTION;
+        });
+
+    require(!released, "camera requeue failure should fail the final release");
+    require(camera_queue_calls == 1, "camera requeue callback should run once");
+    require(received_nonnull_handles, "camera requeue callback should receive both handles");
+    require(entry.ref_count.load(std::memory_order_acquire) == 0,
+            "camera requeue failure should leave the entry at zero references");
+    WORKER_ENTRY* recycled = nullptr;
+    require(!recycle_queue.pop(recycled),
+            "camera requeue failure must not enqueue the entry for recycling");
+    require(worker_entry_camera_requeue_failure_count().load(std::memory_order_acquire) == 1,
+            "camera requeue failure should increment its diagnostic exactly once");
+    require(worker_entry_recycle_queue_failure_count().load(std::memory_order_acquire) == 0,
+            "camera requeue failure should not increment queue failure diagnostics");
+    require(worker_entry_recycle_failure_count().load(std::memory_order_acquire) == 1,
+            "camera requeue failure should increment total recycle failures exactly once");
+    const WorkerEntryRefCountDiagnosticCounts counts =
+        worker_entry_ref_count_diagnostic_counts_for_context(context);
+    require(counts.camera_requeue_failures == 1,
+            "camera requeue failure should be present in context diagnostics");
+    require(counts.recycle_queue_failures == 0,
+            "camera requeue failure should not appear as a queue failure");
+    require(counts.recycle_failures == 1,
+            "camera requeue failure should have one total context failure");
+}
+
+void test_camera_requeue_success_enqueues_without_failure()
+{
+    reset_worker_entry_release_diagnostics_for_tests();
+    SafeQueue<WORKER_ENTRY*> recycle_queue;
+    WORKER_ENTRY entry{};
+    entry.ref_count.store(1, std::memory_order_release);
+    entry.gpu_direct_mode = true;
+    entry.camera_instance = reinterpret_cast<Emergent::CEmergentCamera*>(0x1);
+    entry.camera_frame_struct = reinterpret_cast<Emergent::CEmergentFrame*>(0x2);
+    const WorkerEntryReleaseContext context{"2010096", "unit_test_camera_requeue_success"};
+    int camera_queue_calls = 0;
+
+    const bool released = release_worker_entry_to_recycle_with_camera_queue(
+        &recycle_queue,
+        &entry,
+        context,
+        [&](Emergent::CEmergentCamera*,
+            Emergent::CEmergentFrame*) noexcept -> EVT_ERROR {
+            ++camera_queue_calls;
+            return EVT_SUCCESS;
+        });
+
+    require(released, "successful camera requeue should permit final recycling");
+    require(camera_queue_calls == 1, "successful camera requeue callback should run once");
+    WORKER_ENTRY* recycled = nullptr;
+    require(recycle_queue.pop(recycled),
+            "successful camera requeue should enqueue the entry for recycling");
+    require(recycled == &entry, "successful camera requeue should enqueue the released entry");
+    require(worker_entry_camera_requeue_failure_count().load(std::memory_order_acquire) == 0,
+            "successful camera requeue should not increment camera failure diagnostics");
+    require(worker_entry_recycle_queue_failure_count().load(std::memory_order_acquire) == 0,
+            "successful camera requeue should not increment queue failure diagnostics");
+    require(worker_entry_recycle_failure_count().load(std::memory_order_acquire) == 0,
+            "successful camera requeue should not increment total failure diagnostics");
+    const WorkerEntryRefCountDiagnosticCounts counts =
+        worker_entry_ref_count_diagnostic_counts_for_context(context);
+    require(counts.camera_requeue_failures == 0 &&
+                counts.recycle_queue_failures == 0 &&
+                counts.recycle_failures == 0,
+            "successful camera requeue should have no context failure diagnostics");
+}
+
 }  // namespace
 
 int main()
@@ -465,6 +555,8 @@ int main()
         test_context_release_diagnostics_keep_counter_behavior();
         test_ref_count_zero_release_is_detected_without_decrement();
         test_negative_ref_count_release_is_detected_without_decrement();
+        test_camera_requeue_failure_skips_recycle_queue();
+        test_camera_requeue_success_enqueues_without_failure();
     } catch (const std::exception& e) {
         std::cerr << "worker_entry_release_tests failed: " << e.what() << std::endl;
         return 1;

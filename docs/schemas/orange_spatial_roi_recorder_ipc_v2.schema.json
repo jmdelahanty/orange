@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.spatial_roi_recording.external_recorder_ipc_v2",
+  "title": "Orange spatial ROI external recorder IPC v2 contract",
+  "description": "Closed ipc_v2 object embedded in the spatial ROI recorder contract. This slice uses deferred source release; drain/finalize grammar is defined but not negotiated or operational.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "protocol",
+    "version",
+    "features",
+    "source_lifetime_mode",
+    "ack",
+    "release",
+    "drain_finalize",
+    "bounds"
+  ],
+  "properties": {
+    "protocol": {
+      "const": "orange.spatial_roi.external_recorder_ipc"
+    },
+    "version": {
+      "const": 2
+    },
+    "features": {
+      "const": [
+        "cuda_ipc",
+        "packed_mono8",
+        "ack_release",
+        "terminal_error"
+      ]
+    },
+    "source_lifetime_mode": {
+      "const": "deferred_release"
+    },
+    "ack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["message_kind", "accepted_true", "accepted_false"],
+      "properties": {
+        "message_kind": { "const": "ACK" },
+        "accepted_true": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["means", "source_safe_after_ack", "release_required"],
+          "properties": {
+            "means": {
+              "const": "recorder_accepted_frame_and_retains_source_access"
+            },
+            "source_safe_after_ack": { "const": false },
+            "release_required": { "const": true }
+          }
+        },
+        "accepted_false": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["means", "source_safe_after_ack", "release_required"],
+          "properties": {
+            "means": {
+              "const": "recorder_rejected_frame_but_source_access_is_not_yet_released"
+            },
+            "source_safe_after_ack": { "const": false },
+            "release_required": { "const": true }
+          }
+        }
+      }
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "message_kind",
+        "means",
+        "source_safe_after_release",
+        "required_after_accepted_ack",
+        "required_after_rejected_ack",
+        "does_not_mean_encode_or_disk_complete"
+      ],
+      "properties": {
+        "message_kind": { "const": "RELEASE" },
+        "means": {
+          "const": "recorder_finished_with_source_allocation"
+        },
+        "source_safe_after_release": { "const": true },
+        "required_after_accepted_ack": { "const": true },
+        "required_after_rejected_ack": { "const": true },
+        "does_not_mean_encode_or_disk_complete": { "const": true }
+      }
+    },
+    "drain_finalize": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "operational",
+        "message_order",
+        "drain_request",
+        "drain_status",
+        "finalize_request",
+        "finalize_status"
+      ],
+      "properties": {
+        "status": { "const": "defined_not_negotiated" },
+        "operational": { "const": false },
+        "message_order": {
+          "const": [
+            "DRAIN_REQUEST",
+            "DRAIN_STATUS",
+            "FINALIZE_REQUEST",
+            "FINALIZE_STATUS"
+          ]
+        },
+        "drain_request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "message_kind",
+            "sender",
+            "receiver",
+            "correlation",
+            "reason_required"
+          ],
+          "properties": {
+            "message_kind": { "const": "DRAIN_REQUEST" },
+            "sender": { "const": "producer" },
+            "receiver": { "const": "recorder" },
+            "correlation": {
+              "const": "stream_identity_and_drain_sequence"
+            },
+            "reason_required": { "const": true }
+          }
+        },
+        "drain_status": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "message_kind",
+            "sender",
+            "receiver",
+            "states",
+            "correlation",
+            "reason_required",
+            "finalize_request_allowed_only_when"
+          ],
+          "properties": {
+            "message_kind": { "const": "DRAIN_STATUS" },
+            "sender": { "const": "recorder" },
+            "receiver": { "const": "producer" },
+            "states": {
+              "const": ["draining", "drained", "failed"]
+            },
+            "correlation": {
+              "const": "stream_identity_and_drain_sequence"
+            },
+            "reason_required": { "const": true },
+            "finalize_request_allowed_only_when": {
+              "const": "state=drained"
+            }
+          }
+        },
+        "finalize_request": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "message_kind",
+            "sender",
+            "receiver",
+            "requires",
+            "correlation",
+            "nonce",
+            "reason_required"
+          ],
+          "properties": {
+            "message_kind": { "const": "FINALIZE_REQUEST" },
+            "sender": { "const": "producer" },
+            "receiver": { "const": "recorder" },
+            "requires": { "const": "matching_drained_status" },
+            "correlation": {
+              "const": "stream_identity_and_drain_sequence"
+            },
+            "nonce": { "const": "fresh_16_byte_lower_hex" },
+            "reason_required": { "const": true }
+          }
+        },
+        "finalize_status": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "message_kind",
+            "sender",
+            "receiver",
+            "states",
+            "correlation",
+            "nonce",
+            "reason_required",
+            "session_finalized_only_when"
+          ],
+          "properties": {
+            "message_kind": { "const": "FINALIZE_STATUS" },
+            "sender": { "const": "recorder" },
+            "receiver": { "const": "producer" },
+            "states": { "const": ["finalized", "failed"] },
+            "correlation": {
+              "const": "stream_identity_drain_sequence_and_finalize_nonce"
+            },
+            "nonce": { "const": "must_equal_request" },
+            "reason_required": { "const": true },
+            "session_finalized_only_when": {
+              "const": "state=finalized"
+            }
+          }
+        }
+      }
+    },
+    "bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "queue_capacity_frames_per_stream",
+        "max_outstanding_frames_per_stream",
+        "max_queue_capacity_frames_per_stream",
+        "queue_capacity_frames_total",
+        "max_outstanding_frames_total",
+        "overflow_action",
+        "producer_backpressure"
+      ],
+      "properties": {
+        "queue_capacity_frames_per_stream": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "max_outstanding_frames_per_stream": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "max_queue_capacity_frames_per_stream": {
+          "const": 4096
+        },
+        "queue_capacity_frames_total": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "max_outstanding_frames_total": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "overflow_action": {
+          "const": "reject_frame_without_releasing_prior_frames"
+        },
+        "producer_backpressure": {
+          "const": "nonblocking_fail_closed"
+        }
+      }
+    }
+  }
+}

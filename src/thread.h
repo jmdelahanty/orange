@@ -31,25 +31,45 @@ public:
     void push(T val)
     {
         mutex.Lock();
+        LockGuard unlock(mutex);
         queue.push(val);
-        mutex.Unlock();
     }
 
     bool pop(T& val)
     {
         bool success = false;
         mutex.Lock();
+        LockGuard unlock(mutex);
         if (!queue.empty())
         {
             val = queue.front();
             queue.pop();
             success = true;
         }
-        mutex.Unlock();
         return success;
     }
 
 private:
+    class LockGuard final
+    {
+    public:
+        explicit LockGuard(CGenericMutex& mutex) noexcept
+            : mutex_(mutex)
+        {
+        }
+
+        LockGuard(const LockGuard&) = delete;
+        LockGuard& operator=(const LockGuard&) = delete;
+
+        ~LockGuard() noexcept
+        {
+            mutex_.Unlock();
+        }
+
+    private:
+        CGenericMutex& mutex_;
+    };
+
     std::queue<T> queue;
     CGenericMutex mutex;
 };

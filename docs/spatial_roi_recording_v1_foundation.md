@@ -4,14 +4,16 @@
 
 **Last updated:** 2026-08-31
 
-**Status:** extraction foundation complete in Orange commit `c423ad5`; the
-frame contract, strict recorder-plan materializer, bounded per-ROI runtime,
-acquisition ownership bridge/controller, dedicated ROI IPC-v2 grammar, and
-CUDA-IPC frame exporter are implemented on
+**Status:** extraction foundation complete in Orange commit `c423ad5` and the
+acquisition/IPC export foundation committed through `d895d60`; the current
+branch also implements an exact HELLO/FRAME/ACK/RELEASE handoff owner and
+explicit drain/finalize wire states. The frame contract, strict recorder-plan
+materializer, bounded per-ROI runtime, acquisition ownership bridge/controller,
+dedicated ROI IPC-v2 grammar, and CUDA-IPC frame exporter are implemented on
 `agent/acquisition/spatial-roi-recording-v1-20260830`. The feature remains
-default-off and has no production arming caller or ROI-aware recorder
-supervisor. It is not connected to session finalization or deployment and does
-not yet produce ROI video files.
+default-off and has no production arming caller, Unix-socket adapter, recorder
+process/import implementation, or ROI-aware supervisor. It is not connected to
+session finalization or deployment and does not yet produce ROI video files.
 
 This document is the canonical status and handoff for the detector-independent
 spatial ROI path. It must not be read as claiming that the existing scalar,
@@ -45,9 +47,11 @@ Implemented components:
   controller in `src/spatial_roi_acquisition_bridge.*` and
   `src/spatial_roi_acquisition_controller.*`;
 - a separate closed JSON-line ROI IPC v2 contract in
-  `src/spatial_roi_ipc_protocol.*`; and
+  `src/spatial_roi_ipc_protocol.*`, including explicit drain/finalize control;
 - verified-plan-only CUDA memory/event handle export in
-  `src/spatial_roi_ipc_exporter.*`.
+  `src/spatial_roi_ipc_exporter.*`; and
+- a bounded, one-logical-stream handoff state machine with exact HELLO feature
+  negotiation and ACK/RELEASE ownership in `src/spatial_roi_ipc_handoff.*`.
 
 The plan binds the parent recording identity/token, producer generation,
 camera ID and serial, native raster, layout/materialization/registration
@@ -95,17 +99,45 @@ generation that it has already used. Production plan creation must mint a new
 producer generation after a process/runtime restart.
 
 The exporter retains the batch envelope and therefore its CUDA allocation and
-source lease. A future supervisor must hold that envelope in an outstanding
-correlation table until an exact recorder `RELEASE` (or another explicitly
-source-safe detached-copy boundary). Merely sending `FRAME` or receiving
-`ACK` is not permission to recycle the allocation.
+source lease. The handoff inserts the complete export into a bounded
+correlation table before writing the first `FRAME` byte and retains it through
+both accepted and rejected `ACK` until an exact `RELEASE`. Merely sending
+`FRAME` or receiving `ACK` is not permission to recycle the allocation. A
+timeout, EOF, partial/failed write, malformed response, identity mismatch, or
+out-of-order response latches the endpoint fatal and keeps ownership
+indeterminate until the future supervisor confirms recorder-process exit. If
+an owner violates that lifecycle and destroys an indeterminate handoff, the
+table is deliberately quarantined for process lifetime rather than releasing a
+possibly live CUDA allocation.
+
+Worker-entry final release is also fail-closed: queue-lock exceptions cannot
+strand the recycle mutex, a failed camera-SDK frame return prevents wrapper
+reuse, and a failed recycle-queue insertion drops the zero-reference wrapper
+instead of retrying it. Saturating process/context counters distinguish camera
+return failures from recycle-queue failures. Those counters are diagnostic
+only in this foundation; production arming remains blocked until the supervisor
+persists them into the recording/session status.
 
 The new recorder contract is intentionally a separate
 `orange.spatial_roi_recording.external_recorder_contract` schema. The current
 `orange.external_recorder.contract` supervisor and positional v1 frame
 protocol cannot carry the required ROI identity and must reject it. Do not
 relabel or feed this object to that parser. The next integration must add an
-ROI-aware supervisor/protocol consumer before enabling the runtime.
+ROI-aware Unix-socket transport, recorder import/process, and supervisor before
+enabling the runtime. The active HELLO capability list is exactly `cuda_ipc`,
+`packed_mono8`, `ack_release`, and `terminal_error`. The v2 protocol also
+defines closed `DRAIN_REQUEST`, `DRAIN_STATUS`, `FINALIZE_REQUEST`, and
+`FINALIZE_STATUS` messages, but `drain_finalize` is deliberately not negotiated
+and a peer advertising it is rejected. It becomes an active feature only when
+the recorder supervisor can coordinate every lane and verify finalization
+evidence; no production component sends or consumes those messages yet.
+
+The version domains are deliberately distinct: the generated recorder contract
+is schema v1 with mode `spatial_roi_external_recorder_v1`, while its embedded
+wire transport is `orange.spatial_roi.external_recorder_ipc` version 2. The
+normative closed schema for the embedded `ipc_v2` object is
+`docs/schemas/orange_spatial_roi_recorder_ipc_v2.schema.json`; a production
+consumer-side parser/validator remains part of the supervisor slice.
 
 ## Validation completed
 
@@ -125,10 +157,15 @@ ROI-aware supervisor/protocol consumer before enabling the runtime.
 - dense per-lane stream indexing with no gaps on rejected admission;
 - acquisition bridge/controller identity, lease, exception, concurrent
   disarm, generation-reuse, and teardown behavior;
-- strict ROI IPC-v2 HELLO/FRAME/ACK/RELEASE/TERMINAL_ERROR parsing and
-  cross-recording/cross-generation correlation identity;
+- strict ROI IPC-v2 HELLO/FRAME/ACK/RELEASE/TERMINAL_ERROR and drain/finalize
+  parsing, control-state sequencing, and cross-recording/cross-generation
+  identity;
 - real CUDA IPC export of every ROI allocation and the shared completion
-  event; and
+  event;
+- deterministic handoff tests for exact HELLO capabilities, ACK-versus-RELEASE
+  lifetime, accepted/rejected frames, mismatches, duplicates, old-index replay,
+  timeout/EOF/write failure, peer-exit release, and fail-safe destructor
+  quarantine; and
 - production Orange GUI and headless builds with the new foundation linked.
 
 ## Two optional crop products
@@ -255,6 +292,9 @@ are nevertheless gated to one camera/four ROIs for this slice.
 - [x] Release the source lease only after the batch completion fence; on an
       unprovable completion, preserve the producer quarantine behavior and never
       recycle or reuse the allocation speculatively.
+- [ ] Before production arming, either generation-tag reusable worker-entry
+      leases or prove stale release impossible across every consumer; refcount
+      alone cannot distinguish a late release from a recycled entry generation.
 - [ ] Prove that ROI work cannot delay acquisition, YOLO, display, or the
       authoritative full-frame recorder. In strict mode, an admitted ROI loss
       makes the spatial-ROI product incomplete rather than silently shortening
@@ -270,9 +310,13 @@ are nevertheless gated to one camera/four ROIs for this slice.
 - [x] Define and validate a dedicated ROI-aware IPC-v2 grammar and a
       verified-plan CUDA-IPC FRAME exporter. The existing positional protocol
       remains deliberately unchanged.
-- [ ] Implement its socket client/recorder import, supervisor lifecycle, and
-      bounded outstanding correlation-to-envelope table. Do not report a lane
-      source-safe until exact `RELEASE` or a validated detached-copy boundary.
+- [x] Implement the bounded one-stream handoff owner, exact HELLO negotiation,
+      strictly increasing ROI indices, and correlation-to-envelope table. Do
+      not report a lane source-safe until exact `RELEASE`.
+- [x] Define and validate explicit drain/finalize messages and their ordered,
+      stream-bound sequence/nonce state machine.
+- [ ] Implement the Unix-socket transport, recorder CUDA import/process,
+      supervisor/reap lifecycle, and production drain/finalize exchange.
 - [x] Give each required ROI an independently bounded runtime queue and
       terminal state. A lane may fail or drop only its own sidecar; it must not
       relabel another ROI. Connecting those lanes to recorder processes and
@@ -300,6 +344,8 @@ are nevertheless gated to one camera/four ROIs for this slice.
       portable relative paths, final status, byte sizes, packet/frame counts,
       and SHA-256 evidence. Finalization must fail closed on range or identity
       disagreement.
+- [ ] Persist worker-entry recycle, camera-return, and recycle-queue failure
+      counters in recording/session status before production arming.
 - [ ] Persist the complete physical-layout -> camera-materialization ->
       arena-group-binding chain and its portable path/size/SHA-256 evidence in
       the Orange geometry bundle, ROI plan/contract, final session manifest,
