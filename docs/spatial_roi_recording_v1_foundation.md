@@ -8,12 +8,14 @@
 acquisition/IPC export foundation committed through `d895d60`; the current
 branch also implements an exact HELLO/FRAME/ACK/RELEASE handoff owner and
 explicit drain/finalize wire states. The frame contract, strict recorder-plan
-materializer, bounded per-ROI runtime, acquisition ownership bridge/controller,
-dedicated ROI IPC-v2 grammar, and CUDA-IPC frame exporter are implemented on
-`agent/acquisition/spatial-roi-recording-v1-20260830`. The feature remains
-default-off and has no production arming caller, Unix-socket adapter, recorder
-process/import implementation, or ROI-aware supervisor. It is not connected to
-session finalization or deployment and does not yet produce ROI video files.
+materializer and plan-bound consumer parser, bounded per-ROI runtime,
+acquisition ownership bridge/controller, dedicated ROI IPC-v2 grammar,
+CUDA-IPC frame exporter, and adopt-only bounded Unix-socket line transport are
+implemented on `agent/acquisition/spatial-roi-recording-v1-20260830`. The
+feature remains default-off and has no production arming caller, socket
+listener/connector, recorder process/import implementation, child supervisor,
+or operational drain/finalize exchange. It is not connected to session
+finalization or deployment and does not yet produce ROI video files.
 
 This document is the canonical status and handoff for the detector-independent
 spatial ROI path. It must not be read as claiming that the existing scalar,
@@ -40,6 +42,10 @@ Implemented components:
   `src/spatial_roi_frame_contract.*`;
 - a verified-plan-only recorder contract materializer in
   `src/session/spatial_roi_recorder_contract.*`; and
+- a recorder-side parser that accepts only the deterministic contract rebuilt
+  from an independently verified plan, authoritative recording root, and
+  parent-supplied GPU mapping in
+  `src/session/spatial_roi_recorder_contract_parser.*`;
 - one strictly bounded worker lane per verified ROI, with shared batch/source
   lifetime and explicit terminal outcomes, in
   `src/spatial_roi_recording_runtime.*`;
@@ -51,7 +57,12 @@ Implemented components:
 - verified-plan-only CUDA memory/event handle export in
   `src/spatial_roi_ipc_exporter.*`; and
 - a bounded, one-logical-stream handoff state machine with exact HELLO feature
-  negotiation and ACK/RELEASE ownership in `src/spatial_roi_ipc_handoff.*`.
+  negotiation and ACK/RELEASE ownership in `src/spatial_roi_ipc_handoff.*`;
+  and
+- a single-owner, no-reconnect Unix-domain line transport that adopts one
+  already-connected endpoint, verifies peer credentials when requested,
+  enforces hard read/write deadlines and bounded chunked framing, and preserves
+  coalesced messages in `src/spatial_roi_unix_socket_transport.*`.
 
 The plan binds the parent recording identity/token, producer generation,
 camera ID and serial, native raster, layout/materialization/registration
@@ -122,9 +133,26 @@ The new recorder contract is intentionally a separate
 `orange.spatial_roi_recording.external_recorder_contract` schema. The current
 `orange.external_recorder.contract` supervisor and positional v1 frame
 protocol cannot carry the required ROI identity and must reject it. Do not
-relabel or feed this object to that parser. The next integration must add an
-ROI-aware Unix-socket transport, recorder import/process, and supervisor before
-enabling the runtime. The active HELLO capability list is exactly `cuda_ipc`,
+relabel or feed this object to that parser. Its dedicated consumer parser does
+not trust repeated fields or an embedded digest by themselves: the candidate
+must exactly equal a deterministic rebuild from the independently verified
+plan, expected recording root, and expected runtime GPU mapping. The bounded
+file reader opens one non-symlink regular contract file, rejects embedded-NUL
+paths and duplicate JSON keys, never reads more than 16 MiB, and applies fixed
+depth/event/container/string limits before DOM materialization. Artifact paths
+are still only lexically validated at this stage;
+the future recorder must open beneath an already-owned artifact-root directory
+using descriptor-relative, no-symlink semantics rather than treating a parsed
+path as authorization.
+
+The adopt-only Unix transport is not a process supervisor. It neither binds nor
+unlinks a socket path, launches a child, reconnects, retries a FRAME, nor proves
+peer exit. PID validation through `SO_PEERCRED` is valid only when the recorder
+connects after it has been spawned; a socketpair created before `fork()` names
+the creator and is not child-exec proof. The next integration must add that
+listener/connect lifecycle, CUDA import/recorder process, exact reap evidence,
+and finalization supervisor before enabling the runtime. The active HELLO
+capability list is exactly `cuda_ipc`,
 `packed_mono8`, `ack_release`, and `terminal_error`. The v2 protocol also
 defines closed `DRAIN_REQUEST`, `DRAIN_STATUS`, `FINALIZE_REQUEST`, and
 `FINALIZE_STATUS` messages, but `drain_finalize` is deliberately not negotiated
@@ -136,8 +164,16 @@ The version domains are deliberately distinct: the generated recorder contract
 is schema v1 with mode `spatial_roi_external_recorder_v1`, while its embedded
 wire transport is `orange.spatial_roi.external_recorder_ipc` version 2. The
 normative closed schema for the embedded `ipc_v2` object is
-`docs/schemas/orange_spatial_roi_recorder_ipc_v2.schema.json`; a production
-consumer-side parser/validator remains part of the supervisor slice.
+`docs/schemas/orange_spatial_roi_recorder_ipc_v2.schema.json`.
+
+The extraction pixel contract and the eventual encoder-input contract are
+deliberately distinct. Extraction copies native Mono8 without resize or color
+conversion. HEVC/NVENC consumes NV12, so the recorder must copy every extracted
+Mono8 byte unchanged into the NV12 Y plane and fill interleaved UV with the
+neutral value 128; alignment padding remains zero in Y. The contract now says
+`luma_preserved_exactly=true` and `neutral_chroma_value=128` instead of the
+incorrect claim that Mono8-to-NV12 performs no format conversion. That transform
+and decoded-pixel proof remain pending with the recorder implementation.
 
 ## Validation completed
 
@@ -166,6 +202,12 @@ consumer-side parser/validator remains part of the supervisor slice.
   lifetime, accepted/rejected frames, mismatches, duplicates, old-index replay,
   timeout/EOF/write failure, peer-exit release, and fail-safe destructor
   quarantine; and
+- exact plan/root/GPU-bound recorder contract parsing, canonical identity,
+  geometry/queue/artifact mutation rejection, bounded non-symlink file reads,
+  and explicit Mono8-to-NV12 declarations;
+- real-kernel Unix transport tests for partial/coalesced I/O, hard zero and
+  partial-write deadlines, EOF versus timeout, oversized input, peer closure,
+  credentials, invalid-descriptor rejection/closure, and no reconnect; and
 - production Orange GUI and headless builds with the new foundation linked.
 
 ## Two optional crop products
@@ -315,15 +357,20 @@ are nevertheless gated to one camera/four ROIs for this slice.
       not report a lane source-safe until exact `RELEASE`.
 - [x] Define and validate explicit drain/finalize messages and their ordered,
       stream-bound sequence/nonce state machine.
-- [ ] Implement the Unix-socket transport, recorder CUDA import/process,
-      supervisor/reap lifecycle, and production drain/finalize exchange.
+- [x] Implement a bounded adopt-only connected Unix-socket transport and a
+      strict consumer parser bound to the independently verified plan,
+      authoritative recording root, and parent GPU placement.
+- [ ] Implement socket listener/connect ownership, recorder CUDA
+      import/process, supervisor/reap lifecycle, and production drain/finalize
+      exchange.
 - [x] Give each required ROI an independently bounded runtime queue and
       terminal state. A lane may fail or drop only its own sidecar; it must not
       relabel another ROI. Connecting those lanes to recorder processes and
       full-frame coexistence remains pending.
 - [ ] Encode the exact Mono8 pixels with the validated lossless profile. Keep
-      alignment padding explicit and zero-filled; no scaling or color
-      conversion is permitted.
+      alignment padding explicit and zero-filled; do not scale. Map each Mono8
+      byte unchanged to NV12 Y and set interleaved UV to neutral 128, then prove
+      decoded luma equality.
 - [x] Define and validate ACK/release identity including recording token,
       producer generation, logical stream/ROI identity,
       `recording_frame_id`, and dense `roi_stream_frame_index`.

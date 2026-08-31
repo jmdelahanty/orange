@@ -1,6 +1,7 @@
 #include "session/spatial_roi_recorder_contract.h"
 
 #include "session/spatial_roi_recording_config.h"
+#include "spatial_roi_ipc_protocol.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -363,6 +364,14 @@ bool build_spatial_roi_recorder_contract(
                         roi_path +
                             " encoded raster must have even dimensions for NV12/HEVC");
                 }
+                if (static_cast<std::uint64_t>(roi.encoded_raster.width) *
+                        roi.encoded_raster.height >
+                    orange::spatial_roi::ipc::kSpatialRoiIpcMaxPackedMono8Bytes) {
+                    return fail(
+                        error_out,
+                        roi_path +
+                            " encoded raster exceeds the IPC-v2 packed Mono8 byte bound");
+                }
 
                 const std::string environment_key =
                     "spatial_roi_" + roi.logical_stream_id;
@@ -491,7 +500,8 @@ bool build_spatial_roi_recorder_contract(
                         {"input_format", "mono8"},
                         {"encoded_format", "nv12"},
                         {"no_resize", true},
-                        {"no_color_conversion", true},
+                        {"luma_preserved_exactly", true},
+                        {"neutral_chroma_value", 128},
                     }},
                     // Keep the direct names understood by the existing
                     // external-recorder materialization shape in addition to

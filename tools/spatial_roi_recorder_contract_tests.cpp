@@ -6,6 +6,7 @@
 #include <functional>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -147,6 +148,51 @@ nlohmann::json make_plan(std::uint32_t output_alignment_px = 2)
     nlohmann::json plan;
     std::string error;
     require(spatial_roi::build_plan(config, context, &plan, nullptr, &error), error);
+    return plan;
+}
+
+nlohmann::json make_oversized_packed_roi_plan()
+{
+    spatial_roi::Config config = spatial_roi::default_config();
+    config.enabled = true;
+    config.buffering.pool_frames_per_stream = 1;
+    config.buffering.queue_frames_per_stream = 1;
+    config.admission.max_rois_per_camera = 1;
+    config.admission.max_total_rois = 1;
+    config.admission.max_total_encoder_streams = 1;
+    config.admission.max_total_pixel_rate =
+        std::numeric_limits<std::uint64_t>::max();
+    config.admission.max_total_pool_bytes =
+        std::numeric_limits<std::uint64_t>::max();
+    config.admission.max_total_queue_frames = 1;
+
+    spatial_roi::CameraConfig camera;
+    camera.camera_id = 3;
+    camera.camera_serial = "2010096";
+    camera.native_raster = {65536, 32770};
+    camera.source_frame_rate = 1;
+    camera.arena_group_id = "group_1";
+    camera.layout = {"layout_1", digest('1')};
+    camera.materialization = {"materialization_1", digest('2')};
+    camera.registration = {"registration_1", digest('3')};
+    camera.rois.push_back(make_roi(camera.camera_serial,
+                                   "roi_1",
+                                   "region_1",
+                                   {0, 0, 65536, 32770}));
+    config.cameras.emplace(camera.camera_serial, std::move(camera));
+
+    spatial_roi::PlanContext context;
+    context.recording_id = "roi-contract-oversized-test";
+    context.recording_identity_token =
+        orange::shaman_v2_recording_identity::token_for_recording_id(
+            context.recording_id);
+    context.generated_at_utc = "2026-08-31T00:00:00Z";
+    context.producer_generation = "generation_oversized";
+
+    nlohmann::json plan;
+    std::string error;
+    require(spatial_roi::build_plan(config, context, &plan, nullptr, &error),
+            error);
     return plan;
 }
 
@@ -328,6 +374,15 @@ void builds_one_strict_nonrolling_stream_per_roi()
                 "spatial ROI GOP must be one");
         require(stream.at("encode_profile").value("frame_rate", 0) == 100,
                 "source frame rate mismatch");
+        require(stream.at("encode_profile").value("input_format", std::string()) ==
+                    "mono8" &&
+                    stream.at("encode_profile").value("encoded_format", std::string()) ==
+                    "nv12" &&
+                    stream.at("encode_profile").value("luma_preserved_exactly", false) &&
+                    stream.at("encode_profile").value("neutral_chroma_value", 0) == 128,
+                "Mono8-to-NV12 contract must preserve luma and declare neutral chroma");
+        require(!stream.at("encode_profile").contains("no_color_conversion"),
+                "encode profile must not claim that Mono8-to-NV12 avoids conversion");
         require(stream.value("codec", std::string()) == "hevc" &&
                     stream.value("tuning", std::string()) == "lossless" &&
                     stream.value("gop", 0) == 1,
@@ -475,6 +530,18 @@ void rejects_bad_root_and_tampered_or_duplicate_plan()
                 &contract,
                 &error),
             "odd encoded ROI dimensions must fail NV12/HEVC materialization");
+
+    spatial_roi::SpatialRoiRecorderRuntimeGpuMapping oversized_mapping;
+    oversized_mapping.analytics_gpu_by_camera_serial.emplace("2010096", 5);
+    oversized_mapping.recorder_gpu_by_logical_stream_id.emplace(
+        spatial_roi::expected_logical_stream_id("2010096", "roi_1"), 6);
+    require(!spatial_roi::build_spatial_roi_recorder_contract(
+                make_oversized_packed_roi_plan(),
+                "/tmp/orange_roi_contract_test",
+                oversized_mapping,
+                &contract,
+                &error),
+            "ROI larger than the IPC-v2 packed Mono8 bound must fail materialization");
 }
 
 }  // namespace

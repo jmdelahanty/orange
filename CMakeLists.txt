@@ -368,6 +368,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/spatial_roi_ipc_exporter.cpp"
     "${SRC_DIR}/spatial_roi_ipc_handoff.cpp"
     "${SRC_DIR}/spatial_roi_ipc_protocol.cpp"
+    "${SRC_DIR}/spatial_roi_unix_socket_transport.cpp"
     "${SRC_DIR}/spatial_roi_recording_runtime.cpp"
     "${SRC_DIR}/pose_event_log.cpp"
     "${SRC_DIR}/pose_worker.cpp"
@@ -378,6 +379,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/session/external_crop_recorder_config.cpp"
     "${SRC_DIR}/session/spatial_roi_recording_config.cpp"
     "${SRC_DIR}/session/spatial_roi_recorder_contract.cpp"
+    "${SRC_DIR}/session/spatial_roi_recorder_contract_parser.cpp"
     "${SRC_DIR}/session/crop_rolling_sidecars.cpp"
     "${SRC_DIR}/session/recording_observation_binding.cpp"
     "${SRC_DIR}/session/recording_observation_finalization.cpp"
@@ -417,6 +419,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/session/external_crop_recorder_config.cpp"
     "${SRC_DIR}/session/spatial_roi_recording_config.cpp"
     "${SRC_DIR}/session/spatial_roi_recorder_contract.cpp"
+    "${SRC_DIR}/session/spatial_roi_recorder_contract_parser.cpp"
     "${SRC_DIR}/session/crop_rolling_sidecars.cpp"
     "${SRC_DIR}/session/recording_observation_binding.cpp"
     "${SRC_DIR}/session/recording_observation_finalization.cpp"
@@ -460,6 +463,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/spatial_roi_ipc_exporter.cpp"
     "${SRC_DIR}/spatial_roi_ipc_handoff.cpp"
     "${SRC_DIR}/spatial_roi_ipc_protocol.cpp"
+    "${SRC_DIR}/spatial_roi_unix_socket_transport.cpp"
     "${SRC_DIR}/spatial_roi_recording_runtime.cpp"
     "${SRC_DIR}/pose_event_log.cpp"
     "${SRC_DIR}/pose_worker.cpp"
@@ -908,6 +912,17 @@ if(BUILD_TESTING)
         ORANGE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     add_test(NAME spatial_roi_recorder_contract_tests COMMAND spatial_roi_recorder_contract_tests)
 
+    add_executable(spatial_roi_recorder_contract_parser_tests
+        "tools/spatial_roi_recorder_contract_parser_tests.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_contract_parser.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_contract.cpp"
+        "${SRC_DIR}/session/spatial_roi_recording_config.cpp"
+    )
+    target_include_directories(spatial_roi_recorder_contract_parser_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_recorder_contract_parser_tests PRIVATE cxx_std_17)
+    add_test(NAME spatial_roi_recorder_contract_parser_tests
+        COMMAND spatial_roi_recorder_contract_parser_tests)
+
     add_executable(spatial_roi_frame_contract_tests
         "tools/spatial_roi_frame_contract_tests.cpp"
         "${SRC_DIR}/spatial_roi_frame_contract.cpp"
@@ -1019,6 +1034,16 @@ if(BUILD_TESTING)
         ${CUDA_CUDART_LIBRARY}
         Threads::Threads)
     add_test(NAME spatial_roi_ipc_handoff_tests COMMAND spatial_roi_ipc_handoff_tests)
+
+    add_executable(spatial_roi_unix_socket_transport_tests
+        "tools/spatial_roi_unix_socket_transport_tests.cpp"
+        "${SRC_DIR}/spatial_roi_unix_socket_transport.cpp"
+    )
+    target_include_directories(spatial_roi_unix_socket_transport_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_unix_socket_transport_tests PRIVATE cxx_std_17)
+    target_link_libraries(spatial_roi_unix_socket_transport_tests PRIVATE Threads::Threads)
+    add_test(NAME spatial_roi_unix_socket_transport_tests
+        COMMAND spatial_roi_unix_socket_transport_tests)
 
     add_executable(ffmpeg_writer_failure_tests
         "tools/ffmpeg_writer_failure_tests.cpp"
