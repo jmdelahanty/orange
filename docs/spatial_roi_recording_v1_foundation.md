@@ -12,9 +12,12 @@ materializer and plan-bound consumer parser, bounded per-ROI runtime,
 acquisition ownership bridge/controller, dedicated ROI IPC-v2 grammar,
 CUDA-IPC frame exporter, and adopt-only bounded Unix-socket line transport are
 implemented on `agent/acquisition/spatial-roi-recording-v1-20260830`. The
+branch also has a recorder-side, bounded CUDA-IPC detach pool that verifies the
+complete stream/geometry/GPU binding, copies into recorder-owned Mono8 and
+NV12 storage, and reaches a source-safe boundary before closing imports. The
 feature remains default-off and has no production arming caller, socket
-listener/connector, recorder process/import implementation, child supervisor,
-or operational drain/finalize exchange. It is not connected to session
+listener/connector, recorder executable, NVENC/mux stage, child supervisor, or
+operational drain/finalize exchange. It is not connected to session
 finalization or deployment and does not yet produce ROI video files.
 
 This document is the canonical status and handoff for the detector-independent
@@ -62,7 +65,13 @@ Implemented components:
 - a single-owner, no-reconnect Unix-domain line transport that adopts one
   already-connected endpoint, verifies peer credentials when requested,
   enforces hard read/write deadlines and bounded chunked framing, and preserves
-  coalesced messages in `src/spatial_roi_unix_socket_transport.*`.
+  coalesced messages in `src/spatial_roi_unix_socket_transport.*`; and
+- a bounded synchronous, one-owner CUDA detach pool in
+  `src/spatial_roi_recorder_cuda_detach.*` that binds the exact stream,
+  fixed-region geometry, source/recorder GPUs and shard, enforces an aggregate
+  allocation budget and one active caller, bounds source-event/copy waits,
+  validates the imported allocation, and materializes packed Mono8 plus NV12
+  with byte-identical Y and neutral UV=128.
 
 The plan binds the parent recording identity/token, producer generation,
 camera ID and serial, native raster, layout/materialization/registration
@@ -150,7 +159,7 @@ unlinks a socket path, launches a child, reconnects, retries a FRAME, nor proves
 peer exit. PID validation through `SO_PEERCRED` is valid only when the recorder
 connects after it has been spawned; a socketpair created before `fork()` names
 the creator and is not child-exec proof. The next integration must add that
-listener/connect lifecycle, CUDA import/recorder process, exact reap evidence,
+listener/connect lifecycle, recorder executable/encoder, exact reap evidence,
 and finalization supervisor before enabling the runtime. The active HELLO
 capability list is exactly `cuda_ipc`,
 `packed_mono8`, `ack_release`, and `terminal_error`. The v2 protocol also
@@ -173,7 +182,8 @@ Mono8 byte unchanged into the NV12 Y plane and fill interleaved UV with the
 neutral value 128; alignment padding remains zero in Y. The contract now says
 `luma_preserved_exactly=true` and `neutral_chroma_value=128` instead of the
 incorrect claim that Mono8-to-NV12 performs no format conversion. That transform
-and decoded-pixel proof remain pending with the recorder implementation.
+is now implemented and byte-verified in recorder-owned device storage. NVENC,
+container output, and decoded-video luma proof remain pending.
 
 ## Validation completed
 
@@ -208,7 +218,17 @@ and decoded-pixel proof remain pending with the recorder implementation.
 - real-kernel Unix transport tests for partial/coalesced I/O, hard zero and
   partial-write deadlines, EOF versus timeout, oversized input, peer closure,
   credentials, invalid-descriptor rejection/closure, and no reconnect; and
+- a real separate-process CUDA IPC import/detach test that holds the producer
+  allocation through recorder exit, verifies exact Mono8 and NV12 Y bytes,
+  verifies UV=128, exercises bounded slot reuse/rejection/quarantine, proves a
+  deliberately pending producer event reaches its hard deadline, rejects a
+  concurrent caller immediately, and only then permits producer release; and
 - production Orange GUI and headless builds with the new foundation linked.
+
+The recorder detach acceptance above is same-GPU on the installed Linux/CUDA
+driver. Cross-GPU use is preflighted for unified addressing, IPC-event support,
+and recorder-to-source peer access, but a positive/negative multi-GPU topology
+test remains an explicit acceptance gate before enabling such a placement.
 
 ## Two optional crop products
 
@@ -360,17 +380,22 @@ are nevertheless gated to one camera/four ROIs for this slice.
 - [x] Implement a bounded adopt-only connected Unix-socket transport and a
       strict consumer parser bound to the independently verified plan,
       authoritative recording root, and parent GPU placement.
-- [ ] Implement socket listener/connect ownership, recorder CUDA
-      import/process, supervisor/reap lifecycle, and production drain/finalize
-      exchange.
+- [x] Implement recorder-side CUDA import and bounded detach into
+      recorder-owned packed Mono8/NV12 storage, with exact plan geometry,
+      source/recorder GPU, shard, allocation extent, pool-budget, timeout, and
+      quarantine checks. This is a library/test seam, not yet a recorder
+      process.
+- [ ] Implement socket listener/connect ownership, recorder executable,
+      supervisor/reap lifecycle, and production drain/finalize exchange.
 - [x] Give each required ROI an independently bounded runtime queue and
       terminal state. A lane may fail or drop only its own sidecar; it must not
       relabel another ROI. Connecting those lanes to recorder processes and
       full-frame coexistence remains pending.
 - [ ] Encode the exact Mono8 pixels with the validated lossless profile. Keep
       alignment padding explicit and zero-filled; do not scale. Map each Mono8
-      byte unchanged to NV12 Y and set interleaved UV to neutral 128, then prove
-      decoded luma equality.
+      byte unchanged to NV12 Y and set interleaved UV to neutral 128 (the
+      recorder-owned transform is complete), then prove decoded-video luma
+      equality through NVENC and the finalized container.
 - [x] Define and validate ACK/release identity including recording token,
       producer generation, logical stream/ROI identity,
       `recording_frame_id`, and dense `roi_stream_frame_index`.

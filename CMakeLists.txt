@@ -551,6 +551,15 @@ link_libraries(orange_project_warnings)
 
 add_executable(orange ${ORANGE_SOURCES})
 add_executable(orange_client EXCLUDE_FROM_ALL ${ORANGE_CLIENT_SOURCES})
+add_library(spatial_roi_recorder_cuda_detach STATIC
+    "${SRC_DIR}/spatial_roi_recorder_cuda_detach.cu")
+target_include_directories(spatial_roi_recorder_cuda_detach PUBLIC
+    ${ORANGE_COMMON_INCLUDE_DIRS})
+target_compile_features(spatial_roi_recorder_cuda_detach PUBLIC
+    cxx_std_17 cuda_std_17)
+target_link_libraries(spatial_roi_recorder_cuda_detach PRIVATE
+    ${CUDA_CUDART_LIBRARY}
+    ${CUDA_DRIVER_LIBRARY})
 add_executable(yolo_offline EXCLUDE_FROM_ALL ${YOLO_OFFLINE_SOURCES})
 add_executable(evt_lens_probe ${EVT_LENS_PROBE_SOURCES})
 add_executable(evt_aperture_characterize ${EVT_APERTURE_CHARACTERIZE_SOURCES})
@@ -1044,6 +1053,25 @@ if(BUILD_TESTING)
     target_link_libraries(spatial_roi_unix_socket_transport_tests PRIVATE Threads::Threads)
     add_test(NAME spatial_roi_unix_socket_transport_tests
         COMMAND spatial_roi_unix_socket_transport_tests)
+
+    add_executable(spatial_roi_recorder_cuda_detach_tests
+        "tools/spatial_roi_recorder_cuda_detach_tests.cpp"
+        "${SRC_DIR}/spatial_roi_ipc_protocol.cpp"
+        "${SRC_DIR}/spatial_roi_frame_contract.cpp"
+    )
+    target_include_directories(spatial_roi_recorder_cuda_detach_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_recorder_cuda_detach_tests PRIVATE
+        cxx_std_17 cuda_std_17)
+    target_link_libraries(spatial_roi_recorder_cuda_detach_tests PRIVATE
+        spatial_roi_recorder_cuda_detach
+        ${CUDA_CUDART_LIBRARY}
+        ${CUDA_DRIVER_LIBRARY}
+        Threads::Threads)
+    add_test(NAME spatial_roi_recorder_cuda_detach_tests
+        COMMAND spatial_roi_recorder_cuda_detach_tests)
+    set_tests_properties(spatial_roi_recorder_cuda_detach_tests PROPERTIES
+        TIMEOUT 30)
 
     add_executable(ffmpeg_writer_failure_tests
         "tools/ffmpeg_writer_failure_tests.cpp"
