@@ -145,12 +145,28 @@ private:
 // Immutable delivery identity assigned by the individual ROI lane when its
 // queue admits an item.  The index is deliberately not stored in the shared
 // batch envelope: one source batch fans out to independent ROI streams, each
-// of which has its own dense one-based sequence.  A sink may retain this value
-// together with envelope for an asynchronous IPC or metadata handoff.
+// of which has its own dense one-based sequence.  The constructor is private
+// so a sink cannot manufacture a new lane/index/envelope combination, and the
+// fields are const so an accepted identity cannot be changed before it reaches
+// an exporter.  A sink may retain this value together with envelope for an
+// asynchronous IPC or metadata handoff.
 struct SpatialRoiLaneDelivery final {
-    std::size_t lane_index = 0;
-    std::uint64_t roi_stream_frame_index = 0;
-    std::shared_ptr<const SpatialRoiBatchEnvelope> envelope;
+    const std::size_t lane_index;
+    const std::uint64_t roi_stream_frame_index;
+    const std::shared_ptr<const SpatialRoiBatchEnvelope> envelope;
+
+private:
+    friend class SpatialRoiRecordingRuntime;
+
+    SpatialRoiLaneDelivery(
+        std::size_t lane_index,
+        std::uint64_t roi_stream_frame_index,
+        std::shared_ptr<const SpatialRoiBatchEnvelope> envelope)
+        : lane_index(lane_index),
+          roi_stream_frame_index(roi_stream_frame_index),
+          envelope(std::move(envelope))
+    {
+    }
 };
 
 // The preferred sink API.  The delivery value is immutable from the sink's

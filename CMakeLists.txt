@@ -361,8 +361,12 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/crop_preview_worker.cpp"
     "${SRC_DIR}/crop_producer.cpp"
     "${SRC_DIR}/crop_producer_worker.cpp"
+    "${SRC_DIR}/spatial_roi_acquisition_bridge.cpp"
+    "${SRC_DIR}/spatial_roi_acquisition_controller.cpp"
     "${SRC_DIR}/spatial_roi_batch_producer.cpp"
     "${SRC_DIR}/spatial_roi_frame_contract.cpp"
+    "${SRC_DIR}/spatial_roi_ipc_exporter.cpp"
+    "${SRC_DIR}/spatial_roi_ipc_protocol.cpp"
     "${SRC_DIR}/spatial_roi_recording_runtime.cpp"
     "${SRC_DIR}/pose_event_log.cpp"
     "${SRC_DIR}/pose_worker.cpp"
@@ -448,8 +452,12 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/crop_preview_worker.cpp"
     "${SRC_DIR}/crop_producer.cpp"
     "${SRC_DIR}/crop_producer_worker.cpp"
+    "${SRC_DIR}/spatial_roi_acquisition_bridge.cpp"
+    "${SRC_DIR}/spatial_roi_acquisition_controller.cpp"
     "${SRC_DIR}/spatial_roi_batch_producer.cpp"
     "${SRC_DIR}/spatial_roi_frame_contract.cpp"
+    "${SRC_DIR}/spatial_roi_ipc_exporter.cpp"
+    "${SRC_DIR}/spatial_roi_ipc_protocol.cpp"
     "${SRC_DIR}/spatial_roi_recording_runtime.cpp"
     "${SRC_DIR}/pose_event_log.cpp"
     "${SRC_DIR}/pose_worker.cpp"
@@ -904,6 +912,15 @@ if(BUILD_TESTING)
     target_compile_features(spatial_roi_frame_contract_tests PRIVATE cxx_std_17)
     add_test(NAME spatial_roi_frame_contract_tests COMMAND spatial_roi_frame_contract_tests)
 
+    add_executable(spatial_roi_ipc_protocol_tests
+        "tools/spatial_roi_ipc_protocol_tests.cpp"
+        "${SRC_DIR}/spatial_roi_ipc_protocol.cpp"
+        "${SRC_DIR}/spatial_roi_frame_contract.cpp"
+    )
+    target_include_directories(spatial_roi_ipc_protocol_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_ipc_protocol_tests PRIVATE cxx_std_17)
+    add_test(NAME spatial_roi_ipc_protocol_tests COMMAND spatial_roi_ipc_protocol_tests)
+
     add_executable(spatial_roi_batch_producer_tests
         "tools/spatial_roi_batch_producer_tests.cpp"
         "${SRC_DIR}/spatial_roi_batch_producer.cpp"
@@ -928,6 +945,57 @@ if(BUILD_TESTING)
         ${CUDA_CUDART_LIBRARY}
         Threads::Threads)
     add_test(NAME spatial_roi_recording_runtime_tests COMMAND spatial_roi_recording_runtime_tests)
+
+    add_executable(spatial_roi_acquisition_bridge_tests
+        "tools/spatial_roi_acquisition_bridge_tests.cpp"
+        "${SRC_DIR}/spatial_roi_acquisition_bridge.cpp"
+        "${SRC_DIR}/spatial_roi_recording_runtime.cpp"
+        "${SRC_DIR}/spatial_roi_batch_producer.cpp"
+        "${SRC_DIR}/session/spatial_roi_recording_config.cpp"
+    )
+    target_include_directories(spatial_roi_acquisition_bridge_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_acquisition_bridge_tests PRIVATE cxx_std_17)
+    target_link_libraries(spatial_roi_acquisition_bridge_tests PRIVATE
+        ${CUDA_CUDART_LIBRARY}
+        ${EVT_CAMERA_LIBRARY}
+        ${EVT_GENICAM_LIBRARY}
+        ${EVT_GIGE_LIBRARY}
+        Threads::Threads)
+    add_test(NAME spatial_roi_acquisition_bridge_tests COMMAND spatial_roi_acquisition_bridge_tests)
+
+    add_executable(spatial_roi_acquisition_controller_tests
+        "tools/spatial_roi_acquisition_controller_tests.cpp"
+        "${SRC_DIR}/spatial_roi_acquisition_controller.cpp"
+        "${SRC_DIR}/spatial_roi_acquisition_bridge.cpp"
+        "${SRC_DIR}/spatial_roi_recording_runtime.cpp"
+        "${SRC_DIR}/spatial_roi_batch_producer.cpp"
+        "${SRC_DIR}/session/spatial_roi_recording_config.cpp"
+    )
+    target_include_directories(spatial_roi_acquisition_controller_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_acquisition_controller_tests PRIVATE cxx_std_17)
+    target_link_libraries(spatial_roi_acquisition_controller_tests PRIVATE
+        ${CUDA_CUDART_LIBRARY}
+        ${EVT_CAMERA_LIBRARY}
+        ${EVT_GENICAM_LIBRARY}
+        ${EVT_GIGE_LIBRARY}
+        Threads::Threads)
+    add_test(NAME spatial_roi_acquisition_controller_tests COMMAND spatial_roi_acquisition_controller_tests)
+
+    add_executable(spatial_roi_ipc_exporter_tests
+        "tools/spatial_roi_ipc_exporter_tests.cpp"
+        "${SRC_DIR}/spatial_roi_ipc_exporter.cpp"
+        "${SRC_DIR}/spatial_roi_ipc_protocol.cpp"
+        "${SRC_DIR}/spatial_roi_frame_contract.cpp"
+        "${SRC_DIR}/spatial_roi_recording_runtime.cpp"
+        "${SRC_DIR}/spatial_roi_batch_producer.cpp"
+        "${SRC_DIR}/session/spatial_roi_recording_config.cpp"
+    )
+    target_include_directories(spatial_roi_ipc_exporter_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_ipc_exporter_tests PRIVATE cxx_std_17)
+    target_link_libraries(spatial_roi_ipc_exporter_tests PRIVATE
+        ${CUDA_CUDART_LIBRARY}
+        Threads::Threads)
+    add_test(NAME spatial_roi_ipc_exporter_tests COMMAND spatial_roi_ipc_exporter_tests)
 
     add_executable(ffmpeg_writer_failure_tests
         "tools/ffmpeg_writer_failure_tests.cpp"

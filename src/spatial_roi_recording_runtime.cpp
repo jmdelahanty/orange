@@ -643,6 +643,14 @@ SpatialRoiBatchSubmission SpatialRoiRecordingRuntime::TrySubmit(
         return submission;
     }
 
+    // Materialize all caller-visible variable-size state before producer or
+    // lane admission. Once the first lane accepts this frame, the remainder
+    // of TrySubmit must not throw and make the acquisition bridge report an
+    // exception for work that is already in flight.
+    submission.lane_count = lanes_.size();
+    submission.lane_reasons.assign(
+        submission.lane_count, SpatialRoiLaneTerminalReason::kPending);
+
     const SpatialRoiBatchLimits& limits = producer_->limits();
     std::vector<SpatialRoiWorkItem> work_items;
     work_items.reserve(limits.expected_roi_descriptors.size());
@@ -697,7 +705,6 @@ SpatialRoiBatchSubmission SpatialRoiRecordingRuntime::TrySubmit(
     std::shared_ptr<SpatialRoiBatchEnvelope> envelope(new SpatialRoiBatchEnvelope(
         std::move(result), std::move(work_items), batch_sequence));
     submission.batch_sequence = batch_sequence;
-    submission.lane_count = lanes_.size();
     submission.envelope = envelope;
     last_admitted_recording_frame_id_ = source.identity.recording_frame_id;
 
@@ -729,6 +736,7 @@ SpatialRoiBatchSubmission SpatialRoiRecordingRuntime::TrySubmit(
             counters_->lane_stopped.fetch_add(1, std::memory_order_relaxed);
             fatal_lane_admission_failure = true;
         }
+        submission.lane_reasons[lane_index] = reason;
         mark_lane_terminal(envelope, lane_index, reason);
     }
 
@@ -741,7 +749,6 @@ SpatialRoiBatchSubmission SpatialRoiRecordingRuntime::TrySubmit(
         }
     }
 
-    submission.lane_reasons = envelope->terminal_snapshot().lane_reasons;
     const bool all_lanes_admitted =
         submission.admitted_lane_count == submission.lane_count;
     submission.status = all_lanes_admitted

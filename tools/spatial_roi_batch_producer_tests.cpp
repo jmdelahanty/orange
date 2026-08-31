@@ -730,6 +730,19 @@ void test_gpu_batch_copy(int gpu_id)
     source_view.source_lease = weak_source_lease.lock();
     require(first.outputs().size() == work_items.size(), "first batch output count mismatch");
     require(first.completion_event() != nullptr, "first batch has no completion event");
+    cudaIpcEventHandle_t completion_ipc_handle{};
+    require_cuda(
+        cudaIpcGetEventHandle(
+            &completion_ipc_handle, first.completion_event()),
+        "cudaIpcGetEventHandle(spatial ROI completion)");
+    for (const auto& output : first.outputs()) {
+        cudaIpcMemHandle_t output_ipc_handle{};
+        require_cuda(
+            cudaIpcGetMemHandle(
+                &output_ipc_handle,
+                static_cast<void*>(output.device_data)),
+            "cudaIpcGetMemHandle(spatial ROI output)");
+    }
     require_cuda(
         cudaEventSynchronize(first.completion_event()),
         "cudaEventSynchronize(batch complete)");

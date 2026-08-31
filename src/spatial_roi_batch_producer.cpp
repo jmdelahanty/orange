@@ -992,7 +992,7 @@ public:
             }
             status = cudaEventCreateWithFlags(
                 &slot.completion_event,
-                cudaEventDisableTiming);
+                cudaEventDisableTiming | cudaEventInterprocess);
             if (status != cudaSuccess) {
                 set_error(
                     error_out,
