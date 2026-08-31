@@ -137,10 +137,11 @@ emitted for compatibility, but schema-2 consumers should prefer
 `recording_outputs` when it is present.
 
 The `crop` value is currently one scalar, YOLO-driven top-one crop stream. It is
-not the detector-independent spatial ROI collection. That product is only at
-the verified-plan/CUDA extraction-foundation stage in Orange `c423ad5`; its
-recorder and multi-output session contract remain pending. Consumers must not
-infer stable `roi_id` or `region_id` from the current crop descriptor.
+not the detector-independent spatial ROI collection. That product has a
+verified-plan/CUDA extractor plus a closed frame contract and bounded lane
+runtime on its isolation branch, but no recorder process or multi-output
+session inventory yet. Consumers must not infer stable `roi_id` or `region_id`
+from the current crop descriptor.
 
 Every newly finalized encoded `full` or `crop` descriptor also carries
 `encoding_budget` (`schema_id = "orange.recording_encoding_budget"`, version

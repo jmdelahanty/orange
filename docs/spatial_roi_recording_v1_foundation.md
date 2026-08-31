@@ -2,10 +2,15 @@
 
 **Date:** 2026-08-30
 
-**Status:** extraction foundation complete in Orange commit `c423ad5`
-(`agent/acquisition/spatial-roi-recording-v1-20260830`). The feature remains
-default-off and is not connected to acquisition, recorder processes, session
-finalization, or deployment.
+**Last updated:** 2026-08-31
+
+**Status:** extraction foundation complete in Orange commit `c423ad5`; the
+frame-contract, strict recorder-plan materializer, and bounded per-ROI runtime
+foundation are implemented on
+`agent/acquisition/spatial-roi-recording-v1-20260830`. The feature remains
+default-off and is not connected to acquisition, the existing external
+recorder supervisor/protocol, session finalization, or deployment. It does not
+yet produce ROI video files.
 
 This document is the canonical status and handoff for the detector-independent
 spatial ROI path. It must not be read as claiming that the existing scalar,
@@ -27,7 +32,14 @@ Implemented components:
   geometry validation, and aggregate resource admission in
   `src/session/spatial_roi_recording_config.*`; and
 - a bounded native-Mono8 CUDA batch extractor in
-  `src/spatial_roi_batch_producer.*`.
+  `src/spatial_roi_batch_producer.*`;
+- a closed, collision-checked per-ROI frame/metadata descriptor in
+  `src/spatial_roi_frame_contract.*`;
+- a verified-plan-only recorder contract materializer in
+  `src/session/spatial_roi_recorder_contract.*`; and
+- one strictly bounded worker lane per verified ROI, with shared batch/source
+  lifetime and explicit terminal outcomes, in
+  `src/spatial_roi_recording_runtime.*`.
 
 The plan binds the parent recording identity/token, producer generation,
 camera ID and serial, native raster, layout/materialization/registration
@@ -54,6 +66,22 @@ statuses. If a failed asynchronous submission cannot be proven complete by a
 stream synchronization, the complete pool state and source lease are
 quarantined for process lifetime rather than risking use-after-free.
 
+The runtime submits one verified-order batch, fans its immutable envelope to
+independently bounded ROI lanes, and never waits for another submitter or a
+lane queue. Schema v1 is always strict: any queue rejection, missing sink,
+sink failure, or CUDA completion failure makes the spatial-ROI batch
+incomplete. Duplicate or out-of-order recording-frame identities are rejected
+before production, and fatal producer states remain latched in the runtime. A
+completed lane means the handoff reached a source-safe boundary; it is not
+session-finalization proof.
+
+The new recorder contract is intentionally a separate
+`orange.spatial_roi_recording.external_recorder_contract` schema. The current
+`orange.external_recorder.contract` supervisor and positional v1 frame
+protocol cannot carry the required ROI identity and must reject it. Do not
+relabel or feed this object to that parser. The next integration must add an
+ROI-aware supervisor/protocol consumer before enabling the runtime.
+
 ## Validation completed
 
 - strict config/plan parsing, normalization, digest binding, bounds, overlap,
@@ -62,7 +90,14 @@ quarantined for process lifetime rather than risking use-after-free.
 - four simultaneous device-to-device ROI copies on an RTX A6000;
 - exact decoded content pixels and explicit zero padding;
 - bounded pool exhaustion/reuse and source-lease lifetime; and
-- `StopAccepting()` linearization against concurrent production.
+- `StopAccepting()` linearization against concurrent production;
+- closed frame/metadata JSON round trips, canonical stream naming, origin-
+  anchored encoded geometry, and duplicate identity rejection;
+- exact verified-plan-to-recorder materialization, GPU-map coverage, HEVC
+  lossless/GOP-1 policy, queue-depth propagation, and odd-NV12 rejection;
+- four-lane CUDA fanout, exact outstanding-capacity enforcement, queue-full,
+  sink-rejection/failure, missing-sink, and re-entrant-stop behavior; and
+- production Orange GUI and headless builds with the new foundation linked.
 
 ## Next slice: one-camera, four-ROI recorder integration
 
@@ -73,6 +108,10 @@ retaining the authoritative full-frame stream. YOLO, preview, pose, packed
 atlases, crop-only media policy, and detection-centered routing are out of
 scope.
 
+The schema and runtime remain general over a verified plan's admitted ROI
+count so future layouts do not require a second ABI. Activation and acceptance
+are nevertheless gated to one camera/four ROIs for this slice.
+
 ### A. Acquisition seam and batch submission
 
 - [ ] At recording cadence, obtain the authoritative `WORKER_ENTRY` source
@@ -81,9 +120,11 @@ scope.
 - [ ] Submit exactly one `TryProduce()` batch per eligible source frame, with
       all plan ROIs in verified order and the complete source identity copied to
       every work item.
-- [ ] Make batch admission nonblocking. Record separate stopped, pool-empty,
-      invalid, CUDA-error, and source-quarantine outcomes per source frame.
-- [ ] Release the source lease only after the batch completion fence; on an
+- [x] Make runtime batch/lane admission nonblocking and expose separate busy,
+      stopped, pool-empty, invalid, duplicate/out-of-order, CUDA-error,
+      queue-full/queue-admission-failure, and source-quarantine outcomes.
+      Acquisition-side per-frame persistence remains pending.
+- [x] Release the source lease only after the batch completion fence; on an
       unprovable completion, preserve the producer quarantine behavior and never
       recycle or reuse the allocation speculatively.
 - [ ] Prove that ROI work cannot delay acquisition, YOLO, display, or the
@@ -93,13 +134,17 @@ scope.
 
 ### B. Per-ROI recorder/IPC lanes
 
-- [ ] Extend the recorder handoff with an explicit `roi_id`, `region_id`,
+- [x] Define and validate a closed handoff descriptor with explicit `roi_id`,
+      `region_id`,
       `logical_stream_id`, plan digest, native content rectangle, encoded raster,
       and ROI-local frame index. `recording_frame_id` alone is not a sufficient
       key when four ROI descriptors share one source frame.
-- [ ] Give each required ROI an independently bounded admission queue and
+- [ ] Carry that descriptor on an ROI-aware supervisor/IPC protocol; the
+      existing positional protocol remains deliberately unchanged.
+- [x] Give each required ROI an independently bounded runtime queue and
       terminal state. A lane may fail or drop only its own sidecar; it must not
-      relabel another ROI or downgrade the full-frame ingest output.
+      relabel another ROI. Connecting those lanes to recorder processes and
+      full-frame coexistence remains pending.
 - [ ] Encode the exact Mono8 pixels with the validated lossless profile. Keep
       alignment padding explicit and zero-filled; no scaling or color
       conversion is permitted.

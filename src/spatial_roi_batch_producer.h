@@ -330,6 +330,10 @@ public:
     // that has entered admission, including its CUDA enqueue sequence, and no
     // new submission can enqueue after this call returns.
     void StopAccepting() noexcept;
+    // Fail-stop after a downstream CUDA completion check can no longer prove
+    // source/output safety. The pool and outstanding source leases are then
+    // retained for the process lifetime rather than reused or released.
+    void Quarantine() noexcept;
     std::size_t slot_capacity() const noexcept;
     std::size_t available_slot_count() const noexcept;
     std::size_t pending_slot_count() const noexcept;

@@ -1020,6 +1020,14 @@ public:
         accepting_.store(false, std::memory_order_release);
     }
 
+    void Quarantine() noexcept
+    {
+        std::lock_guard<std::mutex> enqueue_lock(enqueue_mutex_);
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        accepting_.store(false, std::memory_order_release);
+        quarantine_for_process_lifetime();
+    }
+
     // Internal error path used while TryProduce already owns enqueue_mutex_.
     // It must not call StopAccepting(), which would recursively lock the same
     // non-recursive mutex.
@@ -1071,6 +1079,10 @@ public:
         }
         if (!reclaim_completed_locked(error_out)) {
             accepting_.store(false, std::memory_order_release);
+            if (failure_status) {
+                *failure_status =
+                    SpatialRoiBatchStatus::kSourceQuarantined;
+            }
             return false;
         }
         for (std::size_t index = 0; index < slots_.size(); ++index) {
@@ -1242,6 +1254,8 @@ private:
             set_error(
                 error_out,
                 cuda_failure("cudaEventQuery(spatial ROI batch)", status));
+            accepting_.store(false, std::memory_order_release);
+            quarantine_for_process_lifetime();
             return false;
         }
         return true;
@@ -1617,6 +1631,13 @@ void SpatialRoiBatchProducer::StopAccepting() noexcept
 {
     if (state_) {
         state_->StopAccepting();
+    }
+}
+
+void SpatialRoiBatchProducer::Quarantine() noexcept
+{
+    if (state_) {
+        state_->Quarantine();
     }
 }
 

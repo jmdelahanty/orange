@@ -8,8 +8,10 @@ and crop-video recording without merging their hot paths prematurely.
 ## Spatial ROI boundary (2026-08-31)
 
 Orange commit `c423ad5` completes the verified-plan and CUDA batch-extraction
-foundation for detector-independent spatial ROI recording. It does not add
-recording outputs. The current scalar `recording_outputs[serial].crop`
+foundation for detector-independent spatial ROI recording. The isolation
+branch now also contains the closed ROI frame contract, recorder-plan
+materializer, and bounded lane runtime, but it still does not add recording
+outputs. The current scalar `recording_outputs[serial].crop`
 descriptor and `Cam<serial>_crop` artifacts continue to describe the legacy
 YOLO-driven top-one crop sidecar only. They must not be used to represent four
 stable `roi_id`/`region_id` streams.

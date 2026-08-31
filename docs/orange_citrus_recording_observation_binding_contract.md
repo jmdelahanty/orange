@@ -100,9 +100,10 @@ artifacts remain inspectable and are not rewritten.
 This contract describes the existing scalar YOLO-driven crop stream. It does
 not claim support for the separate detector-independent spatial ROI product.
 Spatial ROI media must retain stable `roi_id`/`region_id`, plan digest, native
-content rectangle, and a collision-free ROI frame identity in a future media
-inventory; that recorder integration remains pending after Orange foundation
-commit `c423ad5`.
+content rectangle, and a collision-free ROI frame identity in its media
+inventory. Orange now defines that frame identity on the isolation branch,
+but recorder IPC, media inventory, and finalization integration remain
+pending after foundation commit `c423ad5`.
 
 If Orange later supports two independent native source-camera frame streams
 from one camera in one recording, that producer must use a new identity policy
