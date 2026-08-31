@@ -1037,6 +1037,17 @@ public:
         accepting_.store(false, std::memory_order_release);
     }
 
+    // TryAcquire is called while SpatialRoiBatchProducer owns enqueue_mutex_.
+    // A device-selection failure cannot prove that source reads admitted by
+    // earlier batches have completed, so retain the complete pool rather than
+    // merely stopping future admission.
+    void QuarantineWithEnqueueLockHeld() noexcept
+    {
+        std::lock_guard<std::mutex> lock(pool_mutex_);
+        accepting_.store(false, std::memory_order_release);
+        quarantine_for_process_lifetime();
+    }
+
     bool TryAcquire(AcquiredSlot* acquired,
                     SpatialRoiBatchStatus* failure_status,
                     const std::shared_ptr<void>& source_lease,
@@ -1059,7 +1070,11 @@ public:
 
         cudaError_t status = cudaSetDevice(limits_.gpu_id);
         if (status != cudaSuccess) {
-            DisableAccepting();
+            QuarantineWithEnqueueLockHeld();
+            if (failure_status) {
+                *failure_status =
+                    SpatialRoiBatchStatus::kSourceQuarantined;
+            }
             set_error(error_out, cuda_failure("cudaSetDevice", status));
             return false;
         }
