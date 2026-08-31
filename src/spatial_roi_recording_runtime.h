@@ -142,7 +142,27 @@ private:
         SpatialRoiBatchCompletionStatus::kPending;
 };
 
+// Immutable delivery identity assigned by the individual ROI lane when its
+// queue admits an item.  The index is deliberately not stored in the shared
+// batch envelope: one source batch fans out to independent ROI streams, each
+// of which has its own dense one-based sequence.  A sink may retain this value
+// together with envelope for an asynchronous IPC or metadata handoff.
+struct SpatialRoiLaneDelivery final {
+    std::size_t lane_index = 0;
+    std::uint64_t roi_stream_frame_index = 0;
+    std::shared_ptr<const SpatialRoiBatchEnvelope> envelope;
+};
+
+// The preferred sink API.  The delivery value is immutable from the sink's
+// perspective and contains all identity needed by a future exporter.
 using SpatialRoiLaneSink = std::function<SpatialRoiLaneSinkResult(
+    const SpatialRoiLaneDelivery& delivery)>;
+
+// Source compatibility for clients that have not yet migrated to the
+// delivery-value callback.  Runtime internals always invoke SpatialRoiLaneSink
+// and adapt this form at construction.  New code should use SpatialRoiLaneSink
+// so the per-lane stream index cannot be accidentally omitted.
+using SpatialRoiLegacyLaneSink = std::function<SpatialRoiLaneSinkResult(
     std::size_t lane_index,
     std::shared_ptr<const SpatialRoiBatchEnvelope> envelope)>;
 
@@ -205,6 +225,11 @@ public:
         std::string camera_serial,
         int gpu_id,
         SpatialRoiLaneSink sink = {});
+    SpatialRoiRecordingRuntime(
+        const nlohmann::json& verified_plan,
+        std::string camera_serial,
+        int gpu_id,
+        SpatialRoiLegacyLaneSink sink);
     ~SpatialRoiRecordingRuntime();
 
     SpatialRoiRecordingRuntime(const SpatialRoiRecordingRuntime&) = delete;

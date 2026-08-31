@@ -248,6 +248,16 @@ public:
         kStopped,
     };
 
+    struct AdmissionResult {
+        Admission status = Admission::kFailed;
+        std::uint64_t roi_stream_frame_index = 0;
+    };
+
+    struct QueuedDelivery {
+        std::shared_ptr<SpatialRoiBatchEnvelope> envelope;
+        std::uint64_t roi_stream_frame_index = 0;
+    };
+
     Lane(SpatialRoiRecordingRuntime* owner,
          std::size_t lane_index,
          int gpu_id,
@@ -273,27 +283,38 @@ public:
     Lane(const Lane&) = delete;
     Lane& operator=(const Lane&) = delete;
 
-    Admission TryEnqueue(const std::shared_ptr<SpatialRoiBatchEnvelope>& envelope)
+    AdmissionResult TryEnqueue(
+        const std::shared_ptr<SpatialRoiBatchEnvelope>& envelope)
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!accepting_) {
-            return Admission::kStopped;
+            return {Admission::kStopped, 0};
         }
         if (outstanding_ >= queue_capacity_) {
-            return Admission::kQueueFull;
+            return {Admission::kQueueFull, 0};
+        }
+        // A wrapped counter would violate the dense positive-index contract.
+        // Treat the impossible terminal value as an admission failure without
+        // changing the counter or queue state.
+        if (next_roi_stream_frame_index_ == std::numeric_limits<std::uint64_t>::max()) {
+            accepting_ = false;
+            condition_.notify_all();
+            return {Admission::kFailed, 0};
         }
         try {
-            queue_.push_back(envelope);
+            queue_.push_back(
+                {envelope, next_roi_stream_frame_index_});
         } catch (...) {
             // A lane whose bounded queue cannot materialize its next node is
             // failed closed. Already admitted FIFO work still drains.
             accepting_ = false;
             condition_.notify_all();
-            return Admission::kFailed;
+            return {Admission::kFailed, 0};
         }
+        const std::uint64_t admitted_index = next_roi_stream_frame_index_++;
         ++outstanding_;
         condition_.notify_one();
-        return Admission::kAccepted;
+        return {Admission::kAccepted, admitted_index};
     }
 
     void StopAccepting() noexcept
@@ -324,7 +345,7 @@ private:
     void run() noexcept
     {
         for (;;) {
-            std::shared_ptr<SpatialRoiBatchEnvelope> envelope;
+            QueuedDelivery queued_delivery;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
                 condition_.wait(lock, [this]() {
@@ -338,9 +359,12 @@ private:
                     }
                     continue;
                 }
-                envelope = std::move(queue_.front());
+                queued_delivery = std::move(queue_.front());
                 queue_.pop_front();
             }
+
+            std::shared_ptr<SpatialRoiBatchEnvelope>& envelope =
+                queued_delivery.envelope;
 
             SpatialRoiLaneTerminalReason terminal =
                 SpatialRoiLaneTerminalReason::kSinkFailed;
@@ -353,7 +377,10 @@ private:
                         SpatialRoiLaneTerminalReason::kSourceQuarantined;
                 } else {
                     const SpatialRoiLaneSinkResult result =
-                        sink_ ? sink_(lane_index_, envelope)
+                        sink_ ? sink_(SpatialRoiLaneDelivery{
+                                         lane_index_,
+                                         queued_delivery.roi_stream_frame_index,
+                                         envelope})
                               : SpatialRoiLaneSinkResult::kFailed;
                     switch (result) {
                     case SpatialRoiLaneSinkResult::kCompleted:
@@ -391,8 +418,9 @@ private:
 
     std::mutex mutex_;
     std::condition_variable condition_;
-    std::deque<std::shared_ptr<SpatialRoiBatchEnvelope>> queue_;
+    std::deque<QueuedDelivery> queue_;
     std::size_t outstanding_ = 0;
+    std::uint64_t next_roi_stream_frame_index_ = 1;
     bool accepting_ = false;
     std::thread worker_;
     const std::thread::id worker_id_;
@@ -467,6 +495,26 @@ SpatialRoiRecordingRuntime::SpatialRoiRecordingRuntime(
             this, lane_index, gpu_id, lane_queue_capacity_, sink));
     }
     accepting_ = true;
+}
+
+SpatialRoiRecordingRuntime::SpatialRoiRecordingRuntime(
+    const nlohmann::json& verified_plan,
+    std::string camera_serial,
+    int gpu_id,
+    SpatialRoiLegacyLaneSink sink)
+    : SpatialRoiRecordingRuntime(
+          verified_plan,
+          std::move(camera_serial),
+          gpu_id,
+          SpatialRoiLaneSink(
+              [legacy_sink = std::move(sink)](
+                  const SpatialRoiLaneDelivery& delivery) {
+                  return legacy_sink
+                             ? legacy_sink(delivery.lane_index,
+                                           delivery.envelope)
+                             : SpatialRoiLaneSinkResult::kFailed;
+              }))
+{
 }
 
 SpatialRoiRecordingRuntime::~SpatialRoiRecordingRuntime()
@@ -655,13 +703,13 @@ SpatialRoiBatchSubmission SpatialRoiRecordingRuntime::TrySubmit(
 
     bool fatal_lane_admission_failure = false;
     for (std::size_t lane_index = 0; lane_index < lanes_.size(); ++lane_index) {
-        Lane::Admission admission = Lane::Admission::kFailed;
+        Lane::AdmissionResult admission;
         try {
             admission = lanes_[lane_index]->TryEnqueue(envelope);
         } catch (...) {
-            admission = Lane::Admission::kFailed;
+            admission = {Lane::Admission::kFailed, 0};
         }
-        if (admission == Lane::Admission::kAccepted) {
+        if (admission.status == Lane::Admission::kAccepted) {
             ++submission.admitted_lane_count;
             counters_->lane_admitted.fetch_add(1, std::memory_order_relaxed);
             continue;
@@ -669,10 +717,10 @@ SpatialRoiBatchSubmission SpatialRoiRecordingRuntime::TrySubmit(
 
         SpatialRoiLaneTerminalReason reason =
             SpatialRoiLaneTerminalReason::kStopped;
-        if (admission == Lane::Admission::kQueueFull) {
+        if (admission.status == Lane::Admission::kQueueFull) {
             reason = SpatialRoiLaneTerminalReason::kQueueFull;
             counters_->lane_queue_full.fetch_add(1, std::memory_order_relaxed);
-        } else if (admission == Lane::Admission::kFailed) {
+        } else if (admission.status == Lane::Admission::kFailed) {
             reason = SpatialRoiLaneTerminalReason::kQueueAdmissionFailed;
             counters_->lane_queue_admission_failed.fetch_add(
                 1, std::memory_order_relaxed);

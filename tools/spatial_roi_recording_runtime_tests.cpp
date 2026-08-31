@@ -22,6 +22,7 @@ namespace {
 using orange::spatial_roi::SpatialRoiBatchCompletionStatus;
 using orange::spatial_roi::SpatialRoiBatchSubmission;
 using orange::spatial_roi::SpatialRoiFrameIdentity;
+using orange::spatial_roi::SpatialRoiLaneDelivery;
 using orange::spatial_roi::SpatialRoiLaneSinkResult;
 using orange::spatial_roi::SpatialRoiLaneTerminalReason;
 using orange::spatial_roi::SpatialRoiRecordingRuntime;
@@ -269,14 +270,17 @@ void test_runtime_cuda_fanout_and_terminal_failures()
 
     std::mutex sink_mutex;
     std::vector<std::size_t> completed_lanes;
+    std::vector<std::uint64_t> completed_indexes;
     {
         SpatialRoiRecordingRuntime runtime(
             plan,
             "10000",
             0,
-            [&](std::size_t lane_index,
-                std::shared_ptr<const orange::spatial_roi::SpatialRoiBatchEnvelope>
-                    envelope) {
+            [&](const SpatialRoiLaneDelivery& delivery) {
+                const std::size_t lane_index = delivery.lane_index;
+                const auto& envelope = delivery.envelope;
+                require(delivery.roi_stream_frame_index > 0,
+                        "lane delivery index was not positive");
                 require(envelope->work_items().size() == 4,
                         "batch envelope lost one or more ROI work items");
                 require(envelope->work_items()[lane_index].roi_id ==
@@ -288,6 +292,7 @@ void test_runtime_cuda_fanout_and_terminal_failures()
                         "lane output identity does not match work item identity");
                 std::lock_guard<std::mutex> lock(sink_mutex);
                 completed_lanes.push_back(lane_index);
+                completed_indexes.push_back(delivery.roi_stream_frame_index);
                 return SpatialRoiLaneSinkResult::kCompleted;
             });
 
@@ -310,6 +315,12 @@ void test_runtime_cuda_fanout_and_terminal_failures()
                 "batch did not record every terminal lane");
         require(completed_lanes.size() == 4,
                 "sink did not receive one callback per ROI lane");
+        require(completed_indexes.size() == 4,
+                "sink did not receive one stream index per ROI lane");
+        for (const std::uint64_t index : completed_indexes) {
+            require(index == 1,
+                    "first admitted batch did not receive index one on every lane");
+        }
         const auto counters = runtime.counters();
         require(counters.producer_accepted == 1 && counters.lane_admitted == 4,
                 "accepted producer/lane counters are not exact");
@@ -325,8 +336,8 @@ void test_runtime_cuda_fanout_and_terminal_failures()
             plan,
             "10000",
             0,
-            [](std::size_t lane_index,
-               std::shared_ptr<const orange::spatial_roi::SpatialRoiBatchEnvelope>) {
+            [](const SpatialRoiLaneDelivery& delivery) {
+                const std::size_t lane_index = delivery.lane_index;
                 if (lane_index == 1) {
                     return SpatialRoiLaneSinkResult::kRejected;
                 }
@@ -387,18 +398,25 @@ void test_exact_lane_capacity_and_reentrant_stop()
     std::mutex gate_mutex;
     std::condition_variable gate_condition;
     bool release_sinks = false;
+    std::condition_variable completed_condition;
+    std::size_t completed_delivery_count = 0;
+    std::vector<std::vector<std::uint64_t>> delivered_indexes(4);
     SpatialRoiBatchSubmission first;
     SpatialRoiBatchSubmission second;
     SpatialRoiBatchSubmission overflow;
+    SpatialRoiBatchSubmission fourth;
     {
         SpatialRoiRecordingRuntime runtime(
             plan,
             "10000",
             0,
-            [&](std::size_t,
-                std::shared_ptr<const orange::spatial_roi::SpatialRoiBatchEnvelope>) {
+            [&](const SpatialRoiLaneDelivery& delivery) {
                 std::unique_lock<std::mutex> lock(gate_mutex);
                 gate_condition.wait(lock, [&]() { return release_sinks; });
+                delivered_indexes[delivery.lane_index].push_back(
+                    delivery.roi_stream_frame_index);
+                ++completed_delivery_count;
+                completed_condition.notify_all();
                 return SpatialRoiLaneSinkResult::kCompleted;
             });
 
@@ -428,7 +446,34 @@ void test_exact_lane_capacity_and_reentrant_stop()
             release_sinks = true;
         }
         gate_condition.notify_all();
+        {
+            std::unique_lock<std::mutex> lock(gate_mutex);
+            completed_condition.wait(lock, [&]() {
+                return completed_delivery_count == 8;
+            });
+        }
+
+        // Release the producer results from the first three submissions so
+        // the test can admit another batch without changing the bounded pool
+        // configuration.  The callbacks above have already retained the
+        // immutable per-lane indices for verification.
+        first.envelope.reset();
+        second.envelope.reset();
+        overflow.envelope.reset();
+        source.identity.recording_frame_id++;
+        fourth = runtime.TrySubmit(source);
+        require(fourth.status == SpatialRoiRuntimeSubmitStatus::kAccepted &&
+                    fourth.admitted_lane_count == 4,
+                "lane indices could not continue after queue rejection");
         runtime.StopAcceptingAndDrain();
+        for (std::size_t lane_index = 0; lane_index < 4; ++lane_index) {
+            require(delivered_indexes[lane_index].size() == 3,
+                    "one lane did not receive all admitted deliveries");
+            require(delivered_indexes[lane_index][0] == 1 &&
+                        delivered_indexes[lane_index][1] == 2 &&
+                        delivered_indexes[lane_index][2] == 3,
+                    "queue rejection introduced a per-lane index gap");
+        }
         const auto counters = runtime.counters();
         require(counters.lane_queue_full == 4 &&
                     counters.batches_incomplete == 1 &&
@@ -438,6 +483,32 @@ void test_exact_lane_capacity_and_reentrant_stop()
     first.envelope.reset();
     second.envelope.reset();
     overflow.envelope.reset();
+    fourth.envelope.reset();
+
+    // A newly constructed runtime represents a new ROI stream generation and
+    // therefore starts its independent dense index at one.
+    std::uint64_t restarted_index = 0;
+    {
+        SpatialRoiRecordingRuntime runtime(
+            plan,
+            "10000",
+            0,
+            [&](const SpatialRoiLaneDelivery& delivery) {
+                if (delivery.lane_index == 0) {
+                    restarted_index = delivery.roi_stream_frame_index;
+                }
+                return SpatialRoiLaneSinkResult::kCompleted;
+            });
+        SpatialRoiSourceView restarted_source = make_source_view(gpu_source);
+        restarted_source.identity.recording_frame_id = 101;
+        const SpatialRoiBatchSubmission submission =
+            runtime.TrySubmit(restarted_source);
+        require(submission.status == SpatialRoiRuntimeSubmitStatus::kAccepted,
+                "fresh runtime did not admit its first batch");
+        runtime.StopAcceptingAndDrain();
+    }
+    require(restarted_index == 1,
+            "fresh runtime did not restart ROI stream index at one");
 
     SpatialRoiBatchSubmission reentrant;
     {
@@ -446,8 +517,8 @@ void test_exact_lane_capacity_and_reentrant_stop()
             plan,
             "10000",
             0,
-            [&](std::size_t lane_index,
-                std::shared_ptr<const orange::spatial_roi::SpatialRoiBatchEnvelope>) {
+            [&](const SpatialRoiLaneDelivery& delivery) {
+                const std::size_t lane_index = delivery.lane_index;
                 if (lane_index == 0) {
                     runtime_ptr->StopAcceptingAndDrain();
                 }
