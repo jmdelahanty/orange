@@ -5,6 +5,14 @@ Date: 2026-08-21
 Status: proposed design contract and implementation checklist; no production
 crop-only profile is promoted by this document
 
+The 2026-08-31 spatial ROI extraction foundation is a separate, default-off
+detector-independent path (see
+[`spatial_roi_recording_v1_foundation.md`](spatial_roi_recording_v1_foundation.md)).
+It does not implement crop-only recording, does not make the full-frame output
+recoverable from ROI media, and does not change the acceptance requirements in
+this document. Crop-only remains explicitly unpromoted until its own context,
+media-policy, identity, and finalization evidence are implemented.
+
 ## Purpose
 
 Define a production-safe Orange acquisition mode that retains detected subject

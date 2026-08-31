@@ -73,6 +73,13 @@ mirrors those summaries into one multi-camera `rolling_clips` manifest. Each
 clip carries continuous `recording_frame_id` metadata and clip-local MP4
 timestamps.
 
+The current session contract's optional `recording_outputs[serial].crop` entry
+is the legacy scalar YOLO-driven crop sidecar, including its existing rolling
+behavior. It does not represent the detector-independent spatial ROI product.
+The latter remains default-off and is not session-integrated until the separate
+per-ROI descriptor collection, collision-free frame identity, and strict
+finalization gates in `docs/spatial_roi_recording_v1_foundation.md` are complete.
+
 ## Single-Video Layout
 
 When `clip_seconds = 0`, keep the existing structure:

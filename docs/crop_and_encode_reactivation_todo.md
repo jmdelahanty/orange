@@ -3,6 +3,18 @@
 Date: 2026-02-25
 Scope: make `CropAndEncodeWorker` practically usable again in `orange-jeremy` with a safe enablement path and production-ready lifecycle behavior.
 
+## Spatial ROI boundary (2026-08-31)
+
+The detector-independent spatial ROI extraction foundation is complete in
+Orange commit `c423ad5`; its status and next-slice checklist live in
+[`spatial_roi_recording_v1_foundation.md`](spatial_roi_recording_v1_foundation.md).
+This TODO remains the plan for the existing YOLO-driven, top-one `CropFrame`
+path. Its `CropAndEncodeWorker`, `Cam<serial>_crop` artifact, and
+`recording_outputs[serial].crop` descriptor must not be marked complete for, or
+reused as, four stable spatial ROI streams. The spatial ROI recorder must stay
+detector-independent and must retain the authoritative full-frame output until
+its own acceptance gates pass.
+
 ## Current State Snapshot
 
 Updated 2026-05-04:

@@ -5,6 +5,24 @@ Date: 2026-05-26
 Scope: define how Orange should reduce duplication between full-frame recording
 and crop-video recording without merging their hot paths prematurely.
 
+## Spatial ROI boundary (2026-08-31)
+
+Orange commit `c423ad5` completes the verified-plan and CUDA batch-extraction
+foundation for detector-independent spatial ROI recording. It does not add
+recording outputs. The current scalar `recording_outputs[serial].crop`
+descriptor and `Cam<serial>_crop` artifacts continue to describe the legacy
+YOLO-driven top-one crop sidecar only. They must not be used to represent four
+stable `roi_id`/`region_id` streams.
+
+The next ROI slice is an end-to-end one-camera/four-ROI recorder integration.
+It may reuse shared output/profile/sink helpers from this plan, but it must
+first extend descriptors, frame metadata, recorder handoff identity, and
+finalization to a collection keyed by logical ROI stream. Full-frame recording
+remains the ingest authority, and ROI lanes remain bounded sidecars whose
+pressure or failure cannot block or relabel the full-frame path. The detailed
+gates and non-negotiable safety boundaries are in
+[`spatial_roi_recording_v1_foundation.md`](spatial_roi_recording_v1_foundation.md).
+
 ## Bottom Line
 
 Keep full-frame and crop recording separate at the workload/scheduling level,

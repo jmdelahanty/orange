@@ -8,6 +8,13 @@ path. The current follow-up is a capped no-vsync live run that records
 
 Last updated: 2026-05-28.
 
+Scope boundary (2026-08-31): this checklist covers the existing YOLO-driven
+top-one crop recorder and sampled preview. It does not cover the separate
+detector-independent spatial ROI extraction foundation in Orange `c423ad5` or
+its pending per-ROI recorder integration; use
+`docs/spatial_roi_recording_v1_foundation.md` for that work. Spatial ROI
+availability must remain independent of preview and YOLO state.
+
 Latest live validation note:
 
 - Artifact `/home/jeremy/orange_data/exp/unsorted/2026_05_28_01_05_07`

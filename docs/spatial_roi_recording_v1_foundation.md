@@ -2,8 +2,14 @@
 
 **Date:** 2026-08-30
 
-**Status:** experimental extraction foundation; default off and not connected
-to acquisition, recorder processes, session finalization, or deployment.
+**Status:** extraction foundation complete in Orange commit `c423ad5`
+(`agent/acquisition/spatial-roi-recording-v1-20260830`). The feature remains
+default-off and is not connected to acquisition, recorder processes, session
+finalization, or deployment.
+
+This document is the canonical status and handoff for the detector-independent
+spatial ROI path. It must not be read as claiming that the existing scalar,
+YOLO-driven `Cam<serial>_crop` output is a spatial ROI stream.
 
 ## Scope
 
@@ -58,19 +64,96 @@ quarantined for process lifetime rather than risking use-after-free.
 - bounded pool exhaustion/reuse and source-lease lifetime; and
 - `StopAccepting()` linearization against concurrent production.
 
-## Required next slice
+## Next slice: one-camera, four-ROI recorder integration
 
-Before this can produce usable scientific recordings, Orange still needs:
+The next implementation slice is one end-to-end, detector-independent recorder
+path for a single camera with one accepted four-region plan. It must produce
+four independently addressable native-resolution lossless ROI streams while
+retaining the authoritative full-frame stream. YOLO, preview, pose, packed
+atlases, crop-only media policy, and detection-centered routing are out of
+scope.
 
-- a recording-cadence `WORKER_ENTRY` integration that supplies the authoritative
-  source allocation/event lease without blocking acquisition;
-- one bounded logical recorder/IPC lane per required ROI;
-- native lossless Mono8 media plus per-frame identity metadata;
-- output descriptor collections, counters, summaries, portable manifests,
-  rolling/session finalization, file size, and SHA-256 evidence;
-- storage, codec, encoder/session, and free-space preflight at arming; and
-- one-camera/four-ROI followed by four-camera load and failure validation.
+### A. Acquisition seam and batch submission
+
+- [ ] At recording cadence, obtain the authoritative `WORKER_ENTRY` source
+      allocation/event lease and construct one `SpatialRoiSourceView` for the
+      camera; do not read pixels through YOLO or the legacy top-one crop path.
+- [ ] Submit exactly one `TryProduce()` batch per eligible source frame, with
+      all plan ROIs in verified order and the complete source identity copied to
+      every work item.
+- [ ] Make batch admission nonblocking. Record separate stopped, pool-empty,
+      invalid, CUDA-error, and source-quarantine outcomes per source frame.
+- [ ] Release the source lease only after the batch completion fence; on an
+      unprovable completion, preserve the producer quarantine behavior and never
+      recycle or reuse the allocation speculatively.
+- [ ] Prove that ROI work cannot delay acquisition, YOLO, display, or the
+      authoritative full-frame recorder. In strict mode, an admitted ROI loss
+      makes the spatial-ROI product incomplete rather than silently shortening
+      its frame range.
+
+### B. Per-ROI recorder/IPC lanes
+
+- [ ] Extend the recorder handoff with an explicit `roi_id`, `region_id`,
+      `logical_stream_id`, plan digest, native content rectangle, encoded raster,
+      and ROI-local frame index. `recording_frame_id` alone is not a sufficient
+      key when four ROI descriptors share one source frame.
+- [ ] Give each required ROI an independently bounded admission queue and
+      terminal state. A lane may fail or drop only its own sidecar; it must not
+      relabel another ROI or downgrade the full-frame ingest output.
+- [ ] Encode the exact Mono8 pixels with the validated lossless profile. Keep
+      alignment padding explicit and zero-filled; no scaling or color
+      conversion is permitted.
+- [ ] Define and validate ACK/release identity as `(camera_serial, roi_id,
+      recording_frame_id, roi_stream_frame_index)` or an equivalent collision-
+      free key before using an existing external recorder transport.
+- [ ] Keep recorder encode/mux/disk work outside the acquisition process. The
+      source-safe boundary is an accepted detached copy or an explicit
+      recorder `RELEASE`, never encode completion inferred by Orange.
+
+### C. Artifacts, arming, and finalization
+
+- [ ] Replace the scalar `recording_outputs[serial].crop` assumption with a
+      collection keyed by stable ROI/logical stream identity while retaining
+      compatibility aliases for the legacy top-one crop output.
+- [ ] Write one frame metadata row per accepted ROI frame, including source
+      identity, ROI identity, native content rectangle, encoded raster/padding,
+      and submission outcome. Accepted video indices advance only on queue
+      admission.
+- [ ] Add per-ROI descriptors, counters, summaries, rolling/session manifests,
+      portable relative paths, final status, byte sizes, packet/frame counts,
+      and SHA-256 evidence. Finalization must fail closed on range or identity
+      disagreement.
+- [ ] Add arming preflight for camera/raster/layout/registration/codec,
+      aggregate pixel rate, encoder/session count, pool/queue bytes, storage,
+      and reserved free space. Invalid or over-budget plans must not start.
+
+### D. Acceptance and safety gates
+
+- [ ] Validate one camera/four ROI at the declared cadence with YOLO disabled
+      and preview/pose disabled; compare every decoded content pixel to the
+      source fixture and verify explicit padding.
+- [ ] Inject one ROI queue/recorder/finalization failure and verify that the
+      other ROI lanes and full-frame recording remain correctly identified and
+      bounded.
+- [ ] Validate counts, frame identity joins, container/keyframe correctness,
+      finalization, file size, and digest evidence before increasing camera or
+      ROI count.
+- [ ] Repeat at four cameras only after the one-camera acceptance artifact is
+      complete, then measure aggregate GPU/NVENC/storage headroom.
+
+The following boundaries are mandatory throughout the slice:
+
+- The configuration stays strict, versioned, optional, and default-off.
+- Full-frame recording remains ingest-authoritative and required; no crop-only
+  or replacement-authority mode is introduced.
+- Stable spatial `roi_id`/`region_id` comes from the verified plan. Detector
+  order, confidence, `track_id`, and `fish_id` must not name an ROI stream.
+- No atlas/packing fallback is introduced until standalone ROI correctness is
+  proven; no pose or detection fanout is coupled to ROI availability.
+- Queue/pool pressure is bounded and observable. Acquisition must not wait for
+  encode, mux, disk I/O, or finalization.
+- Merge/deployment remains blocked until the acceptance gates above and the
+  corresponding Citrus media-reference checks pass.
 
 Authoritative full-frame recording must remain enabled until those acceptance
-gates pass. This branch must not be merged or deployed on the strength of the
-extraction test alone.
+gates pass. The extraction tests alone do not authorize merge or deployment.

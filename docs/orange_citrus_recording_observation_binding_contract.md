@@ -97,6 +97,13 @@ The old `coordinate_space = full_frame_pixels` value remains only as a
 deprecated source-geometry alias. Historical schema-v1 `role = sidecar`
 artifacts remain inspectable and are not rewritten.
 
+This contract describes the existing scalar YOLO-driven crop stream. It does
+not claim support for the separate detector-independent spatial ROI product.
+Spatial ROI media must retain stable `roi_id`/`region_id`, plan digest, native
+content rectangle, and a collision-free ROI frame identity in a future media
+inventory; that recorder integration remains pending after Orange foundation
+commit `c423ad5`.
+
 If Orange later supports two independent native source-camera frame streams
 from one camera in one recording, that producer must use a new identity policy
 with explicit stream instance IDs. It must not silently keep using the serial.

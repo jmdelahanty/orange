@@ -126,6 +126,28 @@ production recording session is clean only when descriptor intake ends via
 `client_finalize`; EOF, malformed descriptors, ACK/RELEASE write failures, or
 signal stop before finalize are recorded as unclean intake termination.
 
+## Spatial ROI v1 boundary (2026-08-31)
+
+The existing `stream_kind = "crop"` contract is for one YOLO-driven,
+camera-owned top-one crop stream (for example `2010096_crop`). It is not yet a
+contract for detector-independent spatial ROI fanout. In particular,
+`recording_frame_id` plus camera serial is not a unique handoff key when one
+source frame produces four ROI descriptors.
+
+The next spatial ROI recorder slice must extend the handoff with stable
+`roi_id`, `region_id`, `logical_stream_id`, plan digest, native content
+rectangle, encoded raster/padding, and an ROI-local frame index. ACK, RELEASE,
+duplicate detection, summaries, and finalization must use a collision-free
+stream-plus-frame identity. Stream IDs and socket/environment namespaces must
+remain distinct per logical ROI (or a multiplexed protocol must prove the same
+isolation); changing `camera_serial` to encode ROI identity is forbidden.
+
+Until that extension and its validators are implemented, this external
+recorder contract must not claim support for spatial ROI outputs. The existing
+full-frame and legacy crop paths remain unchanged, and the authoritative
+full-frame source lease must remain protected by the existing detached-copy or
+explicit `RELEASE` source-safe boundary.
+
 There are two source-lifetime modes:
 
 1. Detached-copy mode:

@@ -385,6 +385,13 @@ Current emitted top-level fields:
 - Value: object keyed by output kind:
   - `full`: ingest-authoritative full-frame output descriptor.
   - `crop`: optional runtime-derived acquisition-media stream descriptor.
+- The `crop` value above is currently scalar and describes the legacy
+  YOLO-driven top-one crop stream. It is not the spatial ROI collection.
+  Detector-independent spatial ROI recording is only at the verified-plan and
+  CUDA extraction-foundation stage in Orange commit `c423ad5`; its next slice
+  must add a collection keyed by stable `roi_id`/`logical_stream_id`, with
+  collision-free per-ROI frame identity and finalization evidence. See
+  [`spatial_roi_recording_v1_foundation.md`](spatial_roi_recording_v1_foundation.md).
 - Each descriptor carries:
   - `schema_version: integer`
   - `camera_serial: string`
