@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <deque>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -28,6 +29,7 @@ struct FrameIPCFrameIdentity {
     uint64_t recording_frame_id = 0;
     uint64_t camera_timestamp_ns = 0;
     uint64_t timestamp_sys_ns = 0;
+    uint64_t detection_model_id_hash = 0;
     std::string recording_identity_token;
 };
 
@@ -78,12 +80,21 @@ public:
     // timestamps when the writer thread pushes the slot.
     bool sendFrame(const FrameIPCFrameIdentity& identity,
                    bool yolo_processing) {
+        return sendFrame(identity, yolo_processing, yolo_processing);
+    }
+
+    bool sendFrame(const FrameIPCFrameIdentity& identity,
+                   bool yolo_processing,
+                   bool v2_detection_terminal_expected) {
         if (!enabled_) {
             return false;
         }
         FrameEvent event;
         event.identity = identity;
         event.yolo_processing = yolo_processing;
+        // This is deliberately separate from yolo_processing: a worker can
+        // run for recording/analytics while live v2 publication is disabled.
+        event.v2_detection_terminal_expected = v2_detection_terminal_expected;
 
         bool dropped = false;
         {
@@ -107,7 +118,7 @@ public:
         identity.state_frame_id = frame_id;
         identity.camera_frame_id = frame_id;
         identity.camera_timestamp_ns = timestamp;
-        return sendFrame(identity, yolo_processing);
+        return sendFrame(identity, yolo_processing, yolo_processing);
     }
 
     bool updateFrameWithDetections(uint64_t legacy_frame_id,
@@ -120,12 +131,134 @@ public:
             legacy_frame_id, state_frame_id, status, std::move(detections));
     }
 
+    // Extended grouped-live metadata. Counts are supplied by YOLO after
+    // postprocessing and spatial-mask evaluation; callers that do not have
+    // those stages can use the compatibility overload above.
+    bool updateFrameWithDetectionResult(
+        uint64_t legacy_frame_id,
+        uint64_t state_frame_id,
+        shaman_v2::DetectionStatus detection_status,
+        std::vector<shaman::Object> detections,
+        uint32_t source_detection_count,
+        uint32_t retained_detection_count,
+        uint64_t detection_model_id_hash,
+        shaman_v2::DetectionResultReason detection_reason =
+            shaman_v2::DetectionResultReason::kNone,
+        bool synthetic_objects = false) {
+        return enqueueDetectionUpdate(
+            legacy_frame_id,
+            state_frame_id,
+            detection_status,
+            std::move(detections),
+            source_detection_count,
+            retained_detection_count,
+            detection_model_id_hash,
+            detection_reason,
+            true,
+            synthetic_objects);
+    }
+
+    // Synthetic runtime detections are a v2 test seam. They must never alter
+    // the legacy v1 stream, but when v2 is enabled they still terminate the
+    // pending base state. The final flag is kept private to this explicit API
+    // so normal detection updates cannot accidentally suppress v1 output.
+    bool publishSyntheticYoloResult(
+        uint64_t legacy_frame_id,
+        uint64_t state_frame_id,
+        std::vector<shaman::Object> detections,
+        uint32_t source_detection_count,
+        uint32_t retained_detection_count,
+        uint64_t detection_model_id_hash,
+        shaman_v2::DetectionStatus detection_status,
+        shaman_v2::DetectionResultReason detection_reason) {
+        if (!enabled_ || !v2_publisher_) {
+            return false;
+        }
+        return enqueueDetectionUpdate(
+            legacy_frame_id,
+            state_frame_id,
+            detection_status,
+            std::move(detections),
+            source_detection_count,
+            retained_detection_count,
+            detection_model_id_hash,
+            detection_reason,
+            false,
+            true);
+    }
+
     bool updateFrameWithDetectionResult(
         uint64_t legacy_frame_id,
         uint64_t state_frame_id,
         shaman_v2::DetectionStatus detection_status,
         std::vector<shaman::Object> detections) {
+        const uint32_t count = static_cast<uint32_t>(
+            std::min<std::size_t>(detections.size(), UINT32_MAX));
+        return enqueueDetectionUpdate(
+            legacy_frame_id,
+            state_frame_id,
+            detection_status,
+            std::move(detections),
+            count,
+            count,
+            0,
+            shaman_v2::DetectionResultReason::kNone,
+            true);
+    }
+
+    // A scheduled YOLO frame whose worker enqueue was rejected still receives
+    // a terminal v2 state. It is deliberately v2-only so the legacy v1 queue
+    // retains its historical absence-of-update behavior on this failure path.
+    bool publishYoloWorkerEnqueueRejected(
+        uint64_t legacy_frame_id,
+        uint64_t state_frame_id,
+        uint64_t detection_model_id_hash = 0) {
+        return enqueueDetectionUpdate(
+            legacy_frame_id,
+            state_frame_id,
+            shaman_v2::DetectionStatus::kFailed,
+            {},
+            0,
+            0,
+            detection_model_id_hash,
+            shaman_v2::DetectionResultReason::kYoloWorkerEnqueueRejected,
+            false);
+    }
+
+private:
+    bool enqueueDetectionUpdate(
+        uint64_t legacy_frame_id,
+        uint64_t state_frame_id,
+        shaman_v2::DetectionStatus detection_status,
+        std::vector<shaman::Object> detections,
+        uint32_t source_detection_count,
+        uint32_t retained_detection_count,
+        uint64_t detection_model_id_hash,
+        shaman_v2::DetectionResultReason detection_reason,
+        bool emit_legacy,
+        bool synthetic_objects = false) {
         if (!enabled_) {
+            return false;
+        }
+        if (detection_reason == shaman_v2::DetectionResultReason::kNone &&
+            detection_status == shaman_v2::DetectionStatus::kZeroDetections) {
+            detection_reason = source_detection_count == 0
+                ? shaman_v2::DetectionResultReason::kNoSourceDetections
+                : shaman_v2::DetectionResultReason::kAllDetectionsRejectedByMask;
+        } else if (detection_reason == shaman_v2::DetectionResultReason::kNone &&
+                   detection_status == shaman_v2::DetectionStatus::kFailed) {
+            detection_reason =
+                shaman_v2::DetectionResultReason::kProcessingFailed;
+        }
+        if (legacy_frame_id == 0 || state_frame_id == 0 ||
+            detections.size() > std::numeric_limits<uint32_t>::max() ||
+            retained_detection_count != detections.size() ||
+            source_detection_count < retained_detection_count ||
+            !valid_detection_update(
+                detection_status,
+                source_detection_count,
+                retained_detection_count,
+                detection_reason)) {
             return false;
         }
         UpdateEvent event;
@@ -133,6 +266,12 @@ public:
         event.state_frame_id = state_frame_id;
         event.detection_status = detection_status;
         event.detections = std::move(detections);
+        event.source_detection_count = source_detection_count;
+        event.retained_detection_count = retained_detection_count;
+        event.detection_model_id_hash = detection_model_id_hash;
+        event.detection_reason = detection_reason;
+        event.emit_legacy = emit_legacy;
+        event.synthetic_objects = synthetic_objects;
 
         bool dropped = false;
         {
@@ -146,6 +285,46 @@ public:
         return true;
     }
 
+    static bool valid_detection_update(
+        shaman_v2::DetectionStatus status,
+        uint32_t source_detection_count,
+        uint32_t retained_detection_count,
+        shaman_v2::DetectionResultReason reason) {
+        using shaman_v2::DetectionResultReason;
+        using shaman_v2::DetectionStatus;
+        if (status != DetectionStatus::kDetections &&
+            status != DetectionStatus::kZeroDetections &&
+            status != DetectionStatus::kFailed) {
+            return false;
+        }
+        if (status == DetectionStatus::kDetections) {
+            return retained_detection_count > 0 &&
+                   retained_detection_count <= shaman_v2::kMaxObjects &&
+                   reason == DetectionResultReason::kNone;
+        }
+        if (status == DetectionStatus::kZeroDetections) {
+            return retained_detection_count == 0 &&
+                   ((source_detection_count == 0 &&
+                     reason == DetectionResultReason::kNoSourceDetections) ||
+                    (source_detection_count > 0 &&
+                     reason == DetectionResultReason::kAllDetectionsRejectedByMask));
+        }
+        if (reason == DetectionResultReason::kNone) {
+            return false;
+        }
+        if (reason == DetectionResultReason::kNoSourceDetections) {
+            return source_detection_count == 0 && retained_detection_count == 0;
+        }
+        if (reason == DetectionResultReason::kAllDetectionsRejectedByMask) {
+            return source_detection_count > 0 && retained_detection_count == 0;
+        }
+        if (reason == DetectionResultReason::kObjectsTruncated) {
+            return retained_detection_count > shaman_v2::kMaxObjects;
+        }
+        return retained_detection_count == 0;
+    }
+
+public:
     bool updateFrameWithDetections(uint64_t frame_id,
                                    std::vector<shaman::Object> detections) {
         return updateFrameWithDetections(frame_id, frame_id, std::move(detections));
@@ -162,6 +341,21 @@ public:
             pose_slot.source_frame_id = pose_slot.state_frame_id;
         }
         if (pose_slot.state_frame_id == 0) {
+            return false;
+        }
+        if (pose_slot.object_count > shaman_v2::kMaxObjects) {
+            return false;
+        }
+        for (uint32_t index = 0; index < pose_slot.object_count; ++index) {
+            if (pose_slot.objects[index].keypoint_count >
+                shaman_v2::kMaxKeypointsPerObject) {
+                return false;
+            }
+        }
+        // The update API is the last host-side boundary before the v2 queue.
+        // Counts/order/status/reason must be supplied coherently by the
+        // producer; do not silently repair malformed metadata here.
+        if (!shaman_v2::slot_payload_valid(pose_slot)) {
             return false;
         }
 
@@ -199,6 +393,7 @@ private:
     struct FrameEvent {
         FrameIPCFrameIdentity identity;
         bool yolo_processing = false;
+        bool v2_detection_terminal_expected = false;
     };
 
     struct UpdateEvent {
@@ -207,6 +402,13 @@ private:
         shaman_v2::DetectionStatus detection_status =
             shaman_v2::DetectionStatus::kFailed;
         std::vector<shaman::Object> detections;
+        uint32_t source_detection_count = 0;
+        uint32_t retained_detection_count = 0;
+        uint64_t detection_model_id_hash = 0;
+        shaman_v2::DetectionResultReason detection_reason =
+            shaman_v2::DetectionResultReason::kNone;
+        bool emit_legacy = true;
+        bool synthetic_objects = false;
     };
 
     template <typename T>
@@ -344,6 +546,9 @@ private:
             // bounded pending/stale decision. Do not couple it to the legacy
             // recording/local identifier switch below.
             EmitV2Yolo(update);
+            if (!update.emit_legacy) {
+                continue;
+            }
             if (update.legacy_frame_id == last_base_frame_id_) {
                 EmitLegacyUpdate(update);
                 continue;
@@ -450,6 +655,9 @@ private:
         slot.recording_frame_id = frame.identity.recording_frame_id;
         slot.camera_timestamp_ns = frame.identity.camera_timestamp_ns;
         slot.timestamp_sys_ns = frame.identity.timestamp_sys_ns;
+        slot.detection_model_id_hash = frame.identity.detection_model_id_hash != 0
+            ? frame.identity.detection_model_id_hash
+            : (frame.yolo_processing ? shaman_v2::fnv1a64("unknown") : 0);
         shaman_v2::copy_recording_identity_token(
             slot.recording_identity_token,
             frame.identity.recording_identity_token);
@@ -458,7 +666,7 @@ private:
         slot.source_width_px = static_cast<uint32_t>(camera_params_->width);
         slot.source_height_px = static_cast<uint32_t>(camera_params_->height);
         slot.detection_status = static_cast<uint32_t>(
-            frame.yolo_processing
+            frame.v2_detection_terminal_expected
                 ? shaman_v2::DetectionStatus::kPending
                 : shaman_v2::DetectionStatus::kNotScheduled);
         slot.pose_status = static_cast<uint32_t>(shaman_v2::PoseStatus::kDisabled);
@@ -478,10 +686,31 @@ private:
         slot.source_height_px = static_cast<uint32_t>(camera_params_->height);
         slot.detection_status = static_cast<uint32_t>(update.detection_status);
         slot.pose_status = static_cast<uint32_t>(shaman_v2::PoseStatus::kDisabled);
-        slot.object_count = static_cast<uint32_t>(
-            std::min<size_t>(update.detections.size(), shaman_v2::kMaxObjects));
+        slot.retained_detection_count = update.retained_detection_count;
+        slot.source_detection_count = update.source_detection_count;
+        slot.detection_model_id_hash = update.detection_model_id_hash != 0
+            ? update.detection_model_id_hash
+            : shaman_v2::fnv1a64("unknown");
+        slot.detection_reason = static_cast<uint32_t>(update.detection_reason);
+        slot.object_order = shaman_v2::kObjectOrderUnorderedPayloadLocal;
+        slot.transmitted_object_count = static_cast<uint32_t>(std::min<size_t>(
+            update.detections.size(), shaman_v2::kMaxObjects));
+        slot.objects_truncated = slot.retained_detection_count >
+                slot.transmitted_object_count
+            ? slot.retained_detection_count - slot.transmitted_object_count
+            : 0;
+        if (slot.objects_truncated > 0) {
+            slot.detection_status = static_cast<uint32_t>(
+                shaman_v2::DetectionStatus::kFailed);
+            slot.detection_reason = static_cast<uint32_t>(
+                shaman_v2::DetectionResultReason::kObjectsTruncated);
+        }
+        slot.object_count = slot.transmitted_object_count;
         for (uint32_t i = 0; i < slot.object_count; ++i) {
             slot.objects[i] = ConvertObjectV2(update.detections[i]);
+            if (update.synthetic_objects) {
+                slot.objects[i].flags |= shaman_v2::kObjectSynthetic;
+            }
         }
         v2_publisher_->publish_yolo_result(slot);
     }

@@ -1,7 +1,8 @@
 # Shaman V2 Live-State Queue Contract
 
-Date: 2026-08-24
+Date: 2026-08-30
 Status: Orange producer and Citrus opt-in authoritative consumer implemented;
+grouped-live observation metadata is ABI revision 4;
 production default remains v1 pending a four-camera live validation. Orange
 creates the v2 queue behind `ORANGE_SHAMAN_V2_LIVE_STATE=1`. Citrus can select
 it per arena or, for an autorun validation without editing the canonical
@@ -19,7 +20,7 @@ canvas, through `CITRUS_GUI_AUTORUN_SHAMAN_V2_AUTHORITATIVE=1`.
 | Time | Orange publish timestamps | Camera timestamp, host timestamp, and Orange publish timestamps |
 | Camera | Numeric runtime ID only | Runtime ID, stable serial, and native source extent |
 | Payload | Bounding boxes | Bounding boxes, track/flags, pose state, and bounded keypoints |
-| Ordering | Consumer interprets vector updates | Monotonic sequence/state IDs with producer stale-update suppression |
+| Ordering | Consumer interprets vector updates | Explicit `unordered_payload_local` objects with producer stale-update suppression |
 | Queue | 8 slots | 64 slots |
 
 V2 remains a best-effort control stream, not a complete scientific event log.
@@ -75,10 +76,30 @@ matching opt-in reader.
 - Ring behavior: bounded, non-blocking, latest-state oriented.
 - Compatibility: current `/shm_cam_<camera_serial>` remains available until all
   consumers explicitly move to v2.
+- Writer ownership: exactly one Orange writer holds an advisory SHM file lock;
+  a second simultaneous writer is rejected.
+- Restart behavior: a new writer clears predecessor slots and advances
+  `producer_generation`; every slot carries the generation and a
+  `producer_instance_id`.
+
+Restart reset and reader access are synchronized by the shared
+`shaman_v2::index_lock_path(queue_name)` sidecar helper. Orange and Citrus must
+use that helper byte-for-byte; its safe queue-name prefix is disambiguated by
+the standard FNV-1a hash suffix. Readers must treat a changed
+`producer_generation` as a new stream and reset sequence/frame gap baselines
+before accepting the next slot.
 
 The v2 queue should be unlinked/recreated when the ABI changes. The shared
 memory header should carry enough fixed metadata for a reader to reject an
 incompatible queue before consuming slots.
+
+If a writer is interrupted after marking an otherwise valid ABI4 queue
+`initialized=false`, the next writer waits briefly for an active reset and then
+self-heals the queue under the writer/index locks. A queue whose first-time
+construction was interrupted before a valid header was installed, or whose
+header is from a stale/incompatible ABI, is rejected fail-closed and requires
+manual `shm_unlink` before recreation; the writer never guesses how to repair
+such a header.
 
 ## Live-State Identity
 
@@ -98,6 +119,9 @@ Every visible v2 slot must include:
   acquisition.
 - `orange_publish_timestamp_us_epoch`: Orange wall-clock publish time.
 - `orange_publish_timestamp_us_monotonic`: Orange steady-clock publish time.
+- `producer_generation`: monotonically advanced generation for this camera
+  queue, incremented whenever the authoritative writer starts.
+- `producer_instance_id`: nonzero identity for the particular writer run.
 
 Rules:
 
@@ -115,6 +139,10 @@ Rules:
 - A semantic update with `source_frame_id > current_state_frame_id` may be held
   briefly as pending until the base frame arrives, subject to a bounded pending
   queue.
+
+`recording_frame_id` is never the live-state join key. Pose publication uses
+the crop's stream-local `local_frame_id` for both `state_frame_id` and
+`source_frame_id`; recording-local numbering remains metadata only.
 
 ## Payload Model
 
@@ -152,6 +180,58 @@ pose_status:
 Stale updates should not be represented as published statuses in v2 live slots.
 They belong in producer counters and Orange JSONL audit rows.
 
+### Grouped-live detection semantics (revision 4)
+
+The object vector is an unordered set. `object_order` is always
+`unordered_payload_local`; payload index is provenance within one observation,
+not a track, region, or fish identity. `track_id = -1` means untracked and
+must not be interpreted as a stable identity.
+
+Each detection terminal slot carries these counts:
+
+- `source_detection_count`: detector/post-NMS count before the outer spatial
+  mask;
+- `retained_detection_count`: count after the mask (the post-mask vector);
+- `transmitted_object_count`: number copied into `objects[]`;
+- `object_count`: v3 compatibility alias for `transmitted_object_count`; and
+- `objects_truncated`: number of retained objects omitted by the fixed
+  `kMaxObjects` capacity.
+
+If `objects_truncated > 0`, the producer sends the bounded prefix for
+diagnostics but changes `detection_status` to `failed` and sets the stable
+`detection_reason = objects_truncated`. Consumers must fail closed and must
+not treat that prefix as a complete observation.
+
+`detection_reason` values are stable ABI numbers:
+
+| Value | Meaning |
+| ---: | --- |
+| 0 | none (successful nonzero result) |
+| 1 | no source detections |
+| 2 | all source detections rejected by the outer mask |
+| 3 | objects truncated by SHAMAN capacity |
+| 4 | scheduled YOLO worker enqueue rejected |
+| 5 | inference timeout |
+| 6 | CPU results unavailable/skipped |
+| 7 | other processing failure |
+
+Thus `zero_detections` distinguishes an empty detector result from an
+all-outside mask result without relying on object count alone. A scheduled
+YOLO frame whose worker enqueue is rejected publishes a terminal `failed` slot
+with reason 4; this v2-only terminal publication does not change v1 behavior.
+
+`detection_model_id_hash` is the stable 64-bit FNV-1a hash of the detector
+model ID used in Orange's event record (the model filename stem); when the
+model is unavailable, the literal ID `unknown` is hashed instead. The value is
+copied into base, terminal, and later pose-enrichment states.
+
+The FNV-1a offset basis is the standard
+`14695981039346656037ULL`. This is part of ABI revision 4: Orange and Citrus
+must use the same basis and byte order when comparing model hashes. Pose
+publication rejects results with more than 64 objects or more than 32
+keypoints per object; it never publishes a bounded prefix as a complete pose
+observation.
+
 ## Coordinates
 
 All live v2 geometry should be in source-frame camera pixels unless a field
@@ -172,14 +252,18 @@ source_y_px = crop_y_px + crop_local_y_px
 
 Citrus should continue to own homography/application-space transforms.
 
-## Suggested Fixed ABI Shape
+## Fixed ABI Shape (revision 4)
 
-This is an illustrative C/C++ ABI shape, not final code:
+The implementation uses this fixed C++ ABI shape. `slot_bytes` and
+`queue_bytes` are checked exactly, so revision 3 queues fail closed and must be
+recreated. On the supported x86_64 toolchain, `sizeof(Object) == 548`,
+`sizeof(Slot) == 35368`, and `sizeof(SharedQueue) == 2263640`; both Orange and
+Citrus assert these sizes. Numeric enum values below are stable.
 
 ```cpp
 constexpr uint64_t SHAMAN_V2_MAGIC = 0x4f524e4753484d32ULL; // ORNGSHM2
-// Shaman-v2 protocol, ABI revision 3.
-constexpr uint32_t SHAMAN_V2_SCHEMA_VERSION = 3;
+// Shaman-v2 protocol, ABI revision 4.
+constexpr uint32_t SHAMAN_V2_SCHEMA_VERSION = 4;
 constexpr uint32_t SHAMAN_V2_QUEUE_SIZE = 64;
 constexpr uint32_t SHAMAN_V2_MAX_OBJECTS = 64;
 constexpr uint32_t SHAMAN_V2_MAX_KEYPOINTS_PER_OBJECT = 32;
@@ -261,6 +345,16 @@ struct ShamanV2Slot {
 
     uint32_t object_count;
     ShamanV2Object objects[SHAMAN_V2_MAX_OBJECTS];
+
+    // Revision-4 append-only grouped-live metadata.
+    uint32_t source_detection_count;
+    uint32_t retained_detection_count;
+    uint32_t transmitted_object_count;
+    uint32_t objects_truncated;
+    uint32_t object_order; // 1 = unordered_payload_local
+    uint32_t detection_reason;
+    uint64_t producer_generation;
+    uint64_t producer_instance_id;
 };
 
 struct ShamanV2SharedQueue {
@@ -276,6 +370,8 @@ struct ShamanV2SharedQueue {
     std::atomic<uint64_t> push_failures;
     std::atomic<uint64_t> stale_suppressed;
     ShamanV2Slot queue[SHAMAN_V2_QUEUE_SIZE];
+    std::atomic<uint64_t> producer_generation;
+    std::atomic<uint64_t> producer_instance_id;
 };
 ```
 
@@ -299,6 +395,12 @@ Orange v2 writer state should track at least:
 - bounded pending semantic updates keyed by frame id
 - counters for stale suppression and queue/push failures
 
+The shared-memory writer also owns an advisory single-writer lock. On startup
+it marks the queue uninitialized, clears all ring slots, advances
+`producer_generation`, assigns a new `producer_instance_id`, resets sequence
+and queue counters, and then marks the queue initialized. Readers must reset
+sequence expectations and any held state when generation changes.
+
 Base frame `N`:
 
 - Publish a `latest_tracking_state` slot for `N`.
@@ -314,6 +416,10 @@ YOLO result for frame `K`:
 - If `K == latest_base_state_frame_id`, publish a complete latest-state slot for
   `K` with `detection_status = detections`, `zero_detections`, or `failed`.
 - If `K > latest_base_state_frame_id`, hold it in a bounded pending map.
+- Carry the raw/source and retained/post-mask counts. Set
+  `transmitted_object_count = min(retained_detection_count, kMaxObjects)`.
+- If retained count exceeds capacity, publish `failed` with reason
+  `objects_truncated`; a consumer must not use the bounded prefix as complete.
 
 Pose result for frame `K`:
 
@@ -322,6 +428,17 @@ Pose result for frame `K`:
 - If `K == latest_base_state_frame_id`, publish a complete latest-state slot for
   `K` with `pose_status = poses`, `no_result`, or `failed`.
 - If `K > latest_base_state_frame_id`, hold it in a bounded pending map.
+- Use the crop's stream-local `local_frame_id` as `K`, even when
+  `recording_frame_id` differs.
+
+Pose enrichment must preserve the complete authoritative YOLO object vector.
+When a pose object's bounding box matches exactly one current detection, its
+keypoints are merged into that object; ambiguous or unmatched boxes do not
+replace or shrink the detection vector. If pose arrives before YOLO, its
+bounded evidence is held privately: interim slots retain the base
+`pending`/`not_scheduled` detection status and zero detection counts/objects.
+The evidence is reconciled only after the same-frame YOLO terminal arrives,
+which establishes the authoritative detection vector.
 
 The published pose state for frame `K` should include the detection box and
 source-frame keypoints for frame `K` when available. It should not publish a
@@ -354,6 +471,12 @@ Citrus v2 reader should:
   newer;
 - use explicit detection/pose statuses instead of inferring state from object
   count alone;
+- require `object_order = unordered_payload_local` and treat `track_id = -1`
+  as untracked;
+- require `objects_truncated == 0` before treating a detections slot as a
+  complete observation; failed/truncated slots are diagnostic only;
+- reset sequence/state expectations and held targets on producer-generation
+  change;
 - apply homography/transforms from source-frame pixels inside Citrus.
 
 If Citrus drains multiple slots in one update, keeping the newest valid slot is
@@ -431,7 +554,14 @@ First headless pose-to-v2 verifier smoke:
     host-clock identities from Orange acquisition into each base state.
 11. [x] Publish explicit terminal YOLO status for detections, zero detections,
     and failures rather than leaving a base state indefinitely pending.
-12. [ ] Run the controlled four-camera Orange/Citrus live validation, inspect
+12. [x] Advance the ABI to revision 4 with grouped source/retained/transmitted
+    counts, explicit unordered ordering, stable detection reasons, and
+    producer restart identity.
+13. [x] Publish terminal v2 failure when scheduled YOLO worker enqueue is
+    rejected, while preserving v1 behavior.
+14. [x] Bind pose state/source identity to stream-local `local_frame_id`, with
+    a regression test where it differs from `recording_frame_id`.
+15. [ ] Run the controlled four-camera Orange/Citrus live validation, inspect
     queue/identity/status counters and Chaser behavior, then decide whether to
     change the canonical Shadow default.
 

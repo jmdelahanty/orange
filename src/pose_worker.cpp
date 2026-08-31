@@ -188,7 +188,9 @@ std::vector<std::string> default_pose_keypoint_labels(size_t keypoint_count)
 
 uint64_t fnv1a64(const std::string& value)
 {
-    uint64_t hash = 1469598103934665603ULL;
+    // Keep pose model/skeleton identities identical to the ABI4 shared
+    // shaman_v2.h helper and Citrus's reader.
+    uint64_t hash = 14695981039346656037ULL;
     for (unsigned char byte : value) {
         hash ^= static_cast<uint64_t>(byte);
         hash *= 1099511628211ULL;
@@ -921,8 +923,10 @@ void PoseWorker::publish_pose_result_v2(
         return;
     }
 
-    const uint64_t frame_id =
-        frame.recording_frame_id > 0 ? frame.recording_frame_id : frame.local_frame_id;
+    // SHAMAN live-state identity is stream-local. Recording-frame numbering
+    // may restart or be absent when recording toggles and must remain metadata
+    // only; binding pose to it misroutes delayed pose results.
+    const uint64_t frame_id = frame.local_frame_id;
     if (frame_id == 0) {
         return;
     }
@@ -940,9 +944,8 @@ void PoseWorker::publish_pose_result_v2(
     }
     slot.source_width_px = static_cast<uint32_t>(std::max(0, frame.source_width));
     slot.source_height_px = static_cast<uint32_t>(std::max(0, frame.source_height));
-    slot.detection_status = frame.has_detection
-        ? static_cast<uint32_t>(shaman_v2::DetectionStatus::kDetections)
-        : static_cast<uint32_t>(shaman_v2::DetectionStatus::kNotScheduled);
+    slot.detection_status = static_cast<uint32_t>(
+        shaman_v2::DetectionStatus::kNotScheduled);
     if (status == "poses") {
         slot.pose_status = static_cast<uint32_t>(shaman_v2::PoseStatus::kPoses);
     } else if (status == "failed") {
@@ -955,11 +958,35 @@ void PoseWorker::publish_pose_result_v2(
 
     const bool publish_detection_bbox = frame.has_detection &&
         frame.detection_w > 0.0f && frame.detection_h > 0.0f;
+    if (frame.has_detection && (!poses.empty() || publish_detection_bbox)) {
+        slot.detection_status = static_cast<uint32_t>(
+            shaman_v2::DetectionStatus::kDetections);
+    }
+    // A live slot has fixed capacities. Do not publish a bounded prefix as if
+    // it were a complete pose observation when the backend returns more
+    // instances or keypoints than ABI4 can carry.
+    if (poses.size() > shaman_v2::kMaxObjects) {
+        std::cerr << "[PoseWorker] Suppressing v2 pose publication: "
+                  << poses.size() << " instances exceed SHAMAN capacity "
+                  << shaman_v2::kMaxObjects << std::endl;
+        return;
+    }
+    for (const auto& pose : poses) {
+        if (pose.keypoints.size() > shaman_v2::kMaxKeypointsPerObject) {
+            std::cerr << "[PoseWorker] Suppressing v2 pose publication: keypoint "
+                      << "count exceeds SHAMAN capacity "
+                      << shaman_v2::kMaxKeypointsPerObject << std::endl;
+            return;
+        }
+    }
     const size_t object_count = !poses.empty()
         ? poses.size()
         : (publish_detection_bbox ? 1U : 0U);
     slot.object_count = static_cast<uint32_t>(
         std::min<size_t>(object_count, shaman_v2::kMaxObjects));
+    slot.transmitted_object_count = slot.object_count;
+    slot.retained_detection_count = slot.object_count;
+    slot.source_detection_count = slot.object_count;
 
     for (uint32_t object_index = 0; object_index < slot.object_count; ++object_index) {
         const pose_event_log::PoseInstanceRecord* pose =

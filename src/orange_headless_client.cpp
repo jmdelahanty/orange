@@ -663,6 +663,8 @@ struct HeadlessFrameIpcReaderStats {
     uint64_t last_frame_id = 0;
     uint64_t first_sequence_id = 0;
     uint64_t last_sequence_id = 0;
+    uint64_t producer_generation_changes = 0;
+    uint64_t last_producer_generation = 0;
 };
 
 struct HeadlessFrameIpcRuntime {
@@ -4130,6 +4132,20 @@ bool start_headless_frame_ipc_runtime(HeadlessFrameIpcRuntime* runtime,
                         shaman_v2::Slot slot;
                         while (reader.pop(slot)) {
                             popped_any = true;
+                            const bool generation_changed =
+                                stats.last_producer_generation != 0 &&
+                                slot.producer_generation !=
+                                    stats.last_producer_generation;
+                            if (generation_changed) {
+                                // Sequence/frame monotonicity is scoped to a
+                                // writer generation. A restart is a new
+                                // stream epoch, not a gap or regression.
+                                stats.producer_generation_changes++;
+                                stats.last_frame_id = 0;
+                                stats.last_sequence_id = 0;
+                            }
+                            stats.last_producer_generation =
+                                slot.producer_generation;
                             stats.messages_popped++;
                             stats.v2_latest_state_messages++;
                             const uint64_t frame_id = slot.state_frame_id;
@@ -4168,6 +4184,9 @@ bool start_headless_frame_ipc_runtime(HeadlessFrameIpcRuntime* runtime,
                             if (stats.messages_popped == 1) {
                                 stats.first_frame_id = frame_id;
                                 stats.first_sequence_id = slot.sequence_id;
+                            } else if (generation_changed) {
+                                // Monotonicity baselines were reset above;
+                                // retain first_* as run-level diagnostics.
                             } else {
                                 if (frame_id == stats.last_frame_id) {
                                     // Base, detection, and pose state updates may share a frame id.
@@ -5604,6 +5623,8 @@ bool write_headless_frame_ipc_summary(
             {"reader_last_frame_id", 0ULL},
             {"reader_first_sequence_id", 0ULL},
             {"reader_last_sequence_id", 0ULL},
+            {"reader_producer_generation_changes", 0ULL},
+            {"reader_last_producer_generation", 0ULL},
             {"status", "pass"},
             {"failures", nlohmann::json::array()}
         };
@@ -5687,6 +5708,10 @@ bool write_headless_frame_ipc_summary(
             camera_json["reader_last_frame_id"] = stats.last_frame_id;
             camera_json["reader_first_sequence_id"] = stats.first_sequence_id;
             camera_json["reader_last_sequence_id"] = stats.last_sequence_id;
+            camera_json["reader_producer_generation_changes"] =
+                stats.producer_generation_changes;
+            camera_json["reader_last_producer_generation"] =
+                stats.last_producer_generation;
 
             if (headless_frame_ipc_mode_is_verify_drain(config.mode)) {
                 if (!stats.reader_started) {

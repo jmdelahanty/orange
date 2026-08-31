@@ -2152,6 +2152,13 @@ void acquire_frames(
                 
                 current_entry->ipc_frame_id = frame_id_for_ipc;
                 bool yolo_will_process = will_yolo;
+                // Running YOLO does not imply a v2 terminal update: the
+                // live publication capability is independently gated by the
+                // configured publish_live_ipc/send_yolo_via_frame_ipc path.
+                const bool v2_detection_terminal_expected =
+                    yolo_will_process &&
+                    camera_select->send_yolo_via_frame_ipc &&
+                    ipc_manager->isV2Enabled();
                 
                 // Log the frame ID being sent (for debugging)
                 static uint64_t last_logged_frame = 0;
@@ -2167,6 +2174,10 @@ void acquire_frames(
                 ipc_identity.recording_frame_id = current_entry->recording_frame_id;
                 ipc_identity.camera_timestamp_ns = current_entry->timestamp;
                 ipc_identity.timestamp_sys_ns = current_entry->timestamp_sys;
+                if (camera_select->yolo_model) {
+                    ipc_identity.detection_model_id_hash = shaman_v2::fnv1a64(
+                        build_model_id_from_path(camera_select->yolo_model));
+                }
                 if (ipc_identity.recording_frame_id > 0 &&
                     !current_entry->recording_folder.empty()) {
                     const std::string recording_id = std::filesystem::path(
@@ -2177,7 +2188,8 @@ void acquire_frames(
                 }
                 bool ipc_success = ipc_manager->sendFrame(
                     ipc_identity,
-                    yolo_will_process);
+                    yolo_will_process,
+                    v2_detection_terminal_expected);
                 
                 if (!ipc_success) {
                     // IPC logging disabled: queue full warning.
@@ -2256,6 +2268,21 @@ void acquire_frames(
                     current_entry->yolo_dispatched = false;
                     current_entry->has_detections = false;
                     current_entry->detections_ready.store(true, std::memory_order_release);
+                    // The base v2 slot was explicitly marked pending because
+                    // YOLO was scheduled. If the worker queue rejects this
+                    // frame, publish a terminal failed state so Citrus never
+                    // holds an observation in pending forever. This helper is
+                    // v2-only and therefore leaves legacy v1 behavior intact.
+                    if (current_entry->frame_ipc_manager &&
+                        current_entry->frame_ipc_manager->isV2Enabled()) {
+                        current_entry->frame_ipc_manager->publishYoloWorkerEnqueueRejected(
+                            current_entry->ipc_frame_id,
+                            current_entry->frame_id,
+                            shaman_v2::fnv1a64(
+                                camera_select->yolo_model
+                                    ? build_model_id_from_path(camera_select->yolo_model)
+                                    : std::string("unknown")));
+                    }
                     if (current_entry->yolo_input_ready_event) {
                         cudaEventRecord(current_entry->yolo_input_ready_event, stream);
                         current_entry->yolo_input_ready_event_recorded.store(

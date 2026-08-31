@@ -2043,6 +2043,8 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
 
         FrameIPCManager* frame_ipc = entry->frame_ipc_manager;
         const bool frame_ipc_enabled = frame_ipc && frame_ipc->isEnabled();
+        const bool frame_ipc_v2_enabled =
+            frame_ipc_enabled && frame_ipc->isV2Enabled();
         const std::string frame_ipc_queue_name = frame_ipc
             ? frame_ipc->getQueueName()
             : ("/shm_cam_" + associated_camera_params_->camera_serial);
@@ -2050,6 +2052,13 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         std::string frame_ipc_request_status = frame_ipc_enabled
             ? "not_requested_zero_detections"
             : "not_enabled";
+
+        const std::string detection_model_id =
+            (associated_camera_select_ && associated_camera_select_->yolo_model)
+                ? build_model_id_from_path(associated_camera_select_->yolo_model)
+                : "unknown";
+        const uint64_t detection_model_id_hash =
+            shaman_v2::fnv1a64(detection_model_id);
 
         std::string yolo_status;
         std::string yolo_error;
@@ -2082,28 +2091,86 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                     : "not_enabled";
             }
         }
+        if (synthetic_detection_mode && !frame_ipc_v2_enabled) {
+            frame_ipc_request_status = "not_requested_synthetic_runtime";
+        }
 
         if (frame_ipc_enabled && !synthetic_detection_mode) {
             std::vector<shaman::Object> shaman_objects;
             shaman_v2::DetectionStatus live_status =
                 shaman_v2::DetectionStatus::kFailed;
+            shaman_v2::DetectionResultReason detection_reason =
+                shaman_v2::DetectionResultReason::kProcessingFailed;
             if (finished_in_time && !skip_cpu_results) {
                 shaman_objects = conv_shaman(entry->detections);
                 live_status = shaman_objects.empty()
                     ? shaman_v2::DetectionStatus::kZeroDetections
                     : shaman_v2::DetectionStatus::kDetections;
+                if (spatial_mask_result.raw_detection_count == 0) {
+                    detection_reason =
+                        shaman_v2::DetectionResultReason::kNoSourceDetections;
+                } else if (spatial_mask_result.downstream_detection_count == 0) {
+                    detection_reason =
+                        shaman_v2::DetectionResultReason::kAllDetectionsRejectedByMask;
+                } else if (spatial_mask_result.downstream_detection_count >
+                           static_cast<int>(shaman_v2::kMaxObjects)) {
+                    live_status = shaman_v2::DetectionStatus::kFailed;
+                    detection_reason =
+                        shaman_v2::DetectionResultReason::kObjectsTruncated;
+                } else {
+                    detection_reason = shaman_v2::DetectionResultReason::kNone;
+                }
+            } else if (!finished_in_time) {
+                detection_reason =
+                    shaman_v2::DetectionResultReason::kInferenceTimeout;
+            } else if (skip_cpu_results) {
+                detection_reason =
+                    shaman_v2::DetectionResultReason::kCpuResultsSkipped;
             }
             frame_ipc_update_requested =
                 frame_ipc->updateFrameWithDetectionResult(
                     frame_id_for_ipc,
                     entry->frame_id,
                     live_status,
-                    std::move(shaman_objects));
+                    std::move(shaman_objects),
+                    static_cast<uint32_t>(std::max(
+                        0, spatial_mask_result.raw_detection_count)),
+                    static_cast<uint32_t>(std::max(
+                        0, spatial_mask_result.downstream_detection_count)),
+                    detection_model_id_hash,
+                    detection_reason);
             frame_ipc_request_status = frame_ipc_update_requested
                 ? "queued"
                 : "not_enabled";
-        } else if (synthetic_detection_mode && frame_ipc_enabled && entry->has_detections) {
-            frame_ipc_request_status = "not_requested_synthetic_runtime";
+        } else if (synthetic_detection_mode && frame_ipc_v2_enabled) {
+            // Synthetic runtime detections are test-only, but when live IPC is
+            // explicitly enabled they still need a terminal state so the base
+            // slot cannot remain pending forever. Mark every emitted object
+            // synthetic so Citrus cannot mistake this path for production
+            // detector output.
+            std::vector<shaman::Object> synthetic_objects =
+                conv_shaman(entry->detections);
+            const uint32_t synthetic_count = static_cast<uint32_t>(
+                synthetic_objects.size());
+            const auto synthetic_status = synthetic_objects.empty()
+                ? shaman_v2::DetectionStatus::kZeroDetections
+                : shaman_v2::DetectionStatus::kDetections;
+            const auto synthetic_reason = synthetic_objects.empty()
+                ? shaman_v2::DetectionResultReason::kNoSourceDetections
+                : shaman_v2::DetectionResultReason::kNone;
+            frame_ipc_update_requested =
+                frame_ipc->publishSyntheticYoloResult(
+                    frame_id_for_ipc,
+                    entry->frame_id,
+                    std::move(synthetic_objects),
+                    synthetic_count,
+                    synthetic_count,
+                    detection_model_id_hash,
+                    synthetic_status,
+                    synthetic_reason);
+            frame_ipc_request_status = frame_ipc_update_requested
+                ? "queued"
+                : "not_enabled";
         }
 #if YOLO_PROFILE
         const auto ipc_end = std::chrono::steady_clock::now();
