@@ -1,0 +1,270 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange_spatial_roi_recording_config.schema.json",
+  "title": "Orange detector-independent spatial ROI recording configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "enabled",
+    "backend",
+    "strict",
+    "source_cadence",
+    "pixel_contract",
+    "buffering",
+    "admission",
+    "cameras"
+  ],
+  "properties": {
+    "schema_id": { "const": "orange.spatial_roi_recording.config" },
+    "schema_version": { "const": 1 },
+    "enabled": { "type": "boolean", "default": false },
+    "backend": { "const": "independent_lossless_external_ipc" },
+    "strict": { "const": true },
+    "source_cadence": { "const": "every_recording_frame" },
+    "pixel_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_format",
+        "no_resize",
+        "no_color_conversion",
+        "output_alignment_px",
+        "padding_value_mono8"
+      ],
+      "properties": {
+        "source_format": { "const": "mono8" },
+        "no_resize": { "const": true },
+        "no_color_conversion": { "const": true },
+        "output_alignment_px": { "enum": [1, 2, 4, 8, 16] },
+        "padding_value_mono8": {
+          "const": 0
+        }
+      }
+    },
+    "buffering": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pool_frames_per_stream", "queue_frames_per_stream"],
+      "properties": {
+        "pool_frames_per_stream": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "queue_frames_per_stream": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        }
+      }
+    },
+    "admission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_rois_per_camera",
+        "max_total_rois",
+        "max_total_pixel_rate",
+        "max_total_encoder_streams",
+        "max_total_pool_bytes",
+        "max_total_queue_frames"
+      ],
+      "properties": {
+        "max_rois_per_camera": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "max_total_rois": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "max_total_pixel_rate": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "max_total_encoder_streams": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "max_total_pool_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "max_total_queue_frames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    "cameras": {
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/identifier" },
+      "additionalProperties": { "$ref": "#/$defs/camera" }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "enabled": { "const": true } },
+        "required": ["enabled"]
+      },
+      "then": {
+        "properties": { "cameras": { "minProperties": 1 } }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+    },
+    "logicalStreamId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+    },
+    "artifactStem": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "raster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        }
+      }
+    },
+    "rect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "width", "height"],
+      "properties": {
+        "x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        }
+      }
+    },
+    "authorityRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "sha256"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "artifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["relative_path", "sha256"],
+      "properties": {
+        "relative_path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+$"
+        },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "roi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "roi_id",
+        "region_id",
+        "required",
+        "content_rect",
+        "logical_stream_id",
+        "artifact_stem"
+      ],
+      "properties": {
+        "roi_id": { "$ref": "#/$defs/identifier" },
+        "region_id": { "$ref": "#/$defs/identifier" },
+        "arena_id": { "$ref": "#/$defs/identifier" },
+        "required": { "const": true },
+        "content_rect": { "$ref": "#/$defs/rect" },
+        "region_mask": { "$ref": "#/$defs/artifactRef" },
+        "logical_stream_id": { "$ref": "#/$defs/logicalStreamId" },
+        "artifact_stem": { "$ref": "#/$defs/artifactStem" }
+      }
+    },
+    "camera": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "camera_id",
+        "camera_serial",
+        "native_raster",
+        "source_frame_rate",
+        "arena_group_id",
+        "layout",
+        "materialization",
+        "registration",
+        "allow_roi_overlap",
+        "rois"
+      ],
+      "properties": {
+        "camera_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "camera_serial": { "$ref": "#/$defs/identifier" },
+        "native_raster": { "$ref": "#/$defs/raster" },
+        "source_frame_rate": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "arena_group_id": { "$ref": "#/$defs/identifier" },
+        "layout": { "$ref": "#/$defs/authorityRef" },
+        "materialization": { "$ref": "#/$defs/authorityRef" },
+        "registration": { "$ref": "#/$defs/authorityRef" },
+        "allow_roi_overlap": { "type": "boolean" },
+        "rois": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/roi" }
+        }
+      }
+    }
+  }
+}

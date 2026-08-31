@@ -1,0 +1,296 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange_spatial_roi_recording_plan.schema.json",
+  "title": "Orange detector-independent spatial ROI recording plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "canonicalization",
+    "plan_sha256",
+    "plan"
+  ],
+  "properties": {
+    "schema_id": { "const": "orange.spatial_roi_recording.plan" },
+    "schema_version": { "const": 1 },
+    "canonicalization": {
+      "const": "canonical_json_utf8_sort_keys_compact_v1"
+    },
+    "plan_sha256": { "$ref": "#/$defs/sha256" },
+    "plan": { "$ref": "#/$defs/planPayload" }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"
+    },
+    "recordingId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!\\s)[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f]$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "raster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        }
+      }
+    },
+    "offset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "const": 0 },
+        "y": { "const": 0 }
+      }
+    },
+    "padding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["right", "bottom", "value_mono8"],
+      "properties": {
+        "right": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "bottom": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "value_mono8": { "const": 0 }
+      }
+    },
+    "expectedArtifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "video",
+        "metadata",
+        "keyframes",
+        "perf",
+        "summary",
+        "finalization"
+      ],
+      "properties": {
+        "video": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "metadata": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "keyframes": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "perf": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "summary": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "finalization": { "type": "string", "minLength": 1, "maxLength": 512 }
+      }
+    },
+    "resolvedRoi": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "roi_id",
+        "region_id",
+        "required",
+        "content_rect",
+        "logical_stream_id",
+        "artifact_stem",
+        "encoded_raster",
+        "content_offset",
+        "encoded_content_rect",
+        "padding",
+        "no_scaling",
+        "socket_path",
+        "expected_artifacts"
+      ],
+      "properties": {
+        "roi_id": { "$ref": "#/$defs/identifier" },
+        "region_id": { "$ref": "#/$defs/identifier" },
+        "arena_id": { "$ref": "#/$defs/identifier" },
+        "required": { "const": true },
+        "content_rect": {
+          "$ref": "orange_spatial_roi_recording_config.schema.json#/$defs/rect"
+        },
+        "region_mask": {
+          "$ref": "orange_spatial_roi_recording_config.schema.json#/$defs/artifactRef"
+        },
+        "logical_stream_id": { "$ref": "#/$defs/identifier" },
+        "artifact_stem": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,159}$"
+        },
+        "encoded_raster": { "$ref": "#/$defs/raster" },
+        "content_offset": { "$ref": "#/$defs/offset" },
+        "encoded_content_rect": {
+          "$ref": "orange_spatial_roi_recording_config.schema.json#/$defs/rect"
+        },
+        "padding": { "$ref": "#/$defs/padding" },
+        "no_scaling": { "const": true },
+        "socket_path": { "type": "string", "minLength": 1, "maxLength": 107 },
+        "expected_artifacts": { "$ref": "#/$defs/expectedArtifacts" }
+      }
+    },
+    "resolvedCamera": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "camera_id",
+        "camera_serial",
+        "native_raster",
+        "source_frame_rate",
+        "arena_group_id",
+        "layout",
+        "materialization",
+        "registration",
+        "allow_roi_overlap",
+        "rois"
+      ],
+      "properties": {
+        "camera_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "camera_serial": { "$ref": "#/$defs/identifier" },
+        "native_raster": { "$ref": "#/$defs/raster" },
+        "source_frame_rate": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "arena_group_id": { "$ref": "#/$defs/identifier" },
+        "layout": {
+          "$ref": "orange_spatial_roi_recording_config.schema.json#/$defs/authorityRef"
+        },
+        "materialization": {
+          "$ref": "orange_spatial_roi_recording_config.schema.json#/$defs/authorityRef"
+        },
+        "registration": {
+          "$ref": "orange_spatial_roi_recording_config.schema.json#/$defs/authorityRef"
+        },
+        "allow_roi_overlap": { "type": "boolean" },
+        "rois": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/resolvedRoi" }
+        }
+      }
+    },
+    "admissionUsage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "camera_count",
+        "roi_count",
+        "encoder_stream_count",
+        "content_pixel_rate",
+        "encoded_pixel_rate",
+        "pool_bytes",
+        "queue_frames"
+      ],
+      "properties": {
+        "camera_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "roi_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "encoder_stream_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "content_pixel_rate": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "encoded_pixel_rate": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "pool_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "queue_frames": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    "planPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_id",
+        "schema_version",
+        "plan_scope",
+        "recording_id",
+        "recording_identity_token",
+        "generated_at_utc",
+        "producer_generation",
+        "configuration",
+        "admission_usage",
+        "resolved_cameras"
+      ],
+      "properties": {
+        "schema_id": { "const": "orange.spatial_roi_recording.plan" },
+        "schema_version": { "const": 1 },
+        "plan_scope": {
+          "const": "detector_independent_camera_native_spatial_rois"
+        },
+        "recording_id": { "$ref": "#/$defs/recordingId" },
+        "recording_identity_token": { "$ref": "#/$defs/sha256" },
+        "generated_at_utc": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "producer_generation": { "$ref": "#/$defs/identifier" },
+        "configuration": {
+          "allOf": [
+            {
+              "$ref": "orange_spatial_roi_recording_config.schema.json"
+            },
+            {
+              "type": "object",
+              "required": ["enabled"],
+              "properties": {
+                "enabled": { "const": true }
+              }
+            }
+          ]
+        },
+        "admission_usage": { "$ref": "#/$defs/admissionUsage" },
+        "resolved_cameras": {
+          "type": "object",
+          "propertyNames": { "$ref": "#/$defs/identifier" },
+          "minProperties": 1,
+          "additionalProperties": { "$ref": "#/$defs/resolvedCamera" }
+        }
+      }
+    }
+  }
+}
