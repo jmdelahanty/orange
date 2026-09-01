@@ -6,15 +6,15 @@
 
 **Status:** the extraction, acquisition/IPC handoff, transport, and
 recorder-owned CUDA detach foundations are committed through `22ab8b1` on
-`agent/acquisition/spatial-roi-recording-v1-20260830`. The working tree also
-contains an uncommitted one-output lossless encoder, descriptor-authorized
-artifact root/bundle, recorder evidence writer, and shared NVENC/FFmpeg
-failure hardening. That library/test media slice has the real-driver
-acceptance result recorded below, but has not been committed. The feature
-remains default-off and still has no production arming caller, socket
-listener, camera-level recorder executable, child supervisor, operational
-drain/finalize exchange, or headless-runner integration. No Orange application
-path currently produces spatial-ROI video files.
+`agent/acquisition/spatial-roi-recording-v1-20260830`. The reviewed Gate 1
+one-output lossless encoder, descriptor-authorized artifact root/bundle,
+recorder evidence writer, and shared NVENC/FFmpeg failure hardening are
+committed as `157ce0f`. That library/test media slice has the real-driver
+acceptance result recorded below. The feature remains default-off and still
+has no production arming caller, socket listener, camera-level recorder
+executable, child supervisor, operational drain/finalize exchange, or
+headless-runner integration. No Orange application path currently produces
+spatial-ROI video files.
 
 The dependency-ordered completion authority is
 `docs/spatial_roi_headless_completion_checklist_2026-08-31.md`. The component
@@ -273,7 +273,7 @@ neutral value 128; alignment padding remains zero in Y. The contract now says
 `luma_preserved_exactly=true` and `neutral_chroma_value=128` instead of the
 incorrect claim that Mono8-to-NV12 performs no format conversion. That transform
 is implemented and byte-verified in recorder-owned device storage. The
-outside-sandbox real-driver acceptance for the working-tree encoder is
+outside-sandbox real-driver acceptance for the committed Gate 1 encoder is
 **PASS**: device `0`, `256x256`, `3/3` frames decoded, elapsed `1001 ms` on
 the final hardened encoder/writer tree.
 The local sandbox has no CUDA device and therefore only exercises the host

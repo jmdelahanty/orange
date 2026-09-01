@@ -5,12 +5,11 @@
 **Scope:** Orange fixed-region spatial ROI recording from the current committed
 foundation to a supervised one-camera/four-ROI headless acceptance run.
 
-**Current checkpoint:** Gate 0 is committed through `22ab8b1`. The Gate 1
-one-output media/evidence library and test slice is implemented in the
-working tree and has a real-driver acceptance result recorded below, but it is
-not committed. Gates 2-6 are not implemented. No current Orange application
-path can arm this feature or produce spatial-ROI videos; there is not yet an
-end-to-end recorder executable.
+**Current checkpoint:** Gate 0 is committed through `22ab8b1`. The reviewed
+Gate 1 one-output media/evidence library and test slice is committed as
+`157ce0f`, with the real-driver acceptance result recorded below. Gates 2-6 are
+not implemented. No current Orange application path can arm this feature or
+produce spatial-ROI videos; there is not yet an end-to-end recorder executable.
 
 This is the authoritative execution-order checklist for the first headless
 fixed-region slice. The detailed contracts and rationale remain in
@@ -86,8 +85,8 @@ libraries should be reused.
 ## Gate 1: stabilize one-output media and evidence core
 
 **Status:** the one-output library/test slice and its real-driver acceptance
-are complete in the uncommitted working tree. Production recorder integration,
-the reviewed commit, and the end-to-end executable remain pending.
+are complete and reviewed in commit `157ce0f`. Production recorder integration
+and the end-to-end executable remain pending.
 
 - [x] Implement one bounded, single-owner lossless NVENC/MP4 output core.
 - [x] Preserve a dense media timeline separately from sparse source recording
@@ -138,8 +137,8 @@ the reviewed commit, and the end-to-end executable remain pending.
       encoder/writer tree.
 - [x] Rebuild `orange`, `orange_client`, and all affected tests; run the full
       spatial-ROI and FFmpeg/NVENC regression set plus `git diff --check`.
-- [ ] Commit the reviewed media/evidence slice and update this checkpoint with
-      its commit and test evidence.
+- [x] Commit the reviewed media/evidence slice and update this checkpoint with
+      its commit and test evidence: `157ce0f`.
 
 **Gate 1 evidence:** the focused encoder target builds and its host portion
 passes the artifact-authority, bounded-admission, profile, and terminal-truth
@@ -150,10 +149,10 @@ An immutable successful terminal snapshot additionally requires
 `enqueue_attempted == enqueued`, zero rejected admission and queue overflows,
 matching dequeue/copy/source-release/result counts, and zero writer media-size
 limit failures.
-A reviewed commit and end-to-end recorder executable are still required before
-this slice is merge-ready. The final host regression passed 17 unrestricted
-tests plus the expected sandbox-limited Unix-socket test; that socket test then
-passed outside the sandbox with real `SO_TYPE`/peer-credential access.
+The end-to-end recorder executable is still required before this feature is
+merge-ready. The final host regression passed 17 sandbox-compatible tests plus
+the expected sandbox-limited Unix-socket test; that socket test then passed
+outside the sandbox with real `SO_TYPE`/peer-credential access.
 
 The v2 defaults are 4,000,000 frames, 128 GiB media, and 4 GiB aggregate
 evidence per stream. The frame and evidence defaults are also implementation
