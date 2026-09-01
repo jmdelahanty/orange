@@ -7,11 +7,11 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <climits>
 #include <cstdio>
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
-#include <fstream>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -19,6 +19,7 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace OrangeVideoContainerFinalization {
@@ -56,25 +57,40 @@ struct Mp4BoxLocation {
     std::uint64_t size = 0;
 };
 
-bool ReadAt(std::fstream& file,
+bool ReadAt(int fd,
             std::uint64_t offset,
             std::uint8_t* bytes,
             std::size_t size) {
-    if (offset >
-        static_cast<std::uint64_t>(std::numeric_limits<std::streamoff>::max())) {
+    if (fd < 0 || !bytes ||
+        offset > static_cast<std::uint64_t>(
+                     std::numeric_limits<off_t>::max()) ||
+        size > static_cast<std::size_t>(SSIZE_MAX)) {
         return false;
     }
-    file.clear();
-    file.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
-    if (!file) {
-        return false;
+    std::size_t completed = 0;
+    while (completed < size) {
+        const std::uint64_t current_offset = offset + completed;
+        if (current_offset > static_cast<std::uint64_t>(
+                                 std::numeric_limits<off_t>::max())) {
+            return false;
+        }
+        const ssize_t count = ::pread(
+            fd,
+            bytes + completed,
+            size - completed,
+            static_cast<off_t>(current_offset));
+        if (count < 0 && errno == EINTR) {
+            continue;
+        }
+        if (count <= 0) {
+            return false;
+        }
+        completed += static_cast<std::size_t>(count);
     }
-    file.read(reinterpret_cast<char*>(bytes),
-              static_cast<std::streamsize>(size));
-    return file.gcount() == static_cast<std::streamsize>(size);
+    return true;
 }
 
-bool ReadBoxAt(std::fstream& file,
+bool ReadBoxAt(int fd,
                std::uint64_t offset,
                std::uint64_t parent_end,
                Mp4BoxLocation* box,
@@ -84,7 +100,7 @@ bool ReadBoxAt(std::fstream& file,
     }
 
     std::array<std::uint8_t, 16> header{};
-    if (!ReadAt(file, offset, header.data(), 8)) {
+    if (!ReadAt(fd, offset, header.data(), 8)) {
         return false;
     }
     const std::uint32_t compact_size = ReadBigEndian32(header.data());
@@ -93,7 +109,7 @@ bool ReadBoxAt(std::fstream& file,
     std::uint64_t box_size = compact_size;
     if (compact_size == 1) {
         if (parent_end - offset < 16 ||
-            !ReadAt(file, offset + 8, header.data() + 8, 8)) {
+            !ReadAt(fd, offset + 8, header.data() + 8, 8)) {
             return false;
         }
         header_size = 16;
@@ -108,7 +124,7 @@ bool ReadBoxAt(std::fstream& file,
     return true;
 }
 
-bool FindChildBox(std::fstream& file,
+bool FindChildBox(int fd,
                   std::uint64_t begin,
                   std::uint64_t end,
                   std::uint32_t wanted_type,
@@ -117,7 +133,7 @@ bool FindChildBox(std::fstream& file,
     while (offset < end) {
         Mp4BoxLocation box;
         std::uint32_t type = 0;
-        if (!ReadBoxAt(file, offset, end, &box, &type)) {
+        if (!ReadBoxAt(fd, offset, end, &box, &type)) {
             return false;
         }
         if (type == wanted_type) {
@@ -131,7 +147,7 @@ bool FindChildBox(std::fstream& file,
     return false;
 }
 
-bool FindMetadataKeyIndex(std::fstream& file,
+bool FindMetadataKeyIndex(int fd,
                           const Mp4BoxLocation& keys,
                           const std::string& wanted_key,
                           std::uint32_t* key_index) {
@@ -142,14 +158,14 @@ bool FindMetadataKeyIndex(std::fstream& file,
     }
 
     std::array<std::uint8_t, 8> header{};
-    if (!ReadAt(file, payload, header.data(), header.size())) {
+    if (!ReadAt(fd, payload, header.data(), header.size())) {
         return false;
     }
     const std::uint32_t entry_count = ReadBigEndian32(header.data() + 4);
     std::uint64_t offset = payload + 8;
     for (std::uint32_t index = 1; index <= entry_count; ++index) {
         if (offset > end || end - offset < 8 ||
-            !ReadAt(file, offset, header.data(), header.size())) {
+            !ReadAt(fd, offset, header.data(), header.size())) {
             return false;
         }
         const std::uint32_t entry_size = ReadBigEndian32(header.data());
@@ -160,7 +176,7 @@ bool FindMetadataKeyIndex(std::fstream& file,
         const std::size_t key_size = static_cast<std::size_t>(entry_size - 8);
         std::vector<std::uint8_t> key_bytes(key_size);
         if (key_size > 0 &&
-            !ReadAt(file, offset + 8, key_bytes.data(), key_bytes.size())) {
+            !ReadAt(fd, offset + 8, key_bytes.data(), key_bytes.size())) {
             return false;
         }
         if (key_namespace == FourCc('m', 'd', 't', 'a') &&
@@ -275,6 +291,241 @@ nlohmann::json NullableError(const std::string& value) {
     return value.empty() ? nlohmann::json(nullptr) : nlohmann::json(value);
 }
 
+bool WriteAt(int fd,
+             std::uint64_t offset,
+             const std::uint8_t* bytes,
+             std::size_t size) {
+    if (fd < 0 || !bytes ||
+        offset > static_cast<std::uint64_t>(
+                     std::numeric_limits<off_t>::max()) ||
+        size > static_cast<std::size_t>(SSIZE_MAX)) {
+        return false;
+    }
+    std::size_t completed = 0;
+    while (completed < size) {
+        const std::uint64_t current_offset = offset + completed;
+        if (current_offset > static_cast<std::uint64_t>(
+                                 std::numeric_limits<off_t>::max())) {
+            return false;
+        }
+        const ssize_t count = ::pwrite(
+            fd,
+            bytes + completed,
+            size - completed,
+            static_cast<off_t>(current_offset));
+        if (count < 0 && errno == EINTR) {
+            continue;
+        }
+        if (count <= 0) {
+            return false;
+        }
+        completed += static_cast<std::size_t>(count);
+    }
+    return true;
+}
+
+bool PatchIntentOnFd(int video_fd, std::string* error) {
+    struct stat file_stat {};
+    if (video_fd < 0 || ::fstat(video_fd, &file_stat) != 0 ||
+        file_stat.st_size < 0) {
+        if (error) {
+            *error = "could not determine finalized MP4 size";
+        }
+        return false;
+    }
+    const std::uint64_t file_size =
+        static_cast<std::uint64_t>(file_stat.st_size);
+
+    Mp4BoxLocation moov;
+    Mp4BoxLocation udta;
+    Mp4BoxLocation meta;
+    Mp4BoxLocation keys;
+    Mp4BoxLocation ilst;
+    if (!FindChildBox(video_fd, 0, file_size,
+                      FourCc('m', 'o', 'o', 'v'), &moov) ||
+        !FindChildBox(video_fd, moov.offset + moov.header_size,
+                      moov.offset + moov.size, FourCc('u', 'd', 't', 'a'),
+                      &udta) ||
+        !FindChildBox(video_fd, udta.offset + udta.header_size,
+                      udta.offset + udta.size, FourCc('m', 'e', 't', 'a'),
+                      &meta)) {
+        if (error) {
+            *error = "could not locate moov/udta/meta";
+        }
+        return false;
+    }
+
+    const std::uint64_t meta_children =
+        meta.offset + meta.header_size + 4;  // full-box version/flags
+    if (meta_children > meta.offset + meta.size ||
+        !FindChildBox(video_fd, meta_children, meta.offset + meta.size,
+                      FourCc('k', 'e', 'y', 's'), &keys) ||
+        !FindChildBox(video_fd, meta_children, meta.offset + meta.size,
+                      FourCc('i', 'l', 's', 't'), &ilst)) {
+        if (error) {
+            *error = "could not locate QuickTime metadata keys/ilst";
+        }
+        return false;
+    }
+
+    std::uint32_t key_index = 0;
+    if (!FindMetadataKeyIndex(video_fd, keys,
+                              kFullFrameRatePlaybackIntentKey, &key_index)) {
+        if (error) {
+            *error = "could not locate full-frame-rate playback-intent key";
+        }
+        return false;
+    }
+
+    Mp4BoxLocation item;
+    Mp4BoxLocation data;
+    if (!FindChildBox(video_fd, ilst.offset + ilst.header_size,
+                      ilst.offset + ilst.size, key_index, &item) ||
+        !FindChildBox(video_fd, item.offset + item.header_size,
+                      item.offset + item.size, FourCc('d', 'a', 't', 'a'),
+                      &data)) {
+        if (error) {
+            *error =
+                "could not locate full-frame-rate playback-intent data atom";
+        }
+        return false;
+    }
+
+    const std::uint64_t data_payload = data.offset + data.header_size;
+    if (data.size != data.header_size + 9) {
+        if (error) {
+            *error =
+                "unexpected full-frame-rate playback-intent payload size";
+        }
+        return false;
+    }
+    std::array<std::uint8_t, 9> existing{};
+    if (!ReadAt(video_fd, data_payload, existing.data(), existing.size()) ||
+        ReadBigEndian32(existing.data()) != kMdtaUtf8Type ||
+        ReadBigEndian32(existing.data() + 4) != 0 || existing[8] != '1') {
+        if (error) {
+            *error =
+                "unexpected full-frame-rate playback-intent source value";
+        }
+        return false;
+    }
+
+    const std::array<std::uint8_t, 9> typed_value = {
+        0, 0, 0, static_cast<std::uint8_t>(kMdtaUnsignedIntegerType),
+        0, 0, 0, 0,
+        1,
+    };
+    if (!WriteAt(video_fd, data_payload, typed_value.data(),
+                 typed_value.size()) ||
+        ::fsync(video_fd) != 0) {
+        if (error) {
+            *error = "failed to write typed full-frame-rate playback intent";
+        }
+        return false;
+    }
+    std::array<std::uint8_t, 9> verified{};
+    if (!ReadAt(video_fd, data_payload, verified.data(), verified.size()) ||
+        verified != typed_value) {
+        if (error) {
+            *error = "failed to verify typed full-frame-rate playback intent";
+        }
+        return false;
+    }
+    return true;
+}
+
+nlohmann::json BuildDocument(
+    const std::string& video_display_label,
+    const std::string& sidecar_display_label,
+    int recording_fps,
+    Status status,
+    const Outcome& outcome,
+    const std::optional<std::uintmax_t>& file_size,
+    const std::string& file_size_error) {
+    const bool container_finalized =
+        outcome.header_written && outcome.trailer_written &&
+        outcome.output_closed;
+    return {
+        {"schema_id", kSchemaId},
+        {"schema_version", kSchemaVersion},
+        {"generated_at_utc", CurrentUtcTimestamp()},
+        {"status", StatusName(status)},
+        {"terminal", IsTerminal(status)},
+        {"video_path", video_display_label},
+        {"sidecar_path", sidecar_display_label},
+        {"recording_fps", recording_fps},
+        {"container",
+         {
+             {"header_written", outcome.header_written},
+             {"trailer_attempted", outcome.trailer_attempted},
+             {"trailer_written", outcome.trailer_written},
+             {"output_close_attempted", outcome.output_close_attempted},
+             {"output_closed", outcome.output_closed},
+             {"finalized", container_finalized},
+             {"trailer_error_code",
+              NullableErrorCode(outcome.trailer_error_code)},
+             {"trailer_error", NullableError(outcome.trailer_error)},
+             {"output_close_error_code",
+              NullableErrorCode(outcome.output_close_error_code)},
+             {"output_close_error",
+              NullableError(outcome.output_close_error)},
+             {"file_size_bytes",
+              file_size ? nlohmann::json(*file_size)
+                        : nlohmann::json(nullptr)},
+             {"file_size_error",
+              file_size_error.empty() ? nlohmann::json(nullptr)
+                                      : nlohmann::json(file_size_error)},
+         }},
+        {"quicktime_full_frame_rate_playback_intent",
+         {
+             {"key", kFullFrameRatePlaybackIntentKey},
+             {"requested_value", 1},
+             {"required_data_type", "UInt8"},
+             {"quicktime_data_atom_type", 22},
+             {"patch_attempted", outcome.playback_intent_patch_attempted},
+             {"patch_applied", outcome.playback_intent_patch_applied},
+             {"error", NullableError(outcome.playback_intent_patch_error)},
+         }},
+    };
+}
+
+bool WriteJsonToFd(int fd,
+                   const nlohmann::json& value,
+                   std::string* error) {
+    if (fd < 0) {
+        if (error) {
+            *error = "descriptor_sidecar_fd_invalid";
+        }
+        return false;
+    }
+    if (::ftruncate(fd, 0) != 0) {
+        if (error) {
+            *error = "descriptor_sidecar_truncate_failed:" +
+                     std::to_string(errno);
+        }
+        return false;
+    }
+    if (::lseek(fd, 0, SEEK_SET) < 0) {
+        if (error) {
+            *error = "descriptor_sidecar_rewind_failed:" +
+                     std::to_string(errno);
+        }
+        return false;
+    }
+    const std::string bytes = value.dump(2) + "\n";
+    if (!WriteAll(fd, bytes, error)) {
+        return false;
+    }
+    if (::fsync(fd) != 0) {
+        if (error) {
+            *error = "descriptor_sidecar_fsync_failed:" +
+                     std::to_string(errno);
+        }
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 Status ClassifyTerminalStatus(const Outcome& outcome) {
@@ -321,118 +572,35 @@ bool PatchFullFrameRatePlaybackIntent(const fs::path& video_path,
     orange::ScopedFsuid fsuid_guard;
     (void)fsuid_guard;
 
-    std::fstream file(video_path, std::ios::binary | std::ios::in | std::ios::out);
-    if (!file.is_open()) {
+    const int video_fd = ::open(video_path.c_str(), O_RDWR | O_CLOEXEC);
+    if (video_fd < 0) {
         if (error) {
             *error = "could not reopen finalized MP4";
         }
         return false;
     }
-    file.seekg(0, std::ios::end);
-    const std::streamoff stream_size = file.tellg();
-    if (stream_size < 0) {
+    const bool patched = PatchIntentOnFd(video_fd, error);
+    const int close_result = ::close(video_fd);
+    if (patched && close_result != 0) {
         if (error) {
-            *error = "could not determine finalized MP4 size";
+            *error = "failed to close finalized MP4";
         }
         return false;
     }
-    const std::uint64_t file_size = static_cast<std::uint64_t>(stream_size);
+    return patched;
+}
 
-    Mp4BoxLocation moov;
-    Mp4BoxLocation udta;
-    Mp4BoxLocation meta;
-    Mp4BoxLocation keys;
-    Mp4BoxLocation ilst;
-    if (!FindChildBox(file, 0, file_size, FourCc('m', 'o', 'o', 'v'), &moov) ||
-        !FindChildBox(file, moov.offset + moov.header_size,
-                      moov.offset + moov.size, FourCc('u', 'd', 't', 'a'),
-                      &udta) ||
-        !FindChildBox(file, udta.offset + udta.header_size,
-                      udta.offset + udta.size, FourCc('m', 'e', 't', 'a'),
-                      &meta)) {
+bool PatchFullFrameRatePlaybackIntent(int video_fd,
+                                      const std::string& video_display_label,
+                                      std::string* error) {
+    if (video_fd < 0) {
         if (error) {
-            *error = "could not locate moov/udta/meta";
+            *error = "invalid finalized MP4 descriptor:" +
+                     video_display_label;
         }
         return false;
     }
-
-    const std::uint64_t meta_children =
-        meta.offset + meta.header_size + 4;  // full-box version/flags
-    if (meta_children > meta.offset + meta.size ||
-        !FindChildBox(file, meta_children, meta.offset + meta.size,
-                      FourCc('k', 'e', 'y', 's'), &keys) ||
-        !FindChildBox(file, meta_children, meta.offset + meta.size,
-                      FourCc('i', 'l', 's', 't'), &ilst)) {
-        if (error) {
-            *error = "could not locate QuickTime metadata keys/ilst";
-        }
-        return false;
-    }
-
-    std::uint32_t key_index = 0;
-    if (!FindMetadataKeyIndex(file, keys, kFullFrameRatePlaybackIntentKey,
-                              &key_index)) {
-        if (error) {
-            *error = "could not locate full-frame-rate playback-intent key";
-        }
-        return false;
-    }
-
-    Mp4BoxLocation item;
-    Mp4BoxLocation data;
-    if (!FindChildBox(file, ilst.offset + ilst.header_size,
-                      ilst.offset + ilst.size, key_index, &item) ||
-        !FindChildBox(file, item.offset + item.header_size,
-                      item.offset + item.size, FourCc('d', 'a', 't', 'a'),
-                      &data)) {
-        if (error) {
-            *error = "could not locate full-frame-rate playback-intent data atom";
-        }
-        return false;
-    }
-
-    const std::uint64_t data_payload = data.offset + data.header_size;
-    if (data.size != data.header_size + 9) {
-        if (error) {
-            *error = "unexpected full-frame-rate playback-intent payload size";
-        }
-        return false;
-    }
-    std::array<std::uint8_t, 9> existing{};
-    if (!ReadAt(file, data_payload, existing.data(), existing.size()) ||
-        ReadBigEndian32(existing.data()) != kMdtaUtf8Type ||
-        ReadBigEndian32(existing.data() + 4) != 0 || existing[8] != '1') {
-        if (error) {
-            *error = "unexpected full-frame-rate playback-intent source value";
-        }
-        return false;
-    }
-
-    const std::array<std::uint8_t, 9> typed_value = {
-        0, 0, 0, static_cast<std::uint8_t>(kMdtaUnsignedIntegerType),
-        0, 0, 0, 0,
-        1,
-    };
-    file.clear();
-    file.seekp(static_cast<std::streamoff>(data_payload), std::ios::beg);
-    file.write(reinterpret_cast<const char*>(typed_value.data()),
-               static_cast<std::streamsize>(typed_value.size()));
-    file.flush();
-    if (!file) {
-        if (error) {
-            *error = "failed to write typed full-frame-rate playback intent";
-        }
-        return false;
-    }
-    std::array<std::uint8_t, 9> verified{};
-    if (!ReadAt(file, data_payload, verified.data(), verified.size()) ||
-        verified != typed_value) {
-        if (error) {
-            *error = "failed to verify typed full-frame-rate playback intent";
-        }
-        return false;
-    }
-    return true;
+    return PatchIntentOnFd(video_fd, error);
 }
 
 bool Persist(const fs::path& video_path,
@@ -456,55 +624,56 @@ bool Persist(const fs::path& video_path,
         std::error_code file_size_error;
         const std::uintmax_t file_size =
             fs::file_size(video_path, file_size_error);
-        const bool container_finalized =
-            outcome.header_written && outcome.trailer_written &&
-            outcome.output_closed;
-        nlohmann::json document = {
-            {"schema_id", kSchemaId},
-            {"schema_version", kSchemaVersion},
-            {"generated_at_utc", CurrentUtcTimestamp()},
-            {"status", StatusName(status)},
-            {"terminal", IsTerminal(status)},
-            {"video_path", video_path.string()},
-            {"sidecar_path", destination.string()},
-            {"recording_fps", recording_fps},
-            {"container",
-             {
-                 {"header_written", outcome.header_written},
-                 {"trailer_attempted", outcome.trailer_attempted},
-                 {"trailer_written", outcome.trailer_written},
-                 {"output_close_attempted", outcome.output_close_attempted},
-                 {"output_closed", outcome.output_closed},
-                 {"finalized", container_finalized},
-                 {"trailer_error_code",
-                  NullableErrorCode(outcome.trailer_error_code)},
-                 {"trailer_error", NullableError(outcome.trailer_error)},
-                 {"output_close_error_code",
-                  NullableErrorCode(outcome.output_close_error_code)},
-                 {"output_close_error",
-                  NullableError(outcome.output_close_error)},
-                 {"file_size_bytes",
-                  file_size_error ? nlohmann::json(nullptr)
-                                  : nlohmann::json(file_size)},
-                 {"file_size_error",
-                  file_size_error
-                      ? nlohmann::json(file_size_error.message())
-                      : nlohmann::json(nullptr)},
-             }},
-            {"quicktime_full_frame_rate_playback_intent",
-             {
-                 {"key", kFullFrameRatePlaybackIntentKey},
-                 {"requested_value", 1},
-                 {"required_data_type", "UInt8"},
-                 {"quicktime_data_atom_type", 22},
-                 {"patch_attempted",
-                  outcome.playback_intent_patch_attempted},
-                 {"patch_applied", outcome.playback_intent_patch_applied},
-                 {"error",
-                  NullableError(outcome.playback_intent_patch_error)},
-             }},
-        };
+        const nlohmann::json document = BuildDocument(
+            video_path.string(), destination.string(), recording_fps, status,
+            outcome,
+            file_size_error
+                ? std::optional<std::uintmax_t>{}
+                : std::optional<std::uintmax_t>{file_size},
+            file_size_error ? file_size_error.message() : std::string{});
         return WriteJsonAtomically(destination, document, error);
+    } catch (const std::exception& exception) {
+        if (error) {
+            *error = std::string("sidecar_exception:") + exception.what();
+        }
+        return false;
+    } catch (...) {
+        if (error) {
+            *error = "sidecar_exception:unknown";
+        }
+        return false;
+    }
+}
+
+bool Persist(int video_fd,
+             const std::string& video_display_label,
+             int sidecar_fd,
+             const std::string& sidecar_display_label,
+             int recording_fps,
+             Status status,
+             const Outcome& outcome,
+             std::string* error) {
+    try {
+        if (video_fd < 0 || sidecar_fd < 0 ||
+            video_display_label.empty() || sidecar_display_label.empty()) {
+            if (error) {
+                *error = "invalid_descriptor_finalization_authority";
+            }
+            return false;
+        }
+
+        struct stat video_stat {};
+        std::optional<std::uintmax_t> file_size;
+        std::string file_size_error;
+        if (::fstat(video_fd, &video_stat) == 0 && video_stat.st_size >= 0) {
+            file_size = static_cast<std::uintmax_t>(video_stat.st_size);
+        } else {
+            file_size_error = "fstat_failed:" + std::to_string(errno);
+        }
+        const nlohmann::json document = BuildDocument(
+            video_display_label, sidecar_display_label, recording_fps, status,
+            outcome, file_size, file_size_error);
+        return WriteJsonToFd(sidecar_fd, document, error);
     } catch (const std::exception& exception) {
         if (error) {
             *error = std::string("sidecar_exception:") + exception.what();

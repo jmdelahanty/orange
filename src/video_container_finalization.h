@@ -46,6 +46,14 @@ std::filesystem::path SidecarPathFor(
 bool PatchFullFrameRatePlaybackIntent(const std::filesystem::path& video_path,
                                       std::string* error);
 
+// Descriptor-authoritative variant. The held descriptor is never reopened by
+// pathname: all reads, the fixed-size metadata patch, verification, and fsync
+// operate on the supplied media inode. video_display_label is evidence only
+// and is never interpreted as filesystem authority.
+bool PatchFullFrameRatePlaybackIntent(int video_fd,
+                                      const std::string& video_display_label,
+                                      std::string* error);
+
 // Persist a small adjacent lifecycle document. This never reads or hashes the
 // media payload; it stats the file and atomically replaces the JSON sidecar in
 // the video's directory under Orange's invoking-user filesystem identity.
@@ -54,6 +62,19 @@ bool Persist(const std::filesystem::path& video_path,
              Status status,
              const Outcome& outcome,
              std::filesystem::path* sidecar_path,
+             std::string* error);
+
+// Descriptor-authoritative lifecycle persistence. The media size comes from
+// fstat(video_fd), and the JSON document is written in place through the
+// explicit sidecar descriptor with ftruncate/write/fsync. Display labels are
+// recorded in the document but are never opened or used to derive a filename.
+bool Persist(int video_fd,
+             const std::string& video_display_label,
+             int sidecar_fd,
+             const std::string& sidecar_display_label,
+             int recording_fps,
+             Status status,
+             const Outcome& outcome,
              std::string* error);
 
 }  // namespace OrangeVideoContainerFinalization

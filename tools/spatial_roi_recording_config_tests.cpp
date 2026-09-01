@@ -49,12 +49,17 @@ spatial_roi::Config make_config()
     config.output_alignment_px = 2;
     config.buffering.pool_frames_per_stream = 4;
     config.buffering.queue_frames_per_stream = 8;
+    config.recording_limits.max_frames_per_stream = 1000;
+    config.recording_limits.max_media_bytes_per_stream = 10000;
+    config.recording_limits.max_evidence_bytes_per_stream = 2000;
     config.admission.max_rois_per_camera = 8;
     config.admission.max_total_rois = 8;
     config.admission.max_total_encoder_streams = 8;
     config.admission.max_total_pixel_rate = 100000000ULL;
     config.admission.max_total_pool_bytes = 100000000ULL;
     config.admission.max_total_queue_frames = 128;
+    config.admission.max_total_media_bytes = 20000;
+    config.admission.max_total_evidence_bytes = 4000;
 
     spatial_roi::CameraConfig camera;
     camera.camera_id = 0;
@@ -77,6 +82,21 @@ void default_is_off_and_closed_round_trip_works()
 {
     const spatial_roi::Config defaults = spatial_roi::default_config();
     require(!defaults.enabled, "spatial ROI recording must default off");
+    require(spatial_roi::kConfigSchemaVersion == 2 &&
+                spatial_roi::kPlanSchemaVersion == 2,
+            "long-run admission requires config and plan schema v2");
+    require(defaults.recording_limits.max_frames_per_stream ==
+                spatial_roi::kDefaultMaxFramesPerStream &&
+                defaults.recording_limits.max_media_bytes_per_stream ==
+                    spatial_roi::kDefaultMaxMediaBytesPerStream &&
+                defaults.recording_limits.max_evidence_bytes_per_stream ==
+                    spatial_roi::kDefaultMaxEvidenceBytesPerStream,
+            "disabled defaults must retain the documented per-stream ceilings");
+    require(defaults.admission.max_total_media_bytes ==
+                spatial_roi::kDefaultMaxTotalMediaBytes &&
+                defaults.admission.max_total_evidence_bytes ==
+                    spatial_roi::kDefaultMaxTotalEvidenceBytes,
+            "disabled defaults must admit the default maximum stream count");
     std::string error;
     require(spatial_roi::validate_config(defaults, nullptr, &error), error);
 
@@ -98,6 +118,36 @@ void default_is_off_and_closed_round_trip_works()
     unknown["cameras"]["2010096"]["rois"][0]["future_field"] = true;
     require(!spatial_roi::parse_config(unknown, &parsed, &error),
             "unknown ROI field must fail closed");
+
+    unknown = wire;
+    unknown["recording_limits"]["future_field"] = true;
+    require(!spatial_roi::parse_config(unknown, &parsed, &error),
+            "unknown recording_limits field must fail closed");
+
+    unknown = wire;
+    unknown.erase("recording_limits");
+    require(!spatial_roi::parse_config(unknown, &parsed, &error),
+            "missing recording_limits policy must fail closed");
+
+    unknown = wire;
+    unknown["recording_limits"].erase("max_media_bytes_per_stream");
+    require(!spatial_roi::parse_config(unknown, &parsed, &error),
+            "missing recording_limits member must fail closed");
+
+    unknown = wire;
+    unknown["admission"].erase("max_total_media_bytes");
+    require(!spatial_roi::parse_config(unknown, &parsed, &error),
+            "missing aggregate media ceiling must fail closed");
+
+    unknown = wire;
+    unknown["admission"].erase("max_total_evidence_bytes");
+    require(!spatial_roi::parse_config(unknown, &parsed, &error),
+            "missing aggregate evidence ceiling must fail closed");
+
+    unknown = wire;
+    unknown["schema_version"] = 1;
+    require(!spatial_roi::parse_config(unknown, &parsed, &error),
+            "schema-v1 config must not be interpreted as schema v2");
 
     unknown = wire;
     unknown["schema_version"] = std::numeric_limits<std::uint64_t>::max();
@@ -230,6 +280,10 @@ void alignment_and_admission_usage_are_exact()
             "pool byte calculation mismatch");
     require(usage.queue_frames == 2 * 8,
             "aggregate queue frame calculation mismatch");
+    require(usage.media_bytes == 20000,
+            "aggregate media-byte admission mismatch");
+    require(usage.evidence_bytes == 4000,
+            "aggregate evidence-byte admission mismatch");
 }
 
 void each_admission_limit_is_enforced()
@@ -264,9 +318,97 @@ void each_admission_limit_is_enforced()
     config.admission.max_total_queue_frames = 15;
     require(!spatial_roi::validate_config(config, nullptr, &error),
             "aggregate queue-frame limit must be enforced");
+
+    config = make_config();
+    config.admission.max_total_media_bytes = 19999;
+    require(!spatial_roi::validate_config(config, nullptr, &error),
+            "aggregate media-byte limit must be enforced");
+
+    config = make_config();
+    config.admission.max_total_evidence_bytes = 3999;
+    require(!spatial_roi::validate_config(config, nullptr, &error),
+            "aggregate evidence-byte limit must be enforced");
 }
 
-void pixel_contract_is_nonnegotiable_in_v1()
+void recording_limits_are_positive_and_aggregate_overflow_is_rejected()
+{
+    std::string error;
+    spatial_roi::Config config = make_config();
+    config.recording_limits.max_frames_per_stream = 0;
+    require(!spatial_roi::validate_config(config, nullptr, &error),
+            "zero max_frames_per_stream must fail");
+
+    config = make_config();
+    config.recording_limits.max_media_bytes_per_stream = 0;
+    require(!spatial_roi::validate_config(config, nullptr, &error),
+            "zero max_media_bytes_per_stream must fail");
+
+    config = make_config();
+    config.recording_limits.max_evidence_bytes_per_stream = 0;
+    require(!spatial_roi::validate_config(config, nullptr, &error),
+            "zero max_evidence_bytes_per_stream must fail");
+
+    config = make_config();
+    config.recording_limits.max_frames_per_stream =
+        spatial_roi::kMaxFramesPerStream + 1;
+    require(!spatial_roi::validate_config(config, nullptr, &error),
+            "frame limit beyond the recorder implementation ceiling must fail");
+
+    config = make_config();
+    config.recording_limits.max_media_bytes_per_stream =
+        spatial_roi::kMaxMediaBytesPerStream + 1;
+    config.admission.max_total_media_bytes =
+        std::numeric_limits<std::uint64_t>::max();
+    require(!spatial_roi::validate_config(config, nullptr, &error),
+            "media limit beyond the recorder implementation ceiling must fail");
+
+    config = make_config();
+    config.recording_limits.max_evidence_bytes_per_stream =
+        spatial_roi::kMaxEvidenceBytesPerStream + 1;
+    require(!spatial_roi::validate_config(config, nullptr, &error),
+            "evidence limit beyond the recorder implementation ceiling must fail");
+
+    config = make_config();
+    config.admission.max_total_media_bytes = 0;
+    require(!spatial_roi::validate_config(config, nullptr, &error),
+            "zero aggregate media ceiling must fail");
+
+    config = make_config();
+    config.admission.max_total_evidence_bytes = 0;
+    require(!spatial_roi::validate_config(config, nullptr, &error),
+            "zero aggregate evidence ceiling must fail");
+
+    nlohmann::json wire = spatial_roi::config_to_json(make_config());
+    wire["recording_limits"]["max_frames_per_stream"] = 0;
+    spatial_roi::Config parsed;
+    require(!spatial_roi::parse_config(wire, &parsed, &error),
+            "zero wire recording limit must fail");
+
+    config = make_config();
+    config.recording_limits.max_media_bytes_per_stream =
+        spatial_roi::kMaxMediaBytesPerStream;
+    config.admission.max_total_media_bytes =
+        std::numeric_limits<std::uint64_t>::max();
+    config.cameras.begin()->second.rois.push_back(make_roi(
+        config.cameras.begin()->second.camera_serial,
+        "roi_3",
+        "region_3",
+        {40, 40, 4, 4}));
+    require(!spatial_roi::validate_config(config, nullptr, &error),
+            "aggregate media-byte overflow must fail before admission");
+    require(error.find("overflow") != std::string::npos,
+            "media-byte overflow rejection should be explicit");
+
+    config = make_config();
+    config.recording_limits.max_evidence_bytes_per_stream =
+        std::numeric_limits<std::uint64_t>::max();
+    config.admission.max_total_evidence_bytes =
+        std::numeric_limits<std::uint64_t>::max();
+    require(!spatial_roi::validate_config(config, nullptr, &error),
+            "unimplementable evidence-byte ceiling must fail before admission");
+}
+
+void pixel_contract_is_nonnegotiable_in_v2()
 {
     std::string error;
     spatial_roi::Config config = make_config();
@@ -287,13 +429,13 @@ void pixel_contract_is_nonnegotiable_in_v1()
     config = make_config();
     config.padding_value_mono8 = 1;
     require(!spatial_roi::validate_config(config, nullptr, &error),
-            "nonzero Mono8 padding must fail in schema v1");
+            "nonzero Mono8 padding must fail in schema v2");
 
     nlohmann::json wire = spatial_roi::config_to_json(make_config());
     wire["pixel_contract"]["padding_value_mono8"] = 1;
     spatial_roi::Config parsed;
     require(!spatial_roi::parse_config(wire, &parsed, &error),
-            "nonzero wire Mono8 padding must fail in schema v1");
+            "nonzero wire Mono8 padding must fail in schema v2");
 }
 
 void unsupported_best_effort_contract_values_fail_closed()
@@ -375,6 +517,30 @@ void plan_is_deterministic_closed_and_digest_bound()
     require(spatial_roi::build_plan(config, context, &second, nullptr, &error), error);
     require(first == second, "same normalized inputs must produce the same plan");
     require(spatial_roi::verify_plan(first, &error), error);
+    require(first.at("schema_version") == 2 &&
+                first.at("plan").at("schema_version") == 2,
+            "plan envelope and payload must both declare schema v2");
+    require(first.at("plan").at("configuration").at("recording_limits") ==
+                nlohmann::json({
+                    {"max_frames_per_stream", 1000},
+                    {"max_media_bytes_per_stream", 10000},
+                    {"max_evidence_bytes_per_stream", 2000},
+                }),
+            "plan must authenticate the exact recording_limits policy");
+    require(first.at("plan").at("admission_usage").at("media_bytes") ==
+                20000 &&
+                first.at("plan").at("admission_usage").at("evidence_bytes") ==
+                    4000,
+            "plan must authenticate checked long-run aggregate usage");
+
+    spatial_roi::SpatialRoiRecordingPlan parsed_plan;
+    require(spatial_roi::parse_verified_plan(first, &parsed_plan, &error), error);
+    require(parsed_plan.recording_limits.max_frames_per_stream == 1000 &&
+                parsed_plan.recording_limits.max_media_bytes_per_stream == 10000 &&
+                parsed_plan.recording_limits.max_evidence_bytes_per_stream == 2000 &&
+                parsed_plan.admission_usage.media_bytes == 20000 &&
+                parsed_plan.admission_usage.evidence_bytes == 4000,
+            "verified plan view omitted authenticated long-run bounds");
 
     const nlohmann::json& resolved_roi =
         first.at("plan")
@@ -424,6 +590,27 @@ void plan_is_deterministic_closed_and_digest_bound()
     tampered["plan_sha256"] = digest('b');
     require(!spatial_roi::verify_plan(tampered, &error),
             "wrong plan digest must fail verification");
+
+    tampered = first;
+    tampered["plan"]["configuration"]["recording_limits"]
+            ["max_media_bytes_per_stream"] = 10001;
+    require(!spatial_roi::verify_plan(tampered, &error),
+            "mutated per-stream media admission must fail verification");
+
+    tampered = first;
+    tampered["plan"]["admission_usage"]["evidence_bytes"] = 4001;
+    require(!spatial_roi::verify_plan(tampered, &error),
+            "mutated aggregate evidence usage must fail deterministic verification");
+
+    tampered = first;
+    tampered["schema_version"] = 1;
+    require(!spatial_roi::verify_plan(tampered, &error),
+            "schema-v1 plan envelope must not verify as schema v2");
+
+    tampered = first;
+    tampered["plan"]["schema_version"] = 1;
+    require(!spatial_roi::verify_plan(tampered, &error),
+            "schema-v1 plan payload must not verify as schema v2");
 }
 
 void bool_plan_apis_catch_malformed_utf8()
@@ -481,8 +668,10 @@ int main()
         {"alignment_and_admission_usage_are_exact",
          alignment_and_admission_usage_are_exact},
         {"each_admission_limit_is_enforced", each_admission_limit_is_enforced},
-        {"pixel_contract_is_nonnegotiable_in_v1",
-         pixel_contract_is_nonnegotiable_in_v1},
+        {"recording_limits_are_positive_and_aggregate_overflow_is_rejected",
+         recording_limits_are_positive_and_aggregate_overflow_is_rejected},
+        {"pixel_contract_is_nonnegotiable_in_v2",
+         pixel_contract_is_nonnegotiable_in_v2},
         {"unsupported_best_effort_contract_values_fail_closed",
          unsupported_best_effort_contract_values_fail_closed},
         {"recording_identity_uses_canonical_limit_and_token_binding",

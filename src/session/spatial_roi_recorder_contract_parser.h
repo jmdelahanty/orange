@@ -70,6 +70,18 @@ struct SpatialRoiRecorderIpcView {
     std::uint64_t max_outstanding_frames_total = 0;
 };
 
+// Checked recorder-side totals over every stream in stream_order.  These
+// values make process-level memory admission deterministic without asking the
+// caller to re-derive (or silently enlarge) per-stream budgets.
+struct SpatialRoiRecorderAggregateBoundsView {
+    std::uint64_t max_queue_bytes_total = 0;
+    std::uint64_t writer_queue_max_packets_total = 0;
+    std::uint64_t writer_queue_max_bytes_total = 0;
+    std::uint32_t operation_timeout_ms_per_stream = 0;
+    std::uint64_t max_media_bytes_total = 0;
+    std::uint64_t max_evidence_bytes_total = 0;
+};
+
 struct SpatialRoiRecorderStreamView {
     std::string stream_id;
     std::string logical_stream_id;
@@ -105,6 +117,13 @@ struct SpatialRoiRecorderStreamView {
     std::uint32_t quality_value = 0;
     std::uint32_t gop = 0;
     std::uint32_t encode_queue_depth = 0;
+    std::uint64_t max_queue_bytes = 0;
+    std::uint64_t writer_queue_max_packets = 0;
+    std::uint64_t writer_queue_max_bytes = 0;
+    std::uint32_t operation_timeout_ms = 0;
+    std::uint64_t max_frames_per_stream = 0;
+    std::uint64_t max_media_bytes_per_stream = 0;
+    std::uint64_t max_evidence_bytes_per_stream = 0;
     std::string routing_policy;
     std::vector<int> expected_shard_gpu_ids;
     std::map<std::string, SpatialRoiRecorderArtifactPathView> artifacts;
@@ -138,6 +157,7 @@ struct SpatialRoiRecorderContractView {
     std::uint32_t stream_count = 0;
     std::vector<std::string> stream_order;
     SpatialRoiRecorderIpcView ipc_v2;
+    SpatialRoiRecorderAggregateBoundsView aggregate_bounds;
     std::map<std::string, int> analytics_gpu_by_camera_serial;
     std::map<std::string, int> recorder_gpu_by_logical_stream_id;
     std::vector<SpatialRoiRecorderStreamView> streams;

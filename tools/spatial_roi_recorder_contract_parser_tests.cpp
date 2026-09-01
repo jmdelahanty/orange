@@ -61,12 +61,17 @@ Fixture make_fixture()
     config.enabled = true;
     config.buffering.pool_frames_per_stream = 4;
     config.buffering.queue_frames_per_stream = 8;
+    config.recording_limits.max_frames_per_stream = 2000;
+    config.recording_limits.max_media_bytes_per_stream = 2000000;
+    config.recording_limits.max_evidence_bytes_per_stream = 200000;
     config.admission.max_rois_per_camera = 4;
     config.admission.max_total_rois = 4;
     config.admission.max_total_encoder_streams = 4;
     config.admission.max_total_pixel_rate = 100000000ULL;
     config.admission.max_total_pool_bytes = 100000000ULL;
     config.admission.max_total_queue_frames = 64;
+    config.admission.max_total_media_bytes = 8000000;
+    config.admission.max_total_evidence_bytes = 800000;
 
     spatial_roi::CameraConfig camera;
     camera.camera_id = 3;
@@ -139,7 +144,9 @@ void parses_one_plan_bound_selected_stream()
     spatial_roi::SpatialRoiRecorderContractView view;
     std::string error;
     require(parses(fixture, fixture.contract, kSecondStream, &view, &error), error);
-    require(view.schema_version == 1 && view.stream_count == 2,
+    require(view.schema_version ==
+                    spatial_roi::kSpatialRoiRecorderContractSchemaVersion &&
+                view.stream_count == 2,
             "contract envelope was not parsed");
     require(view.ipc_v2.features ==
                 std::vector<std::string>{"cuda_ipc", "packed_mono8",
@@ -152,12 +159,34 @@ void parses_one_plan_bound_selected_stream()
     require(view.selected_stream.artifacts.at("video").relative_path ==
                 "Cam2010096_spatial_roi_roi_2.mp4",
             "artifact relative path was not derived");
+    require(view.selected_stream.artifacts.at("evidence").relative_path ==
+                "Cam2010096_spatial_roi_roi_2_evidence.jsonl" &&
+                view.selected_stream.artifacts.at("evidence_manifest").relative_path ==
+                    "Cam2010096_spatial_roi_roi_2_evidence_manifest.json",
+            "evidence artifact paths were not exposed from the authenticated map");
     require(view.selected_stream.geometry.content_rect.x == 20 &&
                 view.selected_stream.geometry.encoded_raster.width == 12,
             "verified geometry was not exposed");
     require(view.selected_stream.encode_profile.luma_preserved_exactly &&
                 view.selected_stream.encode_profile.neutral_chroma_value == 128,
             "Mono8-to-NV12 luma/chroma contract was not parsed");
+    require(view.selected_stream.encode_queue_depth == 8 &&
+                view.selected_stream.max_queue_bytes == 1440 &&
+                view.selected_stream.writer_queue_max_packets == 512 &&
+                view.selected_stream.writer_queue_max_bytes == 134217728 &&
+                view.selected_stream.operation_timeout_ms == 2000,
+            "selected stream does not fully expose encoder construction bounds");
+    require(view.selected_stream.max_frames_per_stream == 2000 &&
+                view.selected_stream.max_media_bytes_per_stream == 2000000 &&
+                view.selected_stream.max_evidence_bytes_per_stream == 200000,
+            "selected stream omitted authenticated long-run admission");
+    require(view.aggregate_bounds.max_queue_bytes_total == 2640 &&
+                view.aggregate_bounds.writer_queue_max_packets_total == 1024 &&
+                view.aggregate_bounds.writer_queue_max_bytes_total == 268435456 &&
+                view.aggregate_bounds.operation_timeout_ms_per_stream == 2000 &&
+                view.aggregate_bounds.max_media_bytes_total == 4000000 &&
+                view.aggregate_bounds.max_evidence_bytes_total == 400000,
+            "aggregate recorder bounds were not parsed exactly");
 }
 
 void rejects_schema_feature_and_selector_fallbacks()
@@ -244,6 +273,113 @@ void rejects_mutations_even_when_internal_copies_are_changed()
     candidate = fixture.contract;
     candidate["streams"][kFirstStream]["unexpected"] = true;
     require_rejected(fixture, candidate, "unknown stream field was accepted");
+}
+
+void rejects_bound_overflow_and_cross_field_mutations()
+{
+    const Fixture fixture = make_fixture();
+
+    json candidate = fixture.contract;
+    candidate["streams"][kFirstStream]["max_queue_bytes"] =
+        std::numeric_limits<std::uint64_t>::max();
+    candidate["aggregate_bounds"]["max_queue_bytes_total"] =
+        std::numeric_limits<std::uint64_t>::max();
+    require_rejected(fixture,
+                     candidate,
+                     "self-consistent-looking overflowing queue bytes were accepted");
+
+    candidate = fixture.contract;
+    candidate["streams"][kFirstStream]["writer_queue_max_packets"] = 4097;
+    candidate["aggregate_bounds"]["writer_queue_max_packets_total"] = 4609;
+    require_rejected(fixture,
+                     candidate,
+                     "writer packet budget above the encoder ceiling was accepted");
+
+    candidate = fixture.contract;
+    candidate["streams"][kFirstStream]["writer_queue_max_bytes"] =
+        536870913ULL;
+    candidate["aggregate_bounds"]["writer_queue_max_bytes_total"] =
+        671088641ULL;
+    require_rejected(fixture,
+                     candidate,
+                     "writer byte budget above the encoder ceiling was accepted");
+
+    candidate = fixture.contract;
+    candidate["streams"][kFirstStream]["operation_timeout_ms"] = 60001;
+    candidate["aggregate_bounds"]["operation_timeout_ms_per_stream"] = 60001;
+    candidate["streams"][kSecondStream]["operation_timeout_ms"] = 60001;
+    require_rejected(fixture,
+                     candidate,
+                     "operation timeout above the encoder ceiling was accepted");
+
+    candidate = fixture.contract;
+    candidate["aggregate_bounds"]["max_queue_bytes_total"] = 2641;
+    require_rejected(fixture,
+                     candidate,
+                     "aggregate queue bytes disagreed with stream totals but were accepted");
+
+    candidate = fixture.contract;
+    candidate["streams"][kFirstStream]["max_frames_per_stream"] = 0;
+    require_rejected(fixture,
+                     candidate,
+                     "zero per-stream frame admission was accepted");
+
+    candidate = fixture.contract;
+    candidate["streams"][kFirstStream]["max_media_bytes_per_stream"] = 0;
+    require_rejected(fixture,
+                     candidate,
+                     "zero per-stream media admission was accepted");
+
+    candidate = fixture.contract;
+    candidate["streams"][kFirstStream]["max_evidence_bytes_per_stream"] = 0;
+    require_rejected(fixture,
+                     candidate,
+                     "zero per-stream evidence admission was accepted");
+
+    candidate = fixture.contract;
+    candidate["streams"][kFirstStream]["max_media_bytes_per_stream"] =
+        std::numeric_limits<std::uint64_t>::max();
+    candidate["aggregate_bounds"]["max_media_bytes_total"] =
+        std::numeric_limits<std::uint64_t>::max();
+    require_rejected(fixture,
+                     candidate,
+                     "overflowing aggregate media admission was accepted");
+
+    candidate = fixture.contract;
+    candidate["streams"][kFirstStream]["max_evidence_bytes_per_stream"] =
+        std::numeric_limits<std::uint64_t>::max();
+    candidate["aggregate_bounds"]["max_evidence_bytes_total"] =
+        std::numeric_limits<std::uint64_t>::max();
+    require_rejected(fixture,
+                     candidate,
+                     "overflowing aggregate evidence admission was accepted");
+
+    candidate = fixture.contract;
+    candidate["streams"][kSecondStream]["max_frames_per_stream"] = 2001;
+    require_rejected(fixture,
+                     candidate,
+                     "cross-stream recording_limits policy drift was accepted");
+
+    candidate = fixture.contract;
+    candidate["aggregate_bounds"]["max_media_bytes_total"] = 4000001;
+    require_rejected(fixture,
+                     candidate,
+                     "aggregate media admission disagreed with stream totals");
+
+    candidate = fixture.contract;
+    candidate["aggregate_bounds"]["max_evidence_bytes_total"] = 400001;
+    require_rejected(fixture,
+                     candidate,
+                     "aggregate evidence admission disagreed with stream totals");
+
+    candidate = fixture.contract;
+    const std::string video =
+        candidate["streams"][kFirstStream]["mp4"].get<std::string>();
+    candidate["streams"][kFirstStream]["evidence_jsonl"] = video;
+    candidate["streams"][kFirstStream]["expected_artifacts"]["evidence"] = video;
+    require_rejected(fixture,
+                     candidate,
+                     "evidence path colliding with media was accepted");
 }
 
 void rejects_wrong_external_authority()
@@ -397,6 +533,8 @@ int main()
          rejects_schema_feature_and_selector_fallbacks},
         {"rejects_mutations_even_when_internal_copies_are_changed",
          rejects_mutations_even_when_internal_copies_are_changed},
+        {"rejects_bound_overflow_and_cross_field_mutations",
+         rejects_bound_overflow_and_cross_field_mutations},
         {"rejects_wrong_external_authority", rejects_wrong_external_authority},
         {"parses_only_bounded_nonsymlink_regular_file",
          parses_only_bounded_nonsymlink_regular_file},
@@ -417,6 +555,6 @@ int main()
                   << " spatial ROI contract parser test(s) failed\n";
         return 1;
     }
-    std::cout << "5 spatial ROI contract parser tests passed\n";
+    std::cout << "6 spatial ROI contract parser tests passed\n";
     return 0;
 }

@@ -932,6 +932,19 @@ if(BUILD_TESTING)
     add_test(NAME spatial_roi_recorder_contract_parser_tests
         COMMAND spatial_roi_recorder_contract_parser_tests)
 
+    add_executable(spatial_roi_recorder_artifact_root_tests
+        "tools/spatial_roi_recorder_artifact_root_tests.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_artifact_root.cpp"
+    )
+    target_include_directories(spatial_roi_recorder_artifact_root_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_recorder_artifact_root_tests PRIVATE
+        cxx_std_17)
+    target_link_libraries(spatial_roi_recorder_artifact_root_tests PRIVATE
+        Threads::Threads)
+    add_test(NAME spatial_roi_recorder_artifact_root_tests
+        COMMAND spatial_roi_recorder_artifact_root_tests)
+
     add_executable(spatial_roi_frame_contract_tests
         "tools/spatial_roi_frame_contract_tests.cpp"
         "${SRC_DIR}/spatial_roi_frame_contract.cpp"
@@ -1080,6 +1093,8 @@ if(BUILD_TESTING)
     )
     target_include_directories(ffmpeg_writer_failure_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(ffmpeg_writer_failure_tests PRIVATE cxx_std_17)
+    target_compile_definitions(ffmpeg_writer_failure_tests PRIVATE
+        ORANGE_FFMPEG_WRITER_TESTING)
     target_link_libraries(ffmpeg_writer_failure_tests PRIVATE
         ${AVFORMAT_LIBRARY}
         ${SWRESAMPLE_LIBRARY}
@@ -1090,6 +1105,79 @@ if(BUILD_TESTING)
     set_target_properties(ffmpeg_writer_failure_tests PROPERTIES
         BUILD_RPATH "${FFMPEG_LIBRARY_DIR}")
     add_test(NAME ffmpeg_writer_failure_tests COMMAND ffmpeg_writer_failure_tests)
+
+    add_executable(ffmpeg_writer_error_state_tests
+        "tools/ffmpeg_writer_error_state_tests.cpp"
+        "${SRC_DIR}/video_container_finalization.cpp"
+        "${SRC_DIR}/FFmpegWriter.cpp"
+    )
+    target_include_directories(ffmpeg_writer_error_state_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(ffmpeg_writer_error_state_tests PRIVATE cxx_std_17)
+    target_compile_definitions(ffmpeg_writer_error_state_tests PRIVATE
+        ORANGE_FFMPEG_WRITER_TESTING)
+    target_link_libraries(ffmpeg_writer_error_state_tests PRIVATE
+        ${AVFORMAT_LIBRARY}
+        ${SWRESAMPLE_LIBRARY}
+        ${AVUTIL_LIBRARY}
+        ${AVCODEC_LIBRARY}
+        pthread)
+    set_target_properties(ffmpeg_writer_error_state_tests PROPERTIES
+        BUILD_RPATH "${FFMPEG_LIBRARY_DIR}")
+    add_test(NAME ffmpeg_writer_error_state_tests
+        COMMAND ffmpeg_writer_error_state_tests)
+
+    add_executable(spatial_roi_recorder_evidence_tests
+        "tools/spatial_roi_recorder_evidence_tests.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_evidence.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_artifact_root.cpp"
+        "${SRC_DIR}/spatial_roi_frame_contract.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_contract_parser.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_contract.cpp"
+        "${SRC_DIR}/session/spatial_roi_recording_config.cpp"
+    )
+    target_include_directories(spatial_roi_recorder_evidence_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_recorder_evidence_tests PRIVATE cxx_std_17)
+    add_test(NAME spatial_roi_recorder_evidence_tests
+        COMMAND spatial_roi_recorder_evidence_tests)
+    set_tests_properties(spatial_roi_recorder_evidence_tests PROPERTIES
+        TIMEOUT 60)
+
+    add_executable(spatial_roi_lossless_encoder_tests
+        "tools/spatial_roi_lossless_encoder_tests.cpp"
+        "${SRC_DIR}/spatial_roi_lossless_encoder.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_artifact_root.cpp"
+        "${SRC_DIR}/spatial_roi_ipc_protocol.cpp"
+        "${SRC_DIR}/spatial_roi_frame_contract.cpp"
+        "${SRC_DIR}/video_encode_profile.cpp"
+        "${SRC_DIR}/video_container_finalization.cpp"
+        "${SRC_DIR}/FFmpegWriter.cpp"
+        ${NVENCODER_SOURCES}
+    )
+    target_include_directories(spatial_roi_lossless_encoder_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_lossless_encoder_tests PRIVATE
+        cxx_std_17 cuda_std_17)
+    target_compile_definitions(spatial_roi_lossless_encoder_tests PRIVATE
+        ORANGE_SPATIAL_ROI_ENCODER_TESTING=1)
+    target_link_libraries(spatial_roi_lossless_encoder_tests PRIVATE
+        spatial_roi_recorder_cuda_detach
+        ${CUDA_CUDART_LIBRARY}
+        ${CUDA_DRIVER_LIBRARY}
+        ${NVIDIA_ENCODE_LIBRARY}
+        ${AVFORMAT_LIBRARY}
+        ${SWRESAMPLE_LIBRARY}
+        ${AVUTIL_LIBRARY}
+        ${AVCODEC_LIBRARY}
+        Threads::Threads
+        m)
+    set_target_properties(spatial_roi_lossless_encoder_tests PROPERTIES
+        BUILD_RPATH "${FFMPEG_LIBRARY_DIR}")
+    add_test(NAME spatial_roi_lossless_encoder_tests
+        COMMAND spatial_roi_lossless_encoder_tests)
+    set_tests_properties(spatial_roi_lossless_encoder_tests PROPERTIES
+        TIMEOUT 60)
 
     add_test(
         NAME validate_gui_crop_preview_tests

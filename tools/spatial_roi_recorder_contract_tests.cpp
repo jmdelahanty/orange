@@ -111,12 +111,17 @@ nlohmann::json make_plan(std::uint32_t output_alignment_px = 2)
     config.output_alignment_px = output_alignment_px;
     config.buffering.pool_frames_per_stream = 4;
     config.buffering.queue_frames_per_stream = 8;
+    config.recording_limits.max_frames_per_stream = 1000;
+    config.recording_limits.max_media_bytes_per_stream = 1000000;
+    config.recording_limits.max_evidence_bytes_per_stream = 100000;
     config.admission.max_rois_per_camera = 8;
     config.admission.max_total_rois = 8;
     config.admission.max_total_encoder_streams = 8;
     config.admission.max_total_pixel_rate = 100000000ULL;
     config.admission.max_total_pool_bytes = 100000000ULL;
     config.admission.max_total_queue_frames = 128;
+    config.admission.max_total_media_bytes = 8000000;
+    config.admission.max_total_evidence_bytes = 800000;
 
     spatial_roi::CameraConfig camera;
     camera.camera_id = 3;
@@ -228,7 +233,7 @@ void builds_one_strict_nonrolling_stream_per_roi()
                 "independent_lossless_external_ipc",
             "contract backend mismatch");
     require(contract.value("mode", std::string()) ==
-                "spatial_roi_external_recorder_v1",
+                spatial_roi::kSpatialRoiRecorderContractMode,
             "contract mode mismatch");
     require(contract.value("recording_id", std::string()) ==
                 plan.at("plan").at("recording_id").get<std::string>(),
@@ -334,10 +339,20 @@ void builds_one_strict_nonrolling_stream_per_roi()
     };
     require(contract.at("ipc_v2") == expected_ipc_v2,
             "contract must contain the exact closed IPC-v2 handoff object");
+    require(contract.at("aggregate_bounds") == nlohmann::json{
+                {"max_queue_bytes_total", 7296},
+                {"writer_queue_max_packets_total", 2048},
+                {"writer_queue_max_bytes_total", 536870912},
+                {"operation_timeout_ms_per_stream", 2000},
+                {"max_media_bytes_total", 4000000},
+                {"max_evidence_bytes_total", 400000}},
+            "contract aggregate recorder bounds are not the checked stream totals");
 
     std::vector<std::string> stream_ids;
     std::set<std::string> recorder_log_paths;
     std::set<std::string> transport_sidecar_paths;
+    std::set<std::string> evidence_paths;
+    std::set<std::string> evidence_manifest_paths;
     for (const auto& roi_id : {"roi_1", "roi_2", "roi_3", "roi_4"}) {
         const std::string roi_name(roi_id);
         const std::string stream_id =
@@ -391,6 +406,28 @@ void builds_one_strict_nonrolling_stream_per_roi()
                 "recorder rate-control spelling must match the supported profile");
         require(stream.value("encode_queue_depth", 0) == 8,
                 "verified per-stream queue bound was not propagated");
+        const std::uint64_t encoded_pixels =
+            stream.at("geometry_identity").at("encoded_raster").at("width")
+                .get<std::uint64_t>() *
+            stream.at("geometry_identity").at("encoded_raster").at("height")
+                .get<std::uint64_t>();
+        require(stream.value("max_queue_bytes", std::uint64_t{0}) ==
+                    (encoded_pixels + encoded_pixels / 2U) * 8U,
+                "detached NV12 queue byte bound was not derived from geometry/depth");
+        require(stream.value("writer_queue_max_packets", std::uint64_t{0}) ==
+                    spatial_roi::kSpatialRoiRecorderWriterQueueMaxPackets &&
+                    stream.value("writer_queue_max_bytes", std::uint64_t{0}) ==
+                        spatial_roi::kSpatialRoiRecorderWriterQueueMaxBytes &&
+                    stream.value("operation_timeout_ms", 0U) ==
+                        spatial_roi::kSpatialRoiRecorderOperationTimeoutMs,
+                "encoder/writer construction bounds are not authenticated");
+        require(stream.value("max_frames_per_stream", std::uint64_t{0}) ==
+                    1000 &&
+                    stream.value("max_media_bytes_per_stream", std::uint64_t{0}) ==
+                        1000000 &&
+                    stream.value("max_evidence_bytes_per_stream",
+                                 std::uint64_t{0}) == 100000,
+                "long-run per-stream admission was not authenticated");
         require(stream.value("session_id", std::string()) ==
                     contract.value("session_id", std::string()),
                 "stream session identity drifted from the recording");
@@ -415,7 +452,7 @@ void builds_one_strict_nonrolling_stream_per_roi()
                 "encoded content must be origin-anchored, not camera-relative");
         require(stream.at("geometry_identity").at("padding").at("left") == 0 &&
                     stream.at("geometry_identity").at("padding").at("top") == 0,
-                "schema v1 must make zero left/top padding explicit");
+                "schema v2 must make zero left/top padding explicit");
         require(stream.at("geometry_identity").at("padding").at("value_mono8") ==
                     0,
                 "padding value must be zero");
@@ -440,17 +477,31 @@ void builds_one_strict_nonrolling_stream_per_roi()
         require(stream.at("expected_artifacts").contains("recorder_log") &&
                     stream.at("expected_artifacts").contains("transport_sidecar"),
                 "strict recorder contract must name recorder log and transport sidecar");
+        require(stream.at("expected_artifacts").contains("evidence") &&
+                    stream.at("expected_artifacts").contains("evidence_manifest"),
+                "strict recorder contract must name evidence and finalized manifest");
         require(stream.at("recorder_log") ==
                     stream.at("expected_artifacts").at("recorder_log") &&
                     stream.at("transport_sidecar") ==
                         stream.at("expected_artifacts").at("transport_sidecar"),
                 "stream recorder log and transport sidecar paths must be canonical");
+        require(stream.at("evidence_jsonl") ==
+                    stream.at("expected_artifacts").at("evidence") &&
+                    stream.at("evidence_manifest_json") ==
+                        stream.at("expected_artifacts").at("evidence_manifest"),
+                "stream evidence paths must be canonical");
         require(recorder_log_paths.insert(
                     stream.at("recorder_log").get<std::string>()).second,
                 "recorder log paths must be unique per logical stream");
         require(transport_sidecar_paths.insert(
                     stream.at("transport_sidecar").get<std::string>()).second,
                 "transport sidecar paths must be unique per logical stream");
+        require(evidence_paths.insert(
+                    stream.at("evidence_jsonl").get<std::string>()).second,
+                "evidence paths must be unique per logical stream");
+        require(evidence_manifest_paths.insert(
+                    stream.at("evidence_manifest_json").get<std::string>()).second,
+                "evidence manifest paths must be unique per logical stream");
         require(stream.at("recorder_log").get<std::string>().find(
                     "/tmp/orange_roi_contract_test/") == 0 &&
                     stream.at("transport_sidecar").get<std::string>().find(
@@ -461,8 +512,10 @@ void builds_one_strict_nonrolling_stream_per_roi()
     require(contract.at("stream_order") == stream_ids,
             "stream order does not exactly preserve verified plan order");
     require(recorder_log_paths.size() == stream_ids.size() &&
-                transport_sidecar_paths.size() == stream_ids.size(),
-            "each logical stream must have one unique log and transport sidecar path");
+                transport_sidecar_paths.size() == stream_ids.size() &&
+                evidence_paths.size() == stream_ids.size() &&
+                evidence_manifest_paths.size() == stream_ids.size(),
+            "each logical stream must have unique log, transport, and evidence paths");
     require(contract.value("require_gop_routing", true) == false,
             "independent GOP-1 ROI streams must not require shard routing");
 }
@@ -521,6 +574,13 @@ void rejects_bad_root_and_tampered_or_duplicate_plan()
     require(!spatial_roi::build_spatial_roi_recorder_contract(
                 tampered, "/tmp/orange_roi_contract_test", mapping, &contract, &error),
             "duplicate ROI identity must fail plan verification");
+
+    tampered = plan;
+    tampered["plan"]["configuration"]["recording_limits"]
+            ["max_frames_per_stream"] = 1001;
+    require(!spatial_roi::build_spatial_roi_recorder_contract(
+                tampered, "/tmp/orange_roi_contract_test", mapping, &contract, &error),
+            "mutated authenticated recording limit must fail plan verification");
 
     const nlohmann::json odd_nv12_plan = make_plan(1);
     require(!spatial_roi::build_spatial_roi_recorder_contract(

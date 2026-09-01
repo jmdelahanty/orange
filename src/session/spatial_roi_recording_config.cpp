@@ -53,7 +53,7 @@ bool exact_keys(const json& value,
     for (auto it = value.begin(); it != value.end(); ++it) {
         if (required.count(it.key()) == 0 && optional.count(it.key()) == 0) {
             return fail(error_out,
-                        field_path(path, it.key()) + " is not allowed by schema v1");
+                        field_path(path, it.key()) + " is not allowed by schema v2");
         }
     }
     return true;
@@ -596,7 +596,8 @@ bool accumulate_metric(std::uint64_t value,
 {
     std::uint64_t next = 0;
     if (!checked_add(*total, value, &next)) {
-        return fail(error_out, name + " exceeds uint64 capacity");
+        return fail(error_out,
+                    name + " accumulation overflowed uint64 capacity");
     }
     *total = next;
     return true;
@@ -632,8 +633,8 @@ bool parse_config(const nlohmann::json& value,
     const std::string root = "spatial_roi_recording";
     if (!exact_keys(value,
                     {"schema_id", "schema_version", "enabled", "backend", "strict",
-                     "source_cadence", "pixel_contract", "buffering", "admission",
-                     "cameras"},
+                     "source_cadence", "pixel_contract", "buffering",
+                     "recording_limits", "admission", "cameras"},
                     {},
                     root,
                     error_out)) {
@@ -693,7 +694,7 @@ bool parse_config(const nlohmann::json& value,
     }
     if (padding_value != 0) {
         return fail(error_out,
-                    pixel_path + ".padding_value_mono8 must be exactly 0 in schema v1");
+                    pixel_path + ".padding_value_mono8 must be exactly 0 in schema v2");
     }
     parsed.padding_value_mono8 = static_cast<std::uint8_t>(padding_value);
 
@@ -717,12 +718,43 @@ bool parse_config(const nlohmann::json& value,
         return false;
     }
 
+    const json& recording_limits = value.at("recording_limits");
+    const std::string recording_limits_path =
+        field_path(root, "recording_limits");
+    if (!exact_keys(recording_limits,
+                    {"max_frames_per_stream", "max_media_bytes_per_stream",
+                     "max_evidence_bytes_per_stream"},
+                    {},
+                    recording_limits_path,
+                    error_out) ||
+        !read_u64(recording_limits,
+                  "max_frames_per_stream",
+                  recording_limits_path,
+                  std::numeric_limits<std::uint64_t>::max(),
+                  &parsed.recording_limits.max_frames_per_stream,
+                  error_out) ||
+        !read_u64(recording_limits,
+                  "max_media_bytes_per_stream",
+                  recording_limits_path,
+                  std::numeric_limits<std::uint64_t>::max(),
+                  &parsed.recording_limits.max_media_bytes_per_stream,
+                  error_out) ||
+        !read_u64(recording_limits,
+                  "max_evidence_bytes_per_stream",
+                  recording_limits_path,
+                  std::numeric_limits<std::uint64_t>::max(),
+                  &parsed.recording_limits.max_evidence_bytes_per_stream,
+                  error_out)) {
+        return false;
+    }
+
     const json& admission = value.at("admission");
     const std::string admission_path = field_path(root, "admission");
     if (!exact_keys(admission,
                     {"max_rois_per_camera", "max_total_rois",
                      "max_total_pixel_rate", "max_total_encoder_streams",
-                     "max_total_pool_bytes", "max_total_queue_frames"},
+                     "max_total_pool_bytes", "max_total_queue_frames",
+                     "max_total_media_bytes", "max_total_evidence_bytes"},
                     {},
                     admission_path,
                     error_out) ||
@@ -758,6 +790,18 @@ bool parse_config(const nlohmann::json& value,
                   admission_path,
                   std::numeric_limits<std::uint64_t>::max(),
                   &parsed.admission.max_total_queue_frames,
+                  error_out) ||
+        !read_u64(admission,
+                  "max_total_media_bytes",
+                  admission_path,
+                  std::numeric_limits<std::uint64_t>::max(),
+                  &parsed.admission.max_total_media_bytes,
+                  error_out) ||
+        !read_u64(admission,
+                  "max_total_evidence_bytes",
+                  admission_path,
+                  std::numeric_limits<std::uint64_t>::max(),
+                  &parsed.admission.max_total_evidence_bytes,
                   error_out)) {
         return false;
     }
@@ -817,6 +861,15 @@ nlohmann::json config_to_json(const Config& config)
              {"pool_frames_per_stream", config.buffering.pool_frames_per_stream},
              {"queue_frames_per_stream", config.buffering.queue_frames_per_stream},
          }},
+        {"recording_limits",
+         {
+             {"max_frames_per_stream",
+              config.recording_limits.max_frames_per_stream},
+             {"max_media_bytes_per_stream",
+              config.recording_limits.max_media_bytes_per_stream},
+             {"max_evidence_bytes_per_stream",
+              config.recording_limits.max_evidence_bytes_per_stream},
+         }},
         {"admission",
          {
              {"max_rois_per_camera", config.admission.max_rois_per_camera},
@@ -826,6 +879,9 @@ nlohmann::json config_to_json(const Config& config)
               config.admission.max_total_encoder_streams},
              {"max_total_pool_bytes", config.admission.max_total_pool_bytes},
              {"max_total_queue_frames", config.admission.max_total_queue_frames},
+             {"max_total_media_bytes", config.admission.max_total_media_bytes},
+             {"max_total_evidence_bytes",
+              config.admission.max_total_evidence_bytes},
          }},
         {"cameras", std::move(cameras)},
     };
@@ -837,7 +893,7 @@ bool validate_config(const Config& config,
 {
     if (!config.strict) {
         return fail(error_out,
-                    "spatial ROI schema v1 requires strict=true; best-effort admission is unsupported");
+                    "spatial ROI schema v2 requires strict=true; best-effort admission is unsupported");
     }
     if (config.backend != kBackend) {
         return fail(error_out,
@@ -852,11 +908,11 @@ bool validate_config(const Config& config,
     }
     if (!config.no_resize || !config.no_color_conversion) {
         return fail(error_out,
-                    "spatial ROI v1 requires no_resize and no_color_conversion");
+                    "spatial ROI v2 requires no_resize and no_color_conversion");
     }
     if (config.padding_value_mono8 != 0) {
         return fail(error_out,
-                    "spatial ROI schema v1 requires padding_value_mono8=0");
+                    "spatial ROI schema v2 requires padding_value_mono8=0");
     }
     static constexpr std::uint32_t kAllowedAlignments[] = {1, 2, 4, 8, 16};
     if (std::find(std::begin(kAllowedAlignments),
@@ -870,12 +926,29 @@ bool validate_config(const Config& config,
         return fail(error_out,
                     "spatial ROI pool and queue frames per stream must be positive");
     }
+    if (config.recording_limits.max_frames_per_stream == 0 ||
+        config.recording_limits.max_media_bytes_per_stream == 0 ||
+        config.recording_limits.max_evidence_bytes_per_stream == 0) {
+        return fail(error_out,
+                    "spatial ROI recording limits must be positive");
+    }
+    if (config.recording_limits.max_frames_per_stream >
+            kMaxFramesPerStream ||
+        config.recording_limits.max_media_bytes_per_stream >
+            kMaxMediaBytesPerStream ||
+        config.recording_limits.max_evidence_bytes_per_stream >
+            kMaxEvidenceBytesPerStream) {
+        return fail(error_out,
+                    "spatial ROI recording limits exceed recorder implementation ceilings");
+    }
     if (config.admission.max_rois_per_camera == 0 ||
         config.admission.max_total_rois == 0 ||
         config.admission.max_total_pixel_rate == 0 ||
         config.admission.max_total_encoder_streams == 0 ||
         config.admission.max_total_pool_bytes == 0 ||
-        config.admission.max_total_queue_frames == 0) {
+        config.admission.max_total_queue_frames == 0 ||
+        config.admission.max_total_media_bytes == 0 ||
+        config.admission.max_total_evidence_bytes == 0) {
         return fail(error_out, "spatial ROI admission limits must be positive");
     }
     if (config.enabled && config.cameras.empty()) {
@@ -939,7 +1012,7 @@ bool validate_config(const Config& config,
             }
             if (!roi.required) {
                 return fail(error_out,
-                            roi_path + ".required=false is unsupported; schema v1 requires every admitted ROI");
+                            roi_path + ".required=false is unsupported; schema v2 requires every admitted ROI");
             }
             if (!is_safe_identifier(roi.region_id)) {
                 return fail(error_out, roi_path + ".region_id is not a safe identifier");
@@ -979,7 +1052,7 @@ bool validate_config(const Config& config,
                     roi.logical_stream_id, kMaxLogicalStreamIdLength)) {
                 return fail(error_out,
                             roi_path + ".logical_stream_id must equal " +
-                                logical_stream_id + " and fit the v1 limit");
+                                logical_stream_id + " and fit the v2 limit");
             }
             if (roi.artifact_stem != artifact_stem ||
                 !is_safe_identifier(roi.artifact_stem, kMaxArtifactStemLength)) {
@@ -1048,7 +1121,17 @@ bool validate_config(const Config& config,
                 !accumulate_metric(config.buffering.queue_frames_per_stream,
                                    &usage.queue_frames,
                                    "queue frames",
-                                   error_out)) {
+                                   error_out) ||
+                !accumulate_metric(
+                    config.recording_limits.max_media_bytes_per_stream,
+                    &usage.media_bytes,
+                    "media bytes",
+                    error_out) ||
+                !accumulate_metric(
+                    config.recording_limits.max_evidence_bytes_per_stream,
+                    &usage.evidence_bytes,
+                    "evidence bytes",
+                    error_out)) {
                 return false;
             }
             if (usage.roi_count == std::numeric_limits<std::uint32_t>::max()) {
@@ -1078,6 +1161,15 @@ bool validate_config(const Config& config,
         return fail(error_out,
                     "spatial ROI queue frames exceed admission.max_total_queue_frames");
     }
+    if (usage.media_bytes > config.admission.max_total_media_bytes) {
+        return fail(error_out,
+                    "spatial ROI media bytes exceed admission.max_total_media_bytes");
+    }
+    if (usage.evidence_bytes > config.admission.max_total_evidence_bytes) {
+        return fail(
+            error_out,
+            "spatial ROI evidence bytes exceed admission.max_total_evidence_bytes");
+    }
     if (usage_out) {
         *usage_out = usage;
     }
@@ -1094,6 +1186,8 @@ nlohmann::json admission_usage_to_json(const AdmissionUsage& usage)
         {"encoded_pixel_rate", usage.encoded_pixel_rate},
         {"pool_bytes", usage.pool_bytes},
         {"queue_frames", usage.queue_frames},
+        {"media_bytes", usage.media_bytes},
+        {"evidence_bytes", usage.evidence_bytes},
     };
 }
 
@@ -1274,23 +1368,26 @@ bool parse_verified_plan(const nlohmann::json& plan,
     parsed.producer_generation =
         payload.at("producer_generation").get<std::string>();
     parsed.pool_frames_per_stream = config.buffering.pool_frames_per_stream;
-    parsed.admission_usage = {
-        payload.at("admission_usage").at("camera_count").get<std::uint32_t>(),
-        payload.at("admission_usage").at("roi_count").get<std::uint32_t>(),
-        payload.at("admission_usage")
-            .at("encoder_stream_count")
-            .get<std::uint32_t>(),
-        payload.at("admission_usage")
-            .at("content_pixel_rate")
-            .get<std::uint64_t>(),
-        payload.at("admission_usage")
-            .at("encoded_pixel_rate")
-            .get<std::uint64_t>(),
-        payload.at("admission_usage").at("pool_bytes").get<std::uint64_t>(),
-        payload.at("admission_usage")
-            .at("queue_frames")
-            .get<std::uint64_t>(),
-    };
+    parsed.recording_limits = config.recording_limits;
+    const json& admission_usage = payload.at("admission_usage");
+    parsed.admission_usage.camera_count =
+        admission_usage.at("camera_count").get<std::uint32_t>();
+    parsed.admission_usage.roi_count =
+        admission_usage.at("roi_count").get<std::uint32_t>();
+    parsed.admission_usage.encoder_stream_count =
+        admission_usage.at("encoder_stream_count").get<std::uint32_t>();
+    parsed.admission_usage.content_pixel_rate =
+        admission_usage.at("content_pixel_rate").get<std::uint64_t>();
+    parsed.admission_usage.encoded_pixel_rate =
+        admission_usage.at("encoded_pixel_rate").get<std::uint64_t>();
+    parsed.admission_usage.pool_bytes =
+        admission_usage.at("pool_bytes").get<std::uint64_t>();
+    parsed.admission_usage.queue_frames =
+        admission_usage.at("queue_frames").get<std::uint64_t>();
+    parsed.admission_usage.media_bytes =
+        admission_usage.at("media_bytes").get<std::uint64_t>();
+    parsed.admission_usage.evidence_bytes =
+        admission_usage.at("evidence_bytes").get<std::uint64_t>();
 
     const json& resolved_cameras = payload.at("resolved_cameras");
     for (auto camera_it = resolved_cameras.begin();

@@ -11,6 +11,38 @@
 
 #include "NvEncoderCuda.h"
 
+namespace {
+
+// cuCtxPushCurrent changes thread-local driver state. Every throwing CUDA
+// operation below must still restore that stack before propagating an error;
+// otherwise one failed recorder copy poisons all later CUDA work on its owner
+// thread.
+class ScopedCudaContextPush final
+{
+public:
+    explicit ScopedCudaContextPush(CUcontext context)
+    {
+        CUDA_DRVAPI_CALL(cuCtxPushCurrent(context));
+        active_ = true;
+    }
+
+    ~ScopedCudaContextPush()
+    {
+        if (active_)
+        {
+            (void)cuCtxPopCurrent(nullptr);
+        }
+    }
+
+    ScopedCudaContextPush(const ScopedCudaContextPush&) = delete;
+    ScopedCudaContextPush& operator=(const ScopedCudaContextPush&) = delete;
+
+private:
+    bool active_ = false;
+};
+
+} // namespace
+
 
 NvEncoderCuda::NvEncoderCuda(CUcontext cuContext, uint32_t nWidth, uint32_t nHeight, NV_ENC_BUFFER_FORMAT eBufferFormat,
     uint32_t nExtraOutputDelay, bool bMotionEstimationOnly, bool bOutputInVideoMemory):
@@ -30,7 +62,18 @@ NvEncoderCuda::NvEncoderCuda(CUcontext cuContext, uint32_t nWidth, uint32_t nHei
 
 NvEncoderCuda::~NvEncoderCuda()
 {
-    ReleaseCudaResources();
+    // Destructors are a fallback boundary and must never terminate the
+    // process merely because restoring a CUDA context failed. Normal owners
+    // call DestroyEncoder(), where ReleaseCudaResources still reports errors;
+    // this path only prevents an exception from escaping a noexcept
+    // destructor during partial construction or failure unwinding.
+    try
+    {
+        ReleaseCudaResources();
+    }
+    catch (...)
+    {
+    }
 }
 
 void NvEncoderCuda::AllocateInputBuffers(int32_t numInputBuffers)
@@ -46,7 +89,7 @@ void NvEncoderCuda::AllocateInputBuffers(int32_t numInputBuffers)
 
     for (int count = 0; count < numCount; count++)
     {
-        CUDA_DRVAPI_CALL(cuCtxPushCurrent(m_cuContext));
+        ScopedCudaContextPush context_guard(m_cuContext);
         std::vector<void*> inputFrames;
         for (int i = 0; i < numInputBuffers; i++)
         {
@@ -60,8 +103,6 @@ void NvEncoderCuda::AllocateInputBuffers(int32_t numInputBuffers)
                 GetMaxEncodeHeight() + chromaHeight, 16));
             inputFrames.push_back((void*)pDeviceFrame);
         }
-        CUDA_DRVAPI_CALL(cuCtxPopCurrent(NULL));
-
         RegisterInputResources(inputFrames,
             NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR,
             GetMaxEncodeWidth(),
@@ -116,7 +157,7 @@ void NvEncoderCuda::FillInputFrameChromaPlanes(uint8_t value)
         NVENC_THROW_ERROR("No input frames available for chroma prefill", NV_ENC_ERR_ENCODER_NOT_INITIALIZED);
     }
 
-    CUDA_DRVAPI_CALL(cuCtxPushCurrent(m_cuContext));
+    ScopedCudaContextPush context_guard(m_cuContext);
     for (const NvEncInputFrame& inputFrame : m_vInputFrames)
     {
         const uint32_t chromaHeight =
@@ -138,7 +179,6 @@ void NvEncoderCuda::FillInputFrameChromaPlanes(uint8_t value)
         }
     }
     CUDA_DRVAPI_CALL(cuCtxSynchronize());
-    CUDA_DRVAPI_CALL(cuCtxPopCurrent(NULL));
 }
 
 void NvEncoderCuda::SetIOCudaStreams(NV_ENC_CUSTREAM_PTR inputStream, NV_ENC_CUSTREAM_PTR outputStream)
@@ -165,7 +205,7 @@ void NvEncoderCuda::ReleaseCudaResources()
 
     UnregisterInputResources();
 
-    cuCtxPushCurrent(m_cuContext);
+    ScopedCudaContextPush context_guard(m_cuContext);
 
     if (m_bOwnInputFrames)
     {
@@ -188,7 +228,6 @@ void NvEncoderCuda::ReleaseCudaResources()
     }
     m_vReferenceFrames.clear();
 
-    cuCtxPopCurrent(NULL);
     m_bOwnInputFrames = true;
     m_cuContext = nullptr;
 }
@@ -212,7 +251,7 @@ void NvEncoderCuda::CopyToDeviceFrame(CUcontext device,
         NVENC_THROW_ERROR("Invalid source memory type for copy", NV_ENC_ERR_INVALID_PARAM);
     }
 
-    CUDA_DRVAPI_CALL(cuCtxPushCurrent(device));
+    ScopedCudaContextPush context_guard(device);
 
     uint32_t srcPitch = nSrcPitch ? nSrcPitch : NvEncoder::GetWidthInBytes(pixelFormat, width);
     CUDA_MEMCPY2D m = { 0 };
@@ -275,7 +314,6 @@ void NvEncoderCuda::CopyToDeviceFrame(CUcontext device,
             }
         }
     }
-    CUDA_DRVAPI_CALL(cuCtxPopCurrent(NULL));
 }
 
 void NvEncoderCuda::CopyToDeviceFrame(CUcontext device,
@@ -297,7 +335,7 @@ void NvEncoderCuda::CopyToDeviceFrame(CUcontext device,
         NVENC_THROW_ERROR("Invalid source memory type for copy", NV_ENC_ERR_INVALID_PARAM);
     }
 
-    CUDA_DRVAPI_CALL(cuCtxPushCurrent(device));
+    ScopedCudaContextPush context_guard(device);
 
     uint32_t srcPitch = nSrcPitch ? nSrcPitch : NvEncoder::GetWidthInBytes(pixelFormat, width);
     CUDA_MEMCPY2D m = { 0 };
@@ -359,5 +397,4 @@ void NvEncoderCuda::CopyToDeviceFrame(CUcontext device,
             }
         }
     }
-    CUDA_DRVAPI_CALL(cuCtxPopCurrent(NULL));
 }

@@ -263,6 +263,7 @@ void NvEncoder::CreateEncoder(const NV_ENC_INITIALIZE_PARAMS* pEncoderParams)
     NVENC_API_CALL(m_nvenc.nvEncInitializeEncoder(m_hEncoder, &m_initializeParams));
 
     m_bEncoderInitialized = true;
+    m_bEndEncodeCalled.store(false, std::memory_order_release);
     m_nWidth = m_initializeParams.encodeWidth;
     m_nHeight = m_initializeParams.encodeHeight;
     m_nMaxEncodeWidth = m_initializeParams.maxEncodeWidth;
@@ -658,6 +659,19 @@ void NvEncoder::EndEncode(std::vector<std::vector<uint8_t>> &vPacket,
     if (!IsHWEncoderInitialized())
     {
         NVENC_THROW_ERROR("Encoder device not initialized", NV_ENC_ERR_ENCODER_NOT_INITIALIZED);
+    }
+
+    // EndEncode is an idempotent drain boundary. DestroyEncoder() releases
+    // input resources through FlushEncoder(); that teardown path must not send
+    // a second EOS after an owner has already drained and consumed all output.
+    bool expected = false;
+    if (!m_bEndEncodeCalled.compare_exchange_strong(
+            expected,
+            true,
+            std::memory_order_acq_rel,
+            std::memory_order_acquire))
+    {
+        return;
     }
 
     SendEOS();

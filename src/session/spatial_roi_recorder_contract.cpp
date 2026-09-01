@@ -218,6 +218,53 @@ bool add_unique_path(std::set<std::string>* paths,
     return true;
 }
 
+bool checked_add(const std::uint64_t left,
+                 const std::uint64_t right,
+                 std::uint64_t* out)
+{
+    if (!out || right > std::numeric_limits<std::uint64_t>::max() - left) {
+        return false;
+    }
+    *out = left + right;
+    return true;
+}
+
+bool checked_multiply(const std::uint64_t left,
+                      const std::uint64_t right,
+                      std::uint64_t* out)
+{
+    if (!out || (left != 0 &&
+                 right > std::numeric_limits<std::uint64_t>::max() / left)) {
+        return false;
+    }
+    *out = left * right;
+    return true;
+}
+
+bool nv12_queue_byte_budget(const Raster& encoded_raster,
+                            const std::uint32_t queue_frames,
+                            std::uint64_t* bytes_out,
+                            std::string* error_out,
+                            const std::string& path)
+{
+    std::uint64_t pixels = 0;
+    std::uint64_t bytes_per_frame = 0;
+    std::uint64_t queue_bytes = 0;
+    if (!bytes_out || (encoded_raster.width % 2U) != 0U ||
+        (encoded_raster.height % 2U) != 0U ||
+        !checked_multiply(encoded_raster.width,
+                          encoded_raster.height,
+                          &pixels) ||
+        !checked_add(pixels, pixels / 2U, &bytes_per_frame) ||
+        !checked_multiply(bytes_per_frame, queue_frames, &queue_bytes) ||
+        queue_bytes == 0) {
+        return fail(error_out,
+                    path + " detached NV12 encode queue byte budget overflowed");
+    }
+    *bytes_out = queue_bytes;
+    return true;
+}
+
 }  // namespace
 
 bool build_spatial_roi_recorder_contract(
@@ -282,6 +329,11 @@ bool build_spatial_roi_recorder_contract(
         json streams = json::object();
         json stream_order = json::array();
         std::size_t stream_count = 0;
+        std::uint64_t max_queue_bytes_total = 0;
+        std::uint64_t writer_queue_max_packets_total = 0;
+        std::uint64_t writer_queue_max_bytes_total = 0;
+        std::uint64_t max_media_bytes_total = 0;
+        std::uint64_t max_evidence_bytes_total = 0;
 
         for (const auto& [camera_serial, camera] : plan.cameras) {
             const std::string camera_path =
@@ -373,6 +425,35 @@ bool build_spatial_roi_recorder_contract(
                             " encoded raster exceeds the IPC-v2 packed Mono8 byte bound");
                 }
 
+                std::uint64_t max_queue_bytes = 0;
+                if (!nv12_queue_byte_budget(roi.encoded_raster,
+                                            encode_queue_depth,
+                                            &max_queue_bytes,
+                                            error_out,
+                                            roi_path)) {
+                    return false;
+                }
+                if (!checked_add(max_queue_bytes_total,
+                                 max_queue_bytes,
+                                 &max_queue_bytes_total) ||
+                    !checked_add(writer_queue_max_packets_total,
+                                 kSpatialRoiRecorderWriterQueueMaxPackets,
+                                 &writer_queue_max_packets_total) ||
+                    !checked_add(writer_queue_max_bytes_total,
+                                 kSpatialRoiRecorderWriterQueueMaxBytes,
+                                 &writer_queue_max_bytes_total) ||
+                    !checked_add(max_media_bytes_total,
+                                 plan.recording_limits.max_media_bytes_per_stream,
+                                 &max_media_bytes_total) ||
+                    !checked_add(
+                        max_evidence_bytes_total,
+                        plan.recording_limits.max_evidence_bytes_per_stream,
+                        &max_evidence_bytes_total)) {
+                    return fail(error_out,
+                                roi_path +
+                                    " recorder aggregate byte/packet budget overflowed");
+                }
+
                 const std::string environment_key =
                     "spatial_roi_" + roi.logical_stream_id;
                 const std::string socket_path =
@@ -405,6 +486,8 @@ bool build_spatial_roi_recorder_contract(
                     {"finalization", stem + ".mp4.finalization.json"},
                     {"recorder_log", stem + "_recorder.log"},
                     {"transport_sidecar", stem + "_transport.jsonl"},
+                    {"evidence", stem + "_evidence.jsonl"},
+                    {"evidence_manifest", stem + "_evidence_manifest.json"},
                 };
                 json expected_artifacts = json::object();
                 for (const auto& [kind, name] : artifact_names) {
@@ -514,6 +597,19 @@ bool build_spatial_roi_recorder_contract(
                     {"quality_value", 0},
                     {"gop", 1},
                     {"encode_queue_depth", encode_queue_depth},
+                    {"max_queue_bytes", max_queue_bytes},
+                    {"writer_queue_max_packets",
+                     kSpatialRoiRecorderWriterQueueMaxPackets},
+                    {"writer_queue_max_bytes",
+                     kSpatialRoiRecorderWriterQueueMaxBytes},
+                    {"operation_timeout_ms",
+                     kSpatialRoiRecorderOperationTimeoutMs},
+                    {"max_frames_per_stream",
+                     plan.recording_limits.max_frames_per_stream},
+                    {"max_media_bytes_per_stream",
+                     plan.recording_limits.max_media_bytes_per_stream},
+                    {"max_evidence_bytes_per_stream",
+                     plan.recording_limits.max_evidence_bytes_per_stream},
                     {"routing_policy", "single_shard"},
                     {"expected_shard_gpu_ids", {recorder_gpu}},
                     {"recording_control", {
@@ -535,6 +631,9 @@ bool build_spatial_roi_recorder_contract(
                     {"finalization_json", expected_artifacts.at("finalization")},
                     {"recorder_log", expected_artifacts.at("recorder_log")},
                     {"transport_sidecar", expected_artifacts.at("transport_sidecar")},
+                    {"evidence_jsonl", expected_artifacts.at("evidence")},
+                    {"evidence_manifest_json",
+                     expected_artifacts.at("evidence_manifest")},
                     {"expected_artifacts", std::move(expected_artifacts)},
                 };
                 streams[roi.logical_stream_id] = stream;
@@ -559,6 +658,11 @@ bool build_spatial_roi_recorder_contract(
             return fail(error_out,
                         "spatial ROI recorder IPC-v2 queue bound disagrees with the verified plan");
         }
+        if (max_media_bytes_total != plan.admission_usage.media_bytes ||
+            max_evidence_bytes_total != plan.admission_usage.evidence_bytes) {
+            return fail(error_out,
+                        "spatial ROI recorder long-run bounds disagree with the verified plan");
+        }
 
         json analytics_gpu_json = json::object();
         for (const auto& [serial, gpu_id] :
@@ -574,10 +678,10 @@ bool build_spatial_roi_recorder_contract(
         *contract_out = {
             {"schema_id", kSpatialRoiRecorderContractSchemaId},
             {"schema_version", kSpatialRoiRecorderContractSchemaVersion},
-            {"contract_scope", "strict_spatial_roi_external_recorder_v1"},
+            {"contract_scope", kSpatialRoiRecorderContractScope},
             {"strict", true},
             {"backend", "independent_lossless_external_ipc"},
-            {"mode", "spatial_roi_external_recorder_v1"},
+            {"mode", kSpatialRoiRecorderContractMode},
             {"supervise_processes", true},
             {"require_summary", true},
             {"require_status", true},
@@ -676,6 +780,16 @@ bool build_spatial_roi_recorder_contract(
                     {"overflow_action", "reject_frame_without_releasing_prior_frames"},
                     {"producer_backpressure", "nonblocking_fail_closed"},
                 }},
+            }},
+            {"aggregate_bounds", {
+                {"max_queue_bytes_total", max_queue_bytes_total},
+                {"writer_queue_max_packets_total",
+                 writer_queue_max_packets_total},
+                {"writer_queue_max_bytes_total", writer_queue_max_bytes_total},
+                {"operation_timeout_ms_per_stream",
+                 kSpatialRoiRecorderOperationTimeoutMs},
+                {"max_media_bytes_total", max_media_bytes_total},
+                {"max_evidence_bytes_total", max_evidence_bytes_total},
             }},
             {"recording_control", {
                 {"record_for_seconds", 0},

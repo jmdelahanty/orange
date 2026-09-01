@@ -4,21 +4,29 @@
 
 **Last updated:** 2026-08-31
 
-**Status:** extraction foundation complete in Orange commit `c423ad5` and the
-acquisition/IPC export foundation committed through `d895d60`; the current
-branch also implements an exact HELLO/FRAME/ACK/RELEASE handoff owner and
-explicit drain/finalize wire states. The frame contract, strict recorder-plan
-materializer and plan-bound consumer parser, bounded per-ROI runtime,
-acquisition ownership bridge/controller, dedicated ROI IPC-v2 grammar,
-CUDA-IPC frame exporter, and adopt-only bounded Unix-socket line transport are
-implemented on `agent/acquisition/spatial-roi-recording-v1-20260830`. The
-branch also has a recorder-side, bounded CUDA-IPC detach pool that verifies the
-complete stream/geometry/GPU binding, copies into recorder-owned Mono8 and
-NV12 storage, and reaches a source-safe boundary before closing imports. The
-feature remains default-off and has no production arming caller, socket
-listener/connector, recorder executable, NVENC/mux stage, child supervisor, or
-operational drain/finalize exchange. It is not connected to session
-finalization or deployment and does not yet produce ROI video files.
+**Status:** the extraction, acquisition/IPC handoff, transport, and
+recorder-owned CUDA detach foundations are committed through `22ab8b1` on
+`agent/acquisition/spatial-roi-recording-v1-20260830`. The working tree also
+contains an uncommitted one-output lossless encoder, descriptor-authorized
+artifact root/bundle, recorder evidence writer, and shared NVENC/FFmpeg
+failure hardening. That library/test media slice has the real-driver
+acceptance result recorded below, but has not been committed. The feature
+remains default-off and still has no production arming caller, socket
+listener, camera-level recorder executable, child supervisor, operational
+drain/finalize exchange, or headless-runner integration. No Orange application
+path currently produces spatial-ROI video files.
+
+The dependency-ordered completion authority is
+`docs/spatial_roi_headless_completion_checklist_2026-08-31.md`. The component
+inventory later in this document supplies design detail but must not be used to
+declare the headless feature ready.
+
+Before any production consumer was armed, the closed configuration and plan
+documents advanced to schema v2 to bind explicit long-run frame, media, and
+evidence budgets, and the dedicated recorder contract advanced to schema v2 to
+bind encoder/writer limits and evidence artifacts. There is intentionally no
+v1 compatibility parser for these unpublished, default-off contracts. The
+embedded wire protocol remains IPC v2 and is a separate version domain.
 
 This document is the canonical status and handoff for the detector-independent
 spatial ROI path. It must not be read as claiming that the existing scalar,
@@ -28,7 +36,14 @@ YOLO-driven `Cam<serial>_crop` output is a spatial ROI stream.
 
 This slice establishes the detector-independent front half of continuous
 camera-native spatial ROI recording. It does not change the legacy top-one crop
-pipeline and does not make an ROI video.
+pipeline or arm a production ROI video; the one-output encoder test creates
+only a temporary acceptance artifact.
+
+No production spatial-ROI caller exists, and the legacy full-frame/top-one
+crop protocols and artifact identities remain unchanged. Descriptor mode alone
+uses the compact keyframe-summary contract described below; legacy pathname
+mode retains its existing keyframe-list schema. Full FFmpeg/NVENC regression is
+a commit gate for the shared writer hardening.
 
 Implemented components:
 
@@ -71,14 +86,89 @@ Implemented components:
   fixed-region geometry, source/recorder GPUs and shard, enforces an aggregate
   allocation budget and one active caller, bounds source-event/copy waits,
   validates the imported allocation, and materializes packed Mono8 plus NV12
-  with byte-identical Y and neutral UV=128.
+  with byte-identical Y and neutral UV=128;
+- a descriptor-relative artifact-root authority in
+  `src/spatial_roi_recorder_artifact_root.*`, plus a move-only encoder bundle
+  retaining one shared root and exactly four read-write artifact descriptors;
+- a bounded, single-owner lossless HEVC/NVENC/MP4 core in
+  `src/spatial_roi_lossless_encoder.*`, including ordered per-frame results,
+  descriptor-backed metadata, terminal writer evidence, exact sidecar checks,
+  and terminal sealing; and
+- a bounded JSONL evidence writer and finalized-manifest validator in
+  `src/spatial_roi_recorder_evidence.*`.
 
 The plan binds the parent recording identity/token, producer generation,
 camera ID and serial, native raster, layout/materialization/registration
 authority references, ordered ROI descriptors, exact encoded rasters and
-padding, pool depth, and admitted pool bytes. A producer can only be
-constructed from limits minted by a verified plan. Mutating those public
-limits after verification is rejected.
+padding, pool depth, admitted pool bytes, and explicit per-stream frame,
+media-byte, and evidence-byte limits with checked aggregate admission. The v2
+defaults are **4,000,000 frames**, **128 GiB of media**, and **4 GiB of
+aggregate evidence** per stream. The frame and evidence defaults are also
+implementation ceilings. Media is configurable up to
+`9223372036854775807` bytes, the signed `off_t` ceiling. Whatever values the
+verified plan selects are hard authenticated budgets—not a duration or an
+estimate of HEVC compression—and are charged against aggregate admission. A
+producer can only be constructed from limits minted by a verified plan.
+Mutating those public limits after verification is rejected.
+
+The one-output encoder has no arbitrary output or metadata pathname authority.
+For each stream, the contract-authorized artifact directory is
+`<recording_root>/external_spatial_roi_recorder`, and the encoder receives a
+move-only bundle holding exactly these four retained read-write regular-file
+handles (all from that same root identity, with distinct inodes and exact
+contract-relative names):
+
+```text
+Cam<camera_serial>_spatial_roi_<roi_id>.mp4
+Cam<camera_serial>_spatial_roi_<roi_id>_meta.csv
+Cam<camera_serial>_spatial_roi_<roi_id>_keyframe.json
+Cam<camera_serial>_spatial_roi_<roi_id>.mp4.finalization.json
+```
+
+The shared artifact root and handles are checked against the allow-list and
+current directory bindings before use and are sealed only after writer
+quiescence. Metadata is written through the held descriptor with an
+authenticated frame-derived ceiling. Terminal keyframe and finalization JSON
+are read through the held descriptors and are not reopened by pathname. The
+encoder locally bounds both reads at 16 MiB; final evidence validation applies
+a stricter 16 KiB bound to the constant-size keyframe summary. The descriptor
+mode summary is an exact closed object with schema
+`orange.spatial_roi_keyframe_summary` version 1, `terminal=true`, HEVC codec,
+the contract FPS, and a positive total frame count `N`. It proves the exact
+dense sequence with `{first: 0, last: N - 1,
+zero_based_contiguous: true}` and the GOP-1 policy with
+`{name: "all_frames_idr", keyframe_frames: N, non_keyframe_frames: 0,
+satisfied: true}`. The unbounded keyframe-index list remains only in legacy
+pathname mode. Complete output also requires a size-matching container
+finalization sidecar.
+
+The broader recorder contract authorizes twelve exact products: the encoder's
+video, metadata, keyframe summary, and container-finalization descriptors plus
+perf, summary, status, video-sanity, recorder-log, transport, evidence-JSONL,
+and evidence-manifest artifacts. Every non-video product—including evidence
+JSONL and its manifest—is charged against one aggregate evidence budget;
+video alone is charged to the media budget. Finalization, summary, status,
+video-sanity, and manifest JSON each have a 16 MiB read ceiling. Metadata and
+perf CSV bounds are frame-derived. Evidence JSONL is limited by the
+authenticated aggregate evidence budget, one MiB per line, and the
+4,000,000-frame ceiling; log and transport inputs have their own bounded
+grammars and count against that same aggregate budget.
+
+A successful immutable terminal snapshot requires every admitted frame to
+complete: public enqueue attempts are exactly partitioned into enqueued and
+rejected attempts, successful finalization has no rejection or queue overflow,
+dequeue/copy/source-release/result counts match, and the writer's
+`video_size_limit_failures` is zero.
+
+Recovery APIs deliberately require the same retained
+`SpatialRoiRecorderArtifactRoot`; there is no pathname-only recovery overload.
+The evidence JSONL/manifest pair can be adopted exactly between its two
+no-replace publication steps while that authority survives. Process-boundary
+recovery is not yet claimed: Gate 2/3 must inherit or pass the root directory
+descriptor together with its expected `(device, inode)` identity, or fail
+closed under a new recording identity. Partial MP4, metadata, keyframe, and
+finalization artifacts are non-certifying residue in Gate 1 and are neither
+resumed nor adopted.
 
 ## Batch contract
 
@@ -100,7 +190,7 @@ quarantined for process lifetime rather than risking use-after-free.
 
 The runtime submits one verified-order batch, fans its immutable envelope to
 independently bounded ROI lanes, and never waits for another submitter or a
-lane queue. Schema v1 is always strict: any queue rejection, missing sink,
+lane queue. Configuration/plan schema v2 is always strict: any queue rejection, missing sink,
 sink failure, or CUDA completion failure makes the spatial-ROI batch
 incomplete. Duplicate or out-of-order recording-frame identities are rejected
 before production, and fatal producer states remain latched in the runtime. A
@@ -170,7 +260,7 @@ the recorder supervisor can coordinate every lane and verify finalization
 evidence; no production component sends or consumes those messages yet.
 
 The version domains are deliberately distinct: the generated recorder contract
-is schema v1 with mode `spatial_roi_external_recorder_v1`, while its embedded
+is schema v2 with mode `spatial_roi_external_recorder_v2`, while its embedded
 wire transport is `orange.spatial_roi.external_recorder_ipc` version 2. The
 normative closed schema for the embedded `ipc_v2` object is
 `docs/schemas/orange_spatial_roi_recorder_ipc_v2.schema.json`.
@@ -182,8 +272,12 @@ Mono8 byte unchanged into the NV12 Y plane and fill interleaved UV with the
 neutral value 128; alignment padding remains zero in Y. The contract now says
 `luma_preserved_exactly=true` and `neutral_chroma_value=128` instead of the
 incorrect claim that Mono8-to-NV12 performs no format conversion. That transform
-is now implemented and byte-verified in recorder-owned device storage. NVENC,
-container output, and decoded-video luma proof remain pending.
+is implemented and byte-verified in recorder-owned device storage. The
+outside-sandbox real-driver acceptance for the working-tree encoder is
+**PASS**: device `0`, `256x256`, `3/3` frames decoded, elapsed `1001 ms` on
+the final hardened encoder/writer tree.
+The local sandbox has no CUDA device and therefore only exercises the host
+portion; no production target consumes this core yet.
 
 ## Validation completed
 
@@ -215,6 +309,11 @@ container output, and decoded-video luma proof remain pending.
 - exact plan/root/GPU-bound recorder contract parsing, canonical identity,
   geometry/queue/artifact mutation rejection, bounded non-symlink file reads,
   and explicit Mono8-to-NV12 declarations;
+- host encoder/artifact-authority rejection, bounded frame/media admission,
+  descriptor-backed metadata, strict terminal writer/result accounting,
+  exact four-artifact binding/sealing, and immutable terminal snapshots; and
+- outside-sandbox CUDA/NVENC/container acceptance on device `0`: **PASS**,
+  `3/3` decoded frames at `256x256`, elapsed `1001 ms`;
 - real-kernel Unix transport tests for partial/coalesced I/O, hard zero and
   partial-write deadlines, EOF versus timeout, oversized input, peer closure,
   credentials, invalid-descriptor rejection/closure, and no reconnect; and
@@ -223,7 +322,9 @@ container output, and decoded-video luma proof remain pending.
   verifies UV=128, exercises bounded slot reuse/rejection/quarantine, proves a
   deliberately pending producer event reaches its hard deadline, rejects a
   concurrent caller immediately, and only then permits producer release; and
-- production Orange GUI and headless builds with the new foundation linked.
+- production Orange GUI and headless builds with the committed Gate 0
+  foundation; the Gate 1 encoder/evidence sources remain library/test targets
+  until the dedicated recorder executable is added.
 
 The recorder detach acceptance above is same-GPU on the installed Linux/CUDA
 driver. Cross-GPU use is preflighted for unified addressing, IPC-event support,
@@ -326,7 +427,13 @@ materialization, Citrus H5 embedding, media manifests, and final receipt
 closure remain explicit acceptance work; the present tests do not claim those
 artifacts exist.
 
-## Next slice: one-camera, four-ROI recorder integration
+## Detailed one-camera/four-ROI component inventory
+
+The stable gate order and acceptance evidence are maintained in
+`docs/spatial_roi_headless_completion_checklist_2026-08-31.md`. The checklist
+below is a detailed component inventory retained with the foundation design;
+completed library seams here do not imply that a later headless gate is
+complete.
 
 The next implementation slice is one end-to-end, detector-independent recorder
 path for a single camera with one accepted four-region plan. It must produce
@@ -391,11 +498,13 @@ are nevertheless gated to one camera/four ROIs for this slice.
       terminal state. A lane may fail or drop only its own sidecar; it must not
       relabel another ROI. Connecting those lanes to recorder processes and
       full-frame coexistence remains pending.
-- [ ] Encode the exact Mono8 pixels with the validated lossless profile. Keep
+- [x] Encode the exact Mono8 pixels with the validated lossless profile. Keep
       alignment padding explicit and zero-filled; do not scale. Map each Mono8
       byte unchanged to NV12 Y and set interleaved UV to neutral 128 (the
       recorder-owned transform is complete), then prove decoded-video luma
-      equality through NVENC and the finalized container.
+      equality through NVENC and the finalized container. The one-output
+      library/test seam passes this proof on the real driver; production
+      recorder wiring remains pending.
 - [x] Define and validate ACK/release identity including recording token,
       producer generation, logical stream/ROI identity,
       `recording_frame_id`, and dense `roi_stream_frame_index`.

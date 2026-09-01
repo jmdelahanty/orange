@@ -2,6 +2,7 @@
 
 #include "json.hpp"
 
+#include <cstdint>
 #include <map>
 #include <string>
 
@@ -9,7 +10,20 @@ namespace orange::session::spatial_roi {
 
 inline constexpr const char* kSpatialRoiRecorderContractSchemaId =
     "orange.spatial_roi_recording.external_recorder_contract";
-inline constexpr int kSpatialRoiRecorderContractSchemaVersion = 1;
+inline constexpr int kSpatialRoiRecorderContractSchemaVersion = 2;
+inline constexpr const char* kSpatialRoiRecorderContractScope =
+    "strict_spatial_roi_external_recorder_v2";
+inline constexpr const char* kSpatialRoiRecorderContractMode =
+    "spatial_roi_external_recorder_v2";
+
+// Closed recorder-side construction policy.  These are authenticated values,
+// not parser fallbacks: every emitted stream repeats the applicable values and
+// the aggregate contract binds their checked totals.  Keep these policy
+// values within SpatialRoiLosslessEncoder's host-side validation ceilings.
+inline constexpr std::uint64_t kSpatialRoiRecorderWriterQueueMaxPackets = 512;
+inline constexpr std::uint64_t kSpatialRoiRecorderWriterQueueMaxBytes =
+    128ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint32_t kSpatialRoiRecorderOperationTimeoutMs = 2000;
 
 // Runtime placement is deliberately separate from the verified plan. The
 // plan binds camera/ROI geometry and identity; this mapping binds the live

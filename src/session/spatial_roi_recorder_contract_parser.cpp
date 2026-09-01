@@ -33,10 +33,11 @@ constexpr std::size_t kMaxJsonEvents = 200000;
 constexpr std::size_t kMaxJsonStringBytes = 64U * 1024U;
 constexpr std::size_t kMaxJsonContainerItems = 32768;
 constexpr std::uint32_t kMaxQueueFrames = 4096;
+constexpr std::uint64_t kMaxWriterQueuePackets = 4096;
+constexpr std::uint64_t kMaxWriterQueueBytes = 512ULL * 1024ULL * 1024ULL;
+constexpr std::uint32_t kMaxOperationTimeoutMs = 60000;
 constexpr std::size_t kMaxSocketPathBytes = 107;
-constexpr char kExpectedScope[] = "strict_spatial_roi_external_recorder_v1";
 constexpr char kExpectedBackend[] = "independent_lossless_external_ipc";
-constexpr char kExpectedMode[] = "spatial_roi_external_recorder_v1";
 constexpr char kExpectedProtocol[] = "orange.spatial_roi.external_recorder_ipc";
 constexpr char kExpectedCadence[] = "every_recording_frame";
 constexpr char kExpectedPixelFormat[] = "mono8";
@@ -285,6 +286,29 @@ bool json_u64(const json& value, std::uint64_t* out)
         return false;
     }
     *out = static_cast<std::uint64_t>(signed_value);
+    return true;
+}
+
+bool checked_add(const std::uint64_t left,
+                 const std::uint64_t right,
+                 std::uint64_t* out)
+{
+    if (!out || right > std::numeric_limits<std::uint64_t>::max() - left) {
+        return false;
+    }
+    *out = left + right;
+    return true;
+}
+
+bool checked_multiply(const std::uint64_t left,
+                      const std::uint64_t right,
+                      std::uint64_t* out)
+{
+    if (!out || (left != 0 &&
+                 right > std::numeric_limits<std::uint64_t>::max() / left)) {
+        return false;
+    }
+    *out = left * right;
     return true;
 }
 
@@ -767,15 +791,40 @@ bool parse_encode_profile(const json& value,
     return true;
 }
 
+bool expected_nv12_queue_bytes(const SpatialRoiRecorderGeometryView& geometry,
+                               const std::uint32_t queue_frames,
+                               std::uint64_t* bytes_out,
+                               const std::string& path,
+                               std::string* error_out)
+{
+    std::uint64_t pixels = 0;
+    std::uint64_t bytes_per_frame = 0;
+    std::uint64_t queue_bytes = 0;
+    if (!bytes_out || (geometry.encoded_raster.width % 2U) != 0U ||
+        (geometry.encoded_raster.height % 2U) != 0U || queue_frames == 0 ||
+        !checked_multiply(geometry.encoded_raster.width,
+                          geometry.encoded_raster.height,
+                          &pixels) ||
+        !checked_add(pixels, pixels / 2U, &bytes_per_frame) ||
+        !checked_multiply(bytes_per_frame, queue_frames, &queue_bytes) ||
+        queue_bytes == 0) {
+        return fail(error_out,
+                    path + " detached NV12 encode queue byte budget overflowed");
+    }
+    *bytes_out = queue_bytes;
+    return true;
+}
+
 bool parse_expected_artifacts(const json& value,
                               const std::string& artifact_root,
                               SpatialRoiRecorderStreamView* out,
                               const std::string& path,
                               std::string* error_out)
 {
-    const std::set<std::string> keys = {"video", "metadata", "keyframes", "perf",
-                                        "summary", "status", "video_sanity", "finalization",
-                                        "recorder_log", "transport_sidecar"};
+    const std::set<std::string> keys = {
+        "video", "metadata", "keyframes", "perf", "summary", "status",
+        "video_sanity", "finalization", "recorder_log", "transport_sidecar",
+        "evidence", "evidence_manifest"};
     if (!exact_keys(value, keys, path, error_out)) {
         return false;
     }
@@ -1007,6 +1056,71 @@ bool parse_ipc(const json& value,
     return true;
 }
 
+bool parse_aggregate_bounds(const json& value,
+                            SpatialRoiRecorderAggregateBoundsView* out,
+                            const std::string& path,
+                            std::string* error_out)
+{
+    if (!exact_keys(value,
+                    {"max_queue_bytes_total",
+                     "writer_queue_max_packets_total",
+                     "writer_queue_max_bytes_total",
+                     "operation_timeout_ms_per_stream",
+                     "max_media_bytes_total",
+                     "max_evidence_bytes_total"},
+                    path,
+                    error_out) ||
+        !read_u64(value,
+                  "max_queue_bytes_total",
+                  path,
+                  &out->max_queue_bytes_total,
+                  error_out,
+                  std::numeric_limits<std::uint64_t>::max(),
+                  true) ||
+        !read_u64(value,
+                  "writer_queue_max_packets_total",
+                  path,
+                  &out->writer_queue_max_packets_total,
+                  error_out,
+                  std::numeric_limits<std::uint64_t>::max(),
+                  true) ||
+        !read_u64(value,
+                  "writer_queue_max_bytes_total",
+                  path,
+                  &out->writer_queue_max_bytes_total,
+                  error_out,
+                  std::numeric_limits<std::uint64_t>::max(),
+                  true) ||
+        !read_u32(value,
+                  "operation_timeout_ms_per_stream",
+                  path,
+                  &out->operation_timeout_ms_per_stream,
+                  error_out,
+                  true) ||
+        !read_u64(value,
+                  "max_media_bytes_total",
+                  path,
+                  &out->max_media_bytes_total,
+                  error_out,
+                  std::numeric_limits<std::uint64_t>::max(),
+                  true) ||
+        !read_u64(value,
+                  "max_evidence_bytes_total",
+                  path,
+                  &out->max_evidence_bytes_total,
+                  error_out,
+                  std::numeric_limits<std::uint64_t>::max(),
+                  true)) {
+        return false;
+    }
+    if (out->operation_timeout_ms_per_stream !=
+        kSpatialRoiRecorderOperationTimeoutMs) {
+        return fail(error_out,
+                    path + " has an unsupported operation timeout policy");
+    }
+    return true;
+}
+
 bool parse_stream(const json& value,
                   const std::string& key,
                   const std::string& artifact_root,
@@ -1022,10 +1136,15 @@ bool parse_stream(const json& value,
         "arena_id", "recording_id", "session_id", "recording_identity_token",
         "producer_generation", "spatial_roi_plan_sha256", "frame_identity", "identity",
         "geometry_identity", "encode_profile", "encode_fps", "codec", "tuning",
-        "rate_control_mode", "quality_value", "gop", "encode_queue_depth", "routing_policy",
+        "rate_control_mode", "quality_value", "gop", "encode_queue_depth",
+        "max_queue_bytes", "writer_queue_max_packets", "writer_queue_max_bytes",
+        "operation_timeout_ms", "max_frames_per_stream",
+        "max_media_bytes_per_stream", "max_evidence_bytes_per_stream",
+        "routing_policy",
         "expected_shard_gpu_ids", "recording_control", "rollover", "mp4", "metadata_csv",
         "keyframe_json", "perf_csv", "summary_json", "status_json", "video_sanity_json",
-        "finalization_json", "recorder_log", "transport_sidecar", "expected_artifacts"};
+        "finalization_json", "recorder_log", "transport_sidecar", "evidence_jsonl",
+        "evidence_manifest_json", "expected_artifacts"};
     if (!exact_keys(value, keys, path, error_out) ||
         !read_string(value, "stream_id", path, &out->stream_id, error_out, true) ||
         !read_string(value, "logical_stream_id", path, &out->logical_stream_id, error_out, true) ||
@@ -1087,6 +1206,54 @@ bool parse_stream(const json& value,
         !read_u32(value, "quality_value", path, &out->quality_value, error_out) ||
         !read_u32(value, "gop", path, &out->gop, error_out, true) ||
         !read_u32(value, "encode_queue_depth", path, &out->encode_queue_depth, error_out, true) ||
+        !read_u64(value,
+                  "max_queue_bytes",
+                  path,
+                  &out->max_queue_bytes,
+                  error_out,
+                  std::numeric_limits<std::uint64_t>::max(),
+                  true) ||
+        !read_u64(value,
+                  "writer_queue_max_packets",
+                  path,
+                  &out->writer_queue_max_packets,
+                  error_out,
+                  kMaxWriterQueuePackets,
+                  true) ||
+        !read_u64(value,
+                  "writer_queue_max_bytes",
+                  path,
+                  &out->writer_queue_max_bytes,
+                  error_out,
+                  kMaxWriterQueueBytes,
+                  true) ||
+        !read_u32(value,
+                  "operation_timeout_ms",
+                  path,
+                  &out->operation_timeout_ms,
+                  error_out,
+                  true) ||
+        !read_u64(value,
+                  "max_frames_per_stream",
+                  path,
+                  &out->max_frames_per_stream,
+                  error_out,
+                  std::numeric_limits<std::uint64_t>::max(),
+                  true) ||
+        !read_u64(value,
+                  "max_media_bytes_per_stream",
+                  path,
+                  &out->max_media_bytes_per_stream,
+                  error_out,
+                  std::numeric_limits<std::uint64_t>::max(),
+                  true) ||
+        !read_u64(value,
+                  "max_evidence_bytes_per_stream",
+                  path,
+                  &out->max_evidence_bytes_per_stream,
+                  error_out,
+                  std::numeric_limits<std::uint64_t>::max(),
+                  true) ||
         !read_string(value, "routing_policy", path, &out->routing_policy, error_out, true) ||
         !read_string(value, "mp4", path, nullptr, error_out, true) ||
         !read_string(value, "metadata_csv", path, nullptr, error_out, true) ||
@@ -1098,6 +1265,8 @@ bool parse_stream(const json& value,
         !read_string(value, "finalization_json", path, nullptr, error_out, true) ||
         !read_string(value, "recorder_log", path, nullptr, error_out, true) ||
         !read_string(value, "transport_sidecar", path, nullptr, error_out, true) ||
+        !read_string(value, "evidence_jsonl", path, nullptr, error_out, true) ||
+        !read_string(value, "evidence_manifest_json", path, nullptr, error_out, true) ||
         !parse_expected_artifacts(value.at("expected_artifacts"),
                                   artifact_root,
                                   out,
@@ -1130,8 +1299,24 @@ bool parse_stream(const json& value,
         out->rate_control_mode != "cqp" || out->quality_value != 0 || out->gop != 1 ||
         out->routing_policy != "single_shard" || out->encode_profile.frame_rate != out->encode_fps ||
         out->encode_fps == 0 || out->encode_queue_depth == 0 ||
-        out->encode_queue_depth > kMaxQueueFrames) {
+        out->encode_queue_depth > kMaxQueueFrames ||
+        out->writer_queue_max_packets !=
+            kSpatialRoiRecorderWriterQueueMaxPackets ||
+        out->writer_queue_max_bytes != kSpatialRoiRecorderWriterQueueMaxBytes ||
+        out->operation_timeout_ms != kSpatialRoiRecorderOperationTimeoutMs ||
+        out->operation_timeout_ms > kMaxOperationTimeoutMs) {
         return fail(error_out, path + " contains an invalid stream identity/profile");
+    }
+    std::uint64_t expected_queue_bytes = 0;
+    if (!expected_nv12_queue_bytes(out->geometry,
+                                   out->encode_queue_depth,
+                                   &expected_queue_bytes,
+                                   field(path, "max_queue_bytes"),
+                                   error_out) ||
+        out->max_queue_bytes != expected_queue_bytes) {
+        return fail(error_out,
+                    field(path, "max_queue_bytes") +
+                        " must exactly cover the bounded detached NV12 queue");
     }
     if (identity_view.recording_id != out->recording_id ||
         identity_view.recording_identity_token != out->recording_identity_token ||
@@ -1178,7 +1363,9 @@ bool parse_stream(const json& value,
         {"keyframe_json", "keyframes"}, {"perf_csv", "perf"},
         {"summary_json", "summary"}, {"status_json", "status"},
         {"video_sanity_json", "video_sanity"}, {"finalization_json", "finalization"},
-        {"recorder_log", "recorder_log"}, {"transport_sidecar", "transport_sidecar"}};
+        {"recorder_log", "recorder_log"}, {"transport_sidecar", "transport_sidecar"},
+        {"evidence_jsonl", "evidence"},
+        {"evidence_manifest_json", "evidence_manifest"}};
     for (const auto& [direct, artifact] : direct_artifacts) {
         if (value.at(direct).get<std::string>() != out->artifacts.at(artifact).absolute_path) {
             return fail(error_out, path + "." + direct + " disagrees with expected_artifacts");
@@ -1211,8 +1398,8 @@ bool parse_spatial_roi_recorder_contract_structure(
             "require_storage_preflight", "preserve_shard_mp4s", "recording_id", "session_id",
             "recording_identity_token", "producer_generation", "spatial_roi_plan_sha256",
             "recording_root", "artifact_root", "source_cadence", "source_pixel_format",
-            "stream_count", "stream_order", "ipc_v2", "recording_control", "rollover",
-            "gpu_mapping", "streams"};
+            "stream_count", "stream_order", "ipc_v2", "aggregate_bounds",
+            "recording_control", "rollover", "gpu_mapping", "streams"};
         if (!exact_keys(value, top_keys, "contract", error_out) ||
             !read_string(value, "schema_id", "contract", &contract_out->schema_id, error_out, true) ||
             !read_int(value, "schema_version", "contract", &contract_out->schema_version, error_out) ||
@@ -1239,13 +1426,19 @@ bool parse_spatial_roi_recorder_contract_structure(
             !read_string(value, "source_cadence", "contract", &contract_out->source_cadence, error_out, true) ||
             !read_string(value, "source_pixel_format", "contract", &contract_out->source_pixel_format, error_out, true) ||
             !read_u32(value, "stream_count", "contract", &contract_out->stream_count, error_out, true) ||
-            !parse_ipc(value.at("ipc_v2"), &contract_out->ipc_v2, "contract.ipc_v2", error_out)) {
+            !parse_ipc(value.at("ipc_v2"), &contract_out->ipc_v2, "contract.ipc_v2", error_out) ||
+            !parse_aggregate_bounds(value.at("aggregate_bounds"),
+                                    &contract_out->aggregate_bounds,
+                                    "contract.aggregate_bounds",
+                                    error_out)) {
             return false;
         }
         if (contract_out->schema_id != kSpatialRoiRecorderContractSchemaId ||
             contract_out->schema_version != kSpatialRoiRecorderContractSchemaVersion ||
-            contract_out->contract_scope != kExpectedScope || !contract_out->strict ||
-            contract_out->backend != kExpectedBackend || contract_out->mode != kExpectedMode ||
+            contract_out->contract_scope != kSpatialRoiRecorderContractScope ||
+            !contract_out->strict ||
+            contract_out->backend != kExpectedBackend ||
+            contract_out->mode != kSpatialRoiRecorderContractMode ||
             !contract_out->supervise_processes || !contract_out->require_summary ||
             !contract_out->require_status || !contract_out->require_video_sanity ||
             !contract_out->require_protocol_hello || !contract_out->require_frame_identity_proof ||
@@ -1260,7 +1453,7 @@ bool parse_spatial_roi_recorder_contract_structure(
             !sha256(contract_out->spatial_roi_plan_sha256) ||
             contract_out->source_cadence != kExpectedCadence ||
             contract_out->source_pixel_format != kExpectedPixelFormat) {
-            return fail(error_out, "contract identity or strict flags do not match schema v1");
+            return fail(error_out, "contract identity or strict flags do not match schema v2");
         }
         std::filesystem::path recording_root;
         std::filesystem::path artifact_root;
@@ -1355,6 +1548,15 @@ bool parse_spatial_roi_recorder_contract_structure(
         contract_out->streams.clear();
         std::set<std::string> camera_serials;
         std::set<std::string> artifact_paths;
+        std::uint64_t max_queue_bytes_total = 0;
+        std::uint64_t writer_queue_max_packets_total = 0;
+        std::uint64_t writer_queue_max_bytes_total = 0;
+        std::uint64_t max_media_bytes_total = 0;
+        std::uint64_t max_evidence_bytes_total = 0;
+        std::uint64_t max_frames_per_stream = 0;
+        std::uint64_t max_media_bytes_per_stream = 0;
+        std::uint64_t max_evidence_bytes_per_stream = 0;
+        bool has_recording_limits = false;
         for (const std::string& stream_id : contract_out->stream_order) {
             if (!streams.contains(stream_id)) {
                 return fail(error_out, "contract.streams is missing stream_order entry " + stream_id);
@@ -1380,6 +1582,42 @@ bool parse_spatial_roi_recorder_contract_structure(
                     contract_out->analytics_gpu_by_camera_serial.at(stream.camera_serial)) {
                 return fail(error_out, "contract stream identity/GPU mapping disagrees with parent");
             }
+            if (stream.operation_timeout_ms !=
+                    contract_out->aggregate_bounds.operation_timeout_ms_per_stream ||
+                !checked_add(max_queue_bytes_total,
+                             stream.max_queue_bytes,
+                             &max_queue_bytes_total) ||
+                !checked_add(writer_queue_max_packets_total,
+                             stream.writer_queue_max_packets,
+                             &writer_queue_max_packets_total) ||
+                !checked_add(writer_queue_max_bytes_total,
+                             stream.writer_queue_max_bytes,
+                             &writer_queue_max_bytes_total) ||
+                !checked_add(max_media_bytes_total,
+                             stream.max_media_bytes_per_stream,
+                             &max_media_bytes_total) ||
+                !checked_add(max_evidence_bytes_total,
+                             stream.max_evidence_bytes_per_stream,
+                             &max_evidence_bytes_total)) {
+                return fail(error_out,
+                            "contract stream recorder bounds overflow or disagree with parent");
+            }
+            if (!has_recording_limits) {
+                max_frames_per_stream = stream.max_frames_per_stream;
+                max_media_bytes_per_stream =
+                    stream.max_media_bytes_per_stream;
+                max_evidence_bytes_per_stream =
+                    stream.max_evidence_bytes_per_stream;
+                has_recording_limits = true;
+            } else if (stream.max_frames_per_stream != max_frames_per_stream ||
+                       stream.max_media_bytes_per_stream !=
+                           max_media_bytes_per_stream ||
+                       stream.max_evidence_bytes_per_stream !=
+                           max_evidence_bytes_per_stream) {
+                return fail(
+                    error_out,
+                    "contract streams must share one authenticated recording_limits policy");
+            }
             for (const auto& [kind, artifact] : stream.artifacts) {
                 (void)kind;
                 if (!artifact_paths.insert(artifact.absolute_path).second) {
@@ -1399,8 +1637,19 @@ bool parse_spatial_roi_recorder_contract_structure(
                 static_cast<std::uint64_t>(contract_out->stream_count) *
                     contract_out->ipc_v2.queue_capacity_frames_per_stream ||
             contract_out->ipc_v2.max_outstanding_frames_total !=
-                contract_out->ipc_v2.queue_capacity_frames_total) {
-            return fail(error_out, "contract IPC total queue bounds disagree with stream_count");
+                contract_out->ipc_v2.queue_capacity_frames_total ||
+            contract_out->aggregate_bounds.max_queue_bytes_total !=
+                max_queue_bytes_total ||
+            contract_out->aggregate_bounds.writer_queue_max_packets_total !=
+                writer_queue_max_packets_total ||
+            contract_out->aggregate_bounds.writer_queue_max_bytes_total !=
+                writer_queue_max_bytes_total ||
+            contract_out->aggregate_bounds.max_media_bytes_total !=
+                max_media_bytes_total ||
+            contract_out->aggregate_bounds.max_evidence_bytes_total !=
+                max_evidence_bytes_total) {
+            return fail(error_out,
+                        "contract aggregate bounds disagree with its streams");
         }
         const auto selected = std::find_if(
             contract_out->streams.begin(), contract_out->streams.end(),

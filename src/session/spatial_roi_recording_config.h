@@ -11,10 +11,10 @@ namespace orange::session::spatial_roi {
 
 inline constexpr const char* kConfigSchemaId =
     "orange.spatial_roi_recording.config";
-inline constexpr int kConfigSchemaVersion = 1;
+inline constexpr int kConfigSchemaVersion = 2;
 inline constexpr const char* kPlanSchemaId =
     "orange.spatial_roi_recording.plan";
-inline constexpr int kPlanSchemaVersion = 1;
+inline constexpr int kPlanSchemaVersion = 2;
 inline constexpr const char* kPlanScope =
     "detector_independent_camera_native_spatial_rois";
 inline constexpr const char* kCanonicalization =
@@ -24,6 +24,28 @@ inline constexpr const char* kBackend =
 inline constexpr const char* kSourceCadence =
     "every_recording_frame";
 inline constexpr const char* kSourcePixelFormat = "mono8";
+
+// These are both defaults and current implementation ceilings. The evidence
+// stream validator is intentionally bounded to this frame count/file size, so
+// config/plan admission must never mint a contract the recorder cannot honor.
+inline constexpr std::uint64_t kMaxFramesPerStream = 4000000ULL;
+// FFmpeg's descriptor-backed AVIO and the finalization sidecar use signed
+// off_t lengths. Do not mint a verified plan whose media ceiling the recorder
+// cannot represent on the supported 64-bit Linux runtime.
+inline constexpr std::uint64_t kMaxMediaBytesPerStream =
+    9223372036854775807ULL;
+inline constexpr std::uint64_t kMaxEvidenceBytesPerStream =
+    4ULL * 1024ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t kDefaultMaxFramesPerStream =
+    kMaxFramesPerStream;
+inline constexpr std::uint64_t kDefaultMaxMediaBytesPerStream =
+    128ULL * 1024ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t kDefaultMaxEvidenceBytesPerStream =
+    kMaxEvidenceBytesPerStream;
+inline constexpr std::uint64_t kDefaultMaxTotalMediaBytes =
+    16ULL * kDefaultMaxMediaBytesPerStream;
+inline constexpr std::uint64_t kDefaultMaxTotalEvidenceBytes =
+    16ULL * kDefaultMaxEvidenceBytesPerStream;
 
 struct Raster {
     std::uint32_t width = 0;
@@ -47,7 +69,7 @@ struct RoiConfig {
     std::string region_id;
     bool has_arena_id = false;
     std::string arena_id;
-    // Optional/best-effort ROI admission is not defined in schema v1.
+    // Optional/best-effort ROI admission is not defined in schema v2.
     bool required = true;
     Rect content_rect;
     bool has_region_mask = false;
@@ -79,6 +101,17 @@ struct BufferingConfig {
     std::uint32_t queue_frames_per_stream = 64;
 };
 
+// Explicit long-run bounds. These are admission ceilings, not a duration or
+// an estimate of HEVC compression. Every enabled ROI stream reserves exactly
+// these frame/media/evidence budgets before the plan is armed.
+struct RecordingLimits {
+    std::uint64_t max_frames_per_stream = kDefaultMaxFramesPerStream;
+    std::uint64_t max_media_bytes_per_stream =
+        kDefaultMaxMediaBytesPerStream;
+    std::uint64_t max_evidence_bytes_per_stream =
+        kDefaultMaxEvidenceBytesPerStream;
+};
+
 struct AdmissionLimits {
     std::uint32_t max_rois_per_camera = 16;
     std::uint32_t max_total_rois = 16;
@@ -86,12 +119,14 @@ struct AdmissionLimits {
     std::uint32_t max_total_encoder_streams = 16;
     std::uint64_t max_total_pool_bytes = 2147483648ULL;
     std::uint64_t max_total_queue_frames = 1024ULL;
+    std::uint64_t max_total_media_bytes = kDefaultMaxTotalMediaBytes;
+    std::uint64_t max_total_evidence_bytes = kDefaultMaxTotalEvidenceBytes;
 };
 
 struct Config {
     bool enabled = false;
     std::string backend = kBackend;
-    // Schema v1 is fail-closed; strict=false has no supported runtime
+    // Schema v2 is fail-closed; strict=false has no supported runtime
     // semantics and is rejected by validate_config().
     bool strict = true;
     std::string source_cadence = kSourceCadence;
@@ -101,6 +136,7 @@ struct Config {
     std::uint32_t output_alignment_px = 2;
     std::uint8_t padding_value_mono8 = 0;
     BufferingConfig buffering;
+    RecordingLimits recording_limits;
     AdmissionLimits admission;
     std::map<std::string, CameraConfig> cameras;
 };
@@ -113,6 +149,8 @@ struct AdmissionUsage {
     std::uint64_t encoded_pixel_rate = 0;
     std::uint64_t pool_bytes = 0;
     std::uint64_t queue_frames = 0;
+    std::uint64_t media_bytes = 0;
+    std::uint64_t evidence_bytes = 0;
 };
 
 struct PlanContext {
@@ -153,6 +191,7 @@ struct SpatialRoiRecordingPlan {
     std::string recording_identity_token;
     std::string producer_generation;
     std::uint32_t pool_frames_per_stream = 0;
+    RecordingLimits recording_limits;
     AdmissionUsage admission_usage;
     std::map<std::string, SpatialRoiPlanCameraDescriptor> cameras;
 };
@@ -167,7 +206,7 @@ std::string expected_logical_stream_id(const std::string& camera_serial,
 std::string expected_artifact_stem(const std::string& camera_serial,
                                    const std::string& roi_id);
 
-// Parse a closed schema-v1 object. Unknown fields, unsafe identifiers, and
+// Parse a closed schema-v2 object. Unknown fields, unsafe identifiers, and
 // inconsistent derived stream/artifact names fail closed.
 bool parse_config(const nlohmann::json& value,
                   Config* config_out,

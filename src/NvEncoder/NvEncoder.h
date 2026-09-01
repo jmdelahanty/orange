@@ -18,6 +18,7 @@
 #include <nvEncodeAPI.h>
 #include <stdint.h>
 #include <condition_variable>
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <iostream>
@@ -509,6 +510,11 @@ private:
     NV_ENC_INITIALIZE_PARAMS m_initializeParams = {};
     NV_ENC_CONFIG m_encodeConfig = {};
     bool m_bEncoderInitialized = false;
+    // Sending EOS is terminal for one initialized NVENC session. Resource
+    // teardown historically called EndEncode() again after owners had already
+    // drained explicitly, which could submit EOS twice. Keep this latch
+    // process-local and reset it only when a new encoder session is created.
+    std::atomic<bool> m_bEndEncodeCalled{false};
     uint32_t m_nExtraOutputDelay = 3; // To ensure encode and graphics can work in parallel, m_nExtraOutputDelay should be set to at least 1
     std::vector<NV_ENC_OUTPUT_PTR> m_vBitstreamOutputBuffer;
     std::vector<NV_ENC_OUTPUT_PTR> m_vMVDataOutputBuffer;

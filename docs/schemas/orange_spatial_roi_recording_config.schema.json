@@ -13,12 +13,13 @@
     "source_cadence",
     "pixel_contract",
     "buffering",
+    "recording_limits",
     "admission",
     "cameras"
   ],
   "properties": {
     "schema_id": { "const": "orange.spatial_roi_recording.config" },
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 2 },
     "enabled": { "type": "boolean", "default": false },
     "backend": { "const": "independent_lossless_external_ipc" },
     "strict": { "const": true },
@@ -60,6 +61,32 @@
         }
       }
     },
+    "recording_limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_frames_per_stream",
+        "max_media_bytes_per_stream",
+        "max_evidence_bytes_per_stream"
+      ],
+      "properties": {
+        "max_frames_per_stream": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4000000
+        },
+        "max_media_bytes_per_stream": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "max_evidence_bytes_per_stream": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967296
+        }
+      }
+    },
     "admission": {
       "type": "object",
       "additionalProperties": false,
@@ -69,7 +96,9 @@
         "max_total_pixel_rate",
         "max_total_encoder_streams",
         "max_total_pool_bytes",
-        "max_total_queue_frames"
+        "max_total_queue_frames",
+        "max_total_media_bytes",
+        "max_total_evidence_bytes"
       ],
       "properties": {
         "max_rois_per_camera": {
@@ -98,6 +127,16 @@
           "maximum": 18446744073709551615
         },
         "max_total_queue_frames": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "max_total_media_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "max_total_evidence_bytes": {
           "type": "integer",
           "minimum": 1,
           "maximum": 18446744073709551615
