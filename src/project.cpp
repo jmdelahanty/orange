@@ -7,6 +7,10 @@
 #include "fsuid_guard.h"
 #include "gui/spatial_layout/sha256.h"
 #include "session/recording_observation_identity.h"
+#include "session/spatial_roi_media_policy.h"
+#include "session/spatial_roi_session_snapshot.h"
+#include "recording_output_descriptor.h"
+#include "spatial_roi_recorder_artifact_root.h"
 #include "spatial_calibration_snapshot.h"
 #include "video_capture.h"
 #include <unistd.h>      // For gethostname in client_send_bringup_message
@@ -16,6 +20,7 @@
 #include <iostream>
 #include <fstream>       // For std::ifstream
 #include <filesystem>    // For std::filesystem
+#include <initializer_list>
 #include <algorithm>     // For std::sort, std::find_if
 #include <numeric>       // For std::iota (if used, though it's in camera.cpp sort_indexes)
 #include <iomanip>       // For std::put_time, std::setfill, std::setw
@@ -90,6 +95,907 @@ bool read_recording_snapshot_locked(const std::filesystem::path& snapshot_path,
     if (!snapshot_out->is_object()) {
         *snapshot_out = nlohmann::json::object();
     }
+    return true;
+}
+
+struct ProjectSpatialRoiMediaPolicy final {
+    bool explicit_policy = false;
+    bool full_frame = true;
+    bool fixed_rois = true;
+    nlohmann::json wire = nullptr;
+};
+
+bool read_project_spatial_roi_media_policy(
+    const nlohmann::json& session_container,
+    ProjectSpatialRoiMediaPolicy* policy_out)
+{
+    if (!policy_out || !session_container.is_object()) {
+        return false;
+    }
+    const auto policy_it = session_container.find("spatial_roi_media_policy");
+    if (policy_it == session_container.end()) {
+        return true;
+    }
+    const nlohmann::json& policy = policy_it.value();
+    if (!policy.is_object() || policy.size() != 5U ||
+        !policy.contains("schema_id") || !policy.contains("schema_version") ||
+        !policy.contains("media_policy") ||
+        !policy.contains("retained_products") ||
+        !policy.contains("sink_backend") ||
+        !policy.at("schema_id").is_string() ||
+        policy.at("schema_id").get<std::string>() !=
+            orange::session::spatial_roi::kMediaPolicySchemaId ||
+        !policy.at("schema_version").is_number_integer() ||
+        policy.at("schema_version").get<int>() !=
+            orange::session::spatial_roi::kMediaPolicySchemaVersion ||
+        !policy.at("media_policy").is_string() ||
+        !policy.at("retained_products").is_object() ||
+        policy.at("retained_products").size() != 3U) {
+        return false;
+    }
+
+    const std::string policy_name =
+        policy.at("media_policy").get<std::string>();
+    bool expected_full_frame = false;
+    bool expected_fixed_rois = false;
+    bool expected_registered_context = false;
+    if (policy_name == orange::session::spatial_roi::kFullFrameOnlyMediaPolicy) {
+        expected_full_frame = true;
+    } else if (policy_name ==
+               orange::session::spatial_roi::kFullFrameAndFixedRoisMediaPolicy) {
+        expected_full_frame = true;
+        expected_fixed_rois = true;
+    } else if (policy_name ==
+               orange::session::spatial_roi::
+                   kFixedRoisWithRegisteredContextMediaPolicy) {
+        expected_fixed_rois = true;
+        expected_registered_context = true;
+    } else {
+        return false;
+    }
+
+    const nlohmann::json& retained = policy.at("retained_products");
+    if (!retained.contains("full_frame") ||
+        !retained.contains("fixed_rois") ||
+        !retained.contains("registered_context") ||
+        !retained.at("full_frame").is_boolean() ||
+        !retained.at("fixed_rois").is_boolean() ||
+        !retained.at("registered_context").is_boolean() ||
+        retained.at("full_frame").get<bool>() != expected_full_frame ||
+        retained.at("fixed_rois").get<bool>() != expected_fixed_rois ||
+        retained.at("registered_context").get<bool>() !=
+            expected_registered_context) {
+        return false;
+    }
+    const nlohmann::json& sink_backend = policy.at("sink_backend");
+    if (!sink_backend.is_null()) {
+        if (!sink_backend.is_string()) {
+            return false;
+        }
+        const std::string backend = sink_backend.get<std::string>();
+        if (backend.empty() || backend.size() > 128U ||
+            std::any_of(backend.begin(), backend.end(),
+                        [](const unsigned char ch) {
+                            return ch < 0x20U || ch == 0x7fU;
+                        })) {
+            return false;
+        }
+    }
+
+    policy_out->explicit_policy = true;
+    policy_out->full_frame = expected_full_frame;
+    policy_out->fixed_rois = expected_fixed_rois;
+    policy_out->wire = policy;
+    return true;
+}
+
+bool resolve_project_spatial_roi_media_policy(
+    const nlohmann::json& snapshot,
+    const nlohmann::json& session_info,
+    ProjectSpatialRoiMediaPolicy* policy_out)
+{
+    if (!policy_out || !snapshot.is_object() || !session_info.is_object()) {
+        return false;
+    }
+    *policy_out = ProjectSpatialRoiMediaPolicy{};
+
+    ProjectSpatialRoiMediaPolicy persisted;
+    const auto snapshot_session_it = snapshot.find("session");
+    if (snapshot_session_it != snapshot.end() &&
+        !read_project_spatial_roi_media_policy(snapshot_session_it.value(),
+                                               &persisted)) {
+        return false;
+    }
+    ProjectSpatialRoiMediaPolicy candidate;
+    if (!read_project_spatial_roi_media_policy(session_info, &candidate)) {
+        return false;
+    }
+    if (persisted.explicit_policy && candidate.explicit_policy &&
+        persisted.wire != candidate.wire) {
+        return false;
+    }
+    *policy_out = candidate.explicit_policy ? candidate : persisted;
+    return true;
+}
+
+bool project_validate_spatial_roi_descriptors(
+    const nlohmann::json& recording_outputs_v3,
+    const nlohmann::json& session,
+    const orange::session::spatial_roi::SpatialRoiSessionSnapshotValidation& validation,
+    const ProjectSpatialRoiMediaPolicy& media_policy)
+{
+    constexpr std::array<const char*, 12> kArtifactKinds = {
+        "video", "metadata", "keyframes", "perf", "summary", "status",
+        "video_sanity", "finalization", "recorder_log", "transport_sidecar",
+        "evidence", "evidence_manifest"};
+
+    const auto exact_keys = [](const nlohmann::json& value,
+                               std::initializer_list<const char*> keys) {
+        if (!value.is_object() || value.size() != keys.size()) {
+            return false;
+        }
+        for (const char* key : keys) {
+            if (!value.contains(key)) {
+                return false;
+            }
+        }
+        return true;
+    };
+    const auto string_equals = [](const nlohmann::json& object,
+                                  const char* key,
+                                  const std::string& expected) {
+        return object.is_object() && object.contains(key) &&
+               object.at(key).is_string() &&
+               object.at(key).get<std::string>() == expected;
+    };
+    const auto field_equals = [](const nlohmann::json& object,
+                                 const char* key,
+                                 const nlohmann::json& expected) {
+        return object.is_object() && object.contains(key) &&
+               object.at(key) == expected;
+    };
+    const auto nonnegative_u64_field = [](const nlohmann::json& object,
+                                          const char* key) {
+        return object.is_object() && object.contains(key) &&
+               (object.at(key).is_number_unsigned() ||
+                (object.at(key).is_number_integer() &&
+                 object.at(key).get<std::int64_t>() >= 0));
+    };
+    const auto safe_relative_path = [](const nlohmann::json& value) {
+        if (!value.is_string()) {
+            return false;
+        }
+        const std::string path_text = value.get<std::string>();
+        if (path_text.empty() || path_text.front() == '/' ||
+            path_text.front() == '\\' || path_text.find(':') != std::string::npos) {
+            return false;
+        }
+        const std::filesystem::path path(path_text);
+        if (path.is_absolute() || path.has_root_name() ||
+            path.has_root_directory() || path == std::filesystem::path(".")) {
+            return false;
+        }
+        for (const auto& component : path) {
+            if (component == std::filesystem::path(".") ||
+                component == std::filesystem::path("..")) {
+                return false;
+            }
+        }
+        return path.lexically_normal().generic_string() == path_text;
+    };
+
+    if (!exact_keys(recording_outputs_v3, {"schema_id", "schema_version", "cameras"}) ||
+        !string_equals(recording_outputs_v3, "schema_id",
+                        orange::session::kRecordingOutputsV3SchemaId) ||
+        !recording_outputs_v3.at("schema_version").is_number_integer() ||
+        recording_outputs_v3.at("schema_version").get<int>() !=
+            orange::session::kRecordingOutputsV3SchemaVersion ||
+        !recording_outputs_v3.at("cameras").is_object() ||
+        validation.stream_order.size() != 4U ||
+        validation.status.empty() ||
+        !session.is_object()) {
+        return false;
+    }
+
+    const std::string& camera_serial = validation.camera_serial;
+    const nlohmann::json* spatial_roi_collection = nullptr;
+    for (auto camera_it = recording_outputs_v3.at("cameras").begin();
+         camera_it != recording_outputs_v3.at("cameras").end(); ++camera_it) {
+        if (!camera_it.value().is_object()) {
+            return false;
+        }
+        for (auto output_it = camera_it.value().begin();
+             output_it != camera_it.value().end(); ++output_it) {
+            if (output_it.key() != "full" && output_it.key() != "crop" &&
+                output_it.key() != "spatial_roi") {
+                return false;
+            }
+            if (output_it.key() == "spatial_roi") {
+                if (camera_it.key() != camera_serial ||
+                    !output_it.value().is_object() ||
+                    spatial_roi_collection != nullptr) {
+                    return false;
+                }
+                spatial_roi_collection = &output_it.value();
+            } else if (!output_it.value().is_object()) {
+                return false;
+            }
+        }
+    }
+    if (spatial_roi_collection == nullptr ||
+        spatial_roi_collection->size() != validation.stream_order.size()) {
+        return false;
+    }
+    if (recording_outputs_v3.at("cameras").size() != 1U) {
+        return false;
+    }
+    const nlohmann::json& camera_outputs =
+        recording_outputs_v3.at("cameras").at(camera_serial);
+    if (!camera_outputs.is_object() ||
+        !camera_outputs.contains("spatial_roi") ||
+        camera_outputs.size() > 2U ||
+        (camera_outputs.size() == 2U &&
+         (!camera_outputs.contains("full") ||
+          !camera_outputs.at("full").is_object() ||
+          !string_equals(camera_outputs.at("full"), "output_kind", "full")))) {
+        return false;
+    }
+    if (validation.status == "complete" && !media_policy.fixed_rois) {
+        return false;
+    }
+    if (validation.status == "complete" &&
+        media_policy.explicit_policy && !media_policy.full_frame &&
+        camera_outputs.contains("full")) {
+        return false;
+    }
+    if (validation.status == "complete" && media_policy.full_frame &&
+        (camera_outputs.size() != 2U || !camera_outputs.contains("full"))) {
+        // The combined media policy retains the ordinary first-class full
+        // output. Its lifecycle is independent, so a failed full output is
+        // accepted below, but omitting the scalar output is not. The explicit
+        // fixed-ROI-with-registered-context policy intentionally omits it.
+        return false;
+    }
+    if (camera_outputs.contains("full") &&
+        (!camera_outputs.at("full").is_object() ||
+         !string_equals(camera_outputs.at("full"), "output_kind", "full") ||
+         !string_equals(camera_outputs.at("full"), "camera_serial", camera_serial))) {
+        return false;
+    }
+    if (validation.status == "complete" &&
+        camera_outputs.contains("full") &&
+        (!string_equals(camera_outputs.at("full"), "status", "finalized") &&
+         !string_equals(camera_outputs.at("full"), "status", "failed"))) {
+        return false;
+    }
+    if (validation.status == "complete" && camera_outputs.contains("full") &&
+        !string_equals(camera_outputs.at("full"), "role",
+                       "ingest_authoritative")) {
+        return false;
+    }
+    if (validation.status == "complete" && camera_outputs.contains("full")) {
+        const nlohmann::json& full = camera_outputs.at("full");
+        const auto backend_it = full.find("backend");
+        if (backend_it == full.end() || !backend_it->is_string()) {
+            return false;
+        }
+        const std::string backend = backend_it->get<std::string>();
+        if (!full.contains("schema_version") ||
+            !full.at("schema_version").is_number_integer() ||
+            full.at("schema_version").get<int>() != 1 ||
+            !string_equals(full, "camera_serial", camera_serial) ||
+            !string_equals(full, "output_kind", "full") ||
+            !string_equals(full, "role", "ingest_authoritative") ||
+            (backend != "in_process" && backend != "external_ipc") ||
+            !string_equals(full, "container", "mp4") ||
+            !string_equals(full, "coordinate_space", "full_frame_pixels")) {
+            return false;
+        }
+        if (string_equals(full, "status", "finalized")) {
+            const std::string expected_packet_count_source =
+                backend == "in_process"
+                    ? "ffprobe_nb_read_packets"
+                    : "external_recorder_summary.packets_written";
+            if (!string_equals(full, "packet_count_source",
+                               expected_packet_count_source)) {
+                return false;
+            }
+            std::set<std::string> full_paths;
+            for (const char* key : {"video", "metadata", "keyframes"}) {
+                const auto path_it = full.find(key);
+                if (path_it == full.end() ||
+                    !safe_relative_path(path_it.value()) ||
+                    !full_paths.insert(path_it->get<std::string>()).second) {
+                    return false;
+                }
+            }
+        }
+    }
+    if (validation.status == "complete" && camera_outputs.contains("full") &&
+        string_equals(camera_outputs.at("full"), "status", "finalized")) {
+        const nlohmann::json& full = camera_outputs.at("full");
+        if (!nonnegative_u64_field(full, "frame_count") ||
+            !nonnegative_u64_field(full, "first_recording_frame_id") ||
+            !nonnegative_u64_field(full, "last_recording_frame_id") ||
+            !nonnegative_u64_field(full, "recording_frame_id_gaps") ||
+            !nonnegative_u64_field(full, "packet_count")) {
+            return false;
+        }
+        const std::uint64_t full_frame_count =
+            full.at("frame_count").get<std::uint64_t>();
+        const std::uint64_t full_packet_count =
+            full.at("packet_count").get<std::uint64_t>();
+        const std::uint64_t full_first_frame =
+            full.at("first_recording_frame_id").get<std::uint64_t>();
+        const std::uint64_t full_last_frame =
+            full.at("last_recording_frame_id").get<std::uint64_t>();
+        if (full_frame_count == 0 || full_packet_count == 0 ||
+            full_first_frame == 0 || full_last_frame < full_first_frame ||
+            full_last_frame - full_first_frame != full_frame_count - 1 ||
+            full.at("recording_frame_id_gaps") != 0) {
+            return false;
+        }
+    }
+
+    std::set<std::string> descriptor_ids;
+    std::set<std::string> artifact_paths;
+    for (std::size_t index = 0; index < validation.stream_order.size(); ++index) {
+        const std::string& stream_id = validation.stream_order.at(index);
+        if (!spatial_roi_collection->contains(stream_id) ||
+            !descriptor_ids.insert(stream_id).second) {
+            return false;
+        }
+        const nlohmann::json& descriptor = spatial_roi_collection->at(stream_id);
+        if (!descriptor.is_object() ||
+            !descriptor.contains("schema_version") ||
+            !descriptor.at("schema_version").is_number_integer() ||
+            descriptor.at("schema_version").get<int>() != 3 ||
+            !string_equals(descriptor, "camera_serial", camera_serial) ||
+            !string_equals(descriptor, "output_kind", "spatial_roi") ||
+            !string_equals(descriptor, "logical_stream_id", stream_id) ||
+            !string_equals(
+                descriptor, "role",
+                orange::session::kRuntimeDerivedAcquisitionInputRole) ||
+            !string_equals(descriptor, "backend", "external_ipc") ||
+            !string_equals(descriptor, "container", "mp4") ||
+            !string_equals(descriptor, "status", validation.status) ||
+            !descriptor.contains("details") ||
+            !descriptor.at("details").is_object()) {
+            return false;
+        }
+
+        const nlohmann::json& details = descriptor.at("details");
+        const nlohmann::json& roi = session.at("rois").at(index);
+        if (!details.contains("geometry") ||
+            !details.at("geometry").is_object() ||
+            !details.contains("geometry_identity") ||
+            !details.at("geometry_identity").is_object() ||
+            !details.contains("source_geometry") ||
+            !details.at("source_geometry").is_object() ||
+            !details.contains("encoded_geometry") ||
+            !details.at("encoded_geometry").is_object() ||
+            !details.contains("encode_profile") ||
+            !details.at("encode_profile").is_object() ||
+            !exact_keys(details.at("encoded_geometry"),
+                        {"encoded_raster", "encoded_content_rect", "raster",
+                         "content_rect", "coordinate_space"})) {
+            return false;
+        }
+        const nlohmann::json& descriptor_geometry = details.at("geometry");
+        const nlohmann::json& descriptor_encoded_geometry =
+            details.at("encoded_geometry");
+        const nlohmann::json& session_geometry = roi.at("geometry");
+        const nlohmann::json& session_source_geometry =
+            roi.at("source_geometry");
+        const nlohmann::json& session_encoded_geometry =
+            roi.at("encoded_geometry");
+        const nlohmann::json& session_profile = roi.at("encode_profile");
+        const nlohmann::json expected_frame_identity = {
+            {"key_fields", {"recording_identity_token", "producer_generation",
+                             "logical_stream_id", "recording_frame_id",
+                             "roi_stream_frame_index"}},
+            {"roi_stream_frame_index", "dense_one_based"},
+            {"recording_frame_id_source", "parent_camera_recording"}};
+        const nlohmann::json& analytics_gpu_mapping =
+            session.at("gpu_mapping").at("analytics_gpu_by_camera_serial");
+        const nlohmann::json& recorder_gpu_mapping =
+            session.at("gpu_mapping")
+                .at("recorder_gpu_by_logical_stream_id");
+        if (!field_equals(descriptor, "width",
+                          session_geometry.at("encoded_raster").at("width")) ||
+            !field_equals(descriptor, "height",
+                          session_geometry.at("encoded_raster").at("height")) ||
+            !field_equals(descriptor, "frame_rate", roi.at("encode_fps")) ||
+            !field_equals(descriptor, "codec", roi.at("codec")) ||
+            !field_equals(descriptor, "tuning", roi.at("tuning")) ||
+            !field_equals(descriptor, "pixel_source_format",
+                          session_profile.at("input_format")) ||
+            !field_equals(descriptor, "encoded_format",
+                          session_profile.at("encoded_format")) ||
+            !field_equals(descriptor, "coordinate_space",
+                          session_source_geometry.at("coordinate_space")) ||
+            !field_equals(descriptor, "video_pixel_coordinate_space",
+                          session_encoded_geometry.at("coordinate_space")) ||
+            !field_equals(descriptor, "source_geometry_coordinate_space",
+                          session_source_geometry.at("coordinate_space")) ||
+            !field_equals(details, "stream_id", stream_id) ||
+            !string_equals(details, "stream_kind", "spatial_roi") ||
+            !field_equals(details, "frame_identity", expected_frame_identity) ||
+            descriptor_geometry != session_geometry ||
+            details.at("geometry_identity") != session_geometry ||
+            details.at("source_geometry") != session_source_geometry ||
+            !field_equals(descriptor_encoded_geometry, "encoded_raster",
+                          session_geometry.at("encoded_raster")) ||
+            !field_equals(descriptor_encoded_geometry, "encoded_content_rect",
+                          session_geometry.at("encoded_content_rect")) ||
+            !field_equals(descriptor_encoded_geometry, "raster",
+                          session_encoded_geometry.at("raster")) ||
+            !field_equals(descriptor_encoded_geometry, "content_rect",
+                          session_encoded_geometry.at("content_rect")) ||
+            !field_equals(descriptor_encoded_geometry, "coordinate_space",
+                          session_encoded_geometry.at("coordinate_space")) ||
+            details.at("encode_profile") != session_profile ||
+            !field_equals(details, "encode_fps", roi.at("encode_fps")) ||
+            !field_equals(details, "analytics_gpu_id",
+                          roi.at("analytics_gpu_id")) ||
+            !field_equals(details, "source_gpu_id", roi.at("source_gpu_id")) ||
+            !field_equals(details, "recorder_gpu_id",
+                          roi.at("recorder_gpu_id")) ||
+            !field_equals(details, "assigned_gpu_id",
+                          roi.at("assigned_gpu_id")) ||
+            !field_equals(details, "expected_shard_gpu_ids",
+                          roi.at("expected_shard_gpu_ids")) ||
+            !field_equals(details, "gop", session_profile.at("gop_length")) ||
+            !field_equals(details, "rate_control_mode",
+                          session_profile.at("rate_control_mode")) ||
+            !field_equals(details, "quality_value",
+                          session_profile.at("quality_value")) ||
+            !details.contains("encode_queue_depth") ||
+            !(details.at("encode_queue_depth").is_number_unsigned() ||
+              (details.at("encode_queue_depth").is_number_integer() &&
+               details.at("encode_queue_depth").get<std::int64_t>() > 0)) ||
+            !string_equals(details, "routing_policy", "single_shard") ||
+            !analytics_gpu_mapping.contains(camera_serial) ||
+            analytics_gpu_mapping.at(camera_serial) !=
+                roi.at("analytics_gpu_id") ||
+            !recorder_gpu_mapping.contains(stream_id) ||
+            recorder_gpu_mapping.at(stream_id) != roi.at("recorder_gpu_id")) {
+            return false;
+        }
+        if (!details.contains("identity") || !details.at("identity").is_object() ||
+            !string_equals(details, "artifact_path_scope",
+                           "recording_root_relative") ||
+            !string_equals(details, "artifact_root_relative",
+                           orange::spatial_roi::recording::
+                               kSpatialRoiRecorderArtifactDirectory) ||
+            !string_equals(details, "recording_id",
+                           session.at("recording_id").get<std::string>()) ||
+            !string_equals(details, "session_id",
+                           session.at("session_id").get<std::string>()) ||
+            !string_equals(details, "recording_identity_token",
+                           session.at("recording_identity_token").get<std::string>()) ||
+            !string_equals(details, "producer_generation",
+                           session.at("producer_generation").get<std::string>()) ||
+            !string_equals(details, "spatial_roi_plan_sha256",
+                           session.at("spatial_roi_plan_sha256").get<std::string>()) ||
+            !details.contains("camera_id") ||
+            details.at("camera_id") != session.at("camera_id") ||
+            !string_equals(details, "camera_serial", camera_serial) ||
+            !string_equals(details, "logical_stream_id", stream_id) ||
+            !string_equals(details, "roi_id", roi.at("roi_id").get<std::string>()) ||
+            !string_equals(details, "region_id", roi.at("region_id").get<std::string>()) ||
+            !string_equals(details, "arena_group_id",
+                           roi.at("arena_group_id").get<std::string>()) ||
+            !details.contains("arena_id") ||
+            details.at("arena_id") != roi.at("arena_id")) {
+            return false;
+        }
+
+        const nlohmann::json& identity = details.at("identity");
+        if (!exact_keys(identity,
+                        {"recording_id", "recording_identity_token",
+                         "producer_generation", "spatial_roi_plan_sha256",
+                         "camera_id", "camera_serial", "roi_id", "region_id",
+                         "arena_group_id", "logical_stream_id", "arena_id"}) ||
+            !string_equals(identity, "recording_id",
+                           session.at("recording_id").get<std::string>()) ||
+            !string_equals(identity, "recording_identity_token",
+                           session.at("recording_identity_token").get<std::string>()) ||
+            !string_equals(identity, "producer_generation",
+                           session.at("producer_generation").get<std::string>()) ||
+            !string_equals(identity, "spatial_roi_plan_sha256",
+                           session.at("spatial_roi_plan_sha256").get<std::string>()) ||
+            identity.at("camera_id") != session.at("camera_id") ||
+            !string_equals(identity, "camera_serial", camera_serial) ||
+            !string_equals(identity, "roi_id", roi.at("roi_id").get<std::string>()) ||
+            !string_equals(identity, "region_id", roi.at("region_id").get<std::string>()) ||
+            !string_equals(identity, "arena_group_id",
+                           roi.at("arena_group_id").get<std::string>()) ||
+            !string_equals(identity, "logical_stream_id", stream_id) ||
+            identity.at("arena_id") != roi.at("arena_id")) {
+            return false;
+        }
+
+        const nlohmann::json& artifacts = details.value("artifacts", nlohmann::json::object());
+        if (!artifacts.is_object() || artifacts.size() != kArtifactKinds.size()) {
+            return false;
+        }
+        for (const char* kind : kArtifactKinds) {
+            if (!artifacts.contains(kind) ||
+                !safe_relative_path(artifacts.at(kind)) ||
+                !artifact_paths.insert(artifacts.at(kind).get<std::string>()).second) {
+                return false;
+            }
+        }
+        for (const char* kind : {"video", "metadata", "keyframes", "perf", "summary"}) {
+            if (!string_equals(descriptor, kind,
+                               artifacts.at(kind).get<std::string>())) {
+                return false;
+            }
+        }
+
+        const auto receipt_it = details.find("finalized_receipt");
+        if (validation.status == "complete") {
+            if (validation.finalized_session_receipt.is_null() ||
+                receipt_it == details.end() ||
+                receipt_it->is_null() ||
+                !validation.finalized_session_receipt.contains("streams") ||
+                receipt_it.value() !=
+                    validation.finalized_session_receipt.at("streams").at(index)) {
+                return false;
+            }
+            const nlohmann::json& receipt_stream = receipt_it.value();
+            const nlohmann::json& receipt_artifacts =
+                receipt_stream.at("artifacts");
+            if (!receipt_artifacts.is_array() ||
+                receipt_artifacts.size() != kArtifactKinds.size()) {
+                return false;
+            }
+            for (std::size_t artifact_index = 0;
+                 artifact_index < kArtifactKinds.size(); ++artifact_index) {
+                if (!receipt_artifacts.at(artifact_index).is_object() ||
+                    !string_equals(receipt_artifacts.at(artifact_index), "kind",
+                                   kArtifactKinds.at(artifact_index)) ||
+                    !string_equals(
+                        artifacts, kArtifactKinds.at(artifact_index),
+                        std::string(orange::spatial_roi::recording::
+                                        kSpatialRoiRecorderArtifactDirectory) + "/" +
+                            receipt_artifacts.at(artifact_index)
+                                .at("relative_path").get<std::string>()) ||
+                    !safe_relative_path(
+                        receipt_artifacts.at(artifact_index).at("relative_path")) ||
+                    !receipt_artifacts.at(artifact_index).contains("size_bytes") ||
+                    !receipt_artifacts.at(artifact_index).contains("sha256")) {
+                    return false;
+                }
+            }
+            const nlohmann::json& receipt_ranges = receipt_stream.at("ranges");
+            const nlohmann::json& receipt_counts = receipt_stream.at("counts");
+            if (!field_equals(descriptor, "frame_count",
+                              receipt_ranges.at("frame_count")) ||
+                !field_equals(descriptor, "first_recording_frame_id",
+                              receipt_ranges.at("recording_frame_id").at("first")) ||
+                !field_equals(descriptor, "last_recording_frame_id",
+                              receipt_ranges.at("recording_frame_id").at("last")) ||
+                !field_equals(descriptor, "recording_frame_id_gaps", 0) ||
+                !field_equals(descriptor, "packet_count",
+                              receipt_counts.at("packet_count")) ||
+                !string_equals(
+                    descriptor, "packet_count_source",
+                    "spatial_roi_finalized_session_receipt")) {
+                return false;
+            }
+            if (camera_outputs.contains("full") &&
+                string_equals(camera_outputs.at("full"), "status", "finalized") &&
+                 (!field_equals(descriptor, "frame_count",
+                                camera_outputs.at("full").at("frame_count")) ||
+                  !field_equals(descriptor, "first_recording_frame_id",
+                                camera_outputs.at("full")
+                                    .at("first_recording_frame_id")) ||
+                  !field_equals(descriptor, "last_recording_frame_id",
+                                camera_outputs.at("full")
+                                    .at("last_recording_frame_id")))) {
+                return false;
+            }
+        } else if (receipt_it != details.end()) {
+            return false;
+        }
+    }
+    if (validation.status == "complete" &&
+        camera_outputs.contains("full") &&
+        string_equals(camera_outputs.at("full"), "status", "finalized")) {
+        const nlohmann::json& full = camera_outputs.at("full");
+        for (const char* key : {"video", "metadata", "keyframes"}) {
+            const auto path_it = full.find(key);
+            if (path_it != full.end() &&
+                artifact_paths.find(path_it->get<std::string>()) !=
+                    artifact_paths.end()) {
+                return false;
+            }
+        }
+    }
+    return descriptor_ids.size() == 4U &&
+           artifact_paths.size() == 4U * kArtifactKinds.size();
+}
+
+bool validate_spatial_roi_session_update(
+    const nlohmann::json& recording_outputs_v3,
+    const nlohmann::json& session_info,
+    const nlohmann::json& snapshot)
+{
+    const nlohmann::json* session_snapshot = nullptr;
+    const auto session_it = session_info.find("spatial_roi_recording");
+    if (session_it != session_info.end()) {
+        session_snapshot = &session_it.value();
+    }
+    const auto backend_it = session_info.find("recording_backend");
+    if (backend_it != session_info.end() && backend_it->is_object()) {
+        const auto nested_it = backend_it->find("spatial_roi_recording");
+        if (nested_it != backend_it->end()) {
+            if (session_snapshot != nullptr && *session_snapshot != *nested_it) {
+                return false;
+            }
+            session_snapshot = &nested_it.value();
+        }
+    }
+    if (session_snapshot == nullptr) {
+        // Non-ROI session updates predate this coupled seam and intentionally
+        // retain their historical permissive merge behavior.
+        return true;
+    }
+    orange::session::spatial_roi::SpatialRoiSessionSnapshotValidation validation;
+    std::string validation_error;
+    if (!orange::session::spatial_roi::validate_spatial_roi_session_snapshot_json(
+            *session_snapshot, &validation, &validation_error)) {
+        std::cerr << "Spatial ROI session snapshot validation failed: "
+                  << (validation_error.empty() ? "unknown validation error"
+                                               : validation_error)
+                  << std::endl;
+        return false;
+    }
+    ProjectSpatialRoiMediaPolicy media_policy;
+    if (!resolve_project_spatial_roi_media_policy(
+            snapshot, session_info, &media_policy)) {
+        std::cerr << "Spatial ROI media policy validation failed" << std::endl;
+        return false;
+    }
+    const bool descriptors_valid = project_validate_spatial_roi_descriptors(
+        recording_outputs_v3, *session_snapshot, validation, media_policy);
+    if (!descriptors_valid) {
+        std::cerr << "Spatial ROI recording output descriptor validation failed"
+                  << std::endl;
+    }
+    return descriptors_valid;
+}
+
+// Merge the collection-valued output index into a mutable snapshot. Keep
+// this separate from the schema-2 merge below: a spatial ROI stream must not
+// be allowed to occupy the scalar full/crop slots used by existing readers.
+bool merge_recording_outputs_v3_into_snapshot(
+    const nlohmann::json& recording_outputs_v3,
+    nlohmann::json* snapshot,
+    const bool replace_spatial_roi_collection = false)
+{
+    if (!snapshot || !snapshot->is_object() ||
+        !recording_outputs_v3.is_object() ||
+        !recording_outputs_v3.contains("schema_id") ||
+        !recording_outputs_v3["schema_id"].is_string() ||
+        recording_outputs_v3["schema_id"].get<std::string>() !=
+            orange::session::kRecordingOutputsV3SchemaId ||
+        !recording_outputs_v3.contains("schema_version") ||
+        !recording_outputs_v3["schema_version"].is_number_integer() ||
+        recording_outputs_v3["schema_version"].get<int>() !=
+            orange::session::kRecordingOutputsV3SchemaVersion ||
+        !recording_outputs_v3.contains("cameras") ||
+        !recording_outputs_v3["cameras"].is_object()) {
+        return false;
+    }
+
+    nlohmann::json merged = snapshot->value(
+        "recording_outputs_v3", nlohmann::json::object());
+    if (!merged.is_object()) {
+        merged = nlohmann::json::object();
+    }
+    if (merged.contains("schema_id") &&
+        (!merged["schema_id"].is_string() ||
+         merged["schema_id"].get<std::string>() !=
+             orange::session::kRecordingOutputsV3SchemaId)) {
+        return false;
+    }
+    if (merged.contains("schema_version") &&
+        (!merged["schema_version"].is_number_integer() ||
+         merged["schema_version"].get<int>() !=
+             orange::session::kRecordingOutputsV3SchemaVersion)) {
+        return false;
+    }
+    merged["schema_id"] = orange::session::kRecordingOutputsV3SchemaId;
+    merged["schema_version"] =
+        orange::session::kRecordingOutputsV3SchemaVersion;
+    if (!merged.contains("cameras") || !merged["cameras"].is_object()) {
+        merged["cameras"] = nlohmann::json::object();
+    }
+    nlohmann::json legacy_outputs = snapshot->value(
+        "recording_outputs", nlohmann::json::object());
+    if (!legacy_outputs.is_object()) {
+        legacy_outputs = nlohmann::json::object();
+    }
+    nlohmann::json legacy_encoders = snapshot->value(
+        "encoders", nlohmann::json::object());
+    if (!legacy_encoders.is_object()) {
+        legacy_encoders = nlohmann::json::object();
+    }
+    const auto read_string_field = [](const nlohmann::json& object,
+                                      const char* key,
+                                      std::string* value_out,
+                                      const bool required) {
+        if (!object.contains(key)) {
+            return !required;
+        }
+        if (!object[key].is_string()) {
+            return false;
+        }
+        if (value_out) {
+            *value_out = object[key].get<std::string>();
+        }
+        return true;
+    };
+
+    for (auto camera_it = recording_outputs_v3["cameras"].begin();
+         camera_it != recording_outputs_v3["cameras"].end();
+         ++camera_it) {
+        if (camera_it.key().empty() || !camera_it.value().is_object()) {
+            return false;
+        }
+        nlohmann::json& merged_camera = merged["cameras"][camera_it.key()];
+        if (!merged_camera.is_object()) {
+            merged_camera = nlohmann::json::object();
+        }
+
+        for (auto output_it = camera_it.value().begin();
+             output_it != camera_it.value().end();
+             ++output_it) {
+            if (output_it.key() == "spatial_roi") {
+                if (!output_it.value().is_object()) {
+                    return false;
+                }
+                if (replace_spatial_roi_collection) {
+                    // A validated coupled update is an authoritative snapshot
+                    // of the four-lane collection. Replace the collection as
+                    // one unit so stale streams or fields from an earlier
+                    // lifecycle cannot survive a later exact update.
+                    merged_camera["spatial_roi"] = nlohmann::json::object();
+                }
+                if (!merged_camera.contains("spatial_roi") ||
+                    !merged_camera["spatial_roi"].is_object()) {
+                    merged_camera["spatial_roi"] = nlohmann::json::object();
+                }
+                for (auto stream_it = output_it.value().begin();
+                     stream_it != output_it.value().end();
+                     ++stream_it) {
+                    if (stream_it.key().empty() ||
+                        !stream_it.value().is_object()) {
+                        return false;
+                    }
+                    std::string descriptor_stream_id;
+                    std::string descriptor_camera_serial;
+                    std::string descriptor_output_kind;
+                    if (!read_string_field(
+                            stream_it.value(),
+                            "logical_stream_id",
+                            &descriptor_stream_id,
+                            true) ||
+                        !read_string_field(
+                            stream_it.value(),
+                            "camera_serial",
+                            &descriptor_camera_serial,
+                            true) ||
+                        !read_string_field(
+                            stream_it.value(),
+                            "output_kind",
+                            &descriptor_output_kind,
+                            true) ||
+                        !stream_it.value().contains("schema_version") ||
+                        !stream_it.value()["schema_version"].is_number_integer() ||
+                        stream_it.value()["schema_version"].get<int>() !=
+                            orange::session::kRecordingOutputsV3SchemaVersion ||
+                        descriptor_stream_id.empty() ||
+                        descriptor_stream_id != stream_it.key() ||
+                        descriptor_camera_serial != camera_it.key() ||
+                        descriptor_output_kind !=
+                            orange::session::kSpatialRoiRecordingOutputKind) {
+                        return false;
+                    }
+                    nlohmann::json& merged_stream =
+                        merged_camera["spatial_roi"][stream_it.key()];
+                    if (!merged_stream.is_object()) {
+                        merged_stream = nlohmann::json::object();
+                    }
+                    for (auto field_it = stream_it.value().begin();
+                         field_it != stream_it.value().end();
+                         ++field_it) {
+                        merged_stream[field_it.key()] = field_it.value();
+                    }
+                }
+                continue;
+            }
+
+            // v3 deliberately retains ordinary scalar full/crop entries.
+            // Non-coupled calls merge them only inside the v3 envelope;
+            // coupled calls additionally project full atomically below so
+            // schema-2 consumers retain their first-class view.
+            if (!output_it.value().is_object()) {
+                return false;
+            }
+            if (replace_spatial_roi_collection && output_it.key() == "full") {
+                // Keep the established schema-2 projection first-class for
+                // consumers that have not adopted recording_outputs_v3 yet.
+                // Stage both copies locally so a later validation failure
+                // cannot publish only one side of the duplicate.
+                if (!legacy_outputs[camera_it.key()].is_object()) {
+                    legacy_outputs[camera_it.key()] = nlohmann::json::object();
+                }
+                if (!legacy_encoders[camera_it.key()].is_object()) {
+                    legacy_encoders[camera_it.key()] = nlohmann::json::object();
+                }
+                if (!legacy_encoders[camera_it.key()].contains("outputs") ||
+                    !legacy_encoders[camera_it.key()]["outputs"].is_object()) {
+                    legacy_encoders[camera_it.key()]["outputs"] =
+                        nlohmann::json::object();
+                }
+                legacy_outputs[camera_it.key()]["full"] = output_it.value();
+                legacy_encoders[camera_it.key()]["outputs"]["full"] =
+                    output_it.value();
+            }
+            std::string descriptor_camera_serial;
+            if (!read_string_field(
+                    output_it.value(),
+                    "camera_serial",
+                    &descriptor_camera_serial,
+                    false)) {
+                return false;
+            }
+            if (!descriptor_camera_serial.empty() &&
+                descriptor_camera_serial != camera_it.key()) {
+                return false;
+            }
+            std::string descriptor_output_kind;
+            if (!read_string_field(
+                    output_it.value(),
+                    "output_kind",
+                    &descriptor_output_kind,
+                    false)) {
+                return false;
+            }
+            if (!descriptor_output_kind.empty() &&
+                descriptor_output_kind != output_it.key()) {
+                return false;
+            }
+            nlohmann::json& merged_output =
+                merged_camera[output_it.key()];
+            if (!merged_output.is_object()) {
+                merged_output = nlohmann::json::object();
+            }
+            if (replace_spatial_roi_collection && output_it.key() == "full") {
+                // The coupled full descriptor is authoritative too. Do not
+                // retain fields from an earlier v3 full projection.
+                merged_output = output_it.value();
+            } else {
+                for (auto field_it = output_it.value().begin();
+                     field_it != output_it.value().end();
+                     ++field_it) {
+                    merged_output[field_it.key()] = field_it.value();
+                }
+            }
+        }
+    }
+
+    (*snapshot)["recording_outputs_v3"] = std::move(merged);
+    if (replace_spatial_roi_collection) {
+        (*snapshot)["recording_outputs"] = std::move(legacy_outputs);
+        (*snapshot)["encoders"] = std::move(legacy_encoders);
+    }
+    (*snapshot)["recording_outputs_v3_updated_at_utc"] =
+        get_current_utc_timestamp();
     return true;
 }
 
@@ -3371,6 +4277,15 @@ nlohmann::json build_camera_runtime_snapshot(const CameraParams& camera_params)
     return snapshot;
 }
 } // namespace
+
+std::string resolved_camera_configuration_sha256(
+    const CameraParams& camera_params)
+{
+    const std::string canonical_bytes =
+        build_camera_config_json_from_params(camera_params).dump();
+    return "sha256:" +
+        orange::gui::spatial_layout::checksum::sha256_hex(canonical_bytes);
+}
 
 void load_camera_json_config_files(std::string file_name, CameraParams* camera_params, int camera_id, int num_cameras) {
     // ... (implementation from project.h)
@@ -6859,10 +7774,73 @@ bool update_recording_snapshot_session_artifacts(const std::string& recording_fo
         "recording snapshot");
 }
 
+bool omit_recording_snapshot_full_frame_product(
+    const std::string& recording_folder,
+    const std::string& media_policy) {
+    if (recording_folder.empty() ||
+        media_policy != "fixed_rois_with_registered_context") {
+        return false;
+    }
+
+    const std::filesystem::path snapshot_path =
+        std::filesystem::path(recording_folder) / "recording_snapshot.json";
+    std::lock_guard<std::mutex> lock(recording_snapshot_mutex());
+
+    nlohmann::json snapshot;
+    if (!read_recording_snapshot_locked(snapshot_path, &snapshot)) {
+        return false;
+    }
+
+    if (snapshot.contains("recording_outputs") &&
+        snapshot["recording_outputs"].is_object()) {
+        for (auto camera_it = snapshot["recording_outputs"].begin();
+             camera_it != snapshot["recording_outputs"].end();
+             ++camera_it) {
+            if (camera_it.value().is_object()) {
+                camera_it.value().erase("full");
+            }
+        }
+    }
+    if (snapshot.contains("encoders") && snapshot["encoders"].is_object()) {
+        for (auto encoder_it = snapshot["encoders"].begin();
+             encoder_it != snapshot["encoders"].end();
+             ++encoder_it) {
+            if (!encoder_it.value().is_object() ||
+                !encoder_it.value().contains("outputs") ||
+                !encoder_it.value()["outputs"].is_object()) {
+                continue;
+            }
+            encoder_it.value()["outputs"].erase("full");
+        }
+    }
+    snapshot["recording_outputs_updated_at_utc"] =
+        get_current_utc_timestamp();
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    return write_json_atomic(
+        snapshot_path,
+        snapshot,
+        std::filesystem::perms::unknown,
+        false,
+        "recording snapshot");
+}
+
 bool update_recording_snapshot_recording_outputs(const std::string& recording_folder,
                                                  const nlohmann::json& recording_outputs) {
     if (recording_folder.empty() || !recording_outputs.is_object()) {
         return false;
+    }
+
+    // Accept the versioned envelope through the historical entry point as a
+    // migration convenience. It is still stored additively; schema-2 callers
+    // continue to receive the exact camera -> full/crop shape they expect.
+    if (recording_outputs.contains("schema_id") ||
+        recording_outputs.contains("schema_version") ||
+        recording_outputs.contains("cameras")) {
+        return update_recording_snapshot_recording_outputs_v3(
+            recording_folder,
+            recording_outputs);
     }
 
     const std::filesystem::path snapshot_path =
@@ -6924,6 +7902,117 @@ bool update_recording_snapshot_recording_outputs(const std::string& recording_fo
         }
         snapshot["encoders"][camera_it.key()]["outputs"] = camera_it.value();
     }
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    return write_json_atomic(
+        snapshot_path,
+        snapshot,
+        std::filesystem::perms::unknown,
+        false,
+        "recording snapshot");
+}
+
+bool update_recording_snapshot_recording_outputs_v3(
+    const std::string& recording_folder,
+    const nlohmann::json& recording_outputs_v3) {
+    if (recording_folder.empty() || !recording_outputs_v3.is_object()) {
+        return false;
+    }
+
+    const std::filesystem::path snapshot_path =
+        std::filesystem::path(recording_folder) / "recording_snapshot.json";
+
+    std::lock_guard<std::mutex> lock(recording_snapshot_mutex());
+
+    nlohmann::json snapshot;
+    if (!read_recording_snapshot_locked(snapshot_path, &snapshot)) {
+        return false;
+    }
+    if (!merge_recording_outputs_v3_into_snapshot(
+            recording_outputs_v3,
+            &snapshot)) {
+        return false;
+    }
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    return write_json_atomic(
+        snapshot_path,
+        snapshot,
+        std::filesystem::perms::unknown,
+        false,
+        "recording snapshot");
+}
+
+bool update_recording_snapshot_recording_outputs_v3_and_session_artifacts(
+    const std::string& recording_folder,
+    const nlohmann::json& recording_outputs_v3,
+    const nlohmann::json& session_info) {
+    if (recording_folder.empty() || !recording_outputs_v3.is_object() ||
+        !session_info.is_object()) {
+        return false;
+    }
+
+    const std::filesystem::path snapshot_path =
+        std::filesystem::path(recording_folder) / "recording_snapshot.json";
+
+    std::lock_guard<std::mutex> lock(recording_snapshot_mutex());
+
+    nlohmann::json snapshot;
+    if (!read_recording_snapshot_locked(snapshot_path, &snapshot)) {
+        return false;
+    }
+    // Validate and merge both payloads before making the single atomic write.
+    // In particular, a malformed v3 identity must not leave a session status
+    // behind that claims a lifecycle transition was published.
+    if (!validate_spatial_roi_session_update(
+            recording_outputs_v3, session_info, snapshot)) {
+        std::cerr << "Combined recording snapshot update rejected spatial ROI/session payload"
+                  << std::endl;
+        return false;
+    }
+    if (!merge_recording_outputs_v3_into_snapshot(
+            recording_outputs_v3,
+            &snapshot,
+            true)) {
+        std::cerr << "Combined recording snapshot update rejected v3 output merge"
+                  << std::endl;
+        return false;
+    }
+    if (!snapshot.contains("session") || !snapshot["session"].is_object()) {
+        snapshot["session"] = nlohmann::json::object();
+    }
+    for (auto it = session_info.begin(); it != session_info.end(); ++it) {
+        snapshot["session"][it.key()] = it.value();
+    }
+    const nlohmann::json* spatial_roi_session = nullptr;
+    const auto spatial_roi_it = snapshot["session"].find(
+        "spatial_roi_recording");
+    if (spatial_roi_it != snapshot["session"].end() &&
+        spatial_roi_it->is_object()) {
+        spatial_roi_session = &spatial_roi_it.value();
+    } else {
+        const auto backend_it = snapshot["session"].find("recording_backend");
+        if (backend_it != snapshot["session"].end() && backend_it->is_object()) {
+            const auto nested_it = backend_it->find("spatial_roi_recording");
+            if (nested_it != backend_it->end() && nested_it->is_object()) {
+                spatial_roi_session = &nested_it.value();
+                snapshot["session"]["spatial_roi_recording"] =
+                    nested_it.value();
+            }
+        }
+    }
+    if (spatial_roi_session != nullptr) {
+        if (!snapshot["session"].contains("recording_backend") ||
+            !snapshot["session"]["recording_backend"].is_object()) {
+            snapshot["session"]["recording_backend"] =
+                nlohmann::json::object();
+        }
+        snapshot["session"]["recording_backend"]["spatial_roi_recording"] =
+            *spatial_roi_session;
+    }
+    snapshot["session"]["updated_at_utc"] = get_current_utc_timestamp();
 
     orange::ScopedFsuid fsuid_guard;
     (void)fsuid_guard;

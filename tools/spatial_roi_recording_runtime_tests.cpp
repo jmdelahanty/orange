@@ -306,7 +306,8 @@ void test_runtime_cuda_fanout_and_terminal_failures()
                     SpatialRoiRuntimeSubmitStatus::kDuplicateOrOutOfOrder &&
                     !duplicate.envelope,
                 "duplicate source recording frame was admitted twice");
-        runtime.StopAcceptingAndDrain();
+        require(runtime.StopAcceptingAndDrain(),
+                "successful ROI sinks did not report a successful drain");
 
         const auto snapshot = submission.envelope->terminal_snapshot();
         require(snapshot.status == SpatialRoiBatchCompletionStatus::kComplete,
@@ -352,7 +353,11 @@ void test_runtime_cuda_fanout_and_terminal_failures()
         failed_submission = runtime.TrySubmit(source);
         require(failed_submission.status == SpatialRoiRuntimeSubmitStatus::kAccepted,
                 "sink outcome was incorrectly reported as an admission failure");
-        runtime.StopAcceptingAndDrain();
+        std::string drain_error;
+        require(!runtime.StopAcceptingAndDrain(&drain_error),
+                "sink rejection/failure was reported as a successful drain");
+        require(!drain_error.empty(),
+                "incomplete sink drain did not retain a failure reason");
         const auto snapshot = failed_submission.envelope->terminal_snapshot();
         require(snapshot.status == SpatialRoiBatchCompletionStatus::kIncomplete,
                 "required sink rejection/failure did not make batch incomplete");
@@ -377,7 +382,8 @@ void test_runtime_cuda_fanout_and_terminal_failures()
         require(missing_sink_submission.status ==
                     SpatialRoiRuntimeSubmitStatus::kAccepted,
                 "missing sink was incorrectly reported as an admission failure");
-        runtime.StopAcceptingAndDrain();
+        require(!runtime.StopAcceptingAndDrain(),
+                "missing recorder sink was reported as a successful drain");
         const auto snapshot =
             missing_sink_submission.envelope->terminal_snapshot();
         require(snapshot.status == SpatialRoiBatchCompletionStatus::kIncomplete,
@@ -465,7 +471,8 @@ void test_exact_lane_capacity_and_reentrant_stop()
         require(fourth.status == SpatialRoiRuntimeSubmitStatus::kAccepted &&
                     fourth.admitted_lane_count == 4,
                 "lane indices could not continue after queue rejection");
-        runtime.StopAcceptingAndDrain();
+        require(!runtime.StopAcceptingAndDrain(),
+                "queue-full lane admission was reported as a successful drain");
         for (std::size_t lane_index = 0; lane_index < 4; ++lane_index) {
             require(delivered_indexes[lane_index].size() == 3,
                     "one lane did not receive all admitted deliveries");
@@ -505,7 +512,8 @@ void test_exact_lane_capacity_and_reentrant_stop()
             runtime.TrySubmit(restarted_source);
         require(submission.status == SpatialRoiRuntimeSubmitStatus::kAccepted,
                 "fresh runtime did not admit its first batch");
-        runtime.StopAcceptingAndDrain();
+        require(runtime.StopAcceptingAndDrain(),
+                "fresh successful runtime did not report a successful drain");
     }
     require(restarted_index == 1,
             "fresh runtime did not restart ROI stream index at one");
@@ -528,7 +536,8 @@ void test_exact_lane_capacity_and_reentrant_stop()
         reentrant = runtime.TrySubmit(make_source_view(gpu_source));
         require(reentrant.status == SpatialRoiRuntimeSubmitStatus::kAccepted,
                 "reentrant-stop fixture was not admitted");
-        runtime.StopAcceptingAndDrain();
+        require(runtime.StopAcceptingAndDrain(),
+                "reentrant successful runtime did not report a successful drain");
         require(reentrant.envelope->terminal_snapshot().status ==
                     SpatialRoiBatchCompletionStatus::kComplete,
                 "reentrant stop prevented admitted lanes from draining");

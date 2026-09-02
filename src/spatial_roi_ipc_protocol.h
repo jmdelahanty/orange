@@ -39,6 +39,21 @@ inline constexpr const char* kSpatialRoiIpcFinalizeStatusKind =
 
 inline constexpr const char* kSpatialRoiIpcProducerRole = "producer";
 inline constexpr const char* kSpatialRoiIpcRecorderRole = "recorder";
+
+// Canonical, ordered HELLO capability vector for both protocol peers. Exact
+// equality is intentional: adding, removing, or reordering a capability is a
+// wire-contract change and must never be accepted asymmetrically.
+inline const std::vector<std::string>& spatial_roi_ipc_required_features()
+{
+    static const std::vector<std::string> features = {
+        "cuda_ipc",
+        "packed_mono8",
+        "ack_release",
+        "terminal_error",
+    };
+    return features;
+}
+
 inline constexpr const char* kSpatialRoiIpcDrainStateDraining = "draining";
 inline constexpr const char* kSpatialRoiIpcDrainStateDrained = "drained";
 inline constexpr const char* kSpatialRoiIpcDrainStateFailed = "failed";

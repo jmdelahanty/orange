@@ -7,9 +7,12 @@
 #include "gui/spatial_layout/sha256.h"
 #include "project.h"
 #include "session/recording_observation_identity.h"
+#include "shaman_v2_recording_identity.h"
 #include "video_capture.h"
 
 #include <cstdlib>
+#include <array>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -79,6 +82,488 @@ std::string fnv1a64_fixture(const std::filesystem::path& path)
         hash *= UINT64_C(1099511628211);
     }
     return orange::calibration::format_fnv1a64_fingerprint(hash);
+}
+
+struct SpatialRoiSnapshotFixture {
+    nlohmann::json recording_outputs_v3;
+    nlohmann::json session;
+};
+
+enum class SnapshotFixtureProfile {
+    legacy_p7_cqp0_gop1,
+    p1_vbr_q20_gop1,
+    active_p1_vbr_q20_gop25,
+};
+
+std::string snapshot_test_digest(const char fill)
+{
+    return "sha256:" + std::string(64, fill);
+}
+
+nlohmann::json make_complete_recorder_process_status()
+{
+    const nlohmann::json preflight = {
+        {"schema_id", "orange.spatial_roi_recording.storage_preflight"},
+        {"schema_version", 1},
+        {"checked", true},
+        {"passed", true},
+        {"status", "passed"},
+        {"error", ""},
+        {"policy", {
+            {"schema_id", "orange.spatial_roi_recorder_storage_preflight_policy"},
+            {"schema_version", 1},
+            {"required", true},
+            {"reserved_free_bytes", 10}}},
+        {"artifact_root", {{"device", 1}, {"inode", 3}}},
+        {"filesystem", {
+            {"block_size_bytes", 1},
+            {"total_blocks", 100000},
+            {"available_blocks", 100000},
+            {"capacity_bytes", 100000},
+            {"available_bytes", 100000}}},
+        {"budgets", {
+            {"max_media_bytes_total", 1000},
+            {"max_evidence_bytes_total", 5000},
+            {"reserved_free_bytes", 10},
+            {"required_bytes", 6010}}}};
+    const nlohmann::json empty_child = {
+        {"event", ""},
+        {"status", ""},
+        {"state", ""},
+        {"ready", false},
+        {"clean_eof", false},
+        {"completed", false},
+        {"failed", false},
+        {"first_failure_stream_id", ""},
+        {"first_failure", ""},
+        {"error", ""},
+        {"payload", nlohmann::json::object()}};
+    const nlohmann::json child = {
+        {"event", "ready"},
+        {"status", "ready"},
+        {"state", "ready"},
+        {"ready", true},
+        {"clean_eof", false},
+        {"completed", false},
+        {"failed", false},
+        {"first_failure_stream_id", ""},
+        {"first_failure", ""},
+        {"error", ""},
+        {"payload", {{"storage_preflight", preflight}}}};
+    const nlohmann::json terminal = {
+        {"event", "terminal"},
+        {"status", "complete"},
+        {"state", "completed"},
+        {"ready", true},
+        {"clean_eof", true},
+        {"completed", true},
+        {"failed", false},
+        {"first_failure_stream_id", ""},
+        {"first_failure", ""},
+        {"error", ""},
+        {"payload", {{"storage_preflight", preflight}}}};
+    return {
+        {"schema_id", "orange.spatial_roi_recording.headless_process_status"},
+        {"schema_version", 1},
+        {"session_state", "finished"},
+        {"process_state", "exited"},
+        {"pid", 1234},
+        {"started", true},
+        {"sockets_bound", true},
+        {"ready", true},
+        {"terminal_seen", true},
+        {"exited", true},
+        {"reaped", true},
+        {"exit_code", 0},
+        {"term_signal", 0},
+        {"stdout_bytes_read", 100},
+        {"cleanup_complete", true},
+        {"first_failure", ""},
+        {"error", ""},
+        {"starting", empty_child},
+        {"ready_snapshot", child},
+        {"heartbeat", empty_child},
+        {"terminal", terminal},
+        {"last", terminal}};
+}
+
+SpatialRoiSnapshotFixture make_spatial_roi_snapshot_fixture(
+    const std::string& status,
+    const SnapshotFixtureProfile fixture_profile =
+        SnapshotFixtureProfile::legacy_p7_cqp0_gop1)
+{
+    constexpr std::array<const char*, 12> artifact_kinds = {
+        "video", "metadata", "keyframes", "perf", "summary", "status",
+        "video_sanity", "finalization", "recorder_log", "transport_sidecar",
+        "evidence", "evidence_manifest"};
+    constexpr std::array<const char*, 16> count_keys = {
+        "detach_successes", "dispatch_admitted", "dispatch_rejected",
+        "ack_attempted", "ack_sent", "ack_accepted", "release_attempted",
+        "release_sent", "encoded_frames", "failed_frames", "packet_count",
+        "encoded_bytes", "keyframes", "ack_write_failures",
+        "release_write_failures", "lifecycle_failures"};
+
+    const std::string camera_serial = "2010096";
+    const std::string recording_id = "spatial_roi_atomic_run";
+    const std::string token =
+        orange::shaman_v2_recording_identity::token_for_recording_id(
+            recording_id);
+    const std::string generation = "generation_001";
+    const std::string plan_digest = snapshot_test_digest('b');
+    const nlohmann::json native_raster = {{"width", 4512}, {"height", 4512}};
+    const nlohmann::json authority_layout = {
+        {"id", "layout_1"}, {"sha256", snapshot_test_digest('c')}};
+    const nlohmann::json authority_materialization = {
+        {"id", "materialization_1"}, {"sha256", snapshot_test_digest('d')}};
+    const nlohmann::json authority_registration = {
+        {"id", "registration_1"}, {"sha256", snapshot_test_digest('e')}};
+
+    nlohmann::json rois = nlohmann::json::array();
+    nlohmann::json streams = nlohmann::json::array();
+    nlohmann::json spatial_roi_descriptors = nlohmann::json::object();
+    nlohmann::json recorder_gpus = nlohmann::json::object();
+    nlohmann::json stream_order = nlohmann::json::array();
+    const bool active_p1 =
+        fixture_profile != SnapshotFixtureProfile::legacy_p7_cqp0_gop1;
+    const std::string profile_id =
+        fixture_profile == SnapshotFixtureProfile::active_p1_vbr_q20_gop25
+            ? "hevc_p1_low_latency_vbr_q20_gop25_v1"
+            : (active_p1 ? "hevc_p1_low_latency_vbr_q20_gop1_v1"
+                         : "hevc_p7_lossless_cqp0_gop1_v1");
+    const std::string preset = active_p1 ? "p1" : "p7";
+    const std::string tuning = active_p1 ? "ll" : "lossless";
+    const bool lossless = !active_p1;
+    const std::string rate_control_mode = active_p1 ? "vbr" : "cqp";
+    const int quality_value = active_p1 ? 20 : 0;
+    const int gop_length =
+        fixture_profile == SnapshotFixtureProfile::active_p1_vbr_q20_gop25
+            ? 25
+            : 1;
+    for (int index = 1; index <= 4; ++index) {
+        const std::string stream_id =
+            camera_serial + "_spatial_roi_roi_" + std::to_string(index);
+        const std::string roi_id = "roi_" + std::to_string(index);
+        const std::string region_id = "region_" + std::to_string(index);
+        const int recorder_gpu = index + 1;
+        const std::string artifact_prefix = "external_spatial_roi_recorder/" +
+                                            stream_id + "/";
+        const std::string receipt_artifact_prefix = stream_id + "/";
+        stream_order.push_back(stream_id);
+        recorder_gpus[stream_id] = recorder_gpu;
+
+        const nlohmann::json content_rect = {
+            {"x", index * 10}, {"y", index * 12}, {"width", 24}, {"height", 24}};
+        const nlohmann::json encoded_content_rect = {
+            {"x", 0}, {"y", 0}, {"width", 24}, {"height", 24}};
+        const nlohmann::json geometry = {
+            {"layout", authority_layout},
+            {"materialization", authority_materialization},
+            {"registration", authority_registration},
+            {"native_raster", native_raster},
+            {"content_rect", content_rect},
+            {"encoded_raster", {{"width", 26}, {"height", 26}}},
+            {"encoded_content_rect", encoded_content_rect},
+            {"content_offset", {{"x", 0}, {"y", 0}}},
+            {"padding", {{"left", 0}, {"top", 0}, {"right", 2},
+                          {"bottom", 2}, {"value_mono8", 0}}},
+            {"source_coordinate_space", "camera_native_full_frame_pixels"},
+            {"video_coordinate_space", "spatial_roi_encoded_pixels"}};
+        const nlohmann::json source_geometry = {
+            {"native_raster", native_raster},
+            {"content_rect", content_rect},
+            {"coordinate_space", "camera_native_full_frame_pixels"}};
+        const nlohmann::json encoded_geometry = {
+            {"raster", {{"width", 26}, {"height", 26}}},
+            {"content_rect", encoded_content_rect},
+            {"coordinate_space", "spatial_roi_encoded_pixels"}};
+        const nlohmann::json profile = {
+            {"profile_id", profile_id},
+            {"codec", "hevc"}, {"preset", preset},
+            {"tuning", tuning}, {"lossless", lossless},
+            {"rate_control_mode", rate_control_mode},
+            {"quality_value", quality_value},
+            {"gop_length", gop_length}, {"aq", false},
+            {"temporal_aq", false}, {"lookahead", false},
+            {"lookahead_depth", 0}, {"frame_rate", 100}, {"input_format", "mono8"},
+            {"encoded_format", "nv12"}, {"no_resize", true},
+            {"luma_preserved_exactly", lossless}, {"neutral_chroma_value", 128}};
+        const nlohmann::json identity = {
+            {"recording_id", recording_id},
+            {"recording_identity_token", token},
+            {"producer_generation", generation},
+            {"spatial_roi_plan_sha256", plan_digest},
+            {"camera_id", 0},
+            {"camera_serial", camera_serial},
+            {"arena_group_id", "arena_group_1"},
+            {"arena_id", index == 1 ? nlohmann::json("arena_1") : nullptr},
+            {"region_id", region_id},
+            {"roi_id", roi_id},
+            {"logical_stream_id", stream_id}};
+        rois.push_back({
+            {"stream_id", stream_id},
+            {"logical_stream_id", stream_id},
+            {"roi_id", roi_id},
+            {"region_id", region_id},
+            {"arena_group_id", "arena_group_1"},
+            {"arena_id", index == 1 ? nlohmann::json("arena_1") : nullptr},
+            {"geometry", geometry},
+            {"source_geometry", source_geometry},
+            {"encoded_geometry", encoded_geometry},
+            {"encode_profile", profile},
+            {"encode_fps", 100},
+            {"codec", "hevc"},
+            {"tuning", tuning},
+            {"analytics_gpu_id", 1},
+            {"source_gpu_id", 1},
+            {"recorder_gpu_id", recorder_gpu},
+            {"assigned_gpu_id", recorder_gpu},
+            {"expected_shard_gpu_ids", {recorder_gpu}}});
+
+        nlohmann::json artifact_paths = nlohmann::json::object();
+        nlohmann::json receipt_artifacts = nlohmann::json::array();
+        for (std::size_t artifact_index = 0;
+             artifact_index < artifact_kinds.size(); ++artifact_index) {
+            const char* kind = artifact_kinds.at(artifact_index);
+            const std::string recording_relative_path =
+                artifact_prefix + kind + ".artifact";
+            const std::string receipt_relative_path =
+                receipt_artifact_prefix + kind + ".artifact";
+            artifact_paths[kind] = recording_relative_path;
+            receipt_artifacts.push_back({
+                {"kind", kind},
+                {"relative_path", receipt_relative_path},
+                {"size_bytes", static_cast<std::uint64_t>(100 + artifact_index)},
+                {"sha256", snapshot_test_digest(
+                                static_cast<char>('f' - artifact_index % 6))}});
+        }
+
+        nlohmann::json counts = nlohmann::json::object();
+        for (const char* key : count_keys) {
+            const std::string name(key);
+            const bool failure_counter =
+                name == "dispatch_rejected" || name == "failed_frames" ||
+                name == "ack_write_failures" ||
+                name == "release_write_failures" ||
+                name == "lifecycle_failures";
+            const bool byte_counter = name == "encoded_bytes";
+            counts[key] = failure_counter
+                              ? static_cast<std::uint64_t>(0)
+                              : (byte_counter ? static_cast<std::uint64_t>(400)
+                                              : static_cast<std::uint64_t>(4));
+        }
+        counts["keyframes"] = static_cast<std::uint64_t>(
+            gop_length == 1 ? 4 : 1);
+        const nlohmann::json ranges = {
+            {"recording_frame_id", {{"first", 1}, {"last", 4}}},
+            {"roi_stream_frame_index", {{"first", 1}, {"last", 4}}},
+            {"has_frames", true}, {"frame_count", 4}};
+        const nlohmann::json receipt_stream = {
+            {"logical_stream_id", stream_id},
+            {"identity", {
+                {"recording_id", recording_id}, {"session_id", recording_id},
+                {"recording_identity_token", token},
+                {"producer_generation", generation},
+                {"spatial_roi_plan_sha256", plan_digest}, {"camera_id", 0},
+                {"camera_serial", camera_serial}, {"roi_id", roi_id},
+                {"region_id", region_id}, {"arena_group_id", "arena_group_1"},
+                {"logical_stream_id", stream_id},
+                {"assigned_gpu_id", recorder_gpu}, {"assigned_shard_id", 0}}},
+            {"counts", counts}, {"ranges", ranges},
+            {"finalized_receipt_digest", snapshot_test_digest('0')},
+            {"artifacts", receipt_artifacts}};
+        streams.push_back(receipt_stream);
+
+        nlohmann::json details = {
+            {"stream_id", stream_id},
+            {"stream_kind", "spatial_roi"},
+            {"identity", identity},
+            {"artifact_path_scope", "recording_root_relative"},
+            {"artifact_root_relative", "external_spatial_roi_recorder"},
+            {"recording_id", recording_id}, {"session_id", recording_id},
+            {"recording_identity_token", token},
+            {"producer_generation", generation},
+            {"spatial_roi_plan_sha256", plan_digest}, {"camera_id", 0},
+            {"camera_serial", camera_serial}, {"roi_id", roi_id},
+            {"region_id", region_id}, {"arena_group_id", "arena_group_1"},
+            {"arena_id", index == 1 ? nlohmann::json("arena_1") : nullptr},
+            {"logical_stream_id", stream_id},
+            {"frame_identity", {
+                {"key_fields", {"recording_identity_token", "producer_generation",
+                                 "logical_stream_id", "recording_frame_id",
+                                 "roi_stream_frame_index"}},
+                {"roi_stream_frame_index", "dense_one_based"},
+                {"recording_frame_id_source", "parent_camera_recording"}}},
+            {"analytics_gpu_id", 1},
+            {"source_gpu_id", 1},
+            {"recorder_gpu_id", recorder_gpu},
+            {"assigned_gpu_id", recorder_gpu},
+            {"geometry", geometry},
+            {"geometry_identity", geometry},
+            {"source_geometry", source_geometry},
+            {"encoded_geometry", {
+                {"encoded_raster", geometry.at("encoded_raster")},
+                {"encoded_content_rect", geometry.at("encoded_content_rect")},
+                {"raster", encoded_geometry.at("raster")},
+                {"content_rect", encoded_geometry.at("content_rect")},
+                {"coordinate_space", encoded_geometry.at("coordinate_space")}}},
+            {"encode_profile", profile},
+            {"encode_fps", 100},
+            {"gop", gop_length},
+            {"rate_control_mode", rate_control_mode},
+            {"quality_value", quality_value},
+            {"encode_queue_depth", 1},
+            {"routing_policy", "single_shard"},
+            {"expected_shard_gpu_ids", {recorder_gpu}},
+            {"artifacts", artifact_paths}};
+        if (status == "complete") {
+            details["finalized_receipt"] = receipt_stream;
+        }
+        spatial_roi_descriptors[stream_id] = {
+            {"schema_version", 3}, {"camera_serial", camera_serial},
+            {"output_kind", "spatial_roi"}, {"logical_stream_id", stream_id},
+            {"role", "runtime_derived_acquisition_input"},
+            {"backend", "external_ipc"}, {"status", status},
+            {"video", artifact_paths.at("video")},
+            {"metadata", artifact_paths.at("metadata")},
+            {"keyframes", artifact_paths.at("keyframes")},
+            {"perf", artifact_paths.at("perf")},
+            {"summary", artifact_paths.at("summary")},
+            {"frame_count", 4}, {"first_recording_frame_id", 1},
+            {"last_recording_frame_id", 4}, {"recording_frame_id_gaps", 0},
+            {"packet_count", 4},
+            {"packet_count_source", "spatial_roi_finalized_session_receipt"},
+            {"width", 26}, {"height", 26}, {"frame_rate", 100},
+            {"codec", "hevc"}, {"container", "mp4"}, {"tuning", tuning},
+            {"pixel_source_format", "mono8"}, {"encoded_format", "nv12"},
+            {"coordinate_space", "camera_native_full_frame_pixels"},
+            {"video_pixel_coordinate_space", "spatial_roi_encoded_pixels"},
+            {"source_geometry_coordinate_space", "camera_native_full_frame_pixels"},
+            {"details", details}};
+    }
+
+    nlohmann::json receipt = {
+        {"schema_id", "orange.spatial_roi_recording.finalized_session_receipt"},
+        {"schema_version", 1},
+        {"canonicalization", "canonical_json_utf8_sort_keys_compact_v1"},
+        {"stream_kind", "fixed_region"}, {"status", "complete"},
+        {"stream_count", 4}, {"stream_order", stream_order},
+        {"identity", {
+            {"recording_id", recording_id}, {"session_id", recording_id},
+            {"recording_identity_token", token},
+            {"producer_generation", generation},
+            {"spatial_roi_plan_sha256", plan_digest}, {"camera_id", 0},
+            {"camera_serial", camera_serial}, {"stream_count", 4},
+            {"stream_order", stream_order}}}};
+    receipt["root_authority"] = {
+        {"artifact_root_relative", "external_spatial_roi_recorder"},
+        {"recording_root_identity", {{"device", 1}, {"inode", 2}}},
+        {"artifact_root_identity", {{"device", 1}, {"inode", 3}}},
+        {"root_continuity", {
+            {"proven", {"opened recording root"}},
+            {"not_proven", {"historical continuity"}}}}};
+    receipt["streams"] = streams;
+
+    const nlohmann::json full_output = {
+        {"schema_version", 1},
+        {"camera_serial", camera_serial},
+        {"output_kind", "full"},
+        {"role", "ingest_authoritative"},
+        {"backend", "in_process"},
+        {"status", status == "complete" ? "finalized" : status},
+        {"video", "full/video.mp4"},
+        {"metadata", "full/metadata.json"},
+        {"keyframes", "full/keyframes.json"},
+        {"perf", "full/perf.csv"},
+        {"container", "mp4"},
+        {"coordinate_space", "full_frame_pixels"},
+        {"frame_count", 4},
+        {"first_recording_frame_id", 1},
+        {"last_recording_frame_id", 4},
+        {"recording_frame_id_gaps", 0},
+        {"packet_count", 4},
+        {"packet_count_source", "ffprobe_nb_read_packets"}};
+    const nlohmann::json producer_status = {
+        {"schema_id", "orange.spatial_roi_recording.headless_producer_status"},
+        {"schema_version", 1},
+        {"state", "stopped"},
+        {"recording_id", recording_id},
+        {"session_id", recording_id},
+        {"recording_identity_token", token},
+        {"producer_generation", generation},
+        {"spatial_roi_plan_sha256", plan_digest},
+        {"camera_id", 0},
+        {"camera_serial", camera_serial},
+        {"stream_count", 4},
+        {"submit_attempted", 4},
+        {"submitted", 4},
+        {"incomplete", 0},
+        {"rejected", 0},
+        {"acquisition_armed", false},
+        {"first_failure", ""}};
+
+    const nlohmann::json session = {
+        {"schema_id", "orange.spatial_roi_recording.session_snapshot"},
+        {"schema_version", 3}, {"status", status},
+        {"recording_id", recording_id}, {"session_id", recording_id},
+        {"recording_identity_token", token}, {"producer_generation", generation},
+        {"spatial_roi_plan_sha256", plan_digest}, {"product_kind", "fixed_region"},
+        {"stream_count", 4}, {"stream_order", stream_order},
+        {"identity", {
+            {"recording_id", recording_id}, {"session_id", recording_id},
+            {"recording_identity_token", token},
+            {"producer_generation", generation},
+            {"spatial_roi_plan_sha256", plan_digest}}},
+        {"camera", {{"camera_id", 0}, {"camera_serial", camera_serial},
+                     {"native_raster", native_raster}}},
+        {"camera_id", 0}, {"camera_serial", camera_serial},
+        {"native_raster", native_raster},
+        {"authorities", {{"layout", authority_layout},
+                          {"materialization", authority_materialization},
+                          {"registration", authority_registration}}},
+        {"gpu_mapping", {
+            {"analytics_gpu_by_camera_serial", {{camera_serial, 1}}},
+            {"recorder_gpu_by_logical_stream_id", recorder_gpus}}},
+        {"artifacts", {
+            {"normalized_config", {{"relative_path", "spatial_roi_recording_config.json"},
+                                    {"size_bytes", 10},
+                                    {"sha256", snapshot_test_digest('1')}}},
+            {"verified_plan", {{"relative_path", "spatial_roi_recording_plan.json"},
+                                {"size_bytes", 11},
+                                {"sha256", snapshot_test_digest('2')}}},
+            {"recorder_contract", {{"relative_path", "spatial_roi_recorder_contract.json"},
+                                    {"size_bytes", 12},
+                                    {"sha256", snapshot_test_digest('3')}}}}},
+        {"rois", rois},
+        {"finalized_session_receipt", status == "complete" ? receipt : nullptr},
+        {"recorder_process_status", status == "complete"
+                                         ? make_complete_recorder_process_status()
+                                         : nlohmann::json{{"state", "ready"}}},
+        {"producer_status", status == "complete"
+                                 ? producer_status
+                                 : nlohmann::json{{"state", "armed"}}}};
+
+    return {nlohmann::json{
+                {"schema_id", "orange.recording_outputs"},
+                {"schema_version", 3},
+                {"cameras", {{camera_serial, {{"full", full_output},
+                                               {"spatial_roi", spatial_roi_descriptors}}}}}},
+            session};
+}
+
+nlohmann::json make_media_policy_fixture(const std::string& policy_name)
+{
+    const bool full_frame = policy_name != "fixed_rois_with_registered_context";
+    const bool fixed_rois = policy_name != "full_frame_only";
+    const bool registered_context =
+        policy_name == "fixed_rois_with_registered_context";
+    return {
+        {"schema_id", "orange.spatial_roi_recording.media_policy"},
+        {"schema_version", 1},
+        {"media_policy", policy_name},
+        {"retained_products", {{"full_frame", full_frame},
+                                {"fixed_rois", fixed_rois},
+                                {"registered_context", registered_context}}},
+        {"sink_backend", nullptr}};
 }
 
 class ScopedEnv {
@@ -1246,6 +1731,745 @@ void test_recording_snapshot_source_streams_follow_record_selection()
     std::filesystem::remove_all(recording_folder);
 }
 
+void test_recording_snapshot_explicit_roi_only_policy_omits_full_product()
+{
+    const std::filesystem::path recording_folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_roi_only_snapshot_" +
+         std::to_string(static_cast<long long>(getpid())));
+    std::filesystem::remove_all(recording_folder);
+    std::filesystem::create_directories(recording_folder);
+    const std::filesystem::path snapshot_path =
+        recording_folder / "recording_snapshot.json";
+    const nlohmann::json initial = {
+        {"schema_version", 2},
+        {"recording_id", "roi_only"},
+        {"source_camera_streams",
+         {{"2010093", {{"role", "canonical_acquisition_source"}}}}},
+        {"recording_outputs",
+         {{"2010093",
+           {{"full", {{"output_kind", "full"}, {"status", "disabled"}}},
+            {"crop", {{"output_kind", "crop"}, {"status", "pending"}}}}}}},
+        {"encoders",
+         {{"2010093",
+           {{"outputs",
+             {{"full", {{"output_kind", "full"}}},
+              {"crop", {{"output_kind", "crop"}}}}}}}}},
+    };
+    write_exact_fixture(snapshot_path, initial.dump(2) + "\n");
+    const std::string before = read_exact_fixture(snapshot_path);
+    require(!omit_recording_snapshot_full_frame_product(
+                recording_folder.string(), "full_frame_only"),
+            "full-frame omission must reject every non-ROI-only policy");
+    require(read_exact_fixture(snapshot_path) == before,
+            "rejected omission must not mutate the snapshot");
+
+    require(omit_recording_snapshot_full_frame_product(
+                recording_folder.string(),
+                "fixed_rois_with_registered_context"),
+            "explicit ROI-only policy must remove the initial full product");
+    const nlohmann::json snapshot =
+        nlohmann::json::parse(read_exact_fixture(snapshot_path));
+    require(!snapshot.at("recording_outputs").at("2010093").contains("full") &&
+                snapshot.at("recording_outputs").at("2010093").contains("crop"),
+            "ROI-only start snapshot must omit full while preserving other products");
+    require(!snapshot.at("encoders").at("2010093").at("outputs").contains("full") &&
+                snapshot.at("encoders").at("2010093").at("outputs").contains("crop"),
+            "encoder compatibility view must not retain a phantom full product");
+    require(snapshot.at("source_camera_streams").contains("2010093"),
+            "full-product omission must preserve canonical camera identity");
+    std::filesystem::remove_all(recording_folder);
+}
+
+void test_recording_snapshot_v3_roi_collection_is_additive()
+{
+    const std::filesystem::path recording_folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_spatial_roi_snapshot_v3_" +
+         std::to_string(static_cast<long long>(getpid())));
+    std::filesystem::remove_all(recording_folder);
+    std::filesystem::create_directories(recording_folder);
+
+    CameraParams camera{};
+    camera.camera_serial = "2010096";
+    camera.camera_id = 0;
+    camera.width = 4512;
+    camera.height = 4512;
+    camera.frame_rate = 100;
+    require(write_recording_snapshot(
+                recording_folder.string(),
+                "spatial_roi_v3_run",
+                &camera,
+                1,
+                recording_folder.parent_path().string(),
+                false,
+                false,
+                nullptr,
+                "external_ipc"),
+            "v3 snapshot fixture should write");
+
+    nlohmann::json snapshot = nlohmann::json::parse(read_exact_fixture(
+        recording_folder / "recording_snapshot.json"));
+    const nlohmann::json legacy_full_before =
+        snapshot.at("recording_outputs").at("2010096").at("full");
+    const nlohmann::json v3_first = {
+        {"schema_id", "orange.recording_outputs"},
+        {"schema_version", 3},
+        {"cameras", {
+            {"2010096", {
+                {"full", legacy_full_before},
+                {"spatial_roi", {
+                    {"2010096_spatial_roi_roi_1", {
+                        {"schema_version", 3},
+                        {"camera_serial", "2010096"},
+                        {"output_kind", "spatial_roi"},
+                        {"logical_stream_id", "2010096_spatial_roi_roi_1"},
+                        {"role", "sidecar"},
+                        {"status", "pending"}
+                    }}
+                }}
+            }}
+        }}
+    };
+    require(update_recording_snapshot_recording_outputs_v3(
+                recording_folder.string(),
+                v3_first),
+            "v3 snapshot updater should write the additive collection");
+
+    snapshot = nlohmann::json::parse(read_exact_fixture(
+        recording_folder / "recording_snapshot.json"));
+    require(snapshot.value("schema_version", 0) == 2,
+            "adding v3 outputs must preserve the schema-2 snapshot version");
+    require(snapshot.at("recording_outputs").at("2010096").at("full") ==
+                legacy_full_before,
+            "v3 output update must not rewrite schema-2 full output");
+    require(snapshot.at("recording_outputs_v3").at("schema_version") == 3,
+            "snapshot should carry the nested v3 output schema version");
+    require(snapshot.at("recording_outputs_v3").at("cameras").at("2010096")
+                .at("spatial_roi").size() == 1,
+            "snapshot should carry the first spatial ROI stream");
+
+    const nlohmann::json v3_second = {
+        {"schema_id", "orange.recording_outputs"},
+        {"schema_version", 3},
+        {"cameras", {
+            {"2010096", {
+                {"spatial_roi", {
+                    {"2010096_spatial_roi_roi_2", {
+                        {"camera_serial", "2010096"},
+                        {"output_kind", "spatial_roi"},
+                        {"logical_stream_id", "2010096_spatial_roi_roi_2"},
+                        {"schema_version", 3},
+                        {"status", "completed"}
+                    }}
+                }}
+            }}
+        }}
+    };
+    // The historical updater also accepts the versioned envelope, which
+    // keeps callers that already use that API source-compatible.
+    require(update_recording_snapshot_recording_outputs(
+                recording_folder.string(),
+                v3_second),
+            "legacy snapshot updater should route v3 payloads additively");
+    snapshot = nlohmann::json::parse(read_exact_fixture(
+        recording_folder / "recording_snapshot.json"));
+    const auto& roi_outputs = snapshot.at("recording_outputs_v3")
+                                  .at("cameras")
+                                  .at("2010096")
+                                  .at("spatial_roi");
+    require(roi_outputs.size() == 2,
+            "v3 snapshot merge should retain multiple logical ROI streams");
+    require(roi_outputs.at("2010096_spatial_roi_roi_2").value(
+                "status", std::string()) == "completed",
+            "v3 snapshot merge should update the addressed ROI stream");
+    require(snapshot.at("recording_outputs").at("2010096").at("full") ==
+                legacy_full_before,
+            "repeated v3 updates must leave schema-2 full output untouched");
+
+    nlohmann::json invalid = v3_first;
+    invalid["cameras"]["2010096"]["spatial_roi"]
+           ["2010096_spatial_roi_roi_1"]["logical_stream_id"] =
+        "2010096_spatial_roi_wrong_key";
+    require(!update_recording_snapshot_recording_outputs_v3(
+                recording_folder.string(),
+                invalid),
+            "v3 snapshot updater must reject mismatched ROI identity");
+    snapshot = nlohmann::json::parse(read_exact_fixture(
+        recording_folder / "recording_snapshot.json"));
+    require(snapshot.at("recording_outputs_v3").at("cameras")
+                .at("2010096").at("spatial_roi").size() == 2,
+            "rejected v3 update must leave committed ROI collection unchanged");
+
+    std::filesystem::remove_all(recording_folder);
+}
+
+void test_recording_snapshot_v3_and_session_update_is_atomic()
+{
+    const std::filesystem::path recording_folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_spatial_roi_snapshot_atomic_" +
+         std::to_string(static_cast<long long>(getpid())));
+    std::filesystem::remove_all(recording_folder);
+    std::filesystem::create_directories(recording_folder);
+
+    CameraParams camera{};
+    camera.camera_serial = "2010096";
+    camera.camera_id = 0;
+    camera.width = 4512;
+    camera.height = 4512;
+    camera.frame_rate = 100;
+    require(write_recording_snapshot(
+                recording_folder.string(),
+                "spatial_roi_atomic_run",
+                &camera,
+                1,
+                recording_folder.parent_path().string(),
+                false,
+                false,
+                nullptr,
+                "external_ipc"),
+            "atomic v3/session fixture should write");
+
+    const SpatialRoiSnapshotFixture pending_fixture =
+        make_spatial_roi_snapshot_fixture("pending");
+    const nlohmann::json legacy_session_info = {
+        {"recording_mode", "single_clip"},
+        {"legacy_status", "retained"}};
+    require(update_recording_snapshot_recording_outputs_v3_and_session_artifacts(
+                recording_folder.string(),
+                pending_fixture.recording_outputs_v3,
+                legacy_session_info),
+            "non-ROI session update should retain compatibility");
+    const SpatialRoiSnapshotFixture& fixture = pending_fixture;
+    require(update_recording_snapshot_recording_outputs_v3_and_session_artifacts(
+                recording_folder.string(), fixture.recording_outputs_v3,
+                {{"spatial_roi_recording", fixture.session}}),
+            "combined v3/session update should write");
+    nlohmann::json snapshot = nlohmann::json::parse(read_exact_fixture(
+        recording_folder / "recording_snapshot.json"));
+    require(snapshot.at("session").at("recording_mode") == "single_clip" &&
+                snapshot.at("session").at("legacy_status") == "retained",
+            "non-ROI session fields should commit unchanged");
+    require(snapshot.at("recording_outputs_v3").at("cameras").at("2010096")
+                .at("spatial_roi").size() == 4,
+            "combined update should commit all four v3 streams");
+    require(snapshot.at("recording_outputs").at("2010096").at("full") ==
+                fixture.recording_outputs_v3.at("cameras").at("2010096")
+                    .at("full") &&
+                snapshot.at("encoders").at("2010096").at("outputs")
+                    .at("full") == fixture.recording_outputs_v3.at("cameras")
+                        .at("2010096").at("full"),
+            "coupled update should project the v3 full output to schema-2 consumers");
+    require(snapshot.at("session").at("spatial_roi_recording") ==
+                fixture.session,
+            "combined update should commit the closed pending session snapshot");
+    require(snapshot.at("session").at("recording_backend")
+                    .at("spatial_roi_recording") == fixture.session,
+            "coupled update should mirror the spatial ROI session under recording_backend");
+
+    const auto rejected_without_mutation = [&](const nlohmann::json& candidate_v3,
+                                                const nlohmann::json& candidate_session,
+                                                const std::string& message,
+                                                const nlohmann::json& expected_session) {
+        require(!update_recording_snapshot_recording_outputs_v3_and_session_artifacts(
+                    recording_folder.string(), candidate_v3,
+                    {{"spatial_roi_recording", candidate_session}}),
+                message);
+        const nlohmann::json after = nlohmann::json::parse(read_exact_fixture(
+            recording_folder / "recording_snapshot.json"));
+        require(after.at("session").at("spatial_roi_recording") ==
+                    expected_session,
+                message + ": rejected update changed committed snapshot");
+    };
+
+    nlohmann::json minimal_session = fixture.session;
+    minimal_session = {{"status", "pending"}};
+    rejected_without_mutation(
+        fixture.recording_outputs_v3, minimal_session,
+        "minimal spatial ROI session payload must reject", fixture.session);
+
+    nlohmann::json mismatched_status = fixture.session;
+    mismatched_status["status"] = "failed";
+    rejected_without_mutation(
+        fixture.recording_outputs_v3, mismatched_status,
+        "descriptor/session lifecycle status mismatch must reject", fixture.session);
+
+    nlohmann::json mismatched_identity = fixture.session;
+    mismatched_identity["recording_id"] = "substituted_recording";
+    rejected_without_mutation(
+        fixture.recording_outputs_v3, mismatched_identity,
+        "session identity substitution must reject", fixture.session);
+
+    nlohmann::json missing_streams = fixture.recording_outputs_v3;
+    missing_streams["cameras"]["2010096"]["spatial_roi"].erase(
+        "2010096_spatial_roi_roi_4");
+    rejected_without_mutation(
+        missing_streams, fixture.session,
+        "missing spatial ROI stream must reject", fixture.session);
+
+    nlohmann::json extra_stream = fixture.recording_outputs_v3;
+    extra_stream["cameras"]["2010096"]["spatial_roi"]
+               ["2010096_spatial_roi_roi_5"] =
+        extra_stream["cameras"]["2010096"]["spatial_roi"]
+                    ["2010096_spatial_roi_roi_1"];
+    rejected_without_mutation(
+        extra_stream, fixture.session,
+        "extra spatial ROI stream must reject", fixture.session);
+
+    nlohmann::json failed_fixture = make_spatial_roi_snapshot_fixture("failed").session;
+    nlohmann::json failed_v3 = make_spatial_roi_snapshot_fixture("failed").recording_outputs_v3;
+    require(update_recording_snapshot_recording_outputs_v3_and_session_artifacts(
+                recording_folder.string(), failed_v3,
+                {{"spatial_roi_recording", failed_fixture}}),
+            "failed spatial ROI coupled update should write with null receipt");
+    snapshot = nlohmann::json::parse(read_exact_fixture(
+        recording_folder / "recording_snapshot.json"));
+    require(snapshot.at("session").at("spatial_roi_recording").at(
+                "finalized_session_receipt").is_null(),
+            "failed spatial ROI session must carry a null receipt");
+
+    const SpatialRoiSnapshotFixture complete_fixture =
+        make_spatial_roi_snapshot_fixture("complete");
+    require(update_recording_snapshot_recording_outputs_v3_and_session_artifacts(
+                recording_folder.string(), complete_fixture.recording_outputs_v3,
+                {{"spatial_roi_recording", complete_fixture.session}}),
+            "complete spatial ROI coupled update should write with receipt");
+    snapshot = nlohmann::json::parse(read_exact_fixture(
+        recording_folder / "recording_snapshot.json"));
+    require(snapshot.at("session").at("spatial_roi_recording") ==
+                complete_fixture.session,
+            "complete coupled update should commit the receipt-gated snapshot");
+    require(snapshot.at("recording_outputs").at("2010096").at("full") ==
+                complete_fixture.recording_outputs_v3.at("cameras")
+                    .at("2010096").at("full") &&
+                snapshot.at("encoders").at("2010096").at("outputs")
+                    .at("full") == complete_fixture.recording_outputs_v3
+                        .at("cameras").at("2010096").at("full"),
+            "terminal coupled update should retain finalized full output in both projections");
+
+    nlohmann::json stale_schema2_full = complete_fixture.recording_outputs_v3
+                                             .at("cameras")
+                                             .at("2010096")
+                                             .at("full");
+    stale_schema2_full["stale_terminal_field"] = "stale";
+    require(update_recording_snapshot_recording_outputs(
+                recording_folder.string(),
+                {{"2010096", {{"full", stale_schema2_full}}}}),
+            "schema-2 updater should be able to seed a stale full field");
+    snapshot = nlohmann::json::parse(read_exact_fixture(
+        recording_folder / "recording_snapshot.json"));
+    require(snapshot.at("recording_outputs").at("2010096").at("full")
+                .contains("stale_terminal_field"),
+            "stale schema-2 full fixture should contain the stale terminal field");
+    require(update_recording_snapshot_recording_outputs_v3_and_session_artifacts(
+                recording_folder.string(), complete_fixture.recording_outputs_v3,
+                {{"spatial_roi_recording", complete_fixture.session}}),
+            "coupled update should replace stale schema-2 full metadata");
+    snapshot = nlohmann::json::parse(read_exact_fixture(
+        recording_folder / "recording_snapshot.json"));
+    require(!snapshot.at("recording_outputs").at("2010096").at("full")
+                 .contains("stale_terminal_field") &&
+                !snapshot.at("encoders").at("2010096").at("outputs")
+                     .at("full").contains("stale_terminal_field"),
+            "coupled update must remove stale schema-2 full fields from both projections");
+
+    // A non-coupled additive update may leave an old stream and terminal
+    // field in the nested index. The authenticated coupled update is
+    // authoritative for the four-lane collection and must replace it as a
+    // unit rather than overlaying those stale entries.
+    nlohmann::json stale_outputs = complete_fixture.recording_outputs_v3;
+    stale_outputs["cameras"]["2010096"]["full"]["stale_terminal_field"] =
+        "stale";
+    stale_outputs["cameras"]["2010096"]["spatial_roi"]
+                 ["2010096_spatial_roi_roi_5"] =
+        stale_outputs["cameras"]["2010096"]["spatial_roi"]
+                    ["2010096_spatial_roi_roi_1"];
+    stale_outputs["cameras"]["2010096"]["spatial_roi"]
+                 ["2010096_spatial_roi_roi_5"]["logical_stream_id"] =
+        "2010096_spatial_roi_roi_5";
+    stale_outputs["cameras"]["2010096"]["spatial_roi"]
+                 ["2010096_spatial_roi_roi_1"]["stale_terminal_field"] =
+        "stale";
+    require(update_recording_snapshot_recording_outputs_v3(
+                recording_folder.string(), stale_outputs),
+            "standalone update should be able to seed stale collection state");
+    snapshot = nlohmann::json::parse(read_exact_fixture(
+        recording_folder / "recording_snapshot.json"));
+    require(snapshot.at("recording_outputs_v3").at("cameras").at("2010096")
+                    .at("spatial_roi").size() == 5,
+            "stale collection fixture should contain an extra ROI stream");
+    require(snapshot.at("recording_outputs_v3").at("cameras").at("2010096")
+                    .at("spatial_roi").at("2010096_spatial_roi_roi_1")
+                    .contains("stale_terminal_field"),
+            "stale collection fixture should contain the stale terminal field");
+    require(snapshot.at("recording_outputs_v3").at("cameras").at("2010096")
+                    .at("full").contains("stale_terminal_field"),
+            "stale v3 full fixture should contain the stale terminal field");
+    require(update_recording_snapshot_recording_outputs_v3_and_session_artifacts(
+                recording_folder.string(), complete_fixture.recording_outputs_v3,
+                {{"spatial_roi_recording", complete_fixture.session}}),
+            "coupled update should replace a stale ROI collection");
+    snapshot = nlohmann::json::parse(read_exact_fixture(
+        recording_folder / "recording_snapshot.json"));
+    const auto& replaced_roi_outputs =
+        snapshot.at("recording_outputs_v3").at("cameras").at("2010096")
+            .at("spatial_roi");
+    require(replaced_roi_outputs.size() == 4 &&
+                !replaced_roi_outputs.contains("2010096_spatial_roi_roi_5") &&
+                !replaced_roi_outputs.at("2010096_spatial_roi_roi_1")
+                     .contains("stale_terminal_field"),
+            "coupled update must remove stale streams and terminal fields");
+    require(!snapshot.at("recording_outputs_v3").at("cameras").at("2010096")
+                 .at("full").contains("stale_terminal_field"),
+            "coupled update must remove stale v3 full fields");
+    require(update_recording_snapshot_recording_outputs_v3_and_session_artifacts(
+                recording_folder.string(), complete_fixture.recording_outputs_v3,
+                {{"recording_backend", {
+                    {"spatial_roi_recording", complete_fixture.session}}}}),
+            "nested recording_backend spatial ROI snapshot should validate");
+    snapshot = nlohmann::json::parse(read_exact_fixture(
+        recording_folder / "recording_snapshot.json"));
+    require(snapshot.at("session").at("spatial_roi_recording") ==
+                snapshot.at("session").at("recording_backend")
+                    .at("spatial_roi_recording"),
+            "snapshot session and recording_backend spatial ROI metadata must match exactly");
+
+    nlohmann::json failed_full_outputs = complete_fixture.recording_outputs_v3;
+    failed_full_outputs["cameras"]["2010096"]["full"]["status"] = "failed";
+    require(update_recording_snapshot_recording_outputs_v3_and_session_artifacts(
+                recording_folder.string(), failed_full_outputs,
+                {{"spatial_roi_recording", complete_fixture.session}}),
+            "complete ROI snapshot should remain valid with an independently failed full frame");
+    snapshot = nlohmann::json::parse(read_exact_fixture(
+        recording_folder / "recording_snapshot.json"));
+    require(snapshot.is_object(), "failed-full snapshot should remain readable");
+    require(snapshot.at("recording_outputs").at("2010096").at("full") ==
+                failed_full_outputs.at("cameras").at("2010096").at("full") &&
+                snapshot.at("encoders").at("2010096").at("outputs")
+                    .at("full") == failed_full_outputs.at("cameras")
+                        .at("2010096").at("full"),
+            "failed full output should be projected consistently to schema-2 consumers");
+    nlohmann::json failed_full_unavailable_evidence = failed_full_outputs;
+    failed_full_unavailable_evidence["cameras"]["2010096"]["full"]
+                                    ["packet_count_source"] = "unavailable";
+    require(update_recording_snapshot_recording_outputs_v3_and_session_artifacts(
+                recording_folder.string(),
+                failed_full_unavailable_evidence,
+                {{"spatial_roi_recording", complete_fixture.session}}),
+            "independently failed full output should permit unavailable packet evidence");
+    snapshot = nlohmann::json::parse(read_exact_fixture(
+        recording_folder / "recording_snapshot.json"));
+    require(snapshot.at("recording_outputs").at("2010096").at("full") ==
+                failed_full_unavailable_evidence.at("cameras")
+                    .at("2010096").at("full") &&
+                snapshot.at("encoders").at("2010096").at("outputs")
+                    .at("full") == failed_full_unavailable_evidence
+                        .at("cameras").at("2010096").at("full"),
+            "failed full unavailable evidence should remain exactly projected");
+    nlohmann::json bad_full_descriptor = complete_fixture.recording_outputs_v3;
+    bad_full_descriptor["cameras"]["2010096"]["full"]["video"] =
+        "/absolute/full.mp4";
+    rejected_without_mutation(
+        bad_full_descriptor, complete_fixture.session,
+        "complete finalized full output must use safe relative paths",
+        complete_fixture.session);
+    bad_full_descriptor = complete_fixture.recording_outputs_v3;
+    bad_full_descriptor["cameras"]["2010096"]["full"]["container"] =
+        "mkv";
+    rejected_without_mutation(
+        bad_full_descriptor, complete_fixture.session,
+        "complete finalized full output must retain the mp4 container",
+        complete_fixture.session);
+    bad_full_descriptor = complete_fixture.recording_outputs_v3;
+    bad_full_descriptor["cameras"]["2010096"]["full"]["coordinate_space"] =
+        "wrong_pixels";
+    rejected_without_mutation(
+        bad_full_descriptor, complete_fixture.session,
+        "complete finalized full output must retain full-frame coordinates",
+        complete_fixture.session);
+    bad_full_descriptor = complete_fixture.recording_outputs_v3;
+    bad_full_descriptor["cameras"]["2010096"]["full"]
+                      ["packet_count_source"] = "unverified";
+    rejected_without_mutation(
+        bad_full_descriptor, complete_fixture.session,
+        "complete finalized full output must retain verified packet provenance",
+        complete_fixture.session);
+    nlohmann::json aliased_full_descriptor = complete_fixture.recording_outputs_v3;
+    aliased_full_descriptor["cameras"]["2010096"]["full"]["video"] =
+        complete_fixture.recording_outputs_v3.at("cameras").at("2010096")
+            .at("spatial_roi").at("2010096_spatial_roi_roi_1")
+            .at("details").at("artifacts").at("video");
+    rejected_without_mutation(
+        aliased_full_descriptor, complete_fixture.session,
+        "complete full and ROI artifacts must use disjoint paths",
+        complete_fixture.session);
+    nlohmann::json missing_complete_full = complete_fixture.recording_outputs_v3;
+    missing_complete_full["cameras"]["2010096"].erase("full");
+    rejected_without_mutation(
+        missing_complete_full, complete_fixture.session,
+        "complete ROI snapshot must retain a first-class full output",
+        complete_fixture.session);
+    nlohmann::json pending_complete_full = complete_fixture.recording_outputs_v3;
+    pending_complete_full["cameras"]["2010096"]["full"]["status"] = "pending";
+    rejected_without_mutation(
+        pending_complete_full, complete_fixture.session,
+        "complete ROI snapshot must reject a nonterminal full output",
+        complete_fixture.session);
+    nlohmann::json failed_full_bad_descriptor = failed_full_outputs;
+    failed_full_bad_descriptor["cameras"]["2010096"]["spatial_roi"]
+                             ["2010096_spatial_roi_roi_1"]["codec"] = "h264";
+    rejected_without_mutation(
+        failed_full_bad_descriptor, complete_fixture.session,
+        "failed full frame must not bypass ROI descriptor validation",
+        complete_fixture.session);
+
+    nlohmann::json substituted_receipt = complete_fixture.session;
+    substituted_receipt["finalized_session_receipt"]["stream_order"][0] =
+        "wrong_stream";
+    rejected_without_mutation(
+        complete_fixture.recording_outputs_v3, substituted_receipt,
+        "receipt stream-order substitution must reject", complete_fixture.session);
+
+    nlohmann::json substituted_descriptor = complete_fixture.recording_outputs_v3;
+    substituted_descriptor["cameras"]["2010096"]["spatial_roi"]
+                          ["2010096_spatial_roi_roi_1"]["details"]
+                          ["finalized_receipt"]["logical_stream_id"] =
+        "wrong_stream";
+    rejected_without_mutation(
+        substituted_descriptor, complete_fixture.session,
+        "descriptor receipt substitution must reject", complete_fixture.session);
+
+    nlohmann::json substituted_geometry = complete_fixture.recording_outputs_v3;
+    substituted_geometry["cameras"]["2010096"]["spatial_roi"]
+                       ["2010096_spatial_roi_roi_1"]["details"]["geometry"]
+                       ["content_rect"]["x"] = 999;
+    rejected_without_mutation(
+        substituted_geometry, complete_fixture.session,
+        "descriptor geometry substitution must reject", complete_fixture.session);
+
+    nlohmann::json substituted_profile = complete_fixture.recording_outputs_v3;
+    substituted_profile["cameras"]["2010096"]["spatial_roi"]
+                      ["2010096_spatial_roi_roi_1"]["details"]
+                      ["encode_profile"]["tuning"] = "lossy";
+    rejected_without_mutation(
+        substituted_profile, complete_fixture.session,
+        "descriptor profile substitution must reject", complete_fixture.session);
+
+    nlohmann::json substituted_gpu = complete_fixture.recording_outputs_v3;
+    substituted_gpu["cameras"]["2010096"]["spatial_roi"]
+                  ["2010096_spatial_roi_roi_1"]["details"]["recorder_gpu_id"] = 99;
+    rejected_without_mutation(
+        substituted_gpu, complete_fixture.session,
+        "descriptor GPU substitution must reject", complete_fixture.session);
+
+    nlohmann::json substituted_raster = complete_fixture.recording_outputs_v3;
+    substituted_raster["cameras"]["2010096"]["spatial_roi"]
+                     ["2010096_spatial_roi_roi_1"]["width"] = 27;
+    rejected_without_mutation(
+        substituted_raster, complete_fixture.session,
+        "descriptor raster substitution must reject", complete_fixture.session);
+
+    nlohmann::json substituted_fps = complete_fixture.recording_outputs_v3;
+    substituted_fps["cameras"]["2010096"]["spatial_roi"]
+                  ["2010096_spatial_roi_roi_1"]["frame_rate"] = 99;
+    rejected_without_mutation(
+        substituted_fps, complete_fixture.session,
+        "descriptor frame-rate substitution must reject", complete_fixture.session);
+
+    nlohmann::json substituted_codec = complete_fixture.recording_outputs_v3;
+    substituted_codec["cameras"]["2010096"]["spatial_roi"]
+                    ["2010096_spatial_roi_roi_1"]["codec"] = "h264";
+    rejected_without_mutation(
+        substituted_codec, complete_fixture.session,
+        "descriptor codec substitution must reject", complete_fixture.session);
+
+    nlohmann::json substituted_range = complete_fixture.session;
+    substituted_range["finalized_session_receipt"]["streams"][0]
+                     ["ranges"]["frame_count"] = 2;
+    rejected_without_mutation(
+        complete_fixture.recording_outputs_v3, substituted_range,
+        "receipt range/count substitution must reject", complete_fixture.session);
+
+    nlohmann::json non_dense_range = complete_fixture.session;
+    non_dense_range["finalized_session_receipt"]["streams"][0]
+                    ["ranges"]["recording_frame_id"]["last"] = 2;
+    rejected_without_mutation(
+        complete_fixture.recording_outputs_v3, non_dense_range,
+        "non-dense receipt range must reject", complete_fixture.session);
+
+    nlohmann::json malformed_descriptor = complete_fixture.recording_outputs_v3;
+    malformed_descriptor["cameras"]["2010096"]["spatial_roi"]
+                       ["2010096_spatial_roi_roi_1"]["details"]
+                       ["identity"]
+                       .erase("camera_id");
+    rejected_without_mutation(
+        malformed_descriptor, complete_fixture.session,
+        "malformed descriptor identity must reject without throwing",
+        complete_fixture.session);
+
+    nlohmann::json arbitrary_spatial = complete_fixture.session;
+    arbitrary_spatial["finalized_session_receipt"] = nullptr;
+    rejected_without_mutation(
+        complete_fixture.recording_outputs_v3, arbitrary_spatial,
+        "complete session without receipt must reject", complete_fixture.session);
+
+    std::filesystem::remove_all(recording_folder);
+}
+
+void test_recording_snapshot_v3_selected_profiles_and_direct_fields()
+{
+    const SnapshotFixtureProfile profiles[] = {
+        SnapshotFixtureProfile::legacy_p7_cqp0_gop1,
+        SnapshotFixtureProfile::p1_vbr_q20_gop1,
+        SnapshotFixtureProfile::active_p1_vbr_q20_gop25};
+    for (const SnapshotFixtureProfile profile : profiles) {
+        const std::filesystem::path recording_folder =
+            std::filesystem::temp_directory_path() /
+            ("orange_spatial_roi_profile_snapshot_" +
+             std::to_string(static_cast<long long>(getpid())) + "_" +
+             std::to_string(static_cast<int>(profile)));
+        std::filesystem::remove_all(recording_folder);
+        std::filesystem::create_directories(recording_folder);
+
+        CameraParams camera{};
+        camera.camera_serial = "2010096";
+        camera.camera_id = 0;
+        camera.width = 4512;
+        camera.height = 4512;
+        camera.frame_rate = 100;
+        require(write_recording_snapshot(
+                    recording_folder.string(), "spatial_roi_profile_run",
+                    &camera, 1, recording_folder.parent_path().string(), false,
+                    false, nullptr, "external_ipc"),
+                "selected-profile fixture should write");
+        const SpatialRoiSnapshotFixture fixture =
+            make_spatial_roi_snapshot_fixture("complete", profile);
+        require(update_recording_snapshot_recording_outputs_v3_and_session_artifacts(
+                    recording_folder.string(), fixture.recording_outputs_v3,
+                    {{"spatial_roi_recording", fixture.session}}),
+                "selected spatial ROI profile should validate");
+        std::filesystem::remove_all(recording_folder);
+    }
+
+    const std::filesystem::path recording_folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_spatial_roi_profile_mismatch_" +
+         std::to_string(static_cast<long long>(getpid())));
+    std::filesystem::remove_all(recording_folder);
+    std::filesystem::create_directories(recording_folder);
+    CameraParams camera{};
+    camera.camera_serial = "2010096";
+    camera.camera_id = 0;
+    camera.width = 4512;
+    camera.height = 4512;
+    camera.frame_rate = 100;
+    require(write_recording_snapshot(
+                recording_folder.string(), "spatial_roi_profile_mismatch_run",
+                &camera, 1, recording_folder.parent_path().string(), false,
+                false, nullptr, "external_ipc"),
+            "profile mismatch fixture should write");
+    const SpatialRoiSnapshotFixture fixture =
+        make_spatial_roi_snapshot_fixture(
+            "complete", SnapshotFixtureProfile::active_p1_vbr_q20_gop25);
+    require(update_recording_snapshot_recording_outputs_v3_and_session_artifacts(
+                recording_folder.string(), fixture.recording_outputs_v3,
+                {{"spatial_roi_recording", fixture.session}}),
+            "active profile baseline should validate");
+    const auto rejected_profile_field =
+        [&](const char* field, const nlohmann::json& value) {
+            nlohmann::json mismatch = fixture.recording_outputs_v3;
+            mismatch["cameras"]["2010096"]["spatial_roi"]
+                    ["2010096_spatial_roi_roi_1"]["details"][field] = value;
+            require(!update_recording_snapshot_recording_outputs_v3_and_session_artifacts(
+                        recording_folder.string(), mismatch,
+                        {{"spatial_roi_recording", fixture.session}}),
+                    std::string("mismatched direct ") + field +
+                        " must reject");
+        };
+    rejected_profile_field("gop", 1);
+    rejected_profile_field("rate_control_mode", "cqp");
+    rejected_profile_field("quality_value", 0);
+    std::filesystem::remove_all(recording_folder);
+}
+
+void test_recording_snapshot_v3_media_policy_controls_full_output()
+{
+    const auto seed_snapshot = [](const std::filesystem::path& recording_folder,
+                                  const std::string& recording_id) {
+        std::filesystem::remove_all(recording_folder);
+        std::filesystem::create_directories(recording_folder);
+        CameraParams camera{};
+        camera.camera_serial = "2010096";
+        camera.camera_id = 0;
+        camera.width = 4512;
+        camera.height = 4512;
+        camera.frame_rate = 100;
+        require(write_recording_snapshot(
+                    recording_folder.string(), recording_id, &camera, 1,
+                    recording_folder.parent_path().string(), false, false,
+                    nullptr, "external_ipc"),
+                "media-policy fixture should write");
+    };
+
+    const std::filesystem::path roi_only_folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_spatial_roi_policy_roi_only_" +
+         std::to_string(static_cast<long long>(getpid())));
+    seed_snapshot(roi_only_folder, "spatial_roi_policy_roi_only_run");
+    require(update_recording_snapshot_session_artifacts(
+                roi_only_folder.string(),
+                {{"spatial_roi_media_policy",
+                  make_media_policy_fixture(
+                      "fixed_rois_with_registered_context")}}),
+            "ROI-only media policy should persist");
+    require(omit_recording_snapshot_full_frame_product(
+                roi_only_folder.string(),
+                "fixed_rois_with_registered_context"),
+            "ROI-only media policy should omit the initial full product");
+    SpatialRoiSnapshotFixture roi_only_fixture =
+        make_spatial_roi_snapshot_fixture(
+            "complete", SnapshotFixtureProfile::active_p1_vbr_q20_gop25);
+    roi_only_fixture.recording_outputs_v3["cameras"]["2010096"].erase("full");
+    require(update_recording_snapshot_recording_outputs_v3_and_session_artifacts(
+                roi_only_folder.string(), roi_only_fixture.recording_outputs_v3,
+                {{"spatial_roi_recording", roi_only_fixture.session}}),
+            "explicit fixed-ROI media policy should allow ROI-only completion");
+    const nlohmann::json roi_only_snapshot = nlohmann::json::parse(
+        read_exact_fixture(roi_only_folder / "recording_snapshot.json"));
+    require(!roi_only_snapshot.at("recording_outputs_v3").at("cameras")
+                 .at("2010096").contains("full") &&
+                !roi_only_snapshot.at("recording_outputs").at("2010096")
+                     .contains("full"),
+            "ROI-only completion must retain no full descriptor");
+    std::filesystem::remove_all(roi_only_folder);
+
+    const std::filesystem::path combined_folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_spatial_roi_policy_combined_" +
+         std::to_string(static_cast<long long>(getpid())));
+    seed_snapshot(combined_folder, "spatial_roi_policy_combined_run");
+    require(update_recording_snapshot_session_artifacts(
+                combined_folder.string(),
+                {{"spatial_roi_media_policy",
+                  make_media_policy_fixture("full_frame_and_fixed_rois")}}),
+            "combined media policy should persist");
+    SpatialRoiSnapshotFixture combined_fixture =
+        make_spatial_roi_snapshot_fixture(
+            "complete", SnapshotFixtureProfile::active_p1_vbr_q20_gop25);
+    combined_fixture.recording_outputs_v3["cameras"]["2010096"].erase("full");
+    const std::string combined_snapshot_before = read_exact_fixture(
+        combined_folder / "recording_snapshot.json");
+    require(!update_recording_snapshot_recording_outputs_v3_and_session_artifacts(
+                combined_folder.string(), combined_fixture.recording_outputs_v3,
+                {{"spatial_roi_recording", combined_fixture.session}}),
+            "combined media policy must require the full descriptor");
+    require(read_exact_fixture(combined_folder / "recording_snapshot.json") ==
+                combined_snapshot_before,
+            "combined missing-full rejection must not mutate the snapshot");
+    std::filesystem::remove_all(combined_folder);
+}
+
 }  // namespace
 
 int main()
@@ -1280,6 +2504,16 @@ int main()
          &test_immutable_recording_start_snapshot_is_exact_and_create_once},
         {"recording_snapshot_source_streams_follow_record_selection",
          &test_recording_snapshot_source_streams_follow_record_selection},
+        {"recording_snapshot_explicit_roi_only_policy_omits_full_product",
+         &test_recording_snapshot_explicit_roi_only_policy_omits_full_product},
+        {"recording_snapshot_v3_roi_collection_is_additive",
+         &test_recording_snapshot_v3_roi_collection_is_additive},
+        {"recording_snapshot_v3_and_session_update_is_atomic",
+         &test_recording_snapshot_v3_and_session_update_is_atomic},
+        {"recording_snapshot_v3_selected_profiles_and_direct_fields",
+         &test_recording_snapshot_v3_selected_profiles_and_direct_fields},
+        {"recording_snapshot_v3_media_policy_controls_full_output",
+         &test_recording_snapshot_v3_media_policy_controls_full_output},
     };
 
     for (const auto& test : tests) {

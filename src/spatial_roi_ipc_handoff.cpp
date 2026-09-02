@@ -13,19 +13,6 @@ namespace {
 
 constexpr std::size_t kMaxRetainedErrorBytes = kSpatialRoiIpcMaxTextBytes;
 
-const std::vector<std::string>& required_hello_features()
-{
-    // This order is canonical on the wire. Validation compares the complete
-    // vector, so a peer is not allowed to add, omit, or reorder capabilities.
-    static const std::vector<std::string> features = {
-        "cuda_ipc",
-        "packed_mono8",
-        "ack_release",
-        "terminal_error",
-    };
-    return features;
-}
-
 std::atomic<std::uint64_t> g_quarantined_destructors{0};
 
 void increment_atomic_saturating(std::atomic<std::uint64_t>* value) noexcept
@@ -402,7 +389,7 @@ bool SpatialRoiIpcHandoff::validate_hello(
         }
         return false;
     }
-    if (hello.features != required_hello_features()) {
+    if (hello.features != spatial_roi_ipc_required_features()) {
         if (error_out) {
             *error_out = "recorder HELLO feature set is not exact";
         }
@@ -454,7 +441,7 @@ bool SpatialRoiIpcHandoff::Negotiate(std::string* error_out)
     local_hello.role = kSpatialRoiIpcProducerRole;
     local_hello.queue_capacity_frames =
         static_cast<std::uint32_t>(config_.max_outstanding_frames);
-    local_hello.features = required_hello_features();
+    local_hello.features = spatial_roi_ipc_required_features();
 
     std::string validation_error;
     std::string wire;

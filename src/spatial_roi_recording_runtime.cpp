@@ -762,6 +762,10 @@ void SpatialRoiRecordingRuntime::mark_lane_terminal(
     std::size_t lane_index,
     SpatialRoiLaneTerminalReason reason) noexcept
 {
+    if (reason != SpatialRoiLaneTerminalReason::kCompleted &&
+        reason != SpatialRoiLaneTerminalReason::kPending) {
+        latch_failure(terminal_reason_name(reason));
+    }
     switch (reason) {
     case SpatialRoiLaneTerminalReason::kCompleted:
         counters_->lane_completed.fetch_add(1, std::memory_order_relaxed);
@@ -792,6 +796,20 @@ void SpatialRoiRecordingRuntime::mark_lane_terminal(
             counters_->strict_incomplete_batches.fetch_add(
                 1, std::memory_order_relaxed);
         }
+    }
+}
+
+void SpatialRoiRecordingRuntime::latch_failure(const char* reason) noexcept
+{
+    std::lock_guard<std::mutex> lock(failure_mutex_);
+    if (failed_) {
+        return;
+    }
+    failed_ = true;
+    try {
+        first_failure_ = (reason && *reason) ? reason : "spatial ROI lane failed";
+    } catch (...) {
+        // The boolean remains authoritative if explanatory allocation fails.
     }
 }
 
@@ -839,15 +857,42 @@ void SpatialRoiRecordingRuntime::Drain() noexcept
     }
 }
 
-void SpatialRoiRecordingRuntime::StopAcceptingAndDrain() noexcept
+bool SpatialRoiRecordingRuntime::StopAcceptingAndDrain(
+    std::string* error_out) noexcept
 {
     Drain();
+    const bool success = !failed();
+    if (!success && error_out) {
+        try {
+            *error_out = failure_reason();
+        } catch (...) {
+            error_out->clear();
+        }
+    } else if (error_out) {
+        try {
+            error_out->clear();
+        } catch (...) {
+        }
+    }
+    return success;
 }
 
 bool SpatialRoiRecordingRuntime::accepting() const noexcept
 {
     std::lock_guard<std::mutex> admission_lock(admission_mutex_);
     return accepting_;
+}
+
+bool SpatialRoiRecordingRuntime::failed() const noexcept
+{
+    std::lock_guard<std::mutex> lock(failure_mutex_);
+    return failed_;
+}
+
+std::string SpatialRoiRecordingRuntime::failure_reason() const
+{
+    std::lock_guard<std::mutex> lock(failure_mutex_);
+    return first_failure_;
 }
 
 SpatialRoiRecordingRuntimeCounters SpatialRoiRecordingRuntime::counters() const

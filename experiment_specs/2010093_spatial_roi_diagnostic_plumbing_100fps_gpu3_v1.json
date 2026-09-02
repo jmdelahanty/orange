@@ -1,0 +1,260 @@
+{
+  "experiment_id": "2010093_spatial_roi_diagnostic_plumbing_100fps_gpu3_v1",
+  "notes": "Versioned plumbing/encoder validation smoke for selected camera 2010093 at 4512x4512 and 100 FPS on GPU 3. In the normal four-camera rig inventory, serial 2010093 has runtime/Shaman camera_id 0; it is also camera_id 0 when it is the only exposed camera. The four non-overlapping rectangles are 0-indexed camera-perspective quadrants ordered top-left, top-right, bottom-left, bottom-right. This is diagnostic validation geometry only, not accepted physical compartment geometry or production region calibration. Authority JSON is closed, versioned, camera-native diagnostic metadata and explicitly carries diagnostic_not_physical_acceptance status.",
+  "selection": {
+    "camera_serials": ["2010093"],
+    "gpu_ids": [3]
+  },
+  "fixed": {
+    "duration_s": 3,
+    "warmup_s": 1,
+    "display": false,
+    "yolo": false,
+    "stream_only": false,
+    "sync_mode": "free_run",
+    "recording_sink_mode": "external_ipc",
+    "config_folder": "config/validated_split_gop_hevc_100fps_gop25_fourcam_a16",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "nvenc_direct_input": false,
+    "external_recorder_contract": {
+      "schema_id": "orange.external_recorder.contract",
+      "schema_version": 1,
+      "mode": "diagnostic_ipc_v1",
+      "supervise_processes": true,
+      "recorder_tool_path": "targets/release/external_recorder_ipc_probe",
+      "artifact_root": "/tmp/orange_external_recorder_spatial_roi_2010093",
+      "session_id": "2010093_spatial_roi_diagnostic_plumbing_100fps_gpu3_v1",
+      "require_summary": true,
+      "require_status": true,
+      "require_video_sanity": true,
+      "require_merged_mp4": true,
+      "require_gop_routing": true,
+      "require_storage_preflight": true,
+      "require_protocol_hello": true,
+      "require_frame_identity_proof": true,
+      "preserve_shard_mp4s": false,
+      "streams": {
+        "2010093": {
+          "stream_id": "2010093",
+          "camera_serial": "2010093",
+          "analytics_gpu_id": 3,
+          "recorder_gpu_id": 3,
+          "expected_shard_gpu_ids": [3, 4],
+          "routing_policy": "gop_modulo",
+          "summary_json": "/tmp/orange_external_recorder_spatial_roi_2010093/Cam2010093_external_summary.json",
+          "status_json": "/tmp/orange_external_recorder_spatial_roi_2010093/Cam2010093_external_status.json",
+          "video_sanity_json": "/tmp/orange_external_recorder_spatial_roi_2010093/Cam2010093_external_video_sanity.json",
+          "mp4": "/tmp/orange_external_recorder_spatial_roi_2010093/Cam2010093_external.mp4",
+          "metadata_csv": "/tmp/orange_external_recorder_spatial_roi_2010093/Cam2010093_external_meta.csv",
+          "gop_routing_csv": "/tmp/orange_external_recorder_spatial_roi_2010093/Cam2010093_external_gop_routing.csv",
+          "encode_fps": 100,
+          "encode_max_fps": 0,
+          "encode_queue_depth": 32,
+          "prewarm_slots": 4,
+          "prewarm_bytes": 20358144,
+          "prewarm_peer_copy": true,
+          "codec": "hevc",
+          "preset": "p1",
+          "tuning": "ll",
+          "gop": 25,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000
+        }
+      }
+    },
+    "yolo_worker": false,
+    "pose_worker": false,
+    "spatial_roi_recording": {
+      "schema_id": "orange.spatial_roi_recording.config",
+      "schema_version": 3,
+      "enabled": true,
+      "backend": "independent_hevc_external_ipc",
+      "strict": true,
+      "source_cadence": "every_recording_frame",
+      "pixel_contract": {
+        "source_format": "mono8",
+        "no_resize": true,
+        "no_color_conversion": true,
+        "output_alignment_px": 2,
+        "padding_value_mono8": 0
+      },
+      "encode_profile": {
+        "name": "hevc_p1_low_latency_vbr_q20_gop25_v1",
+        "codec": "hevc",
+        "preset": "p1",
+        "tuning": "ll",
+        "lossless": false,
+        "rate_control_mode": "vbr",
+        "quality_value": 20,
+        "gop_length": 25,
+        "aq": false,
+        "temporal_aq": false,
+        "lookahead": false,
+        "lookahead_depth": 0
+      },
+      "buffering": {
+        "pool_frames_per_stream": 32,
+        "queue_frames_per_stream": 64
+      },
+      "recording_limits": {
+        "max_frames_per_stream": 2000,
+        "max_media_bytes_per_stream": 17179869184,
+        "max_evidence_bytes_per_stream": 268435456
+      },
+      "admission": {
+        "max_rois_per_camera": 4,
+        "max_total_rois": 4,
+        "max_total_pixel_rate": 3000000000,
+        "max_total_encoder_streams": 4,
+        "max_total_pool_bytes": 1000000000,
+        "max_total_queue_frames": 512,
+        "max_total_media_bytes": 68719476736,
+        "max_total_evidence_bytes": 1073741824
+      },
+      "cameras": {
+        "2010093": {
+          "camera_id": 0,
+          "camera_serial": "2010093",
+          "native_raster": {
+            "width": 4512,
+            "height": 4512
+          },
+          "source_frame_rate": 100,
+          "arena_group_id": "diagnostic_quadrants",
+          "layout": {
+            "id": "2010093_diagnostic_layout_v1",
+            "sha256": "sha256:3c426ab2d4be238dca72b2d96f8dbbcc0de585acdcb5ebef4b1f182f71339656"
+          },
+          "materialization": {
+            "id": "2010093_diagnostic_materialization_v1",
+            "sha256": "sha256:5fa379643059c60edc111ea0b89b00cb7ac10dff4f04cee8c17a2763e2ce1b83"
+          },
+          "registration": {
+            "id": "2010093_diagnostic_registration_v1",
+            "sha256": "sha256:cef85a0d4f51a4ef6b0a64fbf5e849f5947475bf11aa586a10f8553b6228e227"
+          },
+          "allow_roi_overlap": false,
+          "rois": [
+            {
+              "roi_id": "quadrant_top_left",
+              "region_id": "diagnostic_top_left",
+              "required": true,
+              "content_rect": {
+                "x": 0,
+                "y": 0,
+                "width": 2256,
+                "height": 2256
+              },
+              "logical_stream_id": "2010093_spatial_roi_quadrant_top_left",
+              "artifact_stem": "Cam2010093_spatial_roi_quadrant_top_left"
+            },
+            {
+              "roi_id": "quadrant_top_right",
+              "region_id": "diagnostic_top_right",
+              "required": true,
+              "content_rect": {
+                "x": 2256,
+                "y": 0,
+                "width": 2256,
+                "height": 2256
+              },
+              "logical_stream_id": "2010093_spatial_roi_quadrant_top_right",
+              "artifact_stem": "Cam2010093_spatial_roi_quadrant_top_right"
+            },
+            {
+              "roi_id": "quadrant_bottom_left",
+              "region_id": "diagnostic_bottom_left",
+              "required": true,
+              "content_rect": {
+                "x": 0,
+                "y": 2256,
+                "width": 2256,
+                "height": 2256
+              },
+              "logical_stream_id": "2010093_spatial_roi_quadrant_bottom_left",
+              "artifact_stem": "Cam2010093_spatial_roi_quadrant_bottom_left"
+            },
+            {
+              "roi_id": "quadrant_bottom_right",
+              "region_id": "diagnostic_bottom_right",
+              "required": true,
+              "content_rect": {
+                "x": 2256,
+                "y": 2256,
+                "width": 2256,
+                "height": 2256
+              },
+              "logical_stream_id": "2010093_spatial_roi_quadrant_bottom_right",
+              "artifact_stem": "Cam2010093_spatial_roi_quadrant_bottom_right"
+            }
+          ]
+        }
+      }
+    },
+    "spatial_roi_recorder_runtime": {
+      "schema_id": "orange.spatial_roi_recording.recorder_runtime",
+      "schema_version": 1,
+      "mode": "explicit_per_stream",
+      "recorder_gpu_by_logical_stream_id": {
+        "2010093_spatial_roi_quadrant_top_left": 1,
+        "2010093_spatial_roi_quadrant_top_right": 2,
+        "2010093_spatial_roi_quadrant_bottom_left": 1,
+        "2010093_spatial_roi_quadrant_bottom_right": 2
+      }
+    }
+  },
+  "matrix": {
+    "codec": ["hevc"],
+    "preset": ["p1"],
+    "tuning": ["ll"],
+    "rate_control_mode": ["vbr"],
+    "quality_value": [20],
+    "gop_length": [25],
+    "aq": ["off"],
+    "temporal_aq": ["off"],
+    "lookahead": ["off"]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 2.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true,
+    "require_zero_camera_drops": true,
+    "require_valid_video_content": true
+  },
+  "diagnostic_authority": {
+    "schema_id": "orange.spatial_roi_diagnostic_authority.index",
+    "schema_version": 1,
+    "closed": true,
+    "status": "diagnostic_not_physical_acceptance",
+    "camera_serial": "2010093",
+    "runtime_camera_id": 0,
+    "runtime_mapping": "normal_four_camera_rig_inventory_2010093_to_2010096_maps_0_to_3",
+    "coordinate_space": "camera_native_0_indexed",
+    "native_raster": {
+      "width": 4512,
+      "height": 4512
+    },
+    "artifacts": {
+      "layout": {
+        "id": "2010093_diagnostic_layout_v1",
+        "path": "experiment_specs/spatial_roi_diagnostic_authority/2010093_diagnostic_layout_v1.json",
+        "size_bytes": 1113,
+        "sha256": "sha256:3c426ab2d4be238dca72b2d96f8dbbcc0de585acdcb5ebef4b1f182f71339656"
+      },
+      "materialization": {
+        "id": "2010093_diagnostic_materialization_v1",
+        "path": "experiment_specs/spatial_roi_diagnostic_authority/2010093_diagnostic_materialization_v1.json",
+        "size_bytes": 1651,
+        "sha256": "sha256:5fa379643059c60edc111ea0b89b00cb7ac10dff4f04cee8c17a2763e2ce1b83"
+      },
+      "registration": {
+        "id": "2010093_diagnostic_registration_v1",
+        "path": "experiment_specs/spatial_roi_diagnostic_authority/2010093_diagnostic_registration_v1.json",
+        "size_bytes": 811,
+        "sha256": "sha256:cef85a0d4f51a4ef6b0a64fbf5e849f5947475bf11aa586a10f8553b6228e227"
+      }
+    }
+  }
+}

@@ -10,11 +10,28 @@ namespace orange::session::spatial_roi {
 
 inline constexpr const char* kSpatialRoiRecorderContractSchemaId =
     "orange.spatial_roi_recording.external_recorder_contract";
-inline constexpr int kSpatialRoiRecorderContractSchemaVersion = 2;
+inline constexpr int kLegacySpatialRoiRecorderContractSchemaVersion = 4;
+inline constexpr int kSpatialRoiRecorderContractSchemaVersion = 5;
+inline constexpr const char* kLegacySpatialRoiRecorderContractScope =
+    "strict_spatial_roi_external_recorder_v4";
 inline constexpr const char* kSpatialRoiRecorderContractScope =
-    "strict_spatial_roi_external_recorder_v2";
+    "strict_spatial_roi_external_recorder_v5";
+inline constexpr const char* kLegacySpatialRoiRecorderContractMode =
+    "spatial_roi_external_recorder_v4";
 inline constexpr const char* kSpatialRoiRecorderContractMode =
-    "spatial_roi_external_recorder_v2";
+    "spatial_roi_external_recorder_v5";
+
+// Storage admission is a separate closed policy schema.  The recorder must
+// authenticate these values from the contract before it performs its
+// descriptor-bound live filesystem query; there is no zero-reserve fallback.
+inline constexpr const char* kSpatialRoiRecorderStoragePreflightPolicySchemaId =
+    "orange.spatial_roi_recorder_storage_preflight_policy";
+inline constexpr int kSpatialRoiRecorderStoragePreflightPolicySchemaVersion = 1;
+inline constexpr const char* kSpatialRoiRecorderStoragePreflightSchemaId =
+    "orange.spatial_roi_recording.storage_preflight";
+inline constexpr int kSpatialRoiRecorderStoragePreflightSchemaVersion = 1;
+inline constexpr std::uint64_t kSpatialRoiRecorderReservedFreeBytes =
+    500000000000ULL;
 
 // Closed recorder-side construction policy.  These are authenticated values,
 // not parser fallbacks: every emitted stream repeats the applicable values and

@@ -2,6 +2,7 @@
 
 #include "spatial_roi_ipc_handoff.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -18,6 +19,9 @@ namespace orange::spatial_roi::ipc {
 // future supervisor and are intentionally outside this class. The class is
 // single-owner and not thread-safe: ReadLine, WriteLine, and Close must never
 // run concurrently, and callers must not retain or duplicate the adopted fd.
+// RequestShutdown is the one deliberate exception: a lifecycle owner may call
+// it from another thread to interrupt a bounded ReadLine/WriteLine before it
+// joins the transport owner. Close must still wait until that owner has joined.
 struct SpatialRoiUnixSocketTransportConfig {
     // This is also the upper bound accepted by WriteLine.  ReadLine applies
     // the smaller of this value and its per-call max_wire_bytes argument.
@@ -79,6 +83,12 @@ public:
         std::chrono::milliseconds timeout,
         std::size_t max_wire_bytes) override;
 
+    // Interrupt an active owner through a private pollable event capability;
+    // this method neither reads nor mutates socket-owner state. The caller must
+    // join the owner before calling Close. This operation is idempotent and is
+    // the only method permitted concurrently with ReadLine/WriteLine.
+    bool RequestShutdown(std::string* error_out = nullptr) noexcept;
+
     // Closing is idempotent.  close(2) is deliberately not retried after
     // EINTR because Linux may already have released the descriptor number.
     void Close() noexcept;
@@ -102,6 +112,7 @@ private:
 
     SpatialRoiUnixSocketLineTransport(
         int fd,
+        int cancellation_fd,
         SpatialRoiUnixSocketTransportConfig config,
         SpatialRoiUnixSocketPeerCredentials peer_credentials);
 
@@ -122,6 +133,8 @@ private:
         const std::string& error) const noexcept;
 
     int fd_ = -1;
+    int cancellation_fd_ = -1;
+    std::atomic<bool> shutdown_requested_{false};
     SpatialRoiUnixSocketTransportConfig config_;
     SpatialRoiUnixSocketPeerCredentials peer_credentials_;
     std::string receive_buffer_;

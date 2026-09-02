@@ -5,6 +5,7 @@ ORANGE_ROOT="/home/jeremy/orange-jeremy"
 DEFAULT_ORANGE_CLIENT="$ORANGE_ROOT/build/orange_client"
 EXPERIMENT_ORANGE_ROOT="/home/jeremy/orange-gop-split-a16"
 EXPERIMENT_ORANGE_CLIENT="$EXPERIMENT_ORANGE_ROOT/targets/release/orange_client"
+ISOLATION_ORANGE_CLIENT="/tmp/orange-spatial-roi-recording-v1-20260830/targets/release/orange_client"
 ORANGE_CLIENT="$DEFAULT_ORANGE_CLIENT"
 ACQUIRE_WORK_ENTRIES_MAX=""
 ENCODER_ENTRY_POOL_SIZE=""
@@ -18,6 +19,7 @@ YOLO_SPATIAL_MASK_MODE=""
 YOLO_SPATIAL_MASK_INPUT_CONTEXT_OUTSET_PX=""
 YOLO_SPATIAL_MASK_APPLY_TIMEOUT_MS=""
 CITRUS_RECORDING_CANVAS_CONFIG_PATH=""
+SPATIAL_ROI_RECORDER_CPU_AFFINITY=""
 ALLOWED_SPEC_DIR_1="$ORANGE_ROOT/experiment_specs"
 ALLOWED_SPEC_DIR_2="/tmp"
 ALLOWED_SPEC_DIR_3="$EXPERIMENT_ORANGE_ROOT/experiment_specs"
@@ -53,12 +55,17 @@ Options:
   --citrus-recording-canvas-config-path <path>
                                       Select an existing Citrus canvas JSON under
                                       /home/jeremy/citrus/targets/rigs or /tmp.
+  --spatial-roi-recorder-cpu-affinity <cpu-list>
+                                      Export the optional camera-recorder-wide
+                                      ORANGE_SPATIAL_ROI_RECORDER_CPU_AFFINITY.
+                                      Example: 13-19,45-51.
 
 Behavior:
   - Runs orange_client in local experiment mode as root.
   - Only accepts orange_client binaries at:
       /home/jeremy/orange-jeremy/build/orange_client
       /home/jeremy/orange-gop-split-a16/targets/release/orange_client
+      /tmp/orange-spatial-roi-recording-v1-20260830/targets/release/orange_client
   - Only accepts spec files under:
       /home/jeremy/orange-jeremy/experiment_specs
       /home/jeremy/orange-gop-split-a16/experiment_specs
@@ -108,7 +115,7 @@ while [[ $# -gt 0 ]]; do
       [[ $# -gt 0 ]] || { echo "--orange-client requires a value." >&2; exit 2; }
       ORANGE_CLIENT="$(realpath -e "$1")"
       case "$ORANGE_CLIENT" in
-        "$DEFAULT_ORANGE_CLIENT"|"$EXPERIMENT_ORANGE_CLIENT")
+        "$DEFAULT_ORANGE_CLIENT"|"$EXPERIMENT_ORANGE_CLIENT"|"$ISOLATION_ORANGE_CLIENT")
           ;;
         *)
           echo "Refusing to use orange_client outside allowed binaries: $ORANGE_CLIENT" >&2
@@ -231,6 +238,16 @@ while [[ $# -gt 0 ]]; do
       esac
       shift
       ;;
+    --spatial-roi-recorder-cpu-affinity)
+      shift
+      [[ $# -gt 0 ]] || { echo "--spatial-roi-recorder-cpu-affinity requires a value." >&2; exit 2; }
+      [[ "$1" =~ ^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$ ]] || {
+        echo "--spatial-roi-recorder-cpu-affinity must be a comma-separated CPU/range list." >&2
+        exit 2
+      }
+      SPATIAL_ROI_RECORDER_CPU_AFFINITY="$1"
+      shift
+      ;;
     *)
       break
       ;;
@@ -295,6 +312,10 @@ export_optional_runtime_env() {
   if [[ -n "$CITRUS_RECORDING_CANVAS_CONFIG_PATH" ]]; then
     echo "[sudo-wrapper] citrus_recording_canvas_config_path=$CITRUS_RECORDING_CANVAS_CONFIG_PATH"
     export ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH="$CITRUS_RECORDING_CANVAS_CONFIG_PATH"
+  fi
+  if [[ -n "$SPATIAL_ROI_RECORDER_CPU_AFFINITY" ]]; then
+    echo "[sudo-wrapper] spatial_roi_recorder_cpu_affinity=$SPATIAL_ROI_RECORDER_CPU_AFFINITY"
+    export ORANGE_SPATIAL_ROI_RECORDER_CPU_AFFINITY="$SPATIAL_ROI_RECORDER_CPU_AFFINITY"
   fi
 }
 

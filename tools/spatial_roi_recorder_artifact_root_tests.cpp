@@ -214,6 +214,60 @@ SpatialRoiRecorderArtifactIdentity identity_for_fd(const int fd)
             static_cast<std::uint64_t>(value.st_ino)};
 }
 
+int open_directory_fd(const fs::path& path)
+{
+    const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    require(fd >= 0,
+            "failed to open directory descriptor for adoption: " +
+                std::string(std::strerror(errno)));
+    return fd;
+}
+
+int open_read_only_fd(const fs::path& path)
+{
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    require(fd >= 0,
+            "failed to open file descriptor for adoption: " +
+                std::string(std::strerror(errno)));
+    return fd;
+}
+
+void require_closed(const int fd, const std::string& context)
+{
+    errno = 0;
+    require(::fcntl(fd, F_GETFD) < 0 && errno == EBADF,
+            context + " descriptor was not closed");
+}
+
+void require_adoption_rejected(
+    const int recording_root_fd,
+    const int artifact_root_fd,
+    const SpatialRoiRecorderArtifactIdentity recording_identity,
+    const SpatialRoiRecorderArtifactIdentity artifact_identity,
+    const fs::path& diagnostic_root,
+    const std::vector<std::string>& allowed,
+    const std::string& context)
+{
+    std::unique_ptr<SpatialRoiRecorderArtifactRoot> result;
+    std::string error;
+    require(!SpatialRoiRecorderArtifactRoot::AdoptExistingFds(
+                recording_root_fd,
+                artifact_root_fd,
+                recording_identity,
+                artifact_identity,
+                diagnostic_root,
+                allowed,
+                &result,
+                &error),
+            context + " was unexpectedly accepted");
+    require(result == nullptr && !error.empty(),
+            context + " rejection did not fail closed with a diagnostic");
+    require_closed(recording_root_fd, context + " recording-root");
+    if (artifact_root_fd != recording_root_fd) {
+        require_closed(artifact_root_fd, context + " artifact-root");
+    }
+}
+
 void rejects_unsafe_paths_and_unlisted_names()
 {
     TempTree tree;
@@ -614,6 +668,202 @@ void adopted_leaf_replacement_is_detected()
             "adopted artifact replacement lacked a diagnostic");
 }
 
+void adopts_inherited_descriptors_without_path_reopen()
+{
+    TempTree tree;
+    const fs::path root = make_recording_root(tree);
+    auto creating_authority = open_root(root, {"adopted.bin"});
+    creating_authority.reset();
+
+    const int recording_fd = open_directory_fd(root);
+    const int artifact_fd = open_directory_fd(
+        root / kSpatialRoiRecorderArtifactDirectory);
+    const auto recording_identity = identity_for_fd(recording_fd);
+    const auto artifact_identity = identity_for_fd(artifact_fd);
+
+    std::unique_ptr<SpatialRoiRecorderArtifactRoot> adopted;
+    std::string error;
+    require(SpatialRoiRecorderArtifactRoot::AdoptExistingFds(
+                recording_fd,
+                artifact_fd,
+                recording_identity,
+                artifact_identity,
+                root,
+                {"adopted.bin"},
+                &adopted,
+                &error),
+            "inherited descriptor adoption failed: " + error);
+    require(adopted != nullptr && adopted->valid(),
+            "inherited descriptor adoption returned no authority");
+    require((::fcntl(adopted->borrowed_recording_root_fd(), F_GETFD) &
+             FD_CLOEXEC) != 0 &&
+                (::fcntl(adopted->borrowed_artifact_root_fd(), F_GETFD) &
+                 FD_CLOEXEC) != 0,
+            "adopted descriptors are not close-on-exec");
+    require(adopted->recording_root_identity() == recording_identity &&
+                adopted->artifact_root_identity() == artifact_identity,
+            "adopted descriptors did not retain exact identities");
+    auto file = create_file(*adopted, "adopted.bin");
+    write_all(file->borrowed_fd(), "inherited authority");
+}
+
+void adoption_uses_descriptor_identity_after_path_swap()
+{
+    TempTree tree;
+    const fs::path root = make_recording_root(tree);
+    auto creating_authority = open_root(root, {"moved.bin"});
+    creating_authority.reset();
+
+    const int recording_fd = open_directory_fd(root);
+    const int artifact_fd = open_directory_fd(
+        root / kSpatialRoiRecorderArtifactDirectory);
+    const auto recording_identity = identity_for_fd(recording_fd);
+    const auto artifact_identity = identity_for_fd(artifact_fd);
+
+    const fs::path moved_root = tree.path() / "moved_recording";
+    std::error_code rename_error;
+    fs::rename(root, moved_root, rename_error);
+    require(!rename_error, "failed to move opened recording root: " +
+                              rename_error.message());
+    const fs::path decoy = tree.path() / "decoy_recording";
+    require(fs::create_directory(decoy), "failed to create swapped-root decoy");
+    fs::create_directory_symlink(decoy, root);
+
+    std::unique_ptr<SpatialRoiRecorderArtifactRoot> adopted;
+    std::string error;
+    require(SpatialRoiRecorderArtifactRoot::AdoptExistingFds(
+                recording_fd,
+                artifact_fd,
+                recording_identity,
+                artifact_identity,
+                root,
+                {"moved.bin"},
+                &adopted,
+                &error),
+            "descriptor adoption followed swapped diagnostic path: " + error);
+    auto file = create_file(*adopted, "moved.bin");
+    write_all(file->borrowed_fd(), "descriptor-bound");
+    require(fs::is_regular_file(
+                moved_root / kSpatialRoiRecorderArtifactDirectory / "moved.bin"),
+            "adopted authority did not remain bound to opened recording root");
+    require(!fs::exists(decoy / kSpatialRoiRecorderArtifactDirectory /
+                        "moved.bin"),
+            "adopted authority followed swapped diagnostic path");
+}
+
+void adoption_rejects_wrong_identity_and_descriptor_types()
+{
+    TempTree tree;
+    const fs::path root = make_recording_root(tree);
+    auto creating_authority = open_root(root, {"identity.bin"});
+    creating_authority.reset();
+    const fs::path decoy_root = make_recording_root(tree, "decoy_recording");
+
+    {
+        const int recording_fd = open_directory_fd(root);
+        const int artifact_fd = open_directory_fd(
+            root / kSpatialRoiRecorderArtifactDirectory);
+        const int decoy_fd = open_directory_fd(decoy_root);
+        const auto decoy_identity = identity_for_fd(decoy_fd);
+        const auto artifact_identity = identity_for_fd(artifact_fd);
+        require(::close(decoy_fd) == 0, "failed to close decoy identity descriptor");
+        require_adoption_rejected(recording_fd,
+                                  artifact_fd,
+                                  decoy_identity,
+                                  artifact_identity,
+                                  root,
+                                  {"identity.bin"},
+                                  "wrong recording identity");
+    }
+
+    {
+        const int recording_fd = open_directory_fd(root);
+        const fs::path regular = tree.path() / "not_a_directory";
+        {
+            std::ofstream output(regular, std::ios::binary);
+            require(static_cast<bool>(output), "failed to create non-directory fixture");
+            output << "not a directory";
+        }
+        const int artifact_fd = open_read_only_fd(regular);
+        const auto recording_identity = identity_for_fd(recording_fd);
+        const auto artifact_identity = identity_for_fd(artifact_fd);
+        require_adoption_rejected(recording_fd,
+                                  artifact_fd,
+                                  recording_identity,
+                                  artifact_identity,
+                                  root,
+                                  {"identity.bin"},
+                                  "non-directory artifact descriptor");
+    }
+}
+
+void adoption_rejects_unrelated_child_and_bad_allow_list()
+{
+    TempTree tree;
+    const fs::path root = make_recording_root(tree);
+    auto creating_authority = open_root(root, {"allow.bin"});
+    creating_authority.reset();
+    const fs::path unrelated = tree.path() / "unrelated_artifact_root";
+    require(fs::create_directory(unrelated), "failed to create unrelated directory");
+
+    {
+        const int recording_fd = open_directory_fd(root);
+        const int artifact_fd = open_directory_fd(unrelated);
+        require_adoption_rejected(recording_fd,
+                                  artifact_fd,
+                                  identity_for_fd(recording_fd),
+                                  identity_for_fd(artifact_fd),
+                                  root,
+                                  {"allow.bin"},
+                                  "unrelated artifact descriptor");
+    }
+
+    {
+        const fs::path symlink_root = make_recording_root(tree, "symlink_recording");
+        const fs::path symlink_target = tree.path() / "symlink_target";
+        require(fs::create_directory(symlink_target),
+                "failed to create symlink artifact target");
+        fs::create_directory_symlink(
+            symlink_target,
+            symlink_root / kSpatialRoiRecorderArtifactDirectory);
+        const int recording_fd = open_directory_fd(symlink_root);
+        const int artifact_fd = open_directory_fd(symlink_target);
+        const auto recording_identity = identity_for_fd(recording_fd);
+        const auto artifact_identity = identity_for_fd(artifact_fd);
+        require_adoption_rejected(recording_fd,
+                                  artifact_fd,
+                                  recording_identity,
+                                  artifact_identity,
+                                  symlink_root,
+                                  {"allow.bin"},
+                                  "symlink artifact child");
+    }
+
+    {
+        const int recording_fd = open_directory_fd(root);
+        const int artifact_fd = open_directory_fd(
+            root / kSpatialRoiRecorderArtifactDirectory);
+        require_adoption_rejected(recording_fd,
+                                  artifact_fd,
+                                  identity_for_fd(recording_fd),
+                                  identity_for_fd(artifact_fd),
+                                  root,
+                                  {"allow.bin", "allow.bin"},
+                                  "duplicate adoption allow-list");
+    }
+
+    {
+        const int shared_fd = open_directory_fd(root);
+        require_adoption_rejected(shared_fd,
+                                  shared_fd,
+                                  identity_for_fd(shared_fd),
+                                  identity_for_fd(shared_fd),
+                                  root,
+                                  {"allow.bin"},
+                                  "shared descriptor arguments");
+    }
+}
+
 }  // namespace
 
 int main()
@@ -628,6 +878,10 @@ int main()
         duplicated_descriptors_and_durable_seal_work();
         existing_adoption_never_creates_and_honors_access();
         adopted_leaf_replacement_is_detected();
+        adopts_inherited_descriptors_without_path_reopen();
+        adoption_uses_descriptor_identity_after_path_swap();
+        adoption_rejects_wrong_identity_and_descriptor_types();
+        adoption_rejects_unrelated_child_and_bad_allow_list();
         std::cout << "spatial_roi_recorder_artifact_root_tests passed\n";
         return 0;
     } catch (const std::exception& exception) {

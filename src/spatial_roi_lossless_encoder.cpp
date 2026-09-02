@@ -437,10 +437,9 @@ bool validate_spatial_roi_lossless_frame_result(
                 result.output_frame_index != result.nvenc_pts + 1U ||
                 result.output_frame_index !=
                     result.correlation.roi_stream_frame_index ||
-                result.packet_count != 1 || result.encoded_bytes == 0 ||
-                !result.keyframe) {
+                result.packet_count != 1 || result.encoded_bytes == 0) {
                 return reject(
-                    "encoded result requires one keyframe packet and exact one-based output identity");
+                    "encoded result requires one packet and exact one-based output identity");
             }
             break;
         case SpatialRoiLosslessFrameResultStatus::Failed:
@@ -466,12 +465,12 @@ bool validate_spatial_roi_lossless_frame_result(
     return true;
 }
 
-bool validate_spatial_roi_lossless_encoder_config(
+bool validate_spatial_roi_encoder_config(
     const SpatialRoiLosslessEncoderConfig& config,
     std::string* error_out)
 {
     auto reject = [&](const std::string& reason) {
-        set_error(error_out, "spatial ROI lossless encoder config invalid: " + reason);
+        set_error(error_out, "spatial ROI encoder config invalid: " + reason);
         return false;
     };
 
@@ -501,11 +500,33 @@ bool validate_spatial_roi_lossless_encoder_config(
     if (geometry.routing_policy != "single_shard") {
         return reject("routing_policy must be single_shard");
     }
-    if (config.codec != "hevc" || config.tuning != "lossless" || !config.lossless ||
-        config.gop_length != 1 || config.input_format != "mono8" ||
+    const bool legacy_lossless =
+        config.profile_id == kSpatialRoiLegacyLosslessProfileId &&
+        config.codec == "hevc" && config.preset == "p7" &&
+        config.tuning == "lossless" && config.lossless &&
+        config.rate_control_mode == "cqp" && config.quality_value == 0 &&
+        config.gop_length == 1 && config.luma_preserved_exactly && !config.aq &&
+        !config.temporal_aq && !config.lookahead && config.lookahead_depth == 0;
+    const bool p1_low_latency =
+        config.profile_id == kSpatialRoiP1LowLatencyProfileId &&
+        config.codec == "hevc" && config.preset == "p1" &&
+        config.tuning == "ll" && !config.lossless &&
+        config.rate_control_mode == "vbr" && config.quality_value == 20 &&
+        config.gop_length == 1 && !config.luma_preserved_exactly && !config.aq &&
+        !config.temporal_aq && !config.lookahead && config.lookahead_depth == 0;
+    const bool p1_low_latency_gop25 =
+        config.profile_id == kSpatialRoiP1LowLatencyGop25ProfileId &&
+        config.codec == "hevc" && config.preset == "p1" &&
+        config.tuning == "ll" && !config.lossless &&
+        config.rate_control_mode == "vbr" && config.quality_value == 20 &&
+        config.gop_length == 25 && !config.luma_preserved_exactly && !config.aq &&
+        !config.temporal_aq && !config.lookahead && config.lookahead_depth == 0;
+    if ((!legacy_lossless && !p1_low_latency && !p1_low_latency_gop25) ||
+        config.input_format != "mono8" ||
         config.encoded_format != "nv12" || !config.no_resize ||
-        !config.luma_preserved_exactly || config.neutral_chroma_value != 128) {
-        return reject("profile must be strict HEVC lossless GOP-1 Mono8-to-NV12");
+        config.neutral_chroma_value != 128) {
+        return reject(
+            "profile must be a supported versioned HEVC Mono8-to-NV12 profile");
     }
     if (config.fps == 0 || config.fps > kMaxFps) {
         return reject("fps is outside the bounded positive range");
@@ -568,7 +589,7 @@ bool validate_spatial_roi_lossless_encoder_config(
     (void)metadata_max_bytes;
     // Reuse only the host-side frame contract validator. This checks the
     // recording token, stream naming, geometry, Mono8 byte count, and routing
-    // grammar without invoking any legacy external-recorder parser.
+    // grammar without invoking the separate full-frame external-recorder parser.
     SpatialRoiFrameDescriptor descriptor;
     descriptor.recording_id = config.stream.recording_id;
     descriptor.recording_identity_token = config.stream.recording_identity_token;
@@ -610,28 +631,50 @@ bool validate_spatial_roi_lossless_encoder_config(
     return true;
 }
 
-VideoEncodeProfile build_spatial_roi_lossless_encoder_profile(
+bool validate_spatial_roi_lossless_encoder_config(
+    const SpatialRoiLosslessEncoderConfig& config,
+    std::string* error_out)
+{
+    if (!config.lossless ||
+        config.profile_id != kSpatialRoiLegacyLosslessProfileId) {
+        set_error(error_out,
+                  "spatial ROI lossless encoder config invalid: profile is not the legacy lossless profile");
+        return false;
+    }
+    return validate_spatial_roi_encoder_config(config, error_out);
+}
+
+VideoEncodeProfile build_spatial_roi_encoder_profile(
     const SpatialRoiLosslessEncoderConfig& config)
 {
     std::string error;
-    if (!validate_spatial_roi_lossless_encoder_config(config, &error)) {
+    if (!validate_spatial_roi_encoder_config(config, &error)) {
         throw std::invalid_argument(error);
     }
     VideoEncodeProfile profile;
-    profile.name = "spatial_roi_hevc_lossless_gop1";
-    profile.output_kind = "crop";
+    profile.name = config.profile_id;
+    // This is a recorder-owned fixed-region raster, not the legacy
+    // detection-centered crop stream. Keep the output kind distinct so the
+    // emitted video metadata cannot claim a detection selection or a
+    // no-detection blanking policy.
+    profile.output_kind = "spatial_roi";
     profile.role = "recorder_owned_spatial_roi";
     profile.camera_serial = config.stream.camera_serial;
     profile.codec = config.codec;
-    profile.preset = "p7";
+    profile.preset = config.preset;
     profile.tuning = config.tuning;
-    profile.rate_control_mode = "cqp";
+    profile.rate_control_mode = config.rate_control_mode;
     profile.output_mode = "spatial_roi";
     profile.input_format = "nv12";
     profile.source_format = "mono8";
-    profile.quality_value = 0;
-    profile.requested_gop_length = 1;
-    profile.resolved_gop_length = 1;
+    profile.quality_value = static_cast<int>(config.quality_value);
+    profile.requested_gop_length = static_cast<int>(config.gop_length);
+    profile.resolved_gop_length = config.gop_length;
+    profile.encoder_control_overrides.aq = config.aq ? 1 : 0;
+    profile.encoder_control_overrides.temporal_aq = config.temporal_aq ? 1 : 0;
+    profile.encoder_control_overrides.lookahead = config.lookahead ? 1 : 0;
+    profile.encoder_control_overrides.lookahead_depth =
+        static_cast<int>(config.lookahead_depth);
     profile.width = config.geometry.encoded_raster.width;
     profile.height = config.geometry.encoded_raster.height;
     // The immediate source handed to this core is the recorder's packed ROI
@@ -649,6 +692,16 @@ VideoEncodeProfile build_spatial_roi_lossless_encoder_profile(
     profile.encode_gpu_id = config.recorder_gpu_id;
     profile.source_pixel_contract = resolve_video_source_pixel_contract(profile);
     return profile;
+}
+
+VideoEncodeProfile build_spatial_roi_lossless_encoder_profile(
+    const SpatialRoiLosslessEncoderConfig& config)
+{
+    std::string error;
+    if (!validate_spatial_roi_lossless_encoder_config(config, &error)) {
+        throw std::invalid_argument(error);
+    }
+    return build_spatial_roi_encoder_profile(config);
 }
 
 struct SpatialRoiLosslessEncoder::Impl final {
@@ -682,6 +735,10 @@ struct SpatialRoiLosslessEncoder::Impl final {
         ipc::SpatialRoiRecorderDetachedFrame detached;
         SpatialRoiLosslessDeviceView view;
         std::shared_ptr<CopyAck> copy_ack;
+        // Set exactly once when the item enters the bounded input queue. This
+        // is the anchor for queue-wait and admission-to-result telemetry; it
+        // adds no allocation or ownership work to the acquisition path.
+        std::uint64_t admitted_at_ns = 0;
         bool owns_detached = false;
         bool result_emitted = false;
         bool nvenc_pts_assigned = false;
@@ -724,6 +781,7 @@ struct SpatialRoiLosslessEncoder::Impl final {
     std::atomic<std::uint64_t> enqueue_attempted_count{0};
     std::atomic<std::uint64_t> rejected_count{0};
     std::atomic<std::uint64_t> queue_overflow_count{0};
+    SpatialRoiLosslessWriterOperationalSnapshot writer_operational_value;
     bool has_last_enqueued = false;
     std::uint64_t last_recording_frame_id = 0;
     std::uint64_t next_expected_roi_stream_frame_index = 1;
@@ -749,7 +807,7 @@ struct SpatialRoiLosslessEncoder::Impl final {
     CUcontext cu_context = nullptr;
     explicit Impl(SpatialRoiLosslessEncoderConfig value)
         : config(std::move(value)),
-          profile_value(build_spatial_roi_lossless_encoder_profile(config))
+          profile_value(build_spatial_roi_encoder_profile(config))
     {
         // Make the unsafe-copy quarantine allocation before the worker can
         // start a CUDA operation. The timeout path must not allocate.
@@ -757,6 +815,28 @@ struct SpatialRoiLosslessEncoder::Impl final {
     }
 
     ~Impl() = default;
+
+    using LatencyMember = LatencyAggregateStats SpatialRoiLosslessEncoderStats::*;
+
+    void observe_latency(const LatencyMember member,
+                         const std::uint64_t started_at_ns,
+                         const std::uint64_t finished_at_ns) noexcept
+    {
+        if (started_at_ns == 0 || finished_at_ns < started_at_ns) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(mutex);
+        observe_latency_ns(&(stats_value.*member),
+                           finished_at_ns - started_at_ns);
+    }
+
+    void observe_queue_wait(const WorkItem& item,
+                            const std::uint64_t dequeued_at_ns) noexcept
+    {
+        observe_latency(&SpatialRoiLosslessEncoderStats::queue_wait_latency,
+                        item.admitted_at_ns,
+                        dequeued_at_ns);
+    }
 
     void start(const std::shared_ptr<Impl>& self)
     {
@@ -956,6 +1036,11 @@ struct SpatialRoiLosslessEncoder::Impl final {
             config.artifacts.video->relative_path(),
             config.artifacts.keyframes_json->relative_path(),
             config.artifacts.finalization_json->relative_path());
+        FFmpegWriterKeyframePolicy keyframe_policy;
+        if (profile_value.resolved_gop_length > 1) {
+            keyframe_policy.name = kFFmpegWriterFixedGopIdrPolicyName;
+            keyframe_policy.gop_length = profile_value.resolved_gop_length;
+        }
         writer = std::make_unique<FFmpegWriter>(
             AV_CODEC_ID_HEVC,
             static_cast<int>(profile_value.width),
@@ -963,7 +1048,8 @@ struct SpatialRoiLosslessEncoder::Impl final {
             static_cast<int>(profile_value.fps),
             std::move(output),
             tags,
-            FFmpegWriterQueueConfig{writer_packets, writer_bytes});
+            FFmpegWriterQueueConfig{writer_packets, writer_bytes},
+            std::move(keyframe_policy));
         writer->create_thread();
         writer_thread_started = true;
     }
@@ -1217,11 +1303,16 @@ struct SpatialRoiLosslessEncoder::Impl final {
                 metadata.correlation.recording_frame_id;
             const std::uint64_t roi_stream_frame_index =
                 metadata.correlation.roi_stream_frame_index;
+            item->admitted_at_ns = steady_clock_now_ns();
             queue.push_back(std::move(item));
             queued_bytes += item_bytes;
             ++stats_value.enqueued;
+            stats_value.queue_depth = queue.size();
+            stats_value.queue_bytes = queued_bytes;
             stats_value.peak_queue_depth = std::max<std::uint64_t>(
                 stats_value.peak_queue_depth, queue.size());
+            stats_value.peak_queue_bytes = std::max<std::uint64_t>(
+                stats_value.peak_queue_bytes, queued_bytes);
             has_last_enqueued = true;
             last_recording_frame_id = recording_frame_id;
             next_expected_roi_stream_frame_index =
@@ -1293,7 +1384,8 @@ struct SpatialRoiLosslessEncoder::Impl final {
     }
 
     bool emit_result(SpatialRoiLosslessFrameResult result,
-                     std::string* delivery_error) noexcept
+                     std::string* delivery_error,
+                     const std::uint64_t admitted_at_ns = 0) noexcept
     {
         std::string validation_error;
         bool result_valid = true;
@@ -1364,6 +1456,13 @@ struct SpatialRoiLosslessEncoder::Impl final {
                 callback_error = "frame result callback threw a non-standard exception";
             }
         }
+        // Count the full admitted-to-terminal-result interval, including the
+        // synchronous evidence callback. This remains a control-thread
+        // aggregate update; no I/O or allocation is introduced on admission.
+        observe_latency(
+            &SpatialRoiLosslessEncoderStats::admission_to_result_latency,
+            admitted_at_ns,
+            steady_clock_now_ns());
         if (ordering_ok && callback_ok && result_valid) {
             return true;
         }
@@ -1408,7 +1507,9 @@ struct SpatialRoiLosslessEncoder::Impl final {
         }
         item.result_emitted = true;
         try {
-            return emit_result(failed_result_for(item, reason), delivery_error);
+            return emit_result(failed_result_for(item, reason),
+                               delivery_error,
+                               item.admitted_at_ns);
         } catch (...) {
             // A completion construction failure is explicit and terminal even
             // when the callback object cannot be invoked.
@@ -1594,7 +1695,26 @@ struct SpatialRoiLosslessEncoder::Impl final {
             return;
         }
         try {
+            writer_operational_value.observed = true;
+            writer_operational_value.queue_max_packets =
+                writer->queue_config().max_queued_packets;
+            writer_operational_value.queue_max_bytes =
+                writer->queue_config().max_queued_bytes;
+            writer_operational_value.queue_current_packets =
+                writer->queued_packets();
+            writer_operational_value.queue_current_bytes =
+                writer->queued_bytes();
+            writer_operational_value.queue_peak_packets =
+                writer->peak_queued_packets();
+            writer_operational_value.queue_peak_bytes =
+                writer->peak_queued_bytes();
+            writer_operational_value.queue_overflowed =
+                writer->has_queue_overflowed();
+            writer_operational_value.queue_overflow_events =
+                writer->queue_overflow_events();
             const FFmpegWriterFailureStats failures = writer->failure_stats();
+            writer_operational_value.failure_stats = failures;
+            writer_operational_value.latency_stats = writer->latency_stats();
             snapshot.failure_latched = failures.failed;
             snapshot.packet_allocation_failures =
                 failures.packet_allocation_failures;
@@ -1660,7 +1780,7 @@ struct SpatialRoiLosslessEncoder::Impl final {
         }
         if (packets.size() != 1 || timestamps.size() != 1) {
             throw std::runtime_error(
-                "strict GOP-1 NVENC encode must return exactly one packet and timestamp per frame");
+                "configured NVENC encode must return exactly one packet and timestamp per frame");
         }
         note_writer_state();
         if (writer->failed() || writer->has_queue_overflowed() ||
@@ -1690,16 +1810,23 @@ struct SpatialRoiLosslessEncoder::Impl final {
         }
         const bool keyframe = packet_has_hevc_idr(
             packets.front().data(), packets.front().size());
-        if (!keyframe) {
+        const std::uint32_t gop_length = profile_value.resolved_gop_length;
+        const bool expected_keyframe =
+            (expected_nvenc_pts % static_cast<std::uint64_t>(gop_length)) == 0;
+        if (keyframe != expected_keyframe) {
             throw std::runtime_error(
-                "strict GOP-1 NVENC packet is not an HEVC IDR keyframe");
+                expected_keyframe
+                    ? "configured NVENC GOP boundary packet is not an HEVC IDR keyframe"
+                    : "configured NVENC interior packet unexpectedly contains an IDR keyframe");
         }
-        const bool accepted = writer->push_packet(
+        const bool accepted = writer->push_packet_with_keyframe(
             const_cast<std::uint8_t*>(packets.front().data()),
             static_cast<int>(packets.front().size()),
             pts,
+            keyframe,
             output_index,
-            true);
+            ((expected_nvenc_pts + 1U) % static_cast<std::uint64_t>(gop_length)) == 0,
+            0);
         if (!accepted || writer->failed() || writer->has_queue_overflowed() ||
             writer->writer_thread_failed()) {
             note_writer_state();
@@ -1767,6 +1894,8 @@ struct SpatialRoiLosslessEncoder::Impl final {
             const auto copy_deadline = std::chrono::steady_clock::now() +
                                        std::chrono::milliseconds(
                                            config.operation_timeout_ms);
+            const std::uint64_t source_copy_started_at_ns =
+                steady_clock_now_ns();
             copy_started = true;
             NvEncoderCuda::CopyToDeviceFrame(
                 cu_context,
@@ -1787,6 +1916,10 @@ struct SpatialRoiLosslessEncoder::Impl final {
                     "spatial ROI input copy did not complete within the bound");
             }
             copy_completed = true;
+            observe_latency(
+                &SpatialRoiLosslessEncoderStats::source_copy_latency,
+                source_copy_started_at_ns,
+                steady_clock_now_ns());
             {
                 std::lock_guard<std::mutex> lock(mutex);
                 ++stats_value.copy_completed;
@@ -1838,7 +1971,13 @@ struct SpatialRoiLosslessEncoder::Impl final {
             picture.inputTimeStamp = dense_frame_index;
             picture.inputDuration = 1;
             ++encode_index;
+            const std::uint64_t encode_call_started_at_ns =
+                steady_clock_now_ns();
             encoder->EncodeFrame(packets, &picture, nullptr, &timestamps);
+            observe_latency(
+                &SpatialRoiLosslessEncoderStats::encode_call_latency,
+                encode_call_started_at_ns,
+                steady_clock_now_ns());
             const AcceptedPacket packet = push_exact_frame_packet(
                 packets, timestamps, dense_frame_index);
 
@@ -1862,7 +2001,8 @@ struct SpatialRoiLosslessEncoder::Impl final {
             item.result_emitted = true;
             std::string callback_error;
             const bool callback_ok = emit_result(std::move(result),
-                                                 &callback_error);
+                                                 &callback_error,
+                                                 item.admitted_at_ns);
             if (!callback_ok) {
                 throw std::runtime_error(
                     callback_error.empty()
@@ -1914,11 +2054,11 @@ struct SpatialRoiLosslessEncoder::Impl final {
                 encoder->EndEncode(packets, nullptr, &timestamps);
                 if (!packets.empty() || !timestamps.empty()) {
                     throw std::runtime_error(
-                        "strict GOP-1 NVENC drain returned a delayed packet without a retained frame result");
+                        "configured NVENC drain returned a delayed packet without a retained frame result");
                 }
                 if (next_expected_output_index != encode_index) {
                     throw std::runtime_error(
-                        "NVENC did not return exactly one packet for every submitted GOP-1 frame");
+                        "NVENC did not return exactly one packet for every submitted frame");
                 }
             }
             drain_state = DrainState::Drained;
@@ -1979,6 +2119,11 @@ struct SpatialRoiLosslessEncoder::Impl final {
         std::string evidence_error;
         try {
             const nlohmann::json keyframes = nlohmann::json::parse(keyframe_bytes);
+            const bool all_frames_idr = profile_value.resolved_gop_length == 1;
+            const std::string expected_policy_name = all_frames_idr
+                ? kFFmpegWriterAllFramesIdrPolicyName
+                : "fixed_gop_" +
+                      std::to_string(profile_value.resolved_gop_length) + "_idr";
             if (!keyframes.is_object() || keyframes.size() != 8 ||
                 keyframes.value("schema_id", std::string()) !=
                     "orange.spatial_roi_keyframe_summary" ||
@@ -1995,10 +2140,15 @@ struct SpatialRoiLosslessEncoder::Impl final {
                 !keyframes.at("keyframe_policy").is_object() ||
                 keyframes.at("keyframe_policy").size() != 4) {
                 throw std::runtime_error(
-                    "terminal keyframe artifact does not prove exact GOP-1 evidence");
+                    "terminal keyframe artifact does not prove the configured GOP evidence");
             }
             const auto& sequence = keyframes.at("frame_index_sequence");
             const auto& policy = keyframes.at("keyframe_policy");
+            const std::uint64_t expected_keyframe_count =
+                all_frames_idr
+                    ? encode_index
+                    : (encode_index + profile_value.resolved_gop_length - 1U) /
+                          profile_value.resolved_gop_length;
             if (encode_index == 0 ||
                 !sequence.at("first").is_number_integer() ||
                 sequence.at("first").get<std::int64_t>() != 0 ||
@@ -2006,10 +2156,11 @@ struct SpatialRoiLosslessEncoder::Impl final {
                 sequence.at("last").get<std::uint64_t>() != encode_index - 1U ||
                 !sequence.at("zero_based_contiguous").is_boolean() ||
                 !sequence.at("zero_based_contiguous").get<bool>() ||
-                policy.value("name", std::string()) != "all_frames_idr" ||
+                policy.value("name", std::string()) != expected_policy_name ||
                 policy.value("keyframe_frames", std::uint64_t(0)) !=
-                    encode_index ||
-                policy.value("non_keyframe_frames", std::uint64_t(1)) != 0 ||
+                    expected_keyframe_count ||
+                policy.value("non_keyframe_frames", std::uint64_t(1)) !=
+                    encode_index - expected_keyframe_count ||
                 !policy.at("satisfied").is_boolean() ||
                 !policy.at("satisfied").get<bool>()) {
                 throw std::runtime_error(
@@ -2107,8 +2258,15 @@ struct SpatialRoiLosslessEncoder::Impl final {
                 latch_failure(
                     "FFmpegWriter explicit terminal finalization failed");
             }
-            writer.reset();
-            writer_thread_started = false;
+            {
+                // operational_snapshot() uses the encoder mutex to protect
+                // this owning pointer while it samples the writer's own
+                // thread-safe counters. Do not destroy the writer concurrently
+                // with a control-thread sample.
+                std::lock_guard<std::mutex> lock(mutex);
+                writer.reset();
+                writer_thread_started = false;
+            }
 
             // FFmpegWriter writes both terminal sidecars from descriptor
             // duplicates. Validate those exact held inodes, then seal all four
@@ -2173,6 +2331,7 @@ struct SpatialRoiLosslessEncoder::Impl final {
         try {
             for (;;) {
                 std::unique_ptr<WorkItem> item;
+                std::uint64_t dequeued_at_ns = 0;
                 {
                     std::unique_lock<std::mutex> lock(mutex);
                     cv.wait(lock, [&]() { return stop_requested || !queue.empty(); });
@@ -2186,6 +2345,8 @@ struct SpatialRoiLosslessEncoder::Impl final {
                         std::deque<std::unique_ptr<WorkItem>> pending;
                         pending.swap(queue);
                         queued_bytes = 0;
+                        stats_value.queue_depth = 0;
+                        stats_value.queue_bytes = 0;
                         lock.unlock();
                         release_pending_items(
                             pending,
@@ -2197,6 +2358,14 @@ struct SpatialRoiLosslessEncoder::Impl final {
                     queue.pop_front();
                     queued_bytes -= item->view.metadata.byte_length;
                     ++stats_value.dequeued;
+                    stats_value.queue_depth = queue.size();
+                    stats_value.queue_bytes = queued_bytes;
+                    if (item) {
+                        dequeued_at_ns = steady_clock_now_ns();
+                    }
+                }
+                if (item) {
+                    observe_queue_wait(*item, dequeued_at_ns);
                 }
                 try {
                     process_item(item);
@@ -2207,6 +2376,8 @@ struct SpatialRoiLosslessEncoder::Impl final {
                         std::lock_guard<std::mutex> lock(mutex);
                         pending.swap(queue);
                         queued_bytes = 0;
+                        stats_value.queue_depth = 0;
+                        stats_value.queue_bytes = 0;
                     }
                     release_pending_items(pending, exception.what());
                     break;
@@ -2512,6 +2683,8 @@ struct SpatialRoiLosslessEncoder::Impl final {
                               : error_value);
                 snapshot->counts = stats_value;
                 snapshot->writer = writer_terminal_value;
+                snapshot->writer_operational =
+                    writer_operational_value;
                 terminal_snapshot_value = std::move(snapshot);
             } catch (...) {
                 failed_value = true;
@@ -2557,11 +2730,74 @@ struct SpatialRoiLosslessEncoder::Impl final {
     {
         std::lock_guard<std::mutex> lock(mutex);
         SpatialRoiLosslessEncoderStats snapshot = stats_value;
+        snapshot.queue_depth = queue.size();
+        snapshot.queue_bytes = queued_bytes;
         snapshot.enqueue_attempted =
             enqueue_attempted_count.load(std::memory_order_acquire);
         snapshot.rejected = rejected_count.load(std::memory_order_acquire);
         snapshot.queue_overflows =
             queue_overflow_count.load(std::memory_order_acquire);
+        return snapshot;
+    }
+
+    SpatialRoiLosslessEncoderOperationalSnapshot operational_snapshot() const noexcept
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        SpatialRoiLosslessEncoderOperationalSnapshot snapshot;
+        snapshot.initialized = initialized && init_ok;
+        snapshot.accepting = accepting;
+        snapshot.failed = failed_value;
+        snapshot.finalized = finalized;
+        snapshot.input_queue_max_frames = config.queue_capacity;
+        snapshot.input_queue_max_bytes = config.max_queue_bytes;
+        snapshot.input_queue_current_frames = queue.size();
+        snapshot.input_queue_current_bytes = queued_bytes;
+        snapshot.input_queue_peak_frames = stats_value.peak_queue_depth;
+        snapshot.input_queue_peak_bytes = stats_value.peak_queue_bytes;
+        snapshot.enqueue_attempted =
+            enqueue_attempted_count.load(std::memory_order_acquire);
+        snapshot.enqueue_admitted = stats_value.enqueued;
+        snapshot.dequeued = stats_value.dequeued;
+        snapshot.rejected = rejected_count.load(std::memory_order_acquire);
+        snapshot.queue_overflows =
+            queue_overflow_count.load(std::memory_order_acquire);
+        snapshot.queue_wait_latency = stats_value.queue_wait_latency;
+        snapshot.source_copy_latency = stats_value.source_copy_latency;
+        snapshot.encode_call_latency = stats_value.encode_call_latency;
+        snapshot.admission_to_result_latency =
+            stats_value.admission_to_result_latency;
+
+        // The limits are sourced from the verified encoder config even if the
+        // writer failed before construction. When present, all dynamic values
+        // are read through FFmpegWriter's own atomics/mutex-protected methods.
+        snapshot.writer.queue_max_packets = config.writer_queue_max_packets;
+        snapshot.writer.queue_max_bytes = config.writer_queue_max_bytes;
+        if (writer) {
+            snapshot.writer.observed = true;
+            snapshot.writer.queue_current_packets = writer->queued_packets();
+            snapshot.writer.queue_current_bytes = writer->queued_bytes();
+            snapshot.writer.queue_peak_packets = writer->peak_queued_packets();
+            snapshot.writer.queue_peak_bytes = writer->peak_queued_bytes();
+            snapshot.writer.queue_overflowed = writer->has_queue_overflowed();
+            snapshot.writer.queue_overflow_events =
+                writer->queue_overflow_events();
+            try {
+                snapshot.writer.failure_stats = writer->failure_stats();
+                snapshot.writer.latency_stats = writer->latency_stats();
+            } catch (...) {
+                // Keep the scalar queue/latch view useful if a diagnostic
+                // string copy fails while sampling. A later sample can retry.
+            }
+        } else {
+            try {
+                snapshot.writer = writer_operational_value;
+            } catch (...) {
+                // Keep the exact configured limits and zeroed dynamic fields
+                // if a best-effort terminal diagnostic copy cannot allocate.
+            }
+            snapshot.writer.queue_max_packets = config.writer_queue_max_packets;
+            snapshot.writer.queue_max_bytes = config.writer_queue_max_bytes;
+        }
         return snapshot;
     }
 
@@ -2619,6 +2855,13 @@ SpatialRoiLosslessEncoderStats SpatialRoiLosslessEncoder::stats() const noexcept
     return impl_ ? impl_->stats() : SpatialRoiLosslessEncoderStats{};
 }
 
+SpatialRoiLosslessEncoderOperationalSnapshot
+SpatialRoiLosslessEncoder::operational_snapshot() const noexcept
+{
+    return impl_ ? impl_->operational_snapshot()
+                 : SpatialRoiLosslessEncoderOperationalSnapshot{};
+}
+
 std::shared_ptr<const SpatialRoiLosslessEncoderTerminalSnapshot>
 SpatialRoiLosslessEncoder::terminal_snapshot() const noexcept
 {
@@ -2629,13 +2872,24 @@ bool SpatialRoiLosslessEncoder::Enqueue(
     ipc::SpatialRoiRecorderDetachedFrame&& detached,
     const SpatialRoiFrameDescriptor& descriptor) noexcept
 {
+    return Enqueue(std::move(detached), descriptor, nullptr);
+}
+
+bool SpatialRoiLosslessEncoder::Enqueue(
+    ipc::SpatialRoiRecorderDetachedFrame&& detached,
+    const SpatialRoiFrameDescriptor& descriptor,
+    std::string* error_out) noexcept
+{
     auto implementation = impl_;
     if (!implementation) {
+        try {
+            set_error(error_out, "spatial ROI encoder implementation is unavailable");
+        } catch (...) {
+        }
         return false;
     }
-    std::string error;
     return implementation->enqueue_detached(
-        std::move(detached), descriptor, &error);
+        std::move(detached), descriptor, error_out);
 }
 
 bool SpatialRoiLosslessEncoder::Enqueue(

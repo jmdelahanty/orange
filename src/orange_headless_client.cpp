@@ -7,8 +7,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
@@ -17,6 +19,7 @@
 #include <limits>
 #include <mutex>
 #include <numeric>
+#include <set>
 #include <sstream>
 #include <thread>
 #include <unordered_map>
@@ -43,9 +46,25 @@
 #include "session/recording_session.h"
 #include "session/recording_observation_prearm.h"
 #include "session/recording_observation_request_artifacts.h"
+#include "session/registered_scene_context_capture_declaration.h"
+#include "session/spatial_roi_recorder_camera_contract.h"
+#include "session/spatial_roi_recorder_contract.h"
+#include "session/spatial_roi_recorder_runtime_config.h"
+#include "session/spatial_roi_media_policy.h"
+#include "session/spatial_roi_recording_config.h"
+#include "session/spatial_roi_recording_outputs.h"
+#include "session/spatial_roi_session_snapshot.h"
+#include "spatial_roi_finalized_session_receipt.h"
+#include "spatial_roi_headless_camera_session.h"
+#include "spatial_roi_session_authority_store.h"
+#include "spatial_roi_registered_scene_context.h"
+#include "spatial_snapshot_worker.h"
+#include "gui/spatial_layout/sha256.h"
+#include "shaman_v2_recording_identity.h"
 #include "external_recorder_contract_utils.h"
 #include "external_recorder_lifecycle.h"
 #include "external_recorder_supervisor.h"
+#include "headless_experiment_outcome.h"
 #include "headless_recording_profile.h"
 #include "fsuid_guard.h"
 #include "nic_thermal_monitor.h"
@@ -210,6 +229,18 @@ struct HeadlessCliOptions {
     HeadlessPoseWorkerConfig pose_worker;
     HeadlessRecordingControlConfig recording_control;
     HeadlessExternalRecorderContractConfig external_recorder_contract;
+    bool has_spatial_roi_media_policy = false;
+    orange::session::spatial_roi::MediaPolicy spatial_roi_media_policy =
+        orange::session::spatial_roi::default_media_policy(false);
+    bool has_registered_scene_context_capture_declaration = false;
+    orange::session::spatial_roi::
+        RegisteredSceneContextCaptureDeclaration
+            registered_scene_context_capture_declaration;
+    bool has_spatial_roi_recording = false;
+    orange::session::spatial_roi::Config spatial_roi_recording;
+    bool has_spatial_roi_recorder_runtime = false;
+    orange::session::spatial_roi::RecorderRuntimeConfig
+        spatial_roi_recorder_runtime;
     bool has_recording_override = false;
     nlohmann::json recording_override = nlohmann::json::object();
     std::unordered_map<std::string, nlohmann::json> recording_overrides_by_camera;
@@ -251,8 +282,20 @@ struct ExperimentSpec {
     HeadlessPoseWorkerConfig pose_worker;
     HeadlessRecordingControlConfig recording_control;
     HeadlessExternalRecorderContractConfig external_recorder_contract;
+    bool has_spatial_roi_media_policy = false;
+    orange::session::spatial_roi::MediaPolicy spatial_roi_media_policy =
+        orange::session::spatial_roi::default_media_policy(false);
+    bool has_registered_scene_context_capture_declaration = false;
+    orange::session::spatial_roi::
+        RegisteredSceneContextCaptureDeclaration
+            registered_scene_context_capture_declaration;
     bool has_recording_profile = false;
     orange::headless::RecordingProfile recording_profile;
+    bool has_spatial_roi_recording = false;
+    orange::session::spatial_roi::Config spatial_roi_recording;
+    bool has_spatial_roi_recorder_runtime = false;
+    orange::session::spatial_roi::RecorderRuntimeConfig
+        spatial_roi_recorder_runtime;
     bool has_recording_override = false;
     nlohmann::json recording_override = nlohmann::json::object();
     std::unordered_map<std::string, nlohmann::json> recording_overrides_by_camera;
@@ -864,7 +907,8 @@ nlohmann::json build_headless_recording_control_config_json(
 nlohmann::json build_headless_external_recorder_contract_config_json(
     const HeadlessExternalRecorderContractConfig& config,
     const HeadlessRecordingControlConfig* recording_control = nullptr,
-    const int planned_duration_seconds = 0)
+    const int planned_duration_seconds = 0,
+    const std::string& combined_recording_folder = {})
 {
     nlohmann::json contract = {
         {"schema_id", config.schema_id},
@@ -902,6 +946,47 @@ nlohmann::json build_headless_external_recorder_contract_config_json(
         orange::external_recorder::ApplyExternalRecorderRecordingControlToContract(
             &contract,
             intent);
+    }
+    if (!combined_recording_folder.empty()) {
+        // A coupled full-frame + spatial-ROI manifest has a single
+        // recording-root-relative artifact namespace. Preserve the configured
+        // leaf names, but materialize the external full-frame product beneath
+        // this run's root so its descriptor can be published safely alongside
+        // the ROI products. Full-frame-only callers do not pass this scope and
+        // retain their historical paths byte-for-byte.
+        const std::filesystem::path artifact_root =
+            std::filesystem::path(combined_recording_folder) /
+            "external_recorder";
+        contract["artifact_root"] = artifact_root.string();
+        if (contract["streams"].is_object()) {
+            for (auto it = contract["streams"].begin();
+                 it != contract["streams"].end();
+                 ++it) {
+                if (!it.value().is_object()) {
+                    continue;
+                }
+                const std::string serial =
+                    it.value().value("camera_serial", it.key());
+                for (const char* key : {
+                         "summary_json", "status_json", "video_sanity_json",
+                         "mp4", "mp4_keyframe", "metadata_csv",
+                         "detach_csv", "encode_csv", "gop_routing_csv",
+                         "recorder_log"}) {
+                    const auto path_it = it.value().find(key);
+                    if (path_it == it.value().end() ||
+                        !path_it->is_string() || path_it->get<std::string>().empty()) {
+                        continue;
+                    }
+                    std::filesystem::path leaf(path_it->get<std::string>());
+                    leaf = leaf.filename();
+                    if (leaf.empty() || leaf == std::filesystem::path(".") ||
+                        leaf == std::filesystem::path("..")) {
+                        leaf = std::string("Cam") + serial + "_external_" + key;
+                    }
+                    it.value()[key] = (artifact_root / leaf).string();
+                }
+            }
+        }
     }
     return contract;
 }
@@ -962,7 +1047,9 @@ private:
 std::vector<int> collect_unique_gpu_ids(
     const CameraParams* cameras_params,
     const std::vector<int>& selected_indices,
-    const HeadlessExternalRecorderContractConfig* external_recorder_contract = nullptr);
+    const HeadlessExternalRecorderContractConfig* external_recorder_contract = nullptr,
+    const orange::session::spatial_roi::SpatialRoiRecorderRuntimeGpuMapping*
+        spatial_roi_gpu_mapping = nullptr);
 void start_headless_gpu_dmon_monitor(HeadlessGpuDmonMonitor* monitor,
                                      const std::string& recording_folder,
                                      const std::vector<int>& gpu_ids);
@@ -1496,6 +1583,404 @@ bool parse_experiment_recording_overrides(const nlohmann::json& fixed,
             return false;
         }
         spec->recording_overrides_by_camera[canonical_serial] = item.value();
+    }
+
+    return true;
+}
+
+bool parse_experiment_spatial_roi_recording(const nlohmann::json& fixed,
+                                            ExperimentSpec* spec,
+                                            std::string* error_out)
+{
+    if (error_out) {
+        error_out->clear();
+    }
+    if (!spec) {
+        if (error_out) {
+            *error_out =
+                "Internal error: null experiment spec while parsing spatial ROI recording";
+        }
+        return false;
+    }
+
+    spec->has_spatial_roi_recording = false;
+    spec->spatial_roi_recording =
+        orange::session::spatial_roi::default_config();
+
+    if (!fixed.contains("spatial_roi_recording")) {
+        return true;
+    }
+    if (!fixed.at("spatial_roi_recording").is_object()) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.spatial_roi_recording must be a JSON object";
+        }
+        return false;
+    }
+
+    orange::session::spatial_roi::Config parsed;
+    std::string parse_error;
+    if (!orange::session::spatial_roi::parse_config(
+            fixed.at("spatial_roi_recording"), &parsed, &parse_error)) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.spatial_roi_recording invalid: " +
+                parse_error;
+        }
+        return false;
+    }
+
+    spec->spatial_roi_recording = std::move(parsed);
+    spec->has_spatial_roi_recording = true;
+    return true;
+}
+
+bool parse_experiment_spatial_roi_media_policy(
+    const nlohmann::json& fixed,
+    ExperimentSpec* spec,
+    std::string* error_out)
+{
+    if (error_out) {
+        error_out->clear();
+    }
+    if (!spec) {
+        if (error_out) {
+            *error_out =
+                "Internal error: null experiment spec while parsing spatial ROI media policy";
+        }
+        return false;
+    }
+
+    const bool spatial_roi_enabled =
+        spec->has_spatial_roi_recording &&
+        spec->spatial_roi_recording.enabled;
+    spec->has_spatial_roi_media_policy =
+        fixed.contains("spatial_roi_media_policy");
+    const nlohmann::json configured =
+        spec->has_spatial_roi_media_policy
+            ? fixed.at("spatial_roi_media_policy")
+            : nlohmann::json(nullptr);
+    std::string policy_error;
+    if (!orange::session::spatial_roi::resolve_media_policy(
+            configured,
+            spatial_roi_enabled,
+            &spec->spatial_roi_media_policy,
+            &policy_error)) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.spatial_roi_media_policy invalid: " +
+                policy_error;
+        }
+        return false;
+    }
+
+    // The retained ROI streams use the camera-level external IPC recorder in
+    // both spatial-ROI policies. The main full-frame ingress remains an
+    // independent operational setting and is validated below.
+    const std::string expected_retained_media_backend =
+        orange::session::spatial_roi::media_policy_requires_fixed_rois(
+            spec->spatial_roi_media_policy)
+            ? "external_ipc"
+            : spec->recording_sink_mode;
+    if (spec->spatial_roi_media_policy.sink_backend.empty()) {
+        spec->spatial_roi_media_policy.sink_backend =
+            expected_retained_media_backend;
+    } else if (spec->spatial_roi_media_policy.sink_backend !=
+               expected_retained_media_backend) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.spatial_roi_media_policy.sink_backend must be " +
+                expected_retained_media_backend + " for policy " +
+                orange::session::spatial_roi::media_policy_kind_to_string(
+                    spec->spatial_roi_media_policy.kind);
+        }
+        return false;
+    }
+    return true;
+}
+
+bool parse_experiment_spatial_roi_recorder_runtime(
+    const nlohmann::json& fixed,
+    ExperimentSpec* spec,
+    std::string* error_out)
+{
+    if (error_out) {
+        error_out->clear();
+    }
+    if (!spec) {
+        if (error_out) {
+            *error_out =
+                "Internal error: null experiment spec while parsing spatial ROI recorder runtime";
+        }
+        return false;
+    }
+
+    spec->has_spatial_roi_recorder_runtime = false;
+    spec->spatial_roi_recorder_runtime =
+        orange::session::spatial_roi::RecorderRuntimeConfig{};
+    if (!fixed.contains("spatial_roi_recorder_runtime")) {
+        return true;
+    }
+
+    orange::session::spatial_roi::RecorderRuntimeConfig parsed;
+    std::string parse_error;
+    if (!orange::session::spatial_roi::parse_recorder_runtime_config(
+            fixed.at("spatial_roi_recorder_runtime"),
+            &parsed,
+            &parse_error)) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.spatial_roi_recorder_runtime invalid: " +
+                parse_error;
+        }
+        return false;
+    }
+    spec->spatial_roi_recorder_runtime = std::move(parsed);
+    spec->has_spatial_roi_recorder_runtime = true;
+    return true;
+}
+
+bool parse_experiment_registered_scene_context_capture_declaration(
+    const nlohmann::json& fixed,
+    ExperimentSpec* spec,
+    std::string* error_out)
+{
+    if (error_out) {
+        error_out->clear();
+    }
+    if (!spec) {
+        if (error_out) {
+            *error_out =
+                "Internal error: null experiment spec while parsing registered scene context declaration";
+        }
+        return false;
+    }
+    spec->has_registered_scene_context_capture_declaration =
+        fixed.contains("registered_scene_context");
+    const bool required =
+        orange::session::spatial_roi::media_policy_requires_registered_context(
+            spec->spatial_roi_media_policy);
+    if (!spec->has_registered_scene_context_capture_declaration) {
+        if (required && error_out) {
+            *error_out =
+                "Experiment spec media policy fixed_rois_with_registered_context requires the closed fixed.registered_scene_context capture declaration; registration acceptance is never inferred from an ID or digest";
+        }
+        return !required;
+    }
+    if (!required) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.registered_scene_context is currently supported only by media policy fixed_rois_with_registered_context";
+        }
+        return false;
+    }
+    std::string declaration_error;
+    if (!orange::session::spatial_roi::
+            parse_registered_scene_context_capture_declaration(
+                fixed.at("registered_scene_context"),
+                &spec->registered_scene_context_capture_declaration,
+                &declaration_error)) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.registered_scene_context invalid: " +
+                declaration_error;
+        }
+        return false;
+    }
+    return true;
+}
+
+bool validate_experiment_spatial_roi_recording(const ExperimentSpec& spec,
+                                               std::string* error_out)
+{
+    if (error_out) {
+        error_out->clear();
+    }
+    const bool spatial_roi_enabled =
+        spec.has_spatial_roi_recording &&
+        spec.spatial_roi_recording.enabled;
+    const bool policy_requires_fixed_rois =
+        orange::session::spatial_roi::media_policy_requires_fixed_rois(
+            spec.spatial_roi_media_policy);
+    const bool policy_requires_full_frame =
+        orange::session::spatial_roi::media_policy_requires_full_frame(
+            spec.spatial_roi_media_policy);
+    const bool policy_requires_registered_context =
+        orange::session::spatial_roi::media_policy_requires_registered_context(
+            spec.spatial_roi_media_policy);
+
+    if (!spatial_roi_enabled) {
+        if (spec.has_spatial_roi_recorder_runtime) {
+            if (error_out) {
+                *error_out =
+                    "Experiment spec fixed.spatial_roi_recorder_runtime requires enabled fixed.spatial_roi_recording";
+            }
+            return false;
+        }
+        if (policy_requires_fixed_rois || policy_requires_registered_context) {
+            if (error_out) {
+                *error_out =
+                    "Experiment spec fixed.spatial_roi_media_policy requires enabled fixed.spatial_roi_recording";
+            }
+            return false;
+        }
+        return true;
+    }
+
+    if (!policy_requires_fixed_rois) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec enables fixed.spatial_roi_recording but fixed.spatial_roi_media_policy does not retain fixed ROIs";
+        }
+        return false;
+    }
+    if (policy_requires_registered_context &&
+        !spec.has_registered_scene_context_capture_declaration) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec registered-context media policy requires fixed.registered_scene_context";
+        }
+        return false;
+    }
+
+    if (spec.stream_only) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.spatial_roi_recording enabled requires "
+                "the recording/session lifecycle; fixed.stream_only must be false";
+        }
+        return false;
+    }
+    if (policy_requires_full_frame) {
+        if (spec.recording_sink_mode != "external_ipc") {
+            if (error_out) {
+                *error_out =
+                    "Experiment spec media policy full_frame_and_fixed_rois requires fixed.recording_sink_mode=external_ipc";
+            }
+            return false;
+        }
+        if (!spec.external_recorder_contract.enabled() ||
+            !spec.external_recorder_contract.supervise_processes) {
+            if (error_out) {
+                *error_out =
+                    "Experiment spec media policy full_frame_and_fixed_rois requires a supervised fixed.external_recorder_contract";
+            }
+            return false;
+        }
+    } else {
+        if (!policy_requires_registered_context) {
+            if (error_out) {
+                *error_out =
+                    "Experiment spec spatial ROI media policy omits full frame without requiring registered context";
+            }
+            return false;
+        }
+        if (spec.recording_sink_mode != "immediate_recycle") {
+            if (error_out) {
+                *error_out =
+                    "Experiment spec media policy fixed_rois_with_registered_context requires fixed.recording_sink_mode=immediate_recycle so recording identities remain active without a continuous full-frame encoder";
+            }
+            return false;
+        }
+        if (spec.external_recorder_contract.enabled()) {
+            if (error_out) {
+                *error_out =
+                    "Experiment spec media policy fixed_rois_with_registered_context must not enable fixed.external_recorder_contract; no continuous full-frame recorder is retained";
+            }
+            return false;
+        }
+        if (spec.pre_encoder_reference_capture.enabled) {
+            if (error_out) {
+                *error_out =
+                    "Experiment spec media policy fixed_rois_with_registered_context uses the registered native context product and must not enable pre_encoder_reference_capture";
+            }
+            return false;
+        }
+    }
+    if (spec.recording_control.enabled()) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.spatial_roi_recording enabled does not "
+                "yet support fixed.recording_control; the first slice records "
+                "one non-rolling ROI session for the complete headless run";
+        }
+        return false;
+    }
+
+    const auto& cameras = spec.spatial_roi_recording.cameras;
+    if (cameras.size() != 1) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.spatial_roi_recording enabled requires "
+                "exactly one camera; got " + std::to_string(cameras.size());
+        }
+        return false;
+    }
+
+    const auto& camera_entry = *cameras.begin();
+    const auto& camera = camera_entry.second;
+    if (camera.rois.size() != 4) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.spatial_roi_recording enabled requires "
+                "exactly four required ROIs for camera " + camera_entry.first +
+                "; got " + std::to_string(camera.rois.size());
+        }
+        return false;
+    }
+    for (std::size_t index = 0; index < camera.rois.size(); ++index) {
+        if (!camera.rois[index].required) {
+            if (error_out) {
+                *error_out =
+                    "Experiment spec fixed.spatial_roi_recording enabled requires "
+                    "all four ROIs to be required for camera " +
+                    camera_entry.first + "; ROI index " + std::to_string(index) +
+                    " is optional";
+            }
+            return false;
+        }
+    }
+
+    if (spec.has_spatial_roi_recorder_runtime) {
+        std::set<std::string> expected_streams;
+        for (const auto& [camera_serial, camera_config] : cameras) {
+            (void)camera_serial;
+            for (const auto& roi : camera_config.rois) {
+                expected_streams.insert(roi.logical_stream_id);
+            }
+        }
+        const auto& actual = spec.spatial_roi_recorder_runtime
+                                 .recorder_gpu_by_logical_stream_id;
+        if (actual.size() != expected_streams.size()) {
+            if (error_out) {
+                *error_out =
+                    "Experiment spec fixed.spatial_roi_recorder_runtime must exactly cover all spatial ROI logical streams; expected " +
+                    std::to_string(expected_streams.size()) + " entries, got " +
+                    std::to_string(actual.size());
+            }
+            return false;
+        }
+        for (const std::string& logical_stream_id : expected_streams) {
+            if (actual.count(logical_stream_id) != 1) {
+                if (error_out) {
+                    *error_out =
+                        "Experiment spec fixed.spatial_roi_recorder_runtime is missing logical stream " +
+                        logical_stream_id;
+                }
+                return false;
+            }
+        }
+        for (const auto& [logical_stream_id, gpu_id] : actual) {
+            (void)gpu_id;
+            if (expected_streams.count(logical_stream_id) != 1) {
+                if (error_out) {
+                    *error_out =
+                        "Experiment spec fixed.spatial_roi_recorder_runtime contains unknown logical stream " +
+                        logical_stream_id;
+                }
+                return false;
+            }
+        }
     }
 
     return true;
@@ -3868,7 +4353,9 @@ void shutdown_headless_run(std::vector<std::thread>& camera_threads,
                            CameraControl* camera_control,
                            PTPParams* ptp_params,
                            bool reset_ptp_state,
-                           const std::string& recording_sink_mode)
+                           const std::string& recording_sink_mode,
+                           const std::function<void()>&
+                               after_camera_threads_join = {})
 {
     if (camera_control) {
         if (camera_control->record_video ||
@@ -3891,6 +4378,13 @@ void shutdown_headless_run(std::vector<std::thread>& camera_threads,
         }
     }
     camera_threads.clear();
+
+    // A camera-level derivative recorder may still hold WORKER_ENTRY source
+    // leases in its bounded extraction lanes.  Drain it after acquisition has
+    // stopped, but before CameraResources/recycle queues are destroyed.
+    if (after_camera_threads_join) {
+        after_camera_threads_join();
+    }
 
     stop_headless_yolo_workers(yolo_workers);
     stop_headless_pose_pipeline(crop_producer_workers, pose_workers);
@@ -4352,6 +4846,26 @@ bool open_cameras(CameraParams *cameras_params,
 }
 
 
+struct HeadlessSpatialRoiRecordingOwner;
+bool start_headless_spatial_roi_before_acquisition(
+    HeadlessSpatialRoiRecordingOwner* owner,
+    std::string* error_out);
+bool persist_headless_spatial_roi_start_policy(
+    HeadlessSpatialRoiRecordingOwner* owner,
+    const std::string& record_folder,
+    std::string* error_out);
+bool start_headless_registered_context_capture(
+    HeadlessSpatialRoiRecordingOwner* owner,
+    CameraParams* camera_params,
+    CameraResources* camera_resources,
+    SpatialSnapshotWorker** worker_out,
+    std::string* error_out);
+void stop_headless_registered_context_worker(
+    HeadlessSpatialRoiRecordingOwner* owner) noexcept;
+orange::spatial_roi::SpatialRoiAcquisitionController*
+headless_spatial_roi_acquisition_controller(
+    HeadlessSpatialRoiRecordingOwner* owner) noexcept;
+
 bool start_camera_thread(std::vector<std::thread> &camera_threads,
     std::vector<CameraResources>& camera_resources,
     std::vector<int>& active_camera_indices,
@@ -4379,7 +4893,10 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
         yolo_event_log::SyntheticYoloEventConfig{},
     const HeadlessYoloWorkerConfig& yolo_worker_config = HeadlessYoloWorkerConfig{},
     const HeadlessPoseWorkerConfig& pose_worker_config = HeadlessPoseWorkerConfig{},
-    const HeadlessExternalRecorderContractConfig* external_recorder_contract = nullptr)
+    const HeadlessExternalRecorderContractConfig* external_recorder_contract = nullptr,
+    const orange::session::spatial_roi::SpatialRoiRecorderRuntimeGpuMapping*
+        spatial_roi_gpu_mapping = nullptr,
+    HeadlessSpatialRoiRecordingOwner* spatial_roi_owner = nullptr)
 {
     std::cout << "start camera sthread..." << std::endl;
     if (thread_failure_state) {
@@ -4676,7 +5193,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                 collect_unique_gpu_ids(
                     cameras_params,
                     selected_indices,
-                    external_recorder_contract));
+                    external_recorder_contract,
+                    spatial_roi_gpu_mapping));
             start_headless_nic_thermal_monitor(
                 nic_thermal_monitor,
                 record_folder);
@@ -4936,7 +5454,24 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
             }
         }
 
+        if (spatial_roi_owner) {
+            std::string spatial_roi_start_error;
+            if (!start_headless_spatial_roi_before_acquisition(
+                    spatial_roi_owner, &spatial_roi_start_error)) {
+                throw std::runtime_error(
+                    "failed to arm spatial ROI headless recorder: " +
+                    spatial_roi_start_error);
+            }
+        }
+
         if (enable_artifacts) {
+            std::string media_policy_persist_error;
+            if (!persist_headless_spatial_roi_start_policy(
+                    spatial_roi_owner,
+                    record_folder,
+                    &media_policy_persist_error)) {
+                throw std::runtime_error(media_policy_persist_error);
+            }
             if (!yolo_worker_config.enabled()) {
                 std::string geometry_error;
                 if (!write_recording_geometry_contract(
@@ -5042,6 +5577,9 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
         return false;
     }
 
+    auto* spatial_roi_acquisition_controller =
+        headless_spatial_roi_acquisition_controller(spatial_roi_owner);
+
     if (use_ptp_sync) {
         for (int idx : selected_indices)
         {
@@ -5060,86 +5598,186 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                   << std::endl;
     }
 
-    for (int idx : selected_indices)
-    {
-        auto synthetic_yolo_emitter = synthetic_yolo_emitters[idx];
-        CameraEmergent* ecams_ptr = ecams;
-        CameraParams* cameras_params_ptr = cameras_params;
-        CameraEachSelect* cameras_select_ptr = cameras_select;
-        CameraControl* camera_control_ptr = camera_control;
-        PTPParams* ptp_params_ptr = ptp_params;
-        auto* recording_pipelines_ptr = &recording_pipelines;
-        auto* yolo_workers_ptr = &yolo_workers;
-        auto* frame_ipc_managers_ptr = &frame_ipc_managers;
-        auto* camera_resources_ptr = &camera_resources;
-        camera_threads.push_back(std::thread(
-            [idx,
-             thread_failure_state,
-             synthetic_yolo_emitter,
-             ecams_ptr,
-             cameras_params_ptr,
-             cameras_select_ptr,
-             camera_control_ptr,
-             ptp_params_ptr,
-             recording_pipelines_ptr,
-             yolo_workers_ptr,
-             frame_ipc_managers_ptr,
-             camera_resources_ptr]() {
-                try {
-                    acquire_frames(
-                        &ecams_ptr[idx],
-                        &cameras_params_ptr[idx],
-                        &cameras_select_ptr[idx],
-                        camera_control_ptr,
-                        ptp_params_ptr,
-                        nullptr,
-                        nullptr,
-                        (*recording_pipelines_ptr)[idx]
-                            ? (*recording_pipelines_ptr)[idx]->recording_ingress()
-                            : nullptr,
-                        (*yolo_workers_ptr)[idx].get(),
-                        nullptr,
-                        &(*camera_resources_ptr)[idx],
-                        (*frame_ipc_managers_ptr)[idx].get(),
-                        synthetic_yolo_emitter.get());
-                } catch (const std::exception& ex) {
-                    std::ostringstream message;
-                    message << "Headless camera thread failed for camera "
-                            << cameras_params_ptr[idx].camera_serial
-                            << ": " << ex.what();
-                    std::cerr << message.str() << std::endl;
-                    if (thread_failure_state) {
-                        thread_failure_state->record_failure(message.str());
+    // Reserve before creating any thread so vector growth cannot fail after a
+    // prior camera thread has started.  Thread creation itself can still fail
+    // (for example, when the process hits its thread limit), so the guarded
+    // path below stops admission and joins every thread before returning to a
+    // caller that owns the ROI controller pointer.
+    const auto stop_and_join_started_camera_threads = [&]() noexcept {
+        if (camera_control) {
+            camera_control->subscribe = false;
+            camera_control->record_video = false;
+            camera_control->recording_draining = true;
+            camera_control->stop_record = true;
+        }
+        quit_server = true;
+        for (auto& camera_thread : camera_threads) {
+            if (!camera_thread.joinable()) {
+                continue;
+            }
+            try {
+                camera_thread.join();
+            } catch (...) {
+                // A joinable thread must never reach vector destruction. A
+                // join failure is unrecoverable because detaching would leave
+                // the thread with a potentially dangling ROI controller.
+                std::terminate();
+            }
+        }
+        camera_threads.clear();
+    };
+    const auto cleanup_after_camera_thread_start_failure =
+        [&](const char* reason, const char* detail) {
+            std::cerr << (reason ? reason : "Failed to start headless camera threads");
+            if (detail && *detail) {
+                std::cerr << ": " << detail;
+            }
+            std::cerr << std::endl;
+            stop_and_join_started_camera_threads();
+            stop_headless_yolo_workers(yolo_workers);
+            stop_headless_pose_pipeline(crop_producer_workers, pose_workers);
+            stop_headless_frame_ipc_runtime(frame_ipc_runtime);
+            clear_headless_frame_ipc_managers(frame_ipc_managers);
+            stop_headless_registered_context_worker(spatial_roi_owner);
+            if (enable_artifacts) {
+                orange::session::drain_and_shutdown_recording_run(
+                    &recording_pipelines,
+                    recording_sink_mode,
+                    camera_control,
+                    std::chrono::seconds(10),
+                    "Headless recording drain after camera thread startup failure");
+                stop_headless_gpu_dmon_monitor(gpu_dmon_monitor);
+                stop_headless_nic_thermal_monitor(nic_thermal_monitor);
+            }
+            cleanup_selected_camera_buffers(
+                selected_indices, ecams, cameras_params, camera_resources);
+            camera_resources.clear();
+            return false;
+        };
+
+    if (spatial_roi_owner && !spatial_roi_acquisition_controller) {
+        return cleanup_after_camera_thread_start_failure(
+            "Spatial ROI recording owner did not expose an armed acquisition controller",
+            nullptr);
+    }
+
+    SpatialSnapshotWorker* registered_context_worker = nullptr;
+    std::string registered_context_start_error;
+    if (!start_headless_registered_context_capture(
+            spatial_roi_owner,
+            selected_indices.size() == 1
+                ? &cameras_params[selected_indices.front()]
+                : nullptr,
+            selected_indices.size() == 1
+                ? &camera_resources[selected_indices.front()]
+                : nullptr,
+            &registered_context_worker,
+            &registered_context_start_error)) {
+        return cleanup_after_camera_thread_start_failure(
+            "Failed to arm registered scene context capture",
+            registered_context_start_error.c_str());
+    }
+
+    try {
+        camera_threads.reserve(selected_indices.size());
+        for (int idx : selected_indices)
+        {
+            auto synthetic_yolo_emitter = synthetic_yolo_emitters[idx];
+            CameraEmergent* ecams_ptr = ecams;
+            CameraParams* cameras_params_ptr = cameras_params;
+            CameraEachSelect* cameras_select_ptr = cameras_select;
+            CameraControl* camera_control_ptr = camera_control;
+            PTPParams* ptp_params_ptr = ptp_params;
+            auto* recording_pipelines_ptr = &recording_pipelines;
+            auto* yolo_workers_ptr = &yolo_workers;
+            auto* frame_ipc_managers_ptr = &frame_ipc_managers;
+            auto* camera_resources_ptr = &camera_resources;
+            camera_threads.push_back(std::thread(
+                [idx,
+                 thread_failure_state,
+                 synthetic_yolo_emitter,
+                 ecams_ptr,
+                 cameras_params_ptr,
+                 cameras_select_ptr,
+                 camera_control_ptr,
+                 ptp_params_ptr,
+                 recording_pipelines_ptr,
+                 yolo_workers_ptr,
+                 frame_ipc_managers_ptr,
+                 camera_resources_ptr,
+                 registered_context_worker,
+                 spatial_roi_acquisition_controller]() {
+                    try {
+                        acquire_frames(
+                            &ecams_ptr[idx],
+                            &cameras_params_ptr[idx],
+                            &cameras_select_ptr[idx],
+                            camera_control_ptr,
+                            ptp_params_ptr,
+                            nullptr,
+                            nullptr,
+                            (*recording_pipelines_ptr)[idx]
+                                ? (*recording_pipelines_ptr)[idx]->recording_ingress()
+                                : nullptr,
+                            (*yolo_workers_ptr)[idx].get(),
+                            nullptr,
+                            &(*camera_resources_ptr)[idx],
+                            (*frame_ipc_managers_ptr)[idx].get(),
+                            synthetic_yolo_emitter.get(),
+                            registered_context_worker,
+                            nullptr,
+                            spatial_roi_acquisition_controller);
+                    } catch (const std::exception& ex) {
+                        std::ostringstream message;
+                        message << "Headless camera thread failed for camera "
+                                << cameras_params_ptr[idx].camera_serial
+                                << ": " << ex.what();
+                        std::cerr << message.str() << std::endl;
+                        if (thread_failure_state) {
+                            thread_failure_state->record_failure(message.str());
+                        }
+                        if (camera_control_ptr) {
+                            camera_control_ptr->subscribe = false;
+                            camera_control_ptr->record_video = false;
+                            camera_control_ptr->recording_draining = true;
+                            camera_control_ptr->stop_record = true;
+                        }
+                        quit_server = true;
+                    } catch (...) {
+                        const std::string message =
+                            "Headless camera thread failed with an unknown exception for camera " +
+                            cameras_params_ptr[idx].camera_serial;
+                        std::cerr << message << std::endl;
+                        if (thread_failure_state) {
+                            thread_failure_state->record_failure(message);
+                        }
+                        if (camera_control_ptr) {
+                            camera_control_ptr->subscribe = false;
+                            camera_control_ptr->record_video = false;
+                            camera_control_ptr->recording_draining = true;
+                            camera_control_ptr->stop_record = true;
+                        }
+                        quit_server = true;
                     }
-                    if (camera_control_ptr) {
-                        camera_control_ptr->subscribe = false;
-                        camera_control_ptr->record_video = false;
-                        camera_control_ptr->recording_draining = true;
-                        camera_control_ptr->stop_record = true;
-                    }
-                    quit_server = true;
-                } catch (...) {
-                    const std::string message =
-                        "Headless camera thread failed with an unknown exception for camera " +
-                        cameras_params_ptr[idx].camera_serial;
-                    std::cerr << message << std::endl;
-                    if (thread_failure_state) {
-                        thread_failure_state->record_failure(message);
-                    }
-                    if (camera_control_ptr) {
-                        camera_control_ptr->subscribe = false;
-                        camera_control_ptr->record_video = false;
-                        camera_control_ptr->recording_draining = true;
-                        camera_control_ptr->stop_record = true;
-                    }
-                    quit_server = true;
-                }
-            }));
+                }));
+        }
+    } catch (const std::exception& ex) {
+        return cleanup_after_camera_thread_start_failure(
+            "Failed to start headless camera threads", ex.what());
+    } catch (...) {
+        return cleanup_after_camera_thread_start_failure(
+            "Failed to start headless camera threads", "unknown exception");
     }
 
     // wait for all camera ready
     if (use_ptp_sync) {
-        while(ptp_params->ptp_counter != static_cast<int>(selected_indices.size())) {
+        while (ptp_params->ptp_counter !=
+               static_cast<std::uint64_t>(selected_indices.size())) {
+            if (quit_server || (camera_control && !camera_control->subscribe)) {
+                return cleanup_after_camera_thread_start_failure(
+                    "Headless camera startup stopped before all PTP participants became ready",
+                    nullptr);
+            }
             usleep(10);
         }
     }
@@ -5534,6 +6172,1661 @@ bool write_json_file(const std::filesystem::path& path, const nlohmann::json& va
     return true;
 }
 
+constexpr char kSpatialRoiConfigAuthorityName[] =
+    "spatial_roi_recording_config.json";
+constexpr char kSpatialRoiPlanAuthorityName[] =
+    "spatial_roi_recording_plan.json";
+constexpr char kSpatialRoiContractAuthorityName[] =
+    "spatial_roi_recorder_contract.json";
+constexpr char kSpatialRoiPreparationFailureName[] =
+    "spatial_roi_recording_preparation_failure.json";
+constexpr char kRegisteredSceneContextArtifactName[] =
+    "registered_scene_context.mono8";
+constexpr char kRegisteredSceneContextDescriptorName[] =
+    "registered_scene_context.json";
+
+struct HeadlessSpatialRoiRecordingOwner {
+    bool enabled = false;
+    bool registered_context_required = false;
+    orange::session::spatial_roi::MediaPolicy media_policy =
+        orange::session::spatial_roi::default_media_policy(false);
+    orange::session::spatial_roi::RegisteredSceneContextCaptureDeclaration
+        registered_context_capture_declaration;
+    std::filesystem::path recording_root;
+    nlohmann::json normalized_config = nlohmann::json::object();
+    nlohmann::json verified_plan = nlohmann::json::object();
+    nlohmann::json recorder_contract = nlohmann::json::object();
+    orange::session::spatial_roi::SpatialRoiRecorderRuntimeGpuMapping
+        gpu_mapping;
+    orange::session::spatial_roi::SpatialRoiRecorderCameraContractView
+        camera_contract;
+    orange::session::spatial_roi::SpatialRoiSessionArtifactReference
+        normalized_config_artifact;
+    orange::session::spatial_roi::SpatialRoiSessionArtifactReference
+        verified_plan_artifact;
+    orange::session::spatial_roi::SpatialRoiSessionArtifactReference
+        recorder_contract_artifact;
+    std::unique_ptr<
+        orange::session::spatial_roi::SpatialRoiSessionAuthorityStore>
+        authority_store;
+    std::unique_ptr<
+        orange::spatial_roi::headless::SpatialRoiHeadlessCameraSession>
+        session;
+    std::unique_ptr<SpatialSnapshotWorker> registered_context_worker;
+    std::uint64_t registered_context_request_id = 0;
+    std::chrono::steady_clock::time_point registered_context_requested_at;
+    std::chrono::steady_clock::time_point registered_context_completed_at;
+    bool registered_context_terminal = false;
+    bool registered_context_published = false;
+    bool registered_context_snapshot_linked = false;
+    std::uint64_t registered_context_capture_latency_ns = 0;
+    orange::session::spatial_roi::RegisteredSceneContextPublication
+        registered_context_publication;
+    orange::session::spatial_roi::RegisteredSceneContextDescriptor
+        registered_context_descriptor_template;
+    std::string registered_context_failure;
+    // Empty until the recorder child has exited cleanly and every contract-
+    // bound output artifact has been reopened, hashed, and authenticated.
+    nlohmann::json finalized_session_receipt = nlohmann::json::object();
+    std::string first_failure;
+};
+
+nlohmann::json registered_scene_context_runtime_json(
+    const HeadlessSpatialRoiRecordingOwner& owner)
+{
+    nlohmann::json context = {
+        {"schema_id", "orange.recording.registered_scene_context_runtime"},
+        {"schema_version", 1},
+        {"required", owner.registered_context_required},
+        {"status",
+         !owner.registered_context_required
+             ? "not_requested"
+             : owner.registered_context_published &&
+                       owner.registered_context_snapshot_linked
+                   ? "finalized"
+                   : owner.registered_context_terminal ? "failed" : "pending"},
+        {"capture_role",
+         orange::session::spatial_roi::kRegisteredSceneContextCaptureRole},
+        {"artifact_relative_path", kRegisteredSceneContextArtifactName},
+        {"descriptor_relative_path", kRegisteredSceneContextDescriptorName},
+        {"request_id", owner.registered_context_request_id},
+        {"capture_latency_ns", owner.registered_context_capture_latency_ns},
+        {"failure_reason", owner.registered_context_failure},
+    };
+    if (owner.registered_context_published) {
+        const auto& publication = owner.registered_context_publication;
+        context["descriptor_receipt"] = {
+            {"relative_path", publication.descriptor_receipt.relative_path},
+            {"size_bytes", publication.descriptor_receipt.size_bytes},
+            {"sha256", publication.descriptor_receipt.sha256},
+        };
+        context["artifact"] = {
+            {"relative_path", publication.descriptor.artifact.relative_path},
+            {"size_bytes", publication.descriptor.artifact.size_bytes},
+            {"sha256", publication.descriptor.artifact.sha256},
+        };
+        context["registration_authority_status"] =
+            publication.descriptor.invariants.registration_authority_status;
+        context["daily_registration_accepted"] =
+            publication.descriptor.invariants.daily_registration_accepted;
+        context["source_frame"] = {
+            {"source_frame_id",
+             publication.descriptor.source_frame.source_frame_id},
+            {"local_frame_id",
+             publication.descriptor.source_frame.local_frame_id},
+            {"camera_frame_id",
+             publication.descriptor.source_frame.camera_frame_id},
+            {"recording_frame_id",
+             publication.descriptor.source_frame.recording_frame_id},
+            {"camera_timestamp_ns",
+             publication.descriptor.source_frame.camera_timestamp_ns},
+            {"timestamp_sys_ns",
+             publication.descriptor.source_frame.timestamp_sys_ns},
+        };
+    }
+    return context;
+}
+
+bool verify_published_registered_scene_context(
+    const HeadlessSpatialRoiRecordingOwner& owner,
+    std::string* error_out)
+{
+    if (error_out) {
+        error_out->clear();
+    }
+    if (!owner.authority_store || !owner.authority_store->valid() ||
+        !owner.registered_context_published) {
+        if (error_out) {
+            *error_out =
+                "registered scene context has no retained publication authority";
+        }
+        return false;
+    }
+    std::string descriptor_bytes;
+    std::string verify_error;
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    if (!owner.authority_store->VerifyRootBinding(&verify_error) ||
+        !owner.authority_store->ReadAndVerify(
+            owner.registered_context_publication.descriptor_receipt,
+            &descriptor_bytes,
+            nullptr,
+            &verify_error)) {
+        if (error_out) {
+            *error_out = "registered scene context descriptor verification "
+                         "failed: " +
+                (verify_error.empty() ? std::string("unspecified error")
+                                      : verify_error);
+        }
+        return false;
+    }
+
+    orange::session::spatial_roi::RegisteredSceneContextDescriptor
+        verified_descriptor;
+    try {
+        const nlohmann::json descriptor_json =
+            nlohmann::json::parse(descriptor_bytes);
+        if (!orange::session::spatial_roi::
+                registered_scene_context_descriptor_from_json(
+                    descriptor_json,
+                    &verified_descriptor,
+                    &verify_error)) {
+            if (error_out) {
+                *error_out =
+                    "registered scene context descriptor reparse failed: " +
+                    verify_error;
+            }
+            return false;
+        }
+    } catch (const std::exception& exception) {
+        if (error_out) {
+            *error_out =
+                "registered scene context descriptor JSON is invalid: " +
+                std::string(exception.what());
+        }
+        return false;
+    }
+    if (orange::session::spatial_roi::
+            registered_scene_context_descriptor_to_json(
+                verified_descriptor) !=
+        orange::session::spatial_roi::
+            registered_scene_context_descriptor_to_json(
+                owner.registered_context_publication.descriptor)) {
+        if (error_out) {
+            *error_out =
+                "registered scene context descriptor changed after publication";
+        }
+        return false;
+    }
+    std::string verified_context_bytes;
+    if (!orange::session::spatial_roi::read_registered_scene_context_bytes(
+            *owner.authority_store,
+            verified_descriptor,
+            &verified_context_bytes,
+            &verify_error)) {
+        if (error_out) {
+            *error_out =
+                "registered scene context image verification failed: " +
+                (verify_error.empty() ? std::string("unspecified error")
+                                      : verify_error);
+        }
+        return false;
+    }
+    return true;
+}
+
+bool poll_headless_registered_scene_context(
+    HeadlessSpatialRoiRecordingOwner* owner,
+    const bool require_terminal,
+    std::string* error_out)
+{
+    if (error_out) {
+        error_out->clear();
+    }
+    if (!owner || !owner->registered_context_required) {
+        return true;
+    }
+    const auto publish_runtime_best_effort = [&]() {
+        if (!owner->recording_root.empty()) {
+            (void)update_recording_snapshot_session_artifacts(
+                owner->recording_root.string(),
+                {{"registered_scene_context",
+                  registered_scene_context_runtime_json(*owner)}});
+        }
+    };
+    if (owner->registered_context_terminal) {
+        if (owner->registered_context_published &&
+            owner->registered_context_snapshot_linked &&
+            require_terminal) {
+            std::string verification_error;
+            if (!verify_published_registered_scene_context(
+                    *owner, &verification_error)) {
+                owner->registered_context_snapshot_linked = false;
+                owner->registered_context_failure = verification_error;
+                if (owner->first_failure.empty()) {
+                    owner->first_failure = verification_error;
+                }
+                publish_runtime_best_effort();
+            }
+        }
+        if (!owner->registered_context_published ||
+            !owner->registered_context_snapshot_linked) {
+            if (error_out) {
+                *error_out = owner->registered_context_failure.empty()
+                    ? "registered scene context did not finalize"
+                    : owner->registered_context_failure;
+            }
+            return false;
+        }
+        return true;
+    }
+    if (!owner->registered_context_worker) {
+        if (!require_terminal) {
+            return true;
+        }
+        owner->registered_context_terminal = true;
+        owner->registered_context_failure =
+            "registered scene context worker was not available at finalization";
+        publish_runtime_best_effort();
+        if (error_out) {
+            *error_out = owner->registered_context_failure;
+        }
+        return false;
+    }
+
+    SpatialSnapshotResult result;
+    if (!owner->registered_context_worker->PopCompletedSnapshot(&result)) {
+        if (!require_terminal) {
+            return true;
+        }
+        owner->registered_context_terminal = true;
+        owner->registered_context_failure =
+            "registered scene context capture produced no terminal result";
+        publish_runtime_best_effort();
+        if (error_out) {
+            *error_out = owner->registered_context_failure;
+        }
+        return false;
+    }
+
+    owner->registered_context_completed_at = std::chrono::steady_clock::now();
+    if (owner->registered_context_requested_at.time_since_epoch().count() > 0 &&
+        owner->registered_context_completed_at >=
+            owner->registered_context_requested_at) {
+        owner->registered_context_capture_latency_ns =
+            static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    owner->registered_context_completed_at -
+                    owner->registered_context_requested_at)
+                    .count());
+    }
+
+    const auto fail_capture = [&](const std::string& reason) {
+        owner->registered_context_terminal = true;
+        owner->registered_context_failure = reason;
+        if (owner->first_failure.empty()) {
+            owner->first_failure = reason;
+        }
+        publish_runtime_best_effort();
+        if (error_out) {
+            *error_out = reason;
+        }
+        return false;
+    };
+    if (!result.ok) {
+        return fail_capture(
+            "registered scene context capture failed: " +
+            (result.error.empty() ? std::string("unspecified worker failure")
+                                  : result.error));
+    }
+    const auto& expected = owner->registered_context_descriptor_template;
+    const std::uint64_t expected_bytes =
+        static_cast<std::uint64_t>(expected.native_raster.stride_bytes) *
+        expected.native_raster.height;
+    if (result.request_id != owner->registered_context_request_id ||
+        result.capture_representation != "native_bytes" ||
+        result.camera_serial != expected.camera_serial ||
+        result.pixel_format != GVSP_PIX_MONO8 ||
+        result.width != static_cast<int>(expected.native_raster.width) ||
+        result.height != static_cast<int>(expected.native_raster.height) ||
+        result.native_bytes.size() != expected_bytes ||
+        result.local_frame_id == 0 || result.camera_frame_id == 0 ||
+        result.camera_timestamp_ns == 0 || result.timestamp_sys_ns == 0) {
+        std::ostringstream message;
+        message << "registered scene context result did not match the armed "
+                   "native Mono8 camera/frame contract"
+                << " request=" << result.request_id
+                << " expected_request="
+                << owner->registered_context_request_id
+                << " camera=" << result.camera_serial
+                << " pixel_format=" << result.pixel_format
+                << " raster=" << result.width << "x" << result.height
+                << " bytes=" << result.native_bytes.size()
+                << " expected_bytes=" << expected_bytes
+                << " local_frame=" << result.local_frame_id
+                << " camera_frame=" << result.camera_frame_id
+                << " recording_frame=" << result.recording_frame_id;
+        return fail_capture(message.str());
+    }
+
+    auto descriptor = owner->registered_context_descriptor_template;
+    descriptor.source_frame.source_frame_id = result.local_frame_id;
+    descriptor.source_frame.local_frame_id = result.local_frame_id;
+    descriptor.source_frame.camera_frame_id = result.camera_frame_id;
+    descriptor.source_frame.recording_frame_id = result.recording_frame_id;
+    descriptor.source_frame.camera_timestamp_ns = result.camera_timestamp_ns;
+    descriptor.source_frame.timestamp_sys_ns = result.timestamp_sys_ns;
+    const std::string bytes(
+        reinterpret_cast<const char*>(result.native_bytes.data()),
+        result.native_bytes.size());
+    std::string publish_error;
+    {
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
+        if (!owner->authority_store ||
+            !orange::session::spatial_roi::publish_registered_scene_context(
+                *owner->authority_store,
+                kRegisteredSceneContextDescriptorName,
+                descriptor,
+                bytes,
+                &owner->registered_context_publication,
+                &publish_error)) {
+            return fail_capture(
+                "registered scene context publication failed: " +
+                (publish_error.empty() ? std::string("unspecified error")
+                                       : publish_error));
+        }
+    }
+    owner->registered_context_published = true;
+    owner->registered_context_failure.clear();
+    owner->registered_context_snapshot_linked = true;
+    const nlohmann::json runtime = registered_scene_context_runtime_json(*owner);
+    if (!update_recording_snapshot_session_artifacts(
+            owner->recording_root.string(),
+            {{"registered_scene_context", runtime}})) {
+        owner->registered_context_snapshot_linked = false;
+        return fail_capture(
+            "registered scene context was published but could not be linked "
+            "from recording_snapshot.json");
+    }
+    owner->registered_context_terminal = true;
+    std::cout << "Registered native scene context finalized."
+              << " camera=" << descriptor.camera_serial
+              << " recording_frame=" << result.recording_frame_id
+              << " bytes=" << result.native_bytes.size()
+              << " latency_ns="
+              << owner->registered_context_capture_latency_ns
+              << std::endl;
+    return true;
+}
+
+bool persist_headless_spatial_roi_start_policy(
+    HeadlessSpatialRoiRecordingOwner* owner,
+    const std::string& record_folder,
+    std::string* error_out)
+{
+    if (error_out) {
+        error_out->clear();
+    }
+    if (!owner || !owner->enabled) {
+        return true;
+    }
+    const std::string media_policy_name =
+        orange::session::spatial_roi::media_policy_kind_to_string(
+            owner->media_policy.kind);
+    if (!orange::session::spatial_roi::media_policy_requires_full_frame(
+            owner->media_policy) &&
+        !omit_recording_snapshot_full_frame_product(
+            record_folder, media_policy_name)) {
+        if (error_out) {
+            *error_out =
+                "failed to omit the continuous full-frame descriptor for "
+                "the fixed-ROI-only media policy before sealing the "
+                "recording-start snapshot";
+        }
+        return false;
+    }
+    const nlohmann::json session_update = {
+        {"spatial_roi_media_policy",
+         orange::session::spatial_roi::media_policy_to_json(
+             owner->media_policy)},
+        {"registered_scene_context_capture_declaration",
+         owner->registered_context_required
+             ? orange::session::spatial_roi::
+                   registered_scene_context_capture_declaration_to_json(
+                       owner->registered_context_capture_declaration)
+             : nlohmann::json(nullptr)},
+        {"registered_scene_context",
+         registered_scene_context_runtime_json(*owner)},
+    };
+    if (!update_recording_snapshot_session_artifacts(
+            record_folder, session_update)) {
+        if (error_out) {
+            *error_out =
+                "failed to persist the spatial ROI media policy and "
+                "registered-context state before sealing the "
+                "recording-start snapshot";
+        }
+        return false;
+    }
+    return true;
+}
+
+bool start_headless_registered_context_capture(
+    HeadlessSpatialRoiRecordingOwner* owner,
+    CameraParams* camera_params,
+    CameraResources* camera_resources,
+    SpatialSnapshotWorker** worker_out,
+    std::string* error_out)
+{
+    if (worker_out) {
+        *worker_out = nullptr;
+    }
+    if (error_out) {
+        error_out->clear();
+    }
+    if (!owner || !owner->enabled ||
+        !owner->registered_context_required) {
+        return true;
+    }
+    const auto fail_start = [&](const std::string& reason) {
+        if (owner->registered_context_worker) {
+            owner->registered_context_worker->StopThread();
+            owner->registered_context_worker.reset();
+        }
+        owner->registered_context_terminal = true;
+        owner->registered_context_failure = reason;
+        if (owner->first_failure.empty()) {
+            owner->first_failure = reason;
+        }
+        if (!owner->recording_root.empty()) {
+            (void)update_recording_snapshot_session_artifacts(
+                owner->recording_root.string(),
+                {{"registered_scene_context",
+                  registered_scene_context_runtime_json(*owner)}});
+        }
+        if (error_out) {
+            *error_out = reason;
+        }
+        return false;
+    };
+    if (!camera_params || !camera_resources ||
+        !camera_resources->recycle_queue) {
+        return fail_start(
+            "registered scene context requires one initialized camera "
+            "resource and recycle queue");
+    }
+    if (owner->registered_context_worker) {
+        return fail_start(
+            "registered scene context worker was already initialized");
+    }
+
+    try {
+        const std::string worker_name =
+            "HeadlessRegisteredContext_Cam_" +
+            camera_params->camera_serial;
+        owner->registered_context_worker =
+            std::make_unique<SpatialSnapshotWorker>(
+                worker_name.c_str(),
+                camera_params,
+                *camera_resources->recycle_queue);
+        owner->registered_context_worker->SetMaxQueueSize(1);
+        if (owner->registered_context_worker->StartThread() != 0) {
+            return fail_start(
+                "registered scene context worker thread did not start");
+        }
+        owner->registered_context_requested_at =
+            std::chrono::steady_clock::now();
+        std::string request_error;
+        if (!owner->registered_context_worker->RequestNativeSnapshot(
+                "registered_scene_context_v1",
+                &owner->registered_context_request_id,
+                &request_error)) {
+            return fail_start(
+                "registered scene context request was rejected: " +
+                (request_error.empty()
+                     ? std::string("unspecified worker error")
+                     : request_error));
+        }
+        if (!update_recording_snapshot_session_artifacts(
+                owner->recording_root.string(),
+                {{"registered_scene_context",
+                  registered_scene_context_runtime_json(*owner)}})) {
+            return fail_start(
+                "registered scene context request could not be linked from "
+                "recording_snapshot.json");
+        }
+    } catch (const std::exception& exception) {
+        return fail_start(exception.what());
+    } catch (...) {
+        return fail_start(
+            "unknown registered scene context startup exception");
+    }
+    if (worker_out) {
+        *worker_out = owner->registered_context_worker.get();
+    }
+    return true;
+}
+
+void stop_headless_registered_context_worker(
+    HeadlessSpatialRoiRecordingOwner* owner) noexcept
+{
+    if (!owner || !owner->registered_context_worker) {
+        return;
+    }
+    try {
+        owner->registered_context_worker->StopThread();
+        std::string terminal_error;
+        (void)poll_headless_registered_scene_context(
+            owner, true, &terminal_error);
+    } catch (...) {
+        // Cleanup must remain noexcept even if terminal evidence publication
+        // encounters an allocation or filesystem exception.
+    }
+    owner->registered_context_worker.reset();
+}
+
+nlohmann::json spatial_roi_child_snapshot_json(
+    const orange::spatial_roi::recording::
+        SpatialRoiCameraRecorderProcessSnapshot& snapshot)
+{
+    return {
+        {"event", snapshot.event},
+        {"status", snapshot.status},
+        {"state", snapshot.state},
+        {"ready", snapshot.ready},
+        {"clean_eof", snapshot.clean_eof},
+        {"completed", snapshot.completed},
+        {"failed", snapshot.failed},
+        {"first_failure_stream_id", snapshot.first_failure_stream_id},
+        {"first_failure", snapshot.first_failure},
+        {"error", snapshot.error},
+        {"payload", snapshot.payload},
+    };
+}
+
+nlohmann::json spatial_roi_process_status_json(
+    const orange::spatial_roi::headless::
+        SpatialRoiHeadlessCameraSessionSnapshot& snapshot)
+{
+    const auto& process = snapshot.process;
+    return {
+        {"schema_id",
+         "orange.spatial_roi_recording.headless_process_status"},
+        {"schema_version", 1},
+        {"session_state",
+         orange::spatial_roi::headless::
+             spatial_roi_headless_camera_session_state_name(snapshot.state)},
+        {"process_state",
+         orange::spatial_roi::recording::
+             spatial_roi_camera_recorder_process_state_name(process.state)},
+        {"pid", process.pid},
+        {"started", process.started},
+        {"sockets_bound", process.sockets_bound},
+        {"ready", process.ready},
+        {"terminal_seen", process.terminal_seen},
+        {"exited", process.exited},
+        {"reaped", process.reaped},
+        {"exit_code", process.exit_code},
+        {"term_signal", process.term_signal},
+        {"stdout_bytes_read", process.stdout_bytes_read},
+        {"cleanup_complete", snapshot.cleanup_complete},
+        {"first_failure", snapshot.first_failure},
+        {"error", process.error},
+        {"starting", spatial_roi_child_snapshot_json(process.starting)},
+        {"ready_snapshot",
+         spatial_roi_child_snapshot_json(process.ready_snapshot)},
+        {"heartbeat", spatial_roi_child_snapshot_json(process.heartbeat)},
+        {"terminal", spatial_roi_child_snapshot_json(process.terminal)},
+        {"last", spatial_roi_child_snapshot_json(process.last)},
+    };
+}
+
+nlohmann::json spatial_roi_producer_status_json(
+    const orange::spatial_roi::headless::
+        SpatialRoiHeadlessCameraSessionSnapshot& snapshot)
+{
+    const auto& producer = snapshot.producer;
+    return {
+        {"schema_id",
+         "orange.spatial_roi_recording.headless_producer_status"},
+        {"schema_version", 1},
+        {"state",
+         orange::spatial_roi::spatial_roi_camera_producer_state_name(
+             producer.state)},
+        {"recording_id", producer.recording_id},
+        {"session_id", producer.session_id},
+        {"recording_identity_token", producer.recording_identity_token},
+        {"producer_generation", producer.producer_generation},
+        {"spatial_roi_plan_sha256", producer.spatial_roi_plan_sha256},
+        {"camera_id", producer.camera_id},
+        {"camera_serial", producer.camera_serial},
+        {"stream_count", producer.stream_count},
+        {"submit_attempted", producer.submit_attempted},
+        {"submitted", producer.submitted},
+        {"incomplete", producer.incomplete},
+        {"rejected", producer.rejected},
+        {"acquisition_armed", snapshot.acquisition_armed},
+        {"first_failure", producer.first_failure},
+    };
+}
+
+bool build_spatial_roi_session_metadata(
+    const HeadlessSpatialRoiRecordingOwner& owner,
+    const std::string& status,
+    nlohmann::json* metadata_out,
+    std::string* error_out)
+{
+    if (!metadata_out || !owner.session) {
+        if (error_out) {
+            *error_out =
+                "Spatial ROI session metadata requires an active owner";
+        }
+        return false;
+    }
+    const auto runtime = owner.session->snapshot();
+    const nlohmann::json process_status =
+        spatial_roi_process_status_json(runtime);
+    const nlohmann::json producer_status =
+        spatial_roi_producer_status_json(runtime);
+    const nlohmann::json* finalized_receipt =
+        status == "complete" ? &owner.finalized_session_receipt : nullptr;
+    return orange::session::spatial_roi::
+        build_spatial_roi_session_snapshot_json(
+            owner.camera_contract,
+            owner.normalized_config_artifact,
+            owner.verified_plan_artifact,
+            owner.recorder_contract_artifact,
+            status,
+            &process_status,
+            &producer_status,
+            finalized_receipt,
+            metadata_out,
+            error_out);
+}
+
+bool publish_headless_spatial_roi_preparation_failure_if_authoritative(
+    const HeadlessSpatialRoiRecordingOwner& owner,
+    const std::string& reason,
+    std::string* error_out)
+{
+    // Do not mint a failure artifact until the independently built plan and
+    // recorder contract have both been authenticated and all three authority
+    // files have exact byte receipts. Earlier failures are still reported to
+    // stderr by the caller, but have no trustworthy recording identity to
+    // publish.
+    const auto valid_artifact = [](const auto& artifact) {
+        if (artifact.relative_path.empty() || artifact.size_bytes == 0 ||
+            artifact.sha256.size() != 71 ||
+            artifact.sha256.rfind("sha256:", 0) != 0) {
+            return false;
+        }
+        return std::all_of(
+            artifact.sha256.begin() + 7,
+            artifact.sha256.end(),
+            [](const unsigned char byte) {
+                return (byte >= '0' && byte <= '9') ||
+                       (byte >= 'a' && byte <= 'f');
+            });
+    };
+    if (!owner.enabled || owner.recording_root.empty() ||
+        !owner.authority_store || !owner.authority_store->valid() ||
+        owner.camera_contract.schema_id !=
+            orange::session::spatial_roi::
+                kSpatialRoiRecorderCameraContractSchemaId ||
+        owner.camera_contract.schema_version !=
+            orange::session::spatial_roi::
+                kSpatialRoiRecorderCameraContractSchemaVersion ||
+        owner.camera_contract.recording_id.empty() ||
+        owner.camera_contract.session_id != owner.camera_contract.recording_id ||
+        owner.camera_contract.recording_identity_token.empty() ||
+        owner.camera_contract.producer_generation.empty() ||
+        owner.camera_contract.spatial_roi_plan_sha256.empty() ||
+        owner.camera_contract.camera_serial.empty() ||
+        owner.camera_contract.stream_order.size() != 4 ||
+        !valid_artifact(owner.normalized_config_artifact) ||
+        !valid_artifact(owner.verified_plan_artifact) ||
+        !valid_artifact(owner.recorder_contract_artifact)) {
+        return true;
+    }
+
+    const auto verify_artifact = [&](const auto& artifact) {
+        const orange::session::spatial_roi::
+            SpatialRoiSessionAuthorityReceipt expected = {
+                artifact.relative_path,
+                artifact.size_bytes,
+                artifact.sha256};
+        return owner.authority_store->ReadAndVerify(
+            expected, nullptr, nullptr, error_out);
+    };
+    {
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
+        if (!verify_artifact(owner.normalized_config_artifact) ||
+            !verify_artifact(owner.verified_plan_artifact) ||
+            !verify_artifact(owner.recorder_contract_artifact)) {
+            return false;
+        }
+    }
+
+    const auto artifact_json = [](const auto& artifact) {
+        return nlohmann::json{
+            {"relative_path", artifact.relative_path},
+            {"size_bytes", artifact.size_bytes},
+            {"sha256", artifact.sha256},
+        };
+    };
+    constexpr std::size_t kMaximumFailureReasonBytes = 4096;
+    const std::string normalized_reason =
+        reason.empty() ? "unspecified spatial ROI preparation failure" : reason;
+    const std::string bounded_reason =
+        normalized_reason.size() <= kMaximumFailureReasonBytes
+            ? normalized_reason
+            : normalized_reason.substr(0, kMaximumFailureReasonBytes);
+    const nlohmann::json failure = {
+        {"schema_id", "orange.spatial_roi_recording.preparation_status"},
+        {"schema_version", 1},
+        {"status", "failed"},
+        {"stage", "pre_arm_preparation"},
+        {"recording_started", false},
+        {"certifies_recording", false},
+        {"recorded_at_utc", get_current_utc_timestamp()},
+        {"failure_reason", bounded_reason},
+        {"identity",
+         {{"recording_id", owner.camera_contract.recording_id},
+          {"session_id", owner.camera_contract.session_id},
+          {"recording_identity_token",
+           owner.camera_contract.recording_identity_token},
+          {"producer_generation", owner.camera_contract.producer_generation},
+          {"spatial_roi_plan_sha256",
+           owner.camera_contract.spatial_roi_plan_sha256},
+          {"camera_id", owner.camera_contract.camera_id},
+          {"camera_serial", owner.camera_contract.camera_serial}}},
+        {"stream_order", owner.camera_contract.stream_order},
+        {"authorities",
+         {{"config", artifact_json(owner.normalized_config_artifact)},
+          {"verified_plan", artifact_json(owner.verified_plan_artifact)},
+          {"recorder_contract",
+           artifact_json(owner.recorder_contract_artifact)}}},
+        {"evidence_semantics",
+         "authenticated_preparation_failure_only_not_recording_completion"},
+    };
+    orange::session::spatial_roi::SpatialRoiSessionAuthorityReceipt
+        failure_receipt;
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    return owner.authority_store->PublishJson(
+        kSpatialRoiPreparationFailureName,
+        failure,
+        &failure_receipt,
+        error_out);
+}
+
+std::string resolve_spatial_roi_recorder_executable(std::string* error_out)
+{
+    if (const char* override_path =
+            std::getenv("ORANGE_SPATIAL_ROI_RECORDER_EXECUTABLE");
+        override_path != nullptr && override_path[0] != '\0') {
+        const std::filesystem::path path(override_path);
+        if (!path.is_absolute()) {
+            if (error_out) {
+                *error_out =
+                    "ORANGE_SPATIAL_ROI_RECORDER_EXECUTABLE must be absolute";
+            }
+            return {};
+        }
+        return path.lexically_normal().string();
+    }
+
+    std::error_code executable_error;
+    const std::filesystem::path self =
+        std::filesystem::read_symlink("/proc/self/exe", executable_error);
+    if (executable_error || !self.is_absolute()) {
+        if (error_out) {
+            *error_out =
+                "Could not resolve /proc/self/exe for the spatial ROI recorder: " +
+                executable_error.message();
+        }
+        return {};
+    }
+    return (self.parent_path() / "spatial_roi_camera_recorder")
+        .lexically_normal()
+        .string();
+}
+
+bool resolve_spatial_roi_recorder_cpu_affinity(
+    const std::string& camera_serial,
+    std::string* affinity_out,
+    std::string* source_out,
+    std::string* error_out)
+{
+    if (!affinity_out || !source_out) {
+        if (error_out) {
+            *error_out =
+                "Internal error: null spatial ROI recorder affinity destination";
+        }
+        return false;
+    }
+    affinity_out->clear();
+    source_out->clear();
+
+    // Per-camera authority wins over the global fallback. Empty variables are
+    // intentionally equivalent to unset so existing wrappers that declare
+    // optional variables without exporting values preserve inherited affinity.
+    const std::array<std::string, 2> keys = {
+        "ORANGE_SPATIAL_ROI_RECORDER_CPU_AFFINITY_CAM_" + camera_serial,
+        "ORANGE_SPATIAL_ROI_RECORDER_CPU_AFFINITY",
+    };
+    for (const std::string& key : keys) {
+        const char* value = std::getenv(key.c_str());
+        if (value != nullptr && value[0] != '\0') {
+            *affinity_out = value;
+            *source_out = key;
+            return true;
+        }
+    }
+    return true;
+}
+
+bool prepare_headless_spatial_roi_recording(
+    const HeadlessCliOptions& options,
+    const CameraParams* cameras_params,
+    const std::vector<int>& selected_indices,
+    HeadlessSpatialRoiRecordingOwner* owner,
+    std::string* error_out)
+{
+    if (!owner) {
+        if (error_out) {
+            *error_out = "Internal error: null spatial ROI recording owner";
+        }
+        return false;
+    }
+    *owner = HeadlessSpatialRoiRecordingOwner{};
+    if (!options.has_spatial_roi_recording ||
+        !options.spatial_roi_recording.enabled) {
+        return true;
+    }
+    owner->enabled = true;
+    owner->media_policy = options.spatial_roi_media_policy;
+    owner->registered_context_required =
+        orange::session::spatial_roi::media_policy_requires_registered_context(
+            options.spatial_roi_media_policy);
+    if (owner->registered_context_required) {
+        std::string declaration_error;
+        if (!options.has_registered_scene_context_capture_declaration ||
+            !orange::session::spatial_roi::
+                validate_registered_scene_context_capture_declaration(
+                    options.registered_scene_context_capture_declaration,
+                    &declaration_error)) {
+            if (error_out) {
+                *error_out =
+                    "Registered scene context requires a validated explicit capture declaration: " +
+                    (declaration_error.empty()
+                         ? std::string("declaration is absent")
+                         : declaration_error);
+            }
+            return false;
+        }
+        owner->registered_context_capture_declaration =
+            options.registered_scene_context_capture_declaration;
+    }
+    if (!cameras_params || selected_indices.size() != 1 ||
+        options.spatial_roi_recording.cameras.size() != 1) {
+        if (error_out) {
+            *error_out =
+                "Spatial ROI headless recording requires exactly one selected camera";
+        }
+        return false;
+    }
+
+    const CameraParams& actual = cameras_params[selected_indices.front()];
+    const auto& configured_entry =
+        *options.spatial_roi_recording.cameras.begin();
+    const auto& configured = configured_entry.second;
+    if (configured_entry.first != actual.camera_serial ||
+        configured.camera_serial != actual.camera_serial ||
+        configured.camera_id != actual.camera_id ||
+        configured.native_raster.width != actual.width ||
+        configured.native_raster.height != actual.height ||
+        configured.source_frame_rate != actual.frame_rate ||
+        actual.gpu_id < 0) {
+        if (error_out) {
+            std::ostringstream message;
+            message << "Spatial ROI config camera authority does not match the "
+                       "opened camera: configured="
+                    << configured.camera_serial << " id="
+                    << configured.camera_id << " raster="
+                    << configured.native_raster.width << "x"
+                    << configured.native_raster.height << " fps="
+                    << configured.source_frame_rate << " actual="
+                    << actual.camera_serial << " id=" << actual.camera_id
+                    << " raster=" << actual.width << "x" << actual.height
+                    << " fps=" << actual.frame_rate << " gpu="
+                    << actual.gpu_id;
+            *error_out = message.str();
+        }
+        return false;
+    }
+
+    std::error_code root_error;
+    owner->recording_root =
+        std::filesystem::absolute(options.record_folder, root_error)
+            .lexically_normal();
+    if (root_error || owner->recording_root.empty() ||
+        owner->recording_root == owner->recording_root.root_path()) {
+        if (error_out) {
+            *error_out = "Spatial ROI recording root is unsafe: " +
+                         root_error.message();
+        }
+        return false;
+    }
+    {
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
+        std::vector<std::string> authority_paths = {
+            kSpatialRoiConfigAuthorityName,
+            kSpatialRoiPlanAuthorityName,
+            kSpatialRoiContractAuthorityName,
+            kSpatialRoiPreparationFailureName};
+        if (owner->registered_context_required) {
+            authority_paths.push_back(kRegisteredSceneContextArtifactName);
+            authority_paths.push_back(kRegisteredSceneContextDescriptorName);
+        }
+        if (!orange::session::spatial_roi::
+                SpatialRoiSessionAuthorityStore::OpenOrCreate(
+                    owner->recording_root,
+                    authority_paths,
+                    &owner->authority_store,
+                    error_out) ||
+            !owner->authority_store ||
+            !owner->authority_store->valid()) {
+            if (error_out && error_out->empty()) {
+                *error_out =
+                    "Could not open a descriptor-bound spatial ROI recording root";
+            }
+            return false;
+        }
+    }
+
+    const std::string recording_id = owner->recording_root.filename().string();
+    orange::session::spatial_roi::PlanContext context;
+    context.recording_id = recording_id;
+    context.recording_identity_token =
+        orange::shaman_v2_recording_identity::token_for_recording_id(
+            recording_id);
+    context.generated_at_utc = get_current_utc_timestamp();
+    context.producer_generation =
+        "headless_roi_" + std::to_string(static_cast<long long>(::getpid())) +
+        "_" + std::to_string(static_cast<unsigned long long>(
+                  std::chrono::steady_clock::now()
+                      .time_since_epoch()
+                      .count()));
+
+    owner->normalized_config =
+        orange::session::spatial_roi::config_to_json(
+            options.spatial_roi_recording);
+    std::string build_error;
+    if (!orange::session::spatial_roi::build_plan(
+            options.spatial_roi_recording,
+            context,
+            &owner->verified_plan,
+            nullptr,
+            &build_error)) {
+        if (error_out) {
+            *error_out = "Failed to build spatial ROI verified plan: " +
+                         build_error;
+        }
+        return false;
+    }
+
+    owner->gpu_mapping.analytics_gpu_by_camera_serial.emplace(
+        actual.camera_serial, actual.gpu_id);
+    if (options.has_spatial_roi_recorder_runtime) {
+        owner->gpu_mapping.recorder_gpu_by_logical_stream_id =
+            options.spatial_roi_recorder_runtime
+                .recorder_gpu_by_logical_stream_id;
+    } else {
+        for (const auto& roi : configured.rois) {
+            owner->gpu_mapping.recorder_gpu_by_logical_stream_id.emplace(
+                roi.logical_stream_id, actual.gpu_id);
+        }
+    }
+    if (!orange::session::spatial_roi::build_spatial_roi_recorder_contract(
+            owner->verified_plan,
+            owner->recording_root.string(),
+            owner->gpu_mapping,
+            &owner->recorder_contract,
+            &build_error)) {
+        if (error_out) {
+            *error_out = "Failed to build spatial ROI recorder contract: " +
+                         build_error;
+        }
+        return false;
+    }
+    if (!orange::session::spatial_roi::
+            parse_spatial_roi_recorder_camera_contract(
+                owner->recorder_contract,
+                owner->verified_plan,
+                owner->recording_root.string(),
+                owner->gpu_mapping,
+                &owner->camera_contract,
+                &build_error)) {
+        if (error_out) {
+            *error_out = "Failed to authenticate spatial ROI camera contract: " +
+                         build_error;
+        }
+        return false;
+    }
+
+    if (owner->registered_context_required) {
+        auto& descriptor = owner->registered_context_descriptor_template;
+        descriptor.status = "complete";
+        descriptor.failure_reason.clear();
+        descriptor.recording_id = owner->camera_contract.recording_id;
+        descriptor.session_id = owner->camera_contract.session_id;
+        descriptor.recording_identity_token =
+            owner->camera_contract.recording_identity_token;
+        descriptor.producer_generation =
+            owner->camera_contract.producer_generation;
+        descriptor.camera_id = actual.camera_id;
+        descriptor.camera_serial = actual.camera_serial;
+        descriptor.source_camera_stream_id =
+            "camera_" + actual.camera_serial;
+        descriptor.stream_epoch_id =
+            owner->camera_contract.producer_generation;
+        descriptor.camera_configuration_sha256 =
+            resolved_camera_configuration_sha256(actual);
+        descriptor.native_raster.width = actual.width;
+        descriptor.native_raster.height = actual.height;
+        descriptor.native_raster.stride_bytes = actual.width;
+        descriptor.layout = {
+            configured.layout.id, configured.layout.sha256};
+        descriptor.materialization = {
+            configured.materialization.id,
+            configured.materialization.sha256};
+        descriptor.registration = {
+            configured.registration.id,
+            configured.registration.sha256};
+        const auto& declaration =
+            owner->registered_context_capture_declaration;
+        descriptor.invariants.daily_registration_accepted =
+            orange::session::spatial_roi::
+                registered_scene_context_daily_registration_accepted(
+                    declaration);
+        descriptor.invariants.registration_authority_status =
+            declaration.registration_authority_status;
+        descriptor.invariants.dish_setup_complete =
+            declaration.dish_setup_complete;
+        descriptor.invariants.subject_presence =
+            declaration.subject_presence;
+        descriptor.invariants.nir_illumination_fixed =
+            declaration.nir_illumination_fixed;
+        descriptor.invariants.camera_configuration_fixed =
+            declaration.camera_configuration_fixed;
+        descriptor.invariants.rig_fixed = declaration.rig_fixed;
+        descriptor.artifact.relative_path =
+            kRegisteredSceneContextArtifactName;
+    }
+
+    const auto publish_authority = [&](
+        const char* relative_path,
+        const nlohmann::json& value,
+        orange::session::spatial_roi::SpatialRoiSessionArtifactReference*
+            artifact_out) {
+        if (!artifact_out || !owner->authority_store) {
+            build_error =
+                "Spatial ROI authority publication has no retained root";
+            return false;
+        }
+        orange::session::spatial_roi::SpatialRoiSessionAuthorityReceipt
+            receipt;
+        if (!owner->authority_store->PublishJson(
+                relative_path, value, &receipt, &build_error)) {
+            return false;
+        }
+        artifact_out->relative_path = receipt.relative_path;
+        artifact_out->size_bytes = receipt.size_bytes;
+        artifact_out->sha256 = receipt.sha256;
+        return true;
+    };
+    {
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
+        if (!publish_authority(
+                kSpatialRoiConfigAuthorityName,
+                owner->normalized_config,
+                &owner->normalized_config_artifact) ||
+            !publish_authority(
+                kSpatialRoiPlanAuthorityName,
+                owner->verified_plan,
+                &owner->verified_plan_artifact) ||
+            !publish_authority(
+                kSpatialRoiContractAuthorityName,
+                owner->recorder_contract,
+                &owner->recorder_contract_artifact) ||
+            !owner->authority_store->VerifyRootBinding(&build_error)) {
+            if (error_out) {
+                *error_out =
+                    "Failed to persist descriptor-bound spatial ROI recording authorities: " +
+                    build_error;
+            }
+            return false;
+        }
+    }
+    if (!owner->authority_store->VerifyRootBinding(&build_error)) {
+        if (error_out) {
+            *error_out =
+                "Spatial ROI recording-root binding changed after authority publication: " +
+                build_error;
+        }
+        return false;
+    }
+
+    const std::string recorder_executable =
+        resolve_spatial_roi_recorder_executable(&build_error);
+    if (recorder_executable.empty()) {
+        if (error_out) {
+            *error_out = build_error;
+        }
+        return false;
+    }
+    const std::int64_t planned_seconds =
+        static_cast<std::int64_t>(std::max(1, options.duration_seconds)) +
+        static_cast<std::int64_t>(
+            std::max(0, options.record_start_delay_seconds)) +
+        600;
+    constexpr std::int64_t kSevenDaysSeconds = 7LL * 24LL * 60LL * 60LL;
+    if (planned_seconds > kSevenDaysSeconds) {
+        if (error_out) {
+            *error_out =
+                "Spatial ROI run plus finalization margin exceeds the seven-day recorder bound";
+        }
+        return false;
+    }
+
+    orange::spatial_roi::recording::SpatialRoiCameraRecorderProcessConfig
+        process_config;
+    process_config.contract_path =
+        (owner->recording_root / kSpatialRoiContractAuthorityName).string();
+    process_config.verified_plan_path =
+        (owner->recording_root / kSpatialRoiPlanAuthorityName).string();
+    process_config.expected_recording_root = owner->recording_root.string();
+    process_config.recorder_executable = recorder_executable;
+    process_config.gpu_mapping = owner->gpu_mapping;
+    process_config.expected_producer_pid = ::getpid();
+    process_config.expected_producer_uid = ::geteuid();
+    if (!resolve_spatial_roi_recorder_cpu_affinity(
+            actual.camera_serial,
+            &process_config.cpu_affinity,
+            &process_config.cpu_affinity_source,
+            &build_error)) {
+        if (error_out) *error_out = build_error;
+        return false;
+    }
+    process_config.eof_timeout = std::chrono::seconds(planned_seconds);
+    process_config.readiness_timeout = std::chrono::seconds(120);
+    process_config.accept_timeout = std::chrono::seconds(120);
+    process_config.ipc_timeout = std::chrono::minutes(5);
+    process_config.video_probe_timeout = std::chrono::seconds(120);
+    process_config.socket_wait_timeout = std::chrono::seconds(120);
+    process_config.ready_wait_timeout = std::chrono::seconds(120);
+    process_config.clean_exit_timeout = std::chrono::minutes(3);
+
+    orange::spatial_roi::SpatialRoiCameraProducerConfig producer_config;
+    producer_config.candidate_contract = owner->recorder_contract;
+    producer_config.independently_verified_plan = owner->verified_plan;
+    producer_config.expected_recording_root = owner->recording_root.string();
+    producer_config.expected_gpu_mapping = owner->gpu_mapping;
+    producer_config.producer_gpu_id = actual.gpu_id;
+    producer_config.expected_recorder_uid = ::geteuid();
+    producer_config.connect_timeout = std::chrono::seconds(10);
+    producer_config.write_timeout = std::chrono::seconds(10);
+    producer_config.ipc_response_timeout = std::chrono::seconds(10);
+
+    orange::spatial_roi::headless::SpatialRoiHeadlessCameraSessionConfig
+        session_config;
+    session_config.process = std::move(process_config);
+    session_config.producer = std::move(producer_config);
+    owner->session = orange::spatial_roi::headless::
+        SpatialRoiHeadlessCameraSession::Create(
+            std::move(session_config), &build_error);
+    if (!owner->session) {
+        if (error_out) {
+            *error_out = "Failed to prepare spatial ROI headless recording: " +
+                         build_error;
+        }
+        return false;
+    }
+
+    std::ostringstream recorder_gpus;
+    bool first_recorder_gpu = true;
+    for (const auto& [logical_stream_id, gpu_id] :
+         owner->gpu_mapping.recorder_gpu_by_logical_stream_id) {
+        if (!first_recorder_gpu) {
+            recorder_gpus << ',';
+        }
+        first_recorder_gpu = false;
+        recorder_gpus << logical_stream_id << '=' << gpu_id;
+    }
+    std::cout << "Spatial ROI headless recorder prepared."
+              << " camera=" << actual.camera_serial
+              << " streams=" << owner->camera_contract.stream_count
+              << " recorder_gpu_source="
+              << (options.has_spatial_roi_recorder_runtime
+                      ? "fixed.spatial_roi_recorder_runtime"
+                      : "source_gpu_default")
+              << " recorder_gpus=" << recorder_gpus.str()
+              << " root=" << owner->recording_root.string()
+              << std::endl;
+    return true;
+}
+
+bool run_combined_headless_storage_preflight(
+    const orange::external_recorder::SupervisedRecorderLifecycleState&
+        external_recorder_lifecycle,
+    const HeadlessSpatialRoiRecordingOwner& spatial_roi_owner,
+    nlohmann::json* evidence_out,
+    std::string* error_out)
+{
+    if (!evidence_out) {
+        if (error_out) {
+            *error_out = "combined storage preflight destination is null";
+        }
+        return false;
+    }
+    *evidence_out = nlohmann::json::object();
+    if (!spatial_roi_owner.enabled || !spatial_roi_owner.authority_store ||
+        !external_recorder_lifecycle.started) {
+        if (error_out) {
+            *error_out =
+                "combined storage preflight requires prepared spatial ROI and "
+                "started external recorder lifecycles";
+        }
+        return false;
+    }
+    if (!external_recorder_lifecycle.plan.require_storage_preflight ||
+        !external_recorder_lifecycle.plan.storage_budget.enabled) {
+        if (error_out) {
+            *error_out =
+                "combined storage preflight requires the external full-frame "
+                "storage preflight to be enabled";
+        }
+        return false;
+    }
+    if (external_recorder_lifecycle.plan.streams.size() != 1U ||
+        external_recorder_lifecycle.plan.streams.front().camera_serial !=
+            spatial_roi_owner.camera_contract.camera_serial ||
+        external_recorder_lifecycle.plan.streams.front().stream_kind !=
+            "full_frame" ||
+        external_recorder_lifecycle.plan.streams.front().output_kind != "full") {
+        if (error_out) {
+            *error_out =
+                "combined storage preflight requires exactly one full-frame "
+                "external stream for the spatial ROI camera";
+        }
+        return false;
+    }
+
+    const auto& roi_bounds = spatial_roi_owner.camera_contract.aggregate_bounds;
+    if (roi_bounds.max_media_bytes_total == 0 ||
+        roi_bounds.max_evidence_bytes_total == 0 ||
+        roi_bounds.max_media_bytes_total >
+            std::numeric_limits<std::uint64_t>::max() -
+                roi_bounds.max_evidence_bytes_total) {
+        if (error_out) {
+            *error_out =
+                "combined storage preflight received invalid spatial ROI bounds";
+        }
+        return false;
+    }
+    const std::uint64_t roi_total_bytes =
+        roi_bounds.max_media_bytes_total +
+        roi_bounds.max_evidence_bytes_total;
+    if (roi_total_bytes > std::numeric_limits<std::uint64_t>::max() / 8U) {
+        if (error_out) {
+            *error_out =
+                "combined storage preflight spatial ROI bounds overflow bitrate conversion";
+        }
+        return false;
+    }
+
+    // Run the existing aggregate estimator over a copied full-frame plan plus
+    // one synthetic one-second stream whose bounded output is exactly the
+    // authenticated aggregate ROI media+evidence budget. This gives both
+    // recorder families one capacity decision while preserving each child's
+    // own independently authenticated preflight.
+    orange::external_recorder::SupervisorPlan full_frame_plan =
+        external_recorder_lifecycle.plan;
+    orange::external_recorder::SupervisorPlan spatial_roi_plan;
+    spatial_roi_plan.artifact_root = spatial_roi_owner.recording_root.string();
+    spatial_roi_plan.session_id = spatial_roi_owner.camera_contract.recording_id;
+    spatial_roi_plan.require_storage_preflight = true;
+    spatial_roi_plan.storage_budget.enabled = true;
+    spatial_roi_plan.storage_budget.safety_headroom_ratio = 0.0;
+    spatial_roi_plan.storage_budget.reserved_free_bytes =
+        spatial_roi_owner.camera_contract.storage_preflight_policy.reserved_free_bytes;
+    spatial_roi_plan.storage_budget.metadata_bytes_per_frame = 0;
+    spatial_roi_plan.storage_budget.raw_nv12_expansion_ratio = 1.0;
+    spatial_roi_plan.storage_budget.planned_duration_seconds = 1;
+
+    orange::external_recorder::RecorderStreamPlan spatial_roi_stream;
+    spatial_roi_stream.stream_id = "spatial_roi_aggregate_bound";
+    spatial_roi_stream.stream_kind = "spatial_roi";
+    spatial_roi_stream.output_kind = "spatial_roi";
+    spatial_roi_stream.camera_serial =
+        spatial_roi_owner.camera_contract.camera_serial;
+    spatial_roi_stream.mp4 =
+        (spatial_roi_owner.recording_root /
+         "external_spatial_roi_recorder" /
+         "combined_storage_preflight_probe.mp4").string();
+    spatial_roi_stream.encode_fps = 1;
+    spatial_roi_stream.tuning = "ll";
+    spatial_roi_stream.rate_control_mode = "vbr";
+    spatial_roi_stream.bitrate_bps = roi_total_bytes * 8U;
+    spatial_roi_stream.max_bitrate_bps = spatial_roi_stream.bitrate_bps;
+    spatial_roi_plan.streams.push_back(std::move(spatial_roi_stream));
+
+    std::vector<orange::external_recorder::SupervisorPlan*> plans = {
+        &full_frame_plan, &spatial_roi_plan};
+    orange::external_recorder::DurationAwareStoragePreflight preflight;
+    std::string preflight_error;
+    if (!orange::external_recorder::RunDurationAwareStoragePreflight(
+            plans, &preflight, &preflight_error)) {
+        if (error_out) {
+            *error_out = preflight_error.empty()
+                ? "combined full-frame and spatial ROI storage preflight failed"
+                : preflight_error;
+        }
+        return false;
+    }
+    // The terminal combined product is required to have one filesystem
+    // authority. Reject split-filesystem contracts instead of claiming that
+    // the two independent child preflights jointly reserve capacity.
+    if (preflight.filesystems.size() != 1U ||
+        !preflight.filesystems.front().ok ||
+        preflight.filesystems.front().filesystem_key.empty()) {
+        if (error_out) {
+            *error_out =
+                "combined storage preflight requires one healthy shared output filesystem";
+        }
+        return false;
+    }
+
+    nlohmann::json evidence =
+        orange::external_recorder::DurationAwareStoragePreflightToJson(
+            preflight);
+    evidence["schema_id"] = "orange.combined_storage_preflight";
+    evidence["schema_version"] = 1;
+    evidence["product"] = "full_frame_plus_spatial_roi";
+    evidence["recording_root"] = spatial_roi_owner.recording_root.string();
+    evidence["full_frame_artifact_root"] =
+        external_recorder_lifecycle.plan.artifact_root;
+    evidence["spatial_roi_bounds"] = {
+        {"max_media_bytes_total", roi_bounds.max_media_bytes_total},
+        {"max_evidence_bytes_total", roi_bounds.max_evidence_bytes_total},
+        {"reserved_free_bytes",
+         spatial_roi_owner.camera_contract.storage_preflight_policy
+             .reserved_free_bytes},
+    };
+    evidence["capacity_binding"] = {
+        {"filesystem_key", preflight.filesystems.front().filesystem_key},
+        {"full_frame_and_roi_summed", true},
+        {"single_shared_filesystem", true},
+    };
+    evidence["summary"]["full_frame_stream_count"] =
+        full_frame_plan.streams.size();
+    evidence["summary"]["crop_stream_count"] = 0;
+    evidence["summary"]["spatial_roi_aggregate_stream_count"] = 1;
+    std::string write_error;
+    if (!write_json_file(
+            spatial_roi_owner.recording_root / "combined_storage_preflight.json",
+            evidence,
+            &write_error)) {
+        if (error_out) {
+            *error_out = write_error;
+        }
+        return false;
+    }
+    *evidence_out = std::move(evidence);
+    if (error_out) {
+        error_out->clear();
+    }
+    return true;
+}
+
+bool build_headless_spatial_roi_recording_outputs(
+    const HeadlessSpatialRoiRecordingOwner& owner,
+    const std::string& status,
+    std::vector<orange::session::RecordingOutputDescriptor>* outputs_out,
+    std::string* error_out)
+{
+    if (!outputs_out) {
+        if (error_out) {
+            *error_out =
+                "Spatial ROI recording output destination is null";
+        }
+        return false;
+    }
+    if (!owner.enabled) {
+        outputs_out->clear();
+        return true;
+    }
+    std::vector<orange::session::RecordingOutputDescriptor> outputs;
+    if (!orange::session::spatial_roi::build_spatial_roi_recording_outputs(
+            owner.camera_contract, status, &outputs, error_out)) {
+        return false;
+    }
+    if (status == "complete") {
+        const nlohmann::json& receipt = owner.finalized_session_receipt;
+        if (!receipt.is_object() ||
+            receipt.value("status", std::string()) != "complete" ||
+            !receipt.contains("stream_order") ||
+            receipt.at("stream_order") != owner.camera_contract.stream_order ||
+            !receipt.contains("streams") ||
+            !receipt.at("streams").is_array() ||
+            receipt.at("streams").size() != outputs.size() ||
+            outputs.size() != owner.camera_contract.stream_order.size()) {
+            if (error_out) {
+                *error_out =
+                    "Complete spatial ROI outputs require a plan-ordered finalized session receipt";
+            }
+            return false;
+        }
+        const auto read_u64 = [](const nlohmann::json& object,
+                                 const char* key,
+                                 std::uint64_t* value_out) {
+            if (!value_out || !object.is_object() || !object.contains(key)) {
+                return false;
+            }
+            const nlohmann::json& value = object.at(key);
+            if (value.is_number_unsigned()) {
+                *value_out = value.get<std::uint64_t>();
+                return true;
+            }
+            if (value.is_number_integer() && value.get<std::int64_t>() >= 0) {
+                *value_out = static_cast<std::uint64_t>(
+                    value.get<std::int64_t>());
+                return true;
+            }
+            return false;
+        };
+        for (std::size_t index = 0; index < outputs.size(); ++index) {
+            const nlohmann::json& stream_receipt =
+                receipt.at("streams").at(index);
+            auto& output = outputs[index];
+            if (!stream_receipt.is_object() ||
+                stream_receipt.value("logical_stream_id", std::string()) !=
+                    output.logical_stream_id ||
+                owner.camera_contract.stream_order[index] !=
+                    output.logical_stream_id ||
+                !stream_receipt.contains("counts") ||
+                !stream_receipt.at("counts").is_object() ||
+                !stream_receipt.contains("ranges") ||
+                !stream_receipt.at("ranges").is_object()) {
+                if (error_out) {
+                    *error_out =
+                        "Finalized spatial ROI stream receipt is missing or out of plan order";
+                }
+                return false;
+            }
+            const nlohmann::json& counts = stream_receipt.at("counts");
+            const nlohmann::json& ranges = stream_receipt.at("ranges");
+            std::uint64_t frame_count = 0;
+            std::uint64_t packet_count = 0;
+            if (!read_u64(ranges, "frame_count", &frame_count) ||
+                !read_u64(counts, "packet_count", &packet_count) ||
+                !ranges.contains("has_frames") ||
+                !ranges.at("has_frames").is_boolean()) {
+                if (error_out) {
+                    *error_out =
+                        "Finalized spatial ROI stream receipt has invalid count/range evidence";
+                }
+                return false;
+            }
+            const bool has_frames = ranges.at("has_frames").get<bool>();
+            output.frame_count = frame_count;
+            output.packet_count = packet_count;
+            output.packet_count_source =
+                "spatial_roi_finalized_session_receipt";
+            if (has_frames) {
+                if (frame_count == 0 ||
+                    !ranges.contains("recording_frame_id") ||
+                    !ranges.at("recording_frame_id").is_object() ||
+                    !read_u64(ranges.at("recording_frame_id"), "first",
+                              &output.first_recording_frame_id) ||
+                    !read_u64(ranges.at("recording_frame_id"), "last",
+                              &output.last_recording_frame_id) ||
+                    output.last_recording_frame_id <
+                        output.first_recording_frame_id) {
+                    if (error_out) {
+                        *error_out =
+                            "Finalized spatial ROI stream receipt has an invalid recording-frame range";
+                    }
+                    return false;
+                }
+                const std::uint64_t span =
+                    output.last_recording_frame_id -
+                    output.first_recording_frame_id + 1U;
+                if (span < frame_count) {
+                    if (error_out) {
+                        *error_out =
+                            "Finalized spatial ROI stream frame count exceeds its recording-frame range";
+                    }
+                    return false;
+                }
+                output.recording_frame_id_gaps = span - frame_count;
+            } else if (frame_count != 0) {
+                if (error_out) {
+                    *error_out =
+                        "Finalized spatial ROI stream reports frames while has_frames is false";
+                }
+                return false;
+            }
+            output.details["finalized_receipt"] = stream_receipt;
+        }
+    }
+    *outputs_out = std::move(outputs);
+    return true;
+}
+
+bool update_headless_spatial_roi_recording_snapshot(
+    const HeadlessSpatialRoiRecordingOwner& owner,
+    const std::string& status,
+    std::vector<orange::session::RecordingOutputDescriptor>* outputs_out,
+    std::string* error_out)
+{
+    if (!owner.enabled) {
+        if (outputs_out) {
+            outputs_out->clear();
+        }
+        return true;
+    }
+    std::vector<orange::session::RecordingOutputDescriptor> outputs;
+    if (!build_headless_spatial_roi_recording_outputs(
+            owner, status, &outputs, error_out)) {
+        return false;
+    }
+    nlohmann::json versioned_outputs;
+    if (!orange::session::build_recording_outputs_v3_json(
+            outputs, &versioned_outputs, error_out)) {
+        if (error_out && error_out->empty()) {
+            *error_out =
+                "Failed to build spatial ROI recording outputs snapshot";
+        }
+        return false;
+    }
+
+    nlohmann::json session_metadata;
+    if (!build_spatial_roi_session_metadata(
+            owner, status, &session_metadata, error_out)) {
+        if (error_out && error_out->empty()) {
+            *error_out =
+                "Failed to build spatial ROI session metadata";
+        }
+        return false;
+    }
+    if (!update_recording_snapshot_recording_outputs_v3_and_session_artifacts(
+            owner.recording_root.string(),
+            versioned_outputs,
+            {{"spatial_roi_recording", session_metadata}})) {
+        if (error_out) {
+            *error_out =
+                "Failed to atomically update the recording snapshot with spatial ROI outputs and session metadata";
+        }
+        return false;
+    }
+    if (outputs_out) {
+        *outputs_out = std::move(outputs);
+    }
+    return true;
+}
+
+bool start_headless_spatial_roi_before_acquisition(
+    HeadlessSpatialRoiRecordingOwner* owner,
+    std::string* error_out)
+{
+    if (!owner || !owner->enabled) {
+        return true;
+    }
+    if (!owner->session) {
+        if (error_out) {
+            *error_out = "Spatial ROI recording owner has no prepared session";
+        }
+        return false;
+    }
+    std::string start_error;
+    if (!owner->session->Start(&start_error)) {
+        owner->first_failure = owner->session->first_failure();
+        if (error_out) {
+            *error_out = start_error;
+        }
+        return false;
+    }
+    if (!update_headless_spatial_roi_recording_snapshot(
+            *owner, "pending", nullptr, &start_error)) {
+        owner->first_failure = start_error;
+        (void)owner->session->Abort(nullptr);
+        if (error_out) {
+            *error_out = start_error;
+        }
+        return false;
+    }
+    std::cout << "Spatial ROI headless recorder armed before acquisition."
+              << " camera=" << owner->camera_contract.camera_serial
+              << " streams=" << owner->camera_contract.stream_count
+              << std::endl;
+    return true;
+}
+
+orange::spatial_roi::SpatialRoiAcquisitionController*
+headless_spatial_roi_acquisition_controller(
+    HeadlessSpatialRoiRecordingOwner* owner) noexcept
+{
+    return owner && owner->enabled && owner->session
+               ? owner->session->acquisition_controller()
+               : nullptr;
+}
+
 bool write_headless_frame_ipc_summary(
     const std::string& record_folder,
     const HeadlessFrameIpcConfig& config,
@@ -5917,7 +8210,9 @@ std::string join_ints_csv(const std::vector<int>& values)
 std::vector<int> collect_unique_gpu_ids(
     const CameraParams* cameras_params,
     const std::vector<int>& selected_indices,
-    const HeadlessExternalRecorderContractConfig* external_recorder_contract)
+    const HeadlessExternalRecorderContractConfig* external_recorder_contract,
+    const orange::session::spatial_roi::SpatialRoiRecorderRuntimeGpuMapping*
+        spatial_roi_gpu_mapping)
 {
     std::vector<int> gpu_ids;
     std::unordered_set<int> seen;
@@ -5990,6 +8285,18 @@ std::vector<int> collect_unique_gpu_ids(
         if (const nlohmann::json* stream =
                 find_external_stream_for_camera(camera.camera_serial)) {
             append_external_stream_gpus(*stream);
+        }
+    }
+    if (spatial_roi_gpu_mapping) {
+        for (const auto& [camera_serial, gpu_id] :
+             spatial_roi_gpu_mapping->analytics_gpu_by_camera_serial) {
+            (void)camera_serial;
+            append_gpu_id(gpu_id);
+        }
+        for (const auto& [logical_stream_id, gpu_id] :
+             spatial_roi_gpu_mapping->recorder_gpu_by_logical_stream_id) {
+            (void)logical_stream_id;
+            append_gpu_id(gpu_id);
         }
     }
     std::sort(gpu_ids.begin(), gpu_ids.end());
@@ -6191,28 +8498,129 @@ std::string format_external_recorder_clip_id(const int clip_index)
     return out.str();
 }
 
-bool write_supervised_external_recorder_single_clip_manifest(
-    const ExperimentRunPlan& run,
-    const std::string& manifest_status,
-    nlohmann::json* bridge_out,
-    std::string* error_out)
-{
-    const HeadlessExternalRecorderContractConfig& config =
-        run.options.external_recorder_contract;
-    const std::filesystem::path run_folder(run.recording_folder);
-    const nlohmann::json local_manifest =
-        read_json_file_best_effort(run_folder / "recording_session.json");
-    const nlohmann::json local_stream =
-        local_manifest.value("stream", nlohmann::json::object());
-    const nlohmann::json local_recording =
-        local_manifest.value("recording", nlohmann::json::object());
-
+// The external full-frame recorder and the camera-level spatial ROI recorder
+// are independently supervised children.  Keep the external recorder's
+// finalized product projection reusable by the combined manifest path; the
+// external-only bridge below still owns its historical manifest behavior.
+struct HeadlessExternalRecorderSingleClipProducts final {
     std::vector<orange::session::RecordingSessionCameraArtifact> camera_artifacts;
     std::vector<orange::session::RecordingOutputDescriptor> recording_outputs;
     nlohmann::json summary_paths = nlohmann::json::object();
     nlohmann::json mp4_paths = nlohmann::json::object();
     nlohmann::json metadata_paths = nlohmann::json::object();
     nlohmann::json keyframe_paths = nlohmann::json::object();
+};
+
+bool normalize_external_artifact_path_for_recording_root(
+    const std::string& path_text,
+    const std::filesystem::path& recording_folder,
+    std::string* relative_path_out,
+    std::string* error_out)
+{
+    if (!relative_path_out) {
+        if (error_out) {
+            *error_out = "external artifact relative-path destination is null";
+        }
+        return false;
+    }
+    relative_path_out->clear();
+    if (path_text.empty() || recording_folder.empty()) {
+        if (error_out) {
+            *error_out = "external artifact path and recording folder are required";
+        }
+        return false;
+    }
+
+    std::error_code error;
+    const std::filesystem::path recording_root =
+        std::filesystem::weakly_canonical(recording_folder, error);
+    if (error || recording_root.empty()) {
+        if (error_out) {
+            *error_out = "failed to resolve recording root for external artifact: " +
+                         error.message();
+        }
+        return false;
+    }
+
+    std::filesystem::path artifact_path(path_text);
+    if (artifact_path.is_relative()) {
+        const std::filesystem::path cwd = std::filesystem::current_path(error);
+        if (error) {
+            if (error_out) {
+                *error_out = "failed to resolve current directory for external artifact: " +
+                             error.message();
+            }
+            return false;
+        }
+        artifact_path = cwd / artifact_path;
+    }
+    const std::filesystem::path resolved_artifact =
+        std::filesystem::weakly_canonical(artifact_path, error);
+    if (error || resolved_artifact.empty()) {
+        if (error_out) {
+            *error_out = "failed to resolve external artifact path '" + path_text +
+                         "': " + error.message();
+        }
+        return false;
+    }
+
+    const std::filesystem::path relative =
+        resolved_artifact.lexically_relative(recording_root);
+    if (relative.empty() || relative.is_absolute() ||
+        relative.has_root_name() || relative.has_root_directory()) {
+        if (error_out) {
+            *error_out = "external artifact path is not below the active recording root: " +
+                         path_text;
+        }
+        return false;
+    }
+    for (const auto& component : relative) {
+        if (component == std::filesystem::path(".") ||
+            component == std::filesystem::path("..")) {
+            if (error_out) {
+                *error_out = "external artifact path is not below the active recording root: " +
+                             path_text;
+            }
+            return false;
+        }
+    }
+    const std::string normalized = relative.generic_string();
+    if (normalized.empty() ||
+        std::filesystem::path(normalized).lexically_normal().generic_string() !=
+            normalized) {
+        if (error_out) {
+            *error_out = "external artifact path is not a normalized recording-root-relative path: " +
+                         path_text;
+        }
+        return false;
+    }
+    *relative_path_out = normalized;
+    return true;
+}
+
+bool collect_supervised_external_recorder_single_clip_products(
+    const ExperimentRunPlan& run,
+    const std::string& manifest_status,
+    HeadlessExternalRecorderSingleClipProducts* products_out,
+    std::string* error_out,
+    const std::string& recording_folder_for_relative_paths = {},
+    const std::string& external_artifact_root_for_paths = {})
+{
+    if (!products_out) {
+        if (error_out) {
+            *error_out = "external recorder product destination is null";
+        }
+        return false;
+    }
+    *products_out = HeadlessExternalRecorderSingleClipProducts{};
+    const HeadlessExternalRecorderContractConfig& config =
+        run.options.external_recorder_contract;
+    if (!config.streams.is_object()) {
+        if (error_out) {
+            *error_out = "external recorder single-clip products require stream contracts";
+        }
+        return false;
+    }
 
     for (auto it = config.streams.begin(); it != config.streams.end(); ++it) {
         if (!it.value().is_object()) {
@@ -6221,11 +8629,22 @@ bool write_supervised_external_recorder_single_clip_manifest(
         const nlohmann::json& stream = it.value();
         const std::string serial =
             stream.value("camera_serial", stream.value("stream_id", it.key()));
-        const std::string summary_path = stream.value("summary_json", std::string());
+        const auto materialize_external_path = [&](const std::string& path) {
+            if (external_artifact_root_for_paths.empty() || path.empty()) {
+                return path;
+            }
+            const std::filesystem::path leaf =
+                std::filesystem::path(path).filename();
+            return (std::filesystem::path(external_artifact_root_for_paths) /
+                    leaf)
+                .string();
+        };
+        const std::string summary_path = materialize_external_path(
+            stream.value("summary_json", std::string()));
         if (serial.empty() || summary_path.empty()) {
             if (error_out) {
                 *error_out =
-                    "external recorder single-clip manifest bridge missing serial or summary_json";
+                    "external recorder single-clip products missing serial or summary_json";
             }
             return false;
         }
@@ -6243,7 +8662,7 @@ bool write_supervised_external_recorder_single_clip_manifest(
         if (rolling.is_object() && rolling.value("enabled", false)) {
             if (error_out) {
                 *error_out =
-                    "single-clip manifest bridge received rolling output for camera " +
+                    "single-clip products received rolling output for camera " +
                     serial;
             }
             return false;
@@ -6262,23 +8681,22 @@ bool write_supervised_external_recorder_single_clip_manifest(
         const uint64_t frames_encoded = summary.value("frames_encoded", 0ULL);
         const uint64_t encode_skipped = summary.value("encode_skipped", 0ULL);
         const uint64_t encode_dropped = summary.value("encode_dropped", 0ULL);
-        const uint64_t metadata_rows =
-            frame_metadata.value("rows_written", 0ULL);
+        const uint64_t metadata_rows = frame_metadata.value("rows_written", 0ULL);
         const uint64_t metadata_gaps =
             frame_metadata.value("recording_frame_id_gaps", 0ULL);
         const uint64_t zero_camera_timestamps =
             frame_metadata.value("zero_camera_timestamp_rows", 0ULL);
         const uint64_t zero_system_timestamps =
             frame_metadata.value("zero_system_timestamp_rows", 0ULL);
-        const std::string mp4 = merged_enabled
+        const std::string raw_mp4 = merged_enabled
             ? merged.value("mp4", outputs.value("mp4", stream.value("mp4", std::string())))
             : outputs.value("mp4", stream.value("mp4", std::string()));
-        const std::string metadata = frame_metadata.value(
+        const std::string mp4 = materialize_external_path(raw_mp4);
+        const std::string raw_metadata = frame_metadata.value(
             "path",
-            outputs.value(
-                "metadata",
-                stream.value("metadata_csv", std::string())));
-        const std::string keyframes = merged_enabled
+            outputs.value("metadata", stream.value("metadata_csv", std::string())));
+        const std::string metadata = materialize_external_path(raw_metadata);
+        const std::string raw_keyframes = merged_enabled
             ? merged.value(
                   "mp4_keyframe",
                   outputs.value(
@@ -6287,6 +8705,7 @@ bool write_supervised_external_recorder_single_clip_manifest(
             : outputs.value(
                   "mp4_keyframe",
                   stream.value("mp4_keyframe", std::string()));
+        const std::string keyframes = materialize_external_path(raw_keyframes);
         const uint64_t packets_written = merged_enabled
             ? merged.value("packets_written", 0ULL)
             : external_encode.value("mp4_packets", 0ULL);
@@ -6295,13 +8714,31 @@ bool write_supervised_external_recorder_single_clip_manifest(
             frames_encoded <= frames_received &&
             encode_skipped == frames_received - frames_encoded &&
             encode_dropped == 0;
+        const bool require_complete_artifacts =
+            !recording_folder_for_relative_paths.empty();
+        const auto regular_nonempty_file = [](const std::string& path) {
+            if (path.empty()) {
+                return false;
+            }
+            std::error_code file_error;
+            if (!std::filesystem::is_regular_file(path, file_error) ||
+                file_error) {
+                return false;
+            }
+            const uintmax_t size = std::filesystem::file_size(path, file_error);
+            return !file_error && size > 0;
+        };
         if (summary.value("worker_failed", false) || frames_received == 0 ||
             frames_encoded == 0 || !encode_accounting_complete ||
             metadata_rows != frames_encoded || zero_camera_timestamps != 0 ||
             zero_system_timestamps != 0 || packets_written != frames_encoded ||
-            mp4.empty() ||
-            metadata.empty() || !std::filesystem::exists(mp4) ||
-            !std::filesystem::exists(metadata)) {
+            mp4.empty() || metadata.empty() ||
+            !std::filesystem::exists(mp4) ||
+            !std::filesystem::exists(metadata) ||
+            (require_complete_artifacts &&
+             (!regular_nonempty_file(mp4) ||
+              !regular_nonempty_file(metadata) ||
+              !regular_nonempty_file(keyframes)))) {
             if (error_out) {
                 *error_out =
                     "external recorder single-clip outputs are incomplete for camera " +
@@ -6315,6 +8752,38 @@ bool write_supervised_external_recorder_single_clip_manifest(
         artifact.video_path = mp4;
         artifact.metadata_path = metadata;
         artifact.keyframe_path = keyframes;
+        if (require_complete_artifacts) {
+            std::string relative_video;
+            std::string relative_metadata;
+            std::string relative_keyframes;
+            std::string path_error;
+            if (!normalize_external_artifact_path_for_recording_root(
+                    mp4,
+                    recording_folder_for_relative_paths,
+                    &relative_video,
+                    &path_error) ||
+                !normalize_external_artifact_path_for_recording_root(
+                    metadata,
+                    recording_folder_for_relative_paths,
+                    &relative_metadata,
+                    &path_error) ||
+                !normalize_external_artifact_path_for_recording_root(
+                    keyframes,
+                    recording_folder_for_relative_paths,
+                    &relative_keyframes,
+                    &path_error)) {
+                if (error_out) {
+                    *error_out =
+                        "external recorder single-clip artifact path cannot be "
+                        "published in the combined manifest for camera " +
+                        serial + ": " + path_error;
+                }
+                return false;
+            }
+            artifact.video_path = std::move(relative_video);
+            artifact.metadata_path = std::move(relative_metadata);
+            artifact.keyframe_path = std::move(relative_keyframes);
+        }
         artifact.frame_count = frames_encoded;
         artifact.first_recording_frame_id =
             frame_metadata.value("first_recording_frame_id", 0ULL);
@@ -6327,9 +8796,7 @@ bool write_supervised_external_recorder_single_clip_manifest(
 
         orange::session::RecordingOutputDescriptor output =
             orange::session::build_full_recording_output_descriptor(
-                artifact,
-                "external_ipc",
-                manifest_status);
+                artifact, "external_ipc", manifest_status);
         output.summary_path = summary_path;
         output.frame_rate = summary.value(
             "fps", stream.value("encode_fps", 0));
@@ -6347,20 +8814,52 @@ bool write_supervised_external_recorder_single_clip_manifest(
             {"stream_kind", stream.value("stream_kind", "full_frame")},
             {"output_kind", stream.value("output_kind", "full")}
         };
-        recording_outputs.push_back(std::move(output));
-        camera_artifacts.push_back(std::move(artifact));
-        summary_paths[serial] = summary_path;
-        mp4_paths[serial] = mp4;
-        metadata_paths[serial] = metadata;
-        keyframe_paths[serial] = keyframes;
+        products_out->recording_outputs.push_back(std::move(output));
+        products_out->camera_artifacts.push_back(std::move(artifact));
+        products_out->summary_paths[serial] = summary_path;
+        products_out->mp4_paths[serial] = mp4;
+        products_out->metadata_paths[serial] = metadata;
+        products_out->keyframe_paths[serial] = keyframes;
     }
 
-    if (camera_artifacts.empty()) {
+    if (products_out->camera_artifacts.empty()) {
         if (error_out) {
-            *error_out = "external recorder single-clip manifest bridge found no cameras";
+            *error_out = "external recorder single-clip products found no cameras";
         }
         return false;
     }
+    return true;
+}
+
+bool write_supervised_external_recorder_single_clip_manifest(
+    const ExperimentRunPlan& run,
+    const std::string& manifest_status,
+    nlohmann::json* bridge_out,
+    std::string* error_out)
+{
+    const HeadlessExternalRecorderContractConfig& config =
+        run.options.external_recorder_contract;
+    const std::filesystem::path run_folder(run.recording_folder);
+    const nlohmann::json local_manifest =
+        read_json_file_best_effort(run_folder / "recording_session.json");
+    const nlohmann::json local_stream =
+        local_manifest.value("stream", nlohmann::json::object());
+    const nlohmann::json local_recording =
+        local_manifest.value("recording", nlohmann::json::object());
+
+    HeadlessExternalRecorderSingleClipProducts products;
+    if (!collect_supervised_external_recorder_single_clip_products(
+            run, manifest_status, &products, error_out)) {
+        return false;
+    }
+    std::vector<orange::session::RecordingSessionCameraArtifact> camera_artifacts =
+        std::move(products.camera_artifacts);
+    std::vector<orange::session::RecordingOutputDescriptor> recording_outputs =
+        std::move(products.recording_outputs);
+    nlohmann::json summary_paths = std::move(products.summary_paths);
+    nlohmann::json mp4_paths = std::move(products.mp4_paths);
+    nlohmann::json metadata_paths = std::move(products.metadata_paths);
+    nlohmann::json keyframe_paths = std::move(products.keyframe_paths);
 
     orange::session::SingleClipRecordingSessionManifestOptions manifest_options;
     manifest_options.producer = "orange_headless_external_ipc";
@@ -7999,6 +10498,21 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             return false;
         }
     }
+    if (!parse_experiment_spatial_roi_recording(fixed, spec, error_out)) {
+        return false;
+    }
+    if (!parse_experiment_spatial_roi_media_policy(
+            fixed, spec, error_out)) {
+        return false;
+    }
+    if (!parse_experiment_registered_scene_context_capture_declaration(
+            fixed, spec, error_out)) {
+        return false;
+    }
+    if (!parse_experiment_spatial_roi_recorder_runtime(
+            fixed, spec, error_out)) {
+        return false;
+    }
     if (!parse_experiment_recording_overrides(fixed, spec, error_out)) {
         return false;
     }
@@ -8180,6 +10694,9 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
                 "Local experiment runner does not support "
                 "fixed.recording_sink_mode != real with fixed.pre_encoder_reference_capture.";
         }
+        return false;
+    }
+    if (!validate_experiment_spatial_roi_recording(*spec, error_out)) {
         return false;
     }
     const std::string raw_sync_mode = fixed.value("sync_mode", "free_run");
@@ -8499,6 +11016,22 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                 spec.recording_control;
                                                             run.options.external_recorder_contract =
                                                                 spec.external_recorder_contract;
+                                                            run.options.has_spatial_roi_media_policy =
+                                                                spec.has_spatial_roi_media_policy;
+                                                            run.options.spatial_roi_media_policy =
+                                                                spec.spatial_roi_media_policy;
+                                                            run.options.has_registered_scene_context_capture_declaration =
+                                                                spec.has_registered_scene_context_capture_declaration;
+                                                            run.options.registered_scene_context_capture_declaration =
+                                                                spec.registered_scene_context_capture_declaration;
+                                                            run.options.has_spatial_roi_recording =
+                                                                spec.has_spatial_roi_recording;
+                                                            run.options.spatial_roi_recording =
+                                                                spec.spatial_roi_recording;
+                                                            run.options.has_spatial_roi_recorder_runtime =
+                                                                spec.has_spatial_roi_recorder_runtime;
+                                                            run.options.spatial_roi_recorder_runtime =
+                                                                spec.spatial_roi_recorder_runtime;
                                                             run.options.has_recording_override =
                                                                 spec.has_recording_override;
                                                             run.options.recording_override =
@@ -8567,6 +11100,18 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                 {"ptp_register_read_decimate",
                                                                  spec.ptp_register_read_decimate},
                                                                 {"recording_sink_mode", spec.recording_sink_mode},
+                                                                {"spatial_roi_media_policy",
+                                                                 orange::session::spatial_roi::media_policy_to_json(
+                                                                     spec.spatial_roi_media_policy)},
+                                                                {"spatial_roi_media_policy_source",
+                                                                 spec.has_spatial_roi_media_policy
+                                                                     ? "fixed.spatial_roi_media_policy"
+                                                                     : "backward_compatible_default"},
+                                                                {"registered_scene_context",
+                                                                 spec.has_registered_scene_context_capture_declaration
+                                                                     ? orange::session::spatial_roi::registered_scene_context_capture_declaration_to_json(
+                                                                           spec.registered_scene_context_capture_declaration)
+                                                                     : nlohmann::json(nullptr)},
                                                                 {"helper_noop_source_read",
                                                                  spec.helper_noop_source_read},
                                                                 {"helper_copy_bytes",
@@ -8597,7 +11142,11 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                  build_headless_external_recorder_contract_config_json(
                                                                      run.options.external_recorder_contract,
                                                                      &run.options.recording_control,
-                                                                     run.options.duration_seconds)},
+                                                                     run.options.duration_seconds,
+                                                                     run.options.has_spatial_roi_recording &&
+                                                                             run.options.spatial_roi_recording.enabled
+                                                                         ? run.recording_folder
+                                                                         : std::string())},
                                                             };
                                                             if (spec.has_recording_profile) {
                                                                 run.config_json["recording_profile"] =
@@ -8605,6 +11154,26 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                         spec.recording_profile);
                                                                 run.config_json["recording_profile_source"] =
                                                                     "fixed.recording_profile";
+                                                            }
+                                                            if (spec.has_spatial_roi_recording) {
+                                                                run.config_json["spatial_roi_recording"] =
+                                                                    orange::session::spatial_roi::config_to_json(
+                                                                        spec.spatial_roi_recording);
+                                                            }
+                                                            if (spec.has_spatial_roi_recorder_runtime) {
+                                                                nlohmann::json runtime_json;
+                                                                std::string runtime_error;
+                                                                if (!orange::session::spatial_roi::
+                                                                        serialize_recorder_runtime_config(
+                                                                            spec.spatial_roi_recorder_runtime,
+                                                                            &runtime_json,
+                                                                            &runtime_error)) {
+                                                                    throw std::runtime_error(
+                                                                        "Could not serialize validated fixed.spatial_roi_recorder_runtime: " +
+                                                                        runtime_error);
+                                                                }
+                                                                run.config_json["spatial_roi_recorder_runtime"] =
+                                                                    std::move(runtime_json);
                                                             }
                                                             if (spec.has_recording_override) {
                                                                 run.config_json["recording"] =
@@ -9060,6 +11629,11 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         }
     }
 
+    // Keep the ROI session owner declared before the camera-thread vector.
+    // On any exceptional unwind, started camera threads must be destroyed (or
+    // joined by the startup guard) before the raw controller they capture can
+    // be destroyed.
+    HeadlessSpatialRoiRecordingOwner spatial_roi_owner;
     CameraControl camera_control;
     PTPParams ptp_params{};
     std::vector<std::thread> camera_threads;
@@ -9111,7 +11685,11 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             build_headless_external_recorder_contract_config_json(
                 options.external_recorder_contract,
                 &options.recording_control,
-                options.duration_seconds);
+                options.duration_seconds,
+                options.has_spatial_roi_recording &&
+                        options.spatial_roi_recording.enabled
+                    ? active_record_folder
+                    : std::string());
         lifecycle_options.recorder_tool_path =
             options.external_recorder_contract.recorder_tool_path;
         lifecycle_options.default_session_id =
@@ -9211,6 +11789,56 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     if (rolling_clip_recording) {
         camera_control.preserve_recording_session_state = true;
     }
+    std::string spatial_roi_prepare_error;
+    if (!prepare_headless_spatial_roi_recording(
+            options,
+            cameras_params.get(),
+            selected_inventory_indices,
+            &spatial_roi_owner,
+            &spatial_roi_prepare_error)) {
+        std::cerr << spatial_roi_prepare_error << std::endl;
+        std::string preparation_failure_publish_error;
+        if (!publish_headless_spatial_roi_preparation_failure_if_authoritative(
+                spatial_roi_owner,
+                spatial_roi_prepare_error,
+                &preparation_failure_publish_error)) {
+            std::cerr
+                << "Failed to publish authenticated spatial ROI preparation failure: "
+                << preparation_failure_publish_error << std::endl;
+        }
+        stop_supervised_external_recorder();
+        close_selected_cameras(
+            selected_inventory_indices, ecams.get(), cameras_params.get());
+        return 1;
+    }
+    if (spatial_roi_owner.enabled &&
+        options.recording_sink_mode == "external_ipc") {
+        nlohmann::json combined_storage_preflight;
+        std::string combined_storage_error;
+        if (!run_combined_headless_storage_preflight(
+                external_recorder_lifecycle,
+                spatial_roi_owner,
+                &combined_storage_preflight,
+                &combined_storage_error)) {
+            std::cerr << "Combined full-frame and spatial ROI storage preflight "
+                         "failed: "
+                      << combined_storage_error << std::endl;
+            std::string preparation_failure_publish_error;
+            if (!publish_headless_spatial_roi_preparation_failure_if_authoritative(
+                    spatial_roi_owner,
+                    combined_storage_error,
+                    &preparation_failure_publish_error) &&
+                !preparation_failure_publish_error.empty()) {
+                std::cerr
+                    << "Failed to publish combined storage preflight failure: "
+                    << preparation_failure_publish_error << std::endl;
+            }
+            stop_supervised_external_recorder();
+            close_selected_cameras(
+                selected_inventory_indices, ecams.get(), cameras_params.get());
+            return 1;
+        }
+    }
     const bool started = start_camera_thread(
         camera_threads,
         camera_resources,
@@ -9244,9 +11872,41 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         options.yolo_event_log,
         options.yolo_worker,
         options.pose_worker,
-        &options.external_recorder_contract);
+        &options.external_recorder_contract,
+        spatial_roi_owner.enabled ? &spatial_roi_owner.gpu_mapping : nullptr,
+        spatial_roi_owner.enabled ? &spatial_roi_owner : nullptr);
 
     if (!started) {
+        const std::string startup_failure_reason =
+            thread_failure_state.has_failure()
+                ? thread_failure_state.get_first_error()
+                : "camera startup failed before spatial ROI acquisition was armed";
+        bool failed_snapshot_published = false;
+        if (spatial_roi_owner.session) {
+            (void)spatial_roi_owner.session->Abort(nullptr);
+            std::string spatial_roi_snapshot_error;
+            failed_snapshot_published =
+                update_headless_spatial_roi_recording_snapshot(
+                    spatial_roi_owner,
+                    "failed",
+                    nullptr,
+                    &spatial_roi_snapshot_error);
+            if (!failed_snapshot_published &&
+                !spatial_roi_snapshot_error.empty()) {
+                std::cerr << spatial_roi_snapshot_error << std::endl;
+            }
+        }
+        if (spatial_roi_owner.enabled && !failed_snapshot_published) {
+            std::string preparation_failure_publish_error;
+            if (!publish_headless_spatial_roi_preparation_failure_if_authoritative(
+                    spatial_roi_owner,
+                    startup_failure_reason,
+                    &preparation_failure_publish_error)) {
+                std::cerr
+                    << "Failed to publish authenticated spatial ROI camera-start failure: "
+                    << preparation_failure_publish_error << std::endl;
+            }
+        }
         stop_supervised_external_recorder();
         stop_headless_frame_ipc_runtime(&frame_ipc_runtime);
         clear_headless_frame_ipc_managers(frame_ipc_managers);
@@ -9279,6 +11939,13 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     bool recording_clock_anchored = !options.recording_control.enabled();
     bool recording_auto_stop_requested = false;
     bool recording_drain_completed = false;
+    uint64_t highest_recording_frame_id_observed = 0;
+    auto observe_recording_progress = [&]() {
+        highest_recording_frame_id_observed = std::max(
+            highest_recording_frame_id_observed,
+            camera_control.latest_recording_frame_id.load(
+                std::memory_order_relaxed));
+    };
     std::vector<HeadlessRollingClipRuntime> rolling_clips;
     HeadlessRollingClipRuntime active_rolling_clip;
     HeadlessRollingClipRuntime pending_next_rolling_clip;
@@ -9497,6 +12164,16 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         : std::chrono::steady_clock::time_point::max();
 
     while (!quit_server && std::chrono::steady_clock::now() < deadline) {
+        std::string registered_context_error;
+        if (!poll_headless_registered_scene_context(
+                &spatial_roi_owner, false, &registered_context_error)) {
+            std::cerr << registered_context_error << std::endl;
+            // The context product is first-class for this media policy. Stop
+            // admission promptly, but keep the independently healthy ROI
+            // session eligible for truthful finalization below.
+            quit_server = true;
+            break;
+        }
         if (enable_recording &&
             !recording_armed &&
             options.record_start_delay_seconds > 0 &&
@@ -9523,6 +12200,11 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
                       << std::endl;
         }
         anchor_recording_clock_if_ready();
+        // Acquisition clears its live latest-frame counter when a recording
+        // drain completes. Preserve positive recording progress before that
+        // lifecycle transition so terminal evidence is not inferred from a
+        // reset runtime field.
+        observe_recording_progress();
         if (enable_recording && rolling_clip_recording) {
             complete_pending_rollover_if_ready();
         }
@@ -9665,6 +12347,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         usleep(20000);
     }
 
+    observe_recording_progress();
+
     if (thread_failure_state.has_failure() && gpu_dmon_monitor.error.empty()) {
         gpu_dmon_monitor.error = thread_failure_state.get_first_error();
     }
@@ -9672,6 +12356,141 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         stop_headless_gpu_dmon_monitor(&gpu_dmon_monitor);
         stop_headless_nic_thermal_monitor(&nic_thermal_monitor);
     }
+
+    bool spatial_roi_finalize_ok = true;
+    bool registered_context_finalize_ok =
+        !spatial_roi_owner.registered_context_required;
+    bool spatial_roi_recording_drained_before_clear = false;
+    std::string spatial_roi_worker_stop_reason;
+    std::vector<orange::session::RecordingOutputDescriptor>
+        spatial_roi_recording_outputs;
+    auto finalize_spatial_roi_after_camera_join = [&]() {
+        if (!spatial_roi_owner.enabled) {
+            return;
+        }
+        if (spatial_roi_owner.registered_context_worker) {
+            spatial_roi_owner.registered_context_worker->StopThread();
+        }
+        std::string registered_context_error;
+        registered_context_finalize_ok =
+            poll_headless_registered_scene_context(
+                &spatial_roi_owner, true, &registered_context_error);
+        spatial_roi_owner.registered_context_worker.reset();
+        if (!registered_context_finalize_ok) {
+            std::cerr << "Registered scene context finalization: "
+                      << registered_context_error << std::endl;
+            if (spatial_roi_owner.first_failure.empty()) {
+                spatial_roi_owner.first_failure = registered_context_error;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(
+                camera_control.recording_folder_mutex);
+            spatial_roi_worker_stop_reason =
+                camera_control.worker_stop_reason;
+        }
+        observe_recording_progress();
+        spatial_roi_recording_drained_before_clear =
+            camera_control.active_recorders.load(std::memory_order_relaxed) ==
+                0 &&
+            orange::session::recording_pipelines_drained(
+                &recording_pipelines);
+        const bool abort_spatial_roi =
+            thread_failure_state.has_failure() ||
+            !spatial_roi_worker_stop_reason.empty();
+        spatial_roi_owner.finalized_session_receipt =
+            nlohmann::json::object();
+        std::string spatial_roi_finish_error;
+        bool lifecycle_ok = false;
+        try {
+            if (spatial_roi_owner.session) {
+                lifecycle_ok = abort_spatial_roi
+                                   ? spatial_roi_owner.session->Abort(
+                                         &spatial_roi_finish_error)
+                                   : spatial_roi_owner.session->Finish(
+                                         &spatial_roi_finish_error);
+            }
+        } catch (const std::exception& exception) {
+            spatial_roi_finish_error = exception.what();
+            lifecycle_ok = false;
+        } catch (...) {
+            spatial_roi_finish_error =
+                "unknown spatial ROI lifecycle exception";
+            lifecycle_ok = false;
+        }
+        bool finalized_receipt_ok = false;
+        if (lifecycle_ok && !abort_spatial_roi) {
+            orange::spatial_roi::recording::
+                SpatialRoiFinalizedSessionReceiptRequest receipt_request;
+            receipt_request.recorder_contract =
+                spatial_roi_owner.recorder_contract;
+            receipt_request.verified_plan = spatial_roi_owner.verified_plan;
+            receipt_request.expected_recording_root =
+                spatial_roi_owner.recording_root.string();
+            receipt_request.expected_gpu_mapping =
+                spatial_roi_owner.gpu_mapping;
+            receipt_request.camera_contract =
+                spatial_roi_owner.camera_contract;
+            std::string receipt_error;
+            finalized_receipt_ok = orange::spatial_roi::recording::
+                build_spatial_roi_finalized_session_receipt(
+                    receipt_request,
+                    &spatial_roi_owner.finalized_session_receipt,
+                    &receipt_error);
+            if (!finalized_receipt_ok) {
+                spatial_roi_owner.finalized_session_receipt =
+                    nlohmann::json::object();
+                spatial_roi_finish_error =
+                    "finalized spatial ROI artifact receipt failed: " +
+                    (receipt_error.empty() ? std::string("unknown error")
+                                           : receipt_error);
+            }
+        }
+        spatial_roi_finalize_ok =
+            lifecycle_ok && !abort_spatial_roi && finalized_receipt_ok;
+        const std::string spatial_roi_status =
+            spatial_roi_finalize_ok ? "complete" : "failed";
+        if (!lifecycle_ok && spatial_roi_finish_error.empty()) {
+            spatial_roi_finish_error =
+                "spatial ROI lifecycle did not complete cleanly";
+        }
+        if (!spatial_roi_finish_error.empty()) {
+            if (spatial_roi_owner.first_failure.empty()) {
+                spatial_roi_owner.first_failure = spatial_roi_finish_error;
+            }
+            std::cerr << "Spatial ROI recorder finalization: "
+                      << spatial_roi_finish_error << std::endl;
+        }
+        std::string spatial_roi_output_error;
+        if (!build_headless_spatial_roi_recording_outputs(
+                spatial_roi_owner,
+                spatial_roi_status,
+                &spatial_roi_recording_outputs,
+                &spatial_roi_output_error)) {
+            spatial_roi_finalize_ok = false;
+            spatial_roi_owner.finalized_session_receipt =
+                nlohmann::json::object();
+            if (spatial_roi_owner.first_failure.empty()) {
+                spatial_roi_owner.first_failure = spatial_roi_output_error;
+            }
+            std::cerr << "Spatial ROI output finalization: "
+                      << spatial_roi_output_error << std::endl;
+            // Preserve the authenticated planned outputs as failed
+            // descriptors even when receipt promotion itself failed. This
+            // lets the terminal manifest describe the incomplete product
+            // without first publishing a terminal recording snapshot.
+            std::string failed_output_error;
+            if (!build_headless_spatial_roi_recording_outputs(
+                    spatial_roi_owner,
+                    "failed",
+                    &spatial_roi_recording_outputs,
+                    &failed_output_error)) {
+                spatial_roi_recording_outputs.clear();
+                std::cerr << "Spatial ROI failed-output projection: "
+                          << failed_output_error << std::endl;
+            }
+        }
+    };
 
     shutdown_headless_run(
         camera_threads,
@@ -9690,9 +12509,363 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         &camera_control,
         &ptp_params,
         false,
-        options.recording_sink_mode);
+        options.recording_sink_mode,
+        finalize_spatial_roi_after_camera_join);
 
     const bool external_recorder_stop_ok = stop_supervised_external_recorder();
+    const bool spatial_roi_policy_includes_full_frame =
+        orange::session::spatial_roi::media_policy_requires_full_frame(
+            options.spatial_roi_media_policy);
+
+    // In the combined product the external full-frame recorder is finalized
+    // after the camera-level ROI recorder has seen acquisition EOF.  Materialize
+    // its artifact evidence now, after both supervised children have stopped,
+    // so the shared recording_session manifest can describe both products.
+    bool external_full_products_ok = true;
+    HeadlessExternalRecorderSingleClipProducts external_full_products;
+    if (spatial_roi_owner.enabled &&
+        spatial_roi_policy_includes_full_frame) {
+        ExperimentRunPlan external_products_run;
+        external_products_run.recording_folder = active_record_folder;
+        external_products_run.options = options;
+        std::string external_full_products_error;
+        if (!external_recorder_stop_ok ||
+            !collect_supervised_external_recorder_single_clip_products(
+                external_products_run,
+                "completed",
+                &external_full_products,
+                &external_full_products_error,
+                active_record_folder,
+                external_recorder_lifecycle.plan.artifact_root)) {
+            external_full_products_ok = false;
+            // Keep the terminal manifest truthful, but also fail the headless
+            // run: an ROI-complete recording without its first-class full
+            // product is not a successful combined product.
+            if (external_full_products_error.empty()) {
+                external_full_products_error =
+                    "external full-frame recorder did not produce complete artifact evidence";
+            }
+            std::cerr << "Combined spatial ROI recording: external full-frame "
+                         "product is incomplete: "
+                      << external_full_products_error << std::endl;
+        }
+    }
+
+    bool spatial_roi_manifest_ok = true;
+    bool spatial_roi_aggregate_completion_ok = true;
+    if (spatial_roi_owner.enabled &&
+        spatial_roi_policy_includes_full_frame &&
+        !external_full_products_ok) {
+        // A conservative incomplete manifest is still written below for
+        // diagnosis, but the combined headless run must fail closed.
+        spatial_roi_aggregate_completion_ok = false;
+    }
+    bool spatial_roi_manifest_options_ready = false;
+    orange::session::SingleClipRecordingSessionManifestOptions
+        spatial_roi_manifest_options;
+    if (spatial_roi_owner.enabled) {
+        const auto session_finished_time = std::chrono::steady_clock::now();
+        const std::string session_finished_at_utc =
+            get_current_utc_timestamp();
+        const bool recording_started =
+            recording_start_time.time_since_epoch().count() > 0 &&
+            highest_recording_frame_id_observed > 0;
+        const bool recording_drained =
+            spatial_roi_recording_drained_before_clear;
+        const std::string stop_reason =
+            !spatial_roi_worker_stop_reason.empty()
+                ? spatial_roi_worker_stop_reason
+                : thread_failure_state.has_failure()
+                      ? "camera_thread_failure"
+                      : quit_server ? "interrupted"
+                                    : "stream_duration_elapsed";
+        bool completed = recording_started && recording_drained &&
+                         spatial_roi_finalize_ok &&
+                         registered_context_finalize_ok &&
+                         !thread_failure_state.has_failure() &&
+                         spatial_roi_worker_stop_reason.empty();
+        if (spatial_roi_policy_includes_full_frame &&
+            !external_full_products_ok) {
+            completed = false;
+        }
+
+        std::vector<std::string> camera_serials;
+        camera_serials.reserve(selected_inventory_indices.size());
+        for (int idx : selected_inventory_indices) {
+            camera_serials.push_back(cameras_params[idx].camera_serial);
+        }
+        std::vector<orange::session::RecordingSessionCameraArtifact>
+            camera_artifacts =
+                spatial_roi_policy_includes_full_frame &&
+                        external_full_products_ok
+                    ? external_full_products.camera_artifacts
+                    : orange::session::build_recording_camera_artifacts(
+                          camera_serials, active_record_folder, true);
+
+        nlohmann::json spatial_roi_session_metadata;
+        std::string spatial_roi_manifest_error;
+        if (!build_spatial_roi_session_metadata(
+                spatial_roi_owner,
+                spatial_roi_finalize_ok ? "complete" : "failed",
+                &spatial_roi_session_metadata,
+                &spatial_roi_manifest_error)) {
+            spatial_roi_manifest_ok = false;
+        } else {
+            auto& manifest_options = spatial_roi_manifest_options;
+            manifest_options.producer = "orange_headless";
+            manifest_options.session_id =
+                spatial_roi_owner.recording_root.filename().string();
+            manifest_options.created_at_utc = session_started_at_utc;
+            manifest_options.updated_at_utc = session_finished_at_utc;
+            manifest_options.recording_folder = active_record_folder;
+            manifest_options.status = completed ? "completed" : "incomplete";
+            manifest_options.requested_stream_duration_seconds =
+                options.duration_seconds;
+            manifest_options.stream_start_delay_seconds =
+                options.stream_start_delay_seconds;
+            manifest_options.stream_started_at_utc = session_started_at_utc;
+            manifest_options.stream_finished_at_utc = session_finished_at_utc;
+            manifest_options.stream_actual_elapsed_s =
+                std::chrono::duration<double>(session_finished_time -
+                                              run_start_time)
+                    .count();
+            manifest_options.stream_interrupted = quit_server;
+            manifest_options.recording_control = {0, 0};
+            manifest_options.recording_started = recording_started;
+            manifest_options.recording_started_at_utc =
+                recording_started_at_utc;
+            manifest_options.recording_started_at_elapsed_s =
+                elapsed_since_run_start(recording_start_time);
+            manifest_options.recording_stop_requested = true;
+            manifest_options.recording_stop_requested_at_utc =
+                session_finished_at_utc;
+            manifest_options.recording_stop_requested_at_elapsed_s =
+                elapsed_since_run_start(session_finished_time);
+            manifest_options.recording_stop_reason = stop_reason;
+            manifest_options.recording_drain_completed = recording_drained;
+            manifest_options.recording_drained_at_utc =
+                session_finished_at_utc;
+            manifest_options.recording_drained_at_elapsed_s =
+                elapsed_since_run_start(session_finished_time);
+            manifest_options.actual_recording_duration_s =
+                elapsed_between(recording_start_time, session_finished_time);
+            manifest_options.drain_duration_s = 0.0;
+            manifest_options.timed_stop_hit =
+                stop_reason == "stream_duration_elapsed";
+            const bool external_full_frame =
+                spatial_roi_policy_includes_full_frame;
+            manifest_options.include_full_frame_product =
+                external_full_frame;
+            manifest_options.recording_backend = {
+                {"mode", external_full_frame
+                             ? "external_ipc"
+                             : "fixed_roi_external_ipc"},
+                {"status", completed ? "completed" : "incomplete"},
+                {"media_policy",
+                 orange::session::spatial_roi::media_policy_to_json(
+                     options.spatial_roi_media_policy)},
+                {"full_frame",
+                 {{"status",
+                   external_full_frame
+                       ? (external_full_products_ok ? "finalized" : "failed")
+                       : "omitted_by_policy"},
+                  {"required", external_full_frame},
+                  {"continuous", external_full_frame},
+                  {"first_class", true}}},
+                {"registered_scene_context",
+                 registered_scene_context_runtime_json(spatial_roi_owner)},
+                {"spatial_roi_recording", spatial_roi_session_metadata},
+                {"system_monitoring",
+                 {{"nic_thermal",
+                   orange::monitoring::NicThermalMonitorProcessToJson(
+                       nic_thermal_monitor)}}},
+            };
+            if (external_full_frame) {
+                manifest_options.recording_backend["status"] =
+                    external_full_products_ok ? "completed" : "incomplete";
+                manifest_options.recording_backend["artifact_root"] =
+                    external_recorder_lifecycle.plan.artifact_root;
+                manifest_options.recording_backend["source"] =
+                    "external_recorder_summary";
+                manifest_options.recording_backend["summary_json"] =
+                    external_full_products.summary_paths;
+                manifest_options.recording_backend["authoritative_video_mode"] =
+                    "single_mp4";
+                manifest_options.recording_backend["merged_mp4"] =
+                    external_full_products.mp4_paths;
+                manifest_options.recording_backend["frame_metadata_csv"] =
+                    external_full_products.metadata_paths;
+                manifest_options.recording_backend["keyframes"] =
+                    external_full_products.keyframe_paths;
+                manifest_options.recording_backend[
+                    "combined_storage_preflight"] =
+                    "combined_storage_preflight.json";
+            }
+            manifest_options.cameras = std::move(camera_artifacts);
+            manifest_options.recording_outputs =
+                spatial_roi_recording_outputs;
+            spatial_roi_manifest_options_ready = true;
+
+            const nlohmann::json manifest =
+                orange::session::build_single_clip_recording_session_manifest(
+                    manifest_options);
+            const std::string manifest_status =
+                manifest.value("status", std::string());
+            const bool aggregate_manifest_complete =
+                completed && !manifest.empty() &&
+                (manifest_status == "completed" ||
+                 manifest_status == "complete");
+            if (!aggregate_manifest_complete) {
+                spatial_roi_aggregate_completion_ok = false;
+                std::cerr
+                    << "Spatial ROI aggregate recording is incomplete: "
+                    << (external_full_frame
+                            ? "the first-class full-frame product and four ROI "
+                              "products did not all finalize with identical "
+                              "frame coverage. "
+                            : "the registered native context and four fixed "
+                              "ROI products did not all finalize. ")
+                    << "Product-specific terminal evidence is preserved."
+                    << std::endl;
+            }
+            if (manifest.empty() ||
+                !orange::session::write_recording_session_manifest(
+                    (spatial_roi_owner.recording_root /
+                     "recording_session.json")
+                        .string(),
+                    manifest,
+                    &spatial_roi_manifest_error)) {
+                spatial_roi_manifest_ok = false;
+            } else {
+                const nlohmann::json session_update = {
+                    {"recording_mode", "single_clip"},
+                    {"recording_session_manifest_path",
+                     (spatial_roi_owner.recording_root /
+                      "recording_session.json")
+                         .string()},
+                    {"recording_backend",
+                     manifest.value("recording_backend",
+                                    nlohmann::json::object())},
+                    {"spatial_roi_recording",
+                     spatial_roi_session_metadata},
+                    {"spatial_roi_media_policy",
+                     orange::session::spatial_roi::media_policy_to_json(
+                         options.spatial_roi_media_policy)},
+                    {"registered_scene_context",
+                     registered_scene_context_runtime_json(
+                         spatial_roi_owner)},
+                };
+                if (!manifest.contains("recording_outputs_v3") ||
+                    !manifest["recording_outputs_v3"].is_object() ||
+                    !update_recording_snapshot_recording_outputs_v3_and_session_artifacts(
+                        spatial_roi_owner.recording_root.string(),
+                        manifest["recording_outputs_v3"],
+                        session_update)) {
+                    spatial_roi_manifest_ok = false;
+                    spatial_roi_manifest_error =
+                        "Failed to atomically publish spatial ROI recording manifest references and outputs";
+                }
+            }
+        }
+        if (!spatial_roi_manifest_ok) {
+            spatial_roi_aggregate_completion_ok = false;
+            // A complete recording_session.json may have been written before
+            // the atomic recording-snapshot publication failed. Reconcile
+            // the manifest to the same conservative failed ROI state before
+            // publishing a failed snapshot; never leave two terminal
+            // authorities that disagree about completion.
+            spatial_roi_finalize_ok = false;
+            std::vector<orange::session::RecordingOutputDescriptor>
+                failed_spatial_roi_outputs;
+            nlohmann::json failed_spatial_roi_session_metadata;
+            std::string reconciliation_error;
+            bool failed_manifest_written = false;
+            if (!spatial_roi_manifest_options_ready) {
+                reconciliation_error =
+                    "spatial ROI terminal manifest options were not materialized";
+            } else if (!build_headless_spatial_roi_recording_outputs(
+                           spatial_roi_owner,
+                           "failed",
+                           &failed_spatial_roi_outputs,
+                           &reconciliation_error) ||
+                       !build_spatial_roi_session_metadata(
+                           spatial_roi_owner,
+                           "failed",
+                           &failed_spatial_roi_session_metadata,
+                           &reconciliation_error)) {
+                if (reconciliation_error.empty()) {
+                    reconciliation_error =
+                        "failed to build conservative spatial ROI terminal evidence";
+                }
+            } else {
+                spatial_roi_manifest_options.status = "incomplete";
+                spatial_roi_manifest_options.recording_backend
+                    ["spatial_roi_recording"] =
+                        failed_spatial_roi_session_metadata;
+                spatial_roi_manifest_options.recording_outputs =
+                    failed_spatial_roi_outputs;
+                const nlohmann::json failed_manifest =
+                    orange::session::build_single_clip_recording_session_manifest(
+                        spatial_roi_manifest_options);
+                const std::filesystem::path manifest_path =
+                    spatial_roi_owner.recording_root /
+                    "recording_session.json";
+                if (failed_manifest.empty() ||
+                    !orange::session::write_recording_session_manifest(
+                        manifest_path.string(),
+                        failed_manifest,
+                        &reconciliation_error)) {
+                    if (reconciliation_error.empty()) {
+                        reconciliation_error =
+                            "failed to rewrite conservative spatial ROI terminal manifest";
+                    }
+                } else {
+                    failed_manifest_written = true;
+                    const nlohmann::json failed_session_update = {
+                        {"recording_mode", "single_clip"},
+                        {"recording_session_manifest_path",
+                         manifest_path.string()},
+                        {"recording_backend",
+                         failed_manifest.value(
+                             "recording_backend",
+                             nlohmann::json::object())},
+                        {"spatial_roi_recording",
+                         failed_spatial_roi_session_metadata},
+                        {"spatial_roi_media_policy",
+                         orange::session::spatial_roi::media_policy_to_json(
+                             options.spatial_roi_media_policy)},
+                        {"registered_scene_context",
+                         registered_scene_context_runtime_json(
+                             spatial_roi_owner)},
+                    };
+                    if (!failed_manifest.contains("recording_outputs_v3") ||
+                        !failed_manifest.at("recording_outputs_v3").is_object() ||
+                        !update_recording_snapshot_recording_outputs_v3_and_session_artifacts(
+                            spatial_roi_owner.recording_root.string(),
+                            failed_manifest.at("recording_outputs_v3"),
+                            failed_session_update)) {
+                        reconciliation_error =
+                            "failed to atomically publish the conservative spatial ROI terminal snapshot";
+                    } else {
+                        spatial_roi_recording_outputs =
+                            std::move(failed_spatial_roi_outputs);
+                    }
+                }
+            }
+            if (!reconciliation_error.empty()) {
+                if (!spatial_roi_manifest_error.empty()) {
+                    spatial_roi_manifest_error += "; ";
+                }
+                spatial_roi_manifest_error += failed_manifest_written
+                    ? "failed terminal snapshot reconciliation: " +
+                          reconciliation_error
+                    : "failed terminal manifest reconciliation: " +
+                          reconciliation_error;
+            }
+            std::cerr << "Spatial ROI recording manifest failed: "
+                      << spatial_roi_manifest_error << std::endl;
+        }
+    }
 
     if (enable_recording && options.recording_control.enabled()) {
         const auto session_finished_time = std::chrono::steady_clock::now();
@@ -9996,6 +13169,12 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     clear_headless_frame_ipc_managers(frame_ipc_managers);
 
     if (!external_recorder_stop_ok) {
+        return 1;
+    }
+
+    if (!spatial_roi_finalize_ok || !registered_context_finalize_ok ||
+        !spatial_roi_manifest_ok ||
+        !spatial_roi_aggregate_completion_ok) {
         return 1;
     }
 
@@ -10739,7 +13918,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
         }
         return false;
     }
-    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,stream_only,acquisition_buffer_mode,recording_sink_mode,external_recorder_contract_mode,external_recorder_contract_artifact_root,external_recorder_summary_json_path,external_recorder_video_sanity_json_path,external_recorder_mp4_path,external_recorder_gop_routing_csv_path,external_recorder_routing_policy,external_recorder_expected_shard_count,frame_ipc_mode,frame_ipc_status,frame_ipc_frames_sent,frame_ipc_reader_popped,frame_ipc_reader_gaps,frame_ipc_push_failures,nvenc_direct_input,duration_s,warmup_s,recording_control_record_for_seconds,recording_control_clip_seconds,recording_session_manifest_path,recording_control_video_duration_error_s,display,yolo,yolo_worker_mode,yolo_worker_status,yolo_worker_engine_path,yolo_worker_decimate,yolo_worker_publish_live_ipc,yolo_event_log_mode,yolo_event_log_status,yolo_event_log_present,yolo_event_log_rows,yolo_event_log_detection_rows,yolo_event_log_zero_rows,yolo_event_log_timeout_rows,yolo_event_log_failed_rows,yolo_event_log_parse_errors,yolo_event_log_schema_errors,yolo_event_log_sequence_errors,yolo_event_log_cadence_errors,yolo_event_log_metadata_join_misses,yolo_event_log_path,pose,pose_worker_mode,pose_worker_status,pose_worker_engine_path,pose_worker_skeleton_id,pose_worker_skeleton_path,pose_worker_input_width,pose_worker_input_height,pose_worker_input_layout,pose_worker_input_dtype,pose_worker_normalization,pose_worker_roi_source,pose_worker_queue_depth,pose_worker_timeout_ms,pose_worker_prewarm_iterations,pose_worker_fail_on_init_error,pose_worker_write_events_jsonl,pose_event_log_mode,pose_event_log_status,pose_event_log_present,pose_event_log_rows,pose_event_log_no_result_rows,pose_event_log_result_rows,pose_event_log_failed_rows,pose_event_log_parse_errors,pose_event_log_schema_errors,pose_event_log_sequence_errors,pose_event_log_noop_errors,pose_event_log_metadata_join_misses,pose_event_log_path,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,video_content_checked,video_content_valid,video_content_status,video_first_frame_luma_mean,video_first_frame_luma_stddev,video_first_frame_black_fraction,video_first_frame_decoded_bytes,status,pass_fail,reason,acq_fps_mean,acq_fps_p95,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,external_ipc_frames_acked_final,external_ipc_failures_final,external_ipc_ack_timeouts_final,submitted_frames_final,primary_routed_frames_final,helper_requested_frames_final,helper_fallback_frames_final,helper_dispatched_frames_final,routing_last_target_gpu_id,routing_last_route_mode,dropped_frames_camera,camera_frame_id_gaps,get_frame_errors_final,get_frame_error_code_last,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
+    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,stream_only,acquisition_buffer_mode,recording_sink_mode,external_recorder_contract_mode,external_recorder_contract_artifact_root,external_recorder_summary_json_path,external_recorder_video_sanity_json_path,external_recorder_mp4_path,external_recorder_gop_routing_csv_path,external_recorder_routing_policy,external_recorder_expected_shard_count,frame_ipc_mode,frame_ipc_status,frame_ipc_frames_sent,frame_ipc_reader_popped,frame_ipc_reader_gaps,frame_ipc_push_failures,nvenc_direct_input,duration_s,warmup_s,recording_control_record_for_seconds,recording_control_clip_seconds,recording_session_manifest_path,recording_control_video_duration_error_s,display,yolo,yolo_worker_mode,yolo_worker_status,yolo_worker_engine_path,yolo_worker_decimate,yolo_worker_publish_live_ipc,yolo_event_log_mode,yolo_event_log_status,yolo_event_log_present,yolo_event_log_rows,yolo_event_log_detection_rows,yolo_event_log_zero_rows,yolo_event_log_timeout_rows,yolo_event_log_failed_rows,yolo_event_log_parse_errors,yolo_event_log_schema_errors,yolo_event_log_sequence_errors,yolo_event_log_cadence_errors,yolo_event_log_metadata_join_misses,yolo_event_log_path,pose,pose_worker_mode,pose_worker_status,pose_worker_engine_path,pose_worker_skeleton_id,pose_worker_skeleton_path,pose_worker_input_width,pose_worker_input_height,pose_worker_input_layout,pose_worker_input_dtype,pose_worker_normalization,pose_worker_roi_source,pose_worker_queue_depth,pose_worker_timeout_ms,pose_worker_prewarm_iterations,pose_worker_fail_on_init_error,pose_worker_write_events_jsonl,pose_event_log_mode,pose_event_log_status,pose_event_log_present,pose_event_log_rows,pose_event_log_no_result_rows,pose_event_log_result_rows,pose_event_log_failed_rows,pose_event_log_parse_errors,pose_event_log_schema_errors,pose_event_log_sequence_errors,pose_event_log_noop_errors,pose_event_log_metadata_join_misses,pose_event_log_path,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,video_content_checked,video_content_valid,video_content_status,video_first_frame_luma_mean,video_first_frame_luma_stddev,video_first_frame_black_fraction,video_first_frame_decoded_bytes,status,pass_fail,reason,acq_fps_mean,acq_fps_p95,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,external_ipc_frames_acked_final,external_ipc_failures_final,external_ipc_ack_timeouts_final,submitted_frames_final,primary_routed_frames_final,helper_requested_frames_final,helper_fallback_frames_final,helper_dispatched_frames_final,routing_last_target_gpu_id,routing_last_route_mode,dropped_frames_camera,camera_frame_id_gaps,get_frame_errors_final,get_frame_error_code_last,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path,run_status,run_pass_fail,run_reason\n";
     for (const auto& run_entry : runs_json.value("runs", nlohmann::json::array())) {
         const nlohmann::json cameras = run_entry.value("camera_results", nlohmann::json::array());
         for (const auto& row : cameras) {
@@ -10903,7 +14082,10 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << (row.value("pre_encoder_reference_metadata_present", false) ? "true" : "false") << ","
                 << "\"" << row.value("pre_encoder_reference_raw_dump_path", "") << "\","
                 << "\"" << row.value("pre_encoder_reference_index_path", "") << "\","
-                << "\"" << row.value("pre_encoder_reference_metadata_path", "") << "\"\n";
+                << "\"" << row.value("pre_encoder_reference_metadata_path", "") << "\","
+                << run_entry.value("status", "") << ","
+                << run_entry.value("pass_fail", "") << ","
+                << "\"" << run_entry.value("reason", "") << "\"\n";
         }
     }
     return true;
@@ -11113,15 +14295,28 @@ int run_local_experiment(const HeadlessCliOptions& options)
                     }
                     run_entry["camera_results"].push_back(row);
                 }
-                run_entry["pass_fail"] = any_fail ? "fail" : (any_marginal ? "marginal" : "pass");
-                run_failed = run_failed || any_fail;
+                const orange::headless::ExperimentRunOutcome run_outcome =
+                    orange::headless::ResolveExperimentRunOutcome(
+                        run_failed, any_fail, any_marginal);
+                run_entry["pass_fail"] =
+                    orange::headless::ExperimentRunOutcomeName(run_outcome);
+                run_failed =
+                    run_outcome ==
+                    orange::headless::ExperimentRunOutcome::kFail;
             }
         }
 
         run_entry["finished_at_utc"] = get_current_utc_timestamp();
-        if (run_entry.value("status", "") == "failed" && !run_entry.contains("pass_fail")) {
-            run_entry["pass_fail"] = "fail";
-        }
+        const orange::headless::ExperimentRunOutcome reported_outcome =
+            orange::headless::ResolveReportedExperimentRunOutcome(
+                run_entry.value("status", std::string()),
+                run_entry.value("pass_fail", std::string()));
+        run_entry["pass_fail"] =
+            orange::headless::ExperimentRunOutcomeName(reported_outcome);
+        run_failed =
+            run_failed ||
+            reported_outcome ==
+                orange::headless::ExperimentRunOutcome::kFail;
         runs_json["runs"].push_back(run_entry);
 
         auto build_summary_json = [&]() {
@@ -11129,12 +14324,17 @@ int run_local_experiment(const HeadlessCliOptions& options)
             int marginal_count = 0;
             int fail_count = 0;
             for (const auto& completed_run : runs_json["runs"]) {
-                const std::string pass_fail = completed_run.value("pass_fail", "");
-                if (pass_fail == "pass") {
+                const orange::headless::ExperimentRunOutcome outcome =
+                    orange::headless::ResolveReportedExperimentRunOutcome(
+                        completed_run.value("status", std::string()),
+                        completed_run.value("pass_fail", std::string()));
+                if (outcome ==
+                    orange::headless::ExperimentRunOutcome::kPass) {
                     ++pass_count;
-                } else if (pass_fail == "marginal") {
+                } else if (outcome ==
+                           orange::headless::ExperimentRunOutcome::kMarginal) {
                     ++marginal_count;
-                } else if (pass_fail == "fail") {
+                } else {
                     ++fail_count;
                 }
             }

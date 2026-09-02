@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 simplelogger::Logger* logger =
@@ -60,6 +61,30 @@ std::string write_metadata_csv(
     return bytes;
 }
 
+void write_nonempty_artifact(
+    const std::filesystem::path& path,
+    const std::string& bytes = "fixture\n")
+{
+    if (!path.parent_path().empty()) {
+        std::filesystem::create_directories(path.parent_path());
+    }
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    require(static_cast<bool>(output),
+            "failed to open full-frame artifact fixture " + path.string());
+    output << bytes;
+    require(static_cast<bool>(output),
+            "failed to write full-frame artifact fixture " + path.string());
+}
+
+void materialize_full_frame_artifacts(
+    const std::filesystem::path& folder,
+    const orange::session::RecordingSessionCameraArtifact& artifact)
+{
+    write_nonempty_artifact(folder / artifact.video_path, "video-fixture\n");
+    write_nonempty_artifact(folder / artifact.keyframe_path,
+                            "{\"keyframes\":[1]}\n");
+}
+
 orange::session::RecordingOutputDescriptor make_external_crop_output(
     const std::string& serial,
     const std::string& scope,
@@ -95,6 +120,170 @@ orange::session::RecordingOutputDescriptor make_external_crop_output(
         {"video_backend", "external_ipc"},
         {"metadata_backend", "orange_gui_split_crop_csv"}
     };
+    return output;
+}
+
+orange::session::RecordingOutputDescriptor make_spatial_roi_output(
+    const std::string& serial,
+    const std::string& logical_stream_id)
+{
+    orange::session::RecordingOutputDescriptor output;
+    output.camera_serial = serial;
+    output.output_kind = orange::session::kSpatialRoiRecordingOutputKind;
+    output.logical_stream_id = logical_stream_id;
+    output.role = "sidecar";
+    output.backend = "external_ipc";
+    output.status = "completed";
+    output.video_path = logical_stream_id + ".mp4";
+    output.frame_count = 10;
+    output.first_recording_frame_id = 1;
+    output.last_recording_frame_id = 10;
+    output.recording_frame_id_gaps = 0;
+    output.packet_count = 10;
+    output.packet_count_source = "spatial_roi_finalized_receipt.packet_count";
+    const std::string roi_id = logical_stream_id.substr(
+        logical_stream_id.rfind('_') + 1);
+    const nlohmann::json artifacts = {
+        {"video", "external_spatial_roi_recorder/" + logical_stream_id + ".mp4"},
+        {"metadata", "external_spatial_roi_recorder/" + logical_stream_id + "_meta.csv"},
+        {"keyframes", "external_spatial_roi_recorder/" + logical_stream_id + "_keyframe.json"},
+        {"perf", "external_spatial_roi_recorder/" + logical_stream_id + "_perf.csv"},
+        {"summary", "external_spatial_roi_recorder/" + logical_stream_id + "_summary.json"},
+        {"status", "external_spatial_roi_recorder/" + logical_stream_id + "_status.json"},
+        {"video_sanity", "external_spatial_roi_recorder/" + logical_stream_id + "_video_sanity.json"},
+        {"finalization", "external_spatial_roi_recorder/" + logical_stream_id + ".mp4.finalization.json"},
+        {"recorder_log", "external_spatial_roi_recorder/" + logical_stream_id + "_recorder.log"},
+        {"transport_sidecar", "external_spatial_roi_recorder/" + logical_stream_id + "_transport.jsonl"},
+        {"evidence", "external_spatial_roi_recorder/" + logical_stream_id + "_evidence.jsonl"},
+        {"evidence_manifest", "external_spatial_roi_recorder/" + logical_stream_id + "_evidence_manifest.json"}
+    };
+    output.details = {
+        {"artifact_path_scope", "recording_root_relative"},
+        {"artifact_root_relative", "external_spatial_roi_recorder"},
+        {"artifacts", artifacts},
+        {"camera_id", 7},
+        {"camera_serial", serial},
+        {"assigned_gpu_id", 3},
+        {"session_id", "session_spatial_roi"},
+        {"frame_identity", {
+            {"key_fields", {"recording_id", "logical_stream_id", "roi_id"}},
+            {"roi_stream_frame_index", "dense_accepted_frame_order"},
+            {"recording_frame_id_source", "parent_camera_recording"}
+        }},
+        {"identity", {
+            {"camera_id", 7},
+            {"camera_serial", serial},
+            {"logical_stream_id", logical_stream_id},
+            {"producer_generation", "generation_001"},
+            {"recording_id", "session_spatial_roi"},
+            {"recording_identity_token", "sha256:" + std::string(64, 'a')},
+            {"arena_group_id", "arena_group_0"},
+            {"region_id", "region_" + roi_id},
+            {"roi_id", roi_id},
+            {"spatial_roi_plan_sha256", "sha256:" + std::string(64, 'b')}
+        }},
+        {"logical_stream_id", logical_stream_id},
+        {"producer_generation", "generation_001"},
+        {"recording_id", "session_spatial_roi"},
+        {"recording_identity_token", "sha256:" + std::string(64, 'a')},
+        {"region_id", "region_" + roi_id},
+        {"roi_id", roi_id},
+        {"spatial_roi_plan_sha256", "sha256:" + std::string(64, 'b')}
+    };
+    nlohmann::json receipt_artifacts = nlohmann::json::array();
+    for (const char* kind : {"video", "metadata", "keyframes", "perf",
+                             "summary", "status", "video_sanity", "finalization",
+                             "recorder_log", "transport_sidecar", "evidence",
+                             "evidence_manifest"}) {
+        receipt_artifacts.push_back({{"kind", kind}});
+    }
+    output.details["finalized_receipt"] = {
+        {"logical_stream_id", logical_stream_id},
+        {"identity", {
+            {"recording_id", "session_spatial_roi"},
+            {"session_id", "session_spatial_roi"},
+            {"recording_identity_token", "sha256:" + std::string(64, 'a')},
+            {"producer_generation", "generation_001"},
+            {"spatial_roi_plan_sha256", "sha256:" + std::string(64, 'b')},
+            {"camera_id", 7},
+            {"camera_serial", serial},
+            {"roi_id", roi_id},
+            {"region_id", "region_" + roi_id},
+            {"arena_group_id", "arena_group_0"},
+            {"logical_stream_id", logical_stream_id},
+            {"assigned_gpu_id", 3},
+            {"assigned_shard_id", 0}
+        }},
+        {"counts", {
+            {"detach_successes", 10},
+            {"dispatch_admitted", 10},
+            {"dispatch_rejected", 0},
+            {"ack_attempted", 10},
+            {"ack_sent", 10},
+            {"ack_accepted", 10},
+            {"release_attempted", 10},
+            {"release_sent", 10},
+            {"encoded_frames", 10},
+            {"failed_frames", 0},
+            {"packet_count", 10},
+            {"encoded_bytes", 100},
+            {"keyframes", 10},
+            {"ack_write_failures", 0},
+            {"release_write_failures", 0},
+            {"lifecycle_failures", 0}
+        }},
+        {"ranges", {
+            {"recording_frame_id", {{"first", 1}, {"last", 10}}},
+            {"roi_stream_frame_index", {{"first", 1}, {"last", 10}}},
+            {"has_frames", true},
+            {"frame_count", 10}
+        }},
+        {"finalized_receipt_digest", "sha256:" + std::string(64, 'c')},
+        {"artifacts", receipt_artifacts}
+    };
+    for (nlohmann::json& artifact : output.details["finalized_receipt"]["artifacts"]) {
+        const std::string recording_relative_path =
+            artifacts.at(artifact.at("kind")).get<std::string>();
+        artifact["relative_path"] = recording_relative_path.substr(
+            std::string("external_spatial_roi_recorder/").size());
+        artifact["size_bytes"] = 1;
+        artifact["sha256"] = "sha256:" + std::string(64, 'd');
+    }
+    return output;
+}
+
+orange::session::RecordingOutputDescriptor make_gop25_spatial_roi_output(
+    const std::string& serial,
+    const std::string& logical_stream_id)
+{
+    auto output = make_spatial_roi_output(serial, logical_stream_id);
+    output.details["encode_profile"] = {
+        {"profile_id", "hevc_p1_low_latency_vbr_q20_gop25_v1"},
+        {"codec", "hevc"},
+        {"preset", "p1"},
+        {"tuning", "ll"},
+        {"lossless", false},
+        {"rate_control_mode", "vbr"},
+        {"quality_value", 20},
+        {"gop_length", 25},
+        {"aq", false},
+        {"temporal_aq", false},
+        {"lookahead", false},
+        {"lookahead_depth", 0},
+        {"frame_rate", 100},
+        {"input_format", "mono8"},
+        {"encoded_format", "nv12"},
+        {"no_resize", true},
+        {"luma_preserved_exactly", false},
+        {"neutral_chroma_value", 128}};
+    output.details["rate_control_mode"] = "vbr";
+    output.details["quality_value"] = 20;
+    output.details["gop"] = 25;
+    output.codec = "hevc";
+    output.tuning = "ll";
+    output.pixel_source_format = "mono8";
+    output.encoded_format = "nv12";
+    output.details["finalized_receipt"]["counts"]["keyframes"] = 1;
     return output;
 }
 
@@ -321,6 +510,824 @@ void test_rolling_manifest_emits_session_aggregate_and_clip_crop_outputs()
     require(
         manifest["recording"]["control"]["event_log"].value("bytes", 0) == 1024,
         "rolling manifest should preserve local-control event-log byte count");
+}
+
+void test_single_clip_manifest_indexes_multiple_spatial_roi_streams()
+{
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "orange_spatial_roi_test";
+    options.session_id = "session_spatial_roi";
+    options.recording_folder = "/tmp/orange_session_manifest_spatial_roi";
+    options.status = "completed";
+    options.recording_backend = {
+        {"mode", "external_ipc"},
+        {"full_frame", {{"first_class", true}}},
+    };
+    options.cameras.push_back(make_camera_artifact("2010096", 10));
+
+    const std::string roi_one = "2010096_spatial_roi_roi_1";
+    const std::string roi_two = "2010096_spatial_roi_roi_2";
+    options.recording_outputs.push_back(
+        make_external_crop_output("2010096", "single_clip", 10));
+    options.recording_outputs.push_back(
+        make_spatial_roi_output("2010096", roi_one));
+    options.recording_outputs.push_back(
+        make_spatial_roi_output("2010096", roi_two));
+
+    const nlohmann::json manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    const auto& legacy = manifest.at("recording_outputs").at("2010096");
+    require(legacy.contains("full") && legacy.contains("crop"),
+            "schema-2 manifest view should retain full and scalar crop");
+    require(manifest.at("recording_backend").at("mode") == "external_ipc" &&
+                manifest.at("recording_backend").at("full_frame").at(
+                    "first_class") == true,
+            "combined manifest should preserve the selected external full-frame backend");
+    require(!legacy.contains("spatial_roi"),
+            "schema-2 manifest view should not collapse ROI streams");
+
+    const auto& versioned = manifest.at("recording_outputs_v3");
+    require(versioned.value("schema_version", 0) == 3,
+            "single-clip manifest should emit output schema v3");
+    const auto& camera = versioned.at("cameras").at("2010096");
+    require(camera.contains("full") && camera.contains("crop"),
+            "v3 manifest view should retain first-class full and crop");
+    require(camera.at("spatial_roi").size() == 2,
+            "v3 manifest should retain every spatial ROI stream");
+    require(camera.at("spatial_roi").at(roi_one).value(
+                "logical_stream_id", std::string()) == roi_one,
+            "v3 manifest should key ROI streams by logical_stream_id");
+    require(manifest.at("clips")[0].at("recording_outputs_v3") == versioned,
+            "clip compatibility entry should carry the same v3 output index");
+    const auto& evidence = manifest.at("spatial_roi_recording_evidence");
+    require(evidence.value("schema_id", std::string()) ==
+                "orange.spatial_roi_recording.manifest_evidence_index" &&
+                evidence.value("schema_version", 0) == 1 &&
+                evidence.value("status", std::string()) == "complete" &&
+                evidence.value("stream_count", 0) == 2 &&
+                evidence.value("status_semantics", std::string()) ==
+                    "stream_lifecycle_only" &&
+                evidence.at("verification").value("status", std::string()) ==
+                    "validated" &&
+                evidence.at("verification").value(
+                    "receipt_promotion_required", true) == false,
+            "complete manifest should promote closed ROI receipts");
+    const auto& evidence_stream = evidence.at("streams").at("2010096").at(roi_one);
+    require(evidence_stream.at("descriptor_ref") ==
+                "#/recording_outputs_v3/cameras/2010096/spatial_roi/" + roi_one &&
+                evidence_stream.at("frame_identity").at("recording_frame_id_source") ==
+                    "parent_camera_recording" &&
+                evidence_stream.at("artifact_bindings").size() == 12 &&
+                evidence_stream.at("artifact_bindings").at("video").value(
+                    "relative_path", std::string()) ==
+                    options.recording_outputs[1].details.at("artifacts").at("video") &&
+                evidence_stream.at("artifact_bindings").at("video").value(
+                    "receipt_relative_path", std::string()) == roi_one + ".mp4" &&
+                evidence_stream.at("artifact_bindings").at("video").value(
+                    "size_bytes", 0) == 1 &&
+                evidence_stream.at("artifact_bindings").at("video").value(
+                    "verification_status", std::string()) ==
+                    "finalized_receipt_validated" &&
+                evidence_stream.at("counts").at("encoded_frames") == 10 &&
+                evidence_stream.at("ranges").at("frame_count") == 10 &&
+                evidence_stream.at("finalized_receipt_digest") ==
+                    "sha256:" + std::string(64, 'c') &&
+                evidence_stream.at("evidence_manifest_relative_path") ==
+                    "external_spatial_roi_recorder/" + roi_one + "_evidence_manifest.json",
+            "ROI evidence binding should promote exact finalized artifact receipts and stream ranges");
+    require(manifest.at("clips")[0].at("spatial_roi_recording_evidence") ==
+                evidence,
+            "clip compatibility entry should carry the same ROI evidence binding");
+}
+
+void test_single_clip_manifest_accepts_gop25_keyframe_cadence()
+{
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "orange_spatial_roi_gop25_test";
+    options.session_id = "session_spatial_roi_gop25";
+    options.recording_folder = "/tmp/orange_session_manifest_spatial_roi_gop25";
+    options.status = "completed";
+    options.recording_backend = {
+        {"mode", "external_ipc"},
+        {"full_frame", {{"first_class", true}}},
+    };
+    options.cameras.push_back(make_camera_artifact("2010096", 10));
+    options.recording_outputs.push_back(
+        make_external_crop_output("2010096", "single_clip", 10));
+    options.recording_outputs.push_back(
+        make_gop25_spatial_roi_output(
+            "2010096", "2010096_spatial_roi_roi_1"));
+    options.recording_outputs.push_back(
+        make_gop25_spatial_roi_output(
+            "2010096", "2010096_spatial_roi_roi_2"));
+
+    const nlohmann::json manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    require(!manifest.empty(),
+            "complete manifest should accept GOP25 receipt cadence");
+    require(manifest.at("spatial_roi_recording_evidence")
+                    .at("streams").at("2010096")
+                    .at("2010096_spatial_roi_roi_1").at("counts")
+                    .at("keyframes") == 1,
+            "GOP25 manifest evidence should retain the profile-derived keyframe count");
+
+    options.recording_outputs[1].details["finalized_receipt"]["counts"]
+        ["keyframes"] = 10;
+    require(orange::session::build_single_clip_recording_session_manifest(options)
+                .empty(),
+            "complete manifest must reject all-keyframe evidence for GOP25");
+}
+
+void test_complete_manifest_rejects_invalid_spatial_roi_receipt()
+{
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "orange_spatial_roi_receipt_test";
+    options.session_id = "session_spatial_roi_receipt";
+    options.recording_folder = "/tmp/orange_session_manifest_spatial_roi_receipt";
+    options.status = "completed";
+    options.cameras.push_back(make_camera_artifact("2010096", 10));
+    options.recording_outputs.push_back(
+        make_spatial_roi_output("2010096", "2010096_spatial_roi_roi_1"));
+
+    auto expect_rejected = [&](const std::string& message) {
+        require(
+            orange::session::build_single_clip_recording_session_manifest(options)
+                .empty(),
+            message);
+    };
+
+    options.recording_outputs[0].details.erase("finalized_receipt");
+    expect_rejected("complete manifest must reject a missing finalized receipt");
+    options.recording_outputs[0] =
+        make_spatial_roi_output("2010096", "2010096_spatial_roi_roi_1");
+
+    auto& receipt =
+        options.recording_outputs[0].details["finalized_receipt"];
+    receipt["artifacts"][0]["relative_path"] = "substituted.mp4";
+    expect_rejected("complete manifest must reject a substituted artifact path");
+    options.recording_outputs[0] =
+        make_spatial_roi_output("2010096", "2010096_spatial_roi_roi_1");
+    options.recording_outputs[0].details["finalized_receipt"]["artifacts"][0]["kind"] =
+        "metadata";
+    expect_rejected("complete manifest must reject artifact kind/order substitution");
+    options.recording_outputs[0] =
+        make_spatial_roi_output("2010096", "2010096_spatial_roi_roi_1");
+    options.recording_outputs[0].details["finalized_receipt"]["artifacts"][0]["size_bytes"] =
+        0;
+    expect_rejected("complete manifest must reject zero-sized receipts");
+    options.recording_outputs[0] =
+        make_spatial_roi_output("2010096", "2010096_spatial_roi_roi_1");
+    options.recording_outputs[0].details["finalized_receipt"]["artifacts"][0]["sha256"] =
+        "sha256:" + std::string(64, 'A');
+    expect_rejected("complete manifest must reject non-canonical hashes");
+    options.recording_outputs[0] =
+        make_spatial_roi_output("2010096", "2010096_spatial_roi_roi_1");
+    options.recording_outputs[0].details["finalized_receipt"]["artifacts"].erase(11);
+    expect_rejected("complete manifest must reject omitted artifact receipts");
+    options.recording_outputs[0] =
+        make_spatial_roi_output("2010096", "2010096_spatial_roi_roi_1");
+    options.recording_outputs[0].details["finalized_receipt"]["counts"]
+        ["dispatch_rejected"] = 1;
+    expect_rejected("complete manifest must reject a failed admission count");
+    options.recording_outputs[0] =
+        make_spatial_roi_output("2010096", "2010096_spatial_roi_roi_1");
+    options.recording_outputs[0].details["finalized_receipt"]["counts"]
+        ["encoded_frames"] = 9;
+    expect_rejected("complete manifest must reject incomplete encode counts");
+    options.recording_outputs[0] =
+        make_spatial_roi_output("2010096", "2010096_spatial_roi_roi_1");
+    options.recording_outputs[0].details["finalized_receipt"]["counts"]
+        ["encoded_bytes"] = 0;
+    expect_rejected("complete manifest must reject an empty encoded payload");
+    options.recording_outputs[0] =
+        make_spatial_roi_output("2010096", "2010096_spatial_roi_roi_1");
+    options.recording_outputs[0].details["finalized_receipt"]["ranges"]
+        ["roi_stream_frame_index"]["first"] = 0;
+    expect_rejected("complete manifest must reject a non-one-based ROI range");
+    options.recording_outputs[0] =
+        make_spatial_roi_output("2010096", "2010096_spatial_roi_roi_1");
+    options.recording_outputs[0].details["finalized_receipt"]["ranges"]
+        ["recording_frame_id"]["last"] = 11;
+    expect_rejected("complete manifest must reject a sparse recording-frame range");
+    options.recording_outputs[0] =
+        make_spatial_roi_output("2010096", "2010096_spatial_roi_roi_1");
+    options.recording_outputs[0].frame_count = 9;
+    expect_rejected("complete manifest must reject descriptor/receipt count disagreement");
+    options.recording_outputs[0] =
+        make_spatial_roi_output("2010096", "2010096_spatial_roi_roi_1");
+    options.recording_outputs[0].first_recording_frame_id = 2;
+    options.recording_outputs[0].last_recording_frame_id = 11;
+    options.recording_outputs[0].details["finalized_receipt"]["ranges"]
+        ["recording_frame_id"] = {{"first", 2}, {"last", 11}};
+    const nlohmann::json coverage_downgraded =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    require(!coverage_downgraded.empty() &&
+                coverage_downgraded.at("status") == "incomplete",
+            "full-frame/ROI coverage disagreement must downgrade aggregate completion while preserving product evidence");
+
+    options.recording_outputs.clear();
+    options.recording_outputs.push_back(
+        make_spatial_roi_output("2010096", "2010096_spatial_roi_roi_1"));
+    options.recording_outputs.push_back(
+        make_spatial_roi_output("2010096", "2010096_spatial_roi_roi_2"));
+    options.recording_outputs[1].first_recording_frame_id = 2;
+    options.recording_outputs[1].last_recording_frame_id = 11;
+    options.recording_outputs[1].details["finalized_receipt"]["ranges"]
+        ["recording_frame_id"] = {{"first", 2}, {"last", 11}};
+    expect_rejected(
+        "complete manifest must reject partitioned ROI lane coverage");
+}
+
+void test_pending_manifest_retains_path_only_spatial_roi_bindings()
+{
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "orange_spatial_roi_pending_test";
+    options.session_id = "session_spatial_roi_pending";
+    options.recording_folder = "/tmp/orange_session_manifest_spatial_roi_pending";
+    options.status = "recording";
+    options.cameras.push_back(make_camera_artifact("2010096", 10));
+    options.recording_outputs.push_back(
+        make_spatial_roi_output("2010096", "2010096_spatial_roi_roi_1"));
+    options.recording_outputs[0].status = "pending";
+    options.recording_outputs[0].details.erase("finalized_receipt");
+
+    const nlohmann::json manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    const auto& evidence = manifest.at("spatial_roi_recording_evidence");
+    require(evidence.at("status") == "pending" &&
+                evidence.at("verification").at("status") == "not_validated" &&
+                evidence.at("verification").at("receipt_promotion_required") &&
+                evidence.at("streams").at("2010096")
+                    .at("2010096_spatial_roi_roi_1")
+                    .at("artifact_bindings").at("video")
+                    .at("verification_status") == "declared_expected_path",
+            "pending manifest must retain path-only ROI bindings");
+}
+
+void test_manifest_rejects_unbound_spatial_roi_evidence()
+{
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "orange_spatial_roi_test";
+    options.session_id = "session_spatial_roi_unbound";
+    options.recording_folder = "/tmp/orange_session_manifest_spatial_roi_unbound";
+    options.status = "completed";
+    options.cameras.push_back(make_camera_artifact("2010096", 10));
+    options.recording_outputs.push_back(
+        make_spatial_roi_output("2010096", "2010096_spatial_roi_roi_1"));
+    options.recording_outputs.back().details.erase("frame_identity");
+
+    const nlohmann::json manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    require(manifest.empty(),
+            "manifest builder must fail closed when ROI evidence is unbound");
+
+    options.recording_outputs.back() =
+        make_spatial_roi_output("2010096", "2010096_spatial_roi_roi_1");
+    options.recording_outputs.back().details["artifacts"]["video"] =
+        "/tmp/absolute_roi.mp4";
+    require(orange::session::build_single_clip_recording_session_manifest(options)
+                .empty(),
+            "manifest builder must reject absolute ROI evidence paths");
+
+    options.recording_outputs.back() =
+        make_spatial_roi_output("2010096", "2010096_spatial_roi_roi_1");
+    options.recording_outputs.back().details["camera_serial"] = "other-camera";
+    require(orange::session::build_single_clip_recording_session_manifest(options)
+                .empty(),
+            "manifest builder must reject mismatched ROI evidence identity");
+}
+
+void test_manifest_full_frame_completion_gate()
+{
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "orange_full_frame_gate_test";
+    options.session_id = "session_full_frame_gate";
+    options.recording_folder = "/tmp/orange_session_manifest_full_frame_gate";
+    options.status = "incomplete";
+    options.recording_started = false;
+    options.recording_drain_completed = true;
+    options.recording_backend = {
+        {"mode", "in_process"},
+        {"full_frame", {{"status", "finalized"}, {"first_class", true}}},
+        {"spatial_roi_recording", {{"status", "failed"}}}
+    };
+    options.cameras.push_back(make_camera_artifact("2010096", 0));
+    options.recording_outputs.push_back(
+        make_spatial_roi_output(
+            "2010096", "2010096_spatial_roi_roi_1"));
+    options.recording_outputs.back().status = "failed";
+    options.recording_outputs.back().details.erase("finalized_receipt");
+
+    const nlohmann::json manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    require(manifest.at("recording_backend").at("full_frame").at("status") ==
+                "failed" &&
+                manifest.at("recording_backend").at("full_frame").at(
+                    "completion_gate") == "failed" &&
+                manifest.at("recording_backend").at("full_frame").at(
+                    "recording_started") == false,
+            "full-frame backend must not claim finalized without the start gate");
+
+    options.status = "completed";
+    options.recording_started = true;
+    options.recording_drain_completed = true;
+    options.recording_backend["full_frame"]["status"] = "pending";
+    options.cameras[0] = make_camera_artifact("2010096", 10);
+    const nlohmann::json completed_manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    require(completed_manifest.at("recording_backend").at("full_frame").at(
+                "status") == "finalized" &&
+                completed_manifest.at("recording_backend").at("full_frame").at(
+                    "completion_gate") == "passed",
+            "full-frame backend should finalize only after both gates pass");
+
+    // ROI failure belongs to the aggregate lifecycle only. Once the full
+    // descriptor has its own frame/packet evidence and drained successfully,
+    // it remains a valid first-class product.
+    options.status = "incomplete";
+    options.recording_backend["full_frame"]["status"] = "finalized";
+    const nlohmann::json roi_failed_manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    require(roi_failed_manifest.at("recording_backend").at("full_frame").at(
+                "status") == "finalized" &&
+                roi_failed_manifest.at("recording_backend").at("full_frame").at(
+                    "completion_gate") == "passed" &&
+                roi_failed_manifest.at("recording_outputs_v3")
+                    .at("cameras").at("2010096").at("full")
+                    .at("status") == "finalized" &&
+                roi_failed_manifest.at("recording_outputs_v3")
+                    .at("cameras").at("2010096").at("spatial_roi")
+                    .at("2010096_spatial_roi_roi_1").at("status") ==
+                    "failed",
+            "ROI failure must not demote an independently valid full-frame product");
+}
+
+void test_full_frame_completion_gate_is_spatial_roi_scoped()
+{
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "orange_non_roi_compatibility_test";
+    options.session_id = "session_non_roi_compatibility";
+    options.recording_folder = "/tmp/orange_session_non_roi_compatibility";
+    options.status = "completed";
+    options.recording_started = false;
+    options.recording_drain_completed = false;
+    options.recording_backend = {
+        {"mode", "in_process"},
+        {"full_frame", {{"status", "pending"}, {"first_class", true}}}
+    };
+    options.cameras.push_back(make_camera_artifact("2010096", 10));
+
+    const nlohmann::json manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    require(manifest.at("recording_backend") == options.recording_backend,
+            "absent spatial ROI must not rewrite the established full-frame backend payload");
+    require(!manifest.at("recording_backend").at("full_frame").contains(
+                "completion_gate"),
+            "absent spatial ROI must not add a new full-frame completion contract");
+}
+
+void test_rolling_manifest_gates_clip_full_frame_status_independently()
+{
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_session_manifest_rolling_full_frame_gate_" +
+         std::to_string(static_cast<long long>(::getpid())));
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder);
+
+    orange::session::RollingRecordingSessionManifestOptions options;
+    options.producer = "orange_rolling_full_frame_gate_test";
+    options.session_id = "session_rolling_full_frame_gate";
+    options.recording_folder = folder.string();
+    options.status = "incomplete";
+    options.recording_started = true;
+    options.recording_drain_completed = true;
+    options.recording_backend = {
+        {"mode", "in_process"},
+        {"full_frame", {{"status", "pending"}, {"first_class", true}}}
+    };
+    options.camera_serials.push_back("2010096");
+
+    orange::session::RollingClipManifestOptions clip;
+    clip.producer = options.producer;
+    clip.output_backend = "in_process";
+    clip.session_id = options.session_id;
+    clip.clip_index = 0;
+    clip.clip_id = "clip_000000";
+    clip.recording_folder = options.recording_folder;
+    clip.directory = "clips/clip_000000";
+    // The clip aggregate can be incomplete because an independent ROI
+    // stream failed, while its full-frame evidence remains valid.
+    clip.status = "incomplete";
+    clip.drain_completed = true;
+    clip.cameras.push_back(make_camera_artifact("2010096", 10));
+    clip.cameras[0].first_recording_frame_id = 101;
+    clip.cameras[0].last_recording_frame_id = 110;
+    materialize_full_frame_artifacts(folder, clip.cameras[0]);
+    write_metadata_csv(folder / "Cam2010096_meta.csv",
+                       {101, 102, 103, 104, 105, 106, 107, 108, 109, 110});
+    orange::session::RecordingOutputDescriptor roi =
+        make_spatial_roi_output("2010096", "2010096_spatial_roi_roi_1");
+    roi.status = "failed";
+    roi.details.erase("finalized_receipt");
+    clip.recording_outputs.push_back(roi);
+    // The session-level collection can legitimately contain only ROI/crop
+    // products while full-frame authority remains clip-scoped. Its mere
+    // non-emptiness must not suppress the per-clip full-frame evidence gate.
+    options.recording_outputs.push_back(std::move(roi));
+    options.clips.push_back(clip);
+
+    const nlohmann::json manifest =
+        orange::session::build_rolling_clip_recording_session_manifest(options);
+    require(manifest.at("recording_backend").at("full_frame").at("status") ==
+                "finalized" &&
+                manifest.at("recording_backend").at("full_frame").at(
+                    "completion_gate") == "passed",
+            "rolling full-frame backend should use independent clip evidence");
+    const nlohmann::json& clip_v3 =
+        manifest.at("clips")[0].at("recording_outputs_v3");
+    require(clip_v3.at("cameras").at("2010096").at("full").at("status") ==
+                "finalized" &&
+                manifest.at("clips")[0].at("status") == "incomplete",
+            "rolling v3 full-frame status must not copy an incomplete clip status");
+
+    options.clips[0].cameras[0].recording_frame_id_gaps = 1;
+    const nlohmann::json gapped_manifest =
+        orange::session::build_rolling_clip_recording_session_manifest(options);
+    require(gapped_manifest.at("recording_backend").at("full_frame").at(
+                "status") == "failed" &&
+                gapped_manifest.at("clips")[0].at("recording_outputs_v3")
+                        .at("cameras").at("2010096").at("full").at("status") ==
+                    "failed",
+                "rolling full-frame status must fail closed for clip frame gaps");
+
+    options.clips[0].cameras[0].recording_frame_id_gaps = 0;
+    options.clips[0].drain_completed = false;
+    const nlohmann::json undrained_manifest =
+        orange::session::build_rolling_clip_recording_session_manifest(options);
+    require(undrained_manifest.at("recording_backend").at("full_frame").at(
+                "status") == "failed" &&
+                undrained_manifest.at("clips")[0].at("recording_outputs_v3")
+                        .at("cameras").at("2010096").at("full").at("status") ==
+                    "failed",
+            "rolling full-frame status must fail closed for an undrained clip");
+
+    std::filesystem::remove_all(folder);
+}
+
+void test_manifest_full_frame_gate_rejects_unsealed_metadata_evidence()
+{
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_session_full_frame_metadata_gate_" +
+         std::to_string(static_cast<long long>(::getpid())));
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder);
+
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "orange_full_frame_metadata_gate_test";
+    options.session_id = "session_full_frame_metadata_gate";
+    options.recording_folder = folder.string();
+    options.status = "completed";
+    options.recording_started = true;
+    options.recording_drain_completed = true;
+    options.recording_backend = {
+        {"mode", "external_ipc"},
+        {"full_frame", {{"status", "pending"}}},
+        {"spatial_roi_recording", {{"status", "failed"}}}
+    };
+    options.cameras.push_back(make_camera_artifact("2010096", 2));
+    materialize_full_frame_artifacts(folder, options.cameras[0]);
+    options.recording_outputs.push_back(
+        make_spatial_roi_output(
+            "2010096", "2010096_spatial_roi_roi_1"));
+    options.recording_outputs.back().status = "failed";
+    options.recording_outputs.back().details.erase("finalized_receipt");
+    const std::filesystem::path metadata_path =
+        folder / "Cam2010096_meta.csv";
+
+    const auto write_metadata = [&](const std::string& bytes) {
+        std::ofstream output(metadata_path, std::ios::binary);
+        require(static_cast<bool>(output), "failed to open metadata gate fixture");
+        output << bytes;
+        require(static_cast<bool>(output), "failed to write metadata gate fixture");
+    };
+    const std::string valid_header =
+        "frame_id,timestamp,timestamp_sys,recording_frame_id\n";
+    const std::vector<std::pair<std::string, std::string>> invalid_metadata = {
+        {"malformed_header", "frame_id,,timestamp_sys,recording_frame_id\n"
+                              "1,1000,2000,1\n2,1001,2001,2\n"},
+        {"malformed_row", valid_header + "1,1000,2000,1\n"
+                           "not-a-frame,1001,2001,2\n"},
+        {"alias_mismatch", valid_header + "1,1000,2000,1\n"
+                            "9,1001,2001,2\n"},
+        {"frame_gap", valid_header + "1,1000,2000,1\n"
+                       "3,1001,2001,3\n"},
+        {"descriptor_mapping_mismatch", valid_header + "1,1000,2000,1\n"
+                                         "2,1001,2001,2\n"}
+    };
+
+    for (const auto& [name, bytes] : invalid_metadata) {
+        write_metadata(bytes);
+        if (name == "descriptor_mapping_mismatch") {
+            options.cameras[0].frame_count = 3;
+            options.cameras[0].last_recording_frame_id = 3;
+        } else {
+            options.cameras[0].frame_count = 2;
+            options.cameras[0].last_recording_frame_id = 2;
+        }
+        const nlohmann::json manifest =
+            orange::session::build_single_clip_recording_session_manifest(options);
+        require(manifest.at("recording_backend").at("full_frame").at("status") ==
+                    "failed" &&
+                    manifest.at("recording_backend").at("full_frame").at(
+                        "completion_gate") == "failed",
+                "full-frame gate should reject " + name + " metadata evidence");
+    }
+
+    write_metadata("frame_id,timestamp,timestamp_sys\n"
+                   "1,1000,2000\n2,1001,2001\n");
+    options.cameras[0].frame_count = 2;
+    options.cameras[0].last_recording_frame_id = 2;
+    const nlohmann::json valid_manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    require(valid_manifest.at("recording_backend").at("full_frame").at("status") ==
+                "finalized" &&
+                valid_manifest.at("recording_backend").at("full_frame").at(
+                    "completion_gate") == "passed",
+            "full-frame gate should preserve the current in-process frame_id metadata evidence");
+
+    std::filesystem::remove(folder / options.cameras[0].video_path);
+    const nlohmann::json missing_video_manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    require(missing_video_manifest.at("recording_backend").at("full_frame").at(
+                "status") == "failed",
+            "full-frame gate must reject a missing declared video artifact");
+    write_nonempty_artifact(folder / options.cameras[0].video_path, "");
+    const nlohmann::json empty_video_manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    require(empty_video_manifest.at("recording_backend").at("full_frame").at(
+                "status") == "failed",
+            "full-frame gate must reject an empty declared video artifact");
+    write_nonempty_artifact(folder / options.cameras[0].video_path,
+                            "video-fixture\n");
+
+    std::filesystem::remove(folder / options.cameras[0].keyframe_path);
+    std::filesystem::create_directory(folder / options.cameras[0].keyframe_path);
+    const nlohmann::json nonregular_keyframe_manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    require(nonregular_keyframe_manifest.at("recording_backend").at("full_frame").at(
+                "status") == "failed",
+            "full-frame gate must reject a non-regular keyframe artifact");
+    std::filesystem::remove_all(folder / options.cameras[0].keyframe_path);
+    write_nonempty_artifact(folder / options.cameras[0].keyframe_path,
+                            "{\"keyframes\":[1]}\n");
+
+    options.cameras[0].packet_count = 1;
+    const nlohmann::json truncated_packet_manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    require(truncated_packet_manifest.at("recording_backend").at("full_frame").at(
+                "status") == "failed",
+            "full-frame gate must reject packet/frame cardinality disagreement");
+    options.cameras[0].packet_count = 2;
+
+    std::filesystem::remove(folder / options.cameras[0].keyframe_path);
+    std::filesystem::create_hard_link(
+        folder / options.cameras[0].video_path,
+        folder / options.cameras[0].keyframe_path);
+    const nlohmann::json aliased_artifacts_manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    require(aliased_artifacts_manifest.at("recording_backend").at("full_frame").at(
+                "status") == "failed",
+            "full-frame gate must reject artifact paths that alias one inode");
+
+    std::filesystem::remove_all(folder);
+}
+
+void test_complete_spatial_roi_aggregate_requires_full_metadata_evidence()
+{
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_session_spatial_roi_aggregate_metadata_gate_" +
+         std::to_string(static_cast<long long>(::getpid())));
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder);
+
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "orange_spatial_roi_aggregate_metadata_gate_test";
+    options.session_id = "session_spatial_roi";
+    options.recording_folder = folder.string();
+    options.status = "completed";
+    options.recording_started = true;
+    options.recording_drain_completed = true;
+    options.recording_backend = {
+        {"mode", "external_ipc"},
+        {"full_frame", {{"status", "pending"}, {"first_class", true}}},
+        {"spatial_roi_recording", {{"status", "complete"}}},
+    };
+    options.cameras.push_back(make_camera_artifact("2010096", 10));
+    materialize_full_frame_artifacts(folder, options.cameras[0]);
+    options.recording_outputs.push_back(
+        make_spatial_roi_output(
+            "2010096", "2010096_spatial_roi_roi_1"));
+
+    const auto require_aggregate_incomplete = [&](const std::string& reason) {
+        const nlohmann::json manifest =
+            orange::session::build_single_clip_recording_session_manifest(options);
+        require(!manifest.empty() && manifest.at("status") == "incomplete",
+                reason + " must make aggregate completion incomplete");
+        const nlohmann::json& camera = manifest.at("recording_outputs_v3")
+            .at("cameras").at("2010096");
+        require(camera.at("full").at("status") == "failed" &&
+                    camera.at("spatial_roi")
+                        .at("2010096_spatial_roi_roi_1")
+                        .at("status") == "completed",
+                reason + " must preserve truthful independent product states");
+    };
+
+    require_aggregate_incomplete("missing full-frame metadata");
+
+    {
+        std::ofstream output(folder / "Cam2010096_meta.csv", std::ios::binary);
+        require(static_cast<bool>(output), "failed to open malformed metadata fixture");
+        output << "frame_id,recording_frame_id\n1,1\n2,3\n";
+    }
+    require_aggregate_incomplete("contradictory full-frame metadata");
+
+    {
+        std::ofstream output(folder / "Cam2010096_meta.csv", std::ios::binary);
+        require(static_cast<bool>(output),
+                "failed to open current in-process metadata fixture");
+        output << "frame_id,timestamp,timestamp_sys\n";
+        for (std::uint64_t frame_id = 1; frame_id <= 10; ++frame_id) {
+            output << frame_id << ",1000,2000\n";
+        }
+        require(static_cast<bool>(output),
+                "failed to write current in-process metadata fixture");
+    }
+    const nlohmann::json complete =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    require(!complete.empty() && complete.at("status") == "completed" &&
+                complete.at("recording_outputs_v3")
+                    .at("cameras").at("2010096")
+                    .at("full").at("status") == "finalized",
+            "current in-process dense full metadata and complete ROI evidence must permit aggregate completion");
+
+    std::filesystem::remove_all(folder);
+}
+
+void test_fixed_roi_only_manifest_omits_full_frame_product_by_policy()
+{
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_session_fixed_roi_only_identity_" +
+         std::to_string(static_cast<long long>(::getpid())));
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder);
+
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "orange_fixed_roi_only_test";
+    options.session_id = "session_spatial_roi";
+    options.recording_folder = folder.string();
+    options.status = "completed";
+    options.recording_started = true;
+    options.recording_drain_completed = true;
+    options.include_full_frame_product = false;
+    options.recording_backend = {
+        {"mode", "fixed_roi_external_ipc"},
+        {"media_policy", "fixed_rois_with_registered_context"},
+        {"full_frame",
+         {{"status", "omitted_by_policy"},
+          {"required", false},
+          {"continuous", false}}},
+        {"registered_context", {{"status", "finalized"}}},
+        {"spatial_roi_recording", {{"status", "complete"}}},
+    };
+    options.cameras.push_back(make_camera_artifact("2010096", 10));
+    options.recording_outputs.push_back(make_spatial_roi_output(
+        "2010096", "2010096_spatial_roi_roi_1"));
+    options.recording_outputs.push_back(make_spatial_roi_output(
+        "2010096", "2010096_spatial_roi_roi_2"));
+    options.recording_outputs.push_back(make_spatial_roi_output(
+        "2010096", "2010096_spatial_roi_roi_3"));
+    options.recording_outputs.push_back(make_spatial_roi_output(
+        "2010096", "2010096_spatial_roi_roi_4"));
+
+    const nlohmann::json manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    require(!manifest.empty() && manifest.at("status") == "completed",
+            "an explicit fixed-ROI-only policy must complete without a synthetic full-frame descriptor");
+    require(manifest.at("cameras").size() == 1 &&
+                manifest.at("cameras").at(0) == "2010096",
+            "ROI-only manifest must preserve the camera identity");
+    require(manifest.at("camera_artifacts").empty() &&
+                manifest.at("clips").at(0).at("artifacts").at("videos").empty(),
+            "ROI-only manifest must not mint absent continuous full-frame artifact paths");
+    const nlohmann::json& camera_outputs =
+        manifest.at("recording_outputs_v3").at("cameras").at("2010096");
+    require(!camera_outputs.contains("full") &&
+                camera_outputs.at("spatial_roi").size() == 4,
+            "ROI-only output index must contain only the retained fixed ROI streams");
+    require(manifest.at("recording_backend").at("full_frame").at("status") ==
+                "omitted_by_policy" &&
+                !manifest.at("recording_backend").at("full_frame").contains(
+                    "completion_gate"),
+            "manifest builder must preserve explicit full-frame omission semantics");
+
+    options.recording_outputs.back().last_recording_frame_id = 9;
+    const nlohmann::json mismatched =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    require(mismatched.empty() || mismatched.at("status") == "incomplete",
+            "ROI-only aggregate completion must reject unequal ROI frame coverage");
+
+    options.recording_outputs.back().last_recording_frame_id = 10;
+    const nlohmann::json complete_manifest =
+        orange::session::build_single_clip_recording_session_manifest(options);
+    const std::filesystem::path manifest_path =
+        folder / "recording_session.json";
+    std::string error;
+    require(
+        orange::session::write_recording_session_manifest(
+            manifest_path.string(), complete_manifest, &error),
+        "fixed-ROI-only manifest finalization should succeed: " + error);
+    const nlohmann::json written = read_json(manifest_path);
+    require(written.at("status") == "completed",
+            "fixed-ROI-only finalization must preserve completed session status");
+    require(written.at("camera_artifacts").empty() &&
+                written.at("clips").at(0).at("artifacts").at("videos").empty() &&
+                written.at("clips").at(0).at("artifacts").at("metadata").empty() &&
+                !std::filesystem::exists(folder / "Cam2010096.mp4") &&
+                !std::filesystem::exists(folder / "Cam2010096_meta.csv"),
+            "ROI-only finalization must not mint fake full-frame media or metadata");
+
+    const nlohmann::json& frame_identity =
+        written.at("frame_identity_contract");
+    require(frame_identity.at("status") == "finalized" &&
+                frame_identity.at("verification").at("result") == "passed" &&
+                frame_identity.at("verification").at("authority") ==
+                    "authenticated_spatial_roi_finalized_receipts" &&
+                frame_identity.at("camera_streams").at("2010096").at(
+                    "backend") == "fixed_roi_external_ipc" &&
+                frame_identity.at("camera_streams").at("2010096").at(
+                    "verification_status") == "passed" &&
+                frame_identity.at("camera_streams").at("2010096").at(
+                    "stream_proofs").size() == 4,
+            "frame identity must use authenticated fixed-ROI receipts, not an in-process full-frame producer claim");
+
+    const nlohmann::json& historical_mapping =
+        written.at("acquisition_index_mapping");
+    require(historical_mapping.at("status") ==
+                "not_applicable_by_media_policy" &&
+                historical_mapping.at("reason_code") ==
+                    "continuous_full_frame_product_omitted_by_media_policy" &&
+                historical_mapping.at("camera_streams").empty() &&
+                !written.contains("acquisition_index_mapping_sha256"),
+            "the historical metadata-backed mapping must be explicitly not applicable and unsealed");
+
+    const nlohmann::json& roi_mapping =
+        written.at("spatial_roi_acquisition_index_mapping");
+    const nlohmann::json& roi_camera =
+        roi_mapping.at("camera_streams").at("2010096");
+    require(roi_mapping.at("schema_id") ==
+                "orange.spatial_roi_recording.acquisition_index_mapping" &&
+                roi_mapping.at("schema_version") == 1 &&
+                roi_mapping.at("status") == "finalized" &&
+                roi_mapping.at("source_evidence_index_ref") ==
+                    "#/spatial_roi_recording_evidence" &&
+                roi_mapping.at("source_evidence_index_sha256") ==
+                    canonical_semantic_sha256(
+                        written.at("spatial_roi_recording_evidence")) &&
+                written.at("spatial_roi_acquisition_index_mapping_sha256") ==
+                    canonical_semantic_sha256(roi_mapping),
+            "ROI-derived acquisition mapping must be a closed, evidence-bound, digested finalized record");
+    require(roi_camera.at("coverage").at("first_recording_frame_id") == 1 &&
+                roi_camera.at("coverage").at("last_recording_frame_id") == 10 &&
+                roi_camera.at("coverage").at("total_acquisitions") == 10 &&
+                roi_camera.at("coverage").at("gap_count") == 0 &&
+                roi_camera.at("source_authority").at("kind") ==
+                    "authenticated_spatial_roi_finalized_receipts" &&
+                roi_camera.at("source_authority").at(
+                    "finalized_receipts").size() == 4 &&
+                roi_camera.at("conversion").at("constant") == 1,
+            "ROI acquisition mapping must derive one shared dense camera range from all four retained streams");
+
+    const nlohmann::json frozen_roi_mapping = roi_mapping;
+    const std::string frozen_roi_mapping_digest =
+        written.at("spatial_roi_acquisition_index_mapping_sha256")
+            .get<std::string>();
+    error.clear();
+    require(
+        orange::session::write_recording_session_manifest(
+            manifest_path.string(), written, &error),
+        "rewriting a sealed ROI-only manifest should succeed: " + error);
+    const nlohmann::json rewritten = read_json(manifest_path);
+    require(rewritten.at("spatial_roi_acquisition_index_mapping") ==
+                frozen_roi_mapping &&
+                rewritten.at("spatial_roi_acquisition_index_mapping_sha256") ==
+                    frozen_roi_mapping_digest,
+            "finalized ROI-derived acquisition mapping evidence must remain immutable on rewrite");
+
+    std::filesystem::remove_all(folder);
 }
 
 void test_camera_preferred_recording_sink_resolution()
@@ -1262,6 +2269,28 @@ int main()
          test_single_clip_manifest_preserves_full_and_crop_outputs},
         {"rolling_manifest_emits_session_aggregate_and_clip_crop_outputs",
          test_rolling_manifest_emits_session_aggregate_and_clip_crop_outputs},
+        {"single_clip_manifest_indexes_multiple_spatial_roi_streams",
+         test_single_clip_manifest_indexes_multiple_spatial_roi_streams},
+        {"single_clip_manifest_accepts_gop25_keyframe_cadence",
+         test_single_clip_manifest_accepts_gop25_keyframe_cadence},
+        {"complete_manifest_rejects_invalid_spatial_roi_receipt",
+         test_complete_manifest_rejects_invalid_spatial_roi_receipt},
+        {"pending_manifest_retains_path_only_spatial_roi_bindings",
+         test_pending_manifest_retains_path_only_spatial_roi_bindings},
+        {"manifest_rejects_unbound_spatial_roi_evidence",
+         test_manifest_rejects_unbound_spatial_roi_evidence},
+        {"manifest_full_frame_completion_gate",
+         test_manifest_full_frame_completion_gate},
+        {"full_frame_completion_gate_is_spatial_roi_scoped",
+         test_full_frame_completion_gate_is_spatial_roi_scoped},
+        {"rolling_manifest_gates_clip_full_frame_status_independently",
+         test_rolling_manifest_gates_clip_full_frame_status_independently},
+        {"manifest_full_frame_gate_rejects_unsealed_metadata_evidence",
+         test_manifest_full_frame_gate_rejects_unsealed_metadata_evidence},
+        {"complete_spatial_roi_aggregate_requires_full_metadata_evidence",
+         test_complete_spatial_roi_aggregate_requires_full_metadata_evidence},
+        {"fixed_roi_only_manifest_omits_full_frame_product_by_policy",
+         test_fixed_roi_only_manifest_omits_full_frame_product_by_policy},
         {"camera_preferred_recording_sink_resolution",
          test_camera_preferred_recording_sink_resolution},
         {"manifest_references_recording_geometry_contract",

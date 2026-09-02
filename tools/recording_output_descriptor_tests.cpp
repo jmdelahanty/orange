@@ -259,6 +259,94 @@ void test_full_and_crop_statuses_are_independent()
             "crop sidecar status reason should be preserved");
 }
 
+void test_spatial_roi_outputs_are_collection_valued_in_v3()
+{
+    orange::session::RecordingOutputDescriptor full;
+    full.camera_serial = "2010096";
+    full.output_kind = "full";
+    full.video_path = "Cam2010096.mp4";
+    full.status = "completed";
+
+    orange::session::RecordingOutputDescriptor crop;
+    crop.camera_serial = "2010096";
+    orange::session::apply_crop_recording_output_media_contract(&crop);
+    crop.video_path = "Cam2010096_crop.mp4";
+    crop.status = "completed";
+
+    orange::session::RecordingOutputDescriptor roi_one;
+    roi_one.camera_serial = "2010096";
+    roi_one.output_kind = orange::session::kSpatialRoiRecordingOutputKind;
+    roi_one.logical_stream_id = "2010096_spatial_roi_roi_1";
+    roi_one.role = "sidecar";
+    roi_one.video_path = "Cam2010096_spatial_roi_roi_1.mp4";
+    roi_one.details = {{"roi_id", "roi_1"}, {"region_id", "region_1"}};
+
+    orange::session::RecordingOutputDescriptor roi_two = roi_one;
+    roi_two.logical_stream_id = "2010096_spatial_roi_roi_2";
+    roi_two.video_path = "Cam2010096_spatial_roi_roi_2.mp4";
+    roi_two.details["roi_id"] = "roi_2";
+    roi_two.details["region_id"] = "region_2";
+
+    // The schema-2 view remains safe for existing readers: adding ROI
+    // descriptors cannot replace either scalar full or crop output.
+    const auto legacy = orange::session::build_recording_outputs_json(
+        {full, crop, roi_one, roi_two});
+    require(legacy["2010096"].contains("full"),
+            "legacy output view should retain full output with ROI streams");
+    require(legacy["2010096"].contains("crop"),
+            "legacy output view should retain crop output with ROI streams");
+    require(!legacy["2010096"].contains("spatial_roi"),
+            "legacy output view must not expose a lossy scalar spatial ROI");
+    require(legacy["2010096"]["full"].value("video", std::string()) ==
+                "Cam2010096.mp4",
+            "legacy full output must remain unchanged");
+
+    const auto versioned = orange::session::build_recording_outputs_v3_json(
+        {full, crop, roi_one, roi_two});
+    require(versioned.value("schema_id", std::string()) ==
+                orange::session::kRecordingOutputsV3SchemaId,
+            "v3 output index schema id");
+    require(versioned.value("schema_version", 0) ==
+                orange::session::kRecordingOutputsV3SchemaVersion,
+            "v3 output index schema version");
+    const auto& camera = versioned.at("cameras").at("2010096");
+    require(camera.at("full").value("video", std::string()) ==
+                "Cam2010096.mp4",
+            "v3 full output must remain first-class");
+    require(camera.at("crop").value("video", std::string()) ==
+                "Cam2010096_crop.mp4",
+            "v3 crop output must remain scalar");
+    require(camera.at("spatial_roi").size() == 2,
+            "v3 spatial ROI collection should retain both streams");
+    require(camera.at("spatial_roi")
+                .at("2010096_spatial_roi_roi_1")
+                .value("logical_stream_id", std::string()) ==
+                "2010096_spatial_roi_roi_1",
+            "v3 ROI key should be the logical stream identity");
+    require(camera.at("spatial_roi")
+                .at("2010096_spatial_roi_roi_2")
+                .at("details")
+                .value("roi_id", std::string()) == "roi_2",
+            "v3 should preserve per-stream details");
+
+    orange::session::RecordingOutputDescriptor missing_key = roi_one;
+    missing_key.logical_stream_id.clear();
+    nlohmann::json without_key;
+    std::string error;
+    require(!orange::session::build_recording_outputs_v3_json(
+                {missing_key}, &without_key, &error),
+            "anonymous spatial ROI outputs must fail v3 construction");
+    require(error.find("logical_stream_id") != std::string::npos,
+            "missing logical stream failure should identify the key");
+
+    orange::session::RecordingOutputDescriptor duplicate = roi_one;
+    require(!orange::session::build_recording_outputs_v3_json(
+                {roi_one, duplicate}, &without_key, &error),
+            "duplicate spatial ROI keys must fail v3 construction");
+    require(error.find("duplicate") != std::string::npos,
+            "duplicate logical stream failure should be explicit");
+}
+
 void test_default_fallback_values()
 {
     orange::session::RecordingOutputDescriptor descriptor;
@@ -292,6 +380,8 @@ int main()
         {"full_output_descriptor_from_camera_artifact", test_full_output_descriptor_from_camera_artifact},
         {"crop_output_descriptor_serialization", test_crop_output_descriptor_serialization},
         {"full_and_crop_statuses_are_independent", test_full_and_crop_statuses_are_independent},
+        {"spatial_roi_outputs_are_collection_valued_in_v3",
+         test_spatial_roi_outputs_are_collection_valued_in_v3},
         {"default_fallback_values", test_default_fallback_values},
     };
 

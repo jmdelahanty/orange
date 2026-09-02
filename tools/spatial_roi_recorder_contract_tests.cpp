@@ -215,6 +215,8 @@ spatial_roi::SpatialRoiRecorderRuntimeGpuMapping make_mapping()
 void builds_one_strict_nonrolling_stream_per_roi()
 {
     const nlohmann::json plan = make_plan();
+    const auto& expected_plan_profile =
+        plan.at("plan").at("configuration").at("encode_profile");
     const auto mapping = make_mapping();
     nlohmann::json contract;
     std::string error;
@@ -230,7 +232,7 @@ void builds_one_strict_nonrolling_stream_per_roi()
             "contract schema version mismatch");
     require(contract.value("strict", false), "contract must be strict");
     require(contract.value("backend", std::string()) ==
-                "independent_lossless_external_ipc",
+                plan.at("plan").at("configuration").at("backend"),
             "contract backend mismatch");
     require(contract.value("mode", std::string()) ==
                 spatial_roi::kSpatialRoiRecorderContractMode,
@@ -339,7 +341,23 @@ void builds_one_strict_nonrolling_stream_per_roi()
     };
     require(contract.at("ipc_v2") == expected_ipc_v2,
             "contract must contain the exact closed IPC-v2 handoff object");
+    require(contract.value("schema_version", 0) ==
+                spatial_roi::kSpatialRoiRecorderContractSchemaVersion &&
+                contract.value("mode", std::string()) ==
+                    spatial_roi::kSpatialRoiRecorderContractMode &&
+                contract.at("require_storage_preflight") == true &&
+                contract.at("storage_preflight_policy") == nlohmann::json{
+                    {"schema_id",
+                     spatial_roi::kSpatialRoiRecorderStoragePreflightPolicySchemaId},
+                    {"schema_version",
+                     spatial_roi::kSpatialRoiRecorderStoragePreflightPolicySchemaVersion},
+                    {"required", true},
+                    {"reserved_free_bytes",
+                     spatial_roi::kSpatialRoiRecorderReservedFreeBytes},
+                },
+            "contract must authenticate the nonzero storage preflight policy");
     require(contract.at("aggregate_bounds") == nlohmann::json{
+                {"max_detach_pool_bytes_total", 12160},
                 {"max_queue_bytes_total", 7296},
                 {"writer_queue_max_packets_total", 2048},
                 {"writer_queue_max_bytes_total", 536870912},
@@ -377,35 +395,62 @@ void builds_one_strict_nonrolling_stream_per_roi()
                 "region identity mismatch");
         require(stream.at("arena_id").is_string(),
                 "arena identity should be preserved");
+        require(stream.at("encode_profile").value("profile_id", std::string()) ==
+                    expected_plan_profile.at("name"),
+                "encode profile identifier must be authenticated");
         require(stream.at("encode_profile").value("codec", std::string()) ==
-                    "hevc",
+                    expected_plan_profile.at("codec"),
                 "codec must be HEVC");
+        require(stream.at("encode_profile").value("preset", std::string()) ==
+                    expected_plan_profile.at("preset"),
+                "preset must be authenticated");
         require(stream.at("encode_profile").value("tuning", std::string()) ==
-                    "lossless",
-                "tuning must be lossless");
-        require(stream.at("encode_profile").value("lossless", false),
-                "lossless flag must be true");
-        require(stream.at("encode_profile").value("gop_length", 0) == 1,
-                "spatial ROI GOP must be one");
+                    expected_plan_profile.at("tuning"),
+                "tuning must match the plan profile");
+        require(stream.at("encode_profile").value("lossless", true) ==
+                    expected_plan_profile.at("lossless"),
+                "lossless flag must match the plan profile");
+        require(stream.at("encode_profile").value("rate_control_mode", std::string()) ==
+                    expected_plan_profile.at("rate_control_mode") &&
+                    stream.at("encode_profile").value("quality_value", 0) ==
+                    expected_plan_profile.at("quality_value"),
+                "rate control policy must match the plan profile");
+        require(stream.at("encode_profile").value("gop_length", 0) ==
+                    expected_plan_profile.at("gop_length"),
+                "spatial ROI GOP must match the immutable plan profile");
+        require(stream.at("encode_profile").value("aq", true) == false &&
+                    stream.at("encode_profile").value("temporal_aq", true) == false &&
+                    stream.at("encode_profile").value("lookahead", true) == false &&
+                    stream.at("encode_profile").value("lookahead_depth", 1) == 0,
+                "spatial ROI encoder controls must be explicitly disabled");
         require(stream.at("encode_profile").value("frame_rate", 0) == 100,
                 "source frame rate mismatch");
         require(stream.at("encode_profile").value("input_format", std::string()) ==
                     "mono8" &&
                     stream.at("encode_profile").value("encoded_format", std::string()) ==
                     "nv12" &&
-                    stream.at("encode_profile").value("luma_preserved_exactly", false) &&
+                    stream.at("encode_profile").value("luma_preserved_exactly", true) ==
+                    expected_plan_profile.at("lossless") &&
                     stream.at("encode_profile").value("neutral_chroma_value", 0) == 128,
-                "Mono8-to-NV12 contract must preserve luma and declare neutral chroma");
+                "Mono8-to-NV12 contract must declare the luma/chroma policy");
         require(!stream.at("encode_profile").contains("no_color_conversion"),
                 "encode profile must not claim that Mono8-to-NV12 avoids conversion");
-        require(stream.value("codec", std::string()) == "hevc" &&
-                    stream.value("tuning", std::string()) == "lossless" &&
-                    stream.value("gop", 0) == 1,
-                "direct recorder encode profile must be HEVC/lossless/GOP1");
-        require(stream.value("rate_control_mode", std::string()) == "cqp",
-                "recorder rate-control spelling must match the supported profile");
+        require(stream.value("codec", std::string()) ==
+                    expected_plan_profile.at("codec") &&
+                    stream.value("tuning", std::string()) ==
+                    expected_plan_profile.at("tuning") &&
+                    stream.value("gop", 0) ==
+                        expected_plan_profile.at("gop_length"),
+                "direct recorder encode profile must match the plan GOP");
+        require(stream.value("rate_control_mode", std::string()) ==
+                    expected_plan_profile.at("rate_control_mode") &&
+                    stream.value("quality_value", 0) ==
+                    expected_plan_profile.at("quality_value"),
+                "recorder rate-control policy must match the supported profile");
         require(stream.value("encode_queue_depth", 0) == 8,
                 "verified per-stream queue bound was not propagated");
+        require(stream.value("detach_pool_frames", 0) == 8,
+                "verified detach-pool slot bound was not propagated");
         const std::uint64_t encoded_pixels =
             stream.at("geometry_identity").at("encoded_raster").at("width")
                 .get<std::uint64_t>() *
@@ -414,6 +459,9 @@ void builds_one_strict_nonrolling_stream_per_roi()
         require(stream.value("max_queue_bytes", std::uint64_t{0}) ==
                     (encoded_pixels + encoded_pixels / 2U) * 8U,
                 "detached NV12 queue byte bound was not derived from geometry/depth");
+        require(stream.value("max_detach_pool_bytes", std::uint64_t{0}) ==
+                    (encoded_pixels * 2U + encoded_pixels / 2U) * 8U,
+                "Mono8+NV12 detach-pool byte bound was not derived from geometry/depth");
         require(stream.value("writer_queue_max_packets", std::uint64_t{0}) ==
                     spatial_roi::kSpatialRoiRecorderWriterQueueMaxPackets &&
                     stream.value("writer_queue_max_bytes", std::uint64_t{0}) ==
@@ -517,7 +565,7 @@ void builds_one_strict_nonrolling_stream_per_roi()
                 evidence_manifest_paths.size() == stream_ids.size(),
             "each logical stream must have unique log, transport, and evidence paths");
     require(contract.value("require_gop_routing", true) == false,
-            "independent GOP-1 ROI streams must not require shard routing");
+            "independent per-ROI GOP streams must not require shard routing");
 }
 
 void rejects_missing_extra_and_negative_gpu_mappings()

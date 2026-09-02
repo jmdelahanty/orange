@@ -129,6 +129,28 @@ public:
         std::unique_ptr<SpatialRoiRecorderArtifactRoot>* root_out,
         std::string* error_out = nullptr);
 
+    // Adopt two descriptors inherited from a trusted recorder/supervisor. The
+    // factory takes ownership of both descriptors as soon as it is called:
+    // every rejected descriptor is closed exactly once, and successful
+    // descriptors are closed by the returned root. The descriptors are never
+    // reopened through diagnostic_recording_root; that path is retained only
+    // for diagnostics and metadata. On success FD_CLOEXEC is set on both
+    // adopted descriptors (and they remain owned by the returned root).
+    //
+    // The expected identities must be the (device, inode) pairs obtained from
+    // the descriptors by the trusted hand-off authority. The artifact
+    // descriptor must also be the exact non-symlink
+    // external_spatial_roi_recorder child of recording_root_fd.
+    static bool AdoptExistingFds(
+        int recording_root_fd,
+        int artifact_root_fd,
+        SpatialRoiRecorderArtifactIdentity expected_recording_root_identity,
+        SpatialRoiRecorderArtifactIdentity expected_artifact_root_identity,
+        const std::filesystem::path& diagnostic_recording_root,
+        const std::vector<std::string>& allowed_relative_paths,
+        std::unique_ptr<SpatialRoiRecorderArtifactRoot>* root_out,
+        std::string* error_out = nullptr);
+
     ~SpatialRoiRecorderArtifactRoot();
 
     SpatialRoiRecorderArtifactRoot(
@@ -195,6 +217,16 @@ private:
         const std::filesystem::path& authoritative_recording_root,
         const std::vector<std::string>& allowed_relative_paths,
         bool create_artifact_directory,
+        std::unique_ptr<SpatialRoiRecorderArtifactRoot>* root_out,
+        std::string* error_out);
+
+    static bool AdoptExistingFdsImpl(
+        int recording_root_fd,
+        int artifact_root_fd,
+        SpatialRoiRecorderArtifactIdentity expected_recording_root_identity,
+        SpatialRoiRecorderArtifactIdentity expected_artifact_root_identity,
+        const std::filesystem::path& diagnostic_recording_root,
+        const std::vector<std::string>& allowed_relative_paths,
         std::unique_ptr<SpatialRoiRecorderArtifactRoot>* root_out,
         std::string* error_out);
 

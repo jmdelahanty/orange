@@ -69,6 +69,53 @@ int validated_frame_rate(int fps)
     return fps;
 }
 
+bool is_fixed_gop_policy(const FFmpegWriterKeyframePolicy& policy)
+{
+    return policy.name == kFFmpegWriterFixedGopIdrPolicyName ||
+        (policy.gop_length >= 2 &&
+         policy.name == "fixed_gop_" + std::to_string(policy.gop_length) +
+                            "_idr");
+}
+
+void validate_keyframe_policy(const FFmpegWriterKeyframePolicy& policy)
+{
+    if (policy.name == kFFmpegWriterAllFramesIdrPolicyName) {
+        if (policy.gop_length != 1) {
+            throw std::invalid_argument(
+                "FFmpegWriter all_frames_idr policy requires gop_length=1");
+        }
+        return;
+    }
+    if (policy.name == kFFmpegWriterFixedGopIdrPolicyName) {
+        if (policy.gop_length < 2) {
+            throw std::invalid_argument(
+                "FFmpegWriter fixed_gop_idr policy requires gop_length>=2");
+        }
+        return;
+    }
+    if (is_fixed_gop_policy(policy)) {
+        return;
+    }
+    throw std::invalid_argument(
+        "FFmpegWriter keyframe policy name is not supported");
+}
+
+std::string keyframe_policy_summary_name(
+    const FFmpegWriterKeyframePolicy& policy)
+{
+    if (is_fixed_gop_policy(policy)) {
+        return "fixed_gop_" + std::to_string(policy.gop_length) + "_idr";
+    }
+    return policy.name;
+}
+
+FFmpegWriterKeyframePolicy validated_keyframe_policy(
+    FFmpegWriterKeyframePolicy policy)
+{
+    validate_keyframe_policy(policy);
+    return policy;
+}
+
 bool frame_index_has_representable_pts(int64_t frame_index, int fps)
 {
     if (frame_index < 0 || frame_index == std::numeric_limits<int64_t>::max() ||
@@ -193,7 +240,10 @@ bool persist_finalization_status(
         return false;
     }
     if (log_success) {
-        std::cout << "FFMPEG: container finalization status="
+        // stdout is a machine-readable JSONL lifecycle channel for the
+        // camera-level spatial ROI recorder child. Keep diagnostics on
+        // stderr so successful writer teardown cannot corrupt that protocol.
+        std::cerr << "FFMPEG: container finalization status="
                   << OrangeVideoContainerFinalization::StatusName(status)
                   << " sidecar="
                   << (descriptor_output ? finalization_path
@@ -458,19 +508,24 @@ FFmpegWriter::FFmpegWriter(
     int nFps,
     FFmpegWriterDescriptorOutputConfig output,
     const std::vector<std::pair<std::string, std::string>>& metadata_tags,
-    FFmpegWriterQueueConfig queue_config)
+    FFmpegWriterQueueConfig queue_config,
+    FFmpegWriterKeyframePolicy keyframe_policy)
     : nFps(validated_frame_rate(nFps)),
       descriptor_output_(true),
       output_path_(std::move(output.video_display_label_)),
       keyframe_file_(std::move(output.keyframe_sidecar_display_label_)),
       finalization_file_(
           std::move(output.finalization_sidecar_display_label_)),
-      video_fd_(output.release_video_fd()),
-      keyframe_fd_(output.release_keyframe_sidecar_fd()),
-      finalization_fd_(output.release_finalization_sidecar_fd()),
       max_video_bytes_(output.max_video_bytes_),
+      keyframe_policy_(validated_keyframe_policy(std::move(keyframe_policy))),
       queue_config_(queue_config)
 {
+    // Validate the policy before transferring any descriptor ownership. If
+    // construction rejects an unknown policy, output's destructor still owns
+    // and closes the caller-supplied duplicates.
+    video_fd_ = output.release_video_fd();
+    keyframe_fd_ = output.release_keyframe_sidecar_fd();
+    finalization_fd_ = output.release_finalization_sidecar_fd();
     output_label_ = std::filesystem::path(output_path_).stem().string();
     codec_id_ = eCodecId;
     initialize_container(eCodecId, nWidth, nHeight, metadata_tags);
@@ -847,6 +902,15 @@ bool FFmpegWriter::finalize() noexcept
 
         if (oc) {
             if (open_) {
+                if (descriptor_output_ &&
+                    is_fixed_gop_policy(keyframe_policy_) &&
+                    (!descriptor_zero_based_contiguous_ ||
+                     !descriptor_keyframe_policy_satisfied_)) {
+                    latch_failure(
+                        FailureKind::PacketEnqueue,
+                        AVERROR(EPROTO),
+                        "FFmpegWriter descriptor fixed-GOP frame sequence is not zero-based contiguous");
+                }
                 write_keyframe_sidecar();
                 // Send a NULL packet to flush any muxer-internal frames.
                 const int flush_result = av_interleaved_write_frame(oc, NULL);
@@ -1045,6 +1109,32 @@ bool FFmpegWriter::push_packet(uint8_t* pData,
                                bool is_last_packet_in_gop,
                                uint64_t gop_release_started_ns)
 {
+    return push_packet_impl(pData, nBytes, nPts, gop_index,
+                             is_last_packet_in_gop,
+                             gop_release_started_ns, std::nullopt);
+}
+
+bool FFmpegWriter::push_packet_with_keyframe(uint8_t* pData,
+                                              int nBytes,
+                                              int64_t nPts,
+                                              bool is_keyframe,
+                                              uint64_t gop_index,
+                                              bool is_last_packet_in_gop,
+                                              uint64_t gop_release_started_ns)
+{
+    return push_packet_impl(pData, nBytes, nPts, gop_index,
+                             is_last_packet_in_gop,
+                             gop_release_started_ns, is_keyframe);
+}
+
+bool FFmpegWriter::push_packet_impl(uint8_t* pData,
+                                    int nBytes,
+                                    int64_t nPts,
+                                    uint64_t gop_index,
+                                    bool is_last_packet_in_gop,
+                                    uint64_t gop_release_started_ns,
+                                    std::optional<bool> actual_keyframe)
+{
     std::lock_guard<std::mutex> admission_lock(admission_mutex_);
     if (finalization_started_.load(std::memory_order_acquire)) {
         return false;
@@ -1186,14 +1276,33 @@ bool FFmpegWriter::push_packet(uint8_t* pData,
         sequential_frame_counter_++;
     }
 
-    const bool is_idr = packet_has_idr(pData, static_cast<size_t>(nBytes));
-    if (descriptor_output_ && !is_idr) {
+    const bool packet_idr = packet_has_idr(pData, static_cast<size_t>(nBytes));
+    if (actual_keyframe && *actual_keyframe != packet_idr) {
+        if (descriptor_output_) {
+            descriptor_keyframe_policy_satisfied_ = false;
+        }
         latch_failure(
             FailureKind::PacketEnqueue,
             AVERROR(EPROTO),
-            "FFmpegWriter descriptor output requires every frame to be IDR");
+            "FFmpegWriter explicit keyframe flag disagrees with packet IDR");
         av_packet_free(&pkt);
         return false;
+    }
+    const bool is_idr = actual_keyframe.value_or(packet_idr);
+    if (descriptor_output_) {
+        const bool expected_idr =
+            (frame_index % static_cast<int64_t>(keyframe_policy_.gop_length)) == 0;
+        if (is_idr != expected_idr) {
+            descriptor_keyframe_policy_satisfied_ = false;
+            latch_failure(
+                FailureKind::PacketEnqueue,
+                AVERROR(EPROTO),
+                expected_idr
+                    ? "FFmpegWriter descriptor output requires an IDR at every GOP boundary"
+                    : "FFmpegWriter descriptor output received an unexpected interior IDR");
+            av_packet_free(&pkt);
+            return false;
+        }
     }
     try {
         if (is_idr) {
@@ -1379,6 +1488,11 @@ void FFmpegWriter::write_one_pkt(AVPacket* pkt)
     }
 }
 
+bool FFmpegWriter::write_packet(uint8_t* pData, int nBytes, int64_t nPts)
+{
+    return push_packet(pData, nBytes, nPts);
+}
+
 void FFmpegWriter::write_thread()
 {
     // An exception escaping this thread would call std::terminate and kill
@@ -1526,14 +1640,23 @@ void FFmpegWriter::write_keyframe_sidecar()
                  << "\n";
         document << "  },\n";
         document << "  \"keyframe_policy\": {\n";
-        document << "    \"name\": \"all_frames_idr\",\n";
+        document << "    \"name\": \""
+                 << keyframe_policy_summary_name(keyframe_policy_)
+                 << "\",\n";
         document << "    \"keyframe_frames\": "
                  << descriptor_keyframe_frames_ << ",\n";
         document << "    \"non_keyframe_frames\": "
                  << descriptor_non_keyframe_frames_ << ",\n";
+        const bool all_idr_satisfied =
+            descriptor_keyframe_frames_ == descriptor_total_frames_ &&
+            descriptor_non_keyframe_frames_ == 0;
+        const bool fixed_gop_satisfied =
+            descriptor_zero_based_contiguous_ &&
+            descriptor_keyframe_policy_satisfied_;
         document << "    \"satisfied\": "
-                 << ((descriptor_keyframe_frames_ == descriptor_total_frames_ &&
-                      descriptor_non_keyframe_frames_ == 0)
+                 << ((keyframe_policy_.name == kFFmpegWriterAllFramesIdrPolicyName
+                          ? all_idr_satisfied
+                          : fixed_gop_satisfied)
                          ? "true"
                          : "false")
                  << "\n";

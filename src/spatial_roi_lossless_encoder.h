@@ -2,7 +2,9 @@
 
 #include "spatial_roi_recorder_artifact_root.h"
 #include "spatial_roi_recorder_cuda_detach.h"
+#include "latency_stats.h"
 #include "video_encode_profile.h"
+#include "FFmpegWriter.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -11,6 +13,13 @@
 #include <string>
 
 namespace orange::spatial_roi::encoder {
+
+inline constexpr const char* kSpatialRoiLegacyLosslessProfileId =
+    "hevc_p7_lossless_cqp0_gop1_v1";
+inline constexpr const char* kSpatialRoiP1LowLatencyProfileId =
+    "hevc_p1_low_latency_vbr_q20_gop1_v1";
+inline constexpr const char* kSpatialRoiP1LowLatencyGop25ProfileId =
+    "hevc_p1_low_latency_vbr_q20_gop25_v1";
 
 // The encoder has no pathname authority.  The recorder contract owner opens
 // exactly these four files from one descriptor-authorized artifact root and
@@ -117,8 +126,60 @@ struct SpatialRoiLosslessWriterTerminalSnapshot {
     std::string close_finalization_failure_reason;
 };
 
+// A coherent, non-terminal operational view of one recorder-owned encoder.
+// The recorder control thread may sample this while the owner and FFmpegWriter
+// threads are active. It contains no handles or references and is therefore
+// safe to retain after the sampling call returns. The input queue limits are
+// the exact bounds enforced by this encoder; the writer limits are copied from
+// FFmpegWriter's queue configuration.
+struct SpatialRoiLosslessWriterOperationalSnapshot {
+    bool observed = false;
+    std::size_t queue_max_packets = 0;
+    std::size_t queue_max_bytes = 0;
+    std::size_t queue_current_packets = 0;
+    std::size_t queue_current_bytes = 0;
+    std::size_t queue_peak_packets = 0;
+    std::size_t queue_peak_bytes = 0;
+    bool queue_overflowed = false;
+    std::uint64_t queue_overflow_events = 0;
+    FFmpegWriterFailureStats failure_stats;
+    FFmpegWriterLatencyStats latency_stats;
+};
+
+// This snapshot is intentionally separate from the existing terminal stats:
+// it exposes queue pressure and latency while a stream is running without
+// changing the established terminal/evidence shape. Sampling takes the
+// encoder mutex and uses FFmpegWriter's own atomic/mutex-protected accessors;
+// it performs no I/O and does not allocate on the encode path.
+struct SpatialRoiLosslessEncoderOperationalSnapshot {
+    bool initialized = false;
+    bool accepting = false;
+    bool failed = false;
+    bool finalized = false;
+
+    std::size_t input_queue_max_frames = 0;
+    std::uint64_t input_queue_max_bytes = 0;
+    std::size_t input_queue_current_frames = 0;
+    std::uint64_t input_queue_current_bytes = 0;
+    std::size_t input_queue_peak_frames = 0;
+    std::uint64_t input_queue_peak_bytes = 0;
+
+    std::uint64_t enqueue_attempted = 0;
+    std::uint64_t enqueue_admitted = 0;
+    std::uint64_t dequeued = 0;
+    std::uint64_t rejected = 0;
+    std::uint64_t queue_overflows = 0;
+
+    LatencyAggregateStats queue_wait_latency;
+    LatencyAggregateStats source_copy_latency;
+    LatencyAggregateStats encode_call_latency;
+    LatencyAggregateStats admission_to_result_latency;
+
+    SpatialRoiLosslessWriterOperationalSnapshot writer;
+};
+
 // This is the recorder's already-verified, one-stream encode contract.  It is
-// intentionally a value type rather than a legacy external-recorder parser
+// intentionally a value type rather than the full-frame external-recorder parser
 // result: callers must provide the strict fields that were authenticated by
 // the spatial ROI recorder contract before constructing this core.
 struct SpatialRoiLosslessEncoderConfig {
@@ -128,10 +189,18 @@ struct SpatialRoiLosslessEncoderConfig {
     int recorder_gpu_id = -1;
     int assigned_shard_id = -1;
 
+    std::string profile_id = kSpatialRoiLegacyLosslessProfileId;
     std::string codec = "hevc";
+    std::string preset = "p7";
     std::string tuning = "lossless";
     bool lossless = true;
+    std::string rate_control_mode = "cqp";
+    std::uint32_t quality_value = 0;
     std::uint32_t gop_length = 1;
+    bool aq = false;
+    bool temporal_aq = false;
+    bool lookahead = false;
+    std::uint32_t lookahead_depth = 0;
     std::uint32_t fps = 0;
     std::string input_format = "mono8";
     std::string encoded_format = "nv12";
@@ -222,6 +291,13 @@ struct SpatialRoiLosslessEncoderStats {
     std::uint64_t failed_results = 0;
     std::uint64_t result_callback_failures = 0;
     std::uint64_t peak_queue_depth = 0;
+    std::uint64_t peak_queue_bytes = 0;
+    std::uint64_t queue_depth = 0;
+    std::uint64_t queue_bytes = 0;
+    LatencyAggregateStats queue_wait_latency;
+    LatencyAggregateStats source_copy_latency;
+    LatencyAggregateStats encode_call_latency;
+    LatencyAggregateStats admission_to_result_latency;
     std::uint64_t finalize_calls = 0;
     // This is the aggregate terminal-success bit: it requires the writer's
     // exact complete/patch-applied sidecar and a successful metadata flush.
@@ -253,6 +329,7 @@ struct SpatialRoiLosslessEncoderTerminalSnapshot {
     std::string terminal_reason;
     SpatialRoiLosslessEncoderStats counts;
     SpatialRoiLosslessWriterTerminalSnapshot writer;
+    SpatialRoiLosslessWriterOperationalSnapshot writer_operational;
 };
 
 // Host-only validation and profile construction seams. They reject any
@@ -261,7 +338,18 @@ bool validate_spatial_roi_lossless_encoder_config(
     const SpatialRoiLosslessEncoderConfig& config,
     std::string* error_out = nullptr);
 
+// Generic validator. It accepts the legacy lossless profile, the original
+// P1/low-latency/VBR-Q20/GOP1 profile, and the explicit GOP-25 variant. All
+// variants preserve the exact one-input/one-packet/dense-PTS evidence contract;
+// only the keyframe cadence changes for the GOP-25 profile.
+bool validate_spatial_roi_encoder_config(
+    const SpatialRoiLosslessEncoderConfig& config,
+    std::string* error_out = nullptr);
+
 VideoEncodeProfile build_spatial_roi_lossless_encoder_profile(
+    const SpatialRoiLosslessEncoderConfig& config);
+
+VideoEncodeProfile build_spatial_roi_encoder_profile(
     const SpatialRoiLosslessEncoderConfig& config);
 
 const char* spatial_roi_lossless_frame_result_status_name(
@@ -290,15 +378,28 @@ public:
     const VideoEncodeProfile& profile() const noexcept;
     SpatialRoiLosslessEncoderStats stats() const noexcept;
 
+    // Returns a coherent operational sample suitable for control-thread
+    // telemetry. It never performs I/O and is safe to call concurrently with
+    // Enqueue, encoding, writer draining, or Finalize.
+    SpatialRoiLosslessEncoderOperationalSnapshot
+    operational_snapshot() const noexcept;
+
     // Null before Finalize completes. Every successful/repeated Finalize call
     // returns the same immutable snapshot object.
     std::shared_ptr<const SpatialRoiLosslessEncoderTerminalSnapshot>
     terminal_snapshot() const noexcept;
 
     // Takes ownership of the detached result. Its Release is performed by the
-    // owner thread after the synchronized device-to-NVENC input copy.
+    // owner thread after the synchronized device-to-NVENC input copy. A false
+    // return from this detached-frame overload is strictly pre-admission: the
+    // detached allocation has been returned safely and no result callback will
+    // later be emitted for that frame. The diagnostic overload preserves the
+    // bounded rejection reason needed by the recorder ACK/evidence path.
     bool Enqueue(ipc::SpatialRoiRecorderDetachedFrame&& detached,
                  const SpatialRoiFrameDescriptor& descriptor) noexcept;
+    bool Enqueue(ipc::SpatialRoiRecorderDetachedFrame&& detached,
+                 const SpatialRoiFrameDescriptor& descriptor,
+                 std::string* error_out) noexcept;
 
     // Enqueues an immutable view and waits only until its source copy has
     // completed (bounded by operation_timeout_ms). The owner thread then
@@ -309,8 +410,8 @@ public:
     bool Enqueue(const SpatialRoiLosslessDeviceView& view) noexcept;
 
     // Stops admission, drains the bounded queue, calls NvEncoderCuda::EndEncode
-    // at most once, requires that strict GOP-1 left no delayed frame packets,
-    // and finalizes the writer. Repeated calls return the original result. If CUDA copy
+    // at most once, requires that the zero-delay profile left no delayed frame
+    // packets, and finalizes the writer. Repeated calls return the original result. If CUDA copy
     // completion is uncertain, the destination and source are quarantined,
     // EndEncode/destruction are skipped, and this returns false.
     bool Finalize() noexcept;

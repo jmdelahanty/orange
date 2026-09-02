@@ -13,6 +13,7 @@ extern "C"
 #include <cstdint>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <string>
 #include <utility>
@@ -23,6 +24,22 @@ extern "C"
 struct FFmpegWriterQueueConfig {
     size_t max_queued_packets = 0;
     size_t max_queued_bytes = 0;
+};
+
+// The descriptor writer normally enforces all-IDR packets for compatibility
+// with the original lossless ROI stream.  A fixed-GOP policy is an explicit
+// opt-in: frame zero and every subsequent zero-based GOP boundary must be an
+// IDR, while packets inside the GOP must not be IDR.  The writer retains only
+// counters and a small amount of sequence state, so this policy remains O(1)
+// for arbitrarily long recordings.
+inline constexpr const char* kFFmpegWriterAllFramesIdrPolicyName =
+    "all_frames_idr";
+inline constexpr const char* kFFmpegWriterFixedGopIdrPolicyName =
+    "fixed_gop_idr";
+
+struct FFmpegWriterKeyframePolicy {
+    std::string name = kFFmpegWriterAllFramesIdrPolicyName;
+    std::uint32_t gop_length = 1;
 };
 
 struct FFmpegWriterLatencyStats {
@@ -123,7 +140,8 @@ public:
                  int nFps,
                  FFmpegWriterDescriptorOutputConfig output,
                  const std::vector<std::pair<std::string, std::string>>& metadata_tags = {},
-                 FFmpegWriterQueueConfig queue_config = {});
+                 FFmpegWriterQueueConfig queue_config = {},
+                 FFmpegWriterKeyframePolicy keyframe_policy = {});
     ~FFmpegWriter();
     // Synchronously closes the packet-admission boundary, drains and joins
     // the writer thread, flushes the muxer, writes the trailer, closes/fsyncs
@@ -146,6 +164,16 @@ public:
                      uint64_t gop_index = 0,
                      bool is_last_packet_in_gop = false,
                      uint64_t gop_release_started_ns = 0);
+    // Explicit-keyframe variant used by configured encoders. The boolean is
+    // the actual packet flag observed from the encoder; the writer cross-checks
+    // it against the packet's IDR NAL and then applies the selected policy.
+    bool push_packet_with_keyframe(uint8_t* pData,
+                                   int nBytes,
+                                   int64_t nPts,
+                                   bool is_keyframe,
+                                   uint64_t gop_index = 0,
+                                   bool is_last_packet_in_gop = false,
+                                   uint64_t gop_release_started_ns = 0);
     void create_thread();
     void quit_thread();
     void join_thread();
@@ -221,9 +249,10 @@ private:
     AVIOContext* custom_avio_ = nullptr;
     uint64_t max_video_bytes_ = 0;
     // Legacy pathname output preserves its historical explicit frame list.
-    // Descriptor output is strict GOP-1 and records an O(1), closed summary
-    // instead, so a multi-million-frame recording does not consume O(frames)
-    // memory or sidecar bytes.
+    // Descriptor output records an O(1), closed summary under either the
+    // default all-IDR policy or an explicit fixed-GOP policy, so a
+    // multi-million-frame recording does not consume O(frames) memory/sidecar
+    // bytes.
     std::vector<int64_t> keyframe_frames_;
     uint64_t descriptor_total_frames_ = 0;
     uint64_t descriptor_keyframe_frames_ = 0;
@@ -232,6 +261,8 @@ private:
     int64_t descriptor_last_frame_index_ = 0;
     bool descriptor_has_frame_index_ = false;
     bool descriptor_zero_based_contiguous_ = true;
+    FFmpegWriterKeyframePolicy keyframe_policy_;
+    bool descriptor_keyframe_policy_satisfied_ = true;
     FFmpegWriterQueueConfig queue_config_;
     std::atomic<size_t> queued_packets_{0};
     std::atomic<size_t> queued_bytes_{0};
@@ -281,6 +312,13 @@ private:
     void write_thread();
     void write_thread_loop();
     void write_keyframe_sidecar();
+    bool push_packet_impl(uint8_t* pData,
+                          int nBytes,
+                          int64_t nPts,
+                          uint64_t gop_index,
+                          bool is_last_packet_in_gop,
+                          uint64_t gop_release_started_ns,
+                          std::optional<bool> actual_keyframe);
     bool packet_has_idr(const uint8_t* data, size_t size) const;
     bool packet_has_idr_h264(const uint8_t* data, size_t size) const;
     bool packet_has_idr_hevc(const uint8_t* data, size_t size) const;

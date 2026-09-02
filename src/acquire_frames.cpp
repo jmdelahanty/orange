@@ -17,6 +17,7 @@
 #include "display_preview_policy.h"
 #include "recording_ingress.h"
 #include "spatial_snapshot_worker.h"
+#include "spatial_roi_acquisition_controller.h"
 #include "cuda_context_debug.h"
 #include "frame_ipc_manager.h"
 #include "shaman_v2_recording_identity.h"
@@ -1080,7 +1081,9 @@ void acquire_frames(
     FrameIPCManager* frame_ipc_manager,
     yolo_event_log::SyntheticYoloEventEmitter* synthetic_yolo_event_emitter,
     SpatialSnapshotWorker* spatial_snapshot_worker,
-    orange::gui::GuiStartupTimingRecorder* startup_timing
+    orange::gui::GuiStartupTimingRecorder* startup_timing,
+    orange::spatial_roi::SpatialRoiAcquisitionController*
+        spatial_roi_acquisition_controller
 ){
     const uint64_t acquisition_thread_entered_ns =
         orange::gui::GuiStartupTimingRecorder::NowNs();
@@ -1811,6 +1814,10 @@ void acquire_frames(
                 }
             }
             bool will_record = (camera_control->record_video && recording_ingress);
+            const bool will_spatial_roi =
+                camera_control->record_video &&
+                spatial_roi_acquisition_controller &&
+                spatial_roi_acquisition_controller->armed();
             bool yolo_enabled = (camera_select->yolo && yolo_worker);
             if (yolo_enabled && !last_yolo_enabled) {
                 yolo_decimate_counter = 0;
@@ -1902,6 +1909,7 @@ void acquire_frames(
             int dispatch_count = 0;
             if (will_display) dispatch_count++;
             if (will_record) dispatch_count++;
+            if (will_spatial_roi) dispatch_count++;
             if (will_yolo) dispatch_count++;
             const bool will_snapshot =
                 spatial_snapshot_worker &&
@@ -1928,9 +1936,10 @@ void acquire_frames(
                 !force_ring_copy;
             const bool use_analytics_hybrid = analytics_owned_frame_enabled;
             const bool recording_requires_owned_source =
-                will_record &&
-                recording_ingress &&
-                recording_ingress->requires_owned_cuda_source();
+                (will_record &&
+                 recording_ingress &&
+                 recording_ingress->requires_owned_cuda_source()) ||
+                will_spatial_roi;
             bool use_ring_copy =
                 use_direct_pointer &&
                 (dispatch_count > 1 || recording_requires_owned_source) &&
@@ -2321,6 +2330,51 @@ void acquire_frames(
                 const bool dispatch_yolo_before_recording =
                     detect_priority_recording && will_record && will_yolo;
 
+                const auto submit_spatial_roi = [&]() {
+                    if (!will_spatial_roi) {
+                        return;
+                    }
+                    const auto spatial_roi_result =
+                        spatial_roi_acquisition_controller->TrySubmit(
+                            current_entry,
+                            resources->recycle_queue,
+                            WorkerEntryReleaseContext{
+                                camera_params->camera_serial.c_str(),
+                                "spatial_roi"});
+                    if (spatial_roi_result.status !=
+                        orange::spatial_roi::
+                            SpatialRoiAcquisitionControllerSubmitStatus::
+                                kSubmitted) {
+                        std::cerr
+                            << "[ACQ][ERROR] spatial ROI recording submission "
+                               "failed closed"
+                            << " cam=" << camera_params->camera_serial
+                            << " frame=" << current_entry->frame_id
+                            << " recording_frame="
+                            << current_entry->recording_frame_id
+                            << " status="
+                            << orange::spatial_roi::
+                                   spatial_roi_acquisition_controller_submit_status_name(
+                                       spatial_roi_result.status)
+                            << " reason="
+                            << (spatial_roi_result.bridge_result.error.empty()
+                                    ? "unspecified"
+                                    : spatial_roi_result.bridge_result.error)
+                            << std::endl;
+                        {
+                            std::lock_guard<std::mutex> stop_reason_lock(
+                                camera_control->recording_folder_mutex);
+                            if (camera_control->worker_stop_reason.empty()) {
+                                camera_control->worker_stop_reason =
+                                    "spatial_roi_recording_failure";
+                            }
+                        }
+                        camera_control->record_video = false;
+                        camera_control->recording_draining = true;
+                        camera_control->stop_record = true;
+                    }
+                };
+
                 if (will_display) {
                     bool enqueue_rejected = false;
                     if (!retain_and_enqueue_worker_entry(
@@ -2338,6 +2392,7 @@ void acquire_frames(
                 if (dispatch_yolo_before_recording) {
                     enqueue_yolo();
                 }
+                submit_spatial_roi();
                 if (will_snapshot && spatial_snapshot_worker->TryClaimNextFrame()) {
                     bool enqueue_rejected = false;
                     if (!retain_and_enqueue_worker_entry(

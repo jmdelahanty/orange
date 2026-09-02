@@ -10,12 +10,18 @@
 #include <string>
 #include <vector>
 
+enum class SpatialSnapshotRepresentation {
+    kRgba8,
+    kNativeBytes,
+};
+
 struct SpatialSnapshotResult {
     bool ok = false;
     uint64_t request_id = 0;
     std::string operation_id;
     std::string camera_serial;
     std::string capture_mode = "full_resolution_stream_snapshot";
+    std::string capture_representation = "rgba8";
     std::string source_array_role = "images_full";
     std::string error;
     int width = 0;
@@ -33,6 +39,10 @@ struct SpatialSnapshotResult {
     uint64_t first_camera_frame_id = 0;
     uint64_t last_camera_frame_id = 0;
     std::vector<unsigned char> rgba;
+    // Populated only for RequestNativeSnapshot().  These are the exact packed
+    // source bytes copied from WORKER_ENTRY after its readiness event; no
+    // debayer, color conversion, resize, or normalization is applied.
+    std::vector<unsigned char> native_bytes;
 };
 
 class SpatialSnapshotWorker : public CThreadWorker<WORKER_ENTRY> {
@@ -51,6 +61,10 @@ public:
         uint64_t* request_id_out,
         std::string* error_out,
         uint32_t frame_count = 1);
+    bool RequestNativeSnapshot(
+        const std::string& operation_id,
+        uint64_t* request_id_out,
+        std::string* error_out);
     bool HasPendingRequest() const;
     bool TryClaimNextFrame();
     void CompleteClaimedRequestWithError(const std::string& error);
@@ -70,6 +84,8 @@ private:
         uint64_t request_id = 0;
         std::string operation_id;
         uint32_t target_frame_count = 1;
+        SpatialSnapshotRepresentation representation =
+            SpatialSnapshotRepresentation::kRgba8;
     };
 
     struct AverageAccumulator {
@@ -103,6 +119,16 @@ private:
         const WORKER_ENTRY& entry,
         SpatialSnapshotResult* result,
         std::string* error_out);
+    bool copy_entry_to_native(
+        const WORKER_ENTRY& entry,
+        SpatialSnapshotResult* result,
+        std::string* error_out);
+    bool request_snapshot(
+        const std::string& operation_id,
+        uint64_t* request_id_out,
+        std::string* error_out,
+        uint32_t frame_count,
+        SpatialSnapshotRepresentation representation);
 
     CameraParams* camera_params_ = nullptr;
     SafeQueue<WORKER_ENTRY*>* recycle_queue_ = nullptr;

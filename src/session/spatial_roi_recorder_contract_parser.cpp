@@ -2,6 +2,7 @@
 
 #include "session/spatial_roi_recorder_contract.h"
 #include "session/spatial_roi_recording_config.h"
+#include "spatial_roi_recorder_cuda_detach.h"
 #include "shaman_v2_recording_identity.h"
 #include "spatial_roi_frame_contract.h"
 #include "spatial_roi_ipc_protocol.h"
@@ -37,7 +38,6 @@ constexpr std::uint64_t kMaxWriterQueuePackets = 4096;
 constexpr std::uint64_t kMaxWriterQueueBytes = 512ULL * 1024ULL * 1024ULL;
 constexpr std::uint32_t kMaxOperationTimeoutMs = 60000;
 constexpr std::size_t kMaxSocketPathBytes = 107;
-constexpr char kExpectedBackend[] = "independent_lossless_external_ipc";
 constexpr char kExpectedProtocol[] = "orange.spatial_roi.external_recorder_ipc";
 constexpr char kExpectedCadence[] = "every_recording_frame";
 constexpr char kExpectedPixelFormat[] = "mono8";
@@ -754,17 +754,34 @@ bool parse_identity(const json& value,
 bool parse_encode_profile(const json& value,
                           SpatialRoiRecorderEncodeProfileView* out,
                           const std::string& path,
+                          const int contract_schema_version,
                           std::string* error_out)
 {
-    if (!exact_keys(value,
-                    {"codec", "tuning", "lossless", "gop_length", "frame_rate",
-                     "input_format", "encoded_format", "no_resize",
-                     "luma_preserved_exactly", "neutral_chroma_value"},
-                    path,
-                    error_out) ||
+    const std::set<std::string> legacy_keys = {
+        "profile_id", "codec", "preset", "tuning", "lossless",
+        "rate_control_mode", "quality_value", "gop_length", "frame_rate",
+        "input_format", "encoded_format", "no_resize",
+        "luma_preserved_exactly", "neutral_chroma_value"};
+    std::set<std::string> expected_keys = legacy_keys;
+    if (contract_schema_version == kSpatialRoiRecorderContractSchemaVersion) {
+        expected_keys.insert("aq");
+        expected_keys.insert("temporal_aq");
+        expected_keys.insert("lookahead");
+        expected_keys.insert("lookahead_depth");
+    }
+    if (!exact_keys(value, expected_keys, path, error_out) ||
+        !read_string(value, "profile_id", path, &out->profile_id, error_out, true) ||
         !read_string(value, "codec", path, &out->codec, error_out, true) ||
+        !read_string(value, "preset", path, &out->preset, error_out, true) ||
         !read_string(value, "tuning", path, &out->tuning, error_out, true) ||
         !read_bool(value, "lossless", path, &out->lossless, error_out) ||
+        !read_string(value,
+                     "rate_control_mode",
+                     path,
+                     &out->rate_control_mode,
+                     error_out,
+                     true) ||
+        !read_u32(value, "quality_value", path, &out->quality_value, error_out) ||
         !read_u32(value, "gop_length", path, &out->gop_length, error_out, true) ||
         !read_u32(value, "frame_rate", path, &out->frame_rate, error_out, true) ||
         !read_string(value, "input_format", path, &out->input_format, error_out, true) ||
@@ -782,11 +799,61 @@ bool parse_encode_profile(const json& value,
                   error_out)) {
         return false;
     }
-    if (out->codec != "hevc" || out->tuning != "lossless" || !out->lossless ||
-        out->gop_length != 1 || out->input_format != "mono8" ||
+    if (contract_schema_version == kLegacySpatialRoiRecorderContractSchemaVersion) {
+        // Contract v4 predated explicit encoder-control fields. All profiles
+        // admitted by that schema were operationally defined with these
+        // controls disabled, so retain that exact legacy inference.
+        out->aq = false;
+        out->temporal_aq = false;
+        out->lookahead = false;
+        out->lookahead_depth = 0;
+    } else if (!read_bool(value, "aq", path, &out->aq, error_out) ||
+               !read_bool(value,
+                          "temporal_aq",
+                          path,
+                          &out->temporal_aq,
+                          error_out) ||
+               !read_bool(value,
+                          "lookahead",
+                          path,
+                          &out->lookahead,
+                          error_out) ||
+               !read_u32(value,
+                         "lookahead_depth",
+                         path,
+                         &out->lookahead_depth,
+                         error_out)) {
+        return false;
+    }
+    const EncodeProfile legacy = legacy_lossless_encode_profile();
+    const EncodeProfile legacy_low_latency =
+        legacy_low_latency_vbr_gop1_encode_profile();
+    const EncodeProfile low_latency = low_latency_vbr_encode_profile();
+    const auto matches = [&](const EncodeProfile& expected) {
+        return out->profile_id == expected.name &&
+            out->codec == expected.codec && out->preset == expected.preset &&
+            out->tuning == expected.tuning && out->lossless == expected.lossless &&
+            out->rate_control_mode == expected.rate_control_mode &&
+            out->quality_value == expected.quality_value &&
+            out->gop_length == expected.gop_length && out->aq == expected.aq &&
+            out->temporal_aq == expected.temporal_aq &&
+            out->lookahead == expected.lookahead &&
+            out->lookahead_depth == expected.lookahead_depth;
+    };
+    const bool is_legacy = matches(legacy);
+    const bool is_legacy_low_latency = matches(legacy_low_latency);
+    const bool is_low_latency = matches(low_latency);
+    if ((contract_schema_version == kLegacySpatialRoiRecorderContractSchemaVersion &&
+         !is_legacy) ||
+        (contract_schema_version == kSpatialRoiRecorderContractSchemaVersion &&
+         !is_legacy && !is_legacy_low_latency && !is_low_latency) ||
+        (contract_schema_version != kLegacySpatialRoiRecorderContractSchemaVersion &&
+         contract_schema_version != kSpatialRoiRecorderContractSchemaVersion) ||
+        out->frame_rate == 0 || out->input_format != "mono8" ||
         out->encoded_format != "nv12" || !out->no_resize ||
-        !out->luma_preserved_exactly || out->neutral_chroma_value != 128) {
-        return fail(error_out, path + " is not the fixed lossless HEVC profile");
+        out->luma_preserved_exactly != out->lossless ||
+        out->neutral_chroma_value != 128) {
+        return fail(error_out, path + " is not an allowed immutable HEVC profile");
     }
     return true;
 }
@@ -812,6 +879,35 @@ bool expected_nv12_queue_bytes(const SpatialRoiRecorderGeometryView& geometry,
                     path + " detached NV12 encode queue byte budget overflowed");
     }
     *bytes_out = queue_bytes;
+    return true;
+}
+
+bool expected_detach_pool_bytes(
+    const SpatialRoiRecorderGeometryView& geometry,
+    const std::uint32_t pool_frames,
+    std::uint64_t* bytes_out,
+    const std::string& path,
+    std::string* error_out)
+{
+    std::uint64_t pixels = 0;
+    std::uint64_t nv12_bytes = 0;
+    std::uint64_t bytes_per_slot = 0;
+    std::uint64_t pool_bytes = 0;
+    if (!bytes_out || pool_frames == 0 ||
+        !checked_multiply(geometry.encoded_raster.width,
+                          geometry.encoded_raster.height,
+                          &pixels) ||
+        !checked_add(pixels, pixels / 2U, &nv12_bytes) ||
+        !checked_add(pixels, nv12_bytes, &bytes_per_slot) ||
+        !checked_multiply(bytes_per_slot, pool_frames, &pool_bytes) ||
+        pool_bytes == 0 ||
+        pool_bytes > orange::spatial_roi::ipc::
+            kSpatialRoiRecorderCudaDetachMaxPoolBytes) {
+        return fail(error_out,
+                    path +
+                        " recorder Mono8+NV12 detach-pool byte budget is invalid");
+    }
+    *bytes_out = pool_bytes;
     return true;
 }
 
@@ -872,8 +968,8 @@ bool parse_ipc(const json& value,
         out->source_lifetime_mode != kExpectedLifetime) {
         return fail(error_out, path + " has the wrong protocol identity");
     }
-    const std::vector<std::string> expected_features = {
-        "cuda_ipc", "packed_mono8", "ack_release", "terminal_error"};
+    const auto& expected_features =
+        orange::spatial_roi::ipc::spatial_roi_ipc_required_features();
     const json& features = value.at("features");
     if (!features.is_array() || features.size() != expected_features.size()) {
         return fail(error_out, path + ".features must be the exact active feature list");
@@ -1056,13 +1152,58 @@ bool parse_ipc(const json& value,
     return true;
 }
 
+bool parse_storage_preflight_policy(
+    const json& value,
+    SpatialRoiRecorderStoragePreflightPolicyView* out,
+    const std::string& path,
+    std::string* error_out)
+{
+    if (!out ||
+        !exact_keys(value,
+                    {"schema_id", "schema_version", "required",
+                     "reserved_free_bytes"},
+                    path,
+                    error_out) ||
+        !read_string(value,
+                     "schema_id",
+                     path,
+                     &out->schema_id,
+                     error_out,
+                     true) ||
+        !read_int(value,
+                  "schema_version",
+                  path,
+                  &out->schema_version,
+                  error_out) ||
+        !read_bool(value, "required", path, &out->required, error_out) ||
+        !read_u64(value,
+                  "reserved_free_bytes",
+                  path,
+                  &out->reserved_free_bytes,
+                  error_out,
+                  std::numeric_limits<std::uint64_t>::max(),
+                  true)) {
+        return false;
+    }
+    if (out->schema_id !=
+            kSpatialRoiRecorderStoragePreflightPolicySchemaId ||
+        out->schema_version !=
+            kSpatialRoiRecorderStoragePreflightPolicySchemaVersion ||
+        !out->required || out->reserved_free_bytes == 0) {
+        return fail(error_out,
+                    path + " does not match the required nonzero reserve policy");
+    }
+    return true;
+}
+
 bool parse_aggregate_bounds(const json& value,
                             SpatialRoiRecorderAggregateBoundsView* out,
                             const std::string& path,
                             std::string* error_out)
 {
     if (!exact_keys(value,
-                    {"max_queue_bytes_total",
+                    {"max_detach_pool_bytes_total",
+                     "max_queue_bytes_total",
                      "writer_queue_max_packets_total",
                      "writer_queue_max_bytes_total",
                      "operation_timeout_ms_per_stream",
@@ -1070,6 +1211,13 @@ bool parse_aggregate_bounds(const json& value,
                      "max_evidence_bytes_total"},
                     path,
                     error_out) ||
+        !read_u64(value,
+                  "max_detach_pool_bytes_total",
+                  path,
+                  &out->max_detach_pool_bytes_total,
+                  error_out,
+                  std::numeric_limits<std::uint64_t>::max(),
+                  true) ||
         !read_u64(value,
                   "max_queue_bytes_total",
                   path,
@@ -1124,6 +1272,7 @@ bool parse_aggregate_bounds(const json& value,
 bool parse_stream(const json& value,
                   const std::string& key,
                   const std::string& artifact_root,
+                  const int contract_schema_version,
                   SpatialRoiRecorderStreamView* out,
                   std::string* error_out)
 {
@@ -1137,7 +1286,8 @@ bool parse_stream(const json& value,
         "producer_generation", "spatial_roi_plan_sha256", "frame_identity", "identity",
         "geometry_identity", "encode_profile", "encode_fps", "codec", "tuning",
         "rate_control_mode", "quality_value", "gop", "encode_queue_depth",
-        "max_queue_bytes", "writer_queue_max_packets", "writer_queue_max_bytes",
+        "detach_pool_frames", "max_detach_pool_bytes", "max_queue_bytes",
+        "writer_queue_max_packets", "writer_queue_max_bytes",
         "operation_timeout_ms", "max_frames_per_stream",
         "max_media_bytes_per_stream", "max_evidence_bytes_per_stream",
         "routing_policy",
@@ -1198,6 +1348,7 @@ bool parse_stream(const json& value,
         !parse_encode_profile(value.at("encode_profile"),
                               &out->encode_profile,
                               field(path, "encode_profile"),
+                              contract_schema_version,
                               error_out) ||
         !read_u32(value, "encode_fps", path, &out->encode_fps, error_out, true) ||
         !read_string(value, "codec", path, &out->codec, error_out, true) ||
@@ -1206,6 +1357,20 @@ bool parse_stream(const json& value,
         !read_u32(value, "quality_value", path, &out->quality_value, error_out) ||
         !read_u32(value, "gop", path, &out->gop, error_out, true) ||
         !read_u32(value, "encode_queue_depth", path, &out->encode_queue_depth, error_out, true) ||
+        !read_u32(value,
+                  "detach_pool_frames",
+                  path,
+                  &out->detach_pool_frames,
+                  error_out,
+                  true) ||
+        !read_u64(value,
+                  "max_detach_pool_bytes",
+                  path,
+                  &out->max_detach_pool_bytes,
+                  error_out,
+                  orange::spatial_roi::ipc::
+                      kSpatialRoiRecorderCudaDetachMaxPoolBytes,
+                  true) ||
         !read_u64(value,
                   "max_queue_bytes",
                   path,
@@ -1291,15 +1456,20 @@ bool parse_stream(const json& value,
         out->logical_stream_id !=
             expected_logical_stream_id(out->camera_serial, out->roi_id) ||
         out->env_key != "spatial_roi_" + out->logical_stream_id ||
-        out->socket_path != "/tmp/orange_external_recorder_" + out->logical_stream_id + ".sock" ||
+        out->socket_path != expected_socket_path(
+            out->recording_identity_token, out->logical_stream_id) ||
         out->socket_path.size() > kMaxSocketPathBytes ||
         out->geometry.source_coordinate_space != "camera_native_full_frame_pixels" ||
         out->geometry.video_coordinate_space != "spatial_roi_encoded_pixels" ||
-        out->codec != "hevc" || out->tuning != "lossless" ||
-        out->rate_control_mode != "cqp" || out->quality_value != 0 || out->gop != 1 ||
+        out->codec != out->encode_profile.codec ||
+        out->tuning != out->encode_profile.tuning ||
+        out->rate_control_mode != out->encode_profile.rate_control_mode ||
+        out->quality_value != out->encode_profile.quality_value ||
+        out->gop != out->encode_profile.gop_length ||
         out->routing_policy != "single_shard" || out->encode_profile.frame_rate != out->encode_fps ||
         out->encode_fps == 0 || out->encode_queue_depth == 0 ||
         out->encode_queue_depth > kMaxQueueFrames ||
+        out->detach_pool_frames != out->encode_queue_depth ||
         out->writer_queue_max_packets !=
             kSpatialRoiRecorderWriterQueueMaxPackets ||
         out->writer_queue_max_bytes != kSpatialRoiRecorderWriterQueueMaxBytes ||
@@ -1307,16 +1477,23 @@ bool parse_stream(const json& value,
         out->operation_timeout_ms > kMaxOperationTimeoutMs) {
         return fail(error_out, path + " contains an invalid stream identity/profile");
     }
+    std::uint64_t expected_detach_bytes = 0;
     std::uint64_t expected_queue_bytes = 0;
     if (!expected_nv12_queue_bytes(out->geometry,
                                    out->encode_queue_depth,
                                    &expected_queue_bytes,
                                    field(path, "max_queue_bytes"),
                                    error_out) ||
+        !expected_detach_pool_bytes(out->geometry,
+                                    out->detach_pool_frames,
+                                    &expected_detach_bytes,
+                                    field(path, "max_detach_pool_bytes"),
+                                    error_out) ||
+        out->max_detach_pool_bytes != expected_detach_bytes ||
         out->max_queue_bytes != expected_queue_bytes) {
         return fail(error_out,
-                    field(path, "max_queue_bytes") +
-                        " must exactly cover the bounded detached NV12 queue");
+                    path +
+                        " detach-pool or encode-queue bytes do not match the closed allocation policy");
     }
     if (identity_view.recording_id != out->recording_id ||
         identity_view.recording_identity_token != out->recording_identity_token ||
@@ -1395,7 +1572,8 @@ bool parse_spatial_roi_recorder_contract_structure(
             "schema_id", "schema_version", "contract_scope", "strict", "backend", "mode",
             "supervise_processes", "require_summary", "require_status", "require_video_sanity",
             "require_protocol_hello", "require_frame_identity_proof", "require_gop_routing",
-            "require_storage_preflight", "preserve_shard_mp4s", "recording_id", "session_id",
+            "require_storage_preflight", "storage_preflight_policy",
+            "preserve_shard_mp4s", "recording_id", "session_id",
             "recording_identity_token", "producer_generation", "spatial_roi_plan_sha256",
             "recording_root", "artifact_root", "source_cadence", "source_pixel_format",
             "stream_count", "stream_order", "ipc_v2", "aggregate_bounds",
@@ -1415,6 +1593,11 @@ bool parse_spatial_roi_recorder_contract_structure(
             !read_bool(value, "require_frame_identity_proof", "contract", &contract_out->require_frame_identity_proof, error_out) ||
             !read_bool(value, "require_gop_routing", "contract", &contract_out->require_gop_routing, error_out) ||
             !read_bool(value, "require_storage_preflight", "contract", &contract_out->require_storage_preflight, error_out) ||
+            !parse_storage_preflight_policy(
+                value.at("storage_preflight_policy"),
+                &contract_out->storage_preflight_policy,
+                "contract.storage_preflight_policy",
+                error_out) ||
             !read_bool(value, "preserve_shard_mp4s", "contract", &contract_out->preserve_shard_mp4s, error_out) ||
             !read_string(value, "recording_id", "contract", &contract_out->recording_id, error_out, true) ||
             !read_string(value, "session_id", "contract", &contract_out->session_id, error_out, true) ||
@@ -1433,16 +1616,35 @@ bool parse_spatial_roi_recorder_contract_structure(
                                     error_out)) {
             return false;
         }
+        const bool legacy_contract =
+            contract_out->schema_version ==
+            kLegacySpatialRoiRecorderContractSchemaVersion;
+        const bool current_contract =
+            contract_out->schema_version ==
+            kSpatialRoiRecorderContractSchemaVersion;
+        const char* expected_scope =
+            legacy_contract ? kLegacySpatialRoiRecorderContractScope
+                            : kSpatialRoiRecorderContractScope;
+        const char* expected_mode =
+            legacy_contract ? kLegacySpatialRoiRecorderContractMode
+                            : kSpatialRoiRecorderContractMode;
+        const char* expected_backend = legacy_contract ? kLegacyBackend : kBackend;
         if (contract_out->schema_id != kSpatialRoiRecorderContractSchemaId ||
-            contract_out->schema_version != kSpatialRoiRecorderContractSchemaVersion ||
-            contract_out->contract_scope != kSpatialRoiRecorderContractScope ||
+            (!legacy_contract && !current_contract) ||
+            contract_out->contract_scope != expected_scope ||
             !contract_out->strict ||
-            contract_out->backend != kExpectedBackend ||
-            contract_out->mode != kSpatialRoiRecorderContractMode ||
+            contract_out->backend != expected_backend ||
+            contract_out->mode != expected_mode ||
             !contract_out->supervise_processes || !contract_out->require_summary ||
             !contract_out->require_status || !contract_out->require_video_sanity ||
             !contract_out->require_protocol_hello || !contract_out->require_frame_identity_proof ||
             contract_out->require_gop_routing || !contract_out->require_storage_preflight ||
+            contract_out->storage_preflight_policy.schema_id !=
+                kSpatialRoiRecorderStoragePreflightPolicySchemaId ||
+            contract_out->storage_preflight_policy.schema_version !=
+                kSpatialRoiRecorderStoragePreflightPolicySchemaVersion ||
+            !contract_out->storage_preflight_policy.required ||
+            contract_out->storage_preflight_policy.reserved_free_bytes == 0 ||
             contract_out->preserve_shard_mp4s || !recording_id(contract_out->recording_id) ||
             contract_out->session_id != contract_out->recording_id ||
             !sha256(contract_out->recording_identity_token) ||
@@ -1453,7 +1655,10 @@ bool parse_spatial_roi_recorder_contract_structure(
             !sha256(contract_out->spatial_roi_plan_sha256) ||
             contract_out->source_cadence != kExpectedCadence ||
             contract_out->source_pixel_format != kExpectedPixelFormat) {
-            return fail(error_out, "contract identity or strict flags do not match schema v2");
+            return fail(error_out,
+                        legacy_contract
+                            ? "contract identity or strict flags do not match schema v4"
+                            : "contract identity or strict flags do not match schema v5");
         }
         std::filesystem::path recording_root;
         std::filesystem::path artifact_root;
@@ -1548,6 +1753,7 @@ bool parse_spatial_roi_recorder_contract_structure(
         contract_out->streams.clear();
         std::set<std::string> camera_serials;
         std::set<std::string> artifact_paths;
+        std::uint64_t max_detach_pool_bytes_total = 0;
         std::uint64_t max_queue_bytes_total = 0;
         std::uint64_t writer_queue_max_packets_total = 0;
         std::uint64_t writer_queue_max_bytes_total = 0;
@@ -1565,6 +1771,7 @@ bool parse_spatial_roi_recorder_contract_structure(
             if (!parse_stream(streams.at(stream_id),
                               stream_id,
                               contract_out->artifact_root,
+                              contract_out->schema_version,
                               &stream,
                               error_out)) {
                 return false;
@@ -1584,6 +1791,9 @@ bool parse_spatial_roi_recorder_contract_structure(
             }
             if (stream.operation_timeout_ms !=
                     contract_out->aggregate_bounds.operation_timeout_ms_per_stream ||
+                !checked_add(max_detach_pool_bytes_total,
+                             stream.max_detach_pool_bytes,
+                             &max_detach_pool_bytes_total) ||
                 !checked_add(max_queue_bytes_total,
                              stream.max_queue_bytes,
                              &max_queue_bytes_total) ||
@@ -1638,6 +1848,8 @@ bool parse_spatial_roi_recorder_contract_structure(
                     contract_out->ipc_v2.queue_capacity_frames_per_stream ||
             contract_out->ipc_v2.max_outstanding_frames_total !=
                 contract_out->ipc_v2.queue_capacity_frames_total ||
+            contract_out->aggregate_bounds.max_detach_pool_bytes_total !=
+                max_detach_pool_bytes_total ||
             contract_out->aggregate_bounds.max_queue_bytes_total !=
                 max_queue_bytes_total ||
             contract_out->aggregate_bounds.writer_queue_max_packets_total !=

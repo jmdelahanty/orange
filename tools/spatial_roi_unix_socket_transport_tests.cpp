@@ -17,6 +17,7 @@
 namespace {
 
 using orange::spatial_roi::ipc::SpatialRoiIpcTransportReadStatus;
+using orange::spatial_roi::ipc::SpatialRoiIpcTransportReadResult;
 using orange::spatial_roi::ipc::SpatialRoiUnixSocketLineTransport;
 using orange::spatial_roi::ipc::SpatialRoiUnixSocketTransportConfig;
 
@@ -139,6 +140,57 @@ void test_write_partial_and_no_reconnect()
     close_pair(sockets);
 }
 
+void test_cross_thread_shutdown_interrupts_owner_without_concurrent_close()
+{
+    auto sockets = make_socketpair();
+    auto transport = adopt(sockets[0]);
+    sockets[0] = -1;
+
+    SpatialRoiIpcTransportReadResult read;
+    std::thread owner([&] {
+        read = transport->ReadLine(std::chrono::seconds(5), 64);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    std::string error;
+    require(transport->RequestShutdown(&error),
+            "cross-thread shutdown request failed: " + error);
+    require(transport->RequestShutdown(&error),
+            "repeated shutdown request was not idempotent: " + error);
+    owner.join();
+    require(read.status == SpatialRoiIpcTransportReadStatus::kEof ||
+                read.status == SpatialRoiIpcTransportReadStatus::kError,
+            "shutdown request did not interrupt the transport owner");
+    // The request itself never closes fd_; the awakened owner is allowed to
+    // consume shutdown EOF and terminal-close the transport before it returns.
+    transport->Close();
+    require(transport->closed(),
+            "post-join Close did not release the shutdown descriptor");
+
+    close_pair(sockets);
+}
+
+void test_failed_shutdown_request_can_retry()
+{
+    auto sockets = make_socketpair();
+    auto transport = adopt(sockets[0]);
+    sockets[0] = -1;
+
+    // Close removes the private cancellation capability. Both calls must
+    // report failure; the second call specifically proves a failed request was
+    // not permanently recorded as successful.
+    transport->Close();
+    std::string error;
+    require(!transport->RequestShutdown(&error),
+            "shutdown request on a closed capability unexpectedly succeeded");
+    require(!error.empty(), "failed shutdown request omitted its diagnostic");
+    error.clear();
+    require(!transport->RequestShutdown(&error),
+            "failed shutdown request was permanently suppressed");
+    require(!error.empty(), "retried shutdown failure omitted its diagnostic");
+
+    close_pair(sockets);
+}
+
 void test_eof_and_oversized_line()
 {
     {
@@ -150,6 +202,25 @@ void test_eof_and_oversized_line()
         require(eof.status == SpatialRoiIpcTransportReadStatus::kEof,
                 "peer shutdown should be distinguished from timeout");
         require(eof.line.empty(), "EOF must not return a line");
+        close_pair(sockets);
+    }
+
+    {
+        auto sockets = make_socketpair();
+        auto transport = adopt(sockets[0]);
+        sockets[0] = -1;
+        const std::string partial = "unterminated";
+        require(::send(sockets[1], partial.data(), partial.size(), MSG_NOSIGNAL) ==
+                    static_cast<ssize_t>(partial.size()),
+                "truncated-line prefix send failed");
+        require(::shutdown(sockets[1], SHUT_WR) == 0,
+                "truncated-line shutdown failed");
+        const auto truncated =
+            transport->ReadLine(std::chrono::milliseconds(100), 64);
+        require(truncated.status == SpatialRoiIpcTransportReadStatus::kError,
+                "unterminated EOF was classified as clean EOF");
+        require(truncated.error.find("line terminator") != std::string::npos,
+                "unterminated EOF diagnostic lost truncation reason");
         close_pair(sockets);
     }
 
@@ -422,6 +493,8 @@ int main()
 {
     test_peer_credentials_and_partial_read();
     test_write_partial_and_no_reconnect();
+    test_cross_thread_shutdown_interrupts_owner_without_concurrent_close();
+    test_failed_shutdown_request_can_retry();
     test_eof_and_oversized_line();
     test_write_validation_and_credential_rejection();
     test_chunked_coalesced_read_and_hard_zero_deadline();

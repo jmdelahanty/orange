@@ -25,6 +25,7 @@ It only accepts `orange_client` binaries at:
 
 - `/home/jeremy/orange-jeremy/build/orange_client`
 - `/home/jeremy/orange-gop-split-a16/targets/release/orange_client`
+- `/tmp/orange-spatial-roi-recording-v1-20260830/targets/release/orange_client`
 
 The wrapper also exposes a narrow allowlist of experiment env passthroughs:
 
@@ -39,6 +40,9 @@ The wrapper also exposes a narrow allowlist of experiment env passthroughs:
 - `--yolo-ready-event-fastpath <0|1>` exports
   `ORANGE_YOLO_READY_EVENT_FASTPATH`.
 - `--yolo-detach-input <0|1>` exports `ORANGE_YOLO_DETACH_INPUT`.
+- `--spatial-roi-recorder-cpu-affinity <cpu-list>` exports the optional
+  `ORANGE_SPATIAL_ROI_RECORDER_CPU_AFFINITY` multi-core child envelope. It is
+  unset by default and does not enable realtime scheduling.
 
 After the run, it chowns the experiment output folder back to the invoking
 user so artifacts are not left root-owned.

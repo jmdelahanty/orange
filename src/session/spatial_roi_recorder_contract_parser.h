@@ -38,10 +38,18 @@ struct SpatialRoiRecorderGeometryView {
 };
 
 struct SpatialRoiRecorderEncodeProfileView {
+    std::string profile_id;
     std::string codec;
+    std::string preset;
     std::string tuning;
     bool lossless = false;
+    std::string rate_control_mode;
+    std::uint32_t quality_value = 0;
     std::uint32_t gop_length = 0;
+    bool aq = false;
+    bool temporal_aq = false;
+    bool lookahead = false;
+    std::uint32_t lookahead_depth = 0;
     std::uint32_t frame_rate = 0;
     std::string input_format;
     std::string encoded_format;
@@ -70,10 +78,18 @@ struct SpatialRoiRecorderIpcView {
     std::uint64_t max_outstanding_frames_total = 0;
 };
 
+struct SpatialRoiRecorderStoragePreflightPolicyView {
+    std::string schema_id;
+    int schema_version = 0;
+    bool required = false;
+    std::uint64_t reserved_free_bytes = 0;
+};
+
 // Checked recorder-side totals over every stream in stream_order.  These
 // values make process-level memory admission deterministic without asking the
 // caller to re-derive (or silently enlarge) per-stream budgets.
 struct SpatialRoiRecorderAggregateBoundsView {
+    std::uint64_t max_detach_pool_bytes_total = 0;
     std::uint64_t max_queue_bytes_total = 0;
     std::uint64_t writer_queue_max_packets_total = 0;
     std::uint64_t writer_queue_max_bytes_total = 0;
@@ -117,6 +133,8 @@ struct SpatialRoiRecorderStreamView {
     std::uint32_t quality_value = 0;
     std::uint32_t gop = 0;
     std::uint32_t encode_queue_depth = 0;
+    std::uint32_t detach_pool_frames = 0;
+    std::uint64_t max_detach_pool_bytes = 0;
     std::uint64_t max_queue_bytes = 0;
     std::uint64_t writer_queue_max_packets = 0;
     std::uint64_t writer_queue_max_bytes = 0;
@@ -144,6 +162,7 @@ struct SpatialRoiRecorderContractView {
     bool require_frame_identity_proof = false;
     bool require_gop_routing = false;
     bool require_storage_preflight = false;
+    SpatialRoiRecorderStoragePreflightPolicyView storage_preflight_policy;
     bool preserve_shard_mp4s = false;
     std::string recording_id;
     std::string session_id;

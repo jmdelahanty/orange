@@ -53,7 +53,7 @@ bool exact_keys(const json& value,
     for (auto it = value.begin(); it != value.end(); ++it) {
         if (required.count(it.key()) == 0 && optional.count(it.key()) == 0) {
             return fail(error_out,
-                        field_path(path, it.key()) + " is not allowed by schema v2");
+                        field_path(path, it.key()) + " is not allowed by this schema");
         }
     }
     return true;
@@ -510,6 +510,82 @@ json camera_to_json(const CameraConfig& camera)
     };
 }
 
+json encode_profile_to_json(const EncodeProfile& profile)
+{
+    return {
+        {"name", profile.name},
+        {"codec", profile.codec},
+        {"preset", profile.preset},
+        {"tuning", profile.tuning},
+        {"lossless", profile.lossless},
+        {"rate_control_mode", profile.rate_control_mode},
+        {"quality_value", profile.quality_value},
+        {"gop_length", profile.gop_length},
+        {"aq", profile.aq},
+        {"temporal_aq", profile.temporal_aq},
+        {"lookahead", profile.lookahead},
+        {"lookahead_depth", profile.lookahead_depth},
+    };
+}
+
+bool parse_encode_profile(const json& value,
+                          EncodeProfile* out,
+                          const std::string& path,
+                          std::string* error_out)
+{
+    return exact_keys(value,
+                      {"name", "codec", "preset", "tuning", "lossless",
+                       "rate_control_mode", "quality_value", "gop_length",
+                       "aq", "temporal_aq", "lookahead", "lookahead_depth"},
+                      {},
+                      path,
+                      error_out) &&
+        read_string(value, "name", path, &out->name, error_out) &&
+        read_string(value, "codec", path, &out->codec, error_out) &&
+        read_string(value, "preset", path, &out->preset, error_out) &&
+        read_string(value, "tuning", path, &out->tuning, error_out) &&
+        read_bool(value, "lossless", path, &out->lossless, error_out) &&
+        read_string(value,
+                    "rate_control_mode",
+                    path,
+                    &out->rate_control_mode,
+                    error_out) &&
+        read_u32(value,
+                 "quality_value",
+                 path,
+                 &out->quality_value,
+                 error_out) &&
+        read_u32(value, "gop_length", path, &out->gop_length, error_out) &&
+        read_bool(value, "aq", path, &out->aq, error_out) &&
+        read_bool(value, "temporal_aq", path, &out->temporal_aq, error_out) &&
+        read_bool(value, "lookahead", path, &out->lookahead, error_out) &&
+        read_u32(value,
+                 "lookahead_depth",
+                 path,
+                 &out->lookahead_depth,
+                 error_out);
+}
+
+bool same_encode_profile(const EncodeProfile& left,
+                         const EncodeProfile& right)
+{
+    return left.name == right.name && left.codec == right.codec &&
+        left.preset == right.preset && left.tuning == right.tuning &&
+        left.lossless == right.lossless &&
+        left.rate_control_mode == right.rate_control_mode &&
+        left.quality_value == right.quality_value &&
+        left.gop_length == right.gop_length && left.aq == right.aq &&
+        left.temporal_aq == right.temporal_aq &&
+        left.lookahead == right.lookahead &&
+        left.lookahead_depth == right.lookahead_depth;
+}
+
+bool supported_schema_version(const std::uint64_t version)
+{
+    return version == static_cast<std::uint64_t>(kLegacyConfigSchemaVersion) ||
+        version == static_cast<std::uint64_t>(kConfigSchemaVersion);
+}
+
 std::string canonical_sha256(const json& value)
 {
     const std::string bytes = value.dump(
@@ -518,12 +594,9 @@ std::string canonical_sha256(const json& value)
         orange::gui::spatial_layout::checksum::sha256_hex(bytes);
 }
 
-std::string expected_socket_path(const std::string& logical_stream_id)
-{
-    return "/tmp/orange_external_recorder_" + logical_stream_id + ".sock";
-}
-
-json resolved_cameras_to_json(const Config& config)
+json resolved_cameras_to_json(
+    const Config& config,
+    const std::string& recording_identity_token)
 {
     json cameras = json::object();
     for (const auto& [camera_key, camera] : config.cameras) {
@@ -557,7 +630,8 @@ json resolved_cameras_to_json(const Config& config)
                 {"value_mono8", config.padding_value_mono8},
             };
             resolved_roi["no_scaling"] = true;
-            resolved_roi["socket_path"] = expected_socket_path(roi.logical_stream_id);
+            resolved_roi["socket_path"] = expected_socket_path(
+                recording_identity_token, roi.logical_stream_id);
             resolved_roi["expected_artifacts"] = {
                 {"video", artifact_root + roi.artifact_stem + ".mp4"},
                 {"metadata", artifact_root + roi.artifact_stem + "_meta.csv"},
@@ -610,6 +684,39 @@ Config default_config()
     return Config{};
 }
 
+EncodeProfile legacy_lossless_encode_profile()
+{
+    EncodeProfile profile;
+    profile.name = kLegacyLosslessEncodeProfileName;
+    profile.codec = "hevc";
+    profile.preset = "p7";
+    profile.tuning = "lossless";
+    profile.lossless = true;
+    profile.rate_control_mode = "cqp";
+    profile.quality_value = 0;
+    profile.gop_length = 1;
+    return profile;
+}
+
+EncodeProfile legacy_low_latency_vbr_gop1_encode_profile()
+{
+    EncodeProfile profile;
+    profile.name = kLegacyLowLatencyVbrGop1EncodeProfileName;
+    profile.codec = "hevc";
+    profile.preset = "p1";
+    profile.tuning = "ll";
+    profile.lossless = false;
+    profile.rate_control_mode = "vbr";
+    profile.quality_value = 20;
+    profile.gop_length = 1;
+    return profile;
+}
+
+EncodeProfile low_latency_vbr_encode_profile()
+{
+    return EncodeProfile{};
+}
+
 std::string expected_logical_stream_id(const std::string& camera_serial,
                                        const std::string& roi_id)
 {
@@ -622,6 +729,34 @@ std::string expected_artifact_stem(const std::string& camera_serial,
     return "Cam" + camera_serial + "_spatial_roi_" + roi_id;
 }
 
+std::string expected_socket_runtime_directory(
+    const std::string& recording_identity_token)
+{
+    if (!is_sha256(recording_identity_token)) {
+        return {};
+    }
+    // Ninety-six bits name the per-recording runtime directory. This is a
+    // collision-resistant namespace aid, not the recording identity proof;
+    // IPC-v2 still authenticates the complete 256-bit token.
+    return "/tmp/orange_spatial_roi_" +
+        recording_identity_token.substr(7, 24);
+}
+
+std::string expected_socket_path(
+    const std::string& recording_identity_token,
+    const std::string& logical_stream_id)
+{
+    const std::string runtime_directory =
+        expected_socket_runtime_directory(recording_identity_token);
+    if (runtime_directory.empty() ||
+        !is_safe_identifier(logical_stream_id, kMaxLogicalStreamIdLength)) {
+        return {};
+    }
+    const std::string stream_digest =
+        orange::gui::spatial_layout::checksum::sha256_hex(logical_stream_id);
+    return runtime_directory + "/" + stream_digest.substr(0, 24) + ".sock";
+}
+
 bool parse_config(const nlohmann::json& value,
                   Config* config_out,
                   std::string* error_out)
@@ -631,24 +766,36 @@ bool parse_config(const nlohmann::json& value,
     }
     try {
     const std::string root = "spatial_roi_recording";
-    if (!exact_keys(value,
-                    {"schema_id", "schema_version", "enabled", "backend", "strict",
-                     "source_cadence", "pixel_contract", "buffering",
-                     "recording_limits", "admission", "cameras"},
-                    {},
-                    root,
-                    error_out)) {
-        return false;
-    }
     std::uint64_t schema_version = 0;
-    if (!value.at("schema_id").is_string() ||
+    if (!value.is_object() || !value.contains("schema_id") ||
+        !value.contains("schema_version") ||
+        !value.at("schema_id").is_string() ||
         value.at("schema_id").get<std::string>() != kConfigSchemaId ||
         !json_nonnegative_u64(value.at("schema_version"), &schema_version) ||
-        schema_version != kConfigSchemaVersion) {
+        !supported_schema_version(schema_version)) {
         return fail(error_out, "spatial ROI config schema_id/schema_version mismatch");
+    }
+    std::set<std::string> required = {
+        "schema_id", "schema_version", "enabled", "backend", "strict",
+        "source_cadence", "pixel_contract", "buffering", "recording_limits",
+        "admission", "cameras"};
+    if (schema_version == static_cast<std::uint64_t>(kConfigSchemaVersion)) {
+        required.insert("encode_profile");
+    }
+    if (!exact_keys(value, required, {}, root, error_out)) {
+        return false;
     }
 
     Config parsed;
+    parsed.schema_version = static_cast<int>(schema_version);
+    if (parsed.schema_version == kLegacyConfigSchemaVersion) {
+        parsed.encode_profile = legacy_lossless_encode_profile();
+    } else if (!parse_encode_profile(value.at("encode_profile"),
+                                     &parsed.encode_profile,
+                                     field_path(root, "encode_profile"),
+                                     error_out)) {
+        return false;
+    }
     if (!read_bool(value, "enabled", root, &parsed.enabled, error_out) ||
         !read_string(value, "backend", root, &parsed.backend, error_out) ||
         !read_bool(value, "strict", root, &parsed.strict, error_out) ||
@@ -694,7 +841,7 @@ bool parse_config(const nlohmann::json& value,
     }
     if (padding_value != 0) {
         return fail(error_out,
-                    pixel_path + ".padding_value_mono8 must be exactly 0 in schema v2");
+                    pixel_path + ".padding_value_mono8 must be exactly 0");
     }
     parsed.padding_value_mono8 = static_cast<std::uint8_t>(padding_value);
 
@@ -841,9 +988,9 @@ nlohmann::json config_to_json(const Config& config)
     for (const auto& [camera_key, camera] : config.cameras) {
         cameras[camera_key] = camera_to_json(camera);
     }
-    return {
+    json normalized = {
         {"schema_id", kConfigSchemaId},
-        {"schema_version", kConfigSchemaVersion},
+        {"schema_version", config.schema_version},
         {"enabled", config.enabled},
         {"backend", config.backend},
         {"strict", config.strict},
@@ -885,19 +1032,50 @@ nlohmann::json config_to_json(const Config& config)
          }},
         {"cameras", std::move(cameras)},
     };
+    if (config.schema_version == kConfigSchemaVersion) {
+        normalized["encode_profile"] =
+            encode_profile_to_json(config.encode_profile);
+    }
+    return normalized;
 }
 
 bool validate_config(const Config& config,
                      AdmissionUsage* usage_out,
                      std::string* error_out)
 {
+    if (config.schema_version != kLegacyConfigSchemaVersion &&
+        config.schema_version != kConfigSchemaVersion) {
+        return fail(error_out,
+                    "spatial ROI config schema_version must be 2 or 3");
+    }
     if (!config.strict) {
         return fail(error_out,
-                    "spatial ROI schema v2 requires strict=true; best-effort admission is unsupported");
+                    "spatial ROI configuration requires strict=true; best-effort admission is unsupported");
     }
-    if (config.backend != kBackend) {
+    const EncodeProfile legacy_profile = legacy_lossless_encode_profile();
+    const EncodeProfile legacy_low_latency_profile =
+        legacy_low_latency_vbr_gop1_encode_profile();
+    const EncodeProfile low_latency_profile = low_latency_vbr_encode_profile();
+    if (config.schema_version == kLegacyConfigSchemaVersion) {
+        if (config.backend != kLegacyBackend) {
+            return fail(
+                error_out,
+                "spatial ROI schema v2 backend must be independent_lossless_external_ipc");
+        }
+        if (!same_encode_profile(config.encode_profile, legacy_profile)) {
+            return fail(error_out,
+                        "spatial ROI schema v2 must infer the immutable legacy lossless encode profile");
+        }
+    } else if (config.backend != kBackend) {
         return fail(error_out,
-                    "spatial ROI backend must be independent_lossless_external_ipc");
+                    "spatial ROI schema v3 backend must be independent_hevc_external_ipc");
+    } else if (!same_encode_profile(config.encode_profile, legacy_profile) &&
+               !same_encode_profile(config.encode_profile,
+                                    legacy_low_latency_profile) &&
+               !same_encode_profile(config.encode_profile,
+                                    low_latency_profile)) {
+        return fail(error_out,
+                    "spatial ROI schema v3 encode_profile is not one of the three immutable supported profiles");
     }
     if (config.source_cadence != kSourceCadence) {
         return fail(error_out,
@@ -908,11 +1086,11 @@ bool validate_config(const Config& config,
     }
     if (!config.no_resize || !config.no_color_conversion) {
         return fail(error_out,
-                    "spatial ROI v2 requires no_resize and no_color_conversion");
+                    "spatial ROI recording requires no_resize and no_color_conversion");
     }
     if (config.padding_value_mono8 != 0) {
         return fail(error_out,
-                    "spatial ROI schema v2 requires padding_value_mono8=0");
+                    "spatial ROI recording requires padding_value_mono8=0");
     }
     static constexpr std::uint32_t kAllowedAlignments[] = {1, 2, 4, 8, 16};
     if (std::find(std::begin(kAllowedAlignments),
@@ -1012,7 +1190,7 @@ bool validate_config(const Config& config,
             }
             if (!roi.required) {
                 return fail(error_out,
-                            roi_path + ".required=false is unsupported; schema v2 requires every admitted ROI");
+                            roi_path + ".required=false is unsupported; every admitted ROI is required");
             }
             if (!is_safe_identifier(roi.region_id)) {
                 return fail(error_out, roi_path + ".region_id is not a safe identifier");
@@ -1052,15 +1230,17 @@ bool validate_config(const Config& config,
                     roi.logical_stream_id, kMaxLogicalStreamIdLength)) {
                 return fail(error_out,
                             roi_path + ".logical_stream_id must equal " +
-                                logical_stream_id + " and fit the v2 limit");
+                                logical_stream_id + " and fit the schema limit");
             }
             if (roi.artifact_stem != artifact_stem ||
                 !is_safe_identifier(roi.artifact_stem, kMaxArtifactStemLength)) {
                 return fail(error_out,
                             roi_path + ".artifact_stem must equal " + artifact_stem);
             }
-            if (expected_socket_path(roi.logical_stream_id).size() >
-                kMaxUnixSocketPathLength) {
+            const std::string socket_probe = expected_socket_path(
+                "sha256:" + std::string(64, '0'), roi.logical_stream_id);
+            if (socket_probe.empty() ||
+                socket_probe.size() > kMaxUnixSocketPathLength) {
                 return fail(error_out,
                             roi_path + ".logical_stream_id makes the socket path too long");
             }
@@ -1225,7 +1405,7 @@ bool build_plan(const Config& config,
     }
     const json payload = {
         {"schema_id", kPlanSchemaId},
-        {"schema_version", kPlanSchemaVersion},
+        {"schema_version", config.schema_version},
         {"plan_scope", kPlanScope},
         {"recording_id", context.recording_id},
         {"recording_identity_token", context.recording_identity_token},
@@ -1233,11 +1413,12 @@ bool build_plan(const Config& config,
         {"producer_generation", context.producer_generation},
         {"configuration", config_to_json(config)},
         {"admission_usage", admission_usage_to_json(usage)},
-        {"resolved_cameras", resolved_cameras_to_json(config)},
+        {"resolved_cameras", resolved_cameras_to_json(
+             config, context.recording_identity_token)},
     };
     *plan_out = {
         {"schema_id", kPlanSchemaId},
-        {"schema_version", kPlanSchemaVersion},
+        {"schema_version", config.schema_version},
         {"canonicalization", kCanonicalization},
         {"plan_sha256", canonical_sha256(payload)},
         {"plan", payload},
@@ -1270,7 +1451,7 @@ bool verify_plan(const nlohmann::json& plan, std::string* error_out)
         plan.at("schema_id").get<std::string>() != kPlanSchemaId ||
         !json_nonnegative_u64(
             plan.at("schema_version"), &envelope_schema_version) ||
-        envelope_schema_version != kPlanSchemaVersion ||
+        !supported_schema_version(envelope_schema_version) ||
         !plan.at("canonicalization").is_string() ||
         plan.at("canonicalization").get<std::string>() != kCanonicalization ||
         !plan.at("plan_sha256").is_string() ||
@@ -1292,7 +1473,8 @@ bool verify_plan(const nlohmann::json& plan, std::string* error_out)
         payload.at("schema_id").get<std::string>() != kPlanSchemaId ||
         !json_nonnegative_u64(
             payload.at("schema_version"), &payload_schema_version) ||
-        payload_schema_version != kPlanSchemaVersion ||
+        !supported_schema_version(payload_schema_version) ||
+        payload_schema_version != envelope_schema_version ||
         !payload.at("plan_scope").is_string() ||
         payload.at("plan_scope").get<std::string>() != kPlanScope ||
         !payload.at("recording_id").is_string() ||
@@ -1318,13 +1500,19 @@ bool verify_plan(const nlohmann::json& plan, std::string* error_out)
         !validate_config(config, &usage, error_out)) {
         return false;
     }
+    if (config.schema_version != static_cast<int>(payload_schema_version)) {
+        return fail(error_out,
+                    "spatial ROI plan and configuration schema versions differ");
+    }
     if (!config.enabled) {
         return fail(error_out,
                     "spatial ROI recording plan requires enabled=true");
     }
     if (payload.at("configuration") != config_to_json(config) ||
         payload.at("admission_usage") != admission_usage_to_json(usage) ||
-        payload.at("resolved_cameras") != resolved_cameras_to_json(config)) {
+        payload.at("resolved_cameras") != resolved_cameras_to_json(
+            config,
+            payload.at("recording_identity_token").get<std::string>())) {
         return fail(error_out,
                     "spatial ROI plan normalized configuration or resolution mismatch");
     }
@@ -1361,6 +1549,9 @@ bool parse_verified_plan(const nlohmann::json& plan,
     }
 
     SpatialRoiRecordingPlan parsed;
+    parsed.schema_version = config.schema_version;
+    parsed.backend = config.backend;
+    parsed.encode_profile = config.encode_profile;
     parsed.plan_sha256 = plan.at("plan_sha256").get<std::string>();
     parsed.recording_id = payload.at("recording_id").get<std::string>();
     parsed.recording_identity_token =
@@ -1402,6 +1593,8 @@ bool parse_verified_plan(const nlohmann::json& plan,
             camera.at("native_raster").at("width").get<std::uint32_t>(),
             camera.at("native_raster").at("height").get<std::uint32_t>(),
         };
+        parsed_camera.source_frame_rate =
+            camera.at("source_frame_rate").get<std::uint32_t>();
         parsed_camera.arena_group_id =
             camera.at("arena_group_id").get<std::string>();
 

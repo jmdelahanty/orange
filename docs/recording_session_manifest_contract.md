@@ -79,6 +79,38 @@ behavior. It does not represent the detector-independent spatial ROI product.
 The latter remains default-off and is not session-integrated until the separate
 per-ROI descriptor collection, collision-free frame identity, and strict
 finalization gates in `docs/spatial_roi_recording_v1_foundation.md` are complete.
+The additive v3 shape below is the metadata integration seam; it does not by
+itself arm or launch an ROI recorder.
+
+The shared descriptor helper now defines an additive output-index envelope for
+the collection integration seam. When spatial ROI descriptors are supplied,
+session and clip manifests may carry `recording_outputs_v3` with
+`schema_id = "orange.recording_outputs"` and `schema_version = 3`:
+
+```json
+"recording_outputs_v3": {
+  "schema_id": "orange.recording_outputs",
+  "schema_version": 3,
+  "cameras": {
+    "2010096": {
+      "full": { "output_kind": "full" },
+      "crop": { "output_kind": "crop" },
+      "spatial_roi": {
+        "2010096_spatial_roi_roi_1": {
+          "output_kind": "spatial_roi",
+          "camera_serial": "2010096",
+          "logical_stream_id": "2010096_spatial_roi_roi_1"
+        }
+      }
+    }
+  }
+}
+```
+
+`full` stays ingest-authoritative and scalar, and the compatibility
+`recording_outputs[serial].full`/`.crop` entries are not replaced. Writers
+reject missing or duplicate spatial-ROI logical stream keys and identity-field
+mismatches; consumers must validate the v3 envelope before using it.
 
 ## Single-Video Layout
 

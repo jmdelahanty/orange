@@ -25,6 +25,24 @@ std::string digest(const char fill)
     return "sha256:" + std::string(64, fill);
 }
 
+void require_profile_equal(const spatial_roi::EncodeProfile& actual,
+                           const spatial_roi::EncodeProfile& expected,
+                           const std::string& message)
+{
+    require(actual.name == expected.name && actual.codec == expected.codec &&
+                actual.preset == expected.preset &&
+                actual.tuning == expected.tuning &&
+                actual.lossless == expected.lossless &&
+                actual.rate_control_mode == expected.rate_control_mode &&
+                actual.quality_value == expected.quality_value &&
+                actual.gop_length == expected.gop_length &&
+                actual.aq == expected.aq &&
+                actual.temporal_aq == expected.temporal_aq &&
+                actual.lookahead == expected.lookahead &&
+                actual.lookahead_depth == expected.lookahead_depth,
+            message);
+}
+
 spatial_roi::RoiConfig make_roi(const std::string& camera_serial,
                                 const std::string& roi_id,
                                 const std::string& region_id,
@@ -45,6 +63,9 @@ spatial_roi::RoiConfig make_roi(const std::string& camera_serial,
 spatial_roi::Config make_config()
 {
     spatial_roi::Config config = spatial_roi::default_config();
+    config.schema_version = spatial_roi::kLegacyConfigSchemaVersion;
+    config.backend = spatial_roi::kLegacyBackend;
+    config.encode_profile = spatial_roi::legacy_lossless_encode_profile();
     config.enabled = true;
     config.output_alignment_px = 2;
     config.buffering.pool_frames_per_stream = 4;
@@ -78,13 +99,30 @@ spatial_roi::Config make_config()
     return config;
 }
 
+spatial_roi::Config make_v3_config()
+{
+    spatial_roi::Config config = make_config();
+    config.schema_version = spatial_roi::kConfigSchemaVersion;
+    config.backend = spatial_roi::kBackend;
+    config.encode_profile = spatial_roi::low_latency_vbr_encode_profile();
+    return config;
+}
+
 void default_is_off_and_closed_round_trip_works()
 {
     const spatial_roi::Config defaults = spatial_roi::default_config();
     require(!defaults.enabled, "spatial ROI recording must default off");
-    require(spatial_roi::kConfigSchemaVersion == 2 &&
-                spatial_roi::kPlanSchemaVersion == 2,
-            "long-run admission requires config and plan schema v2");
+    require(defaults.schema_version == 3 &&
+                spatial_roi::kLegacyConfigSchemaVersion == 2 &&
+                spatial_roi::kConfigSchemaVersion == 3 &&
+                spatial_roi::kLegacyPlanSchemaVersion == 2 &&
+                spatial_roi::kPlanSchemaVersion == 3,
+            "defaults must select v3 while retaining explicit v2 constants");
+    require(defaults.backend == spatial_roi::kBackend,
+            "disabled defaults must select the generic HEVC backend");
+    require_profile_equal(defaults.encode_profile,
+                          spatial_roi::low_latency_vbr_encode_profile(),
+                          "disabled defaults must select the P1 low-latency profile");
     require(defaults.recording_limits.max_frames_per_stream ==
                 spatial_roi::kDefaultMaxFramesPerStream &&
                 defaults.recording_limits.max_media_bytes_per_stream ==
@@ -102,8 +140,15 @@ void default_is_off_and_closed_round_trip_works()
 
     const spatial_roi::Config source = make_config();
     const nlohmann::json wire = spatial_roi::config_to_json(source);
+    require(wire.at("schema_version") == 2 &&
+                wire.at("backend") == spatial_roi::kLegacyBackend &&
+                !wire.contains("encode_profile"),
+            "schema-v2 emission must remain the legacy profile-free wire object");
     spatial_roi::Config parsed;
     require(spatial_roi::parse_config(wire, &parsed, &error), error);
+    require_profile_equal(parsed.encode_profile,
+                          spatial_roi::legacy_lossless_encode_profile(),
+                          "schema-v2 parsing must infer the legacy lossless profile");
     require(spatial_roi::config_to_json(parsed) == wire,
             "config parse/build round trip changed normalized JSON");
 
@@ -153,6 +198,105 @@ void default_is_off_and_closed_round_trip_works()
     unknown["schema_version"] = std::numeric_limits<std::uint64_t>::max();
     require(!spatial_roi::parse_config(unknown, &parsed, &error),
             "oversized schema version must fail without throwing");
+}
+
+void v3_profiles_are_required_closed_and_immutable()
+{
+    std::string error;
+    spatial_roi::Config config = make_v3_config();
+    require(spatial_roi::validate_config(config, nullptr, &error), error);
+
+    const nlohmann::json wire = spatial_roi::config_to_json(config);
+    require(wire.at("schema_version") == 3 &&
+                wire.at("backend") == spatial_roi::kBackend,
+            "schema-v3 wire must select the generic HEVC backend");
+    require(wire.at("encode_profile") == nlohmann::json({
+                {"name", "hevc_p1_low_latency_vbr_q20_gop25_v1"},
+                {"codec", "hevc"},
+                {"preset", "p1"},
+                {"tuning", "ll"},
+                {"lossless", false},
+                {"rate_control_mode", "vbr"},
+                {"quality_value", 20},
+                {"gop_length", 25},
+                {"aq", false},
+                {"temporal_aq", false},
+                {"lookahead", false},
+                {"lookahead_depth", 0},
+            }),
+            "schema-v3 P1 profile does not match its immutable named policy");
+
+    spatial_roi::Config parsed;
+    require(spatial_roi::parse_config(wire, &parsed, &error), error);
+    require(spatial_roi::config_to_json(parsed) == wire,
+            "schema-v3 config parse/build round trip changed normalized JSON");
+    require_profile_equal(parsed.encode_profile,
+                          spatial_roi::low_latency_vbr_encode_profile(),
+                          "schema-v3 parse did not expose the selected profile");
+
+    nlohmann::json invalid = wire;
+    invalid.erase("encode_profile");
+    require(!spatial_roi::parse_config(invalid, &parsed, &error),
+            "schema-v3 encode_profile must be required");
+
+    invalid = wire;
+    invalid["encode_profile"]["future_field"] = true;
+    require(!spatial_roi::parse_config(invalid, &parsed, &error),
+            "schema-v3 encode_profile must be closed");
+
+    invalid = wire;
+    invalid["encode_profile"]["quality_value"] = 21;
+    require(!spatial_roi::parse_config(invalid, &parsed, &error),
+            "a named profile with mutated quality must fail closed");
+
+    for (const char* control : {"aq", "temporal_aq", "lookahead"}) {
+        invalid = wire;
+        invalid["encode_profile"][control] = true;
+        require(!spatial_roi::parse_config(invalid, &parsed, &error),
+                std::string("a named profile with enabled ") + control +
+                    " must fail closed");
+    }
+    invalid = wire;
+    invalid["encode_profile"]["lookahead_depth"] = 1;
+    require(!spatial_roi::parse_config(invalid, &parsed, &error),
+            "a named profile with nonzero lookahead depth must fail closed");
+
+    invalid = wire;
+    invalid["encode_profile"]["name"] = "future_profile";
+    require(!spatial_roi::parse_config(invalid, &parsed, &error),
+            "an unknown named profile must fail closed");
+
+    invalid = wire;
+    invalid["backend"] = spatial_roi::kLegacyBackend;
+    require(!spatial_roi::parse_config(invalid, &parsed, &error),
+            "schema-v3 must not reuse the legacy lossless-only backend name");
+
+    config.encode_profile =
+        spatial_roi::legacy_low_latency_vbr_gop1_encode_profile();
+    require(spatial_roi::validate_config(config, nullptr, &error), error);
+    const nlohmann::json v3_legacy_p1 = spatial_roi::config_to_json(config);
+    require(spatial_roi::parse_config(v3_legacy_p1, &parsed, &error), error);
+    require_profile_equal(
+        parsed.encode_profile,
+        spatial_roi::legacy_low_latency_vbr_gop1_encode_profile(),
+        "schema-v3 must preserve the previously versioned P1 GOP-1 profile");
+
+    config.encode_profile = spatial_roi::legacy_lossless_encode_profile();
+    require(spatial_roi::validate_config(config, nullptr, &error), error);
+    const nlohmann::json v3_legacy = spatial_roi::config_to_json(config);
+    require(spatial_roi::parse_config(v3_legacy, &parsed, &error), error);
+    require_profile_equal(parsed.encode_profile,
+                          spatial_roi::legacy_lossless_encode_profile(),
+                          "schema-v3 must support its explicit legacy named profile");
+
+    spatial_roi::Config v2 = make_config();
+    nlohmann::json v2_wire = spatial_roi::config_to_json(v2);
+    v2_wire["encode_profile"] = wire.at("encode_profile");
+    require(!spatial_roi::parse_config(v2_wire, &parsed, &error),
+            "schema-v2 must reject, not silently consume, a profile member");
+    v2.encode_profile = spatial_roi::low_latency_vbr_encode_profile();
+    require(!spatial_roi::validate_config(v2, nullptr, &error),
+            "programmatic schema-v2 configs must retain the inferred legacy profile");
 }
 
 void enabled_requires_camera_and_roi()
@@ -613,6 +757,53 @@ void plan_is_deterministic_closed_and_digest_bound()
             "schema-v1 plan payload must not verify as schema v2");
 }
 
+void v3_plan_follows_config_version_and_exposes_profile()
+{
+    const spatial_roi::Config config = make_v3_config();
+    spatial_roi::PlanContext context;
+    context.recording_id = "2026_09_01_v3_profile";
+    context.recording_identity_token =
+        orange::shaman_v2_recording_identity::token_for_recording_id(
+            context.recording_id);
+    context.generated_at_utc = "2026-09-01T12:00:00Z";
+    context.producer_generation = "generation_v3";
+
+    nlohmann::json plan;
+    std::string error;
+    require(spatial_roi::build_plan(config, context, &plan, nullptr, &error),
+            error);
+    require(plan.at("schema_version") == 3 &&
+                plan.at("plan").at("schema_version") == 3 &&
+                plan.at("plan").at("configuration").at("schema_version") == 3,
+            "v3 plan envelope, payload, and configuration versions must agree");
+    require(spatial_roi::verify_plan(plan, &error), error);
+
+    spatial_roi::SpatialRoiRecordingPlan parsed;
+    require(spatial_roi::parse_verified_plan(plan, &parsed, &error), error);
+    require(parsed.schema_version == 3 && parsed.backend == spatial_roi::kBackend,
+            "verified plan view omitted its v3 schema/backend authority");
+    require_profile_equal(parsed.encode_profile,
+                          spatial_roi::low_latency_vbr_encode_profile(),
+                          "verified plan view omitted its P1 encode profile");
+    require(parsed.cameras.at("2010096").source_frame_rate == 100,
+            "verified plan view omitted the camera-bound encode cadence");
+
+    nlohmann::json tampered = plan;
+    tampered["schema_version"] = 2;
+    require(!spatial_roi::verify_plan(tampered, &error),
+            "mismatched v2 envelope and v3 payload must fail closed");
+
+    tampered = plan;
+    tampered["plan"]["schema_version"] = 2;
+    require(!spatial_roi::verify_plan(tampered, &error),
+            "mismatched v3 envelope and v2 payload must fail closed");
+
+    tampered = plan;
+    tampered["plan"]["configuration"]["schema_version"] = 2;
+    require(!spatial_roi::verify_plan(tampered, &error),
+            "plan and embedded configuration versions must match");
+}
+
 void bool_plan_apis_catch_malformed_utf8()
 {
     spatial_roi::Config config = make_config();
@@ -658,6 +849,8 @@ int main()
     const std::vector<std::pair<std::string, std::function<void()>>> tests = {
         {"default_is_off_and_closed_round_trip_works",
          default_is_off_and_closed_round_trip_works},
+        {"v3_profiles_are_required_closed_and_immutable",
+         v3_profiles_are_required_closed_and_immutable},
         {"enabled_requires_camera_and_roi", enabled_requires_camera_and_roi},
         {"disabled_config_cannot_build_or_verify_plan",
          disabled_config_cannot_build_or_verify_plan},
@@ -678,6 +871,8 @@ int main()
          recording_identity_uses_canonical_limit_and_token_binding},
         {"plan_is_deterministic_closed_and_digest_bound",
          plan_is_deterministic_closed_and_digest_bound},
+        {"v3_plan_follows_config_version_and_exposes_profile",
+         v3_plan_follows_config_version_and_exposes_profile},
         {"bool_plan_apis_catch_malformed_utf8",
          bool_plan_apis_catch_malformed_utf8},
     };

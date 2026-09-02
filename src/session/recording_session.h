@@ -186,6 +186,12 @@ struct SingleClipRecordingSessionManifestOptions {
     bool timed_stop_hit = false;
     nlohmann::json recording_stop_control = nlohmann::json::object();
     nlohmann::json recording_backend = nlohmann::json::object();
+    // False only for an explicit media policy that intentionally omits the
+    // continuous full-frame product. Camera identities remain in the
+    // manifest, but no synthetic full-frame paths/descriptors are minted and
+    // ROI aggregate completion is evaluated without a full-frame coverage
+    // requirement.
+    bool include_full_frame_product = true;
     std::vector<RecordingSessionCameraArtifact> cameras;
     std::vector<RecordingOutputDescriptor> recording_outputs;
 };

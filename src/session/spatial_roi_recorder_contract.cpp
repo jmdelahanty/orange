@@ -2,6 +2,8 @@
 
 #include "session/spatial_roi_recording_config.h"
 #include "spatial_roi_ipc_protocol.h"
+#include "spatial_roi_recorder_cuda_detach.h"
+#include "spatial_roi_recorder_storage_preflight.h"
 
 #include <cstdint>
 #include <filesystem>
@@ -108,6 +110,40 @@ json rect_json(const Rect& rect)
 json raster_json(const Raster& raster)
 {
     return {{"width", raster.width}, {"height", raster.height}};
+}
+
+// The plan's closed profile is projected into the recorder contract with the
+// fixed Mono8 -> NV12 geometry fields that are part of this recorder's wire
+// contract.  Keep the profile identifier and every encoder policy field
+// authenticated; the derived pixel fields are intentionally repeated on each
+// stream so a consumer never has to reconstruct them from a profile name.
+json encode_profile_json(const EncodeProfile& profile,
+                         const std::uint32_t frame_rate,
+                         const bool include_encoder_controls)
+{
+    json value = {
+        {"profile_id", profile.name},
+        {"codec", profile.codec},
+        {"preset", profile.preset},
+        {"tuning", profile.tuning},
+        {"lossless", profile.lossless},
+        {"rate_control_mode", profile.rate_control_mode},
+        {"quality_value", profile.quality_value},
+        {"gop_length", profile.gop_length},
+        {"frame_rate", frame_rate},
+        {"input_format", kSourcePixelFormat},
+        {"encoded_format", "nv12"},
+        {"no_resize", true},
+        {"luma_preserved_exactly", profile.lossless},
+        {"neutral_chroma_value", 128},
+    };
+    if (include_encoder_controls) {
+        value["aq"] = profile.aq;
+        value["temporal_aq"] = profile.temporal_aq;
+        value["lookahead"] = profile.lookahead;
+        value["lookahead_depth"] = profile.lookahead_depth;
+    }
+    return value;
 }
 
 bool check_exact_camera_gpu_mapping(
@@ -265,6 +301,35 @@ bool nv12_queue_byte_budget(const Raster& encoded_raster,
     return true;
 }
 
+bool detach_pool_byte_budget(const Raster& encoded_raster,
+                             const std::uint32_t pool_frames,
+                             std::uint64_t* bytes_out,
+                             std::string* error_out,
+                             const std::string& path)
+{
+    std::uint64_t pixels = 0;
+    std::uint64_t nv12_bytes = 0;
+    std::uint64_t bytes_per_slot = 0;
+    std::uint64_t pool_bytes = 0;
+    if (!bytes_out || pool_frames == 0 ||
+        !checked_multiply(encoded_raster.width,
+                          encoded_raster.height,
+                          &pixels) ||
+        !checked_add(pixels, pixels / 2U, &nv12_bytes) ||
+        !checked_add(pixels, nv12_bytes, &bytes_per_slot) ||
+        !checked_multiply(bytes_per_slot, pool_frames, &pool_bytes) ||
+        pool_bytes == 0 ||
+        pool_bytes > orange::spatial_roi::ipc::
+            kSpatialRoiRecorderCudaDetachMaxPoolBytes) {
+        return fail(
+            error_out,
+            path +
+                " recorder Mono8+NV12 detach-pool byte budget overflowed or exceeds the implementation ceiling");
+    }
+    *bytes_out = pool_bytes;
+    return true;
+}
+
 }  // namespace
 
 bool build_spatial_roi_recorder_contract(
@@ -287,6 +352,23 @@ bool build_spatial_roi_recorder_contract(
         if (!parse_verified_plan(verified_plan, &plan, error_out)) {
             return false;
         }
+        const bool legacy_plan =
+            plan.schema_version == kLegacyPlanSchemaVersion;
+        if (!legacy_plan && plan.schema_version != kPlanSchemaVersion) {
+            return fail(error_out,
+                        "spatial ROI recorder contract requires plan schema v2 or v3");
+        }
+        const int contract_schema_version =
+            legacy_plan ? kLegacySpatialRoiRecorderContractSchemaVersion
+                        : kSpatialRoiRecorderContractSchemaVersion;
+        const char* contract_scope =
+            legacy_plan ? kLegacySpatialRoiRecorderContractScope
+                        : kSpatialRoiRecorderContractScope;
+        const char* contract_mode =
+            legacy_plan ? kLegacySpatialRoiRecorderContractMode
+                        : kSpatialRoiRecorderContractMode;
+        const char* contract_backend =
+            legacy_plan ? kLegacyBackend : kBackend;
 
         std::filesystem::path root;
         if (!is_absolute_recording_root(recording_root, &root, error_out)) {
@@ -329,6 +411,7 @@ bool build_spatial_roi_recorder_contract(
         json streams = json::object();
         json stream_order = json::array();
         std::size_t stream_count = 0;
+        std::uint64_t max_detach_pool_bytes_total = 0;
         std::uint64_t max_queue_bytes_total = 0;
         std::uint64_t writer_queue_max_packets_total = 0;
         std::uint64_t writer_queue_max_bytes_total = 0;
@@ -425,15 +508,24 @@ bool build_spatial_roi_recorder_contract(
                             " encoded raster exceeds the IPC-v2 packed Mono8 byte bound");
                 }
 
+                std::uint64_t max_detach_pool_bytes = 0;
                 std::uint64_t max_queue_bytes = 0;
                 if (!nv12_queue_byte_budget(roi.encoded_raster,
                                             encode_queue_depth,
                                             &max_queue_bytes,
                                             error_out,
-                                            roi_path)) {
+                                            roi_path) ||
+                    !detach_pool_byte_budget(roi.encoded_raster,
+                                             encode_queue_depth,
+                                             &max_detach_pool_bytes,
+                                             error_out,
+                                             roi_path)) {
                     return false;
                 }
-                if (!checked_add(max_queue_bytes_total,
+                if (!checked_add(max_detach_pool_bytes_total,
+                                 max_detach_pool_bytes,
+                                 &max_detach_pool_bytes_total) ||
+                    !checked_add(max_queue_bytes_total,
                                  max_queue_bytes,
                                  &max_queue_bytes_total) ||
                     !checked_add(writer_queue_max_packets_total,
@@ -456,8 +548,8 @@ bool build_spatial_roi_recorder_contract(
 
                 const std::string environment_key =
                     "spatial_roi_" + roi.logical_stream_id;
-                const std::string socket_path =
-                    "/tmp/orange_external_recorder_" + roi.logical_stream_id + ".sock";
+                const std::string socket_path = expected_socket_path(
+                    plan.recording_identity_token, roi.logical_stream_id);
                 if (!environment_keys.insert(environment_key).second) {
                     return fail(error_out,
                                 "spatial ROI recorder has duplicate env_key " +
@@ -574,29 +666,23 @@ bool build_spatial_roi_recorder_contract(
                         {"source_coordinate_space", "camera_native_full_frame_pixels"},
                         {"video_coordinate_space", "spatial_roi_encoded_pixels"},
                     }},
-                    {"encode_profile", {
-                        {"codec", "hevc"},
-                        {"tuning", "lossless"},
-                        {"lossless", true},
-                        {"gop_length", 1},
-                        {"frame_rate", source_frame_rate},
-                        {"input_format", "mono8"},
-                        {"encoded_format", "nv12"},
-                        {"no_resize", true},
-                        {"luma_preserved_exactly", true},
-                        {"neutral_chroma_value", 128},
-                    }},
+                    {"encode_profile", encode_profile_json(
+                        plan.encode_profile,
+                        source_frame_rate,
+                        plan.schema_version == kPlanSchemaVersion)},
                     // Keep the direct names understood by the existing
                     // external-recorder materialization shape in addition to
                     // the nested profile above. These values are fixed here;
                     // a caller cannot override them per stream.
                     {"encode_fps", source_frame_rate},
-                    {"codec", "hevc"},
-                    {"tuning", "lossless"},
-                    {"rate_control_mode", "cqp"},
-                    {"quality_value", 0},
-                    {"gop", 1},
+                    {"codec", plan.encode_profile.codec},
+                    {"tuning", plan.encode_profile.tuning},
+                    {"rate_control_mode", plan.encode_profile.rate_control_mode},
+                    {"quality_value", plan.encode_profile.quality_value},
+                    {"gop", plan.encode_profile.gop_length},
                     {"encode_queue_depth", encode_queue_depth},
+                    {"detach_pool_frames", encode_queue_depth},
+                    {"max_detach_pool_bytes", max_detach_pool_bytes},
                     {"max_queue_bytes", max_queue_bytes},
                     {"writer_queue_max_packets",
                      kSpatialRoiRecorderWriterQueueMaxPackets},
@@ -677,11 +763,11 @@ bool build_spatial_roi_recorder_contract(
 
         *contract_out = {
             {"schema_id", kSpatialRoiRecorderContractSchemaId},
-            {"schema_version", kSpatialRoiRecorderContractSchemaVersion},
-            {"contract_scope", kSpatialRoiRecorderContractScope},
+            {"schema_version", contract_schema_version},
+            {"contract_scope", contract_scope},
             {"strict", true},
-            {"backend", "independent_lossless_external_ipc"},
-            {"mode", kSpatialRoiRecorderContractMode},
+            {"backend", contract_backend},
+            {"mode", contract_mode},
             {"supervise_processes", true},
             {"require_summary", true},
             {"require_status", true},
@@ -690,6 +776,14 @@ bool build_spatial_roi_recorder_contract(
             {"require_frame_identity_proof", true},
             {"require_gop_routing", false},
             {"require_storage_preflight", true},
+            {"storage_preflight_policy", {
+                {"schema_id",
+                 kSpatialRoiRecorderStoragePreflightPolicySchemaId},
+                {"schema_version",
+                 kSpatialRoiRecorderStoragePreflightPolicySchemaVersion},
+                {"required", true},
+                {"reserved_free_bytes", kSpatialRoiRecorderReservedFreeBytes},
+            }},
             {"preserve_shard_mp4s", false},
             {"recording_id", plan.recording_id},
             {"session_id", plan.recording_id},
@@ -705,8 +799,8 @@ bool build_spatial_roi_recorder_contract(
             {"ipc_v2", {
                 {"protocol", "orange.spatial_roi.external_recorder_ipc"},
                 {"version", 2},
-                {"features", {"cuda_ipc", "packed_mono8", "ack_release",
-                               "terminal_error"}},
+                {"features",
+                 orange::spatial_roi::ipc::spatial_roi_ipc_required_features()},
                 {"source_lifetime_mode", "deferred_release"},
                 {"ack", {
                     {"message_kind", "ACK"},
@@ -782,6 +876,7 @@ bool build_spatial_roi_recorder_contract(
                 }},
             }},
             {"aggregate_bounds", {
+                {"max_detach_pool_bytes_total", max_detach_pool_bytes_total},
                 {"max_queue_bytes_total", max_queue_bytes_total},
                 {"writer_queue_max_packets_total",
                  writer_queue_max_packets_total},

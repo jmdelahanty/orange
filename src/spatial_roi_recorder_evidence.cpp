@@ -5,6 +5,8 @@
 #include "session/spatial_roi_recording_config.h"
 #include "session/spatial_roi_recorder_contract.h"
 #include "session/spatial_roi_recorder_contract_parser.h"
+#include "spatial_roi_recorder_terminal_sidecars.h"
+#include "spatial_roi_recorder_video_sanity.h"
 
 #include <algorithm>
 #include <array>
@@ -14,7 +16,9 @@
 #include <cmath>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 #include <limits>
+#include <numeric>
 #include <set>
 #include <sstream>
 #include <string_view>
@@ -95,7 +99,7 @@ constexpr std::array<std::string_view, 31> kContractKeys = {
 constexpr std::array<std::string_view, 2> kPlanKeys = {
     "schema_id", "schema_version"};
 
-constexpr std::array<std::string_view, 47> kStreamKeys = {
+constexpr std::array<std::string_view, 49> kStreamKeys = {
     "stream_id", "logical_stream_id", "stream_kind", "output_kind",
     "camera_id", "camera_serial", "env_key", "socket_path",
     "analytics_gpu_id", "recorder_gpu_id", "source_gpu_id", "assigned_gpu_id",
@@ -104,6 +108,7 @@ constexpr std::array<std::string_view, 47> kStreamKeys = {
     "spatial_roi_plan_sha256", "frame_identity", "identity", "geometry_identity",
     "encode_profile", "encode_fps", "codec", "tuning", "rate_control_mode",
     "quality_value", "gop", "encode_queue_depth", "routing_policy",
+    "detach_pool_frames", "max_detach_pool_bytes",
     "expected_shard_gpu_ids", "recording_control", "rollover", "mp4",
     "metadata_csv", "keyframe_json", "perf_csv", "summary_json", "status_json",
     "video_sanity_json", "finalization_json", "recorder_log",
@@ -158,14 +163,10 @@ constexpr std::array<std::string_view, 4> kBindingGpuKeys = {
 constexpr std::array<std::string_view, 5> kEvidenceHeaderKeys = {
     "record_type", "schema_id", "schema_version", "canonicalization", "binding"};
 
-constexpr std::array<std::string_view, 9> kEvidenceFrameKeys = {
+constexpr std::array<std::string_view, 12> kEvidenceFrameKeysWithRest = {
     "record_type", "schema_id", "schema_version", "canonicalization",
-    "frame_record_index", "correlation", "frame", "detach", "ack"};
-
-constexpr std::array<std::string_view, 11> kEvidenceFrameKeysWithRest = {
-    "record_type", "schema_id", "schema_version", "canonicalization",
-    "frame_record_index", "correlation", "frame", "detach", "ack", "release",
-    "encode"};
+    "frame_record_index", "correlation", "frame", "detach", "dispatch",
+    "ack", "release", "encode"};
 
 constexpr std::array<std::string_view, 14> kEvidenceTerminalKeys = {
     "record_type", "schema_id", "schema_version", "canonicalization",
@@ -185,11 +186,14 @@ constexpr std::array<std::string_view, 7> kCorrelationKeysWithIds = {
 constexpr std::array<std::string_view, 2> kDetachKeys = {
     "status", "source_release_safe"};
 
-constexpr std::array<std::string_view, 3> kAckKeys = {
-    "sent", "accepted", "reason"};
+constexpr std::array<std::string_view, 2> kDispatchKeys = {
+    "admitted", "reason"};
 
-constexpr std::array<std::string_view, 3> kReleaseKeys = {
-    "sent", "succeeded", "reason"};
+constexpr std::array<std::string_view, 5> kAckKeys = {
+    "attempted", "sent", "accepted", "reason", "error"};
+
+constexpr std::array<std::string_view, 4> kReleaseKeys = {
+    "attempted", "sent", "reason", "error"};
 
 constexpr std::array<std::string_view, 5> kEncodeKeys = {
     "status", "output_frame_index", "packet_count", "encoded_bytes", "keyframe"};
@@ -197,10 +201,12 @@ constexpr std::array<std::string_view, 5> kEncodeKeys = {
 constexpr std::array<std::string_view, 4> kRangeKeys = {
     "recording_frame_id", "roi_stream_frame_index", "has_frames", "frame_count"};
 
-constexpr std::array<std::string_view, 10> kCountKeys = {
-    "detach_successes", "ack_sent", "ack_accepted", "release_sent",
-    "release_succeeded", "encoded_frames", "failed_frames", "packet_count",
-    "encoded_bytes", "keyframes"};
+constexpr std::array<std::string_view, 16> kCountKeys = {
+    "detach_successes", "dispatch_admitted", "dispatch_rejected",
+    "ack_attempted", "ack_sent", "ack_accepted", "release_attempted",
+    "release_sent", "encoded_frames", "failed_frames",
+    "packet_count", "encoded_bytes", "keyframes", "ack_write_failures",
+    "release_write_failures", "lifecycle_failures"};
 
 constexpr std::array<std::string_view, 5> kManifestKeys = {
     "schema_id", "schema_version", "canonicalization", "stream_kind",
@@ -644,42 +650,133 @@ bool validate_geometry(const json& geometry, std::string* error_out)
 
 bool validate_profile(const json& profile, std::string* error_out)
 {
-    // The generated v1 contract has ten profile members.  A future profile
-    // may add fields only by changing this evidence schema version.
-    static constexpr std::array<std::string_view, 10> keys = {
-        "codec", "tuning", "lossless", "gop_length", "frame_rate",
+    // Evidence v2 binds the complete immutable encoder profile projected by
+    // recorder-contract v4. Keep this closed shape in lockstep with the
+    // authoritative contract parser rather than silently discarding the
+    // preset/rate-control fields that distinguish the two supported profiles.
+    static constexpr std::array<std::string_view, 18> keys = {
+        "profile_id", "codec", "preset", "tuning", "lossless",
+        "rate_control_mode", "quality_value", "gop_length", "frame_rate",
         "input_format", "encoded_format", "no_resize", "luma_preserved_exactly",
-        "neutral_chroma_value"};
+        "neutral_chroma_value", "aq", "temporal_aq", "lookahead",
+        "lookahead_depth"};
     if (!exact_keys(profile, keys, "binding.encode_profile", error_out)) {
         return false;
     }
-    if (!read_const_string(profile, "codec", "hevc", "binding.encode_profile",
-                           error_out) ||
-        !read_const_string(profile, "tuning", "lossless", "binding.encode_profile",
-                           error_out) ||
-        !read_const_bool(profile, "lossless", true, "binding.encode_profile",
-                         error_out) ||
-        !read_const_bool(profile, "no_resize", true, "binding.encode_profile",
-                         error_out) ||
-        !read_const_bool(profile, "luma_preserved_exactly", true,
-                         "binding.encode_profile", error_out) ||
-        !read_const_string(profile, "input_format", "mono8",
-                           "binding.encode_profile", error_out) ||
-        !read_const_string(profile, "encoded_format", "nv12",
-                           "binding.encode_profile", error_out)) {
-        return false;
-    }
+    std::string profile_id;
+    std::string codec;
+    std::string preset;
+    std::string tuning;
+    std::string rate_control_mode;
+    std::string input_format;
+    std::string encoded_format;
+    bool lossless = false;
+    bool no_resize = false;
+    bool luma_preserved_exactly = false;
+    bool aq = false;
+    bool temporal_aq = false;
+    bool lookahead = false;
+    std::uint64_t quality_value = 0;
     std::uint64_t gop = 0;
     std::uint64_t fps = 0;
     std::uint64_t chroma = 0;
-    if (!read_u64(profile, "gop_length", &gop, "binding.encode_profile", error_out) ||
-        !read_u64(profile, "frame_rate", &fps, "binding.encode_profile", error_out) ||
+    std::uint64_t lookahead_depth = 0;
+    if (!read_string(profile, "profile_id", &profile_id,
+                     "binding.encode_profile", error_out) ||
+        !read_string(profile, "codec", &codec,
+                     "binding.encode_profile", error_out) ||
+        !read_string(profile, "preset", &preset,
+                     "binding.encode_profile", error_out) ||
+        !read_string(profile, "tuning", &tuning,
+                     "binding.encode_profile", error_out) ||
+        !read_bool(profile, "lossless", &lossless,
+                   "binding.encode_profile", error_out) ||
+        !read_string(profile, "rate_control_mode", &rate_control_mode,
+                     "binding.encode_profile", error_out) ||
+        !read_u64(profile, "quality_value", &quality_value,
+                  "binding.encode_profile", error_out) ||
+        !read_u64(profile, "gop_length", &gop,
+                  "binding.encode_profile", error_out) ||
+        !read_u64(profile, "frame_rate", &fps,
+                  "binding.encode_profile", error_out) ||
+        !read_string(profile, "input_format", &input_format,
+                     "binding.encode_profile", error_out) ||
+        !read_string(profile, "encoded_format", &encoded_format,
+                     "binding.encode_profile", error_out) ||
+        !read_bool(profile, "no_resize", &no_resize,
+                   "binding.encode_profile", error_out) ||
+        !read_bool(profile, "luma_preserved_exactly", &luma_preserved_exactly,
+                   "binding.encode_profile", error_out) ||
+        !read_bool(profile, "aq", &aq,
+                   "binding.encode_profile", error_out) ||
+        !read_bool(profile, "temporal_aq", &temporal_aq,
+                   "binding.encode_profile", error_out) ||
+        !read_bool(profile, "lookahead", &lookahead,
+                   "binding.encode_profile", error_out) ||
         !read_u64(profile, "neutral_chroma_value", &chroma,
                   "binding.encode_profile", error_out) ||
-        gop != 1 || fps == 0 || chroma != 128) {
-        return fail(error_out, "binding.encode_profile has invalid fixed-region values");
+        !read_u64(profile, "lookahead_depth", &lookahead_depth,
+                  "binding.encode_profile", error_out)) {
+        return false;
+    }
+
+    const auto matches = [&](const orange::session::spatial_roi::EncodeProfile& expected) {
+        return profile_id == expected.name && codec == expected.codec &&
+            preset == expected.preset && tuning == expected.tuning &&
+            lossless == expected.lossless &&
+            rate_control_mode == expected.rate_control_mode &&
+            quality_value == expected.quality_value &&
+            gop == expected.gop_length && aq == expected.aq &&
+            temporal_aq == expected.temporal_aq &&
+            lookahead == expected.lookahead &&
+            lookahead_depth == expected.lookahead_depth;
+    };
+    const bool supported =
+        matches(orange::session::spatial_roi::legacy_lossless_encode_profile()) ||
+        matches(orange::session::spatial_roi::
+                    legacy_low_latency_vbr_gop1_encode_profile()) ||
+        matches(orange::session::spatial_roi::low_latency_vbr_encode_profile());
+    if (!supported || fps == 0 || input_format != "mono8" ||
+        encoded_format != "nv12" || !no_resize ||
+        luma_preserved_exactly != lossless || chroma != 128) {
+        return fail(error_out,
+                    "binding.encode_profile is not an allowed immutable HEVC profile");
     }
     return true;
+}
+
+std::uint64_t encode_profile_gop_length(const json& profile)
+{
+    if (!profile.is_object() || !profile.contains("gop_length")) {
+        return 0;
+    }
+    std::uint64_t gop_length = 0;
+    return read_u64(profile, "gop_length", &gop_length,
+                    "binding.encode_profile", nullptr) && gop_length != 0
+        ? gop_length
+        : 0;
+}
+
+std::uint64_t expected_keyframe_count(const std::uint64_t frame_count,
+                                      const std::uint64_t gop_length)
+{
+    return frame_count == 0 || gop_length == 0
+        ? 0
+        : 1U + ((frame_count - 1U) / gop_length);
+}
+
+bool expected_keyframe_for_output(const std::uint64_t one_based_output_index,
+                                  const std::uint64_t gop_length)
+{
+    return one_based_output_index != 0 && gop_length != 0 &&
+        ((one_based_output_index - 1U) % gop_length) == 0;
+}
+
+std::string keyframe_policy_name(const std::uint64_t gop_length)
+{
+    return gop_length == 1
+        ? "all_frames_idr"
+        : "fixed_gop_" + std::to_string(gop_length) + "_idr";
 }
 
 bool validate_binding_json(const json& value, std::string* error_out)
@@ -942,16 +1039,61 @@ std::string metadata_csv_row(const SpatialRoiFrameDescriptor& descriptor,
 
 struct EvidenceCounts {
     std::uint64_t detach_successes = 0;
+    std::uint64_t dispatch_admitted = 0;
+    std::uint64_t dispatch_rejected = 0;
+    std::uint64_t ack_attempted = 0;
     std::uint64_t ack_sent = 0;
     std::uint64_t ack_accepted = 0;
+    std::uint64_t release_attempted = 0;
     std::uint64_t release_sent = 0;
-    std::uint64_t release_succeeded = 0;
     std::uint64_t encoded_frames = 0;
     std::uint64_t failed_frames = 0;
     std::uint64_t packet_count = 0;
     std::uint64_t encoded_bytes = 0;
     std::uint64_t keyframes = 0;
+    std::uint64_t ack_write_failures = 0;
+    std::uint64_t release_write_failures = 0;
+    std::uint64_t lifecycle_failures = 0;
 };
+
+struct CanonicalFrameLifecycle {
+    std::string detach_status;
+    bool source_release_safe = false;
+    bool dispatch_admitted = false;
+    std::string dispatch_reason;
+    bool ack_attempted = false;
+    bool ack_sent = false;
+    bool ack_accepted = false;
+    std::string ack_reason;
+    std::string ack_error;
+    bool release_attempted = false;
+    bool release_sent = false;
+    std::string release_reason;
+    std::string release_error;
+};
+
+bool canonicalize_lifecycle(const SpatialRoiRecorderFrameEvidence& value,
+                            CanonicalFrameLifecycle* out,
+                            std::string* error_out)
+{
+    if (!out) {
+        return fail(error_out, "frame lifecycle destination is null");
+    }
+    out->detach_status = value.detach_status;
+    out->source_release_safe = value.source_release_safe;
+    out->dispatch_admitted = value.dispatch_admitted;
+    out->dispatch_reason = value.dispatch_reason;
+    out->ack_attempted = value.ack_attempted;
+    out->ack_sent = value.ack_sent;
+    out->ack_accepted = value.ack_accepted;
+    out->ack_reason = value.ack_reason;
+    out->ack_error = value.ack_error;
+    out->release_attempted = value.release_attempted;
+    out->release_sent = value.release_sent;
+    out->release_reason = value.release_reason;
+    out->release_error = value.release_error;
+    return true;
+}
 
 struct NormalizedFinalizeRequest {
     std::string terminal_state;
@@ -1560,50 +1702,97 @@ bool validate_frame_input(const SpatialRoiRecorderEvidenceBinding& binding,
     if (!binding_matches_descriptor(binding, value.frame, error_out)) {
         return false;
     }
-    if (!safe_identifier(value.detach_status, 64) ||
+    CanonicalFrameLifecycle lifecycle;
+    if (!canonicalize_lifecycle(value, &lifecycle, error_out)) {
+        return false;
+    }
+    if (!safe_identifier(lifecycle.detach_status, 64) ||
         std::find(kDetachStatuses.begin(), kDetachStatuses.end(),
-                  value.detach_status) == kDetachStatuses.end()) {
+                  lifecycle.detach_status) == kDetachStatuses.end()) {
         return fail(error_out, "frame.detach_status is not a known detach result");
     }
-    if (!safe_text(value.ack_reason, kMaxReasonBytes) && !value.ack_reason.empty()) {
+    if (!safe_text(lifecycle.dispatch_reason, kMaxReasonBytes) &&
+        !lifecycle.dispatch_reason.empty()) {
+        return fail(error_out, "frame.dispatch_reason contains unsafe text");
+    }
+    if (!safe_text(lifecycle.ack_reason, kMaxReasonBytes) &&
+        !lifecycle.ack_reason.empty()) {
         return fail(error_out, "frame.ack_reason contains unsafe text");
     }
-    if (!safe_text(value.release_reason, kMaxReasonBytes) &&
-        !value.release_reason.empty()) {
+    if (!safe_text(lifecycle.ack_error, kMaxReasonBytes) &&
+        !lifecycle.ack_error.empty()) {
+        return fail(error_out, "frame.ack_error contains unsafe text");
+    }
+    if (!safe_text(lifecycle.release_reason, kMaxReasonBytes) &&
+        !lifecycle.release_reason.empty()) {
         return fail(error_out, "frame.release_reason contains unsafe text");
     }
-    if (value.detach_source_release_safe !=
-        (value.detach_status == "detached")) {
+    if (!safe_text(lifecycle.release_error, kMaxReasonBytes) &&
+        !lifecycle.release_error.empty()) {
+        return fail(error_out, "frame.release_error contains unsafe text");
+    }
+    if (lifecycle.dispatch_admitted && !lifecycle.dispatch_reason.empty()) {
+        return fail(error_out, "admitted dispatch reason must be empty");
+    }
+    if (!lifecycle.dispatch_admitted && lifecycle.dispatch_reason.empty() &&
+        (lifecycle.ack_attempted || lifecycle.release_attempted ||
+         lifecycle.detach_status == "detached")) {
+        return fail(error_out, "rejected dispatch requires a reason");
+    }
+    if (!lifecycle.ack_attempted &&
+        (lifecycle.ack_sent || lifecycle.ack_accepted ||
+         !lifecycle.ack_reason.empty() || !lifecycle.ack_error.empty())) {
+        return fail(error_out, "ACK evidence is attempted inconsistently");
+    }
+    if (lifecycle.ack_sent && !lifecycle.ack_attempted) {
+        return fail(error_out, "sent ACK was not attempted");
+    }
+    if (lifecycle.ack_accepted != lifecycle.dispatch_admitted) {
         return fail(error_out,
-                    "detach source-release truth does not match detach status");
+                    "ACK payload accepted bit must equal dispatch admission");
     }
-    if (!value.ack_sent && value.ack_accepted) {
-        return fail(error_out, "accepted ACK cannot be unsent");
-    }
-    if (value.ack_accepted && value.detach_status != "detached") {
-        return fail(error_out, "accepted ACK requires a detached frame");
-    }
-    if (value.release_sent != value.ack_sent) {
-        return fail(error_out,
-                    "terminal lifecycle evidence requires one RELEASE after every ACK");
-    }
-    if (value.ack_accepted && !value.ack_reason.empty()) {
+    if (lifecycle.ack_accepted && !lifecycle.ack_reason.empty()) {
         return fail(error_out, "accepted ACK reason must be empty");
     }
-    if (!value.ack_accepted && value.ack_reason.empty()) {
-        return fail(error_out, "unaccepted frame requires an ACK/lifecycle reason");
+    if (lifecycle.ack_attempted && !lifecycle.ack_accepted &&
+        lifecycle.ack_reason.empty()) {
+        return fail(error_out, "unaccepted ACK requires a reason");
     }
-    if (value.release_sent && !value.release_succeeded &&
-        value.release_reason.empty()) {
-        return fail(error_out, "failed RELEASE requires a reason");
+    if (lifecycle.ack_sent && !lifecycle.ack_error.empty()) {
+        return fail(error_out, "sent ACK must not carry a write error");
     }
-    if (!value.release_sent && value.release_succeeded) {
-        return fail(error_out, "successful RELEASE cannot be unsent");
+    if (!lifecycle.ack_sent && lifecycle.ack_attempted &&
+        lifecycle.ack_error.empty()) {
+        return fail(error_out, "failed ACK write requires an error");
     }
-    if ((!value.release_sent || value.release_succeeded) &&
-        !value.release_reason.empty()) {
+    if (!lifecycle.release_attempted &&
+        (lifecycle.release_sent ||
+         !lifecycle.release_reason.empty() || !lifecycle.release_error.empty())) {
+        return fail(error_out, "RELEASE evidence is attempted inconsistently");
+    }
+    if (lifecycle.release_sent && !lifecycle.release_attempted) {
+        return fail(error_out, "sent RELEASE was not attempted");
+    }
+    if (lifecycle.release_attempted && !lifecycle.ack_sent) {
         return fail(error_out,
-                    "unsent or successful RELEASE reason must be empty");
+                    "RELEASE cannot be attempted after ACK write failure");
+    }
+    const std::string expected_release_reason =
+        lifecycle.dispatch_admitted ? "source_detached" : "source_rejected";
+    if (lifecycle.release_attempted &&
+        lifecycle.release_reason != expected_release_reason) {
+        return fail(error_out,
+                    "RELEASE reason does not match dispatch outcome");
+    }
+    if (lifecycle.release_sent && !lifecycle.release_error.empty()) {
+        return fail(error_out, "sent RELEASE must not carry a write error");
+    }
+    if (lifecycle.release_attempted && !lifecycle.release_sent &&
+        lifecycle.release_error.empty()) {
+        return fail(error_out, "failed RELEASE write requires an error");
+    }
+    if (lifecycle.dispatch_admitted && !lifecycle.ack_attempted) {
+        return fail(error_out, "admitted dispatch requires an ACK attempt");
     }
     if (!safe_identifier(value.encode_status, 32) ||
         (value.encode_status != kEncodeEncoded &&
@@ -1611,15 +1800,25 @@ bool validate_frame_input(const SpatialRoiRecorderEvidenceBinding& binding,
          value.encode_status != kEncodeNotAttempted)) {
         return fail(error_out, "frame encode status is not recognized");
     }
-    if (!value.ack_accepted && (value.output_frame_index != 0 ||
-                                value.encode_status == kEncodeEncoded)) {
-        return fail(error_out, "unaccepted frame contains encode success evidence");
+    if (!lifecycle.dispatch_admitted && value.encode_status != kEncodeNotAttempted) {
+        return fail(error_out, "rejected dispatch cannot carry encode evidence");
+    }
+    if (lifecycle.dispatch_admitted && value.encode_status == kEncodeNotAttempted) {
+        return fail(error_out, "admitted dispatch requires an encoder result");
+    }
+    const std::uint64_t gop_length =
+        encode_profile_gop_length(binding.encode_profile);
+    if (gop_length == 0) {
+        return fail(error_out, "frame binding has no valid GOP length");
     }
     if (value.encode_status == kEncodeEncoded &&
         (value.output_frame_index == 0 || value.packet_count != 1 ||
-         value.encoded_bytes == 0 || !value.keyframe ||
+         value.encoded_bytes == 0 ||
+         value.keyframe != expected_keyframe_for_output(
+                               value.output_frame_index, gop_length) ||
          value.output_frame_index != value.frame.roi_stream_frame_index)) {
-        return fail(error_out, "encoded frame requires positive output/packet/byte counts");
+        return fail(error_out,
+                    "encoded frame requires positive output/packet/byte counts and exact configured-GOP keyframe evidence");
     }
     if (value.encode_status != kEncodeEncoded &&
         (value.output_frame_index != 0 || value.packet_count != 0 ||
@@ -1627,38 +1826,57 @@ bool validate_frame_input(const SpatialRoiRecorderEvidenceBinding& binding,
         return fail(error_out,
                     "nonencoded frame must not claim packets, bytes, or keyframes");
     }
-    if (value.encode_status == kEncodeFailed && !value.ack_accepted) {
-        return fail(error_out, "encode failure requires an admitted output frame");
-    }
-    if (!value.ack_accepted &&
-        (value.packet_count != 0 || value.encoded_bytes != 0 || value.keyframe)) {
-        return fail(error_out, "rejected frame contains packet evidence");
-    }
     if (counts_out) {
-        if (value.detach_status == "detached" && !increment(&counts_out->detach_successes)) {
+        if (lifecycle.detach_status == "detached" &&
+            !increment(&counts_out->detach_successes)) {
             return fail(error_out, "detach success count overflow");
         }
-        if (value.ack_sent && !increment(&counts_out->ack_sent)) {
+        if (lifecycle.dispatch_admitted &&
+            !increment(&counts_out->dispatch_admitted)) {
+            return fail(error_out, "dispatch admission count overflow");
+        }
+        if (!lifecycle.dispatch_admitted &&
+            !increment(&counts_out->dispatch_rejected)) {
+            return fail(error_out, "dispatch rejection count overflow");
+        }
+        if (lifecycle.ack_attempted && !increment(&counts_out->ack_attempted)) {
+            return fail(error_out, "ACK attempt count overflow");
+        }
+        if (lifecycle.ack_sent && !increment(&counts_out->ack_sent)) {
             return fail(error_out, "ACK count overflow");
         }
-        if (value.ack_accepted && !increment(&counts_out->ack_accepted)) {
+        if (lifecycle.ack_accepted && !increment(&counts_out->ack_accepted)) {
             return fail(error_out, "accepted ACK count overflow");
         }
-        if (value.release_sent && !increment(&counts_out->release_sent)) {
+        if (lifecycle.release_attempted &&
+            !increment(&counts_out->release_attempted)) {
+            return fail(error_out, "RELEASE attempt count overflow");
+        }
+        if (lifecycle.release_sent && !increment(&counts_out->release_sent)) {
             return fail(error_out, "RELEASE count overflow");
         }
-        if (value.release_succeeded && !increment(&counts_out->release_succeeded)) {
-            return fail(error_out, "successful RELEASE count overflow");
+        if (lifecycle.ack_attempted && !lifecycle.ack_sent &&
+            !lifecycle.ack_error.empty() &&
+            !increment(&counts_out->ack_write_failures)) {
+            return fail(error_out, "ACK write failure count overflow");
+        }
+        if (lifecycle.release_attempted && !lifecycle.release_sent &&
+            !lifecycle.release_error.empty() &&
+            !increment(&counts_out->release_write_failures)) {
+            return fail(error_out, "RELEASE write failure count overflow");
+        }
+        const bool frame_failed = lifecycle.detach_status != "detached" ||
+            !lifecycle.dispatch_admitted || !lifecycle.ack_sent ||
+            !lifecycle.release_sent || value.encode_status != kEncodeEncoded;
+        if (frame_failed && !increment(&counts_out->failed_frames)) {
+            return fail(error_out, "failed frame count overflow");
+        }
+        if (frame_failed && !increment(&counts_out->lifecycle_failures)) {
+            return fail(error_out, "lifecycle failure count overflow");
         }
         if (value.encode_status == kEncodeEncoded &&
             !increment(&counts_out->encoded_frames)) {
             return fail(error_out, "encoded frame count overflow");
-        }
-        const bool frame_failed = value.detach_status != "detached" ||
-            !value.ack_accepted || !value.release_succeeded ||
-            value.encode_status != kEncodeEncoded;
-        if (frame_failed && !increment(&counts_out->failed_frames)) {
-            return fail(error_out, "failed frame count overflow");
         }
         if (!increment(&counts_out->packet_count, value.packet_count) ||
             !increment(&counts_out->encoded_bytes, value.encoded_bytes)) {
@@ -1674,6 +1892,9 @@ bool validate_frame_input(const SpatialRoiRecorderEvidenceBinding& binding,
 json frame_evidence_json(const SpatialRoiRecorderFrameEvidence& value,
                          const std::size_t record_index)
 {
+    CanonicalFrameLifecycle lifecycle;
+    std::string ignored;
+    (void)canonicalize_lifecycle(value, &lifecycle, &ignored);
     return {
         {"record_type", kFrameRecordType},
         {"schema_id", kSpatialRoiRecorderEvidenceSchemaId},
@@ -1683,18 +1904,25 @@ json frame_evidence_json(const SpatialRoiRecorderFrameEvidence& value,
         {"correlation", correlation_json(value.frame)},
         {"frame", spatial_roi_frame_descriptor_to_json(value.frame)},
         {"detach", {
-            {"status", value.detach_status},
-            {"source_release_safe", value.detach_source_release_safe},
+            {"status", lifecycle.detach_status},
+            {"source_release_safe", lifecycle.source_release_safe},
+        }},
+        {"dispatch", {
+            {"admitted", lifecycle.dispatch_admitted},
+            {"reason", lifecycle.dispatch_reason},
         }},
         {"ack", {
-            {"sent", value.ack_sent},
-            {"accepted", value.ack_accepted},
-            {"reason", value.ack_reason},
+            {"attempted", lifecycle.ack_attempted},
+            {"sent", lifecycle.ack_sent},
+            {"accepted", lifecycle.ack_accepted},
+            {"reason", lifecycle.ack_reason},
+            {"error", lifecycle.ack_error},
         }},
         {"release", {
-            {"sent", value.release_sent},
-            {"succeeded", value.release_succeeded},
-            {"reason", value.release_reason},
+            {"attempted", lifecycle.release_attempted},
+            {"sent", lifecycle.release_sent},
+            {"reason", lifecycle.release_reason},
+            {"error", lifecycle.release_error},
         }},
         {"encode", {
             {"status", value.encode_status},
@@ -1710,15 +1938,21 @@ json counts_json(const EvidenceCounts& counts)
 {
     return {
         {"detach_successes", counts.detach_successes},
+        {"dispatch_admitted", counts.dispatch_admitted},
+        {"dispatch_rejected", counts.dispatch_rejected},
+        {"ack_attempted", counts.ack_attempted},
         {"ack_sent", counts.ack_sent},
         {"ack_accepted", counts.ack_accepted},
+        {"release_attempted", counts.release_attempted},
         {"release_sent", counts.release_sent},
-        {"release_succeeded", counts.release_succeeded},
         {"encoded_frames", counts.encoded_frames},
         {"failed_frames", counts.failed_frames},
         {"packet_count", counts.packet_count},
         {"encoded_bytes", counts.encoded_bytes},
         {"keyframes", counts.keyframes},
+        {"ack_write_failures", counts.ack_write_failures},
+        {"release_write_failures", counts.release_write_failures},
+        {"lifecycle_failures", counts.lifecycle_failures},
     };
 }
 
@@ -2493,46 +2727,41 @@ bool validate_perf_csv(const int fd,
                        const std::uint64_t expected_frames,
                        std::string* error_out)
 {
-    bool frame_count_seen = false;
-    const auto callback = [&](const std::string& line,
-                              const std::uint64_t line_number) -> bool {
-        if (line_number == 1) {
-            return line == "metric,value" ||
-                fail(error_out, "perf CSV header is invalid");
-        }
-        std::array<std::string_view, 2> fields{};
-        if (!split_exact_csv(line, &fields)) {
-            return fail(error_out, "perf CSV row has the wrong column count");
-        }
-        std::uint64_t value = 0;
-        if (fields[0] == "frames") {
-            if (frame_count_seen || !parse_decimal_u64(fields[1], &value) ||
-                value != expected_frames) {
-                return fail(error_out,
-                            "perf CSV frame cardinality is invalid");
-            }
-            frame_count_seen = true;
-        } else {
-            if (fields[0].size() > 128 || fields[1].size() > 256 ||
-                std::any_of(fields[0].begin(), fields[0].end(),
-                            [](const unsigned char ch) {
-                                return !(std::isalnum(ch) || ch == '_' || ch == '-' ||
-                                         ch == '.');
-                            })) {
-                return fail(error_out, "perf CSV metric name/value is unsafe");
-            }
-        }
-        return true;
-    };
-    std::uint64_t line_count = 0;
-    if (!visit_bounded_lines_fd(
-            fd, 256 + binding.max_frames_per_stream * 512, 512,
-            binding.max_frames_per_stream + 1, "perf CSV", callback,
-            &line_count, error_out)) {
+    std::string actual;
+    if (!read_open_file_fd(fd, kSpatialRoiRecorderManifestMaxFileBytes,
+                           "perf CSV", &actual, error_out)) {
         return false;
     }
-    return (line_count >= 2 && frame_count_seen) ||
-        fail(error_out, "perf CSV lacks its exact frame count");
+    const std::string expected =
+        std::string("metric,value\n") +
+        "schema_id," + kSpatialRoiRecorderPerfSchemaId +
+        "\nschema_version," +
+        std::to_string(kSpatialRoiRecorderTerminalCandidateSchemaVersion) +
+        "\nstate," + kSpatialRoiRecorderPendingManifestState +
+        "\ncertifying,false\nrequires_finalized_evidence_manifest,true"
+        "\ncommit_marker,evidence_manifest"
+        "\ncommit_marker_state,required_finalized\nlogical_stream_id," +
+        binding.logical_stream_id + "\nframe_count," +
+        std::to_string(expected_frames) + "\n";
+    return actual == expected ||
+        fail(error_out, "perf CSV is not the exact pending-manifest candidate");
+}
+
+json terminal_candidate_base(const char* schema_id,
+                             const SpatialRoiRecorderEvidenceBinding& binding,
+                             const std::uint64_t expected_frames)
+{
+    return {
+        {"schema_id", schema_id},
+        {"schema_version", kSpatialRoiRecorderTerminalCandidateSchemaVersion},
+        {"state", kSpatialRoiRecorderPendingManifestState},
+        {"certifying", false},
+        {"requires_finalized_evidence_manifest", true},
+        {"commit_marker", "evidence_manifest"},
+        {"commit_marker_state", "required_finalized"},
+        {"logical_stream_id", binding.logical_stream_id},
+        {"frame_count", expected_frames},
+    };
 }
 
 bool validate_terminal_json_sidecar(
@@ -2550,71 +2779,49 @@ bool validate_terminal_json_sidecar(
     json value;
     if (!strict_json_from_bytes(bytes, 200000, &value,
                                 std::string(kind) + " sidecar", error_out) ||
-        !value.is_object() || value.empty() || value.size() > 128) {
+        !value.is_object()) {
         return fail(error_out, std::string(kind) + " sidecar is not a bounded object");
     }
-    std::uint64_t parsed_frames = 0;
-    if (!read_u64(value, "frame_count", &parsed_frames,
-                  std::string(kind), error_out) ||
-        parsed_frames != expected_frames) {
-        return fail(error_out,
-                    std::string(kind) + " sidecar frame count is invalid");
-    }
-    const auto stream = value.find("logical_stream_id");
-    if (stream == value.end() || !stream->is_string() ||
-        stream->get<std::string>() != binding.logical_stream_id) {
-        return fail(error_out,
-                    std::string(kind) + " sidecar stream identity is invalid");
-    }
+    json expected;
     if (std::string_view(kind) == "summary") {
-        const auto status = value.find("status");
-        return (status != value.end() && status->is_string() &&
-                status->get<std::string>() == kTerminalComplete) ||
-            fail(error_out, "summary sidecar is not complete");
+        expected = terminal_candidate_base(kSpatialRoiRecorderSummarySchemaId,
+                                           binding, expected_frames);
+        expected["status"] = kSpatialRoiRecorderPendingManifestState;
+    } else if (std::string_view(kind) == "status") {
+        expected = terminal_candidate_base(kSpatialRoiRecorderStatusSchemaId,
+                                           binding, expected_frames);
+        expected["terminal"] = false;
+    } else {
+        return fail(error_out, "unknown terminal JSON sidecar kind");
     }
-    const auto terminal = value.find("terminal");
-    const auto state = value.find("state");
-    return (terminal != value.end() && terminal->is_boolean() &&
-            terminal->get<bool>() && state != value.end() && state->is_string() &&
-            state->get<std::string>() == kTerminalComplete) ||
-        fail(error_out, "status sidecar is not terminal-complete");
+    return value == expected ||
+        fail(error_out, std::string(kind) +
+                            " sidecar is not the exact pending-manifest candidate");
 }
 
 bool validate_recorder_log(const int fd,
                            const SpatialRoiRecorderEvidenceBinding& binding,
+                           const std::uint64_t expected_frames,
                            std::string* error_out)
 {
-    std::string last_line;
-    const auto callback = [&](const std::string& line, std::uint64_t) -> bool {
-        if (std::any_of(line.begin(), line.end(), [](const unsigned char ch) {
-                return (ch < 0x20 && ch != '\t') || ch == 0x7f;
-            })) {
-            return fail(error_out, "recorder log contains unsafe control bytes");
-        }
-        last_line = line;
-        return true;
-    };
-    std::uint64_t max_lines = binding.max_frames_per_stream;
-    if (max_lines > std::numeric_limits<std::uint64_t>::max() - 1024) {
-        return fail(error_out, "recorder log line bound overflowed");
-    }
-    max_lines += 1024;
-    if (!visit_bounded_lines_fd(
-            fd, binding.max_evidence_bytes_per_stream, 64 * 1024, max_lines,
-            "recorder log", callback, nullptr, error_out)) {
+    std::string actual;
+    if (!read_open_file_fd(fd, kSpatialRoiRecorderManifestMaxFileBytes,
+                           "recorder log", &actual, error_out)) {
         return false;
     }
-    constexpr std::string_view kCompleteSuffix = " complete";
-    const bool exact_complete = last_line == kTerminalComplete;
-    const bool complete_suffix =
-        last_line.size() >= kCompleteSuffix.size() &&
-        last_line.compare(last_line.size() - kCompleteSuffix.size(),
-                          kCompleteSuffix.size(), kCompleteSuffix) == 0;
-    const bool named_complete =
-        last_line.find("state=complete") != std::string::npos ||
-        last_line.find("status=complete") != std::string::npos;
-    return (exact_complete || complete_suffix || named_complete) ||
-        fail(error_out, "recorder log lacks a terminal completion record");
+    const std::string expected =
+        std::string("schema_id=") + kSpatialRoiRecorderLogSchemaId +
+        " schema_version=" +
+        std::to_string(kSpatialRoiRecorderTerminalCandidateSchemaVersion) +
+        " state=" + kSpatialRoiRecorderPendingManifestState +
+        " certifying=false requires_finalized_evidence_manifest=true"
+        " commit_marker=evidence_manifest"
+        " commit_marker_state=required_finalized logical_stream_id=" +
+        binding.logical_stream_id + " frame_count=" +
+        std::to_string(expected_frames) + "\n";
+    return actual == expected ||
+        fail(error_out,
+             "recorder log is not the exact pending-manifest candidate");
 }
 
 bool validate_transport_sidecar(
@@ -2623,40 +2830,21 @@ bool validate_transport_sidecar(
     const std::uint64_t expected_frames,
     std::string* error_out)
 {
-    json last = nullptr;
-    const auto callback = [&](const std::string& line, std::uint64_t) -> bool {
-        json value;
-        if (!strict_json_from_bytes(line, 200000, &value,
-                                    "transport sidecar record", error_out) ||
-            !value.is_object() || value.empty() || value.size() > 128) {
-            return fail(error_out,
-                        "transport sidecar record is not a bounded object");
-        }
-        last = std::move(value);
-        return true;
-    };
-    std::uint64_t max_lines = binding.max_frames_per_stream;
-    if (max_lines > std::numeric_limits<std::uint64_t>::max() - 16) {
-        return fail(error_out, "transport sidecar record bound overflowed");
-    }
-    max_lines += 16;
-    if (!visit_bounded_lines_fd(
-            fd, binding.max_evidence_bytes_per_stream,
-            kSpatialRoiRecorderEvidenceMaxLineBytes, max_lines,
-            "transport sidecar", callback, nullptr, error_out)) {
+    std::string bytes;
+    if (!read_open_file_fd(fd, kSpatialRoiRecorderManifestMaxFileBytes,
+                           "transport sidecar", &bytes, error_out)) {
         return false;
     }
-    std::uint64_t frame_count = 0;
-    if (!last.is_object() || !last.value("terminal", false) ||
-        last.value("state", std::string()) != kTerminalComplete ||
-        !read_u64(last, "frame_count", &frame_count, "transport", error_out) ||
-        frame_count != expected_frames ||
-        last.value("logical_stream_id", std::string()) !=
-            binding.logical_stream_id) {
-        return fail(error_out,
-                    "transport sidecar lacks its exact terminal stream cardinality");
+    json actual;
+    if (!strict_json_from_bytes(bytes, 200000, &actual,
+                                "transport sidecar", error_out)) {
+        return false;
     }
-    return true;
+    const json expected = terminal_candidate_base(
+        kSpatialRoiRecorderTransportSchemaId, binding, expected_frames);
+    return actual == expected ||
+        fail(error_out,
+             "transport sidecar is not the exact pending-manifest candidate");
 }
 
 bool bytes_equal_at(const int parent_fd,
@@ -3122,6 +3310,7 @@ bool validate_container_finalization_sidecar(
 bool validate_closed_keyframe_sidecar(const int fd,
                                       const std::uint64_t expected_frames,
                                       const std::uint64_t expected_fps,
+                                      const std::uint64_t expected_gop_length,
                                       std::string* error_out)
 {
     std::string bytes;
@@ -3181,21 +3370,26 @@ bool validate_closed_keyframe_sidecar(const int fd,
     const json& policy = document.at("keyframe_policy");
     static constexpr std::array<std::string_view, 4> policy_keys = {
         "name", "keyframe_frames", "non_keyframe_frames", "satisfied"};
+    std::string policy_name;
     std::uint64_t keyframe_frames = 0;
     std::uint64_t non_keyframe_frames = 0;
     if (!exact_keys(policy, policy_keys, "keyframe_summary.keyframe_policy",
                     error_out) ||
-        !read_const_string(policy, "name", "all_frames_idr",
-                           "keyframe_summary.keyframe_policy", error_out) ||
+        !read_string(policy, "name", &policy_name,
+                     "keyframe_summary.keyframe_policy", error_out) ||
         !read_u64(policy, "keyframe_frames", &keyframe_frames,
                   "keyframe_summary.keyframe_policy", error_out) ||
         !read_u64(policy, "non_keyframe_frames", &non_keyframe_frames,
                   "keyframe_summary.keyframe_policy", error_out) ||
         !read_const_bool(policy, "satisfied", true,
                          "keyframe_summary.keyframe_policy", error_out) ||
-        keyframe_frames != expected_frames || non_keyframe_frames != 0) {
+        expected_gop_length == 0 ||
+        policy_name != keyframe_policy_name(expected_gop_length) ||
+        keyframe_frames !=
+            expected_keyframe_count(expected_frames, expected_gop_length) ||
+        non_keyframe_frames != expected_frames - keyframe_frames) {
         return fail(error_out,
-                    "keyframe summary GOP-1 policy is not satisfied");
+                    "keyframe summary configured-GOP policy is not satisfied");
     }
     return true;
 }
@@ -3216,10 +3410,14 @@ bool finite_number(const json& value, double* output)
 bool validate_closed_video_sanity_sidecar(
     const int fd,
     const SpatialRoiRecorderEvidenceBinding& binding,
-    const std::string& relative_path,
     const std::string& video_relative_path,
     const std::uint64_t video_size,
+    const std::string& video_sha256,
+    const std::uint64_t video_device,
+    const std::uint64_t video_inode,
     const std::uint64_t expected_frames,
+    const SpatialRoiRecorderArtifactIdentity& video_root_identity,
+    const SpatialRoiRecorderVideoSanityResult* verified_probe,
     std::string* error_out)
 {
     std::string bytes;
@@ -3232,14 +3430,34 @@ bool validate_closed_video_sanity_sidecar(
                                 "video sanity sidecar", error_out)) {
         return false;
     }
-    static constexpr std::array<std::string_view, 15> keys = {
-        "schema_version", "video_path", "content_checked", "content_valid",
-        "status", "width", "height", "nb_frames", "container",
-        "sampled_frame_count", "mean_luma", "max_stddev",
-        "max_black_fraction_lt8", "thresholds", "sampled_frames"};
+    static constexpr std::array<std::string_view, 32> keys = {
+        "schema_id", "schema_version", "state", "certifying",
+        "requires_finalized_evidence_manifest", "commit_marker",
+        "commit_marker_state", "logical_stream_id", "frame_count",
+        "video_path", "video_size_bytes", "video_sha256", "video_device",
+        "video_inode", "content_checked", "content_valid", "status", "width",
+        "height", "nb_frames", "container", "container_name", "codec",
+        "decoder", "timeline", "pixel_semantics", "sampled_frame_count",
+        "mean_luma", "max_stddev", "max_black_fraction_lt8", "thresholds",
+        "sampled_frames"};
     if (!exact_keys(document, keys, "video_sanity", error_out) ||
-        !read_const_int(document, "schema_version", 1, "video_sanity",
-                        error_out) ||
+        !read_const_string(document, "schema_id",
+                           kSpatialRoiRecorderVideoSanitySchemaId,
+                           "video_sanity", error_out) ||
+        !read_const_int(document, "schema_version",
+                        kSpatialRoiRecorderTerminalCandidateSchemaVersion,
+                        "video_sanity", error_out) ||
+        !read_const_string(document, "state",
+                           kSpatialRoiRecorderPendingManifestState,
+                           "video_sanity", error_out) ||
+        !read_const_bool(document, "certifying", false, "video_sanity",
+                         error_out) ||
+        !read_const_bool(document, "requires_finalized_evidence_manifest", true,
+                         "video_sanity", error_out) ||
+        !read_const_string(document, "commit_marker", "evidence_manifest",
+                           "video_sanity", error_out) ||
+        !read_const_string(document, "commit_marker_state",
+                           "required_finalized", "video_sanity", error_out) ||
         !read_const_bool(document, "content_checked", true, "video_sanity",
                          error_out) ||
         !read_const_bool(document, "content_valid", true, "video_sanity",
@@ -3248,15 +3466,51 @@ bool validate_closed_video_sanity_sidecar(
                            error_out)) {
         return false;
     }
+    std::string logical_stream_id;
     std::string video_path;
+    std::string sidecar_sha256;
+    std::uint64_t sidecar_frames = 0;
+    std::uint64_t sidecar_video_size = 0;
+    std::uint64_t sidecar_video_device = 0;
+    std::uint64_t sidecar_video_inode = 0;
+    if (!read_string(document, "logical_stream_id", &logical_stream_id,
+                     "video_sanity", error_out) ||
+        !read_u64(document, "frame_count", &sidecar_frames, "video_sanity",
+                  error_out) ||
+        !read_u64(document, "video_size_bytes", &sidecar_video_size,
+                  "video_sanity", error_out) ||
+        !read_string(document, "video_sha256", &sidecar_sha256,
+                     "video_sanity", error_out, 71) ||
+        !read_u64(document, "video_device", &sidecar_video_device,
+                  "video_sanity", error_out) ||
+        !read_u64(document, "video_inode", &sidecar_video_inode,
+                  "video_sanity", error_out) ||
+        logical_stream_id != binding.logical_stream_id ||
+        sidecar_frames != expected_frames || sidecar_video_size != video_size ||
+        !is_sha256(sidecar_sha256) || sidecar_sha256 != video_sha256 ||
+        sidecar_video_inode == 0 ||
+        (verified_probe != nullptr &&
+         (sidecar_video_device != video_device ||
+          sidecar_video_inode != video_inode))) {
+        return fail(error_out,
+                    "video sanity identity does not bind the retained video receipt");
+    }
+    if (verified_probe != nullptr &&
+        (verified_probe->artifact_root_identity() != video_root_identity ||
+         verified_probe->video_identity().device != video_device ||
+         verified_probe->video_identity().inode != video_inode ||
+         verified_probe->relative_path() != video_relative_path ||
+         verified_probe->size_bytes() != video_size ||
+         verified_probe->sha256() != video_sha256 ||
+         verified_probe->frame_count() != expected_frames)) {
+        return fail(error_out,
+                    "video sanity decoder capability does not bind the retained video");
+    }
     if (!read_string(document, "video_path", &video_path, "video_sanity",
                      error_out, kSpatialRoiRecorderEvidenceMaxPathBytes)) {
         return false;
     }
-    const std::string video_absolute =
-        (std::filesystem::path(binding.artifact_root) / video_relative_path)
-            .lexically_normal().generic_string();
-    if (video_path != video_relative_path && video_path != video_absolute) {
+    if (video_path != video_relative_path) {
         return fail(error_out,
                     "video sanity sidecar does not bind the contract video");
     }
@@ -3273,9 +3527,25 @@ bool validate_closed_video_sanity_sidecar(
         height != binding.geometry_identity.at("encoded_raster").at("height") ||
         frames != expected_frames || sampled_count == 0 || sampled_count > 5 ||
         !document.at("sampled_frames").is_array() ||
-        document.at("sampled_frames").size() != sampled_count) {
+        document.at("sampled_frames").size() != sampled_count ||
+        (verified_probe != nullptr &&
+         (verified_probe->width() != width ||
+          verified_probe->height() != height))) {
         return fail(error_out,
                     "video sanity dimensions/frame/sample counts do not match evidence");
+    }
+    std::vector<std::uint64_t> expected_sample_indices{0};
+    if (expected_frames > 2) {
+        expected_sample_indices.push_back(expected_frames / 2);
+    }
+    if (expected_frames > 1) {
+        expected_sample_indices.push_back(expected_frames - 1);
+    }
+    if (sampled_count != expected_sample_indices.size() ||
+        (verified_probe != nullptr &&
+         verified_probe->samples().size() != sampled_count)) {
+        return fail(error_out,
+                    "video sanity does not use the deterministic sample schedule");
     }
     double mean_luma = 0;
     double max_stddev = 0;
@@ -3300,12 +3570,19 @@ bool validate_closed_video_sanity_sidecar(
         black_threshold != 0.98 || stddev_threshold != 5.0) {
         return fail(error_out, "video sanity thresholds are not the closed v1 values");
     }
+    if (height != 0 && width > std::numeric_limits<std::uint64_t>::max() / height) {
+        return fail(error_out, "video sanity raster byte count overflowed");
+    }
     const std::uint64_t pixels = width * height;
     static constexpr std::array<std::string_view, 8> sample_keys = {
         "requested_frame_index", "mean", "stddev", "min", "max",
         "black_fraction_lt8", "white_fraction_gt247", "decoded_bytes"};
     std::uint64_t previous_index = 0;
+    double sample_mean_sum = 0.0;
+    double observed_max_stddev = 0.0;
+    double observed_max_black = 0.0;
     bool first = true;
+    std::size_t sample_offset = 0;
     for (const auto& sample : document.at("sampled_frames")) {
         if (!exact_keys(sample, sample_keys, "video_sanity.sample", error_out)) {
             return false;
@@ -3330,27 +3607,247 @@ bool validate_closed_video_sanity_sidecar(
             !finite_number(sample.at("stddev"), &sample_stddev) ||
             !finite_number(sample.at("black_fraction_lt8"), &black) ||
             !finite_number(sample.at("white_fraction_gt247"), &white) ||
-            index >= expected_frames || (!first && index <= previous_index) ||
+            index >= expected_frames ||
+            index != expected_sample_indices.at(sample_offset) ||
+            (!first && index <= previous_index) ||
             min_value > max_value || max_value > 255 || decoded_bytes != pixels ||
             sample_mean < 0 || sample_mean > 255 || sample_stddev < 0 ||
-            black < 0 || black > 1 || white < 0 || white > 1) {
+            sample_mean < static_cast<double>(min_value) ||
+            sample_mean > static_cast<double>(max_value) ||
+            sample_stddev >
+                (static_cast<double>(max_value) -
+                 static_cast<double>(min_value)) /
+                        2.0 +
+                    1e-12 ||
+            black < 0 || black > 1 || white < 0 || white > 1 ||
+            black + white > 1.0 + 1e-12 ||
+            (min_value >= 8 && black != 0.0) ||
+            (max_value < 8 && black != 1.0) ||
+            (max_value <= 247 && white != 0.0) ||
+            (min_value > 247 && white != 1.0)) {
             return fail(error_out,
                         "video sanity sampled-frame evidence is invalid");
         }
+        if (verified_probe != nullptr) {
+            const auto& probed = verified_probe->samples().at(sample_offset);
+            if (probed.requested_frame_index != index ||
+                probed.mean != sample_mean ||
+                probed.stddev != sample_stddev || probed.min != min_value ||
+                probed.max != max_value ||
+                probed.black_fraction_lt8 != black ||
+                probed.white_fraction_gt247 != white ||
+                probed.decoded_bytes != decoded_bytes) {
+                return fail(error_out,
+                            "video sanity sidecar samples do not match the decoder capability");
+            }
+        }
         previous_index = index;
         first = false;
+        sample_mean_sum += sample_mean;
+        observed_max_stddev = std::max(observed_max_stddev, sample_stddev);
+        observed_max_black = std::max(observed_max_black, black);
+        ++sample_offset;
     }
+    const double observed_mean = sample_mean_sum / static_cast<double>(sampled_count);
+    const auto approximately_equal = [](const double lhs, const double rhs) {
+        const double scale = std::max({1.0, std::fabs(lhs), std::fabs(rhs)});
+        return std::fabs(lhs - rhs) <= scale * 1e-12;
+    };
+    if (!approximately_equal(mean_luma, observed_mean) ||
+        !approximately_equal(max_stddev, observed_max_stddev) ||
+        !approximately_equal(max_black, observed_max_black)) {
+        return fail(error_out,
+                    "video sanity aggregate measurements do not match samples");
+    }
+
     const json& container = document.at("container");
     static constexpr std::array<std::string_view, 2> container_keys = {
         "size", "duration"};
+    std::string container_size;
+    std::string duration_text;
     if (!exact_keys(container, container_keys, "video_sanity.container",
-                    error_out) || !container.at("size").is_string() ||
-        !container.at("duration").is_string() ||
-        container.at("size").get<std::string>() != std::to_string(video_size)) {
+                    error_out) ||
+        !read_string(container, "size", &container_size,
+                     "video_sanity.container", error_out, 32) ||
+        !read_string(container, "duration", &duration_text,
+                     "video_sanity.container", error_out, 64) ||
+        container_size != std::to_string(video_size) ||
+        (verified_probe != nullptr &&
+         verified_probe->duration_seconds() != duration_text)) {
         return fail(error_out,
                     "video sanity container size does not match actual video");
     }
-    (void)relative_path;
+
+    errno = 0;
+    char* duration_end = nullptr;
+    const double duration = std::strtod(duration_text.c_str(), &duration_end);
+    const std::uint64_t expected_fps =
+        binding.encode_profile.at("frame_rate").get<std::uint64_t>();
+    if (errno != 0 || duration_end == duration_text.c_str() ||
+        *duration_end != '\0' || !std::isfinite(duration) || duration <= 0.0) {
+        return fail(error_out,
+                    "video sanity duration does not match frame count and cadence");
+    }
+
+    std::string container_name;
+    std::string codec;
+    std::string decoder;
+    if (!read_string(document, "container_name", &container_name,
+                     "video_sanity", error_out, 256) ||
+        !read_string(document, "codec", &codec, "video_sanity", error_out,
+                     32) ||
+        !read_string(document, "decoder", &decoder, "video_sanity", error_out,
+                     256) ||
+        container_name != "mov,mp4,m4a,3gp,3g2,mj2" || codec != "hevc" ||
+        decoder.rfind("hevc@", 0) != 0 ||
+        (verified_probe != nullptr &&
+         (verified_probe->container() != container_name ||
+          verified_probe->codec() != codec ||
+          verified_probe->decoder() != decoder))) {
+        return fail(error_out,
+                    "video sanity codec/container/decoder evidence is invalid");
+    }
+
+    const json& pixel_semantics = document.at("pixel_semantics");
+    static constexpr std::array<std::string_view, 4> pixel_keys = {
+        "pixel_format", "color_range", "bit_depth", "chroma_subsampling"};
+    std::string pixel_format;
+    std::string color_range;
+    std::string chroma_subsampling;
+    std::uint64_t bit_depth = 0;
+    if (!exact_keys(pixel_semantics, pixel_keys,
+                    "video_sanity.pixel_semantics", error_out) ||
+        !read_string(pixel_semantics, "pixel_format", &pixel_format,
+                     "video_sanity.pixel_semantics", error_out, 32) ||
+        !read_string(pixel_semantics, "color_range", &color_range,
+                     "video_sanity.pixel_semantics", error_out, 32) ||
+        !read_u64(pixel_semantics, "bit_depth", &bit_depth,
+                  "video_sanity.pixel_semantics", error_out) ||
+        !read_string(pixel_semantics, "chroma_subsampling", &chroma_subsampling,
+                     "video_sanity.pixel_semantics", error_out, 32) ||
+        (pixel_format != "yuv420p" && pixel_format != "yuvj420p" &&
+         pixel_format != "nv12") ||
+        color_range != "pc" || bit_depth != 8 ||
+        chroma_subsampling != "4:2:0" ||
+        (verified_probe != nullptr &&
+         (verified_probe->pixel_format() != pixel_format ||
+          verified_probe->color_range() != color_range ||
+          verified_probe->bit_depth() != bit_depth ||
+          verified_probe->chroma_subsampling() != chroma_subsampling))) {
+        return fail(error_out,
+                    "video sanity pixel semantics are not full-range 8-bit 4:2:0");
+    }
+
+    const auto parse_positive_canonical_rational = [](const std::string& value,
+                                                       std::uint64_t* numerator,
+                                                       std::uint64_t* denominator) {
+        const std::size_t slash = value.find('/');
+        if (slash == std::string::npos || slash == 0 || slash + 1 >= value.size() ||
+            value.find('/', slash + 1) != std::string::npos) {
+            return false;
+        }
+        const std::string_view num(value.data(), slash);
+        const std::string_view den(value.data() + slash + 1,
+                                   value.size() - slash - 1);
+        if ((num.size() > 1 && num.front() == '0') ||
+            (den.size() > 1 && den.front() == '0') ||
+            !parse_decimal_u64(num, numerator) ||
+            !parse_decimal_u64(den, denominator) || *numerator == 0 ||
+            *denominator == 0 || std::gcd(*numerator, *denominator) != 1) {
+            return false;
+        }
+        return true;
+    };
+    const auto read_i64_or_null = [](const json& value,
+                                     std::int64_t* output) {
+        if (!output || value.is_null() || value.is_boolean() ||
+            (!value.is_number_integer() && !value.is_number_unsigned())) {
+            return false;
+        }
+        if (value.is_number_unsigned()) {
+            const std::uint64_t parsed = value.get<std::uint64_t>();
+            if (parsed > static_cast<std::uint64_t>(
+                             std::numeric_limits<std::int64_t>::max())) {
+                return false;
+            }
+            *output = static_cast<std::int64_t>(parsed);
+            return true;
+        }
+        *output = value.get<std::int64_t>();
+        return true;
+    };
+    const json& timeline = document.at("timeline");
+    static constexpr std::array<std::string_view, 5> timeline_keys = {
+        "frame_rate", "time_base", "has_decoded_pts", "first_decoded_pts",
+        "last_decoded_pts"};
+    std::string frame_rate;
+    std::string time_base;
+    bool has_decoded_pts = false;
+    std::uint64_t time_base_num = 0;
+    std::uint64_t time_base_den = 0;
+    if (!exact_keys(timeline, timeline_keys, "video_sanity.timeline", error_out) ||
+        !read_string(timeline, "frame_rate", &frame_rate,
+                     "video_sanity.timeline", error_out, 64) ||
+        !read_string(timeline, "time_base", &time_base,
+                     "video_sanity.timeline", error_out, 64) ||
+        !read_bool(timeline, "has_decoded_pts", &has_decoded_pts,
+                   "video_sanity.timeline", error_out) ||
+        frame_rate != std::to_string(expected_fps) + "/1" ||
+        !parse_positive_canonical_rational(time_base, &time_base_num,
+                                           &time_base_den) ||
+        (verified_probe != nullptr &&
+         (verified_probe->frame_rate() != frame_rate ||
+          verified_probe->time_base() != time_base))) {
+        return fail(error_out, "video sanity timeline cadence is invalid");
+    }
+    const long double time_base_seconds =
+        static_cast<long double>(time_base_num) /
+        static_cast<long double>(time_base_den);
+    const long double expected_period =
+        1.0L / static_cast<long double>(expected_fps);
+    const long double ticks_per_frame = expected_period / time_base_seconds;
+    const long double integral_ticks = std::round(ticks_per_frame);
+    if (!std::isfinite(time_base_seconds) || time_base_seconds <= 0.0L ||
+        time_base_seconds > expected_period / 4.0L ||
+        integral_ticks < 4.0L ||
+        std::fabs(ticks_per_frame - integral_ticks) > 1e-9L) {
+        return fail(error_out,
+                    "video sanity time base cannot represent the contract cadence exactly");
+    }
+    const long double expected_duration =
+        static_cast<long double>(expected_frames) * expected_period;
+    if (std::fabs(static_cast<long double>(duration) - expected_duration) >
+        time_base_seconds / 2.0L + 1e-9L) {
+        return fail(error_out,
+                    "video sanity duration does not match frame count and time base");
+    }
+    if (!has_decoded_pts) {
+        return fail(error_out,
+                    "video sanity fixed MP4 profile requires decoded PTS evidence");
+    } else {
+        std::int64_t first_pts = 0;
+        std::int64_t last_pts = 0;
+        if (!read_i64_or_null(timeline.at("first_decoded_pts"), &first_pts) ||
+            !read_i64_or_null(timeline.at("last_decoded_pts"), &last_pts) ||
+            first_pts > last_pts ||
+            (expected_frames > 1 && first_pts == last_pts)) {
+            return fail(error_out, "video sanity decoded PTS range is invalid");
+        }
+        const long double ticks =
+            static_cast<long double>(last_pts) -
+            static_cast<long double>(first_pts);
+        const long double expected_ticks =
+            integral_ticks * static_cast<long double>(expected_frames - 1);
+        if (!std::isfinite(ticks) ||
+            std::fabs(ticks - expected_ticks) > 0.5L ||
+            (verified_probe != nullptr &&
+             (!verified_probe->has_decoded_pts() ||
+              verified_probe->first_decoded_pts() != first_pts ||
+              verified_probe->last_decoded_pts() != last_pts))) {
+            return fail(error_out,
+                        "video sanity decoded PTS span does not match cadence");
+        }
+    }
     return true;
 }
 
@@ -3359,6 +3856,7 @@ bool validate_opened_finalize_artifacts(
     const NormalizedFinalizeRequest& request,
     const SpatialRoiRecorderEvidenceBinding& binding,
     const EvidenceCounts& counts,
+    const SpatialRoiRecorderVideoSanityResult* verified_probe,
     json* receipts_out,
     std::string* error_out)
 {
@@ -3393,7 +3891,7 @@ bool validate_opened_finalize_artifacts(
              status->file->borrowed_fd(), "status", binding,
              counts.encoded_frames, error_out) ||
          !validate_recorder_log(recorder_log->file->borrowed_fd(), binding,
-                                error_out) ||
+                                counts.encoded_frames, error_out) ||
          !validate_transport_sidecar(
              transport->file->borrowed_fd(), binding, counts.encoded_frames,
              error_out))) {
@@ -3404,6 +3902,8 @@ bool validate_opened_finalize_artifacts(
                                           counts.encoded_frames,
                                           binding.encode_profile.at("frame_rate")
                                               .get<std::uint64_t>(),
+                                          encode_profile_gop_length(
+                                              binding.encode_profile),
                                           error_out)) {
         return false;
     }
@@ -3426,10 +3926,14 @@ bool validate_opened_finalize_artifacts(
     if (sanity) {
         if (!video || !validate_closed_video_sanity_sidecar(
                           sanity->file->borrowed_fd(), binding,
-                          sanity->relative_path,
                           video->relative_path,
                           video->reference.at("size_bytes").get<std::uint64_t>(),
-                          counts.encoded_frames, error_out)) {
+                          video->reference.at("sha256").get<std::string>(),
+                          static_cast<std::uint64_t>(video->snapshot.st_dev),
+                          static_cast<std::uint64_t>(video->snapshot.st_ino),
+                          counts.encoded_frames,
+                          video->file->artifact_root_identity(),
+                          verified_probe, error_out)) {
             return false;
         }
     }
@@ -3544,7 +4048,9 @@ bool parse_frame_json(const json& value,
                            "evidence.frame", error_out) ||
         !read_const_string(value, "schema_id", kSpatialRoiRecorderEvidenceSchemaId,
                            "evidence.frame", error_out) ||
-        !read_const_int(value, "schema_version", 1, "evidence.frame", error_out) ||
+        !read_const_int(value, "schema_version",
+                        kSpatialRoiRecorderEvidenceSchemaVersion,
+                        "evidence.frame", error_out) ||
         !read_const_string(value, "canonicalization", kSpatialRoiRecorderCanonicalization,
                            "evidence.frame", error_out)) {
         return false;
@@ -3564,26 +4070,39 @@ bool parse_frame_json(const json& value,
     SpatialRoiRecorderFrameEvidence frame;
     frame.frame = descriptor;
     const json& detach = value.at("detach");
+    const json& dispatch = value.at("dispatch");
     const json& ack = value.at("ack");
     const json& release = value.at("release");
     const json& encode = value.at("encode");
     if (!exact_keys(detach, kDetachKeys, "evidence.frame.detach", error_out) ||
+        !exact_keys(dispatch, kDispatchKeys, "evidence.frame.dispatch", error_out) ||
         !exact_keys(ack, kAckKeys, "evidence.frame.ack", error_out) ||
         !exact_keys(release, kReleaseKeys, "evidence.frame.release", error_out) ||
         !exact_keys(encode, kEncodeKeys, "evidence.frame.encode", error_out) ||
         !read_string(detach, "status", &frame.detach_status,
                      "evidence.frame.detach", error_out, 64) ||
-        !read_bool(detach, "source_release_safe", &frame.detach_source_release_safe,
+        !read_bool(detach, "source_release_safe", &frame.source_release_safe,
                    "evidence.frame.detach", error_out) ||
+        !read_bool(dispatch, "admitted", &frame.dispatch_admitted,
+                   "evidence.frame.dispatch", error_out) ||
+        !read_optional_text(dispatch, "reason", &frame.dispatch_reason,
+                            "evidence.frame.dispatch", error_out,
+                            kMaxReasonBytes) ||
+        !read_bool(ack, "attempted", &frame.ack_attempted,
+                   "evidence.frame.ack", error_out) ||
         !read_bool(ack, "sent", &frame.ack_sent, "evidence.frame.ack", error_out) ||
         !read_bool(ack, "accepted", &frame.ack_accepted, "evidence.frame.ack", error_out) ||
         !read_optional_text(ack, "reason", &frame.ack_reason,
                             "evidence.frame.ack", error_out, kMaxReasonBytes) ||
+        !read_optional_text(ack, "error", &frame.ack_error,
+                            "evidence.frame.ack", error_out, kMaxReasonBytes) ||
+        !read_bool(release, "attempted", &frame.release_attempted,
+                   "evidence.frame.release", error_out) ||
         !read_bool(release, "sent", &frame.release_sent,
                    "evidence.frame.release", error_out) ||
-        !read_bool(release, "succeeded", &frame.release_succeeded,
-                   "evidence.frame.release", error_out) ||
         !read_optional_text(release, "reason", &frame.release_reason,
+                            "evidence.frame.release", error_out, kMaxReasonBytes) ||
+        !read_optional_text(release, "error", &frame.release_error,
                             "evidence.frame.release", error_out, kMaxReasonBytes) ||
         !read_string(encode, "status", &frame.encode_status,
                      "evidence.frame.encode", error_out, 32) ||
@@ -3718,7 +4237,8 @@ bool parse_evidence_stream_fd(
                                    "evidence.header", error_out) ||
                 !read_const_string(record, "schema_id", kSpatialRoiRecorderEvidenceSchemaId,
                                    "evidence.header", error_out) ||
-                !read_const_int(record, "schema_version", 1,
+                !read_const_int(record, "schema_version",
+                                kSpatialRoiRecorderEvidenceSchemaVersion,
                                 "evidence.header", error_out) ||
                 !read_const_string(record, "canonicalization",
                                    kSpatialRoiRecorderCanonicalization,
@@ -3744,7 +4264,8 @@ bool parse_evidence_stream_fd(
                                    "evidence.terminal", error_out) ||
                 !read_const_string(record, "schema_id", kSpatialRoiRecorderEvidenceSchemaId,
                                    "evidence.terminal", error_out) ||
-                !read_const_int(record, "schema_version", 1,
+                !read_const_int(record, "schema_version",
+                                kSpatialRoiRecorderEvidenceSchemaVersion,
                                 "evidence.terminal", error_out) ||
                 !read_const_string(record, "canonicalization",
                                    kSpatialRoiRecorderCanonicalization,
@@ -3931,15 +4452,21 @@ bool manifest_counts_from_json(const json& value,
         return read_u64(value, key, out, "manifest.counts", error_out);
     };
     return read("detach_successes", &counts->detach_successes) &&
+        read("dispatch_admitted", &counts->dispatch_admitted) &&
+        read("dispatch_rejected", &counts->dispatch_rejected) &&
+        read("ack_attempted", &counts->ack_attempted) &&
         read("ack_sent", &counts->ack_sent) &&
         read("ack_accepted", &counts->ack_accepted) &&
+        read("release_attempted", &counts->release_attempted) &&
         read("release_sent", &counts->release_sent) &&
-        read("release_succeeded", &counts->release_succeeded) &&
         read("encoded_frames", &counts->encoded_frames) &&
         read("failed_frames", &counts->failed_frames) &&
         read("packet_count", &counts->packet_count) &&
         read("encoded_bytes", &counts->encoded_bytes) &&
-        read("keyframes", &counts->keyframes);
+        read("keyframes", &counts->keyframes) &&
+        read("ack_write_failures", &counts->ack_write_failures) &&
+        read("release_write_failures", &counts->release_write_failures) &&
+        read("lifecycle_failures", &counts->lifecycle_failures);
 }
 
 bool manifest_ranges_from_json(const json& value,
@@ -4360,15 +4887,21 @@ bool SpatialRoiRecorderEvidenceWriter::Open(
             writer->last_roi_stream_frame_index_ = last_roi;
             writer->last_output_frame_index_ = counts.encoded_frames;
             writer->detach_successes_ = counts.detach_successes;
+            writer->dispatch_admitted_ = counts.dispatch_admitted;
+            writer->dispatch_rejected_ = counts.dispatch_rejected;
+            writer->ack_attempted_ = counts.ack_attempted;
             writer->ack_sent_ = counts.ack_sent;
             writer->ack_accepted_ = counts.ack_accepted;
+            writer->release_attempted_ = counts.release_attempted;
             writer->release_sent_ = counts.release_sent;
-            writer->release_succeeded_ = counts.release_succeeded;
             writer->encoded_frames_ = counts.encoded_frames;
             writer->failed_frames_ = counts.failed_frames;
             writer->packet_count_ = counts.packet_count;
             writer->encoded_bytes_ = counts.encoded_bytes;
             writer->keyframes_ = counts.keyframes;
+            writer->ack_write_failures_ = counts.ack_write_failures;
+            writer->release_write_failures_ = counts.release_write_failures;
+            writer->lifecycle_failures_ = counts.lifecycle_failures;
             writer->evidence_bytes_written_ =
                 manifest.at("evidence").at("size_bytes").get<std::uint64_t>();
             writer->evidence_published_ = true;
@@ -4430,6 +4963,7 @@ bool SpatialRoiRecorderEvidenceWriter::Open(
                     &opened_artifacts, error_out) ||
                 !validate_opened_finalize_artifacts(
                     &opened_artifacts, recovered, writer->binding_, counts,
+                    nullptr,
                     &actual_receipts, error_out) ||
                 actual_receipts != artifact_receipts ||
                 (terminal_state == kTerminalComplete &&
@@ -4461,15 +4995,21 @@ bool SpatialRoiRecorderEvidenceWriter::Open(
             writer->last_roi_stream_frame_index_ = last_roi;
             writer->last_output_frame_index_ = counts.encoded_frames;
             writer->detach_successes_ = counts.detach_successes;
+            writer->dispatch_admitted_ = counts.dispatch_admitted;
+            writer->dispatch_rejected_ = counts.dispatch_rejected;
+            writer->ack_attempted_ = counts.ack_attempted;
             writer->ack_sent_ = counts.ack_sent;
             writer->ack_accepted_ = counts.ack_accepted;
+            writer->release_attempted_ = counts.release_attempted;
             writer->release_sent_ = counts.release_sent;
-            writer->release_succeeded_ = counts.release_succeeded;
             writer->encoded_frames_ = counts.encoded_frames;
             writer->failed_frames_ = counts.failed_frames;
             writer->packet_count_ = counts.packet_count;
             writer->encoded_bytes_ = counts.encoded_bytes;
             writer->keyframes_ = counts.keyframes;
+            writer->ack_write_failures_ = counts.ack_write_failures;
+            writer->release_write_failures_ = counts.release_write_failures;
+            writer->lifecycle_failures_ = counts.lifecycle_failures;
             writer->evidence_bytes_written_ = evidence_size;
             writer->evidence_published_ = true;
             writer->terminal_written_ = true;
@@ -4604,20 +5144,33 @@ bool SpatialRoiRecorderEvidenceWriter::AppendFrame(
     }
     EvidenceCounts totals;
     totals.detach_successes = detach_successes_;
+    totals.dispatch_admitted = dispatch_admitted_;
+    totals.dispatch_rejected = dispatch_rejected_;
+    totals.ack_attempted = ack_attempted_;
     totals.ack_sent = ack_sent_;
     totals.ack_accepted = ack_accepted_;
+    totals.release_attempted = release_attempted_;
     totals.release_sent = release_sent_;
-    totals.release_succeeded = release_succeeded_;
     totals.encoded_frames = encoded_frames_;
     totals.failed_frames = failed_frames_;
     totals.packet_count = packet_count_;
     totals.encoded_bytes = encoded_bytes_;
     totals.keyframes = keyframes_;
+    totals.ack_write_failures = ack_write_failures_;
+    totals.release_write_failures = release_write_failures_;
+    totals.lifecycle_failures = lifecycle_failures_;
     if (!increment(&totals.detach_successes, counts_after.detach_successes) ||
+        !increment(&totals.dispatch_admitted, counts_after.dispatch_admitted) ||
+        !increment(&totals.dispatch_rejected, counts_after.dispatch_rejected) ||
+        !increment(&totals.ack_attempted, counts_after.ack_attempted) ||
         !increment(&totals.ack_sent, counts_after.ack_sent) ||
         !increment(&totals.ack_accepted, counts_after.ack_accepted) ||
+        !increment(&totals.release_attempted, counts_after.release_attempted) ||
         !increment(&totals.release_sent, counts_after.release_sent) ||
-        !increment(&totals.release_succeeded, counts_after.release_succeeded) ||
+        !increment(&totals.ack_write_failures, counts_after.ack_write_failures) ||
+        !increment(&totals.release_write_failures,
+                   counts_after.release_write_failures) ||
+        !increment(&totals.lifecycle_failures, counts_after.lifecycle_failures) ||
         !increment(&totals.encoded_frames, counts_after.encoded_frames) ||
         !increment(&totals.failed_frames, counts_after.failed_frames) ||
         !increment(&totals.packet_count, counts_after.packet_count) ||
@@ -4643,15 +5196,21 @@ bool SpatialRoiRecorderEvidenceWriter::AppendFrame(
     }
     ++frame_count_;
     detach_successes_ = totals.detach_successes;
+    dispatch_admitted_ = totals.dispatch_admitted;
+    dispatch_rejected_ = totals.dispatch_rejected;
+    ack_attempted_ = totals.ack_attempted;
     ack_sent_ = totals.ack_sent;
     ack_accepted_ = totals.ack_accepted;
+    release_attempted_ = totals.release_attempted;
     release_sent_ = totals.release_sent;
-    release_succeeded_ = totals.release_succeeded;
     encoded_frames_ = totals.encoded_frames;
     failed_frames_ = totals.failed_frames;
     packet_count_ = totals.packet_count;
     encoded_bytes_ = totals.encoded_bytes;
     keyframes_ = totals.keyframes;
+    ack_write_failures_ = totals.ack_write_failures;
+    release_write_failures_ = totals.release_write_failures;
+    lifecycle_failures_ = totals.lifecycle_failures;
     if (error_out) error_out->clear();
     return true;
 }
@@ -4680,6 +5239,12 @@ bool SpatialRoiRecorderEvidenceWriter::Finalize(
         if (error_out) error_out->clear();
         return true;
     }
+    if (normalized.terminal_state == kTerminalComplete &&
+        !request.video_sanity_result) {
+        return latch_failure(
+            "complete finalization requires the descriptor-bound decoder-probe capability",
+            error_out);
+    }
     if (fatal_ || (staging_fd_ < 0 && !evidence_published_)) {
         return latch_failure(error_.empty() ? "evidence writer is not usable" : error_, error_out);
     }
@@ -4695,23 +5260,34 @@ bool SpatialRoiRecorderEvidenceWriter::Finalize(
     }
     EvidenceCounts counts;
     counts.detach_successes = detach_successes_;
+    counts.dispatch_admitted = dispatch_admitted_;
+    counts.dispatch_rejected = dispatch_rejected_;
+    counts.ack_attempted = ack_attempted_;
     counts.ack_sent = ack_sent_;
     counts.ack_accepted = ack_accepted_;
+    counts.release_attempted = release_attempted_;
     counts.release_sent = release_sent_;
-    counts.release_succeeded = release_succeeded_;
     counts.encoded_frames = encoded_frames_;
     counts.failed_frames = failed_frames_;
     counts.packet_count = packet_count_;
     counts.encoded_bytes = encoded_bytes_;
     counts.keyframes = keyframes_;
+    counts.ack_write_failures = ack_write_failures_;
+    counts.release_write_failures = release_write_failures_;
+    counts.lifecycle_failures = lifecycle_failures_;
     if (normalized.terminal_state == kTerminalComplete) {
         const auto& snapshot_counts = request.encoder_terminal_snapshot->counts;
+        const std::uint64_t gop_length =
+            encode_profile_gop_length(binding_.encode_profile);
+        const std::uint64_t required_keyframes =
+            expected_keyframe_count(frame_count_, gop_length);
         if (snapshot_counts.enqueued != frame_count_ ||
             snapshot_counts.encoded_frames != counts.encoded_frames ||
             snapshot_counts.encoded_packets != counts.packet_count ||
             snapshot_counts.encoded_bytes != counts.encoded_bytes ||
             counts.encoded_frames != frame_count_ ||
-            counts.packet_count != frame_count_ || counts.keyframes != frame_count_) {
+            counts.packet_count != frame_count_ || gop_length == 0 ||
+            counts.keyframes != required_keyframes) {
             return latch_failure(
                 "encoder terminal snapshot does not exactly match frame evidence",
                 error_out);
@@ -4743,6 +5319,7 @@ bool SpatialRoiRecorderEvidenceWriter::Finalize(
     }
     if (!validate_opened_finalize_artifacts(
             &opened_artifacts, normalized, binding_, counts,
+            request.video_sanity_result.get(),
             &artifact_receipts, error_out)) {
         return latch_existing_error("could not validate finalization artifacts");
     }
@@ -4872,7 +5449,9 @@ bool validate_spatial_roi_recorder_finalized_manifest_authority(
     if (!exact_keys(manifest, emitted_keys, "manifest", error_out) ||
         !read_const_string(manifest, "schema_id", kSpatialRoiRecorderManifestSchemaId,
                            "manifest", error_out) ||
-        !read_const_int(manifest, "schema_version", 1, "manifest", error_out) ||
+        !read_const_int(manifest, "schema_version",
+                        kSpatialRoiRecorderManifestSchemaVersion,
+                        "manifest", error_out) ||
         !read_const_string(manifest, "canonicalization", kSpatialRoiRecorderCanonicalization,
                            "manifest", error_out) ||
         !read_const_string(manifest, "stream_kind", kSpatialRoiRecorderFixedRegionKind,
@@ -5062,6 +5641,7 @@ bool validate_spatial_roi_recorder_finalized_manifest_authority(
     json validated_artifact_receipts;
     if (!validate_opened_finalize_artifacts(
             &opened_artifacts, normalized, binding, evidence_counts,
+            nullptr,
             &validated_artifact_receipts, error_out) ||
         validated_artifact_receipts != manifest.at("artifacts")) {
         return fail(error_out,

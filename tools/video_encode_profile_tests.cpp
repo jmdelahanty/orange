@@ -1,5 +1,6 @@
 #include "camera.h"
 #include "video_encode_profile.h"
+#include <cstring>
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -331,6 +332,139 @@ void test_crop_profile()
         "crop metadata json ffprobe validation flag");
 }
 
+void test_lossy_low_latency_crop_profile_is_not_forced_lossless()
+{
+    const CameraParams camera = make_camera();
+    VideoEncodeProfile profile =
+        build_crop_video_encode_profile(camera, 256, 256);
+    profile.name = "spatial_roi_hevc_p1_low_latency_vbr_q20_gop1_v1";
+    profile.preset = "p1";
+    profile.tuning = "ll";
+    profile.rate_control_mode = "vbr";
+    profile.quality_value = 20;
+    profile.requested_gop_length = 1;
+    profile.resolved_gop_length = 1;
+
+    const NV_ENC_CONFIG encode_config = apply_to_config(profile);
+    const VideoEncodeProfileNvencGuids guids =
+        resolve_video_encode_profile_nvenc_guids(profile);
+
+    require(std::memcmp(&guids.preset_guid,
+                        &NV_ENC_PRESET_P1_GUID,
+                        sizeof(GUID)) == 0,
+            "lossy crop uses requested P1 preset");
+    require(guids.tuning_info == NV_ENC_TUNING_INFO_LOW_LATENCY,
+            "lossy crop uses requested low-latency tuning");
+    require(encode_config.gopLength == 1,
+            "lossy first-slice crop retains explicit GOP1");
+    require(encode_config.rcParams.rateControlMode == NV_ENC_PARAMS_RC_VBR,
+            "lossy crop uses VBR instead of forced lossless CONSTQP");
+    require(encode_config.rcParams.averageBitRate > 0 &&
+                encode_config.rcParams.maxBitRate >=
+                    encode_config.rcParams.averageBitRate,
+            "lossy crop receives a bounded bitrate budget");
+    require(encode_config.rcParams.enableAQ == 1,
+            "lossy crop retains quality-profile AQ");
+}
+
+void test_spatial_roi_metadata_describes_fixed_region()
+{
+    const CameraParams camera = make_camera();
+    VideoEncodeProfile profile = build_crop_video_encode_profile(camera, 256, 256);
+    // Start from the legacy crop dimensions/configuration, but clear its
+    // derived source contract so this test exercises the fixed spatial ROI
+    // branch rather than retaining detection-crop provenance.
+    profile.name = "hevc_p1_low_latency_vbr_q20_gop1_v1";
+    profile.output_kind = "spatial_roi";
+    profile.role = "recorder_owned_spatial_roi";
+    profile.output_mode = "spatial_roi";
+    profile.source_pixel_contract = {};
+
+    const auto tags = build_video_encode_metadata_tags(profile);
+    const std::string comment = tag_value(tags, "comment");
+    const nlohmann::json metadata = build_video_metadata_json(
+        profile, "/tmp/Cam2010096_spatial_roi_arena_1.mp4",
+        "2010096_spatial_roi_arena_1");
+
+    require(!tags.empty() && tags[0].second == "Cam2010096 spatial ROI",
+            "spatial ROI metadata title identifies the fixed-region output");
+    require_contains(comment, "output_kind=spatial_roi",
+                     "spatial ROI comment output kind");
+    require_contains(comment, "role=recorder_owned_spatial_roi",
+                     "spatial ROI comment role");
+    require_contains(comment, "selection_policy=fixed_spatial_roi_geometry",
+                     "spatial ROI comment fixed geometry policy");
+    require_contains(comment,
+                     "blank_frame_policy=not_applicable_source_frame_always_bound",
+                     "spatial ROI comment does not claim no-detection blanking");
+    require(comment.find("largest_detection_by_confidence") == std::string::npos,
+            "spatial ROI comment does not claim detection selection");
+    require(comment.find("encode_black_frame_when_no_detection") == std::string::npos,
+            "spatial ROI comment does not claim detection-miss blanking");
+    require(metadata.at("schema_version") == 3,
+            "spatial ROI metadata uses its versioned output schema");
+    require(metadata.at("output_kind") == "spatial_roi",
+            "spatial ROI metadata output kind");
+    require(metadata.at("role") == "recorder_owned_spatial_roi",
+            "spatial ROI metadata role");
+    require(metadata.at("source_pixel_contract").at("id") ==
+                "orange.spatial_roi.mono8.v1",
+            "spatial ROI metadata source contract id");
+    require(metadata.at("source_pixel_contract").at("source_origin") ==
+                "spatial_roi_recorder",
+            "spatial ROI metadata source origin");
+    require(metadata.at("source_pixel_contract").at("transform_to_encoder") ==
+                "spatial_roi_mono8_to_nv12",
+            "spatial ROI metadata transform");
+    require(metadata.at("video_pixel_coordinate_space") == "crop_frame_pixels",
+            "spatial ROI metadata uses packed ROI pixel coordinates");
+}
+
+void test_spatial_roi_gop25_metadata_captures_encode_profile()
+{
+    const CameraParams camera = make_camera();
+    VideoEncodeProfile profile = build_crop_video_encode_profile(camera, 256, 256);
+    profile.name = "hevc_p1_low_latency_vbr_q20_gop25_v1";
+    profile.output_kind = "spatial_roi";
+    profile.role = "recorder_owned_spatial_roi";
+    profile.output_mode = "spatial_roi";
+    profile.preset = "p1";
+    profile.tuning = "ll";
+    profile.rate_control_mode = "vbr";
+    profile.quality_value = 20;
+    profile.requested_gop_length = 25;
+    profile.resolved_gop_length = 25;
+    profile.encoder_control_overrides.aq = 0;
+    profile.encoder_control_overrides.temporal_aq = 0;
+    profile.encoder_control_overrides.lookahead = 0;
+    profile.encoder_control_overrides.lookahead_depth = 0;
+    profile.source_pixel_contract = {};
+
+    const std::string comment = tag_value(
+        build_video_encode_metadata_tags(profile), "comment");
+    require_contains(comment,
+                     "profile_name=hevc_p1_low_latency_vbr_q20_gop25_v1",
+                     "GOP25 spatial ROI comment profile identity");
+    require_contains(comment,
+                     "rate_control_mode=vbr",
+                     "GOP25 spatial ROI comment rate-control mode");
+    require_contains(comment,
+                     "quality_value=20",
+                     "GOP25 spatial ROI comment quality value");
+    require_contains(comment,
+                     "requested_gop_length=25",
+                     "GOP25 spatial ROI comment requested GOP");
+    require_contains(comment, "gop=25",
+                     "GOP25 spatial ROI comment resolved GOP");
+    require_contains(comment,
+                     "aq=0; temporal_aq=0; lookahead=0; lookahead_depth=0",
+                     "GOP25 spatial ROI comment encoder controls");
+    require_contains(comment, "rc=vbr; target_bps=10000000",
+                     "GOP25 spatial ROI comment target bitrate");
+    require_contains(comment, "max_bps=15000000; vbv=15000000",
+                     "GOP25 spatial ROI comment effective bitrate bounds");
+}
+
 void test_normalization()
 {
     require(normalize_video_encode_codec("vp9") == "h264", "unknown codec fallback");
@@ -351,6 +485,9 @@ int main()
     test_vbr_cq_profile_with_external_style_overrides();
     test_lossless_full_profile();
     test_crop_profile();
+    test_lossy_low_latency_crop_profile_is_not_forced_lossless();
+    test_spatial_roi_metadata_describes_fixed_region();
+    test_spatial_roi_gop25_metadata_captures_encode_profile();
     test_normalization();
     std::cout << "video_encode_profile_tests passed" << std::endl;
     return 0;

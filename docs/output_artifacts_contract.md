@@ -305,6 +305,8 @@ Current emitted top-level fields:
 - `session: object` (optional in older artifacts)
 - `recording_outputs: object` (schema-2 output descriptors keyed by camera
   serial, then output kind)
+- `recording_outputs_v3: object` (optional additive schema-3 output index;
+  spatial ROI streams are keyed by logical stream identity)
 - `sync: object` (session-level synchronization provenance)
 - `cameras: object`
 - `camera_runtime: object` (resolved per-recording camera config and raster
@@ -393,10 +395,42 @@ Current emitted top-level fields:
   `roi_id`/`logical_stream_id`, carry that identity through recorder IPC, and
   add finalization evidence. See
   [`spatial_roi_recording_v1_foundation.md`](spatial_roi_recording_v1_foundation.md).
+
+When spatial ROI streams are available, the snapshot/session may additionally
+emit `recording_outputs_v3`:
+
+```json
+{
+  "schema_id": "orange.recording_outputs",
+  "schema_version": 3,
+  "cameras": {
+    "2010096": {
+      "full": { "output_kind": "full", "camera_serial": "2010096" },
+      "crop": { "output_kind": "crop", "camera_serial": "2010096" },
+      "spatial_roi": {
+        "2010096_spatial_roi_roi_1": {
+          "schema_version": 3,
+          "camera_serial": "2010096",
+          "output_kind": "spatial_roi",
+          "logical_stream_id": "2010096_spatial_roi_roi_1"
+        }
+      }
+    }
+  }
+}
+```
+
+The v3 envelope is additive: schema-2 `recording_outputs` remains unchanged,
+`full` remains the ingest-authoritative scalar, and legacy `crop` remains a
+scalar. Only `spatial_roi` is a collection, keyed by `logical_stream_id`.
+Writers fail closed for missing or duplicate `(camera_serial,
+logical_stream_id)` keys and for descriptor identity mismatches.
 - Each descriptor carries:
   - `schema_version: integer`
   - `camera_serial: string`
   - `output_kind: string`
+  - `logical_stream_id: string` (required for `spatial_roi`; omitted for
+    ordinary full/crop descriptors unless a producer explicitly supplies it)
   - `role: string`:
     - full output: `ingest_authoritative`
     - current crop output: `runtime_derived_acquisition_input`

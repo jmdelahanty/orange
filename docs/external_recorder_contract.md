@@ -144,9 +144,9 @@ isolation); changing `camera_serial` to encode ROI identity is forbidden.
 
 Until that extension and its validators are implemented, this external
 recorder contract must not claim support for spatial ROI outputs. The existing
-full-frame and legacy crop paths remain unchanged, and the authoritative
-full-frame source lease must remain protected by the existing detached-copy or
-explicit `RELEASE` source-safe boundary.
+first-class full-frame path and the established top-one crop path remain
+unchanged, and the authoritative full-frame source lease must remain protected
+by the existing detached-copy or explicit `RELEASE` source-safe boundary.
 
 There are two source-lifetime modes:
 

@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <limits>
 #include <poll.h>
+#include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -81,9 +82,11 @@ int poll_timeout_milliseconds(
 
 SpatialRoiUnixSocketLineTransport::SpatialRoiUnixSocketLineTransport(
     const int fd,
+    const int cancellation_fd,
     SpatialRoiUnixSocketTransportConfig config,
     const SpatialRoiUnixSocketPeerCredentials peer_credentials)
     : fd_(fd),
+      cancellation_fd_(cancellation_fd),
       config_(std::move(config)),
       peer_credentials_(peer_credentials)
 {
@@ -220,10 +223,18 @@ SpatialRoiUnixSocketLineTransport::AdoptConnectedFd(
             return fail(errno_message("fcntl(O_NONBLOCK)", errno));
         }
 
+        ScopedFd cancellation_fd(
+            ::eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK));
+        if (cancellation_fd.get() < 0) {
+            return fail(errno_message("eventfd", errno));
+        }
+
         auto transport = std::unique_ptr<SpatialRoiUnixSocketLineTransport>(
             new SpatialRoiUnixSocketLineTransport(
-                owned_fd.get(), std::move(config), peer_credentials));
+                owned_fd.get(), cancellation_fd.get(), std::move(config),
+                peer_credentials));
         (void)owned_fd.release();
+        (void)cancellation_fd.release();
         return transport;
     } catch (const std::exception& exception) {
         set_error(error_out, exception.what());
@@ -237,6 +248,45 @@ SpatialRoiUnixSocketLineTransport::AdoptConnectedFd(
 SpatialRoiUnixSocketLineTransport::~SpatialRoiUnixSocketLineTransport()
 {
     Close();
+}
+
+bool SpatialRoiUnixSocketLineTransport::RequestShutdown(
+    std::string* error_out) noexcept
+{
+    if (error_out) {
+        error_out->clear();
+    }
+    // Record the request only after the wakeup capability has accepted the
+    // signal.  If the descriptor is closed or the write fails, a later caller
+    // must be able to retry instead of observing a permanently-successful
+    // but unsignalled request.
+    if (shutdown_requested_.load(std::memory_order_acquire)) {
+        return true;
+    }
+    if (cancellation_fd_ < 0) {
+        set_error(error_out,
+                  "socket transport cancellation capability is closed");
+        return false;
+    }
+    const std::uint64_t signal = 1;
+    while (true) {
+        const ssize_t written =
+            ::write(cancellation_fd_, &signal, sizeof(signal));
+        if (written == static_cast<ssize_t>(sizeof(signal))) {
+            shutdown_requested_.store(true, std::memory_order_release);
+            return true;
+        }
+        if (written < 0 && errno == EINTR) {
+            continue;
+        }
+        // A saturated nonblocking eventfd is already signalled.
+        if (written < 0 && errno == EAGAIN) {
+            shutdown_requested_.store(true, std::memory_order_release);
+            return true;
+        }
+        set_error(error_out, "eventfd cancellation signal failed");
+        return false;
+    }
 }
 
 bool SpatialRoiUnixSocketLineTransport::set_error(
@@ -293,11 +343,14 @@ SpatialRoiUnixSocketLineTransport::wait_for(
             std::chrono::steady_clock::now() >= deadline) {
             return PollWaitStatus::kTimeout;
         }
-        pollfd descriptor{};
-        descriptor.fd = fd_;
-        descriptor.events = events;
+        std::array<pollfd, 2> descriptors{};
+        descriptors[0].fd = fd_;
+        descriptors[0].events = events;
+        descriptors[1].fd = cancellation_fd_;
+        descriptors[1].events = POLLIN;
         const int timeout = poll_timeout_milliseconds(deadline);
-        const int result = ::poll(&descriptor, 1, timeout);
+        const nfds_t descriptor_count = cancellation_fd_ >= 0 ? 2U : 1U;
+        const int result = ::poll(descriptors.data(), descriptor_count, timeout);
         allow_immediate_probe = false;
         if (result == 0) {
             return PollWaitStatus::kTimeout;
@@ -314,12 +367,17 @@ SpatialRoiUnixSocketLineTransport::wait_for(
             std::chrono::steady_clock::now() >= deadline) {
             return PollWaitStatus::kTimeout;
         }
-        if (descriptor.revents & POLLNVAL) {
+        if (descriptor_count == 2U && descriptors[1].revents != 0) {
+            set_error(error_out,
+                      "socket transport lifecycle cancellation requested");
+            return PollWaitStatus::kError;
+        }
+        if (descriptors[0].revents & POLLNVAL) {
             set_error(error_out, "poll reported an invalid socket descriptor");
             return PollWaitStatus::kError;
         }
-        if ((descriptor.revents & events) != 0 ||
-            (descriptor.revents & (POLLERR | POLLHUP)) != 0) {
+        if ((descriptors[0].revents & events) != 0 ||
+            (descriptors[0].revents & (POLLERR | POLLHUP)) != 0) {
             return PollWaitStatus::kReady;
         }
         // Ignore unrelated events and keep the same absolute deadline.
@@ -349,6 +407,11 @@ void SpatialRoiUnixSocketLineTransport::Close() noexcept
     const int descriptor = std::exchange(fd_, -1);
     if (descriptor >= 0) {
         (void)::close(descriptor);
+    }
+    const int cancellation_descriptor =
+        std::exchange(cancellation_fd_, -1);
+    if (cancellation_descriptor >= 0) {
+        (void)::close(cancellation_descriptor);
     }
     receive_buffer_.clear();
     if (!terminal_) {
@@ -561,7 +624,9 @@ SpatialRoiIpcTransportReadResult SpatialRoiUnixSocketLineTransport::ReadLine(
             close_with_error(partial_line
                                  ? "socket peer reached EOF before line terminator"
                                  : "socket peer reached EOF");
-            terminal_status_ = SpatialRoiIpcTransportReadStatus::kEof;
+            terminal_status_ = partial_line
+                                   ? SpatialRoiIpcTransportReadStatus::kError
+                                   : SpatialRoiIpcTransportReadStatus::kEof;
             return terminal_read_result();
         }
         if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {

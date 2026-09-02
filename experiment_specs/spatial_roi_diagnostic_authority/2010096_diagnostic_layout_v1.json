@@ -1,0 +1,53 @@
+{
+  "schema_id": "orange.spatial_roi_diagnostic_authority.layout",
+  "schema_version": 1,
+  "authority_id": "diagnostic_layout_v1",
+  "closed": true,
+  "status": "diagnostic_not_physical_acceptance",
+  "geometry_role": "plumbing_encoder_validation_only",
+  "camera_serial": "2010096",
+  "coordinate_space": "camera_native_0_indexed",
+  "camera_perspective": true,
+  "native_raster": {
+    "width": 4512,
+    "height": 4512
+  },
+  "rois": [
+    {
+      "roi_id": "quadrant_top_left",
+      "content_rect": {
+        "x": 0,
+        "y": 0,
+        "width": 2256,
+        "height": 2256
+      }
+    },
+    {
+      "roi_id": "quadrant_top_right",
+      "content_rect": {
+        "x": 2256,
+        "y": 0,
+        "width": 2256,
+        "height": 2256
+      }
+    },
+    {
+      "roi_id": "quadrant_bottom_left",
+      "content_rect": {
+        "x": 0,
+        "y": 2256,
+        "width": 2256,
+        "height": 2256
+      }
+    },
+    {
+      "roi_id": "quadrant_bottom_right",
+      "content_rect": {
+        "x": 2256,
+        "y": 2256,
+        "width": 2256,
+        "height": 2256
+      }
+    }
+  ]
+}

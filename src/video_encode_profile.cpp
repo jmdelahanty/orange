@@ -17,6 +17,17 @@ constexpr int kMinQualityValue = 1;
 constexpr int kMaxQualityValue = 51;
 constexpr int kMaxLookaheadDepth = 32;
 constexpr uint32_t kVuiVideoFormatUnspecified = 5;
+constexpr const char* kSpatialRoiOutputKind = "spatial_roi";
+
+bool is_spatial_roi_output(const VideoEncodeProfile& profile)
+{
+    return profile.output_kind == kSpatialRoiOutputKind;
+}
+
+bool is_roi_raster_output(const VideoEncodeProfile& profile)
+{
+    return profile.output_kind == "crop" || is_spatial_roi_output(profile);
+}
 
 std::string lower_ascii(std::string value)
 {
@@ -137,6 +148,23 @@ VideoSourcePixelContract derived_video_source_pixel_contract(
         return contract;
     }
 
+    if (is_spatial_roi_output(profile)) {
+        // A fixed spatial ROI is already selected by the recorder's
+        // authenticated geometry contract. It is not a live detection crop,
+        // and therefore must not inherit the detection-crop provenance or
+        // selection semantics used by the legacy GUI crop stream.
+        contract.id = "orange.spatial_roi.mono8.v1";
+        contract.pixel_format = "mono8";
+        contract.color_space = "linear_gray";
+        contract.channel_order = "gray";
+        contract.memory_layout = "HxW";
+        contract.width = profile.width;
+        contract.height = profile.height;
+        contract.source_origin = "spatial_roi_recorder";
+        contract.transform_to_encoder = "spatial_roi_mono8_to_nv12";
+        return contract;
+    }
+
     const std::string source_format =
         profile.source_format.empty()
             ? (profile.color ? "rgb8" : "mono8")
@@ -230,6 +258,77 @@ void append_source_pixel_comment_fields(std::ostringstream& comment,
             << "; encoder_input_format=" << contract.encoder_input_format
             << "; encoded_pix_fmt=" << contract.encoded_pix_fmt
             << "; encoded_color_range=" << contract.encoded_color_range;
+}
+
+void append_raster_encode_control_comment_fields(
+    std::ostringstream& comment,
+    const VideoEncodeProfile& profile)
+{
+    comment << "; aq=" << profile.encoder_control_overrides.aq
+            << "; temporal_aq="
+            << profile.encoder_control_overrides.temporal_aq
+            << "; lookahead="
+            << profile.encoder_control_overrides.lookahead
+            << "; lookahead_depth="
+            << profile.encoder_control_overrides.lookahead_depth;
+    const std::string rc_strategy =
+        resolve_video_encode_rate_control_strategy(profile.tuning,
+                                                   profile.rate_control_mode);
+    if (rc_strategy == "lossless") {
+        comment << "; rc=constqp; qp=0";
+        return;
+    }
+    if (rc_strategy == "cqp") {
+        comment << "; rc=constqp; qp=" << profile.quality_value;
+        return;
+    }
+
+    const uint32_t target_bps = estimate_profile_target_bitrate(profile);
+    if (rc_strategy == "cbr") {
+        comment << "; rc=cbr; target_bps=" << target_bps;
+    } else if (rc_strategy == "vbr_cq") {
+        comment << "; rc=vbr; cq=" << profile.quality_value
+                << "; target_bps=" << target_bps;
+    } else {
+        comment << "; rc=vbr; target_bps=" << target_bps;
+    }
+
+    // The encoder applies the derived quality-profile ceiling and VBV size
+    // when no explicit override is present. Keep those effective values in
+    // the MP4 comment so fixed ROI outputs do not lose their bitrate contract
+    // on the early-return metadata path.
+    uint32_t max_bps = target_bps;
+    if (profile.encoder_control_overrides.max_bitrate_bps > 0) {
+        max_bps = saturate_positive_u32(
+            profile.encoder_control_overrides.max_bitrate_bps);
+    } else if (rc_strategy != "cbr") {
+        // apply_quality_recording_profile() derives this ceiling from the
+        // raster dimensions before applying an optional target-bitrate
+        // override. Recompute that same estimate instead of multiplying an
+        // overridden target, which would misstate the effective encoder
+        // ceiling when only target_bitrate_bps is overridden.
+        RecordingOutputConfig output_config;
+        output_config.mode = profile.output_mode;
+        output_config.downsample_factor = profile.downsample_factor;
+        output_config.requested_width = profile.requested_output_width;
+        output_config.requested_height = profile.requested_output_height;
+        output_config.resolved_width = static_cast<int>(profile.width);
+        output_config.resolved_height = static_cast<int>(profile.height);
+        output_config.resize_enabled = profile.resize_enabled;
+
+        CameraParams camera_params{};
+        camera_params.width = profile.source_width;
+        camera_params.height = profile.source_height;
+        camera_params.frame_rate = profile.fps;
+        camera_params.gpu_id = profile.source_gpu_id;
+        camera_params.color = profile.color;
+        max_bps = estimate_recording_bitrate(camera_params, output_config).max_bitrate;
+    }
+    comment << "; max_bps=" << max_bps;
+    const uint32_t vbv = profile.encoder_control_overrides.vbv_buffer_size > 0
+        ? saturate_positive_u32(profile.encoder_control_overrides.vbv_buffer_size)
+        : max_bps;
+    comment << "; vbv=" << vbv;
 }
 
 nlohmann::json metadata_tags_to_json(
@@ -638,9 +737,9 @@ void apply_video_encode_profile_to_nvenc_config(
     encode_config->frameIntervalP = 1;
     apply_full_range_video_signal_to_nvenc_config(profile.codec, encode_config);
 
-    if (profile.output_kind == "crop") {
-        encode_config->gopLength = 1;
-        encode_config->frameIntervalP = 1;
+    const bool low_latency = video_encode_tuning_is_low_latency(profile.tuning);
+    const bool lossless = video_encode_tuning_is_lossless(profile.tuning);
+    if (lossless) {
         encode_config->rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
         encode_config->rcParams.constQP = {0, 0, 0};
         encode_config->rcParams.averageBitRate = 0;
@@ -652,32 +751,16 @@ void apply_video_encode_profile_to_nvenc_config(
         encode_config->rcParams.enableTemporalAQ = 0;
         encode_config->rcParams.enableLookahead = 0;
         encode_config->rcParams.lowDelayKeyFrameScale = 0;
+        encode_config->gopLength = 1;
+        encode_config->frameIntervalP = 1;
+    } else if (is_cqp_rate_control(profile.rate_control_mode)) {
+        apply_cqp_recording_profile(*encode_config, profile);
+    } else if (is_cbr_rate_control(profile.rate_control_mode)) {
+        apply_cbr_recording_profile(*encode_config, profile, low_latency);
+    } else if (is_vbr_cq_rate_control(profile.rate_control_mode)) {
+        apply_vbr_cq_recording_profile(*encode_config, profile, low_latency);
     } else {
-        const bool low_latency = video_encode_tuning_is_low_latency(profile.tuning);
-        const bool lossless = video_encode_tuning_is_lossless(profile.tuning);
-        if (lossless) {
-            encode_config->rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
-            encode_config->rcParams.constQP = {0, 0, 0};
-            encode_config->rcParams.averageBitRate = 0;
-            encode_config->rcParams.maxBitRate = 0;
-            encode_config->rcParams.vbvBufferSize = 0;
-            encode_config->rcParams.targetQuality = 0;
-            encode_config->rcParams.targetQualityLSB = 0;
-            encode_config->rcParams.enableAQ = 0;
-            encode_config->rcParams.enableTemporalAQ = 0;
-            encode_config->rcParams.enableLookahead = 0;
-            encode_config->rcParams.lowDelayKeyFrameScale = 0;
-            encode_config->gopLength = 1;
-            encode_config->frameIntervalP = 1;
-        } else if (is_cqp_rate_control(profile.rate_control_mode)) {
-            apply_cqp_recording_profile(*encode_config, profile);
-        } else if (is_cbr_rate_control(profile.rate_control_mode)) {
-            apply_cbr_recording_profile(*encode_config, profile, low_latency);
-        } else if (is_vbr_cq_rate_control(profile.rate_control_mode)) {
-            apply_vbr_cq_recording_profile(*encode_config, profile, low_latency);
-        } else {
-            apply_quality_recording_profile(*encode_config, profile, low_latency);
-        }
+        apply_quality_recording_profile(*encode_config, profile, low_latency);
     }
 
     encode_config->rcParams.enableMinQP = 0;
@@ -842,7 +925,11 @@ nlohmann::json build_video_metadata_json(
 {
     nlohmann::json out = {
         {"schema_id", "orange.video_metadata"},
-        {"schema_version", profile.output_kind == "crop" ? 2 : 1},
+        // Schema v3 distinguishes a recorder-owned fixed spatial ROI from the
+        // legacy detection-centered crop (v2). Full-frame metadata remains v1.
+        {"schema_version", profile.output_kind == "crop"
+                                ? 2
+                                : (is_spatial_roi_output(profile) ? 3 : 1)},
         {"video_path", video_path},
         {"stream_id", stream_id},
         {"camera_serial", profile.camera_serial},
@@ -866,7 +953,7 @@ nlohmann::json build_video_metadata_json(
             {"validated_with_ffprobe", false}
         }}
     };
-    if (profile.output_kind == "crop") {
+    if (is_roi_raster_output(profile)) {
         out["video_pixel_coordinate_space"] = "crop_frame_pixels";
         out["source_geometry_coordinate_space"] = "full_frame_pixels";
         // Compatibility alias for readers of the pre-split coordinate field.
@@ -884,20 +971,27 @@ std::vector<std::pair<std::string, std::string>> build_video_encode_metadata_tag
     title << "Cam" << profile.camera_serial;
     if (profile.output_kind == "crop") {
         title << " crop";
+    } else if (is_spatial_roi_output(profile)) {
+        title << " spatial ROI";
     }
     tags.emplace_back("title", title.str());
 
     std::ostringstream comment;
     comment << "nvenc codec=" << profile.codec
+            << "; profile_name=" << profile.name
             << "; preset=" << profile.preset
             << "; tuning=" << profile.tuning
             << "; res=" << profile.width << "x" << profile.height
             << "; fps=" << profile.fps
             << "; color=" << (profile.color ? 1 : 0)
-            << "; gop=" << profile.resolved_gop_length;
+            << "; gop=" << profile.resolved_gop_length
+            << "; rate_control_mode=" << profile.rate_control_mode
+            << "; quality_value=" << profile.quality_value
+            << "; requested_gop_length=" << profile.requested_gop_length;
     append_source_pixel_comment_fields(comment, profile);
 
     if (profile.output_kind == "crop") {
+        append_raster_encode_control_comment_fields(comment, profile);
         comment << "; output_kind=crop"
                 << "; role=runtime_derived_acquisition_input"
                 << "; input_format=" << profile.input_format
@@ -907,6 +1001,21 @@ std::vector<std::pair<std::string, std::string>> build_video_encode_metadata_tag
                 << "; source_geometry_coordinate_space=full_frame_pixels"
                 << "; selection_policy=largest_detection_by_confidence"
                 << "; blank_frame_policy=encode_black_frame_when_no_detection";
+        tags.emplace_back("comment", comment.str());
+        return tags;
+    }
+
+    if (is_spatial_roi_output(profile)) {
+        append_raster_encode_control_comment_fields(comment, profile);
+        comment << "; output_kind=spatial_roi"
+                << "; role=recorder_owned_spatial_roi"
+                << "; input_format=" << profile.input_format
+                << "; source_format=" << profile.source_format
+                << "; coordinate_space=full_frame_pixels"
+                << "; video_pixel_coordinate_space=crop_frame_pixels"
+                << "; source_geometry_coordinate_space=full_frame_pixels"
+                << "; selection_policy=fixed_spatial_roi_geometry"
+                << "; blank_frame_policy=not_applicable_source_frame_always_bound";
         tags.emplace_back("comment", comment.str());
         return tags;
     }

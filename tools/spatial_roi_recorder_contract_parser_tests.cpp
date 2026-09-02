@@ -148,6 +148,13 @@ void parses_one_plan_bound_selected_stream()
                     spatial_roi::kSpatialRoiRecorderContractSchemaVersion &&
                 view.stream_count == 2,
             "contract envelope was not parsed");
+    require(view.storage_preflight_policy.schema_id ==
+                spatial_roi::kSpatialRoiRecorderStoragePreflightPolicySchemaId &&
+                view.storage_preflight_policy.schema_version ==
+                    spatial_roi::kSpatialRoiRecorderStoragePreflightPolicySchemaVersion &&
+                view.storage_preflight_policy.required &&
+                view.storage_preflight_policy.reserved_free_bytes > 0,
+            "storage preflight policy was not authenticated");
     require(view.ipc_v2.features ==
                 std::vector<std::string>{"cuda_ipc", "packed_mono8",
                                          "ack_release", "terminal_error"},
@@ -167,9 +174,14 @@ void parses_one_plan_bound_selected_stream()
     require(view.selected_stream.geometry.content_rect.x == 20 &&
                 view.selected_stream.geometry.encoded_raster.width == 12,
             "verified geometry was not exposed");
-    require(view.selected_stream.encode_profile.luma_preserved_exactly &&
+    require(!view.selected_stream.encode_profile.lossless &&
+                !view.selected_stream.encode_profile.luma_preserved_exactly &&
+                !view.selected_stream.encode_profile.aq &&
+                !view.selected_stream.encode_profile.temporal_aq &&
+                !view.selected_stream.encode_profile.lookahead &&
+                view.selected_stream.encode_profile.lookahead_depth == 0 &&
                 view.selected_stream.encode_profile.neutral_chroma_value == 128,
-            "Mono8-to-NV12 luma/chroma contract was not parsed");
+            "Mono8-to-NV12 luma/chroma and encoder-control policy was not parsed");
     require(view.selected_stream.encode_queue_depth == 8 &&
                 view.selected_stream.max_queue_bytes == 1440 &&
                 view.selected_stream.writer_queue_max_packets == 512 &&
@@ -207,6 +219,11 @@ void rejects_schema_feature_and_selector_fallbacks()
     candidate = fixture.contract;
     candidate["unexpected"] = true;
     require_rejected(fixture, candidate, "unknown contract field was accepted");
+
+    candidate = fixture.contract;
+    candidate["storage_preflight_policy"]["reserved_free_bytes"] = 0;
+    require_rejected(fixture, candidate,
+                     "zero reserved-free-space policy was accepted");
 
     spatial_roi::SpatialRoiRecorderContractView view;
     std::string error;
@@ -287,6 +304,33 @@ void rejects_bound_overflow_and_cross_field_mutations()
     require_rejected(fixture,
                      candidate,
                      "self-consistent-looking overflowing queue bytes were accepted");
+
+    candidate = fixture.contract;
+    candidate["streams"][kFirstStream]["detach_pool_frames"] =
+        candidate["streams"][kFirstStream]["detach_pool_frames"]
+            .get<std::uint64_t>() + 1;
+    require_rejected(fixture,
+                     candidate,
+                     "detach-pool slot count detached from queue admission was accepted");
+
+    candidate = fixture.contract;
+    candidate["streams"][kFirstStream]["max_detach_pool_bytes"] =
+        candidate["streams"][kFirstStream]["max_detach_pool_bytes"]
+            .get<std::uint64_t>() + 1;
+    candidate["aggregate_bounds"]["max_detach_pool_bytes_total"] =
+        candidate["aggregate_bounds"]["max_detach_pool_bytes_total"]
+            .get<std::uint64_t>() + 1;
+    require_rejected(fixture,
+                     candidate,
+                     "self-consistent-looking detach-pool byte mutation was accepted");
+
+    candidate = fixture.contract;
+    candidate["aggregate_bounds"]["max_detach_pool_bytes_total"] =
+        candidate["aggregate_bounds"]["max_detach_pool_bytes_total"]
+            .get<std::uint64_t>() + 1;
+    require_rejected(fixture,
+                     candidate,
+                     "aggregate detach-pool bytes disagreed with stream totals");
 
     candidate = fixture.contract;
     candidate["streams"][kFirstStream]["writer_queue_max_packets"] = 4097;
@@ -522,6 +566,64 @@ void parses_only_bounded_nonsymlink_regular_file()
     std::filesystem::remove(oversized_path);
 }
 
+void accepts_legacy_v2_lossless_plan_as_contract_v4()
+{
+    const Fixture current = make_fixture();
+    spatial_roi::Config legacy_config;
+    json config_json = current.plan.at("plan").at("configuration");
+    config_json["schema_version"] = spatial_roi::kLegacyConfigSchemaVersion;
+    config_json["backend"] = spatial_roi::kLegacyBackend;
+    config_json.erase("encode_profile");
+    std::string error;
+    require(spatial_roi::parse_config(config_json, &legacy_config, &error), error);
+
+    spatial_roi::PlanContext context;
+    const json& payload = current.plan.at("plan");
+    context.recording_id = payload.at("recording_id").get<std::string>();
+    context.recording_identity_token =
+        payload.at("recording_identity_token").get<std::string>();
+    context.generated_at_utc = payload.at("generated_at_utc").get<std::string>();
+    context.producer_generation =
+        payload.at("producer_generation").get<std::string>();
+    Fixture legacy;
+    require(spatial_roi::build_plan(
+                legacy_config, context, &legacy.plan, nullptr, &error),
+            error);
+    legacy.mapping = current.mapping;
+    require(spatial_roi::build_spatial_roi_recorder_contract(
+                legacy.plan,
+                kRecordingRoot,
+                legacy.mapping,
+                &legacy.contract,
+                &error),
+            error);
+    require(legacy.contract.at("schema_version") ==
+                spatial_roi::kLegacySpatialRoiRecorderContractSchemaVersion,
+            "legacy plan must emit contract schema v4");
+    require(legacy.contract.at("backend") == spatial_roi::kLegacyBackend,
+            "legacy plan must retain lossless backend identity");
+    const json& legacy_wire_profile =
+        legacy.contract.at("streams").at(kFirstStream).at("encode_profile");
+    require(!legacy_wire_profile.contains("aq") &&
+                !legacy_wire_profile.contains("temporal_aq") &&
+                !legacy_wire_profile.contains("lookahead") &&
+                !legacy_wire_profile.contains("lookahead_depth"),
+            "legacy v4 profile wire must remain unchanged");
+    spatial_roi::SpatialRoiRecorderContractView view;
+    require(parses(legacy, legacy.contract, kFirstStream, &view, &error), error);
+    require(view.selected_stream.encode_profile.profile_id ==
+                spatial_roi::legacy_lossless_encode_profile().name &&
+                view.selected_stream.encode_profile.lossless &&
+                view.selected_stream.encode_profile.preset == "p7" &&
+                view.selected_stream.encode_profile.rate_control_mode == "cqp" &&
+                view.selected_stream.encode_profile.quality_value == 0 &&
+                !view.selected_stream.encode_profile.aq &&
+                !view.selected_stream.encode_profile.temporal_aq &&
+                !view.selected_stream.encode_profile.lookahead &&
+                view.selected_stream.encode_profile.lookahead_depth == 0,
+            "legacy v4 contract did not preserve the inferred lossless profile");
+}
+
 }  // namespace
 
 int main()
@@ -538,6 +640,8 @@ int main()
         {"rejects_wrong_external_authority", rejects_wrong_external_authority},
         {"parses_only_bounded_nonsymlink_regular_file",
          parses_only_bounded_nonsymlink_regular_file},
+        {"accepts_legacy_v2_lossless_plan_as_contract_v4",
+         accepts_legacy_v2_lossless_plan_as_contract_v4},
     };
     int failures = 0;
     for (const auto& test : tests) {
@@ -555,6 +659,6 @@ int main()
                   << " spatial ROI contract parser test(s) failed\n";
         return 1;
     }
-    std::cout << "6 spatial ROI contract parser tests passed\n";
+    std::cout << "7 spatial ROI contract parser tests passed\n";
     return 0;
 }

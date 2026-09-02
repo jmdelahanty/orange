@@ -268,9 +268,15 @@ public:
     // is forbidden.
     void StopAccepting() noexcept;
     void Drain() noexcept;
-    void StopAcceptingAndDrain() noexcept;
+    // Returns false when any admitted lane terminates incompletely (including
+    // sink rejection/failure, source quarantine, or a queue admission drop).
+    // The optional error is bounded by the implementation and is best-effort
+    // because this boundary is noexcept.
+    bool StopAcceptingAndDrain(std::string* error_out = nullptr) noexcept;
 
     bool accepting() const noexcept;
+    bool failed() const noexcept;
+    std::string failure_reason() const;
     bool strict_mode() const noexcept { return true; }
     std::size_t lane_count() const noexcept { return lanes_.size(); }
     std::size_t lane_queue_capacity() const noexcept
@@ -290,6 +296,7 @@ private:
         const std::shared_ptr<SpatialRoiBatchEnvelope>& envelope,
         std::size_t lane_index,
         SpatialRoiLaneTerminalReason reason) noexcept;
+    void latch_failure(const char* reason) noexcept;
     void QuarantineAfterCudaCompletionFailure() noexcept;
     static SpatialRoiRuntimeSubmitStatus map_producer_status(
         SpatialRoiBatchStatus status) noexcept;
@@ -305,11 +312,14 @@ private:
     std::size_t lane_queue_capacity_ = 0;
     mutable std::mutex admission_mutex_;
     mutable std::mutex drain_mutex_;
+    mutable std::mutex failure_mutex_;
     bool accepting_ = false;
     SpatialRoiRuntimeSubmitStatus terminal_status_ =
         SpatialRoiRuntimeSubmitStatus::kStopped;
     std::uint64_t next_batch_sequence_ = 1;
     std::uint64_t last_admitted_recording_frame_id_ = 0;
+    bool failed_ = false;
+    std::string first_failure_;
 
     struct AtomicCounters;
     std::unique_ptr<AtomicCounters> counters_;

@@ -279,6 +279,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/yolo_event_log.cpp"
     "${SRC_DIR}/enet_thread.cpp"
     "${SRC_DIR}/project.cpp"
+    "${SRC_DIR}/session/spatial_roi_session_snapshot.cpp"
     "${SRC_DIR}/nic_thermal_monitor.cpp"
     "${SRC_DIR}/recording_validation.cpp"
     "${SRC_DIR}/recording_encoding_budget.cpp"
@@ -363,11 +364,13 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/crop_producer_worker.cpp"
     "${SRC_DIR}/spatial_roi_acquisition_bridge.cpp"
     "${SRC_DIR}/spatial_roi_acquisition_controller.cpp"
+    "${SRC_DIR}/spatial_roi_camera_producer_coordinator.cpp"
     "${SRC_DIR}/spatial_roi_batch_producer.cpp"
     "${SRC_DIR}/spatial_roi_frame_contract.cpp"
     "${SRC_DIR}/spatial_roi_ipc_exporter.cpp"
     "${SRC_DIR}/spatial_roi_ipc_handoff.cpp"
     "${SRC_DIR}/spatial_roi_ipc_protocol.cpp"
+    "${SRC_DIR}/spatial_roi_unix_socket_connector.cpp"
     "${SRC_DIR}/spatial_roi_unix_socket_transport.cpp"
     "${SRC_DIR}/spatial_roi_recording_runtime.cpp"
     "${SRC_DIR}/pose_event_log.cpp"
@@ -377,9 +380,13 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/external_recorder_lifecycle.cpp"
     "${SRC_DIR}/external_recorder_supervisor.cpp"
     "${SRC_DIR}/session/external_crop_recorder_config.cpp"
+    "${SRC_DIR}/session/registered_scene_context_capture_declaration.cpp"
+    "${SRC_DIR}/session/spatial_roi_media_policy.cpp"
     "${SRC_DIR}/session/spatial_roi_recording_config.cpp"
+    "${SRC_DIR}/session/spatial_roi_recorder_camera_contract.cpp"
     "${SRC_DIR}/session/spatial_roi_recorder_contract.cpp"
     "${SRC_DIR}/session/spatial_roi_recorder_contract_parser.cpp"
+    "${SRC_DIR}/session/spatial_roi_recording_outputs.cpp"
     "${SRC_DIR}/session/crop_rolling_sidecars.cpp"
     "${SRC_DIR}/session/recording_observation_binding.cpp"
     "${SRC_DIR}/session/recording_observation_finalization.cpp"
@@ -402,6 +409,7 @@ set(ORANGE_SOURCES
 
 set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/orange_headless_client.cpp"
+    "${SRC_DIR}/headless_experiment_outcome.cpp"
     "${SRC_DIR}/headless_recording_profile.cpp"
     "${SRC_DIR}/network_base.cpp"
     "${SRC_DIR}/video_container_finalization.cpp"
@@ -417,9 +425,14 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/external_recorder_lifecycle.cpp"
     "${SRC_DIR}/external_recorder_supervisor.cpp"
     "${SRC_DIR}/session/external_crop_recorder_config.cpp"
+    "${SRC_DIR}/session/registered_scene_context_capture_declaration.cpp"
+    "${SRC_DIR}/session/spatial_roi_media_policy.cpp"
     "${SRC_DIR}/session/spatial_roi_recording_config.cpp"
+    "${SRC_DIR}/session/spatial_roi_recorder_runtime_config.cpp"
+    "${SRC_DIR}/session/spatial_roi_recorder_camera_contract.cpp"
     "${SRC_DIR}/session/spatial_roi_recorder_contract.cpp"
     "${SRC_DIR}/session/spatial_roi_recorder_contract_parser.cpp"
+    "${SRC_DIR}/session/spatial_roi_recording_outputs.cpp"
     "${SRC_DIR}/session/crop_rolling_sidecars.cpp"
     "${SRC_DIR}/session/recording_observation_binding.cpp"
     "${SRC_DIR}/session/recording_observation_finalization.cpp"
@@ -458,15 +471,27 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/crop_producer_worker.cpp"
     "${SRC_DIR}/spatial_roi_acquisition_bridge.cpp"
     "${SRC_DIR}/spatial_roi_acquisition_controller.cpp"
+    "${SRC_DIR}/spatial_roi_camera_producer_coordinator.cpp"
+    "${SRC_DIR}/spatial_roi_camera_recorder_process.cpp"
+    "${SRC_DIR}/spatial_roi_recorder_scheduling.cpp"
+    "${SRC_DIR}/spatial_roi_headless_camera_session.cpp"
     "${SRC_DIR}/spatial_roi_batch_producer.cpp"
     "${SRC_DIR}/spatial_roi_frame_contract.cpp"
     "${SRC_DIR}/spatial_roi_ipc_exporter.cpp"
     "${SRC_DIR}/spatial_roi_ipc_handoff.cpp"
     "${SRC_DIR}/spatial_roi_ipc_protocol.cpp"
+    "${SRC_DIR}/spatial_roi_unix_socket_connector.cpp"
     "${SRC_DIR}/spatial_roi_unix_socket_transport.cpp"
     "${SRC_DIR}/spatial_roi_recording_runtime.cpp"
+    "${SRC_DIR}/spatial_roi_finalized_session_receipt.cpp"
+    "${SRC_DIR}/spatial_roi_recorder_artifact_root.cpp"
+    "${SRC_DIR}/spatial_roi_recorder_storage_preflight.cpp"
+    "${SRC_DIR}/spatial_roi_recorder_evidence.cpp"
+    "${SRC_DIR}/spatial_roi_session_authority_store.cpp"
+    "${SRC_DIR}/spatial_roi_registered_scene_context.cpp"
     "${SRC_DIR}/pose_event_log.cpp"
     "${SRC_DIR}/pose_worker.cpp"
+    "${SRC_DIR}/session/spatial_roi_session_snapshot.cpp"
     ${NVENCODER_SOURCES}
     ${ORANGE_CUDA_SOURCES}
 )
@@ -488,6 +513,7 @@ set(EVT_APERTURE_CHARACTERIZE_SOURCES
     "${SRC_DIR}/camera.cpp"
     "${SRC_DIR}/camera_sensor_pipeline_state.cpp"
     "${SRC_DIR}/project.cpp"
+    "${SRC_DIR}/session/spatial_roi_session_snapshot.cpp"
     "${SRC_DIR}/spatial_calibration_snapshot.cpp"
     "${SRC_DIR}/spatial_layout_schema.cpp"
 )
@@ -497,6 +523,7 @@ set(EVT_STREAM_SMOKE_SOURCES
     "${SRC_DIR}/camera.cpp"
     "${SRC_DIR}/camera_sensor_pipeline_state.cpp"
     "${SRC_DIR}/project.cpp"
+    "${SRC_DIR}/session/spatial_roi_session_snapshot.cpp"
     "${SRC_DIR}/spatial_calibration_snapshot.cpp"
     "${SRC_DIR}/spatial_layout_schema.cpp"
 )
@@ -560,6 +587,56 @@ target_compile_features(spatial_roi_recorder_cuda_detach PUBLIC
 target_link_libraries(spatial_roi_recorder_cuda_detach PRIVATE
     ${CUDA_CUDART_LIBRARY}
     ${CUDA_DRIVER_LIBRARY})
+add_library(spatial_roi_camera_recorder_core STATIC
+    "${SRC_DIR}/spatial_roi_camera_recorder.cpp"
+    "${SRC_DIR}/spatial_roi_camera_recorder_stream_core.cpp"
+    "${SRC_DIR}/spatial_roi_lossless_encoder.cpp"
+    "${SRC_DIR}/spatial_roi_recorder_artifact_root.cpp"
+    "${SRC_DIR}/spatial_roi_recorder_storage_preflight.cpp"
+    "${SRC_DIR}/spatial_roi_recorder_evidence.cpp"
+    "${SRC_DIR}/spatial_roi_recorder_scheduling.cpp"
+    "${SRC_DIR}/spatial_roi_recorder_frame_journal.cpp"
+    "${SRC_DIR}/spatial_roi_recorder_frame_journal_bridge.cpp"
+    "${SRC_DIR}/spatial_roi_recorder_ipc_session.cpp"
+    "${SRC_DIR}/spatial_roi_recorder_terminal_sidecars.cpp"
+    "${SRC_DIR}/spatial_roi_recorder_video_sanity.cpp"
+    "${SRC_DIR}/spatial_roi_socket_runtime_directory.cpp"
+    "${SRC_DIR}/spatial_roi_unix_socket_listener.cpp"
+    "${SRC_DIR}/spatial_roi_unix_socket_transport.cpp"
+    "${SRC_DIR}/spatial_roi_ipc_handoff.cpp"
+    "${SRC_DIR}/spatial_roi_ipc_protocol.cpp"
+    "${SRC_DIR}/spatial_roi_frame_contract.cpp"
+    "${SRC_DIR}/session/spatial_roi_recorder_camera_contract.cpp"
+    "${SRC_DIR}/session/spatial_roi_recorder_contract_parser.cpp"
+    "${SRC_DIR}/session/spatial_roi_recorder_contract.cpp"
+    "${SRC_DIR}/session/spatial_roi_recording_config.cpp"
+    "${SRC_DIR}/video_encode_profile.cpp"
+    "${SRC_DIR}/video_container_finalization.cpp"
+    "${SRC_DIR}/FFmpegWriter.cpp"
+    ${NVENCODER_SOURCES}
+)
+target_include_directories(spatial_roi_camera_recorder_core PUBLIC
+    ${ORANGE_COMMON_INCLUDE_DIRS})
+target_compile_features(spatial_roi_camera_recorder_core PUBLIC
+    cxx_std_17 cuda_std_17)
+target_link_libraries(spatial_roi_camera_recorder_core PUBLIC
+    spatial_roi_recorder_cuda_detach
+    ${CUDA_CUDART_LIBRARY}
+    ${CUDA_DRIVER_LIBRARY}
+    ${NVIDIA_ENCODE_LIBRARY}
+    ${AVFORMAT_LIBRARY}
+    ${SWRESAMPLE_LIBRARY}
+    ${AVUTIL_LIBRARY}
+    ${AVCODEC_LIBRARY}
+    Threads::Threads
+    m)
+set_target_properties(spatial_roi_camera_recorder_core PROPERTIES
+    BUILD_RPATH "${CUDA_LIBRARY_DIR};${FFMPEG_LIBRARY_DIR}")
+add_executable(spatial_roi_camera_recorder
+    "tools/spatial_roi_camera_recorder.cpp")
+target_link_libraries(spatial_roi_camera_recorder PRIVATE
+    spatial_roi_camera_recorder_core)
+add_dependencies(orange_client spatial_roi_camera_recorder)
 add_executable(yolo_offline EXCLUDE_FROM_ALL ${YOLO_OFFLINE_SOURCES})
 add_executable(evt_lens_probe ${EVT_LENS_PROBE_SOURCES})
 add_executable(evt_aperture_characterize ${EVT_APERTURE_CHARACTERIZE_SOURCES})
@@ -567,6 +644,7 @@ add_executable(evt_stream_smoke EXCLUDE_FROM_ALL ${EVT_STREAM_SMOKE_SOURCES})
 add_executable(nvenc_stress_load EXCLUDE_FROM_ALL ${NVENC_STRESS_LOAD_SOURCES})
 add_executable(nv12_prefill_validation EXCLUDE_FROM_ALL ${NV12_PREFILL_VALIDATION_SOURCES})
 add_executable(external_recorder_ipc_probe EXCLUDE_FROM_ALL ${EXTERNAL_RECORDER_IPC_PROBE_SOURCES})
+add_dependencies(orange_client external_recorder_ipc_probe)
 add_executable(external_recorder_supervisor_plan EXCLUDE_FROM_ALL ${EXTERNAL_RECORDER_SUPERVISOR_PLAN_SOURCES})
 add_executable(nic_thermal_monitor
     "tools/nic_thermal_monitor.cpp"
@@ -579,6 +657,22 @@ add_dependencies(orange nic_thermal_monitor)
 add_dependencies(orange_client nic_thermal_monitor)
 
 if(BUILD_TESTING)
+    add_test(NAME spatial_roi_camera_recorder_help
+        COMMAND spatial_roi_camera_recorder --help)
+
+    add_executable(spatial_roi_camera_recorder_core_link_tests
+        "tools/spatial_roi_camera_recorder_core_link_tests.cpp")
+    target_include_directories(spatial_roi_camera_recorder_core_link_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_camera_recorder_core_link_tests PRIVATE
+        cxx_std_17)
+    target_link_libraries(spatial_roi_camera_recorder_core_link_tests PRIVATE
+        spatial_roi_camera_recorder_core)
+    set_target_properties(spatial_roi_camera_recorder_core_link_tests PROPERTIES
+        BUILD_RPATH "${CUDA_LIBRARY_DIR};${FFMPEG_LIBRARY_DIR}")
+    add_test(NAME spatial_roi_camera_recorder_core_link_tests
+        COMMAND spatial_roi_camera_recorder_core_link_tests)
+
     add_executable(nic_thermal_monitor_tests
         "tools/nic_thermal_monitor_tests.cpp"
         "${SRC_DIR}/nic_thermal_monitor.cpp"
@@ -596,6 +690,16 @@ if(BUILD_TESTING)
     target_include_directories(headless_recording_profile_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(headless_recording_profile_tests PRIVATE cxx_std_17)
     add_test(NAME headless_recording_profile_tests COMMAND headless_recording_profile_tests)
+
+    add_executable(headless_experiment_outcome_tests
+        "tools/headless_experiment_outcome_tests.cpp"
+        "${SRC_DIR}/headless_experiment_outcome.cpp"
+    )
+    target_include_directories(headless_experiment_outcome_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(headless_experiment_outcome_tests PRIVATE cxx_std_17)
+    add_test(NAME headless_experiment_outcome_tests
+        COMMAND headless_experiment_outcome_tests)
 
     add_executable(external_recorder_frame_metadata_tests
         "tools/external_recorder_frame_metadata_tests.cpp"
@@ -620,6 +724,64 @@ if(BUILD_TESTING)
     target_include_directories(recording_output_descriptor_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(recording_output_descriptor_tests PRIVATE cxx_std_17)
     add_test(NAME recording_output_descriptor_tests COMMAND recording_output_descriptor_tests)
+
+    add_executable(spatial_roi_recording_outputs_tests
+        "tools/spatial_roi_recording_outputs_tests.cpp"
+        "${SRC_DIR}/session/spatial_roi_recording_outputs.cpp"
+        "${SRC_DIR}/recording_output_descriptor.cpp"
+    )
+    target_include_directories(spatial_roi_recording_outputs_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_recording_outputs_tests PRIVATE cxx_std_17)
+    add_test(NAME spatial_roi_recording_outputs_tests
+        COMMAND spatial_roi_recording_outputs_tests)
+
+    add_executable(spatial_roi_session_snapshot_tests
+        "tools/spatial_roi_session_snapshot_tests.cpp"
+        "${SRC_DIR}/session/spatial_roi_session_snapshot.cpp"
+    )
+    target_include_directories(spatial_roi_session_snapshot_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_session_snapshot_tests PRIVATE cxx_std_17)
+    add_test(NAME spatial_roi_session_snapshot_tests
+        COMMAND spatial_roi_session_snapshot_tests)
+
+    add_executable(spatial_roi_session_authority_store_tests
+        "tools/spatial_roi_session_authority_store_tests.cpp"
+        "${SRC_DIR}/spatial_roi_session_authority_store.cpp"
+    )
+    target_include_directories(spatial_roi_session_authority_store_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_session_authority_store_tests PRIVATE
+        cxx_std_17)
+    add_test(NAME spatial_roi_session_authority_store_tests
+        COMMAND spatial_roi_session_authority_store_tests)
+    set_tests_properties(spatial_roi_session_authority_store_tests PROPERTIES
+        TIMEOUT 60)
+
+    add_executable(spatial_roi_registered_scene_context_tests
+        "tools/spatial_roi_registered_scene_context_tests.cpp"
+        "${SRC_DIR}/spatial_roi_registered_scene_context.cpp"
+        "${SRC_DIR}/spatial_roi_session_authority_store.cpp")
+    target_include_directories(spatial_roi_registered_scene_context_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_registered_scene_context_tests PRIVATE
+        cxx_std_17)
+    add_test(NAME spatial_roi_registered_scene_context_tests
+        COMMAND spatial_roi_registered_scene_context_tests)
+    set_tests_properties(spatial_roi_registered_scene_context_tests PROPERTIES
+        TIMEOUT 60)
+
+    add_executable(registered_scene_context_capture_declaration_tests
+        "tools/registered_scene_context_capture_declaration_tests.cpp"
+        "${SRC_DIR}/session/registered_scene_context_capture_declaration.cpp"
+    )
+    target_include_directories(registered_scene_context_capture_declaration_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(registered_scene_context_capture_declaration_tests PRIVATE
+        cxx_std_17)
+    add_test(NAME registered_scene_context_capture_declaration_tests
+        COMMAND registered_scene_context_capture_declaration_tests)
 
     add_executable(acquisition_index_authority_tests
         "tools/acquisition_index_authority_tests.cpp"
@@ -910,6 +1072,30 @@ if(BUILD_TESTING)
     target_compile_features(spatial_roi_recording_config_tests PRIVATE cxx_std_17)
     add_test(NAME spatial_roi_recording_config_tests COMMAND spatial_roi_recording_config_tests)
 
+    add_executable(spatial_roi_media_policy_tests
+        "tools/spatial_roi_media_policy_tests.cpp"
+        "${SRC_DIR}/session/spatial_roi_media_policy.cpp"
+    )
+    target_include_directories(spatial_roi_media_policy_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_media_policy_tests PRIVATE cxx_std_17)
+    add_test(NAME spatial_roi_media_policy_tests COMMAND spatial_roi_media_policy_tests)
+
+    add_test(NAME spatial_roi_fixed_roi_only_spec_validation
+        COMMAND python3
+            "${CMAKE_SOURCE_DIR}/scripts/validate_spatial_roi_fixed_roi_only_spec.py")
+
+    add_executable(spatial_roi_recorder_runtime_config_tests
+        "tools/spatial_roi_recorder_runtime_config_tests.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_runtime_config.cpp"
+    )
+    target_include_directories(spatial_roi_recorder_runtime_config_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_recorder_runtime_config_tests PRIVATE
+        cxx_std_17)
+    add_test(NAME spatial_roi_recorder_runtime_config_tests
+        COMMAND spatial_roi_recorder_runtime_config_tests)
+
     add_executable(spatial_roi_recorder_contract_tests
         "tools/spatial_roi_recorder_contract_tests.cpp"
         "${SRC_DIR}/session/spatial_roi_recorder_contract.cpp"
@@ -932,6 +1118,20 @@ if(BUILD_TESTING)
     add_test(NAME spatial_roi_recorder_contract_parser_tests
         COMMAND spatial_roi_recorder_contract_parser_tests)
 
+    add_executable(spatial_roi_recorder_camera_contract_tests
+        "tools/spatial_roi_recorder_camera_contract_tests.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_camera_contract.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_contract_parser.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_contract.cpp"
+        "${SRC_DIR}/session/spatial_roi_recording_config.cpp"
+    )
+    target_include_directories(spatial_roi_recorder_camera_contract_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_recorder_camera_contract_tests PRIVATE
+        cxx_std_17)
+    add_test(NAME spatial_roi_recorder_camera_contract_tests
+        COMMAND spatial_roi_recorder_camera_contract_tests)
+
     add_executable(spatial_roi_recorder_artifact_root_tests
         "tools/spatial_roi_recorder_artifact_root_tests.cpp"
         "${SRC_DIR}/spatial_roi_recorder_artifact_root.cpp"
@@ -944,6 +1144,51 @@ if(BUILD_TESTING)
         Threads::Threads)
     add_test(NAME spatial_roi_recorder_artifact_root_tests
         COMMAND spatial_roi_recorder_artifact_root_tests)
+
+    add_executable(spatial_roi_recorder_storage_preflight_tests
+        "tools/spatial_roi_recorder_storage_preflight_tests.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_storage_preflight.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_artifact_root.cpp")
+    target_include_directories(spatial_roi_recorder_storage_preflight_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_recorder_storage_preflight_tests PRIVATE cxx_std_17)
+    target_link_libraries(spatial_roi_recorder_storage_preflight_tests PRIVATE
+        Threads::Threads)
+    add_test(NAME spatial_roi_recorder_storage_preflight_tests
+        COMMAND spatial_roi_recorder_storage_preflight_tests)
+
+    add_executable(spatial_roi_recorder_terminal_sidecars_tests
+        "tools/spatial_roi_recorder_terminal_sidecars_tests.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_terminal_sidecars.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_artifact_root.cpp"
+    )
+    target_include_directories(spatial_roi_recorder_terminal_sidecars_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_recorder_terminal_sidecars_tests PRIVATE
+        cxx_std_17)
+    target_link_libraries(spatial_roi_recorder_terminal_sidecars_tests PRIVATE
+        Threads::Threads)
+    add_test(NAME spatial_roi_recorder_terminal_sidecars_tests
+        COMMAND spatial_roi_recorder_terminal_sidecars_tests)
+
+    add_executable(spatial_roi_recorder_video_sanity_tests
+        "tools/spatial_roi_recorder_video_sanity_tests.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_video_sanity.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_artifact_root.cpp"
+    )
+    target_include_directories(spatial_roi_recorder_video_sanity_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_recorder_video_sanity_tests PRIVATE
+        cxx_std_17)
+    target_link_libraries(spatial_roi_recorder_video_sanity_tests PRIVATE
+        ${AVFORMAT_LIBRARY}
+        ${AVCODEC_LIBRARY}
+        ${AVUTIL_LIBRARY}
+        Threads::Threads)
+    set_target_properties(spatial_roi_recorder_video_sanity_tests PROPERTIES
+        BUILD_RPATH "${FFMPEG_LIBRARY_DIR}")
+    add_test(NAME spatial_roi_recorder_video_sanity_tests
+        COMMAND spatial_roi_recorder_video_sanity_tests)
 
     add_executable(spatial_roi_frame_contract_tests
         "tools/spatial_roi_frame_contract_tests.cpp"
@@ -1022,6 +1267,86 @@ if(BUILD_TESTING)
         Threads::Threads)
     add_test(NAME spatial_roi_acquisition_controller_tests COMMAND spatial_roi_acquisition_controller_tests)
 
+    add_executable(spatial_roi_camera_producer_coordinator_tests
+        "tools/spatial_roi_camera_producer_coordinator_tests.cpp"
+        "${SRC_DIR}/spatial_roi_camera_producer_coordinator.cpp"
+        "${SRC_DIR}/spatial_roi_ipc_exporter.cpp"
+        "${SRC_DIR}/spatial_roi_ipc_handoff.cpp"
+        "${SRC_DIR}/spatial_roi_ipc_protocol.cpp"
+        "${SRC_DIR}/spatial_roi_frame_contract.cpp"
+        "${SRC_DIR}/spatial_roi_unix_socket_connector.cpp"
+        "${SRC_DIR}/spatial_roi_unix_socket_transport.cpp"
+        "${SRC_DIR}/spatial_roi_recording_runtime.cpp"
+        "${SRC_DIR}/spatial_roi_batch_producer.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_camera_contract.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_contract_parser.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_contract.cpp"
+        "${SRC_DIR}/session/spatial_roi_recording_config.cpp"
+    )
+    target_include_directories(spatial_roi_camera_producer_coordinator_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_camera_producer_coordinator_tests PRIVATE
+        cxx_std_17)
+    target_link_libraries(spatial_roi_camera_producer_coordinator_tests PRIVATE
+        ${CUDA_CUDART_LIBRARY}
+        Threads::Threads)
+    add_test(NAME spatial_roi_camera_producer_coordinator_tests
+        COMMAND spatial_roi_camera_producer_coordinator_tests)
+
+    add_executable(spatial_roi_camera_recorder_process_tests
+        "tools/spatial_roi_camera_recorder_process_tests.cpp"
+        "${SRC_DIR}/spatial_roi_camera_recorder.cpp"
+        "${SRC_DIR}/spatial_roi_camera_recorder_process.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_scheduling.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_storage_preflight.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_camera_contract.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_contract_parser.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_contract.cpp"
+        "${SRC_DIR}/session/spatial_roi_recording_config.cpp"
+    )
+    target_include_directories(spatial_roi_camera_recorder_process_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_camera_recorder_process_tests PRIVATE
+        cxx_std_17)
+    target_link_libraries(spatial_roi_camera_recorder_process_tests PRIVATE
+        Threads::Threads)
+    add_test(NAME spatial_roi_camera_recorder_process_tests
+        COMMAND spatial_roi_camera_recorder_process_tests)
+
+    add_executable(spatial_roi_headless_camera_session_tests
+        "tools/spatial_roi_headless_camera_session_tests.cpp"
+        "${SRC_DIR}/spatial_roi_headless_camera_session.cpp"
+        "${SRC_DIR}/spatial_roi_camera_recorder_process.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_scheduling.cpp"
+        "${SRC_DIR}/spatial_roi_camera_producer_coordinator.cpp"
+        "${SRC_DIR}/spatial_roi_acquisition_controller.cpp"
+        "${SRC_DIR}/spatial_roi_acquisition_bridge.cpp"
+        "${SRC_DIR}/spatial_roi_ipc_exporter.cpp"
+        "${SRC_DIR}/spatial_roi_ipc_handoff.cpp"
+        "${SRC_DIR}/spatial_roi_ipc_protocol.cpp"
+        "${SRC_DIR}/spatial_roi_frame_contract.cpp"
+        "${SRC_DIR}/spatial_roi_unix_socket_connector.cpp"
+        "${SRC_DIR}/spatial_roi_unix_socket_transport.cpp"
+        "${SRC_DIR}/spatial_roi_recording_runtime.cpp"
+        "${SRC_DIR}/spatial_roi_batch_producer.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_camera_contract.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_contract_parser.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_contract.cpp"
+        "${SRC_DIR}/session/spatial_roi_recording_config.cpp"
+    )
+    target_include_directories(spatial_roi_headless_camera_session_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_headless_camera_session_tests PRIVATE
+        cxx_std_17)
+    target_link_libraries(spatial_roi_headless_camera_session_tests PRIVATE
+        ${CUDA_CUDART_LIBRARY}
+        ${EVT_CAMERA_LIBRARY}
+        ${EVT_GENICAM_LIBRARY}
+        ${EVT_GIGE_LIBRARY}
+        Threads::Threads)
+    add_test(NAME spatial_roi_headless_camera_session_tests
+        COMMAND spatial_roi_headless_camera_session_tests)
+
     add_executable(spatial_roi_ipc_exporter_tests
         "tools/spatial_roi_ipc_exporter_tests.cpp"
         "${SRC_DIR}/spatial_roi_ipc_exporter.cpp"
@@ -1057,6 +1382,66 @@ if(BUILD_TESTING)
         Threads::Threads)
     add_test(NAME spatial_roi_ipc_handoff_tests COMMAND spatial_roi_ipc_handoff_tests)
 
+    add_executable(spatial_roi_recorder_ipc_session_tests
+        "tools/spatial_roi_recorder_ipc_session_tests.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_ipc_session.cpp"
+        "${SRC_DIR}/spatial_roi_ipc_protocol.cpp"
+        "${SRC_DIR}/spatial_roi_frame_contract.cpp"
+    )
+    target_include_directories(spatial_roi_recorder_ipc_session_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_recorder_ipc_session_tests PRIVATE
+        cxx_std_17)
+    add_test(NAME spatial_roi_recorder_ipc_session_tests
+        COMMAND spatial_roi_recorder_ipc_session_tests)
+
+    add_executable(spatial_roi_recorder_frame_journal_tests
+        "tools/spatial_roi_recorder_frame_journal_tests.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_frame_journal.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_evidence.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_artifact_root.cpp"
+        "${SRC_DIR}/spatial_roi_ipc_protocol.cpp"
+        "${SRC_DIR}/spatial_roi_frame_contract.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_contract_parser.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_contract.cpp"
+        "${SRC_DIR}/session/spatial_roi_recording_config.cpp"
+    )
+    target_include_directories(spatial_roi_recorder_frame_journal_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_recorder_frame_journal_tests PRIVATE
+        cxx_std_17)
+    target_link_libraries(spatial_roi_recorder_frame_journal_tests PRIVATE
+        Threads::Threads)
+    add_test(NAME spatial_roi_recorder_frame_journal_tests
+        COMMAND spatial_roi_recorder_frame_journal_tests)
+    set_tests_properties(spatial_roi_recorder_frame_journal_tests PROPERTIES
+        TIMEOUT 60)
+
+    add_executable(spatial_roi_recorder_frame_journal_bridge_tests
+        "tools/spatial_roi_recorder_frame_journal_bridge_tests.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_frame_journal_bridge.cpp"
+    )
+    target_include_directories(spatial_roi_recorder_frame_journal_bridge_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_recorder_frame_journal_bridge_tests PRIVATE
+        cxx_std_17)
+    add_test(NAME spatial_roi_recorder_frame_journal_bridge_tests
+        COMMAND spatial_roi_recorder_frame_journal_bridge_tests)
+    set_tests_properties(spatial_roi_recorder_frame_journal_bridge_tests PROPERTIES
+        TIMEOUT 60)
+
+    add_executable(spatial_roi_socket_runtime_directory_tests
+        "tools/spatial_roi_socket_runtime_directory_tests.cpp"
+        "${SRC_DIR}/spatial_roi_socket_runtime_directory.cpp"
+        "${SRC_DIR}/session/spatial_roi_recording_config.cpp"
+    )
+    target_include_directories(spatial_roi_socket_runtime_directory_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_socket_runtime_directory_tests PRIVATE
+        cxx_std_17)
+    add_test(NAME spatial_roi_socket_runtime_directory_tests
+        COMMAND spatial_roi_socket_runtime_directory_tests)
+
     add_executable(spatial_roi_unix_socket_transport_tests
         "tools/spatial_roi_unix_socket_transport_tests.cpp"
         "${SRC_DIR}/spatial_roi_unix_socket_transport.cpp"
@@ -1066,6 +1451,62 @@ if(BUILD_TESTING)
     target_link_libraries(spatial_roi_unix_socket_transport_tests PRIVATE Threads::Threads)
     add_test(NAME spatial_roi_unix_socket_transport_tests
         COMMAND spatial_roi_unix_socket_transport_tests)
+
+    add_executable(spatial_roi_unix_socket_connector_tests
+        "tools/spatial_roi_unix_socket_connector_tests.cpp"
+        "${SRC_DIR}/spatial_roi_unix_socket_connector.cpp"
+        "${SRC_DIR}/spatial_roi_unix_socket_transport.cpp"
+    )
+    target_include_directories(spatial_roi_unix_socket_connector_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_unix_socket_connector_tests PRIVATE
+        cxx_std_17)
+    target_link_libraries(spatial_roi_unix_socket_connector_tests PRIVATE
+        Threads::Threads)
+    add_test(NAME spatial_roi_unix_socket_connector_tests
+        COMMAND spatial_roi_unix_socket_connector_tests)
+
+    add_executable(spatial_roi_unix_socket_listener_tests
+        "tools/spatial_roi_unix_socket_listener_tests.cpp"
+        "${SRC_DIR}/spatial_roi_unix_socket_listener.cpp"
+        "${SRC_DIR}/spatial_roi_unix_socket_transport.cpp"
+    )
+    target_include_directories(spatial_roi_unix_socket_listener_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_unix_socket_listener_tests PRIVATE
+        cxx_std_17)
+    target_link_libraries(spatial_roi_unix_socket_listener_tests PRIVATE
+        Threads::Threads)
+    add_test(NAME spatial_roi_unix_socket_listener_tests
+        COMMAND spatial_roi_unix_socket_listener_tests)
+
+    add_executable(spatial_roi_camera_recorder_tests
+        "tools/spatial_roi_camera_recorder_tests.cpp"
+        "${SRC_DIR}/spatial_roi_camera_recorder.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_storage_preflight.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_camera_contract.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_contract_parser.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_contract.cpp"
+        "${SRC_DIR}/session/spatial_roi_recording_config.cpp"
+    )
+    target_include_directories(spatial_roi_camera_recorder_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_camera_recorder_tests PRIVATE
+        cxx_std_17)
+    add_test(NAME spatial_roi_camera_recorder_tests
+        COMMAND spatial_roi_camera_recorder_tests)
+
+    add_executable(spatial_roi_recorder_scheduling_tests
+        "tools/spatial_roi_recorder_scheduling_tests.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_scheduling.cpp")
+    target_include_directories(spatial_roi_recorder_scheduling_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_roi_recorder_scheduling_tests PRIVATE
+        cxx_std_17)
+    target_link_libraries(spatial_roi_recorder_scheduling_tests PRIVATE
+        Threads::Threads)
+    add_test(NAME spatial_roi_recorder_scheduling_tests
+        COMMAND spatial_roi_recorder_scheduling_tests)
 
     add_executable(spatial_roi_recorder_cuda_detach_tests
         "tools/spatial_roi_recorder_cuda_detach_tests.cpp"
@@ -1138,10 +1579,33 @@ if(BUILD_TESTING)
     )
     target_include_directories(spatial_roi_recorder_evidence_tests PRIVATE
         ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_definitions(spatial_roi_recorder_evidence_tests PRIVATE
+        ORANGE_SPATIAL_ROI_VIDEO_SANITY_TESTING=1)
     target_compile_features(spatial_roi_recorder_evidence_tests PRIVATE cxx_std_17)
     add_test(NAME spatial_roi_recorder_evidence_tests
         COMMAND spatial_roi_recorder_evidence_tests)
     set_tests_properties(spatial_roi_recorder_evidence_tests PROPERTIES
+        TIMEOUT 60)
+
+    add_executable(spatial_roi_finalized_session_receipt_tests
+        "tools/spatial_roi_finalized_session_receipt_tests.cpp"
+        "${SRC_DIR}/spatial_roi_finalized_session_receipt.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_evidence.cpp"
+        "${SRC_DIR}/spatial_roi_recorder_artifact_root.cpp"
+        "${SRC_DIR}/spatial_roi_frame_contract.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_camera_contract.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_contract_parser.cpp"
+        "${SRC_DIR}/session/spatial_roi_recorder_contract.cpp"
+        "${SRC_DIR}/session/spatial_roi_recording_config.cpp"
+    )
+    target_include_directories(spatial_roi_finalized_session_receipt_tests PRIVATE
+        ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_definitions(spatial_roi_finalized_session_receipt_tests PRIVATE
+        ORANGE_SPATIAL_ROI_VIDEO_SANITY_TESTING=1)
+    target_compile_features(spatial_roi_finalized_session_receipt_tests PRIVATE cxx_std_17)
+    add_test(NAME spatial_roi_finalized_session_receipt_tests
+        COMMAND spatial_roi_finalized_session_receipt_tests)
+    set_tests_properties(spatial_roi_finalized_session_receipt_tests PROPERTIES
         TIMEOUT 60)
 
     add_executable(spatial_roi_lossless_encoder_tests
@@ -1298,6 +1762,7 @@ if(BUILD_TESTING)
     add_executable(app_storage_config_tests
         "tools/app_storage_config_tests.cpp"
         "${SRC_DIR}/project.cpp"
+        "${SRC_DIR}/session/spatial_roi_session_snapshot.cpp"
         "${SRC_DIR}/camera.cpp"
         "${SRC_DIR}/camera_sensor_pipeline_state.cpp"
         "${SRC_DIR}/spatial_calibration_snapshot.cpp"
@@ -1328,6 +1793,7 @@ if(BUILD_TESTING)
         "${SRC_DIR}/camera_sensor_pipeline_state.cpp"
         "${SRC_DIR}/spatial_calibration_snapshot.cpp"
         "${SRC_DIR}/spatial_layout_schema.cpp"
+        "${SRC_DIR}/session/spatial_roi_session_snapshot.cpp"
     )
     target_include_directories(recording_snapshots_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(recording_snapshots_tests PRIVATE cxx_std_17)
@@ -1722,6 +2188,7 @@ orange_configure_target(nvenc_stress_load)
 orange_configure_target(nv12_prefill_validation)
 orange_configure_target(external_recorder_ipc_probe)
 orange_configure_target(external_recorder_supervisor_plan)
+orange_configure_target(spatial_roi_camera_recorder)
 if(TARGET recording_session_manifest_tests)
     orange_configure_target(recording_session_manifest_tests)
 endif()

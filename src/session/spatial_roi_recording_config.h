@@ -11,16 +11,26 @@ namespace orange::session::spatial_roi {
 
 inline constexpr const char* kConfigSchemaId =
     "orange.spatial_roi_recording.config";
-inline constexpr int kConfigSchemaVersion = 2;
+inline constexpr int kLegacyConfigSchemaVersion = 2;
+inline constexpr int kConfigSchemaVersion = 3;
 inline constexpr const char* kPlanSchemaId =
     "orange.spatial_roi_recording.plan";
-inline constexpr int kPlanSchemaVersion = 2;
+inline constexpr int kLegacyPlanSchemaVersion = 2;
+inline constexpr int kPlanSchemaVersion = 3;
 inline constexpr const char* kPlanScope =
     "detector_independent_camera_native_spatial_rois";
 inline constexpr const char* kCanonicalization =
     "canonical_json_utf8_sort_keys_compact_v1";
-inline constexpr const char* kBackend =
+inline constexpr const char* kLegacyBackend =
     "independent_lossless_external_ipc";
+inline constexpr const char* kBackend =
+    "independent_hevc_external_ipc";
+inline constexpr const char* kLegacyLosslessEncodeProfileName =
+    "hevc_p7_lossless_cqp0_gop1_v1";
+inline constexpr const char* kLegacyLowLatencyVbrGop1EncodeProfileName =
+    "hevc_p1_low_latency_vbr_q20_gop1_v1";
+inline constexpr const char* kLowLatencyVbrEncodeProfileName =
+    "hevc_p1_low_latency_vbr_q20_gop25_v1";
 inline constexpr const char* kSourceCadence =
     "every_recording_frame";
 inline constexpr const char* kSourcePixelFormat = "mono8";
@@ -69,7 +79,7 @@ struct RoiConfig {
     std::string region_id;
     bool has_arena_id = false;
     std::string arena_id;
-    // Optional/best-effort ROI admission is not defined in schema v2.
+    // Optional/best-effort ROI admission is not defined in schema v2 or v3.
     bool required = true;
     Rect content_rect;
     bool has_region_mask = false;
@@ -101,6 +111,26 @@ struct BufferingConfig {
     std::uint32_t queue_frames_per_stream = 64;
 };
 
+// Schema v3 names complete immutable encoder policies rather than allowing
+// individual encoder knobs to drift independently. Schema v2 has no wire
+// member for this object and is interpreted as the legacy lossless profile.
+struct EncodeProfile {
+    std::string name = kLowLatencyVbrEncodeProfileName;
+    std::string codec = "hevc";
+    std::string preset = "p1";
+    std::string tuning = "ll";
+    bool lossless = false;
+    std::string rate_control_mode = "vbr";
+    std::uint32_t quality_value = 20;
+    std::uint32_t gop_length = 25;
+    // Effective encoder controls are part of the immutable profile. They are
+    // deliberately concrete values rather than tri-state runtime overrides.
+    bool aq = false;
+    bool temporal_aq = false;
+    bool lookahead = false;
+    std::uint32_t lookahead_depth = 0;
+};
+
 // Explicit long-run bounds. These are admission ceilings, not a duration or
 // an estimate of HEVC compression. Every enabled ROI stream reserves exactly
 // these frame/media/evidence budgets before the plan is armed.
@@ -124,9 +154,10 @@ struct AdmissionLimits {
 };
 
 struct Config {
+    int schema_version = kConfigSchemaVersion;
     bool enabled = false;
     std::string backend = kBackend;
-    // Schema v2 is fail-closed; strict=false has no supported runtime
+    // Schemas v2/v3 are fail-closed; strict=false has no supported runtime
     // semantics and is rejected by validate_config().
     bool strict = true;
     std::string source_cadence = kSourceCadence;
@@ -135,6 +166,7 @@ struct Config {
     bool no_color_conversion = true;
     std::uint32_t output_alignment_px = 2;
     std::uint8_t padding_value_mono8 = 0;
+    EncodeProfile encode_profile;
     BufferingConfig buffering;
     RecordingLimits recording_limits;
     AdmissionLimits admission;
@@ -180,12 +212,16 @@ struct SpatialRoiPlanCameraDescriptor {
     int camera_id = -1;
     std::string camera_serial;
     Raster native_raster;
+    std::uint32_t source_frame_rate = 0;
     std::string arena_group_id;
     std::vector<SpatialRoiPlanRoiDescriptor> rois;
     std::uint64_t pool_bytes = 0;
 };
 
 struct SpatialRoiRecordingPlan {
+    int schema_version = 0;
+    std::string backend;
+    EncodeProfile encode_profile;
     std::string plan_sha256;
     std::string recording_id;
     std::string recording_identity_token;
@@ -201,13 +237,33 @@ struct SpatialRoiRecordingPlan {
 // the output.
 Config default_config();
 
+// Canonical values for the only two profiles accepted by schema v3. These
+// factories also make the profile inferred for schema v2 explicit to native
+// callers without adding it to the legacy wire object.
+EncodeProfile legacy_lossless_encode_profile();
+EncodeProfile legacy_low_latency_vbr_gop1_encode_profile();
+EncodeProfile low_latency_vbr_encode_profile();
+
 std::string expected_logical_stream_id(const std::string& camera_serial,
                                        const std::string& roi_id);
 std::string expected_artifact_stem(const std::string& camera_serial,
                                    const std::string& roi_id);
 
-// Parse a closed schema-v2 object. Unknown fields, unsafe identifiers, and
-// inconsistent derived stream/artifact names fail closed.
+// Spatial-ROI sockets live beneath one recording-specific private runtime
+// directory. The directory is created and owned by the camera-level
+// supervisor with mode 0700; neither the plan nor the listener treats /tmp
+// itself as the endpoint authority. Stream leaf names are fixed-length hashes
+// because sockaddr_un has a small platform path limit. The complete stream
+// identity remains authenticated by IPC-v2 HELLO and is never inferred from
+// this opaque leaf.
+std::string expected_socket_runtime_directory(
+    const std::string& recording_identity_token);
+std::string expected_socket_path(
+    const std::string& recording_identity_token,
+    const std::string& logical_stream_id);
+
+// Parse a closed schema-v2 or schema-v3 object. Unknown fields, unsafe
+// identifiers, and inconsistent derived stream/artifact names fail closed.
 bool parse_config(const nlohmann::json& value,
                   Config* config_out,
                   std::string* error_out = nullptr);

@@ -1,0 +1,77 @@
+{
+  "schema_id": "orange.spatial_roi_diagnostic_authority.materialization",
+  "schema_version": 1,
+  "authority_id": "2010093_diagnostic_materialization_v1",
+  "closed": true,
+  "status": "diagnostic_not_physical_acceptance",
+  "geometry_role": "plumbing_encoder_validation_only",
+  "camera_serial": "2010093",
+  "coordinate_space": "camera_native_0_indexed",
+  "camera_perspective": true,
+  "native_raster": {
+    "width": 4512,
+    "height": 4512
+  },
+  "source_frame_rate": 100,
+  "pixel_contract": {
+    "source_format": "mono8",
+    "no_resize": true,
+    "no_color_conversion": true,
+    "output_alignment_px": 2,
+    "padding_value_mono8": 0
+  },
+  "rois": [
+    {
+      "roi_id": "quadrant_top_left",
+      "content_rect": {
+        "x": 0,
+        "y": 0,
+        "width": 2256,
+        "height": 2256
+      },
+      "output_raster": {
+        "width": 2256,
+        "height": 2256
+      }
+    },
+    {
+      "roi_id": "quadrant_top_right",
+      "content_rect": {
+        "x": 2256,
+        "y": 0,
+        "width": 2256,
+        "height": 2256
+      },
+      "output_raster": {
+        "width": 2256,
+        "height": 2256
+      }
+    },
+    {
+      "roi_id": "quadrant_bottom_left",
+      "content_rect": {
+        "x": 0,
+        "y": 2256,
+        "width": 2256,
+        "height": 2256
+      },
+      "output_raster": {
+        "width": 2256,
+        "height": 2256
+      }
+    },
+    {
+      "roi_id": "quadrant_bottom_right",
+      "content_rect": {
+        "x": 2256,
+        "y": 2256,
+        "width": 2256,
+        "height": 2256
+      },
+      "output_raster": {
+        "width": 2256,
+        "height": 2256
+      }
+    }
+  ]
+}

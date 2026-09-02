@@ -1,5 +1,8 @@
 #include "recording_output_descriptor.h"
 
+#include <set>
+#include <utility>
+
 namespace orange::session {
 
 namespace {
@@ -20,8 +23,12 @@ nlohmann::json build_recording_output_descriptor_json(
 {
     const std::string output_kind =
         output.output_kind.empty() ? "full" : output.output_kind;
+    const int schema_version =
+        output_kind == "crop"
+            ? 2
+            : (output_kind == kSpatialRoiRecordingOutputKind ? 3 : 1);
     nlohmann::json out = {
-        {"schema_version", output_kind == "crop" ? 2 : 1},
+        {"schema_version", schema_version},
         {"camera_serial", output.camera_serial},
         {"output_kind", output_kind},
         {"role", output.role.empty() ? "sidecar" : output.role},
@@ -29,6 +36,7 @@ nlohmann::json build_recording_output_descriptor_json(
         {"status", output.status.empty() ? "unknown" : output.status}
     };
 
+    add_string_if_nonempty(out, "logical_stream_id", output.logical_stream_id);
     add_string_if_nonempty(out, "video", output.video_path);
     add_string_if_nonempty(out, "metadata", output.metadata_path);
     add_string_if_nonempty(out, "keyframes", output.keyframe_path);
@@ -91,6 +99,13 @@ nlohmann::json build_recording_outputs_json(
         }
         const std::string output_kind =
             output.output_kind.empty() ? "full" : output.output_kind;
+        // The schema-2 index has scalar output-kind slots. Keep it a
+        // compatibility view for full/crop consumers and do not let a new
+        // collection-valued spatial ROI stream replace either slot (or the
+        // previous ROI stream) by accident.
+        if (output_kind == kSpatialRoiRecordingOutputKind) {
+            continue;
+        }
         if (!grouped.contains(output.camera_serial) ||
             !grouped[output.camera_serial].is_object()) {
             grouped[output.camera_serial] = nlohmann::json::object();
@@ -99,6 +114,115 @@ nlohmann::json build_recording_outputs_json(
             build_recording_output_descriptor_json(output);
     }
     return grouped;
+}
+
+nlohmann::json build_recording_outputs_v3_json(
+    const std::vector<RecordingOutputDescriptor>& outputs)
+{
+    nlohmann::json versioned;
+    if (!build_recording_outputs_v3_json(outputs, &versioned, nullptr)) {
+        // The convenience overload cannot expose a diagnostic. Returning
+        // null is an explicit fail-closed signal; callers that need to
+        // report the reason should use the bool/error overload.
+        return nlohmann::json();
+    }
+    return versioned;
+}
+
+bool build_recording_outputs_v3_json(
+    const std::vector<RecordingOutputDescriptor>& outputs,
+    nlohmann::json* output_out,
+    std::string* error_out)
+{
+    if (!output_out) {
+        if (error_out) {
+            *error_out = "output_out is null";
+        }
+        return false;
+    }
+
+    nlohmann::json versioned = {
+        {"schema_id", kRecordingOutputsV3SchemaId},
+        {"schema_version", kRecordingOutputsV3SchemaVersion},
+        {"cameras", nlohmann::json::object()}
+    };
+    std::set<std::pair<std::string, std::string>> spatial_roi_keys;
+
+    for (const RecordingOutputDescriptor& output : outputs) {
+        if (output.camera_serial.empty()) {
+            if (output.output_kind == kSpatialRoiRecordingOutputKind) {
+                if (error_out) {
+                    *error_out =
+                        "spatial ROI descriptor has an empty camera_serial";
+                }
+                return false;
+            }
+            continue;
+        }
+
+        const std::string output_kind =
+            output.output_kind.empty() ? "full" : output.output_kind;
+        nlohmann::json& camera_outputs =
+            versioned["cameras"][output.camera_serial];
+        if (!camera_outputs.is_object()) {
+            camera_outputs = nlohmann::json::object();
+        }
+
+        if (output_kind == kSpatialRoiRecordingOutputKind) {
+            if (output.logical_stream_id.empty()) {
+                if (error_out) {
+                    *error_out =
+                        "spatial ROI descriptor has an empty logical_stream_id";
+                }
+                return false;
+            }
+            if (!spatial_roi_keys.emplace(
+                     output.camera_serial,
+                     output.logical_stream_id)
+                     .second) {
+                if (error_out) {
+                    *error_out =
+                        "duplicate spatial ROI logical_stream_id for camera " +
+                        output.camera_serial + ": " +
+                        output.logical_stream_id;
+                }
+                return false;
+            }
+
+            const nlohmann::json descriptor =
+                build_recording_output_descriptor_json(output);
+            if (descriptor.value("camera_serial", std::string()) !=
+                    output.camera_serial ||
+                descriptor.value("output_kind", std::string()) !=
+                    kSpatialRoiRecordingOutputKind ||
+                descriptor.value("logical_stream_id", std::string()) !=
+                    output.logical_stream_id) {
+                if (error_out) {
+                    *error_out =
+                        "spatial ROI descriptor identity fields disagree with "
+                        "its collection key";
+                }
+                return false;
+            }
+            if (!camera_outputs.contains(kSpatialRoiRecordingOutputKind) ||
+                !camera_outputs[kSpatialRoiRecordingOutputKind].is_object()) {
+                camera_outputs[kSpatialRoiRecordingOutputKind] =
+                    nlohmann::json::object();
+            }
+            camera_outputs[kSpatialRoiRecordingOutputKind]
+                         [output.logical_stream_id] =
+                descriptor;
+            continue;
+        }
+
+        // Full-frame remains an ordinary first-class scalar output. Crop is
+        // also kept scalar for compatibility; only spatial_roi is a keyed
+        // collection in v3.
+        camera_outputs[output_kind] =
+            build_recording_output_descriptor_json(output);
+    }
+    *output_out = std::move(versioned);
+    return true;
 }
 
 RecordingOutputDescriptor build_full_recording_output_descriptor(

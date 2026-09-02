@@ -17,16 +17,17 @@
 namespace orange::spatial_roi::recording {
 
 struct SpatialRoiRecorderEvidenceMetadataDigest;
+class SpatialRoiRecorderVideoSanityResult;
 
 // This is deliberately a recorder-side artifact contract.  It is not the
-// legacy external-recorder CSV protocol and it is not a replacement for the
-// ROI IPC-v2 wire grammar.
+// established full-frame external-recorder CSV protocol, and it is not a
+// replacement for the ROI IPC-v2 wire grammar.
 inline constexpr const char* kSpatialRoiRecorderEvidenceSchemaId =
     "orange.spatial_roi_recorder.evidence";
-inline constexpr int kSpatialRoiRecorderEvidenceSchemaVersion = 1;
+inline constexpr int kSpatialRoiRecorderEvidenceSchemaVersion = 2;
 inline constexpr const char* kSpatialRoiRecorderManifestSchemaId =
     "orange.spatial_roi_recorder.finalized_manifest";
-inline constexpr int kSpatialRoiRecorderManifestSchemaVersion = 1;
+inline constexpr int kSpatialRoiRecorderManifestSchemaVersion = 2;
 inline constexpr const char* kSpatialRoiRecorderCanonicalization =
     "canonical_json_utf8_sort_keys_compact_v1";
 inline constexpr const char* kSpatialRoiRecorderFixedRegionKind =
@@ -36,7 +37,7 @@ inline constexpr std::size_t kSpatialRoiRecorderEvidenceMaxPathBytes = 1024;
 inline constexpr std::size_t kSpatialRoiRecorderEvidenceMaxLineBytes =
     1024 * 1024;
 // Evidence has a fixed implementation ceiling as well as the stricter exact
-// per-stream ceiling authenticated by contract v2. The authenticated value is
+// per-stream ceiling authenticated by contract v3. The authenticated value is
 // one aggregate budget for every non-video artifact, the JSONL, and its final
 // manifest; it is not independently reusable by each sidecar. Validation
 // streams JSONL rather than making a second multi-gigabyte in-memory copy.
@@ -97,7 +98,7 @@ struct SpatialRoiRecorderEvidenceBinding {
     std::string artifact_root;
     std::map<std::string, std::string> expected_artifacts;
 
-    // Exact per-stream admission ceilings copied from the authoritative v2
+    // Exact per-stream admission ceilings copied from the authoritative v3
     // contract parser. They bound recorder allocation/publication; they are
     // not caller estimates derived from duration or compression. The evidence
     // ceiling is aggregate across all non-video products for this stream.
@@ -132,18 +133,32 @@ bool validate_spatial_roi_recorder_evidence_binding(
 struct SpatialRoiRecorderFrameEvidence {
     SpatialRoiFrameDescriptor frame;
 
-    // `detach_status` is the recorder detach result.  A status other than
+    // `detach_status` is the recorder detach result. A status other than
     // "detached" is retained as evidence and makes the frame unsuccessful.
-    std::string detach_status = "detached";
-    bool detach_source_release_safe = false;
+    // Empty until the detach seam records an explicit outcome.  A default
+    // construction must never imply successful ownership transfer.
+    std::string detach_status;
+    bool source_release_safe = false;
 
+    // Dispatch admission is recorder-internal truth and is never inferred from
+    // ACK state. An admitted frame can have an ACK write failure.
+    bool dispatch_admitted = false;
+    std::string dispatch_reason;
+
+    // ACK fields describe both the local attempt and the payload. The accepted
+    // bit is retained even if the attempted write fails.
+    bool ack_attempted = false;
     bool ack_sent = false;
     bool ack_accepted = false;
     std::string ack_reason;
+    std::string ack_error;
 
+    // A successful WriteLine is release_sent; no peer receipt/success bit is
+    // inferable by the recorder. release_reason is the exact wire reason.
+    bool release_attempted = false;
     bool release_sent = false;
-    bool release_succeeded = false;
     std::string release_reason;
+    std::string release_error;
 
     // encoded is the only successful encode state.  failed and not_attempted
     // retain terminal/nonterminal recorder outcomes without inventing packets.
@@ -172,6 +187,14 @@ struct SpatialRoiRecorderFinalizeRequest {
     std::shared_ptr<const orange::spatial_roi::encoder::
                         SpatialRoiLosslessEncoderTerminalSnapshot>
         encoder_terminal_snapshot;
+    // Complete first publication additionally requires the exact
+    // descriptor-retaining result minted by the bounded decoder probe.  A
+    // caller-authored JSON sidecar is never sufficient to certify media.
+    // This capability is consumed synchronously and its fields are persisted
+    // in the committed video-sanity sidecar; it is not part of request hash
+    // canonicalization because the pointer itself has no wire identity.
+    std::shared_ptr<const SpatialRoiRecorderVideoSanityResult>
+        video_sanity_result;
     std::vector<SpatialRoiRecorderArtifactInput> artifacts;
 };
 
@@ -246,15 +269,21 @@ private:
     bool fatal_ = false;
     bool finalized_ = false;
     std::uint64_t detach_successes_ = 0;
+    std::uint64_t dispatch_admitted_ = 0;
+    std::uint64_t dispatch_rejected_ = 0;
+    std::uint64_t ack_attempted_ = 0;
     std::uint64_t ack_sent_ = 0;
     std::uint64_t ack_accepted_ = 0;
+    std::uint64_t release_attempted_ = 0;
     std::uint64_t release_sent_ = 0;
-    std::uint64_t release_succeeded_ = 0;
     std::uint64_t encoded_frames_ = 0;
     std::uint64_t failed_frames_ = 0;
     std::uint64_t packet_count_ = 0;
     std::uint64_t encoded_bytes_ = 0;
     std::uint64_t keyframes_ = 0;
+    std::uint64_t ack_write_failures_ = 0;
+    std::uint64_t release_write_failures_ = 0;
+    std::uint64_t lifecycle_failures_ = 0;
     std::uint64_t evidence_bytes_written_ = 0;
     // Incremental O(1)-memory digest of the exact encoder metadata CSV bytes
     // projected from admitted frame evidence. Complete finalization compares

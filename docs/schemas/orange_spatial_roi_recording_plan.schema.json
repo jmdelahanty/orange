@@ -13,7 +13,7 @@
   ],
   "properties": {
     "schema_id": { "const": "orange.spatial_roi_recording.plan" },
-    "schema_version": { "const": 2 },
+    "schema_version": { "const": 3 },
     "canonicalization": {
       "const": "canonical_json_utf8_sort_keys_compact_v1"
     },
@@ -269,7 +269,7 @@
       ],
       "properties": {
         "schema_id": { "const": "orange.spatial_roi_recording.plan" },
-        "schema_version": { "const": 2 },
+        "schema_version": { "const": 3 },
         "plan_scope": {
           "const": "detector_independent_camera_native_spatial_rois"
         },

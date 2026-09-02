@@ -1,5 +1,7 @@
 #include "spatial_roi_recorder_evidence.h"
+#include "spatial_roi_recorder_video_sanity.h"
 
+#include "gui/spatial_layout/sha256.h"
 #include "session/spatial_roi_recording_config.h"
 #include "session/spatial_roi_recorder_contract.h"
 #include "shaman_v2_recording_identity.h"
@@ -16,12 +18,65 @@
 
 #include <unistd.h>
 
+namespace orange::spatial_roi::recording {
+
+#if defined(ORANGE_SPATIAL_ROI_VIDEO_SANITY_TESTING)
+class SpatialRoiRecorderVideoSanityTestFactory final {
+public:
+    static std::shared_ptr<const SpatialRoiRecorderVideoSanityResult> Create(
+        const std::shared_ptr<SpatialRoiRecorderArtifactRoot>& root,
+        const std::string& relative_path,
+        const std::uint64_t frame_count,
+        std::string* error_out)
+    {
+        std::unique_ptr<SpatialRoiRecorderArtifactFile> file;
+        if (!root || frame_count == 0 ||
+            !root->OpenExistingFile(
+                relative_path, SpatialRoiRecorderArtifactFileAccess::kReadOnly,
+                &file, error_out)) {
+            return nullptr;
+        }
+        struct stat status {};
+        if (::fstat(file->borrowed_fd(), &status) != 0 || status.st_size <= 0) {
+            if (error_out) *error_out = "test video stat failed";
+            return nullptr;
+        }
+        std::vector<SpatialRoiRecorderVideoSanitySample> samples;
+        const auto add_sample = [&](const std::uint64_t index) {
+            samples.push_back({index, 64.0, 10.0, 0, 200, 0.1, 0.0, 16});
+        };
+        add_sample(0);
+        if (frame_count > 2) add_sample(frame_count / 2);
+        if (frame_count > 1) add_sample(frame_count - 1);
+        auto shared_file = std::shared_ptr<SpatialRoiRecorderArtifactFile>(
+            std::move(file));
+        return std::shared_ptr<const SpatialRoiRecorderVideoSanityResult>(
+            new SpatialRoiRecorderVideoSanityResult(
+                root, shared_file, root->artifact_root_identity(),
+                shared_file->identity(), relative_path,
+                static_cast<std::uint64_t>(status.st_size),
+                "sha256:" +
+                    orange::gui::spatial_layout::checksum::sha256_hex(
+                        std::string("fake-lossless-video")),
+                std::to_string(static_cast<double>(frame_count) / 100.0),
+                "100/1", "1/10000", true, 0,
+                static_cast<std::int64_t>((frame_count - 1) * 100),
+                "mov,mp4,m4a,3gp,3g2,mj2", "hevc", "hevc@test",
+                "yuvj420p", "pc", 8, "4:2:0", 4, 4, frame_count,
+                std::move(samples)));
+    }
+};
+#endif
+
+}  // namespace orange::spatial_roi::recording
+
 namespace {
 
 namespace fs = std::filesystem;
 namespace contract = orange::session::spatial_roi;
 namespace evidence = orange::spatial_roi::recording;
 namespace encoder = orange::spatial_roi::encoder;
+namespace checksum = orange::gui::spatial_layout::checksum;
 using json = nlohmann::json;
 
 constexpr char kCameraSerial[] = "CAM001";
@@ -145,11 +200,12 @@ std::unique_ptr<Fixture> make_fixture(
                fixture->plan, fixture->recording_root.generic_string(),
                fixture->gpu_mapping, &fixture->recorder_contract, &error),
            "contract build failed: " + error);
-    expect(evidence::make_spatial_roi_recorder_evidence_binding(
-               fixture->recorder_contract, fixture->plan,
-               fixture->recording_root.generic_string(), fixture->gpu_mapping,
-               stream, &fixture->binding, &error),
-           "binding failed: " + error);
+    const bool binding_built =
+        evidence::make_spatial_roi_recorder_evidence_binding(
+            fixture->recorder_contract, fixture->plan,
+            fixture->recording_root.generic_string(), fixture->gpu_mapping,
+            stream, &fixture->binding, &error);
+    expect(binding_built, "binding failed: " + error);
     fixture->artifact_root = fixture->binding.artifact_root;
     std::vector<std::string> allowed_artifacts;
     for (const auto& [kind, path] : fixture->binding.expected_artifacts) {
@@ -247,16 +303,22 @@ evidence::SpatialRoiRecorderFrameEvidence success_frame(
 {
     evidence::SpatialRoiRecorderFrameEvidence value;
     value.frame = descriptor(binding, index);
-    value.detach_source_release_safe = true;
+    value.detach_status = "detached";
+    value.source_release_safe = true;
+    value.dispatch_admitted = true;
+    value.ack_attempted = true;
     value.ack_sent = true;
     value.ack_accepted = true;
+    value.release_attempted = true;
     value.release_sent = true;
-    value.release_succeeded = true;
+    value.release_reason = "source_detached";
     value.encode_status = "encoded";
     value.output_frame_index = index;
     value.packet_count = 1;
     value.encoded_bytes = 100 + index;
-    value.keyframe = true;
+    const std::uint64_t gop_length =
+        binding.encode_profile.at("gop_length").get<std::uint64_t>();
+    value.keyframe = ((index - 1U) % gop_length) == 0;
     return value;
 }
 
@@ -343,6 +405,9 @@ json sanity_sidecar(const Fixture& fixture,
                     const std::uint64_t size,
                     const std::uint64_t frames)
 {
+    struct stat video_status {};
+    expect(::stat(artifact_path(fixture, "video").c_str(), &video_status) == 0,
+           "could not stat video for sanity receipt");
     json samples = json::array();
     for (std::uint64_t index = 0; index < std::min<std::uint64_t>(frames, 2);
          ++index) {
@@ -354,13 +419,45 @@ json sanity_sidecar(const Fixture& fixture,
         });
     }
     return {
+        {"schema_id", "orange.spatial_roi_recorder.video_sanity"},
         {"schema_version", 1},
+        {"state", "pending_manifest"},
+        {"certifying", false},
+        {"requires_finalized_evidence_manifest", true},
+        {"commit_marker", "evidence_manifest"},
+        {"commit_marker_state", "required_finalized"},
+        {"logical_stream_id", fixture.binding.logical_stream_id},
+        {"frame_count", frames},
         {"video_path", fixture.binding.expected_artifacts.at("video")},
+        {"video_size_bytes", size},
+        {"video_sha256",
+         "sha256:" + checksum::sha256_hex(
+                         std::string(kVideoBytes, sizeof(kVideoBytes) - 1))},
+        {"video_device", static_cast<std::uint64_t>(video_status.st_dev)},
+        {"video_inode", static_cast<std::uint64_t>(video_status.st_ino)},
         {"content_checked", true}, {"content_valid", true},
         {"status", "pass"}, {"width", 4}, {"height", 4},
         {"nb_frames", frames},
         {"container", {{"size", std::to_string(size)},
-                        {"duration", "0.020000"}}},
+                        {"duration", std::to_string(
+                                         static_cast<double>(frames) / 100.0)}}},
+        {"container_name", "mov,mp4,m4a,3gp,3g2,mj2"},
+        {"codec", "hevc"},
+        {"decoder", "hevc@test"},
+        {"timeline", {
+            {"frame_rate", "100/1"},
+            {"time_base", "1/10000"},
+            {"has_decoded_pts", true},
+            {"first_decoded_pts", 0},
+            {"last_decoded_pts", static_cast<std::int64_t>(
+                                     frames == 0 ? 0 : (frames - 1) * 100)},
+        }},
+        {"pixel_semantics", {
+            {"pixel_format", "yuvj420p"},
+            {"color_range", "pc"},
+            {"bit_depth", 8},
+            {"chroma_subsampling", "4:2:0"},
+        }},
         {"sampled_frame_count", samples.size()}, {"mean_luma", 64.0},
         {"max_stddev", 10.0}, {"max_black_fraction_lt8", 0.1},
         {"thresholds", {{"max_black_fraction_lt8", 0.98},
@@ -369,8 +466,17 @@ json sanity_sidecar(const Fixture& fixture,
     };
 }
 
-json keyframe_summary(const std::uint64_t frames)
+json keyframe_summary(
+    const evidence::SpatialRoiRecorderEvidenceBinding& binding,
+    const std::uint64_t frames)
 {
+    const std::uint64_t gop_length =
+        binding.encode_profile.at("gop_length").get<std::uint64_t>();
+    const std::uint64_t keyframes =
+        frames == 0 ? 0 : 1U + ((frames - 1U) / gop_length);
+    const std::string policy_name = gop_length == 1
+        ? "all_frames_idr"
+        : "fixed_gop_" + std::to_string(gop_length) + "_idr";
     return {
         {"schema_id", "orange.spatial_roi_keyframe_summary"},
         {"schema_version", 1},
@@ -384,9 +490,9 @@ json keyframe_summary(const std::uint64_t frames)
             {"zero_based_contiguous", true},
         }},
         {"keyframe_policy", {
-            {"name", "all_frames_idr"},
-            {"keyframe_frames", frames},
-            {"non_keyframe_frames", 0},
+            {"name", policy_name},
+            {"keyframe_frames", keyframes},
+            {"non_keyframe_frames", frames - keyframes},
             {"satisfied", true},
         }},
     };
@@ -416,32 +522,53 @@ void write_artifacts(Fixture& fixture,
         write_artifact_bytes(fixture, "keyframes", *raw_keyframes);
     } else {
         write_artifact_bytes(fixture, "keyframes",
-                             keyframe_summary(frames).dump() + "\n");
+                             keyframe_summary(fixture.binding, frames).dump() + "\n");
     }
+    const auto candidate_base = [&](const char* schema_id) {
+        return json{
+            {"schema_id", schema_id},
+            {"schema_version", 1},
+            {"state", "pending_manifest"},
+            {"certifying", false},
+            {"requires_finalized_evidence_manifest", true},
+            {"commit_marker", "evidence_manifest"},
+            {"commit_marker_state", "required_finalized"},
+            {"logical_stream_id", fixture.binding.logical_stream_id},
+            {"frame_count", frames},
+        };
+    };
     write_artifact_bytes(
         fixture, "perf",
-        "metric,value\nframes," + std::to_string(frames) + "\n");
+        "metric,value\n"
+        "schema_id,orange.spatial_roi_recorder.perf\n"
+        "schema_version,1\n"
+        "state,pending_manifest\n"
+        "certifying,false\n"
+        "requires_finalized_evidence_manifest,true\n"
+        "commit_marker,evidence_manifest\n"
+        "commit_marker_state,required_finalized\n"
+        "logical_stream_id," + fixture.binding.logical_stream_id +
+        "\nframe_count," + std::to_string(frames) + "\n");
+    auto summary = candidate_base("orange.spatial_roi_recorder.summary");
+    summary["status"] = "pending_manifest";
     write_artifact_bytes(
-        fixture, "summary",
-        json{{"status", "complete"},
-             {"frame_count", frames},
-             {"logical_stream_id", fixture.binding.logical_stream_id}}.dump() +
-            "\n");
+        fixture, "summary", summary.dump() + "\n");
+    auto status = candidate_base("orange.spatial_roi_recorder.status");
+    status["terminal"] = false;
     write_artifact_bytes(
-        fixture, "status",
-        json{{"terminal", true},
-             {"state", "complete"},
-             {"frame_count", frames},
-             {"logical_stream_id", fixture.binding.logical_stream_id}}.dump() +
-            "\n");
-    write_artifact_bytes(fixture, "recorder_log", "complete\n");
+        fixture, "status", status.dump() + "\n");
     write_artifact_bytes(
-        fixture, "transport_sidecar",
-        json{{"terminal", true},
-             {"state", "complete"},
-             {"frame_count", frames},
-             {"logical_stream_id", fixture.binding.logical_stream_id}}.dump() +
-            "\n");
+        fixture, "recorder_log",
+        "schema_id=orange.spatial_roi_recorder.log schema_version=1"
+        " state=pending_manifest certifying=false"
+        " requires_finalized_evidence_manifest=true"
+        " commit_marker=evidence_manifest"
+        " commit_marker_state=required_finalized logical_stream_id=" +
+        fixture.binding.logical_stream_id + " frame_count=" +
+        std::to_string(frames) + "\n");
+    const auto transport = candidate_base("orange.spatial_roi_recorder.transport");
+    write_artifact_bytes(
+        fixture, "transport_sidecar", transport.dump() + "\n");
     write_artifact_bytes(
         fixture, "finalization",
         finalization_sidecar(fixture,
@@ -457,6 +584,14 @@ evidence::SpatialRoiRecorderFinalizeRequest complete_request(
 {
     evidence::SpatialRoiRecorderFinalizeRequest request;
     request.encoder_terminal_snapshot = success_snapshot(fixture.binding, frames);
+#if defined(ORANGE_SPATIAL_ROI_VIDEO_SANITY_TESTING)
+    std::string capability_error;
+    request.video_sanity_result =
+        evidence::SpatialRoiRecorderVideoSanityTestFactory::Create(
+            fixture.artifact_authority,
+            fixture.binding.expected_artifacts.at("video"), frames,
+            &capability_error);
+#endif
     for (const std::string kind : {
              "transport_sidecar", "recorder_log", "finalization",
              "video_sanity", "status", "summary", "perf", "keyframes",
@@ -625,10 +760,28 @@ void test_roundtrip_and_complete_adoption()
            "manifest receipt mutation was accepted");
 }
 
+void test_complete_requires_decoder_probe_capability()
+{
+    auto fixture = make_fixture();
+    write_artifacts(*fixture, 2);
+    auto writer = open_writer(*fixture);
+    append_successes(writer.get(), *fixture, 2);
+    auto request = complete_request(*fixture, 2);
+    expect(request.video_sanity_result != nullptr,
+           "test fixture did not create its descriptor-bound probe capability");
+    request.video_sanity_result.reset();
+    std::string error;
+    expect(!writer->Finalize(request, nullptr, &error),
+           "complete finalization trusted a forgeable disk sidecar without a decoder probe");
+    expect(error.find("decoder-probe capability") != std::string::npos,
+           "missing decoder-probe capability failed for the wrong reason: " + error);
+}
+
 void test_encoder_terminal_v2_completion_truth()
 {
     const auto rejected = [](auto mutation, const std::string& label) {
         auto fixture = make_fixture();
+        write_artifacts(*fixture, 2);
         auto writer = open_writer(*fixture);
         append_successes(writer.get(), *fixture, 2);
         auto request = complete_request(*fixture, 2);
@@ -742,6 +895,109 @@ void test_frame_truth_tables()
              "non-one-based ROI output");
 }
 
+void test_lifecycle_json_roundtrip_and_counters()
+{
+    auto fixture = make_fixture();
+    auto writer = open_writer(*fixture);
+
+    auto ack_failure = success_frame(fixture->binding, 1);
+    ack_failure.ack_sent = false;
+    ack_failure.ack_accepted = true;
+    ack_failure.ack_error = "EPIPE";
+    ack_failure.release_attempted = false;
+    ack_failure.release_sent = false;
+    ack_failure.release_reason.clear();
+    ack_failure.encode_status = "encoded";
+    ack_failure.output_frame_index = 1;
+    expect(writer->AppendFrame(ack_failure), "ACK failure append failed");
+
+    auto release_failure = success_frame(fixture->binding, 2);
+    release_failure.release_sent = false;
+    release_failure.release_reason = "source_detached";
+    release_failure.release_error = "EPIPE";
+    release_failure.encode_status = "encoded";
+    release_failure.output_frame_index = 2;
+    expect(writer->AppendFrame(release_failure), "RELEASE failure append failed");
+
+    auto rejection = success_frame(fixture->binding, 3);
+    rejection.dispatch_admitted = false;
+    rejection.dispatch_reason = "queue_full";
+    rejection.ack_accepted = false;
+    rejection.ack_reason = "queue_full";
+    rejection.release_reason = "source_rejected";
+    rejection.encode_status = "not_attempted";
+    rejection.output_frame_index = 0;
+    rejection.packet_count = 0;
+    rejection.encoded_bytes = 0;
+    rejection.keyframe = false;
+    expect(writer->AppendFrame(rejection), "safe rejection append failed");
+
+    evidence::SpatialRoiRecorderFinalizeRequest request;
+    request.terminal_state = "failed";
+    request.terminal_reason = "transport failure";
+    json manifest;
+    std::string error;
+    expect(writer->Finalize(request, &manifest, &error),
+           "lifecycle finalization failed: " + error);
+    const auto evidence_path = artifact_path(*fixture, "evidence");
+    std::istringstream lines(read_bytes(evidence_path));
+    std::string line;
+    json header;
+    json first;
+    json second;
+    json third;
+    json terminal;
+    expect(static_cast<bool>(std::getline(lines, line)), "missing evidence header");
+    header = json::parse(line);
+    expect(static_cast<bool>(std::getline(lines, line)), "missing ACK failure row");
+    first = json::parse(line);
+    expect(static_cast<bool>(std::getline(lines, line)), "missing RELEASE failure row");
+    second = json::parse(line);
+    expect(static_cast<bool>(std::getline(lines, line)), "missing rejection row");
+    third = json::parse(line);
+    expect(static_cast<bool>(std::getline(lines, line)), "missing terminal row");
+    terminal = json::parse(line);
+    expect(first.at("dispatch").at("admitted") == true &&
+               first.at("ack").at("attempted") == true &&
+               first.at("ack").at("sent") == false &&
+               first.at("ack").at("accepted") == true &&
+               first.at("ack").at("error") == "EPIPE" &&
+               first.at("release").at("attempted") == false,
+           "ACK write failure lifecycle JSON was not retained");
+    expect(second.at("release").at("attempted") == true &&
+               second.at("release").at("sent") == false &&
+               second.at("release").at("reason") == "source_detached" &&
+               second.at("release").at("error") == "EPIPE",
+           "RELEASE write failure lifecycle JSON was not retained");
+    expect(third.at("dispatch").at("admitted") == false &&
+               third.at("dispatch").at("reason") == "queue_full" &&
+               third.at("ack").at("attempted") == true &&
+               third.at("ack").at("sent") == true &&
+               third.at("ack").at("accepted") == false &&
+               third.at("release").at("reason") == "source_rejected",
+           "safe rejection lifecycle JSON was not retained");
+    const auto& counts = terminal.at("counts");
+    expect(counts.at("dispatch_admitted") == 2 &&
+               counts.at("dispatch_rejected") == 1 &&
+               counts.at("ack_attempted") == 3 &&
+               counts.at("ack_sent") == 2 &&
+               counts.at("ack_accepted") == 2 &&
+               counts.at("release_attempted") == 2 &&
+               counts.at("release_sent") == 1 &&
+               counts.at("ack_write_failures") == 1 &&
+               counts.at("release_write_failures") == 1 &&
+               counts.at("lifecycle_failures") == 3,
+           "lifecycle counters were not exact: " + counts.dump());
+    expect(header.at("record_type") == "stream_header" &&
+               terminal.at("record_type") == "stream_terminal",
+           "evidence JSONL record order was not closed");
+    std::string reread_error;
+    expect(evidence::validate_spatial_roi_recorder_finalized_manifest(
+               fixture->artifact_authority, fixture->binding, manifest,
+               &reread_error),
+           "lifecycle JSON round-trip did not validate: " + reread_error);
+}
+
 void test_closed_artifact_proofs()
 {
     {
@@ -752,8 +1008,8 @@ void test_closed_artifact_proofs()
             "\"fps\":100,\"total_frames\":2,\"total_frames\":2,"
             "\"frame_index_sequence\":{\"first\":0,\"last\":1,"
             "\"zero_based_contiguous\":true},\"keyframe_policy\":{"
-            "\"name\":\"all_frames_idr\",\"keyframe_frames\":2,"
-            "\"non_keyframe_frames\":0,\"satisfied\":true}}\n";
+            "\"name\":\"fixed_gop_25_idr\",\"keyframe_frames\":1,"
+            "\"non_keyframe_frames\":1,\"satisfied\":true}}\n";
         write_artifacts(*fixture, 2, &duplicate);
         auto writer = open_writer(*fixture);
         append_successes(writer.get(), *fixture, 2);
@@ -769,10 +1025,10 @@ void test_closed_artifact_proofs()
                  value["frame_index_sequence"]["last"] = 2;
              },
              +[](json& value) {
-                 value["keyframe_policy"]["non_keyframe_frames"] = 1;
+                 value["keyframe_policy"]["non_keyframe_frames"] = 0;
              }}) {
         auto fixture = make_fixture();
-        json invalid = keyframe_summary(2);
+        json invalid = keyframe_summary(fixture->binding, 2);
         mutation(invalid);
         const std::string invalid_bytes = invalid.dump() + "\n";
         write_artifacts(*fixture, 2, &invalid_bytes);
@@ -801,6 +1057,39 @@ void test_closed_artifact_proofs()
         std::string error;
         expect(!writer->Finalize(complete_request(*fixture, 2), nullptr, &error),
                "video sanity frame-count lie was accepted");
+    }
+    using SanityMutation = void (*)(json&);
+    for (const SanityMutation mutation : {
+             +[](json& value) { value["video_sha256"] = digest('f'); },
+             +[](json& value) {
+                 value["video_inode"] =
+                     value.at("video_inode").get<std::uint64_t>() + 1;
+             },
+             +[](json& value) {
+                 value["pixel_semantics"]["pixel_format"] = "yuv420p10le";
+             },
+             +[](json& value) {
+                 value["timeline"]["frame_rate"] = "99/1";
+             },
+             +[](json& value) {
+                 value["timeline"]["last_decoded_pts"] = 1000;
+             },
+             +[](json& value) { value["mean_luma"] = 65.0; },
+             +[](json& value) {
+                 value["video_path"] = "/tmp/substituted.mp4";
+             }}) {
+        auto fixture = make_fixture();
+        write_artifacts(*fixture, 2);
+        json invalid = json::parse(read_bytes(
+            artifact_path(*fixture, "video_sanity")));
+        mutation(invalid);
+        write_bytes(artifact_path(*fixture, "video_sanity"),
+                    invalid.dump() + "\n");
+        auto writer = open_writer(*fixture);
+        append_successes(writer.get(), *fixture, 2);
+        std::string error;
+        expect(!writer->Finalize(complete_request(*fixture, 2), nullptr, &error),
+               "mutated video sanity receipt was accepted");
     }
     {
         auto fixture = make_fixture(8);
@@ -935,11 +1224,8 @@ void test_closed_artifact_proofs()
                "metadata artifact exceeded its frame-derived hash bound");
     }
     {
-        auto fixture = make_fixture(1024 * 1024, 64 * 1024, 32);
+        auto fixture = make_fixture(1024 * 1024, 16 * 1024, 32);
         write_artifacts(*fixture, 2);
-        std::string large_log(60 * 1024, 'x');
-        large_log += " complete\n";
-        write_bytes(artifact_path(*fixture, "recorder_log"), large_log);
         auto writer = open_writer(*fixture);
         append_successes(writer.get(), *fixture, 2);
         std::string error;
@@ -1042,7 +1328,7 @@ void test_failed_terminal()
         evidence::SpatialRoiRecorderFrameEvidence frame;
         frame.frame = descriptor(fixture->binding, 1);
         frame.detach_status = "cuda_error";
-        frame.ack_reason = "CUDA detach failed";
+        frame.dispatch_reason = "CUDA detach failed";
         std::string error;
         expect(writer->AppendFrame(frame, &error),
                "failed frame evidence was rejected: " + error);
@@ -1225,8 +1511,10 @@ int main()
     try {
         test_authoritative_binding();
         test_roundtrip_and_complete_adoption();
+        test_complete_requires_decoder_probe_capability();
         test_encoder_terminal_v2_completion_truth();
         test_frame_truth_tables();
+        test_lifecycle_json_roundtrip_and_counters();
         test_closed_artifact_proofs();
         test_zero_frame_completion_fails_closed();
         test_duplicate_json_keys();

@@ -26,6 +26,9 @@ class SyntheticYoloEventEmitter;
 namespace orange::gui {
 class GuiStartupTimingRecorder;
 }
+namespace orange::spatial_roi {
+class SpatialRoiAcquisitionController;
+}
 
 void acquire_frames(
     CameraEmergent *ecam,
@@ -42,6 +45,8 @@ void acquire_frames(
     FrameIPCManager* frame_ipc_manager,
     yolo_event_log::SyntheticYoloEventEmitter* synthetic_yolo_event_emitter = nullptr,
     SpatialSnapshotWorker* spatial_snapshot_worker = nullptr,
-    orange::gui::GuiStartupTimingRecorder* startup_timing = nullptr
+    orange::gui::GuiStartupTimingRecorder* startup_timing = nullptr,
+    orange::spatial_roi::SpatialRoiAcquisitionController*
+        spatial_roi_acquisition_controller = nullptr
 );
 #endif

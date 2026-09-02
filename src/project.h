@@ -165,8 +165,38 @@ bool update_recording_snapshot_system_monitoring(const std::string& recording_fo
                                                  const nlohmann::json& monitor_info);
 bool update_recording_snapshot_session_artifacts(const std::string& recording_folder,
                                                  const nlohmann::json& session_info);
+// Remove only the legacy continuous full-frame output nodes from an already
+// initialized recording snapshot. This is a pre-seal operation for explicit
+// media policies that retain acquisition identity but intentionally do not
+// create a continuous full-frame product.
+bool omit_recording_snapshot_full_frame_product(
+    const std::string& recording_folder,
+    const std::string& media_policy);
 bool update_recording_snapshot_recording_outputs(const std::string& recording_folder,
                                                  const nlohmann::json& recording_outputs);
+// Merge the additive recording-output schema version 3 into a snapshot. The
+// payload must be the object returned by build_recording_outputs_v3_json().
+// It is stored under recording_outputs_v3 and never replaces the legacy
+// schema-2 recording_outputs full/crop compatibility view.
+bool update_recording_snapshot_recording_outputs_v3(
+    const std::string& recording_folder,
+    const nlohmann::json& recording_outputs_v3);
+// Atomically merge the additive v3 output index and session metadata in one
+// snapshot read/modify/replace transaction. This is intended for lifecycle
+// transitions that publish both spatial-ROI output state and
+// session.spatial_roi_recording state; callers should use this seam instead of
+// issuing two independently atomic snapshot updates. When session_info
+// contains spatial_roi_recording (directly or under recording_backend), that
+// value must be the closed session snapshot schema v2: it must contain four
+// plan-ordered spatial_roi
+// descriptors with matching lifecycle/identity fields; complete requires the
+// closed finalized-session receipt and descriptor receipt bindings, while
+// pending/failed require a null receipt. Other session_info payloads retain
+// the historical permissive merge behavior.
+bool update_recording_snapshot_recording_outputs_v3_and_session_artifacts(
+    const std::string& recording_folder,
+    const nlohmann::json& recording_outputs_v3,
+    const nlohmann::json& session_info);
 bool update_recording_snapshot_model(const std::string& recording_folder,
                                      const std::string& camera_serial,
                                      const std::string& model_kind,
@@ -211,6 +241,11 @@ ResolvedRecordingConfig build_resolved_recording_config(
 bool read_camera_config_snapshot(const CameraParams& camera_params,
                                  std::string* config_contents,
                                  std::string* error_out);
+// Digest the resolved runtime camera configuration (not merely the source
+// file bytes) using canonical nlohmann JSON key ordering. This binds evidence
+// to applied raster, exposure/gain, optics, sync, GPU, and recording settings.
+std::string resolved_camera_configuration_sha256(
+    const CameraParams& camera_params);
 bool save_camera_json_config(const CameraParams& camera_params,
                              std::string* error_out);
 bool update_calibration_artifact_registry(const std::string& artifact_root_dir,

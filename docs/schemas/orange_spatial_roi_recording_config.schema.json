@@ -12,6 +12,7 @@
     "strict",
     "source_cadence",
     "pixel_contract",
+    "encode_profile",
     "buffering",
     "recording_limits",
     "admission",
@@ -19,9 +20,9 @@
   ],
   "properties": {
     "schema_id": { "const": "orange.spatial_roi_recording.config" },
-    "schema_version": { "const": 2 },
+    "schema_version": { "const": 3 },
     "enabled": { "type": "boolean", "default": false },
-    "backend": { "const": "independent_lossless_external_ipc" },
+    "backend": { "const": "independent_hevc_external_ipc" },
     "strict": { "const": true },
     "source_cadence": { "const": "every_recording_frame" },
     "pixel_contract": {
@@ -44,6 +45,7 @@
         }
       }
     },
+    "encode_profile": { "$ref": "#/$defs/encodeProfile" },
     "buffering": {
       "type": "object",
       "additionalProperties": false,
@@ -161,6 +163,67 @@
     }
   ],
   "$defs": {
+    "encodeProfile": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "codec", "preset", "tuning", "lossless", "rate_control_mode", "quality_value", "gop_length", "aq", "temporal_aq", "lookahead", "lookahead_depth"],
+          "properties": {
+            "name": { "const": "hevc_p7_lossless_cqp0_gop1_v1" },
+            "codec": { "const": "hevc" },
+            "preset": { "const": "p7" },
+            "tuning": { "const": "lossless" },
+            "lossless": { "const": true },
+            "rate_control_mode": { "const": "cqp" },
+            "quality_value": { "const": 0 },
+            "gop_length": { "const": 1 },
+            "aq": { "const": false },
+            "temporal_aq": { "const": false },
+            "lookahead": { "const": false },
+            "lookahead_depth": { "const": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "codec", "preset", "tuning", "lossless", "rate_control_mode", "quality_value", "gop_length", "aq", "temporal_aq", "lookahead", "lookahead_depth"],
+          "properties": {
+            "name": { "const": "hevc_p1_low_latency_vbr_q20_gop1_v1" },
+            "codec": { "const": "hevc" },
+            "preset": { "const": "p1" },
+            "tuning": { "const": "ll" },
+            "lossless": { "const": false },
+            "rate_control_mode": { "const": "vbr" },
+            "quality_value": { "const": 20 },
+            "gop_length": { "const": 1 },
+            "aq": { "const": false },
+            "temporal_aq": { "const": false },
+            "lookahead": { "const": false },
+            "lookahead_depth": { "const": 0 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "codec", "preset", "tuning", "lossless", "rate_control_mode", "quality_value", "gop_length", "aq", "temporal_aq", "lookahead", "lookahead_depth"],
+          "properties": {
+            "name": { "const": "hevc_p1_low_latency_vbr_q20_gop25_v1" },
+            "codec": { "const": "hevc" },
+            "preset": { "const": "p1" },
+            "tuning": { "const": "ll" },
+            "lossless": { "const": false },
+            "rate_control_mode": { "const": "vbr" },
+            "quality_value": { "const": 20 },
+            "gop_length": { "const": 25 },
+            "aq": { "const": false },
+            "temporal_aq": { "const": false },
+            "lookahead": { "const": false },
+            "lookahead_depth": { "const": 0 }
+          }
+        }
+      ]
+    },
     "identifier": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$"

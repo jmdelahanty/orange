@@ -98,6 +98,7 @@ Top-level fields:
   "producer_version": "...",
   "source_version": { ... },
   "recording_outputs": { ... },
+  "recording_outputs_v3": { ... },
   "sync": { ... },
   "cameras": { ... },
   "camera_runtime": { ... },
@@ -142,6 +143,49 @@ verified-plan/CUDA extractor plus a closed frame contract and bounded lane
 runtime on its isolation branch, but no recorder process or multi-output
 session inventory yet. Consumers must not infer stable `roi_id` or `region_id`
 from the current crop descriptor.
+
+When detector-independent spatial ROI outputs are present, the snapshot also
+may contain the additive `recording_outputs_v3` object. This does not change
+the top-level snapshot `schema_version` (which remains `2` for compatibility)
+or replace `recording_outputs`. Its shape is:
+
+```json
+{
+  "recording_outputs_v3": {
+    "schema_id": "orange.recording_outputs",
+    "schema_version": 3,
+    "cameras": {
+      "2010096": {
+        "full": { "output_kind": "full", "camera_serial": "2010096" },
+        "crop": { "output_kind": "crop", "camera_serial": "2010096" },
+        "spatial_roi": {
+          "2010096_spatial_roi_roi_1": {
+            "schema_version": 3,
+            "camera_serial": "2010096",
+            "output_kind": "spatial_roi",
+            "logical_stream_id": "2010096_spatial_roi_roi_1"
+          },
+          "2010096_spatial_roi_roi_2": {
+            "schema_version": 3,
+            "camera_serial": "2010096",
+            "output_kind": "spatial_roi",
+            "logical_stream_id": "2010096_spatial_roi_roi_2"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+`recording_outputs_v3.cameras[serial].full` remains the ingest-authoritative
+full-frame descriptor and `.crop` remains the legacy scalar crop descriptor.
+Only `.spatial_roi` is collection-valued; each member is keyed by its
+authenticated `logical_stream_id`. Producers reject an empty key, duplicate
+`(camera_serial, logical_stream_id)`, or a descriptor whose identity fields do
+not agree with its camera/key. Consumers that do not understand v3 can safely
+continue reading schema-2 `recording_outputs`; consumers that need spatial ROI
+streams must opt into and validate the v3 envelope.
 
 Every newly finalized encoded `full` or `crop` descriptor also carries
 `encoding_budget` (`schema_id = "orange.recording_encoding_budget"`, version
@@ -1762,7 +1806,8 @@ Important: these camera configs are read from the static JSON config files at
 recording start. The snapshot does not query live camera state from the SDK, and
 does not reflect any runtime UI tweaks applied after recording starts.
 
-Legacy single-output example (currently emitted for full-frame HW encoder):
+First-class single-output example (currently emitted for the supported
+full-frame HW encoder):
 
 ```
 {
