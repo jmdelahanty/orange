@@ -253,6 +253,31 @@ bool build_export_impl(
     if (status != cudaSuccess) {
         return fail(error_out, cuda_failure("cudaSetDevice(spatial ROI export)", status));
     }
+    // Prove source-device identity while this is still the original pointer
+    // in the contract-bound, peer-checked producer process. Legacy cudaMalloc
+    // CUDA-IPC mappings can report the importing device from
+    // cudaPointerGetAttributes
+    // after a cross-GPU import, so the recorder cannot establish the physical
+    // source ordinal from that post-import field alone.
+    cudaPointerAttributes pointer_attributes{};
+    status = cudaPointerGetAttributes(&pointer_attributes, output.device_data);
+    if (status != cudaSuccess) {
+        return fail(error_out,
+                    cuda_failure("cudaPointerGetAttributes(spatial ROI export)",
+                                 status));
+    }
+#if CUDART_VERSION >= 10000
+    const cudaMemoryType memory_type = pointer_attributes.type;
+#else
+    const cudaMemoryType memory_type = pointer_attributes.memoryType;
+#endif
+    if (memory_type != cudaMemoryTypeDevice ||
+        pointer_attributes.device != exporter.producer_gpu_id() ||
+        pointer_attributes.devicePointer == nullptr) {
+        return fail(error_out,
+                    "spatial ROI output allocation does not belong to the "
+                    "contract-bound producer GPU");
+    }
     status = cudaEventQuery(result.completion_event());
     if (status != cudaSuccess) {
         return fail(error_out,

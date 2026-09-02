@@ -1243,13 +1243,26 @@ SpatialRoiRecorderCudaDetachPool::TryDetachImpl(
             cuda_failure("cudaPointerGetAttributes(recorder detach)", status));
     }
 #if CUDART_VERSION >= 10000
-    if (pointer_attributes.type != cudaMemoryTypeDevice ||
+    const cudaMemoryType imported_memory_type = pointer_attributes.type;
 #else
-    if (pointer_attributes.memoryType != cudaMemoryTypeDevice ||
+    const cudaMemoryType imported_memory_type = pointer_attributes.memoryType;
 #endif
-        pointer_attributes.device != config_.expected_source_gpu_id) {
+    // Legacy cudaMalloc/cudaIpcOpenMemHandle mappings have reported the
+    // importing device ordinal here on released NVIDIA drivers; fixed drivers
+    // may report the physical source ordinal. Source authority is proved by
+    // the exporter before handle creation and by the contract-bound descriptor
+    // received from the peer-credential-checked producer. This query instead
+    // proves a usable device alias whose reported ordinal belongs to one of the
+    // two devices in the declared handoff.
+    const bool reported_expected_ipc_device =
+        pointer_attributes.device == config_.expected_source_gpu_id ||
+        pointer_attributes.device == config_.recorder_gpu_id;
+    if (imported_memory_type != cudaMemoryTypeDevice ||
+        pointer_attributes.devicePointer == nullptr ||
+        !reported_expected_ipc_device) {
         return quarantine_claim(
-            "imported CUDA allocation does not match the configured source GPU");
+            "imported CUDA allocation is not accessible through the declared "
+            "source/recorder GPU handoff");
     }
     CUdeviceptr imported_allocation_base = 0;
     std::size_t imported_allocation_bytes = 0;

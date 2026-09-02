@@ -12,7 +12,9 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <sys/types.h>
@@ -62,6 +64,20 @@ std::string hex_handle(const void* handle, const std::size_t bytes)
         output.push_back(kHex[input[index] & 0x0f]);
     }
     return output;
+}
+
+int parse_gpu_id_arg(const char* text, const char* context)
+{
+    require(text && *text,
+            std::string(context ? context : "GPU id") + " is empty");
+    char* end = nullptr;
+    errno = 0;
+    const long parsed = std::strtol(text, &end, 10);
+    require(errno == 0 && end && *end == '\0' && parsed >= 0 &&
+                parsed <= std::numeric_limits<int>::max(),
+            std::string("invalid ") + (context ? context : "GPU id") +
+                ": " + text);
+    return static_cast<int>(parsed);
 }
 
 bool write_all(const int fd, const void* data, const std::size_t bytes)
@@ -260,7 +276,8 @@ GpuSource make_pending_source(const int gpu_id,
     return source;
 }
 
-SpatialRoiFrameDescriptor make_descriptor(const int gpu_id,
+SpatialRoiFrameDescriptor make_descriptor(const int source_gpu_id,
+                                          const int recorder_gpu_id,
                                           const std::string& recording_id =
                                               "recorder-detach-test")
 {
@@ -291,8 +308,8 @@ SpatialRoiFrameDescriptor make_descriptor(const int gpu_id,
     descriptor.padding = {0, 0, 0, 0, 0};
     descriptor.source_pixel_format = orange::spatial_roi::kSpatialRoiMono8PixelFormat;
     descriptor.bytes = 16;
-    descriptor.source_gpu_id = gpu_id;
-    descriptor.assigned_gpu_id = gpu_id;
+    descriptor.source_gpu_id = source_gpu_id;
+    descriptor.assigned_gpu_id = recorder_gpu_id;
     descriptor.assigned_shard_id = 0;
     descriptor.routing_policy = "single_shard";
     return descriptor;
@@ -599,7 +616,7 @@ void run_timeout_recorder_checks(const SpatialRoiIpcFrame& frame)
             "timeout-quarantined pool lost its source-unsafe terminal state");
 }
 
-int run_producer()
+int run_producer(const int source_gpu_id, const int recorder_gpu_id)
 {
     int device_count = 0;
     const cudaError_t device_status = cudaGetDeviceCount(&device_count);
@@ -613,14 +630,16 @@ int run_producer()
         return 0;
     }
 
-    const int gpu_id = 0;
+    require(source_gpu_id < device_count && recorder_gpu_id < device_count,
+            "configured source/recorder GPU is outside the CUDA device range");
     const std::vector<unsigned char> source_bytes = {
         0, 1, 2, 3,
         4, 5, 6, 7,
         8, 9, 10, 11,
         12, 13, 14, 15};
-    GpuSource source = make_source(gpu_id, source_bytes);
-    const SpatialRoiFrameDescriptor descriptor = make_descriptor(gpu_id);
+    GpuSource source = make_source(source_gpu_id, source_bytes);
+    const SpatialRoiFrameDescriptor descriptor =
+        make_descriptor(source_gpu_id, recorder_gpu_id);
     const SpatialRoiIpcFrame frame = make_frame(descriptor, source);
     std::string serialization_error;
     const std::string wire =
@@ -653,7 +672,7 @@ int run_producer()
     return 0;
 }
 
-int run_timeout_producer()
+int run_timeout_producer(const int source_gpu_id, const int recorder_gpu_id)
 {
     int device_count = 0;
     const cudaError_t device_status = cudaGetDeviceCount(&device_count);
@@ -667,15 +686,17 @@ int run_timeout_producer()
         return 0;
     }
 
-    const int gpu_id = 0;
+    require(source_gpu_id < device_count && recorder_gpu_id < device_count,
+            "configured timeout source/recorder GPU is outside the CUDA device range");
     const std::vector<unsigned char> source_bytes = {
         0, 1, 2, 3,
         4, 5, 6, 7,
         8, 9, 10, 11,
         12, 13, 14, 15};
     HostGate gate;
-    GpuSource source = make_pending_source(gpu_id, source_bytes, &gate);
-    const SpatialRoiFrameDescriptor descriptor = make_descriptor(gpu_id);
+    GpuSource source = make_pending_source(source_gpu_id, source_bytes, &gate);
+    const SpatialRoiFrameDescriptor descriptor =
+        make_descriptor(source_gpu_id, recorder_gpu_id);
     const SpatialRoiIpcFrame frame = make_frame(descriptor, source);
     std::string serialization_error;
     const std::string wire =
@@ -770,7 +791,9 @@ pid_t spawn_mode(const std::string& executable,
                  const int input_read,
                  const int output_write,
                  const int* close_fds,
-                 const std::size_t close_fd_count)
+                 const std::size_t close_fd_count,
+                 const char* argument_1 = nullptr,
+                 const char* argument_2 = nullptr)
 {
     // Resolve the string pointer before fork.  The child then performs only
     // dup2/close/exec calls, which keeps this fork+exec seam safe even if the
@@ -791,8 +814,19 @@ pid_t spawn_mode(const std::string& executable,
                 close(fd);
             }
         }
-        execl(executable_path, executable_path, mode,
-              static_cast<char*>(nullptr));
+        if (argument_1 && argument_2) {
+            execl(executable_path,
+                  executable_path,
+                  mode,
+                  argument_1,
+                  argument_2,
+                  static_cast<char*>(nullptr));
+        } else {
+            execl(executable_path,
+                  executable_path,
+                  mode,
+                  static_cast<char*>(nullptr));
+        }
         _exit(127);
     }
     return pid;
@@ -828,8 +862,12 @@ ExchangeOutcome run_exchange(const std::string& executable,
                              const char* producer_mode,
                              const char* recorder_mode,
                              const char* release_command,
-                             const char* producer_success_prefix)
+                             const char* producer_success_prefix,
+                             const int source_gpu_id,
+                             const int recorder_gpu_id)
 {
+    const std::string source_gpu_arg = std::to_string(source_gpu_id);
+    const std::string recorder_gpu_arg = std::to_string(recorder_gpu_id);
     int producer_frame[2] = {-1, -1};
     int producer_control[2] = {-1, -1};
     require(pipe(producer_frame) == 0 && pipe(producer_control) == 0,
@@ -842,7 +880,9 @@ ExchangeOutcome run_exchange(const std::string& executable,
                                           producer_control[0],
                                           producer_frame[1],
                                           producer_close_fds.data(),
-                                          producer_close_fds.size());
+                                          producer_close_fds.size(),
+                                          source_gpu_arg.c_str(),
+                                          recorder_gpu_arg.c_str());
     close(producer_control[0]);
     close(producer_frame[1]);
     producer_control[0] = -1;
@@ -929,15 +969,96 @@ ExchangeOutcome run_exchange(const std::string& executable,
     return outcome;
 }
 
+bool cuda_ipc_device_usable(const int gpu_id)
+{
+    int unified_addressing = 0;
+    if (cudaDeviceGetAttribute(&unified_addressing,
+                               cudaDevAttrUnifiedAddressing,
+                               gpu_id) != cudaSuccess ||
+        unified_addressing == 0) {
+        return false;
+    }
+    int ipc_event_support = 0;
+    return cudaDeviceGetAttribute(&ipc_event_support,
+                                  cudaDevAttrIpcEventSupport,
+                                  gpu_id) == cudaSuccess &&
+           ipc_event_support != 0;
+}
+
+struct TestGpuPair {
+    int source_gpu_id = -1;
+    int recorder_gpu_id = -1;
+
+    bool valid() const noexcept
+    {
+        return source_gpu_id >= 0 && recorder_gpu_id >= 0;
+    }
+};
+
+int find_same_gpu_control(const int device_count)
+{
+    for (int gpu_id = 0; gpu_id < device_count; ++gpu_id) {
+        if (cuda_ipc_device_usable(gpu_id)) {
+            return gpu_id;
+        }
+    }
+    return -1;
+}
+
+TestGpuPair find_distinct_peer_pair(const int device_count)
+{
+    for (int source_gpu_id = 0; source_gpu_id < device_count; ++source_gpu_id) {
+        if (!cuda_ipc_device_usable(source_gpu_id)) {
+            continue;
+        }
+        for (int recorder_gpu_id = 0;
+             recorder_gpu_id < device_count;
+             ++recorder_gpu_id) {
+            if (recorder_gpu_id == source_gpu_id ||
+                !cuda_ipc_device_usable(recorder_gpu_id)) {
+                continue;
+            }
+            int recorder_can_access_source = 0;
+            if (cudaDeviceCanAccessPeer(&recorder_can_access_source,
+                                        recorder_gpu_id,
+                                        source_gpu_id) == cudaSuccess &&
+                recorder_can_access_source != 0) {
+                return {source_gpu_id, recorder_gpu_id};
+            }
+        }
+    }
+    return {};
+}
+
 int run_supervisor()
 {
     (void)signal(SIGPIPE, SIG_IGN);
+    int device_count = 0;
+    const cudaError_t device_status = cudaGetDeviceCount(&device_count);
+    if (device_status != cudaSuccess || device_count <= 0) {
+        std::cout << "[SKIP] spatial ROI recorder CUDA detach tests: "
+                  << (device_status == cudaSuccess
+                          ? "no CUDA device"
+                          : cudaGetErrorString(device_status))
+                  << '\n';
+        (void)cudaGetLastError();
+        return 0;
+    }
+    const int control_gpu_id = find_same_gpu_control(device_count);
+    if (control_gpu_id < 0) {
+        std::cout << "[SKIP] spatial ROI recorder CUDA detach tests: "
+                     "no CUDA device supports unified addressing and IPC events\n";
+        return 0;
+    }
+
     const std::string executable = self_executable_path();
     const ExchangeOutcome success = run_exchange(executable,
                                                  "--producer",
                                                  "--recorder",
                                                  "RELEASE\n",
-                                                 "PRODUCER_OK ");
+                                                 "PRODUCER_OK ",
+                                                 control_gpu_id,
+                                                 control_gpu_id);
     if (success.skipped) {
         std::cout << "[SKIP] spatial ROI recorder CUDA detach tests: "
                   << success.producer_record.substr(5) << "\n";
@@ -948,14 +1069,35 @@ int run_supervisor()
                                                  "--timeout-producer",
                                                  "--recorder-timeout",
                                                  "OPEN\n",
-                                                 "TIMEOUT_PRODUCER_OK ");
+                                                 "TIMEOUT_PRODUCER_OK ",
+                                                 control_gpu_id,
+                                                 control_gpu_id);
     if (timeout.skipped) {
         std::cout << "[SKIP] spatial ROI recorder CUDA detach tests: "
                   << timeout.producer_record.substr(5) << "\n";
         return 0;
     }
+    const TestGpuPair cross_gpu = find_distinct_peer_pair(device_count);
+    if (cross_gpu.valid()) {
+        const ExchangeOutcome cross_gpu_success = run_exchange(
+            executable,
+            "--producer",
+            "--recorder",
+            "RELEASE\n",
+            "PRODUCER_OK ",
+            cross_gpu.source_gpu_id,
+            cross_gpu.recorder_gpu_id);
+        require(!cross_gpu_success.skipped,
+                "selected peer-capable cross-GPU exchange was unexpectedly skipped");
+        std::cout << "[PASS] spatial ROI cross-GPU CUDA IPC detach: source GPU "
+                  << cross_gpu.source_gpu_id << " -> recorder GPU "
+                  << cross_gpu.recorder_gpu_id << '\n';
+    } else {
+        std::cout << "[SKIP] spatial ROI cross-GPU CUDA IPC detach: "
+                     "no distinct recorder-to-source peer-capable GPU pair\n";
+    }
     std::cout << "spatial_roi_recorder_cuda_detach_tests: "
-                 "separate-process IPC and bounded-timeout checks passed\n";
+                 "same-GPU IPC, bounded-timeout, and available cross-GPU checks passed\n";
     return 0;
 }
 
@@ -964,8 +1106,9 @@ int run_supervisor()
 int main(const int argc, char** argv)
 {
     try {
-        if (argc == 2 && std::strcmp(argv[1], "--producer") == 0) {
-            return run_producer();
+        if (argc == 4 && std::strcmp(argv[1], "--producer") == 0) {
+            return run_producer(parse_gpu_id_arg(argv[2], "source GPU id"),
+                                parse_gpu_id_arg(argv[3], "recorder GPU id"));
         }
         if (argc == 2 && std::strcmp(argv[1], "--recorder") == 0) {
             return run_recorder(false);
@@ -973,8 +1116,10 @@ int main(const int argc, char** argv)
         if (argc == 2 && std::strcmp(argv[1], "--recorder-timeout") == 0) {
             return run_recorder(true);
         }
-        if (argc == 2 && std::strcmp(argv[1], "--timeout-producer") == 0) {
-            return run_timeout_producer();
+        if (argc == 4 && std::strcmp(argv[1], "--timeout-producer") == 0) {
+            return run_timeout_producer(
+                parse_gpu_id_arg(argv[2], "timeout source GPU id"),
+                parse_gpu_id_arg(argv[3], "timeout recorder GPU id"));
         }
         if (argc != 1) {
             std::cerr << "usage: spatial_roi_recorder_cuda_detach_tests\n";

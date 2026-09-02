@@ -716,6 +716,29 @@ are nevertheless gated to one camera/four ROIs for this slice.
 
 ### B. Per-ROI recorder/IPC lanes
 
+#### CUDA transport selection
+
+IPC-v2 deliberately uses the supported CUDA Runtime IPC family:
+`cudaIpcGetMemHandle`/`cudaIpcOpenMemHandle` for the producer-owned
+`cudaMalloc` ROI allocation and an interprocess CUDA event for readiness. The
+contract-bound, peer-credential-checked producer proves the original allocation
+is device memory on its declared `source_gpu_id` before exporting the handle.
+After a cross-GPU import, the recorder treats
+`cudaPointerGetAttributes().device` as mapping evidence rather
+than source authority because released NVIDIA drivers can report the importing
+GPU for this legacy allocation mapping. It still requires a device-accessible
+alias, an ordinal belonging to the declared source/recorder pair, verified peer
+access, the exact allocation base/range, the contract-bound descriptor from the
+checked producer peer, event completion, and a completed detach copy before
+source release.
+
+CUDA Virtual Memory Management is a deferred IPC-v3 transport option, not a
+prerequisite for fixed-ROI acceptance. Adopting it would replace the producer
+pool allocator and import lifecycle, add allocation-granularity and device
+capability checks, and require POSIX shareable file descriptors to be passed
+with `SCM_RIGHTS` rather than serialized into the current line protocol. It
+would not remove the need for an interprocess synchronization contract.
+
 - [x] Define and validate a closed handoff descriptor with explicit `roi_id`,
       `region_id`,
       `logical_stream_id`, plan digest, native content rectangle, encoded raster,
