@@ -1101,6 +1101,43 @@ int run_supervisor()
     return 0;
 }
 
+int run_requested_cross_gpu(const int source_gpu_id,
+                            const int recorder_gpu_id)
+{
+    (void)signal(SIGPIPE, SIG_IGN);
+    int device_count = 0;
+    require_cuda(cudaGetDeviceCount(&device_count), "cudaGetDeviceCount");
+    require(source_gpu_id >= 0 && source_gpu_id < device_count &&
+                recorder_gpu_id >= 0 && recorder_gpu_id < device_count,
+            "requested cross-GPU pair is outside the CUDA device range");
+    require(source_gpu_id != recorder_gpu_id,
+            "requested cross-GPU pair must use distinct devices");
+    require(cuda_ipc_device_usable(source_gpu_id) &&
+                cuda_ipc_device_usable(recorder_gpu_id),
+            "requested cross-GPU pair does not support CUDA IPC events and unified addressing");
+    int recorder_can_access_source = 0;
+    require_cuda(cudaDeviceCanAccessPeer(&recorder_can_access_source,
+                                         recorder_gpu_id,
+                                         source_gpu_id),
+                 "cudaDeviceCanAccessPeer(requested cross-GPU pair)");
+    require(recorder_can_access_source != 0,
+            "requested recorder GPU cannot access the source GPU as a peer");
+
+    const ExchangeOutcome outcome = run_exchange(self_executable_path(),
+                                                  "--producer",
+                                                  "--recorder",
+                                                  "RELEASE\n",
+                                                  "PRODUCER_OK ",
+                                                  source_gpu_id,
+                                                  recorder_gpu_id);
+    require(!outcome.skipped,
+            "requested peer-capable cross-GPU exchange was unexpectedly skipped");
+    std::cout << "[PASS] spatial ROI requested cross-GPU CUDA IPC detach: source GPU "
+              << source_gpu_id << " -> recorder GPU " << recorder_gpu_id
+              << '\n';
+    return 0;
+}
+
 }  // namespace
 
 int main(const int argc, char** argv)
@@ -1121,8 +1158,14 @@ int main(const int argc, char** argv)
                 parse_gpu_id_arg(argv[2], "timeout source GPU id"),
                 parse_gpu_id_arg(argv[3], "timeout recorder GPU id"));
         }
+        if (argc == 4 && std::strcmp(argv[1], "--cross-gpu") == 0) {
+            return run_requested_cross_gpu(
+                parse_gpu_id_arg(argv[2], "source GPU id"),
+                parse_gpu_id_arg(argv[3], "recorder GPU id"));
+        }
         if (argc != 1) {
-            std::cerr << "usage: spatial_roi_recorder_cuda_detach_tests\n";
+            std::cerr << "usage: spatial_roi_recorder_cuda_detach_tests "
+                         "[--cross-gpu <source-gpu> <recorder-gpu>]\n";
             return 2;
         }
         return run_supervisor();

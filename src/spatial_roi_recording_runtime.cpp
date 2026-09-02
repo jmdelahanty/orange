@@ -326,6 +326,33 @@ public:
         condition_.notify_all();
     }
 
+    // StopAccepting is deliberately separate from cancellation: normal
+    // shutdown preserves FIFO work that was already admitted.  After a sink
+    // failure, however, the failed lane cannot safely invoke its sink again.
+    // Move its queued deliveries out under the lane lock, decrementing the
+    // outstanding count at the same linearization point.  The runtime marks
+    // those envelopes terminal after this method returns, so no sink callback
+    // runs while the lane lock is held.
+    void StopAcceptingAndTakeQueued(
+        std::deque<QueuedDelivery>* canceled) noexcept
+    {
+        if (!canceled) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            accepting_ = false;
+            canceled->swap(queue_);
+            const std::size_t canceled_count = canceled->size();
+            if (canceled_count >= outstanding_) {
+                outstanding_ = 0;
+            } else {
+                outstanding_ -= canceled_count;
+            }
+        }
+        condition_.notify_all();
+    }
+
     void Join() noexcept
     {
         if (worker_id_ == std::this_thread::get_id()) {
@@ -399,6 +426,15 @@ private:
                 }
             } catch (...) {
                 terminal = SpatialRoiLaneTerminalReason::kSinkFailed;
+            }
+            if (terminal == SpatialRoiLaneTerminalReason::kSinkRejected ||
+                terminal == SpatialRoiLaneTerminalReason::kSinkFailed) {
+                // This stops admission before the next source frame can be
+                // accepted, then cancels only this lane's queued work. The
+                // fail-fast request is published before the stop lock, and
+                // the active sink reason is latched before canceled entries
+                // can attempt to record their stopped terminal state.
+                owner_->fail_fast_after_sink_failure(lane_index_, terminal);
             }
             owner_->mark_lane_terminal(envelope, lane_index_, terminal);
             {
@@ -613,6 +649,22 @@ SpatialRoiBatchSubmission SpatialRoiRecordingRuntime::TrySubmit(
         return submission;
     }
 
+    // A lane publishes its sink-failure stop request before it acquires
+    // admission_mutex_. Observe that request here as well, closing the race
+    // in which a submitter could otherwise pass accepting_ before the failing
+    // lane gets to stop the producer and all lane queues.
+    if (sink_failure_stop_requested_.load(std::memory_order_acquire) &&
+        accepting_) {
+        accepting_ = false;
+        terminal_status_ = SpatialRoiRuntimeSubmitStatus::kStopped;
+        if (producer_) {
+            producer_->StopAccepting();
+        }
+        for (const auto& lane : lanes_) {
+            lane->StopAccepting();
+        }
+    }
+
     if (!accepting_) {
         submission.status = terminal_status_;
         submission.producer_status =
@@ -782,8 +834,10 @@ void SpatialRoiRecordingRuntime::mark_lane_terminal(
         break;
     case SpatialRoiLaneTerminalReason::kQueueFull:
     case SpatialRoiLaneTerminalReason::kQueueAdmissionFailed:
-    case SpatialRoiLaneTerminalReason::kStopped:
     case SpatialRoiLaneTerminalReason::kPending:
+        break;
+    case SpatialRoiLaneTerminalReason::kStopped:
+        counters_->lane_stopped.fetch_add(1, std::memory_order_relaxed);
         break;
     }
 
@@ -796,6 +850,50 @@ void SpatialRoiRecordingRuntime::mark_lane_terminal(
             counters_->strict_incomplete_batches.fetch_add(
                 1, std::memory_order_relaxed);
         }
+    }
+}
+
+void SpatialRoiRecordingRuntime::fail_fast_after_sink_failure(
+    std::size_t failed_lane_index,
+    SpatialRoiLaneTerminalReason reason) noexcept
+{
+    // This store is the asynchronous stop linearization point. A TrySubmit
+    // already inside admission is concurrent with the failing sink; every
+    // later caller observes the request after taking admission_mutex_.
+    sink_failure_stop_requested_.store(true, std::memory_order_release);
+    latch_failure(terminal_reason_name(reason));
+    // Linearize the stop against TrySubmit first.  A sink callback runs on a
+    // lane thread and never owns admission_mutex_, so this is safe even when
+    // the sink re-enters StopAcceptingAndDrain().
+    {
+        std::lock_guard<std::mutex> admission_lock(admission_mutex_);
+        const bool was_accepting = accepting_;
+        accepting_ = false;
+        if (was_accepting) {
+            terminal_status_ = SpatialRoiRuntimeSubmitStatus::kStopped;
+        }
+        if (producer_) {
+            producer_->StopAccepting();
+        }
+        for (const auto& lane : lanes_) {
+            lane->StopAccepting();
+        }
+    }
+
+    if (failed_lane_index >= lanes_.size()) {
+        return;
+    }
+
+    // Healthy lanes retain their admitted queues and therefore continue to
+    // drain FIFO.  Only deliveries that have not yet been dequeued from the
+    // failed lane are terminalized as stopped and released here.
+    std::deque<Lane::QueuedDelivery> canceled;
+    lanes_[failed_lane_index]->StopAcceptingAndTakeQueued(&canceled);
+    for (auto& delivery : canceled) {
+        mark_lane_terminal(
+            delivery.envelope,
+            failed_lane_index,
+            SpatialRoiLaneTerminalReason::kStopped);
     }
 }
 

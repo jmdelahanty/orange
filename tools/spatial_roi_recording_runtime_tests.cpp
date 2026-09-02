@@ -6,6 +6,7 @@
 #include <cuda_runtime.h>
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <iostream>
@@ -110,6 +111,29 @@ nlohmann::json make_plan()
                 make_config(), context, &plan, nullptr, &error),
             "build_plan failed: " + error);
     require(api::verify_plan(plan, &error), "verify_plan failed: " + error);
+    return plan;
+}
+
+nlohmann::json make_plan_with_queue_capacity(std::uint32_t queue_capacity)
+{
+    namespace api = orange::session::spatial_roi;
+    api::Config config = make_config();
+    config.buffering.queue_frames_per_stream = queue_capacity;
+    api::PlanContext context;
+    context.recording_id = "runtime-test-recording";
+    context.recording_identity_token =
+        orange::shaman_v2_recording_identity::token_for_recording_id(
+            context.recording_id);
+    context.generated_at_utc = "2026-08-31T00:00:00Z";
+    context.producer_generation = "generation_1";
+
+    nlohmann::json plan;
+    std::string error;
+    require(api::build_plan(
+                config, context, &plan, nullptr, &error),
+            "build_plan fail-fast fixture failed: " + error);
+    require(api::verify_plan(plan, &error),
+            "verify_plan fail-fast fixture failed: " + error);
     return plan;
 }
 
@@ -339,14 +363,8 @@ void test_runtime_cuda_fanout_and_terminal_failures()
             0,
             [](const SpatialRoiLaneDelivery& delivery) {
                 const std::size_t lane_index = delivery.lane_index;
-                if (lane_index == 1) {
+                if (lane_index == 0) {
                     return SpatialRoiLaneSinkResult::kRejected;
-                }
-                if (lane_index == 2) {
-                    return SpatialRoiLaneSinkResult::kFailed;
-                }
-                if (lane_index == 3) {
-                    return static_cast<SpatialRoiLaneSinkResult>(999);
                 }
                 return SpatialRoiLaneSinkResult::kCompleted;
             });
@@ -361,17 +379,23 @@ void test_runtime_cuda_fanout_and_terminal_failures()
         const auto snapshot = failed_submission.envelope->terminal_snapshot();
         require(snapshot.status == SpatialRoiBatchCompletionStatus::kIncomplete,
                 "required sink rejection/failure did not make batch incomplete");
-        require(snapshot.lane_reasons[1] ==
-                    SpatialRoiLaneTerminalReason::kSinkRejected &&
-                    snapshot.lane_reasons[2] ==
-                        SpatialRoiLaneTerminalReason::kSinkFailed,
-                "sink terminal rejection reasons were not retained");
+        require(snapshot.lane_reasons[0] ==
+                    SpatialRoiLaneTerminalReason::kSinkRejected,
+                "sink rejection reason was not retained");
+        for (std::size_t lane_index = 1; lane_index < 4; ++lane_index) {
+            require(snapshot.lane_reasons[lane_index] ==
+                            SpatialRoiLaneTerminalReason::kCompleted ||
+                        snapshot.lane_reasons[lane_index] ==
+                            SpatialRoiLaneTerminalReason::kStopped,
+                    "healthy lane did not reach a terminal outcome");
+        }
         const auto counters = runtime.counters();
         require(counters.lane_sink_rejected == 1 &&
-                    counters.lane_sink_failed == 2 &&
+                    counters.lane_sink_failed == 0 &&
+                    counters.lane_completed + counters.lane_stopped == 3 &&
                     counters.batches_incomplete == 1 &&
                     counters.strict_incomplete_batches == 1,
-                "incomplete batch counters are not exact");
+                "fail-fast incomplete batch counters are not exact");
     }
     failed_submission.envelope.reset();
 
@@ -389,9 +413,11 @@ void test_runtime_cuda_fanout_and_terminal_failures()
         require(snapshot.status == SpatialRoiBatchCompletionStatus::kIncomplete,
                 "missing recorder sink did not fail the batch closed");
         const auto counters = runtime.counters();
-        require(counters.lane_sink_failed == 4 &&
+        require(counters.lane_sink_failed >= 1 &&
+                    counters.lane_sink_failed <= 4 &&
+                    counters.lane_sink_failed + counters.lane_stopped == 4 &&
                     counters.batches_incomplete == 1,
-                "missing recorder sink failure counters are not exact");
+                "missing recorder sink fail-fast counters are not exact");
     }
     missing_sink_submission.envelope.reset();
 }
@@ -545,6 +571,139 @@ void test_exact_lane_capacity_and_reentrant_stop()
     reentrant.envelope.reset();
 }
 
+void test_sink_failure_fails_fast_and_cancels_only_failed_lane()
+{
+    GpuSource gpu_source = make_source();
+    const nlohmann::json plan = make_plan_with_queue_capacity(4);
+
+    std::mutex gate_mutex;
+    std::condition_variable gate_condition;
+    bool release_failed_sink = false;
+    bool failed_sink_started = false;
+    std::mutex calls_mutex;
+    std::vector<std::vector<std::uint64_t>> delivered_indexes(4);
+    std::atomic<std::size_t> failed_sink_calls{0};
+
+    std::vector<SpatialRoiBatchSubmission> submissions;
+    {
+        SpatialRoiRecordingRuntime runtime(
+            plan,
+            "10000",
+            0,
+            [&](const SpatialRoiLaneDelivery& delivery) {
+                if (delivery.lane_index == 0) {
+                    failed_sink_calls.fetch_add(1, std::memory_order_relaxed);
+                    {
+                        std::lock_guard<std::mutex> lock(gate_mutex);
+                        failed_sink_started = true;
+                    }
+                    gate_condition.notify_all();
+                    std::unique_lock<std::mutex> lock(gate_mutex);
+                    gate_condition.wait(lock, [&]() {
+                        return release_failed_sink;
+                    });
+                    return SpatialRoiLaneSinkResult::kRejected;
+                }
+                {
+                    std::lock_guard<std::mutex> lock(calls_mutex);
+                    delivered_indexes[delivery.lane_index].push_back(
+                        delivery.roi_stream_frame_index);
+                }
+                return SpatialRoiLaneSinkResult::kCompleted;
+            });
+
+        SpatialRoiSourceView source = make_source_view(gpu_source);
+        submissions.reserve(4);
+        for (std::size_t frame = 0; frame < 4; ++frame) {
+            if (frame != 0) {
+                ++source.identity.recording_frame_id;
+            }
+            submissions.push_back(runtime.TrySubmit(source));
+            require(submissions.back().status ==
+                        SpatialRoiRuntimeSubmitStatus::kAccepted,
+                    "fail-fast fixture did not admit an initially queued batch");
+        }
+
+        {
+            std::unique_lock<std::mutex> lock(gate_mutex);
+            require(gate_condition.wait_for(
+                        lock,
+                        std::chrono::seconds(2),
+                        [&]() { return failed_sink_started; }),
+                    "failed sink did not become the active lane callback");
+        }
+        require(failed_sink_calls.load(std::memory_order_relaxed) == 1,
+                "failed lane did not start with exactly one sink callback");
+
+        {
+            std::lock_guard<std::mutex> lock(gate_mutex);
+            release_failed_sink = true;
+        }
+        gate_condition.notify_all();
+
+        const auto failure_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (!runtime.failed() &&
+               std::chrono::steady_clock::now() < failure_deadline) {
+            std::this_thread::yield();
+        }
+        require(runtime.failed(),
+                "sink rejection did not latch runtime failure");
+
+        ++source.identity.recording_frame_id;
+        SpatialRoiBatchSubmission stopped = runtime.TrySubmit(source);
+        const auto stopped_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (stopped.status == SpatialRoiRuntimeSubmitStatus::kBusy &&
+               std::chrono::steady_clock::now() < stopped_deadline) {
+            std::this_thread::yield();
+            stopped = runtime.TrySubmit(source);
+        }
+        require(stopped.status == SpatialRoiRuntimeSubmitStatus::kStopped &&
+                    !stopped.envelope,
+                "future submission did not converge to stopped after sink rejection");
+
+        require(!runtime.StopAcceptingAndDrain(),
+                "failed sink was reported as a successful drain");
+        require(failed_sink_calls.load(std::memory_order_relaxed) == 1,
+                "canceled failed-lane deliveries invoked the sink again");
+
+        for (const SpatialRoiBatchSubmission& submission : submissions) {
+            const auto snapshot = submission.envelope->terminal_snapshot();
+            require(snapshot.status == SpatialRoiBatchCompletionStatus::kIncomplete,
+                    "failed-lane batch did not become incomplete");
+            require(snapshot.lane_reasons[0] ==
+                        (submission.batch_sequence == 1
+                             ? SpatialRoiLaneTerminalReason::kSinkRejected
+                             : SpatialRoiLaneTerminalReason::kStopped),
+                    "failed lane did not retain rejection/cancellation reason");
+            for (std::size_t lane_index = 1; lane_index < 4; ++lane_index) {
+                require(snapshot.lane_reasons[lane_index] ==
+                            SpatialRoiLaneTerminalReason::kCompleted,
+                        "healthy lane did not drain its admitted delivery");
+            }
+        }
+
+        const auto counters = runtime.counters();
+        require(counters.lane_sink_rejected == 1 &&
+                    counters.lane_stopped == 3 &&
+                    counters.lane_completed == 12 &&
+                    counters.batches_incomplete == 4 &&
+                    counters.strict_incomplete_batches == 4,
+                "fail-fast terminal counters are not exact");
+        for (std::size_t lane_index = 1; lane_index < 4; ++lane_index) {
+            std::lock_guard<std::mutex> lock(calls_mutex);
+            require(delivered_indexes[lane_index].size() == 4,
+                    "healthy lane did not receive every admitted delivery");
+            for (std::size_t index = 0; index < 4; ++index) {
+                require(delivered_indexes[lane_index][index] == index + 1,
+                        "healthy lane FIFO order was not preserved");
+            }
+        }
+    }
+    submissions.clear();
+}
+
 }  // namespace
 
 int main()
@@ -567,9 +726,11 @@ int main()
 
         test_runtime_cuda_fanout_and_terminal_failures();
         test_exact_lane_capacity_and_reentrant_stop();
+        test_sink_failure_fails_fast_and_cancels_only_failed_lane();
         std::cout << "[PASS] spatial ROI runtime verified-plan rejection and status contracts\n";
         std::cout << "[PASS] spatial ROI runtime CUDA fanout, shared envelope, drain, and terminal reasons\n";
         std::cout << "[PASS] spatial ROI runtime exact lane capacity and reentrant stop\n";
+        std::cout << "[PASS] spatial ROI runtime sink failure fail-fast cancellation and healthy FIFO drain\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "[FAIL] " << error.what() << "\n";

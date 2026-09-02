@@ -3,6 +3,7 @@
 #include "json.hpp"
 #include "spatial_roi_batch_producer.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -296,6 +297,9 @@ private:
         const std::shared_ptr<SpatialRoiBatchEnvelope>& envelope,
         std::size_t lane_index,
         SpatialRoiLaneTerminalReason reason) noexcept;
+    void fail_fast_after_sink_failure(
+        std::size_t failed_lane_index,
+        SpatialRoiLaneTerminalReason reason) noexcept;
     void latch_failure(const char* reason) noexcept;
     void QuarantineAfterCudaCompletionFailure() noexcept;
     static SpatialRoiRuntimeSubmitStatus map_producer_status(
@@ -318,6 +322,10 @@ private:
         SpatialRoiRuntimeSubmitStatus::kStopped;
     std::uint64_t next_batch_sequence_ = 1;
     std::uint64_t last_admitted_recording_frame_id_ = 0;
+    // A sink terminal is asynchronous to TrySubmit. Keep its fail-fast stop
+    // request distinct from failed_: failed_ also records strict queue-full
+    // batches, which do not invalidate later dense lane admission.
+    std::atomic<bool> sink_failure_stop_requested_{false};
     bool failed_ = false;
     std::string first_failure_;
 
