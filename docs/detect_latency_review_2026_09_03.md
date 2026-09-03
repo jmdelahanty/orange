@@ -77,8 +77,12 @@ Frame budget, camera 2010093, mean per frame:
 
 4. **A 1 Hz driver stall.** 343-939 frames per camera saw `cudaEventRecord`
    block for about 2.7 ms, and 79% of them land in the same 50 ms slice of each
-   second. The headless client's `nvidia-smi dmon` subprocess polls at 1 Hz and
-   is the leading suspect. Today the stall hides inside the GPU wait.
+   second. Today the stall hides inside the GPU wait. **Root cause, found by
+   A/B on 2026-09-03:** not `nvidia-smi dmon`. The acquisition thread's 1 Hz
+   PTP summary writer called `build_gpu_runtime_info`, which calls
+   `cudaGetDeviceProperties` and holds the driver lock for milliseconds.
+   Disabling dmon left the stalls in place; caching the device properties per
+   GPU removed them entirely (0 stalls on all cameras in the verification run).
 
 5. **Production runs do not record their own flags.** Only affinity is written
    to the snapshot. Reconstructing the rest required reading code defaults and
@@ -129,16 +133,95 @@ the pixels. The colleague's rig uses the same A16 dies with about 7 MP sensors
 but a different, unknown engine; the like-for-like test is the same engine
 file on one die with no recorder running.
 
+## A/B Results, 2026-09-03
+
+Three-camera headless PTP external-IPC runs (2010096 was offline), 60 s each,
+5,902 frames per camera, zero gaps, run through `orange-local-benchmark` with
+`experiment_specs/threecam_detect_latency_*.json`. The baseline reproduces
+the August figures to within a few hundredths of a millisecond, so a short
+headless run is a valid proxy for the protocol runs.
+
+Baseline (usleep poll, latch before fanout, dmon on) versus levers 1+3+4
+(event sync, latch after fanout, dmon off, GPU-properties cache), steady after
+frame 200, values in ms, this run minus baseline:
+
+| Metric | 2010093 | 2010094 | 2010095 |
+|---|---|---|---|
+| acq to detect mean | 2.889 to 2.796 (-0.094) | 2.883 to 2.787 (-0.096) | 2.775 to 2.665 (-0.110) |
+| acq to detect p95 | 3.880 to 3.770 (-0.111) | 3.848 to 3.753 (-0.095) | 3.621 to 3.535 (-0.087) |
+| acq to detect p99 | 4.258 to 3.911 (-0.347) | 4.048 to 3.872 (-0.176) | 4.037 to 3.703 (-0.334) |
+| worker total mean | 2.844 to 2.770 (-0.074) | 2.845 to 2.762 (-0.083) | 2.727 to 2.636 (-0.091) |
+| acq to worker start p99.9 | 2.220 to 0.054 | 2.013 to 0.052 | 2.360 to 0.072 |
+| latch-frame acq to worker start mean | 1.823 to 0.029 | 1.548 to 0.028 | 1.958 to 0.034 |
+| cudaEventRecord stalls > 1 ms | 6 to 0 | 2 to 0 | 6 to 0 |
+| same-die / other-die worker mean | 3.196 / 2.492 to 3.129 / 2.412 | 3.205 / 2.486 to 3.114 / 2.410 | 3.006 / 2.448 to 2.912 / 2.359 |
+
+Reading: event sync is worth about 80 us on every frame, as predicted. The
+deferred latch removes the acquisition-side tail completely. The stall fix
+removes the periodic driver stall. The same-die encoder penalty is untouched
+by these three levers, as expected; that is lever 2.
+
+Lever 2, external recorder direct input, on top of the levers run
+(this run minus levers, ms):
+
+| Metric | 2010093 | 2010094 | 2010095 |
+|---|---|---|---|
+| acq to detect mean | 2.796 to 2.574 (-0.221) | 2.787 to 2.581 (-0.206) | 2.665 to 2.666 (+0.001) |
+| acq to detect p95 | 3.770 to 3.095 (-0.675) | 3.753 to 3.096 (-0.657) | 3.535 to 3.309 (-0.225) |
+| worker total p95 | 3.749 to 3.069 (-0.680) | 3.732 to 3.069 (-0.664) | 3.504 to 3.283 (-0.221) |
+| same-die worker mean | 3.129 to 2.679 (-0.450) | 3.114 to 2.677 (-0.437) | 2.912 to 2.899 (-0.013) |
+| other-die worker mean | 2.412 to 2.421 | 2.410 to 2.431 | 2.359 to 2.381 |
+
+On 2010093 and 2010094 the detach slot copy was most of the same-die penalty:
+removing it takes the p95 from 3.77 to 3.10 ms with zero recorder drops and
+5,900 frames encoded per camera. On 2010095 (dies 7/8) the same-die mean did
+not move, and its "copy" time under direct input rose to the encoder's own
+frame time, which suggests that card is encode-bound rather than copy-bound.
+Open question.
+
+Caveat that decides whether lever 2 is usable: the run finished with
+`finalized external recording lacks a complete returned-NVENC frame identity
+proof`. The direct-input path does not produce the schema-2 frame-identity
+proof the recording contract requires, which is why the smoke runner labels
+it a legacy diagnostic. The latency numbers are valid; the recording is not
+accepted. Making direct input a production path means teaching it to emit the
+returned-NVENC identity proof, or relaxing the contract for it deliberately.
+
+Two lessons from getting here. The first deferred-latch build still delayed
+the latch frames because the normal-path YOLO enqueue sat *after* the
+cadence probe, so the latch ran before the enqueue; the enqueue now precedes
+the deferred latch. And `run_supervised_external_recorder_verifier` requires
+`recording_session.json`, which the client only writes when
+`fixed.recording_control.record_for_seconds` is set; specs that only set
+`duration_s` fail the verifier after an otherwise clean run. The latency specs
+now set both.
+
+Reproduce: stamp a copy of the spec into `/tmp` with a unique
+`experiment_id` and `external_recorder_contract.artifact_root` (the client
+refuses to reuse a non-empty run folder), then:
+
+```bash
+sudo -n /usr/local/bin/orange-local-benchmark \
+    --orange-client /home/jeremy/orange-gop-split-a16/targets/release/orange_client \
+    --yolo-perf-log --yolo-perf-sample 1 /tmp/<stamped spec>.json
+python3 scripts/analyze_yolo_latency_phases.py <run folder> \
+    --external-recorder-dir <artifact_root> --steady-after 200 \
+    --json levers.json --baseline-json baseline.json
+```
+
+The client starts the host PTP stack itself for `ptp_gate` runs and now keeps
+ownership across its two status checks, so it stops a stack it started.
+
 ## Levers, In Order
 
 Each step is one change and one measurement against the August baseline.
 
 | # | Change | Measure | Expect |
 |---|---|---|---|
-| 1 | `ORANGE_YOLO_SYNC_EVENT=1` (no code change; `--orange-env` on the fourcam orchestrator) | `total_ms` mean/p95, `cpu_event_record_ms` stall count, `sync_mode` column | 50-150 us off the mean; fewer lock stalls elsewhere |
-| 2 | External recorder direct input (`ORANGE_EXTERNAL_RECORDER_DIRECT_INPUT=1`), see below | cycle-phase profile and die split from the analysis script; detach `copy_ms` | Same-die mass shrinks toward the other-die peak |
-| 3 | Deferred PTP latch (`ORANGE_PTP_LATCH_AFTER_FANOUT`, default on) | `acquisition_to_worker_start_ms` p99/p99.9; `ptp_latch_ns` in the cadence probe | p99 0.57 to about 0.06 ms |
-| 4 | `ORANGE_HEADLESS_GPU_DMON=0` for one run | stall fractional-second histogram | The 1 Hz bin goes flat; otherwise nsys for the other lock holder |
+| 1 | Done. `ORANGE_YOLO_SYNC_EVENT=1`, or `fixed.yolo_sync_event` in a spec, or `--orange-env` on the fourcam orchestrator | `total_ms` mean/p95, `cpu_event_record_ms` stall count, `sync_mode` column | 50-150 us off the mean; fewer lock stalls elsewhere |
+| 2 | Measured. External recorder direct input (`ORANGE_EXTERNAL_RECORDER_DIRECT_INPUT=1`, or `fixed.external_recorder_direct_input`); recording contract not yet satisfied, see A/B results | cycle-phase profile and die split from the analysis script; detach `copy_ms` | Same-die mass shrinks toward the other-die peak |
+| 3 | Done. Deferred PTP latch (`ORANGE_PTP_LATCH_AFTER_FANOUT`, default on) | `acquisition_to_worker_start_ms` p99/p99.9; `ptp_latch_ns` in the cadence probe | p99 0.57 to about 0.06 ms |
+| 4 | Done. Cache `build_gpu_runtime_info` per GPU (the real lock holder); `ORANGE_HEADLESS_GPU_DMON=0` remains available | stall fractional-second histogram | Verified: 0 stalls |
 | 5 | Always-on GPU event timing in the perf row | `preprocess_gpu_ms`, `gap_ms`, `infer_gpu_ms` populated in production | Under 20 us overhead |
 | 6 | GOP-aware tensor routing to the idle die on the same card, only if step 2 leaves most of the contention | die split; per-frame tensor copy time | All frames near the other-die figure plus 0.2-0.4 ms |
 | 7 | Standalone engine loop on the A6000 while citrus renders | p99 under render load | Go only if p99 is comfortably under 1.5 ms |
@@ -197,3 +280,8 @@ New instrumentation from this review:
   `ptp_latch_ns`.
 - `ORANGE_HEADLESS_GPU_DMON=0` disables the headless `nvidia-smi dmon`
   subprocess; the snapshot records `disabled_by_env`.
+- Experiment specs accept `fixed.yolo_sync_event`, `fixed.ptp_latch_after_fanout`,
+  `fixed.headless_gpu_dmon`, and `fixed.external_recorder_direct_input`;
+  `orange_client` exports the matching variables itself, so the sudo wrapper's
+  allowlist is not involved. The GUI wrapper and
+  `run_gui_aq_off_validation.sh` forward the same variables for GUI runs.

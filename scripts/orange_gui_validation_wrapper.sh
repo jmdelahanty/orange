@@ -464,6 +464,13 @@ validate_env_item() {
         return 2
       }
       ;;
+    ORANGE_YOLO_SYNC_EVENT|ORANGE_PTP_LATCH_AFTER_FANOUT|ORANGE_HEADLESS_GPU_DMON|ORANGE_EXTERNAL_RECORDER_DIRECT_INPUT)
+      # Detect-latency levers (docs/detect_latency_review_2026_09_03.md).
+      [[ "$value" =~ ^(0|1)$ ]] || {
+        echo "$key must be 0 or 1" >&2
+        return 2
+      }
+      ;;
     ORANGE_YOLO_RT_POLICY)
       [[ "$value" =~ ^(fifo|rr|round_robin|sched_fifo|sched_rr)$ ]] || {
         echo "$key must be fifo, rr, round_robin, sched_fifo, or sched_rr" >&2

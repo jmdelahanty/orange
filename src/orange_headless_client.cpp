@@ -228,6 +228,14 @@ struct ExperimentSpec {
     std::string acquisition_buffer_mode = "auto";
     int ptp_gate_stagger_ns = 0;
     int ptp_register_read_decimate = 1;
+    // Detect-latency levers (docs/detect_latency_review_2026_09_03.md). Each
+    // maps to one environment variable that orange_client exports before the
+    // runs start, so a spec can A/B them without widening the sudo wrapper's
+    // env allowlist. Defaults mirror the code defaults.
+    bool yolo_sync_event = false;            // ORANGE_YOLO_SYNC_EVENT
+    bool ptp_latch_after_fanout = true;      // ORANGE_PTP_LATCH_AFTER_FANOUT
+    bool headless_gpu_dmon = true;           // ORANGE_HEADLESS_GPU_DMON
+    bool external_recorder_direct_input = false;  // ORANGE_EXTERNAL_RECORDER_DIRECT_INPUT
     std::string recording_sink_mode = "real";
     bool helper_noop_source_read = false;
     int64_t helper_copy_bytes = -1;
@@ -475,7 +483,10 @@ bool ensure_headless_host_ptp_stack(HeadlessHostPtpStackGuard* guard, std::strin
         return false;
     }
     guard->script_path = script_path.string();
-    guard->stop_on_exit = false;
+    // Do not reset stop_on_exit here: the experiment-spec path calls this
+    // twice, and the second call finds the stack healthy because the first
+    // call started it. Resetting would drop ownership and leave an
+    // auto-started stack running after exit.
 
     const HeadlessHostPtpCommandResult status_before =
         run_ptp_stack_command(guard->script_path, "status");
@@ -7908,6 +7919,11 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->ptp_gate_stagger_ns = fixed.value("ptp_gate_stagger_ns", 0);
     spec->ptp_register_read_decimate =
         fixed.value("ptp_register_read_decimate", 1);
+    spec->yolo_sync_event = fixed.value("yolo_sync_event", false);
+    spec->ptp_latch_after_fanout = fixed.value("ptp_latch_after_fanout", true);
+    spec->headless_gpu_dmon = fixed.value("headless_gpu_dmon", true);
+    spec->external_recorder_direct_input =
+        fixed.value("external_recorder_direct_input", false);
     spec->recording_sink_mode = fixed.value("recording_sink_mode", "real");
     spec->helper_noop_source_read = fixed.value("helper_noop_source_read", false);
     spec->helper_copy_bytes = fixed.value("helper_copy_bytes", static_cast<int64_t>(-1));
@@ -8556,6 +8572,12 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                  spec.acquisition_buffer_mode},
                                                                 {"ptp_register_read_decimate",
                                                                  spec.ptp_register_read_decimate},
+                                                                {"yolo_sync_event", spec.yolo_sync_event},
+                                                                {"ptp_latch_after_fanout",
+                                                                 spec.ptp_latch_after_fanout},
+                                                                {"headless_gpu_dmon", spec.headless_gpu_dmon},
+                                                                {"external_recorder_direct_input",
+                                                                 spec.external_recorder_direct_input},
                                                                 {"recording_sink_mode", spec.recording_sink_mode},
                                                                 {"helper_noop_source_read",
                                                                  spec.helper_noop_source_read},
@@ -10960,6 +10982,24 @@ int run_local_experiment(const HeadlessCliOptions& options)
                   << " decimate=" << spec.ptp_register_read_decimate
                   << std::endl;
     }
+    // Detect-latency levers. Always export the two-state flags explicitly so
+    // the run does not depend on the launching environment; the recorder and
+    // dmon flags are exported only when they deviate from the default.
+    setenv("ORANGE_YOLO_SYNC_EVENT", spec.yolo_sync_event ? "1" : "0", 1);
+    setenv("ORANGE_PTP_LATCH_AFTER_FANOUT", spec.ptp_latch_after_fanout ? "1" : "0", 1);
+    if (!spec.headless_gpu_dmon) {
+        setenv("ORANGE_HEADLESS_GPU_DMON", "0", 1);
+    }
+    if (spec.external_recorder_direct_input) {
+        setenv("ORANGE_EXTERNAL_RECORDER_DIRECT_INPUT", "1", 1);
+    }
+    std::cout << "[EXPERIMENT] detect latency levers via spec"
+              << " yolo_sync_event=" << (spec.yolo_sync_event ? 1 : 0)
+              << " ptp_latch_after_fanout=" << (spec.ptp_latch_after_fanout ? 1 : 0)
+              << " headless_gpu_dmon=" << (spec.headless_gpu_dmon ? 1 : 0)
+              << " external_recorder_direct_input="
+              << (spec.external_recorder_direct_input ? 1 : 0)
+              << std::endl;
 
     const std::vector<ExperimentRunPlan> runs = build_experiment_run_plans(spec);
     if (runs.empty()) {

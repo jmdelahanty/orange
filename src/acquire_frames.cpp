@@ -2496,6 +2496,12 @@ void acquire_frames(
                             submit_entry);
                     }
                 }
+                // Normal-path YOLO dispatch (the detect-priority path enqueued
+                // earlier). This must precede the deferred latch below, or the
+                // latch frames still reach the worker late.
+                if (!dispatch_yolo_before_recording && will_yolo) {
+                    enqueue_yolo();
+                }
                 // Deferred PTP register latch: every consumer already has
                 // the frame, so the control-channel round trips no longer
                 // delay detection. Runs before the cadence probe so the
@@ -2590,9 +2596,6 @@ void acquire_frames(
                         recording_ingress ? recording_ingress->GetStats()
                                           : RecordingIngressStats{};
                     acquisition_cadence_probe_recorder.Record(cadence_sample);
-                }
-                if (!dispatch_yolo_before_recording && will_yolo) {
-                    enqueue_yolo();
                 }
 
             } else {

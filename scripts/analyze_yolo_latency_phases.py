@@ -126,6 +126,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="2.0,6.0",
         help="Histogram range for total_ms as lo,hi (default: %(default)s).",
     )
+    parser.add_argument(
+        "--external-recorder-dir",
+        default="",
+        help="Directory holding Cam*_external_gop_routing.csv and Cam*_external_detach.csv "
+        "(default: <run_dir>/external_recorder; headless runs write them to the "
+        "recorder artifact_root under /tmp instead).",
+    )
+    parser.add_argument(
+        "--baseline-json",
+        default="",
+        help="A result JSON from an earlier invocation; prints per-camera deltas "
+        "(this run minus baseline) after the summary.",
+    )
     parser.add_argument("--json", default="", help="Write the full result to this JSON path.")
     parser.add_argument(
         "--quiet", action="store_true", help="Suppress the stdout summary (JSON only)."
@@ -287,7 +300,8 @@ def analyze_camera(
     result["gpu_wait_ms"] = quantiles(gpu_wait)
 
     # Encoder die split and cycle phase (needs the external recorder routing CSV).
-    routing = read_routing(os.path.join(run_dir, "external_recorder", f"Cam{serial}{ROUTING_SUFFIX}"))
+    recorder_dir = args.external_recorder_dir or os.path.join(run_dir, "external_recorder")
+    routing = read_routing(os.path.join(recorder_dir, f"Cam{serial}{ROUTING_SUFFIX}"))
     cycle = args.cycle or derive_cycle(routing)
     result["cycle_frames"] = cycle
     rec_id = perf["recording_frame_id"]
@@ -321,7 +335,7 @@ def analyze_camera(
         result["total_ms_histogram"] = {"edges_ms": hist_edges.tolist(), "all": hist_all.tolist()}
 
     result["detach_copy_ms_by_gpu"] = read_detach(
-        os.path.join(run_dir, "external_recorder", f"Cam{serial}{DETACH_SUFFIX}")
+        os.path.join(recorder_dir, f"Cam{serial}{DETACH_SUFFIX}")
     )
 
     # PTP latch: acquisition-to-worker-start by frame_id mod decimation.
@@ -441,6 +455,52 @@ def print_summary(result: dict[str, Any]) -> None:
             print(f"  {serial}: spread {max(finite) - min(finite):.3f} ms")
 
 
+def print_comparison(result: dict[str, Any], baseline: dict[str, Any]) -> None:
+    """Per-camera deltas, this run minus the baseline, for the headline metrics."""
+    print()
+    print(f"deltas vs baseline {baseline.get('run_dir', '?')} (this run minus baseline, ms):")
+    metrics = [
+        ("acq→detect mean", lambda c: c["acquisition_to_detect_done_ms"].get("mean")),
+        ("acq→detect p95", lambda c: c["acquisition_to_detect_done_ms"].get("p95")),
+        ("acq→detect p99", lambda c: c["acquisition_to_detect_done_ms"].get("p99")),
+        ("worker total mean", lambda c: c["worker_total_ms"].get("mean")),
+        ("worker total p95", lambda c: c["worker_total_ms"].get("p95")),
+        ("gpu wait mean", lambda c: c["gpu_wait_ms"].get("mean")),
+        ("acq→worker p99", lambda c: c["acquisition_to_worker_start_ms"].get("p99")),
+        ("acq→worker p99.9", lambda c: c["acquisition_to_worker_start_ms"].get("p999")),
+        (
+            "same-die mean",
+            lambda c: (c["encoder_die_split"] or {}).get("same_die", {}).get("mean"),
+        ),
+        (
+            "other-die mean",
+            lambda c: (c["encoder_die_split"] or {}).get("other_die", {}).get("mean"),
+        ),
+        ("latch frames mean", lambda c: c["ptp_latch"]["latch_frames_acq_to_worker_start_ms"].get("mean")),
+        ("stall count", lambda c: float(c["event_record_stalls"]["count"])),
+    ]
+    cameras = [s for s in result["cameras"] if s in baseline.get("cameras", {})]
+    header = f"{'metric':>20}" + "".join(f"{s:>22}" for s in cameras)
+    print(header)
+    for label, getter in metrics:
+        row = f"{label:>20}"
+        for serial in cameras:
+            a = getter(result["cameras"][serial])
+            b = getter(baseline["cameras"][serial])
+            if a is None or b is None:
+                row += f"{'n/a':>22}"
+            else:
+                row += f"{b:>9.3f} → {a:<6.3f} {a - b:+.3f}".rjust(22)
+        print(row)
+    print(
+        f"{'sync mode':>20}"
+        + "".join(
+            f"{baseline['cameras'][s]['sync_mode']} → {result['cameras'][s]['sync_mode']}".rjust(22)
+            for s in cameras
+        )
+    )
+
+
 def analyze_run(args: argparse.Namespace) -> dict[str, Any]:
     run_dir = os.path.abspath(args.run_dir)
     serials = find_cameras(run_dir)
@@ -471,6 +531,9 @@ def main(argv: list[str] | None = None) -> int:
             json.dump(result, handle, indent=1)
     if not args.quiet:
         print_summary(result)
+        if args.baseline_json:
+            with open(args.baseline_json) as handle:
+                print_comparison(result, json.load(handle))
     return 0
 
 

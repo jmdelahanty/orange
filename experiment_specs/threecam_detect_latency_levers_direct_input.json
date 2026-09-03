@@ -1,0 +1,181 @@
+{
+  "experiment_id": "threecam_detect_latency_levers_direct_input",
+  "notes": "Four-camera headless PTP external-IPC run for the detect-latency lever A/B (docs/detect_latency_review_2026_09_03.md). Analyse with scripts/analyze_yolo_latency_phases.py. Levers 1, 3, 4 plus lever 2: external recorder direct input (skips the detach slot copy). Check the recorder verifier before trusting the recording. Three-camera variant: 2010096 was offline (no link carrier) on 2026-09-03. require_video_sanity is off: the rig images black frames when the illuminator is off, and this spec measures latency, not content.",
+  "selection": {
+    "camera_serials": [
+      "2010093",
+      "2010094",
+      "2010095"
+    ],
+    "gpu_ids": [
+      3,
+      1,
+      7
+    ]
+  },
+  "fixed": {
+    "duration_s": 60,
+    "warmup_s": 2,
+    "display": false,
+    "yolo": false,
+    "stream_only": false,
+    "sync_mode": "ptp_gate",
+    "recording_sink_mode": "external_ipc",
+    "config_folder": "/home/jeremy/orange-gop-split-a16/config/validated_split_gop_hevc_100fps_gop25_fourcam_a16",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "ptp_register_read_decimate": 100,
+    "nvenc_direct_input": false,
+    "external_recorder_contract": {
+      "schema_id": "orange.external_recorder.contract",
+      "schema_version": 1,
+      "mode": "diagnostic_ipc_v1",
+      "supervise_processes": true,
+      "artifact_root": "/tmp/orange_external_recorder_threecam_detect_latency_levers_direct_input",
+      "session_id": "threecam_detect_latency_levers_direct_input",
+      "require_summary": true,
+      "require_video_sanity": false,
+      "require_merged_mp4": true,
+      "require_gop_routing": true,
+      "preserve_shard_mp4s": false,
+      "streams": {
+        "2010093": {
+          "stream_id": "2010093",
+          "camera_serial": "2010093",
+          "analytics_gpu_id": 3,
+          "recorder_gpu_id": 3,
+          "expected_shard_gpu_ids": [
+            3,
+            4
+          ],
+          "routing_policy": "gop_modulo",
+          "summary_json": "/tmp/orange_external_recorder_threecam_detect_latency_levers_direct_input/Cam2010093_external_summary.json",
+          "video_sanity_json": "/tmp/orange_external_recorder_threecam_detect_latency_levers_direct_input/Cam2010093_external_video_sanity.json",
+          "mp4": "/tmp/orange_external_recorder_threecam_detect_latency_levers_direct_input/Cam2010093_external.mp4",
+          "gop_routing_csv": "/tmp/orange_external_recorder_threecam_detect_latency_levers_direct_input/Cam2010093_external_gop_routing.csv",
+          "encode_fps": 100,
+          "encode_max_fps": 0,
+          "encode_queue_depth": 32,
+          "prewarm_slots": 4,
+          "prewarm_bytes": 20358144,
+          "prewarm_peer_copy": true,
+          "codec": "hevc",
+          "preset": "p1",
+          "tuning": "ll",
+          "gop": 25,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000
+        },
+        "2010094": {
+          "stream_id": "2010094",
+          "camera_serial": "2010094",
+          "analytics_gpu_id": 1,
+          "recorder_gpu_id": 1,
+          "expected_shard_gpu_ids": [
+            1,
+            2
+          ],
+          "routing_policy": "gop_modulo",
+          "summary_json": "/tmp/orange_external_recorder_threecam_detect_latency_levers_direct_input/Cam2010094_external_summary.json",
+          "video_sanity_json": "/tmp/orange_external_recorder_threecam_detect_latency_levers_direct_input/Cam2010094_external_video_sanity.json",
+          "mp4": "/tmp/orange_external_recorder_threecam_detect_latency_levers_direct_input/Cam2010094_external.mp4",
+          "gop_routing_csv": "/tmp/orange_external_recorder_threecam_detect_latency_levers_direct_input/Cam2010094_external_gop_routing.csv",
+          "encode_fps": 100,
+          "encode_max_fps": 0,
+          "encode_queue_depth": 32,
+          "prewarm_slots": 4,
+          "prewarm_bytes": 20358144,
+          "prewarm_peer_copy": true,
+          "codec": "hevc",
+          "preset": "p1",
+          "tuning": "ll",
+          "gop": 25,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000
+        },
+        "2010095": {
+          "stream_id": "2010095",
+          "camera_serial": "2010095",
+          "analytics_gpu_id": 7,
+          "recorder_gpu_id": 7,
+          "expected_shard_gpu_ids": [
+            7,
+            8
+          ],
+          "routing_policy": "gop_modulo",
+          "summary_json": "/tmp/orange_external_recorder_threecam_detect_latency_levers_direct_input/Cam2010095_external_summary.json",
+          "video_sanity_json": "/tmp/orange_external_recorder_threecam_detect_latency_levers_direct_input/Cam2010095_external_video_sanity.json",
+          "mp4": "/tmp/orange_external_recorder_threecam_detect_latency_levers_direct_input/Cam2010095_external.mp4",
+          "gop_routing_csv": "/tmp/orange_external_recorder_threecam_detect_latency_levers_direct_input/Cam2010095_external_gop_routing.csv",
+          "encode_fps": 100,
+          "encode_max_fps": 0,
+          "encode_queue_depth": 32,
+          "prewarm_slots": 4,
+          "prewarm_bytes": 20358144,
+          "prewarm_peer_copy": true,
+          "codec": "hevc",
+          "preset": "p1",
+          "tuning": "ll",
+          "gop": 25,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000
+        }
+      }
+    },
+    "yolo_worker": {
+      "mode": "real",
+      "engine_path": "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.engine",
+      "decimate": 1,
+      "publish_live_ipc": false,
+      "timeout_ms": 500,
+      "prewarm_iterations": 3,
+      "fail_on_init_error": true
+    },
+    "yolo_sync_event": true,
+    "ptp_latch_after_fanout": true,
+    "headless_gpu_dmon": false,
+    "external_recorder_direct_input": true,
+    "recording_control": {
+      "record_for_seconds": 60
+    }
+  },
+  "matrix": {
+    "codec": [
+      "hevc"
+    ],
+    "preset": [
+      "p1"
+    ],
+    "tuning": [
+      "ll"
+    ],
+    "rate_control_mode": [
+      "vbr"
+    ],
+    "quality_value": [
+      20
+    ],
+    "gop_length": [
+      25
+    ],
+    "aq": [
+      "off"
+    ],
+    "temporal_aq": [
+      "off"
+    ],
+    "lookahead": [
+      "off"
+    ]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 2.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true,
+    "require_zero_camera_drops": true,
+    "require_valid_video_content": false
+  }
+}

@@ -1987,6 +1987,21 @@ nlohmann::json build_gpu_runtime_info(int gpu_id) {
         return info;
     }
 
+    // Device properties never change for the life of the process, and
+    // cudaGetDeviceProperties holds the driver lock for milliseconds. The
+    // 1 Hz PTP summary writer calls this from the acquisition thread, which
+    // showed up as periodic ~2.3 ms cudaEventRecord stalls on the YOLO thread
+    // (docs/detect_latency_review_2026_09_03.md, finding 4). Cache per GPU.
+    static std::mutex cache_mutex;
+    static std::map<int, nlohmann::json> cache;
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        const auto it = cache.find(gpu_id);
+        if (it != cache.end()) {
+            return it->second;
+        }
+    }
+
     cudaDeviceProp props{};
     const cudaError_t props_status = cudaGetDeviceProperties(&props, gpu_id);
     if (props_status != cudaSuccess) {
@@ -2009,6 +2024,10 @@ nlohmann::json build_gpu_runtime_info(int gpu_id) {
         info["pci_bus_id_lookup_error"] = cudaGetErrorString(pci_status);
     }
 
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        cache[gpu_id] = info;
+    }
     return info;
 }
 
