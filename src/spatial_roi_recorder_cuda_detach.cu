@@ -179,35 +179,6 @@ bool checked_raster_bytes(const std::uint32_t width,
     return true;
 }
 
-cudaError_t enqueue_mono8_to_nv12(const unsigned char* mono8,
-                                   unsigned char* nv12,
-                                   const std::size_t mono_bytes,
-                                   const std::uint32_t width,
-                                   const std::uint32_t height,
-                                   cudaStream_t stream)
-{
-    if (!mono8 || !nv12 || width == 0 || height == 0 || (width & 1u) != 0 ||
-        (height & 1u) != 0 ||
-        mono_bytes != static_cast<std::size_t>(width) * height) {
-        return cudaErrorInvalidValue;
-    }
-    // The source and destination are both tightly packed.  NV12's Y plane
-    // is byte-for-byte Mono8, including any explicit zero padding in the
-    // encoded raster.  Its interleaved chroma plane is neutral 4:2:0 chroma.
-    cudaError_t status = cudaMemcpyAsync(nv12,
-                                         mono8,
-                                         mono_bytes,
-                                         cudaMemcpyDeviceToDevice,
-                                         stream);
-    if (status != cudaSuccess) {
-        return status;
-    }
-    return cudaMemsetAsync(nv12 + mono_bytes,
-                           128,
-                           mono_bytes / 2,
-                           stream);
-}
-
 SpatialRoiRecorderCudaDetachResult make_result(
     const SpatialRoiRecorderDetachStatus status,
     const std::string& error,
@@ -308,6 +279,21 @@ public:
         kQuarantined,
     };
 
+    enum class ImportCacheLookupStatus {
+        kHit,
+        kMiss,
+        kFull,
+        kHandleCollision,
+        kStopped,
+        kQuarantined,
+    };
+
+    struct ImportCacheLookup {
+        ImportCacheLookupStatus status = ImportCacheLookupStatus::kStopped;
+        void* memory = nullptr;
+        cudaEvent_t event = nullptr;
+    };
+
     SpatialRoiRecorderCudaDetachState(
         SpatialRoiRecorderCudaDetachConfig config)
         : config_(std::move(config))
@@ -319,7 +305,7 @@ public:
         // A quarantined state intentionally leaks its imported CUDA handles,
         // output allocations, and stream.  No destructor can prove that
         // failed or unknown CUDA work is no longer using them.
-        if (quarantined_) {
+        if (quarantined_ || !CloseCachedImports(nullptr)) {
             return;
         }
         if (config_.recorder_gpu_id < 0 ||
@@ -442,6 +428,11 @@ public:
                 return false;
             }
             slots_.resize(config_.slot_count);
+            // One authenticated producer pool slot yields at most one stable
+            // memory/event pair for this logical stream. Reserve the complete
+            // bound before admission so cache misses never grow storage on
+            // the FRAME path.
+            import_cache_.reserve(config_.slot_count);
             for (Slot& slot : slots_) {
                 cudaError_t status = cudaMalloc(
                     reinterpret_cast<void**>(&slot.mono8), mono8_bytes_);
@@ -472,6 +463,196 @@ public:
             return false;
         } catch (...) {
             set_error_noexcept(error_out, "recorder detach pool initialization threw");
+            return false;
+        }
+    }
+
+    ImportCacheLookup LookupCachedImport(
+        const cudaIpcMemHandle_t& memory_handle,
+        const cudaIpcEventHandle_t& event_handle) noexcept
+    {
+        try {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (quarantined_) {
+                return {ImportCacheLookupStatus::kQuarantined, nullptr, nullptr};
+            }
+            if (!accepting_ || imports_closed_) {
+                return {ImportCacheLookupStatus::kStopped, nullptr, nullptr};
+            }
+            for (const CachedImport& entry : import_cache_) {
+                const bool same_memory =
+                    std::memcmp(&entry.memory_handle,
+                                &memory_handle,
+                                sizeof(memory_handle)) == 0;
+                const bool same_event =
+                    std::memcmp(&entry.event_handle,
+                                &event_handle,
+                                sizeof(event_handle)) == 0;
+                if (same_memory && same_event) {
+                    saturating_increment(&counters_.memory_cache_hits);
+                    saturating_increment(&counters_.event_cache_hits);
+                    return {ImportCacheLookupStatus::kHit,
+                            entry.memory,
+                            entry.event};
+                }
+                // A producer pool slot has a stable one-to-one memory/event
+                // binding for this generation. Reusing only one half would
+                // make restart/slot identity ambiguous and can attempt a
+                // second open of an already imported memory handle.
+                if (same_memory || same_event) {
+                    return {ImportCacheLookupStatus::kHandleCollision,
+                            nullptr,
+                            nullptr};
+                }
+            }
+            saturating_increment(&counters_.memory_cache_misses);
+            saturating_increment(&counters_.event_cache_misses);
+            if (import_cache_.size() >= config_.slot_count) {
+                saturating_increment(&counters_.import_cache_full);
+                return {ImportCacheLookupStatus::kFull, nullptr, nullptr};
+            }
+            return {ImportCacheLookupStatus::kMiss, nullptr, nullptr};
+        } catch (...) {
+            return {ImportCacheLookupStatus::kStopped, nullptr, nullptr};
+        }
+    }
+
+    bool CommitCachedImport(const cudaIpcMemHandle_t& memory_handle,
+                            const cudaIpcEventHandle_t& event_handle,
+                            void* memory,
+                            cudaEvent_t event) noexcept
+    {
+        if (!memory || !event) {
+            return false;
+        }
+        try {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!accepting_ || imports_closed_ || quarantined_ ||
+                import_cache_.size() >= config_.slot_count) {
+                return false;
+            }
+            CachedImport entry;
+            entry.memory_handle = memory_handle;
+            entry.event_handle = event_handle;
+            entry.memory = memory;
+            entry.event = event;
+            import_cache_.push_back(entry);
+            counters_.import_cache_entries = import_cache_.size();
+            counters_.peak_import_cache_entries = std::max<std::uint64_t>(
+                counters_.peak_import_cache_entries,
+                static_cast<std::uint64_t>(import_cache_.size()));
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    bool CloseCachedImports(std::string* error_out) noexcept
+    {
+        try {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (imports_closed_) {
+                if (error_out) {
+                    error_out->clear();
+                }
+                return true;
+            }
+            if (accepting_) {
+                set_error_noexcept(
+                    error_out,
+                    "recorder import cache cannot close before admission stops");
+                return false;
+            }
+            if (quarantined_) {
+                set_error_noexcept(
+                    error_out,
+                    "recorder import cache is source-quarantined");
+                return false;
+            }
+            const cudaError_t set_status =
+                cudaSetDevice(config_.recorder_gpu_id);
+            if (set_status != cudaSuccess) {
+                saturating_increment(&counters_.cache_cleanup_failures);
+                saturating_increment(&counters_.cleanup_failures);
+                quarantined_ = true;
+                set_error_noexcept(
+                    error_out,
+                    cuda_failure("cudaSetDevice(import cache cleanup)",
+                                 set_status));
+                return false;
+            }
+            const cudaError_t stream_status =
+                stream_ ? cudaStreamQuery(stream_) : cudaSuccess;
+            if (stream_status != cudaSuccess) {
+                saturating_increment(&counters_.cache_cleanup_failures);
+                saturating_increment(&counters_.cleanup_failures);
+                quarantined_ = true;
+                set_error_noexcept(
+                    error_out,
+                    stream_status == cudaErrorNotReady
+                        ? "recorder detach stream remained active during import cache cleanup"
+                        : cuda_failure("cudaStreamQuery(import cache cleanup)",
+                                       stream_status));
+                return false;
+            }
+
+            // Imported events are retired before their corresponding memory
+            // mappings. No FRAME operation can race this loop: the public
+            // pool owns a whole-operation gate and requires Stop first.
+            for (CachedImport& entry : import_cache_) {
+                if (entry.event) {
+                    const cudaError_t status = cudaEventDestroy(entry.event);
+                    if (status != cudaSuccess) {
+                        saturating_increment(&counters_.cache_cleanup_failures);
+                        saturating_increment(&counters_.cleanup_failures);
+                        quarantined_ = true;
+                        set_error_noexcept(
+                            error_out,
+                            cuda_failure("cudaEventDestroy(import cache cleanup)",
+                                         status));
+                        return false;
+                    }
+                    entry.event = nullptr;
+                    saturating_increment(&counters_.cached_event_closes);
+                }
+            }
+            for (CachedImport& entry : import_cache_) {
+                if (entry.memory) {
+                    const cudaError_t status =
+                        cudaIpcCloseMemHandle(entry.memory);
+                    if (status != cudaSuccess) {
+                        saturating_increment(&counters_.cache_cleanup_failures);
+                        saturating_increment(&counters_.cleanup_failures);
+                        quarantined_ = true;
+                        set_error_noexcept(
+                            error_out,
+                            cuda_failure("cudaIpcCloseMemHandle(import cache cleanup)",
+                                         status));
+                        return false;
+                    }
+                    entry.memory = nullptr;
+                    saturating_increment(&counters_.cached_memory_closes);
+                }
+            }
+            import_cache_.clear();
+            counters_.import_cache_entries = 0;
+            imports_closed_ = true;
+            if (error_out) {
+                error_out->clear();
+            }
+            return true;
+        } catch (const std::exception& exception) {
+            quarantined_ = true;
+            saturating_increment(&counters_.cache_cleanup_failures);
+            saturating_increment(&counters_.cleanup_failures);
+            set_error_noexcept(error_out, exception.what());
+            return false;
+        } catch (...) {
+            quarantined_ = true;
+            saturating_increment(&counters_.cache_cleanup_failures);
+            saturating_increment(&counters_.cleanup_failures);
+            set_error_noexcept(error_out,
+                               "recorder import cache cleanup threw");
             return false;
         }
     }
@@ -712,6 +893,13 @@ public:
     };
 
 private:
+    struct CachedImport {
+        cudaIpcMemHandle_t memory_handle{};
+        cudaIpcEventHandle_t event_handle{};
+        void* memory = nullptr;
+        cudaEvent_t event = nullptr;
+    };
+
     struct Slot {
         unsigned char* mono8 = nullptr;
         unsigned char* nv12 = nullptr;
@@ -733,9 +921,11 @@ private:
     std::size_t nv12_bytes_ = 0;
     cudaStream_t stream_ = nullptr;
     std::vector<Slot> slots_;
+    std::vector<CachedImport> import_cache_;
     mutable std::mutex mutex_;
     bool accepting_ = false;
     bool quarantined_ = false;
+    bool imports_closed_ = false;
     SpatialRoiRecorderCudaDetachCounters counters_;
 };
 
@@ -1226,73 +1416,120 @@ SpatialRoiRecorderCudaDetachPool::TryDetachImpl(
     const auto operation_deadline =
         std::chrono::steady_clock::now() +
         std::chrono::milliseconds(config_.operation_timeout_ms);
-    *source_import_unresolved = true;
-    cudaError_t status = cudaIpcOpenMemHandle(
-        &imported_memory, memory_handle, cudaIpcMemLazyEnablePeerAccess);
-    if (status != cudaSuccess) {
-        return quarantine_claim(
-            cuda_failure("cudaIpcOpenMemHandle(recorder detach)", status));
+    const auto cache_lookup =
+        state_->LookupCachedImport(memory_handle, event_handle);
+    using CacheStatus = detail::SpatialRoiRecorderCudaDetachState::
+        ImportCacheLookupStatus;
+    if (cache_lookup.status == CacheStatus::kFull) {
+        return make_result(
+            SpatialRoiRecorderDetachStatus::kPoolExhausted,
+            "recorder CUDA IPC import cache reached its bounded capacity");
     }
-    claim_guard.SetImported(imported_memory, nullptr);
-    state_->Increment(&SpatialRoiRecorderCudaDetachCounters::memory_imports);
+    if (cache_lookup.status == CacheStatus::kHandleCollision) {
+        state_->Increment(
+            &SpatialRoiRecorderCudaDetachCounters::invalid_arguments);
+        return make_result(
+            SpatialRoiRecorderDetachStatus::kInvalidArgument,
+            "producer reused only one half of a cached CUDA memory/event binding");
+    }
+    if (cache_lookup.status == CacheStatus::kQuarantined) {
+        return make_result(
+            SpatialRoiRecorderDetachStatus::kSourceQuarantined,
+            "recorder import cache is source-quarantined",
+            false);
+    }
+    if (cache_lookup.status == CacheStatus::kStopped) {
+        return make_result(SpatialRoiRecorderDetachStatus::kStopped,
+                           "recorder import cache is stopped");
+    }
 
-    cudaPointerAttributes pointer_attributes{};
-    status = cudaPointerGetAttributes(&pointer_attributes, imported_memory);
-    if (status != cudaSuccess) {
-        return quarantine_claim(
-            cuda_failure("cudaPointerGetAttributes(recorder detach)", status));
-    }
+    cudaError_t status = cudaSuccess;
+    if (cache_lookup.status == CacheStatus::kHit) {
+        imported_memory = cache_lookup.memory;
+        imported_event = cache_lookup.event;
+    } else {
+        // Once an import is attempted, every uncertain failure is terminal.
+        // The newly opened pair is held by ClaimGuard until the validated,
+        // all-or-nothing cache commit transfers ownership to the pool.
+        *source_import_unresolved = true;
+        status = cudaIpcOpenMemHandle(
+            &imported_memory, memory_handle, cudaIpcMemLazyEnablePeerAccess);
+        if (status != cudaSuccess) {
+            return quarantine_claim(
+                cuda_failure("cudaIpcOpenMemHandle(recorder detach)", status));
+        }
+        claim_guard.SetImported(imported_memory, nullptr);
+        state_->Increment(&SpatialRoiRecorderCudaDetachCounters::memory_imports);
+
+        cudaPointerAttributes pointer_attributes{};
+        status = cudaPointerGetAttributes(&pointer_attributes, imported_memory);
+        if (status != cudaSuccess) {
+            return quarantine_claim(
+                cuda_failure("cudaPointerGetAttributes(recorder detach)", status));
+        }
 #if CUDART_VERSION >= 10000
-    const cudaMemoryType imported_memory_type = pointer_attributes.type;
+        const cudaMemoryType imported_memory_type = pointer_attributes.type;
 #else
-    const cudaMemoryType imported_memory_type = pointer_attributes.memoryType;
+        const cudaMemoryType imported_memory_type = pointer_attributes.memoryType;
 #endif
-    // Legacy cudaMalloc/cudaIpcOpenMemHandle mappings have reported the
-    // importing device ordinal here on released NVIDIA drivers; fixed drivers
-    // may report the physical source ordinal. Source authority is proved by
-    // the exporter before handle creation and by the contract-bound descriptor
-    // received from the peer-credential-checked producer. This query instead
-    // proves a usable device alias whose reported ordinal belongs to one of the
-    // two devices in the declared handoff.
-    const bool reported_expected_ipc_device =
-        pointer_attributes.device == config_.expected_source_gpu_id ||
-        pointer_attributes.device == config_.recorder_gpu_id;
-    if (imported_memory_type != cudaMemoryTypeDevice ||
-        pointer_attributes.devicePointer == nullptr ||
-        !reported_expected_ipc_device) {
-        return quarantine_claim(
-            "imported CUDA allocation is not accessible through the declared "
-            "source/recorder GPU handoff");
-    }
-    CUdeviceptr imported_allocation_base = 0;
-    std::size_t imported_allocation_bytes = 0;
-    const CUresult address_status = cuMemGetAddressRange(
-        &imported_allocation_base,
-        &imported_allocation_bytes,
-        reinterpret_cast<CUdeviceptr>(imported_memory));
-    if (address_status != CUDA_SUCCESS) {
-        return quarantine_claim(
-            cuda_driver_failure("cuMemGetAddressRange(recorder detach)",
-                                address_status));
-    }
-    // CUDA may back an exact cudaMalloc request with a larger aligned virtual
-    // allocation. The protocol authorizes only the zero-offset declared byte
-    // span, so the imported base must match and the backing range must cover
-    // that span; backing-range equality is neither required nor portable.
-    if (imported_allocation_base !=
-            reinterpret_cast<CUdeviceptr>(imported_memory) ||
-        imported_allocation_bytes < state_->mono8_bytes()) {
-        return quarantine_claim(
-            "imported CUDA allocation is smaller than the declared packed raster");
+        // Legacy cudaMalloc/cudaIpcOpenMemHandle mappings have reported the
+        // importing device ordinal here on released NVIDIA drivers; fixed
+        // drivers may report the physical source ordinal. The authenticated
+        // handoff permits either declared endpoint ordinal.
+        const bool reported_expected_ipc_device =
+            pointer_attributes.device == config_.expected_source_gpu_id ||
+            pointer_attributes.device == config_.recorder_gpu_id;
+        if (imported_memory_type != cudaMemoryTypeDevice ||
+            pointer_attributes.devicePointer == nullptr ||
+            !reported_expected_ipc_device) {
+            return quarantine_claim(
+                "imported CUDA allocation is not accessible through the declared "
+                "source/recorder GPU handoff");
+        }
+        CUdeviceptr imported_allocation_base = 0;
+        std::size_t imported_allocation_bytes = 0;
+        const CUresult address_status = cuMemGetAddressRange(
+            &imported_allocation_base,
+            &imported_allocation_bytes,
+            reinterpret_cast<CUdeviceptr>(imported_memory));
+        if (address_status != CUDA_SUCCESS) {
+            return quarantine_claim(
+                cuda_driver_failure("cuMemGetAddressRange(recorder detach)",
+                                    address_status));
+        }
+        const std::uint64_t byte_offset = frame.cuda_buffer.byte_offset;
+        const std::uint64_t byte_length = frame.cuda_buffer.byte_length;
+        if (imported_allocation_base !=
+                reinterpret_cast<CUdeviceptr>(imported_memory) ||
+            byte_offset > imported_allocation_bytes ||
+            byte_length > imported_allocation_bytes - byte_offset ||
+            byte_length != state_->mono8_bytes()) {
+            return quarantine_claim(
+                "imported CUDA allocation does not contain the declared packed raster span");
+        }
+
+        status = cudaIpcOpenEventHandle(&imported_event, event_handle);
+        if (status != cudaSuccess) {
+            return quarantine_claim(
+                cuda_failure("cudaIpcOpenEventHandle(recorder detach)", status));
+        }
+        claim_guard.SetImported(imported_memory, imported_event);
+        state_->Increment(&SpatialRoiRecorderCudaDetachCounters::event_imports);
+        if (!state_->CommitCachedImport(memory_handle,
+                                        event_handle,
+                                        imported_memory,
+                                        imported_event)) {
+            return quarantine_claim(
+                "recorder CUDA IPC import cache commit failed");
+        }
+        // Cache ownership is now session-scoped. ClaimGuard only protects the
+        // recorder output slot from this point forward.
+        claim_guard.ClearImported();
     }
 
-    status = cudaIpcOpenEventHandle(&imported_event, event_handle);
-    if (status != cudaSuccess) {
-        return quarantine_claim(
-            cuda_failure("cudaIpcOpenEventHandle(recorder detach)", status));
-    }
-    claim_guard.SetImported(imported_memory, imported_event);
-    state_->Increment(&SpatialRoiRecorderCudaDetachCounters::event_imports);
+    // A cached mapping can remain open safely across FRAMEs, but the current
+    // source occurrence is not RELEASE-safe until its raw copy completes.
+    *source_import_unresolved = true;
 
     cudaError_t query_error = cudaSuccess;
     const BoundedCudaQueryStatus source_query = wait_for_cuda_query(
@@ -1326,17 +1563,6 @@ SpatialRoiRecorderCudaDetachPool::TryDetachImpl(
             cuda_failure("cudaMemcpyAsync(Mono8 recorder detach)", status));
     }
 
-    status = enqueue_mono8_to_nv12(claimed.mono8,
-                                   claimed.nv12,
-                                   state_->mono8_bytes(),
-                                   config_.expected_geometry.encoded_raster.width,
-                                   config_.expected_geometry.encoded_raster.height,
-                                   state_->stream());
-    if (status != cudaSuccess) {
-        return quarantine_claim(
-            cuda_failure("Mono8-to-NV12 recorder detach", status));
-    }
-
     const BoundedCudaQueryStatus copy_query = wait_for_cuda_query(
         [&]() noexcept { return cudaStreamQuery(state_->stream()); },
         operation_deadline,
@@ -1350,25 +1576,9 @@ SpatialRoiRecorderCudaDetachPool::TryDetachImpl(
             cuda_failure("cudaStreamQuery(recorder detach)", query_error));
     }
 
-    // Completion is now proven.  Close both imports before publishing the
-    // result, so a kDetached frame never carries a live producer allocation.
-    const cudaError_t event_close_status = cudaEventDestroy(imported_event);
-    if (event_close_status == cudaSuccess) {
-        imported_event = nullptr;
-    }
-    const cudaError_t memory_close_status = cudaIpcCloseMemHandle(imported_memory);
-    if (memory_close_status == cudaSuccess) {
-        imported_memory = nullptr;
-    }
-    claim_guard.SetImported(imported_memory, imported_event);
-    if (event_close_status != cudaSuccess || memory_close_status != cudaSuccess) {
-        state_->Increment(&SpatialRoiRecorderCudaDetachCounters::cleanup_failures);
-        const cudaError_t failure = event_close_status != cudaSuccess
-                                        ? event_close_status
-                                        : memory_close_status;
-        return quarantine_claim(
-            cuda_failure("CUDA IPC import cleanup(recorder detach)", failure));
-    }
+    // Raw-copy completion is the exact producer source-release boundary.
+    // Session-scoped mappings stay cached, but no queued recorder work refers
+    // to the producer allocation after this query succeeds.
     *source_import_unresolved = false;
 
     try {
@@ -1386,7 +1596,6 @@ SpatialRoiRecorderCudaDetachPool::TryDetachImpl(
         claim_guard.ClearImported();
         claim_guard.Commit();
         state_->AddBytes(state_->mono8_bytes());
-        state_->Increment(&SpatialRoiRecorderCudaDetachCounters::nv12_conversions);
         state_->Increment(&SpatialRoiRecorderCudaDetachCounters::detached);
 
         SpatialRoiRecorderCudaDetachResult result;
@@ -1407,6 +1616,24 @@ void SpatialRoiRecorderCudaDetachPool::Stop() noexcept
     if (state_) {
         state_->Stop();
     }
+}
+
+bool SpatialRoiRecorderCudaDetachPool::CloseCachedImports(
+    std::string* error_out) noexcept
+{
+    if (!state_) {
+        set_error_noexcept(error_out,
+                           "recorder detach pool state is unavailable");
+        return false;
+    }
+    if (operation_in_progress_.test_and_set(std::memory_order_acquire)) {
+        set_error_noexcept(
+            error_out,
+            "recorder detach operation is active during import cache cleanup");
+        return false;
+    }
+    AtomicFlagGuard operation_guard(&operation_in_progress_);
+    return state_->CloseCachedImports(error_out);
 }
 
 }  // namespace orange::spatial_roi::ipc

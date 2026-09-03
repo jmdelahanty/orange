@@ -17,9 +17,11 @@ content-addressed finalized receipts, atomic terminal manifest publication,
 and a read-only offline acceptance verifier, together with focused host test
 targets. The integrated source path and full release targets build, and the
 real driver passed legacy lossless/GOP-1 plus 51-frame P1/GOP-25 encode/decode
-tests on 2026-09-02. Live-camera, four-output headless artifact validation has
-not been completed for this tree. No accepted Orange run currently certifies
-spatial-ROI video files.
+tests on 2026-09-02. Live camera 2010093 has also completed the four-output
+capture/detach/encode/mux path at 100 FPS, including a 600-frame two-GPU run.
+The source lights were disconnected, so the resulting nearly-black media
+correctly failed terminal content sanity and does not certify spatial-ROI video
+files. Illuminated and concurrent four-camera acceptance remain pending.
 
 The dependency-ordered completion authority is
 `docs/spatial_roi_headless_completion_checklist_2026-08-31.md`. The component
@@ -109,8 +111,10 @@ Implemented components:
   `src/spatial_roi_recorder_cuda_detach.*` that binds the exact stream,
   fixed-region geometry, source/recorder GPUs and shard, enforces an aggregate
   allocation budget and one active caller, bounds source-event/copy waits,
-  validates the imported allocation, and materializes packed Mono8 plus NV12
-  with byte-identical Y and neutral UV=128;
+  validates the imported allocation, caches a bounded set of authenticated
+  session memory/event imports, and materializes packed Mono8. The encoder
+  owner copies that Mono8 into a pre-neutralized NVENC Y plane; contract-v1
+  NV12 scratch remains reserved but unused until a versioned budget revision;
 - a descriptor-relative artifact-root authority in
   `src/spatial_roi_recorder_artifact_root.*`, plus a move-only encoder bundle
   retaining one shared root and exactly four read-write artifact descriptors;
@@ -312,10 +316,13 @@ both accepted and rejected `ACK` until an exact `RELEASE`. Merely sending
 `FRAME` or receiving `ACK` is not permission to recycle the allocation. A
 timeout, EOF, partial/failed write, malformed response, identity mismatch, or
 out-of-order response latches the endpoint fatal and keeps ownership
-indeterminate until the future supervisor confirms recorder-process exit. If
-an owner violates that lifecycle and destroys an indeterminate handoff, the
-table is deliberately quarantined for process lifetime rather than releasing a
-possibly live CUDA allocation.
+indeterminate until the supervisor confirms recorder-process exit. Transport
+EOF now stops admission without destroying the exporter or its batch pool,
+because the recorder may retain session-cached CUDA mappings after each
+per-frame RELEASE. Normal and abort paths release those producer resources only
+after exact child reap. If an owner cannot prove that boundary, the stopped
+runtime is deliberately retained for process lifetime rather than freeing a
+possibly mapped CUDA allocation.
 
 Worker-entry final release is also fail-closed: queue-lock exceptions cannot
 strand the recycle mutex, a failed camera-SDK frame return prevents wrapper
@@ -379,18 +386,20 @@ acceptance result.
 
 The extraction pixel contract and the eventual encoder-input contract are
 deliberately distinct. Extraction copies native Mono8 without resize or color
-conversion. HEVC/NVENC consumes NV12, so the recorder must copy every extracted
-Mono8 byte unchanged into the NV12 Y plane and fill interleaved UV with the
-neutral value 128; alignment padding remains zero in Y. The contract now says
-`neutral_chroma_value=128`, with `luma_preserved_exactly=true` only for the
-legacy lossless profile. The recorder always copies the source bytes exactly
-into encoder-input Y before encoding; the active P1/VBR-Q20/GOP-25 media is
-lossy and does not claim decoded-Y identity. That transform is implemented and
-covered by host seams in recorder-owned device-storage code. A non-skipped
+conversion. Detach copies that packed Mono8 into recorder-owned storage and
+waits only for this raw copy before RELEASE. The encoder owner has already
+initialized every NVENC UV plane to neutral 128 and copies each Mono8 byte
+unchanged into the selected input surface's Y plane; alignment padding remains
+zero in Y. Generic recorder-owned NV12 input remains supported and overwrites
+both planes. The contract says `neutral_chroma_value=128`, with
+`luma_preserved_exactly=true` only for the legacy lossless profile. The active
+P1/VBR-Q20/GOP-25 media is lossy and does not claim decoded-Y identity. A
+non-skipped
 CUDA/NVENC/decode run for the current integrated tree passed on the host for
 both legacy lossless/GOP-1 and 51-frame P1/GOP-25 output. The production
-recorder target now consumes this core, but no live-camera headless artifact
-run has certified it.
+recorder target now consumes this core. Live dark-scene media matched the
+registered source's per-quadrant luma, but no illuminated headless artifact run
+has certified it.
 
 ## Thread topology, CPU isolation, and jitter budget
 
@@ -496,9 +505,11 @@ this rig's 64 logical CPUs.
 
 The items below are host/focused validation or previously established
 foundations unless explicitly described as pending. They do not certify a live
-one-camera/four-ROI headless recording. The integrated release build and
-one-output CUDA/NVENC tests pass; live separate-process camera/IPC/four-output
-artifact validation remains required before acceptance.
+content-valid one-camera/four-ROI headless recording. The integrated release
+build, focused CUDA/NVENC tests, and a live separate-process
+camera/IPC/four-output workload run pass. The knowingly unilluminated scene
+failed the required content gate, so illuminated artifact acceptance remains
+required.
 
 - strict config/plan parsing, normalization, digest binding, bounds, overlap,
   naming, recording-token, admission, malformed-input, and mutation tests;
@@ -512,7 +523,9 @@ artifact validation remains required before acceptance.
   HEVC lossless/GOP-1 and P1/VBR-Q20/GOP-25 policies, queue-depth propagation,
   and odd-NV12 rejection;
 - four-lane CUDA fanout, exact outstanding-capacity enforcement, queue-full,
-  sink-rejection/failure, missing-sink, and re-entrant-stop behavior; and
+  sink-rejection/failure, missing-sink, and re-entrant-stop behavior;
+- explicit stop-only versus fully joined drain evidence, so re-entrant lane
+  callbacks cannot authorize transport or producer-resource teardown; and
 - dense per-lane stream indexing with no gaps on rejected admission;
 - acquisition bridge/controller identity, lease, exception, concurrent
   disarm, generation-reuse, and teardown behavior;
@@ -555,14 +568,21 @@ artifact validation remains required before acceptance.
 - production Orange GUI/headless and recorder targets are build-registered,
   with the current source path wired for optional one-camera/four-ROI
   operation. The integrated release rebuild and one-output CUDA/NVENC media
-  run pass. A live separate-process CUDA IPC import/detach run and live
-  four-output headless artifact run remain pending.
+  run pass. Live separate-process CUDA IPC/import-cache/detach and four-output
+  encode/mux now pass at the workload level for 600 frames at 100 FPS. The
+  unilluminated source deliberately prevents terminal content/evidence
+  acceptance.
 
-The earlier isolated recorder-detach result is not current integrated-tree
-acceptance. Cross-GPU use is preflighted for unified addressing, IPC-event
-support, and recorder-to-source peer access, but positive/negative multi-GPU
-topology tests remain an explicit acceptance gate before enabling such a
-placement.
+Cross-GPU use is preflighted for unified addressing, IPC-event support, and
+recorder-to-source peer access. A positive live test now balances two 2256x2256
+100-FPS ROI streams per GPU across camera 2010093's production PIX pair 3/4,
+with approximately 58% steady/peak NVENC utilization on each GPU and zero
+acquisition or encode drops. Negative topology tests, illuminated media, and
+concurrent four-camera operation remain explicit acceptance gates.
+Each ROI remains one independent encoder/timeline/file on one GPU. The 2+2
+placement distributes four such streams across the two GPUs assigned to that
+camera; it does not split an individual ROI's GOP and does not share one pair
+across the rig.
 
 ## Two optional crop products
 
@@ -756,11 +776,12 @@ would not remove the need for an interprocess synchronization contract.
       strict consumer parser bound to the independently verified plan,
       authoritative recording root, and parent GPU placement.
 - [x] Implement recorder-side CUDA import and bounded detach into
-      recorder-owned packed Mono8/NV12 storage, with exact plan geometry,
+      recorder-owned packed Mono8 storage, with exact plan geometry,
       source/recorder GPU, shard, allocation extent, pool-budget, timeout, and
-      quarantine checks. The camera-level executable now consumes this core;
-      live-camera four-output validation remains pending (the one-output
-      CUDA/NVENC tests pass).
+      quarantine checks. Cache memory/event imports for the bounded session,
+      close them after encoder drain, and retain producer pool resources until
+      exact child reap. Contract-reserved NV12 scratch remains allocated but is
+      no longer on the per-frame detach path.
 - [x] Implement the strict one-shot recorder-side socket-listener library and
       its focused lifecycle/credential tests. The restricted sandbox returns
       `EPERM`, while the corresponding host tests pass outside it.
@@ -791,13 +812,13 @@ would not remove the need for an interprocess synchronization contract.
       relabel another ROI. The process and full-frame coexistence composition
       now exists; live four-output validation remains pending.
 - [x] Copy the exact Mono8 source into the selected encoder profile. Keep
-      alignment padding explicit and zero-filled; do not scale. Map each Mono8
-      byte unchanged to NV12 Y and set interleaved UV to neutral 128 (the
-      recorder-owned transform is complete). Exact decoded-video luma is a
+      alignment padding explicit and zero-filled; do not scale. Preinitialize
+      NVENC input UV to neutral 128, then have the encoder owner map each
+      detached Mono8 byte unchanged to Y. Exact decoded-video luma is a
       requirement only for the legacy lossless profile; the active
       P1/VBR-Q20/GOP-25 profile instead requires decode, cadence, dimensions,
-      keyframe placement, and quality sanity. A live finalized-container proof
-      remains pending.
+      keyframe placement, and quality sanity. Live dark-scene containers now
+      prove the workload path; illuminated content/evidence remains pending.
 - [x] Define and validate ACK/release identity including recording token,
       producer generation, logical stream/ROI identity,
       `recording_frame_id`, and dense `roi_stream_frame_index`.

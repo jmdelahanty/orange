@@ -5,8 +5,11 @@ Date: 2026-09-02
 Status: implementation in progress; opt-in and default-off. The release build,
 focused unit tests, static specification validation, and headless parse/resolve
 dry run pass. A camera-independent real CUDA/NVENC test also passed 51 active
-P1/GOP-25 frames with IDRs at 0, 25, and 50. A live-camera recording has not
-yet been run or accepted.
+P1/GOP-25 frames with IDRs at 0, 25, and 50. Live camera 2010093 has now
+sustained four 2256x2256 streams at 100 FPS through capture, detach, encode,
+mux, and decoder setup. Final content acceptance remains pending because the
+2026-09-02 source scene was knowingly unilluminated and correctly failed the
+fixed luma-sanity threshold.
 
 ## Outcome
 
@@ -58,13 +61,42 @@ The capture declaration must explicitly choose
 misrepresented as an experimentally accepted registration.
 
 Still outstanding are the deterministic reconstruction/availability-mask
-tool, a process-level no-full-frame lifecycle test, and live 100 FPS
-validation. The offline acceptance verifier now checks the ROI-only policy,
+tool, a process-level no-full-frame lifecycle test, illuminated live content
+acceptance, and concurrent four-camera validation. The offline acceptance
+verifier now checks the ROI-only policy,
 context bytes/digest/authority, exact ROI bindings, and profile-derived GOP
 evidence. The current
 `immediate_recycle` accounting also reuses the primary routed-frame counter;
 an explicit `immediate_recycled_frames` telemetry counter remains a useful
 nonblocking follow-up.
+
+### Cached raw-detach refactor
+
+The 2026-09-02 recorder refactor changes the RELEASE-critical path without
+changing the wire schema, media policy, geometry, or profile identity:
+
+- each recorder stream opens a bounded, session-scoped cache of authenticated
+  CUDA IPC memory/event pairs instead of opening and closing both handles for
+  every frame;
+- cache cardinality is bounded by the pre-admitted detach-slot count, handle
+  collisions fail closed, and cache cleanup is required after encoder drain;
+- detach waits for the producer event, copies only packed Mono8 into a
+  recorder-owned slot, waits for that copy, and can then return RELEASE;
+- the encoder owner copies that Mono8 directly into the Y plane of a
+  pre-neutralized NVENC input surface. The generic recorder-owned NV12 input
+  path remains supported;
+- the existing per-slot NV12 scratch allocation remains reserved but unused in
+  this slice so the published v1 resource/budget contract is not silently
+  changed; and
+- producer batch-pool allocations/events remain alive after transport EOF and
+  are released only after the recorder child is definitively reaped. An
+  unreaped abnormal child causes bounded fail-closed retention rather than a
+  use-after-free beneath cached mappings.
+
+The detach counters now distinguish unique imports from cache hits/misses and
+record cache cardinality/cleanup. They are covered by focused real-driver
+tests, but they are not yet projected into the terminal per-stream perf
+sidecar; that metadata extension remains required before scaled acceptance.
 
 ## Registered Context Semantics
 
@@ -278,6 +310,53 @@ Per-stream encoder telemetry and per-GPU NVENC utilization remain required for
 scaled configurations. Explicit runtime GPU placement is operational metadata,
 not part of the scientific geometry policy.
 
+### 2026-09-02 two-GPU throughput evidence
+
+Camera 2010093 was run at 4512x4512 Mono8 and 100 FPS with four continuous
+2256x2256 P1/VBR-Q20/GOP-25 ROI streams balanced two each across its production
+PIX pair, GPUs 3 and 4. This is distribution of independent ROI videos; an ROI
+is not itself split-GOP-sharded. The topology is two encoder GPUs assigned to
+each camera, with that camera's four ROI streams placed 2+2 across its pair;
+it is not two encoder GPUs shared by all four cameras.
+
+Artifact root:
+
+```text
+/home/jeremy/orange_data/exp/unsorted/2010093_spatial_roi_cached_raw_detach_two_gpu_pair_100fps_v1/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25__aq_off__tempaq_off__lookahead_off__lookdepth_0__imappx_258
+```
+
+- acquisition received 601 frames at 99.849 FPS with zero camera frame-ID
+  gaps, get-frame errors, preprocess drops, and encode failures;
+- every ROI MP4 contains exactly 600 frames at 2256x2256 and 100 FPS, and every
+  ROI metadata CSV contains exactly 600 rows;
+- steady encoder utilization was approximately 58% on each GPU (observed peak
+  58%); steady SM utilization was approximately 14% on source GPU 3 and 20% on
+  helper GPU 4; and
+- the descriptor-bound decoder accepted the files after its allocation guard
+  was corrected to allow only the bounded HEVC/FFmpeg coded-raster alignment
+  envelope while retaining exact 2256x2256 visible-raster checks.
+
+The registered source context had mean luma 2.01/255 because the acquisition
+lights were not powered. The same per-quadrant values appeared in the ROI
+videos, which supports pixel-path correctness but deliberately fails the
+content-validity gate. Dark content also understates bitrate/disk pressure, so
+this result supports the two-GPUs-per-camera topology but does not replace an
+illuminated run, longer soak, or concurrent four-camera acceptance.
+
+At equal quadrants, two ROI streams per GPU have the same average pixel rate as
+the established two-way full-frame split-GOP workload:
+
+```text
+2 * 2256 * 2256 * 100 = 1,017,907,200 luma pixels/s/GPU
+4512 * 4512 * 50      = 1,017,907,200 luma pixels/s/GPU
+```
+
+The proposed four-camera placement therefore preserves the existing disjoint
+PIX pairs: 2010093 -> 3/4, 2010094 -> 1/2, 2010095 -> 7/8, and 2010096 -> 5/6.
+It still requires an illuminated four-camera validation because independent
+session overhead, content-dependent bitrate, writer/storage pressure, CPU
+threading, and simultaneous acquisition traffic are not proven by one camera.
+
 ## Implementation Checklist
 
 ### Contract and configuration
@@ -310,6 +389,11 @@ not part of the scientific geometry policy.
 - [x] Remove combined-storage assumptions from ROI-only preflight while keeping
       ROI storage reservation strict.
 - [x] Stop, drain, and finalize every ROI stream normally.
+- [x] Cache authenticated CUDA IPC imports for the bounded recorder session,
+      make completed raw Mono8 copy the source-RELEASE boundary, and close the
+      cache only after encoder drain.
+- [x] Retain producer CUDA pool/export resources until definitive recorder
+      reap on normal and abort paths.
 - [x] Do not require or invent full-frame media artifacts in ROI-only completion.
 
 ### Evidence and reconstruction
@@ -340,9 +424,18 @@ not part of the scientific geometry policy.
       and authority mismatch rejection.
 - [ ] Unit-test ROI-only startup/finalization without a full-frame child.
 - [x] Dry-run the 2010093 four-quadrant P1 profile with explicit ROI GPU mapping.
+- [x] Run the 2010093 four-quadrant throughput path at 100 FPS with two ROI
+      streams per member of GPU pair 3/4; prove four 600-frame videos/metadata
+      streams and zero acquisition/encode drops. Content acceptance is not
+      claimed because illumination was intentionally unavailable.
 - [ ] Live-run one camera at 100 FPS and prove: context complete, four ROI
       streams complete, no continuous full-frame process/artifact, no drops,
       bounded queue/latency telemetry, and deterministic mosaic reconstruction.
+- [ ] Repeat with powered production illumination, then run all four cameras
+      concurrently on their disjoint two-GPU PIX pairs.
+- [ ] Persist cache/import, detach/raw-copy, encoder-owner copy, queue
+      high-water, and latency counters in the versioned per-stream terminal
+      performance metadata.
 - [x] Preserve regression coverage for full-frame-only and combined modes.
 
 ## Existing Components To Reuse Carefully

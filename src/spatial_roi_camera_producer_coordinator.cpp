@@ -174,7 +174,9 @@ public:
             }
         } catch (...) {
             // The runtime turns callback exceptions into a terminal lane
-            // failure. No reconnect or retransmit is permitted here.
+            // failure. No reconnect or retransmit is permitted here.  A
+            // transport exception may have happened after FRAME admission,
+            // so retain ownership until the recorder is proven gone.
         }
         return SpatialRoiLaneSinkResult::kFailed;
     }
@@ -182,11 +184,89 @@ public:
     void Stop() noexcept override
     {
         started_ = false;
-        // If a fatal handoff still owns an export, its destructor intentionally
-        // quarantines that ownership until the recorder peer has been proven
-        // gone. Reset order keeps the transport alive through handoff teardown.
-        handoff_.reset();
-        transport_.reset();
+        // Closing the transport is required for recorder EOF and must happen
+        // before the recorder process is waited on.  The handoff, exporter,
+        // and closed transport object remain alive: a fatal handoff may still
+        // retain producer CUDA ownership until the child is definitively
+        // reaped.  ReleaseProducerCudaResourcesAfterRecorderReaped() performs
+        // the later confirmation and object teardown.
+        if (transport_) {
+            transport_->Close();
+        }
+    }
+
+    bool ReleaseProducerCudaResourcesAfterRecorderReaped(
+        std::string* error_out) noexcept override
+    {
+        if (error_out) {
+            try {
+                error_out->clear();
+            } catch (...) {
+            }
+        }
+        if (producer_resources_released_) {
+            return true;
+        }
+
+        // Be robust to a caller that reaches this boundary without first
+        // stopping admission.  Closing an already-closed transport is
+        // idempotent, and no further Submit is permitted after this method.
+        Stop();
+
+        try {
+            if (handoff_) {
+                // ConfirmPeerExited() is intentionally not called on healthy
+                // handoffs: it requires a fatal latch.  A fatal handoff is the
+                // only path that can retain an export after synchronous
+                // Submit returns, and confirmation is the sole operation
+                // allowed to clear that ownership.
+                if (handoff_->fatal_latched() &&
+                    !handoff_->peer_exited_confirmed() &&
+                    !handoff_->ConfirmPeerExited()) {
+                    if (error_out) {
+                        *error_out =
+                            "producer handoff could not confirm recorder reap";
+                    }
+                    return false;
+                }
+                if (handoff_->ownership_indeterminate()) {
+                    if (error_out) {
+                        *error_out =
+                            "producer handoff still retains indeterminate CUDA ownership";
+                    }
+                    return false;
+                }
+            }
+
+            // The handoff stores non-owning pointers to exporter_/transport_.
+            // Destroy it before either owner, even though transport was
+            // already closed above.
+            handoff_.reset();
+            transport_.reset();
+            producer_resources_released_ = true;
+            return true;
+        } catch (const std::exception& exception) {
+            if (error_out) {
+                try {
+                    *error_out = bounded_reason(
+                        std::string("producer CUDA resource release threw: ") +
+                            exception.what(),
+                        "producer CUDA resource release threw");
+                } catch (...) {
+                    error_out->clear();
+                }
+            }
+        } catch (...) {
+            if (error_out) {
+                try {
+                    *error_out =
+                        "producer CUDA resource release threw an unknown exception";
+                } catch (...) {
+                    error_out->clear();
+                }
+            }
+        }
+        return false;
     }
 
 private:
@@ -210,6 +290,7 @@ private:
     std::unique_ptr<ipc::SpatialRoiIpcHandoff> handoff_;
     bool started_ = false;
     bool failed_ = false;
+    bool producer_resources_released_ = false;
     std::string first_failure_;
 };
 
@@ -241,9 +322,10 @@ public:
 
     void StopAccepting() noexcept override { runtime_->StopAccepting(); }
 
-    bool StopAcceptingAndDrain(std::string* error_out) noexcept override
+    bool StopAcceptingAndDrain(std::string* error_out,
+                               bool* fully_drained_out) noexcept override
     {
-        return runtime_->StopAcceptingAndDrain(error_out);
+        return runtime_->StopAcceptingAndDrain(error_out, fully_drained_out);
     }
 
 private:
@@ -343,6 +425,17 @@ SpatialRoiCameraProducerCoordinator::SpatialRoiCameraProducerCoordinator(
 SpatialRoiCameraProducerCoordinator::~SpatialRoiCameraProducerCoordinator()
 {
     StopAndDrain();
+    if (!producer_resources_released_ && runtime_) {
+        // The recorder may still retain session-cached CUDA IPC mappings even
+        // though every individual FRAME received RELEASE. Without definitive
+        // child-reap proof, destroying the concrete runtime could free its
+        // batch-pool allocations/events underneath those mappings. Leak the
+        // stopped runtime deliberately; this is the same fail-closed policy as
+        // an indeterminate handoff export and is bounded to an abnormal
+        // unreaped-recorder process lifetime.
+        (void)runtime_.release();
+        recording_runtime_.reset();
+    }
 }
 
 std::string SpatialRoiCameraProducerCoordinator::bounded_reason(
@@ -577,8 +670,59 @@ void SpatialRoiCameraProducerCoordinator::stop_streams_best_effort() noexcept
     }
 }
 
+bool SpatialRoiCameraProducerCoordinator::release_streams_after_recorder_reaped(
+    std::string* error_out) noexcept
+{
+    bool success = true;
+    std::string first_error;
+    for (auto& slot : *streams_) {
+        if (!slot.start_attempted || !slot.stream) {
+            continue;
+        }
+        try {
+            std::string stream_error;
+            if (!slot.stream->ReleaseProducerCudaResourcesAfterRecorderReaped(
+                    &stream_error)) {
+                success = false;
+                if (first_error.empty()) {
+                    first_error = bounded_reason(
+                        stream_error,
+                        "producer stream retained CUDA ownership after recorder reap");
+                }
+            }
+        } catch (const std::exception& exception) {
+            success = false;
+            if (first_error.empty()) {
+                first_error = exception_reason(
+                    "producer stream CUDA resource release", exception);
+            }
+        } catch (...) {
+            success = false;
+            if (first_error.empty()) {
+                first_error = unknown_exception_reason(
+                    "producer stream CUDA resource release");
+            }
+        }
+    }
+    if (!success) {
+        latch_failure(first_error.empty()
+                          ? "producer stream retained CUDA ownership after recorder reap"
+                          : first_error);
+        if (error_out) {
+            try {
+                *error_out = first_failure_.empty()
+                                 ? "producer CUDA resource release failed"
+                                 : first_failure_;
+            } catch (...) {
+            }
+        }
+    }
+    return success;
+}
+
 bool SpatialRoiCameraProducerCoordinator::Start(std::string* error_out)
 {
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
     if (error_out) {
         error_out->clear();
     }
@@ -670,6 +814,7 @@ SpatialRoiCameraProducerSubmitResult
 SpatialRoiCameraProducerCoordinator::Submit(
     const SpatialRoiSourceView& source) noexcept
 {
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
     SpatialRoiCameraProducerSubmitResult result;
     try {
         ++submit_attempted_;
@@ -722,6 +867,7 @@ SpatialRoiCameraProducerCoordinator::Submit(
 bool SpatialRoiCameraProducerCoordinator::StopAndDrain(
     std::string* error_out) noexcept
 {
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
     if (error_out) {
         try {
             error_out->clear();
@@ -729,10 +875,20 @@ bool SpatialRoiCameraProducerCoordinator::StopAndDrain(
         }
     }
     bool success = true;
+    bool runtime_fully_drained = runtime_ == nullptr;
     if (runtime_) {
         try {
             std::string runtime_error;
-            if (!runtime_->StopAcceptingAndDrain(&runtime_error)) {
+            const bool runtime_success =
+                runtime_->StopAcceptingAndDrain(&runtime_error,
+                                                &runtime_fully_drained);
+            if (!runtime_fully_drained) {
+                success = false;
+                latch_failure(
+                    "camera producer runtime did not complete its drain: " +
+                    bounded_reason(runtime_error,
+                                   "runtime stopped admission without joining lanes"));
+            } else if (!runtime_success) {
                 success = false;
                 latch_failure(
                     "camera producer runtime drain failed: " +
@@ -742,10 +898,17 @@ bool SpatialRoiCameraProducerCoordinator::StopAndDrain(
             success = false;
             latch_failure("camera producer runtime drain threw");
         }
-        runtime_.reset();
-        recording_runtime_.reset();
+        // Keep the stopped runtime and its batch-pool allocations alive while
+        // the recorder owns session-cached CUDA IPC mappings. They are
+        // released only at the explicit post-reap boundary below.
     }
-    stop_streams_best_effort();
+    // A stop-only/re-entrant runtime result cannot make transport/handoff
+    // teardown safe. Keep streams intact until a non-lane owner retries and
+    // proves that every asynchronous callback has joined.
+    if (runtime_fully_drained) {
+        stop_streams_best_effort();
+    }
+    stop_and_drain_completed_ = runtime_fully_drained;
     if (state_ != SpatialRoiCameraProducerState::kFailed) {
         state_ = SpatialRoiCameraProducerState::kStopped;
     }
@@ -762,9 +925,47 @@ bool SpatialRoiCameraProducerCoordinator::StopAndDrain(
     return success;
 }
 
+bool SpatialRoiCameraProducerCoordinator::
+    ReleaseProducerCudaResourcesAfterRecorderReaped(
+        std::string* error_out) noexcept
+{
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+    if (error_out) {
+        try {
+            error_out->clear();
+        } catch (...) {
+        }
+    }
+    if (producer_resources_released_) {
+        return true;
+    }
+    if (state_ != SpatialRoiCameraProducerState::kStopped &&
+        state_ != SpatialRoiCameraProducerState::kFailed) {
+        return fail(
+            error_out,
+            "producer CUDA resources may be released only after the "
+            "coordinator is stopped or failed and the recorder is reaped");
+    }
+    if (!stop_and_drain_completed_) {
+        return fail(
+            error_out,
+            "producer CUDA resources require a completed StopAndDrain "
+            "boundary before recorder-reap release");
+    }
+
+    const bool success = release_streams_after_recorder_reaped(error_out);
+    if (success) {
+        runtime_.reset();
+        recording_runtime_.reset();
+        producer_resources_released_ = true;
+    }
+    return success;
+}
+
 std::shared_ptr<SpatialRoiRecordingRuntime>
 SpatialRoiCameraProducerCoordinator::acquisition_runtime() const noexcept
 {
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
     if (state_ != SpatialRoiCameraProducerState::kReady) {
         return {};
     }
@@ -803,6 +1004,7 @@ bool SpatialRoiCameraProducerCoordinator::MakeAcquisitionSession(
 SpatialRoiCameraProducerSnapshot
 SpatialRoiCameraProducerCoordinator::snapshot() const
 {
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
     SpatialRoiCameraProducerSnapshot snapshot;
     snapshot.state = state_;
     snapshot.recording_id = contract_.recording_id;
@@ -819,6 +1021,29 @@ SpatialRoiCameraProducerCoordinator::snapshot() const
     snapshot.rejected = rejected_;
     snapshot.first_failure = first_failure_;
     return snapshot;
+}
+
+SpatialRoiCameraProducerState
+SpatialRoiCameraProducerCoordinator::state() const noexcept
+{
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+    return state_;
+}
+
+bool SpatialRoiCameraProducerCoordinator::ready() const noexcept
+{
+    return state() == SpatialRoiCameraProducerState::kReady;
+}
+
+bool SpatialRoiCameraProducerCoordinator::failed() const noexcept
+{
+    return state() == SpatialRoiCameraProducerState::kFailed;
+}
+
+std::string SpatialRoiCameraProducerCoordinator::first_failure() const
+{
+    std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex_);
+    return first_failure_;
 }
 
 }  // namespace orange::spatial_roi

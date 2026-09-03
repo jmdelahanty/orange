@@ -19,10 +19,14 @@ strict snapshot/manifest closure, and a read-only offline acceptance verifier.
 CMake registers the recorder, core-link, process-supervisor, headless-session,
 and component test targets. The implementation and host seams are therefore
 present and build-targeted. The four Unix transport/listener/connector/process
-tests pass on the host outside the restricted sandbox. No live-camera,
-four-output headless artifact run is claimed. The remaining gates below
-distinguish implemented host behavior from pending live artifact evidence and
-the deliberately deferred operational protocol details.
+tests pass on the host outside the restricted sandbox. On 2026-09-02, live
+camera 2010093 produced four complete 600-frame, 2256x2256, 100-FPS MP4/metadata
+pairs with zero acquisition or encode drops while balanced two streams per GPU
+across PIX pair 3/4. Final evidence-manifest acceptance is not claimed because
+the acquisition lights were knowingly unavailable and the nearly-black source
+correctly failed the luma-content gate. The remaining gates below distinguish
+implemented host/throughput behavior from pending illuminated artifact
+acceptance and the deliberately deferred operational protocol details.
 The versioned camera-2010096 diagnostic plumbing smoke spec and its
 repo-relative dry-run runner are now present and orange_client-validated; the
 first combined smoke uses the supervised external full-frame sink so summed
@@ -100,8 +104,13 @@ libraries should be reused.
 - [x] Exact HELLO/FRAME/ACK/RELEASE ownership and terminal
       drain/finalize message state machines.
 - [x] Bounded adopt-only Unix transport.
-- [x] Recorder-owned CUDA detach into packed Mono8 and NV12, including timeout
-      quarantine and source-release safety.
+- [x] Recorder-owned CUDA detach into packed Mono8, including timeout
+      quarantine and source-release safety. Session-cached IPC imports replace
+      per-frame open/close, and the encoder owner copies Mono8 directly into a
+      pre-neutralized NVENC surface. The contract-reserved NV12 scratch remains
+      allocated but unused pending a versioned resource-budget revision.
+- [x] Close all cached imports after encoder drain and retain producer CUDA
+      pool/export resources until the recorder child is definitively reaped.
 - [x] Real-driver tests for extraction, ownership, IPC export, and detach.
 
 **Completion evidence:** Orange commits `c423ad5` through `22ab8b1` on
@@ -113,7 +122,8 @@ libraries should be reused.
 commit `157ce0f`; the current integrated tree's own real-driver result passed
 on 2026-09-02. Descriptor-bound video-sanity/evidence-v2,
 camera-level recorder, and headless integration are present in the current
-uncommitted work. A live-camera, four-output headless result remains pending.
+uncommitted work. A live-camera four-output throughput result now exists;
+illuminated content and finalized evidence acceptance remain pending.
 
 - [x] Implement one bounded, single-owner, versioned NVENC/MP4 output core.
 - [x] Preserve a dense media timeline separately from sparse source recording
@@ -182,10 +192,11 @@ An immutable successful terminal snapshot additionally requires
 `enqueue_attempted == enqueued`, zero rejected admission and queue overflows,
 matching dequeue/copy/source-release/result counts, and zero writer media-size
 limit failures.
-The end-to-end recorder executable is now present, but it is not merge-ready
-until its current integrated tree is rebuilt and the live child/artifact gates
-pass. The historical Gate 1 host regression and any earlier outside-sandbox
-socket result do not substitute for that current integrated validation.
+The end-to-end recorder executable is now present and the current integrated
+tree has run the complete live capture/detach/encode/mux/decode path. It is not
+merge-ready until the illuminated artifact gates pass. The historical Gate 1
+host regression and the dark-scene throughput result do not substitute for
+content-valid finalized evidence.
 
 The active configuration and materialized plan are strict schema v3 and bind
 one of three complete immutable encoder profiles. The unpublished schema-v2
@@ -230,8 +241,10 @@ it does not certify a live CUDA/NVENC recording.
 
 **Status:** implemented as a bounded, four-stream production executable and
 core library in the current uncommitted worktree. The executable and focused
-host tests are CMake-registered/build-targeted. A live child with four socket
-connections, CUDA/NVENC output, and finalized artifacts has not been accepted.
+host tests are CMake-registered/build-targeted. A live child has completed four
+socket connections and four 600-frame CUDA/NVENC/MP4 outputs. Those products
+remain non-certifying residue because the unilluminated source failed the
+content-validity gate before terminal sidecars/evidence manifests were minted.
 
 - [x] Add the strict, one-shot `AF_UNIX` listener primitive with exact path,
       mode `0600`, pre-existing-path refusal, bounded accept, peer-credential
@@ -271,9 +284,11 @@ connections, CUDA/NVENC output, and finalized artifacts has not been accepted.
 - [x] Accept exactly one authenticated camera recorder contract plus retained
       descriptor authority and authenticated expected artifact-root identity
       per process.
-- [ ] Rebuild and run the complete current target outside the sandbox; the
+- [x] Rebuild and run the complete current target outside the sandbox; the
       available sandbox cannot establish the required Unix credential/listener
-      behavior and is not live artifact evidence.
+      behavior. The 2026-09-02 live two-GPU run exercised the real child,
+      sockets, CUDA IPC, NVENC, and MP4 decoder; illuminated artifact evidence
+      is still required below.
 - [ ] Define process-boundary recovery by retaining/passing the root directory
       descriptor and expected `(device, inode)` identity, or fail closed under
       a new recording identity.
@@ -317,9 +332,9 @@ CUDA/NVENC/headless path.
 ## Gate 3: ROI child supervision and exact lifecycle
 
 **Status:** the bounded process supervisor and headless session lifecycle are
-implemented and have deterministic fake-child/factory seams. The live
-four-socket/IPC/CUDA child lifecycle and clean artifact acceptance remain
-pending.
+implemented and have deterministic fake-child/factory seams. A live
+four-socket/IPC/CUDA child now reaches bounded failure/reap after the deliberate
+dark-content rejection. A clean successful artifact exit remains pending.
 
 - [x] Materialize a supervisor plan only from the independently verified ROI
       plan, recording identity, camera mapping, and owned recording root.
@@ -336,6 +351,12 @@ pending.
 - [x] On timeout or protocol uncertainty, stop new acquisition submissions,
       terminate the exact child, reap the exact PID, and only then resolve
       quarantined source ownership.
+- [x] Keep transport EOF separate from CUDA-resource release: cached producer
+      allocations/events and any fatal handoff ownership remain alive until
+      exact recorder reap is externally proven.
+- [x] Distinguish a lane-callback re-entrant stop-only request from a fully
+      joined runtime drain; do not close handoffs or permit post-reap producer
+      release until a non-lane owner has joined every lane.
 - [x] Persist child exit status, signal, timeout, and per-ROI terminal status in
       recording/session status.
 - [x] Start and stop the new ROI child without modifying the existing
@@ -356,8 +377,9 @@ failure.
 
 **Status:** the optional default-off headless path is implemented for the
 first one-camera/four-fixed-ROI slice and is wired alongside the existing
-full-frame recorder. Host/build seams exist, but no live armed headless run or
-ROI artifact set is accepted yet.
+full-frame recorder. A live armed ROI-only headless run produced all four media
+streams; the artifact set is not accepted until an illuminated run passes
+content sanity and terminal evidence publication.
 
 - [x] Add the optional strict spatial-ROI configuration to the headless
       experiment-spec/session preparation path using the existing schema and
@@ -524,20 +546,24 @@ content-addressed evidence; every injected omission is rejected.
 
 ## Gate 6: one-camera/four-fixed-ROI headless acceptance
 
-**Status:** pending live acceptance. The first integrated 2010093 attempt on
-2026-09-01 proved the full-frame path and reached all four ROI encoders, but it
-is intentionally rejected: the full-frame recorder finalized 401 frames while
-the four ROI lanes stopped at 17-18 frames after the evidence journal reached
-its 64-entry pending bound. The recorder control loop had deferred journal
-draining until EOF. Continuous owner-thread draining and a 128-frame bounded
-journal regression now cover that defect; a new live run is still required.
+**Status:** pending illuminated and four-camera acceptance. The first integrated
+2010093 attempt on 2026-09-01 exposed deferred journal draining and stopped the
+four ROI lanes at 17-18 frames. Continuous owner-thread draining fixed that
+defect. The next 2026-09-02 attempt carried all four lanes through 400 frames
+and exposed an overly narrow decoder `max_pixels` guard for HEVC's padded coded
+raster; the guard now admits only a bounded 64-pixel decoder-alignment envelope
+while retaining exact visible-raster checks. The current two-GPU attempt then
+produced four complete 600-frame streams at 100 FPS. It is intentionally not
+accepted because the disconnected acquisition lights yielded a mean source
+luma near 2/255 and the content gate correctly rejected it.
 
 - [x] Add a versioned one-camera/four-region headless experiment specification
       and a runner that is a dry run unless explicitly given `--execute`.
       The camera-perspective quadrant rectangles are diagnostic
       plumbing/encoder-validation geometry only, not accepted physical
       compartment geometry; the spec keeps full-frame recording enabled and
-      disables YOLO, pose, and display. The live run remains pending below.
+      disables YOLO, pose, and display. A content-valid accepted run remains
+      pending below.
 - [ ] Run a full-frame-only control and prove the established router's
       protocol, artifacts, frame accounting, and finalization evidence are
       unchanged when the optional ROI configuration is absent and disabled.
@@ -548,6 +574,14 @@ journal regression now cover that defect; a new live run is still required.
 - [ ] Decode all ROI videos and verify frame/packet counts, dense media
       indices, source recording-frame joins, timestamps, keyframes, padding,
       media sanity, finalization status, and SHA-256 receipts.
+- [x] Prove the proposed two-GPUs-per-camera placement on camera 2010093:
+      balance two independent ROI streams per GPU across PIX pair 3/4, retain
+      600 frames per stream at 2256x2256/100 FPS, and observe approximately
+      58% peak/steady NVENC utilization per GPU with zero acquisition or
+      encode drops.
+- [ ] Repeat the two-GPU run with production illumination so video sanity and
+      all terminal evidence manifests complete, then run cameras 2010093-96
+      concurrently on pairs 3/4, 1/2, 7/8, and 5/6 respectively.
 - [ ] Require zero camera gaps, source-ownership violations, incomplete ROI
       batches, queue drops, encoder failures, mux failures, and unresolved
       children.
@@ -583,6 +617,9 @@ journal regression now cover that defect; a new live run is still required.
       queue high-water, journal pending high-water and drain latency, and
       per-role CPU/context-switch evidence needed to diagnose scheduling
       jitter without adding blocking work to acquisition or callbacks.
+- [ ] Persist the new per-stream CUDA IPC cache hit/miss/cardinality/cleanup,
+      raw-detach copy, and encoder-owner Mono8-copy counters in versioned
+      terminal performance metadata.
 - [ ] Compare inherited scheduling with the optional recorder cpuset in a
       controlled one-camera run before changing the default or expanding
       kernel-isolated CPUs. Require unchanged camera/detect hot-path tails and

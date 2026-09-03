@@ -45,6 +45,12 @@ public:
 
     virtual bool Start(std::string* error_out) = 0;
     virtual bool StopAndDrain(std::string* error_out = nullptr) noexcept = 0;
+    // This is the producer/exporter lifetime boundary.  It may be called only
+    // after the recorder process has been definitively reaped; before then a
+    // fatal handoff's retained CUDA ownership must remain quarantined.  The
+    // operation is idempotent after successful completion.
+    virtual bool ReleaseProducerCudaResourcesAfterRecorderReaped(
+        std::string* error_out = nullptr) noexcept = 0;
     virtual bool MakeAcquisitionSession(
         SpatialRoiAcquisitionSession* session_out) const noexcept = 0;
     virtual SpatialRoiCameraProducerSnapshot snapshot() const = 0;
@@ -141,12 +147,14 @@ public:
 
     // Normal finish order:
     // controller Disarm -> controller Drain -> coordinator StopAndDrain
-    // (which closes producer transports) -> process WaitForCleanExit.
+    // (which closes producer transports) -> process WaitForCleanExit ->
+    // coordinator ReleaseProducerCudaResourcesAfterRecorderReaped.
     bool Finish(std::string* error_out = nullptr);
 
     // Best-effort abort/destructor order.  Admission is stopped and drained
     // before producer transports are closed; the process supervisor then
-    // performs its bounded SIGTERM/SIGKILL/reap path.
+    // performs its bounded SIGTERM/SIGKILL/reap path. Retained producer
+    // CUDA/export ownership is released only after that path proves reap.
     bool Abort(std::string* error_out = nullptr) noexcept;
 
     SpatialRoiHeadlessCameraSessionState state() const noexcept

@@ -388,16 +388,22 @@ Current emitted top-level fields:
   - `full`: ingest-authoritative full-frame output descriptor.
   - `crop`: optional runtime-derived acquisition-media stream descriptor.
 - The `crop` value above is currently scalar and describes the legacy
-  YOLO-driven top-one crop stream. It is not the spatial ROI collection.
-  Detector-independent spatial ROI recording has a verified-plan/CUDA
-  extractor and a closed per-ROI frame/lane foundation on its isolation
-  branch. It still must add the session collection keyed by stable
-  `roi_id`/`logical_stream_id`, carry that identity through recorder IPC, and
-  add finalization evidence. See
-  [`spatial_roi_recording_v1_foundation.md`](spatial_roi_recording_v1_foundation.md).
+  YOLO-driven top-one crop stream. It remains distinct from the spatial ROI
+  collection. The implemented spatial-ROI path emits an additive
+  `recording_outputs_v3` envelope whose `spatial_roi` value is keyed by stable
+  `logical_stream_id`; its descriptors, recorder IPC identity, and finalization
+  evidence are defined by
+  [`spatial_roi_recording_v1_foundation.md`](spatial_roi_recording_v1_foundation.md)
+  and the execution gates in
+  [`spatial_roi_headless_completion_checklist_2026-08-31.md`](spatial_roi_headless_completion_checklist_2026-08-31.md).
 
-When spatial ROI streams are available, the snapshot/session may additionally
-emit `recording_outputs_v3`:
+Sessions using `full_frame_and_fixed_rois` retain the first-class `full`
+descriptor alongside the four spatial ROI descriptors. Sessions using
+`fixed_rois_with_registered_context` intentionally omit the continuous full
+frame and carry the explicit `omitted_by_policy` record plus the registered
+scene-context artifacts described in
+[`fixed_roi_registered_context_plan_2026-09-02.md`](fixed_roi_registered_context_plan_2026-09-02.md).
+The spatial collection is additive to the legacy full/crop compatibility views:
 
 ```json
 {
@@ -425,6 +431,31 @@ The v3 envelope is additive: schema-2 `recording_outputs` remains unchanged,
 scalar. Only `spatial_roi` is a collection, keyed by `logical_stream_id`.
 Writers fail closed for missing or duplicate `(camera_serial,
 logical_stream_id)` keys and for descriptor identity mismatches.
+
+Spatial ROI source ownership has a separate hot-path contract. The producer
+exports one native packed-Mono8 ROI allocation and readiness event per FRAME;
+the receiver caches the complete CUDA memory/event import pair for the session
+and generation rather than opening and closing handles for every FRAME. It
+waits for readiness and copies raw Mono8 into recorder-owned storage, then the
+ACK/RELEASE sequence makes that raw-copy completion the producer source-release
+boundary. The encoder owner thread later copies the detached Mono8 view into
+the NVENC luma plane of a prewarmed neutral-chroma NV12 surface and releases
+the detached slot; NV12 conversion is not part of acquisition or detach.
+Admission stop, encoder drain, and cache close precede normal recorder
+finalization. Producer exporter/runtime ownership is released only after the
+recorder child is definitively reaped; otherwise it remains quarantined. Cache
+hit/miss/cleanup and owner-copy counters exist in runtime/test telemetry but
+are not yet persisted as acceptance evidence, so no finalized artifact may
+claim those values.
+
+The spatial video-sanity result is also separate from the legacy full-frame
+`video_content_*` run fields below. It requires exact visible/container/decoded
+dimensions and applies the per-ROI nearly-black/flat-content gate; its decoder
+allocation guard may use a bounded 64x64-aligned HEVC coded envelope. The
+visible raster contract remains exact. `--require-ffprobe` in the spatial
+offline verifier checks availability, raster, and frame count only; it does
+not replace the descriptor-bound luma gate.
+
 - Each descriptor carries:
   - `schema_version: integer`
   - `camera_serial: string`

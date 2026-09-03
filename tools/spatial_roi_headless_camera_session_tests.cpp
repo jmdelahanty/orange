@@ -90,8 +90,9 @@ nlohmann::json make_plan()
 }
 
 struct FakeProcess final : public headless::CameraRecorderProcessHandle {
-    explicit FakeProcess(std::vector<std::string>* events)
-        : events_(events)
+    explicit FakeProcess(std::vector<std::string>* events,
+                         bool stop_reaped = true)
+        : events_(events), stop_reaped_(stop_reaped)
     {
     }
 
@@ -141,8 +142,8 @@ struct FakeProcess final : public headless::CameraRecorderProcessHandle {
     {
         events_->push_back("process.stop");
         status_.state = recording::SpatialRoiCameraRecorderProcessState::kStopped;
-        status_.reaped = status_.started;
-        return true;
+        status_.reaped = status_.started && stop_reaped_;
+        return status_.reaped;
     }
 
     const recording::SpatialRoiCameraRecorderProcessStatus& status()
@@ -153,6 +154,7 @@ struct FakeProcess final : public headless::CameraRecorderProcessHandle {
 
     std::vector<std::string>* events_ = nullptr;
     recording::SpatialRoiCameraRecorderProcessStatus status_;
+    bool stop_reaped_ = true;
 };
 
 struct FakeCoordinator final : public headless::CameraProducerCoordinatorHandle {
@@ -189,6 +191,20 @@ struct FakeCoordinator final : public headless::CameraProducerCoordinatorHandle 
                                               : drain_error_;
         }
         return success;
+    }
+
+    bool ReleaseProducerCudaResourcesAfterRecorderReaped(
+        std::string* error_out) noexcept override
+    {
+        events_->push_back("coordinator.release");
+        ++release_calls_;
+        if (!release_ok_) {
+            if (error_out) {
+                *error_out = "injected producer resource release failure";
+            }
+            return false;
+        }
+        return true;
     }
 
     bool MakeAcquisitionSession(
@@ -229,6 +245,8 @@ struct FakeCoordinator final : public headless::CameraProducerCoordinatorHandle 
     bool stopped_ = false;
     bool drain_ok_ = true;
     std::string drain_error_;
+    std::size_t release_calls_ = 0;
+    bool release_ok_ = true;
 };
 
 headless::SpatialRoiHeadlessCameraSessionConfig make_config(
@@ -236,7 +254,8 @@ headless::SpatialRoiHeadlessCameraSessionConfig make_config(
     std::vector<std::string>* events,
     const bool make_runtime = true,
     const bool coordinator_drain_ok = true,
-    std::string coordinator_drain_error = {})
+    std::string coordinator_drain_error = {},
+    bool process_stop_reaped = true)
 {
     headless::SpatialRoiHeadlessCameraSessionConfig config;
     config.process.expected_producer_pid = ::getpid();
@@ -245,9 +264,9 @@ headless::SpatialRoiHeadlessCameraSessionConfig make_config(
     config.producer.expected_recording_root = "/tmp/headless-session-test";
     config.producer.producer_gpu_id = 0;
     config.producer.expected_recorder_uid = ::geteuid();
-    config.process_factory = [events](auto, std::string*) {
+    config.process_factory = [events, process_stop_reaped](auto, std::string*) {
         return std::unique_ptr<headless::CameraRecorderProcessHandle>(
-            new FakeProcess(events));
+            new FakeProcess(events, process_stop_reaped));
     };
     config.producer_factory = [events,
                                plan,
@@ -312,7 +331,8 @@ void test_finish_order_and_controller_visibility()
                  "process.start", "process.sockets", "coordinator.create",
                  "coordinator.start", "process.ready",
                  "coordinator.make_session",
-                 "coordinator.stop", "process.clean_exit"}),
+                 "coordinator.stop", "process.clean_exit",
+                 "coordinator.release"}),
             "finish lifecycle order was not exact");
 }
 
@@ -333,7 +353,7 @@ void test_start_order_and_abort_after_acquisition_failure()
                  "process.start", "process.sockets", "coordinator.create",
                  "coordinator.start", "process.ready",
                  "coordinator.make_session", "coordinator.stop",
-                 "process.stop"}),
+                 "process.stop", "coordinator.release"}),
             "start failure/abort lifecycle order was not exact");
     require(session->Abort(&error),
             "abort was not idempotent after bounded failed-start cleanup: " +
@@ -365,8 +385,28 @@ void test_abort_order_and_bounded_process_stop()
                  "process.start", "process.sockets", "coordinator.create",
                  "coordinator.start", "process.ready",
                  "coordinator.make_session",
-                 "coordinator.stop", "process.stop"}),
+                 "coordinator.stop", "process.stop", "coordinator.release"}),
             "abort lifecycle order was not exact");
+}
+
+void test_abort_keeps_resources_quarantined_without_reap()
+{
+    const nlohmann::json plan = make_plan();
+    std::vector<std::string> events;
+    std::string error;
+    auto session = headless::SpatialRoiHeadlessCameraSession::Create(
+        make_config(plan, &events, false, true, {}, false), &error);
+    require(session != nullptr, error);
+    require(!session->Start(&error),
+            "unreaped failed-start session unexpectedly succeeded");
+    require(!session->Abort(&error),
+            "unreaped recorder cleanup was reported as successful");
+    require(std::find(events.begin(), events.end(), "coordinator.release") ==
+                events.end(),
+            "producer resources were released without recorder reap proof");
+    require(session->first_failure().find("acquisition session creation") !=
+                std::string::npos,
+            "failed-start reason was not retained while recorder stayed unreaped");
 }
 
 void test_finish_rejects_async_lane_failure()
@@ -410,6 +450,8 @@ int main()
          test_finish_order_and_controller_visibility},
         {"abort_order_and_bounded_process_stop",
          test_abort_order_and_bounded_process_stop},
+        {"abort_keeps_resources_quarantined_without_reap",
+         test_abort_keeps_resources_quarantined_without_reap},
         {"finish_rejects_async_lane_failure",
          test_finish_rejects_async_lane_failure},
     };

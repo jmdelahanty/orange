@@ -126,27 +126,42 @@ production recording session is clean only when descriptor intake ends via
 `client_finalize`; EOF, malformed descriptors, ACK/RELEASE write failures, or
 signal stop before finalize are recorded as unclean intake termination.
 
-## Spatial ROI v1 boundary (2026-08-31)
+## Spatial ROI v1 boundary (2026-09-02)
 
-The existing `stream_kind = "crop"` contract is for one YOLO-driven,
-camera-owned top-one crop stream (for example `2010096_crop`). It is not yet a
-contract for detector-independent spatial ROI fanout. In particular,
-`recording_frame_id` plus camera serial is not a unique handoff key when one
-source frame produces four ROI descriptors.
+The existing `stream_kind = "crop"` contract remains for one YOLO-driven,
+camera-owned top-one crop stream (for example `2010096_crop`). Detector-
+independent fixed-region fanout is implemented by the separate schema-v5
+`spatial_roi_external_recorder` contract and embedded IPC-v2 grammar. Its
+stable `roi_id`, `region_id`, `logical_stream_id`, plan digest, native content
+rectangle, encoded raster/padding, and ROI-local frame index make
+`recording_frame_id` plus camera serial unambiguous when one source frame
+produces four ROI descriptors. The dedicated design/checklist are
+[`spatial_roi_recording_v1_foundation.md`](spatial_roi_recording_v1_foundation.md)
+and
+[`spatial_roi_headless_completion_checklist_2026-08-31.md`](spatial_roi_headless_completion_checklist_2026-08-31.md).
 
-The next spatial ROI recorder slice must extend the handoff with stable
-`roi_id`, `region_id`, `logical_stream_id`, plan digest, native content
-rectangle, encoded raster/padding, and an ROI-local frame index. ACK, RELEASE,
-duplicate detection, summaries, and finalization must use a collision-free
-stream-plus-frame identity. Stream IDs and socket/environment namespaces must
-remain distinct per logical ROI (or a multiplexed protocol must prove the same
-isolation); changing `camera_serial` to encode ROI identity is forbidden.
+Spatial ROI v1 uses detached-copy source lifetime. The receiver caches each
+complete CUDA memory/event import pair for the authenticated stream and
+producer generation. For each FRAME it waits for the producer event and copies
+the exact packed native Mono8 raster; only after that raw copy completes does
+it send the ACK/RELEASE sequence that permits producer source reuse. The
+detached frame then enters the bounded encoder queue. Its single encoder-owner
+thread copies Mono8 into the NVENC Y plane of a prewarmed neutral-chroma NV12
+surface and releases the detached slot; encode, mux, and disk work do not
+extend the producer lease. Cache close occurs after admission stop and
+encoder/session drain. Producer exporter/runtime objects are released only
+after the recorder child is definitively reaped; absent that proof, ownership
+is retained or quarantined.
 
-Until that extension and its validators are implemented, this external
-recorder contract must not claim support for spatial ROI outputs. The existing
-first-class full-frame path and the established top-one crop path remain
-unchanged, and the authoritative full-frame source lease must remain protected
-by the existing detached-copy or explicit `RELEASE` source-safe boundary.
+The two supported fixed-region policies remain distinct: combined mode keeps
+the first-class full-frame product alongside four ROI products, while
+`fixed_rois_with_registered_context` explicitly omits continuous full-frame
+media and binds one native-Mono8 registered context artifact instead. Cache
+hit/miss/cleanup and owner-copy counters are currently runtime/test telemetry,
+not persisted acceptance evidence. The spatial descriptor-bound video-sanity
+probe remains authoritative for per-ROI nearly-black/flat content and exact
+visible raster checks; generic ffprobe availability/frame-count checks do not
+replace it.
 
 There are two source-lifetime modes:
 

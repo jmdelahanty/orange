@@ -60,6 +60,30 @@ unavailable probe or any raster/frame-count decode failure fatal.  Without the
 flag, unavailable ffprobe is reported as a warning and the metadata/artifact
 checks still run.
 
+`ffprobe` is the offline structural check; it is not the image-content gate.
+Before a recorder child can emit successful terminal evidence, the C++ stream
+core decodes the completed HEVC file and requires every visible `AVFrame` to
+have the exact authenticated ROI raster, expected frame count, and acceptable
+luma statistics. HEVC may allocate a wider internal coded/buffer raster (for
+example, a 2256-pixel visible width can require a 2304-pixel aligned allocation
+envelope in the bundled FFmpeg decoder), but that is codec padding rather than
+a changed or cropped output raster. The sanity checker budgets for that coded
+envelope and still requires exact 2256-by-2256 visible frames. A dark-source,
+unlit-camera run can therefore prove throughput and lifecycle behavior while
+correctly producing rejected terminal content evidence; `--require-ffprobe`
+alone must not be interpreted as a brightness/content certification.
+
+At the live handoff boundary, `RELEASE` now means that the recorder has waited
+on the authenticated producer event and copied the complete packed Mono8 ROI
+into bounded recorder-owned storage. CUDA IPC memory/event imports are cached
+for the authenticated stream generation instead of being reopened and closed
+per frame. The cache is closed only after admission stops and encoder work is
+finalized, before successful terminal evidence; producer allocations remain
+retained until the recorder child is definitively reaped. The verifier requires
+the resulting successful child lifecycle, but persistence and offline threshold
+checks for the new cache/copy latency counters remain a separate checklist
+item.
+
 The verifier does not accept an arbitrary self-digesting evidence JSON. Each
 ROI evidence manifest must have the exact production schema-v2 13-field shape,
 the authenticated contract/plan/recording/camera/stream/geometry/GPU/profile/

@@ -43,6 +43,12 @@ constexpr std::size_t kHashBufferBytes = 1024U * 1024U;
 constexpr std::uint64_t kMaxDecodedFrames = 100ULL * 1000ULL * 1000ULL;
 constexpr std::uint32_t kMaxDimension = 32768U;
 constexpr std::uint64_t kMaxPixels = 268ULL * 1000ULL * 1000ULL;
+// The bundled FFmpeg decoder aligns its buffer width to a 64-byte SIMD stride,
+// and HEVC may additionally expose a coded picture larger than the visible
+// conformance-window raster.  Reserve one conservative 64x64 envelope while
+// continuing to require exact visible dimensions from both the MP4 and every
+// decoded AVFrame.  NVENC exercises this for valid 2256-pixel ROI rasters.
+constexpr std::uint32_t kHevcDecoderAllocationAlignment = 64U;
 constexpr double kMinFrameRate = 0.001;
 constexpr double kMaxFrameRate = 10000.0;
 constexpr auto kMaxTimeout = std::chrono::hours(1);
@@ -105,6 +111,39 @@ bool valid_dimensions(const std::uint32_t width,
     const std::uint64_t pixels = static_cast<std::uint64_t>(width) * height;
     if (pixels == 0 || pixels > kMaxPixels) {
         return fail(error_out, "video sanity pixel count is outside the bound");
+    }
+    *pixels_out = pixels;
+    return true;
+}
+
+bool hevc_decoder_pixel_bound(const std::uint32_t visible_width,
+                              const std::uint32_t visible_height,
+                              std::uint64_t* pixels_out,
+                              std::string* error_out)
+{
+    if (pixels_out == nullptr) {
+        return fail(error_out, "video sanity decoder pixel output is null");
+    }
+    const auto align_for_decoder = [](const std::uint32_t value) {
+        return (static_cast<std::uint64_t>(value) +
+                kHevcDecoderAllocationAlignment - 1U) /
+               kHevcDecoderAllocationAlignment *
+               kHevcDecoderAllocationAlignment;
+    };
+    const std::uint64_t coded_width_bound = align_for_decoder(visible_width);
+    const std::uint64_t coded_height_bound = align_for_decoder(visible_height);
+    if (coded_width_bound == 0 || coded_height_bound == 0 ||
+        coded_width_bound > kMaxDimension ||
+        coded_height_bound > kMaxDimension ||
+        coded_width_bound >
+            std::numeric_limits<std::uint64_t>::max() / coded_height_bound) {
+        return fail(error_out,
+                    "video sanity HEVC coded raster is outside the bound");
+    }
+    const std::uint64_t pixels = coded_width_bound * coded_height_bound;
+    if (pixels == 0 || pixels > kMaxPixels) {
+        return fail(error_out,
+                    "video sanity HEVC coded pixel count is outside the bound");
     }
     *pixels_out = pixels;
     return true;
@@ -896,10 +935,15 @@ bool run_probe(const SpatialRoiRecorderVideoSanityRequest& request,
         return fail(error_out, "video sanity video path is not contract-authorized");
     }
     std::uint64_t expected_pixels = 0;
+    std::uint64_t decoder_pixel_bound = 0;
     if (!valid_dimensions(request.encoded_width,
                           request.encoded_height,
                           &expected_pixels,
                           error_out) ||
+        !hevc_decoder_pixel_bound(request.encoded_width,
+                                  request.encoded_height,
+                                  &decoder_pixel_bound,
+                                  error_out) ||
         request.expected_frame_count == 0 ||
         request.expected_frame_count > kMaxDecodedFrames ||
         !std::isfinite(request.expected_frame_rate) ||
@@ -1116,7 +1160,14 @@ bool run_probe(const SpatialRoiRecorderVideoSanityRequest& request,
     // These are decoder-side allocation guards and must be set before
     // avcodec_open2.  max_samples is mostly relevant to audio codecs, but
     // setting it here keeps a future multi-media demux path bounded too.
-    codec_resources.codec->max_pixels = static_cast<std::int64_t>(expected_pixels);
+    // max_pixels applies to decoder allocation before conformance-window
+    // cropping and includes FFmpeg's internal stride alignment. Bound it to a
+    // conservative 64x64 envelope around the authenticated visible raster.
+    // The container and every decoded AVFrame are still required below to
+    // equal the exact contract dimensions, so this does not permit a
+    // different visible raster.
+    codec_resources.codec->max_pixels =
+        static_cast<std::int64_t>(decoder_pixel_bound);
     codec_resources.codec->max_samples = static_cast<std::int64_t>(expected_pixels);
     codec_resources.codec->thread_count = 1;
     if (expired(deadline)) {

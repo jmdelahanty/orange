@@ -547,6 +547,9 @@ void test_exact_lane_capacity_and_reentrant_stop()
     SpatialRoiBatchSubmission reentrant;
     {
         SpatialRoiRecordingRuntime* runtime_ptr = nullptr;
+        bool reentrant_drain_success = true;
+        bool reentrant_fully_drained = true;
+        std::string reentrant_drain_error;
         SpatialRoiRecordingRuntime runtime(
             plan,
             "10000",
@@ -554,7 +557,10 @@ void test_exact_lane_capacity_and_reentrant_stop()
             [&](const SpatialRoiLaneDelivery& delivery) {
                 const std::size_t lane_index = delivery.lane_index;
                 if (lane_index == 0) {
-                    runtime_ptr->StopAcceptingAndDrain();
+                    reentrant_drain_success =
+                        runtime_ptr->StopAcceptingAndDrain(
+                            &reentrant_drain_error,
+                            &reentrant_fully_drained);
                 }
                 return SpatialRoiLaneSinkResult::kCompleted;
             });
@@ -564,6 +570,10 @@ void test_exact_lane_capacity_and_reentrant_stop()
                 "reentrant-stop fixture was not admitted");
         require(runtime.StopAcceptingAndDrain(),
                 "reentrant successful runtime did not report a successful drain");
+        require(!reentrant_drain_success && !reentrant_fully_drained &&
+                    reentrant_drain_error.find("lane callback") !=
+                        std::string::npos,
+                "reentrant drain did not report its stop-only boundary");
         require(reentrant.envelope->terminal_snapshot().status ==
                     SpatialRoiBatchCompletionStatus::kComplete,
                 "reentrant stop prevented admitted lanes from draining");

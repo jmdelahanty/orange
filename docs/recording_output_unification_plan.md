@@ -5,25 +5,35 @@ Date: 2026-05-26
 Scope: define how Orange should reduce duplication between full-frame recording
 and crop-video recording without merging their hot paths prematurely.
 
-## Spatial ROI boundary (2026-08-31)
+## Spatial ROI boundary (2026-09-02)
 
-Orange commit `c423ad5` completes the verified-plan and CUDA batch-extraction
-foundation for detector-independent spatial ROI recording. The isolation
-branch now also contains the closed ROI frame contract, recorder-plan
-materializer, and bounded lane runtime, but it still does not add recording
-outputs. The current scalar `recording_outputs[serial].crop`
-descriptor and `Cam<serial>_crop` artifacts continue to describe the legacy
-YOLO-driven top-one crop sidecar only. They must not be used to represent four
-stable `roi_id`/`region_id` streams.
+The detector-independent fixed-region path now has a dedicated one-camera
+recorder child, collection-valued `recording_outputs_v3` descriptors, the
+ROI-aware IPC-v2 handoff, independent per-ROI evidence/finalization, and a
+read-only acceptance verifier. The scalar
+`recording_outputs[serial].crop` descriptor and `Cam<serial>_crop` artifacts
+remain the legacy YOLO-driven top-one crop sidecar; they must not represent
+four stable `roi_id`/`region_id` streams. The authoritative design and
+execution gates are
+[`spatial_roi_recording_v1_foundation.md`](spatial_roi_recording_v1_foundation.md)
+and
+[`spatial_roi_headless_completion_checklist_2026-08-31.md`](spatial_roi_headless_completion_checklist_2026-08-31.md).
 
-The next ROI slice is an end-to-end one-camera/four-ROI recorder integration.
-It may reuse shared output/profile/sink helpers from this plan, but it must
-first extend descriptors, frame metadata, recorder handoff identity, and
-finalization to a collection keyed by logical ROI stream. Full-frame recording
-remains the ingest authority, and ROI lanes remain bounded sidecars whose
-pressure or failure cannot block or relabel the full-frame path. The detailed
-gates and non-negotiable safety boundaries are in
-[`spatial_roi_recording_v1_foundation.md`](spatial_roi_recording_v1_foundation.md).
+The two fixed-region media policies have different output authority:
+
+- `full_frame_and_fixed_rois` retains the existing ingest-authoritative
+  full-frame product plus four independent ROI products.
+- `fixed_rois_with_registered_context` intentionally omits continuous
+  full-frame media and retains one recording-bound native-Mono8 registered
+  context image plus the four ROI products. Omission is explicit policy state,
+  not a failed or relabeled full-frame output. See
+  [`fixed_roi_registered_context_plan_2026-09-02.md`](fixed_roi_registered_context_plan_2026-09-02.md).
+
+The 2026-09-02 2010093 throughput run sustained four 2256x2256 ROI streams at
+100 FPS with 600 frames per ROI and no acquisition/encode drops. It remains
+non-accepting evidence because the unilluminated source correctly failed the
+nearly-black content gate; throughput and scientific content acceptance are
+separate gates.
 
 ## Bottom Line
 
@@ -61,6 +71,24 @@ RecordingIngress
   -> external_recorder_ipc_probe / supervised recorder process
   -> external_recorder/Cam<serial>_external.mp4
 ```
+
+Fixed-region spatial ROI recording:
+
+```text
+native Mono8 acquisition
+  -> one verified extraction batch -> four bounded ROI lanes
+  -> cached CUDA memory/event import in the recorder child
+  -> raw Mono8 detach copy -> ACK/RELEASE source-safe boundary
+  -> encoder-owner copy into prewarmed NVENC Y/chroma surfaces
+  -> one independent ROI encoder/writer/evidence set per logical stream
+```
+
+The receiver cache is session/generation scoped and closes only after admission
+stop and encoder-owner drain. Producer exporter/runtime ownership is released
+only after the recorder child is definitively reaped; an unreaped or ambiguous
+child leaves that ownership quarantined. Cache hit/miss/cleanup and owner-copy
+counters are available in runtime/test telemetry but are not yet persisted as
+acceptance evidence.
 
 Crop recording:
 

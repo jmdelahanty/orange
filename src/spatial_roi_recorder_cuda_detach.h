@@ -44,7 +44,9 @@ struct SpatialRoiRecorderCudaDetachConfig {
     std::size_t slot_count = 0;
     // This independently authenticated budget must come from recorder
     // admission. The pool rejects both a zero/oversized budget and any plan
-    // whose recorder-owned Mono8+NV12 slots exceed it.
+    // whose recorder-owned, prewarmed slot storage exceeds it.  ABI-v1
+    // contracts reserve Mono8+NV12 bytes per slot; the raw-detach path uses
+    // the NV12 allocation only as encoder-owner scratch after source RELEASE.
     std::uint64_t max_pool_bytes = 0;
     // One absolute deadline covers the imported source event and all queued
     // detach/transform work. A timeout quarantines the pool and is terminal
@@ -80,8 +82,23 @@ struct SpatialRoiRecorderCudaDetachCounters {
     std::uint64_t cuda_errors = 0;
     std::uint64_t memory_imports = 0;
     std::uint64_t event_imports = 0;
+    // IPC imports are session-scoped and bounded by slot_count.  The import
+    // counters above count actual CUDA open calls (cache misses), while these
+    // counters make reuse and cache pressure explicit.
+    std::uint64_t memory_cache_hits = 0;
+    std::uint64_t memory_cache_misses = 0;
+    std::uint64_t event_cache_hits = 0;
+    std::uint64_t event_cache_misses = 0;
+    std::uint64_t import_cache_entries = 0;
+    std::uint64_t peak_import_cache_entries = 0;
+    std::uint64_t import_cache_full = 0;
+    std::uint64_t cached_memory_closes = 0;
+    std::uint64_t cached_event_closes = 0;
+    std::uint64_t cache_cleanup_failures = 0;
     std::uint64_t source_waits = 0;
     std::uint64_t mono8_bytes_copied = 0;
+    // Retained for snapshot compatibility. Conversion is no longer part of
+    // source detach and remains zero; encoder telemetry owns that count.
     std::uint64_t nv12_conversions = 0;
     std::uint64_t slot_releases = 0;
     std::uint64_t source_quarantines = 0;
@@ -96,8 +113,8 @@ class SpatialRoiRecorderCudaDetachState;
 // A successful result owns one recorder-side slot.  Its destructor returns
 // that slot to the bounded pool; callers may also release it explicitly after
 // the encoder has finished using both device views.  No source CUDA IPC
-// handle is retained by this object: imports are closed before kDetached is
-// returned, after the copy stream has completed.
+// handle is retained by this object. The pool owns a bounded session cache of
+// imported handles, while this frame owns only recorder allocations.
 class SpatialRoiRecorderDetachedFrame final {
 public:
     SpatialRoiRecorderDetachedFrame() = default;
@@ -127,6 +144,9 @@ public:
     {
         return device_nv12_;
     }
+    // The NV12 allocation is intentionally uninitialized at detach return and
+    // retained only by the ABI-v1 authenticated pool budget. The encoder uses
+    // the raw Mono8 view and prefilled NVENC chroma surfaces directly.
     std::uint32_t width() const noexcept { return width_; }
     std::uint32_t height() const noexcept { return height_; }
     std::size_t mono8_bytes() const noexcept { return mono8_bytes_; }
@@ -221,9 +241,11 @@ public:
     SpatialRoiRecorderCudaDetachCounters counters() const noexcept;
 
     // The input is the validated wire-level FRAME descriptor.  On success,
-    // this function has synchronously waited for the producer completion event,
-    // copied the full packed Mono8 raster, generated NV12 (Y exact, UV=128),
-    // and closed both imported handles.  Only then is the result RELEASE-ready.
+    // this function has synchronously waited for the producer completion event
+    // and copied the full packed Mono8 raster. Only then is the result
+    // RELEASE-ready. NV12 preparation occurs later on the encoder owner.
+    // Imported handles are cached for this exact authenticated stream and
+    // producer generation; they are not opened/closed on every FRAME.
     // A failure after source import returns kSourceQuarantined and preserves
     // the imported resources in a process-lifetime quarantine.
     // One recorder thread owns a pool/stream at a time. A concurrent caller is
@@ -248,6 +270,12 @@ public:
     // Stop accepting new frames while allowing already returned detached
     // frames to retain the shared pool state until their Release/destruction.
     void Stop() noexcept;
+
+    // Close the bounded session import cache after admission has stopped and
+    // the session/encoder owners have drained.  A cleanup failure quarantines
+    // the pool and returns false; callers must treat recorder finalization as
+    // failed. Idempotent after a successful close.
+    bool CloseCachedImports(std::string* error_out = nullptr) noexcept;
 
 private:
     SpatialRoiRecorderCudaDetachResult TryDetachImpl(

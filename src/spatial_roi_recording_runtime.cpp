@@ -956,9 +956,31 @@ void SpatialRoiRecordingRuntime::Drain() noexcept
 }
 
 bool SpatialRoiRecordingRuntime::StopAcceptingAndDrain(
-    std::string* error_out) noexcept
+    std::string* error_out,
+    bool* fully_drained_out) noexcept
 {
+    if (fully_drained_out) {
+        *fully_drained_out = false;
+    }
+    for (const auto& lane : lanes_) {
+        if (lane->IsCurrentThread()) {
+            StopAccepting();
+            if (error_out) {
+                try {
+                    *error_out =
+                        "runtime drain was requested from a lane callback; "
+                        "only stop admission completed";
+                } catch (...) {
+                    error_out->clear();
+                }
+            }
+            return false;
+        }
+    }
     Drain();
+    if (fully_drained_out) {
+        *fully_drained_out = true;
+    }
     const bool success = !failed();
     if (!success && error_out) {
         try {

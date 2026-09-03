@@ -108,6 +108,25 @@ public:
         return false;
     }
 
+    bool ReleaseProducerCudaResourcesAfterRecorderReaped(
+        std::string* error_out) noexcept override
+    {
+        if (coordinator_) {
+            return coordinator_->ReleaseProducerCudaResourcesAfterRecorderReaped(
+                error_out);
+        }
+        if (error_out) {
+            try {
+                error_out->clear();
+            } catch (...) {
+            }
+        }
+        // No coordinator means no producer/exporter resources were created.
+        // Treat this as an idempotent no-op so failed-start cleanup remains
+        // safe and does not manufacture a second failure.
+        return true;
+    }
+
     bool MakeAcquisitionSession(
         SpatialRoiAcquisitionSession* session_out) const noexcept override
     {
@@ -408,11 +427,18 @@ bool SpatialRoiHeadlessCameraSession::Finish(std::string* error_out)
     }
 
     std::string process_error;
-    if (!process_ || !process_->WaitForCleanExit(&process_error)) {
+    bool process_reaped = false;
+    const bool clean_exit =
+        process_ && process_->WaitForCleanExit(&process_error);
+    if (process_) {
+        process_reaped = process_->status().reaped;
+    }
+    if (!clean_exit || !process_reaped) {
         success = false;
-        latch_failure(
-            "headless camera session recorder clean exit failed: " +
-            bounded_reason(process_error, "clean exit failed"));
+        latch_failure(clean_exit
+                          ? "headless camera session recorder clean exit did not prove child reap"
+                          : "headless camera session recorder clean exit failed: " +
+                                bounded_reason(process_error, "clean exit failed"));
         // WaitForCleanExit already performs bounded escalation on failure;
         // Stop is still called to cover an injected supervisor with the same
         // contract and to make the destructor path idempotent.
@@ -423,6 +449,24 @@ bool SpatialRoiHeadlessCameraSession::Finish(std::string* error_out)
                     "headless camera session recorder stop failed: " +
                     bounded_reason(stop_error, "stop failed"));
             }
+            process_reaped = process_->status().reaped;
+        }
+    }
+
+    // The process status is the external ownership proof.  A successful
+    // WaitForCleanExit normally implies reaped; checking the status explicitly
+    // also keeps injected supervisors from releasing producer CUDA resources
+    // based on a misleading boolean alone.  A failed clean wait may still have
+    // completed bounded stop/reap, in which case this same safe boundary can
+    // release ownership while preserving the session failure result.
+    if (process_reaped && coordinator_) {
+        std::string release_error;
+        if (!coordinator_->ReleaseProducerCudaResourcesAfterRecorderReaped(
+                &release_error)) {
+            success = false;
+            latch_failure(
+                "headless camera session producer CUDA resource release failed: " +
+                bounded_reason(release_error, "producer resource release failed"));
         }
     }
 
@@ -443,6 +487,7 @@ bool SpatialRoiHeadlessCameraSession::abort_impl(std::string* error_out) noexcep
     }
     state_ = SpatialRoiHeadlessCameraSessionState::kAborting;
     bool success = true;
+    bool process_reaped = false;
 
     try {
         // Disarm linearizes against any acquisition callback. Drain then
@@ -478,6 +523,7 @@ bool SpatialRoiHeadlessCameraSession::abort_impl(std::string* error_out) noexcep
                     "headless camera session recorder abort failed: " +
                     bounded_reason(process_error, "bounded recorder stop failed"));
             }
+            process_reaped = process_->status().reaped;
         }
     } catch (const std::exception& exception) {
         success = false;
@@ -485,6 +531,33 @@ bool SpatialRoiHeadlessCameraSession::abort_impl(std::string* error_out) noexcep
     } catch (...) {
         success = false;
         latch_failure("headless camera session recorder abort threw");
+    }
+
+    // Stop() is allowed to return a failure after it has nevertheless reaped
+    // the exact child (for example, while reporting a secondary teardown
+    // error).  The status bit, not the boolean alone, is the ownership proof.
+    // If it is absent, leave the handoff/export ownership quarantined for the
+    // outer supervisor rather than risking producer CUDA reuse.
+    if (process_reaped && coordinator_) {
+        try {
+            std::string release_error;
+            if (!coordinator_->ReleaseProducerCudaResourcesAfterRecorderReaped(
+                    &release_error)) {
+                success = false;
+                latch_failure(
+                    "headless camera session producer CUDA resource release failed: " +
+                    bounded_reason(release_error, "producer resource release failed"));
+            }
+        } catch (const std::exception& exception) {
+            success = false;
+            latch_failure(exception_reason(
+                "headless camera session producer CUDA resource release",
+                exception));
+        } catch (...) {
+            success = false;
+            latch_failure(
+                "headless camera session producer CUDA resource release threw");
+        }
     }
 
     cleanup_complete_ = true;

@@ -210,7 +210,8 @@ struct SpatialRoiLosslessEncoderConfig {
 
     // Both queues are bounded. queue_capacity is the maximum number of
     // detached frames waiting for the one owner thread; max_queue_bytes is an
-    // independent byte budget for those queued NV12 views.
+    // independent byte budget for their eventual queued NV12 views. Raw
+    // detached Mono8 is prepared only after dequeue by that owner.
     std::size_t queue_capacity = 0;
     std::uint64_t max_queue_bytes = 0;
     std::size_t writer_queue_max_packets = 0;
@@ -276,6 +277,9 @@ struct SpatialRoiLosslessEncoderStats {
     std::uint64_t rejected = 0;
     std::uint64_t queue_overflows = 0;
     std::uint64_t copy_completed = 0;
+    // Number of detached Mono8 inputs copied directly into the luma plane of
+    // a neutral-chroma NVENC ring surface by the encoder owner.
+    std::uint64_t mono8_input_copies = 0;
     std::uint64_t source_releases = 0;
     std::uint64_t encoded_frames = 0;
     std::uint64_t encoded_packets = 0;
@@ -394,7 +398,9 @@ public:
     // return from this detached-frame overload is strictly pre-admission: the
     // detached allocation has been returned safely and no result callback will
     // later be emitted for that frame. The diagnostic overload preserves the
-    // bounded rejection reason needed by the recorder ACK/evidence path.
+    // bounded rejection reason needed by the recorder ACK/evidence path. The
+    // first admitted frame fixes the input mode for this encoder instance;
+    // mixing this packed-Mono8 path with generic NV12 views is rejected.
     bool Enqueue(ipc::SpatialRoiRecorderDetachedFrame&& detached,
                  const SpatialRoiFrameDescriptor& descriptor) noexcept;
     bool Enqueue(ipc::SpatialRoiRecorderDetachedFrame&& detached,
@@ -406,7 +412,9 @@ public:
     // continues encode/mux work while the caller may safely let lifetime
     // expire. A timeout is terminal; the source is retained in quarantine.
     // If admission occurred before that timeout, its terminal callback is
-    // still delivered even though this bounded wait returns false.
+    // still delivered even though this bounded wait returns false. This
+    // generic NV12 path likewise cannot be mixed with detached Mono8 frames in
+    // one encoder instance.
     bool Enqueue(const SpatialRoiLosslessDeviceView& view) noexcept;
 
     // Stops admission, drains the bounded queue, calls NvEncoderCuda::EndEncode

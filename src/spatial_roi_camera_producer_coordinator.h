@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <sys/types.h>
 #include <vector>
@@ -32,6 +33,12 @@ public:
     virtual SpatialRoiLaneSinkResult Submit(
         const SpatialRoiLaneDelivery& delivery) = 0;
     virtual void Stop() noexcept = 0;
+    // Stop closes the transport so the recorder can observe producer EOF, but
+    // intentionally retains any indeterminate export ownership.  This second
+    // boundary may be called only after the recorder child has been
+    // definitively reaped.
+    virtual bool ReleaseProducerCudaResourcesAfterRecorderReaped(
+        std::string* error_out = nullptr) noexcept = 0;
 
 protected:
     SpatialRoiCameraProducerStream() = default;
@@ -53,8 +60,11 @@ public:
     virtual SpatialRoiBatchSubmission TrySubmit(
         const SpatialRoiSourceView& source) = 0;
     virtual void StopAccepting() noexcept = 0;
+    // fully_drained_out is false when a runtime can stop admission but cannot
+    // join from the calling context (for example, a re-entrant lane callback).
     virtual bool StopAcceptingAndDrain(
-        std::string* error_out = nullptr) noexcept = 0;
+        std::string* error_out = nullptr,
+        bool* fully_drained_out = nullptr) noexcept = 0;
 
 protected:
     SpatialRoiCameraProducerRuntime() = default;
@@ -192,23 +202,26 @@ public:
     SpatialRoiCameraProducerSubmitResult Submit(
         const SpatialRoiSourceView& source) noexcept;
 
-    // Stop admission, drain already queued lane work, then stop transports.
+    // Stop admission, drain already queued lane work, then close transports.
     // Destruction invokes the same best-effort boundary. A fatal handoff with
-    // indeterminate source ownership remains quarantined by its handoff.
+    // indeterminate source ownership remains retained until the explicit
+    // post-reap release method (or is quarantined by its handoff destructor).
     // Returns false when any admitted ROI lane failed, was rejected/dropped,
     // or otherwise completed incompletely. Transports are still stopped on
     // that path and the first failure is retained in the snapshot.
     bool StopAndDrain(std::string* error_out = nullptr) noexcept;
 
-    SpatialRoiCameraProducerState state() const noexcept { return state_; }
-    bool ready() const noexcept
-    {
-        return state_ == SpatialRoiCameraProducerState::kReady;
-    }
-    bool failed() const noexcept
-    {
-        return state_ == SpatialRoiCameraProducerState::kFailed;
-    }
+    // Release producer-side CUDA/export ownership retained by a fatal IPC
+    // handoff.  The caller must have an external, definitive recorder-child
+    // reap proof (for example, process.status().reaped).  Calling this before
+    // that proof is a lifecycle violation.  The operation is idempotent after
+    // successful completion and leaves ownership quarantined on failure.
+    bool ReleaseProducerCudaResourcesAfterRecorderReaped(
+        std::string* error_out = nullptr) noexcept;
+
+    SpatialRoiCameraProducerState state() const noexcept;
+    bool ready() const noexcept;
+    bool failed() const noexcept;
     // Production Start() retains the exact runtime that owns this
     // coordinator's four lane sink closures. An acquisition controller may
     // Arm() this shared object so its WORKER_ENTRY adapter submits to the
@@ -223,10 +236,7 @@ public:
     // runtime.
     bool MakeAcquisitionSession(
         SpatialRoiAcquisitionSession* session_out) const noexcept;
-    const std::string& first_failure() const noexcept
-    {
-        return first_failure_;
-    }
+    std::string first_failure() const;
     const session::spatial_roi::SpatialRoiRecorderCameraContractView& contract()
         const noexcept
     {
@@ -262,9 +272,17 @@ private:
 
     void latch_failure(std::string reason) noexcept;
     void stop_streams_best_effort() noexcept;
+    bool release_streams_after_recorder_reaped(
+        std::string* error_out) noexcept;
 
     SpatialRoiCameraProducerConfig config_;
     session::spatial_roi::SpatialRoiRecorderCameraContractView contract_;
+    // Start, direct Submit, StopAndDrain, and the post-reap release are one
+    // linear lifecycle.  The normal acquisition adapter retains its own
+    // shared runtime and is stopped/drained by the same runtime boundary;
+    // this mutex prevents callers of the coordinator API from racing a
+    // unique runtime reset.  It is uncontended during steady-state capture.
+    mutable std::mutex lifecycle_mutex_;
     // Shared because acquisition_runtime() may be retained by an
     // acquisition controller after this coordinator has begun teardown. The
     // runtime sink therefore keeps its stream objects alive and sees a
@@ -280,6 +298,12 @@ private:
     std::uint64_t submitted_ = 0;
     std::uint64_t incomplete_ = 0;
     std::uint64_t rejected_ = 0;
+    // A failed submit stops admission but does not prove that asynchronous
+    // runtime lanes have joined. Post-reap stream/runtime teardown therefore
+    // also requires StopAndDrain() to have returned from the runtime drain
+    // boundary (successfully or with a fully reported lane failure).
+    bool stop_and_drain_completed_ = false;
+    bool producer_resources_released_ = false;
 };
 
 }  // namespace orange::spatial_roi

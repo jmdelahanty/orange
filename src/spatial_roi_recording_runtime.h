@@ -270,10 +270,15 @@ public:
     void StopAccepting() noexcept;
     void Drain() noexcept;
     // Returns false when any admitted lane terminates incompletely (including
-    // sink rejection/failure, source quarantine, or a queue admission drop).
-    // The optional error is bounded by the implementation and is best-effort
-    // because this boundary is noexcept.
-    bool StopAcceptingAndDrain(std::string* error_out = nullptr) noexcept;
+    // sink rejection/failure, source quarantine, or a queue admission drop),
+    // or when invoked re-entrantly from a lane callback where joining would
+    // self-deadlock. fully_drained_out distinguishes a completed join with a
+    // reported lane failure from the latter stop-only boundary. The optional
+    // error is bounded by the implementation and is best-effort because this
+    // boundary is noexcept.
+    bool StopAcceptingAndDrain(
+        std::string* error_out = nullptr,
+        bool* fully_drained_out = nullptr) noexcept;
 
     bool accepting() const noexcept;
     bool failed() const noexcept;

@@ -722,6 +722,17 @@ struct SpatialRoiLosslessEncoder::Impl final {
         Failed,
     };
 
+    // One encoder instance owns one immutable source-pixel contract.  The
+    // public generic-NV12 seam remains useful for tests and future producers,
+    // but it must never be interleaved with detached packed-Mono8 frames: a
+    // generic NV12 copy replaces chroma while the Mono8 fast path deliberately
+    // copies only Y over the neutral chroma initialized at encoder creation.
+    enum class InputMode {
+        Unset,
+        DetachedMono8,
+        GenericNv12,
+    };
+
     struct CopyAck {
         std::mutex mutex;
         std::condition_variable cv;
@@ -743,6 +754,7 @@ struct SpatialRoiLosslessEncoder::Impl final {
         bool result_emitted = false;
         bool nvenc_pts_assigned = false;
         std::uint64_t nvenc_pts = 0;
+        InputMode input_mode = InputMode::Unset;
     };
 
     struct AcceptedPacket {
@@ -783,6 +795,7 @@ struct SpatialRoiLosslessEncoder::Impl final {
     std::atomic<std::uint64_t> queue_overflow_count{0};
     SpatialRoiLosslessWriterOperationalSnapshot writer_operational_value;
     bool has_last_enqueued = false;
+    InputMode accepted_input_mode = InputMode::Unset;
     std::uint64_t last_recording_frame_id = 0;
     std::uint64_t next_expected_roi_stream_frame_index = 1;
     std::uint64_t next_result_roi_stream_frame_index = 1;
@@ -996,6 +1009,12 @@ struct SpatialRoiLosslessEncoder::Impl final {
         encoder->SetIOCudaStreams(
             reinterpret_cast<NV_ENC_CUSTREAM_PTR>(&copy_stream),
             reinterpret_cast<NV_ENC_CUSTREAM_PTR>(&copy_stream));
+        // Every source accepted by this component is monochrome. Initialize
+        // the complete NVENC ring once, then detached Mono8 frames can copy
+        // only their exact Y plane while generic NV12 views still overwrite
+        // both Y and UV. This is the proven full-frame Orange pattern.
+        encoder->FillInputFrameChromaPlanes(
+            static_cast<std::uint8_t>(config.neutral_chroma_value));
 
         const std::size_t writer_packets = config.writer_queue_max_packets;
         const std::size_t writer_bytes = config.writer_queue_max_bytes;
@@ -1272,6 +1291,15 @@ struct SpatialRoiLosslessEncoder::Impl final {
             if (!accepting || stop_requested || failed_value || finalized) {
                 return reject_locked(error, "encoder is stopping or has failed");
             }
+            if (item->input_mode == InputMode::Unset) {
+                return reject_locked(error, "encoder work item has no input mode");
+            }
+            if (accepted_input_mode != InputMode::Unset &&
+                accepted_input_mode != item->input_mode) {
+                return reject_locked(
+                    error,
+                    "encoder input mode cannot change within one stream");
+            }
             // This check precedes dense-index consumption below. A frame
             // beyond the authenticated long-run ceiling is rejected while
             // leaving the expected stream index unchanged.
@@ -1304,7 +1332,9 @@ struct SpatialRoiLosslessEncoder::Impl final {
             const std::uint64_t roi_stream_frame_index =
                 metadata.correlation.roi_stream_frame_index;
             item->admitted_at_ns = steady_clock_now_ns();
+            const InputMode admitted_input_mode = item->input_mode;
             queue.push_back(std::move(item));
+            accepted_input_mode = admitted_input_mode;
             queued_bytes += item_bytes;
             ++stats_value.enqueued;
             stats_value.queue_depth = queue.size();
@@ -1897,10 +1927,24 @@ struct SpatialRoiLosslessEncoder::Impl final {
             const std::uint64_t source_copy_started_at_ns =
                 steady_clock_now_ns();
             copy_started = true;
+            const unsigned char* source = item.owns_detached
+                                              ? item.detached.device_mono8()
+                                              : item.view.device_nv12;
+            const std::uint32_t source_pitch = item.owns_detached
+                                                   ? static_cast<std::uint32_t>(
+                                                         item.detached.row_pitch_bytes())
+                                                   : static_cast<std::uint32_t>(
+                                                         item.view.metadata.row_pitch_bytes);
+            const std::uint32_t chroma_planes_to_copy =
+                item.owns_detached ? 0U : input_frame->numChromaPlanes;
+            if (!source || source_pitch != profile_value.width) {
+                throw std::runtime_error(
+                    "encoder source pointer or packed row pitch is invalid");
+            }
             NvEncoderCuda::CopyToDeviceFrame(
                 cu_context,
-                const_cast<unsigned char*>(item.view.device_nv12),
-                static_cast<std::uint32_t>(item.view.metadata.row_pitch_bytes),
+                const_cast<unsigned char*>(source),
+                source_pitch,
                 reinterpret_cast<CUdeviceptr>(input_frame->inputPtr),
                 input_frame->pitch,
                 static_cast<int>(profile_value.width),
@@ -1908,7 +1952,7 @@ struct SpatialRoiLosslessEncoder::Impl final {
                 CU_MEMORYTYPE_DEVICE,
                 NV_ENC_BUFFER_FORMAT_NV12,
                 input_frame->chromaOffsets,
-                input_frame->numChromaPlanes,
+                chroma_planes_to_copy,
                 false,
                 reinterpret_cast<CUstream>(copy_stream));
             if (!wait_for_copy_completion(copy_deadline)) {
@@ -1923,6 +1967,9 @@ struct SpatialRoiLosslessEncoder::Impl final {
             {
                 std::lock_guard<std::mutex> lock(mutex);
                 ++stats_value.copy_completed;
+                if (item.owns_detached) {
+                    ++stats_value.mono8_input_copies;
+                }
             }
             if (item.owns_detached) {
                 item.detached.Release();
@@ -2411,9 +2458,11 @@ struct SpatialRoiLosslessEncoder::Impl final {
             return false;
         }
         try {
-            if (!detached.valid() || !detached.device_nv12()) {
+            if (!detached.valid() || !detached.device_mono8() ||
+                !detached.device_nv12()) {
                 return reject_attempt(
-                    error, "detached frame has no valid NV12 device view");
+                    error,
+                    "detached frame has no valid Mono8/NV12 recorder storage");
             }
             SpatialRoiLosslessFrameMetadata metadata;
             std::string descriptor_error;
@@ -2436,13 +2485,16 @@ struct SpatialRoiLosslessEncoder::Impl final {
                     "detached frame descriptor geometry does not match encoder contract");
             }
             metadata = metadata_from_descriptor(descriptor);
+            const std::uint64_t expected_mono8_bytes =
+                static_cast<std::uint64_t>(metadata.width) * metadata.height;
             if (metadata.byte_length != detached.nv12_bytes() ||
+                expected_mono8_bytes != detached.mono8_bytes() ||
                 metadata.width != detached.width() ||
                 metadata.height != detached.height() ||
                 metadata.row_pitch_bytes != detached.row_pitch_bytes()) {
                 return reject_attempt(
                     error,
-                    "detached frame NV12 view does not match its descriptor");
+                    "detached frame Mono8/NV12 storage does not match its descriptor");
             }
             std::string correlation_error;
             if (!ipc::spatial_roi_ipc_correlation_matches_descriptor(
@@ -2469,6 +2521,7 @@ struct SpatialRoiLosslessEncoder::Impl final {
             item->view.metadata = metadata;
             item->detached = std::move(detached);
             item->owns_detached = true;
+            item->input_mode = InputMode::DetachedMono8;
             return enqueue_item(std::move(item), error);
         } catch (const std::exception& exception) {
             return reject_unadmitted_exception(
@@ -2511,6 +2564,7 @@ struct SpatialRoiLosslessEncoder::Impl final {
 #endif
             auto item = std::make_unique<WorkItem>();
             item->view = view;
+            item->input_mode = InputMode::GenericNv12;
 #if defined(ORANGE_SPATIAL_ROI_ENCODER_TESTING)
             inject_test_fault(SpatialRoiLosslessEncoderTestFaultPoint::
                                   BeforeDeviceViewAckAllocation);

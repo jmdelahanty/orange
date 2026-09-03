@@ -366,31 +366,24 @@ SpatialRoiRecorderCudaDetachConfig make_config(
     return config;
 }
 
-void verify_outputs(
+void verify_raw_output(
     const orange::spatial_roi::ipc::SpatialRoiRecorderDetachedFrame& frame,
     const std::vector<unsigned char>& source_bytes,
     const char* context)
 {
     std::vector<unsigned char> mono(source_bytes.size(), 0);
-    std::vector<unsigned char> nv12(source_bytes.size() + source_bytes.size() / 2,
-                                    0);
     require_cuda(cudaMemcpy(mono.data(),
                             frame.device_mono8(),
                             mono.size(),
                             cudaMemcpyDeviceToHost),
                  "cudaMemcpy(detached Mono8)");
-    require_cuda(cudaMemcpy(nv12.data(),
-                            frame.device_nv12(),
-                            nv12.size(),
-                            cudaMemcpyDeviceToHost),
-                 "cudaMemcpy(detached NV12)");
     require(mono == source_bytes,
             std::string(context) + ": detached Mono8 bytes changed");
-    require(std::equal(source_bytes.begin(), source_bytes.end(), nv12.begin()),
-            std::string(context) + ": NV12 Y plane is not byte-identical Mono8");
-    require(std::all_of(nv12.begin() + source_bytes.size(), nv12.end(),
-                        [](const unsigned char value) { return value == 128; }),
-            std::string(context) + ": NV12 UV plane is not neutral 128");
+    require(frame.device_nv12() != nullptr &&
+                frame.nv12_bytes() ==
+                    source_bytes.size() + source_bytes.size() / 2,
+            std::string(context) +
+                ": prewarmed encoder NV12 scratch is unavailable");
 }
 
 void require_safe(
@@ -433,7 +426,7 @@ void run_recorder_checks(const SpatialRoiIpcFrame& frame)
                                 first.error);
     require(first.source_release_safe(),
             "successful separate-process detach was not source-release safe");
-    verify_outputs(first.frame, source_bytes, "separate-process first detach");
+    verify_raw_output(first.frame, source_bytes, "separate-process first detach");
 
     auto exhausted = pool.TryDetach(frame);
     require_safe(SpatialRoiRecorderDetachStatus::kPoolExhausted,
@@ -446,7 +439,7 @@ void run_recorder_checks(const SpatialRoiIpcFrame& frame)
     auto recycled = pool.TryDetach(frame);
     require(recycled.detached(), "released separate-process slot was not reusable: " +
                                   recycled.error);
-    verify_outputs(recycled.frame, source_bytes, "separate-process recycled detach");
+    verify_raw_output(recycled.frame, source_bytes, "separate-process recycled detach");
     recycled.frame.Release();
     recycled.frame.Release();
     const auto reuse_counters = pool.counters();
@@ -454,6 +447,17 @@ void run_recorder_checks(const SpatialRoiIpcFrame& frame)
             "separate-process pool exhaustion was not counted");
     require(reuse_counters.slot_releases >= 2,
             "separate-process slot releases were not counted");
+    require(reuse_counters.memory_imports == 1 &&
+                reuse_counters.event_imports == 1 &&
+                reuse_counters.memory_cache_misses == 1 &&
+                reuse_counters.event_cache_misses == 1 &&
+                reuse_counters.memory_cache_hits == 1 &&
+                reuse_counters.event_cache_hits == 1 &&
+                reuse_counters.import_cache_entries == 1 &&
+                reuse_counters.peak_import_cache_entries == 1,
+            "reused producer slot did not use the bounded session import cache");
+    require(reuse_counters.nv12_conversions == 0,
+            "source detach still performed NV12 conversion");
 
     // These rejections happen before a slot is claimed/imported and remain
     // safe for the producer to RELEASE.
@@ -513,6 +517,18 @@ void run_recorder_checks(const SpatialRoiIpcFrame& frame)
             "under-budget recorder-owned pool was accepted");
 
     pool.Stop();
+    std::string cache_close_error;
+    require(pool.CloseCachedImports(&cache_close_error),
+            "clean import cache teardown failed: " + cache_close_error);
+    const auto closed_cache_counters = pool.counters();
+    require(closed_cache_counters.import_cache_entries == 0 &&
+                closed_cache_counters.cached_memory_closes == 1 &&
+                closed_cache_counters.cached_event_closes == 1 &&
+                closed_cache_counters.cache_cleanup_failures == 0,
+            "clean import cache teardown counters are inconsistent");
+    require(pool.CloseCachedImports(&cache_close_error),
+            "clean import cache teardown was not idempotent: " +
+                cache_close_error);
     auto normally_stopped = pool.TryDetach(frame);
     require_safe(SpatialRoiRecorderDetachStatus::kStopped,
                  normally_stopped,

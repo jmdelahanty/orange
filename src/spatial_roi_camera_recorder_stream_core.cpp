@@ -877,6 +877,19 @@ bool SpatialRoiConcreteCameraRecorderStreamCore::Finalize(std::string* error_out
                                       : "lossless encoder is unavailable",
                              error_out);
     }
+    // No detached recorder slot or source mapping can be referenced after the
+    // encoder owner has drained. Close the bounded session import cache while
+    // the producer process and its export pool are still alive; a cleanup
+    // failure is terminal and must prevent a successful recorder receipt.
+    std::string import_cleanup_error;
+    if (!detach_pool_ ||
+        !detach_pool_->CloseCachedImports(&import_cleanup_error)) {
+        return latch_failure(
+            import_cleanup_error.empty()
+                ? "recorder CUDA IPC import cache cleanup failed"
+                : import_cleanup_error,
+            error_out);
+    }
     const auto terminal = encoder_->terminal_snapshot();
     if (!terminal || !terminal->successful) {
         return latch_failure("lossless encoder terminal snapshot is not successful",

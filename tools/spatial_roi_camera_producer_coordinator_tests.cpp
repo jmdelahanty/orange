@@ -118,6 +118,8 @@ struct StreamControl {
     std::size_t starts = 0;
     std::size_t submits = 0;
     std::size_t stops = 0;
+    std::size_t releases = 0;
+    bool release_ok = true;
 };
 
 class FakeStream final : public producer::SpatialRoiCameraProducerStream {
@@ -150,9 +152,27 @@ public:
         control_->calls->push_back("stop:" + id_);
     }
 
+    bool ReleaseProducerCudaResourcesAfterRecorderReaped(
+        std::string* error_out) noexcept override
+    {
+        if (released_) {
+            return true;
+        }
+        ++control_->releases;
+        control_->calls->push_back("release:" + id_);
+        if (!control_->release_ok && error_out) {
+            *error_out = "injected producer resource release failure";
+        }
+        if (control_->release_ok) {
+            released_ = true;
+        }
+        return control_->release_ok;
+    }
+
 private:
     std::shared_ptr<StreamControl> control_;
     std::string id_;
+    bool released_ = false;
 };
 
 class FakeRuntime final : public producer::SpatialRoiCameraProducerRuntime {
@@ -162,14 +182,23 @@ public:
                          std::size_t* submit_count,
                          std::vector<std::string>* calls,
                          bool drain_ok,
-                         std::string drain_error)
+                         std::string drain_error,
+                         std::size_t* destroy_count = nullptr)
         : sink_(std::move(sink)),
           status_(status),
           submit_count_(submit_count),
           calls_(calls),
           drain_ok_(drain_ok),
-          drain_error_(std::move(drain_error))
+          drain_error_(std::move(drain_error)),
+          destroy_count_(destroy_count)
     {
+    }
+
+    ~FakeRuntime() override
+    {
+        if (destroy_count_) {
+            ++*destroy_count_;
+        }
     }
 
     producer::SpatialRoiBatchSubmission TrySubmit(
@@ -198,10 +227,14 @@ public:
         ++stop_count_;
         calls_->push_back("runtime_stop");
     }
-    bool StopAcceptingAndDrain(std::string* error_out) noexcept override
+    bool StopAcceptingAndDrain(std::string* error_out,
+                               bool* fully_drained_out) noexcept override
     {
         ++drain_count_;
         calls_->push_back("runtime_drain");
+        if (fully_drained_out) {
+            *fully_drained_out = true;
+        }
         if (error_out) {
             *error_out = drain_ok_ ? std::string{} : drain_error_;
         }
@@ -218,6 +251,7 @@ private:
     std::vector<std::string>* calls_;
     bool drain_ok_ = true;
     std::string drain_error_;
+    std::size_t* destroy_count_ = nullptr;
 };
 
 producer::SpatialRoiCameraProducerConfig config_for(
@@ -228,7 +262,8 @@ producer::SpatialRoiCameraProducerConfig config_for(
     producer::SpatialRoiRuntimeSubmitStatus runtime_status =
         producer::SpatialRoiRuntimeSubmitStatus::kAccepted,
     bool runtime_drain_ok = true,
-    std::string runtime_drain_error = {})
+    std::string runtime_drain_error = {},
+    std::size_t* runtime_destroy_count = nullptr)
 {
     producer::SpatialRoiCameraProducerConfig config;
     config.candidate_contract = fixture.contract;
@@ -254,7 +289,8 @@ producer::SpatialRoiCameraProducerConfig config_for(
                               runtime_status,
                               calls,
                               runtime_drain_ok,
-                              runtime_drain_error = std::move(runtime_drain_error)](
+                              runtime_drain_error = std::move(runtime_drain_error),
+                              runtime_destroy_count](
                                  const json&,
                                  const std::string& camera_serial,
                                  int producer_gpu_id,
@@ -267,7 +303,7 @@ producer::SpatialRoiCameraProducerConfig config_for(
         return std::unique_ptr<producer::SpatialRoiCameraProducerRuntime>(
             new FakeRuntime(std::move(sink), runtime_status,
                             runtime_submit_count, calls, runtime_drain_ok,
-                            runtime_drain_error));
+                            runtime_drain_error, runtime_destroy_count));
     };
     return config;
 }
@@ -323,6 +359,161 @@ void test_one_source_update_and_plan_order()
     require(calls.size() == 9 && calls[4] == "runtime_drain" &&
                 calls[5].find("stop:") == 0 && calls[8].find("stop:") == 0,
             "producer closed a transport before runtime drain completed");
+}
+
+void test_post_reap_resource_release_is_idempotent()
+{
+    const Fixture fixture = make_fixture();
+    std::vector<std::shared_ptr<StreamControl>> controls;
+    std::vector<std::string> calls;
+    std::size_t runtime_submit_count = 0;
+    std::size_t runtime_destroy_count = 0;
+    auto owner = producer::SpatialRoiCameraProducerCoordinator::Create(
+        config_for(fixture,
+                   &controls,
+                   &calls,
+                   &runtime_submit_count,
+                   producer::SpatialRoiRuntimeSubmitStatus::kAccepted,
+                   true,
+                   {},
+                   &runtime_destroy_count),
+        nullptr);
+    require(owner != nullptr, "resource release test owner was rejected");
+    require(owner->Start(), "resource release test owner did not start");
+    require(owner->StopAndDrain(), "resource release test owner did not drain");
+    require(runtime_destroy_count == 0,
+            "producer batch runtime was destroyed before recorder reap proof");
+    for (const auto& control : controls) {
+        require(control->releases == 0,
+                "producer resources were released before recorder reap proof");
+    }
+
+    std::string error;
+    require(owner->ReleaseProducerCudaResourcesAfterRecorderReaped(&error),
+            error);
+    require(runtime_destroy_count == 1,
+            "producer batch runtime was not released at the post-reap boundary");
+    require(owner->ReleaseProducerCudaResourcesAfterRecorderReaped(&error),
+            "second post-reap resource release was not idempotent: " + error);
+    for (const auto& control : controls) {
+        require(control->releases == 1,
+                "post-reap resource release ran more than once per stream");
+    }
+}
+
+void test_post_reap_resource_release_requires_terminal_admission_state()
+{
+    const Fixture fixture = make_fixture();
+    std::vector<std::shared_ptr<StreamControl>> controls;
+    std::vector<std::string> calls;
+    std::size_t runtime_submit_count = 0;
+    std::size_t runtime_destroy_count = 0;
+    auto owner = producer::SpatialRoiCameraProducerCoordinator::Create(
+        config_for(fixture,
+                   &controls,
+                   &calls,
+                   &runtime_submit_count,
+                   producer::SpatialRoiRuntimeSubmitStatus::kAccepted,
+                   true,
+                   {},
+                   &runtime_destroy_count),
+        nullptr);
+    require(owner != nullptr, "resource release state test owner was rejected");
+    require(owner->Start(), "resource release state test owner did not start");
+
+    std::string error;
+    require(!owner->ReleaseProducerCudaResourcesAfterRecorderReaped(&error),
+            "ready producer allowed post-reap resource release");
+    require(error.find("stopped or failed") != std::string::npos,
+            "premature resource release did not explain its lifecycle boundary");
+    require(runtime_destroy_count == 0,
+            "premature resource release destroyed the producer runtime");
+    for (const auto& control : controls) {
+        require(control->releases == 0,
+                "premature resource release reached a producer stream");
+    }
+
+    require(owner->StopAndDrain(), "resource release state test did not drain");
+    require(owner->ReleaseProducerCudaResourcesAfterRecorderReaped(&error),
+            error);
+    require(runtime_destroy_count == 1,
+            "terminal producer did not release its runtime");
+}
+
+void test_failed_submit_still_requires_explicit_runtime_drain()
+{
+    const Fixture fixture = make_fixture();
+    std::vector<std::shared_ptr<StreamControl>> controls;
+    std::vector<std::string> calls;
+    std::size_t runtime_submit_count = 0;
+    std::size_t runtime_destroy_count = 0;
+    auto owner = producer::SpatialRoiCameraProducerCoordinator::Create(
+        config_for(fixture,
+                   &controls,
+                   &calls,
+                   &runtime_submit_count,
+                   producer::SpatialRoiRuntimeSubmitStatus::kCudaError,
+                   true,
+                   {},
+                   &runtime_destroy_count),
+        nullptr);
+    require(owner != nullptr, "failed-submit drain test owner was rejected");
+    require(owner->Start(), "failed-submit drain test owner did not start");
+    const auto submission = owner->Submit(producer::SpatialRoiSourceView{});
+    require(submission.status ==
+                producer::SpatialRoiCameraProducerSubmitStatus::kCudaError &&
+                owner->failed(),
+            "injected runtime CUDA error did not fail the producer");
+
+    std::string error;
+    require(!owner->ReleaseProducerCudaResourcesAfterRecorderReaped(&error),
+            "failed producer released resources before runtime drain");
+    require(error.find("completed StopAndDrain") != std::string::npos,
+            "failed producer did not report the missing drain boundary");
+    require(runtime_destroy_count == 0,
+            "failed producer runtime was destroyed before explicit drain");
+    for (const auto& control : controls) {
+        require(control->releases == 0,
+                "failed producer released a stream before explicit drain");
+    }
+
+    require(!owner->StopAndDrain(),
+            "already-failed producer drain was relabeled successful");
+    require(owner->ReleaseProducerCudaResourcesAfterRecorderReaped(&error),
+            "drained failed producer could not release after reap: " + error);
+    require(runtime_destroy_count == 1,
+            "drained failed producer retained its runtime after reap");
+}
+
+void test_post_reap_resource_release_failure_is_retained()
+{
+    const Fixture fixture = make_fixture();
+    std::vector<std::shared_ptr<StreamControl>> controls;
+    std::vector<std::string> calls;
+    std::size_t runtime_submit_count = 0;
+    auto owner = producer::SpatialRoiCameraProducerCoordinator::Create(
+        config_for(fixture, &controls, &calls, &runtime_submit_count), nullptr);
+    require(owner != nullptr, "resource release failure owner was rejected");
+    require(owner->Start(), "resource release failure owner did not start");
+    require(owner->StopAndDrain(), "resource release failure owner did not drain");
+    controls.front()->release_ok = false;
+
+    std::string error;
+    require(!owner->ReleaseProducerCudaResourcesAfterRecorderReaped(&error),
+            "injected resource release failure was reported as success");
+    require(owner->failed() &&
+                error.find("injected producer resource release failure") !=
+                    std::string::npos,
+            "resource release failure was not latched and surfaced");
+    controls.front()->release_ok = true;
+    require(owner->ReleaseProducerCudaResourcesAfterRecorderReaped(&error),
+            "retained resource release could not be retried: " + error);
+    require(controls.front()->releases == 2,
+            "failed resource release was not retained for a retry");
+    for (std::size_t index = 1; index < controls.size(); ++index) {
+        require(controls[index]->releases == 1,
+                "healthy stream resource release was repeated after failure");
+    }
 }
 
 void test_runtime_incomplete_is_not_silent_success()
@@ -402,6 +593,10 @@ int main()
     try {
         test_status_names();
         test_one_source_update_and_plan_order();
+        test_post_reap_resource_release_is_idempotent();
+        test_post_reap_resource_release_requires_terminal_admission_state();
+        test_failed_submit_still_requires_explicit_runtime_drain();
+        test_post_reap_resource_release_failure_is_retained();
         test_runtime_incomplete_is_not_silent_success();
         test_async_lane_failure_blocks_stop_success();
         test_authentication_precedes_factories();
