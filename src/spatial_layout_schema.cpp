@@ -447,6 +447,58 @@ const std::vector<std::pair<const char*, OrientationStatus>>& orientation_status
     return mapping;
 }
 
+const std::vector<std::pair<const char*, OrderingRule>>& ordering_rule_mapping()
+{
+    static const std::vector<std::pair<const char*, OrderingRule>> mapping = {
+        {"camera_row_major_v1", OrderingRule::kCameraRowMajorV1},
+        {"row_major_from_layout_space", OrderingRule::kRowMajorFromLayoutSpace},
+    };
+    return mapping;
+}
+
+const std::vector<std::pair<const char*, OrderingStatus>>& ordering_status_mapping()
+{
+    static const std::vector<std::pair<const char*, OrderingStatus>> mapping = {
+        {"resolved", OrderingStatus::kResolved},
+        {"ordering_unresolved", OrderingStatus::kOrderingUnresolved},
+    };
+    return mapping;
+}
+
+bool artifact_uses_camera_row_major_v1(const ArenaLayoutArtifact& artifact)
+{
+    OrderingRule ordering_rule = OrderingRule::kRowMajorFromLayoutSpace;
+    return ordering_rule_from_string(artifact.provenance.ordering_rule, &ordering_rule, nullptr) &&
+           ordering_rule == OrderingRule::kCameraRowMajorV1;
+}
+
+// Dense zone_index -> zone_id map from a canonical artifact. Fails when any
+// zone lacks an index or the indices are not exactly 0..N-1.
+bool artifact_zone_index_to_id(const ArenaLayoutArtifact& artifact,
+                               std::vector<std::string>* out,
+                               std::string* error_out)
+{
+    out->assign(artifact.layout.zones.size(), std::string());
+    for (size_t idx = 0; idx < artifact.layout.zones.size(); ++idx) {
+        const ArenaLayoutZone& zone = artifact.layout.zones[idx];
+        if (!zone.has_zone_index) {
+            return set_error(error_out, "arena_layout.layout.zones[" + std::to_string(idx) +
+                                            "].zone_index is required under camera_row_major_v1");
+        }
+        if (zone.zone_index < 0 || static_cast<size_t>(zone.zone_index) >= out->size()) {
+            return set_error(error_out, "arena_layout.layout.zones[" + std::to_string(idx) +
+                                            "].zone_index must be dense in [0, zone_count) under camera_row_major_v1");
+        }
+        std::string& slot = (*out)[static_cast<size_t>(zone.zone_index)];
+        if (!slot.empty()) {
+            return set_error(error_out, "arena_layout.layout.zones contains duplicate zone_index " +
+                                            std::to_string(zone.zone_index));
+        }
+        slot = zone.zone_id;
+    }
+    return true;
+}
+
 const std::vector<std::pair<const char*, VisibilityStatus>>& visibility_status_mapping()
 {
     static const std::vector<std::pair<const char*, VisibilityStatus>> mapping = {
@@ -604,6 +656,26 @@ bool orientation_status_from_string(const std::string& value, OrientationStatus*
     return parse_enum_string(value, out, orientation_status_mapping(), "orientation status", error_out);
 }
 
+const char* ordering_rule_to_string(OrderingRule value)
+{
+    return enum_to_string(value, ordering_rule_mapping());
+}
+
+bool ordering_rule_from_string(const std::string& value, OrderingRule* out, std::string* error_out)
+{
+    return parse_enum_string(value, out, ordering_rule_mapping(), "ordering rule", error_out);
+}
+
+const char* ordering_status_to_string(OrderingStatus value)
+{
+    return enum_to_string(value, ordering_status_mapping());
+}
+
+bool ordering_status_from_string(const std::string& value, OrderingStatus* out, std::string* error_out)
+{
+    return parse_enum_string(value, out, ordering_status_mapping(), "ordering status", error_out);
+}
+
 const char* visibility_status_to_string(VisibilityStatus value)
 {
     return enum_to_string(value, visibility_status_mapping());
@@ -703,8 +775,50 @@ bool validate_dish_mask_geometry(const DishMaskGeometry& value, std::string* err
     return true;
 }
 
+bool validate_registration_ordering(const RegistrationOrdering& value, std::string* error_out)
+{
+    if (value.rule != OrderingRule::kCameraRowMajorV1) {
+        return set_error(error_out, "registration.ordering.rule must be camera_row_major_v1");
+    }
+    if (!is_finite(value.row_margin_px) || !is_finite(value.column_margin_px)) {
+        return set_error(error_out, "registration.ordering margins must be finite");
+    }
+    if (!is_finite(value.ordering_margin_threshold_px) || value.ordering_margin_threshold_px <= 0.0) {
+        return set_error(error_out, "registration.ordering.ordering_margin_threshold_px must be finite and > 0");
+    }
+    const bool margins_exceed_threshold =
+        value.row_margin_px > value.ordering_margin_threshold_px &&
+        value.column_margin_px > value.ordering_margin_threshold_px;
+    if (value.ordering_status == OrderingStatus::kResolved && !margins_exceed_threshold) {
+        return set_error(error_out,
+                         "registration.ordering.ordering_status is resolved but a margin does not exceed the threshold");
+    }
+    if (value.ordering_status == OrderingStatus::kOrderingUnresolved && margins_exceed_threshold) {
+        return set_error(error_out,
+                         "registration.ordering.ordering_status is ordering_unresolved but both margins exceed the threshold");
+    }
+    if (value.zone_index_to_id.empty()) {
+        return set_error(error_out, "registration.ordering.zone_index_to_id must be non-empty");
+    }
+    std::set<std::string> zone_ids;
+    for (size_t idx = 0; idx < value.zone_index_to_id.size(); ++idx) {
+        const std::string& zone_id = value.zone_index_to_id[idx];
+        if (zone_id.empty()) {
+            return set_error(error_out, "registration.ordering.zone_index_to_id[" + std::to_string(idx) +
+                                            "] must be non-empty");
+        }
+        if (!zone_ids.insert(zone_id).second) {
+            return set_error(error_out, "registration.ordering.zone_index_to_id contains duplicate zone_id: " + zone_id);
+        }
+    }
+    return true;
+}
+
 bool validate_view_registration(const ViewRegistration& value, std::string* error_out)
 {
+    if (value.has_ordering && !validate_registration_ordering(value.ordering, error_out)) {
+        return false;
+    }
     if (value.layout_coordinate_space != CoordinateSpace::kLayoutMm &&
         value.layout_coordinate_space != CoordinateSpace::kLayoutUnits) {
         return set_error(error_out, "registration.layout_coordinate_space must be layout_mm or layout_units");
@@ -826,6 +940,16 @@ bool validate_arena_layout_artifact(const ArenaLayoutArtifact& value, std::strin
     if (value.provenance.ordering_rule.empty()) {
         return set_error(error_out, "arena_layout.provenance.ordering_rule must be non-empty");
     }
+    // Legacy artifacts carry free-form rule strings such as
+    // "row_major_top_left" or "single_circle_imported_from_citrus". They are
+    // tolerated; only the enumerated camera_row_major_v1 rule carries extra
+    // structural requirements.
+    if (artifact_uses_camera_row_major_v1(value)) {
+        std::vector<std::string> zone_index_to_id;
+        if (!artifact_zone_index_to_id(value, &zone_index_to_id, error_out)) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -874,6 +998,22 @@ bool validate_arena_layout_runtime(const ArenaLayoutRuntime& value, std::string*
         }
         if (!validate_runtime_geometry(zone.geometry, error_out)) {
             return false;
+        }
+        if (value.registration.has_ordering) {
+            const std::vector<std::string>& index_to_id = value.registration.ordering.zone_index_to_id;
+            if (!zone.has_zone_index) {
+                return set_error(error_out, "arena_layout.runtime.zones[" + std::to_string(idx) +
+                                                "].zone_index is required under camera_row_major_v1");
+            }
+            if (zone.zone_index < 0 || static_cast<size_t>(zone.zone_index) >= index_to_id.size() ||
+                index_to_id[static_cast<size_t>(zone.zone_index)] != zone.zone_id) {
+                return set_error(error_out, "arena_layout.runtime.zones[" + std::to_string(idx) +
+                                                "].zone_index does not match registration.ordering.zone_index_to_id");
+            }
+            if (zone.geometry.type != RuntimeGeometryType::kCircle) {
+                return set_error(error_out, "arena_layout.runtime.zones[" + std::to_string(idx) +
+                                                "].geometry must be a fitted circle under camera_row_major_v1");
+            }
         }
     }
 
@@ -931,6 +1071,24 @@ bool validate_arena_layout_runtime_against_artifact(const ArenaLayoutRuntime& ru
         if (artifact_zone_ids.count(zone.zone_id) == 0) {
             return set_error(error_out, "arena_layout.runtime zone_id not present in canonical artifact: " + zone.zone_id);
         }
+    }
+
+    if (artifact_uses_camera_row_major_v1(artifact)) {
+        if (!runtime.registration.has_ordering) {
+            return set_error(error_out,
+                             "arena_layout.runtime.registration.ordering is required when the artifact ordering_rule is camera_row_major_v1");
+        }
+        std::vector<std::string> artifact_index_to_id;
+        if (!artifact_zone_index_to_id(artifact, &artifact_index_to_id, error_out)) {
+            return false;
+        }
+        if (runtime.registration.ordering.zone_index_to_id != artifact_index_to_id) {
+            return set_error(error_out,
+                             "arena_layout.runtime.registration.ordering.zone_index_to_id must match the canonical artifact zone_index order");
+        }
+    } else if (runtime.registration.has_ordering) {
+        return set_error(error_out,
+                         "arena_layout.runtime.registration.ordering must be absent unless the artifact ordering_rule is camera_row_major_v1");
     }
     return true;
 }
@@ -1092,6 +1250,18 @@ nlohmann::json arena_layout_artifact_to_json(const ArenaLayoutArtifact& value)
     return out;
 }
 
+nlohmann::json registration_ordering_to_json(const RegistrationOrdering& value)
+{
+    return {
+        {"rule", ordering_rule_to_string(value.rule)},
+        {"row_margin_px", value.row_margin_px},
+        {"column_margin_px", value.column_margin_px},
+        {"ordering_margin_threshold_px", value.ordering_margin_threshold_px},
+        {"ordering_status", ordering_status_to_string(value.ordering_status)},
+        {"zone_index_to_id", value.zone_index_to_id}
+    };
+}
+
 nlohmann::json view_registration_to_json(const ViewRegistration& value)
 {
     nlohmann::json out = {
@@ -1107,6 +1277,9 @@ nlohmann::json view_registration_to_json(const ViewRegistration& value)
     }
     if (value.has_orientation_status) {
         out["orientation_status"] = orientation_status_to_string(value.orientation_status);
+    }
+    if (value.has_ordering) {
+        out["ordering"] = registration_ordering_to_json(value.ordering);
     }
     return out;
 }
@@ -1417,6 +1590,35 @@ bool parse_arena_layout_artifact_json(const nlohmann::json& node, ArenaLayoutArt
     return validate_arena_layout_artifact(*out, error_out);
 }
 
+bool parse_registration_ordering_json(const nlohmann::json& node, RegistrationOrdering* out, std::string* error_out)
+{
+    if (!out) {
+        return set_error(error_out, "null RegistrationOrdering destination");
+    }
+    if (!require_object(node, "registration.ordering", error_out)) {
+        return false;
+    }
+    std::string rule;
+    std::string ordering_status;
+    bool has_zone_index_to_id = false;
+    if (!parse_required_string(node, "rule", "registration.ordering", &rule, error_out) ||
+        !ordering_rule_from_string(rule, &out->rule, error_out) ||
+        !parse_required_number(node, "row_margin_px", "registration.ordering", &out->row_margin_px, error_out) ||
+        !parse_required_number(node, "column_margin_px", "registration.ordering", &out->column_margin_px, error_out) ||
+        !parse_required_number(node, "ordering_margin_threshold_px", "registration.ordering",
+                               &out->ordering_margin_threshold_px, error_out) ||
+        !parse_required_string(node, "ordering_status", "registration.ordering", &ordering_status, error_out) ||
+        !ordering_status_from_string(ordering_status, &out->ordering_status, error_out) ||
+        !parse_optional_string_array(node, "zone_index_to_id", &has_zone_index_to_id, &out->zone_index_to_id,
+                                     error_out, "registration.ordering")) {
+        return false;
+    }
+    if (!has_zone_index_to_id) {
+        return set_error(error_out, "registration.ordering.zone_index_to_id must be an array of strings");
+    }
+    return validate_registration_ordering(*out, error_out);
+}
+
 bool parse_view_registration_json(const nlohmann::json& node, ViewRegistration* out, std::string* error_out)
 {
     if (!out) {
@@ -1451,6 +1653,11 @@ bool parse_view_registration_json(const nlohmann::json& node, ViewRegistration* 
             !orientation_status_from_string(orientation_status, &out->orientation_status, error_out)) {
             return false;
         }
+    }
+    out->has_ordering = node.contains("ordering");
+    if (out->has_ordering &&
+        !parse_registration_ordering_json(node.at("ordering"), &out->ordering, error_out)) {
+        return false;
     }
     return validate_view_registration(*out, error_out);
 }

@@ -427,6 +427,14 @@ Optional fields:
 
 - `camera_to_layout_matrix`: array of 9 numbers, row-major 3x3
 - `orientation_status`: one of `trusted`, `manual_confirmed`, `ambiguous`, `unknown`
+- `ordering`: object, required when the layout's `ordering_rule` is
+  `camera_row_major_v1`:
+  - `rule`: `camera_row_major_v1`
+  - `row_margin_px`: number
+  - `column_margin_px`: number
+  - `ordering_margin_threshold_px`: number
+  - `ordering_status`: one of `resolved`, `ordering_unresolved`
+  - `zone_index_to_id`: array of `zone_id` strings in index order
 
 Rules:
 
@@ -434,7 +442,14 @@ Rules:
   camera-native pixels.
 - If `camera_to_layout_matrix` is emitted, it should be numerically consistent
   with the inverse of `layout_to_camera_matrix`.
-- `orientation_status` is recommended whenever the layout is symmetric.
+- `orientation_status` is required when `ordering_rule` is
+  `row_major_from_layout_space` and the layout is symmetric; `ambiguous` or
+  `unknown` blocks stable `zone_id` publication.
+- Under `camera_row_major_v1`, `ordering_status` is `resolved` only when both
+  margins exceed `ordering_margin_threshold_px`; otherwise it is
+  `ordering_unresolved` and stable `zone_id` publication is blocked. The
+  margins are centre-to-centre separations minus within-row or within-column
+  scatter, as defined in the contract's "Ordering And Symmetry Rule".
 
 Geometry consequence:
 
@@ -733,6 +748,8 @@ Rules:
 - `outer_geometry` is required in v1.
 - `zone_id` values must be unique within one `layout_id`.
 - `zone_index`, if present, should be unique within one `layout_id`.
+- When `provenance.ordering_rule` is `camera_row_major_v1`, `zone_index` is
+  required on every zone and must be dense from 0.
 - Canonical `rectangle` zones are axis-aligned in layout space.
 - Zone geometry should lie inside `outer_geometry`.
 - Overlapping zones are discouraged but not forbidden by schema alone.
@@ -768,7 +785,18 @@ deferred.
 Required fields:
 
 - `source`: one of `manual_template`, `imported_template`
-- `ordering_rule`: string
+- `ordering_rule`: one of `camera_row_major_v1`, `row_major_from_layout_space`
+  - `camera_row_major_v1`: well grid of spatially separated zones on a fixed
+    plate; zones are independently fitted circles ordered row-major from the
+    camera's top-left, and the materialization must record ordering margins
+    (see the contract's "Ordering And Symmetry Rule")
+  - `row_major_from_layout_space`: barrier-partitioned or symmetric layouts
+    whose order is fixed in canonical layout space and requires
+    `orientation_status`
+  - legacy values written by existing producers (`row_major_top_left`,
+    `single_circle_imported_from_citrus`) remain accepted for compatibility
+    and carry no structural requirements; new artifacts should use one of the
+    two enumerated values
 
 Optional fields:
 
@@ -923,6 +951,10 @@ Rules:
 
 - `runtime.zones` contains only zones for which Orange emitted a concrete
   camera-pixel overlay.
+- Under `camera_row_major_v1`, every runtime zone carries `zone_index`, the
+  indices match `registration.ordering.zone_index_to_id`, and each zone's
+  `geometry` is the independently fitted `circle` for that well rather than a
+  transformed canonical shape.
 - If `visible_zone_ids` is emitted, it must exactly match the set of `zone_id`
   values in `runtime.zones`.
 - `runtime.zones[*].zone_id` must exist in the referenced canonical
