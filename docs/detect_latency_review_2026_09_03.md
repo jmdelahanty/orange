@@ -515,6 +515,15 @@ Follow-ups, in order:
    -0.29 ms mean) and lever 2c (zero-copy NVENC input, larger win, needs
    engineering). Direct input as it stands passes the contract but its
    recorder runs at 7-10 ms per frame with no headroom at 100 fps.
+4b. Before lever 2c can rely on deferred release: cap the number of pool
+   entries a recorder may hold pending. Today nothing bounds
+   `pending_release_entries_` in `ExternalIpcHandoffWorker`; a stalled
+   recorder would hold entries until the pool starved and acquisition itself
+   stalled. When the cap is hit, skip or drop that frame on the recording side
+   with a counter in the pipeline perf CSV, never on the acquisition side, so
+   the camera never waits on the encoder. Size the cap from the pool (62) minus
+   the entries the other consumers need in flight; something like 16 leaves
+   room for a 160 ms recorder stall at 100 fps.
 5. Always-on GPU event timing in the perf row (checklist step 5), which turns
    the remaining 2.4 ms floor into preprocess, gap, and infer numbers in
    production runs.
