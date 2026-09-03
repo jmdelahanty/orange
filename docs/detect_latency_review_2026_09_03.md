@@ -339,6 +339,44 @@ Measure the same way; expect the same-die penalty to drop to NVENC's own DMA
 cost, a few tenths of a millisecond at most, and the recorder's per-frame
 prepare to fall from 7-10 ms to well under 1 ms.
 
+### Why direct input has no headroom
+
+It comes down to which thread waits for NVENC.
+
+The copy path has two stages in the recorder process. The handoff stage
+copies the incoming frame into one of 32 recorder-owned slots (about 2 ms),
+records an event, and ACKs the source. A separate encode thread then feeds
+those slots to NVENC at whatever pace NVENC manages. The slot queue decouples
+the two, so the handoff finishes early and the queue absorbs encode hiccups;
+that is why enqueue age could reach 25 ms in August without a drop.
+
+Direct input collapses the two stages into one. For each frame the recorder
+waits until NVENC has released one of its own input buffers, copies the Y
+plane straight into it, blocks on a CUDA event until the copy has landed, and
+only then ACKs the source. NVENC has a handful of input buffers and releases
+one only when it has finished encoding the frame that used it, so the wait at
+the front of that sequence is bounded by NVENC's encode time.
+
+That time is 7-10 ms. A 4512x4512 HEVC frame at 150 Mb/s takes a GA107's
+NVENC about 10 ms. During a 25-frame GOP the shard receives a frame every
+10 ms, NVENC runs flat out for the whole GOP, and a free input buffer appears
+every 10 ms. The measured `prepare` p50 of 7-10 ms is almost entirely that
+wait, not the copy.
+
+Headroom, then, means this: the recorder thread is busy 7-10 ms of every
+10 ms frame period and holds the source frame the whole time. It kept up in
+the 60 s runs with zero drops, but one slow encode, a PTP hiccup, or a burst
+of bitstream fetches pushes it past 10 ms per frame, and unlike the copy path
+there is no queue to absorb that. It also holds source frames longer, which
+eats into the acquisition pool.
+
+Lever 2c fixes this rather than repeating it. Registering the acquisition
+buffer itself as the NVENC input removes the copy, and the deferred-release
+protocol makes the wait for NVENC asynchronous: the handoff returns at once
+and the source is released by a message when NVENC is done. The wait still
+exists, but nothing blocks on it. The gate (lever 2b) adds no NVENC coupling
+at all, which is why it was safe to default on.
+
 Lower-probability options, for completeness: INT8 (halves activation bytes,
 so inference is both faster and less sensitive to bandwidth contention; there
 is an INT8 plan in the tree), and GOP-aware tensor routing (lever 6). Stream
