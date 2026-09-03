@@ -414,6 +414,10 @@ Pushed to `origin/agent/acquisition/shaman-v2-authoritative-20260824` on
   validation script forwarding, six threecam/fourcam latency specs,
   `--external-recorder-dir` and `--baseline-json` for the analysis script.
 - `0ed660f`: the direct-input interpretation above.
+- `9b2f261`: this section.
+- `d33c76b`: the detect-priority handoff gate (lever 2b) with its A/B, the
+  schema-2 identity-proof checker fix, and the correction of the earlier
+  direct-input claim.
 
 Follow-ups, in order:
 
