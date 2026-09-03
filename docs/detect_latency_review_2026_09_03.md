@@ -211,16 +211,45 @@ Also visible in the direct-input CSVs: the recorder's per-frame `prepare`
 (the Y-plane copy plus the event wait before ACK) is 7-10 ms p50, so the
 recorder holds each source frame for most of a frame period and runs near
 100% duty at 100 fps. It kept up here (0 drops), but it has no headroom, and
-that is a second reason direct input needs engineering before it is a
+that is the reason direct input needs engineering (lever 2c) before it is a
 production path.
 
-Caveat that decides whether lever 2 is usable: the run finished with
+Correction to an earlier reading: the first direct-input run finished with
 `finalized external recording lacks a complete returned-NVENC frame identity
-proof`. The direct-input path does not produce the schema-2 frame-identity
-proof the recording contract requires, which is why the smoke runner labels
-it a legacy diagnostic. The latency numbers are valid; the recording is not
-accepted. Making direct input a production path means teaching it to emit the
-returned-NVENC identity proof, or relaxing the contract for it deliberately.
+proof`, and this document briefly blamed the direct-input path. That was
+wrong. The recorder started emitting a schema-2 identity proof in `e3cf98c`
+(the commit before this review), while the C++ manifest check in
+`src/session/recording_session.cpp` still accepted only schema 1, so every
+headless external-IPC run on this branch head failed finalization regardless
+of path. The checker now accepts schema 1 or 2 and, for schema 2, also
+requires accepted, attempted, and written packet counts to equal the encoded
+frame count with zero rejections or write failures. Rerun after the fix,
+both the direct-input and the gate specs finish `completed` / `pass`.
+
+What still stands against direct input as a production path is headroom:
+its recorder prepare time of 7-10 ms per frame at 100 fps.
+
+Lever 2b, the detect-priority handoff gate, on top of the levers run
+(this run minus levers, ms):
+
+| Metric | 2010093 | 2010094 | 2010095 |
+|---|---|---|---|
+| acq to detect mean | 2.796 to 2.511 (-0.284) | 2.787 to 2.501 (-0.286) | 2.665 to 2.465 (-0.200) |
+| acq to detect p95 | 3.770 to 3.675 (-0.095) | 3.753 to 3.632 (-0.121) | 3.535 to 3.291 (-0.244) |
+| worker total mean | 2.770 to 2.483 (-0.288) | 2.762 to 2.474 (-0.288) | 2.636 to 2.438 (-0.198) |
+| same-die worker mean | 3.129 to 2.651 (-0.478) | 3.114 to 2.635 (-0.478) | 2.912 to 2.569 (-0.343) |
+| other-die worker mean | 2.412 to 2.314 (-0.098) | 2.410 to 2.312 (-0.098) | 2.359 to 2.306 (-0.053) |
+
+Gate counters: 5,901 frames gated per camera, 92-99% of them actually
+waited, mean wait 1.7 ms, maximum 11 ms, zero timeouts. Recorder: 5,901
+frames encoded, zero drops, enqueue-age p95 unchanged at 0.04 ms. A rerun
+after the identity-proof checker fix reproduced the numbers within
+0.03 ms and finished `completed` / `pass`. The gate
+helps all three cameras, including 2010095, and even the other-die frames
+improve by 0.1 ms, which says the recorder's copies were contending across
+the card and not only on the detect die. Unlike direct input the recorder
+path is unchanged, so this is the first same-die lever that is a candidate
+for production as-is.
 
 Two lessons from getting here. The first deferred-latch build still delayed
 the latch frames because the normal-path YOLO enqueue sat *after* the
@@ -254,13 +283,62 @@ Each step is one change and one measurement against the August baseline.
 | # | Change | Measure | Expect |
 |---|---|---|---|
 | 1 | Done. `ORANGE_YOLO_SYNC_EVENT=1`, or `fixed.yolo_sync_event` in a spec, or `--orange-env` on the fourcam orchestrator | `total_ms` mean/p95, `cpu_event_record_ms` stall count, `sync_mode` column | 50-150 us off the mean; fewer lock stalls elsewhere |
-| 2 | Measured. External recorder direct input (`ORANGE_EXTERNAL_RECORDER_DIRECT_INPUT=1`, or `fixed.external_recorder_direct_input`); recording contract not yet satisfied, see A/B results | cycle-phase profile and die split from the analysis script; detach `copy_ms` | Same-die mass shrinks toward the other-die peak |
+| 2 | Measured, passes the contract. External recorder direct input (`ORANGE_EXTERNAL_RECORDER_DIRECT_INPUT=1`, or `fixed.external_recorder_direct_input`); recorder has no headroom at 100 fps, see A/B results | cycle-phase profile and die split from the analysis script; detach `copy_ms` | Same-die mass shrinks toward the other-die peak |
+| 2b | Measured. Detect-priority handoff gate (`fixed.external_recorder_detect_priority`), see A/B results and below | die split and cycle phase; `detect_priority_*` counters in pipeline perf | Same-die mean falls toward the other-die figure; no recorder drops |
+| 2c | Zero-copy NVENC input from an NV12-shaped acquisition buffer, see below | die split; recorder `prepare_ms`; drops | Same-die penalty down to NVENC DMA; prepare well under 1 ms |
 | 3 | Done. Deferred PTP latch (`ORANGE_PTP_LATCH_AFTER_FANOUT`, default on) | `acquisition_to_worker_start_ms` p99/p99.9; `ptp_latch_ns` in the cadence probe | p99 0.57 to about 0.06 ms |
 | 4 | Done. Cache `build_gpu_runtime_info` per GPU (the real lock holder); `ORANGE_HEADLESS_GPU_DMON=0` remains available | stall fractional-second histogram | Verified: 0 stalls |
 | 5 | Always-on GPU event timing in the perf row | `preprocess_gpu_ms`, `gap_ms`, `infer_gpu_ms` populated in production | Under 20 us overhead |
 | 6 | GOP-aware tensor routing to the idle die on the same card, only if step 2 leaves most of the contention | die split; per-frame tensor copy time | All frames near the other-die figure plus 0.2-0.4 ms |
 | 7 | Standalone engine loop on the A6000 while citrus renders | p99 under render load | Go only if p99 is comfortably under 1.5 ms |
 | 8 | Fold the fused preprocess into the CUDA graph (upstream does this) | `cpu_pre_sync_ms` | One fewer launch, about 10 us |
+
+### Same-die levers 2b and 2c
+
+One NVENC shard has to live on the detect die at four cameras, so the
+remaining same-die penalty has to be attacked by changing *when* and *whether*
+the recorder's copies touch that die, not by moving the encoder.
+
+**2b. Detect-priority handoff gate (time-shift the copies).** The frame
+arrives at t=0, YOLO finishes by about 2.5 ms, and the die idles until the
+next frame at 10 ms. The external IPC handoff used to send the frame
+descriptor to the recorder immediately, so the detach copy and the NVENC
+input copy landed on top of inference. `ORANGE_EXTERNAL_RECORDER_DETECT_PRIORITY`
+(spec key `fixed.external_recorder_detect_priority`) makes the handoff worker
+wait on the frame's YOLO completion event, or `detections_ready`, before the
+detach, with a 50 ms timeout and counters that surface in the pipeline perf
+CSV (`detect_priority_gated_frames`, `detect_priority_waited_frames`,
+`detect_priority_wait_timeouts`, `detect_priority_wait_max_ns`). It mirrors
+the in-process `ORANGE_RECORDING_DETECT_PRIORITY` gate in
+`EncoderPreprocessWorker`, but waits on completion rather than input-ready
+because the copies contend with inference, not only preprocess. Cost: about
+2.5 ms more enqueue age at the recorder and one frame held 2.5 ms longer,
+against a pool of 62 and a recorder queue of 32. Expect the same-die worker
+mean to fall toward the other-die figure while the recorder's own timings
+are unchanged; NVENC's DMA still overlaps, but the copies were the larger
+term. Measure with `threecam_detect_latency_levers_gate.json` against the
+levers run.
+
+**2c. Zero-copy NVENC input from the acquisition buffer.** Allocate the
+acquisition pool NV12-shaped: the Y plane is the GPUDirect target and a
+chroma plane, prefilled to 128 once, follows it. Register the IPC-imported
+buffer with NVENC in the recorder and hold the frame with the existing
+deferred-source-release protocol until NVENC has read it. This removes the
+20 MB copy entirely and with it the 7-10 ms prepare serialization that leaves
+direct input with no headroom. The pieces exist separately: the in-process
+direct-input v1 has the registration machinery, deferred release exists in the
+recorder, and `tools/nv12_prefill_validation.cpp` already explores the chroma
+prefill. The open question is whether the EVT GPUDirect allocation allows the
+1.5x buffer footprint and the pitch NVENC wants (4512 is a multiple of 32).
+Measure the same way; expect the same-die penalty to drop to NVENC's own DMA
+cost, a few tenths of a millisecond at most, and the recorder's per-frame
+prepare to fall from 7-10 ms to well under 1 ms.
+
+Lower-probability options, for completeness: INT8 (halves activation bytes,
+so inference is both faster and less sensitive to bandwidth contention; there
+is an INT8 plan in the tree), and GOP-aware tensor routing (lever 6). Stream
+priority is already highest and preset p1/ll is already the cheapest NVENC
+setting, so neither is a lever.
 
 ### On `nvenc_direct_input`
 
@@ -348,9 +426,10 @@ Follow-ups, in order:
 3. Decide defaults. Event sync and the deferred latch are verified wins with no
    downside seen; the stall fix is unconditional. Defaulting
    `ORANGE_YOLO_SYNC_EVENT` on is one line in `src/yolo_runtime_flags.h`.
-4. Make direct input a production path or leave it an experiment flag. It
-   needs the schema-2 returned-NVENC frame-identity proof, and its recorder
-   runs at 7-10 ms per frame with no headroom at 100 fps.
+4. Decide between lever 2b (the handoff gate, production-compatible today,
+   -0.29 ms mean) and lever 2c (zero-copy NVENC input, larger win, needs
+   engineering). Direct input as it stands passes the contract but its
+   recorder runs at 7-10 ms per frame with no headroom at 100 fps.
 5. Always-on GPU event timing in the perf row (checklist step 5), which turns
    the remaining 2.4 ms floor into preprocess, gap, and infer numbers in
    production runs.
@@ -359,3 +438,8 @@ Follow-ups, in order:
 7. The stock fourcam supervised spec lacks
    `recording_control.record_for_seconds` and fails the verifier for a missing
    session manifest after a clean run; fix it the way the latency specs do.
+8. Regression note for the branch head: `e3cf98c` moved the recorder's
+   frame-identity proof to schema 2 without updating the C++ manifest check,
+   so every headless external-IPC run failed finalization until the checker
+   fix in this review. Worth a test that pins the recorder's proof schema to
+   what the checker accepts.

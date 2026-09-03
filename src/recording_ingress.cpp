@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <thread>
 #include <cctype>
 #include <cerrno>
 #include <cstdlib>
@@ -160,8 +161,16 @@ public:
           socket_path_("/tmp/orange_external_recorder_" + camera_serial_ + ".sock"),
           ack_timeout_ms_(resolve_ack_timeout_ms()),
           deferred_release_(recording_ingress_env_flag_enabled(
-              "ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE", false))
+              "ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE", false)),
+          detect_priority_gate_(recording_ingress_env_flag_enabled(
+              "ORANGE_EXTERNAL_RECORDER_DETECT_PRIORITY", false))
     {
+        if (detect_priority_gate_) {
+            std::cout << "[ExternalIpcRecorder] camera=" << camera_serial_
+                      << " detect-priority gate enabled: frames are handed to the"
+                      << " recorder after YOLO completes (timeout_ns="
+                      << kExternalDetectPriorityWaitTimeoutNs << ")" << std::endl;
+        }
         if (deferred_release_) {
             std::cout << "[ExternalIpcRecorder] camera=" << camera_serial_
                       << " forcing deferred source release protocol" << std::endl;
@@ -271,6 +280,7 @@ protected:
         if (deferred_release_) {
             poll_protocol_lines(false);
         }
+        wait_for_detect_priority(entry);
         bool release_entry_now = true;
         const bool ok = detach_frame(entry, &release_entry_now);
         if (ok) {
@@ -292,7 +302,86 @@ protected:
         return false;
     }
 
+public:
+    uint64_t detect_priority_gated_frames() const { return detect_priority_gated_frames_.load(std::memory_order_relaxed); }
+    uint64_t detect_priority_waited_frames() const { return detect_priority_waited_frames_.load(std::memory_order_relaxed); }
+    uint64_t detect_priority_wait_timeouts() const { return detect_priority_wait_timeouts_.load(std::memory_order_relaxed); }
+    uint64_t detect_priority_wait_total_ns() const { return detect_priority_wait_total_ns_.load(std::memory_order_relaxed); }
+    uint64_t detect_priority_wait_max_ns() const { return detect_priority_wait_max_ns_.load(std::memory_order_relaxed); }
+
 private:
+    // Detect-priority gate for the external recorder path (lever 2b in
+    // docs/detect_latency_review_2026_09_03.md). The recorder's detach copy
+    // and NVENC input copy otherwise land on the detect die while YOLO is
+    // running on the same frame; holding the handoff until YOLO's completion
+    // event fires moves those copies into the idle part of the frame period.
+    // Mirrors EncoderPreprocessWorker's ORANGE_RECORDING_DETECT_PRIORITY gate
+    // but waits on completion rather than input-ready, because the copies
+    // contend with inference, not just preprocess. Frames never dispatched to
+    // YOLO pass through untouched; a wait longer than the timeout is counted
+    // and released so recording never stalls behind a stuck detector.
+    void wait_for_detect_priority(WORKER_ENTRY* entry)
+    {
+        if (!detect_priority_gate_ || !entry || !entry->yolo_dispatched) {
+            return;
+        }
+        detect_priority_gated_frames_.fetch_add(1, std::memory_order_relaxed);
+        auto yolo_done = [&]() {
+            if (entry->detections_ready.load(std::memory_order_acquire)) {
+                return true;
+            }
+            if (!entry->yolo_completion_event ||
+                !entry->yolo_completion_event_recorded.load(std::memory_order_acquire)) {
+                return false;
+            }
+            const cudaError_t status = cudaEventQuery(*entry->yolo_completion_event);
+            if (status == cudaSuccess) {
+                return true;
+            }
+            if (status == cudaErrorNotReady) {
+                return false;
+            }
+            cudaGetLastError();
+            log_limited(std::string("detect-priority completion event query failed: ") +
+                        cudaGetErrorString(status));
+            return true;
+        };
+        if (yolo_done()) {
+            return;
+        }
+        const auto wait_start = std::chrono::steady_clock::now();
+        bool timed_out = false;
+        while (!yolo_done()) {
+            const uint64_t elapsed_ns = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - wait_start).count());
+            if (elapsed_ns >= kExternalDetectPriorityWaitTimeoutNs) {
+                timed_out = true;
+                break;
+            }
+            std::this_thread::sleep_for(kExternalDetectPriorityWaitPollInterval);
+        }
+        const uint64_t wait_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - wait_start).count());
+        detect_priority_waited_frames_.fetch_add(1, std::memory_order_relaxed);
+        detect_priority_wait_total_ns_.fetch_add(wait_ns, std::memory_order_relaxed);
+        uint64_t observed_max = detect_priority_wait_max_ns_.load(std::memory_order_relaxed);
+        while (wait_ns > observed_max &&
+               !detect_priority_wait_max_ns_.compare_exchange_weak(
+                   observed_max, wait_ns, std::memory_order_relaxed)) {
+        }
+        if (timed_out) {
+            detect_priority_wait_timeouts_.fetch_add(1, std::memory_order_relaxed);
+            log_limited("detect-priority wait timed out for recording_frame " +
+                        std::to_string(entry->recording_frame_id) +
+                        " wait_ns=" + std::to_string(wait_ns));
+        }
+    }
+
+    static constexpr uint64_t kExternalDetectPriorityWaitTimeoutNs = 50ULL * 1000ULL * 1000ULL;
+    static constexpr auto kExternalDetectPriorityWaitPollInterval = std::chrono::microseconds(50);
+
     static std::string handle_to_hex(const cudaIpcMemHandle_t& handle)
     {
         const auto* bytes = reinterpret_cast<const unsigned char*>(&handle);
@@ -894,6 +983,12 @@ private:
     int ack_timeout_ms_ = 1000;
     int socket_fd_ = -1;
     bool deferred_release_ = false;
+    bool detect_priority_gate_ = false;
+    std::atomic<uint64_t> detect_priority_gated_frames_{0};
+    std::atomic<uint64_t> detect_priority_waited_frames_{0};
+    std::atomic<uint64_t> detect_priority_wait_timeouts_{0};
+    std::atomic<uint64_t> detect_priority_wait_total_ns_{0};
+    std::atomic<uint64_t> detect_priority_wait_max_ns_{0};
     bool client_hello_sent_ = false;
     bool client_drain_sent_ = false;
     bool client_finalize_sent_ = false;
@@ -1295,6 +1390,18 @@ RecordingIngressStats RecordingIngress::GetStats() const
             external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->failures() : 0;
         stats.external_ipc_ack_timeouts =
             external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->ack_timeouts() : 0;
+        if (external_ipc_handoff_worker_) {
+            stats.detect_priority_gated_frames =
+                external_ipc_handoff_worker_->detect_priority_gated_frames();
+            stats.detect_priority_waited_frames =
+                external_ipc_handoff_worker_->detect_priority_waited_frames();
+            stats.detect_priority_wait_timeouts =
+                external_ipc_handoff_worker_->detect_priority_wait_timeouts();
+            stats.detect_priority_wait_total_ns =
+                external_ipc_handoff_worker_->detect_priority_wait_total_ns();
+            stats.detect_priority_wait_max_ns =
+                external_ipc_handoff_worker_->detect_priority_wait_max_ns();
+        }
     } else if (recording_sink_mode_ == "real") {
         accumulate_worker(primary_preprocess_worker_, true);
         for (const auto& [gpu_id, worker] : helper_preprocess_workers_) {

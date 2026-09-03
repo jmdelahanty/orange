@@ -464,7 +464,7 @@ validate_env_item() {
         return 2
       }
       ;;
-    ORANGE_YOLO_SYNC_EVENT|ORANGE_PTP_LATCH_AFTER_FANOUT|ORANGE_HEADLESS_GPU_DMON|ORANGE_EXTERNAL_RECORDER_DIRECT_INPUT)
+    ORANGE_YOLO_SYNC_EVENT|ORANGE_PTP_LATCH_AFTER_FANOUT|ORANGE_HEADLESS_GPU_DMON|ORANGE_EXTERNAL_RECORDER_DIRECT_INPUT|ORANGE_EXTERNAL_RECORDER_DETECT_PRIORITY)
       # Detect-latency levers (docs/detect_latency_review_2026_09_03.md).
       [[ "$value" =~ ^(0|1)$ ]] || {
         echo "$key must be 0 or 1" >&2

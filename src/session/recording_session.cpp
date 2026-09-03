@@ -1656,11 +1656,28 @@ bool add_finalized_frame_identity_contract(
                         ? summary.value("frames_encoded", 0ULL) : 0ULL;
                     const bool proof_present =
                         proof.is_object() && !proof.empty();
+                    const int proof_version = proof.is_object()
+                        ? proof.value("schema_version", 0) : 0;
+                    // Schema 2 (recorder checkpoint mux proof, e3cf98c) adds
+                    // packet submission/write accounting on top of the
+                    // schema-1 identity registry. Accept both; for schema 2
+                    // also require that every accepted submission was
+                    // attempted and written, with no rejections or failures.
+                    const bool proof_version_ok =
+                        proof_version == 1 || proof_version == 2;
+                    const bool schema2_accounting_ok =
+                        proof_version != 2 ||
+                        (binding.is_object() &&
+                         binding.value("packet_submissions_accepted", 0ULL) == frames_encoded &&
+                         binding.value("packet_write_attempts", 0ULL) == frames_encoded &&
+                         binding.value("packet_submissions_rejected", 1ULL) == 0 &&
+                         binding.value("packet_write_failures", 1ULL) == 0);
                     const bool proof_valid =
                         proof_present &&
                         proof.value("schema_id", std::string()) ==
                             "orange.external_recorder.frame_identity_proof" &&
-                        proof.value("schema_version", 0) == 1 &&
+                        proof_version_ok &&
+                        schema2_accounting_ok &&
                         proof.value("status", std::string()) == "passed" &&
                         proof.value("canonical_field", std::string()) ==
                             "recording_frame_id" &&
