@@ -71,6 +71,41 @@ enum class OrientationStatus {
     kUnknown
 };
 
+// How stable zone names are derived from geometry. See
+// docs/spatial_layout_contract.md "Ordering And Symmetry Rule".
+//
+// kCameraRowMajorV1: well grid of spatially separated zones on a fixed plate;
+//   zones are independently fitted circles ordered row-major from the camera's
+//   top-left, and the materialization records ordering margins.
+// kRowMajorFromLayoutSpace: barrier-partitioned or symmetric layouts whose
+//   order is fixed in canonical layout space and requires orientation_status.
+//
+// ArenaLayoutProvenance::ordering_rule remains a string for compatibility with
+// legacy artifacts ("row_major_top_left", "single_circle_imported_from_citrus");
+// only camera_row_major_v1 adds structural validation.
+enum class OrderingRule {
+    kCameraRowMajorV1,
+    kRowMajorFromLayoutSpace
+};
+
+enum class OrderingStatus {
+    kResolved,
+    kOrderingUnresolved
+};
+
+// Registration-time evidence that a camera_row_major_v1 sort was unambiguous.
+// Margins are centre-to-centre separations between adjacent rows/columns minus
+// the scatter within them; both must exceed the threshold for kResolved.
+struct RegistrationOrdering {
+    OrderingRule rule = OrderingRule::kCameraRowMajorV1;
+    double row_margin_px = 0.0;
+    double column_margin_px = 0.0;
+    double ordering_margin_threshold_px = 0.0;
+    OrderingStatus ordering_status = OrderingStatus::kOrderingUnresolved;
+    // zone_id for each zone_index, dense from 0.
+    std::vector<std::string> zone_index_to_id;
+};
+
 enum class VisibilityStatus {
     kFull,
     kPartial,
@@ -208,6 +243,10 @@ struct ViewRegistration {
     double residual_px = 0.0;
     bool has_orientation_status = false;
     OrientationStatus orientation_status = OrientationStatus::kUnknown;
+    // Required when the layout's provenance.ordering_rule is
+    // camera_row_major_v1; must be absent otherwise.
+    bool has_ordering = false;
+    RegistrationOrdering ordering;
 };
 
 struct DishMaskRuntime {
@@ -280,6 +319,12 @@ bool arena_layout_provenance_source_from_string(const std::string& value,
 const char* orientation_status_to_string(OrientationStatus value);
 bool orientation_status_from_string(const std::string& value, OrientationStatus* out, std::string* error_out = nullptr);
 
+const char* ordering_rule_to_string(OrderingRule value);
+bool ordering_rule_from_string(const std::string& value, OrderingRule* out, std::string* error_out = nullptr);
+
+const char* ordering_status_to_string(OrderingStatus value);
+bool ordering_status_from_string(const std::string& value, OrderingStatus* out, std::string* error_out = nullptr);
+
 const char* visibility_status_to_string(VisibilityStatus value);
 bool visibility_status_from_string(const std::string& value, VisibilityStatus* out, std::string* error_out = nullptr);
 
@@ -290,6 +335,7 @@ bool validate_calibration_ref(const CalibrationRef& value,
 bool validate_layout_geometry(const LayoutGeometry& value, std::string* error_out);
 bool validate_runtime_geometry(const RuntimeGeometry& value, std::string* error_out);
 bool validate_dish_mask_geometry(const DishMaskGeometry& value, std::string* error_out);
+bool validate_registration_ordering(const RegistrationOrdering& value, std::string* error_out);
 bool validate_view_registration(const ViewRegistration& value, std::string* error_out);
 bool validate_dish_mask_artifact(const DishMaskArtifact& value, std::string* error_out);
 bool validate_arena_layout_artifact(const ArenaLayoutArtifact& value, std::string* error_out);
@@ -306,6 +352,7 @@ nlohmann::json runtime_geometry_to_json(const RuntimeGeometry& value);
 nlohmann::json dish_mask_geometry_to_json(const DishMaskGeometry& value);
 nlohmann::json dish_mask_artifact_to_json(const DishMaskArtifact& value);
 nlohmann::json arena_layout_artifact_to_json(const ArenaLayoutArtifact& value);
+nlohmann::json registration_ordering_to_json(const RegistrationOrdering& value);
 nlohmann::json view_registration_to_json(const ViewRegistration& value);
 nlohmann::json dish_mask_runtime_to_json(const DishMaskRuntime& value);
 nlohmann::json arena_layout_runtime_to_json(const ArenaLayoutRuntime& value);
@@ -317,6 +364,7 @@ bool parse_runtime_geometry_json(const nlohmann::json& node, RuntimeGeometry* ou
 bool parse_dish_mask_geometry_json(const nlohmann::json& node, DishMaskGeometry* out, std::string* error_out);
 bool parse_dish_mask_artifact_json(const nlohmann::json& node, DishMaskArtifact* out, std::string* error_out);
 bool parse_arena_layout_artifact_json(const nlohmann::json& node, ArenaLayoutArtifact* out, std::string* error_out);
+bool parse_registration_ordering_json(const nlohmann::json& node, RegistrationOrdering* out, std::string* error_out);
 bool parse_view_registration_json(const nlohmann::json& node, ViewRegistration* out, std::string* error_out);
 bool parse_dish_mask_runtime_json(const nlohmann::json& node, DishMaskRuntime* out, std::string* error_out);
 bool parse_arena_layout_runtime_json(const nlohmann::json& node, ArenaLayoutRuntime* out, std::string* error_out);

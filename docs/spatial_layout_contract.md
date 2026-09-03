@@ -261,7 +261,10 @@ Important distinction:
 - `zone_index` is convenience metadata only
 
 `zone_index` may be assigned row-major during layout authoring, but it must not
-be treated as a cross-recording source of truth on its own.
+be treated as a cross-recording source of truth on its own. It becomes usable
+as a wire-level index only when the accepted materialization freezes the
+index-to-`zone_id` map together with the declared `ordering_rule` and its
+recorded ordering margins (see "Ordering And Symmetry Rule").
 
 ## Dish Mask
 
@@ -551,9 +554,52 @@ This is the intended mechanism for robustness to mm-scale placement changes.
 
 ## Ordering And Symmetry Rule
 
-Top-left ordering is acceptable only during canonical layout authoring.
+Stable zone names require a declared, verifiable `ordering_rule`. The rule
+depends on the apparatus class, and the accepted materialization must record
+which rule it used. Two rules are recognized. This section matches Citrus
+`docs/arena_group_registered_geometry_detection_crop_decision_2026-09-03.md`
+section 10.1 and the Orange routing design's "Region Ordering Rule".
 
-Recommended rule:
+### `camera_row_major_v1` (well grid, current apparatus)
+
+The holder is one acrylic plate with separate cut-outs, each seating one dish,
+fixed under one camera. Plate, camera, and projector together form one Citrus
+rig configuration; reorienting or relocating any of them is a different rig
+configuration and a different materialization, not a rotation to measure
+within one. Because the zones are spatially separated circles, they are
+distinguishable by position alone and zone identity is camera-perspective by
+design:
+
+- each zone is an independently fitted circle in camera-native pixels
+- zones are ordered row-major from the camera's top-left with index base 0:
+  centres are grouped into rows by `y`, then ordered by `x` within each row
+- the materialization records `ordering_rule = camera_row_major_v1`, the
+  ordering margins below, and the resolved index-to-`zone_id` map
+
+The ordering is valid only when the sort is unambiguous. Registration must
+compute and record:
+
+- `row_margin_px`: the smallest vertical distance between adjacent row
+  centroids minus the largest vertical scatter within any row
+- `column_margin_px`: the smallest horizontal distance between adjacent column
+  centroids minus the largest horizontal scatter within any column
+
+Both must exceed a declared `ordering_margin_threshold_px`, recommended to be
+at least one zone radius. The margin is measured between zone centres, not
+edges, so wells may sit close together or touch. For four 40 mm wells at a
+42 mm centre pitch, the row margin is about 42 mm minus sub-millimetre
+scatter against a 20 mm threshold; the threshold bounds plate tilt relative to
+the camera rows (roughly 24 degrees at that pitch), not well spacing. If
+either margin fails, `ordering_status` is `ordering_unresolved`, Orange may
+show unnamed geometric zones for diagnostic review, and it must not publish
+stable `zone_id` assignments. Registration must also match the canonical
+layout's expected zone count, diameter in pixels, and centre spacing within
+declared tolerances.
+
+### `row_major_from_layout_space` (barrier-partitioned or symmetric layouts)
+
+One dish split by internal barriers, or any layout whose zones are not
+separable by position, must not use `camera_row_major_v1`:
 
 - define `zone_index` and initial `zone_id` order once in canonical layout
   space, for example row-major from top-left to bottom-right
@@ -566,13 +612,16 @@ Reason:
 - symmetric layouts can silently rename zones if the dish rotates, mirrors, or
   shifts enough to change row/column ordering
 
-If the layout is symmetric, there must be a symmetry-breaking cue somewhere in
-the setup or registration flow, for example:
+For this rule there must be a symmetry-breaking cue somewhere in the setup or
+registration flow, recorded as `orientation_status`, for example:
 
 - fixed holder orientation
 - fiducial mark
 - asymmetric chamber spacing
 - manual orientation confirmation
+
+An `ambiguous` or `unknown` `orientation_status` under this rule has the same
+publication restriction as `ordering_unresolved`.
 
 ## Canonical Arena-Layout Artifact
 
@@ -648,7 +697,10 @@ Notes:
 
 - `layout_id` is the stable template identity
 - `zone_id` is the stable zone identity
-- `zone_index` is only ordering convenience
+- `zone_index` is only ordering convenience until the materialization freezes
+  it under a declared `ordering_rule`
+- `provenance.ordering_rule` is `camera_row_major_v1` for a well grid or
+  `row_major_from_layout_space` for barrier-partitioned or symmetric layouts
 - `outer_geometry` is required in v1 and is not a replacement for the
   per-camera `dish_mask`
 - canonical artifact payload should not contain per-recording camera-pixel
