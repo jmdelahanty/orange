@@ -294,7 +294,7 @@ Each step is one change and one measurement against the August baseline.
 | 3 | Done. Deferred PTP latch (`ORANGE_PTP_LATCH_AFTER_FANOUT`, default on) | `acquisition_to_worker_start_ms` p99/p99.9; `ptp_latch_ns` in the cadence probe | p99 0.57 to about 0.06 ms |
 | 4 | Done. Cache `build_gpu_runtime_info` per GPU (the real lock holder); `ORANGE_HEADLESS_GPU_DMON=0` remains available | stall fractional-second histogram | Verified: 0 stalls |
 | 5 | Always-on GPU event timing in the perf row | `preprocess_gpu_ms`, `gap_ms`, `infer_gpu_ms` populated in production | Under 20 us overhead |
-| 6 | GOP-aware tensor routing to the idle die on the same card, only if step 2 leaves most of the contention | die split; per-frame tensor copy time | All frames near the other-die figure plus 0.2-0.4 ms |
+| 6 | Assessed: GOP-aware tensor routing, fallback only if 2c is blocked (see below) | peer-copy hop for 4.9 / 2.5 MB between dies; die split | Hop 0.4-0.8 ms versus about 0.2 ms of residual after 2c |
 | 7 | Standalone engine loop on the A6000 while citrus renders | p99 under render load | Go only if p99 is comfortably under 1.5 ms |
 | 8 | Fold the fused preprocess into the CUDA graph (upstream does this) | `cpu_pre_sync_ms` | One fewer launch, about 10 us |
 
@@ -421,6 +421,42 @@ so inference is both faster and less sensitive to bandwidth contention; there
 is an INT8 plan in the tree), and GOP-aware tensor routing (lever 6). Stream
 priority is already highest and preset p1/ll is already the cheapest NVENC
 setting, so neither is a lever.
+
+### Lever 6 assessed: alternate inference to the die that is not encoding
+
+Only as a substitute for 2c, not on top of it.
+
+What routing removes: with 2b and 2c in place, the only encoder traffic still
+overlapping inference on the detect die is NVENC's own read of the frame,
+expected to be worth about 0.2 ms at p95. Routing inference to the die that
+is not encoding removes exactly that.
+
+What routing costs: the frame lands on the detect die over GPUDirect, so
+preprocess must run there; what crosses is the input tensor. The engine's
+input binding is FP32 1x3x640x640 (4.9 MB). The two dies of an A16 pair talk
+through the on-card PCIe switch at Gen4 x4, about 6 GB/s in practice, so the
+hop is roughly 0.8 ms, or about 0.4 ms with an FP16 input binding. Then the
+outputs come back. On top of the hop: two TensorRT contexts per camera,
+tensor buffers on both dies, cross-device events, and per-GOP alternation
+that must agree with the recorder's shard routing. After 2c that spends
+0.4-0.8 ms to remove about 0.2 ms: a loss at the mean, at best a wash at p95.
+
+Where it makes sense: if 2c is blocked (most likely by the EVT GPUDirect
+allocation not allowing an NV12-shaped buffer), routing is the fallback.
+Today, with the gate on, the same-die penalty is 0.34-0.48 ms mean and about
+0.85 ms p95; a 0.4 ms hop against that is a small p95 win and a mean loss, so
+worth it only for the tail and only with an FP16 input binding.
+
+What routing cannot do: the "idle" die is not idle. It is the other shard,
+encoding during the other half of every cycle, and for this camera it also
+hosts the crop recorder. Inference would always land on the die not encoding
+full frames, which is the point, but the crop encode and the peer-copy
+inflow are always there.
+
+Order: prototype 2c and measure the residual. Under 0.3 ms, routing is dead.
+If 2c is blocked, measure the hop before building routing: peer-copy
+microbenchmarks of 4.9 MB and 2.5 MB between dies 3 and 4
+(`scripts/check_cuda_peer_access.cu` is a starting point).
 
 ### On `nvenc_direct_input`
 
