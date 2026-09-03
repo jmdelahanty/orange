@@ -138,14 +138,15 @@ emitted for compatibility, but schema-2 consumers should prefer
 `recording_outputs` when it is present.
 
 The `crop` value is currently one scalar, YOLO-driven top-one crop stream. It is
-not the detector-independent spatial ROI collection. That product has a
-verified-plan/CUDA extractor plus a closed frame contract and bounded lane
-runtime on its isolation branch, but no recorder process or multi-output
-session inventory yet. Consumers must not infer stable `roi_id` or `region_id`
-from the current crop descriptor.
+not the detector-independent spatial ROI collection. The fixed spatial-ROI
+product is now separately implemented with a verified-plan/CUDA extractor, a
+closed frame contract, a descriptor-bound schema-v5 recorder, and an additive
+multi-output session inventory. Consumers must not infer stable `roi_id` or
+`region_id` from the legacy scalar crop descriptor; they must use the validated
+spatial-ROI collection described below.
 
 When detector-independent spatial ROI outputs are present, the snapshot also
-may contain the additive `recording_outputs_v3` object. This does not change
+contains the additive `recording_outputs_v3` object. This does not change
 the top-level snapshot `schema_version` (which remains `2` for compatibility)
 or replace `recording_outputs`. Its shape is:
 
@@ -1343,6 +1344,14 @@ Notes:
   `session.gui_display_frame_rate.imgui_glfw_size_cache` with recording-scoped
   cache-hit, fallback, and null-window counters for the backend display-size
   path.
+- Current GUI recordings also write recording-root `gui_timing_windows.csv`.
+  `session.gui_display_frame_rate.timing_windows` binds that chronological
+  schema-1 sidecar by path, byte size, and SHA-256 and records offered,
+  written, and dropped window/sample counts plus bounded-queue high-water.
+  Rows are exact per-second aggregates rather than per-frame telemetry: this
+  preserves when UI degradation occurred while keeping GUI memory fixed and
+  all disk I/O on a background writer. Whole-recording exact count/mean/min/max
+  and bounded-reservoir percentiles remain in the adjacent aggregate buckets.
 - `clip_seconds = 0` means no rollover and keeps the current flat folder
   layout.
 - `clip_seconds > 0` is implemented for headless experimental specs as
@@ -1728,6 +1737,25 @@ Each MP4 has an adjacent lifecycle artifact:
 <video-path>.finalization.json
 ```
 
+Orange schema version 2 adds a `packet_writes` proof. It separately records
+packets accepted by the bounded asynchronous writer queue, rejected
+submissions, calls attempted at the FFmpeg mux boundary, successful packet
+writes, failed packet writes, the first FFmpeg error code, and muxer-flush
+success. A terminal `complete` claim requires:
+
+```text
+submissions_accepted == write_attempts == packets_written
+submissions_rejected == 0
+write_failures == 0
+writer_error_latched == false
+muxer_flush_attempted == true
+muxer_flush_succeeded == true
+```
+
+This makes `packets_written` an observed mux success count rather than a queue
+submission count. Historical Orange and current Citrus schema-version-1
+sidecars remain inspectable by the validator.
+
 The schema is
 [`orange_video_container_finalization.schema.json`](schemas/orange_video_container_finalization.schema.json).
 The writer atomically advances the sidecar through `recording_open`,
@@ -1795,12 +1823,16 @@ The writer sets `AV_PKT_FLAG_KEY` for H.264 IDR (NAL type 5) and HEVC IDR
 (NAL types 19/20), and uses that to populate the keyframe list.
 
 For an inter-frame stream, FFmpeg writes those flags into the MP4 `stss`
-sync-sample table. Crop video currently uses lossless HEVC with `GOP=1`, so
-every packet is an independently decodable key/sync sample. MP4 permits `stss`
-to be absent when every sample is a sync sample; absence in that all-I case is
-therefore correct. Validation requires every crop packet to carry the demuxed
-key flag. If crop encoding later uses a GOP greater than one, its MP4 must carry
-a truthful `stss` table instead.
+sync-sample table. Here, “crop video” means the legacy scalar, YOLO-driven
+single-target moving crop: that product currently uses lossless HEVC with
+`GOP=1`, so every packet is an independently decodable key/sync sample. This
+GOP-1 statement does not apply to detector-independent `spatial_roi` outputs;
+each fixed-region stream records its resolved profile, and the active
+long-running fixed-region profile uses GOP-25. MP4 permits `stss` to be absent
+when every sample is a sync sample; absence in that all-I case is therefore
+correct. Validation requires every all-I moving-crop packet to carry the
+demuxed key flag. Any inter-frame crop or ROI MP4 must instead carry a truthful
+`stss` table.
 
 Important: these camera configs are read from the static JSON config files at
 recording start. The snapshot does not query live camera state from the SDK, and

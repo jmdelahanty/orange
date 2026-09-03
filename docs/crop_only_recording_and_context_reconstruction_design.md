@@ -3,14 +3,18 @@
 Date: 2026-08-21
 
 Status: proposed design contract and implementation checklist; no production
-crop-only profile is promoted by this document
+detection-driven moving-crop `crop_only` profile is promoted by this document
 
-The 2026-08-31 spatial ROI extraction foundation is a separate, default-off
-detector-independent path (see
+The detector-independent fixed spatial-ROI path that began with the 2026-08-31
+foundation is now implemented as a separate, default-off product (see
 [`spatial_roi_recording_v1_foundation.md`](spatial_roi_recording_v1_foundation.md)).
-It does not implement crop-only recording, does not make the full-frame output
-recoverable from ROI media, and does not change the acceptance requirements in
-this document. Crop-only remains explicitly unpromoted until its own context,
+It has a descriptor-bound recorder, stable per-region identities, an additive
+multi-output session inventory, and two fixed-region policies: one retains the
+full frame and one intentionally replaces continuous full-frame media with a
+registered context artifact. That implemented fixed-ROI-only policy is not the
+detection-driven, moving-subject `crop_only` product specified here. Fixed ROI
+media also cannot recover omitted full-frame pixels. The moving-crop product
+remains explicitly unpromoted until its own subject-coverage, context,
 media-policy, identity, and finalization evidence are implemented.
 
 ## Purpose
@@ -74,19 +78,20 @@ Orange already has most of the pixel and geometry plumbing:
   `immediate_recycle`, allowing crop and analytics artifacts to exist without a
   full-frame MP4.
 
-That is not yet a production crop-only mode:
+That is not yet a production detection-driven moving-crop mode:
 
 - the GUI and startup validator still describe Crop+Encode as requiring
   full-frame Record selection;
-- no first-class media policy distinguishes camera participation from which
-  media products are retained;
-- crop failures currently have optional-sidecar semantics because the
-  full-frame master remains authoritative;
-- still images do not yet have a stable recording-output contract;
+- the legacy moving-crop path has no first-class `crop_only` media policy;
+  the implemented fixed-ROI media policies do not implicitly promote it;
+- moving-crop failures currently have optional-sidecar semantics because the
+  full-frame master remains authoritative for that path;
+- the recording-bound context-image set required by this moving-crop design
+  does not yet have a stable recording-output contract;
 - daily-registration images are calibration evidence and are not guaranteed to
   match the production optical state needed for visual reconstruction; and
-- existing validators do not prove that crops plus background evidence are a
-  complete crop-only payload.
+- existing validators do not prove that moving crops plus background evidence
+  are a complete `crop_only` payload.
 
 ## Terminology
 
@@ -149,6 +154,13 @@ the normalized recording snapshot must persist the resolved policy per
 observation edge. This keeps the schema compatible with future multiple-camera
 per-arena or multiple-arena per-camera acquisition without changing the current
 one-camera/one-arena restriction.
+
+For a future multi-compartment dish, one camera still produces one canonical
+source acquisition stream. Compartment crops are region-scoped derived media,
+not additional source streams. Each physical region may bind one-to-one to a
+sibling Citrus Arena, but neither the region nor the whole dish contains nested
+Arenas. See
+[Multi-compartment physical-layout detection routing](multi_compartment_physical_layout_detection_routing_design.md).
 
 ### 2. Crop-only is explicit and opt-in
 

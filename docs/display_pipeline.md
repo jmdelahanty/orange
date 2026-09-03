@@ -175,6 +175,26 @@ When the source is color, or YOLO detection overlays are enabled and available:
   `recording_snapshot.json session.gui_display_frame_rate.timings` and includes
   frame total, main/crop texture upload, camera/crop window draw, speed graph
   draw, and render/present buckets.
+- Recording-duration GUI timing buckets use fixed-memory deterministic
+  reservoirs. `sample_count`, minimum, maximum, and mean cover every accepted
+  sample; percentile fields are exact while `sample_count <= 8192` and are
+  reservoir estimates afterward. Each bucket records `retained_sample_count`,
+  `max_retained_samples`, `percentile_sampling_policy`, and
+  `percentiles_exact` so consumers do not mistake a long-run estimate for an
+  exact order statistic.
+- The complete GUI timing JSON is constructed only after the recording
+  finalization gate opens. Ordinary recording frames append one bounded sample
+  and never copy, sort, or serialize the accumulated history.
+- Longitudinal timing is preserved separately in recording-root
+  `gui_timing_windows.csv` (`orange.gui_timing_windows`, schema 1). It contains
+  exact per-second sample counts and per-stage min/p05/p50/p95/max/mean values,
+  written by a background thread through a bounded non-blocking queue. A
+  partial final window is drained before recording finalization. The recording
+  snapshot's `session.gui_display_frame_rate.timing_windows` object records the
+  relative and absolute path, size, SHA-256, offered/written/dropped window and
+  sample counts, terminal parity checks, queue capacity/high-water, and any
+  writer error. This keeps
+  slowdown chronology without retaining or writing one row per GUI frame.
 - The ImGui GLFW size-cache shim writes recording-scoped counters under
   `recording_snapshot.json session.gui_display_frame_rate.imgui_glfw_size_cache`.
   Validation can require cache hits with no fallback size polling via
@@ -201,6 +221,9 @@ When the source is color, or YOLO detection overlays are enabled and available:
 - Reduce per‑frame work:
   - Raise GUI display downsample from `4` to `8`.
   - Disable overlays for non‑focused cameras.
+- Keep low-rate control telemetry low-rate. External-recorder status sidecars
+  and optional camera sensor-temperature reads are sampled at one hertz rather
+  than opened/read on every GUI frame.
 - Drop frames aggressively:
   - Keep only the newest frame in the display queue (already done), and cap queue size.
 - Move display preprocessing to the acquisition GPU and transfer only the

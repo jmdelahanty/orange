@@ -1,6 +1,7 @@
 #ifndef ORANGE_POSE_WORKER_H
 #define ORANGE_POSE_WORKER_H
 
+#include "bounded_sample_statistics.h"
 #include "crop_producer.h"
 #include "pose_event_log.h"
 #include "threadworker.h"
@@ -72,13 +73,13 @@ private:
     std::atomic<uint64_t> run_frames_processed_{0};
     std::atomic<uint64_t> run_queue_full_drops_{0};
     std::atomic<int> run_queue_high_water_{0};
-    std::vector<double> capture_to_detect_done_samples_ms_;
-    std::vector<double> detect_to_crop_worker_start_samples_ms_;
-    std::vector<double> crop_worker_start_to_crop_ready_samples_ms_;
-    std::vector<double> detect_to_crop_ready_samples_ms_;
-    std::vector<double> crop_ready_to_pose_start_samples_ms_;
-    std::vector<double> pose_start_to_pose_done_samples_ms_;
-    std::vector<double> capture_to_pose_done_samples_ms_;
+    orange::BoundedSampleStatistics capture_to_detect_done_samples_ms_;
+    orange::BoundedSampleStatistics detect_to_crop_worker_start_samples_ms_;
+    orange::BoundedSampleStatistics crop_worker_start_to_crop_ready_samples_ms_;
+    orange::BoundedSampleStatistics detect_to_crop_ready_samples_ms_;
+    orange::BoundedSampleStatistics crop_ready_to_pose_start_samples_ms_;
+    orange::BoundedSampleStatistics pose_start_to_pose_done_samples_ms_;
+    orange::BoundedSampleStatistics capture_to_pose_done_samples_ms_;
 };
 
 #endif  // ORANGE_POSE_WORKER_H

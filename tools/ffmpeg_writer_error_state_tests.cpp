@@ -13,6 +13,14 @@
 #include <stdexcept>
 #include <string>
 
+class FFmpegWriterTestAccess {
+public:
+    static bool write_one_pkt(FFmpegWriter& writer, AVPacket* packet)
+    {
+        return writer.write_one_pkt(packet);
+    }
+};
+
 namespace {
 
 void expect(bool condition, const std::string& message)
@@ -78,7 +86,7 @@ void test_negative_packet_write_latches_and_fails_finalization()
         expect(packet != nullptr, "test packet allocation failed");
         expect(av_new_packet(packet, 1) >= 0, "test packet payload allocation failed");
         packet->stream_index = 99;
-        writer.write_one_pkt(packet);
+        FFmpegWriterTestAccess::write_one_pkt(writer, packet);
         av_packet_free(&packet);
 
         expect(!writer.finalize(),

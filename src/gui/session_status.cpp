@@ -590,14 +590,48 @@ void gui_refresh_external_recorder_lifecycle(
 
 }  // namespace
 
+bool gui_external_recorder_lifecycle_refresh_due(
+    GuiExternalRecorderLifecycleRefreshState* refresh_state,
+    const bool recording_or_draining,
+    const std::chrono::steady_clock::time_point now,
+    const std::chrono::milliseconds interval)
+{
+    if (!refresh_state) {
+        return true;
+    }
+    if (!recording_or_draining) {
+        refresh_state->recording_active = false;
+        refresh_state->next_refresh_at = {};
+        return false;
+    }
+
+    const bool first_refresh = !refresh_state->recording_active;
+    refresh_state->recording_active = true;
+    if (!first_refresh && now < refresh_state->next_refresh_at) {
+        ++refresh_state->skipped_count;
+        return false;
+    }
+
+    ++refresh_state->refresh_count;
+    refresh_state->next_refresh_at =
+        now + std::max(interval, std::chrono::milliseconds(0));
+    return true;
+}
+
 void gui_refresh_external_recorder_lifecycles(
     orange::session::RecordingSessionState* recording_session,
-    const CameraControl* camera_control)
+    const CameraControl* camera_control,
+    GuiExternalRecorderLifecycleRefreshState* refresh_state)
 {
     if (!recording_session || !camera_control) {
         return;
     }
-    if (!camera_control->record_video && !camera_control->recording_draining) {
+    const bool recording_or_draining =
+        camera_control->record_video || camera_control->recording_draining;
+    if (!gui_external_recorder_lifecycle_refresh_due(
+            refresh_state,
+            recording_or_draining,
+            std::chrono::steady_clock::now())) {
         return;
     }
 

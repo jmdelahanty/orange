@@ -97,6 +97,7 @@ using json = nlohmann::json;
 
 constexpr char kCameraSerial[] = "CAM001";
 constexpr std::uint64_t kFrameCount = 1;
+constexpr std::uint64_t kEncodedBytes = 101;
 constexpr std::uint64_t kMaxFrames = 8;
 constexpr std::uint64_t kMaxMediaBytes = 1024 * 1024;
 constexpr std::uint64_t kMaxEvidenceBytes = 8 * 1024 * 1024;
@@ -209,13 +210,28 @@ json finalization(const evidence::SpatialRoiRecorderEvidenceBinding& binding,
                   const std::uint64_t video_size)
 {
     return {{"schema_id", "orange.video_container_finalization"},
-            {"schema_version", 1},
+            {"schema_version", 2},
             {"generated_at_utc", "2026-09-01T12:01:00Z"},
             {"status", "complete"},
             {"terminal", true},
             {"video_path", binding.expected_artifacts.at("video")},
             {"sidecar_path", binding.expected_artifacts.at("finalization")},
             {"recording_fps", 100},
+            {"packet_writes",
+             {{"submissions_accepted", kFrameCount},
+              {"submission_bytes_accepted", kEncodedBytes},
+              {"submissions_rejected", 0},
+              {"write_attempts", kFrameCount},
+              {"packets_written", kFrameCount},
+              {"bytes_written", kEncodedBytes},
+              {"write_failures", 0},
+              {"first_write_error_code", nullptr},
+              {"writer_error_latched", false},
+              {"muxer_flush_attempted", true},
+              {"muxer_flush_succeeded", true},
+              {"muxer_flush_error_code", nullptr},
+              {"muxer_flush_error", nullptr},
+              {"complete", true}}},
             {"container", {{"header_written", true},
                             {"trailer_attempted", true},
                             {"trailer_written", true},
@@ -359,7 +375,7 @@ evidence::SpatialRoiRecorderFrameEvidence frame(
     value.encode_status = "encoded";
     value.output_frame_index = 1;
     value.packet_count = 1;
-    value.encoded_bytes = 101;
+    value.encoded_bytes = kEncodedBytes;
     value.keyframe = true;
     return value;
 }
@@ -398,7 +414,7 @@ snapshot(const evidence::SpatialRoiRecorderEvidenceBinding& binding)
     value->counts.source_releases = 1;
     value->counts.encoded_frames = 1;
     value->counts.encoded_packets = 1;
-    value->counts.encoded_bytes = 101;
+    value->counts.encoded_bytes = kEncodedBytes;
     value->counts.frame_results_emitted = 1;
     value->counts.encoded_results = 1;
     value->counts.peak_queue_depth = 1;

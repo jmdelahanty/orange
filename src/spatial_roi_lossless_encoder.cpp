@@ -2219,11 +2219,38 @@ struct SpatialRoiLosslessEncoder::Impl final {
             if (!finalization.is_object() ||
                 finalization.value("schema_id", std::string()) !=
                     "orange.video_container_finalization" ||
-                finalization.value("schema_version", 0) != 1 ||
+                finalization.value("schema_version", 0) != 2 ||
                 !finalization.value("terminal", false) ||
                 finalization.value("status", std::string()) != "complete") {
                 throw std::runtime_error(
                     "terminal finalization artifact schema/status is invalid");
+            }
+            const nlohmann::json& packet_writes =
+                finalization.at("packet_writes");
+            if (!packet_writes.is_object() || packet_writes.size() != 14 ||
+                !packet_writes.value("complete", false) ||
+                packet_writes.value("writer_error_latched", true) ||
+                !packet_writes.value("muxer_flush_attempted", false) ||
+                !packet_writes.value("muxer_flush_succeeded", false) ||
+                packet_writes.value("submissions_accepted", std::uint64_t(0)) !=
+                    encode_index ||
+                packet_writes.value("write_attempts", std::uint64_t(0)) !=
+                    encode_index ||
+                packet_writes.value("packets_written", std::uint64_t(0)) !=
+                    encode_index ||
+                packet_writes.value("submissions_rejected", std::uint64_t(1)) !=
+                    0 ||
+                packet_writes.value("write_failures", std::uint64_t(1)) != 0 ||
+                packet_writes.value("submission_bytes_accepted",
+                                    std::uint64_t(0)) !=
+                    stats_value.encoded_bytes ||
+                packet_writes.value("bytes_written", std::uint64_t(0)) !=
+                    stats_value.encoded_bytes ||
+                !packet_writes.at("first_write_error_code").is_null() ||
+                !packet_writes.at("muxer_flush_error_code").is_null() ||
+                !packet_writes.at("muxer_flush_error").is_null()) {
+                throw std::runtime_error(
+                    "terminal finalization artifact does not prove complete packet writes");
             }
             const nlohmann::json& container = finalization.at("container");
             if (!container.is_object() || !container.value("header_written", false) ||

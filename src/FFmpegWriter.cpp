@@ -426,6 +426,28 @@ FFmpegWriterFailureStats FFmpegWriter::failure_stats() const
     return result;
 }
 
+FFmpegWriterPacketWriteStats FFmpegWriter::packet_write_stats() const
+{
+    FFmpegWriterPacketWriteStats stats;
+    stats.submissions_accepted =
+        packet_submissions_accepted_.load(std::memory_order_acquire);
+    stats.submission_bytes_accepted =
+        packet_submission_bytes_accepted_.load(std::memory_order_acquire);
+    stats.submissions_rejected =
+        packet_submissions_rejected_.load(std::memory_order_acquire);
+    stats.write_attempts =
+        packet_write_attempts_.load(std::memory_order_acquire);
+    stats.packets_written =
+        packets_written_.load(std::memory_order_acquire);
+    stats.bytes_written =
+        packet_bytes_written_.load(std::memory_order_acquire);
+    stats.write_failures =
+        packet_mux_write_failures_.load(std::memory_order_acquire);
+    stats.first_write_error_code =
+        first_packet_write_error_code_.load(std::memory_order_acquire);
+    return stats;
+}
+
 void FFmpegWriter::latch_failure(
     FailureKind kind,
     int error_code,
@@ -889,6 +911,57 @@ bool FFmpegWriter::finalize() noexcept
     try {
         OrangeVideoContainerFinalization::Outcome outcome;
         outcome.header_written = open_;
+        const auto populate_packet_write_outcome = [this](
+            OrangeVideoContainerFinalization::Outcome* destination) {
+            const FFmpegWriterPacketWriteStats packet_stats =
+                packet_write_stats();
+            const FFmpegWriterFailureStats failures = failure_stats();
+            // This v2 field is deliberately narrower than the writer's global
+            // failure latch: it describes packet-output/thread failures. Queue
+            // rejection, mux flush, container close, evidence-sidecar, and
+            // playback-patch failures each have separate proof fields or
+            // terminal lifecycle state.
+            destination->writer_error_latched =
+                writer_thread_failed() || failures.packet_write_failures != 0;
+            destination->packet_submissions_accepted =
+                packet_stats.submissions_accepted;
+            destination->packet_submission_bytes_accepted =
+                packet_stats.submission_bytes_accepted;
+            destination->packet_submissions_rejected =
+                packet_stats.submissions_rejected;
+            destination->packet_write_attempts = packet_stats.write_attempts;
+            destination->packets_written = packet_stats.packets_written;
+            destination->packet_bytes_written = packet_stats.bytes_written;
+            destination->packet_write_failures = packet_stats.write_failures;
+            if (packet_stats.first_write_error_code != 0) {
+                destination->first_packet_write_error_code =
+                    packet_stats.first_write_error_code;
+            }
+        };
+        const auto withdraw_terminal_certification = [this](
+            OrangeVideoContainerFinalization::Outcome* destination) {
+            if (!failed() && OrangeVideoContainerFinalization::
+                                 PacketWritesComplete(*destination)) {
+                return;
+            }
+            destination->trailer_written = false;
+            if (destination->trailer_error.empty()) {
+                try {
+                    const FFmpegWriterFailureStats failures = failure_stats();
+                    if (failures.last_error_code != 0) {
+                        destination->trailer_error_code =
+                            failures.last_error_code;
+                    }
+                    destination->trailer_error = failures.last_error.empty()
+                        ? "FFmpegWriter packet, muxer, or sidecar failure"
+                        : failures.last_error;
+                } catch (...) {
+                    destination->trailer_error =
+                        "FFmpegWriter packet, muxer, or sidecar failure";
+                }
+            }
+        };
+        populate_packet_write_outcome(&outcome);
         if (!persist_finalization_status(
                 descriptor_output_, video_fd_, finalization_fd_, output_path_,
                 finalization_file_, nFps,
@@ -913,14 +986,18 @@ bool FFmpegWriter::finalize() noexcept
                 }
                 write_keyframe_sidecar();
                 // Send a NULL packet to flush any muxer-internal frames.
+                outcome.muxer_flush_attempted = true;
                 const int flush_result = av_interleaved_write_frame(oc, NULL);
+                outcome.muxer_flush_succeeded = flush_result >= 0;
                 if (flush_result < 0) {
+                    outcome.muxer_flush_error_code = flush_result;
+                    outcome.muxer_flush_error = av_error_string(flush_result);
                     latch_failure(
                         FailureKind::MuxerFlush,
                         flush_result,
                         "av_interleaved_write_frame(NULL) failed");
                     std::cerr << "FFMPEG: muxer flush failed for " << output_path_
-                              << ": " << av_error_string(flush_result)
+                              << ": " << outcome.muxer_flush_error
                               << std::endl;
                 }
                 outcome.trailer_attempted = true;
@@ -938,26 +1015,11 @@ bool FFmpegWriter::finalize() noexcept
                               << std::endl;
                 }
 
-                // Any earlier packet/mux/keyframe-evidence failure makes the
-                // strict terminal artifact fail closed even if trailer write
-                // itself happened to return success.
-                if (failed()) {
-                    outcome.trailer_written = false;
-                    if (outcome.trailer_error.empty()) {
-                        try {
-                            const FFmpegWriterFailureStats failures =
-                                failure_stats();
-                            outcome.trailer_error_code =
-                                failures.last_error_code;
-                            outcome.trailer_error = failures.last_error.empty()
-                                ? "FFmpegWriter packet, muxer, or sidecar failure"
-                                : failures.last_error;
-                        } catch (...) {
-                            outcome.trailer_error =
-                                "FFmpegWriter packet, muxer, or sidecar failure";
-                        }
-                    }
-                }
+                // Any earlier packet/mux/keyframe-evidence failure or packet
+                // accounting mismatch makes the strict terminal artifact fail
+                // closed even if trailer write itself returned success.
+                populate_packet_write_outcome(&outcome);
+                withdraw_terminal_certification(&outcome);
             } else {
                 outcome.trailer_error = "header_not_written";
             }
@@ -1037,6 +1099,11 @@ bool FFmpegWriter::finalize() noexcept
                 "FFmpegWriter format context unavailable at finalize");
         }
 
+        // Close/fsync may expose a failure after av_write_trailer returned
+        // success. Resolve that before deciding whether the physical file is
+        // eligible for the required playback-intent patch.
+        populate_packet_write_outcome(&outcome);
+        withdraw_terminal_certification(&outcome);
         if (outcome.trailer_written && outcome.output_closed) {
             outcome.playback_intent_patch_attempted = true;
             const bool patch_applied = descriptor_output_
@@ -1061,6 +1128,7 @@ bool FFmpegWriter::finalize() noexcept
             }
         }
 
+        populate_packet_write_outcome(&outcome);
         const auto terminal_status =
             OrangeVideoContainerFinalization::ClassifyTerminalStatus(outcome);
         const bool terminal_persisted = persist_finalization_status(
@@ -1139,12 +1207,16 @@ bool FFmpegWriter::push_packet_impl(uint8_t* pData,
     if (finalization_started_.load(std::memory_order_acquire)) {
         return false;
     }
+    const auto reject_submission = [this]() noexcept {
+        packet_submissions_rejected_.fetch_add(1, std::memory_order_release);
+        return false;
+    };
     if (!open_ || !vs) {
         latch_failure(
             FailureKind::PacketEnqueue,
             AVERROR(EPIPE),
             "FFmpegWriter is not open for packet enqueue");
-        return false;
+        return reject_submission();
     }
     NVTX_ENCODE_DYNAMIC([&]() {
         return "FFmpegWriter push_packet label=" + output_label_ +
@@ -1158,24 +1230,24 @@ bool FFmpegWriter::push_packet_impl(uint8_t* pData,
             FailureKind::PacketEnqueue,
             AVERROR(EINVAL),
             "FFmpegWriter packet size is not positive");
-        return false;
+        return reject_submission();
     }
     if (quit_requested_.load(std::memory_order_acquire)) {
         latch_failure(
             FailureKind::PacketEnqueue,
             AVERROR(EPIPE),
             "FFmpegWriter packet enqueue attempted after quit");
-        return false;
+        return reject_submission();
     }
     if (failed()) {
-        return false;
+        return reject_submission();
     }
     if (!pData) {
         latch_failure(
             FailureKind::PacketEnqueue,
             AVERROR(EINVAL),
             "FFmpegWriter packet data is null");
-        return false;
+        return reject_submission();
     }
 
     const bool has_explicit_pts = nPts >= 0;
@@ -1186,7 +1258,7 @@ bool FFmpegWriter::push_packet_impl(uint8_t* pData,
             FailureKind::PacketEnqueue,
             AVERROR(EOVERFLOW),
             "FFmpegWriter frame index cannot be represented in the 90 kHz timeline");
-        return false;
+        return reject_submission();
     }
     if (descriptor_output_ &&
         descriptor_total_frames_ == std::numeric_limits<uint64_t>::max()) {
@@ -1194,7 +1266,7 @@ bool FFmpegWriter::push_packet_impl(uint8_t* pData,
             FailureKind::PacketEnqueue,
             AVERROR(EOVERFLOW),
             "FFmpegWriter descriptor frame counter overflow");
-        return false;
+        return reject_submission();
     }
 
     const size_t queued_packets = queued_packets_.load(std::memory_order_relaxed);
@@ -1225,7 +1297,7 @@ bool FFmpegWriter::push_packet_impl(uint8_t* pData,
                       << " limit_bytes=" << queue_config_.max_queued_bytes
                       << std::endl;
         }
-        return false;
+        return reject_submission();
     }
 
     const uint64_t alloc_copy_start_ns = steady_clock_now_ns();
@@ -1237,7 +1309,7 @@ bool FFmpegWriter::push_packet_impl(uint8_t* pData,
             "av_packet_alloc failed");
         std::cerr << "FFMPEG: av_packet_alloc failed for " << output_path_
                   << std::endl;
-        return false;
+        return reject_submission();
     }
     const int packet_alloc_result = av_new_packet(pkt, nBytes);
     if (packet_alloc_result < 0) {
@@ -1248,7 +1320,7 @@ bool FFmpegWriter::push_packet_impl(uint8_t* pData,
         std::cerr << "FFMPEG: av_new_packet failed for " << output_path_
                   << ": " << av_error_string(packet_alloc_result) << std::endl;
         av_packet_free(&pkt);
-        return false;
+        return reject_submission();
     }
     memcpy(pkt->data, pData, nBytes);
     const uint64_t alloc_copy_end_ns = steady_clock_now_ns();
@@ -1267,7 +1339,7 @@ bool FFmpegWriter::push_packet_impl(uint8_t* pData,
             AVERROR(EOVERFLOW),
             "FFmpegWriter rescaled frame timestamp overflow");
         av_packet_free(&pkt);
-        return false;
+        return reject_submission();
     }
     pkt->duration = std::max<int64_t>(1, next_pts - pkt->pts);
     if (has_explicit_pts) {
@@ -1286,7 +1358,7 @@ bool FFmpegWriter::push_packet_impl(uint8_t* pData,
             AVERROR(EPROTO),
             "FFmpegWriter explicit keyframe flag disagrees with packet IDR");
         av_packet_free(&pkt);
-        return false;
+        return reject_submission();
     }
     const bool is_idr = actual_keyframe.value_or(packet_idr);
     if (descriptor_output_) {
@@ -1301,7 +1373,7 @@ bool FFmpegWriter::push_packet_impl(uint8_t* pData,
                     ? "FFmpegWriter descriptor output requires an IDR at every GOP boundary"
                     : "FFmpegWriter descriptor output received an unexpected interior IDR");
             av_packet_free(&pkt);
-            return false;
+            return reject_submission();
         }
     }
     try {
@@ -1319,7 +1391,7 @@ bool FFmpegWriter::push_packet_impl(uint8_t* pData,
         std::cerr << "FFMPEG: packet bookkeeping failed for " << output_path_
                   << ": " << exception.what() << std::endl;
         av_packet_free(&pkt);
-        return false;
+        return reject_submission();
     } catch (...) {
         latch_failure(
             FailureKind::PacketEnqueue,
@@ -1328,7 +1400,7 @@ bool FFmpegWriter::push_packet_impl(uint8_t* pData,
         std::cerr << "FFMPEG: packet bookkeeping failed for " << output_path_
                   << ": non-std exception" << std::endl;
         av_packet_free(&pkt);
-        return false;
+        return reject_submission();
     }
     const size_t new_packet_count = queued_packets_.fetch_add(1, std::memory_order_relaxed) + 1;
     const size_t new_byte_count =
@@ -1356,7 +1428,7 @@ bool FFmpegWriter::push_packet_impl(uint8_t* pData,
         std::cerr << "FFMPEG: packet queue push failed for " << output_path_
                   << ": " << exception.what() << std::endl;
         av_packet_free(&pkt);
-        return false;
+        return reject_submission();
     } catch (...) {
         queued_packets_.fetch_sub(1, std::memory_order_relaxed);
         queued_bytes_.fetch_sub(
@@ -1368,8 +1440,11 @@ bool FFmpegWriter::push_packet_impl(uint8_t* pData,
         std::cerr << "FFMPEG: packet queue push failed for " << output_path_
                   << ": non-std exception" << std::endl;
         av_packet_free(&pkt);
-        return false;
+        return reject_submission();
     }
+    packet_submissions_accepted_.fetch_add(1, std::memory_order_release);
+    packet_submission_bytes_accepted_.fetch_add(
+        static_cast<uint64_t>(nBytes), std::memory_order_release);
     if (descriptor_output_) {
         if (!descriptor_has_frame_index_) {
             descriptor_has_frame_index_ = true;
@@ -1471,21 +1546,42 @@ void FFmpegWriter::join_thread()
     }
 }
 
-void FFmpegWriter::write_one_pkt(AVPacket* pkt)
+bool FFmpegWriter::record_packet_write_result(int result, size_t packet_bytes)
 {
-    if (!open_ || !oc) {
-        return;
+    packet_write_attempts_.fetch_add(1, std::memory_order_relaxed);
+    if (result < 0) {
+        packet_mux_write_failures_.fetch_add(1, std::memory_order_relaxed);
+        int expected = 0;
+        first_packet_write_error_code_.compare_exchange_strong(
+            expected,
+            result,
+            std::memory_order_release,
+            std::memory_order_relaxed);
+        latch_failure(
+            FailureKind::PacketWrite,
+            result,
+            "av_interleaved_write_frame(packet) failed");
+        return false;
     }
+    packets_written_.fetch_add(1, std::memory_order_release);
+    packet_bytes_written_.fetch_add(
+        static_cast<uint64_t>(packet_bytes), std::memory_order_release);
+    return true;
+}
+
+bool FFmpegWriter::write_one_pkt(AVPacket* pkt)
+{
+    if (!open_ || !oc || !pkt) {
+        return record_packet_write_result(AVERROR(EINVAL), 0);
+    }
+    const size_t packet_bytes = static_cast<size_t>(std::max(0, pkt->size));
     NVTX_ENCODE_DYNAMIC(std::string("FFmpegWriter av_interleaved_write_frame"));
     const int ret = av_interleaved_write_frame(oc, pkt);
     if (ret < 0) {
-        latch_failure(
-            FailureKind::PacketWrite,
-            ret,
-            "av_interleaved_write_frame(packet) failed");
         std::cerr << "FFMPEG: Error while writing video frame for "
                   << output_path_ << ": " << av_error_string(ret) << std::endl;
     }
+    return record_packet_write_result(ret, packet_bytes);
 }
 
 bool FFmpegWriter::write_packet(uint8_t* pData, int nBytes, int64_t nPts)

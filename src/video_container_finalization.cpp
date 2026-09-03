@@ -28,7 +28,7 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr char kSchemaId[] = "orange.video_container_finalization";
-constexpr int kSchemaVersion = 1;
+constexpr int kSchemaVersion = 2;
 constexpr std::uint32_t kMdtaUtf8Type = 1;
 constexpr std::uint32_t kMdtaUnsignedIntegerType = 22;
 
@@ -454,6 +454,26 @@ nlohmann::json BuildDocument(
         {"video_path", video_display_label},
         {"sidecar_path", sidecar_display_label},
         {"recording_fps", recording_fps},
+        {"packet_writes",
+         {
+             {"submissions_accepted", outcome.packet_submissions_accepted},
+             {"submission_bytes_accepted",
+              outcome.packet_submission_bytes_accepted},
+             {"submissions_rejected", outcome.packet_submissions_rejected},
+             {"write_attempts", outcome.packet_write_attempts},
+             {"packets_written", outcome.packets_written},
+             {"bytes_written", outcome.packet_bytes_written},
+             {"write_failures", outcome.packet_write_failures},
+             {"first_write_error_code",
+              NullableErrorCode(outcome.first_packet_write_error_code)},
+             {"writer_error_latched", outcome.writer_error_latched},
+             {"muxer_flush_attempted", outcome.muxer_flush_attempted},
+             {"muxer_flush_succeeded", outcome.muxer_flush_succeeded},
+             {"muxer_flush_error_code",
+              NullableErrorCode(outcome.muxer_flush_error_code)},
+             {"muxer_flush_error", NullableError(outcome.muxer_flush_error)},
+             {"complete", PacketWritesComplete(outcome)},
+         }},
         {"container",
          {
              {"header_written", outcome.header_written},
@@ -528,11 +548,27 @@ bool WriteJsonToFd(int fd,
 
 }  // namespace
 
+bool PacketWritesComplete(const Outcome& outcome) {
+    return !outcome.writer_error_latched &&
+           outcome.muxer_flush_attempted &&
+           outcome.muxer_flush_succeeded &&
+           !outcome.muxer_flush_error_code.has_value() &&
+           outcome.muxer_flush_error.empty() &&
+           outcome.packet_submissions_rejected == 0 &&
+           outcome.packet_write_failures == 0 &&
+           !outcome.first_packet_write_error_code.has_value() &&
+           outcome.packet_submissions_accepted ==
+               outcome.packet_write_attempts &&
+           outcome.packet_write_attempts == outcome.packets_written &&
+           outcome.packet_submission_bytes_accepted ==
+               outcome.packet_bytes_written;
+}
+
 Status ClassifyTerminalStatus(const Outcome& outcome) {
     const bool container_finalized =
         outcome.header_written && outcome.trailer_written &&
         outcome.output_closed;
-    if (!container_finalized) {
+    if (!container_finalized || !PacketWritesComplete(outcome)) {
         return Status::ContainerFinalizationFailed;
     }
     if (!outcome.playback_intent_patch_applied) {

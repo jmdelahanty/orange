@@ -49,6 +49,15 @@ the model supports multiple arenas observed by one camera and one arena
 observed by multiple cameras without defining a multi-camera or 3D
 reconstruction product in v1.
 
+For a multi-compartment dish, this does not imply nested Arenas. One physical
+camera produces one canonical source acquisition stream, which observes one
+registered multi-compartment physical layout. The implemented Orange
+fixed-ROI path can fan that source out into stable, detector-independent region
+products. In the separately defined Citrus profile, each physical region binds
+one-to-one to one sibling Citrus Arena; the whole dish is not an outer Citrus
+Arena. See
+[Multi-compartment physical-layout detection routing](multi_compartment_physical_layout_detection_routing_design.md).
+
 ## Inspection limitation
 
 The mounted recording stores containing the requested Batman-era, Sleepyfish,
@@ -938,8 +947,17 @@ Phase-B run remains the producer hardware acceptance step.
 Orange's full-frame `stream_id` equals camera serial today. Its live crop is a
 separate, first-class acquisition media stream (`<serial>_crop`) derived from
 that source frame stream. The observation edge therefore names the
-`source_camera_stream_id`; a recording-context media inventory must retain both
-full and crop stream IDs rather than collapsing all media to serial.
+`source_camera_stream_id`; a recording-context media inventory must retain the
+full stream, legacy live-crop stream, and any fixed spatial-ROI logical stream
+IDs rather than collapsing all media to serial.
+
+Post-census implementation now publishes the fixed spatial-ROI products in the
+collection-valued `recording_outputs_v3` session inventory, keyed by
+authenticated `logical_stream_id`, and records their descriptor-bound recorder
+and terminal artifact evidence. That implemented session inventory does not
+yet replace the finer digest-bound acquisition-media inventory beneath each
+`recording_observation_context_v1`; the corresponding Checkpoint 10 item
+therefore remains open.
 
 Relevant one-to-one assumptions include:
 

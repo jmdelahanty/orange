@@ -42,7 +42,9 @@
 #include "gui/env_util.h"
 #include "gui/camera_properties_panel.h"
 #include "gui/frame_ipc_panel.h"
+#include "gui/camera_temperature_sampling.h"
 #include "gui/guided_capture_autorun.h"
+#include "gui/gui_timing_sidecar_writer.h"
 #include "gui/host_ptp_panel.h"
 #include "gui/incremental_clip_shadow.h"
 #include "gui/recording_finalizer.h"
@@ -4971,6 +4973,9 @@ int main(int /*argc*/, char ** /*args*/) {
     bool gui_local_control_exit_pending_after_finalize = false;
     bool gui_local_control_exit_stream_stop_requested = false;
     GuiDisplayFrameRateStats gui_display_frame_rate_stats;
+    orange::gui::GuiTimingSidecarWriter gui_timing_sidecar_writer;
+    GuiExternalRecorderLifecycleRefreshState gui_external_recorder_refresh_state;
+    GuiCameraTemperatureSamplingState gui_camera_temperature_sampling_state;
     orange::control::LocalControlServer gui_local_control_server;
     g_gui_local_control_server = &gui_local_control_server;
     std::string gui_local_control_event_log_path;
@@ -5182,6 +5187,25 @@ int main(int /*argc*/, char ** /*args*/) {
             local_config_select = static_cast<int>(std::distance(local_config_folders.begin(), it));
         }
     };
+    auto build_gui_display_frame_rate_snapshot = [&]() {
+        // This builder is only used at recording finalization. Seal and join
+        // the chronological writer first so its counts and digest describe an
+        // immutable artifact in the same snapshot as the bounded aggregate.
+        gui_timing_sidecar_writer.StopAndDrain();
+        nlohmann::json snapshot = gui_display_frame_rate_json(
+            gui_display_frame_rate_stats,
+            stream_downsample,
+            resolve_gui_display_preview_max_fps_snapshot(
+                cameras_select,
+                num_cameras),
+            static_cast<int>(window->swap_interval),
+            static_cast<int>(window->frame_max_fps),
+            show_yolo_speed_graphs,
+            orange_imgui_glfw_size_cache_stats());
+        snapshot["timing_windows"] =
+            gui_timing_sidecar_writer.ArtifactJson();
+        return snapshot;
+    };
     // Orderly stop-streaming teardown, shared by the "Stop streaming"
     // button and the window-close shutdown path. Must be defined after
     // every local it captures by reference and called synchronously from
@@ -5343,16 +5367,7 @@ int main(int /*argc*/, char ** /*args*/) {
                 cameras_select,
                 num_cameras,
                 crop_size_px,
-                gui_display_frame_rate_json(
-                    gui_display_frame_rate_stats,
-                    stream_downsample,
-                    resolve_gui_display_preview_max_fps_snapshot(
-                        cameras_select,
-                        num_cameras),
-                    static_cast<int>(window->swap_interval),
-                    static_cast<int>(window->frame_max_fps),
-                    show_yolo_speed_graphs,
-                    orange_imgui_glfw_size_cache_stats()))) {
+                build_gui_display_frame_rate_snapshot())) {
             gui_display_frame_rate_stats.Finish();
             gui_mark_local_control_drain_completed(
                 &gui_local_control_stop_scheduler,
@@ -5517,7 +5532,10 @@ int main(int /*argc*/, char ** /*args*/) {
             gui_startup_timing.FlushPending();
         }
         orange::gui::reap_host_ptp_stack_worker(&host_ptp_stack_ui);
-        gui_refresh_external_recorder_lifecycles(&recording_session, camera_control);
+        gui_refresh_external_recorder_lifecycles(
+            &recording_session,
+            camera_control,
+            &gui_external_recorder_refresh_state);
         // Shadow-mode incremental clip splitter
         // (ORANGE_GUI_INCREMENTAL_CLIP_SHADOW): starts with an external-IPC
         // rolling recording and is fed the crop recorder status snapshots
@@ -7141,16 +7159,9 @@ int main(int /*argc*/, char ** /*args*/) {
                     cameras_select,
                     num_cameras,
                     crop_size_px,
-                    gui_display_frame_rate_json(
-                        gui_display_frame_rate_stats,
-                        stream_downsample,
-                        resolve_gui_display_preview_max_fps_snapshot(
-                            cameras_select,
-                            num_cameras),
-                        static_cast<int>(window->swap_interval),
-                        static_cast<int>(window->frame_max_fps),
-                        show_yolo_speed_graphs,
-                        orange_imgui_glfw_size_cache_stats()))) {
+                    [&]() {
+                        return build_gui_display_frame_rate_snapshot();
+                    })) {
                 gui_display_frame_rate_stats.Finish();
                 gui_mark_recording_finished(&gui_session_timing);
                 gui_mark_local_control_drain_completed(
@@ -7443,9 +7454,14 @@ int main(int /*argc*/, char ** /*args*/) {
             ImGui::Begin("Realtime Plots"); {
                 static float t = 0;
                 t += ImGui::GetIO().DeltaTime;
-                for (int i = 0; i < num_cameras; i++) {
-                    get_senstemp_value(&ecams[i].camera, &cameras_params[i]);
-                    realtime_plot_data[i].AddPoint(t, cameras_params[i].sens_temp);
+                if (gui_camera_temperature_sample_due(
+                        &gui_camera_temperature_sampling_state,
+                        true,
+                        std::chrono::steady_clock::now())) {
+                    for (int i = 0; i < num_cameras; i++) {
+                        get_senstemp_value(&ecams[i].camera, &cameras_params[i]);
+                        realtime_plot_data[i].AddPoint(t, cameras_params[i].sens_temp);
+                    }
                 }
 
                 static float history = 10.0f;
@@ -7470,6 +7486,11 @@ int main(int /*argc*/, char ** /*args*/) {
                 }
                 ImGui::End();
             }
+        } else {
+            (void)gui_camera_temperature_sample_due(
+                &gui_camera_temperature_sampling_state,
+                false,
+                std::chrono::steady_clock::now());
         }
 
         const auto render_start = std::chrono::steady_clock::now();
@@ -7489,6 +7510,30 @@ int main(int /*argc*/, char ** /*args*/) {
             &gui_display_frame_rate_stats,
             camera_control->record_video,
             gui_frame_timing);
+        if (camera_control->record_video && gui_recording_run.active &&
+            !gui_recording_run.recording_folder.empty()) {
+            const std::filesystem::path recording_folder =
+                gui_recording_run.recording_folder;
+            if (!gui_timing_sidecar_writer.HasSessionForFolder(
+                    recording_folder)) {
+                if (!gui_timing_sidecar_writer.Start(
+                        recording_folder,
+                        has_gui_timepoint(gui_recording_run.recording_started_at)
+                            ? gui_recording_run.recording_started_at
+                            : render_end)) {
+                    std::cerr << "[GUI][timing] Could not start chronological "
+                                 "GUI timing sidecar: "
+                              << gui_timing_sidecar_writer.ArtifactJson().dump()
+                              << std::endl;
+                }
+            }
+            gui_timing_sidecar_writer.Observe(
+                static_cast<double>(ImGui::GetIO().DeltaTime),
+                gui_frame_timing,
+                gui_any_crop_recording_enabled(cameras_select, num_cameras),
+                show_crop_preview_windows,
+                render_end);
+        }
         gui_startup_timing.FlushPending();
     }
 
@@ -7581,16 +7626,7 @@ int main(int /*argc*/, char ** /*args*/) {
                     cameras_select,
                     num_cameras,
                     crop_size_px,
-                    gui_display_frame_rate_json(
-                        gui_display_frame_rate_stats,
-                        stream_downsample,
-                        resolve_gui_display_preview_max_fps_snapshot(
-                            cameras_select,
-                            num_cameras),
-                        static_cast<int>(window->swap_interval),
-                        static_cast<int>(window->frame_max_fps),
-                        show_yolo_speed_graphs,
-                        orange_imgui_glfw_size_cache_stats()));
+                    build_gui_display_frame_rate_snapshot());
                 if (finalized_at_exit) {
                     gui_display_frame_rate_stats.Finish();
                     gui_mark_local_control_drain_completed(

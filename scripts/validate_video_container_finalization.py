@@ -266,8 +266,15 @@ def validate_one(mp4: Path, ffprobe: str, packet_limit: int) -> tuple[list[str],
 
     if document.get("schema_id") not in ALLOWED_SCHEMA_IDS:
         errors.append(f"unexpected schema_id: {document.get('schema_id')!r}")
-    if document.get("schema_version") != 1:
-        errors.append(f"unexpected schema_version: {document.get('schema_version')!r}")
+    schema_id = document.get("schema_id")
+    schema_version = document.get("schema_version")
+    allowed_versions = (
+        {1, 2}
+        if schema_id == "orange.video_container_finalization"
+        else {1}
+    )
+    if schema_version not in allowed_versions:
+        errors.append(f"unexpected schema_version: {schema_version!r}")
     if document.get("status") != "complete" or document.get("terminal") is not True:
         errors.append(
             f"finalization is not terminal-complete: status={document.get('status')!r}"
@@ -288,6 +295,46 @@ def validate_one(mp4: Path, ffprobe: str, packet_limit: int) -> tuple[list[str],
     fps = document.get("recording_fps")
     if not isinstance(fps, int) or isinstance(fps, bool) or fps < 1:
         errors.append(f"invalid recording_fps: {fps!r}")
+
+    if schema_id == "orange.video_container_finalization" and schema_version == 2:
+        packet_writes = document.get("packet_writes", {})
+        count_fields = (
+            "submissions_accepted",
+            "submission_bytes_accepted",
+            "submissions_rejected",
+            "write_attempts",
+            "packets_written",
+            "bytes_written",
+            "write_failures",
+        )
+        invalid_counts = [
+            name
+            for name in count_fields
+            if not isinstance(packet_writes.get(name), int)
+            or isinstance(packet_writes.get(name), bool)
+            or packet_writes.get(name) < 0
+        ]
+        if invalid_counts:
+            errors.append(
+                "invalid packet-write counters: " + ", ".join(invalid_counts)
+            )
+        elif not (
+            packet_writes.get("complete") is True
+            and packet_writes.get("writer_error_latched") is False
+            and packet_writes.get("muxer_flush_attempted") is True
+            and packet_writes.get("muxer_flush_succeeded") is True
+            and packet_writes.get("muxer_flush_error_code") is None
+            and packet_writes.get("muxer_flush_error") is None
+            and packet_writes.get("submissions_rejected") == 0
+            and packet_writes.get("write_failures") == 0
+            and packet_writes.get("first_write_error_code") is None
+            and packet_writes.get("submissions_accepted")
+            == packet_writes.get("write_attempts")
+            == packet_writes.get("packets_written")
+            and packet_writes.get("submission_bytes_accepted")
+            == packet_writes.get("bytes_written")
+        ):
+            errors.append("packet-write proof is incomplete or inconsistent")
 
     container = document.get("container", {})
     required_container_truths = (

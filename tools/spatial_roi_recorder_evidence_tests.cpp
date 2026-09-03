@@ -322,6 +322,13 @@ evidence::SpatialRoiRecorderFrameEvidence success_frame(
     return value;
 }
 
+std::uint64_t expected_encoded_bytes(const std::uint64_t frames)
+{
+    // success_frame() emits one packet per frame with 100 + one-based index
+    // bytes. Keep every finalization fixture tied to that exact evidence.
+    return frames * 100U + (frames * (frames + 1U)) / 2U;
+}
+
 std::shared_ptr<const encoder::SpatialRoiLosslessEncoderTerminalSnapshot>
 success_snapshot(const evidence::SpatialRoiRecorderEvidenceBinding& binding,
                  const std::uint64_t frames)
@@ -357,7 +364,7 @@ success_snapshot(const evidence::SpatialRoiRecorderEvidenceBinding& binding,
     value->counts.source_releases = frames;
     value->counts.encoded_frames = frames;
     value->counts.encoded_packets = frames;
-    value->counts.encoded_bytes = frames == 0 ? 0 : (frames == 2 ? 203 : 101);
+    value->counts.encoded_bytes = expected_encoded_bytes(frames);
     value->counts.frame_results_emitted = frames;
     value->counts.encoded_results = frames;
     value->counts.peak_queue_depth = frames == 0 ? 0 : 1;
@@ -372,17 +379,36 @@ success_snapshot(const evidence::SpatialRoiRecorderEvidenceBinding& binding,
     return value;
 }
 
-json finalization_sidecar(const Fixture& fixture, const std::uint64_t size)
+json finalization_sidecar(const Fixture& fixture,
+                          const std::uint64_t size,
+                          const std::uint64_t frames)
 {
+    const std::uint64_t encoded_bytes = expected_encoded_bytes(frames);
     return {
         {"schema_id", "orange.video_container_finalization"},
-        {"schema_version", 1},
+        {"schema_version", 2},
         {"generated_at_utc", "2026-08-31T12:01:00Z"},
         {"status", "complete"},
         {"terminal", true},
         {"video_path", fixture.binding.expected_artifacts.at("video")},
         {"sidecar_path", fixture.binding.expected_artifacts.at("finalization")},
         {"recording_fps", 100},
+        {"packet_writes", {
+            {"submissions_accepted", frames},
+            {"submission_bytes_accepted", encoded_bytes},
+            {"submissions_rejected", 0},
+            {"write_attempts", frames},
+            {"packets_written", frames},
+            {"bytes_written", encoded_bytes},
+            {"write_failures", 0},
+            {"first_write_error_code", nullptr},
+            {"writer_error_latched", false},
+            {"muxer_flush_attempted", true},
+            {"muxer_flush_succeeded", true},
+            {"muxer_flush_error_code", nullptr},
+            {"muxer_flush_error", nullptr},
+            {"complete", true},
+        }},
         {"container", {
             {"header_written", true}, {"trailer_attempted", true},
             {"trailer_written", true}, {"output_close_attempted", true},
@@ -572,7 +598,7 @@ void write_artifacts(Fixture& fixture,
     write_artifact_bytes(
         fixture, "finalization",
         finalization_sidecar(fixture,
-            declared_size ? *declared_size : size).dump() + "\n");
+            declared_size ? *declared_size : size, frames).dump() + "\n");
     write_artifact_bytes(
         fixture, "video_sanity",
         sanity_sidecar(fixture, size,
@@ -729,6 +755,28 @@ void test_roundtrip_and_complete_adoption()
                manifest.at("encoder_terminal").at("writer")
                    .at("video_size_limit_failures") == 0,
            "encoder terminal-v2 durability truth was not persisted");
+    const json finalization = json::parse(read_bytes(
+        artifact_path(*fixture, "finalization")));
+    const json& packet_writes = finalization.at("packet_writes");
+    expect(finalization.size() == 11 &&
+               finalization.at("schema_version") == 2 &&
+               packet_writes.size() == 14 &&
+               packet_writes.at("submissions_accepted") == 2 &&
+               packet_writes.at("submission_bytes_accepted") ==
+                   expected_encoded_bytes(2) &&
+               packet_writes.at("submissions_rejected") == 0 &&
+               packet_writes.at("write_attempts") == 2 &&
+               packet_writes.at("packets_written") == 2 &&
+               packet_writes.at("bytes_written") == expected_encoded_bytes(2) &&
+               packet_writes.at("write_failures") == 0 &&
+               packet_writes.at("first_write_error_code").is_null() &&
+               packet_writes.at("writer_error_latched") == false &&
+               packet_writes.at("muxer_flush_attempted") == true &&
+               packet_writes.at("muxer_flush_succeeded") == true &&
+               packet_writes.at("muxer_flush_error_code").is_null() &&
+               packet_writes.at("muxer_flush_error").is_null() &&
+               packet_writes.at("complete") == true,
+           "schema-v2 packet proof is not exact or does not match frame evidence");
     expect(evidence::validate_spatial_roi_recorder_finalized_manifest(
                fixture->artifact_authority, fixture->binding, manifest, &error),
            "manifest validation failed: " + error);
@@ -1047,6 +1095,62 @@ void test_closed_artifact_proofs()
         std::string error;
         expect(!writer->Finalize(complete_request(*fixture, 2), nullptr, &error),
                "finalization video-size lie was accepted");
+    }
+    struct PacketProofMutation {
+        const char* label;
+        void (*apply)(json&);
+    };
+    const PacketProofMutation packet_proof_mutations[] = {
+        {"schema-v1 downgrade", +[](json& value) {
+             value["schema_version"] = 1;
+         }},
+        {"missing packet proof", +[](json& value) {
+             value.erase("packet_writes");
+         }},
+        {"unexpected packet-proof field", +[](json& value) {
+             value["packet_writes"]["unexpected"] = true;
+         }},
+        {"internally consistent wrong packet count", +[](json& value) {
+             json& proof = value["packet_writes"];
+             proof["submissions_accepted"] = 1;
+             proof["write_attempts"] = 1;
+             proof["packets_written"] = 1;
+         }},
+        {"rejected packet submission", +[](json& value) {
+             value["packet_writes"]["submissions_rejected"] = 1;
+         }},
+        {"failed packet write", +[](json& value) {
+             json& proof = value["packet_writes"];
+             proof["write_failures"] = 1;
+             proof["first_write_error_code"] = -5;
+         }},
+        {"failed muxer flush", +[](json& value) {
+             json& proof = value["packet_writes"];
+             proof["muxer_flush_succeeded"] = false;
+             proof["muxer_flush_error_code"] = -5;
+             proof["muxer_flush_error"] = "injected flush failure";
+             proof["complete"] = false;
+         }},
+        {"internally consistent wrong byte count", +[](json& value) {
+             json& proof = value["packet_writes"];
+             proof["submission_bytes_accepted"] = 204;
+             proof["bytes_written"] = 204;
+         }},
+    };
+    for (const PacketProofMutation& mutation : packet_proof_mutations) {
+        auto fixture = make_fixture();
+        write_artifacts(*fixture, 2);
+        json invalid = json::parse(read_bytes(
+            artifact_path(*fixture, "finalization")));
+        mutation.apply(invalid);
+        write_bytes(artifact_path(*fixture, "finalization"),
+                    invalid.dump() + "\n");
+        auto writer = open_writer(*fixture);
+        append_successes(writer.get(), *fixture, 2);
+        std::string error;
+        expect(!writer->Finalize(complete_request(*fixture, 2), nullptr, &error),
+               std::string("mutated schema-v2 packet proof was accepted: ") +
+                   mutation.label);
     }
     {
         auto fixture = make_fixture();

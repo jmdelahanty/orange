@@ -51,6 +51,22 @@ struct FFmpegWriterLatencyStats {
     LatencyAggregateStats gop_release_to_last_write;
 };
 
+// Separates packet admission from observed FFmpeg mux results. A terminal
+// snapshot is complete only when every accepted packet reached the mux
+// boundary successfully and no submission was rejected.
+struct FFmpegWriterPacketWriteStats {
+    uint64_t submissions_accepted = 0;
+    uint64_t submission_bytes_accepted = 0;
+    uint64_t submissions_rejected = 0;
+    uint64_t write_attempts = 0;
+    uint64_t packets_written = 0;
+    uint64_t bytes_written = 0;
+    uint64_t write_failures = 0;
+    int first_write_error_code = 0;
+};
+
+class FFmpegWriterTestAccess;
+
 // Failure state is intentionally a value type. A snapshot taken before
 // finalize() is provisional; after finalize() returns it includes all terminal
 // mux, close/fsync, playback-patch, and sidecar outcomes. The counters count
@@ -177,11 +193,11 @@ public:
     void create_thread();
     void quit_thread();
     void join_thread();
-    void write_one_pkt(AVPacket* pkt);
     bool is_open() const { return open_; }
     // True once the writer thread exited on an exception. The thread never
     // calls exit(); it logs, latches this flag and stops so the owner can
-    // still finalize the container.
+    // still finalize the container. Packet-level failures are reported by
+    // failed() and packet_write_stats().
     bool writer_thread_failed() const { return writer_thread_error_.load(std::memory_order_acquire); }
     // True after any packet allocation/enqueue/write, terminal
     // muxer/close/patch, sidecar, or writer-thread failure. This latch is
@@ -201,6 +217,7 @@ public:
     }
     const FFmpegWriterQueueConfig& queue_config() const { return queue_config_; }
     FFmpegWriterLatencyStats latency_stats() const;
+    FFmpegWriterPacketWriteStats packet_write_stats() const;
 #ifdef ORANGE_FFMPEG_WRITER_TESTING
     // Deterministic terminal-I/O fault injection. These hooks are compiled
     // only into the focused host tests and never into production targets.
@@ -209,6 +226,8 @@ public:
     void test_invalidate_descriptor_finalization_for_finalize() noexcept;
 #endif
 private:
+    friend class FFmpegWriterTestAccess;
+
     enum class FailureKind {
         PacketAllocation,
         PacketEnqueue,
@@ -274,7 +293,18 @@ private:
     std::atomic<bool> writer_error_{false};
     std::atomic<uint64_t> packet_allocation_failures_{0};
     std::atomic<uint64_t> packet_enqueue_failures_{0};
+    std::atomic<uint64_t> packet_submissions_accepted_{0};
+    std::atomic<uint64_t> packet_submission_bytes_accepted_{0};
+    std::atomic<uint64_t> packet_submissions_rejected_{0};
+    std::atomic<uint64_t> packet_write_attempts_{0};
+    std::atomic<uint64_t> packets_written_{0};
+    std::atomic<uint64_t> packet_bytes_written_{0};
+    // Counts failed top-level av_interleaved_write_frame(packet) calls only.
+    // Keep this separate from packet_write_failures_, whose general failure
+    // accounting may also observe a custom-AVIO callback failure.
+    std::atomic<uint64_t> packet_mux_write_failures_{0};
     std::atomic<uint64_t> packet_write_failures_{0};
+    std::atomic<int> first_packet_write_error_code_{0};
     std::atomic<uint64_t> muxer_flush_failures_{0};
     std::atomic<uint64_t> sidecar_write_failures_{0};
     std::atomic<uint64_t> video_size_limit_failures_{0};
@@ -311,6 +341,11 @@ private:
     void latch_failure(FailureKind kind, int error_code, const char* operation) noexcept;
     void write_thread();
     void write_thread_loop();
+    // Raw mux writes are internal to the single writer thread. Exposing this
+    // publicly would bypass admission/finalization serialization and could
+    // mutate terminal accounting after finalize() returned.
+    bool write_one_pkt(AVPacket* pkt);
+    bool record_packet_write_result(int result, size_t packet_bytes);
     void write_keyframe_sidecar();
     bool push_packet_impl(uint8_t* pData,
                           int nBytes,

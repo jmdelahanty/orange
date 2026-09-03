@@ -296,6 +296,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/env_util.cpp"
     "${SRC_DIR}/gui/guided_capture_autorun.cpp"
     "${SRC_DIR}/gui/guided_capture_autorun_config.cpp"
+    "${SRC_DIR}/gui/gui_timing_sidecar_writer.cpp"
     "${SRC_DIR}/gui/arena_centering_analysis.cpp"
     "${SRC_DIR}/gui/daily_registration_geometry.cpp"
     "${SRC_DIR}/gui/spatial_layout/commissioning_finalize_request.cpp"
@@ -971,6 +972,15 @@ if(BUILD_TESTING)
     target_include_directories(gui_display_frame_rate_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(gui_display_frame_rate_tests PRIVATE cxx_std_17)
     add_test(NAME gui_display_frame_rate_tests COMMAND gui_display_frame_rate_tests)
+
+    add_executable(gui_timing_sidecar_writer_tests
+        "tools/gui_timing_sidecar_writer_tests.cpp"
+        "${SRC_DIR}/gui/gui_timing_sidecar_writer.cpp"
+    )
+    target_include_directories(gui_timing_sidecar_writer_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(gui_timing_sidecar_writer_tests PRIVATE cxx_std_17)
+    target_link_libraries(gui_timing_sidecar_writer_tests PRIVATE Threads::Threads)
+    add_test(NAME gui_timing_sidecar_writer_tests COMMAND gui_timing_sidecar_writer_tests)
 
     add_executable(threadworker_tests
         "tools/threadworker_tests.cpp"

@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <thread>
@@ -250,10 +251,11 @@ struct GuiAsyncRecordingFinalizeState {
     std::chrono::steady_clock::time_point started_at{};
 };
 
-// Polled once per GUI frame. Launches the background finalize the frame the
-// drain gate opens and completes it (F3) the frame the worker publishes
-// done. Returns true exactly when a finalize completed successfully this
-// frame (same contract the synchronous
+// Polled once per GUI frame. The display-rate builder remains lazy until the
+// drain gate opens, then runs exactly once for the immutable finalize input.
+// Launches the background finalize the frame the gate opens and completes it
+// (F3) the frame the worker publishes done. Returns true exactly when a
+// finalize completed successfully this frame (same contract the synchronous
 // gui_finalize_recording_session_if_ready gives its callers).
 bool gui_poll_async_recording_finalize(
     GuiAsyncRecordingFinalizeState* state,
@@ -264,7 +266,7 @@ bool gui_poll_async_recording_finalize(
     const CameraEachSelect* cameras_select,
     int num_cameras,
     int crop_size_px,
-    const nlohmann::json& gui_display_frame_rate);
+    const std::function<nlohmann::json()>& gui_display_frame_rate_builder);
 
 // Blocking join for teardown/shutdown: waits for an in-flight background
 // finalize (bounded by the recorder graceful-shutdown timeouts) and

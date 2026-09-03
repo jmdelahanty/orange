@@ -1955,6 +1955,11 @@ struct EncodeSummary {
     uint64_t raw_bytes = 0;
     uint64_t mp4_packets = 0;
     uint64_t mp4_bytes = 0;
+    uint64_t mp4_packet_submissions_accepted = 0;
+    uint64_t mp4_packet_submissions_rejected = 0;
+    uint64_t mp4_packet_write_attempts = 0;
+    uint64_t mp4_packet_write_failures = 0;
+    int mp4_first_packet_write_error_code = 0;
     uint64_t flush_packets = 0;
     uint64_t flush_bytes = 0;
     bool failed = false;
@@ -2122,6 +2127,11 @@ struct RollingClipOutputSummary {
     uint64_t frame_count = 0;
     uint64_t packets_written = 0;
     uint64_t bytes_written = 0;
+    uint64_t packet_submissions_accepted = 0;
+    uint64_t packet_submissions_rejected = 0;
+    uint64_t packet_write_attempts = 0;
+    uint64_t packet_write_failures = 0;
+    int first_packet_write_error_code = 0;
     uint64_t gops_released = 0;
     bool failed = false;
 };
@@ -2151,6 +2161,11 @@ struct MergedOutputSummary {
     int pixel_format = 0;
     uint64_t packets_written = 0;
     uint64_t bytes_written = 0;
+    uint64_t packet_submissions_accepted = 0;
+    uint64_t packet_submissions_rejected = 0;
+    uint64_t packet_write_attempts = 0;
+    uint64_t packet_write_failures = 0;
+    int first_packet_write_error_code = 0;
     uint64_t gops_released = 0;
     uint64_t frame_identities_submitted = 0;
     uint64_t frame_identities_returned = 0;
@@ -2205,11 +2220,15 @@ nlohmann::json frame_identity_proof_json(
         merged.frame_identities_returned == encoded.frames_encoded &&
         merged.frame_identity_mismatches == 0 &&
         merged.outstanding_frame_identities == 0 &&
+        merged.packet_submissions_rejected == 0 &&
+        merged.packet_write_failures == 0 &&
+        merged.packet_submissions_accepted == encoded.frames_encoded &&
+        merged.packet_write_attempts == encoded.frames_encoded &&
         merged.packets_written == encoded.frames_encoded &&
         metadata_rows == encoded.frames_encoded;
     return {
         {"schema_id", "orange.external_recorder.frame_identity_proof"},
-        {"schema_version", 1},
+        {"schema_version", 2},
         {"status", verified ? "passed" : "failed"},
         {"canonical_field", "recording_frame_id"},
         {"scope", "recording_session_and_camera_stream"},
@@ -2228,9 +2247,17 @@ nlohmann::json frame_identity_proof_json(
             {"identity_mismatches", merged.frame_identity_mismatches},
             {"outstanding_submitted_identities", merged.outstanding_frame_identities},
             {"encoded_video_frames", encoded.frames_encoded},
+            {"packet_submissions_accepted", merged.packet_submissions_accepted},
+            {"packet_submissions_rejected", merged.packet_submissions_rejected},
+            {"packet_write_attempts", merged.packet_write_attempts},
             {"packets_written", merged.packets_written},
+            {"packet_write_failures", merged.packet_write_failures},
+            {"first_packet_write_error_code",
+             merged.first_packet_write_error_code == 0
+                 ? nlohmann::json(nullptr)
+                 : nlohmann::json(merged.first_packet_write_error_code)},
             {"metadata_rows", metadata_rows},
-            {"verification_rule_id", "orange.external_recorder.frame_identity.v1"},
+            {"verification_rule_id", "orange.external_recorder.frame_identity.v2"},
             {"verified", verified},
         }},
     };
@@ -2263,6 +2290,16 @@ EncodeSummary aggregate_encode_summaries(const std::vector<EncodeSummary>& summa
         out.raw_bytes += summary.raw_bytes;
         out.mp4_packets += summary.mp4_packets;
         out.mp4_bytes += summary.mp4_bytes;
+        out.mp4_packet_submissions_accepted +=
+            summary.mp4_packet_submissions_accepted;
+        out.mp4_packet_submissions_rejected +=
+            summary.mp4_packet_submissions_rejected;
+        out.mp4_packet_write_attempts += summary.mp4_packet_write_attempts;
+        out.mp4_packet_write_failures += summary.mp4_packet_write_failures;
+        if (out.mp4_first_packet_write_error_code == 0) {
+            out.mp4_first_packet_write_error_code =
+                summary.mp4_first_packet_write_error_code;
+        }
         out.flush_packets += summary.flush_packets;
         out.flush_bytes += summary.flush_bytes;
         out.failed = out.failed || summary.failed;
@@ -2676,6 +2713,11 @@ public:
         out.failed = failed_;
         out.packets_written = packets_written_;
         out.bytes_written = bytes_written_;
+        out.packet_submissions_accepted = packet_submissions_accepted_;
+        out.packet_submissions_rejected = packet_submissions_rejected_;
+        out.packet_write_attempts = packet_write_attempts_;
+        out.packet_write_failures = packet_write_failures_;
+        out.first_packet_write_error_code = first_packet_write_error_code_;
         out.gops_released = gops_released_;
         out.frame_identities_submitted = frame_identities_submitted_;
         out.frame_identities_returned = frame_identities_returned_;
@@ -3027,10 +3069,46 @@ private:
     void finish_clip_writer_locked()
     {
         if (clip_writer_) {
-            clip_writer_->quit_thread();
-            clip_writer_->join_thread();
+            const bool finalization_succeeded = clip_writer_->finalize();
+            const FFmpegWriterPacketWriteStats packet_stats =
+                clip_writer_->packet_write_stats();
+            const FFmpegWriterFailureStats failure_stats =
+                clip_writer_->failure_stats();
             const bool overflowed = clip_writer_->has_queue_overflowed();
-            const bool writer_failed = clip_writer_->writer_thread_failed();
+            const bool writer_thread_failed =
+                clip_writer_->writer_thread_failed();
+            const bool writer_failed = !finalization_succeeded ||
+                clip_writer_->failed() || writer_thread_failed;
+            const bool packet_writes_incomplete =
+                packet_stats.submissions_rejected != 0 ||
+                packet_stats.write_failures != 0 ||
+                packet_stats.submissions_accepted != packet_stats.write_attempts ||
+                packet_stats.write_attempts != packet_stats.packets_written ||
+                packet_stats.submission_bytes_accepted !=
+                    packet_stats.bytes_written;
+            current_clip_summary_.packets_written =
+                packet_stats.packets_written;
+            current_clip_summary_.bytes_written = packet_stats.bytes_written;
+            current_clip_summary_.packet_submissions_accepted =
+                packet_stats.submissions_accepted;
+            current_clip_summary_.packet_submissions_rejected =
+                packet_stats.submissions_rejected;
+            current_clip_summary_.packet_write_attempts =
+                packet_stats.write_attempts;
+            current_clip_summary_.packet_write_failures =
+                packet_stats.write_failures;
+            current_clip_summary_.first_packet_write_error_code =
+                packet_stats.first_write_error_code;
+            packets_written_ += packet_stats.packets_written;
+            bytes_written_ += packet_stats.bytes_written;
+            packet_submissions_accepted_ += packet_stats.submissions_accepted;
+            packet_submissions_rejected_ += packet_stats.submissions_rejected;
+            packet_write_attempts_ += packet_stats.write_attempts;
+            packet_write_failures_ += packet_stats.write_failures;
+            if (first_packet_write_error_code_ == 0) {
+                first_packet_write_error_code_ =
+                    packet_stats.first_write_error_code;
+            }
             rolling_mp4_queue_overflowed_ =
                 rolling_mp4_queue_overflowed_ || overflowed;
             rolling_mp4_queue_overflow_events_ +=
@@ -3042,12 +3120,22 @@ private:
                 rolling_mp4_peak_queued_bytes_,
                 clip_writer_->peak_queued_bytes());
             current_clip_summary_.failed =
-                current_clip_summary_.failed || overflowed || writer_failed;
-            failed_ = failed_ || overflowed || writer_failed;
-            if ((overflowed || writer_failed) && error_message_.empty()) {
+                current_clip_summary_.failed || overflowed || writer_failed ||
+                packet_writes_incomplete;
+            failed_ = failed_ || overflowed || writer_failed ||
+                packet_writes_incomplete;
+            if ((overflowed || writer_failed || packet_writes_incomplete) &&
+                error_message_.empty()) {
                 error_message_ = overflowed
                     ? "rolling clip MP4 writer queue overflowed"
-                    : "rolling clip MP4 writer thread failed";
+                    : (packet_writes_incomplete
+                           ? "rolling clip MP4 writer packet-write accounting is incomplete"
+                           : (writer_thread_failed
+                                  ? "rolling clip MP4 writer thread failed"
+                                  : (!failure_stats.last_error.empty()
+                                         ? "rolling clip MP4 writer finalization failed: " +
+                                               failure_stats.last_error
+                                         : "rolling clip MP4 writer finalization failed")));
             }
             clip_writer_.reset();
         }
@@ -3304,40 +3392,41 @@ private:
         for (size_t i = 0; i < gop.packets.size(); ++i) {
             const BufferedPacket& packet = gop.packets[i];
             if (writer_) {
-                writer_->push_packet(
+                const bool accepted = writer_->push_packet(
                     const_cast<uint8_t*>(packet.bytes.data()),
                     static_cast<int>(packet.bytes.size()),
                     static_cast<int64_t>(merged_pts_counter_++),
                     gop.gop_index,
                     i + 1 == gop.packets.size(),
                     release_started_ns);
-                if (writer_->has_queue_overflowed() || writer_->writer_thread_failed()) {
+                if (!accepted || writer_->has_queue_overflowed() ||
+                    writer_->writer_thread_failed()) {
                     fail_locked(
                         writer_->has_queue_overflowed()
                             ? "merged MP4 writer queue exceeded its hard limit"
-                            : "merged MP4 writer thread failed");
+                            : (!accepted
+                                   ? "merged MP4 writer rejected an encoded packet"
+                                   : "merged MP4 writer thread failed"));
                 }
             }
             if (rolling_enabled_ && clip_writer_) {
-                clip_writer_->push_packet(
+                const bool accepted = clip_writer_->push_packet(
                     const_cast<uint8_t*>(packet.bytes.data()),
                     static_cast<int>(packet.bytes.size()),
                     static_cast<int64_t>(current_clip_pts_counter_++),
                     gop.gop_index,
                     i + 1 == gop.packets.size(),
                     release_started_ns);
-                if (clip_writer_->has_queue_overflowed() ||
+                if (!accepted || clip_writer_->has_queue_overflowed() ||
                     clip_writer_->writer_thread_failed()) {
                     fail_locked(
                         clip_writer_->has_queue_overflowed()
                             ? "rolling MP4 writer queue exceeded its hard limit"
-                            : "rolling MP4 writer thread failed");
+                            : (!accepted
+                                   ? "rolling MP4 writer rejected an encoded packet"
+                                   : "rolling MP4 writer thread failed"));
                 }
-                current_clip_summary_.packets_written++;
-                current_clip_summary_.bytes_written += packet.bytes.size();
             }
-            packets_written_++;
-            bytes_written_ += packet.bytes.size();
         }
         if (rolling_enabled_ && current_clip_index_ >= 0) {
             current_clip_summary_.gops_released++;
@@ -3350,19 +3439,49 @@ private:
         if (!writer_) {
             return;
         }
-        writer_->quit_thread();
-        writer_->join_thread();
+        const bool finalization_succeeded = writer_->finalize();
         writer_latency_ = writer_->latency_stats();
+        const FFmpegWriterPacketWriteStats packet_stats =
+            writer_->packet_write_stats();
+        const FFmpegWriterFailureStats failure_stats = writer_->failure_stats();
+        if (!rolling_enabled_) {
+            packets_written_ = packet_stats.packets_written;
+            bytes_written_ = packet_stats.bytes_written;
+            packet_submissions_accepted_ = packet_stats.submissions_accepted;
+            packet_submissions_rejected_ = packet_stats.submissions_rejected;
+            packet_write_attempts_ = packet_stats.write_attempts;
+            packet_write_failures_ = packet_stats.write_failures;
+            first_packet_write_error_code_ =
+                packet_stats.first_write_error_code;
+        }
         mp4_queue_overflowed_ = writer_->has_queue_overflowed();
         mp4_queue_overflow_events_ = writer_->queue_overflow_events();
         mp4_peak_queued_packets_ = writer_->peak_queued_packets();
         mp4_peak_queued_bytes_ = writer_->peak_queued_bytes();
-        const bool writer_failed = writer_->writer_thread_failed();
-        failed_ = failed_ || mp4_queue_overflowed_ || writer_failed;
-        if ((mp4_queue_overflowed_ || writer_failed) && error_message_.empty()) {
+        const bool writer_thread_failed = writer_->writer_thread_failed();
+        const bool writer_failed = !finalization_succeeded ||
+            writer_->failed() || writer_thread_failed;
+        const bool packet_writes_incomplete =
+            packet_stats.submissions_rejected != 0 ||
+            packet_stats.write_failures != 0 ||
+            packet_stats.submissions_accepted != packet_stats.write_attempts ||
+            packet_stats.write_attempts != packet_stats.packets_written ||
+            packet_stats.submission_bytes_accepted !=
+                packet_stats.bytes_written;
+        failed_ = failed_ || mp4_queue_overflowed_ || writer_failed ||
+            packet_writes_incomplete;
+        if ((mp4_queue_overflowed_ || writer_failed || packet_writes_incomplete) &&
+            error_message_.empty()) {
             error_message_ = mp4_queue_overflowed_
                 ? "merged MP4 writer queue overflowed"
-                : "merged MP4 writer thread failed";
+                : (packet_writes_incomplete
+                       ? "merged MP4 writer packet-write accounting is incomplete"
+                       : (writer_thread_failed
+                              ? "merged MP4 writer thread failed"
+                              : (!failure_stats.last_error.empty()
+                                     ? "merged MP4 writer finalization failed: " +
+                                           failure_stats.last_error
+                                     : "merged MP4 writer finalization failed")));
         }
         writer_.reset();
     }
@@ -3404,6 +3523,11 @@ private:
     uint64_t merged_pts_counter_ = 0;
     uint64_t packets_written_ = 0;
     uint64_t bytes_written_ = 0;
+    uint64_t packet_submissions_accepted_ = 0;
+    uint64_t packet_submissions_rejected_ = 0;
+    uint64_t packet_write_attempts_ = 0;
+    uint64_t packet_write_failures_ = 0;
+    int first_packet_write_error_code_ = 0;
     uint64_t gops_released_ = 0;
     uint64_t frame_identities_submitted_ = 0;
     uint64_t frame_identities_returned_ = 0;
@@ -3606,6 +3730,14 @@ public:
         out.raw_bytes = raw_bytes_;
         out.mp4_packets = mp4_packets_;
         out.mp4_bytes = mp4_bytes_;
+        out.mp4_packet_submissions_accepted =
+            mp4_packet_submissions_accepted_;
+        out.mp4_packet_submissions_rejected =
+            mp4_packet_submissions_rejected_;
+        out.mp4_packet_write_attempts = mp4_packet_write_attempts_;
+        out.mp4_packet_write_failures = mp4_packet_write_failures_;
+        out.mp4_first_packet_write_error_code =
+            mp4_first_packet_write_error_code_;
         out.flush_packets = flush_packets_;
         out.flush_bytes = flush_bytes_;
         out.failed = failed();
@@ -4251,20 +4383,21 @@ private:
             raw_bytes_ += packet.size();
         }
         if (mp4_writer_) {
-            mp4_writer_->push_packet(
+            const bool accepted = mp4_writer_->push_packet(
                 const_cast<uint8_t*>(packet.data()),
                 static_cast<int>(packet.size()),
                 mp4_pts_counter_++);
-            if (mp4_writer_->has_queue_overflowed() ||
+            if (!accepted || mp4_writer_->has_queue_overflowed() ||
                 mp4_writer_->writer_thread_failed()) {
                 failed_.store(true, std::memory_order_release);
                 throw std::runtime_error(
                     mp4_writer_->has_queue_overflowed()
                         ? "external shard MP4 writer queue exceeded its hard limit"
-                        : "external shard MP4 writer thread failed");
+                        : (!accepted
+                               ? "external shard MP4 writer rejected an encoded packet"
+                               : "external shard MP4 writer thread failed"));
             }
-            mp4_packets_++;
-            mp4_bytes_ += packet.size();
+            mp4_packet_submissions_accepted_++;
         }
         if (flush_packet) {
             flush_packets_++;
@@ -4325,14 +4458,34 @@ private:
         if (!mp4_writer_) {
             return;
         }
-        mp4_writer_->quit_thread();
-        mp4_writer_->join_thread();
+        const bool finalization_succeeded = mp4_writer_->finalize();
         writer_latency_ = mp4_writer_->latency_stats();
+        const FFmpegWriterPacketWriteStats packet_stats =
+            mp4_writer_->packet_write_stats();
+        mp4_packets_ = packet_stats.packets_written;
+        mp4_bytes_ = packet_stats.bytes_written;
+        mp4_packet_submissions_accepted_ =
+            packet_stats.submissions_accepted;
+        mp4_packet_submissions_rejected_ =
+            packet_stats.submissions_rejected;
+        mp4_packet_write_attempts_ = packet_stats.write_attempts;
+        mp4_packet_write_failures_ = packet_stats.write_failures;
+        mp4_first_packet_write_error_code_ =
+            packet_stats.first_write_error_code;
         mp4_queue_overflowed_ = mp4_writer_->has_queue_overflowed();
         mp4_queue_overflow_events_ = mp4_writer_->queue_overflow_events();
         mp4_peak_queued_packets_ = mp4_writer_->peak_queued_packets();
         mp4_peak_queued_bytes_ = mp4_writer_->peak_queued_bytes();
-        if (mp4_queue_overflowed_ || mp4_writer_->writer_thread_failed()) {
+        const bool packet_writes_incomplete =
+            packet_stats.submissions_rejected != 0 ||
+            packet_stats.write_failures != 0 ||
+            packet_stats.submissions_accepted != packet_stats.write_attempts ||
+            packet_stats.write_attempts != packet_stats.packets_written ||
+            packet_stats.submission_bytes_accepted !=
+                packet_stats.bytes_written;
+        if (!finalization_succeeded || mp4_queue_overflowed_ ||
+            mp4_writer_->failed() || mp4_writer_->writer_thread_failed() ||
+            packet_writes_incomplete) {
             failed_.store(true, std::memory_order_release);
         }
         mp4_writer_.reset();
@@ -4736,6 +4889,11 @@ private:
     uint64_t raw_bytes_ = 0;
     uint64_t mp4_packets_ = 0;
     uint64_t mp4_bytes_ = 0;
+    uint64_t mp4_packet_submissions_accepted_ = 0;
+    uint64_t mp4_packet_submissions_rejected_ = 0;
+    uint64_t mp4_packet_write_attempts_ = 0;
+    uint64_t mp4_packet_write_failures_ = 0;
+    int mp4_first_packet_write_error_code_ = 0;
     uint64_t flush_packets_ = 0;
     uint64_t flush_bytes_ = 0;
     bool mp4_queue_overflowed_ = false;
@@ -5063,6 +5221,20 @@ void write_summary_json(const Options& options,
     out << "    \"raw_bytes\": " << enc.raw_bytes << ",\n";
     out << "    \"mp4_packets\": " << enc.mp4_packets << ",\n";
     out << "    \"mp4_bytes\": " << enc.mp4_bytes << ",\n";
+    out << "    \"mp4_packet_submissions_accepted\": "
+        << enc.mp4_packet_submissions_accepted << ",\n";
+    out << "    \"mp4_packet_submissions_rejected\": "
+        << enc.mp4_packet_submissions_rejected << ",\n";
+    out << "    \"mp4_packet_write_attempts\": "
+        << enc.mp4_packet_write_attempts << ",\n";
+    out << "    \"mp4_packet_write_failures\": "
+        << enc.mp4_packet_write_failures << ",\n";
+    out << "    \"mp4_first_packet_write_error_code\": ";
+    if (enc.mp4_first_packet_write_error_code == 0) {
+        out << "null,\n";
+    } else {
+        out << enc.mp4_first_packet_write_error_code << ",\n";
+    }
     out << "    \"flush_packets\": " << enc.flush_packets << ",\n";
     out << "    \"flush_bytes\": " << enc.flush_bytes << ",\n";
     out << "    \"enqueue_age_p95_ms\": " << enc.enqueue_age_p95_ms << ",\n";
@@ -5105,6 +5277,20 @@ void write_summary_json(const Options& options,
         out << "      \"returned_bytes\": " << shard.returned_bytes << ",\n";
         out << "      \"mp4_packets\": " << shard.mp4_packets << ",\n";
         out << "      \"mp4_bytes\": " << shard.mp4_bytes << ",\n";
+        out << "      \"mp4_packet_submissions_accepted\": "
+            << shard.mp4_packet_submissions_accepted << ",\n";
+        out << "      \"mp4_packet_submissions_rejected\": "
+            << shard.mp4_packet_submissions_rejected << ",\n";
+        out << "      \"mp4_packet_write_attempts\": "
+            << shard.mp4_packet_write_attempts << ",\n";
+        out << "      \"mp4_packet_write_failures\": "
+            << shard.mp4_packet_write_failures << ",\n";
+        out << "      \"mp4_first_packet_write_error_code\": ";
+        if (shard.mp4_first_packet_write_error_code == 0) {
+            out << "null,\n";
+        } else {
+            out << shard.mp4_first_packet_write_error_code << ",\n";
+        }
         out << "      \"slot_reuse_wait_p95_ms\": " << shard.slot_reuse_wait_p95_ms << ",\n";
         out << "      \"encode_total_p95_ms\": " << shard.encode_total_p95_ms << ",\n";
         out << "      \"encode_picture_p95_ms\": " << shard.encode_picture_p95_ms << ",\n";
@@ -5154,6 +5340,20 @@ void write_summary_json(const Options& options,
     out << "    \"failed\": " << (merged.failed ? "true" : "false") << ",\n";
     out << "    \"packets_written\": " << merged.packets_written << ",\n";
     out << "    \"bytes_written\": " << merged.bytes_written << ",\n";
+    out << "    \"packet_submissions_accepted\": "
+        << merged.packet_submissions_accepted << ",\n";
+    out << "    \"packet_submissions_rejected\": "
+        << merged.packet_submissions_rejected << ",\n";
+    out << "    \"packet_write_attempts\": "
+        << merged.packet_write_attempts << ",\n";
+    out << "    \"packet_write_failures\": "
+        << merged.packet_write_failures << ",\n";
+    out << "    \"first_packet_write_error_code\": ";
+    if (merged.first_packet_write_error_code == 0) {
+        out << "null,\n";
+    } else {
+        out << merged.first_packet_write_error_code << ",\n";
+    }
     out << "    \"gops_released\": " << merged.gops_released << ",\n";
     out << "    \"frame_identities_submitted\": "
         << merged.frame_identities_submitted << ",\n";
@@ -5234,6 +5434,20 @@ void write_summary_json(const Options& options,
         out << "        \"frame_count\": " << clip.frame_count << ",\n";
         out << "        \"packets_written\": " << clip.packets_written << ",\n";
         out << "        \"bytes_written\": " << clip.bytes_written << ",\n";
+        out << "        \"packet_submissions_accepted\": "
+            << clip.packet_submissions_accepted << ",\n";
+        out << "        \"packet_submissions_rejected\": "
+            << clip.packet_submissions_rejected << ",\n";
+        out << "        \"packet_write_attempts\": "
+            << clip.packet_write_attempts << ",\n";
+        out << "        \"packet_write_failures\": "
+            << clip.packet_write_failures << ",\n";
+        out << "        \"first_packet_write_error_code\": ";
+        if (clip.first_packet_write_error_code == 0) {
+            out << "null,\n";
+        } else {
+            out << clip.first_packet_write_error_code << ",\n";
+        }
         out << "        \"encoding_budget\": "
             << json_dump_for_inline_value(
                    external_recording_encoding_budget_json(

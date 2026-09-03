@@ -3176,6 +3176,8 @@ bool validate_container_finalization_sidecar(
     const std::string& expected_video_relative_path,
     const std::uint64_t actual_video_size,
     const std::uint64_t expected_recording_fps,
+    const std::uint64_t expected_packet_count,
+    const std::uint64_t expected_encoded_bytes,
     std::string* error_out)
 {
     std::string bytes;
@@ -3190,14 +3192,14 @@ bool validate_container_finalization_sidecar(
                                 "container finalization sidecar", error_out)) {
         return false;
     }
-    static constexpr std::array<std::string_view, 10> top_keys = {
+    static constexpr std::array<std::string_view, 11> top_keys = {
         "schema_id", "schema_version", "generated_at_utc", "status", "terminal",
-        "video_path", "sidecar_path", "recording_fps", "container",
+        "video_path", "sidecar_path", "recording_fps", "packet_writes", "container",
         "quicktime_full_frame_rate_playback_intent"};
     if (!exact_keys(document, top_keys, "container_finalization", error_out) ||
         !read_const_string(document, "schema_id", "orange.video_container_finalization",
                            "container_finalization", error_out) ||
-        !read_const_int(document, "schema_version", 1, "container_finalization",
+        !read_const_int(document, "schema_version", 2, "container_finalization",
                         error_out) ||
         !read_string(document, "generated_at_utc", nullptr, "container_finalization",
                      error_out, 128) ||
@@ -3234,6 +3236,68 @@ bool validate_container_finalization_sidecar(
         recording_fps != expected_recording_fps) {
         return fail(error_out,
                     "container_finalization.recording_fps does not match contract");
+    }
+
+    const json& packet_writes = document.at("packet_writes");
+    static constexpr std::array<std::string_view, 14> packet_write_keys = {
+        "submissions_accepted", "submission_bytes_accepted",
+        "submissions_rejected", "write_attempts", "packets_written",
+        "bytes_written", "write_failures", "first_write_error_code",
+        "writer_error_latched", "muxer_flush_attempted",
+        "muxer_flush_succeeded", "muxer_flush_error_code",
+        "muxer_flush_error", "complete"};
+    if (!exact_keys(packet_writes, packet_write_keys,
+                    "container_finalization.packet_writes", error_out) ||
+        !read_const_bool(packet_writes, "writer_error_latched", false,
+                         "container_finalization.packet_writes", error_out) ||
+        !read_const_bool(packet_writes, "muxer_flush_attempted", true,
+                         "container_finalization.packet_writes", error_out) ||
+        !read_const_bool(packet_writes, "muxer_flush_succeeded", true,
+                         "container_finalization.packet_writes", error_out) ||
+        !read_const_bool(packet_writes, "complete", true,
+                         "container_finalization.packet_writes", error_out)) {
+        return false;
+    }
+    for (const char* key : {"first_write_error_code", "muxer_flush_error_code",
+                            "muxer_flush_error"}) {
+        if (!packet_writes.at(key).is_null()) {
+            return fail(error_out,
+                        std::string("container_finalization.packet_writes.") +
+                            key + " must be null for complete output");
+        }
+    }
+    std::uint64_t submissions_accepted = 0;
+    std::uint64_t submission_bytes_accepted = 0;
+    std::uint64_t submissions_rejected = 0;
+    std::uint64_t write_attempts = 0;
+    std::uint64_t packets_written = 0;
+    std::uint64_t bytes_written = 0;
+    std::uint64_t write_failures = 0;
+    if (!read_u64(packet_writes, "submissions_accepted", &submissions_accepted,
+                  "container_finalization.packet_writes", error_out) ||
+        !read_u64(packet_writes, "submission_bytes_accepted",
+                  &submission_bytes_accepted,
+                  "container_finalization.packet_writes", error_out) ||
+        !read_u64(packet_writes, "submissions_rejected", &submissions_rejected,
+                  "container_finalization.packet_writes", error_out) ||
+        !read_u64(packet_writes, "write_attempts", &write_attempts,
+                  "container_finalization.packet_writes", error_out) ||
+        !read_u64(packet_writes, "packets_written", &packets_written,
+                  "container_finalization.packet_writes", error_out) ||
+        !read_u64(packet_writes, "bytes_written", &bytes_written,
+                  "container_finalization.packet_writes", error_out) ||
+        !read_u64(packet_writes, "write_failures", &write_failures,
+                  "container_finalization.packet_writes", error_out)) {
+        return false;
+    }
+    if (submissions_accepted != expected_packet_count ||
+        write_attempts != expected_packet_count ||
+        packets_written != expected_packet_count ||
+        submissions_rejected != 0 || write_failures != 0 ||
+        submission_bytes_accepted != expected_encoded_bytes ||
+        submission_bytes_accepted != bytes_written) {
+        return fail(error_out,
+                    "container finalization packet-write proof does not match the recorded stream");
     }
 
     const json& container = document.at("container");
@@ -3919,7 +3983,7 @@ bool validate_opened_finalize_artifacts(
         if (!validate_container_finalization_sidecar(
                 finalization->file->borrowed_fd(), binding.artifact_root,
                 finalization->relative_path, video->relative_path, video_size,
-                fps, error_out)) {
+                fps, counts.encoded_frames, counts.encoded_bytes, error_out)) {
             return false;
         }
     }

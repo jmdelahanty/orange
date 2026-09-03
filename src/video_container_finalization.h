@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -22,6 +23,20 @@ struct Outcome {
     bool output_closed = false;
     bool playback_intent_patch_attempted = false;
     bool playback_intent_patch_applied = false;
+    bool writer_error_latched = false;
+    bool muxer_flush_attempted = false;
+    bool muxer_flush_succeeded = false;
+
+    std::uint64_t packet_submissions_accepted = 0;
+    std::uint64_t packet_submission_bytes_accepted = 0;
+    std::uint64_t packet_submissions_rejected = 0;
+    std::uint64_t packet_write_attempts = 0;
+    std::uint64_t packets_written = 0;
+    std::uint64_t packet_bytes_written = 0;
+    std::uint64_t packet_write_failures = 0;
+    std::optional<int> first_packet_write_error_code;
+    std::optional<int> muxer_flush_error_code;
+    std::string muxer_flush_error;
 
     std::optional<int> trailer_error_code;
     std::string trailer_error;
@@ -29,6 +44,12 @@ struct Outcome {
     std::string output_close_error;
     std::string playback_intent_patch_error;
 };
+
+// True only when every accepted encoded packet and byte reached the FFmpeg
+// mux boundary successfully, no submission was rejected, no contradictory
+// error detail remains, and the terminal muxer flush completed without a
+// latched writer error.
+bool PacketWritesComplete(const Outcome& outcome);
 
 inline constexpr char kFullFrameRatePlaybackIntentKey[] =
     "com.apple.quicktime.full-frame-rate-playback-intent";
