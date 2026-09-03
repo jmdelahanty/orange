@@ -339,6 +339,45 @@ Measure the same way; expect the same-die penalty to drop to NVENC's own DMA
 cost, a few tenths of a millisecond at most, and the recorder's per-frame
 prepare to fall from 7-10 ms to well under 1 ms.
 
+### The frame lifecycle, and what the handoff copy buys
+
+The buffer the camera writes into over GPUDirect is one of the acquisition
+pool's 62 entries. The detach copy exists so that entry can return to the
+pool after about 2 ms instead of after NVENC is done with it, which during a
+GOP is a 10 ms wait with jitter on top. The pool never sees the encoder's
+timeline and a stuck encoder can never starve the camera. That is the right
+design goal, and the copy achieves it.
+
+What it costs is not bandwidth. The traffic on the detect die during a
+shard-0 GOP (the RDMA write, the YOLO read, the detach copy, the NVENC input
+copy, NVENC's own read) is roughly 140 MB per 10 ms frame, about 14 GB/s on a
+die that can move 200 GB/s. What is expensive is occupancy: a 20 MB copy takes
+about 2 ms of a copy engine shared with the peer copies to the other shard
+and with NVENC's DMA, and while it runs it steals bandwidth from a
+latency-critical kernel sequence on a 10-SM die. That is the same-die
+penalty. The gate removes most of it by moving the copy into the 7 ms the die
+would otherwise idle, which is why it was nearly free.
+
+The copy path pays twice on the recorder side: the detach copy into a
+recorder slot, then a second copy from the slot into NVENC's input buffer.
+Direct input removes the first and keeps the second, but re-couples the
+handoff to NVENC's buffer availability, which is where its headroom went.
+
+The cheaper way to buy the same decoupling is depth instead of a copy. At
+100 fps, letting NVENC read the acquisition buffer directly and holding the
+entry until NVENC finishes means one to three extra pool entries in flight
+out of 62. The deferred-release protocol already exists to do exactly that
+without blocking any thread: the recorder ACKs at once so the handoff moves
+on, tags the ACK `deferred_release`, and sends a release message when it has
+finished reading; the ingress worker recycles the entry then. No frame is
+dropped by this; it only changes when the entry returns. The entry is held
+for NVENC's read time (about 10 ms during a GOP, longer if the recorder has a
+backlog) rather than the 2 ms copy, so the pool absorbs it easily, and the
+only new failure mode is a stalled recorder holding many entries, which needs
+a cap on outstanding deferred entries with a recording-side (not
+acquisition-side) fallback. That is lever 2c: zero copies, buffers returned
+by message, pool kept deep enough that a slow encode cannot starve the camera.
+
 ### Why direct input has no headroom
 
 It comes down to which thread waits for NVENC.
