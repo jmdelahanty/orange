@@ -159,7 +159,14 @@ frame 200, values in ms, this run minus baseline:
 Reading: event sync is worth about 80 us on every frame, as predicted. The
 deferred latch removes the acquisition-side tail completely. The stall fix
 removes the periodic driver stall. The same-die encoder penalty is untouched
-by these three levers, as expected; that is lever 2.
+by these three levers, as expected; that is lever 2, below.
+
+Overall: levers 1-4 together take camera 2010093 from 2.89 / 3.88 ms
+(mean / p95, acquisition to result) to 2.57 / 3.10 ms, a 20% p95 reduction,
+with every acquisition-side and driver-side tail gone. The remaining
+structure is exactly what the August review predicted: an uncontended floor
+near 2.4 ms set by yolo11n on a 10-SM die, plus a residual same-die encoder
+penalty of a few tenths of a millisecond during shard-0 GOPs.
 
 Lever 2, external recorder direct input, on top of the levers run
 (this run minus levers, ms):
@@ -175,9 +182,37 @@ Lever 2, external recorder direct input, on top of the levers run
 On 2010093 and 2010094 the detach slot copy was most of the same-die penalty:
 removing it takes the p95 from 3.77 to 3.10 ms with zero recorder drops and
 5,900 frames encoded per camera. On 2010095 (dies 7/8) the same-die mean did
-not move, and its "copy" time under direct input rose to the encoder's own
-frame time, which suggests that card is encode-bound rather than copy-bound.
-Open question.
+not move. The per-shard recorder CSVs say why.
+
+Interpretation. In the copy path, the detect-die shard on 2010093/2010094
+shows `encode_total` p95 of 3.2-3.7 ms and `slot_reuse_wait` p95 of 2.5 ms:
+the recorder is waiting on slot reuse and the encode submit blocks, so the
+detach copy, the NVENC input copy, and NVENC itself all contend with YOLO on
+that die for the whole 25-frame phase (worker mean flat at 3.1-3.3 ms across
+the phase). On 2010095 the same shard shows `encode_total` p95 of 0.08 ms and
+`slot_reuse_wait` p95 of 0.74 ms, and its phase profile ramps from 2.7 to
+3.1 ms instead of sitting at 3.2: the copy path was already cheaper there
+(same-die mean 2.91 versus 3.13). Direct input removes the slot copy and the
+slot waiting; 2010095 had less of both to remove, so it gained less. Under
+direct input all three cameras converge to a residual same-die penalty of
+0.25-0.55 ms, which is what NVENC reading the frame plus the remaining Y-plane
+copy cost on a GA107 die.
+
+Why 2010095 was cheaper to begin with is a placement effect at the card
+level, not the die level. 2010093 (dies 3/4) and 2010094 (dies 1/2) share one
+A16 card and its PCIe switch, so that card carries two cameras' GPUDirect
+inflow, two detectors, and four encoder shards. 2010095 (dies 7/8) sits on the
+other card, whose second camera 2010096 (dies 5/6) was offline, so that card
+carried half the load. Prediction: with 2010096 back online, 2010095's
+copy-path same-die penalty rises to the 2010093/2010094 level and direct
+input helps it as much. That is a one-run test with the fourcam specs.
+
+Also visible in the direct-input CSVs: the recorder's per-frame `prepare`
+(the Y-plane copy plus the event wait before ACK) is 7-10 ms p50, so the
+recorder holds each source frame for most of a frame period and runs near
+100% duty at 100 fps. It kept up here (0 drops), but it has no headroom, and
+that is a second reason direct input needs engineering before it is a
+production path.
 
 Caveat that decides whether lever 2 is usable: the run finished with
 `finalized external recording lacks a complete returned-NVENC frame identity
