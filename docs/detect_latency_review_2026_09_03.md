@@ -256,6 +256,38 @@ the card and not only on the detect die. Unlike direct input the recorder
 path is unchanged, so this is the first same-die lever that is a candidate
 for production as-is.
 
+Lever 2b plus direct input (gate and direct input together, this run minus
+the gate run, ms):
+
+| Metric | 2010093 | 2010094 | 2010095 |
+|---|---|---|---|
+| acq to detect mean | 2.503 to 2.460 | 2.498 to 2.450 | 2.457 to 2.460 |
+| acq to detect p95 | 3.642 to 2.765 (-0.877) | 3.608 to 2.746 (-0.862) | 3.267 to 3.222 |
+| acq to detect p99 | 3.812 to 3.628 | 3.802 to 3.527 | 3.481 to 3.306 |
+| same-die worker mean | 2.643 to 2.499 | 2.632 to 2.485 | 2.555 to 2.527 |
+| other-die worker mean | 2.309 to 2.368 | 2.315 to 2.362 | 2.306 to 2.342 |
+
+Run finished `completed` / `pass`, zero recorder drops. On 2010093 and
+2010094 this is the target: p95 2.77 ms against an uncontended p95 of about
+2.78 ms, same-die mean within 0.13 ms of other-die. So the residual after
+time-shifting one copy and removing the other is about 0.1 ms, which is
+NVENC's own read. What this run does not fix is direct input's headroom
+(recorder prepare p95 still 10 ms), which is exactly what lever 2c restores
+while keeping this result. 2010095 again did not move at p95 (3.22 ms); its
+tail is not the copies, and stays an open question specific to that card.
+
+A finding from reading the acquisition path for 2c: with
+`ORANGE_ANALYTICS_EARLY_OWNED_FRAME` (default on) the exported source is not
+the GPUDirect buffer but an app-owned pool buffer that acquisition copies
+into at t=0 so the EVT ring can be requeued at once, while YOLO reads the EVT
+buffer directly. That copy is a fourth 20 MB transfer per frame on the detect
+die, it runs concurrently with preprocess and inference on every frame, and it
+is therefore inside the "uncontended" floor. Two consequences. It removes the
+EVT-allocation blocker for 2c, because the pool buffer is ours to shape as
+NV12. And it is a candidate lever 2d: hand the EVT buffer itself to the
+recorder under deferred release and drop the early copy, at the cost of
+holding EVT ring entries about 10 ms longer.
+
 Two lessons from getting here. The first deferred-latch build still delayed
 the latch frames because the normal-path YOLO enqueue sat *after* the
 cadence probe, so the latch ran before the enqueue; the enqueue now precedes
