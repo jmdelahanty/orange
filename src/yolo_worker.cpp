@@ -1,5 +1,6 @@
 // src/yolo_worker.cpp
 #include "yolo_worker.h"
+#include "yolo_runtime_flags.h"
 #include "kernel.cuh"
 #include "npp_utils.h"
 #include <cuda_runtime_api.h>
@@ -67,7 +68,14 @@ int ParseEnvInt(const char* name, const int default_value, const int min_value)
     return static_cast<int>(parsed);
 }
 
+// Defaults live in src/yolo_runtime_flags.h so the recording snapshot and the
+// worker agree on what an unset variable means.
 bool EnvFlagEnabledByDefault(const char* name)
+{
+    return orange::yolo_flags::EnvFlag(name, true);
+}
+
+[[maybe_unused]] static bool LegacyEnvFlagEnabledByDefault(const char* name)
 {
     const char* env = std::getenv(name);
     if (!env || !*env) {
@@ -165,8 +173,7 @@ pose::Object BuildRuntimeSyntheticDetection(const RuntimeSyntheticDetectionConfi
 bool SkipCpuResults()
 {
     static const bool enabled = []() {
-        const char* env = std::getenv("ORANGE_YOLO_SKIP_CPU_RESULTS");
-        const bool on = env && *env && std::strcmp(env, "0") != 0;
+        const bool on = orange::yolo_flags::EnvFlag("ORANGE_YOLO_SKIP_CPU_RESULTS", false);
         if (on) {
             std::cout << "[YOLO] CPU results disabled (postprocess/tracking/IPC/ENet)." << std::endl;
         }
@@ -178,11 +185,11 @@ bool SkipCpuResults()
 bool UseEventSyncWait()
 {
     static const bool enabled = []() {
-        const char* env = std::getenv("ORANGE_YOLO_SYNC_EVENT");
-        const bool on = env && *env && std::strcmp(env, "0") != 0;
-        if (on) {
-            std::cout << "[YOLO] Using cudaEventSynchronize for GPU sync." << std::endl;
-        }
+        const bool on = orange::yolo_flags::EnvFlag("ORANGE_YOLO_SYNC_EVENT", false);
+        std::cout << "[YOLO] GPU completion sync mode: "
+                  << orange::yolo_flags::SyncModeLabel(on)
+                  << (on ? " (cudaEventSynchronize)" : " (cudaStreamQuery + usleep)")
+                  << std::endl;
         return on;
     }();
     return enabled;
@@ -202,8 +209,7 @@ bool UseReadyEventFastPath()
 bool UseInlineCropProducer()
 {
     static const bool enabled = []() {
-        const char* env = std::getenv("ORANGE_INLINE_CROP_PRODUCER");
-        const bool on = env && *env && std::strcmp(env, "0") != 0;
+        const bool on = orange::yolo_flags::EnvFlag("ORANGE_INLINE_CROP_PRODUCER", false);
         if (on) {
             std::cout << "[YOLO] Inline crop producer enabled." << std::endl;
         }
@@ -712,6 +718,8 @@ struct YoloPerfRecord {
     double ipc_ms = -1.0;
     double enet_ms = -1.0;
     double total_ms = -1.0;
+    // "event" (cudaEventSynchronize) or "poll" (cudaStreamQuery + usleep).
+    std::string sync_mode;
 };
 
 enum class YoloPerfEventType {
@@ -812,7 +820,7 @@ private:
                  "service_sequence,camera_service_sequence,active_camera_count,same_camera_service_gap_ms,service_skew_latest_other_ms,service_skew_oldest_other_ms,service_count_skew_vs_min,service_count_skew_range,"
                  "ingress_event_ready_before_wait,wait_ms,pre_ms,gap_ms,enqueue_ms,infer_ms,sync_ms,completion_event_ready_before_sync,"
                  "cpu_wait_event_ms,cpu_ingress_event_query_ms,cpu_stream_wait_event_ms,cpu_npp_set_stream_ms,cpu_preprocess_ms,cpu_input_ready_event_record_ms,cpu_dump_ms,cpu_infer_call_ms,cpu_event_record_ms,cpu_pre_sync_ms,cpu_pre_sync_other_ms,cpu_post_sync_ms,"
-                 "queue_ms,post_ms,track_ms,ipc_ms,enet_ms,total_ms\n";
+                 "queue_ms,post_ms,track_ms,ipc_ms,enet_ms,total_ms,sync_mode\n";
         file_ << std::fixed << std::setprecision(6);
         std::cout << "[YOLO_PERF] " << worker_name_ << " logging to " << file_path_ << std::endl;
     }
@@ -899,7 +907,8 @@ private:
               << record.track_ms << ","
               << record.ipc_ms << ","
               << record.enet_ms << ","
-              << record.total_ms << "\n";
+              << record.total_ms << ","
+              << record.sync_mode << "\n";
     }
 
     void ThreadMain() {
@@ -2283,6 +2292,7 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 record.ipc_ms = ms_ipc;
                 record.enet_ms = ms_enet;
                 record.total_ms = ms_total;
+                record.sync_mode = orange::yolo_flags::SyncModeLabel(UseEventSyncWait());
                 perf_logger_->Enqueue(record);
             }
         }

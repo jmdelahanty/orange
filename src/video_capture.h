@@ -432,6 +432,11 @@ struct PTPState
     unsigned long long ptp_register_read_count = 0;
     unsigned long long last_ptp_register_read_frame = 0;
     bool ptp_register_read_this_frame = false;
+    // Set by PTP_timestamp_checking when the register latch for this frame is
+    // deferred until after fanout (ORANGE_PTP_LATCH_AFTER_FANOUT). Cleared by
+    // PTP_register_latch.
+    bool pending_register_latch = false;
+    unsigned long long pending_register_latch_frame_index = 0;
     unsigned long long ptp_time_countdown;
     unsigned long long frame_ts;
     unsigned long long frame_ts_prev;

@@ -88,6 +88,37 @@ int env_positive_int(const char* name, int default_value, int max_value)
     return static_cast<int>(parsed);
 }
 
+// ORANGE_PTP_LATCH_AFTER_FANOUT (default on): perform the decimated
+// GevTimestampControlLatch register round trips after the frame has been
+// fanned out to YOLO/display/recording instead of before. The latch costs
+// 1.7-3.8 ms of synchronous control-channel traffic on the acquisition
+// thread; before this change every latch frame reached the YOLO queue that
+// much late (docs/detect_latency_review_2026_09_03.md, finding 3). Set to 0
+// to restore the pre-fanout order.
+bool ptp_latch_after_fanout()
+{
+    static const bool enabled = []() {
+        const char* env = std::getenv("ORANGE_PTP_LATCH_AFTER_FANOUT");
+        bool on = true;
+        if (env && *env) {
+            std::string normalized(env);
+            std::transform(
+                normalized.begin(),
+                normalized.end(),
+                normalized.begin(),
+                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            on = normalized != "0" &&
+                 normalized != "false" &&
+                 normalized != "off" &&
+                 normalized != "no";
+        }
+        std::cout << "[PTP] Register latch runs "
+                  << (on ? "after" : "before") << " frame fanout" << std::endl;
+        return on;
+    }();
+    return enabled;
+}
+
 int ptp_register_read_decimate()
 {
     static const int decimate = []() {
@@ -297,6 +328,10 @@ struct AcquisitionCadenceProbeSample {
     uint64_t latched_ptp_time_ns = 0;
     int64_t latch_minus_frame_ns = 0;
     uint64_t latch_delta_ns = 0;
+    // Whether the register latch ran after fanout, and how long the latch
+    // round trips took on this frame (0 when no latch ran).
+    bool ptp_latch_deferred = false;
+    uint64_t ptp_latch_ns = 0;
     bool record_active = false;
     int dispatch_count = 0;
     bool will_display = false;
@@ -419,7 +454,9 @@ public:
               << sample.ingress_stats.preprocess_resource_waits << ","
               << sample.ingress_stats.preprocess_frames_dropped << ","
               << sample.ingress_stats.encode_failures << ","
-              << sample.ingress_stats.encode_slow_frames << "\n";
+              << sample.ingress_stats.encode_slow_frames << ","
+              << (sample.ptp_latch_deferred ? 1 : 0) << ","
+              << sample.ptp_latch_ns << "\n";
         file_.flush();
     }
 
@@ -474,7 +511,8 @@ private:
                  "helper_enqueue_q,helper_enqueue_buffers,helper_enqueue_events,helper_enqueue_delay_ns,"
                  "submitted_frames,enqueue_rejected_frames,primary_routed_frames,helper_requested_frames,"
                  "helper_fallback_frames,helper_dispatched_frames,last_target_gpu_id,last_route_mode,"
-                 "pre_q,enc_q,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow\n";
+                 "pre_q,enc_q,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow,"
+                 "ptp_latch_deferred,ptp_latch_ns\n";
         std::cout << "[ACQ_CADENCE] Cam " << serial
                   << " logging frames "
                   << kAcquisitionCadenceProbeFrameMin << "-"
@@ -990,11 +1028,63 @@ std::string current_recording_folder(CameraControl* camera_control) {
 }
 }
 
+// The expensive half of the PTP check: one GigE Vision command and two
+// register reads over the control channel (1.7-3.8 ms observed). Runs either
+// inline from PTP_timestamp_checking or, when the latch is deferred, from the
+// acquisition loop after fanout. `frame_index` is the 1-based local frame the
+// latch is attributed to.
+static inline void PTP_register_latch(PTPState *ptp_state,
+                                      CameraEmergent *ecam,
+                                      CameraParams *camera_params,
+                                      uint64_t frame_index){
+    NVTX_RANGE("PTP_Register_Latch");
+    EVT_CameraExecuteCommand(&ecam->camera, "GevTimestampControlLatch");
+    EVT_CameraGetUInt32Param(&ecam->camera, "GevTimestampValueHigh", &ptp_state->ptp_time_high);
+    EVT_CameraGetUInt32Param(&ecam->camera, "GevTimestampValueLow", &ptp_state->ptp_time_low);
+    const unsigned long long latched_ptp_time =
+        (((unsigned long long)(ptp_state->ptp_time_high)) << 32) |
+        ((unsigned long long)(ptp_state->ptp_time_low));
+    if (ptp_state->ptp_register_read_count != 0 &&
+        latched_ptp_time >= ptp_state->ptp_time_prev) {
+        ptp_state->ptp_time_delta = latched_ptp_time - ptp_state->ptp_time_prev;
+        ptp_state->ptp_time_delta_sum += ptp_state->ptp_time_delta;
+        ptp_state->ptp_time_delta_samples++;
+    } else {
+        ptp_state->ptp_time_delta = 0;
+    }
+    ptp_state->ptp_time = latched_ptp_time;
+    ptp_state->ptp_time_prev = ptp_state->ptp_time;
+    ptp_state->ptp_register_read_count++;
+    ptp_state->last_ptp_register_read_frame = frame_index;
+    ptp_state->ptp_register_read_this_frame = true;
+    ptp_state->pending_register_latch = false;
+
+    if (frame_index <= 5) {
+        const int64_t latch_minus_frame_ns =
+            static_cast<int64_t>(ptp_state->ptp_time) - static_cast<int64_t>(ptp_state->frame_ts);
+        std::cout << "[PTP_FIRST_FRAMES]"
+                  << " cam=" << (camera_params ? camera_params->camera_serial : std::string("<unknown>"))
+                  << " frame=" << frame_index
+                  << " frame_ts_ns=" << ptp_state->frame_ts
+                  << " latched_ptp_ns=" << ptp_state->ptp_time
+                  << " latch_minus_frame_ns=" << latch_minus_frame_ns
+                  << " frame_delta_ns=" << ptp_state->frame_ts_delta
+                  << " latch_delta_ns=" << ptp_state->ptp_time_delta
+                  << " ptp_register_read=1"
+                  << std::endl;
+    }
+}
+
+// The cheap half: per-frame camera timestamp bookkeeping plus the decision
+// whether this frame latches the PTP register. With `defer_register_latch`
+// the latch itself is left pending for the acquisition loop to run after
+// fanout; `ptp_register_read_this_frame` stays false until it does.
 static inline void PTP_timestamp_checking(PTPState *ptp_state,
                                           CameraEmergent *ecam,
                                           const Emergent::CEmergentFrame *received_frame,
                                           CameraState *camera_state,
-                                          CameraParams *camera_params){
+                                          CameraParams *camera_params,
+                                          bool defer_register_latch){
     NVTX_RANGE("PTP_Timestamp_Check");
     const uint64_t frame_index = static_cast<uint64_t>(camera_state->frame_count) + 1;
     const int register_read_decimate = ptp_register_read_decimate();
@@ -1010,42 +1100,17 @@ static inline void PTP_timestamp_checking(PTPState *ptp_state,
     }
     ptp_state->frame_ts_prev = ptp_state->frame_ts;
 
-    ptp_state->ptp_register_read_this_frame = read_ptp_register;
-    if (read_ptp_register) {
-        EVT_CameraExecuteCommand(&ecam->camera, "GevTimestampControlLatch");
-        EVT_CameraGetUInt32Param(&ecam->camera, "GevTimestampValueHigh", &ptp_state->ptp_time_high);
-        EVT_CameraGetUInt32Param(&ecam->camera, "GevTimestampValueLow", &ptp_state->ptp_time_low);
-        const unsigned long long latched_ptp_time =
-            (((unsigned long long)(ptp_state->ptp_time_high)) << 32) |
-            ((unsigned long long)(ptp_state->ptp_time_low));
-        if (ptp_state->ptp_register_read_count != 0 &&
-            latched_ptp_time >= ptp_state->ptp_time_prev) {
-            ptp_state->ptp_time_delta = latched_ptp_time - ptp_state->ptp_time_prev;
-            ptp_state->ptp_time_delta_sum += ptp_state->ptp_time_delta;
-            ptp_state->ptp_time_delta_samples++;
-        } else {
-            ptp_state->ptp_time_delta = 0;
-        }
-        ptp_state->ptp_time = latched_ptp_time;
-        ptp_state->ptp_time_prev = ptp_state->ptp_time;
-        ptp_state->ptp_register_read_count++;
-        ptp_state->last_ptp_register_read_frame = frame_index;
+    ptp_state->ptp_register_read_this_frame = false;
+    ptp_state->pending_register_latch = false;
+    if (!read_ptp_register) {
+        return;
     }
-
-    if (frame_index <= 5) {
-        const int64_t latch_minus_frame_ns =
-            static_cast<int64_t>(ptp_state->ptp_time) - static_cast<int64_t>(ptp_state->frame_ts);
-        std::cout << "[PTP_FIRST_FRAMES]"
-                  << " cam=" << (camera_params ? camera_params->camera_serial : std::string("<unknown>"))
-                  << " frame=" << frame_index
-                  << " frame_ts_ns=" << ptp_state->frame_ts
-                  << " latched_ptp_ns=" << ptp_state->ptp_time
-                  << " latch_minus_frame_ns=" << latch_minus_frame_ns
-                  << " frame_delta_ns=" << ptp_state->frame_ts_delta
-                  << " latch_delta_ns=" << ptp_state->ptp_time_delta
-                  << " ptp_register_read=" << (read_ptp_register ? 1 : 0)
-                  << std::endl;
+    if (defer_register_latch) {
+        ptp_state->pending_register_latch = true;
+        ptp_state->pending_register_latch_frame_index = frame_index;
+        return;
     }
+    PTP_register_latch(ptp_state, ecam, camera_params, frame_index);
 }
 
 static inline Emergent::CEmergentFrame* resolve_queued_camera_frame(
@@ -1740,10 +1805,47 @@ void acquire_frames(
                     ? receive_host_ns - get_frame_call_host_ns
                     : 0;
             uint64_t ptp_check_done_host_ns = 0;
+            const bool ptp_latch_deferred = ptp_latch_after_fanout();
             if (camera_control->sync_camera) {
-                PTP_timestamp_checking(&ptp_state, ecam, received_frame, &camera_state, camera_params);
+                PTP_timestamp_checking(
+                    &ptp_state,
+                    ecam,
+                    received_frame,
+                    &camera_state,
+                    camera_params,
+                    ptp_latch_deferred);
                 ptp_check_done_host_ns = steady_clock_now_ns();
             }
+            // Runs the register latch left pending by PTP_timestamp_checking.
+            // Called once after fanout (before the cadence probe) and again as
+            // a fallback at the end of the frame; the second call is a no-op
+            // when the first ran. The latch statistics that the pre-fanout
+            // block skips (ptp_register_read_this_frame is false there) are
+            // added here instead. The stale-receive check keeps its old
+            // position and therefore sees a deferred latch one frame late.
+            uint64_t ptp_latch_ns = 0;
+            auto run_deferred_ptp_latch = [&]() {
+                if (!camera_control->sync_camera || !ptp_state.pending_register_latch) {
+                    return;
+                }
+                const uint64_t latch_start_ns = steady_clock_now_ns();
+                PTP_register_latch(
+                    &ptp_state,
+                    ecam,
+                    camera_params,
+                    ptp_state.pending_register_latch_frame_index);
+                const uint64_t latch_end_ns = steady_clock_now_ns();
+                ptp_latch_ns = latch_end_ns > latch_start_ns ? latch_end_ns - latch_start_ns : 0;
+                if (!ptp_summary_recording_folder.empty()) {
+                    const int64_t latch_minus_frame_ns =
+                        static_cast<int64_t>(ptp_state.ptp_time) -
+                        static_cast<int64_t>(ptp_state.frame_ts);
+                    latch_minus_frame_stats.add(latch_minus_frame_ns);
+                    if (ptp_state.ptp_time_delta_samples > 0) {
+                        latch_delta_stats.add(static_cast<int64_t>(ptp_state.ptp_time_delta));
+                    }
+                }
+            };
 
             struct timespec ts_rt1;
             clock_gettime(CLOCK_REALTIME, &ts_rt1);
@@ -2394,6 +2496,11 @@ void acquire_frames(
                             submit_entry);
                     }
                 }
+                // Deferred PTP register latch: every consumer already has
+                // the frame, so the control-channel round trips no longer
+                // delay detection. Runs before the cadence probe so the
+                // sample carries the fresh latch and its cost.
+                run_deferred_ptp_latch();
                 const uint64_t probe_frame_id =
                     current_entry->recording_frame_id > 0
                         ? current_entry->recording_frame_id
@@ -2430,6 +2537,8 @@ void acquire_frames(
                             : 0;
                     cadence_sample.latch_delta_ns =
                         camera_control->sync_camera ? ptp_state.ptp_time_delta : 0;
+                    cadence_sample.ptp_latch_deferred = ptp_latch_deferred;
+                    cadence_sample.ptp_latch_ns = ptp_latch_ns;
                     cadence_sample.record_active = camera_control->record_video;
                     cadence_sample.dispatch_count = dispatch_count;
                     cadence_sample.will_display = will_display;
@@ -2501,6 +2610,9 @@ void acquire_frames(
                 free_events_available++;
                 free_entries_available++;
             }
+            // Fallback for frames that skipped the fanout block: a pending
+            // latch must never carry over to a later frame.
+            run_deferred_ptp_latch();
 
             frame_counter_for_fps++;
             auto now = std::chrono::steady_clock::now();

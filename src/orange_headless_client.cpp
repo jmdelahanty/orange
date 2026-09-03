@@ -7130,6 +7130,21 @@ void start_headless_gpu_dmon_monitor(HeadlessGpuDmonMonitor* monitor,
         update_headless_gpu_dmon_snapshot(*monitor);
         return;
     }
+    // ORANGE_HEADLESS_GPU_DMON=0 skips the nvidia-smi dmon subprocess. Its
+    // 1 Hz NVML polling is the leading suspect for the periodic ~2.7 ms
+    // cudaEventRecord stalls seen in the 2026-08-25 four-camera run
+    // (docs/detect_latency_review_2026_09_03.md, finding 4).
+    if (const char* env = std::getenv("ORANGE_HEADLESS_GPU_DMON");
+        env && *env && (std::strcmp(env, "0") == 0 ||
+                        std::strcmp(env, "false") == 0 ||
+                        std::strcmp(env, "off") == 0 ||
+                        std::strcmp(env, "no") == 0)) {
+        monitor->status = "disabled_by_env";
+        std::cout << "[HEADLESS] nvidia-smi dmon monitor disabled by ORANGE_HEADLESS_GPU_DMON="
+                  << env << std::endl;
+        update_headless_gpu_dmon_snapshot(*monitor);
+        return;
+    }
     if (gpu_ids.empty()) {
         monitor->status = "failed_to_start";
         monitor->error = "no gpu ids resolved for dmon monitoring";

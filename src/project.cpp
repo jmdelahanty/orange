@@ -1,6 +1,7 @@
 // src/project.cpp
 #include "project.h"
 #include "camera_config_schema.h"
+#include "yolo_runtime_flags.h"
 #include "citrus_recording_geometry.h"
 #include "external_recorder_ipc_protocol.h"
 #include "fnv1a64_fingerprint.h"
@@ -303,12 +304,42 @@ nlohmann::json build_yolo_worker_runtime_snapshot(const CameraParams* cameras_pa
         affinity_by_camera[camera_key] = affinity;
     }
 
+    // Every detect-path flag, resolved the same way YoloWorker resolves it,
+    // so a run's CSVs can be interpreted without knowing the launch
+    // environment. Defaults live in src/yolo_runtime_flags.h.
+    const orange::yolo_flags::ResolvedFlags flags = orange::yolo_flags::Resolve();
+    const nlohmann::json runtime_flags = {
+        {"source", "environment_resolved"},
+        {"sync_event", flags.sync_event},
+        {"sync_mode", orange::yolo_flags::SyncModeLabel(flags.sync_event)},
+        {"detach_input", flags.detach_input},
+        {"ready_event_fast_path", flags.ready_event_fast_path},
+        {"inline_crop_producer", flags.inline_crop_producer},
+        {"skip_cpu_results", flags.skip_cpu_results},
+        {"stream_priority", flags.stream_priority},
+        {"stream_nonblocking", flags.stream_nonblocking},
+        {"perf_log", flags.perf_log},
+        {"perf_sample", flags.perf_sample},
+        {"env_keys", {
+            "ORANGE_YOLO_SYNC_EVENT",
+            "ORANGE_YOLO_DETACH_INPUT",
+            "ORANGE_YOLO_READY_EVENT_FASTPATH",
+            "ORANGE_INLINE_CROP_PRODUCER",
+            "ORANGE_YOLO_SKIP_CPU_RESULTS",
+            "ORANGE_YOLO_STREAM_PRIORITY",
+            "ORANGE_YOLO_STREAM_NONBLOCKING",
+            "ORANGE_YOLO_PERF_LOG",
+            "ORANGE_YOLO_PERF_SAMPLE"
+        }}
+    };
+
     return {
-        {"schema_version", 1},
+        {"schema_version", 2},
         {"affinity", {
             {"source", "environment"},
             {"per_camera", affinity_by_camera}
-        }}
+        }},
+        {"runtime_flags", runtime_flags}
     };
 }
 

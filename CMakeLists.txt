@@ -958,6 +958,10 @@ if(BUILD_TESTING)
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/external_recorder_smoke_runner_tests.py")
 
     add_test(
+        NAME analyze_yolo_latency_phases_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/analyze_yolo_latency_phases_tests.py")
+
+    add_test(
         NAME evt_stream_smoke_wrapper_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/evt_stream_smoke_wrapper_tests.py")
 
