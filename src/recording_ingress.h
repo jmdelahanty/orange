@@ -36,6 +36,11 @@ struct RecordingIngressStats {
     uint64_t external_ipc_frames_acked = 0;
     uint64_t external_ipc_failures = 0;
     uint64_t external_ipc_ack_timeouts = 0;
+    // Deferred source release (external recorder holds pool entries until it
+    // has read them): entries currently held, and frames skipped on the
+    // recording side because the cap on held entries was reached.
+    uint64_t deferred_release_pending = 0;
+    uint64_t deferred_release_cap_skips = 0;
     uint64_t submitted_frames = 0;
     uint64_t primary_routed_frames = 0;
     uint64_t helper_requested_frames = 0;

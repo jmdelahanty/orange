@@ -260,6 +260,8 @@ struct PipelinePerfSample {
     uint64_t external_ipc_frames_acked = 0;
     uint64_t external_ipc_failures = 0;
     uint64_t external_ipc_ack_timeouts = 0;
+    uint64_t deferred_release_pending = 0;
+    uint64_t deferred_release_cap_skips = 0;
     uint64_t submitted_frames = 0;
     uint64_t enqueue_rejected_frames = 0;
     uint64_t primary_routed_frames = 0;
@@ -748,7 +750,9 @@ public:
               << sample.last_get_frame_error_code << ","
               << sample.gpu_direct_frames << ","
               << sample.gpu_ring_copy_frames << ","
-              << sample.gpu_copy_frames << "\n";
+              << sample.gpu_copy_frames << ","
+              << sample.deferred_release_pending << ","
+              << sample.deferred_release_cap_skips << "\n";
         file_.flush();
 
         acquisition_fps_.add(sample.acquisition_fps);
@@ -815,7 +819,8 @@ private:
                  "external_ipc_frames_acked,external_ipc_failures,external_ipc_ack_timeouts,"
                  "submitted_frames,enqueue_rejected_frames,primary_routed_frames,helper_requested_frames,helper_fallback_frames,helper_dispatched_frames,last_target_gpu_id,last_route_mode,"
                  "camera_dropped_frames,get_frame_errors,last_get_frame_error_code,"
-                 "gpu_direct,gpu_ring,gpu_copy\n";
+                 "gpu_direct,gpu_ring,gpu_copy,"
+                 "deferred_release_pending,deferred_release_cap_skips\n";
         file_ << std::fixed << std::setprecision(6);
         std::cout << "[PIPELINE] Cam " << serial
                   << " logging to " << file_path_ << std::endl;
@@ -1549,6 +1554,8 @@ void acquire_frames(
         sample.external_ipc_frames_acked = recording_stats.external_ipc_frames_acked;
         sample.external_ipc_failures = recording_stats.external_ipc_failures;
         sample.external_ipc_ack_timeouts = recording_stats.external_ipc_ack_timeouts;
+        sample.deferred_release_pending = recording_stats.deferred_release_pending;
+        sample.deferred_release_cap_skips = recording_stats.deferred_release_cap_skips;
         sample.submitted_frames = recording_stats.submitted_frames;
         sample.enqueue_rejected_frames = recording_stats.enqueue_rejected_frames;
         sample.primary_routed_frames = recording_stats.primary_routed_frames;

@@ -163,8 +163,12 @@ public:
           deferred_release_(recording_ingress_env_flag_enabled(
               "ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE", false)),
           detect_priority_gate_(recording_ingress_env_flag_enabled(
-              "ORANGE_EXTERNAL_RECORDER_DETECT_PRIORITY", true))
+              "ORANGE_EXTERNAL_RECORDER_DETECT_PRIORITY", true)),
+          max_deferred_pending_(resolve_max_deferred_pending())
     {
+        std::cout << "[ExternalIpcRecorder] camera=" << camera_serial_
+                  << " deferred-release cap=" << max_deferred_pending_
+                  << " pool entries (ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED)" << std::endl;
         if (detect_priority_gate_) {
             std::cout << "[ExternalIpcRecorder] camera=" << camera_serial_
                       << " detect-priority gate enabled: frames are handed to the"
@@ -197,6 +201,8 @@ public:
     uint64_t frames_acked() const { return frames_acked_.load(std::memory_order_relaxed); }
     uint64_t failures() const { return failures_.load(std::memory_order_relaxed); }
     uint64_t ack_timeouts() const { return ack_timeouts_.load(std::memory_order_relaxed); }
+    uint64_t deferred_release_cap_skips() const { return deferred_cap_skips_.load(std::memory_order_relaxed); }
+    uint64_t deferred_release_pending() const { return static_cast<uint64_t>(pending_release_count()); }
     void RequestRecordingDrain(const char* reason)
     {
         {
@@ -777,12 +783,50 @@ private:
         client_finalize_sent_ = true;
     }
 
+    // Cap on pool entries the recorder may hold under deferred release. The
+    // acquisition pool is what keeps the camera from ever waiting on the
+    // encoder; a stalled recorder must therefore lose frames from the
+    // recording, never stall acquisition. Default 16 of the 62-entry pool:
+    // room for a 160 ms recorder stall at 100 fps while leaving the other
+    // consumers their entries. (docs/detect_latency_review_2026_09_03.md,
+    // follow-up 4b.)
+    static size_t resolve_max_deferred_pending()
+    {
+        const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED");
+        if (env && *env) {
+            char* end = nullptr;
+            const long parsed = std::strtol(env, &end, 10);
+            if (end != env && *end == '\0' && parsed >= 1 && parsed <= 4096) {
+                return static_cast<size_t>(parsed);
+            }
+            std::cerr << "[ExternalIpcRecorder] Ignoring invalid ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED='"
+                      << env << "', using 16" << std::endl;
+        }
+        return 16;
+    }
+
     bool detach_frame(WORKER_ENTRY* entry, bool* release_entry_now)
     {
         if (release_entry_now) {
             *release_entry_now = true;
         }
         refresh_session_from_environment();
+
+        // Deferred-release cap: if the recorder already holds the maximum
+        // number of pool entries, give it one chance to return some, then
+        // skip this frame on the recording side. The entry is released to
+        // the pool immediately by the caller.
+        if (pending_release_count() >= max_deferred_pending_) {
+            poll_protocol_lines(false);
+            if (pending_release_count() >= max_deferred_pending_) {
+                deferred_cap_skips_.fetch_add(1, std::memory_order_relaxed);
+                log_limited("deferred-release cap reached (" +
+                            std::to_string(max_deferred_pending_) +
+                            " entries held by the recorder); skipping recording_frame " +
+                            std::to_string(entry->recording_frame_id));
+                return false;
+            }
+        }
 
         if (source_gpu_id_ >= 0) {
             cudaSetDevice(source_gpu_id_);
@@ -984,6 +1028,8 @@ private:
     int socket_fd_ = -1;
     bool deferred_release_ = false;
     bool detect_priority_gate_ = false;
+    size_t max_deferred_pending_ = 16;
+    std::atomic<uint64_t> deferred_cap_skips_{0};
     std::atomic<uint64_t> detect_priority_gated_frames_{0};
     std::atomic<uint64_t> detect_priority_waited_frames_{0};
     std::atomic<uint64_t> detect_priority_wait_timeouts_{0};
@@ -1391,6 +1437,10 @@ RecordingIngressStats RecordingIngress::GetStats() const
         stats.external_ipc_ack_timeouts =
             external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->ack_timeouts() : 0;
         if (external_ipc_handoff_worker_) {
+            stats.deferred_release_pending =
+                external_ipc_handoff_worker_->deferred_release_pending();
+            stats.deferred_release_cap_skips =
+                external_ipc_handoff_worker_->deferred_release_cap_skips();
             stats.detect_priority_gated_frames =
                 external_ipc_handoff_worker_->detect_priority_gated_frames();
             stats.detect_priority_waited_frames =

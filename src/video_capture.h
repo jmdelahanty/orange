@@ -33,6 +33,12 @@ typedef struct {
     uint64_t recording_frame_id;
     uint64_t ipc_frame_id;
     uint64_t source_buffer_bytes = 0;
+    // Pool buffer laid out as NV12 (Y plane of source_buffer_bytes followed by
+    // a chroma plane prefilled to 128) so an external recorder can register
+    // it with NVENC directly. ORANGE_POOL_NV12_LAYOUT=1; see lever 2c in
+    // docs/detect_latency_review_2026_09_03.md.
+    bool pool_nv12_layout = false;
+    size_t pool_buffer_bytes = 0;
     std::string recording_folder;
     uint64_t timestamp_sys;
     int image_gpu_id = -1;
@@ -263,9 +269,31 @@ struct CameraResources {
         // Value-initialize every entry so cleanup remains safe if a later
         // CUDA allocation or event creation throws partway through this
         // initialization transaction.
+        // Lever 2c: allocate each pool buffer NV12-shaped (Y plane followed by
+        // a chroma plane held at 128) so the external recorder can register
+        // the buffer with NVENC instead of copying it. Only the first
+        // frame_size bytes are ever written by acquisition or the copy paths;
+        // the chroma plane is written once here and never touched again.
+        const bool pool_nv12_layout = []() {
+            const char* env = std::getenv("ORANGE_POOL_NV12_LAYOUT");
+            return env && *env && std::strcmp(env, "0") != 0 &&
+                   std::strcmp(env, "false") != 0 && std::strcmp(env, "off") != 0;
+        }();
+        const size_t chroma_bytes = pool_nv12_layout ? (frame_size + 1) / 2 : 0;
+        const size_t pool_buffer_bytes = frame_size + chroma_bytes;
+        if (pool_nv12_layout) {
+            std::cout << "[CameraResources] Pool buffers use NV12 layout: "
+                      << frame_size << " Y bytes + " << chroma_bytes
+                      << " chroma bytes (prefilled 128) per entry" << std::endl;
+        }
         worker_entry_pool = new WORKER_ENTRY[acquire_work_entries_max]{};
         for (int i = 0; i < acquire_work_entries_max; ++i) {
-            ck(cudaMalloc(&worker_entry_pool[i].d_image, frame_size));
+            ck(cudaMalloc(&worker_entry_pool[i].d_image, pool_buffer_bytes));
+            if (chroma_bytes > 0) {
+                ck(cudaMemset(worker_entry_pool[i].d_image + frame_size, 128, chroma_bytes));
+            }
+            worker_entry_pool[i].pool_nv12_layout = pool_nv12_layout;
+            worker_entry_pool[i].pool_buffer_bytes = pool_buffer_bytes;
             worker_entry_pool[i].d_image_pool = worker_entry_pool[i].d_image;
             ck(cudaEventCreateWithFlags(&worker_entry_pool[i].analytics_ready_event, cudaEventDisableTiming));
             ck(cudaEventCreateWithFlags(&worker_entry_pool[i].yolo_input_ready_event, cudaEventDisableTiming));

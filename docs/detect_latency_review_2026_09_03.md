@@ -410,6 +410,49 @@ a cap on outstanding deferred entries with a recording-side (not
 acquisition-side) fallback. That is lever 2c: zero copies, buffers returned
 by message, pool kept deep enough that a slow encode cannot starve the camera.
 
+### Lever 2c implementation plan
+
+Touch points found on 2026-09-03; slices 1 and 2 are in the tree.
+
+1. **Cap on deferred-release entries (done).** `ExternalIpcHandoffWorker`
+   reads `ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED` (default 16). Before sending
+   a frame it checks the pending map; at the cap it polls the socket once for
+   releases, then skips the frame on the recording side and returns the entry
+   to the pool. Counters `deferred_release_pending` and
+   `deferred_release_cap_skips` are appended to `Cam*_pipeline_perf.csv`.
+2. **NV12-shaped pool (done, behind `ORANGE_POOL_NV12_LAYOUT=1`).**
+   `CameraResources::initialize` allocates each pool buffer as Y plane plus a
+   chroma plane prefilled to 128 once, and records `pool_nv12_layout` /
+   `pool_buffer_bytes` on the `WORKER_ENTRY`. Nothing else changes: acquisition
+   and every copy path still touch only the first `frame_size` bytes.
+3. **Descriptor (next).** The FRAME message in `detach_frame` gains a layout
+   token so the recorder knows the imported buffer is NVENC-registerable
+   (pitch = width, chroma at offset width*height). Older recorders ignore it.
+4. **Recorder registered-source mode (next, the real work).** In
+   `tools/external_recorder_ipc_probe.cpp`, a mode alongside
+   `direct_input_source`: on each FRAME, import the handle (cached, as now),
+   register the pointer with NVENC once per distinct pointer as an NV12
+   `NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR` surface, and encode from it.
+   The wrapper's `MapResources` maps `m_vRegisteredResources[slot]`, so the
+   wrapper needs one small addition: set the registered resource for the next
+   slot before `EncodeFrame` (a per-slot override), with the recorder owning
+   the registry of all registered pool pointers and unregistering them at
+   teardown. Release the source by RELEASE message after the frame's input is
+   unmapped (the existing deferred-release loop, `run_direct_source`, already
+   has the queue and the send path; it only needs the copy replaced by the
+   registered submit and the release moved after unmap). Requires
+   `ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE=1` on the ingress side.
+5. **Measure.** `threecam_detect_latency_levers_gate` plus the new mode,
+   against the gate run and the gate-plus-direct-input run. Expect the
+   gate-plus-direct-input latency (p95 at the uncontended figure on card A)
+   with recorder prepare back under 1 ms and enqueue age at the copy-path
+   level.
+6. **Lever 2d, afterwards.** With 2c working, the early-owned copy at t=0 is
+   the last 20 MB transfer overlapping inference on every frame. Handing the
+   EVT buffer to the recorder under deferred release removes it, at the cost
+   of EVT ring entries held about 10 ms longer; needs the ring depth checked
+   and the same cap logic applied to ring entries.
+
 ### Why direct input has no headroom
 
 It comes down to which thread waits for NVENC.
