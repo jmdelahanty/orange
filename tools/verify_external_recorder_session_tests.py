@@ -158,7 +158,7 @@ def video_metadata_payload(serial: str, *, output_kind: str = "full") -> dict:
 def frame_identity_proof_payload(frames: int = 3) -> dict:
     return {
         "schema_id": "orange.external_recorder.frame_identity_proof",
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "passed",
         "canonical_field": "recording_frame_id",
         "scope": "recording_session_and_camera_stream",
@@ -177,9 +177,14 @@ def frame_identity_proof_payload(frames: int = 3) -> dict:
             "identity_mismatches": 0,
             "outstanding_submitted_identities": 0,
             "encoded_video_frames": frames,
+            "packet_submissions_accepted": frames,
+            "packet_submissions_rejected": 0,
+            "packet_write_attempts": frames,
             "packets_written": frames,
+            "packet_write_failures": 0,
+            "first_packet_write_error_code": None,
             "metadata_rows": frames,
-            "verification_rule_id": "orange.external_recorder.frame_identity.v1",
+            "verification_rule_id": "orange.external_recorder.frame_identity.v2",
             "verified": True,
         },
     }
@@ -676,6 +681,40 @@ def test_returned_nvenc_frame_identity_proof_is_required_and_verified() -> None:
         else:
             raise AssertionError("expected required returned-identity proof to fail")
 
+        legacy_proof = frame_identity_proof_payload()
+        legacy_proof["schema_version"] = 1
+        legacy_binding = legacy_proof["video_binding"]
+        for field in (
+            "packet_submissions_accepted",
+            "packet_submissions_rejected",
+            "packet_write_attempts",
+            "packet_write_failures",
+            "first_packet_write_error_code",
+        ):
+            legacy_binding.pop(field)
+        legacy_binding["verification_rule_id"] = (
+            "orange.external_recorder.frame_identity.v1"
+        )
+        rewrite_summary(
+            summary_path,
+            lambda payload: payload.update({
+                "frame_identity_proof": legacy_proof,
+                "merged_output": {
+                    "coordinator_enabled": True,
+                    "enabled": True,
+                    "failed": False,
+                    "pending_gops": 0,
+                    "packets_written": 3,
+                },
+            }),
+        )
+        verify_one(
+            root,
+            summary_path,
+            mp4_path,
+            contract_fields={"require_frame_identity_proof": True},
+        )
+
         rewrite_summary(
             summary_path,
             lambda payload: payload.update({
@@ -698,6 +737,34 @@ def test_returned_nvenc_frame_identity_proof_is_required_and_verified() -> None:
         require(
             result["frames_encoded"] == 3,
             "valid returned-identity proof should preserve the frame count",
+        )
+
+        rewrite_summary(
+            summary_path,
+            lambda payload: payload["frame_identity_proof"]["video_binding"].update(
+                {"packet_write_failures": 1, "first_packet_write_error_code": -5}
+            ),
+        )
+        try:
+            verify_one(
+                root,
+                summary_path,
+                mp4_path,
+                contract_fields={"require_frame_identity_proof": True},
+            )
+        except verifier.VerificationError as exc:
+            require(
+                "packet_write_failures is nonzero" in str(exc),
+                f"unexpected packet-write failure: {exc}",
+            )
+        else:
+            raise AssertionError("expected packet-write failure proof to fail")
+
+        rewrite_summary(
+            summary_path,
+            lambda payload: payload.update(
+                {"frame_identity_proof": frame_identity_proof_payload()}
+            ),
         )
 
         rewrite_summary(

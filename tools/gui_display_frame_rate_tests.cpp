@@ -1,5 +1,7 @@
 #include "gui_display_frame_rate.h"
+#include "gui/camera_temperature_sampling.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <cmath>
 #include <iostream>
@@ -120,7 +122,83 @@ void test_sampling_only_during_active_recording()
 
     stats.Finish();
     orange::gui::gui_sample_display_frame_rate(&stats, 0.010f, true, true, true);
-    require(stats.overall.samples.size() == 3, "sampling should stop after Finish()");
+    require(stats.overall.samples.sample_count() == 3,
+            "sampling should stop after Finish()");
+}
+
+void test_recording_duration_storage_is_bounded()
+{
+    orange::gui::GuiDurationBucket first;
+    orange::gui::GuiDurationBucket second;
+    constexpr std::uint64_t kObservedSamples = 100000;
+    for (std::uint64_t index = 0; index < kObservedSamples; ++index) {
+        const double value = static_cast<double>(index) * 0.5;
+        first.Add(value);
+        second.Add(value);
+    }
+
+    require(first.samples_ms.sample_count() == kObservedSamples,
+            "bounded telemetry must preserve the exact observed count");
+    require(first.samples_ms.retained_sample_count() ==
+                orange::BoundedSampleStatistics::kDefaultMaxRetainedSamples,
+            "bounded telemetry must cap retained percentile samples");
+    require(!first.samples_ms.percentiles_exact(),
+            "a reservoir summary must declare approximate percentiles");
+    require_near(first.samples_ms.min(), 0.0, 0.0, "bounded exact minimum");
+    require_near(
+        first.samples_ms.max(),
+        static_cast<double>(kObservedSamples - 1) * 0.5,
+        0.0,
+        "bounded exact maximum");
+    require_near(first.samples_ms.mean(), 24999.75, 0.000001, "bounded exact mean");
+    require(first.samples_ms.sorted_retained_samples() ==
+                second.samples_ms.sorted_retained_samples(),
+            "reservoir sampling must be deterministic");
+
+    const nlohmann::json payload = orange::gui::gui_duration_bucket_json(first);
+    require(payload.value("sample_count", 0ULL) == kObservedSamples,
+            "JSON must report the full observed count");
+    require(payload.value("retained_sample_count", 0ULL) ==
+                orange::BoundedSampleStatistics::kDefaultMaxRetainedSamples,
+            "JSON must report the bounded retained count");
+    require(!payload.value("percentiles_exact", true),
+            "JSON must disclose reservoir percentile semantics");
+}
+
+void test_camera_temperature_reads_are_decimated()
+{
+    GuiCameraTemperatureSamplingState state;
+    const auto start = std::chrono::steady_clock::time_point(
+        std::chrono::milliseconds(5000));
+    require(gui_camera_temperature_sample_due(
+                &state, true, start, std::chrono::milliseconds(1000)),
+            "opening the temperature plot must sample immediately");
+    require(!gui_camera_temperature_sample_due(
+                &state,
+                true,
+                start + std::chrono::milliseconds(10),
+                std::chrono::milliseconds(1000)),
+            "temperature SDK reads must not run every GUI frame");
+    require(gui_camera_temperature_sample_due(
+                &state,
+                true,
+                start + std::chrono::milliseconds(1000),
+                std::chrono::milliseconds(1000)),
+            "temperature sampling must refresh at one hertz");
+    require(state.sample_count == 2 && state.skipped_count == 1,
+            "temperature sampler counters must describe decimation");
+    require(!gui_camera_temperature_sample_due(
+                &state,
+                false,
+                start + std::chrono::milliseconds(1010),
+                std::chrono::milliseconds(1000)),
+            "hidden temperature plot must not sample");
+    require(gui_camera_temperature_sample_due(
+                &state,
+                true,
+                start + std::chrono::milliseconds(1020),
+                std::chrono::milliseconds(1000)),
+            "reopening the plot must sample immediately");
 }
 
 void test_imgui_glfw_size_cache_json()
@@ -160,6 +238,8 @@ int main()
 {
     test_percentile_bucket_json();
     test_sampling_only_during_active_recording();
+    test_recording_duration_storage_is_bounded();
+    test_camera_temperature_reads_are_decimated();
     test_imgui_glfw_size_cache_json();
     std::cout << "gui_display_frame_rate_tests passed" << std::endl;
     return 0;

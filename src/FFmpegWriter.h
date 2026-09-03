@@ -34,6 +34,19 @@ struct FFmpegWriterLatencyStats {
     LatencyAggregateStats gop_release_to_last_write;
 };
 
+struct FFmpegWriterPacketWriteStats {
+    uint64_t submissions_accepted = 0;
+    uint64_t submission_bytes_accepted = 0;
+    uint64_t submissions_rejected = 0;
+    uint64_t write_attempts = 0;
+    uint64_t packets_written = 0;
+    uint64_t bytes_written = 0;
+    uint64_t write_failures = 0;
+    int first_write_error_code = 0;
+};
+
+class FFmpegWriterTestAccess;
+
 class FFmpegWriter
 {
 public:
@@ -46,7 +59,7 @@ public:
                  FFmpegWriterQueueConfig queue_config = {});
     ~FFmpegWriter();
     bool write_packet(uint8_t *pData, int nBytes, int64_t nPts);
-    void push_packet(uint8_t* pData,
+    bool push_packet(uint8_t* pData,
                      int nBytes,
                      int64_t nPts,
                      uint64_t gop_index = 0,
@@ -55,11 +68,11 @@ public:
     void create_thread();
     void quit_thread();
     void join_thread();
-    void write_one_pkt(AVPacket* pkt);
+    bool write_one_pkt(AVPacket* pkt);
     bool is_open() const { return open_; }
-    // True once the writer thread exited on an exception. The thread never
-    // calls exit(); it logs, latches this flag and stops so the owner can
-    // still finalize the container.
+    // True after any asynchronous writer exception, packet-submission setup
+    // failure, or negative FFmpeg mux-write result. The writer never calls
+    // exit(); owners can drain and finalize while rejecting the artifact.
     bool writer_thread_failed() const { return writer_thread_error_.load(std::memory_order_acquire); }
     bool has_queue_overflowed() const { return queue_overflowed_.load(std::memory_order_relaxed); }
     uint64_t queue_overflow_events() const { return queue_overflow_events_.load(std::memory_order_relaxed); }
@@ -69,7 +82,9 @@ public:
     size_t peak_queued_bytes() const { return peak_queued_bytes_.load(std::memory_order_relaxed); }
     const FFmpegWriterQueueConfig& queue_config() const { return queue_config_; }
     FFmpegWriterLatencyStats latency_stats() const;
+    FFmpegWriterPacketWriteStats packet_write_stats() const;
 private:
+    friend class FFmpegWriterTestAccess;
     struct QueuedPacket {
         AVPacket* packet = nullptr;
         uint64_t enqueued_at_ns = 0;
@@ -100,10 +115,19 @@ private:
     std::atomic<bool> queue_overflowed_{false};
     std::atomic<uint64_t> queue_overflow_events_{0};
     std::atomic<bool> writer_thread_error_{false};
+    std::atomic<uint64_t> packet_submissions_accepted_{0};
+    std::atomic<uint64_t> packet_submission_bytes_accepted_{0};
+    std::atomic<uint64_t> packet_submissions_rejected_{0};
+    std::atomic<uint64_t> packet_write_attempts_{0};
+    std::atomic<uint64_t> packets_written_{0};
+    std::atomic<uint64_t> packet_bytes_written_{0};
+    std::atomic<uint64_t> packet_write_failures_{0};
+    std::atomic<int> first_packet_write_error_code_{0};
     mutable std::mutex latency_mutex_;
     FFmpegWriterLatencyStats latency_stats_;
     void write_thread();
     void write_thread_loop();
+    bool record_packet_write_result(int result, size_t packet_bytes);
     void write_keyframe_sidecar();
     bool packet_has_idr(const uint8_t* data, size_t size) const;
     bool packet_has_idr_h264(const uint8_t* data, size_t size) const;

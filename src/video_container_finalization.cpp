@@ -27,7 +27,7 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr char kSchemaId[] = "orange.video_container_finalization";
-constexpr int kSchemaVersion = 1;
+constexpr int kSchemaVersion = 2;
 constexpr std::uint32_t kMdtaUtf8Type = 1;
 constexpr std::uint32_t kMdtaUnsignedIntegerType = 22;
 
@@ -281,7 +281,15 @@ Status ClassifyTerminalStatus(const Outcome& outcome) {
     const bool container_finalized =
         outcome.header_written && outcome.trailer_written &&
         outcome.output_closed;
-    if (!container_finalized) {
+    const bool packet_writes_complete =
+        !outcome.writer_error_latched &&
+        outcome.muxer_flush_attempted &&
+        outcome.muxer_flush_succeeded &&
+        outcome.packet_submissions_rejected == 0 &&
+        outcome.packet_write_failures == 0 &&
+        outcome.packet_submissions_accepted == outcome.packet_write_attempts &&
+        outcome.packet_write_attempts == outcome.packets_written;
+    if (!container_finalized || !packet_writes_complete) {
         return Status::ContainerFinalizationFailed;
     }
     if (!outcome.playback_intent_patch_applied) {
@@ -468,6 +476,36 @@ bool Persist(const fs::path& video_path,
             {"video_path", video_path.string()},
             {"sidecar_path", destination.string()},
             {"recording_fps", recording_fps},
+            {"packet_writes",
+             {
+                 {"submissions_accepted", outcome.packet_submissions_accepted},
+                 {"submission_bytes_accepted",
+                  outcome.packet_submission_bytes_accepted},
+                 {"submissions_rejected", outcome.packet_submissions_rejected},
+                 {"write_attempts", outcome.packet_write_attempts},
+                 {"packets_written", outcome.packets_written},
+                 {"bytes_written", outcome.packet_bytes_written},
+                 {"write_failures", outcome.packet_write_failures},
+                 {"first_write_error_code",
+                  NullableErrorCode(outcome.first_packet_write_error_code)},
+                 {"writer_error_latched", outcome.writer_error_latched},
+                 {"muxer_flush_attempted", outcome.muxer_flush_attempted},
+                 {"muxer_flush_succeeded", outcome.muxer_flush_succeeded},
+                 {"muxer_flush_error_code",
+                  NullableErrorCode(outcome.muxer_flush_error_code)},
+                 {"muxer_flush_error",
+                  NullableError(outcome.muxer_flush_error)},
+                 {"complete",
+                  !outcome.writer_error_latched &&
+                      outcome.muxer_flush_attempted &&
+                      outcome.muxer_flush_succeeded &&
+                      outcome.packet_submissions_rejected == 0 &&
+                      outcome.packet_write_failures == 0 &&
+                      outcome.packet_submissions_accepted ==
+                          outcome.packet_write_attempts &&
+                      outcome.packet_write_attempts ==
+                          outcome.packets_written},
+             }},
             {"container",
              {
                  {"header_written", outcome.header_written},

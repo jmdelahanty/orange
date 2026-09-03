@@ -142,6 +142,13 @@ observation edge. This keeps the schema compatible with future multiple-camera
 per-arena or multiple-arena per-camera acquisition without changing the current
 one-camera/one-arena restriction.
 
+For a future multi-compartment dish, one camera still produces one canonical
+source acquisition stream. Compartment crops are region-scoped derived media,
+not additional source streams. Each physical region may bind one-to-one to a
+sibling Citrus Arena, but neither the region nor the whole dish contains nested
+Arenas. See
+[Multi-compartment physical-layout detection routing](multi_compartment_physical_layout_detection_routing_design.md).
+
 ### 2. Crop-only is explicit and opt-in
 
 Ordinary `full_frame_only` and `full_frame_and_crop` recording must remain

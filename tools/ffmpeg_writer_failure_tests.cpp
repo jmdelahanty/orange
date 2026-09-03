@@ -9,12 +9,22 @@
 #include "video_container_finalization.h"
 
 #include <cstdlib>
+#include <cerrno>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+
+class FFmpegWriterTestAccess {
+public:
+    static bool record_packet_write_result(
+        FFmpegWriter& writer, int result, size_t packet_bytes)
+    {
+        return writer.record_packet_write_result(result, packet_bytes);
+    }
+};
 
 namespace {
 
@@ -95,6 +105,8 @@ void test_successful_open_and_finalize()
            "output container must be finalized (non-empty)");
 
     const nlohmann::json finalization = read_json(finalization_path);
+    expect(finalization.at("schema_version") == 2,
+           "new Orange finalization evidence must use schema version 2");
     expect(finalization.at("schema_id") ==
                "orange.video_container_finalization",
            "finalization sidecar has the wrong schema identity");
@@ -105,6 +117,13 @@ void test_successful_open_and_finalize()
            "finalization sidecar must preserve the 700 fps rate");
     expect(finalization.at("container").at("finalized").get<bool>(),
            "finalization sidecar must prove trailer and close success");
+    expect(finalization.at("packet_writes").at("complete").get<bool>() &&
+               finalization.at("packet_writes")
+                   .at("muxer_flush_succeeded")
+                   .get<bool>() &&
+               finalization.at("packet_writes").at("packets_written") == 0 &&
+               finalization.at("packet_writes").at("write_failures") == 0,
+           "empty-container finalization must carry complete zero-packet write proof");
     expect(finalization.at("quicktime_full_frame_rate_playback_intent")
                .at("patch_applied")
                .get<bool>(),
@@ -143,6 +162,8 @@ void test_finalization_status_classification()
 
     Outcome complete;
     complete.header_written = true;
+    complete.muxer_flush_attempted = true;
+    complete.muxer_flush_succeeded = true;
     complete.trailer_written = true;
     complete.output_closed = true;
     complete.playback_intent_patch_applied = true;
@@ -160,6 +181,58 @@ void test_finalization_status_classification()
     expect(ClassifyTerminalStatus(failed) ==
                Status::ContainerFinalizationFailed,
            "trailer failure must classify as container failure");
+
+    Outcome mux_failed = complete;
+    mux_failed.writer_error_latched = true;
+    mux_failed.packet_submissions_accepted = 1;
+    mux_failed.packet_write_attempts = 1;
+    mux_failed.packet_write_failures = 1;
+    mux_failed.first_packet_write_error_code = AVERROR(EIO);
+    expect(ClassifyTerminalStatus(mux_failed) ==
+               Status::ContainerFinalizationFailed,
+           "a mux packet-write failure must prevent complete finalization");
+}
+
+void test_mux_write_failure_is_latched_and_persisted()
+{
+    const std::filesystem::path dir = make_temp_dir();
+    const std::string out_path = (dir / "mux_failure.mp4").string();
+    const std::filesystem::path finalization_path =
+        OrangeVideoContainerFinalization::SidecarPathFor(out_path);
+
+    {
+        FFmpegWriter writer(
+            AV_CODEC_ID_H264, 640, 480, 30, out_path.c_str(), nullptr);
+        const int injected_error = AVERROR(EIO);
+        expect(
+            !FFmpegWriterTestAccess::record_packet_write_result(
+                writer, injected_error, 4096),
+            "a negative mux result must be reported as failure");
+        const FFmpegWriterPacketWriteStats stats = writer.packet_write_stats();
+        expect(writer.writer_thread_failed(),
+               "a mux failure must latch the writer failure boundary");
+        expect(stats.write_attempts == 1 && stats.packets_written == 0 &&
+                   stats.write_failures == 1 &&
+                   stats.first_write_error_code == injected_error,
+               "mux failure counters must preserve the exact failed attempt");
+        writer.create_thread();
+        writer.quit_thread();
+        writer.join_thread();
+    }
+
+    const nlohmann::json finalization = read_json(finalization_path);
+    const nlohmann::json packet_writes = finalization.at("packet_writes");
+    expect(finalization.at("status") == "container_finalization_failed",
+           "a mux write failure must prevent terminal-complete evidence");
+    expect(packet_writes.at("complete") == false &&
+               packet_writes.at("writer_error_latched") == true &&
+               packet_writes.at("write_attempts") == 1 &&
+               packet_writes.at("packets_written") == 0 &&
+               packet_writes.at("write_failures") == 1 &&
+               packet_writes.at("first_write_error_code") == AVERROR(EIO),
+           "finalization evidence must retain mux write failure details");
+
+    std::filesystem::remove_all(dir);
 }
 
 void test_queue_byte_limit_fails_closed_before_enqueuing()
@@ -181,14 +254,20 @@ void test_queue_byte_limit_fails_closed_before_enqueuing()
             {},
             queue_config);
         const uint8_t oversized_packet[] = {0, 0, 1, 0x65};
-        writer.push_packet(
+        expect(!writer.push_packet(
             const_cast<uint8_t*>(oversized_packet),
             static_cast<int>(sizeof(oversized_packet)),
-            0);
+            0),
+            "an over-limit packet submission must report rejection");
         expect(writer.has_queue_overflowed(),
                "an encoded packet above the byte ceiling must latch overflow");
         expect(writer.queue_overflow_events() == 1,
                "the rejected packet must produce one overflow event");
+        const FFmpegWriterPacketWriteStats packet_stats =
+            writer.packet_write_stats();
+        expect(packet_stats.submissions_accepted == 0 &&
+                   packet_stats.submissions_rejected == 1,
+               "submission accounting must distinguish rejected packets");
         expect(writer.queued_packets() == 0 && writer.queued_bytes() == 0,
                "an over-limit packet must not enter the writer queue");
         expect(writer.peak_queued_packets() == 0 &&
@@ -235,6 +314,8 @@ int main()
         {"successful_open_and_finalize", &test_successful_open_and_finalize},
         {"finalization_status_classification",
          &test_finalization_status_classification},
+        {"mux_write_failure_is_latched_and_persisted",
+         &test_mux_write_failure_is_latched_and_persisted},
         {"queue_byte_limit_fails_closed_before_enqueuing",
          &test_queue_byte_limit_fails_closed_before_enqueuing},
         {"failed_construction_leaves_no_object",

@@ -1292,6 +1292,14 @@ Notes:
   `session.gui_display_frame_rate.imgui_glfw_size_cache` with recording-scoped
   cache-hit, fallback, and null-window counters for the backend display-size
   path.
+- Current GUI recordings also write recording-root `gui_timing_windows.csv`.
+  `session.gui_display_frame_rate.timing_windows` binds that chronological
+  schema-1 sidecar by path, byte size, and SHA-256 and records offered,
+  written, and dropped window/sample counts plus bounded-queue high-water.
+  Rows are exact per-second aggregates rather than per-frame telemetry: this
+  preserves when UI degradation occurred while keeping GUI memory fixed and
+  all disk I/O on a background writer. Whole-recording exact count/mean/min/max
+  and bounded-reservoir percentiles remain in the adjacent aggregate buckets.
 - `clip_seconds = 0` means no rollover and keeps the current flat folder
   layout.
 - `clip_seconds > 0` is implemented for headless experimental specs as
@@ -1676,6 +1684,24 @@ Each MP4 has an adjacent lifecycle artifact:
 ```text
 <video-path>.finalization.json
 ```
+
+Orange schema version 2 adds a `packet_writes` proof. It separately records
+packets accepted by the bounded asynchronous writer queue, rejected
+submissions, calls attempted at the FFmpeg mux boundary, successful packet
+writes, failed packet writes, the first FFmpeg error code, and muxer-flush
+success. A terminal `complete` claim requires:
+
+```text
+submissions_accepted == write_attempts == packets_written
+submissions_rejected == 0
+write_failures == 0
+writer_error_latched == false
+muxer_flush_succeeded == true
+```
+
+This makes `packets_written` an observed mux success count rather than a queue
+submission count. Historical Orange and current Citrus schema-version-1
+sidecars remain inspectable by the validator.
 
 The schema is
 [`orange_video_container_finalization.schema.json`](schemas/orange_video_container_finalization.schema.json).

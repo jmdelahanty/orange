@@ -97,6 +97,21 @@ struct GuiExternalRecorderStatusLine {
     std::string rolling_last_rollover_detail;
 };
 
+struct GuiExternalRecorderLifecycleRefreshState {
+    bool recording_active = false;
+    std::chrono::steady_clock::time_point next_refresh_at{};
+    uint64_t refresh_count = 0;
+    uint64_t skipped_count = 0;
+
+    void Reset()
+    {
+        recording_active = false;
+        next_refresh_at = {};
+        refresh_count = 0;
+        skipped_count = 0;
+    }
+};
+
 // --- Session timing ---------------------------------------------------------
 
 std::chrono::seconds gui_elapsed_since(
@@ -209,9 +224,16 @@ GuiExternalRecorderStatusLine gui_external_recorder_status_line(
 void render_gui_external_recorder_status(
     const orange::session::RecordingSessionState& recording_session);
 
-// Polls the supervised external-recorder lifecycles while recording is
-// active or draining; self-contained lifecycle refresh over
-// orange::external_recorder APIs.
+// Polls the supervised external-recorder lifecycles while recording is active
+// or draining. The explicit state decimates fixed-size status-sidecar reads to
+// the recorder heartbeat cadence instead of parsing every GUI frame.
 void gui_refresh_external_recorder_lifecycles(
     orange::session::RecordingSessionState* recording_session,
-    const CameraControl* camera_control);
+    const CameraControl* camera_control,
+    GuiExternalRecorderLifecycleRefreshState* refresh_state);
+
+bool gui_external_recorder_lifecycle_refresh_due(
+    GuiExternalRecorderLifecycleRefreshState* refresh_state,
+    bool recording_or_draining,
+    std::chrono::steady_clock::time_point now,
+    std::chrono::milliseconds interval = std::chrono::milliseconds(1000));

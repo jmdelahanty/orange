@@ -3028,7 +3028,7 @@ bool gui_poll_async_recording_finalize(
     const CameraEachSelect* cameras_select,
     const int num_cameras,
     const int crop_size_px,
-    const nlohmann::json& gui_display_frame_rate)
+    const std::function<nlohmann::json()>& gui_display_frame_rate_builder)
 {
     if (!state || !run) {
         return false;
@@ -3043,6 +3043,10 @@ bool gui_poll_async_recording_finalize(
     if (!gui_recording_finalize_gate_ready(run, recording_session, camera_control)) {
         return false;
     }
+    const nlohmann::json gui_display_frame_rate =
+        gui_display_frame_rate_builder
+            ? gui_display_frame_rate_builder()
+            : nlohmann::json::object();
     gui_launch_async_recording_finalize(
         state,
         run,

@@ -13,12 +13,13 @@
     "video_path",
     "sidecar_path",
     "recording_fps",
+    "packet_writes",
     "container",
     "quicktime_full_frame_rate_playback_intent"
   ],
   "properties": {
     "schema_id": { "const": "orange.video_container_finalization" },
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 2 },
     "generated_at_utc": { "type": "string", "format": "date-time" },
     "status": {
       "enum": [
@@ -33,6 +34,42 @@
     "video_path": { "type": "string", "minLength": 1 },
     "sidecar_path": { "type": "string", "minLength": 1 },
     "recording_fps": { "type": "integer", "minimum": 1 },
+    "packet_writes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "submissions_accepted",
+        "submission_bytes_accepted",
+        "submissions_rejected",
+        "write_attempts",
+        "packets_written",
+        "bytes_written",
+        "write_failures",
+        "first_write_error_code",
+        "writer_error_latched",
+        "muxer_flush_attempted",
+        "muxer_flush_succeeded",
+        "muxer_flush_error_code",
+        "muxer_flush_error",
+        "complete"
+      ],
+      "properties": {
+        "submissions_accepted": { "type": "integer", "minimum": 0 },
+        "submission_bytes_accepted": { "type": "integer", "minimum": 0 },
+        "submissions_rejected": { "type": "integer", "minimum": 0 },
+        "write_attempts": { "type": "integer", "minimum": 0 },
+        "packets_written": { "type": "integer", "minimum": 0 },
+        "bytes_written": { "type": "integer", "minimum": 0 },
+        "write_failures": { "type": "integer", "minimum": 0 },
+        "first_write_error_code": { "type": ["integer", "null"] },
+        "writer_error_latched": { "type": "boolean" },
+        "muxer_flush_attempted": { "type": "boolean" },
+        "muxer_flush_succeeded": { "type": "boolean" },
+        "muxer_flush_error_code": { "type": ["integer", "null"] },
+        "muxer_flush_error": { "type": ["string", "null"] },
+        "complete": { "type": "boolean" }
+      }
+    },
     "container": {
       "type": "object",
       "additionalProperties": false,
@@ -108,6 +145,10 @@
       },
       "then": {
         "properties": {
+          "packet_writes": {
+            "properties": { "complete": { "const": true } },
+            "required": ["complete"]
+          },
           "container": {
             "properties": { "finalized": { "const": true } },
             "required": ["finalized"]

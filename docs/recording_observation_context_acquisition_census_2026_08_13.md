@@ -49,6 +49,14 @@ the model supports multiple arenas observed by one camera and one arena
 observed by multiple cameras without defining a multi-camera or 3D
 reconstruction product in v1.
 
+For a multi-compartment dish, this does not imply nested Arenas. One physical
+camera produces one canonical source acquisition stream, which observes one
+registered multi-compartment physical layout. Each physical compartment is an
+Orange region and may form its own observation edge. In the current planned
+Citrus profile, each region binds one-to-one to one sibling Citrus Arena; the
+whole dish is not an outer Citrus Arena. See
+[Multi-compartment physical-layout detection routing](multi_compartment_physical_layout_detection_routing_design.md).
+
 ## Inspection limitation
 
 The mounted recording stores containing the requested Batman-era, Sleepyfish,

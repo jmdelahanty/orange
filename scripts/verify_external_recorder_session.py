@@ -772,7 +772,10 @@ def verify_frame_identity_proof(
         proof.get("schema_id") == "orange.external_recorder.frame_identity_proof",
         "unexpected frame_identity_proof schema_id",
     )
-    require(proof.get("schema_version") == 1, "unexpected frame_identity_proof schema_version")
+    proof_version = as_int(
+        proof.get("schema_version"), "frame_identity_proof.schema_version"
+    )
+    require(proof_version in {1, 2}, "unexpected frame_identity_proof schema_version")
     require(proof.get("status") == "passed", "frame_identity_proof did not pass")
     require(proof.get("canonical_field") == "recording_frame_id", "unexpected canonical frame field")
     require(
@@ -812,6 +815,28 @@ def verify_frame_identity_proof(
         == packets_written,
         "frame identity proof packet count mismatch",
     )
+    if proof_version == 2:
+        for field in ("packet_submissions_accepted", "packet_write_attempts"):
+            require(
+                as_int(binding.get(field), f"frame_identity_proof.video_binding.{field}")
+                == frames_encoded,
+                f"frame identity {field} does not match frames_encoded",
+            )
+        for field in ("packet_submissions_rejected", "packet_write_failures"):
+            require(
+                as_int(binding.get(field), f"frame_identity_proof.video_binding.{field}")
+                == 0,
+                f"frame identity {field} is nonzero",
+            )
+        require(
+            binding.get("first_packet_write_error_code") is None,
+            "frame identity proof reports a packet-write error code",
+        )
+        require(
+            binding.get("verification_rule_id")
+            == "orange.external_recorder.frame_identity.v2",
+            "unexpected frame identity verification rule",
+        )
     require(
         as_int(binding.get("identity_mismatches"), "frame_identity_proof.video_binding.identity_mismatches")
         == 0,

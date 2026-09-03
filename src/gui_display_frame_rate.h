@@ -1,6 +1,7 @@
 #ifndef ORANGE_GUI_DISPLAY_FRAME_RATE_H
 #define ORANGE_GUI_DISPLAY_FRAME_RATE_H
 
+#include "bounded_sample_statistics.h"
 #include "imgui_glfw_size_cache.h"
 #include "json.hpp"
 
@@ -12,33 +13,33 @@
 namespace orange::gui {
 
 struct GuiFrameRateBucket {
-    std::vector<double> samples;
+    orange::BoundedSampleStatistics samples;
 
     void Reset()
     {
-        samples.clear();
+        samples.Reset();
     }
 
     void Add(const double fps)
     {
         if (std::isfinite(fps) && fps > 0.0 && fps < 10000.0) {
-            samples.push_back(fps);
+            samples.Add(fps);
         }
     }
 };
 
 struct GuiDurationBucket {
-    std::vector<double> samples_ms;
+    orange::BoundedSampleStatistics samples_ms;
 
     void Reset()
     {
-        samples_ms.clear();
+        samples_ms.Reset();
     }
 
     void Add(const double duration_ms)
     {
         if (std::isfinite(duration_ms) && duration_ms >= 0.0 && duration_ms < 60000.0) {
-            samples_ms.push_back(duration_ms);
+            samples_ms.Add(duration_ms);
         }
     }
 };
@@ -114,25 +115,31 @@ struct GuiDisplayFrameRateStats {
     }
 };
 
-inline double gui_fps_percentile(std::vector<double> values, const double percentile)
+inline double gui_percentile_from_sorted(
+    const std::vector<double>& sorted_values,
+    const double percentile)
 {
-    if (values.empty()) {
+    if (sorted_values.empty()) {
         return 0.0;
     }
-    std::sort(values.begin(), values.end());
     const double clamped_percentile = std::clamp(percentile, 0.0, 100.0);
     if (clamped_percentile <= 0.0) {
-        return values.front();
+        return sorted_values.front();
     }
     const std::size_t index = static_cast<std::size_t>(
-        std::ceil((clamped_percentile / 100.0) * static_cast<double>(values.size())) - 1.0);
-    return values[std::min(index, values.size() - 1)];
+        std::ceil((clamped_percentile / 100.0) *
+                  static_cast<double>(sorted_values.size())) - 1.0);
+    return sorted_values[std::min(index, sorted_values.size() - 1)];
 }
 
 inline nlohmann::json gui_duration_bucket_json(const GuiDurationBucket& bucket)
 {
     nlohmann::json out = {
-        {"sample_count", bucket.samples_ms.size()},
+        {"sample_count", bucket.samples_ms.sample_count()},
+        {"retained_sample_count", bucket.samples_ms.retained_sample_count()},
+        {"max_retained_samples", bucket.samples_ms.max_retained_samples()},
+        {"percentile_sampling_policy", "deterministic_reservoir_v1"},
+        {"percentiles_exact", bucket.samples_ms.percentiles_exact()},
         {"min_ms", 0.0},
         {"p05_ms", 0.0},
         {"p50_ms", 0.0},
@@ -144,27 +151,25 @@ inline nlohmann::json gui_duration_bucket_json(const GuiDurationBucket& bucket)
         return out;
     }
 
-    double sum = 0.0;
-    double min_value = bucket.samples_ms.front();
-    double max_value = bucket.samples_ms.front();
-    for (const double value : bucket.samples_ms) {
-        sum += value;
-        min_value = std::min(min_value, value);
-        max_value = std::max(max_value, value);
-    }
-    out["min_ms"] = min_value;
-    out["p05_ms"] = gui_fps_percentile(bucket.samples_ms, 5.0);
-    out["p50_ms"] = gui_fps_percentile(bucket.samples_ms, 50.0);
-    out["p95_ms"] = gui_fps_percentile(bucket.samples_ms, 95.0);
-    out["max_ms"] = max_value;
-    out["mean_ms"] = sum / static_cast<double>(bucket.samples_ms.size());
+    const std::vector<double> sorted_samples =
+        bucket.samples_ms.sorted_retained_samples();
+    out["min_ms"] = bucket.samples_ms.min();
+    out["p05_ms"] = gui_percentile_from_sorted(sorted_samples, 5.0);
+    out["p50_ms"] = gui_percentile_from_sorted(sorted_samples, 50.0);
+    out["p95_ms"] = gui_percentile_from_sorted(sorted_samples, 95.0);
+    out["max_ms"] = bucket.samples_ms.max();
+    out["mean_ms"] = bucket.samples_ms.mean();
     return out;
 }
 
 inline nlohmann::json gui_frame_rate_bucket_json(const GuiFrameRateBucket& bucket)
 {
     nlohmann::json out = {
-        {"sample_count", bucket.samples.size()},
+        {"sample_count", bucket.samples.sample_count()},
+        {"retained_sample_count", bucket.samples.retained_sample_count()},
+        {"max_retained_samples", bucket.samples.max_retained_samples()},
+        {"percentile_sampling_policy", "deterministic_reservoir_v1"},
+        {"percentiles_exact", bucket.samples.percentiles_exact()},
         {"min_fps", 0.0},
         {"p05_fps", 0.0},
         {"p50_fps", 0.0},
@@ -176,20 +181,13 @@ inline nlohmann::json gui_frame_rate_bucket_json(const GuiFrameRateBucket& bucke
         return out;
     }
 
-    double sum = 0.0;
-    double min_value = bucket.samples.front();
-    double max_value = bucket.samples.front();
-    for (const double value : bucket.samples) {
-        sum += value;
-        min_value = std::min(min_value, value);
-        max_value = std::max(max_value, value);
-    }
-    out["min_fps"] = min_value;
-    out["p05_fps"] = gui_fps_percentile(bucket.samples, 5.0);
-    out["p50_fps"] = gui_fps_percentile(bucket.samples, 50.0);
-    out["p95_fps"] = gui_fps_percentile(bucket.samples, 95.0);
-    out["max_fps"] = max_value;
-    out["mean_fps"] = sum / static_cast<double>(bucket.samples.size());
+    const std::vector<double> sorted_samples = bucket.samples.sorted_retained_samples();
+    out["min_fps"] = bucket.samples.min();
+    out["p05_fps"] = gui_percentile_from_sorted(sorted_samples, 5.0);
+    out["p50_fps"] = gui_percentile_from_sorted(sorted_samples, 50.0);
+    out["p95_fps"] = gui_percentile_from_sorted(sorted_samples, 95.0);
+    out["max_fps"] = bucket.samples.max();
+    out["mean_fps"] = bucket.samples.mean();
     return out;
 }
 

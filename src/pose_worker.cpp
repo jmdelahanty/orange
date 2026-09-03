@@ -71,44 +71,20 @@ struct LatencySummary {
     double max_ms = 0.0;
 };
 
-double percentile_from_sorted(const std::vector<double>& sorted_samples, double percentile)
-{
-    if (sorted_samples.empty()) {
-        return 0.0;
-    }
-    if (sorted_samples.size() == 1) {
-        return sorted_samples.front();
-    }
-
-    const double clamped = std::min(1.0, std::max(0.0, percentile));
-    const double idx = clamped * static_cast<double>(sorted_samples.size() - 1);
-    const size_t lo = static_cast<size_t>(idx);
-    const size_t hi = std::min(sorted_samples.size() - 1, lo + 1);
-    const double frac = idx - static_cast<double>(lo);
-    return sorted_samples[lo] + (sorted_samples[hi] - sorted_samples[lo]) * frac;
-}
-
-LatencySummary summarize_latency(const std::vector<double>& samples)
+LatencySummary summarize_latency(const orange::BoundedSampleStatistics& samples)
 {
     LatencySummary summary;
     if (samples.empty()) {
         return summary;
     }
 
-    std::vector<double> sorted_samples = samples;
-    std::sort(sorted_samples.begin(), sorted_samples.end());
-
-    double sum = 0.0;
-    for (double sample : sorted_samples) {
-        sum += sample;
-    }
-
-    summary.count = sorted_samples.size();
-    summary.mean_ms = sum / static_cast<double>(summary.count);
-    summary.p50_ms = percentile_from_sorted(sorted_samples, 0.50);
-    summary.p95_ms = percentile_from_sorted(sorted_samples, 0.95);
-    summary.p99_ms = percentile_from_sorted(sorted_samples, 0.99);
-    summary.max_ms = sorted_samples.back();
+    const std::vector<double> sorted_samples = samples.sorted_retained_samples();
+    summary.count = static_cast<size_t>(samples.sample_count());
+    summary.mean_ms = samples.mean();
+    summary.p50_ms = orange::percentile_from_sorted_samples(sorted_samples, 0.50);
+    summary.p95_ms = orange::percentile_from_sorted_samples(sorted_samples, 0.95);
+    summary.p99_ms = orange::percentile_from_sorted_samples(sorted_samples, 0.99);
+    summary.max_ms = samples.max();
     return summary;
 }
 
@@ -682,7 +658,8 @@ void PoseWorker::RotateRecordingFolder(const std::string& recording_folder)
                  "pose_start_to_pose_done_count,pose_start_to_pose_done_mean_ms,pose_start_to_pose_done_p50_ms,"
                  "pose_start_to_pose_done_p95_ms,pose_start_to_pose_done_p99_ms,pose_start_to_pose_done_max_ms,"
                  "capture_to_pose_done_count,capture_to_pose_done_mean_ms,capture_to_pose_done_p50_ms,"
-                 "capture_to_pose_done_p95_ms,capture_to_pose_done_p99_ms,capture_to_pose_done_max_ms\n";
+                 "capture_to_pose_done_p95_ms,capture_to_pose_done_p99_ms,capture_to_pose_done_max_ms,"
+                 "latency_percentile_method,latency_max_retained_samples\n";
 }
 
 void PoseWorker::CloseRecording()
@@ -788,38 +765,38 @@ bool PoseWorker::WorkerFunction(CropFrame* crop_frame)
             std::lock_guard<std::mutex> lock(recording_mutex_);
             if (crop_frame->frame.acquisition_receive_host_ns > 0 &&
                 crop_frame->frame.yolo_detect_done_host_ns > 0) {
-                capture_to_detect_done_samples_ms_.push_back(elapsed_ms(
+                capture_to_detect_done_samples_ms_.Add(elapsed_ms(
                     crop_frame->frame.acquisition_receive_host_ns,
                     crop_frame->frame.yolo_detect_done_host_ns));
             }
             if (crop_frame->frame.yolo_detect_done_host_ns > 0 &&
                 crop_frame->frame.crop_producer_worker_start_host_ns > 0) {
-                detect_to_crop_worker_start_samples_ms_.push_back(elapsed_ms(
+                detect_to_crop_worker_start_samples_ms_.Add(elapsed_ms(
                     crop_frame->frame.yolo_detect_done_host_ns,
                     crop_frame->frame.crop_producer_worker_start_host_ns));
             }
             if (crop_frame->frame.crop_producer_worker_start_host_ns > 0 &&
                 crop_frame->frame.crop_ready_host_ns > 0) {
-                crop_worker_start_to_crop_ready_samples_ms_.push_back(elapsed_ms(
+                crop_worker_start_to_crop_ready_samples_ms_.Add(elapsed_ms(
                     crop_frame->frame.crop_producer_worker_start_host_ns,
                     crop_frame->frame.crop_ready_host_ns));
             }
             if (crop_frame->frame.yolo_detect_done_host_ns > 0 &&
                 crop_frame->frame.crop_ready_host_ns > 0) {
-                detect_to_crop_ready_samples_ms_.push_back(elapsed_ms(
+                detect_to_crop_ready_samples_ms_.Add(elapsed_ms(
                     crop_frame->frame.yolo_detect_done_host_ns,
                     crop_frame->frame.crop_ready_host_ns));
             }
             if (crop_frame->frame.crop_ready_host_ns > 0) {
-                crop_ready_to_pose_start_samples_ms_.push_back(elapsed_ms(
+                crop_ready_to_pose_start_samples_ms_.Add(elapsed_ms(
                     crop_frame->frame.crop_ready_host_ns,
                     pose_start_host_ns));
             }
-            pose_start_to_pose_done_samples_ms_.push_back(elapsed_ms(
+            pose_start_to_pose_done_samples_ms_.Add(elapsed_ms(
                 pose_start_host_ns,
                 pose_done_host_ns));
             if (crop_frame->frame.acquisition_receive_host_ns > 0) {
-                capture_to_pose_done_samples_ms_.push_back(elapsed_ms(
+                capture_to_pose_done_samples_ms_.Add(elapsed_ms(
                     crop_frame->frame.acquisition_receive_host_ns,
                     pose_done_host_ns));
             }
@@ -1003,13 +980,13 @@ void PoseWorker::reset_run_counters()
     run_frames_processed_.store(0, std::memory_order_relaxed);
     run_queue_full_drops_.store(0, std::memory_order_relaxed);
     run_queue_high_water_.store(0, std::memory_order_relaxed);
-    capture_to_detect_done_samples_ms_.clear();
-    detect_to_crop_worker_start_samples_ms_.clear();
-    crop_worker_start_to_crop_ready_samples_ms_.clear();
-    detect_to_crop_ready_samples_ms_.clear();
-    crop_ready_to_pose_start_samples_ms_.clear();
-    pose_start_to_pose_done_samples_ms_.clear();
-    capture_to_pose_done_samples_ms_.clear();
+    capture_to_detect_done_samples_ms_.Reset();
+    detect_to_crop_worker_start_samples_ms_.Reset();
+    crop_worker_start_to_crop_ready_samples_ms_.Reset();
+    detect_to_crop_ready_samples_ms_.Reset();
+    crop_ready_to_pose_start_samples_ms_.Reset();
+    pose_start_to_pose_done_samples_ms_.Reset();
+    capture_to_pose_done_samples_ms_.Reset();
 }
 
 void PoseWorker::write_recording_summary_locked()
@@ -1092,5 +1069,7 @@ void PoseWorker::write_recording_summary_locked()
               << capture_to_pose_done.p50_ms << ','
               << capture_to_pose_done.p95_ms << ','
               << capture_to_pose_done.p99_ms << ','
-              << capture_to_pose_done.max_ms << '\n';
+              << capture_to_pose_done.max_ms << ','
+              << "deterministic_reservoir_v1,"
+              << orange::BoundedSampleStatistics::kDefaultMaxRetainedSamples << '\n';
 }

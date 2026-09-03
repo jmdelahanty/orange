@@ -6,6 +6,7 @@
 #include "video_container_finalization.h"
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <stdexcept>
 #include <unistd.h>
 #include <filesystem>
@@ -80,6 +81,26 @@ FFmpegWriterLatencyStats FFmpegWriter::latency_stats() const
 {
     std::lock_guard<std::mutex> lock(latency_mutex_);
     return latency_stats_;
+}
+
+FFmpegWriterPacketWriteStats FFmpegWriter::packet_write_stats() const
+{
+    FFmpegWriterPacketWriteStats stats;
+    stats.submissions_accepted =
+        packet_submissions_accepted_.load(std::memory_order_acquire);
+    stats.submission_bytes_accepted =
+        packet_submission_bytes_accepted_.load(std::memory_order_acquire);
+    stats.submissions_rejected =
+        packet_submissions_rejected_.load(std::memory_order_acquire);
+    stats.write_attempts =
+        packet_write_attempts_.load(std::memory_order_acquire);
+    stats.packets_written = packets_written_.load(std::memory_order_acquire);
+    stats.bytes_written = packet_bytes_written_.load(std::memory_order_acquire);
+    stats.write_failures =
+        packet_write_failures_.load(std::memory_order_acquire);
+    stats.first_write_error_code =
+        first_packet_write_error_code_.load(std::memory_order_acquire);
+    return stats;
 }
 
 FFmpegWriter::FFmpegWriter(
@@ -212,6 +233,20 @@ FFmpegWriter::~FFmpegWriter()
 {
     OrangeVideoContainerFinalization::Outcome outcome;
     outcome.header_written = open_;
+    const FFmpegWriterPacketWriteStats packet_stats = packet_write_stats();
+    outcome.writer_error_latched = writer_thread_failed();
+    outcome.packet_submissions_accepted = packet_stats.submissions_accepted;
+    outcome.packet_submission_bytes_accepted =
+        packet_stats.submission_bytes_accepted;
+    outcome.packet_submissions_rejected = packet_stats.submissions_rejected;
+    outcome.packet_write_attempts = packet_stats.write_attempts;
+    outcome.packets_written = packet_stats.packets_written;
+    outcome.packet_bytes_written = packet_stats.bytes_written;
+    outcome.packet_write_failures = packet_stats.write_failures;
+    if (packet_stats.first_write_error_code != 0) {
+        outcome.first_packet_write_error_code =
+            packet_stats.first_write_error_code;
+    }
     persist_finalization_status(
         output_path_, nFps,
         OrangeVideoContainerFinalization::Status::Finalizing,
@@ -221,10 +256,14 @@ FFmpegWriter::~FFmpegWriter()
         if (open_) {
             write_keyframe_sidecar();
             // Send a NULL packet to muxer for flushing any internally buffered frames.
+            outcome.muxer_flush_attempted = true;
             const int flush_result = av_interleaved_write_frame(oc, NULL);
+            outcome.muxer_flush_succeeded = flush_result >= 0;
             if (flush_result < 0) {
+                outcome.muxer_flush_error_code = flush_result;
+                outcome.muxer_flush_error = av_error_string(flush_result);
                 std::cerr << "FFMPEG: muxer flush failed for " << output_path_
-                          << ": " << av_error_string(flush_result) << std::endl;
+                          << ": " << outcome.muxer_flush_error << std::endl;
             }
             outcome.trailer_attempted = true;
             const int trailer_result = av_write_trailer(oc);
@@ -277,7 +316,7 @@ FFmpegWriter::~FFmpegWriter()
         output_path_, nFps, terminal_status, outcome, true);
 }
 
-void FFmpegWriter::push_packet(uint8_t* pData,
+bool FFmpegWriter::push_packet(uint8_t* pData,
                                int nBytes,
                                int64_t nPts,
                                uint64_t gop_index,
@@ -285,7 +324,9 @@ void FFmpegWriter::push_packet(uint8_t* pData,
                                uint64_t gop_release_started_ns)
 {
     if (!open_ || !vs) {
-        return;
+        packet_submissions_rejected_.fetch_add(1, std::memory_order_relaxed);
+        writer_thread_error_.store(true, std::memory_order_release);
+        return false;
     }
     NVTX_ENCODE_DYNAMIC([&]() {
         return "FFmpegWriter push_packet label=" + output_label_ +
@@ -295,7 +336,9 @@ void FFmpegWriter::push_packet(uint8_t* pData,
     }());
     const uint64_t push_start_ns = steady_clock_now_ns();
     if (nBytes <= 0) {
-        return;
+        packet_submissions_rejected_.fetch_add(1, std::memory_order_relaxed);
+        writer_thread_error_.store(true, std::memory_order_release);
+        return false;
     }
 
     const size_t queued_packets = queued_packets_.load(std::memory_order_relaxed);
@@ -317,15 +360,18 @@ void FFmpegWriter::push_packet(uint8_t* pData,
                       << " limit_bytes=" << queue_config_.max_queued_bytes
                       << std::endl;
         }
-        return;
+        packet_submissions_rejected_.fetch_add(1, std::memory_order_relaxed);
+        return false;
     }
 
     const uint64_t alloc_copy_start_ns = steady_clock_now_ns();
     AVPacket *pkt = av_packet_alloc();
-    if (av_new_packet(pkt, nBytes) < 0) {
+    if (!pkt || av_new_packet(pkt, nBytes) < 0) {
         std::cout << "Error, av_new_packet..." << std::endl;
         av_packet_free(&pkt);
-        return;
+        packet_submissions_rejected_.fetch_add(1, std::memory_order_relaxed);
+        writer_thread_error_.store(true, std::memory_order_release);
+        return false;
     }
     memcpy(pkt->data, pData, nBytes);
     const uint64_t alloc_copy_end_ns = steady_clock_now_ns();
@@ -360,6 +406,9 @@ void FFmpegWriter::push_packet(uint8_t* pData,
     queued_packet.gop_release_started_ns = gop_release_started_ns;
     const uint64_t queue_push_start_ns = steady_clock_now_ns();
     m_queue.push(queued_packet);
+    packet_submissions_accepted_.fetch_add(1, std::memory_order_release);
+    packet_submission_bytes_accepted_.fetch_add(
+        static_cast<uint64_t>(nBytes), std::memory_order_release);
     const uint64_t push_end_ns = steady_clock_now_ns();
     {
         std::lock_guard<std::mutex> lock(latency_mutex_);
@@ -379,6 +428,7 @@ void FFmpegWriter::push_packet(uint8_t* pData,
                 push_end_ns - push_start_ns);
         }
     }
+    return true;
 }
 
 void FFmpegWriter::create_thread()
@@ -410,16 +460,36 @@ void FFmpegWriter::join_thread()
     }
 }
 
-void FFmpegWriter::write_one_pkt(AVPacket* pkt)
+bool FFmpegWriter::record_packet_write_result(int result, size_t packet_bytes)
 {
-    if (!open_ || !oc) {
-        return;
+    packet_write_attempts_.fetch_add(1, std::memory_order_relaxed);
+    if (result < 0) {
+        packet_write_failures_.fetch_add(1, std::memory_order_relaxed);
+        int expected = 0;
+        first_packet_write_error_code_.compare_exchange_strong(
+            expected, result, std::memory_order_release, std::memory_order_relaxed);
+        writer_thread_error_.store(true, std::memory_order_release);
+        return false;
     }
+    packets_written_.fetch_add(1, std::memory_order_release);
+    packet_bytes_written_.fetch_add(
+        static_cast<uint64_t>(packet_bytes), std::memory_order_release);
+    return true;
+}
+
+bool FFmpegWriter::write_one_pkt(AVPacket* pkt)
+{
+    if (!open_ || !oc || !pkt) {
+        return record_packet_write_result(AVERROR(EINVAL), 0);
+    }
+    const size_t packet_bytes = static_cast<size_t>(std::max(0, pkt->size));
     NVTX_ENCODE_DYNAMIC(std::string("FFmpegWriter av_interleaved_write_frame"));
     int ret = av_interleaved_write_frame(oc, pkt);
     if (ret < 0) {
-        std::cout << "FFMPEG: Error while writing video frame" << std::endl;
+        std::cerr << "FFMPEG: Error while writing video frame for "
+                  << output_path_ << ": " << av_error_string(ret) << std::endl;
     }
+    return record_packet_write_result(ret, packet_bytes);
 }
 
 void FFmpegWriter::write_thread()

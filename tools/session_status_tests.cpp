@@ -791,6 +791,49 @@ void test_snapshot_finalize_pending_never_overrides_active_recording()
 
 // --- gui_external_recorder_status_line ----------------------------------------
 
+void test_external_recorder_refresh_is_decimated()
+{
+    GuiExternalRecorderLifecycleRefreshState state;
+    const auto start = std::chrono::steady_clock::time_point(
+        std::chrono::milliseconds(10000));
+    require(!gui_external_recorder_lifecycle_refresh_due(
+                &state, false, start, std::chrono::milliseconds(1000)),
+            "idle recorder lifecycle must not poll");
+    require(gui_external_recorder_lifecycle_refresh_due(
+                &state, true, start, std::chrono::milliseconds(1000)),
+            "recording transition must poll immediately");
+    require(!gui_external_recorder_lifecycle_refresh_due(
+                &state,
+                true,
+                start + std::chrono::milliseconds(999),
+                std::chrono::milliseconds(1000)),
+            "recorder status must not be reparsed every GUI frame");
+    require(gui_external_recorder_lifecycle_refresh_due(
+                &state,
+                true,
+                start + std::chrono::milliseconds(1000),
+                std::chrono::milliseconds(1000)),
+            "one-second recorder status heartbeat must poll");
+    require(state.refresh_count == 2 && state.skipped_count == 1,
+            "refresh telemetry must distinguish performed and skipped polls");
+
+    require(!gui_external_recorder_lifecycle_refresh_due(
+                &state,
+                false,
+                start + std::chrono::milliseconds(1100),
+                std::chrono::milliseconds(1000)),
+            "stopping the recording must reset polling state");
+    require(gui_external_recorder_lifecycle_refresh_due(
+                &state,
+                true,
+                start + std::chrono::milliseconds(1200),
+                std::chrono::milliseconds(1000)),
+            "a later recording must receive an immediate first poll");
+    require(state.refresh_count == 3,
+            "refresh counters must cover repeated recording lifecycles");
+    std::cout << "PASS test_external_recorder_refresh_is_decimated" << std::endl;
+}
+
 orange::external_recorder::RecorderProcessState make_process(
     const std::string& serial)
 {
@@ -991,6 +1034,7 @@ int main()
         test_finalize_stage_labels();
         test_snapshot_finalize_pending_keeps_finalizing_and_shows_progress();
         test_snapshot_finalize_pending_never_overrides_active_recording();
+        test_external_recorder_refresh_is_decimated();
         test_status_line_idle_and_error_fallback();
         test_status_line_running_and_degraded();
         test_status_line_error_states();

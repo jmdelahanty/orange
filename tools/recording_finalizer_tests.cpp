@@ -800,6 +800,30 @@ void test_async_finalize_poll_launches_and_completes()
     PhasedFinalizeFixture fixture(session.string());
     GuiAsyncRecordingFinalizeState async_finalize;
     const nlohmann::json frame_rate = nlohmann::json::object();
+    int frame_rate_builder_calls = 0;
+    const auto frame_rate_builder = [&]() {
+        ++frame_rate_builder_calls;
+        return frame_rate;
+    };
+
+    // Ordinary recording frames poll this function continuously. The
+    // telemetry builder must remain completely lazy until the drain gate
+    // opens; otherwise its cost grows with the recording history.
+    fixture.run.finalizing = false;
+    require(!gui_poll_async_recording_finalize(
+                &async_finalize,
+                &fixture.run,
+                &fixture.recording_session,
+                &fixture.camera_control,
+                &fixture.camera,
+                &fixture.select,
+                1,
+                320,
+                frame_rate_builder),
+            "an active recording must not launch finalization");
+    require(frame_rate_builder_calls == 0,
+            "an active recording must not invoke the telemetry snapshot builder");
+    fixture.run.finalizing = true;
 
     // Frame 1: the gate opens and the poll launches the background phase.
     require(!gui_poll_async_recording_finalize(
@@ -811,8 +835,10 @@ void test_async_finalize_poll_launches_and_completes()
                 &fixture.select,
                 1,
                 320,
-                frame_rate),
+                frame_rate_builder),
             "the launching poll must not report completion");
+    require(frame_rate_builder_calls == 1,
+            "the snapshot builder must run exactly once when finalization launches");
     require(async_finalize.active, "the poll must launch the background phase");
     require(fixture.run.finalizing && !fixture.run.finalized,
             "the run stays finalizing while the background phase runs");
@@ -835,7 +861,7 @@ void test_async_finalize_poll_launches_and_completes()
             &fixture.select,
             1,
             320,
-            frame_rate);
+            frame_rate_builder);
         if (!finalized) {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
@@ -843,6 +869,8 @@ void test_async_finalize_poll_launches_and_completes()
     require(finalized, "the poll must complete the background finalize");
     require(!async_finalize.active && !async_finalize.worker.joinable(),
             "completion must join and clear the worker");
+    require(frame_rate_builder_calls == 1,
+            "polling an active finalize must not rebuild the telemetry snapshot");
     require(!fixture.run.active && !fixture.run.finalizing && fixture.run.finalized,
             "completion must flip the terminal run state exactly once");
     require(fixture.camera_control.recording_folder.empty(),
@@ -860,8 +888,10 @@ void test_async_finalize_poll_launches_and_completes()
                 &fixture.select,
                 1,
                 320,
-                frame_rate),
+                frame_rate_builder),
             "a finalized run must not relaunch the background phase");
+    require(frame_rate_builder_calls == 1,
+            "a finalized run must not invoke the telemetry snapshot builder");
     require(!async_finalize.active, "no background phase after the terminal state");
     std::cout << "PASS test_async_finalize_poll_launches_and_completes" << std::endl;
 }
@@ -899,7 +929,7 @@ void test_async_finalize_join_completes_in_flight_work()
                 &fixture.select,
                 1,
                 320,
-                nlohmann::json::object()),
+                []() { return nlohmann::json::object(); }),
             "the launching poll must not report completion");
     require(async_finalize.active, "the poll must launch the background phase");
     require(gui_join_async_recording_finalize(

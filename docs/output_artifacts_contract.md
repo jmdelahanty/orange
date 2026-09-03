@@ -54,6 +54,7 @@ Default configured base path in runtime:
 | Per-edge finalized Citrus H5 receipt | `<recording_folder>/recording_observation_bindings/receipts/obsctx_<sha256>.json` | One per accepted observation edge after successful Citrus H5 close | Create-once exact receipt; Orange independently verifies H5 size/SHA and the reciprocal chain |
 | Finalized observation binding collection | `<recording_folder>/recording_observation_bindings/finalized_collection.json` | Required for final `bound` status | Create-once after the complete receipt batch; projected atomically into `recording_session.json` |
 | Recording session manifest | `<recording_folder>/recording_session.json` | Required for current GUI/headless session finalization | Recording finalization |
+| Chronological GUI timing windows | `<recording_folder>/gui_timing_windows.csv` | Required when the GUI timing writer starts successfully; otherwise final snapshot carries explicit failed/unavailable status | One nonempty fixed-time window per row; background writer drains before GUI finalization |
 | PTP sync summary | `<recording_folder>/ptp_sync_summary.json` | Required | Recording started |
 | Local-control event log | `<recording_folder>/orange_local_control.events.jsonl` | Optional | Local-control/orchestrated GUI recording |
 | Latest pointer (local) | `<base_folder>/.orange/latest_recording.json` | Required | Recording started |
@@ -366,6 +367,21 @@ Current emitted top-level fields:
       `p95_ms`, `max_ms`, and `mean_ms`.
     - `main_texture_upload_count` and `crop_texture_upload_count` count total
       texture uploads sampled during active recording.
+  - `timing_windows: object` (GUI recordings with chronological telemetry)
+    - Declares `orange.gui_timing_windows` schema 1 and references recording-root
+      `gui_timing_windows.csv` by absolute/relative path, byte size, and SHA-256.
+    - `windows_offered|written|dropped` and
+      `samples_offered|written|dropped` retain terminal accounting, with
+      `window_parity_complete` and `sample_parity_complete` making gaps
+      machine-checkable.
+    - `queue_capacity` and `queue_high_water` describe the bounded,
+      non-blocking GUI-to-writer handoff. A nonzero drop count or
+      `status = failed` is explicit degraded diagnostic evidence; it does not
+      stall or fail camera acquisition.
+    - Each CSV row is a nonempty one-second recording-relative window with an
+      index, exact frame/upload counts, and min/p05/p50/p95/max/mean for FPS
+      and every GUI timing phase. Missing window indices expose intervals with
+      no observed GUI frame rather than silently synthesizing samples.
   - `imgui_glfw_size_cache: object` (optional, GUI recordings after the
     ImGui GLFW size-cache shim)
     - `schema_version: integer`
@@ -400,6 +416,11 @@ Current emitted top-level fields:
   - Optional counts: `frame_count`, `first_recording_frame_id`,
     `last_recording_frame_id`, `recording_frame_id_gaps`, `packet_count`,
     `packet_count_source`
+  - For newly finalized external-recorder outputs, `packet_count` is backed by
+    successful FFmpeg mux calls. The recorder summary's schema-2
+    `frame_identity_proof.video_binding` separately exposes packet submissions
+    accepted/rejected, mux-write attempts/successes/failures, and the first
+    mux error code. Queue acceptance alone is not write success.
   - Optional media details: `width`, `height`, `frame_rate`, `codec`,
     `container`, `tuning`, `pixel_source_format`, `encoded_format`,
     `coordinate_space`, `video_pixel_coordinate_space`,

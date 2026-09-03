@@ -640,6 +640,19 @@ Recorder summary schema:
   "encode_queue_depth": 32,
   "encode_queue_high_water": 4,
   "frames_encoded": 100,
+  "frame_identity_proof": {
+    "schema_id": "orange.external_recorder.frame_identity_proof",
+    "schema_version": 2,
+    "status": "passed",
+    "video_binding": {
+      "packet_submissions_accepted": 100,
+      "packet_submissions_rejected": 0,
+      "packet_write_attempts": 100,
+      "packets_written": 100,
+      "packet_write_failures": 0,
+      "first_packet_write_error_code": null
+    }
+  },
   "encoding_budget": {
     "schema_id": "orange.recording_encoding_budget",
     "schema_version": 1,
@@ -699,6 +712,11 @@ When `artifact_root` is omitted, the verifier derives it from
   via `--expect-encode-queue-depth`,
   `--max-encode-queue-high-water`, and `--max-enqueue-age-p95-ms`
 - no encode drops and no worker failures
+- schema-2 frame-identity proof distinguishes packets accepted by the
+  asynchronous FFmpeg queue from actual successful
+  `av_interleaved_write_frame` calls; accepted, attempted, written, and encoded
+  counts must agree, while rejected submissions and mux-write failures must be
+  zero
 - expected shard GPU ids and routing policy match
 - merged output is finalized for multi-shard runs
 - MP4 exists, has a valid video stream, and passes video sanity when required
