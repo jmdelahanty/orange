@@ -320,3 +320,42 @@ New instrumentation from this review:
   `orange_client` exports the matching variables itself, so the sudo wrapper's
   allowlist is not involved. The GUI wrapper and
   `run_gui_aq_off_validation.sh` forward the same variables for GUI runs.
+
+## Landed Commits And Follow-Ups
+
+Pushed to `origin/agent/acquisition/shaman-v2-authoritative-20260824` on
+2026-09-03 (`e3cf98c` to `0ed660f`):
+
+- `c0e9b5d`: deferred PTP latch, `ORANGE_HEADLESS_GPU_DMON`,
+  `src/yolo_runtime_flags.h`, resolved flags in the start snapshot, the
+  `sync_mode` perf column, `scripts/analyze_yolo_latency_phases.py` and its
+  test, this document.
+- `260eabb`: spec-driven levers in `orange_client`, YOLO enqueue ahead of the
+  deferred latch, `build_gpu_runtime_info` cached per GPU (the stall fix),
+  PTP stack ownership kept across both status checks, GUI wrapper and
+  validation script forwarding, six threecam/fourcam latency specs,
+  `--external-recorder-dir` and `--baseline-json` for the analysis script.
+- `0ed660f`: the direct-input interpretation above.
+
+Follow-ups, in order:
+
+1. Bring 2010096 back online (no link carrier on 2026-09-03) and run the three
+   `fourcam_detect_latency_*` specs. This tests the card-level prediction for
+   2010095 and gives a four-camera A/B directly comparable with the August run.
+2. Reinstall the GUI wrapper before the next citrus run:
+   `sudo scripts/install_orange_gui_validation_wrapper.sh`. The headless path
+   needs no installer.
+3. Decide defaults. Event sync and the deferred latch are verified wins with no
+   downside seen; the stall fix is unconditional. Defaulting
+   `ORANGE_YOLO_SYNC_EVENT` on is one line in `src/yolo_runtime_flags.h`.
+4. Make direct input a production path or leave it an experiment flag. It
+   needs the schema-2 returned-NVENC frame-identity proof, and its recorder
+   runs at 7-10 ms per frame with no headroom at 100 fps.
+5. Always-on GPU event timing in the perf row (checklist step 5), which turns
+   the remaining 2.4 ms floor into preprocess, gap, and infer numbers in
+   production runs.
+6. Like-for-like engine test against the colleague's rig: same engine file on
+   one die with no recorder running.
+7. The stock fourcam supervised spec lacks
+   `recording_control.record_for_seconds` and fails the verifier for a missing
+   session manifest after a clean run; fix it the way the latency specs do.
