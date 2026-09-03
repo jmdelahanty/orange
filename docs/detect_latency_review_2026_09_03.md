@@ -84,10 +84,15 @@ Frame budget, camera 2010093, mean per frame:
    Disabling dmon left the stalls in place; caching the device properties per
    GPU removed them entirely (0 stalls on all cameras in the verification run).
 
-5. **Production runs do not record their own flags.** Only affinity is written
-   to the snapshot. Reconstructing the rest required reading code defaults and
-   launch scripts. Defaults also disagree with each other (`SYNC_EVENT` off,
-   `DETACH_INPUT` on, `INLINE_CROP_PRODUCER` off).
+5. **Production runs do not record their own flags.** Only affinity was
+   written to the snapshot. Reconstructing the rest required reading code
+   defaults and launch scripts, and the defaults disagreed with each other
+   (`SYNC_EVENT` off, `DETACH_INPUT` on, `INLINE_CROP_PRODUCER` off). Fixed in
+   this review: every resolved flag is in the snapshot, and since the defaults
+   commit of 2026-09-03 the verified levers default on: `ORANGE_YOLO_SYNC_EVENT=1`,
+   `ORANGE_PTP_LATCH_AFTER_FANOUT=1`, `ORANGE_EXTERNAL_RECORDER_DETECT_PRIORITY=1`.
+   Set any of them to `0` to restore the August behaviour; the
+   `*_detect_latency_baseline` specs do exactly that.
 
 6. **Preview copies on the detect die.** The 10 fps GUI preview copies one
    frame in ten GPU-to-PBO on the detect die; worker time swings 0.2 ms across
@@ -427,9 +432,8 @@ Follow-ups, in order:
 2. Reinstall the GUI wrapper before the next citrus run:
    `sudo scripts/install_orange_gui_validation_wrapper.sh`. The headless path
    needs no installer.
-3. Decide defaults. Event sync and the deferred latch are verified wins with no
-   downside seen; the stall fix is unconditional. Defaulting
-   `ORANGE_YOLO_SYNC_EVENT` on is one line in `src/yolo_runtime_flags.h`.
+3. Done: event sync, the deferred latch, and the handoff gate default on;
+   the stall fix is unconditional.
 4. Decide between lever 2b (the handoff gate, production-compatible today,
    -0.29 ms mean) and lever 2c (zero-copy NVENC input, larger win, needs
    engineering). Direct input as it stands passes the contract but its

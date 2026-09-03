@@ -37,8 +37,9 @@ inline bool EnvFlag(const char* name, bool default_on)
 
 struct ResolvedFlags {
     // ORANGE_YOLO_SYNC_EVENT: wait for inference with cudaEventSynchronize
-    // instead of polling cudaStreamQuery with usleep(100).
-    bool sync_event = false;
+    // instead of polling cudaStreamQuery with usleep(100). Default on since
+    // 2026-09-03 (about 80 us per frame, verified in the three-camera A/B).
+    bool sync_event = true;
     // ORANGE_YOLO_DETACH_INPUT: record an input-ready event after preprocess so
     // the source frame can be released before inference finishes.
     bool detach_input = true;
@@ -61,7 +62,7 @@ struct ResolvedFlags {
 inline ResolvedFlags Resolve()
 {
     ResolvedFlags flags;
-    flags.sync_event = EnvFlag("ORANGE_YOLO_SYNC_EVENT", false);
+    flags.sync_event = EnvFlag("ORANGE_YOLO_SYNC_EVENT", true);
     flags.detach_input = EnvFlag("ORANGE_YOLO_DETACH_INPUT", true);
     flags.ready_event_fast_path = EnvFlag("ORANGE_YOLO_READY_EVENT_FASTPATH", true);
     flags.inline_crop_producer = EnvFlag("ORANGE_INLINE_CROP_PRODUCER", false);

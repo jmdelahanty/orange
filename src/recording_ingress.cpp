@@ -163,7 +163,7 @@ public:
           deferred_release_(recording_ingress_env_flag_enabled(
               "ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE", false)),
           detect_priority_gate_(recording_ingress_env_flag_enabled(
-              "ORANGE_EXTERNAL_RECORDER_DETECT_PRIORITY", false))
+              "ORANGE_EXTERNAL_RECORDER_DETECT_PRIORITY", true))
     {
         if (detect_priority_gate_) {
             std::cout << "[ExternalIpcRecorder] camera=" << camera_serial_

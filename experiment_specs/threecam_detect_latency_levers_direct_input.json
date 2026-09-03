@@ -139,7 +139,8 @@
     "external_recorder_direct_input": true,
     "recording_control": {
       "record_for_seconds": 60
-    }
+    },
+    "external_recorder_detect_priority": false
   },
   "matrix": {
     "codec": [

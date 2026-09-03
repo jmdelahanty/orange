@@ -185,7 +185,7 @@ bool SkipCpuResults()
 bool UseEventSyncWait()
 {
     static const bool enabled = []() {
-        const bool on = orange::yolo_flags::EnvFlag("ORANGE_YOLO_SYNC_EVENT", false);
+        const bool on = orange::yolo_flags::EnvFlag("ORANGE_YOLO_SYNC_EVENT", true);
         std::cout << "[YOLO] GPU completion sync mode: "
                   << orange::yolo_flags::SyncModeLabel(on)
                   << (on ? " (cudaEventSynchronize)" : " (cudaStreamQuery + usleep)")
