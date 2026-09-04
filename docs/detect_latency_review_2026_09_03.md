@@ -1481,6 +1481,47 @@ story holds and the rule is "crop recorders off the card"; p95 still high
 means the peer read itself hurts the detect die whatever the route, and
 the answer is in-process with a cheaper profile than lossless p7.
 
+**A6000 placement, run 2026-09-04 17:30.** `crop_recording.recorder_gpu = 0`
+puts all three crop recorders on the A6000. Acquisition-to-detect mean /
+p95 / p99, crops and crop video on (crop recorder: 2010093: ? frames, proof n/a, 2010094: ? frames, proof n/a, 2010095: ? frames, proof n/a):
+
+| Camera | External crop recorder, other die | External crop recorder, A6000 | No crop pipeline |
+|---|---|---|---|
+| 2010093 (card A) | 2.238 / 2.408 / 2.769 | 2.222 / 2.307 / 2.337 | 2.212 / 2.294 / 2.316 |
+| 2010094 (card A) | 2.272 / 2.548 / 2.795 | 2.206 / 2.287 / 2.313 | 2.216 / 2.305 / 2.330 |
+| 2010095 (card B) | 2.211 / 2.308 / 2.332 | 2.217 / 2.308 / 2.331 | 2.204 / 2.298 / 2.320 |
+
+The switch explanation holds: with the crop traffic leaving the card
+through the root complex, both card A cameras return to the no-crop
+numbers, within 0.01 ms on every quantile, and card B is unchanged. The
+placement rule is therefore "crop recorders off the A16 cards"; the A6000
+has the headroom (0.05 ms per crop) and is where the crop consumers
+(citrus, pose) already live.
+
+**What the first A6000 attempt found instead.** That run failed the
+verifier, correctly: one and two deferred-release cap skips on 2010094 and
+2010095 at recording frames 49 to 51, pending peaking at 48 (the hard cap)
+with 55 to 58 copy fallbacks per camera, all in the first half second.
+Six recorder processes starting together made the cold start longer than
+the cap could absorb. The recorder encode CSV showed why the cold start
+exists at all: the first frame waited 390 to 500 ms before the encode
+worker touched it, because the recorder created its NVENC session, its
+streams and its registered slots only on the first FRAME, and every frame
+that arrived during those 0.4 s queued behind it. Fixed at the protocol:
+the client hello now carries `frame_width`, `frame_height` and
+`source_gpu_id` (the pipeline passes the camera geometry into the
+ingress), the ingress connects and exchanges hellos at thread start
+instead of on the first frame (retried every 250 ms until the recorder's
+socket is up, after re-reading the session identity from the supervisor's
+environment), and the recorder answers a hello that carries geometry by
+queueing a prewarm item that runs `initialize_encoder()` on each encode
+worker's thread before any frame. Measured: the prewarm takes 400 to 630
+ms per encoder and completes during camera open, the first frame's
+enqueue age drops from 391 ms to 0, and the startup pending high-water
+mark drops from 30 (plain registered run) and 48 (six recorders) to 10 to
+11. The soft cap of 32 is now three times the startup peak instead of one
+times.
+
 Note on the spec files: the stream paths in `_crop_synthetic_external`
 were generated with a doubled prefix on the first run (cosmetic; the run's
 full-frame artifacts landed under
