@@ -1,6 +1,6 @@
 {
-  "experiment_id": "threecam_detect_latency_stream_only",
-  "notes": "Engine-only floor for the detect-latency review (docs/detect_latency_review_2026_09_03.md, lever 2d measured): three cameras, YOLO on, no recording, no external recorder, so preprocess and the TensorRT graph run without a concurrent early-owned copy or NVENC on the die. GPU event timing on. This is the like-for-like number for the upstream \"400 FPS\" comparison.",
+  "experiment_id": "threecam_detect_latency_engine_only",
+  "notes": "Engine-only floor for the detect-latency review (docs/detect_latency_review_2026_09_03.md, lever 2d measured): three cameras, YOLO on, recording sink immediate_recycle (no preprocess, no NVENC, no external recorder), GPU event timing on. Early-owned copy ON (default): the copy runs on the acquisition stream concurrently with preprocess.",
   "selection": {
     "camera_serials": [
       "2010093",
@@ -18,9 +18,9 @@
     "warmup_s": 2,
     "display": false,
     "yolo": false,
-    "stream_only": true,
+    "stream_only": false,
     "sync_mode": "ptp_gate",
-    "recording_sink_mode": "real",
+    "recording_sink_mode": "immediate_recycle",
     "config_folder": "/home/jeremy/orange-gop-split-a16/config/validated_split_gop_hevc_100fps_gop25_fourcam_a16",
     "output_root": "/home/jeremy/orange_data/exp/unsorted",
     "ptp_register_read_decimate": 100,
@@ -38,7 +38,8 @@
     "ptp_latch_after_fanout": true,
     "headless_gpu_dmon": true,
     "external_recorder_direct_input": false,
-    "external_recorder_detect_priority": false
+    "external_recorder_detect_priority": false,
+    "analytics_early_owned_frame": true
   },
   "matrix": {
     "codec": [

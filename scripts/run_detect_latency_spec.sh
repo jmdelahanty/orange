@@ -31,18 +31,21 @@ import json, sys
 src, stamp, out = sys.argv[1:4]
 s = json.load(open(src))
 name = s['experiment_id'] + '_' + stamp
-c = s['fixed']['external_recorder_contract']
-old = c['artifact_root']; new = old + '_' + stamp
-s['experiment_id'] = name; c['artifact_root'] = new; c['session_id'] = name
-for st in c['streams'].values():
-    for k in ('summary_json', 'video_sanity_json', 'mp4', 'gop_routing_csv'):
-        st[k] = st[k].replace(old, new)
+s['experiment_id'] = name
+c = s['fixed'].get('external_recorder_contract')
+new = ''
+if c:  # stream-only specs have no recorder contract
+    old = c['artifact_root']; new = old + '_' + stamp
+    c['artifact_root'] = new; c['session_id'] = name
+    for st in c['streams'].values():
+        for k in ('summary_json', 'video_sanity_json', 'mp4', 'gop_routing_csv'):
+            st[k] = st[k].replace(old, new)
 json.dump(s, open(out, 'w'), indent=2)
 print(f"experiment_id={name}")
 print(f"artifact_root={new}")
 PY
 EXPERIMENT_ID="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['experiment_id'])" "$STAMPED")"
-ARTIFACT_ROOT="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['fixed']['external_recorder_contract']['artifact_root'])" "$STAMPED")"
+ARTIFACT_ROOT="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['fixed'].get('external_recorder_contract', {}).get('artifact_root', ''))" "$STAMPED")"
 OUTPUT_ROOT="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['fixed']['output_root'])" "$STAMPED")"
 LOG="/tmp/${EXPERIMENT_ID}.log"
 echo "[run] spec=$STAMPED log=$LOG"
@@ -67,7 +70,8 @@ for row in r.get('camera_results', []):
           f" submitted={row.get('submitted_frames_final')}"
           f" acked={row.get('external_ipc_frames_acked_final')}")
 PY
-ARGS=("$RUN_DIR" --external-recorder-dir "$ARTIFACT_ROOT" --steady-after 200 --json "$RUN_DIR/latency_phases.json")
+ARGS=("$RUN_DIR" --steady-after 200 --json "$RUN_DIR/latency_phases.json")
+[[ -n "$ARTIFACT_ROOT" ]] && ARGS+=(--external-recorder-dir "$ARTIFACT_ROOT")
 [[ -n "$BASELINE_JSON" ]] && ARGS+=(--baseline-json "$BASELINE_JSON")
 python3 "$REPO_ROOT/scripts/analyze_yolo_latency_phases.py" "${ARGS[@]}"
 echo "[run] analysis json: $RUN_DIR/latency_phases.json"

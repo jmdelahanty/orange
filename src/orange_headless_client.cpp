@@ -234,6 +234,7 @@ struct ExperimentSpec {
     // env allowlist. Defaults mirror the code defaults.
     bool yolo_sync_event = true;             // ORANGE_YOLO_SYNC_EVENT (default on)
     bool yolo_gpu_timing = true;             // ORANGE_YOLO_GPU_TIMING (default on)
+    bool analytics_early_owned_frame = true; // ORANGE_ANALYTICS_EARLY_OWNED_FRAME (default on)
     bool ptp_latch_after_fanout = true;      // ORANGE_PTP_LATCH_AFTER_FANOUT
     bool headless_gpu_dmon = true;           // ORANGE_HEADLESS_GPU_DMON
     bool external_recorder_direct_input = false;  // ORANGE_EXTERNAL_RECORDER_DIRECT_INPUT
@@ -7953,6 +7954,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         fixed.value("ptp_register_read_decimate", 1);
     spec->yolo_sync_event = fixed.value("yolo_sync_event", true);
     spec->yolo_gpu_timing = fixed.value("yolo_gpu_timing", true);
+    spec->analytics_early_owned_frame = fixed.value("analytics_early_owned_frame", true);
     spec->ptp_latch_after_fanout = fixed.value("ptp_latch_after_fanout", true);
     spec->headless_gpu_dmon = fixed.value("headless_gpu_dmon", true);
     spec->external_recorder_direct_input =
@@ -11052,6 +11054,7 @@ int run_local_experiment(const HeadlessCliOptions& options)
     // dmon flags are exported only when they deviate from the default.
     setenv("ORANGE_YOLO_SYNC_EVENT", spec.yolo_sync_event ? "1" : "0", 1);
     setenv("ORANGE_YOLO_GPU_TIMING", spec.yolo_gpu_timing ? "1" : "0", 1);
+    setenv("ORANGE_ANALYTICS_EARLY_OWNED_FRAME", spec.analytics_early_owned_frame ? "1" : "0", 1);
     setenv("ORANGE_PTP_LATCH_AFTER_FANOUT", spec.ptp_latch_after_fanout ? "1" : "0", 1);
     if (!spec.headless_gpu_dmon) {
         setenv("ORANGE_HEADLESS_GPU_DMON", "0", 1);
@@ -11075,6 +11078,7 @@ int run_local_experiment(const HeadlessCliOptions& options)
     std::cout << "[EXPERIMENT] detect latency levers via spec"
               << " yolo_sync_event=" << (spec.yolo_sync_event ? 1 : 0)
               << " yolo_gpu_timing=" << (spec.yolo_gpu_timing ? 1 : 0)
+              << " analytics_early_owned_frame=" << (spec.analytics_early_owned_frame ? 1 : 0)
               << " ptp_latch_after_fanout=" << (spec.ptp_latch_after_fanout ? 1 : 0)
               << " headless_gpu_dmon=" << (spec.headless_gpu_dmon ? 1 : 0)
               << " external_recorder_direct_input="

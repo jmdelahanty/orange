@@ -848,6 +848,105 @@ stalls mid-run, frames after that point are not encoded on any path. That
 already fails the run through the recorder contract and the identity proof,
 so it cannot produce a dataset that looks clean.
 
+## Lever 2d, Measured (2026-09-04)
+
+GPU event timing is now a runtime flag (`ORANGE_YOLO_GPU_TIMING`, spec key
+`yolo_gpu_timing`, default on) instead of the compile-time `YOLO_PROFILE`
+guard: six event records per frame on the YOLO stream, the elapsed reads
+after the completion wait the worker already does, plus timing events around
+the early-owned copy on the acquisition stream (`early_copy_ms`). The
+analysis script reports the phases (`gpu_phases`) and their deltas.
+
+Registered spec, three cameras, the same night as the copy fallback
+(`threecam_detect_latency_levers_gate_registered_20260904_015328`), steady
+state after frame 200, mean / p95 in ms:
+
+| Phase | 2010093 | 2010094 | 2010095 | Same-die shard | Other-die shard |
+|---|---|---|---|---|---|
+| ingress wait (stream wait on the camera event) | 0.000 | 0.000 | 0.000 | | |
+| preprocess (NPP resize/convert) | 0.333 / 0.386 | 0.337 / 0.391 | 0.330 / 0.382 | 0.371 | 0.295 |
+| gap (preprocess end to graph start) | 0.002 | 0.002 | 0.002 | | |
+| infer (TensorRT CUDA graph) | 2.001 / 2.029 | 2.001 / 2.028 | 2.002 / 2.029 | 2.020 | 1.983 |
+| early-owned copy (acquisition stream, concurrent) | 0.337 / 0.352 | 0.337 / 0.352 | 0.336 / 0.352 | 0.344 | 0.330 |
+| CPU before sync | 0.056 | 0.052 | 0.058 | | |
+| CPU after sync (postprocess, IPC) | 0.040 | 0.034 | 0.041 | | |
+| worker total | 2.398 / 2.475 | 2.393 / 2.469 | 2.392 / 2.474 | 2.451 | 2.345 |
+| acquisition to detect done | 2.426 / 2.505 | 2.418 / 2.495 | 2.426 / 2.507 | | |
+
+(Same-die and other-die columns are 2010093 means; the other two cameras
+match to 0.01 ms.)
+
+What the floor is made of:
+
+- **The TensorRT graph is 2.0 ms of the 2.4.** yolo11n FP16 at the engine's
+  input size on a 10-SM GA107 die, and it is flat: p95 within 0.03 ms of
+  the mean. Nothing in the pipeline around it is worth more than a tenth of
+  that any more.
+- **Preprocess is 0.33 ms and is where the same-die residual lives.** Same
+  die 0.371 versus other die 0.295: 0.075 of the 0.106 ms residual. The
+  graph itself moves 0.04 (2.020 versus 1.983). Preprocess is memory-bound
+  (it reads the 20 MB frame), so it is the stage that feels NVENC reading
+  the same die's memory.
+- **The early-owned copy is 0.34 ms but it is not serial with detection.**
+  It runs on the acquisition stream while the YOLO stream does preprocess
+  (the worker consumes the camera buffer directly through the ingress
+  event; the copy is for the recorder). So lever 2d as originally framed,
+  "remove the copy and take 0.3 ms off the floor", is wrong. What removing
+  it could recover is the bandwidth it takes from preprocess while both run
+  on the die: bounded by the same mechanism as the same-die residual, so
+  likely under 0.1 ms. The engine-only runs below measure that bound
+  directly.
+- **The cost of measuring:** about 0.04 ms per frame on the mean and p95
+  (2.426 versus 2.383 mean in the run before it). Kept on by default; a spec
+  can turn it off with `yolo_gpu_timing: false`.
+
+Consequence for the roadmap: the next real gains are engine-side (INT8, a
+smaller input, or a different model), not pipeline-side. Two engine-only
+specs (`threecam_detect_latency_engine_only`, recording sink
+`immediate_recycle`, early copy on; and `_no_early_copy`, spec key
+`analytics_early_owned_frame: false`) give the like-for-like engine number
+for the upstream comparison and the upper bound on lever 2d.
+
+Engine-only results (same night, three cameras, steady state, mean / p95 ms;
+2010093 shown, the others within 0.01):
+
+| | Registered (recorder on) | Engine only, early copy on | Engine only, no early copy |
+|---|---|---|---|
+| ingress wait | 0.000 | 0.000 | 0.230 / 0.239 |
+| preprocess | 0.333 / 0.386 | 0.292 / 0.301 | 0.075 / 0.079 |
+| TensorRT graph | 2.001 / 2.029 | 1.982 / 1.988 | 1.981 / 1.987 |
+| early-owned copy (concurrent) | 0.337 | 0.327 | (none) |
+| worker total | 2.398 / 2.475 | 2.327 / 2.341 | 2.348 / 2.363 |
+| acquisition to detect done | 2.426 / 2.505 | 2.355 / 2.369 | 2.373 / 2.388 |
+
+- **The engine-only floor is 2.36 ms mean, 2.37 p95, 2.38 p99**, and the
+  recorder costs 0.07 ms on the mean and 0.13 on p95 on top of it. That is
+  the like-for-like number against upstream: 1.98 ms of TensorRT per frame
+  on one 10-SM die, which is 500 frames per second per die if the die did
+  nothing else, from the same yolo11n FP16 engine this branch has always
+  used. The "400 FPS" claim and this pipeline are within a few percent of
+  each other on the engine; everything else in the 2.4 ms is 0.4 ms.
+- **Lever 2d is dead.** Without the early copy, preprocess drops from 0.29
+  to 0.075 ms (which is 20 MB at the die's bandwidth, so preprocess with the
+  copy running was two thirds contention), but 0.23 ms appears as ingress
+  wait instead, and the total is unchanged to 0.02 ms (2.373 versus 2.355,
+  slightly worse). Two readings of the 0.23 are possible: a clock ramp (the
+  die is idle 0.33 ms longer per frame without the copy, and the first GPU
+  work after idle pays for it; with the copy, the copy absorbs the ramp and
+  preprocess pays contention instead) or a memory-visibility cost of reading
+  the RDMA buffer directly. Locking clocks (`nvidia-smi -lgc`, root) would
+  separate them; either way there is nothing for detection to recover by
+  removing the copy, and the recorder needs it. The camera ring-buffer
+  design from the roadmap is withdrawn.
+- The measurement flag stays on; the engine-only specs stay in the tree as
+  the reference for any engine change.
+
+Roadmap after this: engine-side work is the only lever left with more than
+0.1 ms in it (INT8 calibration of the same model, or a smaller input, both
+measured with these specs first); the four-camera and endurance runs with
+2010096; and the clock-lock experiment as a curiosity that may also explain
+the 0.04 ms same-die graph delta.
+
 ## Landed Commits And Follow-Ups
 
 Pushed to `origin/agent/acquisition/shaman-v2-authoritative-20260824` on
