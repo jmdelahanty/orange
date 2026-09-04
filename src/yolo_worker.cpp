@@ -182,6 +182,17 @@ bool SkipCpuResults()
     return enabled;
 }
 
+bool UseGpuTiming()
+{
+    static const bool enabled = []() {
+        const bool on = orange::yolo_flags::EnvFlag("ORANGE_YOLO_GPU_TIMING", true);
+        std::cout << "[YOLO] GPU event timing: " << (on ? "on" : "off")
+                  << " (ORANGE_YOLO_GPU_TIMING)" << std::endl;
+        return on;
+    }();
+    return enabled;
+}
+
 bool UseEventSyncWait()
 {
     static const bool enabled = []() {
@@ -720,6 +731,8 @@ struct YoloPerfRecord {
     double total_ms = -1.0;
     // "event" (cudaEventSynchronize) or "poll" (cudaStreamQuery + usleep).
     std::string sync_mode;
+    double early_copy_ms = -1.0;  // GPU time of the early-owned copy on the acquisition stream
+    int gpu_timing = 0;
 };
 
 enum class YoloPerfEventType {
@@ -820,7 +833,7 @@ private:
                  "service_sequence,camera_service_sequence,active_camera_count,same_camera_service_gap_ms,service_skew_latest_other_ms,service_skew_oldest_other_ms,service_count_skew_vs_min,service_count_skew_range,"
                  "ingress_event_ready_before_wait,wait_ms,pre_ms,gap_ms,enqueue_ms,infer_ms,sync_ms,completion_event_ready_before_sync,"
                  "cpu_wait_event_ms,cpu_ingress_event_query_ms,cpu_stream_wait_event_ms,cpu_npp_set_stream_ms,cpu_preprocess_ms,cpu_input_ready_event_record_ms,cpu_dump_ms,cpu_infer_call_ms,cpu_event_record_ms,cpu_pre_sync_ms,cpu_pre_sync_other_ms,cpu_post_sync_ms,"
-                 "queue_ms,post_ms,track_ms,ipc_ms,enet_ms,total_ms,sync_mode\n";
+                 "queue_ms,post_ms,track_ms,ipc_ms,enet_ms,total_ms,sync_mode,early_copy_ms,gpu_timing\n";
         file_ << std::fixed << std::setprecision(6);
         std::cout << "[YOLO_PERF] " << worker_name_ << " logging to " << file_path_ << std::endl;
     }
@@ -908,7 +921,9 @@ private:
               << record.ipc_ms << ","
               << record.enet_ms << ","
               << record.total_ms << ","
-              << record.sync_mode << "\n";
+              << record.sync_mode << ","
+              << record.early_copy_ms << ","
+              << record.gpu_timing << "\n";
     }
 
     void ThreadMain() {
@@ -1553,7 +1568,6 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             ms_ingress_event_record_to_worker_start = static_cast<double>(
                 worker_start_host_ns - entry->ingress_event_record_host_ns) / 1000000.0;
         }
-#if YOLO_PROFILE
         struct YoloProfileEvents {
             cudaEvent_t pre_start{};
             cudaEvent_t pre_end{};
@@ -1596,10 +1610,17 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         };
 
         static thread_local YoloProfileEvents prof_events;
+#if YOLO_PROFILE
         static thread_local int prof_count = 0;
-        prof_events.Init(associated_camera_params_->gpu_id);
-        bool timed_wait = false;
 #endif
+        // Runtime GPU event timing (lever 2d, measured first). The events
+        // live on the YOLO stream; the elapsed reads happen after the
+        // completion wait below, so they never add a synchronization.
+        const bool gpu_timing = UseGpuTiming();
+        if (gpu_timing) {
+            prof_events.Init(associated_camera_params_->gpu_id);
+        }
+        bool timed_wait = false;
         const int camera_width = associated_camera_params_->width;
         const int camera_height = associated_camera_params_->height;
 
@@ -1634,23 +1655,21 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 cudaGetLastError();
             }
             if (issue_stream_wait) {
-#if YOLO_PROFILE
-                ck(cudaEventRecord(prof_events.wait_start, yolov8_instance_->stream));
-#endif
+                if (gpu_timing) {
+                    ck(cudaEventRecord(prof_events.wait_start, yolov8_instance_->stream));
+                }
                 const auto cpu_stream_wait_start = std::chrono::steady_clock::now();
                 ck(cudaStreamWaitEvent(yolov8_instance_->stream, *entry->event_ptr, 0));
                 const auto cpu_stream_wait_end = std::chrono::steady_clock::now();
                 ms_cpu_stream_wait_event =
                     std::chrono::duration<double, std::milli>(
                         cpu_stream_wait_end - cpu_stream_wait_start).count();
-#if YOLO_PROFILE
-                ck(cudaEventRecord(prof_events.wait_end, yolov8_instance_->stream));
-                timed_wait = true;
-#endif
+                if (gpu_timing) {
+                    ck(cudaEventRecord(prof_events.wait_end, yolov8_instance_->stream));
+                    timed_wait = true;
+                }
             } else {
-#if YOLO_PROFILE
                 ms_wait = 0.0f;
-#endif
             }
             const auto cpu_wait_end = std::chrono::steady_clock::now();
             ms_cpu_wait_event = std::chrono::duration<double, std::milli>(cpu_wait_end - cpu_wait_start).count();
@@ -1671,9 +1690,9 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             entry,
             associated_camera_params_->gpu_id));
         const auto cpu_preprocess_start = std::chrono::steady_clock::now();
-#if YOLO_PROFILE
-        ck(cudaEventRecord(prof_events.pre_start, yolov8_instance_->stream));
-#endif
+        if (gpu_timing) {
+            ck(cudaEventRecord(prof_events.pre_start, yolov8_instance_->stream));
+        }
         {
             NVTX_YOLO_DYNAMIC(BuildYoloNvtxLabel(
                 "YOLO preprocess_gpu call",
@@ -1724,9 +1743,9 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             ms_worker_start_to_yolo_input_ready = static_cast<double>(
                 entry->yolo_input_ready_host_ns - worker_start_host_ns) / 1000000.0;
         }
-#if YOLO_PROFILE
-        ck(cudaEventRecord(prof_events.pre_end, yolov8_instance_->stream));
-#endif
+        if (gpu_timing) {
+            ck(cudaEventRecord(prof_events.pre_end, yolov8_instance_->stream));
+        }
         const auto cpu_preprocess_end = std::chrono::steady_clock::now();
         ms_cpu_preprocess = std::chrono::duration<double, std::milli>(cpu_preprocess_end - cpu_preprocess_start).count();
         }
@@ -1759,9 +1778,9 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         // Preprocess and run inference. These are non-blocking CUDA calls.
         const auto infer_call_start = std::chrono::steady_clock::now();
         auto inference_start_time = infer_call_start;
-#if YOLO_PROFILE
-        ck(cudaEventRecord(prof_events.infer_start, yolov8_instance_->stream));
-#endif
+        if (gpu_timing) {
+            ck(cudaEventRecord(prof_events.infer_start, yolov8_instance_->stream));
+        }
         {
             NVTX_YOLO_DYNAMIC(BuildYoloNvtxLabel(
                 "YOLO infer enqueue",
@@ -1771,13 +1790,11 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 associated_camera_params_->gpu_id));
             yolov8_instance_->infer();
         }
-#if YOLO_PROFILE
         const auto infer_call_end = std::chrono::steady_clock::now();
         ms_enqueue = std::chrono::duration<double, std::milli>(infer_call_end - infer_call_start).count();
-        ck(cudaEventRecord(prof_events.infer_end, yolov8_instance_->stream));
-#else
-        const auto infer_call_end = std::chrono::steady_clock::now();
-#endif
+        if (gpu_timing) {
+            ck(cudaEventRecord(prof_events.infer_end, yolov8_instance_->stream));
+        }
         ms_cpu_infer_call = std::chrono::duration<double, std::milli>(infer_call_end - infer_call_start).count();
 
         // record per-frame event for synchronization
@@ -1848,9 +1865,7 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         }
             sync_wait_end = std::chrono::steady_clock::now();
         }
-#if YOLO_PROFILE
         ms_sync_wait = std::chrono::duration<double, std::milli>(sync_wait_end - sync_wait_start).count();
-#endif
         ms_cpu_pre_sync = std::chrono::duration<double, std::milli>(sync_wait_start - cpu_start).count();
         ms_cpu_pre_sync_other = ms_cpu_pre_sync - (
             ms_cpu_wait_event +
@@ -1865,8 +1880,10 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             ms_cpu_pre_sync_other = 0.0;
         }
 
-#if YOLO_PROFILE
-        if (finished_in_time) {
+        float ms_early_copy = -1.0f;
+        if (gpu_timing && finished_in_time) {
+            // infer_end precedes the completion event on the same stream, so
+            // this synchronize returns immediately after the wait above.
             ck(cudaEventSynchronize(prof_events.infer_end));
             if (timed_wait) {
                 ck(cudaEventElapsedTime(&ms_wait, prof_events.wait_start, prof_events.wait_end));
@@ -1878,23 +1895,36 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             if (ms_queue < 0.0) {
                 ms_queue = 0.0;
             }
+            // Early-owned copy on the acquisition stream (concurrent with
+            // preprocess, not serial with it). Only reported once complete.
+            if (entry->has_analytics_owned_source() &&
+                entry->analytics_copy_timing_start &&
+                entry->analytics_copy_timing_end &&
+                entry->analytics_copy_timed) {
+                const cudaError_t copy_done = cudaEventQuery(entry->analytics_copy_timing_end);
+                if (copy_done == cudaSuccess) {
+                    ck(cudaEventElapsedTime(
+                        &ms_early_copy,
+                        entry->analytics_copy_timing_start,
+                        entry->analytics_copy_timing_end));
+                } else if (copy_done != cudaErrorNotReady) {
+                    ck(copy_done);
+                } else {
+                    cudaGetLastError();
+                }
+            }
         }
-#endif
         if (finished_in_time) {
             // Now that the GPU is finished, process the results.
             // This completely REPLACES entry->detections, preventing stale data
-#if YOLO_PROFILE
             const auto post_start = std::chrono::steady_clock::now();
-#endif
             if (!skip_cpu_results) {
                 yolov8_instance_->postprocess(entry->detections);
             } else {
                 entry->detections.clear();
             }
-#if YOLO_PROFILE
             const auto post_end = std::chrono::steady_clock::now();
             ms_post = std::chrono::duration<double, std::milli>(post_end - post_start).count();
-#endif
         } else {
             // Timed out, clear any potential partial results
             entry->detections.clear();
@@ -2040,9 +2070,7 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         }
 
         // NEW: Update Frame IPC with YOLO detection results
-#if YOLO_PROFILE
         const auto ipc_start = std::chrono::steady_clock::now();
-#endif
         uint64_t frame_id_for_ipc = entry->ipc_frame_id;
         if (frame_id_for_ipc == 0) {
             frame_id_for_ipc = (entry->recording_frame_id > 0)
@@ -2114,22 +2142,16 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         } else if (synthetic_detection_mode && frame_ipc_enabled && entry->has_detections) {
             frame_ipc_request_status = "not_requested_synthetic_runtime";
         }
-#if YOLO_PROFILE
         const auto ipc_end = std::chrono::steady_clock::now();
         ms_ipc = std::chrono::duration<double, std::milli>(ipc_end - ipc_start).count();
-#endif
 
         // Handle ENet sending if configured
-#if YOLO_PROFILE
         const auto enet_start = std::chrono::steady_clock::now();
-#endif
         if (!skip_cpu_results && !synthetic_detection_mode && enet_target_peer_ && associated_camera_select_->send_yolo_via_enet && !entry->detections.empty()) {
             // ENet code remains unchanged
         }
-#if YOLO_PROFILE
         const auto enet_end = std::chrono::steady_clock::now();
         ms_enet = std::chrono::duration<double, std::milli>(enet_end - enet_start).count();
-#endif
 
         const bool has_recording_frame = entry->recording_frame_id > 0;
         if (event_logger_ && !entry->recording_folder.empty() && has_recording_frame) {
@@ -2293,6 +2315,8 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 record.enet_ms = ms_enet;
                 record.total_ms = ms_total;
                 record.sync_mode = orange::yolo_flags::SyncModeLabel(UseEventSyncWait());
+                record.early_copy_ms = ms_early_copy;
+                record.gpu_timing = gpu_timing ? 1 : 0;
                 perf_logger_->Enqueue(record);
             }
         }

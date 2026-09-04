@@ -54,6 +54,14 @@ struct ResolvedFlags {
     std::string stream_priority = "high";
     // ORANGE_YOLO_STREAM_NONBLOCKING: create the YOLO stream non-blocking.
     bool stream_nonblocking = false;
+    // ORANGE_YOLO_GPU_TIMING: record CUDA events around the ingress wait,
+    // preprocess, and the TensorRT graph on the YOLO stream, and around the
+    // early-owned copy on the acquisition stream, and report the elapsed
+    // GPU times per frame (pre_ms, gap_ms, infer_ms, early_copy_ms). Default
+    // on since 2026-09-04 (lever 2d, measured first): the elapsed reads
+    // happen after the completion wait the worker already does, so the cost
+    // is six event records per frame.
+    bool gpu_timing = true;
     // ORANGE_YOLO_PERF_LOG / ORANGE_YOLO_PERF_SAMPLE.
     bool perf_log = false;
     int perf_sample = 0;
@@ -71,6 +79,7 @@ inline ResolvedFlags Resolve()
         flags.stream_priority = env;
     }
     flags.stream_nonblocking = EnvFlag("ORANGE_YOLO_STREAM_NONBLOCKING", false);
+    flags.gpu_timing = EnvFlag("ORANGE_YOLO_GPU_TIMING", true);
     flags.perf_log = EnvFlag("ORANGE_YOLO_PERF_LOG", false);
     if (const char* env = std::getenv("ORANGE_YOLO_PERF_SAMPLE"); env && *env) {
         flags.perf_sample = std::atoi(env);

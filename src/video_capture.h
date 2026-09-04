@@ -97,6 +97,11 @@ typedef struct {
 
     // Optional event for an acquisition-time owned analytics copy
     cudaEvent_t analytics_ready_event = nullptr;
+    // Timing-enabled events around the early-owned copy (ORANGE_YOLO_GPU_TIMING);
+    // analytics_copy_timed says whether they were recorded for this frame.
+    cudaEvent_t analytics_copy_timing_start = nullptr;
+    cudaEvent_t analytics_copy_timing_end = nullptr;
+    bool analytics_copy_timed = false;
     bool analytics_owned_frame_valid = false;
 
     bool has_analytics_owned_source() const
@@ -296,6 +301,8 @@ struct CameraResources {
             worker_entry_pool[i].pool_buffer_bytes = pool_buffer_bytes;
             worker_entry_pool[i].d_image_pool = worker_entry_pool[i].d_image;
             ck(cudaEventCreateWithFlags(&worker_entry_pool[i].analytics_ready_event, cudaEventDisableTiming));
+            ck(cudaEventCreate(&worker_entry_pool[i].analytics_copy_timing_start));
+            ck(cudaEventCreate(&worker_entry_pool[i].analytics_copy_timing_end));
             ck(cudaEventCreateWithFlags(&worker_entry_pool[i].yolo_input_ready_event, cudaEventDisableTiming));
             worker_entry_pool[i].image_gpu_id = gpu_id;
             worker_entry_pool[i].yolo_input_ready_event_recorded.store(false);
@@ -339,6 +346,12 @@ struct CameraResources {
                 if (worker_entry_pool[i].analytics_ready_event) {
                     cudaEventDestroy(worker_entry_pool[i].analytics_ready_event);
                 }
+                if (worker_entry_pool[i].analytics_copy_timing_start) {
+                    cudaEventDestroy(worker_entry_pool[i].analytics_copy_timing_start);
+                }
+                if (worker_entry_pool[i].analytics_copy_timing_end) {
+                    cudaEventDestroy(worker_entry_pool[i].analytics_copy_timing_end);
+                }
                 if (worker_entry_pool[i].yolo_input_ready_event) {
                     cudaEventDestroy(worker_entry_pool[i].yolo_input_ready_event);
                 }
@@ -349,6 +362,8 @@ struct CameraResources {
                 worker_entry_pool[i].d_image_pool = nullptr;
                 worker_entry_pool[i].d_analytics_image = nullptr;
                 worker_entry_pool[i].analytics_ready_event = nullptr;
+                worker_entry_pool[i].analytics_copy_timing_start = nullptr;
+                worker_entry_pool[i].analytics_copy_timing_end = nullptr;
                 worker_entry_pool[i].yolo_input_ready_event = nullptr;
             }
             delete[] worker_entry_pool;

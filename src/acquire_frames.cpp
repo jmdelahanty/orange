@@ -12,6 +12,7 @@
 #include "thread.h"
 #include "opengldisplay.h"
 #include "yolo_worker.h"
+#include "yolo_runtime_flags.h"
 #include "image_writer_worker.h"
 #include "crop_and_encode_worker.h"
 #include "display_preview_policy.h"
@@ -2084,12 +2085,22 @@ void acquire_frames(
                 // analytics copy is produced for delayed consumers.
                 ck(cudaEventRecord(*current_entry->event_ptr, stream));
                 current_entry->ingress_event_record_host_ns = steady_clock_now_ns();
+                static const bool early_copy_timing =
+                    orange::yolo_flags::EnvFlag("ORANGE_YOLO_GPU_TIMING", true);
+                current_entry->analytics_copy_timed = false;
+                if (early_copy_timing && current_entry->analytics_copy_timing_start) {
+                    ck(cudaEventRecord(current_entry->analytics_copy_timing_start, stream));
+                }
                 ck(cudaMemcpyAsync(
                     current_entry->d_analytics_image,
                     received_frame->imagePtr,
                     received_frame->bufferSize,
                     cudaMemcpyDeviceToDevice,
                     stream));
+                if (early_copy_timing && current_entry->analytics_copy_timing_end) {
+                    ck(cudaEventRecord(current_entry->analytics_copy_timing_end, stream));
+                    current_entry->analytics_copy_timed = true;
+                }
                 ck(cudaEventRecord(current_entry->analytics_ready_event, stream));
             } else if (use_direct_pointer && !use_ring_copy) {
                 gpu_direct_frames++;

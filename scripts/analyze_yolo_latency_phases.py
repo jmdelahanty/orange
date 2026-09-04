@@ -62,6 +62,15 @@ PERF_COLUMNS = [
     "cpu_event_record_ms",
     "yolo_affinity_effective_cpus",
     "sync_mode",
+    # GPU event timing (ORANGE_YOLO_GPU_TIMING, default on since 2026-09-04);
+    # -1 when off or when the run predates it.
+    "wait_ms",
+    "pre_ms",
+    "gap_ms",
+    "infer_ms",
+    "queue_ms",
+    "early_copy_ms",
+    "gpu_timing",
 ]
 
 FLOAT_COLUMNS = {
@@ -77,6 +86,12 @@ FLOAT_COLUMNS = {
     "cpu_post_sync_ms",
     "cpu_event_record_ms",
     "copy_ms",
+    "wait_ms",
+    "pre_ms",
+    "gap_ms",
+    "infer_ms",
+    "queue_ms",
+    "early_copy_ms",
 }
 
 
@@ -299,6 +314,18 @@ def analyze_camera(
     gpu_wait = total - perf["cpu_pre_sync_ms"] - perf["cpu_post_sync_ms"]
     result["gpu_wait_ms"] = quantiles(gpu_wait)
 
+    # GPU event timing: what the floor is made of. Each phase is reported
+    # over the frames where it was measured (>= 0).
+    gpu_phases: dict[str, Any] = {}
+    for column in ("wait_ms", "pre_ms", "gap_ms", "infer_ms", "queue_ms", "early_copy_ms"):
+        if column not in perf:
+            continue
+        values = perf[column]
+        measured = values >= 0.0
+        gpu_phases[column] = quantiles(values[measured]) if measured.any() else None
+        gpu_phases[column + "_measured_fraction"] = float(measured.mean()) if n else math.nan
+    result["gpu_phases"] = gpu_phases or None
+
     # Encoder die split and cycle phase (needs the external recorder routing CSV).
     recorder_dir = args.external_recorder_dir or os.path.join(run_dir, "external_recorder")
     routing = read_routing(os.path.join(recorder_dir, f"Cam{serial}{ROUTING_SUFFIX}"))
@@ -405,6 +432,26 @@ def print_summary(result: dict[str, Any]) -> None:
             f"{fmt(cam['yolo_queue_wait_ms'].get('mean', math.nan)):>6}"
         )
     print()
+    print("gpu phases (event timing, ms; mean / p95 over measured frames):")
+    for serial, cam in result["cameras"].items():
+        phases = cam.get("gpu_phases")
+        if not phases or all(phases.get(k) is None for k in ("pre_ms", "infer_ms")):
+            print(f"  {serial}: no GPU event timing in this run")
+            continue
+        parts = []
+        for key, label in (
+            ("wait_ms", "ingress wait"),
+            ("pre_ms", "preprocess"),
+            ("gap_ms", "gap"),
+            ("infer_ms", "infer"),
+            ("queue_ms", "queue"),
+            ("early_copy_ms", "early copy"),
+        ):
+            q = phases.get(key)
+            if q:
+                parts.append(f"{label} {fmt(q.get('mean', math.nan))}/{fmt(q.get('p95', math.nan))}")
+        print(f"  {serial}: " + " | ".join(parts))
+    print()
     print("encoder die split (worker total_ms):")
     for serial, cam in result["cameras"].items():
         split = cam["encoder_die_split"]
@@ -466,6 +513,9 @@ def print_comparison(result: dict[str, Any], baseline: dict[str, Any]) -> None:
         ("worker total mean", lambda c: c["worker_total_ms"].get("mean")),
         ("worker total p95", lambda c: c["worker_total_ms"].get("p95")),
         ("gpu wait mean", lambda c: c["gpu_wait_ms"].get("mean")),
+        ("infer mean", lambda c: ((c.get("gpu_phases") or {}).get("infer_ms") or {}).get("mean")),
+        ("preprocess mean", lambda c: ((c.get("gpu_phases") or {}).get("pre_ms") or {}).get("mean")),
+        ("early copy mean", lambda c: ((c.get("gpu_phases") or {}).get("early_copy_ms") or {}).get("mean")),
         ("acq→worker p99", lambda c: c["acquisition_to_worker_start_ms"].get("p99")),
         ("acq→worker p99.9", lambda c: c["acquisition_to_worker_start_ms"].get("p999")),
         (
