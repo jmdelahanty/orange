@@ -2202,6 +2202,10 @@ def verify_analytics_root(analytics_root: Path, serials: list[str]) -> list[Path
         acked = as_int(row.get("external_ipc_frames_acked_final", 0), "external_ipc_frames_acked_final")
         submitted = as_int(row.get("submitted_frames_final", 0), "submitted_frames_final")
         require(submitted == 0 or acked >= submitted, f"external IPC ACKed fewer frames than submitted for {serial}")
+        # A deferred-release cap skip is an acquired frame the recorder never
+        # saw (a hole in the dataset); older runs.json rows lack the field.
+        cap_skips = as_int(row.get("deferred_release_cap_skips_final", 0), "deferred_release_cap_skips_final")
+        require(cap_skips == 0, f"deferred-release cap skipped {cap_skips} frames (never recorded) for {serial}")
     return recording_folders
 
 

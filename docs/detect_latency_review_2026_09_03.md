@@ -662,15 +662,10 @@ Making 2c production-ready, in order:
 
 - Route the other-die shard through the slot-copy path instead of the old
   deferred direct-source copy, so that shard gets its headroom back.
-- Verify the cap's skip semantics with a deliberately small cap
-  (`ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED=4`). A skipped frame is never
-  submitted to the recorder, so the merged writer's GOP has fewer submitted
-  frames and should still complete (`continuity_policy = encoded_subset`,
-  `recording_frame_id_gaps_allowed = true`); the run must finish
-  `completed` / `pass` with `deferred_release_cap_skips > 0`. If it does not,
-  add a SKIP message or skip whole GOPs. (The one run that hit the cap also had
-  the drain-ordering bug, so its merged-writer failure is not evidence either
-  way.)
+- Replace the cap's skip with a copy fallback (see "Skipped Frames And
+  Dataset Integrity" below). Until then the verifier fails any run with a
+  nonzero `deferred_release_cap_skips`, and a deliberately small cap
+  (`ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED=4`) is the test that it fires.
 - Default registered source and the NV12 pool on once the endurance run
   passes.
 - Reinstall the GUI wrapper so citrus runs get the flags.
@@ -685,6 +680,105 @@ comparison with upstream.
 Housekeeping: a test pinning the recorder's identity-proof schema to what the
 checker accepts; the stock fourcam supervised spec's missing
 `recording_control`.
+
+## Skipped Frames And Dataset Integrity (2026-09-04)
+
+Asked on 2026-09-04: the datasets feed scientific analysis, downstream
+alignment must not be disturbed by missing frames, and a frame that was
+submitted for recording must be encoded. Those are two invariants, and the
+design as landed guarantees only one of them.
+
+**Submitted implies encoded: holds, and is proven per run.** The identity
+proof in `recording_session.json` requires packet accounting to balance:
+every recording frame id the ingress submitted must return from NVENC as a
+packet, including the encoder's three-to-four-frame output tail at shutdown
+(the drain fix guarantees the tail is flushed before finalize). The
+registered path does not weaken this; the recorder never releases a pool
+entry until NVENC has unmapped it. Every passing run shows
+`submitted_frames == external_ipc_frames_acked` (5900/5900 per camera) and
+the recorder's routing log has recording frame ids 1 to 5900 with no gaps.
+
+**Acquired implies submitted: not guaranteed while the cap skips.** A cap skip
+(`deferred_release_cap_skips`) is a frame the camera delivered and YOLO
+processed but the recorder never saw. The video has a hole. The metadata
+describes it (`continuity_policy = encoded_subset`,
+`recording_frame_id_gaps_allowed = true`, and every encoded frame keeps its
+camera frame id and PTP timestamp), so alignment by timestamp survives, but
+any downstream step that treats encoded frame index as camera frame index is
+off by one after the hole. For a dataset analysed for years, metadata that
+explains a hole is not the same as no hole. The cap has never tripped at 32
+in steady state (low-water mark 58 free of 62), but "never observed" is not a
+guarantee, and a silent skip is the wrong failure mode for this workload.
+
+Did it ever happen? Once: the first registered run, cap 16, before the two
+shutdown bugs were fixed (2010093 skipped 38 frames, ids 17 to 24 and later;
+2010095 ids 17, 19, 21 to 24, 39, 40). That run's merged writer failed, but
+the same run had the drain-ordering bug, which produced the identical
+frontier error on later runs with zero skips, so it is not evidence about
+what a skip does to the output. Every run since, including the runner
+validation on 2026-09-04, has zero skips on every camera.
+
+What changes, in order:
+
+1. **Verifier (landed 2026-09-04).** `orange_client` reads
+   `deferred_release_cap_skips` from the pipeline perf CSV into
+   `runs.json` as `deferred_release_cap_skips_final`, and a nonzero value
+   fails the run with reason "nonzero deferred-release cap skips (frames
+   never recorded)" on both evaluation paths (metrics-only and real
+   recording). It is not policy-configurable. The Python session verifier
+   (`scripts/verify_external_recorder_session.py`) requires the same. A hole
+   can therefore never pass as a clean run. Older CSVs without the column
+   count as zero.
+2. **Copy fallback instead of skip.** Recording pressure should cost latency,
+   never data. The recorder keeps a few staging NV12 buffers on its encode
+   GPU, registered with NVENC once at startup. When the ingress reaches the
+   cap it sends the frame anyway with a `copy` token; the recorder copies the
+   frame into a staging buffer, releases the pool entry immediately, and
+   encodes from staging. That is the same copy the direct-input path already
+   does, so the cost is known and only paid under pressure; steady state
+   stays zero-copy. Registered mode today has no internal input slots
+   (`PrepareExternalRegisteredSlots()` leaves `m_vInputFrames` empty), which
+   is why the fallback cannot reuse the existing copy path on the same
+   encoder and needs the staging set. After this the cap is a latency guard,
+   not a data guard, and the `deferred_release_cap_skips` counter should stay
+   at zero by construction (rename to a `copy_fallback` counter).
+3. **Test.** `experiment_specs/threecam_detect_latency_levers_gate_registered_cap4.json`
+   (new spec key `fixed.external_recorder_max_deferred`, exported by
+   `orange_client` as `ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED`; the sudo
+   wrapper does not forward the raw variable). Today it must fail the
+   verifier with the new reason; after the fallback it must pass with the
+   fallback counter nonzero and 5900/5900 on every camera.
+
+Result of the cap-4 test (2026-09-04, two runs):
+
+- First run, with the skip counter warmup-adjusted like the other counters:
+  the cap tripped on every camera during the first second (2010093 skipped
+  57 frames, ids 5 to 23 and 27 to 64; the others within one frame of
+  that), the merged writer completed, the identity proof passed with 5843
+  encoded frames, and the run **passed**. Every skip fell inside
+  `warmup_s = 2`, so the post-warmup delta was zero, and the existing
+  "acked at least submitted" check is also a post-warmup delta. That is the
+  silent hole exactly as feared, produced by the verifier's own warmup
+  convention.
+- Fix: `deferred_release_cap_skips_final` is now the absolute final
+  counter, never warmup-adjusted (a frame skipped during warmup is still
+  missing from a recording whose ids start at 1). Second run: skips 58, 59,
+  57; `pass_fail = fail`, reason "nonzero deferred-release cap skips (frames
+  never recorded)" on all three cameras.
+- Two things this settled: a skipped frame does not wedge the merged writer
+  (the GOP completes with fewer frames, as the encoded-subset policy
+  allows), and "submitted implies encoded" held with holes present (routing
+  rows equal frames encoded equal proof count). The remaining gap is only
+  "acquired implies submitted", which the copy fallback closes.
+- The steady-state hold count: with the cap at 4 the pending count sat at
+  the cap only during startup and at 3 for the rest of the run (NVENC's
+  output delay), which is why the skips stop after frame 64. The default of
+  32 is eight times that.
+
+One more failure class for completeness: if the recorder process dies or
+stalls mid-run, frames after that point are not encoded on any path. That
+already fails the run through the recorder contract and the identity proof,
+so it cannot produce a dataset that looks clean.
 
 ## Landed Commits And Follow-Ups
 

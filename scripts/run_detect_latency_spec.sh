@@ -61,6 +61,10 @@ python3 - "$OUTPUT_ROOT/$EXPERIMENT_ID/runs.json" <<'PY'
 import json, sys
 r = json.load(open(sys.argv[1]))['runs'][0]
 print(f"[run] status={r.get('status')} pass_fail={r.get('pass_fail')} reason={str(r.get('reason'))[:200]}")
+for row in r.get('camera_results', []):
+    print(f"[run]   camera {row.get('camera_serial')}: pass_fail={row.get('pass_fail')} reason={str(row.get('reason'))[:160]}"
+          f" cap_skips={row.get('deferred_release_cap_skips_final')} submitted={row.get('submitted_frames_final')}"
+          f" acked={row.get('external_ipc_frames_acked_final')}")
 PY
 ARGS=("$RUN_DIR" --external-recorder-dir "$ARTIFACT_ROOT" --steady-after 200 --json "$RUN_DIR/latency_phases.json")
 [[ -n "$BASELINE_JSON" ]] && ARGS+=(--baseline-json "$BASELINE_JSON")
