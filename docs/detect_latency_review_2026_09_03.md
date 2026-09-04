@@ -1200,6 +1200,20 @@ the 0.04 ms same-die graph delta.
 
 ## Landed Commits And Follow-Ups
 
+2026-09-04 additions, all pushed: `278d459` roadmap, four-camera and
+endurance specs, `scripts/run_detect_latency_spec.sh`; `63e2dfb` verifier
+fails cap skips (absolute counter), cap spec key, cap-4 spec; `911cd4d`
+copy fallback and hard cap; `1408c1b` runtime GPU event timing; `addd977`
+engine-only specs; `f8e6e98` force-direct-read and the true floor;
+`3d8a1ce` lever 2d behind a flag; `57ab5e2` lever 2d as the only path with
+the guard in the entry accessor. Follow-ups now: a GUI smoke with recording
+on (display, crop and snapshot consumers block until the after-detection
+copy is recorded, which headless runs never exercise); the endurance spec
+with everything on, then registered source default-on; the four-camera
+runs when 2010096 is up; engine-side work (INT8, input size) as the only
+lever left with more than 0.1 ms in it.
+
+
 Pushed to `origin/agent/acquisition/shaman-v2-authoritative-20260824` on
 2026-09-03 (`e3cf98c` to `0ed660f`):
 
