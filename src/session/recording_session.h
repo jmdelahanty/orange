@@ -375,4 +375,16 @@ void shutdown_recording_pipeline_for_camera(RecordingSessionState* state, int ca
 void clear_recording_pipelines(RecordingSessionState* state);
 RecordingIngress* recording_ingress_for_camera(const RecordingSessionState& state, int camera_index);
 
+// External crop recorder contract (used by the GUI recording session and,
+// since 2026-09-04, by the headless client's fixed.crop_recording
+// mode=external_ipc).
+nlohmann::json build_external_crop_recorder_contract(
+    const std::string& recording_folder,
+    const std::string& recording_id,
+    const CameraParams* cameras_params,
+    const CameraEachSelect* cameras_select,
+    int num_cameras,
+    const RecordingControlConfig& recording_control);
+std::string validate_external_crop_recorder_contract(const nlohmann::json& contract);
+
 }  // namespace orange::session

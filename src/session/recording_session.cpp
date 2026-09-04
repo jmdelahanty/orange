@@ -3982,4 +3982,27 @@ RecordingIngress* recording_ingress_for_camera(const RecordingSessionState& stat
         : nullptr;
 }
 
+
+nlohmann::json build_external_crop_recorder_contract(
+    const std::string& recording_folder,
+    const std::string& recording_id,
+    const CameraParams* cameras_params,
+    const CameraEachSelect* cameras_select,
+    const int num_cameras,
+    const RecordingControlConfig& recording_control)
+{
+    return materialize_external_crop_recorder_contract_for_cameras(
+        recording_folder,
+        recording_id,
+        cameras_params,
+        cameras_select,
+        num_cameras,
+        recording_control);
+}
+
+std::string validate_external_crop_recorder_contract(const nlohmann::json& contract)
+{
+    return external_crop_contract_validation_error(contract);
+}
+
 }  // namespace orange::session

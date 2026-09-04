@@ -1402,12 +1402,55 @@ mean / p95 / p99 in ms:
   Every frame produced a crop and a pose event on the synthetic spec, and
   the crop videos finalized cleanly.
 
-Follow-ups, in order: route the crop encode to the external crop recorder
-on the other die (the GUI's `ORANGE_CROP_RECORDING_SINK_MODE=external_ipc`
-path, not wired headless yet), which should take the p99 back to 2.32; or
-a cheaper crop encode profile than lossless p7 if the in-process path has
-to stay; then the same measurement with a real animal, where the crop
-position moves.
+### External crop recorder, headless (2026-09-04, 17:00)
+
+`fixed.crop_recording.mode = "external_ipc"` now supervises the GUI's
+external crop recorder from the headless client: one recorder process per
+camera, placed on the other die of the camera's card (the full-frame
+contract's shard GPU that is not the detect die, exported as
+`ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_<serial>`), contract materialized
+by the same session code the GUI uses (exported as
+`build_external_crop_recorder_contract`), artifacts under the run folder's
+`external_crop_recorder/`, started after the full-frame supervisor and
+stopped before it. Spec
+`threecam_detect_latency_levers_gate_registered_crop_synthetic_external`.
+
+Result, same synthetic crop on every frame, recorder GPUs 4 / 2 / 8 for
+2010093 / 94 / 95, acquisition-to-detect mean / p95 / p99:
+
+| Camera (card) | In-process crop NVENC | External crop recorder, other die | Graph, other-die GOPs, mean / p95 |
+|---|---|---|---|
+| 2010093 (card A, two cameras) | 2.229 / 2.319 / 2.665 | 2.238 / 2.408 / 2.769 | 1.987 / 2.024 in-process, 2.019 / 2.161 external |
+| 2010094 (card A, two cameras) | 2.230 / 2.320 / 2.617 | 2.272 / 2.548 / 2.795 | 1.988 / 2.025 in-process, 2.036 / 2.375 external |
+| 2010095 (card B, alone) | 2.220 / 2.317 / 2.585 | 2.211 / 2.308 / 2.332 | 1.984 / 2.023 in-process, 1.982 / 2.021 external |
+
+- The crop recorder itself is trivial: 5,901 crops per camera encoded at
+  0.04 to 0.06 ms each, identity proof passed, every frame accounted for.
+- **On the card that carries one camera it is the best crop configuration
+  measured**: 2010095 goes back to 2.21 / 2.31 / 2.33, the no-crop numbers,
+  because nothing crop-related touches the detect die any more.
+- **On the card that carries two cameras it is worse than in-process**, by
+  0.09 and 0.23 ms on p95, and the split says where: the graph slows only
+  during the GOPs whose full-frame shard is on the *other* die (p95 2.16 and
+  2.38 against 2.02), while same-die GOPs and preprocess are unchanged. The
+  crop recorder on the other die adds a peer read of the crop from the
+  detect die's memory on top of the other-die shard's 20 MB frame copy, and
+  with two cameras the card's switch carries both cameras' traffic; the
+  single-camera card does not see it. Steady state, not a transient: the
+  per-10 s p95 windows are flat. The one startup effect was 42 copy
+  fallbacks on 2010094 in the first second (pending peaked at 35 while six
+  recorder processes came up at once; no frame lost).
+- With 2010096 back, card B carries two cameras too, so the two-camera
+  case is the real one. Two things to try, both cheap: put the crop
+  recorders on GPUs outside the card (the A6000, or a die on a card that
+  is not encoding the same camera), and a cheaper in-process crop profile
+  than lossless p7. Then the same measurement with a real animal.
+
+Note on the spec files: the stream paths in `_crop_synthetic_external`
+were generated with a doubled prefix on the first run (cosmetic; the run's
+full-frame artifacts landed under
+`/tmp/orange_external_recorder_threecam_detect_latency_threecam_..._external/`);
+fixed in the tree.
 
 ## Landed Commits And Follow-Ups
 

@@ -124,9 +124,10 @@ struct HeadlessYoloWorkerConfig {
 // wired headless yet). Added 2026-09-04 so the crop load can be measured
 // with the latency specs (docs/detect_latency_review_2026_09_03.md).
 struct HeadlessCropRecordingConfig {
-    std::string mode = "off";   // off | in_process
+    std::string mode = "off";   // off | in_process | external_ipc
     int crop_size_px = 0;       // 0: the camera config's crop_pipeline.crop_size_px
-    bool enabled() const { return mode == "in_process"; }
+    bool enabled() const { return mode == "in_process" || mode == "external_ipc"; }
+    bool external() const { return mode == "external_ipc"; }
 };
 
 struct HeadlessPoseWorkerConfig {
@@ -4759,11 +4760,13 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
         g_headless_crop_encode_workers.clear();
         g_headless_crop_encode_workers.resize(num_cameras);
         if (crop_recording_config.enabled()) {
-            setenv("ORANGE_CROP_RECORDING_SINK_MODE", "in_process", 0);
+            setenv("ORANGE_CROP_RECORDING_SINK_MODE", crop_recording_config.mode.c_str(), 1);
             std::cout << "Headless crop recording enabled."
                       << " mode=" << crop_recording_config.mode
                       << " crop_size_px=" << crop_recording_config.crop_size_px
-                      << " runtime=CropProducerWorker->CropAndEncodeWorker (in-process NVENC on the detect die)"
+                      << (crop_recording_config.external()
+                              ? " runtime=CropProducerWorker->CropAndEncodeWorker->external crop recorder (supervised process on the recorder GPU)"
+                              : " runtime=CropProducerWorker->CropAndEncodeWorker (in-process NVENC on the detect die)")
                       << std::endl;
             for (int idx : selected_indices) {
                 const int crop_size_px = CropProducerWorker::SanitizeCropSize(
@@ -8132,8 +8135,9 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         }
         spec->crop_recording.mode = node.value("mode", std::string("off"));
         spec->crop_recording.crop_size_px = node.value("crop_size_px", 0);
-        if (spec->crop_recording.mode != "off" && spec->crop_recording.mode != "in_process") {
-            if (error_out) *error_out = "Experiment spec fixed.crop_recording.mode must be off|in_process";
+        if (spec->crop_recording.mode != "off" && spec->crop_recording.mode != "in_process" &&
+            spec->crop_recording.mode != "external_ipc") {
+            if (error_out) *error_out = "Experiment spec fixed.crop_recording.mode must be off|in_process|external_ipc";
             return false;
         }
     }
@@ -9250,8 +9254,23 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         options.external_recorder_contract.supervise_processes;
     orange::external_recorder::SupervisorProcessOptions external_recorder_process_options;
     orange::external_recorder::SupervisedRecorderLifecycleState external_recorder_lifecycle;
+    orange::external_recorder::SupervisedRecorderLifecycleState external_crop_recorder_lifecycle;
     auto stop_supervised_external_recorder = [&]() {
         std::string stop_error;
+        if (external_crop_recorder_lifecycle.started) {
+            std::string crop_stop_error;
+            const bool crop_stopped = orange::external_recorder::StopSupervisedRecorderLifecycle(
+                &external_crop_recorder_lifecycle,
+                &crop_stop_error);
+            if (!external_crop_recorder_lifecycle.last_artifact_error.empty()) {
+                std::cerr << external_crop_recorder_lifecycle.last_artifact_error << std::endl;
+                external_crop_recorder_lifecycle.last_artifact_error.clear();
+            }
+            if (!crop_stopped) {
+                std::cerr << "External crop recorder supervisor shutdown failed: "
+                          << crop_stop_error << std::endl;
+            }
+        }
         const bool stopped = orange::external_recorder::StopSupervisedRecorderLifecycle(
             &external_recorder_lifecycle,
             &stop_error);
@@ -9302,6 +9321,102 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         std::cout << "External recorder supervisor started."
                   << " streams=" << external_recorder_lifecycle.plan.streams.size()
                   << " artifact_root=" << external_recorder_lifecycle.plan.artifact_root
+                  << std::endl;
+    }
+    // fixed.crop_recording mode=external_ipc: supervise the external crop
+    // recorder the way the GUI recording session does, one process per
+    // camera on the other die of the camera's card (the full-frame
+    // contract's shard GPU that is not the detect die), so the crop encode
+    // leaves the detect die entirely. Contract and artifacts live under the
+    // run's recording folder (external_crop_recorder/).
+    if (enable_recording && options.crop_recording.external()) {
+        if (!supervise_external_recorder) {
+            std::cerr << "fixed.crop_recording mode=external_ipc requires the supervised external recorder (recording_sink_mode external_ipc)." << std::endl;
+            close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
+            return 1;
+        }
+        for (int inventory_index : selected_inventory_indices) {
+            CameraParams& camera = cameras_params[inventory_index];
+            cameras_select[inventory_index].crop_and_encode = true;
+            if (options.crop_recording.crop_size_px > 0) {
+                camera.crop_pipeline.crop_size_px = options.crop_recording.crop_size_px;
+            }
+            int recorder_gpu = -1;
+            const auto stream = options.external_recorder_contract.streams.find(camera.camera_serial);
+            if (stream != options.external_recorder_contract.streams.end() &&
+                stream->contains("expected_shard_gpu_ids") &&
+                (*stream)["expected_shard_gpu_ids"].is_array()) {
+                for (const nlohmann::json& gpu : (*stream)["expected_shard_gpu_ids"]) {
+                    if (gpu.is_number_integer() && gpu.get<int>() != camera.gpu_id) {
+                        recorder_gpu = gpu.get<int>();
+                        break;
+                    }
+                }
+            }
+            const std::string per_camera_env =
+                "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_" + camera.camera_serial;
+            if (recorder_gpu >= 0) {
+                setenv(per_camera_env.c_str(), std::to_string(recorder_gpu).c_str(), 0);
+            } else {
+                std::cerr << "Headless crop recording: no other-die shard GPU for camera "
+                          << camera.camera_serial << " in the external recorder contract;"
+                          << " the crop recorder will use " << per_camera_env
+                          << " if set, else the detect die." << std::endl;
+            }
+        }
+        orange::session::RecordingControlConfig crop_recording_control;
+        crop_recording_control.record_for_seconds = options.recording_control.record_for_seconds;
+        crop_recording_control.clip_seconds = options.recording_control.clip_seconds;
+        const nlohmann::json crop_contract =
+            orange::session::build_external_crop_recorder_contract(
+                active_record_folder,
+                options.external_recorder_contract.session_id,
+                cameras_params.get(),
+                cameras_select.get(),
+                discovered_cam_count,
+                crop_recording_control);
+        const std::filesystem::path crop_contract_path =
+            std::filesystem::path(active_record_folder) / "external_crop_recorder_contract.json";
+        {
+            std::ofstream out(crop_contract_path);
+            out << crop_contract.dump(2) << "\n";
+        }
+        const std::string crop_contract_error =
+            orange::session::validate_external_crop_recorder_contract(crop_contract);
+        if (!crop_contract_error.empty()) {
+            std::cerr << crop_contract_error << std::endl;
+            stop_supervised_external_recorder();
+            close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
+            return 1;
+        }
+        orange::external_recorder::SupervisedRecorderLifecycleOptions crop_lifecycle_options;
+        crop_lifecycle_options.contract = crop_contract;
+        crop_lifecycle_options.recorder_tool_path =
+            options.external_recorder_contract.recorder_tool_path;
+        crop_lifecycle_options.default_session_id =
+            options.external_recorder_contract.session_id;
+        crop_lifecycle_options.analytics_root =
+            std::filesystem::path(active_record_folder).parent_path().string();
+        crop_lifecycle_options.verifier_path = "scripts/verify_external_recorder_session.py";
+        crop_lifecycle_options.process_options = external_recorder_process_options;
+        std::string crop_supervisor_error;
+        if (!orange::external_recorder::StartSupervisedRecorderLifecycle(
+                crop_lifecycle_options,
+                &external_crop_recorder_lifecycle,
+                &crop_supervisor_error)) {
+            std::cerr << "External crop recorder supervisor failed to start: "
+                      << crop_supervisor_error << std::endl;
+            if (!external_crop_recorder_lifecycle.last_artifact_error.empty()) {
+                std::cerr << external_crop_recorder_lifecycle.last_artifact_error << std::endl;
+                external_crop_recorder_lifecycle.last_artifact_error.clear();
+            }
+            stop_supervised_external_recorder();
+            close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
+            return 1;
+        }
+        std::cout << "External crop recorder supervisor started."
+                  << " streams=" << external_crop_recorder_lifecycle.plan.streams.size()
+                  << " artifact_root=" << external_crop_recorder_lifecycle.plan.artifact_root
                   << std::endl;
     }
     const std::string yolo_decimate_value =
