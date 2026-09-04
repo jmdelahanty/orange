@@ -940,6 +940,50 @@ Engine-only results (same night, three cameras, steady state, mean / p95 ms;
 - The measurement flag stays on; the engine-only specs stay in the tree as
   the reference for any engine change.
 
+### Why the no-copy result is a puzzle, and why it changes nothing
+
+The two engine-only runs differ in exactly one thing: whether the
+acquisition thread launches a 20 MB copy of the frame right after it
+arrives. With the copy, preprocess took 0.29 ms and the YOLO stream never
+waited for the frame. Without it, preprocess took 0.075 ms, which is 20 MB
+at the die's memory bandwidth, so preprocess had been sharing bandwidth
+with the copy. But the total did not improve, because 0.23 ms appeared
+somewhere new: the YOLO stream sat waiting on the frame-ready event before
+it could start preprocess. The work moved; it did not shrink.
+
+Two explanations fit that shape:
+
+- **Clock ramp.** A GPU lowers its clocks when idle. With the copy, the die
+  is busy about 2.7 ms of every 10 ms frame period. Without it, the die is
+  idle 0.33 ms longer per frame, and the first work after the idle stretch
+  pays for the clocks ramping back up. With the copy, the copy absorbs the
+  ramp and preprocess pays contention; without it, the event wait absorbs
+  the ramp and preprocess runs at full speed. Both cost about the same.
+- **RDMA read cost.** The camera writes the frame straight into GPU memory
+  over PCIe. Without the copy, preprocess is the first thing to touch that
+  memory; a first read of freshly written RDMA memory may carry a settling
+  cost the copy had been absorbing.
+
+Locked clocks separate them. With SM and memory clocks pinned at maximum
+(`nvidia-smi -lgc` / `-lmc`, root; the sudo wrapper does not allow it) the
+ramp explanation predicts the 0.23 ms wait disappears and the no-copy run
+wins by about 0.2 ms; the RDMA explanation predicts the wait stays.
+
+Why it changes no decision: lever 2d's premise was that the copy sits on
+the detect path. It does not. It runs on another stream while preprocess
+runs, and its only cost to detection is shared bandwidth, which nets to
+zero once the ramp or read cost is counted. The copy is also what the
+recorder encodes from under the registered-source path; removing it would
+put the recorder back on the camera's ring buffer, which the driver needs
+returned quickly, for no gain. The clock question is still worth answering
+because it may also explain the 0.04 ms same-die delta on the graph.
+
+The measuring cost: six CUDA event records per frame on the YOLO stream
+and two on the acquisition stream; the elapsed reads are free because the
+worker already waits for completion. Same spec with and without the flag:
+about 0.04 ms on mean and p95. Left on because the information is worth
+more than 40 microseconds; `yolo_gpu_timing: false` turns it off.
+
 Roadmap after this: engine-side work is the only lever left with more than
 0.1 ms in it (INT8 calibration of the same model, or a smaller input, both
 measured with these specs first); the four-camera and endurance runs with
