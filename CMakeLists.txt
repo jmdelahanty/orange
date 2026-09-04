@@ -459,6 +459,10 @@ set(EVT_LENS_PROBE_SOURCES
     "${SRC_DIR}/camera_sensor_pipeline_state.cpp"
 )
 
+set(EVT_FORCE_REBOOT_SOURCES
+    "tools/evt_force_reboot.cpp"
+)
+
 set(EVT_APERTURE_CHARACTERIZE_SOURCES
     "tools/evt_aperture_characterize.cpp"
     "${SRC_DIR}/aperture_characterization.cpp"
@@ -530,6 +534,7 @@ add_executable(orange ${ORANGE_SOURCES})
 add_executable(orange_client EXCLUDE_FROM_ALL ${ORANGE_CLIENT_SOURCES})
 add_executable(yolo_offline EXCLUDE_FROM_ALL ${YOLO_OFFLINE_SOURCES})
 add_executable(evt_lens_probe ${EVT_LENS_PROBE_SOURCES})
+add_executable(evt_force_reboot EXCLUDE_FROM_ALL ${EVT_FORCE_REBOOT_SOURCES})
 add_executable(evt_aperture_characterize ${EVT_APERTURE_CHARACTERIZE_SOURCES})
 add_executable(evt_stream_smoke EXCLUDE_FROM_ALL ${EVT_STREAM_SMOKE_SOURCES})
 add_executable(nvenc_stress_load EXCLUDE_FROM_ALL ${NVENC_STRESS_LOAD_SOURCES})
@@ -1438,6 +1443,7 @@ orange_configure_target(orange)
 orange_configure_target(orange_client)
 orange_configure_target(yolo_offline)
 orange_configure_target(evt_lens_probe)
+orange_configure_target(evt_force_reboot)
 orange_configure_target(evt_aperture_characterize)
 orange_configure_target(evt_stream_smoke)
 orange_configure_target(nvenc_stress_load)
@@ -1709,6 +1715,14 @@ if(ORANGE_ENABLE_NVTX)
 endif()
 
 target_link_libraries(evt_lens_probe PRIVATE
+    ${EVT_CAMERA_LIBRARY}
+    ${EVT_GENICAM_LIBRARY}
+    ${EVT_GIGE_LIBRARY}
+    m
+    pthread
+)
+
+target_link_libraries(evt_force_reboot PRIVATE
     ${EVT_CAMERA_LIBRARY}
     ${EVT_GENICAM_LIBRARY}
     ${EVT_GIGE_LIBRARY}
