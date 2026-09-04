@@ -41,6 +41,8 @@ struct RecordingIngressStats {
     // recording side because the cap on held entries was reached.
     uint64_t deferred_release_pending = 0;
     uint64_t deferred_release_cap_skips = 0;
+    uint64_t deferred_release_copy_fallbacks = 0;
+    uint64_t deferred_release_pending_max = 0;
     uint64_t submitted_frames = 0;
     uint64_t primary_routed_frames = 0;
     uint64_t helper_requested_frames = 0;

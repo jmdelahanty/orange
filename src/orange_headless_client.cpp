@@ -597,6 +597,7 @@ struct ExperimentCsvWindowStats {
     uint64_t external_ipc_ack_timeouts_delta = 0;
     uint64_t submitted_frames_delta = 0;
     uint64_t deferred_release_cap_skips_total = 0;  // absolute, not warmup-adjusted
+    uint64_t deferred_release_copy_fallbacks_total = 0;  // absolute, informational
     uint64_t primary_routed_frames_delta = 0;
     uint64_t helper_requested_frames_delta = 0;
     uint64_t helper_fallback_frames_delta = 0;
@@ -7369,6 +7370,7 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
     // Optional: added with the deferred-release cap (2026-09-04). Older
     // pipeline_perf CSVs lack it and count as zero skips.
     const int deferred_release_cap_skips_index = required_index("deferred_release_cap_skips");
+    const int deferred_release_copy_fallbacks_index = required_index("deferred_release_copy_fallbacks");
     const int primary_routed_frames_index = required_index("primary_routed_frames");
     const int helper_requested_frames_index = required_index("helper_requested_frames");
     const int helper_fallback_frames_index = required_index("helper_fallback_frames");
@@ -7441,6 +7443,7 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
     uint64_t last_external_ipc_ack_timeouts = 0;
     uint64_t last_submitted_frames = 0;
     uint64_t last_deferred_release_cap_skips = 0;
+    uint64_t last_deferred_release_copy_fallbacks = 0;
     uint64_t last_primary_routed_frames = 0;
     uint64_t last_helper_requested_frames = 0;
     uint64_t last_helper_fallback_frames = 0;
@@ -7477,6 +7480,7 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
         uint64_t external_ipc_ack_timeouts = 0;
         uint64_t submitted_frames = 0;
         uint64_t deferred_release_cap_skips = 0;
+        uint64_t deferred_release_copy_fallbacks = 0;
         uint64_t primary_routed_frames = 0;
         uint64_t helper_requested_frames = 0;
         uint64_t helper_fallback_frames = 0;
@@ -7548,6 +7552,9 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
         if (deferred_release_cap_skips_index >= 0) {
             parse_u64_cell(cells, deferred_release_cap_skips_index, &deferred_release_cap_skips);
         }
+        if (deferred_release_copy_fallbacks_index >= 0) {
+            parse_u64_cell(cells, deferred_release_copy_fallbacks_index, &deferred_release_copy_fallbacks);
+        }
         if (primary_routed_frames_index >= 0) {
             parse_u64_cell(cells, primary_routed_frames_index, &primary_routed_frames);
         }
@@ -7582,6 +7589,7 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
         last_external_ipc_ack_timeouts = external_ipc_ack_timeouts;
         last_submitted_frames = submitted_frames;
         last_deferred_release_cap_skips = deferred_release_cap_skips;
+        last_deferred_release_copy_fallbacks = deferred_release_copy_fallbacks;
         last_primary_routed_frames = primary_routed_frames;
         last_helper_requested_frames = helper_requested_frames;
         last_helper_fallback_frames = helper_fallback_frames;
@@ -7694,6 +7702,7 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
     // the delta check because the skips fell inside warmup_s.
     (void)baseline_deferred_release_cap_skips;
     stats.deferred_release_cap_skips_total = last_deferred_release_cap_skips;
+    stats.deferred_release_copy_fallbacks_total = last_deferred_release_copy_fallbacks;
     stats.primary_routed_frames_delta =
         (last_primary_routed_frames >= baseline_primary_routed_frames)
             ? (last_primary_routed_frames - baseline_primary_routed_frames)
@@ -10249,6 +10258,7 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["external_ipc_ack_timeouts_final"] = 0ULL;
     row["submitted_frames_final"] = 0ULL;
     row["deferred_release_cap_skips_final"] = 0ULL;
+    row["deferred_release_copy_fallbacks_final"] = 0ULL;
     row["primary_routed_frames_final"] = 0ULL;
     row["helper_requested_frames_final"] = 0ULL;
     row["helper_fallback_frames_final"] = 0ULL;
@@ -10439,6 +10449,7 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["external_ipc_ack_timeouts_final"] = csv_stats.external_ipc_ack_timeouts_delta;
     row["submitted_frames_final"] = csv_stats.submitted_frames_delta;
     row["deferred_release_cap_skips_final"] = csv_stats.deferred_release_cap_skips_total;
+    row["deferred_release_copy_fallbacks_final"] = csv_stats.deferred_release_copy_fallbacks_total;
     row["primary_routed_frames_final"] = csv_stats.primary_routed_frames_delta;
     row["helper_requested_frames_final"] = csv_stats.helper_requested_frames_delta;
     row["helper_fallback_frames_final"] = csv_stats.helper_fallback_frames_delta;
@@ -10801,7 +10812,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
         }
         return false;
     }
-    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,stream_only,acquisition_buffer_mode,recording_sink_mode,external_recorder_contract_mode,external_recorder_contract_artifact_root,external_recorder_summary_json_path,external_recorder_video_sanity_json_path,external_recorder_mp4_path,external_recorder_gop_routing_csv_path,external_recorder_routing_policy,external_recorder_expected_shard_count,frame_ipc_mode,frame_ipc_status,frame_ipc_frames_sent,frame_ipc_reader_popped,frame_ipc_reader_gaps,frame_ipc_push_failures,nvenc_direct_input,duration_s,warmup_s,recording_control_record_for_seconds,recording_control_clip_seconds,recording_session_manifest_path,recording_control_video_duration_error_s,display,yolo,yolo_worker_mode,yolo_worker_status,yolo_worker_engine_path,yolo_worker_decimate,yolo_worker_publish_live_ipc,yolo_event_log_mode,yolo_event_log_status,yolo_event_log_present,yolo_event_log_rows,yolo_event_log_detection_rows,yolo_event_log_zero_rows,yolo_event_log_timeout_rows,yolo_event_log_failed_rows,yolo_event_log_parse_errors,yolo_event_log_schema_errors,yolo_event_log_sequence_errors,yolo_event_log_cadence_errors,yolo_event_log_metadata_join_misses,yolo_event_log_path,pose,pose_worker_mode,pose_worker_status,pose_worker_engine_path,pose_worker_skeleton_id,pose_worker_skeleton_path,pose_worker_input_width,pose_worker_input_height,pose_worker_input_layout,pose_worker_input_dtype,pose_worker_normalization,pose_worker_roi_source,pose_worker_queue_depth,pose_worker_timeout_ms,pose_worker_prewarm_iterations,pose_worker_fail_on_init_error,pose_worker_write_events_jsonl,pose_event_log_mode,pose_event_log_status,pose_event_log_present,pose_event_log_rows,pose_event_log_no_result_rows,pose_event_log_result_rows,pose_event_log_failed_rows,pose_event_log_parse_errors,pose_event_log_schema_errors,pose_event_log_sequence_errors,pose_event_log_noop_errors,pose_event_log_metadata_join_misses,pose_event_log_path,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,video_content_checked,video_content_valid,video_content_status,video_first_frame_luma_mean,video_first_frame_luma_stddev,video_first_frame_black_fraction,video_first_frame_decoded_bytes,status,pass_fail,reason,acq_fps_mean,acq_fps_p95,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,external_ipc_frames_acked_final,external_ipc_failures_final,external_ipc_ack_timeouts_final,submitted_frames_final,deferred_release_cap_skips_final,primary_routed_frames_final,helper_requested_frames_final,helper_fallback_frames_final,helper_dispatched_frames_final,routing_last_target_gpu_id,routing_last_route_mode,dropped_frames_camera,camera_frame_id_gaps,get_frame_errors_final,get_frame_error_code_last,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
+    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,stream_only,acquisition_buffer_mode,recording_sink_mode,external_recorder_contract_mode,external_recorder_contract_artifact_root,external_recorder_summary_json_path,external_recorder_video_sanity_json_path,external_recorder_mp4_path,external_recorder_gop_routing_csv_path,external_recorder_routing_policy,external_recorder_expected_shard_count,frame_ipc_mode,frame_ipc_status,frame_ipc_frames_sent,frame_ipc_reader_popped,frame_ipc_reader_gaps,frame_ipc_push_failures,nvenc_direct_input,duration_s,warmup_s,recording_control_record_for_seconds,recording_control_clip_seconds,recording_session_manifest_path,recording_control_video_duration_error_s,display,yolo,yolo_worker_mode,yolo_worker_status,yolo_worker_engine_path,yolo_worker_decimate,yolo_worker_publish_live_ipc,yolo_event_log_mode,yolo_event_log_status,yolo_event_log_present,yolo_event_log_rows,yolo_event_log_detection_rows,yolo_event_log_zero_rows,yolo_event_log_timeout_rows,yolo_event_log_failed_rows,yolo_event_log_parse_errors,yolo_event_log_schema_errors,yolo_event_log_sequence_errors,yolo_event_log_cadence_errors,yolo_event_log_metadata_join_misses,yolo_event_log_path,pose,pose_worker_mode,pose_worker_status,pose_worker_engine_path,pose_worker_skeleton_id,pose_worker_skeleton_path,pose_worker_input_width,pose_worker_input_height,pose_worker_input_layout,pose_worker_input_dtype,pose_worker_normalization,pose_worker_roi_source,pose_worker_queue_depth,pose_worker_timeout_ms,pose_worker_prewarm_iterations,pose_worker_fail_on_init_error,pose_worker_write_events_jsonl,pose_event_log_mode,pose_event_log_status,pose_event_log_present,pose_event_log_rows,pose_event_log_no_result_rows,pose_event_log_result_rows,pose_event_log_failed_rows,pose_event_log_parse_errors,pose_event_log_schema_errors,pose_event_log_sequence_errors,pose_event_log_noop_errors,pose_event_log_metadata_join_misses,pose_event_log_path,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,video_content_checked,video_content_valid,video_content_status,video_first_frame_luma_mean,video_first_frame_luma_stddev,video_first_frame_black_fraction,video_first_frame_decoded_bytes,status,pass_fail,reason,acq_fps_mean,acq_fps_p95,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,external_ipc_frames_acked_final,external_ipc_failures_final,external_ipc_ack_timeouts_final,submitted_frames_final,deferred_release_cap_skips_final,deferred_release_copy_fallbacks_final,primary_routed_frames_final,helper_requested_frames_final,helper_fallback_frames_final,helper_dispatched_frames_final,routing_last_target_gpu_id,routing_last_route_mode,dropped_frames_camera,camera_frame_id_gaps,get_frame_errors_final,get_frame_error_code_last,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
     for (const auto& run_entry : runs_json.value("runs", nlohmann::json::array())) {
         const nlohmann::json cameras = run_entry.value("camera_results", nlohmann::json::array());
         for (const auto& row : cameras) {
@@ -10945,6 +10956,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << row.value("external_ipc_ack_timeouts_final", 0ULL) << ","
                 << row.value("submitted_frames_final", 0ULL) << ","
                 << row.value("deferred_release_cap_skips_final", 0ULL) << ","
+                << row.value("deferred_release_copy_fallbacks_final", 0ULL) << ","
                 << row.value("primary_routed_frames_final", 0ULL) << ","
                 << row.value("helper_requested_frames_final", 0ULL) << ","
                 << row.value("helper_fallback_frames_final", 0ULL) << ","

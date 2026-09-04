@@ -129,6 +129,11 @@ struct FrameDescriptor {
     std::string routing_policy = "single_shard";
     std::string handle_hex;
     bool nv12_pool = false;  // source buffer is Y plane + chroma(128) plane
+    // Ingress reached its deferred-release cap: copy the frame into a
+    // recorder-owned staging buffer and RELEASE the source at once instead
+    // of holding the pool entry until NVENC unmaps it.
+    bool copy_release = false;
+    uint64_t pool_bytes = 0;  // full NV12-shaped pool allocation (bytes is the Y plane only)
 };
 
 struct ImportedHandle {
@@ -1826,6 +1831,10 @@ bool parse_frame_descriptor(const std::string& line, FrameDescriptor* desc)
     while (in >> extra_token) {
         if (extra_token == "nv12_pool") {
             desc->nv12_pool = true;
+        } else if (extra_token == "copy_release") {
+            desc->copy_release = true;
+        } else if (extra_token.rfind("pool_bytes=", 0) == 0) {
+            desc->pool_bytes = std::strtoull(extra_token.c_str() + 11, nullptr, 10);
         }
     }
     if (desc->stream_id.empty()) {
@@ -3591,6 +3600,13 @@ public:
     {
         stop();
         release_slots();
+        // The encoder unregistered the staging resources in its destructor
+        // (stop() joins the worker, which owns encoder_); free the memory now.
+        encoder_.reset();
+        for (void* ptr : staging_buffers_) {
+            cudaFree(ptr);
+        }
+        staging_buffers_.clear();
     }
 
     void start()
@@ -4547,11 +4563,17 @@ private:
         // NV12-shaped on the source GPU; register it with NVENC once and
         // point the next input slot at it. The source is released only after
         // NVENC has unmapped it (release_registered_sources below).
-        const bool use_registered =
+        const bool registered_eligible =
             registered_mode_enabled_ &&
             item.desc.nv12_pool &&
             item.desc.source_gpu_id == options_.gpu_id;
-        if (options_.registered_source && !use_registered && !registered_fallback_logged_) {
+        // Copy fallback: the ingress hit its deferred-release cap, so encode
+        // this frame from a recorder-owned staging buffer (registered with
+        // NVENC once) and release the pool entry immediately. Recording
+        // pressure costs a copy, never a frame.
+        const bool use_staging = registered_eligible && item.desc.copy_release;
+        const bool use_registered = registered_eligible && !use_staging;
+        if (options_.registered_source && !registered_eligible && !registered_fallback_logged_) {
             registered_fallback_logged_ = true;
             std::cout << "external_recorder_ipc_probe registered-source fallback to copy:"
                       << " nv12_pool=" << (item.desc.nv12_pool ? 1 : 0)
@@ -4583,6 +4605,41 @@ private:
             registered_in_flight_[item.desc.recording_frame_id] = item.desc;
             registered_source_frames_++;
             sample.prepare_ms = ns_to_ms(elapsed_ns(prepare_start));
+        } else if (use_staging) {
+            while (!encoder_->WaitForNextInputFrameAvailable(100)) {
+                if (stopping_requested() || failed()) {
+                    (void)send_source_release(item.desc);
+                    frames_dropped_.fetch_add(1, std::memory_order_relaxed);
+                    return;
+                }
+            }
+            const size_t staging_index = acquire_staging_buffer(item.desc);
+            check_cuda(
+                cudaMemcpyAsync(
+                    staging_buffers_[staging_index],
+                    item.source_ptr,
+                    static_cast<size_t>(item.desc.bytes),
+                    cudaMemcpyDeviceToDevice,
+                    stream_),
+                "cudaMemcpyAsync(external copy-fallback staging Y plane)");
+            check_cuda(
+                cudaEventRecord(direct_input_ready_event_, stream_),
+                "cudaEventRecord(external copy-fallback staged)");
+            check_cuda(
+                cudaEventSynchronize(direct_input_ready_event_),
+                "cudaEventSynchronize(external copy-fallback staged)");
+            sample.prepare_ms = ns_to_ms(elapsed_ns(prepare_start));
+            if (!send_source_release(item.desc)) {
+                staging_free_.push_back(staging_index);
+                throw std::runtime_error("failed to send external source RELEASE (copy fallback)");
+            }
+            encoder_->SetNextInputRegisteredResource(staging_registered_[staging_index]);
+            staging_in_flight_[item.desc.recording_frame_id] = staging_index;
+            copy_fallback_frames_++;
+            if (copy_fallback_frames_ == 1) {
+                std::cout << "external_recorder_ipc_probe copy fallback: first staged frame recording_frame "
+                          << item.desc.recording_frame_id << " (" << item.desc.bytes << " bytes)" << std::endl;
+            }
         } else {
             registered_fallback_frames_ += options_.registered_source ? 1 : 0;
             const NvEncInputFrame* input_frame = encoder_->GetNextInputFrame();
@@ -4661,10 +4718,16 @@ private:
     // so those pool buffers can go back to the acquisition pool now.
     void release_registered_sources(const std::vector<uint64_t>& output_timestamps)
     {
-        if (registered_in_flight_.empty()) {
+        if (registered_in_flight_.empty() && staging_in_flight_.empty()) {
             return;
         }
         for (const uint64_t recording_frame_id : output_timestamps) {
+            const auto staged = staging_in_flight_.find(recording_frame_id);
+            if (staged != staging_in_flight_.end()) {
+                staging_free_.push_back(staged->second);
+                staging_in_flight_.erase(staged);
+                continue;
+            }
             const auto it = registered_in_flight_.find(recording_frame_id);
             if (it == registered_in_flight_.end()) {
                 continue;
@@ -4696,6 +4759,51 @@ private:
             (void)send_source_release(entry.second);
         }
         registered_in_flight_.clear();
+        for (const auto& entry : staging_in_flight_) {
+            staging_free_.push_back(entry.second);
+        }
+        staging_in_flight_.clear();
+    }
+
+    // Copy-fallback staging: NV12-shaped buffers on the encode GPU, the same
+    // size and layout as the pool buffers, registered with NVENC once. NVENC
+    // can hold at most its buffer count of inputs, so the set grows to that
+    // bound on demand and is recycled when the frame's bitstream returns.
+    size_t acquire_staging_buffer(const FrameDescriptor& desc)
+    {
+        if (!staging_free_.empty()) {
+            const size_t index = staging_free_.back();
+            staging_free_.pop_back();
+            return index;
+        }
+        const size_t limit = static_cast<size_t>(encoder_->GetEncoderBufferCount()) + 2;
+        if (staging_buffers_.size() >= limit) {
+            throw std::runtime_error(
+                "copy-fallback staging exhausted (" + std::to_string(limit) +
+                " buffers in flight); NVENC is not returning outputs");
+        }
+        // The FRAME byte count is the Y plane; the registration needs the
+        // full NV12-shaped allocation (Y + chroma at 128), like the pool.
+        const size_t nv12_bytes = desc.pool_bytes > 0
+            ? static_cast<size_t>(desc.pool_bytes)
+            : static_cast<size_t>(desc.width) * static_cast<size_t>(desc.height) * 3 / 2;
+        if (nv12_bytes < static_cast<size_t>(desc.bytes)) {
+            throw std::runtime_error("copy-fallback staging: pool_bytes smaller than the Y plane");
+        }
+        void* ptr = nullptr;
+        check_cuda(
+            cudaMalloc(&ptr, nv12_bytes),
+            "cudaMalloc(external copy-fallback staging)");
+        check_cuda(
+            cudaMemsetAsync(ptr, 128, nv12_bytes, stream_),
+            "cudaMemsetAsync(external copy-fallback staging chroma)");
+        NV_ENC_REGISTERED_PTR registered = encoder_->RegisterExternalResource(
+            ptr, NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR, desc.width);
+        staging_buffers_.push_back(ptr);
+        staging_registered_.push_back(registered);
+        std::cout << "external_recorder_ipc_probe copy fallback: staging buffer #"
+                  << staging_buffers_.size() << " (" << nv12_bytes << " bytes) registered with NVENC" << std::endl;
+        return staging_buffers_.size() - 1;
     }
 
     bool harvest_direct_packets(bool output_delay)
@@ -4898,6 +5006,8 @@ private:
                       << " registered_releases=" << registered_releases_sent_
                       << " registered_release_failures=" << registered_release_failures_
                       << " fallback_frames=" << registered_fallback_frames_
+                      << " copy_fallback_frames=" << copy_fallback_frames_
+                      << " staging_buffers=" << staging_buffers_.size()
                       << std::endl;
         } catch (const std::exception& ex) {
             failed_.store(true, std::memory_order_release);
@@ -5007,6 +5117,12 @@ private:
     uint64_t registered_fallback_frames_ = 0;
     bool registered_fallback_logged_ = false;
     bool registered_mode_enabled_ = false;
+    // Copy-fallback staging (see acquire_staging_buffer).
+    std::vector<void*> staging_buffers_;
+    std::vector<NV_ENC_REGISTERED_PTR> staging_registered_;
+    std::vector<size_t> staging_free_;
+    std::unordered_map<uint64_t, size_t> staging_in_flight_;
+    uint64_t copy_fallback_frames_ = 0;
     std::unique_ptr<FFmpegWriter> mp4_writer_;
     std::ofstream bitstream_out_;
     std::ofstream encode_csv_;

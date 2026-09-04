@@ -164,11 +164,14 @@ public:
               "ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE", false)),
           detect_priority_gate_(recording_ingress_env_flag_enabled(
               "ORANGE_EXTERNAL_RECORDER_DETECT_PRIORITY", true)),
-          max_deferred_pending_(resolve_max_deferred_pending())
+          max_deferred_pending_(resolve_max_deferred_pending()),
+          hard_max_deferred_pending_(resolve_hard_max_deferred_pending(max_deferred_pending_))
     {
         std::cout << "[ExternalIpcRecorder] camera=" << camera_serial_
                   << " deferred-release cap=" << max_deferred_pending_
-                  << " pool entries (ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED)" << std::endl;
+                  << " pool entries (ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED): frames above"
+                  << " it are sent copy_release; hard cap=" << hard_max_deferred_pending_
+                  << " (ORANGE_EXTERNAL_RECORDER_HARD_MAX_DEFERRED) skips" << std::endl;
         if (detect_priority_gate_) {
             std::cout << "[ExternalIpcRecorder] camera=" << camera_serial_
                       << " detect-priority gate enabled: frames are handed to the"
@@ -202,6 +205,8 @@ public:
     uint64_t failures() const { return failures_.load(std::memory_order_relaxed); }
     uint64_t ack_timeouts() const { return ack_timeouts_.load(std::memory_order_relaxed); }
     uint64_t deferred_release_cap_skips() const { return deferred_cap_skips_.load(std::memory_order_relaxed); }
+    uint64_t deferred_release_copy_fallbacks() const { return deferred_copy_fallbacks_.load(std::memory_order_relaxed); }
+    uint64_t deferred_release_pending_max() const { return deferred_pending_max_.load(std::memory_order_relaxed); }
     uint64_t deferred_release_pending() const { return static_cast<uint64_t>(pending_release_count()); }
     void RequestRecordingDrain(const char* reason)
     {
@@ -852,6 +857,28 @@ private:
         return 32;
     }
 
+    // Above the hard cap the recorder is not returning entries at all (dead
+    // or wedged): skip on the recording side so acquisition never starves.
+    // Between the two caps frames are still recorded, via the copy fallback.
+    // While the recorder is alive, pending is bounded by its encode queue
+    // depth (32) plus NVENC's input buffers (4), so 48 is never reached
+    // (measured 2026-09-04: a cold encoder backs the queue up past 20 in the
+    // first GOP, then settles at 3 to 4).
+    static size_t resolve_hard_max_deferred_pending(const size_t soft_cap)
+    {
+        const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_HARD_MAX_DEFERRED");
+        if (env && *env) {
+            char* end = nullptr;
+            const long parsed = std::strtol(env, &end, 10);
+            if (end != env && *end == '\0' && parsed >= 1 && parsed <= 4096) {
+                return std::max(static_cast<size_t>(parsed), soft_cap);
+            }
+            std::cerr << "[ExternalIpcRecorder] Ignoring invalid ORANGE_EXTERNAL_RECORDER_HARD_MAX_DEFERRED='"
+                      << env << "'" << std::endl;
+        }
+        return std::max(soft_cap + 16, static_cast<size_t>(48));
+    }
+
     bool detach_frame(WORKER_ENTRY* entry, bool* release_entry_now)
     {
         if (release_entry_now) {
@@ -859,19 +886,33 @@ private:
         }
         refresh_session_from_environment();
 
-        // Deferred-release cap: if the recorder already holds the maximum
-        // number of pool entries, give it one chance to return some, then
-        // skip this frame on the recording side. The entry is released to
-        // the pool immediately by the caller.
+        // Deferred-release cap: if the recorder already holds the soft cap
+        // of pool entries, give it one chance to return some, then ask it to
+        // copy this frame into its own staging buffer and RELEASE the entry
+        // at once (copy_release). The frame is still recorded. Only above
+        // the hard cap, where the recorder is clearly not returning entries,
+        // is the frame skipped on the recording side; the verifier fails
+        // any run with a nonzero skip count.
+        bool copy_release = false;
         if (pending_release_count() >= max_deferred_pending_) {
             poll_protocol_lines(false);
-            if (pending_release_count() >= max_deferred_pending_) {
+            const size_t pending = pending_release_count();
+            if (pending >= hard_max_deferred_pending_) {
                 deferred_cap_skips_.fetch_add(1, std::memory_order_relaxed);
-                log_limited("deferred-release cap reached (" +
-                            std::to_string(max_deferred_pending_) +
+                log_limited("deferred-release hard cap reached (" +
+                            std::to_string(hard_max_deferred_pending_) +
                             " entries held by the recorder); skipping recording_frame " +
                             std::to_string(entry->recording_frame_id));
                 return false;
+            }
+            if (pending >= max_deferred_pending_) {
+                copy_release = true;
+                if (deferred_copy_fallbacks_.fetch_add(1, std::memory_order_relaxed) == 0) {
+                    std::cout << "[ExternalIpcRecorder] camera=" << camera_serial_
+                              << " deferred-release cap reached (" << max_deferred_pending_
+                              << " entries held); first copy_release for recording_frame "
+                              << entry->recording_frame_id << std::endl;
+                }
             }
         }
 
@@ -949,6 +990,9 @@ private:
             << 0 << " "
             << "single_shard"
             << (entry->pool_nv12_layout ? " nv12_pool" : "")
+            << (entry->pool_nv12_layout && entry->pool_buffer_bytes > 0
+                    ? " pool_bytes=" + std::to_string(entry->pool_buffer_bytes) : "")
+            << (copy_release ? " copy_release" : "")
             << "\n";
 
         if (!send_all(msg.str())) {
@@ -961,6 +1005,7 @@ private:
             {
                 std::lock_guard<std::mutex> lock(pending_release_mutex_);
                 pending_release_entries_[entry->recording_frame_id] = entry;
+                note_pending_max_locked();
             }
             if (release_entry_now) {
                 *release_entry_now = false;
@@ -989,6 +1034,7 @@ private:
             {
                 std::lock_guard<std::mutex> lock(pending_release_mutex_);
                 pending_release_entries_[entry->recording_frame_id] = entry;
+                note_pending_max_locked();
             }
             if (release_entry_now) {
                 *release_entry_now = false;
@@ -998,6 +1044,15 @@ private:
             poll_protocol_lines(false);
         }
         return true;
+    }
+
+    void note_pending_max_locked()
+    {
+        const uint64_t now = static_cast<uint64_t>(pending_release_entries_.size());
+        uint64_t seen = deferred_pending_max_.load(std::memory_order_relaxed);
+        while (now > seen &&
+               !deferred_pending_max_.compare_exchange_weak(seen, now, std::memory_order_relaxed)) {
+        }
     }
 
     size_t pending_release_count() const
@@ -1077,7 +1132,10 @@ private:
     bool deferred_release_ = false;
     bool detect_priority_gate_ = false;
     size_t max_deferred_pending_ = 32;
+    size_t hard_max_deferred_pending_ = 48;
     std::atomic<uint64_t> deferred_cap_skips_{0};
+    std::atomic<uint64_t> deferred_copy_fallbacks_{0};
+    std::atomic<uint64_t> deferred_pending_max_{0};
     std::atomic<uint64_t> detect_priority_gated_frames_{0};
     std::atomic<uint64_t> detect_priority_waited_frames_{0};
     std::atomic<uint64_t> detect_priority_wait_timeouts_{0};
@@ -1489,6 +1547,10 @@ RecordingIngressStats RecordingIngress::GetStats() const
                 external_ipc_handoff_worker_->deferred_release_pending();
             stats.deferred_release_cap_skips =
                 external_ipc_handoff_worker_->deferred_release_cap_skips();
+            stats.deferred_release_copy_fallbacks =
+                external_ipc_handoff_worker_->deferred_release_copy_fallbacks();
+            stats.deferred_release_pending_max =
+                external_ipc_handoff_worker_->deferred_release_pending_max();
             stats.detect_priority_gated_frames =
                 external_ipc_handoff_worker_->detect_priority_gated_frames();
             stats.detect_priority_waited_frames =

@@ -662,10 +662,9 @@ Making 2c production-ready, in order:
 
 - Route the other-die shard through the slot-copy path instead of the old
   deferred direct-source copy, so that shard gets its headroom back.
-- Replace the cap's skip with a copy fallback (see "Skipped Frames And
-  Dataset Integrity" below). Until then the verifier fails any run with a
-  nonzero `deferred_release_cap_skips`, and a deliberately small cap
-  (`ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED=4`) is the test that it fires.
+- Done 2026-09-04: the cap's skip is a copy fallback and the verifier fails
+  any run with a nonzero `deferred_release_cap_skips` (see "Skipped Frames
+  And Dataset Integrity" below). The cap-4 spec is the acceptance test.
 - Default registered source and the NV12 pool on once the endurance run
   passes.
 - Reinstall the GUI wrapper so citrus runs get the flags.
@@ -774,6 +773,68 @@ Result of the cap-4 test (2026-09-04, two runs):
   the cap only during startup and at 3 for the rest of the run (NVENC's
   output delay), which is why the skips stop after frame 64. The default of
   32 is eight times that.
+
+### Copy fallback: landed 2026-09-04
+
+Protocol: when the ingress reaches the soft cap (`ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED`,
+default 32) it still sends the frame, with a `copy_release` token on the
+FRAME line (and `pool_bytes=<n>`, the full NV12-shaped pool allocation, since
+the FRAME byte count is the Y plane only). The registered-source shard
+answers a `copy_release` frame by copying the Y plane into a recorder-owned
+staging buffer on the encode GPU (NV12-shaped, chroma memset to 128 once,
+registered with NVENC once, at most encoder-buffer-count plus two of them,
+recycled when the frame's bitstream returns) and sending RELEASE at once;
+NVENC then encodes from staging. The other-die shard already copies and
+releases immediately, so the token is a no-op there. Only above a hard cap
+(`ORANGE_EXTERNAL_RECORDER_HARD_MAX_DEFERRED`, default 48) is a frame
+skipped, and the verifier fails that run. Counters:
+`deferred_release_copy_fallbacks` and `deferred_release_pending_max` in the
+pipeline perf CSV; `deferred_release_copy_fallbacks_final` in `runs.json`
+(informational); `copy_fallback_frames` and `staging_buffers` in the
+recorder's completion line.
+
+Why the hard cap is 48 and not "soft plus a margin": while the recorder is
+alive, the entries it holds are bounded by its encode queue depth (32) plus
+NVENC's input buffers (4). The first fallback run used soft 4 / hard 20 and
+still skipped 23 frames per camera at recording frames 21 to 25: a cold
+encoder backs its queue up past 20 in the first GOP, and the copy happens
+in the encode worker when it reaches the frame, not on receipt, so the
+backlog itself holds entries whichever path they take. With the hard cap at
+48 that transient cannot reach it; a recorder that is dead fails the run
+through ACK timeouts before the pool is in danger.
+
+The first fallback attempt also failed outright with
+`nvEncRegisterResource` error 23: the staging buffer was allocated at the
+FRAME byte count (Y plane) and NVENC checks the allocation covers the NV12
+frame. Hence `pool_bytes`.
+
+Acceptance run (cap-4 spec, soft 4 / hard 48, `run_0001` of
+`threecam_detect_latency_levers_gate_registered_cap4_20260904_014543`):
+
+| Camera | Skips | Copy fallbacks (ingress) | Staged (same-die shard) | Pending max | Recorded | Routing gaps | acq→detect p95 |
+|---|---|---|---|---|---|---|---|
+| 2010093 | 0 | 111 | 61 | 27 | 5901 / 5901 | 0 | 2.458 ms |
+| 2010094 | 0 | 112 | 61 | 26 | 5901 / 5901 | 0 | 2.458 ms |
+| 2010095 | 0 | 110 | 61 | 26 | 5901 / 5901 | 0 | 2.460 ms |
+
+Pass on every gate; identity proof passed; pool low-water 44 free of 62
+during the startup backlog, 58 to 59 afterwards; detect latency identical
+to the registered run without the fallback. About 110 frames per camera
+took the copy path, all in the first two GOPs while the encoder was cold;
+the ingress counts a fallback for both shards' frames while the recorder
+only stages the same-die shard's, hence 111 versus 61.
+
+What this closes: "acquired implies submitted" now holds whenever the
+recorder is alive, so with "submitted implies encoded" already proven per
+run the dataset has no software-induced holes, and any exception fails the
+run. What it does not do: make the copy free. A frame on the fallback path
+pays the same-die copy the direct-input analysis measured, so a recorder
+running at the cap for long would be back in the no-headroom regime; the
+`deferred_release_copy_fallbacks` counter in the endurance run is the check
+that steady state never goes there. Follow-up if it does: stage on receipt
+in the recorder's socket thread rather than in the encode worker, which
+bounds pending by NVENC's hold alone at the cost of queue-depth staging
+buffers (about 1 GB per shard at this resolution).
 
 One more failure class for completeness: if the recorder process dies or
 stalls mid-run, frames after that point are not encoded on any path. That
