@@ -824,6 +824,13 @@ took the copy path, all in the first two GOPs while the encoder was cold;
 the ingress counts a fallback for both shards' frames while the recorder
 only stages the same-die shard's, hence 111 versus 61.
 
+Regression at the default cap (registered spec, soft 32 / hard 48, same
+night): pass, zero skips, zero fallbacks, p95 2.46 ms on all three cameras,
+and `deferred_release_pending_max` of 30 to 31. So the cold-encoder backlog
+comes within one or two entries of the soft cap even in a normal run; the
+hard cap's 17-entry margin above that is what the endurance run must show
+is never used.
+
 What this closes: "acquired implies submitted" now holds whenever the
 recorder is alive, so with "submitted implies encoded" already proven per
 run the dataset has no software-induced holes, and any exception fails the
