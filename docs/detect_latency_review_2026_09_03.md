@@ -1292,6 +1292,24 @@ real configuration; NVENC alone needs about 8 ms per such frame). The
 honest limit at high rates is encode and detect throughput, not buffer
 lifetime.
 
+The real 800 fps case is a smaller sensor, not this one: the colleague's 7
+MP cameras, or a region of interest. Scaling the measured 20 MP numbers
+linearly with pixels (estimates, not measurements): the pool copy shrinks
+to about 7 MB and 0.05 ms, preprocess to about 0.03 ms, so per-frame
+bandwidth stops mattering at any rate the encoder can sustain. The graph
+does not shrink at all, because the model input is resized to the same 640
+regardless of sensor size, so 2.0 ms per detection and 500 detections per
+second per die is the ceiling at every sensor size; at 800 fps YOLO
+decimates to at most every second frame, and the per-frame latency of the
+frames it does take stays about 2.2 ms. Encode is the other ceiling: NVENC
+at p1 takes about 10 ms for 20 MP on this die, so about 3.5 ms for 7 MP,
+which is roughly 290 fps per NVENC engine; 800 fps of 7 MP needs the GOP
+split across three or more dies, or a smaller frame, before any buffer
+question arises. Nothing in the lifecycle above changes with sensor size:
+the camera buffer hold is still detect time, the ring is still 100, and the
+gate and the copy after detection cost the same fraction of a frame period
+at 7 MP as at 20 MP.
+
 ## Landed Commits And Follow-Ups
 
 2026-09-04 additions, all pushed: `278d459` roadmap, four-camera and
