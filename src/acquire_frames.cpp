@@ -2062,16 +2062,31 @@ void acquire_frames(
                 use_direct_pointer &&
                 camera_params &&
                 camera_params->acquisition_buffer_mode == "force_ring_copy";
-            const bool analytics_owned_frame_enabled =
-                env_flag_enabled("ORANGE_ANALYTICS_EARLY_OWNED_FRAME", true) &&
-                will_yolo &&
-                use_direct_pointer &&
-                !force_ring_copy;
-            const bool use_analytics_hybrid = analytics_owned_frame_enabled;
             const bool recording_requires_owned_source =
                 will_record &&
                 recording_ingress &&
                 recording_ingress->requires_owned_cuda_source();
+            // ORANGE_ANALYTICS_EARLY_OWNED_FRAME=0 is a diagnostic for the
+            // engine-only specs (it selects the ring-copy or, with
+            // ORANGE_ACQ_FORCE_DIRECT_READ, the direct-read path). With a
+            // recorder that needs an owned source it would silently pick the
+            // slow ring copy, so it is ignored there.
+            static const bool owned_frame_env = env_flag_enabled("ORANGE_ANALYTICS_EARLY_OWNED_FRAME", true);
+            static std::atomic<bool> owned_frame_override_logged{false};
+            bool owned_frame_requested = owned_frame_env;
+            if (!owned_frame_requested && recording_requires_owned_source) {
+                owned_frame_requested = true;
+                if (!owned_frame_override_logged.exchange(true)) {
+                    std::cerr << "[Acquire] ORANGE_ANALYTICS_EARLY_OWNED_FRAME=0 ignored: the recorder needs"
+                              << " an owned source, using the owned-copy path" << std::endl;
+                }
+            }
+            const bool analytics_owned_frame_enabled =
+                owned_frame_requested &&
+                will_yolo &&
+                use_direct_pointer &&
+                !force_ring_copy;
+            const bool use_analytics_hybrid = analytics_owned_frame_enabled;
             bool use_ring_copy =
                 use_direct_pointer &&
                 (dispatch_count > 1 || recording_requires_owned_source) &&
@@ -2123,34 +2138,16 @@ void acquire_frames(
                 current_entry->ingress_event_record_host_ns = steady_clock_now_ns();
                 static const bool early_copy_timing =
                     orange::yolo_flags::EnvFlag("ORANGE_YOLO_GPU_TIMING", true);
-                // Lever 2d: leave the copy to the YOLO worker, which issues
-                // it after preprocess has read the camera buffer
-                // (late_owned_copy.h). Only when YOLO will consume the frame
-                // with input detach, so there is a consumer to issue it.
-                const bool late_copy_this_frame =
-                    late_owned_copy_enabled() && will_yolo && yolo_detach_input;
+                // Lever 2d: the owned copy is left to the YOLO worker, which
+                // issues it after detection completes (late_owned_copy.h).
+                // The hybrid path implies will_yolo, so there is always a
+                // consumer to issue it; enqueue failure and worker exceptions
+                // issue it themselves. There is no copy-at-t=0 path any more.
+                (void)early_copy_timing;
                 current_entry->analytics_copy_timed = false;
-                if (late_copy_this_frame) {
-                    current_entry->late_owned_copy_stream = stream;
-                    current_entry->late_owned_copy_bytes = received_frame->bufferSize;
-                    current_entry->late_owned_copy_pending = true;
-                } else {
-                    if (early_copy_timing && current_entry->analytics_copy_timing_start) {
-                        ck(cudaEventRecord(current_entry->analytics_copy_timing_start, stream));
-                    }
-                    ck(cudaMemcpyAsync(
-                        current_entry->d_analytics_image,
-                        received_frame->imagePtr,
-                        received_frame->bufferSize,
-                        cudaMemcpyDeviceToDevice,
-                        stream));
-                    if (early_copy_timing && current_entry->analytics_copy_timing_end) {
-                        ck(cudaEventRecord(current_entry->analytics_copy_timing_end, stream));
-                        current_entry->analytics_copy_timed = true;
-                    }
-                    ck(cudaEventRecord(current_entry->analytics_ready_event, stream));
-                    current_entry->analytics_ready_event_recorded.store(true, std::memory_order_release);
-                }
+                current_entry->late_owned_copy_stream = stream;
+                current_entry->late_owned_copy_bytes = received_frame->bufferSize;
+                current_entry->late_owned_copy_pending = true;
             } else if (use_direct_pointer && !use_ring_copy) {
                 gpu_direct_frames++;
                 gpu_direct_frames_total++;

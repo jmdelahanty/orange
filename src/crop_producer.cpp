@@ -715,6 +715,7 @@ CropProducer::ProduceResult CropProducer::Produce(
 
     if (use_analytics_owned_frame) {
         const uint64_t analytics_wait_start_ns = steady_now_ns();
+        entry->wait_delayed_consumer_ready();
         ck(cudaStreamWaitEvent(producer_stream_, entry->analytics_ready_event, 0));
         if (perf) {
             perf->analytics_owned_wait_cpu_ms = elapsed_ms(analytics_wait_start_ns, steady_now_ns());

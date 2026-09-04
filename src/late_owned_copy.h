@@ -6,8 +6,8 @@
 // (0.076 ms instead of 0.29 under contention with the copy) and the graph
 // runs alone (issuing the copy after preprocess, overlapping the graph,
 // slowed it from 2.00 to 2.26 ms). The copy runs in the idle part of the
-// frame period. Enabled by ORANGE_ANALYTICS_LATE_OWNED_COPY (default off
-// until the A/B).
+// frame period. This is the only owned-copy path: the copy at t=0 was
+// removed on 2026-09-04 after the A/B (2.43 -> 2.20 ms mean).
 //
 // Every path that can end a frame's YOLO consumption must call
 // issue_late_owned_copy() exactly once while entry->late_owned_copy_pending
@@ -20,13 +20,6 @@
 
 #include "video_capture.h"
 #include "yolo_runtime_flags.h"
-
-inline bool late_owned_copy_enabled()
-{
-    static const bool enabled =
-        orange::yolo_flags::EnvFlag("ORANGE_ANALYTICS_LATE_OWNED_COPY", false);
-    return enabled;
-}
 
 // Enqueue the pool copy on the entry's acquisition stream, after `after` if
 // given (the YOLO input-ready event), then record analytics_ready_event and

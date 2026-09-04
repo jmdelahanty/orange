@@ -1,3 +1,6 @@
+#include <atomic>
+#include <chrono>
+#include <thread>
 // src/video_capture.h
 #ifndef ORANGE_VIDEO_CAPTURE
 #define ORANGE_VIDEO_CAPTURE
@@ -124,13 +127,43 @@ typedef struct {
         return has_analytics_owned_source() ? d_analytics_image : d_image;
     }
 
+    // The owned copy is issued by the YOLO worker after detection
+    // (late_owned_copy.h), so analytics_ready_event is recorded a few ms
+    // after the frame arrives. Every delayed consumer (recorder, display,
+    // crop, snapshot, encoder preprocess) goes through this getter, which
+    // blocks (bounded) until the record has happened, so no consumer can
+    // synchronize on the previous frame's record and read a stale buffer.
+    bool wait_delayed_consumer_ready(const int timeout_ms = 50) const
+    {
+        if (!has_analytics_owned_source()) {
+            return true;
+        }
+        int spins = 0;
+        while (!analytics_ready_event_recorded.load(std::memory_order_acquire)) {
+            if (++spins > timeout_ms * 50) {
+                static std::atomic<int> logged{0};
+                if (logged.fetch_add(1) < 3) {
+                    std::cerr << "[WORKER_ENTRY] owned-copy ready event not recorded within "
+                              << timeout_ms << " ms for recording_frame " << recording_frame_id
+                              << " (YOLO worker stalled or shutting down); consumer proceeds on the stale record"
+                              << std::endl;
+                }
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::microseconds(20));
+        }
+        return true;
+    }
+
     cudaEvent_t* delayed_consumer_event()
     {
+        wait_delayed_consumer_ready();
         return has_analytics_owned_source() ? &analytics_ready_event : event_ptr;
     }
 
     const cudaEvent_t* delayed_consumer_event() const
     {
+        wait_delayed_consumer_ready();
         return has_analytics_owned_source() ? &analytics_ready_event : event_ptr;
     }
 

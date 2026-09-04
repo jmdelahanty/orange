@@ -11,6 +11,16 @@ NVENC shards per camera, PTP two-step, GUI preview at 10 fps.
 
 ## Headline
 
+Where it stands on 2026-09-04, three cameras, recorder on, every frame
+recorded: acquisition-to-detect **2.20 ms mean, 2.29 p95, 2.32 p99**, from
+2.87 / 3.87 / 4.18 in the August run (mean down 23 percent, p95 down 41,
+p99 down 44). The TensorRT graph is 2.0 ms of it. The levers that got there
+(event sync, deferred PTP latch, detect-priority handoff gate, registered
+source with copy fallback, and the owned copy issued after detection) are
+on by default, and the copy after detection is the only owned-copy path in
+the tree. The sections below are the record of how; the original review
+follows.
+
 The threading architecture is not where the latency is. The CPU side of the
 detect path costs about 60 us per frame. Of the 2.82 ms mean worker time,
 2.76 ms is waiting on the GPU, and about a fifth of that wait is the recorder
@@ -1158,10 +1168,23 @@ mean / p95 / p99 acquisition-to-detect in ms:
   and the recorder receives each frame about 0.15 ms later than before,
   which the detect-priority gate had already made irrelevant.
 
-Before default-on: the display, crop and snapshot consumers also use
-`delayed_consumer_event()`; they need the same `analytics_ready_event_recorded`
-guard the recording ingress has (headless runs do not exercise them). Then
-the endurance spec with the flag, then default on with `2c`.
+**Made the only path (2026-09-04, 12:00).** The flag is gone: the hybrid
+path always leaves the copy to the YOLO worker, `late_owned_copy.h` has no
+switch, and the copy-at-t=0 branch was deleted. The guard moved into the
+entry itself: `WORKER_ENTRY::delayed_consumer_event()` now blocks (bounded,
+50 ms, logged) until `analytics_ready_event_recorded` is set, so the
+recorder, display, crop producer, spatial snapshot and encoder preprocess
+worker all get it without knowing; the one consumer that touched the raw
+event (crop producer) calls `wait_delayed_consumer_ready()` first. The
+remaining way to leave the path is the diagnostic
+`ORANGE_ANALYTICS_EARLY_OWNED_FRAME=0`, which is now ignored, with a
+logged warning, whenever a recorder needs an owned source, so it can only
+select the ring-copy or forced-direct-read paths in the engine-only specs.
+The registered spec therefore carries lever 2d inherently; the
+`_late_copy` spec was removed. Verification run on the registered spec
+after the change: pass, 5798 submitted and acknowledged on every camera,
+acquisition-to-detect 2.23 / 2.31 / 2.40, 2.23 / 2.31 / 2.38 and
+2.20 / 2.30 / 2.32 ms (mean / p95 / p99), no guard timeouts logged.
 
 The measuring cost: six CUDA event records per frame on the YOLO stream
 and two on the acquisition stream; the elapsed reads are free because the
