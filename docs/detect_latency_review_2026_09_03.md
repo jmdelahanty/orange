@@ -669,12 +669,11 @@ Making 2c production-ready, in order:
   passes.
 - Reinstall the GUI wrapper so citrus runs get the flags.
 
-Then lever 2d, measured first: turn on always-on GPU event timing so the
-2.3 ms floor splits into the early-owned copy, preprocess, and the TensorRT
-graph. That decides between removing the early copy (camera ring buffer under
-deferred release, ring depth checked, same cap logic) and model-side work
-(INT8, input size), and it is the like-for-like engine number for the
-comparison with upstream.
+Then lever 2d, measured first: done 2026-09-04, see "Lever 2d, Measured".
+The graph is 2.0 ms of the 2.4, the early copy is concurrent with
+preprocess and costs detection nothing measurable, so the camera ring-buffer
+design is withdrawn and the remaining lever is the engine (INT8, input
+size), measured with the engine-only specs.
 
 Housekeeping: a test pinning the recorder's identity-proof schema to what the
 checker accepts; the stock fourcam supervised spec's missing
