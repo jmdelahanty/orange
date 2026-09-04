@@ -39,6 +39,7 @@ struct HelloFields {
     int frame_width = 0;
     int frame_height = 0;
     int source_gpu_id = -1;
+    bool nv12_pool = false;  // the client's source buffers are NV12-shaped pool buffers
     std::string recording_config_fingerprint_scope;
     std::string recording_config_fingerprint;
     std::string error;
@@ -458,6 +459,7 @@ inline bool parse_protocol_hello_line(const std::string& line,
             parsed.error = std::string("invalid ") + key;
         }
     }
+    parsed.nv12_pool = find_value(values, "nv12_pool") == "1";
 
     if (parsed.error.empty()) {
         if (parsed.protocol != kProtocolName) {
@@ -637,7 +639,8 @@ inline std::string build_client_hello_line(const std::string& camera_serial,
                                            int resolved_gop_length,
                                            int frame_width = 0,
                                            int frame_height = 0,
-                                           int source_gpu_id = -1)
+                                           int source_gpu_id = -1,
+                                           bool nv12_pool = false)
 {
     std::ostringstream out;
     out << kClientHelloKind
@@ -657,7 +660,8 @@ inline std::string build_client_hello_line(const std::string& camera_serial,
     if (frame_width > 0 && frame_height > 0) {
         out << " frame_width=" << frame_width
             << " frame_height=" << frame_height
-            << " source_gpu_id=" << source_gpu_id;
+            << " source_gpu_id=" << source_gpu_id
+            << " nv12_pool=" << (nv12_pool ? 1 : 0);
     }
     out << "\n";
     return out.str();

@@ -4083,8 +4083,17 @@ private:
         // Registered-source mode applies per shard: only the shard on the
         // source GPU can encode from the pool buffer. Other shards keep
         // owned NVENC input buffers and the copy path.
+        // Registered-source mode needs a source the encoder can register:
+        // the analytics process's NV12-shaped pool on this same GPU. A crop
+        // stream (its own buffers, not pool-shaped) or a source on another
+        // GPU keeps owned input buffers and the copy path. Without the
+        // nv12_pool condition a crop recorder on the detect die prepared
+        // external slots and then had no input frame for the copy fallback
+        // (2026-09-04).
         registered_mode_enabled_ =
-            options_.registered_source && desc.source_gpu_id == options_.gpu_id;
+            options_.registered_source &&
+            desc.source_gpu_id == options_.gpu_id &&
+            desc.nv12_pool;
         if (registered_mode_enabled_) {
             encoder_->SetExternalInputBufferMode(true);
         }
@@ -6216,7 +6225,7 @@ int main(int argc, char** argv)
                     prewarm_desc.width = client_hello.frame_width;
                     prewarm_desc.height = client_hello.frame_height;
                     prewarm_desc.source_gpu_id = client_hello.source_gpu_id;
-                    prewarm_desc.nv12_pool = true;
+                    prewarm_desc.nv12_pool = client_hello.nv12_pool;
                     for (auto& worker : encode_workers) {
                         if (worker) {
                             worker->prewarm_encoder(prewarm_desc);

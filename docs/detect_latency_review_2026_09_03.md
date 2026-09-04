@@ -1552,6 +1552,58 @@ mark drops from 30 (plain registered run) and 48 (six recorders) to 10 to
 11. The soft cap of 32 is now three times the startup peak instead of one
 times.
 
+### Next: GOP-parity crop interleaving (proposed 2026-09-04, pre-test done)
+
+The observation (Jeremy's): each die's NVENC is busy only during its own
+full-frame GOPs, so at every moment one of the two dies on a camera's card
+has an idle encoder. Crops could always go to that one. During other-die
+GOPs, when the other die is busy and the card switch carries the 20 MB
+frame copies, the crop would go to the detect die's own encoder, idle and
+needing no transfer. During same-die GOPs, when the detect die encodes
+from the pool with no copies on the switch, the crop would go to the other
+die, whose encoder and copy engine are idle. The crop transfer would then
+never coincide with a frame copy, which is the collision the p95 data
+pointed at.
+
+**Pre-test: the external crop recorder on the detect die itself** (spec
+`..._crop_synthetic_external_samedie`, `recorder_gpus` 2010093 to 3,
+2010094 to 1, 2010095 to 7; a separate process, so it also separates the
+in-process driver-side cost from the NVENC cost). Every crop encoded
+(5,900 per camera, proofs passed). Its first attempt died at frame two:
+with the registered source now default-on, a recorder on the same GPU as
+its source entered registered mode for a crop stream that has no
+NV12-shaped pool to register, prepared external slots, and had no input
+frame for the copy fallback. Fixed: registered mode now requires the
+source to be pool-shaped (`nv12_pool` on the descriptor, and the ingress
+hello carries the pool layout so the prewarm sees it), and the crop
+check failed that run as designed. The valid run, acquisition-to-detect
+mean / p95 / p99 split by GOP half:
+
+| Camera | All frames | Same-die GOPs (detect die NVENC busy) | Other-die GOPs (detect die NVENC idle) |
+|---|---|---|---|
+| 2010093 | 2.266 / 2.347 / 2.729 | 2.293 / 2.400 / 2.858 | 2.239 / 2.330 / 2.439 |
+| 2010094 | 2.253 / 2.329 / 2.671 | 2.274 / 2.345 / 2.765 | 2.231 / 2.326 / 2.446 |
+| 2010095 | 2.245 / 2.302 / 2.720 | 2.284 / 2.330 / 2.806 | 2.207 / 2.263 / 2.289 |
+
+The penalty sits almost entirely in the same-die GOPs, where the detect
+die's NVENC is already encoding full frames: p99 2.77 to 2.86 there,
+against 2.29 to 2.45 in the other-die GOPs, where the crop rides an idle
+encoder with no transfer (2010095, alone on its card, is at the no-crop
+p99 exactly; the card A cameras carry their usual two-camera residual).
+That is the split the interleave needs: route each crop to the die whose
+encoder is idle for that GOP and the expected result is a p99 of about
+2.3 to 2.45 with all eight dies serving full-frame shards, against 2.6 to
+2.7 in-process and 2.67 to 2.73 here.
+
+What building it takes: a two-shard crop contract per camera on the same
+two dies as the full-frame contract; crop descriptors tagged with the
+full-frame GOP index plus one so the recorder's existing parity routing
+sends each crop to the opposite die; the merged crop writer then stitches
+at 100 GOPs per second instead of two, which is within its frontier
+budget on paper and is the thing to watch; one more recorder process per
+camera and two NVENC sessions per die. Not built yet; it is the next
+experiment on the crop thread.
+
 Note on the spec files: the stream paths in `_crop_synthetic_external`
 were generated with a doubled prefix on the first run (cosmetic; the run's
 full-frame artifacts landed under

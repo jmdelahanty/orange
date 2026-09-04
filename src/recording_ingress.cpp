@@ -800,7 +800,10 @@ private:
                 static_cast<int>(recording_gop_length_),
                 frame_width_,
                 frame_height_,
-                source_gpu_id_))) {
+                source_gpu_id_,
+                // Same rule as the pool allocation (video_capture.h): on
+                // unless ORANGE_POOL_NV12_LAYOUT says off.
+                recording_ingress_env_flag_enabled("ORANGE_POOL_NV12_LAYOUT", true)))) {
             log_limited("send client protocol hello failed: " +
                         std::string(std::strerror(errno)));
             return false;
