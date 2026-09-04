@@ -1310,6 +1310,38 @@ the camera buffer hold is still detect time, the ring is still 100, and the
 gate and the copy after detection cost the same fraction of a frame period
 at 7 MP as at 20 MP.
 
+## Endurance, 30 Minutes, Everything On (2026-09-04)
+
+`threecam_detect_latency_endurance_gate_registered`, 1800 s, three cameras,
+all levers (event sync, deferred latch, handoff gate, registered source with
+copy fallback, copy after detection), GPU event timing on. Pass on every
+gate. Steady state after frame 200, 179,700 rows per camera:
+
+| Camera | acq to detect mean / p95 / p99 / max (ms) | same-die / other-die mean | submitted / acked | skips / fallbacks / pending max | recorder frames / routing gaps / proof |
+|---|---|---|---|---|---|
+| 2010093 | 2.213 / 2.298 / 2.326 / 4.51 | 2.243 / 2.154 | 179,900 / 179,900 | 0 / 0 / 30 | 179,900 / 0 / passed |
+| 2010094 | 2.220 / 2.306 / 2.336 / 4.23 | 2.250 / 2.159 | 179,900 / 179,900 | 0 / 0 / 30 | 179,900 / 0 / passed |
+| 2010095 | 2.197 / 2.295 / 2.319 / 2.78 | 2.243 / 2.126 | 179,900 / 179,900 | 0 / 0 / 30 | 179,900 / 0 / passed |
+
+- Latency held for the whole half hour at the short-run numbers: 2.20 to
+  2.22 ms mean, 2.30 to 2.31 p95, 2.32 to 2.34 p99; the maximum over
+  179,700 frames per camera was under 3 ms. Against last night's registered
+  run (copy at t=0) that is 0.20 to 0.23 ms off every quantile.
+- Zero camera drops, zero starvation, zero cap skips, zero copy fallbacks,
+  no cudaEventRecord stalls, pool low-water 58 of 62. The pending
+  high-water mark was 30 on every camera, the cold-encoder startup backlog
+  again, never revisited: the soft cap of 32 was not touched in steady state
+  over about 3,600 GOPs per camera.
+- Every frame recorded: the recorder encoded exactly the submitted count on
+  each camera, the routing log has no gaps, the identity proof passed, and
+  the merged files are about 1.6 GB each.
+- The latch frames are indistinguishable from the others (0.02 ms), the
+  same-die residual is 0.09 to 0.12 ms, and the graph sat at 2.000 ms with a
+  p95 of 2.03 for the full run.
+
+This is the validation the copy fallback, the verifier change and lever 2d
+were waiting for. Registered source and the NV12 pool can go default-on.
+
 ## Landed Commits And Follow-Ups
 
 2026-09-04 additions, all pushed: `278d459` roadmap, four-camera and
