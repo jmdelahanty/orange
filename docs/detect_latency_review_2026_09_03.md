@@ -978,6 +978,34 @@ put the recorder back on the camera's ring buffer, which the driver needs
 returned quickly, for no gain. The clock question is still worth answering
 because it may also explain the 0.04 ms same-die delta on the graph.
 
+**Locked clocks, run 2026-09-04 morning.** With SM and memory clocks pinned
+at 1755 / 6250 MHz on all six dies (`sudo nvidia-smi -lgc 1755 -i 1,2,3,4,7,8`;
+the memory clock followed and held while idle even with persistence mode
+off), both engine-only specs reproduced to the hundredth:
+
+| | Early copy on, boost | Early copy on, locked | No copy, boost | No copy, locked |
+|---|---|---|---|---|
+| ingress wait | 0.000 | 0.000 | 0.230 | 0.232 |
+| preprocess | 0.292 | 0.293 | 0.075 | 0.075 |
+| TensorRT graph | 1.982 | 1.980 | 1.981 | 1.978 |
+| acquisition to detect, mean / p95 | 2.355 / 2.369 | 2.351 / 2.367 | 2.373 / 2.388 | 2.363 / 2.378 |
+
+So the clock-ramp explanation is out, and so is any worry that boost
+behaviour shapes these numbers: at 100 fps the workload already holds the
+dies at their ceiling. What the columns do show is where the 0.23 ms sits.
+With the copy, the ingress event is already complete when the worker
+reaches it on every frame (`ingress_event_ready_before_wait` = 1.00), 0.026
+ms after it was recorded. Without the copy it is complete on none
+(`0.00`), and the YOLO stream then waits 0.23 ms for it. The event is
+recorded at the same point in the code either way, so something ahead of
+it on the acquisition stream, or on the legacy default stream the
+acquisition stream is created blocking against, takes 0.23 ms only in the
+direct-read configuration. The likely candidate is SDK-side work on the
+camera buffer when a GPUDirect buffer is returned or reused without an
+intervening copy; an nsys trace of the acquisition thread in that mode
+would name it. It is not pursued: lever 2d is dead regardless, and the
+production path always has the copy.
+
 The measuring cost: six CUDA event records per frame on the YOLO stream
 and two on the acquisition stream; the elapsed reads are free because the
 worker already waits for completion. Same spec with and without the flag:
