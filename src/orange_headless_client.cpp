@@ -54,6 +54,7 @@
 #include "yolo_event_log.h"
 #include "yolo_event_log_validation.h"
 #include "crop_producer_worker.h"
+#include "crop_and_encode_worker.h"
 #include "citrus_recording_geometry.h"
 #include "recording_physical_registration.h"
 #include "pose_worker.h"
@@ -115,6 +116,17 @@ struct HeadlessYoloWorkerConfig {
     bool enabled() const {
         return mode == "real";
     }
+};
+
+// fixed.crop_recording: headless crop production and crop video encoding,
+// the same CropProducerWorker -> CropAndEncodeWorker pair the GUI runs
+// (in-process NVENC on the detect die; the external crop recorder is not
+// wired headless yet). Added 2026-09-04 so the crop load can be measured
+// with the latency specs (docs/detect_latency_review_2026_09_03.md).
+struct HeadlessCropRecordingConfig {
+    std::string mode = "off";   // off | in_process
+    int crop_size_px = 0;       // 0: the camera config's crop_pipeline.crop_size_px
+    bool enabled() const { return mode == "in_process"; }
 };
 
 struct HeadlessPoseWorkerConfig {
@@ -208,6 +220,7 @@ struct HeadlessCliOptions {
     yolo_event_log::SyntheticYoloEventConfig yolo_event_log;
     HeadlessYoloWorkerConfig yolo_worker;
     HeadlessPoseWorkerConfig pose_worker;
+    HeadlessCropRecordingConfig crop_recording;
     HeadlessRecordingControlConfig recording_control;
     HeadlessExternalRecorderContractConfig external_recorder_contract;
     bool has_recording_override = false;
@@ -266,6 +279,7 @@ struct ExperimentSpec {
     yolo_event_log::SyntheticYoloEventConfig yolo_event_log;
     HeadlessYoloWorkerConfig yolo_worker;
     HeadlessPoseWorkerConfig pose_worker;
+    HeadlessCropRecordingConfig crop_recording;
     HeadlessRecordingControlConfig recording_control;
     HeadlessExternalRecorderContractConfig external_recorder_contract;
     bool has_recording_profile = false;
@@ -3815,6 +3829,13 @@ void stop_headless_yolo_workers(std::vector<std::unique_ptr<YoloWorker>>& yolo_w
     yolo_workers.clear();
 }
 
+// Headless crop video encoders, one per camera index, owned here rather
+// than threaded through every start/stop signature. Created by
+// start_camera_thread when fixed.crop_recording.mode is in_process and
+// torn down in stop_headless_pose_pipeline (endpoints after producers,
+// the GUI's order).
+std::vector<std::unique_ptr<CropAndEncodeWorker>> g_headless_crop_encode_workers;
+
 void stop_headless_pose_pipeline(
     std::vector<std::unique_ptr<CropProducerWorker>>& crop_producer_workers,
     std::vector<std::unique_ptr<PoseWorker>>& pose_workers)
@@ -3825,6 +3846,18 @@ void stop_headless_pose_pipeline(
             worker->CloseRecording();
         }
     }
+
+    for (auto& worker : g_headless_crop_encode_workers) {
+        if (worker) {
+            worker->StopThread();
+            try {
+                worker->finalize_recording();
+            } catch (const std::exception& ex) {
+                std::cerr << "Headless crop recording finalization failed: " << ex.what() << std::endl;
+            }
+        }
+    }
+    g_headless_crop_encode_workers.clear();
 
     for (auto& worker : pose_workers) {
         if (worker) {
@@ -4382,9 +4415,14 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
         yolo_event_log::SyntheticYoloEventConfig{},
     const HeadlessYoloWorkerConfig& yolo_worker_config = HeadlessYoloWorkerConfig{},
     const HeadlessPoseWorkerConfig& pose_worker_config = HeadlessPoseWorkerConfig{},
-    const HeadlessExternalRecorderContractConfig* external_recorder_contract = nullptr)
+    const HeadlessExternalRecorderContractConfig* external_recorder_contract = nullptr,
+    const HeadlessCropRecordingConfig& crop_recording_config = HeadlessCropRecordingConfig{})
 {
     std::cout << "start camera sthread..." << std::endl;
+    if (crop_recording_config.enabled() && !yolo_worker_config.enabled()) {
+        std::cerr << "fixed.crop_recording requires fixed.yolo_worker (crops are cut from detections)." << std::endl;
+        return false;
+    }
     if (thread_failure_state) {
         thread_failure_state->reset();
     }
@@ -4564,7 +4602,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
             cameras_select[idx].yolo = enable_real_yolo;
             cameras_select[idx].yolo_model =
                 enable_real_yolo ? yolo_worker_config.engine_path.c_str() : nullptr;
-            cameras_select[idx].crop_and_encode = false;
+            cameras_select[idx].crop_and_encode = crop_recording_config.enabled();
             cameras_select[idx].pose = enable_pose;
             cameras_select[idx].send_frame_ipc = frame_ipc_config.enabled();
             cameras_select[idx].send_yolo_via_frame_ipc =
@@ -4718,6 +4756,49 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
             }
         }
 
+        g_headless_crop_encode_workers.clear();
+        g_headless_crop_encode_workers.resize(num_cameras);
+        if (crop_recording_config.enabled()) {
+            setenv("ORANGE_CROP_RECORDING_SINK_MODE", "in_process", 0);
+            std::cout << "Headless crop recording enabled."
+                      << " mode=" << crop_recording_config.mode
+                      << " crop_size_px=" << crop_recording_config.crop_size_px
+                      << " runtime=CropProducerWorker->CropAndEncodeWorker (in-process NVENC on the detect die)"
+                      << std::endl;
+            for (int idx : selected_indices) {
+                const int crop_size_px = CropProducerWorker::SanitizeCropSize(
+                    crop_recording_config.crop_size_px > 0
+                        ? crop_recording_config.crop_size_px
+                        : cameras_params[idx].crop_pipeline.crop_size_px);
+                if (!crop_producer_workers[idx]) {
+                    std::string crop_name = "HeadlessCropProducer_Cam_" +
+                        cameras_params[idx].camera_serial;
+                    crop_producer_workers[idx] = std::make_unique<CropProducerWorker>(
+                        crop_name.c_str(),
+                        &cameras_params[idx],
+                        *camera_resources[idx].recycle_queue,
+                        camera_control,
+                        crop_size_px);
+                    crop_producer_workers[idx]->RotateRecordingFolder(record_folder);
+                }
+                std::string encode_name = "HeadlessCropEncode_Cam_" +
+                    cameras_params[idx].camera_serial;
+                g_headless_crop_encode_workers[idx] = std::make_unique<CropAndEncodeWorker>(
+                    encode_name.c_str(),
+                    &cameras_params[idx],
+                    record_folder,
+                    *camera_resources[idx].recycle_queue,
+                    nullptr,
+                    camera_control,
+                    crop_size_px);
+                auto* producer = crop_producer_workers[idx].get();
+                auto* crop_encode = g_headless_crop_encode_workers[idx].get();
+                crop_encode->SetCropProducer(producer->GetCropProducer());
+                crop_encode->SetCropProducerWorker(producer);
+                producer->SetCropAndEncodeWorker(crop_encode);
+                crop_encode->RotateRecordingFolder(record_folder);
+            }
+        }
         if (pose_worker_config.enabled()) {
             std::cout << "Headless pose worker enabled."
                       << " mode=" << pose_worker_config.mode
@@ -4743,15 +4824,17 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                 const int crop_size_px =
                     CropProducerWorker::SanitizeCropSize(
                         cameras_params[idx].crop_pipeline.crop_size_px);
-                std::string crop_name = "HeadlessCropProducer_Cam_" +
-                    cameras_params[idx].camera_serial;
-                crop_producer_workers[idx] = std::make_unique<CropProducerWorker>(
-                    crop_name.c_str(),
-                    &cameras_params[idx],
-                    *camera_resources[idx].recycle_queue,
-                    camera_control,
-                    crop_size_px);
-                crop_producer_workers[idx]->RotateRecordingFolder(record_folder);
+                if (!crop_producer_workers[idx]) {
+                    std::string crop_name = "HeadlessCropProducer_Cam_" +
+                        cameras_params[idx].camera_serial;
+                    crop_producer_workers[idx] = std::make_unique<CropProducerWorker>(
+                        crop_name.c_str(),
+                        &cameras_params[idx],
+                        *camera_resources[idx].recycle_queue,
+                        camera_control,
+                        crop_size_px);
+                    crop_producer_workers[idx]->RotateRecordingFolder(record_folder);
+                }
 
                 std::string pose_name = "HeadlessPoseWorker_Cam_" +
                     cameras_params[idx].camera_serial;
@@ -4932,6 +5015,11 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
         for (int idx : selected_indices) {
             if (pose_workers[idx]) {
                 pose_workers[idx]->StartThread();
+            }
+            if (idx < static_cast<int>(g_headless_crop_encode_workers.size()) &&
+                g_headless_crop_encode_workers[idx]) {
+                g_headless_crop_encode_workers[idx]->SetMaxQueueSize(64);
+                g_headless_crop_encode_workers[idx]->StartThread();
             }
             if (crop_producer_workers[idx]) {
                 crop_producer_workers[idx]->SetMaxQueueSize(240);
@@ -8036,6 +8124,19 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             return false;
         }
     }
+    if (fixed.contains("crop_recording")) {
+        const nlohmann::json& node = fixed["crop_recording"];
+        if (!node.is_object()) {
+            if (error_out) *error_out = "Experiment spec fixed.crop_recording must be an object";
+            return false;
+        }
+        spec->crop_recording.mode = node.value("mode", std::string("off"));
+        spec->crop_recording.crop_size_px = node.value("crop_size_px", 0);
+        if (spec->crop_recording.mode != "off" && spec->crop_recording.mode != "in_process") {
+            if (error_out) *error_out = "Experiment spec fixed.crop_recording.mode must be off|in_process";
+            return false;
+        }
+    }
     if (fixed.contains("recording_control")) {
         if (!parse_headless_recording_control_json(
                 fixed["recording_control"],
@@ -8550,6 +8651,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             run.options.yolo_event_log = spec.yolo_event_log;
                                                             run.options.yolo_worker = spec.yolo_worker;
                                                             run.options.pose_worker = spec.pose_worker;
+                                                            run.options.crop_recording = spec.crop_recording;
                                                             run.options.recording_control =
                                                                 spec.recording_control;
                                                             run.options.external_recorder_contract =
@@ -9309,7 +9411,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         options.yolo_event_log,
         options.yolo_worker,
         options.pose_worker,
-        &options.external_recorder_contract);
+        &options.external_recorder_contract,
+        options.crop_recording);
 
     if (!started) {
         stop_supervised_external_recorder();

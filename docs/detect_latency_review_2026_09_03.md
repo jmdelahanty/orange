@@ -18,8 +18,11 @@ p99 down 44). The TensorRT graph is 2.0 ms of it. The levers that got there
 (event sync, deferred PTP latch, detect-priority handoff gate, registered
 source with copy fallback, and the owned copy issued after detection) are
 on by default, and the copy after detection is the only owned-copy path in
-the tree. The sections below are the record of how; the original review
-follows.
+the tree. Those numbers are for full-frame encoding plus detection; with
+crop production and in-process crop video added (measured 2026-09-04
+evening, "Crop production and crop video, headless" below) the mean and
+p95 move by 0.01 to 0.02 ms and the p99 by 0.25 to 0.35 ms. The sections
+below are the record of how; the original review follows.
 
 The threading architecture is not where the latency is. The CPU side of the
 detect path costs about 60 us per frame. Of the 2.82 ms mean worker time,
@@ -1349,6 +1352,62 @@ defaults to true and is exported both ways, and the GUI wrapper forwards
 both variables (plus `ORANGE_YOLO_GPU_TIMING`) for turning them off. Every
 lever in this document is now the default behaviour of the tree; a spec
 that says nothing gets all of them.
+
+## Crop Production And Crop Video, Headless (2026-09-04)
+
+Until this evening every number in this document was full-frame encoding
+plus detection. The crop pipeline, which the GUI runs alongside, was not
+in the loop, and the headless client could only produce crops through the
+pose worker and had no crop video path at all. Added:
+
+- `fixed.crop_recording: {"mode": "in_process", "crop_size_px": 384}` in
+  the headless spec builds the same `CropProducerWorker` to
+  `CropAndEncodeWorker` pair the GUI runs: a crop of the top detection cut
+  on every frame and encoded with in-process NVENC on the detect die
+  (profile `crop_hevc_lossless_gop1`, preset p7, one packet per frame). The
+  producer is shared with the pose worker when both are on. The external
+  crop recorder (a separate process, other die) is not wired headless yet.
+- Three specs on top of the registered spec:
+  `..._registered_crop` (crop production and video),
+  `..._registered_crop_pose_noop` (plus the pose worker without an engine;
+  needs a scene with detections or the pose-log gate fails the run), and
+  `..._registered_crop_synthetic` (pose worker in noop mode with
+  `roi_source: synthetic_center_box`, a 384 px box on every frame, so the
+  crop is cut and encoded on an empty tank). The tank was empty for these
+  runs, so the synthetic spec is the one that exercised the real crop cut.
+
+Results, three cameras, registered spec, 60 s, acquisition-to-detect
+mean / p95 / p99 in ms:
+
+| Configuration | 2010093 | 2010094 | 2010095 | Crops |
+|---|---|---|---|---|
+| No crop pipeline (defaults check, same afternoon) | 2.212 / 2.294 / 2.316 | 2.216 / 2.305 / 2.330 | 2.204 / 2.298 / 2.320 | none |
+| Crop production and video, empty scene | 2.239 / 2.330 / 2.673 | 2.239 / 2.320 / 2.605 | 2.205 / 2.300 / 2.573 | 5,902 blank crops encoded |
+| Plus pose worker (noop), empty scene | 2.223 / 2.305 / 2.668 | 2.224 / 2.310 / 2.557 | 2.211 / 2.302 / 2.546 | blank; pose-log gate failed (no events) |
+| Crop and video from a synthetic detection every frame, plus pose noop | 2.229 / 2.319 / 2.665 | 2.230 / 2.320 / 2.617 | 2.220 / 2.317 / 2.585 | 5,900 / 5,900 cut and encoded, 5,900 pose events, 120 MB per camera |
+
+- **Mean and p95 are unchanged within 0.02 ms**; the graph and preprocess
+  are identical. The crop pipeline runs after detection, in the idle part
+  of the period, exactly where the copy after detection put it.
+- **The p99 grows by 0.25 to 0.35 ms** in every crop configuration, blank
+  or real. That is the in-process crop NVENC on the detect die: about one
+  frame in a hundred sees its graph launch delayed (the `gap` p95 rises
+  from 0.002 to 0.015 to 0.05 ms and the `queue` p95 from 0.12 to 0.18),
+  consistent with the crop encoder's CUDA work or NVENC submission landing
+  on the die while the next frame's preprocess and graph are being issued.
+  Not the crop cut itself: the blank-crop run, which cuts nothing, has the
+  same tail.
+- **The crop worker itself is cheap**: 0.18 to 0.23 ms CPU per frame end
+  to end, crop copy sub-millisecond, zero drops, queue high-water 3 of 64.
+  Every frame produced a crop and a pose event on the synthetic spec, and
+  the crop videos finalized cleanly.
+
+Follow-ups, in order: route the crop encode to the external crop recorder
+on the other die (the GUI's `ORANGE_CROP_RECORDING_SINK_MODE=external_ipc`
+path, not wired headless yet), which should take the p99 back to 2.32; or
+a cheaper crop encode profile than lossless p7 if the in-process path has
+to stay; then the same measurement with a real animal, where the crop
+position moves.
 
 ## Landed Commits And Follow-Ups
 
