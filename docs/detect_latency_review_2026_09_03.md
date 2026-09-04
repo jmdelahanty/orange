@@ -1006,6 +1006,41 @@ intervening copy; an nsys trace of the acquisition thread in that mode
 would name it. It is not pursued: lever 2d is dead regardless, and the
 production path always has the copy.
 
+**Was the 0.23 ms introduced by the 2026-09-03 changes?** Almost certainly
+not, though history cannot prove it: no run before 2026-09-04 had GPU event
+timing (every older perf CSV has -1 in those columns), and the direct-read
+configuration has not been the production path since the early-owned copy
+became the default. From the code, none of the changes add GPU work ahead
+of the frame-ready event on the acquisition stream: event sync and the
+deferred latch are CPU-side (and the latch is after the YOLO enqueue); the
+gate, registered source and copy fallback live in the recorder, which the
+engine-only specs do not run; GPU timing records on the YOLO stream, and
+the early-copy events exist only on the copy path, which is the one that
+does not show the wait. The `_levers_off` control spec below settles it.
+
+**What it takes to find it**, cheapest first:
+
+1. Create the acquisition stream non-blocking behind an env flag
+   (`ORANGE_ACQ_STREAM_NONBLOCKING`, spec key `acq_stream_nonblocking`,
+   default off). The stream is made with plain `cudaStreamCreate`, so it
+   serializes behind anything any code in the process launches on the
+   legacy default stream; on the acquisition thread the only other CUDA
+   user is the Emergent SDK. Wait disappears: the 0.23 ms is SDK work on
+   the default stream, and reading ahead of it must then be shown safe,
+   since it could be part of finalizing the DMA. Wait stays: the work is
+   on our own stream, in our code. Spec
+   `threecam_detect_latency_engine_only_no_early_copy_nonblocking`.
+2. Record events on the default stream around `EVT_CameraGetFrame` and
+   `EVT_CameraQueueFrame` in direct mode and report the elapsed. The
+   suspect is the requeue: in direct mode the previous frame's GPUDirect
+   buffer goes back to the SDK around the time the next frame arrives, and
+   0.23 ms is what a 20 MB memset or re-registration of that buffer would
+   cost; on the copy path the requeue happens after the copy completes,
+   off the critical path.
+3. An nsys trace of a no-copy run: the GPU operation ahead of the event
+   record, its duration, and the issuing API call and thread. Needs a
+   sudoers line for `nsys` like the gdb wrapper's.
+
 The measuring cost: six CUDA event records per frame on the YOLO stream
 and two on the acquisition stream; the elapsed reads are free because the
 worker already waits for completion. Same spec with and without the flag:

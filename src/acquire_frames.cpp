@@ -1182,7 +1182,22 @@ void acquire_frames(
 
     {
         NVTX_RANGE("Stream_and_Buffer_Init");
-        ck(cudaStreamCreate(&stream));
+        // ORANGE_ACQ_STREAM_NONBLOCKING (diagnostic, default off): create the
+        // acquisition stream non-blocking so it no longer serializes behind
+        // legacy-default-stream work from other code in the process (the
+        // Emergent SDK on this thread). Used to locate the 0.23 ms that
+        // precedes the ingress event in direct-read mode
+        // (docs/detect_latency_review_2026_09_03.md, "What it takes to find
+        // it"). Not for production until the SDK's default-stream work is
+        // known not to be part of finalizing the frame DMA.
+        static const bool acq_stream_nonblocking =
+            orange::yolo_flags::EnvFlag("ORANGE_ACQ_STREAM_NONBLOCKING", false);
+        if (acq_stream_nonblocking) {
+            ck(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+            std::cout << "[Acquire] acquisition stream created non-blocking (ORANGE_ACQ_STREAM_NONBLOCKING)" << std::endl;
+        } else {
+            ck(cudaStreamCreate(&stream));
+        }
         CUDA_STREAM_LOG("Created acquisition stream", stream);
 
         initalize_gpu_frame(&frame_process_save.frame_original, camera_params);
