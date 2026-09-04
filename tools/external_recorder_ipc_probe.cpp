@@ -3590,6 +3590,9 @@ struct DirectSourceWorkItem {
     FrameDescriptor desc;
     void* source_ptr = nullptr;
     std::chrono::steady_clock::time_point enqueued_at;
+    // Create the encoder for desc's geometry and do nothing else (client
+    // hello carried the frame size); see prewarm_encoder().
+    bool prewarm_only = false;
 };
 
 class ExternalEncodeWorker {
@@ -3618,6 +3621,25 @@ public:
         }
         running_ = true;
         worker_ = std::thread(&ExternalEncodeWorker::run, this);
+    }
+
+    // Encoder warm-up at client hello: queue a work item that only runs
+    // initialize_encoder() on the worker thread, so the NVENC session, the
+    // registered slots and the streams exist before the first FRAME. Without
+    // it the first frame waited about 0.4 s for the encoder and 30 to 50
+    // frames backed up behind it on every start (2026-09-04).
+    void prewarm_encoder(const FrameDescriptor& desc)
+    {
+        if (!(options_.direct_input_source && options_.deferred_source_release)) {
+            return;  // only the direct-source loop consumes these items
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        DirectSourceWorkItem item;
+        item.desc = desc;
+        item.enqueued_at = std::chrono::steady_clock::now();
+        item.prewarm_only = true;
+        direct_source_queue_.push_front(item);
+        cv_.notify_all();
     }
 
     void set_protocol_writer(int fd, std::mutex* mutex)
@@ -4005,9 +4027,9 @@ private:
         }
     }
 
-    void initialize_encoder(const FrameDescriptor& desc)
+    void initialize_encoder(const FrameDescriptor& desc, const bool record_first_desc = true)
     {
-        if (!has_first_desc_) {
+        if (record_first_desc && !has_first_desc_) {
             first_desc_ = desc;
             has_first_desc_ = true;
         }
@@ -4992,6 +5014,14 @@ private:
                     }
                     item = direct_source_queue_.front();
                     direct_source_queue_.pop_front();
+                }
+                if (item.prewarm_only) {
+                    const auto prewarm_start = std::chrono::steady_clock::now();
+                    initialize_encoder(item.desc, /*record_first_desc=*/false);
+                    std::cout << "external_recorder_ipc_probe encoder prewarmed at hello in "
+                              << ns_to_ms(elapsed_ns(prewarm_start)) << " ms ("
+                              << item.desc.width << "x" << item.desc.height << ")" << std::endl;
+                    continue;
                 }
                 try {
                     encode_one_direct_source(item);
@@ -6178,6 +6208,25 @@ int main(int argc, char** argv)
                 }
                 protocol_state.client_hello_received = true;
                 write_status("connected");
+                if (client_hello.frame_width > 0 && client_hello.frame_height > 0) {
+                    FrameDescriptor prewarm_desc;
+                    prewarm_desc.camera_serial = client_hello.camera_serial;
+                    prewarm_desc.session_id = client_hello.session_id;
+                    prewarm_desc.stream_id = client_hello.stream_id;
+                    prewarm_desc.width = client_hello.frame_width;
+                    prewarm_desc.height = client_hello.frame_height;
+                    prewarm_desc.source_gpu_id = client_hello.source_gpu_id;
+                    prewarm_desc.nv12_pool = true;
+                    for (auto& worker : encode_workers) {
+                        if (worker) {
+                            worker->prewarm_encoder(prewarm_desc);
+                        }
+                    }
+                    std::cout << "external_recorder_ipc_probe client hello carries "
+                              << client_hello.frame_width << "x" << client_hello.frame_height
+                              << " source_gpu=" << client_hello.source_gpu_id
+                              << "; prewarming " << encode_workers.size() << " encoder(s)" << std::endl;
+                }
                 continue;
             }
             if (orange::external_recorder::ipc::starts_with_kind(

@@ -66,7 +66,9 @@ public:
                      const ResolvedRecordingConfig& resolved_recording_config,
                      SafeQueue<WORKER_ENTRY*>* recycle_queue = nullptr,
                      const std::string& recording_sink_mode = "real",
-                     const std::string& camera_serial = "");
+                     const std::string& camera_serial = "",
+                     int frame_width = 0,
+                     int frame_height = 0);
     ~RecordingIngress();
 
     bool SubmitFrame(WORKER_ENTRY* entry);
@@ -103,6 +105,8 @@ private:
     SafeQueue<WORKER_ENTRY*>* recycle_queue_ = nullptr;
     std::string recording_sink_mode_ = "real";
     std::string camera_serial_;
+    int frame_width_ = 0;
+    int frame_height_ = 0;
     std::unique_ptr<ThreadedHandoffWorker> threaded_handoff_worker_;
     std::unique_ptr<ExternalIpcHandoffWorker> external_ipc_handoff_worker_;
     std::vector<int> route_gpu_ids_;

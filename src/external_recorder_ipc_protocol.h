@@ -32,6 +32,13 @@ struct HelloFields {
     std::string features;
     int frame_rate = 0;
     int resolved_gop_length = 0;
+    // Optional since 2026-09-04: the client's frame geometry and source GPU,
+    // so the recorder can create its encoder at hello instead of at the
+    // first FRAME (the cold-start backlog that tripped the deferred-release
+    // hard cap when six recorder processes started together).
+    int frame_width = 0;
+    int frame_height = 0;
+    int source_gpu_id = -1;
     std::string recording_config_fingerprint_scope;
     std::string recording_config_fingerprint;
     std::string error;
@@ -442,6 +449,15 @@ inline bool parse_protocol_hello_line(const std::string& line,
         !parse_int_value(gop_value, &parsed.resolved_gop_length)) {
         parsed.error = "invalid resolved_gop_length";
     }
+    for (const auto& [key, target] : {
+             std::pair<const char*, int*>{"frame_width", &parsed.frame_width},
+             std::pair<const char*, int*>{"frame_height", &parsed.frame_height},
+             std::pair<const char*, int*>{"source_gpu_id", &parsed.source_gpu_id}}) {
+        const std::string value = find_value(values, key);
+        if (parsed.error.empty() && !value.empty() && !parse_int_value(value, target)) {
+            parsed.error = std::string("invalid ") + key;
+        }
+    }
 
     if (parsed.error.empty()) {
         if (parsed.protocol != kProtocolName) {
@@ -618,7 +634,10 @@ inline std::string build_client_hello_line(const std::string& camera_serial,
                                            const std::string& stream_id,
                                            const std::string& role,
                                            int frame_rate,
-                                           int resolved_gop_length)
+                                           int resolved_gop_length,
+                                           int frame_width = 0,
+                                           int frame_height = 0,
+                                           int source_gpu_id = -1)
 {
     std::ostringstream out;
     out << kClientHelloKind
@@ -634,8 +653,13 @@ inline std::string build_client_hello_line(const std::string& camera_serial,
         << kRecordingConfigFingerprintScope
         << " recording_config_fingerprint="
         << build_recording_config_fingerprint(frame_rate, resolved_gop_length)
-        << " features=client_control_drain,client_control_finalize"
-        << "\n";
+        << " features=client_control_drain,client_control_finalize";
+    if (frame_width > 0 && frame_height > 0) {
+        out << " frame_width=" << frame_width
+            << " frame_height=" << frame_height
+            << " source_gpu_id=" << source_gpu_id;
+    }
+    out << "\n";
     return out.str();
 }
 

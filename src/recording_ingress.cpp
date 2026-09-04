@@ -148,8 +148,12 @@ public:
                              int source_gpu_id,
                              int route_hint_gpu_id,
                              uint32_t recording_gop_length,
-                             uint32_t recording_frame_rate)
+                             uint32_t recording_frame_rate,
+                             int frame_width = 0,
+                             int frame_height = 0)
         : CThreadWorker<WORKER_ENTRY>(("ExternalIpcRecorder_Cam_" + camera_serial).c_str()),
+          frame_width_(frame_width),
+          frame_height_(frame_height),
           recycle_queue_(recycle_queue),
           camera_serial_(std::move(camera_serial)),
           source_gpu_id_(source_gpu_id),
@@ -232,6 +236,23 @@ protected:
                   << camera_serial_ << ")" << std::endl;
         std::chrono::steady_clock::time_point pending_drain_deadline{};
         while (IsMachineOn() || GetCountQueueIn() > 0 || pending_release_count() > 0) {
+            // Connect and exchange hellos before the first frame, so the
+            // recorder creates its encoder now (frame geometry rides in the
+            // hello) instead of behind the first FRAME with the next 30 to 50
+            // frames backing up behind it. Retried every 250 ms until the
+            // recorder's socket is up.
+            if (IsMachineOn() && socket_fd_ < 0 && frame_width_ > 0) {
+                const auto now = std::chrono::steady_clock::now();
+                if (now - last_eager_connect_attempt_ > std::chrono::milliseconds(250)) {
+                    last_eager_connect_attempt_ = now;
+                    // The session and stream ids come from the supervisor's
+                    // environment; read them before the hello, as
+                    // detach_frame() does, or the recorder rejects the
+                    // identity and exits.
+                    refresh_session_from_environment();
+                    (void)ensure_connected();
+                }
+            }
             if (!IsMachineOn()) {
                 send_client_drain_control("worker_draining");
             }
@@ -776,7 +797,10 @@ private:
                 stream_id_,
                 "orange_full_frame",
                 static_cast<int>(recording_frame_rate_),
-                static_cast<int>(recording_gop_length_)))) {
+                static_cast<int>(recording_gop_length_),
+                frame_width_,
+                frame_height_,
+                source_gpu_id_))) {
             log_limited("send client protocol hello failed: " +
                         std::string(std::strerror(errno)));
             return false;
@@ -1131,6 +1155,9 @@ private:
     std::string socket_path_;
     int ack_timeout_ms_ = 1000;
     int socket_fd_ = -1;
+    int frame_width_ = 0;
+    int frame_height_ = 0;
+    std::chrono::steady_clock::time_point last_eager_connect_attempt_{};
     bool deferred_release_ = false;
     bool detect_priority_gate_ = false;
     size_t max_deferred_pending_ = 32;
@@ -1173,8 +1200,12 @@ RecordingIngress::RecordingIngress(EncoderPreprocessWorker* primary_preprocess_w
                                    const ResolvedRecordingConfig& resolved_recording_config,
                                    SafeQueue<WORKER_ENTRY*>* recycle_queue,
                                    const std::string& recording_sink_mode,
-                                   const std::string& camera_serial)
+                                   const std::string& camera_serial,
+                                   const int frame_width,
+                                   const int frame_height)
     : primary_preprocess_worker_(primary_preprocess_worker),
+      frame_width_(frame_width),
+      frame_height_(frame_height),
       source_gpu_id_(source_gpu_id),
       primary_encode_gpu_id_(primary_encode_gpu_id),
       recording_gop_length_(std::max<uint32_t>(1u, recording_gop_length)),
@@ -1207,7 +1238,9 @@ RecordingIngress::RecordingIngress(EncoderPreprocessWorker* primary_preprocess_w
                 source_gpu_id_,
                 primary_encode_gpu_id_,
                 recording_gop_length_,
-                recording_frame_rate_);
+                recording_frame_rate_,
+                frame_width_,
+                frame_height_);
     }
 
     if (recording_sink_mode_ != "real") {

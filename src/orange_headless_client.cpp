@@ -126,6 +126,7 @@ struct HeadlessYoloWorkerConfig {
 struct HeadlessCropRecordingConfig {
     std::string mode = "off";   // off | in_process | external_ipc
     int crop_size_px = 0;       // 0: the camera config's crop_pipeline.crop_size_px
+    int recorder_gpu = -1;      // external_ipc: -1 = the other die of the camera's card; else this GPU for every camera
     bool enabled() const { return mode == "in_process" || mode == "external_ipc"; }
     bool external() const { return mode == "external_ipc"; }
 };
@@ -8135,6 +8136,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         }
         spec->crop_recording.mode = node.value("mode", std::string("off"));
         spec->crop_recording.crop_size_px = node.value("crop_size_px", 0);
+        spec->crop_recording.recorder_gpu = node.value("recorder_gpu", -1);
         if (spec->crop_recording.mode != "off" && spec->crop_recording.mode != "in_process" &&
             spec->crop_recording.mode != "external_ipc") {
             if (error_out) *error_out = "Experiment spec fixed.crop_recording.mode must be off|in_process|external_ipc";
@@ -9341,9 +9343,10 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             if (options.crop_recording.crop_size_px > 0) {
                 camera.crop_pipeline.crop_size_px = options.crop_recording.crop_size_px;
             }
-            int recorder_gpu = -1;
+            int recorder_gpu = options.crop_recording.recorder_gpu;
             const auto stream = options.external_recorder_contract.streams.find(camera.camera_serial);
-            if (stream != options.external_recorder_contract.streams.end() &&
+            if (recorder_gpu < 0 &&
+                stream != options.external_recorder_contract.streams.end() &&
                 stream->contains("expected_shard_gpu_ids") &&
                 (*stream)["expected_shard_gpu_ids"].is_array()) {
                 for (const nlohmann::json& gpu : (*stream)["expected_shard_gpu_ids"]) {

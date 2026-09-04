@@ -1446,6 +1446,41 @@ Result, same synthetic crop on every frame, recorder GPUs 4 / 2 / 8 for
   is not encoding the same camera), and a cheaper in-process crop profile
   than lossless p7. Then the same measurement with a real animal.
 
+**Why the two-camera card gets worse, from the topology.** An A16 is four
+dies behind one PCIe switch. Card A holds dies 1 to 4: 2010094 detects on
+die 1 with its other shard on die 2, 2010093 detects on die 3 with its
+other shard on die 4. Card B holds dies 7 and 8, where 2010095 is alone.
+Anything one die reads from another die's memory crosses that card's
+switch. Split-GOP recording alternates 25-frame GOPs between two recorder
+processes: during a same-die GOP the recorder on the detect die encodes
+straight from the pool buffer (no copy since lever 2c); during an
+other-die GOP the recorder on the other die first pulls the 20 MB frame
+out of the detect die's memory through the switch, then encodes. So for
+half of every 50 frames there is a steady 2 GB/s of peer reads leaving the
+detect die, served by the same memory controller the graph is using, and
+we had measured that at about 0.04 ms on the graph. The external crop
+recorder adds another process on that other die which also peer-reads
+from the detect die, only 147 KB per frame, plus its own NVENC session. In
+bytes that is nothing, so bandwidth does not explain a p95 that grows by
+0.1 to 0.25 ms. What the data says is narrower: the mean barely moved, the
+same-die GOPs did not move, and the graph's p95 grew only in other-die
+GOPs. That is the signature of occasional collisions, not a constant tax:
+when the crop recorder's peer copy and the other shard's frame copy hit
+the switch together, the frame copy stretches and spends more of its time
+overlapping the graph. On card A two cameras do this, dies 2 and 4 both
+pulling from dies 1 and 3 through one switch, so collisions are twice as
+likely; on card B the crop recorder has no partner. What is measured: the
+recorder cost nothing on the single-camera card and the graph slowed only
+in other-die GOPs on the two-camera card, in steady state. What is
+inferred: that the switch, not the detect die's memory controller, is the
+mechanism. The two make different predictions, and one run separates
+them: crop recorders on the A6000 (`crop_recording.recorder_gpu = 0`,
+spec `..._crop_synthetic_external_a6000`), so their traffic leaves the
+card through the root complex. Card A's p95 back at 2.31 means the switch
+story holds and the rule is "crop recorders off the card"; p95 still high
+means the peer read itself hurts the detect die whatever the route, and
+the answer is in-process with a cheaper profile than lossless p7.
+
 Note on the spec files: the stream paths in `_crop_synthetic_external`
 were generated with a doubled prefix on the first run (cosmetic; the run's
 full-frame artifacts landed under

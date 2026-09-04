@@ -76,7 +76,9 @@ ModernRecordingPipeline::ModernRecordingPipeline(
             resolved_recording_config_,
             &recycle_queue,
             "real",
-            camera_params_->camera_serial);
+            camera_params_->camera_serial,
+            static_cast<int>(camera_params_->width),
+            static_cast<int>(camera_params_->height));
 
         const RecordingStrategyConfig& resolved_strategy = resolved_recording_config_.strategy;
         const std::string& policy = resolved_strategy.split_gop.source_encoder_policy;
@@ -134,7 +136,9 @@ ModernRecordingPipeline::ModernRecordingPipeline(
             resolved_recording_config_,
             &recycle_queue,
             normalized_sink_mode,
-            camera_params_->camera_serial);
+            camera_params_->camera_serial,
+            static_cast<int>(camera_params_->width),
+            static_cast<int>(camera_params_->height));
     } else {
         shared_recording_output_ = std::make_shared<SharedRecordingOutput>();
 
@@ -175,7 +179,9 @@ ModernRecordingPipeline::ModernRecordingPipeline(
             resolved_recording_config_,
             &recycle_queue,
             normalized_sink_mode,
-            camera_params_->camera_serial);
+            camera_params_->camera_serial,
+            static_cast<int>(camera_params_->width),
+            static_cast<int>(camera_params_->height));
 
         const RecordingStrategyConfig& resolved_strategy = resolved_recording_config_.strategy;
         const std::string& policy = resolved_strategy.split_gop.source_encoder_policy;
