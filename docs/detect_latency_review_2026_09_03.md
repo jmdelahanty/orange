@@ -1041,6 +1041,21 @@ does not show the wait. The `_levers_off` control spec below settles it.
    record, its duration, and the issuing API call and thread. Needs a
    sudoers line for `nsys` like the gdb wrapper's.
 
+**Step 1 result (2026-09-04, clocks still locked):** with the acquisition
+stream created non-blocking the wait is unchanged, 0.231 / 0.233 / 0.232 ms
+on the three cameras, preprocess 0.075, total 2.370 mean. So the 0.23 ms is
+not legacy-default-stream work from the SDK serializing ahead of our event;
+whatever delays the event is on our own stream or in the GPU's handling of
+that stream. The `_levers_off` control (event sync off, deferred latch off)
+also shows the wait, 0.227 to 0.232 ms, so it predates the 2026-09-03
+levers; that run's p99 of 2.7 to 3.8 ms in poll mode is a reminder of what
+event sync bought. Our code enqueues nothing on the acquisition stream in
+direct mode except the event records themselves (the only `cudaMemcpyAsync`
+calls in acquire_frames.cpp are the hybrid copy and the ring copy), which
+leaves step 2 (time the SDK's receive and requeue in direct mode) and step
+3 (nsys). Step 3 is now the better bet: it answers the question in one run
+instead of a guess per run.
+
 The measuring cost: six CUDA event records per frame on the YOLO stream
 and two on the acquisition stream; the elapsed reads are free because the
 worker already waits for completion. Same spec with and without the flag:
