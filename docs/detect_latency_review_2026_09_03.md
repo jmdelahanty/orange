@@ -288,6 +288,48 @@ NV12. And it is a candidate lever 2d: hand the EVT buffer itself to the
 recorder under deferred release and drop the early copy, at the cost of
 holding EVT ring entries about 10 ms longer.
 
+Lever 2c measured (2026-09-04): gate plus registered-source recorder, this
+run minus the gate run, ms. Run finished `completed` / `pass`; 5,900 frames
+encoded per camera, zero drops, frame-identity proof passed, 2,950
+registered-source frames and 2,950 RELEASE messages on each detect-die shard.
+
+| Metric | 2010093 | 2010094 | 2010095 |
+|---|---|---|---|
+| acq to detect mean | 2.503 to 2.384 (-0.119) | 2.498 to 2.385 (-0.113) | 2.457 to 2.385 (-0.073) |
+| acq to detect p95 | 3.642 to 2.458 (-1.184) | 3.608 to 2.459 (-1.149) | 3.267 to 2.460 (-0.807) |
+| acq to detect p99 | 3.812 to 2.463 (-1.349) | 3.802 to 2.464 (-1.339) | 3.481 to 2.465 (-1.016) |
+| same-die worker mean | 2.643 to 2.416 | 2.632 to 2.418 | 2.555 to 2.417 |
+| other-die worker mean | 2.309 to 2.299 | 2.315 to 2.301 | 2.306 to 2.297 |
+
+This is the target. Every camera, including 2010095, sits at p95 2.46 ms
+against an uncontended p95 of about 2.46 in this run, and the same-die
+penalty is 0.12 ms, which is NVENC's own read. Against the August baseline
+(2.89 / 3.88 / 4.18 mean / p95 / p99 on 2010093) the full lever set gives
+2.38 / 2.46 / 2.46: a 37% p95 reduction with the tail gone entirely.
+
+What "registered source" means: the recorder no longer copies the frame at
+all. The acquisition pool buffer is allocated NV12-shaped, its IPC handle is
+imported once, the pointer is registered with NVENC once (`nvEncRegisterResource`
+on a CUDA device pointer, 62 registrations per camera, done lazily on first
+sight), and each frame is encoded by pointing NVENC's next input slot at that
+registered buffer. The pool entry is held until NVENC returns the frame's
+packet, then released by a RELEASE message. Only the shard on the source GPU
+can do this; the other-die shard still copies (it has to cross the PCIe
+switch), so its recorder prepare time is unchanged.
+
+Three shutdown bugs had to be fixed to get a clean pass, all in the tree:
+the other-die shard's copy fallback needed its own owned NVENC input buffers
+(registered mode is now decided per shard); the ingress waited forever for
+RELEASE lines a dead recorder would never send (bounded now, with local
+release); and the drain handshake was circular: the client waited for the
+ingress to report drained, the ingress waited for the recorder to release
+the NVENC tail, the recorder waited for finalize to flush, and the client
+only sent finalize after its drain wait gave up 25 s later, which tripped the
+merged writer's 2 s frontier limit during the late flush. The ingress now
+sends drain and finalize as soon as every frame is handed over and only the
+NVENC tail is outstanding. A deferred-release cap of 32 entries protects the
+acquisition pool (never below 58 free in these runs).
+
 Two lessons from getting here. The first deferred-latch build still delayed
 the latch frames because the normal-path YOLO enqueue sat *after* the
 cadence probe, so the latch ran before the enqueue; the enqueue now precedes
@@ -322,7 +364,7 @@ Each step is one change and one measurement against the August baseline.
 | 1 | Done. `ORANGE_YOLO_SYNC_EVENT=1`, or `fixed.yolo_sync_event` in a spec, or `--orange-env` on the fourcam orchestrator | `total_ms` mean/p95, `cpu_event_record_ms` stall count, `sync_mode` column | 50-150 us off the mean; fewer lock stalls elsewhere |
 | 2 | Measured, passes the contract. External recorder direct input (`ORANGE_EXTERNAL_RECORDER_DIRECT_INPUT=1`, or `fixed.external_recorder_direct_input`); recorder has no headroom at 100 fps, see A/B results | cycle-phase profile and die split from the analysis script; detach `copy_ms` | Same-die mass shrinks toward the other-die peak |
 | 2b | Measured. Detect-priority handoff gate (`fixed.external_recorder_detect_priority`), see A/B results and below | die split and cycle phase; `detect_priority_*` counters in pipeline perf | Same-die mean falls toward the other-die figure; no recorder drops |
-| 2c | Zero-copy NVENC input from an NV12-shaped acquisition buffer, see below | die split; recorder `prepare_ms`; drops | Same-die penalty down to NVENC DMA; prepare well under 1 ms |
+| 2c | Measured, passes the contract. Zero-copy NVENC input from the NV12-shaped acquisition buffer (`fixed.external_recorder_registered_source`), see A/B results | die split; recorder `prepare_ms`; drops | Same-die penalty down to NVENC DMA; prepare well under 1 ms |
 | 3 | Done. Deferred PTP latch (`ORANGE_PTP_LATCH_AFTER_FANOUT`, default on) | `acquisition_to_worker_start_ms` p99/p99.9; `ptp_latch_ns` in the cadence probe | p99 0.57 to about 0.06 ms |
 | 4 | Done. Cache `build_gpu_runtime_info` per GPU (the real lock holder); `ORANGE_HEADLESS_GPU_DMON=0` remains available | stall fractional-second histogram | Verified: 0 stalls |
 | 5 | Always-on GPU event timing in the perf row | `preprocess_gpu_ms`, `gap_ms`, `infer_gpu_ms` populated in production | Under 20 us overhead |
@@ -412,7 +454,7 @@ by message, pool kept deep enough that a slow encode cannot starve the camera.
 
 ### Lever 2c implementation plan
 
-Touch points found on 2026-09-03; slices 1 and 2 are in the tree.
+Touch points found on 2026-09-03; all slices landed and passed on 2026-09-04.
 
 1. **Cap on deferred-release entries (done).** `ExternalIpcHandoffWorker`
    reads `ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED` (default 16). Before sending

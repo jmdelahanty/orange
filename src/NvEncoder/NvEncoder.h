@@ -301,6 +301,27 @@ public:
     uint32_t GetEncoderBufferCount() const { return m_nEncoderBuffer; }
 
     /**
+    *  @brief External-slot-override mode (external-input mode without a fixed
+    *  ring): sizes the per-slot registered/mapped vectors so any registered
+    *  resource can be assigned to the next slot with
+    *  SetNextInputRegisteredResource(). Call after CreateEncoder().
+    */
+    void PrepareExternalRegisteredSlots();
+
+    /**
+    *  @brief Registers an externally owned input surface and returns its
+    *  handle. The wrapper owns the registration and unregisters it at
+    *  teardown; the handle may be assigned to slots any number of times.
+    */
+    NV_ENC_REGISTERED_PTR RegisterExternalResource(void* pBuffer, NV_ENC_INPUT_RESOURCE_TYPE eResourceType, int pitch);
+
+    /**
+    *  @brief Assigns a registered resource to the slot the next EncodeFrame()
+    *  will map. Requires PrepareExternalRegisteredSlots().
+    */
+    void SetNextInputRegisteredResource(NV_ENC_REGISTERED_PTR registeredResource);
+
+    /**
     *  @brief This function returns the next input-frame slot index.
     */
     uint32_t GetNextInputFrameIndex() const { return m_nEncoderBuffer > 0 ? static_cast<uint32_t>(m_iToSend % m_nEncoderBuffer) : 0U; }
@@ -482,6 +503,8 @@ protected:
     bool m_bMotionEstimationOnly = false;
     bool m_bOutputInVideoMemory = false;
     bool m_bUseExternalInputBuffers = false;
+    bool m_bExternalSlotOverride = false;
+    std::vector<NV_ENC_REGISTERED_PTR> m_vExternalRegisteredResources;
     bool m_bIsDX12Encode = false;
     void *m_hEncoder = nullptr;
     NV_ENCODE_API_FUNCTION_LIST m_nvenc;

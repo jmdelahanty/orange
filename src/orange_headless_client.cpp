@@ -237,6 +237,8 @@ struct ExperimentSpec {
     bool headless_gpu_dmon = true;           // ORANGE_HEADLESS_GPU_DMON
     bool external_recorder_direct_input = false;  // ORANGE_EXTERNAL_RECORDER_DIRECT_INPUT
     bool external_recorder_detect_priority = true;  // ORANGE_EXTERNAL_RECORDER_DETECT_PRIORITY (default on)
+    bool external_recorder_registered_source = false;  // ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE + ORANGE_POOL_NV12_LAYOUT
+    bool external_recorder_deferred_release = false;  // ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE (diagnostic)
     std::string recording_sink_mode = "real";
     bool helper_noop_source_read = false;
     int64_t helper_copy_bytes = -1;
@@ -7927,6 +7929,10 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         fixed.value("external_recorder_direct_input", false);
     spec->external_recorder_detect_priority =
         fixed.value("external_recorder_detect_priority", true);
+    spec->external_recorder_registered_source =
+        fixed.value("external_recorder_registered_source", false);
+    spec->external_recorder_deferred_release =
+        fixed.value("external_recorder_deferred_release", false);
     spec->recording_sink_mode = fixed.value("recording_sink_mode", "real");
     spec->helper_noop_source_read = fixed.value("helper_noop_source_read", false);
     spec->helper_copy_bytes = fixed.value("helper_copy_bytes", static_cast<int64_t>(-1));
@@ -8583,6 +8589,8 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                  spec.external_recorder_direct_input},
                                                                 {"external_recorder_detect_priority",
                                                                  spec.external_recorder_detect_priority},
+                                                                {"external_recorder_registered_source",
+                                                                 spec.external_recorder_registered_source},
                                                                 {"recording_sink_mode", spec.recording_sink_mode},
                                                                 {"helper_noop_source_read",
                                                                  spec.helper_noop_source_read},
@@ -11000,6 +11008,13 @@ int run_local_experiment(const HeadlessCliOptions& options)
     }
     setenv("ORANGE_EXTERNAL_RECORDER_DETECT_PRIORITY",
            spec.external_recorder_detect_priority ? "1" : "0", 1);
+    if (spec.external_recorder_registered_source) {
+        setenv("ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE", "1", 1);
+        setenv("ORANGE_POOL_NV12_LAYOUT", "1", 1);
+    }
+    if (spec.external_recorder_deferred_release) {
+        setenv("ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE", "1", 1);
+    }
     std::cout << "[EXPERIMENT] detect latency levers via spec"
               << " yolo_sync_event=" << (spec.yolo_sync_event ? 1 : 0)
               << " ptp_latch_after_fanout=" << (spec.ptp_latch_after_fanout ? 1 : 0)
@@ -11008,6 +11023,8 @@ int run_local_experiment(const HeadlessCliOptions& options)
               << (spec.external_recorder_direct_input ? 1 : 0)
               << " external_recorder_detect_priority="
               << (spec.external_recorder_detect_priority ? 1 : 0)
+              << " external_recorder_registered_source="
+              << (spec.external_recorder_registered_source ? 1 : 0)
               << std::endl;
 
     const std::vector<ExperimentRunPlan> runs = build_experiment_run_plans(spec);

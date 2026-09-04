@@ -61,6 +61,12 @@ struct Options {
     bool encode_prewarm_peer_copy = false;
     bool direct_input_source = false;
     bool deferred_source_release = false;
+    // Lever 2c: encode straight from the NV12-shaped acquisition pool buffer
+    // (registered with NVENC once per pointer) with no copy, releasing the
+    // source by RELEASE after NVENC has unmapped it. Implies direct-source
+    // and deferred-release. Frames from another GPU, or without the nv12_pool
+    // layout token, fall back to the direct-source copy.
+    bool registered_source = false;
     uint32_t fps = 60;
     std::string codec = "hevc";
     std::string preset = "p1";
@@ -122,6 +128,7 @@ struct FrameDescriptor {
     uint64_t timestamp_sys = 0;
     std::string routing_policy = "single_shard";
     std::string handle_hex;
+    bool nv12_pool = false;  // source buffer is Y plane + chroma(128) plane
 };
 
 struct ImportedHandle {
@@ -199,6 +206,7 @@ void signal_handler(int)
         << "  --prewarm-peer-copy   After first IPC import, copy 1 byte into each shard to warm peer paths.\n"
         << "  --direct-input-source Copy IPC source directly into NVENC input before ACK. Experimental.\n"
         << "  --deferred-source-release Send RELEASE after source consumption; ACK only accepts work. Experimental.\n"
+        << "  --registered-source   Encode from the NV12-shaped pool buffer registered with NVENC (no copy); implies the two above. Experimental.\n"
         << "  --fps <int>           Encoder nominal FPS. Default 60.\n"
         << "  --codec <hevc|h264>   Default hevc.\n"
         << "  --preset <p1|p3|p5|p7> Default p1.\n"
@@ -368,6 +376,8 @@ Options parse_options(int argc, char** argv)
         env_flag_enabled("ORANGE_EXTERNAL_RECORDER_DIRECT_INPUT", false);
     options.deferred_source_release =
         env_flag_enabled("ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE", false);
+    options.registered_source =
+        env_flag_enabled("ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE", false);
     options.min_free_bytes =
         env_u64("ORANGE_EXTERNAL_RECORDER_MIN_FREE_BYTES", 0);
     options.low_space_warning_bytes =
@@ -418,6 +428,8 @@ Options parse_options(int argc, char** argv)
             options.direct_input_source = true;
         } else if (arg == "--deferred-source-release") {
             options.deferred_source_release = true;
+        } else if (arg == "--registered-source") {
+            options.registered_source = true;
         } else if (arg == "--fps") {
             options.fps = parse_u32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--codec") {
@@ -618,6 +630,10 @@ Options parse_options(int argc, char** argv)
     if (options.importance_map.enabled() && options.stream_kind != "full_frame") {
         throw std::runtime_error(
             "Importance maps are currently supported only for full_frame streams");
+    }
+    if (options.registered_source) {
+        options.direct_input_source = true;
+        options.deferred_source_release = true;
     }
     return options;
 }
@@ -1806,6 +1822,12 @@ bool parse_frame_descriptor(const std::string& line, FrameDescriptor* desc)
         desc->assigned_shard_id = assigned_shard_id;
         desc->routing_policy = std::move(routing_policy);
     }
+    std::string extra_token;
+    while (in >> extra_token) {
+        if (extra_token == "nv12_pool") {
+            desc->nv12_pool = true;
+        }
+    }
     if (desc->stream_id.empty()) {
         desc->stream_id = desc->camera_serial;
     }
@@ -2908,6 +2930,20 @@ private:
         } else if (!frontier_error.empty()) {
             error << " reason=" << frontier_error;
         }
+        error << " next_gop_to_release=" << next_gop_to_release_ << " pending=[";
+        size_t listed = 0;
+        for (const auto& [gop_index, gop] : pending_gops_) {
+            if (listed++ >= 6) {
+                error << " ...";
+                break;
+            }
+            error << (listed > 1 ? " " : "") << gop_index
+                  << ":sub=" << gop.submitted_count
+                  << ",emit=" << gop.emitted_count
+                  << ",subdone=" << (gop.submitted_complete ? 1 : 0)
+                  << ",complete=" << (gop.complete ? 1 : 0);
+        }
+        error << "]";
         fail_locked(error.str());
     }
 
@@ -4004,7 +4040,20 @@ private:
             throw std::runtime_error(
                 "Failed to build encoder importance map: " + importance_map_error);
         }
+        // Registered-source mode applies per shard: only the shard on the
+        // source GPU can encode from the pool buffer. Other shards keep
+        // owned NVENC input buffers and the copy path.
+        registered_mode_enabled_ =
+            options_.registered_source && desc.source_gpu_id == options_.gpu_id;
+        if (registered_mode_enabled_) {
+            encoder_->SetExternalInputBufferMode(true);
+        }
         encoder_->CreateEncoder(&initialize_params);
+        if (registered_mode_enabled_) {
+            encoder_->PrepareExternalRegisteredSlots();
+            std::cout << "external_recorder_ipc_probe registered-source mode: gpu=" << options_.gpu_id
+                      << " encoder_buffers=" << encoder_->GetEncoderBufferCount() << std::endl;
+        }
         encoder_->SetIOCudaStreams(
             reinterpret_cast<NV_ENC_CUSTREAM_PTR>(&stream_),
             reinterpret_cast<NV_ENC_CUSTREAM_PTR>(&stream_));
@@ -4494,21 +4543,63 @@ private:
         sample.enqueue_age_ms = elapsed_ms(item.enqueued_at);
 
         const auto prepare_start = std::chrono::steady_clock::now();
-        const NvEncInputFrame* input_frame = encoder_->GetNextInputFrame();
-        if (!input_frame || !input_frame->inputPtr) {
-            throw std::runtime_error("NvEncoder returned no direct source input frame");
+        // Registered-source path (lever 2c): no copy. The pool buffer is
+        // NV12-shaped on the source GPU; register it with NVENC once and
+        // point the next input slot at it. The source is released only after
+        // NVENC has unmapped it (release_registered_sources below).
+        const bool use_registered =
+            registered_mode_enabled_ &&
+            item.desc.nv12_pool &&
+            item.desc.source_gpu_id == options_.gpu_id;
+        if (options_.registered_source && !use_registered && !registered_fallback_logged_) {
+            registered_fallback_logged_ = true;
+            std::cout << "external_recorder_ipc_probe registered-source fallback to copy:"
+                      << " nv12_pool=" << (item.desc.nv12_pool ? 1 : 0)
+                      << " source_gpu=" << item.desc.source_gpu_id
+                      << " encode_gpu=" << options_.gpu_id << std::endl;
         }
-        prepare_input_frame_from_source(item.desc, item.source_ptr, *input_frame);
-        check_cuda(
-            cudaEventRecord(direct_input_ready_event_, stream_),
-            "cudaEventRecord(external direct source copied)");
-        check_cuda(
-            cudaEventSynchronize(direct_input_ready_event_),
-            "cudaEventSynchronize(external direct source copied)");
-        sample.prepare_ms = ns_to_ms(elapsed_ns(prepare_start));
-
-        if (!send_source_release(item.desc)) {
-            throw std::runtime_error("failed to send external source RELEASE");
+        if (use_registered) {
+            while (!encoder_->WaitForNextInputFrameAvailable(100)) {
+                if (stopping_requested() || failed()) {
+                    (void)send_source_release(item.desc);
+                    frames_dropped_.fetch_add(1, std::memory_order_relaxed);
+                    return;
+                }
+            }
+            NV_ENC_REGISTERED_PTR registered = nullptr;
+            const auto it = registered_sources_.find(item.source_ptr);
+            if (it == registered_sources_.end()) {
+                registered = encoder_->RegisterExternalResource(
+                    item.source_ptr,
+                    NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR,
+                    item.desc.width);
+                registered_sources_.emplace(item.source_ptr, registered);
+                std::cout << "external_recorder_ipc_probe registered pool buffer #"
+                          << registered_sources_.size() << " with NVENC" << std::endl;
+            } else {
+                registered = it->second;
+            }
+            encoder_->SetNextInputRegisteredResource(registered);
+            registered_in_flight_[item.desc.recording_frame_id] = item.desc;
+            registered_source_frames_++;
+            sample.prepare_ms = ns_to_ms(elapsed_ns(prepare_start));
+        } else {
+            registered_fallback_frames_ += options_.registered_source ? 1 : 0;
+            const NvEncInputFrame* input_frame = encoder_->GetNextInputFrame();
+            if (!input_frame || !input_frame->inputPtr) {
+                throw std::runtime_error("NvEncoder returned no direct source input frame");
+            }
+            prepare_input_frame_from_source(item.desc, item.source_ptr, *input_frame);
+            check_cuda(
+                cudaEventRecord(direct_input_ready_event_, stream_),
+                "cudaEventRecord(external direct source copied)");
+            check_cuda(
+                cudaEventSynchronize(direct_input_ready_event_),
+                "cudaEventSynchronize(external direct source copied)");
+            sample.prepare_ms = ns_to_ms(elapsed_ns(prepare_start));
+            if (!send_source_release(item.desc)) {
+                throw std::runtime_error("failed to send external source RELEASE");
+            }
         }
         if (merged_output_) {
             merged_output_->note_submitted(item.desc);
@@ -4533,6 +4624,7 @@ private:
             &fetch_ns,
             &timing);
         sample.encode_total_ms = ns_to_ms(elapsed_ns(encode_start));
+        release_registered_sources(output_timestamps);
         sample.encode_picture_ms = ns_to_ms(timing.encode_picture_ns);
         sample.completion_wait_ms = ns_to_ms(timing.completion_wait_ns);
         sample.lock_bitstream_ms = ns_to_ms(timing.lock_bitstream_ns);
@@ -4562,6 +4654,48 @@ private:
         record_encode_sample(sample);
         write_frame_metadata(item.desc);
         frames_encoded_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // Registered-source mode: NVENC has unmapped the input of every frame
+    // whose bitstream was just returned (outputTimeStamp == recording_frame_id),
+    // so those pool buffers can go back to the acquisition pool now.
+    void release_registered_sources(const std::vector<uint64_t>& output_timestamps)
+    {
+        if (registered_in_flight_.empty()) {
+            return;
+        }
+        for (const uint64_t recording_frame_id : output_timestamps) {
+            const auto it = registered_in_flight_.find(recording_frame_id);
+            if (it == registered_in_flight_.end()) {
+                continue;
+            }
+            if (!send_source_release(it->second)) {
+                // The ingress may already have closed the socket at drain; it
+                // returns held entries itself after its shutdown timeout, so
+                // a failed RELEASE is not fatal to the encode.
+                registered_release_failures_++;
+                if (registered_release_failures_ == 1) {
+                    std::cerr << "external_recorder_ipc_probe registered-source RELEASE send failed for recording_frame "
+                              << recording_frame_id << " (ingress socket closed?)" << std::endl;
+                }
+                registered_in_flight_.erase(it);
+                continue;
+            }
+            registered_releases_sent_++;
+            if (registered_releases_sent_ == 1) {
+                std::cout << "external_recorder_ipc_probe registered-source first RELEASE sent for recording_frame "
+                          << recording_frame_id << " (in flight " << registered_in_flight_.size() << ")" << std::endl;
+            }
+            registered_in_flight_.erase(it);
+        }
+    }
+
+    void release_all_registered_sources()
+    {
+        for (const auto& entry : registered_in_flight_) {
+            (void)send_source_release(entry.second);
+        }
+        registered_in_flight_.clear();
     }
 
     bool harvest_direct_packets(bool output_delay)
@@ -4712,6 +4846,8 @@ private:
         NvEncoderEncodeFrameTiming timing;
         uint64_t fetch_ns = 0;
         encoder_->EndEncode(packets, nullptr, &output_timestamps, &fetch_ns, &timing);
+        release_registered_sources(output_timestamps);
+        release_all_registered_sources();
         if (merged_output_) {
             merged_output_->submit_packets(packets, output_timestamps);
         }
@@ -4758,6 +4894,10 @@ private:
             std::cout << "external_recorder_ipc_probe direct-source encoder complete"
                       << " encoded=" << frames_encoded()
                       << " dropped=" << frames_dropped()
+                      << " registered_frames=" << registered_source_frames_
+                      << " registered_releases=" << registered_releases_sent_
+                      << " registered_release_failures=" << registered_release_failures_
+                      << " fallback_frames=" << registered_fallback_frames_
                       << std::endl;
         } catch (const std::exception& ex) {
             failed_.store(true, std::memory_order_release);
@@ -4856,6 +4996,17 @@ private:
     cudaStream_t copy_stream_ = nullptr;
     cudaEvent_t direct_input_ready_event_ = nullptr;
     std::unique_ptr<NvEncoderCuda> encoder_;
+    // Registered-source mode: NVENC registration per distinct imported pool
+    // pointer (wrapper-owned, unregistered at teardown) and the descriptors of
+    // frames NVENC still holds, keyed by recording_frame_id (= inputTimeStamp).
+    std::unordered_map<const void*, NV_ENC_REGISTERED_PTR> registered_sources_;
+    std::unordered_map<uint64_t, FrameDescriptor> registered_in_flight_;
+    uint64_t registered_source_frames_ = 0;
+    uint64_t registered_releases_sent_ = 0;
+    uint64_t registered_release_failures_ = 0;
+    uint64_t registered_fallback_frames_ = 0;
+    bool registered_fallback_logged_ = false;
+    bool registered_mode_enabled_ = false;
     std::unique_ptr<FFmpegWriter> mp4_writer_;
     std::ofstream bitstream_out_;
     std::ofstream encode_csv_;
@@ -5079,6 +5230,8 @@ void write_summary_json(const Options& options,
         << (options.direct_input_source ? "true" : "false") << ",\n";
     out << "  \"deferred_source_release\": "
         << (options.deferred_source_release ? "true" : "false") << ",\n";
+    out << "  \"registered_source\": "
+        << (options.registered_source ? "true" : "false") << ",\n";
     out << "  \"preserve_shard_mp4s\": "
         << (options.preserve_shard_mp4s ? "true" : "false") << ",\n";
     out << "  \"authoritative_video_output\": {\n";

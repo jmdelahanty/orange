@@ -1044,14 +1044,25 @@ void NvEncoder::UnregisterInputResources()
     }
     m_vMappedInputBuffers.clear();
 
-    for (uint32_t i = 0; i < m_vRegisteredResources.size(); ++i)
+    if (!m_bExternalSlotOverride)
     {
-        if (m_vRegisteredResources[i])
+        for (uint32_t i = 0; i < m_vRegisteredResources.size(); ++i)
         {
-            m_nvenc.nvEncUnregisterResource(m_hEncoder, m_vRegisteredResources[i]);
+            if (m_vRegisteredResources[i])
+            {
+                m_nvenc.nvEncUnregisterResource(m_hEncoder, m_vRegisteredResources[i]);
+            }
         }
     }
     m_vRegisteredResources.clear();
+    for (NV_ENC_REGISTERED_PTR registered : m_vExternalRegisteredResources)
+    {
+        if (registered)
+        {
+            m_nvenc.nvEncUnregisterResource(m_hEncoder, registered);
+        }
+    }
+    m_vExternalRegisteredResources.clear();
 
 
     for (uint32_t i = 0; i < m_vRegisteredResourcesForReference.size(); ++i)
@@ -1063,6 +1074,51 @@ void NvEncoder::UnregisterInputResources()
     }
     m_vRegisteredResourcesForReference.clear();
 
+}
+
+void NvEncoder::PrepareExternalRegisteredSlots()
+{
+    if (!IsHWEncoderInitialized())
+    {
+        NVENC_THROW_ERROR("Encoder intialization failed", NV_ENC_ERR_ENCODER_NOT_INITIALIZED);
+    }
+    if (!m_bUseExternalInputBuffers)
+    {
+        NVENC_THROW_ERROR("External input buffer mode is not enabled", NV_ENC_ERR_INVALID_PARAM);
+    }
+    if (!m_vInputFrames.empty() || !m_vRegisteredResources.empty())
+    {
+        NVENC_THROW_ERROR("Input buffers are already registered", NV_ENC_ERR_INVALID_PARAM);
+    }
+    m_bExternalSlotOverride = true;
+    m_vRegisteredResources.assign(m_nEncoderBuffer, nullptr);
+    m_vMappedInputBuffers.assign(m_nEncoderBuffer, nullptr);
+}
+
+NV_ENC_REGISTERED_PTR NvEncoder::RegisterExternalResource(void* pBuffer, NV_ENC_INPUT_RESOURCE_TYPE eResourceType, int pitch)
+{
+    if (!m_bExternalSlotOverride)
+    {
+        NVENC_THROW_ERROR("PrepareExternalRegisteredSlots() has not been called", NV_ENC_ERR_INVALID_PARAM);
+    }
+    NV_ENC_REGISTERED_PTR registered = RegisterResource(
+        pBuffer, eResourceType, GetMaxEncodeWidth(), GetMaxEncodeHeight(), pitch, GetPixelFormat(), NV_ENC_INPUT_IMAGE);
+    m_vExternalRegisteredResources.push_back(registered);
+    return registered;
+}
+
+void NvEncoder::SetNextInputRegisteredResource(NV_ENC_REGISTERED_PTR registeredResource)
+{
+    if (!m_bExternalSlotOverride || m_vRegisteredResources.size() != static_cast<size_t>(m_nEncoderBuffer))
+    {
+        NVENC_THROW_ERROR("PrepareExternalRegisteredSlots() has not been called", NV_ENC_ERR_INVALID_PARAM);
+    }
+    const uint32_t bfrIdx = static_cast<uint32_t>(m_iToSend % m_nEncoderBuffer);
+    if (m_vMappedInputBuffers[bfrIdx])
+    {
+        NVENC_THROW_ERROR("Next input slot is still mapped", NV_ENC_ERR_ENCODER_BUSY);
+    }
+    m_vRegisteredResources[bfrIdx] = registeredResource;
 }
 
 

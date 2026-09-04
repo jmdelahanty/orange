@@ -225,6 +225,7 @@ protected:
     {
         std::cout << "Child Thread Start 0 (ExternalIpcRecorder_Cam_"
                   << camera_serial_ << ")" << std::endl;
+        std::chrono::steady_clock::time_point pending_drain_deadline{};
         while (IsMachineOn() || GetCountQueueIn() > 0 || pending_release_count() > 0) {
             if (!IsMachineOn()) {
                 send_client_drain_control("worker_draining");
@@ -236,6 +237,32 @@ protected:
             if (entry) {
                 WorkerFunction(entry);
                 continue;
+            }
+            // Shutdown must not wait forever on a recorder that will never
+            // send its RELEASE lines (crashed, or a protocol bug). Give it a
+            // bounded grace period after the machine is stopped and the queue
+            // is empty, then return the held entries to the pool ourselves.
+            if (!IsMachineOn() && pending_release_count() > 0) {
+                // Every frame has been handed over; the entries still held
+                // are in the recorder's NVENC pipeline (registered-source
+                // mode). The recorder flushes NVENC only on finalize, and it
+                // releases those entries as the flush returns their packets,
+                // so send drain+finalize now and keep polling for the RELEASE
+                // lines instead of waiting for a release that cannot come.
+                if (in_flight_.load(std::memory_order_relaxed) == 0) {
+                    send_client_drain_control("worker_drained");
+                    send_client_finalize_control("worker_drained");
+                }
+                const auto now = std::chrono::steady_clock::now();
+                if (pending_drain_deadline == std::chrono::steady_clock::time_point{}) {
+                    pending_drain_deadline = now + std::chrono::seconds(5);
+                } else if (now >= pending_drain_deadline) {
+                    log_limited("recorder still holds " +
+                                std::to_string(pending_release_count()) +
+                                " entries at shutdown; releasing them locally");
+                    release_all_pending("shutdown timeout");
+                    break;
+                }
             }
             if (drain_requested_) {
                 OnFlushTick();
@@ -252,13 +279,27 @@ protected:
 
     void OnFlushTick() override
     {
-        if (deferred_release_) {
+        if (deferred_release_ || pending_release_count() > 0) {
             poll_protocol_lines(false);
         }
         if (drain_requested_) {
-            if (pending_release_count() > 0 ||
-                in_flight_.load(std::memory_order_relaxed) > 0 ||
-                GetCountQueueIn() > 0) {
+            const bool frames_done =
+                in_flight_.load(std::memory_order_relaxed) == 0 &&
+                GetCountQueueIn() == 0;
+            if (frames_done && pending_release_count() > 0) {
+                // Every frame is handed over; what the recorder still holds
+                // is its NVENC tail (registered-source mode). It flushes and
+                // releases that tail only on finalize, so tell it now
+                // instead of waiting for releases that cannot arrive first.
+                std::string reason;
+                {
+                    std::lock_guard<std::mutex> lock(drain_request_mutex_);
+                    reason = drain_reason_.empty() ? "recording_drained" : drain_reason_;
+                }
+                send_client_drain_control(reason.c_str());
+                send_client_finalize_control(reason.c_str());
+            }
+            if (pending_release_count() > 0 || !frames_done) {
                 usleep(1000);
                 (void)EnqueueFlushTick();
                 return;
@@ -568,7 +609,11 @@ private:
             recycle_queue_,
             released_entry,
             WorkerEntryReleaseContext{camera_serial_.c_str(), "external_ipc_release"});
-        frames_released_.fetch_add(1, std::memory_order_relaxed);
+        if (frames_released_.fetch_add(1, std::memory_order_relaxed) == 0) {
+            std::cout << "[ExternalIpcRecorder] camera=" << camera_serial_
+                      << " first deferred RELEASE received for recording_frame "
+                      << recording_frame_id << std::endl;
+        }
         return true;
     }
 
@@ -786,9 +831,11 @@ private:
     // Cap on pool entries the recorder may hold under deferred release. The
     // acquisition pool is what keeps the camera from ever waiting on the
     // encoder; a stalled recorder must therefore lose frames from the
-    // recording, never stall acquisition. Default 16 of the 62-entry pool:
-    // room for a 160 ms recorder stall at 100 fps while leaving the other
-    // consumers their entries. (docs/detect_latency_review_2026_09_03.md,
+    // recording, never stall acquisition. Default 32 of the 62-entry pool:
+    // in registered-source mode NVENC's backlog during a GOP burst lives in
+    // held pool entries (the copy path's encode queue reached a high water
+    // of 24 in the August run), and the other consumers were observed to
+    // keep the pool at 40 free or better. (docs/detect_latency_review_2026_09_03.md,
     // follow-up 4b.)
     static size_t resolve_max_deferred_pending()
     {
@@ -800,9 +847,9 @@ private:
                 return static_cast<size_t>(parsed);
             }
             std::cerr << "[ExternalIpcRecorder] Ignoring invalid ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED='"
-                      << env << "', using 16" << std::endl;
+                      << env << "', using 32" << std::endl;
         }
-        return 16;
+        return 32;
     }
 
     bool detach_frame(WORKER_ENTRY* entry, bool* release_entry_now)
@@ -901,6 +948,7 @@ private:
             << route_hint_gpu_id_ << " "
             << 0 << " "
             << "single_shard"
+            << (entry->pool_nv12_layout ? " nv12_pool" : "")
             << "\n";
 
         if (!send_all(msg.str())) {
@@ -1028,7 +1076,7 @@ private:
     int socket_fd_ = -1;
     bool deferred_release_ = false;
     bool detect_priority_gate_ = false;
-    size_t max_deferred_pending_ = 16;
+    size_t max_deferred_pending_ = 32;
     std::atomic<uint64_t> deferred_cap_skips_{0};
     std::atomic<uint64_t> detect_priority_gated_frames_{0};
     std::atomic<uint64_t> detect_priority_waited_frames_{0};
