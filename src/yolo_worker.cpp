@@ -1,6 +1,7 @@
 // src/yolo_worker.cpp
 #include "yolo_worker.h"
 #include "yolo_runtime_flags.h"
+#include "late_owned_copy.h"
 #include "kernel.cuh"
 #include "npp_utils.h"
 #include <cuda_runtime_api.h>
@@ -1880,6 +1881,21 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             ms_cpu_pre_sync_other = 0.0;
         }
 
+        // Lever 2d: issue the owned copy only now, ordered after the
+        // completion event, so it overlaps neither preprocess (measured
+        // 0.29 -> 0.08 ms) nor the TensorRT graph (measured 2.00 -> 2.26 ms
+        // when the copy ran alongside it). It runs in the idle part of the
+        // frame period; the recorder, gated on YOLO completion anyway, sees
+        // the frame about 0.15 ms later than before.
+        if (entry->late_owned_copy_pending) {
+            if (!finished_in_time && yolov8_instance_ && yolov8_instance_->stream) {
+                cudaStreamSynchronize(yolov8_instance_->stream);
+            }
+            issue_late_owned_copy(
+                entry,
+                (finished_in_time && entry->yolo_completion_event) ? entry->yolo_completion_event : nullptr,
+                gpu_timing);
+        }
         float ms_early_copy = -1.0f;
         if (gpu_timing && finished_in_time) {
             // infer_end precedes the completion event on the same stream, so
@@ -2331,6 +2347,9 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         if (entry->yolo_completion_event) {
             entry->yolo_completion_event_recorded.store(true, std::memory_order_release);
         }
+        // The stream is synchronized above, so the camera buffer is no
+        // longer being read: the late copy can go out unordered.
+        issue_late_owned_copy(entry, nullptr, false);
     }
 
     // Reference counting for recycling the WORKER_ENTRY.

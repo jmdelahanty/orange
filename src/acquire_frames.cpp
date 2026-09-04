@@ -13,6 +13,7 @@
 #include "opengldisplay.h"
 #include "yolo_worker.h"
 #include "yolo_runtime_flags.h"
+#include "late_owned_copy.h"
 #include "image_writer_worker.h"
 #include "crop_and_encode_worker.h"
 #include "display_preview_policy.h"
@@ -1274,6 +1275,10 @@ void acquire_frames(
         cudaEvent_t* copy_ready_event;
         cudaEvent_t* consumer_done_event;
         std::atomic<bool>* consumer_done_event_recorded;
+        // Late-owned copy: the copy-ready event is recorded by the YOLO
+        // worker, so a query before that would see the previous frame's
+        // completion. nullptr on the early-copy and ring-copy paths.
+        std::atomic<bool>* copy_ready_event_recorded = nullptr;
     };
     std::deque<PendingRequeue> pending_requeues;
     int yolo_decimate = 1;
@@ -1742,7 +1747,10 @@ void acquire_frames(
             };
 
             const cudaError_t copy_status =
-                query_requeue_event(it->copy_ready_event, "copy-ready");
+                query_requeue_event(
+                    it->copy_ready_event,
+                    "copy-ready",
+                    it->copy_ready_event_recorded);
             const cudaError_t consumer_status =
                 query_requeue_event(
                     it->consumer_done_event,
@@ -1930,6 +1938,8 @@ void acquire_frames(
             current_entry->yolo_input_ready_host_ns = 0;
             current_entry->yolo_input_ready_event_recorded.store(false);
             current_entry->yolo_completion_event_recorded.store(false);
+            current_entry->analytics_ready_event_recorded.store(false);
+            current_entry->late_owned_copy_pending = false;
 
             bool will_display = false;
             if (camera_select->stream_on && openGLDisplay) {
@@ -2113,21 +2123,34 @@ void acquire_frames(
                 current_entry->ingress_event_record_host_ns = steady_clock_now_ns();
                 static const bool early_copy_timing =
                     orange::yolo_flags::EnvFlag("ORANGE_YOLO_GPU_TIMING", true);
+                // Lever 2d: leave the copy to the YOLO worker, which issues
+                // it after preprocess has read the camera buffer
+                // (late_owned_copy.h). Only when YOLO will consume the frame
+                // with input detach, so there is a consumer to issue it.
+                const bool late_copy_this_frame =
+                    late_owned_copy_enabled() && will_yolo && yolo_detach_input;
                 current_entry->analytics_copy_timed = false;
-                if (early_copy_timing && current_entry->analytics_copy_timing_start) {
-                    ck(cudaEventRecord(current_entry->analytics_copy_timing_start, stream));
+                if (late_copy_this_frame) {
+                    current_entry->late_owned_copy_stream = stream;
+                    current_entry->late_owned_copy_bytes = received_frame->bufferSize;
+                    current_entry->late_owned_copy_pending = true;
+                } else {
+                    if (early_copy_timing && current_entry->analytics_copy_timing_start) {
+                        ck(cudaEventRecord(current_entry->analytics_copy_timing_start, stream));
+                    }
+                    ck(cudaMemcpyAsync(
+                        current_entry->d_analytics_image,
+                        received_frame->imagePtr,
+                        received_frame->bufferSize,
+                        cudaMemcpyDeviceToDevice,
+                        stream));
+                    if (early_copy_timing && current_entry->analytics_copy_timing_end) {
+                        ck(cudaEventRecord(current_entry->analytics_copy_timing_end, stream));
+                        current_entry->analytics_copy_timed = true;
+                    }
+                    ck(cudaEventRecord(current_entry->analytics_ready_event, stream));
+                    current_entry->analytics_ready_event_recorded.store(true, std::memory_order_release);
                 }
-                ck(cudaMemcpyAsync(
-                    current_entry->d_analytics_image,
-                    received_frame->imagePtr,
-                    received_frame->bufferSize,
-                    cudaMemcpyDeviceToDevice,
-                    stream));
-                if (early_copy_timing && current_entry->analytics_copy_timing_end) {
-                    ck(cudaEventRecord(current_entry->analytics_copy_timing_end, stream));
-                    current_entry->analytics_copy_timed = true;
-                }
-                ck(cudaEventRecord(current_entry->analytics_ready_event, stream));
             } else if (use_direct_pointer && !use_ring_copy) {
                 gpu_direct_frames++;
                 gpu_direct_frames_total++;
@@ -2215,7 +2238,8 @@ void acquire_frames(
                      frame_to_requeue,
                      &current_entry->analytics_ready_event,
                      yolo_source_done_event,
-                     yolo_source_done_event_recorded});
+                     yolo_source_done_event_recorded,
+                     &current_entry->analytics_ready_event_recorded});
             }
 
             current_entry->width = received_frame->size_x;
@@ -2431,6 +2455,8 @@ void acquire_frames(
                     current_entry->yolo_dispatched = false;
                     current_entry->has_detections = false;
                     current_entry->detections_ready.store(true, std::memory_order_release);
+                    // No YOLO consumer will issue the late copy: do it here.
+                    issue_late_owned_copy(current_entry, nullptr, false);
                     if (current_entry->yolo_input_ready_event) {
                         cudaEventRecord(current_entry->yolo_input_ready_event, stream);
                         current_entry->yolo_input_ready_event_recorded.store(

@@ -921,6 +921,20 @@ private:
         }
 
         cudaEvent_t* ready_event = entry->delayed_consumer_event();
+        if (ready_event && entry->has_analytics_owned_source()) {
+            // Late-owned copy: analytics_ready_event is recorded by the
+            // YOLO worker after preprocess. Synchronizing before that would
+            // return on the previous frame's record. With the detect-priority
+            // gate on this is already true by the time we get here.
+            int spins = 0;
+            while (!entry->analytics_ready_event_recorded.load(std::memory_order_acquire)) {
+                if (++spins > 2500) {  // 50 ms
+                    log_limited("analytics_ready_event not recorded within 50 ms; skipping frame");
+                    return false;
+                }
+                std::this_thread::sleep_for(std::chrono::microseconds(20));
+            }
+        }
         if (ready_event) {
             const cudaError_t wait_status = cudaEventSynchronize(*ready_event);
             if (wait_status != cudaSuccess) {

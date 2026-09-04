@@ -313,6 +313,7 @@ nlohmann::json build_yolo_worker_runtime_snapshot(const CameraParams* cameras_pa
         {"sync_event", flags.sync_event},
         {"sync_mode", orange::yolo_flags::SyncModeLabel(flags.sync_event)},
         {"gpu_timing", flags.gpu_timing},
+        {"late_owned_copy", orange::yolo_flags::EnvFlag("ORANGE_ANALYTICS_LATE_OWNED_COPY", false)},
         {"detach_input", flags.detach_input},
         {"ready_event_fast_path", flags.ready_event_fast_path},
         {"inline_crop_producer", flags.inline_crop_producer},

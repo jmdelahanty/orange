@@ -669,11 +669,12 @@ Making 2c production-ready, in order:
   passes.
 - Reinstall the GUI wrapper so citrus runs get the flags.
 
-Then lever 2d, measured first: done 2026-09-04, see "Lever 2d, Measured".
-The graph is 2.0 ms of the 2.4, the early copy is concurrent with
-preprocess and costs detection nothing measurable, so the camera ring-buffer
-design is withdrawn and the remaining lever is the engine (INT8, input
-size), measured with the engine-only specs.
+Then lever 2d: measured, mis-read, re-measured and landed 2026-09-04, see
+"Lever 2d, Measured" and "Lever 2d landed". The copy at t=0 was costing
+detection 0.23 ms of bandwidth contention on preprocess; issuing it after
+detection completes brings acquisition-to-detect to 2.20 ms mean / 2.29
+p95 / 2.32 p99 with the recorder on, from 2.43 / 2.50 / 2.52. The graph at
+2.0 ms is now 90 percent of the total; the remaining lever is the engine.
 
 Housekeeping: a test pinning the recorder's identity-proof schema to what the
 checker accepts; the stock fourcam supervised spec's missing
@@ -1110,6 +1111,57 @@ at about 0.26 ms after arrival instead of 0.33). Frames YOLO does not
 consume (decimation, timeout) fall back to the copy at t=0. Expected:
 about 2.15 to 2.20 ms with the recorder on, from 2.43. Flag
 `ORANGE_ANALYTICS_LATE_OWNED_COPY`, default off until the A/B.
+
+### Lever 2d landed: the copy after detection (2026-09-04, 11:30)
+
+Flag `ORANGE_ANALYTICS_LATE_OWNED_COPY` (spec key
+`analytics_late_owned_copy`, default off until the endurance run;
+`src/late_owned_copy.h`). Acquisition still records the ingress event at
+t=0 but leaves the pool copy pending on the entry; the YOLO worker issues
+it on the acquisition stream, ordered after its completion event, once the
+graph has finished, then records `analytics_ready_event` and publishes
+`analytics_ready_event_recorded`. The requeue loop and the recording
+ingress wait for that flag before trusting the event (a query before the
+record would see the previous frame's completion). Frames YOLO does not
+consume (enqueue failure, worker exception) get the copy from whoever
+abandons them. Two attempts, registered spec, recorder on, three cameras,
+mean / p95 / p99 acquisition-to-detect in ms:
+
+| | Registered (copy at t=0) | Copy after preprocess (first attempt) | Copy after detection (landed) |
+|---|---|---|---|
+| preprocess | 0.333 | 0.120 | 0.114 |
+| TensorRT graph | 2.001 | 2.258 | 2.001 |
+| 2010093 | 2.426 / 2.505 / 2.519 | 2.471 / 2.550 / 2.572 | 2.220 / 2.302 / 2.326 |
+| 2010094 | 2.418 / 2.495 / 2.505 | 2.465 / 2.544 / 2.564 | 2.202 / 2.284 / 2.310 |
+| 2010095 | 2.426 / 2.507 / 2.520 | 2.457 / 2.547 / 2.563 | 2.198 / 2.291 / 2.317 |
+| same-die / other-die mean (2010093) | 2.451 / 2.345 | 2.504 / 2.403 | 2.253 / 2.157 |
+
+- The first attempt, copy right after preprocess so it overlaps the graph,
+  freed preprocess (0.33 to 0.12) but slowed the graph from 2.00 to 2.26
+  ms: the TensorRT graph is not immune to a 20 MB copy on the same die
+  after all (NVENC's read pressure, which moved it 0.04, is a much lighter
+  load). Net +0.045 ms. Reverted the same hour.
+- The landed form issues the copy after the completion event. Preprocess
+  0.11, graph unchanged at 2.001, and acquisition-to-detect drops **0.21 ms
+  on mean, p95 and p99 on every camera**: 2.20 to 2.22 mean, 2.28 to 2.30
+  p95, 2.31 to 2.33 p99, with the recorder on and every frame recorded
+  (5799 submitted and acknowledged, proof passed, zero fallbacks). The
+  recorder's routing gap was unchanged, and the same-die residual is now
+  0.10 ms as before.
+- Against the true direct-read floor of 2.12 / 2.14 / 2.15, what is left is
+  0.08 ms: the recorder's presence (its NVENC reads and the ingress handoff
+  on the same die) and a slightly heavier preprocess tail (p95 0.15 versus
+  0.08 alone), which is the next thing to look at if anyone wants the last
+  tenth.
+- Cost: the camera buffer is returned about 2.5 ms after arrival instead
+  of 0.33 ms (the SDK's buffer ring already sustained that in direct mode),
+  and the recorder receives each frame about 0.15 ms later than before,
+  which the detect-priority gate had already made irrelevant.
+
+Before default-on: the display, crop and snapshot consumers also use
+`delayed_consumer_event()`; they need the same `analytics_ready_event_recorded`
+guard the recording ingress has (headless runs do not exercise them). Then
+the endurance spec with the flag, then default on with `2c`.
 
 The measuring cost: six CUDA event records per frame on the YOLO stream
 and two on the acquisition stream; the elapsed reads are free because the

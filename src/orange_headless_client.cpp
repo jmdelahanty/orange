@@ -238,6 +238,7 @@ struct ExperimentSpec {
     bool acq_stream_nonblocking = false;     // ORANGE_ACQ_STREAM_NONBLOCKING (diagnostic)
     bool acq_flush_after_event = false;      // ORANGE_ACQ_FLUSH_AFTER_EVENT (diagnostic)
     bool acq_force_direct_read = false;      // ORANGE_ACQ_FORCE_DIRECT_READ (diagnostic)
+    bool analytics_late_owned_copy = false;  // ORANGE_ANALYTICS_LATE_OWNED_COPY (lever 2d)
     bool ptp_latch_after_fanout = true;      // ORANGE_PTP_LATCH_AFTER_FANOUT
     bool headless_gpu_dmon = true;           // ORANGE_HEADLESS_GPU_DMON
     bool external_recorder_direct_input = false;  // ORANGE_EXTERNAL_RECORDER_DIRECT_INPUT
@@ -7961,6 +7962,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->acq_stream_nonblocking = fixed.value("acq_stream_nonblocking", false);
     spec->acq_flush_after_event = fixed.value("acq_flush_after_event", false);
     spec->acq_force_direct_read = fixed.value("acq_force_direct_read", false);
+    spec->analytics_late_owned_copy = fixed.value("analytics_late_owned_copy", false);
     spec->ptp_latch_after_fanout = fixed.value("ptp_latch_after_fanout", true);
     spec->headless_gpu_dmon = fixed.value("headless_gpu_dmon", true);
     spec->external_recorder_direct_input =
@@ -11064,6 +11066,7 @@ int run_local_experiment(const HeadlessCliOptions& options)
     setenv("ORANGE_ACQ_STREAM_NONBLOCKING", spec.acq_stream_nonblocking ? "1" : "0", 1);
     setenv("ORANGE_ACQ_FLUSH_AFTER_EVENT", spec.acq_flush_after_event ? "1" : "0", 1);
     setenv("ORANGE_ACQ_FORCE_DIRECT_READ", spec.acq_force_direct_read ? "1" : "0", 1);
+    setenv("ORANGE_ANALYTICS_LATE_OWNED_COPY", spec.analytics_late_owned_copy ? "1" : "0", 1);
     setenv("ORANGE_PTP_LATCH_AFTER_FANOUT", spec.ptp_latch_after_fanout ? "1" : "0", 1);
     if (!spec.headless_gpu_dmon) {
         setenv("ORANGE_HEADLESS_GPU_DMON", "0", 1);
@@ -11091,6 +11094,7 @@ int run_local_experiment(const HeadlessCliOptions& options)
               << " acq_stream_nonblocking=" << (spec.acq_stream_nonblocking ? 1 : 0)
               << " acq_flush_after_event=" << (spec.acq_flush_after_event ? 1 : 0)
               << " acq_force_direct_read=" << (spec.acq_force_direct_read ? 1 : 0)
+              << " analytics_late_owned_copy=" << (spec.analytics_late_owned_copy ? 1 : 0)
               << " ptp_latch_after_fanout=" << (spec.ptp_latch_after_fanout ? 1 : 0)
               << " headless_gpu_dmon=" << (spec.headless_gpu_dmon ? 1 : 0)
               << " external_recorder_direct_input="

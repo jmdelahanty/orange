@@ -103,6 +103,14 @@ typedef struct {
     cudaEvent_t analytics_copy_timing_end = nullptr;
     bool analytics_copy_timed = false;
     bool analytics_owned_frame_valid = false;
+    // Late-owned copy (see late_owned_copy.h): set by acquisition when the
+    // copy is left to the YOLO worker; cleared when the copy is issued.
+    bool late_owned_copy_pending = false;
+    cudaStream_t late_owned_copy_stream = nullptr;
+    size_t late_owned_copy_bytes = 0;
+    // True once analytics_ready_event has been recorded for this frame
+    // (immediately on the early-copy path; after the copy on the late path).
+    std::atomic<bool> analytics_ready_event_recorded;
 
     bool has_analytics_owned_source() const
     {
@@ -307,6 +315,7 @@ struct CameraResources {
             worker_entry_pool[i].image_gpu_id = gpu_id;
             worker_entry_pool[i].yolo_input_ready_event_recorded.store(false);
             worker_entry_pool[i].yolo_completion_event_recorded.store(false);
+            worker_entry_pool[i].analytics_ready_event_recorded.store(false);
             // Initialize the new frame_ipc_manager pointer to nullptr
             worker_entry_pool[i].frame_ipc_manager = nullptr;
             worker_entry_pool[i].camera_frame_id = 0;
