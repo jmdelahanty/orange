@@ -1333,8 +1333,9 @@ gate. Steady state after frame 200, 179,700 rows per camera:
   again, never revisited: the soft cap of 32 was not touched in steady state
   over about 3,600 GOPs per camera.
 - Every frame recorded: the recorder encoded exactly the submitted count on
-  each camera, the routing log has no gaps, the identity proof passed, and
-  the merged files are about 1.6 GB each.
+  each camera, the routing log has no gaps, the identity proof passed. The merged
+  files are 1.6, 6.1 and 5.1 GB (2010093 sees a much less detailed scene;
+  the rate control is VBR at quality 20).
 - The latch frames are indistinguishable from the others (0.02 ms), the
   same-die residual is 0.09 to 0.12 ms, and the graph sat at 2.000 ms with a
   p95 of 2.03 for the full run.
