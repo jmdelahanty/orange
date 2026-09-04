@@ -1056,6 +1056,61 @@ leaves step 2 (time the SDK's receive and requeue in direct mode) and step
 3 (nsys). Step 3 is now the better bet: it answers the question in one run
 instead of a guess per run.
 
+**Found (2026-09-04, 11:00).** Step 1b, a 1-byte memset plus stream query
+after the record, also left the wait at 0.23 ms, and the first version of
+that probe crashed all three camera threads at frame 1 (a function-static
+scratch buffer shared across GPUs; fixed to thread-local). The crash left
+2010094 and 2010095 opening but delivering no frames ("EVT_CameraGetFrame:
+Try again") until `evt_force_reboot`; note for the memory file. But the
+crash log printed the acquisition mode line, `direct=0 ring=1`, and that
+is the answer: **the "no early copy" specs never ran without a copy.** With
+the early-owned copy off, `dispatch_count` is still 2 (YOLO plus the
+recording consumer, even under `immediate_recycle`), so the acquisition
+thread takes the ring-copy path: a 20 MB `cudaMemcpyAsync` into the pool
+*ahead of* the ingress event record on the same stream. That copy is the
+0.23 ms "ingress wait" (20 MB at about 175 GB/s), preprocess then read the
+pool copy at full speed (0.075), and the total matched the hybrid run
+because a serial copy and a concurrent-but-contending copy cost the same.
+Every explanation above (clock ramp, SDK default-stream work, unflushed
+record, RDMA read cost) was chasing an artifact of the experiment. The
+non-blocking-stream and flush flags stay in the tree as harmless
+diagnostics; the interpretation paragraphs above are kept as a record of
+the wrong turn.
+
+A true direct read needs the ring copy skipped: `ORANGE_ACQ_FORCE_DIRECT_READ`
+(spec key `acq_force_direct_read`, diagnostic, honoured only when no
+consumer needs an owned source) and the spec
+`threecam_detect_latency_engine_only_direct_read`. Result, three cameras,
+steady state, versus the registered run (recorder on):
+
+| | Registered | Engine only, early copy on | Engine only, true direct read |
+|---|---|---|---|
+| ingress wait | 0.000 | 0.000 | 0.000 |
+| preprocess | 0.333 | 0.292 | 0.076 |
+| TensorRT graph | 2.001 | 1.982 | 1.980 |
+| acquisition to detect, mean | 2.426 | 2.355 | 2.128 / 2.119 / 2.128 |
+| acquisition to detect, p95 | 2.505 | 2.369 | 2.146 / 2.134 / 2.147 |
+| acquisition to detect, p99 | 2.519 | 2.378 | 2.155 / 2.146 / 2.157 |
+
+So the real engine-only floor is **2.12 ms mean, 2.14 p95, 2.15 p99**, the
+graph plus 0.076 ms of preprocess reading the RDMA buffer directly (no
+first-touch penalty) plus about 0.07 ms of CPU. The early-owned copy costs
+detection 0.23 ms, all of it as bandwidth contention on preprocess (0.29
+versus 0.076), and the recorder another 0.07. **Lever 2d is alive**, with a
+different design than the ring buffer: keep the copy, move it behind
+preprocess. The YOLO worker already records `yolo_input_ready_event` when
+preprocess has finished reading the camera buffer; if the worker then
+enqueues the pool copy itself (stream wait on that event, `cudaMemcpyAsync`,
+record `analytics_ready_event`) instead of the acquisition thread doing it
+at t=0, preprocess runs uncontended, the copy runs during the TensorRT
+graph (compute-bound; the NVENC experiment showed the graph moves only
+0.04 ms under memory pressure), the recorder receives the frame about 0.1
+ms later than today, and the camera buffer is returned *sooner* (copy done
+at about 0.26 ms after arrival instead of 0.33). Frames YOLO does not
+consume (decimation, timeout) fall back to the copy at t=0. Expected:
+about 2.15 to 2.20 ms with the recorder on, from 2.43. Flag
+`ORANGE_ANALYTICS_LATE_OWNED_COPY`, default off until the A/B.
+
 The measuring cost: six CUDA event records per frame on the YOLO stream
 and two on the acquisition stream; the elapsed reads are free because the
 worker already waits for completion. Same spec with and without the flag:

@@ -1,0 +1,82 @@
+{
+  "experiment_id": "threecam_detect_latency_engine_only_direct_read",
+  "notes": "Engine-only floor with a TRUE direct read: early-owned copy off AND acq_force_direct_read=true, so YOLO preprocess reads the camera GPUDirect buffer with no copy anywhere. The _no_early_copy spec turned out to run the ring-copy path (dispatch_count 2 with the recording consumer), which queues a 20 MB copy ahead of the ingress event; that copy is the 0.23 ms \"ingress wait\" of 2026-09-04. Diagnostic only (immediate_recycle never reads the image).",
+  "selection": {
+    "camera_serials": [
+      "2010093",
+      "2010094",
+      "2010095"
+    ],
+    "gpu_ids": [
+      3,
+      1,
+      7
+    ]
+  },
+  "fixed": {
+    "duration_s": 60,
+    "warmup_s": 2,
+    "display": false,
+    "yolo": false,
+    "stream_only": false,
+    "sync_mode": "ptp_gate",
+    "recording_sink_mode": "immediate_recycle",
+    "config_folder": "/home/jeremy/orange-gop-split-a16/config/validated_split_gop_hevc_100fps_gop25_fourcam_a16",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "ptp_register_read_decimate": 100,
+    "nvenc_direct_input": false,
+    "yolo_worker": {
+      "mode": "real",
+      "engine_path": "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.engine",
+      "decimate": 1,
+      "publish_live_ipc": false,
+      "timeout_ms": 500,
+      "prewarm_iterations": 3,
+      "fail_on_init_error": true
+    },
+    "yolo_sync_event": true,
+    "ptp_latch_after_fanout": true,
+    "headless_gpu_dmon": true,
+    "external_recorder_direct_input": false,
+    "external_recorder_detect_priority": false,
+    "analytics_early_owned_frame": false,
+    "acq_force_direct_read": true
+  },
+  "matrix": {
+    "codec": [
+      "hevc"
+    ],
+    "preset": [
+      "p1"
+    ],
+    "tuning": [
+      "ll"
+    ],
+    "rate_control_mode": [
+      "vbr"
+    ],
+    "quality_value": [
+      20
+    ],
+    "gop_length": [
+      25
+    ],
+    "aq": [
+      "off"
+    ],
+    "temporal_aq": [
+      "off"
+    ],
+    "lookahead": [
+      "off"
+    ]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 2.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true,
+    "require_zero_camera_drops": true,
+    "require_valid_video_content": false
+  }
+}

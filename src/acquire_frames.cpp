@@ -2066,6 +2066,17 @@ void acquire_frames(
                 use_direct_pointer &&
                 (dispatch_count > 1 || recording_requires_owned_source) &&
                 !use_analytics_hybrid;
+            // ORANGE_ACQ_FORCE_DIRECT_READ (diagnostic, default off): skip the
+            // ring copy that dispatch_count > 1 would otherwise force, so
+            // YOLO reads the camera's GPUDirect buffer with no copy anywhere.
+            // Only honoured when no consumer needs an owned source (so never
+            // under external_ipc); the immediate_recycle sink never reads
+            // the image, which is what the engine-only specs use.
+            static const bool force_direct_read =
+                orange::yolo_flags::EnvFlag("ORANGE_ACQ_FORCE_DIRECT_READ", false);
+            if (force_direct_read && use_ring_copy && !recording_requires_owned_source) {
+                use_ring_copy = false;
+            }
             if (force_ring_copy) {
                 use_ring_copy = true;
             }
@@ -2161,6 +2172,29 @@ void acquire_frames(
             if (!use_analytics_hybrid) {
                 ck(cudaEventRecord(*current_entry->event_ptr, stream));
                 current_entry->ingress_event_record_host_ns = steady_clock_now_ns();
+                // ORANGE_ACQ_FLUSH_AFTER_EVENT (diagnostic, default off): in
+                // direct-read mode the event record is the only CUDA call on
+                // this thread per frame. If the driver holds it back until the
+                // next call, the YOLO stream sees a late ingress event; a
+                // query forces submission. Tests the "unflushed record"
+                // explanation of the 0.23 ms direct-read wait.
+                static const bool flush_after_event =
+                    orange::yolo_flags::EnvFlag("ORANGE_ACQ_FLUSH_AFTER_EVENT", false);
+                if (flush_after_event) {
+                    // A query alone did not change the wait (2026-09-04), so
+                    // follow the record with a 1-byte memset on the stream,
+                    // the smallest real work item, then a stream query.
+                    static thread_local unsigned char* flush_scratch = nullptr;
+                    if (!flush_scratch) {
+                        ck(cudaMalloc(&flush_scratch, 256));
+                    }
+                    ck(cudaMemsetAsync(flush_scratch, 0, 1, stream));
+                    const cudaError_t flush_status = cudaStreamQuery(stream);
+                    if (flush_status != cudaSuccess && flush_status != cudaErrorNotReady) {
+                        ck(flush_status);
+                    }
+                    cudaGetLastError();
+                }
             }
             current_entry->yolo_input_detach_requested = yolo_detach_input && will_yolo;
             if (use_ring_copy) {
