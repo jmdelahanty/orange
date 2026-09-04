@@ -242,7 +242,7 @@ struct ExperimentSpec {
     bool headless_gpu_dmon = true;           // ORANGE_HEADLESS_GPU_DMON
     bool external_recorder_direct_input = false;  // ORANGE_EXTERNAL_RECORDER_DIRECT_INPUT
     bool external_recorder_detect_priority = true;  // ORANGE_EXTERNAL_RECORDER_DETECT_PRIORITY (default on)
-    bool external_recorder_registered_source = false;  // ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE + ORANGE_POOL_NV12_LAYOUT
+    bool external_recorder_registered_source = true;   // ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE + ORANGE_POOL_NV12_LAYOUT (default on since 2026-09-04)
     bool external_recorder_deferred_release = false;  // ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE (diagnostic)
     int external_recorder_max_deferred = -1;  // ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED (-1: ingress default)
     std::string recording_sink_mode = "real";
@@ -7968,7 +7968,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->external_recorder_detect_priority =
         fixed.value("external_recorder_detect_priority", true);
     spec->external_recorder_registered_source =
-        fixed.value("external_recorder_registered_source", false);
+        fixed.value("external_recorder_registered_source", true);
     spec->external_recorder_deferred_release =
         fixed.value("external_recorder_deferred_release", false);
     spec->external_recorder_max_deferred =
@@ -11073,10 +11073,10 @@ int run_local_experiment(const HeadlessCliOptions& options)
     }
     setenv("ORANGE_EXTERNAL_RECORDER_DETECT_PRIORITY",
            spec.external_recorder_detect_priority ? "1" : "0", 1);
-    if (spec.external_recorder_registered_source) {
-        setenv("ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE", "1", 1);
-        setenv("ORANGE_POOL_NV12_LAYOUT", "1", 1);
-    }
+    setenv("ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE",
+           spec.external_recorder_registered_source ? "1" : "0", 1);
+    setenv("ORANGE_POOL_NV12_LAYOUT",
+           spec.external_recorder_registered_source ? "1" : "0", 1);
     if (spec.external_recorder_deferred_release) {
         setenv("ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE", "1", 1);
     }

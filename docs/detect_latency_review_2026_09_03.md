@@ -1341,7 +1341,14 @@ gate. Steady state after frame 200, 179,700 rows per camera:
   p95 of 2.03 for the full run.
 
 This is the validation the copy fallback, the verifier change and lever 2d
-were waiting for. Registered source and the NV12 pool can go default-on.
+were waiting for. Registered source and the NV12 pool went default-on in
+the commit after it: `ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE` and
+`ORANGE_POOL_NV12_LAYOUT` default to on in the recorder and the pool
+allocation, the headless spec key `external_recorder_registered_source`
+defaults to true and is exported both ways, and the GUI wrapper forwards
+both variables (plus `ORANGE_YOLO_GPU_TIMING`) for turning them off. Every
+lever in this document is now the default behaviour of the tree; a spec
+that says nothing gets all of them.
 
 ## Landed Commits And Follow-Ups
 

@@ -211,7 +211,7 @@ void signal_handler(int)
         << "  --prewarm-peer-copy   After first IPC import, copy 1 byte into each shard to warm peer paths.\n"
         << "  --direct-input-source Copy IPC source directly into NVENC input before ACK. Experimental.\n"
         << "  --deferred-source-release Send RELEASE after source consumption; ACK only accepts work. Experimental.\n"
-        << "  --registered-source   Encode from the NV12-shaped pool buffer registered with NVENC (no copy); implies the two above. Experimental.\n"
+        << "  --registered-source   Encode from the NV12-shaped pool buffer registered with NVENC (no copy); implies the two above. Default on since 2026-09-04 (env ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE=0 disables).\n"
         << "  --fps <int>           Encoder nominal FPS. Default 60.\n"
         << "  --codec <hevc|h264>   Default hevc.\n"
         << "  --preset <p1|p3|p5|p7> Default p1.\n"
@@ -381,8 +381,10 @@ Options parse_options(int argc, char** argv)
         env_flag_enabled("ORANGE_EXTERNAL_RECORDER_DIRECT_INPUT", false);
     options.deferred_source_release =
         env_flag_enabled("ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE", false);
+    // Default on since 2026-09-04 (lever 2c; 30-minute endurance passed).
+    // ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE=0 restores the copy path.
     options.registered_source =
-        env_flag_enabled("ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE", false);
+        env_flag_enabled("ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE", true);
     options.min_free_bytes =
         env_u64("ORANGE_EXTERNAL_RECORDER_MIN_FREE_BYTES", 0);
     options.low_space_warning_bytes =

@@ -320,9 +320,14 @@ struct CameraResources {
         // the buffer with NVENC instead of copying it. Only the first
         // frame_size bytes are ever written by acquisition or the copy paths;
         // the chroma plane is written once here and never touched again.
+        // Default on since 2026-09-04 (three-camera 30-minute endurance with
+        // the registered source passed); ORANGE_POOL_NV12_LAYOUT=0 disables.
         const bool pool_nv12_layout = []() {
             const char* env = std::getenv("ORANGE_POOL_NV12_LAYOUT");
-            return env && *env && std::strcmp(env, "0") != 0 &&
+            if (!env || !*env) {
+                return true;
+            }
+            return std::strcmp(env, "0") != 0 &&
                    std::strcmp(env, "false") != 0 && std::strcmp(env, "off") != 0;
         }();
         const size_t chroma_bytes = pool_nv12_layout ? (frame_size + 1) / 2 : 0;
