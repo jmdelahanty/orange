@@ -1198,6 +1198,100 @@ measured with these specs first); the four-camera and endurance runs with
 2010096; and the clock-lock experiment as a curiosity that may also explain
 the 0.04 ms same-die graph delta.
 
+## The Frame Lifecycle After Lever 2d, Step By Step (2026-09-04)
+
+The refcounts and consumers did not change. What changed is which thread
+issues one copy and when. Built up from the buffers:
+
+**Three buffers, four events.** Every frame touches three GPU buffers on
+the detect die. The *camera buffer* is owned by the Emergent SDK; the NIC
+writes the frame straight into it, and it lives in a ring of 100 per
+camera (`evt_buffer_size` in the headless client) that must be refilled by
+returning buffers. The *pool buffer* is ours, one per worker entry,
+NV12-shaped: the owned copy, which the recorder encodes from directly
+(registered with NVENC) and display, crop and snapshot read. The *TensorRT
+input tensor* is written by preprocess and read by the graph; nobody else
+touches it. Four CUDA events on the entry mark the transitions: the ingress
+event (frame is in the camera buffer, may be read), the input-ready event
+(YOLO has finished reading the camera buffer), the completion event (graph
+done), and the ready event (pool copy valid), which every delayed consumer
+waits on. The entry is retained once per consumer at arrival and released
+by each; the last release recycles it. Separately, the camera buffer goes
+back to the SDK when YOLO has finished reading it *and* the pool copy has
+finished reading it.
+
+**Before, copy at t=0** (times from frame arrival, 100 fps):
+
+| t | Acquisition thread and stream | YOLO thread and stream |
+|---|---|---|
+| 0 | Record ingress event. Enqueue the 20 MB camera-to-pool copy. Record ready event. Hand to YOLO and recording. | |
+| 0.03 ms | Copy engine reading the camera buffer, writing the pool. | Wait on ingress event (done). Preprocess reads the camera buffer, sharing bandwidth with the copy: 0.33 ms instead of 0.08. |
+| 0.33 ms | Copy done, ready event fires. | |
+| 0.36 ms | Both conditions met: camera buffer back to the SDK. | Preprocess done, input-ready recorded. Graph starts. |
+| 2.4 ms | | Graph done, completion event, postprocess, detect done. |
+| 2.4 ms on | Recording handoff (gated on detect done) sends the frame; the recorder encodes from the pool buffer. | |
+
+The cost is the second row: preprocess and the copy each read the frame
+once, at the same moment, on one memory system.
+
+**Now, copy after detection:**
+
+| t | Acquisition thread and stream | YOLO thread and stream |
+|---|---|---|
+| 0 | Record ingress event. Mark the entry copy-pending (stream and byte count remembered). Hand to YOLO and recording. | |
+| 0.03 ms | Nothing on the stream. | Preprocess reads the camera buffer alone: 0.08 to 0.11 ms. |
+| 0.14 ms | | Input-ready recorded. Graph runs alone, 2.0 ms. |
+| 2.15 ms | | Graph done. The worker enqueues on the acquisition stream, ordered after the completion event: the copy, then the ready event record; sets the CPU flag "ready event recorded for this frame". |
+| 2.2 ms | | Postprocess, detect done. |
+| 2.35 ms | Copy done, ready event fires. Camera buffer back to the SDK. | |
+| 2.35 ms on | Recording handoff proceeds as before, from the pool buffer. | |
+
+Same buffers, events, refcounts and consumers; the copy moved from the
+front of the frame to the back, into the idle part of the period. The
+recorder sees the frame about 0.15 ms later than before, irrelevant since
+the handoff already waited for detect done. The camera buffer is held 2.4
+ms instead of 0.36.
+
+- *Why the first attempt lost:* the copy ran during the graph and slowed
+  it from 2.00 to 2.26 ms. It has to run after the graph, not beside it.
+- *Why the CPU flag exists:* a CUDA event is a reusable handle. A consumer
+  synchronizing on the ready event before this frame's record has been
+  issued returns at once on the previous frame's completion and reads a
+  pool buffer not yet written. The accessor every delayed consumer uses
+  (`delayed_consumer_event()`) blocks until the flag says the record has
+  happened; in practice never, since consumers arrive after detect done.
+- *Fallbacks:* enqueue failure makes acquisition issue the copy at once;
+  a worker exception or timeout synchronizes the YOLO stream and issues
+  it; a consumer whose copy never arrives (shutdown) gives up after 50 ms
+  and logs.
+- *The three ownership modes* in acquisition: direct (YOLO reads the
+  camera buffer, no pool copy, buffer returned at final release), ring copy
+  (copy first, then the ingress event; every consumer reads the pool), and
+  owned copy (the mode above). Turning the owned copy off with a recorder
+  present gives ring copy, not direct, which is what the "no copy"
+  experiments measured.
+
+**Does the longer hold hurt at high frame rates?** The hold is set by
+detect time, not by frame rate, so the number that matters is hold time
+divided by frame period, against the ring depth. At 100 fps a YOLO frame
+holds its camera buffer for a quarter of a period; at 800 fps (1.25 ms
+period) for about two periods, so two of the 100 ring buffers are out at
+any moment instead of a fraction of one. That is not a constraint. What
+does not scale is detection itself: the graph takes 2.0 ms, so above 500
+fps YOLO cannot run on every frame and `yolo_decimate` selects a subset.
+Frames without YOLO have one consumer and take the ring-copy path (copy at
+t=0, buffer back at about 0.3 ms), so the long hold applies only to the
+decimated YOLO frames. Two second-order effects, both already present
+before 2d because of the detect-priority gate: a YOLO frame reaches the
+recorder about 2.4 ms after arrival while its non-YOLO neighbours are
+ready at 0.3 ms, so the in-order handoff queues them behind it (two frames
+at 800 fps, absorbed by the recorder's queue of 32); and copy bandwidth
+scales with frame rate regardless of when the copy is issued (20 MB at 800
+fps would be 16 GB/s read plus write, but 4512-square at 800 fps is not a
+real configuration; NVENC alone needs about 8 ms per such frame). The
+honest limit at high rates is encode and detect throughput, not buffer
+lifetime.
+
 ## Landed Commits And Follow-Ups
 
 2026-09-04 additions, all pushed: `278d459` roadmap, four-camera and
