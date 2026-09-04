@@ -1,6 +1,6 @@
 {
-  "experiment_id": "threecam_detect_latency_levers_gate_registered_crop_synthetic_external_a6000",
-  "notes": "Four-camera headless PTP external-IPC run for the detect-latency lever A/B (docs/detect_latency_review_2026_09_03.md). Analyse with scripts/analyze_yolo_latency_phases.py. Levers 1, 3, 4 plus lever 2b: the external handoff waits for YOLO completion before giving the frame to the recorder, so the detach and NVENC input copies run in the idle part of the frame period. Plus lever 2c: registered-source external recorder (NV12-shaped pool buffers registered with NVENC, zero copy, deferred release after NVENC unmap). Plus crop production and crop video with a synthetic centre-box detection on every frame (pose_worker noop, roi_source synthetic_center_box, 384 px box), so the crop is actually cut from the frame and encoded even with no animal in view. The _crop spec without synthetic detections encodes blank crops when the scene is empty. Crop video through the EXTERNAL crop recorder (fixed.crop_recording mode=external_ipc): one supervised recorder process per camera on the other die of its card, so the crop NVENC leaves the detect die. Crop recorders placed on the A6000 (crop_recording.recorder_gpu=0) so their peer reads leave the A16 cards through the root complex instead of the card switch; separates the switch-contention explanation from a detect-die memory-controller one. RESULT 2026-09-04: not usable. The A6000 has no peer access with the A16 dies, cudaIpcOpenMemHandle fails in the crop recorder, and the run now fails the crop-recorder check.",
+  "experiment_id": "threecam_detect_latency_levers_gate_registered_crop_synthetic_external_offcard",
+  "notes": "Four-camera headless PTP external-IPC run for the detect-latency lever A/B (docs/detect_latency_review_2026_09_03.md). Analyse with scripts/analyze_yolo_latency_phases.py. Levers 1, 3, 4 plus lever 2b: the external handoff waits for YOLO completion before giving the frame to the recorder, so the detach and NVENC input copies run in the idle part of the frame period. Plus lever 2c: registered-source external recorder (NV12-shaped pool buffers registered with NVENC, zero copy, deferred release after NVENC unmap). Plus crop production and crop video with a synthetic centre-box detection on every frame (pose_worker noop, roi_source synthetic_center_box, 384 px box), so the crop is actually cut from the frame and encoded even with no animal in view. The _crop spec without synthetic detections encodes blank crops when the scene is empty. Crop video through the EXTERNAL crop recorder (fixed.crop_recording mode=external_ipc): one supervised recorder process per camera on the other die of its card, so the crop NVENC leaves the detect die. Crop recorders on A16 dies OFF the camera's own card (recorder_gpus: 2010093->5, 2010094->6, 2010095->4), so the crop peer reads cross the root complex instead of the card switch. The A6000 cannot be used: it has no peer access with the A16 dies and cudaIpcOpenMemHandle fails.",
   "selection": {
     "camera_serials": [
       "2010093",
@@ -30,8 +30,8 @@
       "schema_version": 1,
       "mode": "diagnostic_ipc_v1",
       "supervise_processes": true,
-      "artifact_root": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_a6000",
-      "session_id": "threecam_detect_latency_levers_gate_registered_crop_synthetic_external_a6000",
+      "artifact_root": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_offcard",
+      "session_id": "threecam_detect_latency_levers_gate_registered_crop_synthetic_external_offcard",
       "require_summary": true,
       "require_video_sanity": false,
       "require_merged_mp4": true,
@@ -48,10 +48,10 @@
             4
           ],
           "routing_policy": "gop_modulo",
-          "summary_json": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_a6000/Cam2010093_external_summary.json",
-          "video_sanity_json": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_a6000/Cam2010093_external_video_sanity.json",
-          "mp4": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_a6000/Cam2010093_external.mp4",
-          "gop_routing_csv": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_a6000/Cam2010093_external_gop_routing.csv",
+          "summary_json": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_offcard/Cam2010093_external_summary.json",
+          "video_sanity_json": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_offcard/Cam2010093_external_video_sanity.json",
+          "mp4": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_offcard/Cam2010093_external.mp4",
+          "gop_routing_csv": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_offcard/Cam2010093_external_gop_routing.csv",
           "encode_fps": 100,
           "encode_max_fps": 0,
           "encode_queue_depth": 32,
@@ -76,10 +76,10 @@
             2
           ],
           "routing_policy": "gop_modulo",
-          "summary_json": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_a6000/Cam2010094_external_summary.json",
-          "video_sanity_json": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_a6000/Cam2010094_external_video_sanity.json",
-          "mp4": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_a6000/Cam2010094_external.mp4",
-          "gop_routing_csv": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_a6000/Cam2010094_external_gop_routing.csv",
+          "summary_json": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_offcard/Cam2010094_external_summary.json",
+          "video_sanity_json": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_offcard/Cam2010094_external_video_sanity.json",
+          "mp4": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_offcard/Cam2010094_external.mp4",
+          "gop_routing_csv": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_offcard/Cam2010094_external_gop_routing.csv",
           "encode_fps": 100,
           "encode_max_fps": 0,
           "encode_queue_depth": 32,
@@ -104,10 +104,10 @@
             8
           ],
           "routing_policy": "gop_modulo",
-          "summary_json": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_a6000/Cam2010095_external_summary.json",
-          "video_sanity_json": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_a6000/Cam2010095_external_video_sanity.json",
-          "mp4": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_a6000/Cam2010095_external.mp4",
-          "gop_routing_csv": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_a6000/Cam2010095_external_gop_routing.csv",
+          "summary_json": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_offcard/Cam2010095_external_summary.json",
+          "video_sanity_json": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_offcard/Cam2010095_external_video_sanity.json",
+          "mp4": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_offcard/Cam2010095_external.mp4",
+          "gop_routing_csv": "/tmp/orange_external_recorder_threecam_detect_latency_levers_gate_registered_crop_synthetic_external_offcard/Cam2010095_external_gop_routing.csv",
           "encode_fps": 100,
           "encode_max_fps": 0,
           "encode_queue_depth": 32,
@@ -145,7 +145,11 @@
     "crop_recording": {
       "mode": "external_ipc",
       "crop_size_px": 384,
-      "recorder_gpu": 0
+      "recorder_gpus": {
+        "2010093": 5,
+        "2010094": 6,
+        "2010095": 4
+      }
     },
     "pose_worker": {
       "mode": "noop",

@@ -127,6 +127,7 @@ struct HeadlessCropRecordingConfig {
     std::string mode = "off";   // off | in_process | external_ipc
     int crop_size_px = 0;       // 0: the camera config's crop_pipeline.crop_size_px
     int recorder_gpu = -1;      // external_ipc: -1 = the other die of the camera's card; else this GPU for every camera
+    std::map<std::string, int> recorder_gpus;  // external_ipc: per-camera-serial override, wins over recorder_gpu
     bool enabled() const { return mode == "in_process" || mode == "external_ipc"; }
     bool external() const { return mode == "external_ipc"; }
 };
@@ -8137,6 +8138,13 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         spec->crop_recording.mode = node.value("mode", std::string("off"));
         spec->crop_recording.crop_size_px = node.value("crop_size_px", 0);
         spec->crop_recording.recorder_gpu = node.value("recorder_gpu", -1);
+        if (node.contains("recorder_gpus") && node["recorder_gpus"].is_object()) {
+            for (const auto& [serial, gpu] : node["recorder_gpus"].items()) {
+                if (gpu.is_number_integer()) {
+                    spec->crop_recording.recorder_gpus[serial] = gpu.get<int>();
+                }
+            }
+        }
         if (spec->crop_recording.mode != "off" && spec->crop_recording.mode != "in_process" &&
             spec->crop_recording.mode != "external_ipc") {
             if (error_out) *error_out = "Experiment spec fixed.crop_recording.mode must be off|in_process|external_ipc";
@@ -9344,6 +9352,10 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
                 camera.crop_pipeline.crop_size_px = options.crop_recording.crop_size_px;
             }
             int recorder_gpu = options.crop_recording.recorder_gpu;
+            const auto per_camera = options.crop_recording.recorder_gpus.find(camera.camera_serial);
+            if (per_camera != options.crop_recording.recorder_gpus.end()) {
+                recorder_gpu = per_camera->second;
+            }
             const auto stream = options.external_recorder_contract.streams.find(camera.camera_serial);
             if (recorder_gpu < 0 &&
                 stream != options.external_recorder_contract.streams.end() &&
@@ -9978,7 +9990,30 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         false,
         options.recording_sink_mode);
 
+    // Remember the crop plan before the stop clears the lifecycle: the crop
+    // recorder is not part of the full-frame verifier, so its outcome is
+    // checked here. A crop recorder that failed (2026-09-04: the A6000
+    // cannot open the A16 pool's IPC handles, no peer access) must fail the
+    // run, not pass it with no crop video.
+    const std::vector<orange::external_recorder::RecorderStreamPlan> crop_recorder_streams =
+        external_crop_recorder_lifecycle.started
+            ? external_crop_recorder_lifecycle.plan.streams
+            : std::vector<orange::external_recorder::RecorderStreamPlan>{};
     const bool external_recorder_stop_ok = stop_supervised_external_recorder();
+    bool external_crop_recorder_ok = true;
+    for (const auto& stream : crop_recorder_streams) {
+        const nlohmann::json status = read_json_file_best_effort(stream.status_json);
+        const std::string status_value = status.value("status", std::string("missing"));
+        const bool summary_present =
+            !stream.summary_json.empty() && std::filesystem::exists(stream.summary_json);
+        if (status_value == "failed" || !summary_present) {
+            std::cerr << "External crop recorder " << stream.stream_id << " did not complete:"
+                      << " status=" << status_value
+                      << " summary_present=" << (summary_present ? "true" : "false")
+                      << " (" << stream.status_json << ")" << std::endl;
+            external_crop_recorder_ok = false;
+        }
+    }
 
     if (enable_recording && options.recording_control.enabled()) {
         const auto session_finished_time = std::chrono::steady_clock::now();
@@ -10282,6 +10317,10 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     clear_headless_frame_ipc_managers(frame_ipc_managers);
 
     if (!external_recorder_stop_ok) {
+        return 1;
+    }
+    if (!external_crop_recorder_ok) {
+        std::cerr << "External crop recorder failed; failing the run." << std::endl;
         return 1;
     }
 

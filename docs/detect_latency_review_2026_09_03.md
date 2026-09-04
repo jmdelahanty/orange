@@ -1481,22 +1481,52 @@ story holds and the rule is "crop recorders off the card"; p95 still high
 means the peer read itself hurts the detect die whatever the route, and
 the answer is in-process with a cheaper profile than lossless p7.
 
-**A6000 placement, run 2026-09-04 17:30.** `crop_recording.recorder_gpu = 0`
-puts all three crop recorders on the A6000. Acquisition-to-detect mean /
-p95 / p99, crops and crop video on (crop recorder: 2010093: ? frames, proof n/a, 2010094: ? frames, proof n/a, 2010095: ? frames, proof n/a):
+**A6000 placement: not possible, and it exposed a verifier gap (2026-09-04
+17:30).** `crop_recording.recorder_gpu = 0` put the three crop recorders on
+the A6000. Every one of them died on its first frame:
+`cudaIpcOpenMemHandle failed: peer access is not supported between these
+two devices`. CUDA IPC across processes needs peer access between the
+exporting and importing GPUs, and `nvidia-smi topo -p2p r` shows the A6000
+has none with any A16 die (the eight A16 dies all have it with each
+other, across both cards). The crop worker in the analytics process then
+logged an ACK failure for every crop and dropped them, no crop video was
+written, and the run **passed**, because nothing checked the crop
+recorder. That is the same class of silent hole as the cap skip, and it is
+closed the same way: the headless client now reads each crop stream's
+status and summary after the supervisor stops and fails the run when a
+crop recorder reports `failed` or leaves no summary. An earlier draft of
+this section claimed the A6000 run as the switch-hypothesis confirmation;
+that claim was wrong and is withdrawn. The latency numbers of that run
+were "crops cut, nothing encoded", which is why they looked like the
+no-crop numbers.
 
-| Camera | External crop recorder, other die | External crop recorder, A6000 | No crop pipeline |
+**Off-card placement on A16 dies, run 2026-09-04 17:34.** The valid
+version of the same experiment: `crop_recording.recorder_gpus` maps each
+camera to a die on the *other* A16 card (2010093 to die 5, 2010094 to die
+6, 2010095 to die 4), so the crop peer reads cross the root complex rather
+than the camera's own card switch. Every crop encoded (5,900 per camera,
+identity proofs passed), startup pending peak 6 with the prewarm below.
+Acquisition-to-detect mean / p95 / p99:
+
+| Camera | Crop recorder on the other die, same card | Crop recorder off the card | No crop pipeline |
 |---|---|---|---|
-| 2010093 (card A) | 2.238 / 2.408 / 2.769 | 2.222 / 2.307 / 2.337 | 2.212 / 2.294 / 2.316 |
-| 2010094 (card A) | 2.272 / 2.548 / 2.795 | 2.206 / 2.287 / 2.313 | 2.216 / 2.305 / 2.330 |
-| 2010095 (card B) | 2.211 / 2.308 / 2.332 | 2.217 / 2.308 / 2.331 | 2.204 / 2.298 / 2.320 |
+| 2010093 (card A, recorder on die 5) | 2.238 / 2.408 / 2.769 | 2.229 / 2.308 / 2.604 | 2.212 / 2.294 / 2.316 |
+| 2010094 (card A, recorder on die 6) | 2.272 / 2.548 / 2.795 | 2.215 / 2.299 / 2.331 | 2.216 / 2.305 / 2.330 |
+| 2010095 (card B, recorder on die 4) | 2.211 / 2.308 / 2.332 | 2.202 / 2.295 / 2.315 | 2.204 / 2.298 / 2.320 |
 
-The switch explanation holds: with the crop traffic leaving the card
-through the root complex, both card A cameras return to the no-crop
-numbers, within 0.01 ms on every quantile, and card B is unchanged. The
-placement rule is therefore "crop recorders off the A16 cards"; the A6000
-has the headroom (0.05 ms per crop) and is where the crop consumers
-(citrus, pose) already live.
+The switch explanation holds on the p95: with the crop traffic off the
+camera's own card, both card A cameras return to the no-crop mean and
+p95 within 0.01 ms, and 2010094 and 2010095 return on the p99 too. The
+remaining p99 tail on 2010093 (2.60) is consistent with the same
+mechanism and my own mapping: 2010095's crop recorder was placed on die
+4, which is 2010093's other-shard die, so 2010093's other-die GOPs again
+share their switch path with a crop recorder. The placement rule that
+follows: **a crop recorder goes on a die that is neither the camera's own
+card nor any camera's other-shard die**, in practice a free die. With
+three cameras there are two free dies (5 and 6); with four cameras and all
+eight dies serving shards there are none, and the crop encode then has to
+stay in-process (p99 +0.25 to 0.35 ms) or go to a GPU that has peer
+access with the A16s, which the A6000 does not.
 
 **What the first A6000 attempt found instead.** That run failed the
 verifier, correctly: one and two deferred-release cap skips on 2010094 and
