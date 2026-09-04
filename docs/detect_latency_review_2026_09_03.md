@@ -634,6 +634,58 @@ New instrumentation from this review:
   allowlist is not involved. The GUI wrapper and
   `run_gui_aq_off_validation.sh` forward the same variables for GUI runs.
 
+## Roadmap After Lever 2c (2026-09-04)
+
+Lever 6 (alternating inference to the die that is not encoding) is dead: the
+rule was "under 0.3 ms of residual after 2c, routing is dead", and the
+residual is 0.12 ms. With p99 equal to p95 at 2.46 ms the pipeline has no tail
+left; what remains is the floor (about 2.3 ms: yolo11n on a 10-SM die plus the
+early-owned copy), so the next gains come from what the floor is made of.
+
+Tomorrow, with 2010096 back:
+
+1. Pre-flight all four cameras:
+   `sudo -n /usr/local/bin/orange-evt-stream-smoke --config-dir /home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam --all --frames 5`;
+   a `GVCP ACK error` means `targets/release/evt_force_reboot <serial> <ip>`.
+2. `scripts/run_detect_latency_spec.sh fourcam_detect_latency_baseline`, then
+   `fourcam_detect_latency_levers_gate`, then
+   `fourcam_detect_latency_levers_gate_registered` (pass the previous run's
+   `latency_phases.json` as the second argument for deltas). This tests the
+   card-level prediction for 2010095 and gives a four-camera number directly
+   comparable with August.
+3. `scripts/run_detect_latency_spec.sh fourcam_detect_latency_endurance_gate_registered`:
+   30 minutes with every lever. The 60 s runs prove the mechanism; this proves
+   deferred release holds, the cap is never hit, and the merged writer stays
+   clean over about 700 GOPs.
+
+Making 2c production-ready, in order:
+
+- Route the other-die shard through the slot-copy path instead of the old
+  deferred direct-source copy, so that shard gets its headroom back.
+- Verify the cap's skip semantics with a deliberately small cap
+  (`ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED=4`). A skipped frame is never
+  submitted to the recorder, so the merged writer's GOP has fewer submitted
+  frames and should still complete (`continuity_policy = encoded_subset`,
+  `recording_frame_id_gaps_allowed = true`); the run must finish
+  `completed` / `pass` with `deferred_release_cap_skips > 0`. If it does not,
+  add a SKIP message or skip whole GOPs. (The one run that hit the cap also had
+  the drain-ordering bug, so its merged-writer failure is not evidence either
+  way.)
+- Default registered source and the NV12 pool on once the endurance run
+  passes.
+- Reinstall the GUI wrapper so citrus runs get the flags.
+
+Then lever 2d, measured first: turn on always-on GPU event timing so the
+2.3 ms floor splits into the early-owned copy, preprocess, and the TensorRT
+graph. That decides between removing the early copy (camera ring buffer under
+deferred release, ring depth checked, same cap logic) and model-side work
+(INT8, input size), and it is the like-for-like engine number for the
+comparison with upstream.
+
+Housekeeping: a test pinning the recorder's identity-proof schema to what the
+checker accepts; the stock fourcam supervised spec's missing
+`recording_control`.
+
 ## Landed Commits And Follow-Ups
 
 Pushed to `origin/agent/acquisition/shaman-v2-authoritative-20260824` on
