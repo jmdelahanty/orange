@@ -266,14 +266,32 @@ floor without the two-card purchase.
 
 ## Why not route frames from the A16s to a big GPU for inference
 
-Stated by Jeremy on 2026-09-05, recorded so the option is not re-argued:
-copying all four camera streams off the A16 dies and orchestrating that
-meaningfully is a real challenge; the copy itself costs latency and
-bandwidth, as every copy on the detect path did in the review document;
-and asking one GPU, even a large one, to run a batch-four engine on top
-of everything else it hosts is expensive. If the big-GPU direction is
-ever taken up, it is design B (each card owns its cameras end to end) or
-design C (multicast, if the SDK allows it), not the host-bounce path.
+Decided with Jeremy on 2026-09-05 and recorded so the option is not
+re-argued; the reasons were checked against the measurements before
+being written down.
+
+1. **Topology.** No peer access between the A16 dies and the A6000, and
+   one NVENC on the A6000: every frame needs two host hops of about
+   1.7 ms each, and recording cannot leave the A16s.
+2. **The copy sits on the detect path in the obvious variant.** With the
+   cameras cabled as they are, frames land on the A16 dies first, so the
+   A16-to-host-to-A6000 transfer happens *before* detection: 3.4 ms of
+   copying, more than the entire 2.2 ms the pipeline delivers today. The
+   only escape is RDMA straight into the A6000, which moves the copies to
+   the recording side, off the detect path, but then pushes 8 GB/s in and
+   8 GB/s out of the A6000's single PCIe link for four cameras, in
+   contention with the graph on that GPU.
+3. **Orchestration.** Staging and ordering four streams' transfers
+   against a recorder that does not own them is real engineering.
+
+Not a reason, and an earlier draft stated it wrongly: the cost of a
+batch-four engine. Batch four is cheaper per frame than four separate
+graphs (about 1.0 to 1.2 ms for all four, roughly a tenth of the A6000,
+against 1.43 ms measured for three unbatched cameras); what is expensive
+about batching is the scheduler and the tail risk when frames do not
+arrive together, not the compute. If the big-GPU direction is ever taken
+up, it is design B (each card owns its cameras end to end) or design C
+(multicast, if the SDK allows it), not the host-bounce path.
 
 ## What stays on the A16s meanwhile
 
