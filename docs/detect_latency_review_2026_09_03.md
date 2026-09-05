@@ -1745,6 +1745,14 @@ shard and the crop shard both switch dies and the crop shard opens a new
 GOP with an IDR frame; on the single-camera card a 0.06 ms wave remains.
 Fig. 10 on the page carries the interleave run as a dashed series.
 
+So the heartbeat is now a boundary tick rather than a 25-frame square
+wave, and it is worth under a tenth of a millisecond either way (August's
+wave was 0.55 ms). If the tick ever mattered, offsetting the crop GOP
+boundary from the full-frame boundary by a few frames would separate the
+two die switches and the crop keyframe from each other; at 0.08 ms on one
+frame in fifty it is not worth doing now, and is recorded here as the
+mitigation if it ever is.
+
 Note on the spec files: the stream paths in `_crop_synthetic_external`
 were generated with a doubled prefix on the first run (cosmetic; the run's
 full-frame artifacts landed under
