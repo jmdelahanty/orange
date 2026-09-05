@@ -1769,6 +1769,41 @@ full-frame artifacts landed under
 `/tmp/orange_external_recorder_threecam_detect_latency_threecam_..._external/`);
 fixed in the tree.
 
+## Endurance, 30 Minutes, Full Consumer Set (2026-09-04, 23:00)
+
+`threecam_detect_latency_endurance_crop_interleave`, 1800 s, three
+cameras: split-GOP HEVC full-frame recording, a detection on every frame,
+a synthetic crop on every frame, crop video through the external crop
+recorder with GOP-parity interleaving, the pose worker in noop mode, every
+lever on. Pass on every gate. Steady state after frame 200, 179,701 rows
+per camera:
+
+| Camera | acq to detect mean / p95 / p99 / max (ms) | p99 per 5-minute window | Full frames submitted / acked / recorded / gaps | Crops offered / encoded / dropped / gaps | Pending max |
+|---|---|---|---|---|---|
+| 2010093 | 2.258 / 2.336 / 2.434 / 3.10 | 2.43 2.42 2.42 2.43 2.46 2.44 | 179,901 / 179,901 / 179,901 / 0 | 179,901 / 179,901 / 0 / 0 | 7 |
+| 2010094 | 2.261 / 2.342 / 2.442 / 3.12 | 2.42 2.44 2.45 2.43 2.45 2.45 | 179,901 / 179,901 / 179,901 / 0 | 179,901 / 179,901 / 0 / 0 | 7 |
+| 2010095 | 2.248 / 2.312 / 2.335 / 5.04 | 2.33 2.34 2.33 2.34 2.33 2.33 | 179,901 / 179,901 / 179,901 / 0 | 179,901 / 179,901 / 0 / 0 | 6 |
+
+- The 60 s interleave numbers held for the half hour on every quantile,
+  and the p99 is flat across the six 5-minute windows. The maximum is one
+  frame at 5.0 ms on 2010095 and about 3.1 on the others, out of 179,700.
+- Every frame and every crop accounted for: full-frame and crop identity
+  proofs passed, no routing gaps in either stream, zero crop drops, crop
+  queue high-water 3, crop frame pool never empty. Files: full-frame 1.6,
+  6.2 and 5.1 GB; crop video 3.7 to 3.9 GB per camera (lossless 384
+  square at 100 fps).
+- Zero camera drops, zero starvation, zero cap skips, zero copy
+  fallbacks, no event-record stalls, pool low-water 58 of 62. The startup
+  pending peak was 6 to 7 with the prewarm, against 30 before it.
+- The graph sat at 2.00 ms with a p95 of 2.03 throughout; preprocess
+  0.15 (0.11 without crops), the difference being the crop pipeline's
+  share of the die.
+
+This validates the crop path end to end: the merged crop writer over
+about 7,200 crop GOPs per camera, the crop recorder prewarm, the
+interleave routing, and the crop-frame pool in steady state. GOP-parity
+interleaving can be the default for external crop recording.
+
 ## Landed Commits And Follow-Ups
 
 2026-09-04 additions, all pushed: `278d459` roadmap, four-camera and
