@@ -1894,6 +1894,13 @@ but a card that removes the bounce (inference headroom, three or more
 NVENC engines, GPUDirect RDMA, such as an L40S) is the cleaner version of
 the same idea.
 
+**Decision, 2026-09-05:** the big-GPU direction (batched inference on the
+A6000, or two L40S / RTX 6000 Ada cards owning two cameras each with
+detection and encoding on the same card) is deferred. It is written up
+with the measurements, the estimates marked as such, and a verification
+plan in `docs/big_gpu_inference_deferred_2026_09_05.md`. The four-camera
+pipeline stays on the A16s as it stands.
+
 ## Landed Commits And Follow-Ups
 
 Late 2026-09-04: GOP-parity interleaving is the default for external crop
