@@ -1848,9 +1848,9 @@ memory, 20 MB each way at about 12 GB/s, which is 1.7 ms per hop and
 is a single card that has the inference headroom, enough NVENC for four
 20 MP streams, and GPUDirect RDMA: an L40S has 3 Ada NVENC engines, P2P, and
 RDMA. Whether one Ada engine sustains 20 MP at 100 fps is unmeasured (a
-GA107 engine does not; split-GOP is required on the A16, see
-`docs/multi_gpu_gop_splitting_design.md` and the 2026-06-05 encoding
-master measurements); if it does not, GOPs alternate between two
+GA107 engine does not: measured 2026-09-05 at 95.6 fps sustained with
+4.4 percent dropped, about 10.4 ms per frame, so split-GOP is required
+on the A16; see `docs/big_gpu_inference_deferred_2026_09_05.md`); if it does not, GOPs alternate between two
 sessions on the same GPU with no copy. On such a card the whole
 four-camera pipeline fits on one GPU with no cross-die copy, no same-die
 residual and no card switch, at a frame floor

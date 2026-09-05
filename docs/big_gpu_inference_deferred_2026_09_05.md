@@ -181,6 +181,23 @@ crop placement rules and the host bounce all disappear.
      die, where it would replace the never-measured GA107 P1 LL figure
      with a number; expect it to fail at 100 fps there. Do not treat any
      run of this spec as data: it exists to be pushed past its limit.
+
+     **Measured on the A16, 2026-09-05 00:51** (camera 2010093, die 3, 60
+     s): the engine received 5,900 frames and encoded 5,639, dropping 261
+     on the recorder side, a sustained **95.6 fps** against the 100
+     required. Its queue of 32 filled within the first six seconds and
+     stayed full (enqueue age flat at 332 ms, which is 32 frames times
+     about 10.4 ms per frame, so one 20 MP P1 LL frame costs the engine
+     about 10.4 ms). Upstream, the ingress pending count sat at the soft
+     cap of 32 for the whole run with 5,261 copy fallbacks and zero
+     camera drops, zero starvation and zero cap skips (pending high-water
+     37 of the hard cap 48), so the fallback did exactly what it was built
+     for and acquisition never noticed. The run failed the verifier with
+     "external recorder single-clip outputs are incomplete", which is the
+     designed outcome. So one GA107 engine is at 96 percent of the stream:
+     split-GOP on the A16 is required, and its two-shard form leaves each
+     engine at 48 percent duty, which is the headroom every clean run in
+     the review document has been running on.
   2. The engine-only specs on the card (one camera, then two
      synchronized) for the graph and the true direct-read floor.
   3. A two-camera registered spec with the recorder on the same GPU: one
