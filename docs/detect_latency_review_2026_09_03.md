@@ -1905,6 +1905,53 @@ with the measurements, the estimates marked as such, and a verification
 plan in `docs/big_gpu_inference_deferred_2026_09_05.md`. The four-camera
 pipeline stays on the A16s as it stands.
 
+## Running Citrus And The Orange GUI Together (recipe, 2026-09-05)
+
+For tomorrow's GUI smoke and the render-contention test. The pieces exist:
+
+- `scripts/run_orange_citrus_fourcam_orchestrator.sh` launches both and
+  drives them over their local-control sockets
+  (`/tmp/orange_local_control.sock`, `/tmp/citrus_local_control.sock`).
+  With no arguments it is a dry run that prints the exact Orange and
+  Citrus commands, env overlays and requests; `--execute` runs them.
+  Defaults: Orange through
+  `scripts/run_gui_fourcam_external_ipc_validation.sh --citrus-display-safe`,
+  Citrus as `/home/jeremy/citrus/targets/citrus` with the autorun loader
+  (rig `omnifin0`, canvas `shadow`, protocol `good_cop_bad_cop_demo.json`,
+  `CITRUS_PERF_JSONL=1`), display `:1` with the gdm Xauthority for a
+  tmux/ssh session. Useful flags: `--record-seconds`, `--citrus-run-seconds`,
+  `--stop-policy`, `--attach-orange` / `--attach-citrus` to drive processes
+  already running, `--orange-command` / `--citrus-command` to substitute
+  either side.
+- The GUI validation profile is the four-camera external-IPC one: full
+  frame and crop recording both external, crop recorder GPUs 4/2/8/6 (the
+  other dies), YOLO CPU affinity 6/8/10/12 with isolated-CPU boot options
+  required. As of 2026-09-05 it also exports
+  `ORANGE_CROP_EXTERNAL_INTERLEAVE=1`, so the GUI path gets the
+  GOP-parity interleave, and the GUI wrapper allowlist forwards that
+  variable plus the registered-source, pool-layout, GPU-timing and cap
+  variables. **The wrapper must be reinstalled first**:
+  `sudo scripts/install_orange_gui_validation_wrapper.sh` (needs the
+  password, so run it with the `!` prefix).
+- Citrus draws on GPU 0, the A6000, which drives display `:1`; the
+  `--citrus-display-safe` Orange profile lowers Orange's own display
+  pressure so it does not compete with the stimulus.
+- What the GUI smoke checks that headless never could: the display, crop
+  preview and snapshot consumers now block until the after-detection
+  copy is recorded (`delayed_consumer_event()`), and the GUI recording
+  session builds the crop contract through the same code the headless
+  client uses.
+
+Order for tomorrow: dry run to read the commands; reinstall the wrapper;
+`--execute` with a short `--record-seconds` and `--citrus-run-seconds`
+for the smoke; then, for the render-contention step of the deferred plan,
+Citrus alone via `--citrus-command`/`--attach-citrus` with Orange
+substituted by the headless A6000 engine-only runner (`--orange-command`,
+`--stop-policy none`, `--skip-orange-validation`,
+`--allow-missing-orange-event-log`; untested combination, the dry run will
+say whether the orchestrator accepts it, otherwise start Citrus by hand
+with the printed env overlay and run the headless spec beside it).
+
 ## Landed Commits And Follow-Ups
 
 Late 2026-09-04: GOP-parity interleaving is the default for external crop

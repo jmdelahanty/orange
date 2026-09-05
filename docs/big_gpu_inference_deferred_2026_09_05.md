@@ -206,6 +206,28 @@ crop placement rules and the host bounce all disappear.
      if not.
   4. The crop interleave spec with the crop recorder on the same GPU.
   5. The 30-minute endurance with everything on.
+  6. **Render contention on the shared GPU** (asked 2026-09-05: can the
+     A6000 run inference and the projector rendering at once?). On
+     throughput yes, three cameras' detections used about 15 percent of
+     the A6000; on tail latency unknown, and the mechanism is specific:
+     two processes on one GPU time-slice their contexts rather than run
+     concurrently, a graphics context from citrus's renderer time-slices
+     against a compute context the same way, stream priorities do not
+     cross processes, and MPS does not cover graphics. So while a render
+     frame holds the GPU the detection graph waits for its slice. The
+     run: the one-camera engine-only spec on the A6000
+     (`onecam_engine_only_direct_read_omnifin_a6000`) while citrus renders
+     its normal projector load on the same GPU (citrus draws on GPU 0,
+     the A6000, which drives display `:1`), against the idle baseline
+     0.886 / 0.937 / 1.014 ms. Read the p95 and p99 and the `gap_ms` and
+     `queue_ms` columns: the contention shows up there as launch delay,
+     not as a longer graph. A p99 that stays near 1 ms means the two
+     coexist; a p99 in the several-millisecond range means the render
+     and the inference need separate GPUs, which favours design B with
+     the A6000 kept for rendering. This step decides the placement of the
+     render, not of the cameras, and it can run on the current rig at
+     any time. The same measurement applies to any future card that
+     would host both.
 
 ### C. Network multicast: feed two GPUs without a host bounce (to evaluate)
 
