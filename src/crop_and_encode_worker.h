@@ -47,6 +47,12 @@ public:
     void SetCropPreviewWorker(CropPreviewWorker* crop_preview_worker) { crop_preview_worker_ = crop_preview_worker; }
     void RotateRecordingFolder(const std::string& recording_folder);
     int crop_width() const { return crop_width_; }
+    const std::string& camera_serial() const { return camera_params_->camera_serial; }
+    // Run accounting for the headless crop check (read after StopThread()).
+    uint64_t jobs_enqueued_total() const { return jobs_enqueued_.load(std::memory_order_relaxed); }
+    uint64_t queue_full_drops_total() const { return queue_full_drops_.load(std::memory_order_relaxed); }
+    uint64_t encoded_frames_total() const { return encoded_frames_; }
+    uint64_t dropped_frames_total() const { return dropped_frames_; }
     int crop_height() const { return crop_height_; }
 
 protected:

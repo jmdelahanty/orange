@@ -1804,7 +1804,68 @@ about 7,200 crop GOPs per camera, the crop recorder prewarm, the
 interleave routing, and the crop-frame pool in steady state. GOP-parity
 interleaving can be the default for external crop recording.
 
+## What Faster Hardware Would Buy (2026-09-04, measured on the A6000)
+
+Asked whether an A6000 or datacenter GPU would run this inference much
+faster. Measured rather than guessed, since the rig has an RTX A6000 at
+GPU 0: the same detect ONNX (omnifin0 cedar-shadow v007, the model the
+`_a16_` engines in `orange_data/detect` were built from) built with
+`trtexec --fp16` for the A6000, and one camera (2010093) acquired by
+GPUDirect straight into the A6000, engine-only true direct read, against
+the same camera on its A16 die with that model's A16 engine. Two
+measurements, the engine alone under trtexec and the frame in the
+pipeline:
+
+| | A16 die (GA107, 10 SMs) | RTX A6000 (GA102, 84 SMs) | Ratio |
+|---|---|---|---|
+| trtexec GPU compute, median (fp16, EfficientNMS in the graph) | 2.06 ms | 0.68 ms | 3.0x |
+| in-pipeline TensorRT graph, mean / p95 | 2.061 / 2.067 | 0.708 / 0.737 | 2.9x |
+| preprocess (read the 20 MB frame) | 0.075 | 0.099 | |
+| acquisition to detect, mean / p95 / p99 | 2.197 / 2.211 / 2.226 | 0.886 / 0.937 / 1.014 | 2.5x |
+
+(The omnifin engine on the A16 runs 0.06 ms slower than the yolo11n
+engine used everywhere else in this document; same architecture, a
+different training. The A6000 numbers are with the die shared with
+nothing, as the engine-only A16 numbers are.)
+
+So a workstation Ampere with 8x the SMs and 3.8x the memory bandwidth runs
+this small graph 3x faster, not 8x: at batch one a 640-input yolo11n is
+launch-bound, and the CUDA graph is already hiding most of that. The
+frame floor would go from 2.2 ms to about 0.9. For datacenter parts the
+same scaling argument, as estimates rather than measurements: an L40S or
+RTX 6000 Ada (Ada, 142 SMs, faster clocks) about 0.4 to 0.5 ms of graph,
+an H100 about 0.3 to 0.4, so a frame floor of 0.5 to 0.7 ms; beyond that
+the per-kernel launch floor of a hundred-odd layers dominates and the
+gains stop.
+
+Why the A6000 in this rig cannot simply take the job: it has no peer
+access with the A16 dies, so nothing on an A16 can read its memory (the
+crop recorder finding above), and it has one NVENC, which cannot encode
+even one camera's 20 MP at 100 fps. Detection on the A6000 with
+recording on the A16s would mean copying every frame through host
+memory, 20 MB each way at about 12 GB/s, which is 1.7 ms per hop and
+8 GB/s per camera of host traffic; that erases the gain. What would work
+is a single card that has the inference headroom, enough NVENC for four
+20 MP streams, and GPUDirect RDMA: an L40S has 3 Ada NVENC engines
+(roughly 2x a GA107 engine each, so about 600 fps of 20 MP), P2P, and
+RDMA. On such a card the whole four-camera pipeline fits on one GPU with
+no split-GOP, no same-die residual and no card switch, at a frame floor
+around 0.5 to 0.7 ms plus the same-GPU NVENC read we measured at 0.1 ms
+here. That is the hardware answer; on the A16s the remaining lever is
+the engine (INT8 or input size).
+
+Spec files: `onecam_engine_only_direct_read_omnifin_a16` and
+`_a6000` (the latter overrides the camera's split-GOP strategy to
+`single_session`, since the A16 helpers cannot pair with GPU 0).
+
 ## Landed Commits And Follow-Ups
+
+Late 2026-09-04: GOP-parity interleaving is the default for external crop
+recording (`crop_recording.interleave` defaults to true), and the headless
+run now fails when a crop offered was not encoded (worker-side drops or
+queue-full drops, or an external crop recorder whose encoded count differs
+from what the worker sent): the crop-count verifier check, the crop
+equivalent of submitted-equals-acknowledged.
 
 2026-09-04 additions, all pushed: `278d459` roadmap, four-camera and
 endurance specs, `scripts/run_detect_latency_spec.sh`; `63e2dfb` verifier

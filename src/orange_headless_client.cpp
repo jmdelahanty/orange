@@ -128,7 +128,7 @@ struct HeadlessCropRecordingConfig {
     int crop_size_px = 0;       // 0: the camera config's crop_pipeline.crop_size_px
     int recorder_gpu = -1;      // external_ipc: -1 = the other die of the camera's card; else this GPU for every camera
     std::map<std::string, int> recorder_gpus;  // external_ipc: per-camera-serial override, wins over recorder_gpu
-    bool interleave = false;    // external_ipc: GOP-parity interleaving across the card's two dies
+    bool interleave = true;     // external_ipc: GOP-parity interleaving across the card's two dies (default on since 2026-09-04)
     bool enabled() const { return mode == "in_process" || mode == "external_ipc"; }
     bool external() const { return mode == "external_ipc"; }
 };
@@ -3840,6 +3840,18 @@ void stop_headless_yolo_workers(std::vector<std::unique_ptr<YoloWorker>>& yolo_w
 // the GUI's order).
 std::vector<std::unique_ptr<CropAndEncodeWorker>> g_headless_crop_encode_workers;
 
+// Per-camera crop accounting captured when the crop encoders stop, checked
+// after the crop recorder supervisor stops (crop-count verifier, 2026-09-04):
+// every crop offered must be encoded, and an external recorder must have
+// encoded exactly as many as the worker sent it.
+struct HeadlessCropAccounting {
+    uint64_t jobs_enqueued = 0;
+    uint64_t queue_full_drops = 0;
+    uint64_t encoded_frames = 0;
+    uint64_t dropped_frames = 0;
+};
+std::map<std::string, HeadlessCropAccounting> g_headless_crop_accounting;
+
 void stop_headless_pose_pipeline(
     std::vector<std::unique_ptr<CropProducerWorker>>& crop_producer_workers,
     std::vector<std::unique_ptr<PoseWorker>>& pose_workers)
@@ -3859,6 +3871,12 @@ void stop_headless_pose_pipeline(
             } catch (const std::exception& ex) {
                 std::cerr << "Headless crop recording finalization failed: " << ex.what() << std::endl;
             }
+            HeadlessCropAccounting acct;
+            acct.jobs_enqueued = worker->jobs_enqueued_total();
+            acct.queue_full_drops = worker->queue_full_drops_total();
+            acct.encoded_frames = worker->encoded_frames_total();
+            acct.dropped_frames = worker->dropped_frames_total();
+            g_headless_crop_accounting[worker->camera_serial()] = acct;
         }
     }
     g_headless_crop_encode_workers.clear();
@@ -8139,7 +8157,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         spec->crop_recording.mode = node.value("mode", std::string("off"));
         spec->crop_recording.crop_size_px = node.value("crop_size_px", 0);
         spec->crop_recording.recorder_gpu = node.value("recorder_gpu", -1);
-        spec->crop_recording.interleave = node.value("interleave", false);
+        spec->crop_recording.interleave = node.value("interleave", true);
         if (node.contains("recorder_gpus") && node["recorder_gpus"].is_object()) {
             for (const auto& [serial, gpu] : node["recorder_gpus"].items()) {
                 if (gpu.is_number_integer()) {
@@ -10014,6 +10032,35 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
                       << " status=" << status_value
                       << " summary_present=" << (summary_present ? "true" : "false")
                       << " (" << stream.status_json << ")" << std::endl;
+            external_crop_recorder_ok = false;
+            continue;
+        }
+        // Crop count: the recorder must have encoded exactly what the crop
+        // worker sent it (its own proof covers submitted == encoded on its
+        // side; this ties the two sides together).
+        const nlohmann::json summary = read_json_file_best_effort(stream.summary_json);
+        const uint64_t recorder_encoded = summary.value("frames_encoded", 0ULL);
+        const auto acct = g_headless_crop_accounting.find(stream.camera_serial);
+        if (acct != g_headless_crop_accounting.end() &&
+            recorder_encoded != acct->second.encoded_frames) {
+            std::cerr << "External crop recorder " << stream.stream_id << " encoded "
+                      << recorder_encoded << " crops but the crop worker sent "
+                      << acct->second.encoded_frames << std::endl;
+            external_crop_recorder_ok = false;
+        }
+    }
+    // Crop count, worker side, for every crop configuration: a crop that was
+    // offered and not encoded is a hole in the crop video, the same class as
+    // a cap skip. Fails the run regardless of policy.
+    for (const auto& [serial, acct] : g_headless_crop_accounting) {
+        const bool lost = acct.dropped_frames > 0 || acct.queue_full_drops > 0 ||
+                          acct.encoded_frames != acct.jobs_enqueued;
+        if (lost) {
+            std::cerr << "Crop pipeline for camera " << serial << " lost crops:"
+                      << " offered=" << acct.jobs_enqueued
+                      << " encoded=" << acct.encoded_frames
+                      << " dropped=" << acct.dropped_frames
+                      << " queue_full_drops=" << acct.queue_full_drops << std::endl;
             external_crop_recorder_ok = false;
         }
     }
