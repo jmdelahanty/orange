@@ -1846,10 +1846,14 @@ recording on the A16s would mean copying every frame through host
 memory, 20 MB each way at about 12 GB/s, which is 1.7 ms per hop and
 8 GB/s per camera of host traffic; that erases the gain. What would work
 is a single card that has the inference headroom, enough NVENC for four
-20 MP streams, and GPUDirect RDMA: an L40S has 3 Ada NVENC engines
-(roughly 2x a GA107 engine each, so about 600 fps of 20 MP), P2P, and
-RDMA. On such a card the whole four-camera pipeline fits on one GPU with
-no split-GOP, no same-die residual and no card switch, at a frame floor
+20 MP streams, and GPUDirect RDMA: an L40S has 3 Ada NVENC engines, P2P, and
+RDMA. Whether one Ada engine sustains 20 MP at 100 fps is unmeasured (a
+GA107 engine does not; split-GOP is required on the A16, see
+`docs/multi_gpu_gop_splitting_design.md` and the 2026-06-05 encoding
+master measurements); if it does not, GOPs alternate between two
+sessions on the same GPU with no copy. On such a card the whole
+four-camera pipeline fits on one GPU with no cross-die copy, no same-die
+residual and no card switch, at a frame floor
 around 0.5 to 0.7 ms plus the same-GPU NVENC read we measured at 0.1 ms
 here. That is the hardware answer; on the A16s the remaining lever is
 the engine (INT8 or input size).

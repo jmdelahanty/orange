@@ -75,18 +75,25 @@ Why the A16 needs it. An A16 is not one GPU: it is four GA107 dies on one
 board, each with its own 16 GB of memory, its own ten SMs and its own
 single seventh-generation NVENC engine, behind one PCIe switch. There is
 no shared memory across dies. A frame that the camera RDMAs into die 3
-exists only in die 3's memory. Die 3's one NVENC sustains a 20 MP HEVC
-stream at about 100 fps at preset p1, measured at 8 to 10 ms per frame,
-which is the camera's whole frame rate with no headroom. So to record
-one camera at 100 fps with margin, the GOPs alternate between two dies'
-encoders, and for every other GOP the other die must first pull the 20 MB
+exists only in die 3's memory. Die 3's one NVENC cannot sustain the 20 MP stream at 100 fps: the
+split-GOP design record (`docs/multi_gpu_gop_splitting_design.md`) states
+that a single NVENC path cannot be relied on to save 4512x4512 Mono8 at
+100 fps, the encoding-master measurements of 2026-06-05 show one encoder
+failing even P5 HQ GOP1 at 60 fps (327 of 421 frames, 94 drops), and the
+only four-camera known-good point, P1 LL VBR150 GOP25 at 100 fps, is a
+two-shard result. (A previous draft of this section claimed about 100 fps
+per engine at p1; that figure was an inference from the copy path's
+per-frame time, not a capacity measurement, and is withdrawn.) So to
+record one camera at 100 fps at all, the GOPs alternate between two
+dies' encoders, and for every other GOP the other die must first pull the 20 MB
 frame out of the detect die's memory across the card switch before it
 can encode. That copy, the switch it crosses, and the second die's
 encoder reading memory that the graph on the first die is also using are
 the origin of everything in the review document called "same-die
 residual", "card-level contention", "other-die shard", "crop recorder
 placement" and "GOP-parity interleave". The scheme exists because each
-die has one weak encoder and its own memory.
+die has one encoder too slow for the stream and its own memory; on the
+A16, split-GOP is required, not an optimization.
 
 Why an L40S or RTX 6000 Ada does not. It is one GPU with one memory
 space and three eighth-generation NVENC engines on it. Every engine reads
@@ -98,20 +105,31 @@ die, so nothing crosses a switch and no die is "the other one". The three
 engines are load-balanced by the driver across encode sessions on their
 own: one session per camera stream plus one per crop stream, and the
 driver spreads them over the engines without any GOP routing in our code.
-Per-engine throughput on Ada is roughly twice GA107's for this format (an
-estimate from NVIDIA's generational figures, to be measured), so three
-engines are about 600 fps of 20 MP against the 200 fps two cameras need,
-or even the 400 fps four cameras would need on one card. One camera's
-stream fits inside one engine with headroom, which is the condition the
-A16 could not meet and the reason the GOPs had to be split in the first
-place.
+Whether one Ada engine sustains 100 fps of 20 MP is not known: a GA107
+engine does not, its actual capacity at P1 LL was never measured on its
+own, and NVIDIA's generational figure of roughly 2x per engine for Ada is
+not a measurement of this format at this size. Two cases, both fine:
+
+- One Ada engine does sustain 100 fps: one session per camera, the
+  driver spreads the sessions over the three engines, no GOP routing in
+  our code.
+- It does not: the GOPs still alternate between two encode sessions, but
+  both sessions are on the same GPU reading the same buffer, so the merge
+  logic that exists today keeps working and the copy, the switch and the
+  other-die residual are gone. Split-GOP survives as a session
+  alternation, not as a data movement.
+
+Either way three engines are comfortably more than two cameras need,
+because the alternation only has to buy the same 2x headroom it buys on
+the A16, now with no transfer cost.
 
 What is left over is the one effect that does not depend on topology:
 the encoder reading a frame from the same memory the graph is using,
 measured at 0.1 ms on a GA107 die with 200 GB/s of bandwidth, and
 expected to shrink on a card with 864 GB/s. Everything else in the list
 above becomes a no-op: the split-GOP strategy collapses to single-GPU
-placement, the external recorder becomes one process per camera on the
+placement (one session per camera if an Ada engine sustains the rate,
+two alternating sessions on the same GPU if not), the external recorder becomes one process per camera on the
 same GPU, the crop recorder goes on the same GPU with no placement
 rule, and the merged-GOP writer has one shard to merge.
 
@@ -124,10 +142,12 @@ pose in the idle window on the same card. Nothing crosses a PCIe link
 after the frame arrives, so the card switch, the other-die shard, the
 crop placement rules and the host bounce all disappear.
 
-- Encode fits: three eighth-generation NVENC engines per card; a GA107
-  engine sustains a 20 MP HEVC stream at about 100 fps at p1 and the Ada
-  engine is roughly 2x that, so about 600 fps of 20 MP per card against
-  the 200 fps two cameras need. Split-GOP becomes optional headroom.
+- Encode fits: three eighth-generation NVENC engines per card against
+  two cameras. A GA107 engine cannot sustain 20 MP at 100 fps (see the
+  section above), and whether one Ada engine can is unmeasured; if it
+  cannot, two sessions alternate GOPs on the same GPU with no copy, which
+  is the existing merge logic minus the transfer. Measure per-engine
+  capacity first when a card is present.
 - Latency, estimated from the A6000 measurement: graph 0.4 to 0.5 ms on
   142 Ada SMs at higher clocks; two synchronized cameras per card either
   overlap partly or take one batch-two inference of about 0.6 ms; frame
