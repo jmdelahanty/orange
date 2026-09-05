@@ -1690,10 +1690,20 @@ each crop GOP to the die that is not encoding that GOP's full frames. One
 crop recorder process per camera with two encode workers, exactly like
 the full-frame recorder. The routing CSVs confirm it: every crop of a
 full-frame GOP on die 3 went to die 4 and vice versa, on all three
-cameras. Two consequences of the GOP change: the crop video now has a
-keyframe every 25 frames instead of every frame (still lossless, random
-access is coarser), and the merged crop writer stitches at 4 GOPs per
-second rather than 100, which is easier, not harder.
+cameras. One consequence of the GOP change, and one non-consequence: the merged
+crop writer stitches at 4 GOPs per second rather than 100, which is
+easier, not harder; and the crop video's keyframe structure does *not*
+change, because the recorder's lossless profile forces the encoder GOP to
+1 whatever the routing GOP says (`external_crop_hevc_lossless_gop1`), so
+every crop frame is still an IDR frame. Checked on the interleave run's
+crop MP4 (asked 2026-09-04 evening, "do we need the stss table with a
+25-frame GOP?"): all 5,901 packets carry the keyframe flag, the keyframe
+sidecar lists every frame, and the file has no `stss` box, which in MP4
+means every sample is a sync sample, the correct encoding for an
+all-intra stream and fully seekable. The full-frame file in the same run,
+whose encoder GOP really is 25, has an `stss` box with 237 entries
+written by the muxer from the packet keyframe flags, so if the crop
+encode ever moves to P-frames the sync table will appear on its own.
 
 The first two runs each lost 19 crops per camera, recording frames 58 to
 76, reason `crop_frame_pool_empty`: the crop recorder's two encoders
