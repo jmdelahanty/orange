@@ -1595,6 +1595,50 @@ encoder is idle for that GOP and the expected result is a p99 of about
 2.3 to 2.45 with all eight dies serving full-frame shards, against 2.6 to
 2.7 in-process and 2.67 to 2.73 here.
 
+**Where the crop is cut, and what actually moves.** The cut always
+happens on the detect die and cannot move: it needs the full frame (the
+pool copy) and the detection that says where to cut, both of which live
+there, and shipping the 20 MB frame elsewhere is the traffic this whole
+document removed. The crop producer runs in the analytics process on its
+own stream after detect done and after the pool copy is valid (about
+2.35 ms into the frame), cuts the 384-square region out of the pool copy
+into a small crop buffer, and that buffer (147 KB) is the only thing that
+travels. In-process, the crop-and-encode worker converts and encodes it on
+the detect die's NVENC inside the same process; external, it is exported
+as a CUDA IPC handle and the recorder process imports it and copies it
+into its own NVENC input, a same-die copy or a peer read depending on
+placement. The interleave changes only that destination per GOP; the cut
+and its metadata (rectangle and source detection, sent over the socket
+with the frame) are the same on every path, so the crop video stays
+aligned with the full-frame recording ids whichever die encoded it.
+
+The crop worker's per-frame wall time, from `Cam*_crop_perf.csv` on the
+synthetic runs (2010094, frames with a detection), mean / p95 ms:
+
+| Stage | In-process | External, same die |
+|---|---|---|
+| choose the detection and compute the ROI (CPU) | 0.015 / 0.028 | 0.013 / 0.025 |
+| wait for the pool copy, borrow a crop buffer | 0.006 / 0.017 | 0.006 / 0.016 |
+| enqueue the crop kernel (CPU) | 0.012 / 0.022 | 0.011 / 0.019 |
+| wait for the crop kernel before export | 0 | 0.260 / 0.916 |
+| hand to the encoder (NVENC submit, or FRAME + ACK over the socket) | 0.065 / 0.095 | 0.515 / 0.772 |
+| write the metadata row | 0.034 / 0.032 | 0.028 / 0.027 |
+| total | 0.168 / 0.222 | 1.372 / 1.418 |
+
+So the cut itself is about 0.03 ms of CPU. The detections are already on
+the CPU (YOLO's postprocess and NMS run there), choosing the largest box
+is a loop over a handful of entries, and the crop kernel takes the
+rectangle as kernel arguments, so there is no extra device-to-host
+transfer for the box. What fills the rest of the 0.2 ms in-process is the
+NVENC submission and the CSV row; externally it is the IPC round trip
+(send the descriptor, wait for the recorder's ACK) and an explicit wait
+for the crop kernel before the handle is exported, about 1.4 ms of the
+crop thread's time per frame, all of it in the idle window on a thread
+that is not on the detect path. Two things in that table are worth a
+look later: the metadata row's maximum of 10 ms (a file-system stall on
+the crop thread, harmless today) and the external ACK wait, which could
+be made asynchronous if the crop thread ever needed the headroom.
+
 What building it takes: a two-shard crop contract per camera on the same
 two dies as the full-frame contract; crop descriptors tagged with the
 full-frame GOP index plus one so the recorder's existing parity routing
