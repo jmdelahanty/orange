@@ -264,6 +264,17 @@ answered; it is a day of reading and a switch on the bench. If the
 answer is yes, it is the only design that gives the A6000's inference
 floor without the two-card purchase.
 
+## Why not route frames from the A16s to a big GPU for inference
+
+Stated by Jeremy on 2026-09-05, recorded so the option is not re-argued:
+copying all four camera streams off the A16 dies and orchestrating that
+meaningfully is a real challenge; the copy itself costs latency and
+bandwidth, as every copy on the detect path did in the review document;
+and asking one GPU, even a large one, to run a batch-four engine on top
+of everything else it hosts is expensive. If the big-GPU direction is
+ever taken up, it is design B (each card owns its cameras end to end) or
+design C (multicast, if the SDK allows it), not the host-bounce path.
+
 ## What stays on the A16s meanwhile
 
 The tree's defaults (event sync, deferred PTP latch, detect-priority
