@@ -1,0 +1,94 @@
+{
+  "experiment_id": "threecam_engine_only_direct_read_omnifin_a6000",
+  "notes": "All three cameras acquired by GPUDirect into the single RTX A6000 (GPU 0), engine-only true direct read with the A6000-built omnifin engine. Measures how three PTP-synchronized detections share one big GPU: serialization versus overlap of batch-one graphs.",
+  "selection": {
+    "camera_serials": [
+      "2010093",
+      "2010094",
+      "2010095"
+    ],
+    "gpu_ids": [
+      0,
+      0,
+      0
+    ]
+  },
+  "fixed": {
+    "duration_s": 60,
+    "warmup_s": 2,
+    "display": false,
+    "yolo": false,
+    "stream_only": false,
+    "sync_mode": "ptp_gate",
+    "recording_sink_mode": "immediate_recycle",
+    "config_folder": "/home/jeremy/orange-gop-split-a16/config/validated_split_gop_hevc_100fps_gop25_fourcam_a16",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "ptp_register_read_decimate": 100,
+    "nvenc_direct_input": false,
+    "yolo_worker": {
+      "mode": "real",
+      "engine_path": "/home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_a6000_gpu0_trt100_fp16.engine",
+      "decimate": 1,
+      "publish_live_ipc": false,
+      "timeout_ms": 500,
+      "prewarm_iterations": 3,
+      "fail_on_init_error": true
+    },
+    "yolo_sync_event": true,
+    "ptp_latch_after_fanout": true,
+    "headless_gpu_dmon": true,
+    "external_recorder_direct_input": false,
+    "external_recorder_detect_priority": false,
+    "analytics_early_owned_frame": false,
+    "acq_force_direct_read": true,
+    "recording": {
+      "mode": "single_session",
+      "split_gop": {
+        "placement": "single_gpu",
+        "encoder_gpu_ids": [
+          0
+        ]
+      },
+      "constraints": {
+        "require_peer_access": false
+      }
+    }
+  },
+  "matrix": {
+    "codec": [
+      "hevc"
+    ],
+    "preset": [
+      "p1"
+    ],
+    "tuning": [
+      "ll"
+    ],
+    "rate_control_mode": [
+      "vbr"
+    ],
+    "quality_value": [
+      20
+    ],
+    "gop_length": [
+      25
+    ],
+    "aq": [
+      "off"
+    ],
+    "temporal_aq": [
+      "off"
+    ],
+    "lookahead": [
+      "off"
+    ]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 2.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true,
+    "require_zero_camera_drops": true,
+    "require_valid_video_content": false
+  }
+}

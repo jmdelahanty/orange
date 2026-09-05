@@ -1858,6 +1858,42 @@ Spec files: `onecam_engine_only_direct_read_omnifin_a16` and
 `_a6000` (the latter overrides the camera's split-GOP strategy to
 `single_session`, since the A16 helpers cannot pair with GPU 0).
 
+**"Inference on the A6000, encoding on the A16s?"** (asked 2026-09-04
+night). Not a dumb idea; it is the design the hardware suggests, and the
+deciding unknown is what happens when several PTP-synchronized cameras
+land their frames on one big GPU at the same instant. Measured: all three
+cameras acquired by GPUDirect into the A6000 (`threecam_engine_only_direct_read_omnifin_a6000`),
+engine-only, no recorder:
+
+| Cameras on the A6000 | Graph mean / p95 | Acquisition to detect mean / p95 / p99 | Same on an A16 die each |
+|---|---|---|---|
+| 1 | 0.708 / 0.737 | 0.886 / 0.937 / 1.014 | 2.197 / 2.211 / 2.226 |
+| 3 (synchronized) | 1.25 / 1.57 | 1.43 / 1.78 / 2.40 | 2.20 / 2.21 / 2.23 |
+
+Three batch-one graphs arriving together overlap only partly on the 84
+SMs (three serialized would be 2.1 ms; measured 1.25), so the mean gain
+over the A16s shrinks from 2.5x to 1.5x, the p95 gain to 1.3x, and the
+p99 advantage is gone at three cameras; at four it would be worse. The
+big GPU only pays off for many cameras if the four frames go through
+*one* batched inference (an engine with batch = number of cameras, run
+once per period when all four have arrived, which PTP guarantees within
+microseconds): batch four on this graph should be about 1.0 to 1.2 ms for
+all four, giving every camera a floor near 1.3 ms. That is a real
+project: a batched engine, a scheduler that gathers the four frames, and
+per-camera output demux.
+
+The recording half of the idea: frames would have to reach the A6000 by
+RDMA (measured working for three cameras, 100 fps each, no gaps) and the
+A16 recorders by two host hops, 20 MB device-to-host then host-to-device,
+about 1.7 ms each at PCIe 4 rates, off the detect path but 8 GB/s in and
+8 GB/s out of the A6000's link for four cameras (a 25 GB/s link), plus
+the copies contending with the graph on the A6000 as copies did on the
+A16 dies. Feasible on paper, and the registered-source recorder would
+still work because the host-to-device copy can land in the pool buffer;
+but a card that removes the bounce (inference headroom, three or more
+NVENC engines, GPUDirect RDMA, such as an L40S) is the cleaner version of
+the same idea.
+
 ## Landed Commits And Follow-Ups
 
 Late 2026-09-04: GOP-parity interleaving is the default for external crop
