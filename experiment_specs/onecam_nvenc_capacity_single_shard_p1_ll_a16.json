@@ -1,0 +1,122 @@
+{
+  "experiment_id": "onecam_nvenc_capacity_single_shard_p1_ll_a16",
+  "notes": "Per-engine NVENC capacity test (docs/big_gpu_inference_deferred_2026_09_05.md, verification plan): one camera (2010093) at 100 fps, ONE external recorder shard on the detect die (GPU 3), P1 LL VBR150 GOP25, no crops. The run is expected to fail the cap verifier if one GA107 engine cannot sustain the stream; the capacity number is the recorder summary frames_encoded divided by the run duration, plus drops and enqueue-age growth in the encode CSV. Rerun on a new card by changing the GPU ids. Warning: a run that trips the hard cap skips frames by design; this spec is a capacity measurement, never a data run.",
+  "selection": {
+    "camera_serials": [
+      "2010093"
+    ],
+    "gpu_ids": [
+      3
+    ]
+  },
+  "fixed": {
+    "duration_s": 60,
+    "warmup_s": 2,
+    "display": false,
+    "yolo": false,
+    "stream_only": false,
+    "sync_mode": "ptp_gate",
+    "recording_sink_mode": "external_ipc",
+    "config_folder": "/home/jeremy/orange-gop-split-a16/config/validated_split_gop_hevc_100fps_gop25_fourcam_a16",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "ptp_register_read_decimate": 100,
+    "nvenc_direct_input": false,
+    "external_recorder_contract": {
+      "schema_id": "orange.external_recorder.contract",
+      "schema_version": 1,
+      "mode": "diagnostic_ipc_v1",
+      "supervise_processes": true,
+      "artifact_root": "/tmp/orange_external_recorder_onecam_nvenc_capacity_single_shard_p1_ll_a16",
+      "session_id": "onecam_nvenc_capacity_single_shard_p1_ll_a16",
+      "require_summary": true,
+      "require_video_sanity": false,
+      "require_merged_mp4": true,
+      "require_gop_routing": true,
+      "preserve_shard_mp4s": false,
+      "streams": {
+        "2010093": {
+          "stream_id": "2010093",
+          "camera_serial": "2010093",
+          "analytics_gpu_id": 3,
+          "recorder_gpu_id": 3,
+          "expected_shard_gpu_ids": [
+            3
+          ],
+          "routing_policy": "single_shard",
+          "summary_json": "/tmp/orange_external_recorder_onecam_nvenc_capacity_single_shard_p1_ll_a16/Cam2010093_external_summary.json",
+          "video_sanity_json": "/tmp/orange_external_recorder_onecam_nvenc_capacity_single_shard_p1_ll_a16/Cam2010093_external_video_sanity.json",
+          "mp4": "/tmp/orange_external_recorder_onecam_nvenc_capacity_single_shard_p1_ll_a16/Cam2010093_external.mp4",
+          "gop_routing_csv": "/tmp/orange_external_recorder_onecam_nvenc_capacity_single_shard_p1_ll_a16/Cam2010093_external_gop_routing.csv",
+          "encode_fps": 100,
+          "encode_max_fps": 0,
+          "encode_queue_depth": 32,
+          "prewarm_slots": 4,
+          "prewarm_bytes": 20358144,
+          "prewarm_peer_copy": true,
+          "codec": "hevc",
+          "preset": "p1",
+          "tuning": "ll",
+          "gop": 25,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000
+        }
+      }
+    },
+    "yolo_worker": {
+      "mode": "real",
+      "engine_path": "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.engine",
+      "decimate": 1,
+      "publish_live_ipc": false,
+      "timeout_ms": 500,
+      "prewarm_iterations": 3,
+      "fail_on_init_error": true
+    },
+    "yolo_sync_event": true,
+    "ptp_latch_after_fanout": true,
+    "headless_gpu_dmon": false,
+    "external_recorder_direct_input": false,
+    "recording_control": {
+      "record_for_seconds": 60
+    },
+    "external_recorder_detect_priority": true,
+    "external_recorder_registered_source": true
+  },
+  "matrix": {
+    "codec": [
+      "hevc"
+    ],
+    "preset": [
+      "p1"
+    ],
+    "tuning": [
+      "ll"
+    ],
+    "rate_control_mode": [
+      "vbr"
+    ],
+    "quality_value": [
+      20
+    ],
+    "gop_length": [
+      25
+    ],
+    "aq": [
+      "off"
+    ],
+    "temporal_aq": [
+      "off"
+    ],
+    "lookahead": [
+      "off"
+    ]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 2.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true,
+    "require_zero_camera_drops": true,
+    "require_valid_video_content": false
+  }
+}

@@ -161,11 +161,34 @@ crop placement rules and the host bounce all disappear.
   airflow; the RTX 6000 Ada is the same silicon with active cooling and
   the same three NVENC engines, the right fit for the pancake0
   workstation. GPUDirect RDMA is supported on both.
-- Verification plan when a card is present: the engine-only specs on it
-  (one camera, then two synchronized), then a two-camera registered spec
-  with the recorder on the same GPU, then the crop interleave spec with
-  the crop recorder on the same GPU, then the 30-minute endurance. About
-  half a day of rig time; every estimate above becomes a measurement.
+- Verification plan when a card is present, in order. About half a day
+  of rig time; every estimate above becomes a measurement.
+  1. **Per-engine NVENC capacity** (the unknown that decides whether GOPs
+     alternate at all). Spec
+     `onecam_nvenc_capacity_single_shard_p1_ll_a16`: one camera at 100
+     fps, one external recorder shard on one GPU, P1 LL VBR150 GOP25, no
+     crops, single-shard routing. Point its GPU ids at the new card. Read
+     three things: the recorder summary's `frames_encoded` divided by the
+     run duration (the sustained encode rate; 100 fps means the engine
+     keeps up, less means the engine's capacity), the recorder's encode
+     CSV `enqueue_age_ms` (flat means keeping up, climbing means falling
+     behind), and the run's `pass_fail` (a single engine that cannot keep
+     up backs the pool up to the hard cap and the cap verifier fails the
+     run by design; that failure is the measurement, not a bug). Then the
+     same with a second camera on the same GPU as a second single-shard
+     stream to see whether two sessions land on two engines and both
+     hold 100 fps, and with three. This is also runnable today on an A16
+     die, where it would replace the never-measured GA107 P1 LL figure
+     with a number; expect it to fail at 100 fps there. Do not treat any
+     run of this spec as data: it exists to be pushed past its limit.
+  2. The engine-only specs on the card (one camera, then two
+     synchronized) for the graph and the true direct-read floor.
+  3. A two-camera registered spec with the recorder on the same GPU: one
+     session per camera if step 1 said an engine holds 100 fps, two
+     alternating sessions on the same GPU (single-GPU split-GOP placement)
+     if not.
+  4. The crop interleave spec with the crop recorder on the same GPU.
+  5. The 30-minute endurance with everything on.
 
 ## What stays on the A16s meanwhile
 
