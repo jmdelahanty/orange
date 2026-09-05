@@ -207,6 +207,63 @@ crop placement rules and the host bounce all disappear.
   4. The crop interleave spec with the crop recorder on the same GPU.
   5. The 30-minute endurance with everything on.
 
+### C. Network multicast: feed two GPUs without a host bounce (to evaluate)
+
+Asked 2026-09-05: could the camera, NIC or SDK broadcast a frame to two
+places at once, so the A6000 detects while an A16 records, with no copy
+between them? Inside a host there is no free fan-out: every copy of a
+20 MB frame is a read and a write against a finite memory or PCIe
+bandwidth, and neither the SDK nor CUDA exposes PCIe-level multicast. The
+pipeline already broadcasts the *reference* to a frame at zero cost (the
+refcounted worker entry every consumer retains); bytes only ever need
+copying when a memory domain is crossed, which is the whole story of this
+document.
+
+The one real broadcast is on the network. GigE Vision streams over UDP,
+and the protocol supports multicast: the camera sends each packet **once**,
+addressed to a multicast group rather than to one NIC, and an Ethernet
+switch replicates the stream to every port that has joined the group.
+The camera does not send twice, and it does not know how many receivers
+there are; one application holds the control channel and the others open
+the camera as receivers. So the topology this needs, per camera:
+
+- a switch between the camera and the host (today each camera is cabled
+  point-to-point to its own NIC on its own subnet, so there is no switch
+  to replicate anything);
+- one host NIC port per destination GPU that has joined the group, each
+  with GPUDirect into its GPU: one port landing frames in an A16 die for
+  recording, a second port landing the same frames in the A6000 for
+  detection. Two destinations means two ports per camera, so yes, the
+  port count doubles;
+- aggregate bandwidth: about 16 Gbit/s per camera (20 MB at 100 fps),
+  twice per camera with two receivers, 128 Gbit/s across the switch and
+  NICs for four cameras;
+- two SDK receivers per camera, each reassembling packets on the CPU, so
+  roughly twice the receive-side CPU work, and PTP timestamps that both
+  receivers see identically (they come from the camera, so they should).
+
+What it buys: detection on the A6000 at the measured 0.9 ms floor for one
+camera (or the batched-inference floor for four) with the recording path
+on the A16s untouched, no host bounce, and no P2P requirement between the
+two GPUs. What it does not change: the A6000 still has one NVENC, so
+recording stays on the A16s with everything in the review document as
+it is; and detections must reach the recorder's metadata and the crop
+producer, which today happens in one process; with two receivers the
+detection results would cross processes (a few kilobytes per frame, the
+existing IPC handles it) and the crop would be cut on the A16 from its
+own copy of the frame using boxes produced on the A6000.
+
+Open questions, in the order to check them: whether the Emergent SDK
+supports GigE Vision multicast / receiver mode on these cameras at all
+(the camera manual and the SDK headers decide this; `EVT_CameraOpen`
+today takes control of the device); whether the rig's NICs and a
+100 GbE switch can carry 128 Gbit/s with GPUDirect on every receiving
+port; and whether the receive-side CPU cost of two reassemblies per
+camera fits next to everything else. None of it needs building to be
+answered; it is a day of reading and a switch on the bench. If the
+answer is yes, it is the only design that gives the A6000's inference
+floor without the two-card purchase.
+
 ## What stays on the A16s meanwhile
 
 The tree's defaults (event sync, deferred PTP latch, detect-priority
