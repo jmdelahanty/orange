@@ -286,6 +286,74 @@ answered; it is a day of reading and a switch on the bench. If the
 answer is yes, it is the only design that gives the A6000's inference
 floor without the two-card purchase.
 
+## Before any batched-inference worktree exists: three checks
+
+Asked 2026-09-05 night whether to open a worktree for the batched
+design with crops, crop encode and pose. Not yet. Three cheap checks
+decide whether the design is worth a worktree at all, none of them
+touches the pipeline, and they go in this order:
+
+1. **Render contention on the A6000** (step 6 of the verification plan
+   above). If citrus's projector rendering costs the detection graph
+   milliseconds of tail, the A6000 cannot host detection and the whole
+   question waits for a second big card.
+2. **Batch-four graph timing**, about half an hour: build the same detect
+   ONNX with a batch dimension of four with `trtexec --fp16` on the A6000
+   (`--shapes` for the batched input) and time it. This replaces the
+   1.0 to 1.2 ms estimate for four frames with a number.
+3. **Emergent SDK multicast receive support** on these cameras, reading
+   only (camera manual, SDK headers, `EVT_CameraOpen` semantics). This
+   decides between design C (multicast, detection alone moves to the big
+   GPU, everything else stays on the A16s as validated) and the host
+   bounce.
+
+Where the crop and the pose engine would sit is not a blocker: the crop
+is cut on the GPU that holds the frame and is 147 KB, so moving it to
+pose or to a crop encoder anywhere, including an A16 die through host
+memory, costs tens of microseconds and contends with nothing measurable.
+The A6000's one NVENC encodes a lossless 384-square crop in 0.05 ms, so
+four cameras' crops would occupy it about two percent of the time. The
+hard part is only ever the 20 MB full frame that recording needs on an
+A16 die. If all three checks come back favourable, a worktree for the
+batch scheduler, per-camera demux and batched YOLO worker is the right
+container, and it is a project of weeks; if any comes back unfavourable,
+the worktree would have been spent on a design the hardware rules out.
+
+## How the link-traffic figures are computed
+
+The "16 GB/s of link traffic" and similar numbers in this document come
+from one product, written out so they can be redone for any change of
+resolution, frame rate, camera count or path:
+
+    bytes per frame  = width x height x bytes per pixel
+                     = 4512 x 4512 x 1 (Mono8) = 20,358,144 bytes, about 20 MB
+    bytes per second = bytes per frame x frames per second
+                     = 20 MB x 100 fps = 2.0 GB/s per camera per hop
+    per path         = per-camera rate x cameras x hops that cross the link
+
+Applied to the designs here:
+
+- Host bounce, A6000 to A16: two hops per frame (device to host, host to
+  device), so 2 GB/s x 4 cameras x 2 = 16 GB/s through host memory, and
+  8 GB/s out of the A6000's link plus 8 GB/s into the A16 cards' links.
+  Against a PCIe 4.0 x16 link's practical 22 to 25 GB/s, the A6000 link
+  would also be carrying the 8 GB/s of camera RDMA coming in, so about
+  16 GB/s of its 25.
+- Per-hop latency: 20 MB at a practical 12 GB/s for a pinned
+  device-to-host copy is about 1.7 ms, which is where "1.7 ms per hop"
+  comes from; it is a bandwidth-bound copy, not a fixed cost.
+- Network multicast: the camera stream is 20 MB x 100 fps = 2.0 GB/s =
+  16 Gbit/s per camera per receiver (GVSP packet overhead adds a few
+  percent). Two receivers per camera doubles it; four cameras with two
+  receivers is 128 Gbit/s across the switch and the NICs.
+- The same arithmetic gives the crop: 384 x 384 x 1 = 147 KB per crop,
+  14.7 MB/s per camera at 100 fps, which is why crop placement never
+  costs bandwidth and the crop experiments were about encoder and switch
+  timing instead.
+
+Units: 1 GB/s here is 10^9 bytes per second and 1 Gbit/s is 10^9 bits per
+second, so multiply GB/s by 8 for the network figure.
+
 ## Why not route frames from the A16s to a big GPU for inference
 
 Decided with Jeremy on 2026-09-05 and recorded so the option is not
