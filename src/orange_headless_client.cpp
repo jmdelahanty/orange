@@ -128,6 +128,7 @@ struct HeadlessCropRecordingConfig {
     int crop_size_px = 0;       // 0: the camera config's crop_pipeline.crop_size_px
     int recorder_gpu = -1;      // external_ipc: -1 = the other die of the camera's card; else this GPU for every camera
     std::map<std::string, int> recorder_gpus;  // external_ipc: per-camera-serial override, wins over recorder_gpu
+    bool interleave = false;    // external_ipc: GOP-parity interleaving across the card's two dies
     bool enabled() const { return mode == "in_process" || mode == "external_ipc"; }
     bool external() const { return mode == "external_ipc"; }
 };
@@ -8138,6 +8139,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         spec->crop_recording.mode = node.value("mode", std::string("off"));
         spec->crop_recording.crop_size_px = node.value("crop_size_px", 0);
         spec->crop_recording.recorder_gpu = node.value("recorder_gpu", -1);
+        spec->crop_recording.interleave = node.value("interleave", false);
         if (node.contains("recorder_gpus") && node["recorder_gpus"].is_object()) {
             for (const auto& [serial, gpu] : node["recorder_gpus"].items()) {
                 if (gpu.is_number_integer()) {
@@ -9345,6 +9347,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
             return 1;
         }
+        setenv("ORANGE_CROP_EXTERNAL_INTERLEAVE", options.crop_recording.interleave ? "1" : "0", 1);
         for (int inventory_index : selected_inventory_indices) {
             CameraParams& camera = cameras_params[inventory_index];
             cameras_select[inventory_index].crop_and_encode = true;

@@ -1639,14 +1639,90 @@ look later: the metadata row's maximum of 10 ms (a file-system stall on
 the crop thread, harmless today) and the external ACK wait, which could
 be made asynchronous if the crop thread ever needed the headroom.
 
+**Three things the crop path is not doing (2026-09-04).** Asked whether
+crops are only ever cut in-process, whether the pose engine gets its image
+only after the crop thread's total, and whether EfficientNMS keeps the
+final box on the GPU:
+
+- The crop *cut* is always in-process on the detect die; only the *encode*
+  of the finished crop has a choice of destination, and that is the only
+  thing the interleave routes.
+- The pose worker does not wait for the crop thread's total. The crop
+  producer hands the crop lease to the pose worker the moment the crop
+  kernel is enqueued and its ready event recorded, before the encode job is
+  even queued; the pose worker waits on that GPU event on its own stream.
+  Pose input is ready at about the pool copy plus the cut, 2.4 to 2.45 ms
+  after the frame, whichever path encodes the crop afterwards.
+- NMS is inside the graph, and the box the crop uses is the graph's final
+  box. The engine's outputs are the EfficientNMS set: a detection count,
+  boxes, scores and labels, with boxes always shaped to the configured
+  maximum and padded when fewer objects exist (NVIDIA TensorRT plugin
+  README, `plugin/efficientNMSPlugin`). `YOLOv8::postprocess` only
+  un-letterboxes at most `num_dets` rectangles, a few microseconds. The
+  four small outputs reach the CPU because the inference call copies them
+  device-to-host and that copy is captured inside the CUDA graph, so it is
+  part of the 2.0 ms and adds no separate synchronization. Cutting the
+  crop straight from the device-side boxes would save only that loop
+  (about 0.03 ms on a thread already off the detect path), and the
+  recorder needs the rectangle on the CPU for the metadata anyway. Note
+  for the next engine build: `EfficientNMS_TRT` is deprecated since
+  TensorRT 10.12 in favour of the native `INMSLayer`; the current engine
+  was built with TensorRT 10.0 (`trt100` in its name) and is fine, but an
+  INT8 rebuild on a newer TensorRT may need the native layer, whose
+  outputs fit the same four-binding reader.
+
 What building it takes: a two-shard crop contract per camera on the same
 two dies as the full-frame contract; crop descriptors tagged with the
 full-frame GOP index plus one so the recorder's existing parity routing
 sends each crop to the opposite die; the merged crop writer then stitches
 at 100 GOPs per second instead of two, which is within its frontier
 budget on paper and is the thing to watch; one more recorder process per
-camera and two NVENC sessions per die. Not built yet; it is the next
-experiment on the crop thread.
+camera and two NVENC sessions per die.
+
+**Built and measured (2026-09-04, 22:00).** Simpler than planned: no
+descriptor tagging was needed. Under `crop_recording.interleave = true`
+(env `ORANGE_CROP_EXTERNAL_INTERLEAVE=1`) the crop client uses the
+full-frame GOP length (25) instead of 1, so its GOP index equals the
+full-frame GOP index, and the crop contract lists its two shards as
+[other die, detect die], the reverse of the full-frame contract's [detect
+die, other die]. The recorder's existing `gop_modulo` routing then sends
+each crop GOP to the die that is not encoding that GOP's full frames. One
+crop recorder process per camera with two encode workers, exactly like
+the full-frame recorder. The routing CSVs confirm it: every crop of a
+full-frame GOP on die 3 went to die 4 and vice versa, on all three
+cameras. Two consequences of the GOP change: the crop video now has a
+keyframe every 25 frames instead of every frame (still lossless, random
+access is coarser), and the merged crop writer stitches at 4 GOPs per
+second rather than 100, which is easier, not harder.
+
+The first two runs each lost 19 crops per camera, recording frames 58 to
+76, reason `crop_frame_pool_empty`: the crop recorder's two encoders
+created themselves on the first crop (0.9 and 1.1 s), the crop encode
+queue backed up to 50, and the crop frame pool of 32 ran dry. The full
+frame prewarm did not cover the crop hello. Now it does: the crop client
+hello carries the crop geometry and the crop worker connects at
+construction, so both crop encoders are built during camera open. Third
+run: 5,901 of 5,901 crops per camera, zero drops, crop queue high-water
+2 to 3.
+
+Acquisition-to-detect mean / p95 / p99, every crop encoded, proofs passed:
+
+| Camera | In-process crop NVENC | External, other die, same card | External, detect die | GOP-parity interleave | No crop pipeline |
+|---|---|---|---|---|---|
+| 2010093 (card A) | 2.229 / 2.319 / 2.665 | 2.238 / 2.408 / 2.769 | 2.266 / 2.347 / 2.729 | 2.263 / 2.362 / 2.438 | 2.212 / 2.294 / 2.316 |
+| 2010094 (card A) | 2.230 / 2.320 / 2.617 | 2.272 / 2.548 / 2.795 | 2.253 / 2.329 / 2.671 | 2.260 / 2.365 / 2.440 | 2.216 / 2.305 / 2.330 |
+| 2010095 (card B) | 2.220 / 2.317 / 2.585 | 2.211 / 2.308 / 2.332 | 2.245 / 2.302 / 2.720 | 2.241 / 2.301 / 2.323 | 2.204 / 2.298 / 2.320 |
+
+(Three interleave runs agree to within 0.03 ms on the mean and 0.05 on
+the p95 and p99; the table shows the run with zero drops.) The prediction
+held: the p99 with all dies serving full-frame shards is 2.32 on the
+single-camera card and 2.44 on the two-camera card, against 2.6 to 2.8 in
+every other crop configuration. What is left on card A is 0.05 ms of p95
+and 0.1 of p99 over no-crop, in the other-die GOPs (their p95 is 2.40
+against 2.31 in same-die GOPs), the same two-camera residual the
+same-die pre-test showed: with two cameras on the card, even the
+no-transfer half is not entirely free. This is the recommended crop
+configuration whenever all dies are in use, and it needs no free die.
 
 Note on the spec files: the stream paths in `_crop_synthetic_external`
 were generated with a doubled prefix on the first run (cosmetic; the run's

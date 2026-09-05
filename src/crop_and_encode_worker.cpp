@@ -53,6 +53,13 @@ std::string normalize_crop_recording_sink_mode(std::string value)
     return {};
 }
 
+bool external_crop_interleave_enabled()
+{
+    const char* env = std::getenv("ORANGE_CROP_EXTERNAL_INTERLEAVE");
+    return env && *env && std::strcmp(env, "0") != 0 && std::strcmp(env, "false") != 0 &&
+           std::strcmp(env, "off") != 0;
+}
+
 std::string resolve_crop_recording_sink_mode(const char* worker_name)
 {
     const char* env_value = std::getenv(kCropRecordingSinkModeEnv);
@@ -102,6 +109,19 @@ int CropAndEncodeWorker::SanitizeCropSize(int requested_size_px)
 
 class CropAndEncodeWorker::ExternalCropIpcClient {
 public:
+    // Connect and exchange hellos before the first crop, so the recorder's
+    // encoder prewarm (triggered by the hello's geometry) overlaps camera
+    // open instead of the first crops. Failure is not an error: the first
+    // crop retries the connect as before.
+    void PrewarmConnect(const std::string& recording_folder)
+    {
+        refresh_session_from_environment(recording_folder);
+        if (ensure_connected()) {
+            std::cout << "[ExternalCropIpcRecorder] camera=" << camera_serial_
+                      << " connected at start; recorder prewarming its crop encoder(s)" << std::endl;
+        }
+    }
+
     ExternalCropIpcClient(std::string camera_serial,
                           int source_gpu_id,
                           int crop_width,
@@ -196,7 +216,7 @@ public:
             << frame_index_within_gop << " "
             << source_gpu_id_ << " "
             << 0 << " "
-            << "single_shard"
+            << (gop_length_ > 1 ? "gop_modulo" : "single_shard")
             << "\n";
 
         if (!send_all(msg.str())) {
@@ -467,13 +487,21 @@ private:
                         identity_error);
             return false;
         }
+        // Carry the crop geometry so the recorder prewarms its encoder(s) at
+        // hello instead of on the first crop; without it the crop recorder's
+        // cold start (0.4 to 0.6 s per shard encoder) exhausted the crop
+        // frame pool and dropped crops 58 to 76 on every camera (2026-09-04).
         if (!send_all(orange::external_recorder::ipc::build_client_hello_line(
                 camera_serial_,
                 session_id_,
                 stream_id_,
                 "orange_crop",
                 frame_rate_,
-                gop_length_))) {
+                gop_length_,
+                crop_width_,
+                crop_height_,
+                source_gpu_id_,
+                /*nv12_pool=*/false))) {
             log_limited("send crop client protocol hello failed: " +
                         std::string(std::strerror(errno)));
             return false;
@@ -619,8 +647,21 @@ camera_control_(camera_control)
     if (external_crop_recording_enabled()) {
         // The external crop recorder contract uses GOP=1 so every crop frame is
         // independently routable and future crop clip rollover can use exact
-        // recording-frame boundaries.
-        const int gop_length = 1;
+        // recording-frame boundaries. Under GOP-parity interleaving
+        // (ORANGE_CROP_EXTERNAL_INTERLEAVE=1, 2026-09-04) the crop stream
+        // instead uses the full-frame GOP length so its GOP index matches the
+        // full-frame GOP index, and the contract lists the crop shards in the
+        // opposite order to the full-frame shards: each crop GOP then lands on
+        // the die whose NVENC is idle for that GOP.
+        const bool interleave = external_crop_interleave_enabled();
+        const int full_frame_gop = camera_params_->recording.encode.gop_length > 0
+            ? camera_params_->recording.encode.gop_length
+            : std::max(1, static_cast<int>(camera_params_->frame_rate));
+        const int gop_length = interleave ? full_frame_gop : 1;
+        if (interleave) {
+            std::cout << "[CropAndEncodeWorker] GOP-parity interleave: crop GOP length "
+                      << gop_length << " (full-frame GOP) for " << name << std::endl;
+        }
         external_crop_ipc_ = std::make_unique<ExternalCropIpcClient>(
             camera_params_->camera_serial,
             camera_params_->gpu_id,
@@ -628,6 +669,7 @@ camera_control_(camera_control)
             crop_height_,
             std::max(1, static_cast<int>(camera_params_->frame_rate)),
             gop_length);
+        external_crop_ipc_->PrewarmConnect(base_folder_name_);
         ck(cudaMalloc(
             &d_blank_frame_,
             static_cast<size_t>(crop_width_) * static_cast<size_t>(crop_height_)));

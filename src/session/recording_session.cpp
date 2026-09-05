@@ -827,6 +827,22 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
             resolve_external_crop_recorder_gpu_id_from_env(serial, analytics_gpu_id);
         const bool same_gpu_as_analytics =
             recorder_gpu_id == analytics_gpu_id;
+        // GOP-parity interleaving (ORANGE_CROP_EXTERNAL_INTERLEAVE=1): two
+        // crop shards, listed as [other die, detect die], the reverse of the
+        // full-frame contract's [detect die, other die], with the crop GOP
+        // equal to the full-frame GOP. The recorder's gop_modulo routing then
+        // sends every crop GOP to the die that is not encoding that GOP's
+        // full frames. Requires a recorder GPU different from the analytics
+        // GPU (the other die of the card).
+        const char* interleave_env = std::getenv("ORANGE_CROP_EXTERNAL_INTERLEAVE");
+        const bool interleave =
+            interleave_env && *interleave_env && std::string(interleave_env) != "0" &&
+            !same_gpu_as_analytics;
+        const nlohmann::json crop_shard_gpu_ids = interleave
+            ? nlohmann::json::array({recorder_gpu_id, analytics_gpu_id})
+            : nlohmann::json::array({recorder_gpu_id});
+        const std::string crop_routing_policy = interleave ? "gop_modulo" : "single_shard";
+        const int crop_gop = interleave ? std::max(1, full_frame_gop) : 1;
         const std::string prefix =
             (std::filesystem::path(artifact_root) /
              ("Cam" + serial + "_crop_external")).string();
@@ -842,8 +858,8 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
             {"analytics_gpu_id", analytics_gpu_id},
             {"recorder_gpu_id", recorder_gpu_id},
             {"same_gpu_as_analytics", same_gpu_as_analytics},
-            {"expected_shard_gpu_ids", nlohmann::json::array({recorder_gpu_id})},
-            {"routing_policy", "single_shard"},
+            {"expected_shard_gpu_ids", crop_shard_gpu_ids},
+            {"routing_policy", crop_routing_policy},
             {"summary_json", prefix + "_summary.json"},
             {"status_json", prefix + "_status.json"},
             {"video_sanity_json", prefix + "_video_sanity.json"},
@@ -865,7 +881,7 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
             {"codec", "hevc"},
             {"preset", "p7"},
             {"tuning", "lossless"},
-            {"gop", 1},
+            {"gop", crop_gop},
             {"max_pending_gops", 8},
             {"max_pending_bytes", 268435456},
             {"max_pending_frontier_age_ms", 2000},
