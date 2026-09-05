@@ -1724,6 +1724,27 @@ same-die pre-test showed: with two cameras on the card, even the
 no-transfer half is not entirely free. This is the recommended crop
 configuration whenever all dies are in use, and it needs no free die.
 
+**Is there still a heartbeat?** Mean acquisition-to-detect by position in
+the 50-frame cycle (frame 0 to 25 encoded on the detect die, 26 to 49 on
+the other die), no-crop registered run against the interleave run:
+
+| | Shard-0 half (detect die encodes) | Shard-1 half (other die encodes) | Spread of the 50 means |
+|---|---|---|---|
+| 2010093, no crop | 2.247 | 2.183 | 0.107 |
+| 2010093, interleave | 2.254 | 2.249 | 0.112 (one boundary frame at 2.33; 0.05 without it) |
+| 2010095, no crop | 2.246 | 2.132 | 0.134 |
+| 2010095, interleave | 2.256 | 2.201 | 0.078 |
+
+Without crops the residual heartbeat is the same-die shard's NVENC read:
+the detect-die half sits 0.06 to 0.11 ms above the other-die half. With
+the interleave the crop encode lands on the detect die during exactly the
+other-die half, so that half comes up: on the two-camera card the two
+halves meet at 2.25 and the square wave is gone, replaced by one spike at
+the GOP boundary (phase 27, 2.33 ms mean, 2.48 p95) where the full-frame
+shard and the crop shard both switch dies and the crop shard opens a new
+GOP with an IDR frame; on the single-camera card a 0.06 ms wave remains.
+Fig. 10 on the page carries the interleave run as a dashed series.
+
 Note on the spec files: the stream paths in `_crop_synthetic_external`
 were generated with a doubled prefix on the first run (cosmetic; the run's
 full-frame artifacts landed under
