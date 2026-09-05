@@ -69,6 +69,52 @@ and, for recording, the host bounce above or a big card with its own
 encoders. The A6000 is enough to prototype the inference half with three
 cameras and no recorder.
 
+### Why one Ada card needs none of the split-GOP machinery
+
+Why the A16 needs it. An A16 is not one GPU: it is four GA107 dies on one
+board, each with its own 16 GB of memory, its own ten SMs and its own
+single seventh-generation NVENC engine, behind one PCIe switch. There is
+no shared memory across dies. A frame that the camera RDMAs into die 3
+exists only in die 3's memory. Die 3's one NVENC sustains a 20 MP HEVC
+stream at about 100 fps at preset p1, measured at 8 to 10 ms per frame,
+which is the camera's whole frame rate with no headroom. So to record
+one camera at 100 fps with margin, the GOPs alternate between two dies'
+encoders, and for every other GOP the other die must first pull the 20 MB
+frame out of the detect die's memory across the card switch before it
+can encode. That copy, the switch it crosses, and the second die's
+encoder reading memory that the graph on the first die is also using are
+the origin of everything in the review document called "same-die
+residual", "card-level contention", "other-die shard", "crop recorder
+placement" and "GOP-parity interleave". The scheme exists because each
+die has one weak encoder and its own memory.
+
+Why an L40S or RTX 6000 Ada does not. It is one GPU with one memory
+space and three eighth-generation NVENC engines on it. Every engine reads
+the same memory the graph writes and the camera RDMAs into, so an encoder
+never needs the frame copied anywhere: the registered-source path we run
+today on the detect die, encode straight from the pool buffer, is the
+only path, for both cameras and for the crop encoder. There is no second
+die, so nothing crosses a switch and no die is "the other one". The three
+engines are load-balanced by the driver across encode sessions on their
+own: one session per camera stream plus one per crop stream, and the
+driver spreads them over the engines without any GOP routing in our code.
+Per-engine throughput on Ada is roughly twice GA107's for this format (an
+estimate from NVIDIA's generational figures, to be measured), so three
+engines are about 600 fps of 20 MP against the 200 fps two cameras need,
+or even the 400 fps four cameras would need on one card. One camera's
+stream fits inside one engine with headroom, which is the condition the
+A16 could not meet and the reason the GOPs had to be split in the first
+place.
+
+What is left over is the one effect that does not depend on topology:
+the encoder reading a frame from the same memory the graph is using,
+measured at 0.1 ms on a GA107 die with 200 GB/s of bandwidth, and
+expected to shrink on a card with 864 GB/s. Everything else in the list
+above becomes a no-op: the split-GOP strategy collapses to single-GPU
+placement, the external recorder becomes one process per camera on the
+same GPU, the crop recorder goes on the same GPU with no placement
+rule, and the merged-GOP writer has one shard to merge.
+
 ### B. Two L40S or RTX 6000 Ada cards, two cameras each (preferred)
 
 Each card owns its two cameras end to end: RDMA in, detection, recording
