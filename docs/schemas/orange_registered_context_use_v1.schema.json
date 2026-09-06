@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Recording-use receipt for an unmodified daily native context",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "status",
+    "recording_id",
+    "capture_id",
+    "source_selection",
+    "daily_context",
+    "recording_geometry",
+    "recording_cameras",
+    "reuse_declaration"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "orange.recording.registered_context_use"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "status": {
+      "const": "captured"
+    },
+    "recording_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "capture_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+    },
+    "source_selection": {
+      "$ref": "orange_registered_context_config_v2.schema.json#/$defs/daily_source"
+    },
+    "daily_context": {
+      "$ref": "orange_registered_context_reuse_evidence_v2.schema.json#/$defs/daily_context"
+    },
+    "recording_geometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relative_path",
+        "size_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "relative_path": {
+          "const": "registered_context_geometry_v1.json"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+        }
+      }
+    },
+    "recording_cameras": {
+      "$ref": "orange_registered_context_reuse_evidence_v2.schema.json#/$defs/cameras"
+    },
+    "reuse_declaration": {
+      "allOf": [
+        {
+          "$ref": "orange_registered_context_capture_declaration_v1.schema.json"
+        },
+        {
+          "properties": {
+            "registration_authority_status": {
+              "const": "accepted_for_experiment"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

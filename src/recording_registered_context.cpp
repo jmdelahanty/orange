@@ -1,4 +1,5 @@
 #include "recording_registered_context.h"
+#include "recording_daily_context_reuse.h"
 #include "fsuid_guard.h"
 #include "gui/spatial_layout/sha256.h"
 #include <fstream>
@@ -75,11 +76,31 @@ std::string registration_kind(const json& geometry, const RegisteredContextCamer
 
 RegisteredContextConfig RegisteredContextConfig::Parse(const json& value) {
     require(value.is_object(), "fixed.registered_scene_context must be an object");
+    const auto version = number(value.at("schema_version"));
+    require(version == 1 || version == 2, "unsupported registered_scene_context configuration version");
     for (const auto& item : value.items()) require(item.key() == "schema_version" || item.key() == "enabled" || item.key() == "timeout_ms" ||
-        item.key() == "worker_cpu_ids" || item.key() == "declaration", "unknown registered_scene_context configuration field");
-    require(number(value.at("schema_version")) == 1 && value.at("enabled").is_boolean(), "invalid registered_scene_context configuration version/enabled");
+        item.key() == "worker_cpu_ids" || item.key() == "declaration" || (version == 2 && item.key() == "source"), "unknown registered_scene_context configuration field");
+    require(value.at("enabled").is_boolean(), "invalid registered_scene_context enabled");
     RegisteredContextConfig result;
+    result.schema_version = static_cast<int>(version);
     result.enabled = value.at("enabled").get<bool>();
+    if (version == 2) {
+        const auto& source = value.at("source");
+        if (source.at("kind") == "fresh_capture") exact(source, {"kind"});
+        else {
+            exact(source, {"kind", "descriptor_path", "size_bytes", "sha256", "scene_unchanged_since_capture"});
+            require(source.at("kind") == "daily_registration" && source.at("scene_unchanged_since_capture") == true,
+                "registered_scene_context reuse requires explicit unchanged scene confirmation");
+            const auto path = source.at("descriptor_path").get<std::string>();
+            require(path.find_first_of(std::string("\0\r\n", 3)) == std::string::npos && fs::path(path).is_absolute() &&
+                fs::path(path).lexically_normal() == fs::path(path) && fs::path(path).filename() == "context.json", "invalid daily context descriptor_path");
+            const auto size = number(source.at("size_bytes"));
+            const auto sha = source.at("sha256").get<std::string>();
+            require(size > 0 && size <= 16 * 1024 * 1024 && sha.size() == 71 && sha.substr(0, 7) == "sha256:" &&
+                sha.substr(7).find_first_not_of("0123456789abcdef") == std::string::npos, "invalid daily context size/SHA-256");
+        }
+        result.source = source;
+    }
     if (value.contains("timeout_ms")) {
         const auto timeout = number(value.at("timeout_ms"));
         require(timeout >= 100 && timeout <= 60000, "registered_scene_context timeout_ms must be 100..60000"); result.timeout_ms = static_cast<int>(timeout);
@@ -104,16 +125,21 @@ RegisteredContextConfig RegisteredContextConfig::Parse(const json& value) {
     return result;
 }
 json RegisteredContextConfig::ToJson() const {
-    json result = {{"schema_version", 1}, {"enabled", enabled}, {"timeout_ms", timeout_ms}, {"worker_cpu_ids", worker_cpu_ids}};
+    json result = {{"schema_version", schema_version}, {"enabled", enabled}, {"timeout_ms", timeout_ms}, {"worker_cpu_ids", worker_cpu_ids}};
+    if (schema_version == 2) result["source"] = source;
     if (!declaration.registration_authority_status.empty()) result["declaration"] = authority::registered_scene_context_capture_declaration_to_json(declaration);
     return result;
 }
 
 void RegisteredContextSet::Prepare(const RegisteredContextConfig& config, const fs::path& root,
                                   const std::vector<RegisteredContextCamera>& cameras, const json& geometry) {
-    require(!store_ && bindings_.empty(), "registered context already prepared");
+    require(!store_ && bindings_.empty() && reused_evidence_.is_null(), "registered context already prepared");
     config_ = RegisteredContextConfig::Parse(config.ToJson());
     require(config_.enabled && !cameras.empty() && cameras.size() <= 64, "registered context camera set invalid");
+    if (config_.ReusesDailyContext()) {
+        reused_evidence_ = PrepareDailyContextReuse(config_, root, cameras, geometry);
+        return;
+    }
     recording_id_ = root.filename().string();
     require(!recording_id_.empty() && recording_id_.size() <= 1024, "registered context parent identity invalid");
     std::vector<std::string> allowed = {"registered_context_geometry_v1.json"};
@@ -136,11 +162,13 @@ void RegisteredContextSet::Prepare(const RegisteredContextConfig& config, const 
     require(store_->PublishJson("registered_context_geometry_v1.json", geometry, &geometry_, &error), error);
 }
 json RegisteredContextSet::StartEvidence() const {
+    if (reused_evidence_.is_object()) return reused_evidence_;
     require(store_ != nullptr, "registered context not prepared");
     return {{"schema_version", 1}, {"required", true}, {"profile", "native_registered_pre_recording_v1"},
         {"recording_id", recording_id_}, {"config", config_.ToJson()}, {"geometry_contract", geometry_.ToJson()}, {"cameras", bindings_}};
 }
 bool RegisteredContextSet::Complete() const {
+    if (reused_evidence_.is_object()) return true;
     if (captured_.empty()) return false;
     for (const auto& item : captured_) if (!item.second) return false;
     return true;
@@ -179,6 +207,10 @@ void ApplyRequiredRegisteredContextGate(const fs::path& root, json* parent) {
     const auto snapshot = read_json(start_path);
     if (!snapshot.contains("session") || !snapshot.at("session").contains("registered_scene_context")) return;
     const auto& start = snapshot.at("session").at("registered_scene_context");
+    if (start.is_object() && start.contains("profile") && start.at("profile") == "daily_registered_context_reuse_v1") {
+        ApplyDailyContextReuseGate(root, snapshot, parent);
+        return;
+    }
     json result = {{"schema_version", 1}, {"required", true}, {"profile", "native_registered_pre_recording_v1"},
         {"status", "pending"}, {"cameras", json::array()}};
     const auto state = parent->value("status", std::string());
@@ -189,7 +221,7 @@ void ApplyRequiredRegisteredContextGate(const fs::path& root, json* parent) {
                     start.at("profile") == "native_registered_pre_recording_v1" && start.at("recording_id") == parent->at("session_id"),
                     "registered context prearm identity mismatch");
             const auto config = RegisteredContextConfig::Parse(start.at("config"));
-            require(config.enabled && start.at("cameras").is_array() && !start.at("cameras").empty() && start.at("cameras").size() <= 64,
+            require(config.enabled && !config.ReusesDailyContext() && start.at("cameras").is_array() && !start.at("cameras").empty() && start.at("cameras").size() <= 64,
                     "registered context invalid required camera set");
             std::vector<std::string> allowed = {"registered_context_geometry_v1.json"};
             std::set<std::string> camera_serials;

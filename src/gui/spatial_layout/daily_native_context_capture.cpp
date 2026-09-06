@@ -1,5 +1,6 @@
 #include "gui/spatial_layout/daily_native_context_capture.h"
 #include "daily_registered_context.h"
+#include "registered_context_camera_configuration.h"
 #include "citrus_recording_geometry.h"
 #include "gui/spatial_layout/calibration_transaction_bridge.h"
 #include "gui/spatial_layout/projection_snapshot_client.h"
@@ -22,9 +23,7 @@ int camera_index(const CameraParams* cameras, int count, const std::string& seri
     return -1;
 }
 json camera_settings(const CameraParams& camera) {
-    return {{"camera_id", camera.camera_id}, {"width", camera.width}, {"height", camera.height},
-        {"pixel_format", camera.pixel_format}, {"frame_rate_hz", camera.frame_rate}, {"exposure_us", camera.exposure},
-        {"gain", camera.gain}, {"focus", camera.focus}, {"iris", camera.iris}};
+    return recording::RegisteredContextCameraConfiguration(camera);
 }
 void require(bool value, const std::string& error) { if (!value) throw std::runtime_error(error); }
 }
@@ -33,6 +32,8 @@ public:
     int cpu = -1, subject_presence = 2;
     bool dish_setup = false, nir_fixed = false, camera_fixed = false, rig_fixed = false;
     bool active = false, saving = false;
+    bool reuse_confirmed = false;
+    json saved_descriptor_ref;
     std::string status = "No native daily context captured.", error, saved_path, canvas_path;
     double deadline = 0;
     calibration::DailyContextPlan plan;
@@ -59,6 +60,8 @@ void poll_daily_native_context_capture(SpatialLayoutUiState* ui, const CameraPar
         try {
             const auto receipt = capture.write.get();
             capture.saved_path = (capture.plan.output_root / receipt.at("relative_path").get<std::string>()).string();
+            capture.saved_descriptor_ref = receipt;
+            capture.reuse_confirmed = false;
             finish("");
         } catch (const std::exception& ex) { finish(ex.what()); }
         return;
@@ -164,7 +167,8 @@ void render_daily_native_context_capture(SpatialLayoutUiState* ui, const CameraP
         (ui->calibration_transaction_lease && ui->calibration_transaction_lease->active()));
     if (ImGui::Button("Capture Native Context (All Registered Cameras)")) {
         try {
-            capture.error.clear(); capture.saved_path.clear(); capture.pending.clear(); capture.frames.clear();
+            capture.error.clear(); capture.saved_path.clear(); capture.saved_descriptor_ref = nullptr;
+            capture.reuse_confirmed = false; capture.pending.clear(); capture.frames.clear();
             calibration::DailyContextPlan plan;
             const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
             plan.capture_id = "native_context_" + std::to_string(getpid()) + "_" + std::to_string(ticks);
@@ -219,7 +223,23 @@ void render_daily_native_context_capture(SpatialLayoutUiState* ui, const CameraP
     if (!capture.error.empty()) ImGui::TextWrapped("Error: %s", capture.error.c_str());
     if (!capture.saved_path.empty()) {
         ImGui::TextWrapped("Context descriptor: %s", capture.saved_path.c_str());
-        ImGui::TextWrapped("This daily asset is not yet selected for any recording. The timed headless context option still captures a fresh image.");
+        ImGui::TextWrapped("This daily asset is not automatically selected for recording. Headless v2 can explicitly reuse it; v1 still captures fresh.");
+        ImGui::BeginDisabled(capture.active || recording_locked);
+        ImGui::Checkbox("Scene unchanged since this capture for the next recording", &capture.reuse_confirmed);
+        ImGui::BeginDisabled(!capture.reuse_confirmed);
+        if (ImGui::Button("Copy Headless Context Configuration")) {
+            json config = {{"schema_version", 2}, {"enabled", true}, {"timeout_ms", 10000},
+                {"worker_cpu_ids", {capture.plan.housekeeping_cpu}}, {"declaration", capture.plan.declaration},
+                {"source", {{"kind", "daily_registration"}, {"descriptor_path", capture.saved_path},
+                    {"size_bytes", capture.saved_descriptor_ref.at("size_bytes")}, {"sha256", capture.saved_descriptor_ref.at("sha256")},
+                    {"scene_unchanged_since_capture", true}}}};
+            const auto fragment = json({{"registered_scene_context", config}}).dump(2);
+            ImGui::SetClipboardText(fragment.c_str());
+            capture.reuse_confirmed = false;
+        }
+        ImGui::EndDisabled(); ImGui::EndDisabled();
+        ImGui::TextWrapped("Merge the copied field into your experiment spec's fixed object and review its declarations for each run. "
+            "This does not start recording or change media selection; prearm verifies the files, registration and camera settings.");
     }
 }
 }

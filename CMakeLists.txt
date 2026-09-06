@@ -322,7 +322,6 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/spatial_layout/calibration_workflow.cpp"
     "${SRC_DIR}/gui/spatial_layout/daily_registration_preview.cpp"
     "${SRC_DIR}/gui/spatial_layout/daily_physical_registration_preflight.cpp"
-    "${SRC_DIR}/gui/spatial_layout/daily_registration_runtime_selection.cpp"
     "${SRC_DIR}/gui/spatial_layout/daily_registration_workflow.cpp"
     "${SRC_DIR}/gui/spatial_layout/daily_native_context_capture.cpp"
     "${SRC_DIR}/gui/spatial_layout/geometry.cpp"
@@ -537,16 +536,17 @@ add_library(orange_recording_master_journal STATIC
     "${SRC_DIR}/recording_master_acquisition.cpp"
     "${SRC_DIR}/recording_master_crop_coverage.cpp"
     "${SRC_DIR}/recording_registered_context.cpp"
+    "${SRC_DIR}/recording_daily_context_reuse.cpp"
+    "${SRC_DIR}/daily_registered_context.cpp"
+    "${SRC_DIR}/gui/spatial_layout/daily_registration_runtime_selection.cpp"
     "${SRC_DIR}/spatial_roi_session_authority_store.cpp"
     "${SRC_DIR}/session/registered_scene_context_capture_declaration.cpp")
 target_include_directories(orange_recording_master_journal PUBLIC ${ORANGE_COMMON_INCLUDE_DIRS})
 target_compile_features(orange_recording_master_journal PUBLIC cxx_std_17)
 target_link_libraries(orange_recording_master_journal PUBLIC Threads::Threads)
 
-add_library(orange_daily_registered_context STATIC
-    "${SRC_DIR}/daily_registered_context.cpp"
-    "${SRC_DIR}/gui/spatial_layout/daily_registration_runtime_selection.cpp")
-target_link_libraries(orange_daily_registered_context PUBLIC orange_recording_master_journal)
+add_library(orange_daily_registered_context INTERFACE)
+target_link_libraries(orange_daily_registered_context INTERFACE orange_recording_master_journal)
 
 add_executable(orange ${ORANGE_SOURCES})
 target_link_libraries(orange PRIVATE orange_daily_registered_context)

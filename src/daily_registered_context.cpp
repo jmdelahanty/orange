@@ -20,6 +20,10 @@ void safe_id(const std::string& value) {
     require(!value.empty() && value.size() <= 128 &&
         value.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") == std::string::npos, "unsafe identity");
 }
+void exact(const json& value, std::initializer_list<const char*> keys) {
+    require(value.is_object() && value.size() == keys.size(), "unknown/missing fields");
+    for (const auto* key : keys) require(value.contains(key), "missing field");
+}
 std::set<std::string> camera_set(const json& cameras) {
     require(cameras.is_object() && !cameras.empty() && cameras.size() <= 64, "invalid camera set");
     std::set<std::string> result;
@@ -38,30 +42,23 @@ void ValidateDailyContextSelection(const json& status, const fs::path& registrat
         require(selected.insert(target.at("camera_id").get<std::string>()).second, "ambiguous selected camera");
     require(selected == camera_set(cameras), "selected runtime camera set differs from capture");
 }
-json WriteDailyRegisteredContext(const DailyContextPlan& plan, const std::vector<DailyContextFrame>& frames) {
+static void ValidatePayload(const DailyContextPlan& plan, const std::vector<DailyContextFrame>& frames, const json& registration) {
     const auto expected = camera_set(plan.cameras);
     safe_id(plan.capture_id);
-    require(plan.output_root.is_absolute() && plan.output_root.lexically_normal() == plan.output_root &&
-            plan.output_root.filename() == plan.capture_id &&
-            !plan.requested_at_utc.empty(), "invalid output root/capture identity/time");
+    require(!plan.requested_at_utc.empty(), "missing request time");
     // Reuse the closed scene declaration and strict integer/CPU admission.
     recording::RegisteredContextConfig::Parse({{"schema_version", 1}, {"enabled", true},
         {"worker_cpu_ids", {plan.housekeeping_cpu}}, {"declaration", plan.declaration}});
     ValidateDailyContextSelection(plan.runtime_before, plan.registration_path, plan.registration_sha256, plan.cameras);
     ValidateDailyContextSelection(plan.runtime_after, plan.registration_path, plan.registration_sha256, plan.cameras);
-    require(plan.registration_path.is_absolute() && fs::is_regular_file(fs::symlink_status(plan.registration_path)),
-            "accepted registration file missing or aliased");
-    ScopedFsuid guard;
-    std::string error, registration_bytes;
-    std::unique_ptr<authority::SpatialRoiSessionAuthorityStore> source_store;
-    const auto leaf = plan.registration_path.filename().string();
-    require(authority::SpatialRoiSessionAuthorityStore::OpenExisting(plan.registration_path.parent_path(), {leaf}, &source_store, &error), error);
-    const authority::SpatialRoiSessionAuthorityReceipt source_ref{leaf, fs::file_size(plan.registration_path), plan.registration_sha256};
-    require(source_store->ReadAndVerify(source_ref, &registration_bytes, nullptr, &error), error);
-    const auto registration = json::parse(registration_bytes);
+    require(plan.registration_path.is_absolute() && plan.registration_path.lexically_normal() == plan.registration_path,
+            "invalid original registration path");
+    require(plan.registration_path.string().find_first_of(std::string("\0\r\n", 3)) == std::string::npos,
+            "invalid original registration path characters");
     require(registration.at("schema_id") == "citrus.calibration.daily_registration" &&
         number(registration.at("schema_version")) == 1 && registration.at("status") == "accepted" &&
-        registration.at("registration_id").is_string() && !registration.at("registration_id").get<std::string>().empty(),
+        registration.at("registration_id").is_string() && !registration.at("registration_id").get<std::string>().empty() &&
+        registration.at("registration_id").get<std::string>().size() <= 1024 && registration.at("targets").is_array(),
         "source is not an accepted registration");
     std::set<std::string> registered;
     for (const auto& target : registration.at("targets"))
@@ -96,6 +93,22 @@ json WriteDailyRegisteredContext(const DailyContextPlan& plan, const std::vector
             number(entry.at("camera").at("height")) == static_cast<uint64_t>(source.height) && entry.at("camera").at("pixel_format") == "Mono8",
             "registered native raster mismatch");
     }
+}
+json WriteDailyRegisteredContext(const DailyContextPlan& plan, const std::vector<DailyContextFrame>& frames) {
+    require(plan.output_root.is_absolute() && plan.output_root.lexically_normal() == plan.output_root &&
+            plan.output_root.filename() == plan.capture_id, "invalid output root/capture identity");
+    require(plan.registration_path.is_absolute() && fs::is_regular_file(fs::symlink_status(plan.registration_path)),
+            "accepted registration file missing or aliased");
+    ScopedFsuid guard;
+    std::string error, registration_bytes;
+    std::unique_ptr<authority::SpatialRoiSessionAuthorityStore> source_store;
+    const auto leaf = plan.registration_path.filename().string();
+    require(authority::SpatialRoiSessionAuthorityStore::OpenExisting(plan.registration_path.parent_path(), {leaf}, &source_store, &error), error);
+    const authority::SpatialRoiSessionAuthorityReceipt source_ref{leaf, fs::file_size(plan.registration_path), plan.registration_sha256};
+    require(source_store->ReadAndVerify(source_ref, &registration_bytes, nullptr, &error), error);
+    const auto registration = json::parse(registration_bytes);
+    ValidatePayload(plan, frames, registration);
+    const auto expected = camera_set(plan.cameras);
     std::vector<std::string> allowed = {"context.json", "registration.json", "geometry.json", "runtime_before.json", "runtime_after.json"};
     for (const auto& serial : expected) allowed.push_back("Cam" + serial + "_native.raw");
     // Resolve the parent without following symlinks before creating anything;
@@ -135,5 +148,83 @@ json WriteDailyRegisteredContext(const DailyContextPlan& plan, const std::vector
         {"source_registration_path", plan.registration_path.string()}, {"registration", registration_ref.ToJson()},
         {"geometry", geometry_ref}, {"runtime_before", before_ref}, {"runtime_after", after_ref}, {"cameras", images}};
     return publish_json("context.json", descriptor);
+}
+
+DailyContextBundle ReadDailyRegisteredContext(const fs::path& directory,
+                                             const authority::SpatialRoiSessionAuthorityReceipt& descriptor_ref) {
+    require(descriptor_ref.relative_path == "context.json" && descriptor_ref.size_bytes > 0 &&
+        descriptor_ref.size_bytes <= 16 * 1024 * 1024, "invalid descriptor reference");
+    ScopedFsuid guard;
+    std::string error, bytes;
+    std::unique_ptr<authority::SpatialRoiSessionAuthorityStore> initial;
+    require(authority::SpatialRoiSessionAuthorityStore::OpenExisting(directory, {"context.json"}, &initial, &error), error);
+    require(initial->ReadAndVerify(descriptor_ref, &bytes, nullptr, &error), error);
+    DailyContextBundle bundle;
+    bundle.descriptor = json::parse(bytes);
+    bundle.files["context.json"] = std::move(bytes);
+    const auto& d = bundle.descriptor;
+    exact(d, {"schema_id", "schema_version", "capture_id", "requested_at_utc", "status", "scope", "recording_binding",
+        "coordinate_space", "camera_configuration_authority", "housekeeping_cpu", "scene_declaration", "registration_id",
+        "source_registration_path", "registration", "geometry", "runtime_before", "runtime_after", "cameras"});
+    require(d.at("schema_id") == "orange.calibration.registered_native_context" && number(d.at("schema_version")) == 1 &&
+        d.at("status") == "captured" && d.at("scope") == "daily_registration" && d.at("recording_binding") == "unbound" &&
+        d.at("coordinate_space") == "camera_native_pixels" && d.at("camera_configuration_authority") == "orange_runtime_configuration",
+        "unsupported daily context descriptor");
+    require(d.at("cameras").is_array() && !d.at("cameras").empty() && d.at("cameras").size() <= 64, "invalid descriptor cameras");
+    std::vector<std::string> allowed = {"context.json", "registration.json", "geometry.json", "runtime_before.json", "runtime_after.json"};
+    std::set<std::string> seen;
+    for (const auto& camera : d.at("cameras")) {
+        const auto serial = camera.at("camera_serial").get<std::string>(); safe_id(serial);
+        require(seen.insert(serial).second, "duplicate descriptor camera");
+        allowed.push_back("Cam" + serial + "_native.raw");
+    }
+    std::unique_ptr<authority::SpatialRoiSessionAuthorityStore> store;
+    require(authority::SpatialRoiSessionAuthorityStore::OpenExisting(directory, allowed, &store, &error), error);
+    require(initial->recording_root_identity() == store->recording_root_identity(), "source root changed during open");
+    require(store->ReadAndVerify(descriptor_ref, nullptr, nullptr, &error), error);
+    uint64_t total = 0;
+    const auto read = [&](const std::string& name, const json& ref) -> const std::string& {
+        exact(ref, {"relative_path", "size_bytes", "sha256"});
+        const auto size = number(ref.at("size_bytes"));
+        require(ref.at("relative_path") == name && size > 0 && size <= 64 * 1024 * 1024 &&
+            (total += size) <= 320 * 1024 * 1024, "invalid or excessive asset reference");
+        auto& value = bundle.files[name];
+        require(store->ReadAndVerify({name, size, ref.at("sha256").get<std::string>()}, &value, nullptr, &error), error);
+        return value;
+    };
+    const auto registration = json::parse(read("registration.json", d.at("registration")));
+    bundle.geometry = json::parse(read("geometry.json", d.at("geometry")));
+    DailyContextPlan plan;
+    plan.capture_id = d.at("capture_id").get<std::string>(); plan.requested_at_utc = d.at("requested_at_utc").get<std::string>();
+    plan.registration_path = d.at("source_registration_path").get<std::string>();
+    plan.registration_sha256 = d.at("registration").at("sha256").get<std::string>();
+    const auto cpu = number(d.at("housekeeping_cpu")); require(cpu < 1024, "invalid capture CPU");
+    plan.housekeeping_cpu = static_cast<int>(cpu); plan.declaration = d.at("scene_declaration"); plan.geometry = bundle.geometry;
+    plan.runtime_before = json::parse(read("runtime_before.json", d.at("runtime_before")));
+    plan.runtime_after = json::parse(read("runtime_after.json", d.at("runtime_after")));
+    require(d.at("registration_id") == registration.at("registration_id"), "descriptor registration identity differs");
+    std::vector<DailyContextFrame> frames;
+    for (const auto& camera : d.at("cameras")) {
+        exact(camera, {"camera_serial", "camera_configuration", "source_storage", "stride_bytes", "image", "source_frame"});
+        DailyContextFrame frame;
+        auto& source = frame.source;
+        source.camera_serial = camera.at("camera_serial").get<std::string>();
+        plan.cameras[source.camera_serial] = camera.at("camera_configuration");
+        const auto w = number(camera.at("camera_configuration").at("width")), h = number(camera.at("camera_configuration").at("height"));
+        require(w > 0 && h > 0 && w <= 64 * 1024 * 1024 && h <= 64 * 1024 * 1024 / w &&
+            number(camera.at("stride_bytes")) == w && number(camera.at("image").at("size_bytes")) == w * h, "invalid stored raster");
+        source.width = static_cast<int>(w); source.height = static_cast<int>(h);
+        const auto& f = camera.at("source_frame");
+        exact(f, {"local_frame_id", "camera_frame_id", "recording_frame_id", "camera_timestamp_ns", "timestamp_sys_ns"});
+        source.local_frame_id = number(f.at("local_frame_id")); source.camera_frame_id = number(f.at("camera_frame_id"));
+        source.recording_frame_id = number(f.at("recording_frame_id")); source.camera_timestamp_ns = number(f.at("camera_timestamp_ns"));
+        source.timestamp_sys_ns = number(f.at("timestamp_sys_ns"));
+        frame.source_storage = camera.at("source_storage").get<std::string>();
+        const auto& pixels = read("Cam" + source.camera_serial + "_native.raw", camera.at("image"));
+        source.mono8.assign(pixels.begin(), pixels.end()); frames.push_back(std::move(frame));
+    }
+    ValidatePayload(plan, frames, registration);
+    require(store->VerifyRootBinding(&error), error);
+    return bundle;
 }
 }

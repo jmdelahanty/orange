@@ -1,7 +1,8 @@
 # Daily-registration native camera context
 
 Date: 2026-09-06. Status: GUI implementation and isolated builds/tests complete;
-live GUI/camera validation and recording-time reuse are pending.
+live GUI/camera validation is pending. Timed-headless reuse is now implemented
+in the follow-up described in `daily_context_recording_reuse_2026-09-06.md`.
 Branch: `agent/acquisition/master-frame-journal-v1-20260906`.
 Implementation base: `0504b17144a516339a2cc8053c4f67da727192a5`.
 
@@ -26,6 +27,11 @@ state. This is a separate action from calibration snapshots or recording start.
 5. Wait for “Native daily context saved; no recording started.” The panel shows
    the saved `context.json` path. A new capture creates a new asset; it does not
    overwrite the previous capture or change the accepted registration.
+
+To save a headless reuse configuration after capture, confirm the scene is
+unchanged and use **Copy Headless Context Configuration**. Merge the copied field
+into the existing experiment spec's `fixed` object and review its declarations
+for the next run. This neither starts recording nor changes global app settings.
 
 The action is disabled while recording/finalizing or another calibration
 transaction is active. Its own transaction prevents recording start and camera/
@@ -118,19 +124,19 @@ a fresh pre-recording image and binds it to that recording's master owners.
 Its analytics-owned-only admission is unchanged. The daily profile's explicit
 ring-copy permission does not relax headless admission.
 
-The following interface remains planned, **not yet implemented**:
+The v2 timed-headless configuration now implements explicit fresh/daily source
+selection, verified import and a separate immutable recording-use receipt. It
+checks the saved assets, exact camera settings and selected daily geometry before
+arm. The original capture keeps its historical identity; rolling clips share
+the parent-level imported copy. See `daily_context_recording_reuse_2026-09-06.md`.
+
+The following broader interface remains planned, **not yet implemented**:
 
 - Recording media choice: full frame; full frame plus moving crops; or context
   image plus moving crops only. Established full-frame/split-GOP and supported
   single-subject moving/lossless crops remain first-class modes.
-- Context source: fresh capture, or an explicitly selected daily `context.json`.
-- Reuse admission: verify all stored bytes, exact registration, camera set,
-  native raster and camera settings; require renewed fixed-scene confirmation.
-  Never silently select an old image based only on date or filename.
-- Copy the selected asset into the parent recording envelope with a separate
-  recording-use receipt referencing its original capture identity/digest. Do
-  not rewrite its historical timestamps or pretend it came from the current
-  recording's producer. Rolling clips share that parent-level reference.
+- GUI recording-time source selection/import (the GUI currently captures the
+  daily asset and exports a headless configuration, not GUI-arm reuse).
 - Finish media selection, crop-only supervision/finalization, and actual
   returned-frame/packet/container/decode/hash reconciliation before enabling
   moving-crops-only completion. A context asset alone does not close those gates.
@@ -155,7 +161,8 @@ No visual overview generation is added; that remains downstream work.
 - [ ] Live guided-registration GUI capture with detection on and off, including
       closing the panel while pending and confirming recording remains stopped.
 - [ ] Full JSON Schema-engine validation and downstream contract acceptance.
-- [ ] Saved-daily-context selection/import and immutable recording-use binding.
+- [x] Timed-headless saved-daily-context selection/import and immutable
+      recording-use binding; follow-up validation is documented separately.
 - [ ] Moving-crops-only selector, supervision/finalization and encoded-media proof.
 
 See `docs/registered_context_headless_capture_2026-09-06.md` and Citrus

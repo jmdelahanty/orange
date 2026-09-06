@@ -39,8 +39,8 @@ struct Fixture {
                     {"camera", {{"width", 8}, {"height", 4}, {"pixel_format", "Mono8"}}}}}}}};
     }
     ~Fixture() { std::error_code ec; fs::remove_all(root, ec); }
-    void Prepare() {
-        contexts.Prepare(config(), root, cameras, geometry); start = contexts.StartEvidence();
+    void Prepare(const RegisteredContextConfig& context_config = config()) {
+        contexts.Prepare(context_config, root, cameras, geometry); start = contexts.StartEvidence();
         json masters = json::array();
         for (const auto& c : cameras) masters.push_back({{"camera_serial", c.serial}, {"recording_id", root.filename().string()},
             {"producer_instance_id", c.producer_instance_id}, {"stream_generation", c.stream_generation}});
@@ -97,6 +97,16 @@ void lifecycle() {
     fs::rename(f.root / "Cam02010093_registered_context.raw", f.root / "original.raw");
     std::ofstream altered(f.root / "Cam02010093_registered_context.raw"); altered << "changed"; altered.close();
     check(f.Parent()["status"] == "failed", "mutable refresh bypassed changed required image");
+    Fixture v2; auto v2_config = config(); v2_config.schema_version = 2;
+    v2.Prepare(v2_config); v2.contexts.Accept(v2.frame(0)); v2.contexts.Accept(v2.frame(1));
+    json snapshot; { std::ifstream in(v2.root / "recording_snapshot_start.json"); in >> snapshot; }
+    auto& cfg = snapshot["session"]["registered_scene_context"]["config"];
+    check(cfg.at("schema_version") == 2 && cfg.at("source").at("kind") == "fresh_capture", "v2 fresh source not persisted");
+    check(v2.Parent()["status"] == "completed", "v2 explicit fresh configuration refused");
+    cfg["source"] = {{"kind", "daily_registration"}, {"descriptor_path", "/a/context.json"},
+        {"size_bytes", 1}, {"sha256", "sha256:" + std::string(64, 'a')}, {"scene_unchanged_since_capture", true}};
+    put(v2.root / "recording_snapshot_start.json", snapshot);
+    check(v2.Parent()["status"] == "failed", "fresh evidence accepted a reuse configuration without reuse proof");
 }
 void geometry_and_source_refusal() {
     for (int test = 0; test < 5; ++test) {

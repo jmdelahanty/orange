@@ -22,4 +22,13 @@ void ValidateDailyContextSelection(const nlohmann::json& status,
                                   const std::filesystem::path& registration,
                                   const std::string& sha256,
                                   const nlohmann::json& cameras);
+// Verified exact-byte bundle; usable after the original calibration directory
+// disappears. Never assigns the capture to the current recording's producer.
+struct DailyContextBundle {
+    nlohmann::json descriptor, geometry;
+    std::map<std::string, std::string> files;
+};
+DailyContextBundle ReadDailyRegisteredContext(
+    const std::filesystem::path& directory,
+    const session::spatial_roi::SpatialRoiSessionAuthorityReceipt& descriptor);
 }

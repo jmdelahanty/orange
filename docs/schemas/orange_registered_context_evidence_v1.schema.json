@@ -41,7 +41,15 @@
         "config": {
           "allOf": [
             {
-              "$ref": "orange_registered_context_config_v1.schema.json"
+              "oneOf": [
+                { "$ref": "orange_registered_context_config_v1.schema.json" },
+                {
+                  "allOf": [
+                    { "$ref": "orange_registered_context_config_v2.schema.json" },
+                    { "properties": { "source": { "properties": { "kind": { "const": "fresh_capture" } } } } }
+                  ]
+                }
+              ]
             },
             {
               "properties": {

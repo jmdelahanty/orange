@@ -1,6 +1,8 @@
 #include <algorithm>
 #include "recording_master_crop_coverage.h"
 #include "headless_registered_context.h"
+#include "registered_context_camera_configuration.h"
+#include "scoped_housekeeping_cpu.h"
 #include <atomic>
 #include <array>
 #include <chrono>
@@ -5115,10 +5117,17 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                         throw std::runtime_error("registered context requires a master-bound Mono8 camera");
                     bindings.push_back({cameras_params[idx].camera_serial, master->ProducerInstanceId(),
                         static_cast<uint64_t>(cameras_params[idx].camera_id), master->StreamGeneration(),
-                        static_cast<int>(cameras_params[idx].width), static_cast<int>(cameras_params[idx].height)});
+                        static_cast<int>(cameras_params[idx].width), static_cast<int>(cameras_params[idx].height),
+                        orange::recording::RegisteredContextCameraConfiguration(cameras_params[idx])});
                 }
-                registered_context->evidence.Prepare(context_config, record_folder, bindings, headless_recording_geometry_contract);
-                for (std::size_t c = 0; c < selected_indices.size(); ++c) {
+                {
+                    // Before acquisition starts: import/hash on an explicit
+                    // housekeeping CPU, then restore the control-thread mask.
+                    orange::ScopedHousekeepingCpu affinity(context_config.ReusesDailyContext() ? context_config.worker_cpu_ids.front() : -1);
+                    registered_context->evidence.Prepare(context_config, record_folder, bindings, headless_recording_geometry_contract);
+                    affinity.Restore();
+                }
+                for (std::size_t c = 0; !context_config.ReusesDailyContext() && c < selected_indices.size(); ++c) {
                     const int idx = selected_indices[c];
                     registered_context->AddCamera(idx, &cameras_params[idx], *camera_resources[idx].recycle_queue,
                         context_config.worker_cpu_ids[c % context_config.worker_cpu_ids.size()]);

@@ -30,7 +30,13 @@ def main():
              ("unknown_subject", {}, True), ("disabled", {"enabled": False}, True),
              ("no_master", {}, False), ("no_yolo", {}, False), ("decimated", {}, False),
              ("synthetic", {}, False), ("no_declaration", {}, False), ("diagnostic", {}, False),
-             ("moving_rig", {}, False), ("declaration_extension", {}, False)]
+             ("moving_rig", {}, False), ("declaration_extension", {}, False),
+             ("v2_fresh", {}, True), ("reuse", {}, True), ("reuse_rolling", {}, True)]
+    cases.extend((name, {}, False) for name in (
+        "reuse_changed_scene", "reuse_no_confirmation", "reuse_bad_sha", "reuse_no_sha",
+        "reuse_bad_size", "reuse_bool_size", "reuse_relative_path", "reuse_wrong_leaf",
+        "reuse_parent_path", "reuse_unknown_source", "reuse_source_extension", "v1_source",
+        "v2_no_source", "reuse_no_cpu", "reuse_no_declaration", "reuse_no_master"))
     cases.extend((name, update, False) for name, update in [
         ("no_cpu", {"worker_cpu_ids": []}), ("duplicate_cpu", {"worker_cpu_ids": [0, 0]}),
         ("bool_cpu", {"worker_cpu_ids": [True]}), ("bool_version", {"schema_version": True}),
@@ -47,6 +53,43 @@ def main():
             context.update(update)
             fixed["registered_scene_context"] = context
             fixed["output_root"] = str(directory / "must_not_be_created")
+            if name.startswith("reuse") or name == "v2_fresh":
+                context["schema_version"] = 2
+                context["source"] = {"kind": "fresh_capture"} if name == "v2_fresh" else {
+                    "kind": "daily_registration", "descriptor_path": str(directory / "daily" / "context.json"),
+                    "size_bytes": 1024, "sha256": "sha256:" + "a" * 64, "scene_unchanged_since_capture": True}
+            if name == "reuse_rolling":
+                fixed["recording_control"]["clip_seconds"] = 10
+            if name == "reuse_changed_scene":
+                context["source"]["scene_unchanged_since_capture"] = False
+            if name == "reuse_no_confirmation":
+                context["source"].pop("scene_unchanged_since_capture")
+            if name == "reuse_bad_sha":
+                context["source"]["sha256"] = "sha256:unknown"
+            if name == "reuse_no_sha":
+                context["source"].pop("sha256")
+            if name in ("reuse_bad_size", "reuse_bool_size"):
+                context["source"]["size_bytes"] = True if name == "reuse_bool_size" else 0
+            if name == "reuse_relative_path":
+                context["source"]["descriptor_path"] = "daily/context.json"
+            if name == "reuse_wrong_leaf":
+                context["source"]["descriptor_path"] = str(directory / "wrong.json")
+            if name == "reuse_parent_path":
+                context["source"]["descriptor_path"] = str(directory) + "/daily/../context.json"
+            if name == "reuse_unknown_source":
+                context["source"]["kind"] = "latest_image"
+            if name == "reuse_source_extension":
+                context["source"]["typo"] = True
+            if name == "v1_source":
+                context["source"] = {"kind": "fresh_capture"}
+            if name == "v2_no_source":
+                context["schema_version"] = 2
+            if name == "reuse_no_cpu":
+                context["worker_cpu_ids"] = []
+            if name == "reuse_no_declaration":
+                context.pop("declaration")
+            if name == "reuse_no_master":
+                fixed.pop("master_frame_journal")
             if name == "rolling":
                 fixed["recording_control"]["clip_seconds"] = 10
             if name == "absent":

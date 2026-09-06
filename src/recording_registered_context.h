@@ -10,10 +10,13 @@
 namespace orange::recording {
 
 struct RegisteredContextConfig {
+    int schema_version = 1;
     bool enabled = false;
     int timeout_ms = 10000;
     std::vector<int> worker_cpu_ids;
     session::spatial_roi::RegisteredSceneContextCaptureDeclaration declaration;
+    nlohmann::json source = {{"kind", "fresh_capture"}};
+    bool ReusesDailyContext() const { return source.at("kind") == "daily_registration"; }
     static RegisteredContextConfig Parse(const nlohmann::json& value);
     nlohmann::json ToJson() const;
 };
@@ -24,6 +27,7 @@ struct RegisteredContextCamera {
     std::string serial, producer_instance_id;
     uint64_t camera_id = 0, stream_generation = 0;
     int width = 0, height = 0;
+    nlohmann::json camera_configuration = nlohmann::json::object();
 };
 struct RegisteredContextFrame {
     std::string camera_serial;
@@ -50,6 +54,7 @@ private:
     std::unique_ptr<session::spatial_roi::SpatialRoiSessionAuthorityStore> store_;
     session::spatial_roi::SpatialRoiSessionAuthorityReceipt geometry_;
     nlohmann::json bindings_ = nlohmann::json::array();
+    nlohmann::json reused_evidence_;
     std::map<std::string, bool> captured_;
 };
 
