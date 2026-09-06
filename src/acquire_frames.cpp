@@ -1,6 +1,7 @@
 // src/acquire_frames.cpp
 
 #include "acquire_frames.h"
+#include "ptp_readback_evidence.h"
 #include "nvtx_profiling.h"
 #include "NvEncoder/NvCodecUtils.h"
 #include "image_processing.h"
@@ -1230,7 +1231,7 @@ void acquire_frames(
     std::string ptp_status_last;
     uint64_t ptp_status_samples = 0;
     uint64_t ptp_status_changes = 0;
-    nlohmann::json ptp_readback_observations = nlohmann::json::array();
+    orange::PtpReadbackEvidence ptp_readback_evidence;
     std::string ptp_summary_recording_folder;
     StopWatch w;
     auto last_fps_update_time = std::chrono::steady_clock::now();
@@ -1330,7 +1331,7 @@ void acquire_frames(
         ptp_status_last.clear();
         ptp_status_samples = 0;
         ptp_status_changes = 0;
-        ptp_readback_observations = nlohmann::json::array();
+        ptp_readback_evidence.reset();
     };
 
     auto sample_ptp_enum_readback = [](Emergent::CEmergentCamera* camera,
@@ -1359,6 +1360,7 @@ void acquire_frames(
     };
 
     auto sample_ptp_readbacks = [&]() {
+        if (ptp_readback_evidence.closed()) return;
         const uint64_t mode_samples_before = ptp_mode_samples;
         const uint64_t status_samples_before = ptp_status_samples;
         sample_ptp_enum_readback(
@@ -1375,46 +1377,20 @@ void acquire_frames(
             &ptp_status_last,
             &ptp_status_samples,
             &ptp_status_changes);
-        if (ptp_mode_samples != mode_samples_before ||
-            ptp_status_samples != status_samples_before) {
-            const nlohmann::json mode = ptp_mode_samples > 0
-                ? nlohmann::json(ptp_mode_last) : nlohmann::json(nullptr);
-            const nlohmann::json status = ptp_status_samples > 0
-                ? nlohmann::json(ptp_status_last) : nlohmann::json(nullptr);
-            const std::string sampled_at_utc = get_current_utc_timestamp();
-            const bool same_state = !ptp_readback_observations.empty() &&
-                ptp_readback_observations.back().value("ptp_mode", nlohmann::json(nullptr)) == mode &&
-                ptp_readback_observations.back().value("ptp_status", nlohmann::json(nullptr)) == status;
-            if (same_state) {
-                nlohmann::json& observation = ptp_readback_observations.back();
-                observation["sampled_at_utc"] = sampled_at_utc;
-                observation["last_sampled_at_utc"] = sampled_at_utc;
-                observation["last_local_frame_id"] = camera_state.frame_count;
-                observation["last_recording_frame_id"] = last_recording_frame_count;
-                observation["samples"] = observation.value("samples", 0ULL) + 1;
-            } else {
-                ptp_readback_observations.push_back({
-                    {"sampled_at_utc", sampled_at_utc},
-                    {"first_sampled_at_utc", sampled_at_utc},
-                    {"last_sampled_at_utc", sampled_at_utc},
-                    {"local_frame_id", camera_state.frame_count},
-                    {"recording_frame_id", last_recording_frame_count},
-                    {"first_local_frame_id", camera_state.frame_count},
-                    {"last_local_frame_id", camera_state.frame_count},
-                    {"first_recording_frame_id", last_recording_frame_count},
-                    {"last_recording_frame_id", last_recording_frame_count},
-                    {"samples", 1},
-                    {"ptp_mode", mode},
-                    {"ptp_status", status}
-                });
-            }
-        }
+        // A failed read is unknown for this observation, not the previous
+        // successful value. No additional SDK calls or per-frame polling.
+        ptp_readback_evidence.observe(
+            ptp_mode_samples != mode_samples_before
+                ? std::optional<std::string>(ptp_mode_last) : std::nullopt,
+            ptp_status_samples != status_samples_before
+                ? std::optional<std::string>(ptp_status_last) : std::nullopt,
+            camera_state.frame_count, get_current_utc_timestamp(), steady_clock_now_ns());
     };
 
     auto build_ptp_camera_summary_json = [&](bool finalized) {
         nlohmann::json summary = nlohmann::json::object();
         const uint64_t acquisition_frames = camera_state.frame_count;
-        const uint64_t recording_frames_assigned = last_recording_frame_count;
+        const uint64_t recording_frames_assigned = ptp_readback_evidence.last_recording_frame_id();
         const RecordingIngressStats recording_stats =
             recording_ingress ? recording_ingress->GetStats() : RecordingIngressStats{};
         summary["camera_serial"] = camera_params->camera_serial;
@@ -1500,7 +1476,8 @@ void acquire_frames(
             {"last", ptp_status_samples > 0 ? nlohmann::json(ptp_status_last) : nlohmann::json(nullptr)},
             {"changes", ptp_status_changes}
         };
-        summary["ptp_readback_observations"] = ptp_readback_observations;
+        summary["ptp_readback_observations"] = ptp_readback_evidence.observations();
+        summary["ptp_readback_coverage"] = ptp_readback_evidence.coverage();
         const uint64_t delta_samples = (camera_state.frame_count > 1) ? (camera_state.frame_count - 1) : 0;
         summary["delta_samples"] = delta_samples;
         summary["latch_delta_samples"] = ptp_state.ptp_time_delta_samples;
@@ -1873,7 +1850,7 @@ void acquire_frames(
                     ptp_state.pending_register_latch_frame_index);
                 const uint64_t latch_end_ns = steady_clock_now_ns();
                 ptp_latch_ns = latch_end_ns > latch_start_ns ? latch_end_ns - latch_start_ns : 0;
-                if (!ptp_summary_recording_folder.empty()) {
+                if (!ptp_summary_recording_folder.empty() && !ptp_readback_evidence.closed()) {
                     const int64_t latch_minus_frame_ns =
                         static_cast<int64_t>(ptp_state.ptp_time) -
                         static_cast<int64_t>(ptp_state.frame_ts);
@@ -2036,7 +2013,18 @@ void acquire_frames(
                 ptp_summary_recording_folder = live_recording_folder;
                 reset_ptp_summary_stats();
                 if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera) {
+                    ptp_readback_evidence.recorded_frame(current_entry->recording_frame_id);
                     sample_ptp_readbacks();
+                }
+            }
+            if (!ptp_summary_recording_folder.empty()) {
+                ptp_readback_evidence.recorded_frame(current_entry->recording_frame_id);
+                if (ptp_readback_evidence.finish_if_stopped(camera_control->record_video,
+                        camera_control->preserve_recording_session_state)) {
+                    if (camera_control->sync_camera) {
+                        update_ptp_sync_summary_camera(ptp_summary_recording_folder,
+                            camera_params->camera_serial, build_ptp_camera_summary_json(true));
+                    }
                 }
             }
 
@@ -2264,7 +2252,8 @@ void acquire_frames(
             current_entry->detections_ready.store(false);
             current_entry->ipc_frame_id = 0;
 
-            if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera) {
+            if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera &&
+                !ptp_readback_evidence.closed()) {
                 if (current_entry->recording_frame_id > 0) {
                     recording_camera_minus_realtime_stats.add(
                         static_cast<int64_t>(current_entry->timestamp) -
@@ -2742,7 +2731,7 @@ void acquire_frames(
                             : 0;
                     int32_t current_ptp_offset = 0;
                     EVT_ERROR ptp_offset_ret = EVT_CameraGetInt32Param(&ecam->camera, "PtpOffset", &current_ptp_offset);
-                    if (ptp_offset_ret == EVT_SUCCESS) {
+                    if (ptp_offset_ret == EVT_SUCCESS && !ptp_readback_evidence.closed()) {
                         ptp_offset_stats.add(current_ptp_offset);
                     }
                     sample_ptp_readbacks();
@@ -2750,7 +2739,7 @@ void acquire_frames(
                         update_ptp_sync_summary_camera(
                             ptp_summary_recording_folder,
                             camera_params->camera_serial,
-                            build_ptp_camera_summary_json(false));
+                            build_ptp_camera_summary_json(ptp_readback_evidence.closed()));
                     }
                     if (ptp_offset_ret == EVT_SUCCESS) {
                         std::cout << "[PTP_LIVE] Cam " << camera_params->camera_serial

@@ -594,6 +594,15 @@ if(BUILD_TESTING)
     target_compile_features(recording_output_descriptor_tests PRIVATE cxx_std_17)
     add_test(NAME recording_output_descriptor_tests COMMAND recording_output_descriptor_tests)
 
+    add_executable(recording_timing_evidence_tests "tools/recording_timing_evidence_tests.cpp")
+    target_include_directories(recording_timing_evidence_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(recording_timing_evidence_tests PRIVATE cxx_std_17)
+    add_test(NAME recording_timing_evidence_tests COMMAND recording_timing_evidence_tests)
+    add_executable(rolling_metadata_projection_tests "tools/rolling_metadata_projection_tests.cpp")
+    target_include_directories(rolling_metadata_projection_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(rolling_metadata_projection_tests PRIVATE cxx_std_17)
+    add_test(NAME rolling_metadata_projection_tests COMMAND rolling_metadata_projection_tests)
+
     add_executable(acquisition_index_authority_tests
         "tools/acquisition_index_authority_tests.cpp"
         "${SRC_DIR}/session/acquisition_index_authority.cpp"

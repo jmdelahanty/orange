@@ -3,6 +3,8 @@
 #include "NvEncoder/Logger.h"
 #include "gui/spatial_layout/sha256.h"
 #include "shaman_v2_recording_identity.h"
+#include "recording_metadata_csv.h"
+#include "ptp_readback_evidence.h"
 
 #include <cstdlib>
 #include <filesystem>
@@ -1248,6 +1250,166 @@ void test_manifest_binds_shaman_v2_recording_identity_to_session_id()
     std::filesystem::remove_all(folder);
 }
 
+void test_native_metadata_seals_without_changing_v1_contract()
+{
+    const auto folder = std::filesystem::temp_directory_path() /
+        ("orange_native_alias_" + std::to_string(::getpid()));
+    std::filesystem::create_directories(folder);
+    {
+        std::ofstream csv(folder / "Cam2010096_meta.csv");
+        orange::recording_metadata::write_header(csv);
+        orange::recording_metadata::write_row(csv, 1, 1787695084226944090ULL, 1787695047236290646ULL);
+        orange::recording_metadata::write_row(csv, 2, 1787695084236944095ULL, 1787695047246090354ULL);
+    }
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.session_id = "native_alias";
+    options.recording_folder = folder.string();
+    options.status = "completed";
+    options.cameras.push_back(make_camera_artifact("2010096", 2));
+    const auto path = folder / "recording_session.json";
+    std::string error;
+    require(orange::session::write_recording_session_manifest(path.string(),
+        orange::session::build_single_clip_recording_session_manifest(options), &error), error);
+    auto manifest = read_json(path);
+    require(manifest["acquisition_index_mapping"]["schema_version"] == 1 &&
+            manifest["acquisition_index_mapping"]["status"] == "finalized",
+            "native writer bytes must seal through unchanged mapping v1");
+    orange::session::AcquisitionIndexAuthority authority;
+    require(orange::session::resolve_acquisition_index_authority(
+        manifest, path, "2010096", &authority, &error), error);
+    std::int64_t index = -1;
+    require(authority.recording_frame_id_to_source_acquisition_index(2, &index, &error) && index == 1,
+            "native source conversion must agree with external whole convention");
+    std::filesystem::remove_all(folder);
+}
+
+void test_clock_classification_requires_closed_successful_readbacks()
+{
+    const auto folder = std::filesystem::temp_directory_path() /
+        ("orange_clock_readback_closure_" + std::to_string(::getpid()));
+    std::filesystem::create_directories(folder);
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.session_id = "clock_readback_closure";
+    options.recording_folder = folder.string();
+    options.status = "completed";
+    options.cameras.push_back(make_camera_artifact("2010096", 2));
+    const auto path = folder / "recording_session.json";
+    for (int scenario = 0; scenario < 4; ++scenario) {
+        auto evidence = make_locked_camera_ptp_evidence(2);
+        orange::PtpReadbackEvidence samples;
+        samples.recorded_frame(1);
+        samples.observe("TwoStep", "Slave", 90919, "first", 100);
+        samples.recorded_frame(2);
+        samples.observe("TwoStep", scenario == 2 ? std::nullopt : std::optional<std::string>("Slave"),
+                        90920, "second", 200);
+        evidence["ptp_readback_coverage"] = samples.coverage();
+        if (scenario == 1) evidence["finalized"] = false;
+        if (scenario == 3) evidence["ptp_readback_coverage"]["omitted_observations"] = 1;
+        {
+            std::ofstream summary(folder / "ptp_sync_summary.json");
+            summary << nlohmann::json{{"sync", {{"camera_sync_enabled", true}, {"mode", "ptp_local"}}},
+                {"cameras", {{"2010096", evidence}}}}.dump();
+        }
+        std::string error;
+        require(orange::session::write_recording_session_manifest(path.string(),
+            orange::session::build_single_clip_recording_session_manifest(options), &error), error);
+        const auto contract = read_json(path)["timestamp_clock_contract"];
+        require(contract["clocks"]["camera_2010096"]["classification"] ==
+                    (scenario == 0 ? "ieee1588_tai" : "device_defined"),
+                "unfinished/failed/omitted readbacks cannot promote the clock classification");
+        require(contract["clocks"]["host_realtime"]["sample_event"] ==
+                    "after_EVT_CameraGetFrame_and_optional_inline_PTP_check_before_fanout",
+                "host sampling description must match inline and deferred latch modes");
+    }
+    std::filesystem::remove_all(folder);
+}
+
+void test_native_rolling_projection_opt_in_seals_existing_v1_authority()
+{
+    const auto folder = std::filesystem::temp_directory_path() /
+        ("orange_native_rolling_projection_" + std::to_string(::getpid()));
+    std::filesystem::create_directories(folder);
+    orange::session::RollingRecordingSessionManifestOptions options;
+    options.session_id = "native_rolling_projection";
+    options.recording_folder = folder.string();
+    options.status = "completed";
+    options.recording_drain_completed = true;
+    options.camera_serials = {"2010096"};
+    for (int i = 0; i < 2; ++i) {
+        orange::session::RollingClipManifestOptions clip;
+        clip.session_id = options.session_id;
+        clip.clip_index = i;
+        clip.clip_id = "clip_" + std::to_string(i);
+        clip.directory = "clips/" + clip.clip_id;
+        clip.recording_folder = folder.string();
+        clip.status = "completed";
+        clip.drain_completed = true;
+        clip.final_clip = i == 1;
+        const int first = i == 0 ? 1 : 3, last = i == 0 ? 2 : 3;
+        auto artifact = make_camera_artifact("2010096", last - first + 1);
+        artifact.first_recording_frame_id = first;
+        artifact.last_recording_frame_id = last;
+        artifact.metadata_path = clip.directory + "/Cam2010096_meta.csv";
+        artifact.video_path = clip.directory + "/Cam2010096.mp4";
+        std::filesystem::create_directories(folder / clip.directory);
+        {
+            std::ofstream csv(folder / artifact.metadata_path);
+            orange::recording_metadata::write_header(csv);
+            for (int frame = first; frame <= last; ++frame)
+                orange::recording_metadata::write_row(csv, frame, 1000 + frame, 2000 + frame);
+            std::ofstream(folder / artifact.video_path) << "declared-parity fixture only";
+        }
+        clip.cameras.push_back(artifact);
+        options.clips.push_back(clip);
+    }
+    struct RestoreEnv {
+        std::optional<std::string> prior;
+        RestoreEnv() {
+            if (const char* value = std::getenv("ORANGE_ROLLING_ACQUISITION_PROJECTION_V1")) prior = value;
+        }
+        ~RestoreEnv() {
+            if (prior) ::setenv("ORANGE_ROLLING_ACQUISITION_PROJECTION_V1", prior->c_str(), 1);
+            else ::unsetenv("ORANGE_ROLLING_ACQUISITION_PROJECTION_V1");
+        }
+    } restore;
+    const auto path = folder / "recording_session.json";
+    const auto original = orange::session::build_rolling_clip_recording_session_manifest(options);
+    std::string error;
+    ::unsetenv("ORANGE_ROLLING_ACQUISITION_PROJECTION_V1");
+    require(orange::session::write_recording_session_manifest(path.string(), original, &error), error);
+    require(read_json(path)["acquisition_index_mapping"]["status"] == "unsealed",
+            "default rolling mode must not silently enable the projection profile");
+    ::setenv("ORANGE_ROLLING_ACQUISITION_PROJECTION_V1", "1", 1);
+    require(orange::session::write_recording_session_manifest(path.string(), original, &error), error);
+    auto manifest = read_json(path);
+    require(manifest["acquisition_index_mapping"]["status"] == "finalized",
+            "opt-in native rolling must seal with unchanged v1 mapping keys");
+    orange::session::AcquisitionIndexAuthority authority;
+    require(orange::session::resolve_acquisition_index_authority(manifest, path,
+        "2010096", &authority, &error), error);
+    std::int64_t index = -1;
+    require(authority.recording_frame_id_to_source_acquisition_index(3, &index, &error) && index == 2,
+            "partial last clip must map into the parent acquisition domain");
+    const auto projection = manifest["rolling_metadata_projection"];
+    require(orange::session::write_recording_session_manifest(path.string(), manifest, &error), error);
+    require(read_json(path)["rolling_metadata_projection"] == projection,
+            "sealed source generation must not be reprojected on later manifest writes");
+    // A failed new projection must not silently seal from an older, still
+    // readable parent metadata artifact. No source evidence is removed.
+    auto failed_retry = original;
+    failed_retry["camera_artifacts"] = manifest["camera_artifacts"];
+    failed_retry["clips"][1]["drain_completed"] = false;
+    require(orange::session::write_recording_session_manifest(path.string(), failed_retry, &error), error);
+    const auto rejected = read_json(path);
+    require(rejected["rolling_metadata_projection"]["status"] == "unsealed" &&
+            rejected["acquisition_index_mapping"]["status"] == "unsealed" &&
+            !rejected.contains("acquisition_index_mapping_sha256"),
+            "failed projection must not seal from a pre-existing aggregate CSV");
+    require(rejected["camera_artifacts"] == manifest["camera_artifacts"],
+            "failed projection must preserve original source evidence");
+    std::filesystem::remove_all(folder);
+}
+
 }  // namespace
 
 int main()
@@ -1258,6 +1420,9 @@ int main()
     };
 
     const TestCase tests[] = {
+        {"native_rolling_projection_opt_in_seals_existing_v1_authority", test_native_rolling_projection_opt_in_seals_existing_v1_authority},
+        {"native_metadata_seals_without_changing_v1_contract", test_native_metadata_seals_without_changing_v1_contract},
+        {"clock_classification_requires_closed_successful_readbacks", test_clock_classification_requires_closed_successful_readbacks},
         {"single_clip_manifest_preserves_full_and_crop_outputs",
          test_single_clip_manifest_preserves_full_and_crop_outputs},
         {"rolling_manifest_emits_session_aggregate_and_clip_crop_outputs",

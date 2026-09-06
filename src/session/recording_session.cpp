@@ -27,6 +27,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include "session/rolling_metadata_projection.h"
 #include <thread>
 #include <utility>
 
@@ -1465,8 +1466,15 @@ nlohmann::json build_camera_clock_descriptor(
     const bool ptp_readbacks_stable =
         readback_is_stable_and_enabled(ptp_mode_readback, true) &&
         readback_is_stable_and_enabled(ptp_status_readback, false);
+    const nlohmann::json readback_coverage = camera_evidence.value(
+        "ptp_readback_coverage", nlohmann::json::object());
+    const bool sampled_readbacks_complete = readback_coverage.empty() ||
+        (readback_coverage.value("mode_read_failures", 0ULL) == 0 &&
+         readback_coverage.value("status_read_failures", 0ULL) == 0 &&
+         readback_coverage.value("omitted_observations", 0ULL) == 0);
     const bool base_camera_ptp_evidence =
-        session_ptp_enabled && camera_ptp_enabled && camera_evidence_available &&
+        session_ptp_enabled && camera_ptp_enabled && source_summary_finalized &&
+        sampled_readbacks_complete && camera_evidence_available &&
         ptp_offset_bounded && latch_agreement && camera_realtime_offset_matches &&
         ptp_readbacks_stable;
     const bool direct_tai =
@@ -1514,7 +1522,7 @@ nlohmann::json build_camera_clock_descriptor(
             {"timescale", classified_ptp ? semantic_authority : "unspecified"}
         }},
         {"inference", {
-            {"rule_id", "orange_camera_clock_classification_v2"},
+            {"rule_id", "orange_camera_clock_classification_v3"},
             {"result", direct_tai
                 ? "direct_ptp_time_properties_pass"
                 : (inferred_tai
@@ -1532,6 +1540,7 @@ nlohmann::json build_camera_clock_descriptor(
                 {"latch_agreement", latch_agreement},
                 {"camera_minus_realtime_matches", camera_realtime_offset_matches},
                 {"ptp_readbacks_stable", ptp_readbacks_stable},
+                {"sampled_readbacks_complete", sampled_readbacks_complete},
                 {"host_management_evidence_available", host_management_available},
                 {"host_ptp_timescale", host_ptp_timescale},
                 {"host_current_utc_offset_valid", host_utc_offset_valid}
@@ -1552,6 +1561,7 @@ nlohmann::json build_camera_clock_descriptor(
             {"recording_camera_minus_realtime_ns", camera_minus_realtime},
             {"ptp_mode_readback", ptp_mode_readback},
             {"ptp_status_readback", ptp_status_readback},
+            {"ptp_readback_coverage", readback_coverage},
             {"host_ptp_management_evidence", host_ptp_evidence_snapshot},
             {"ptp_readback_observations", camera_evidence.value(
                 "ptp_readback_observations", nlohmann::json::array())}
@@ -1993,6 +2003,13 @@ bool add_acquisition_index_mapping_contract(
         root_reason = "missing_recording_id";
     } else if (!finalized_frame_identity) {
         root_reason = "frame_identity_contract_unavailable";
+    } else if (manifest->value("mode", "") == "rolling_clips" &&
+               manifest->contains("rolling_metadata_projection") &&
+               manifest->at("rolling_metadata_projection").value("status", "") != "finalized") {
+        // A failed projection cannot fall back to an old aggregate CSV that
+        // happens to remain in camera_artifacts. Keep the source evidence, but
+        // explicitly withhold a new acquisition authority seal.
+        root_reason = "rolling_metadata_projection_unsealed";
     } else if (!cameras.is_array() || cameras.empty() || !camera_artifacts.is_object()) {
         root_reason = "missing_camera_streams";
     } else if (has_duplicate_camera_serials(cameras)) {
@@ -2212,7 +2229,7 @@ void add_finalized_timestamp_clock_contract(
                 {"clock_domain", "host_system_realtime"},
                 {"source_field", "clock_gettime(CLOCK_REALTIME)"},
                 {"producer", "orange_acquisition"},
-                {"sample_event", "immediately_after_EVT_CameraGetFrame_returns"},
+                {"sample_event", "after_EVT_CameraGetFrame_and_optional_inline_PTP_check_before_fanout"},
                 {"semantic_authority", "producer_declared"},
                 {"monotonic", false},
                 {"recording_relative", false}
@@ -2743,6 +2760,24 @@ bool write_recording_session_manifest(const std::string& path,
     if (!add_finalized_frame_identity_contract(
             &finalized_manifest, manifest_path, error_out)) {
         return false;
+    }
+    // Explicit opt-in until the projection profile is reviewed by both v1
+    // consumers. Existing whole mappings and already sealed generations stay
+    // byte-for-byte unchanged; no acquisition hot-path work is introduced.
+    if (env_flag_enabled("ORANGE_ROLLING_ACQUISITION_PROJECTION_V1") &&
+        finalized_manifest.value("mode", "") == "rolling_clips" &&
+        finalized_manifest.value("status", "") == "completed" &&
+        !finalized_manifest.contains("acquisition_index_mapping_sha256")) {
+        try {
+            finalized_manifest = project_dense_rolling_metadata(finalized_manifest, manifest_path);
+        } catch (const std::exception& error) {
+            // Native recording validity is independent of eligibility for the
+            // dense acquisition profile. Retain the original clip evidence.
+            finalized_manifest["rolling_metadata_projection"] = {
+                {"schema_id", "orange.recording.rolling_metadata_projection"},
+                {"schema_version", 1}, {"status", "unsealed"}, {"reason", error.what()}};
+            finalized_manifest.erase("rolling_metadata_projection_sha256");
+        }
     }
     if (!add_acquisition_index_mapping_contract(
             &finalized_manifest, manifest_path, error_out)) {

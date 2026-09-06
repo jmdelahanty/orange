@@ -1,4 +1,5 @@
 #include "shared_recording_output.h"
+#include "recording_metadata_csv.h"
 
 #include <algorithm>
 #include <iostream>
@@ -43,7 +44,7 @@ void initialize_writer_locked(Writer* writer,
         writer->metadata = nullptr;
         throw std::runtime_error("Failed to open recording metadata file");
     }
-    *writer->metadata << "frame_id,timestamp,timestamp_sys\n";
+    orange::recording_metadata::write_header(*writer->metadata);
     writer->video->create_thread();
 }
 
@@ -483,9 +484,8 @@ void SharedRecordingOutput::refresh_writer_queue_metrics_locked()
 void SharedRecordingOutput::write_metadata_row_locked(const RecordingMetadataRow& metadata_row)
 {
     if (writer_.metadata && writer_.metadata->is_open()) {
-        *writer_.metadata << metadata_row.frame_id << ","
-                          << metadata_row.timestamp << ","
-                          << metadata_row.timestamp_sys << '\n';
+        orange::recording_metadata::write_row(*writer_.metadata,
+            metadata_row.frame_id, metadata_row.timestamp, metadata_row.timestamp_sys);
     }
 }
 
