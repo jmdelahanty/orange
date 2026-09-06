@@ -1,6 +1,7 @@
 #include "spatial_snapshot_worker.h"
 
 #include "worker_entry_release.h"
+#include "scoped_housekeeping_cpu.h"
 
 #include <cuda_runtime.h>
 #include <opencv2/imgproc.hpp>
@@ -134,14 +135,16 @@ bool SpatialSnapshotWorker::RequestSnapshot(
 bool SpatialSnapshotWorker::RequestNativeSnapshot(
     const std::string& operation_id,
     uint64_t* request_id_out,
-    std::string* error_out)
+    std::string* error_out,
+    NativeSnapshotOptions options)
 {
     return request_snapshot(
         operation_id,
         request_id_out,
         error_out,
         1,
-        SpatialSnapshotRepresentation::kNativeBytes);
+        SpatialSnapshotRepresentation::kNativeBytes,
+        options);
 }
 
 bool SpatialSnapshotWorker::request_snapshot(
@@ -149,23 +152,31 @@ bool SpatialSnapshotWorker::request_snapshot(
     uint64_t* request_id_out,
     std::string* error_out,
     uint32_t frame_count,
-    const SpatialSnapshotRepresentation representation)
+    const SpatialSnapshotRepresentation representation,
+    NativeSnapshotOptions native_options)
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    if (pending_ || in_flight_ || average_accumulator_.request_id != 0) {
+    if (pending_ || in_flight_ || average_accumulator_.request_id != 0 ||
+        (representation == SpatialSnapshotRepresentation::kNativeBytes && has_completed_result_)) {
         if (error_out) {
             *error_out = "A full-resolution stream snapshot is already pending for this camera.";
         }
         return false;
     }
 
-    pending_ = true;
+    if (native_options.housekeeping_cpu < -1 || native_options.housekeeping_cpu >= CPU_SETSIZE) {
+        if (error_out) *error_out = "Invalid native snapshot housekeeping CPU.";
+        return false;
+    }
     pending_request_.request_id = ++next_request_id_;
     pending_request_.operation_id =
         operation_id.empty() ? "spatial_layout_full_resolution_stream_snapshot" : operation_id;
     pending_request_.target_frame_count =
         std::clamp<uint32_t>(frame_count, 1u, kMaxSpatialSnapshotAverageFrames);
     pending_request_.representation = representation;
+    pending_request_.native_options = native_options;
+    native_source_requested_.store(representation == SpatialSnapshotRepresentation::kNativeBytes, std::memory_order_release);
+    pending_.store(true, std::memory_order_release);
     if (request_id_out) {
         *request_id_out = pending_request_.request_id;
     }
@@ -191,6 +202,14 @@ bool SpatialSnapshotWorker::TryClaimNextFrame()
     pending_ = false;
     in_flight_request_ = pending_request_;
     pending_request_ = ClaimedRequest{};
+    return true;
+}
+
+bool SpatialSnapshotWorker::CancelUnclaimedRequest(uint64_t request_id)
+{
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (!pending_ || in_flight_ || pending_request_.request_id != request_id) return false;
+    reset_active_request_locked();
     return true;
 }
 
@@ -231,6 +250,19 @@ bool SpatialSnapshotWorker::PopCompletedSnapshot(SpatialSnapshotResult* result_o
     if (!has_completed_result_) {
         return false;
     }
+    *result_out = std::move(completed_result_);
+    completed_result_ = SpatialSnapshotResult{};
+    has_completed_result_ = false;
+    return true;
+}
+
+bool SpatialSnapshotWorker::PopCompletedSnapshotForRequest(
+    uint64_t request_id, const std::string& operation_id, SpatialSnapshotResult* result_out)
+{
+    if (!result_out) return false;
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (!has_completed_result_ || completed_result_.request_id != request_id ||
+        completed_result_.operation_id != operation_id) return false;
     *result_out = std::move(completed_result_);
     completed_result_ = SpatialSnapshotResult{};
     has_completed_result_ = false;
@@ -477,6 +509,7 @@ bool SpatialSnapshotWorker::copy_entry_to_rgba(
 
 bool SpatialSnapshotWorker::copy_entry_to_native(
     const WORKER_ENTRY& entry,
+    const NativeSnapshotOptions& options,
     SpatialSnapshotResult* result,
     std::string* error_out)
 {
@@ -486,33 +519,41 @@ bool SpatialSnapshotWorker::copy_entry_to_native(
     };
     cpu_set_t actual;
     CPU_ZERO(&actual);
-    if (native_cpu_ < 0 || native_cpu_ >= CPU_SETSIZE ||
+    const int requested_cpu = options.housekeeping_cpu >= 0 ? options.housekeeping_cpu : native_cpu_;
+    if (requested_cpu < 0 || requested_cpu >= CPU_SETSIZE ||
         pthread_getaffinity_np(pthread_self(), sizeof(actual), &actual) != 0 ||
-        CPU_COUNT(&actual) != 1 || !CPU_ISSET(native_cpu_, &actual))
+        CPU_COUNT(&actual) != 1 || !CPU_ISSET(requested_cpu, &actual))
         return fail("Native context worker housekeeping affinity was not applied.");
     if (!result || entry.width <= 0 || entry.height <= 0 ||
         entry.pixelFormat != GVSP_PIX_MONO8)
         return fail("Native context requires a positive packed Mono8 raster.");
     const uint64_t byte_count = static_cast<uint64_t>(entry.width) * entry.height;
+    const bool analytics_owned = entry.has_analytics_owned_source();
+    const bool ring_owned = options.allow_owned_ring && !entry.gpu_direct_mode && entry.owns_memory &&
+        entry.d_image_pool != nullptr && entry.d_image == entry.d_image_pool &&
+        entry.event_ptr != nullptr && *entry.event_ptr != nullptr;
     if (byte_count > 64 * 1024 * 1024 || entry.source_buffer_bytes < byte_count ||
-        !entry.has_analytics_owned_source())
-        return fail("Native context requires a bounded analytics-owned source; camera DMA fallback refused.");
+        (!analytics_owned && !ring_owned))
+        return fail("Native context requires a bounded owned source; camera DMA fallback refused.");
     // Camera DMA may already have been requeued independently of ref_count.
-    // Only the owned analytics copy can support this delayed one-shot consumer.
-    if (!entry.wait_delayed_consumer_ready())
+    // Daily capture may also use the retained pool-owned ring copy, for
+    // detection-off operation. Never infer ownership from ref_count alone.
+    if (analytics_owned && !entry.wait_delayed_consumer_ready())
         return fail("Native context analytics copy was not issued before readiness timeout.");
     const int device = entry.image_gpu_id;
     if (device < 0) return fail("Native context source GPU identity missing.");
     auto status = cudaSetDevice(device);
     if (status != cudaSuccess) return fail(cuda_error_string("cudaSetDevice", status));
-    status = cudaEventSynchronize(entry.analytics_ready_event);
+    const auto ready = analytics_owned ? entry.analytics_ready_event : *entry.event_ptr;
+    const auto* source = analytics_owned ? entry.d_analytics_image : entry.d_image_pool;
+    status = cudaEventSynchronize(ready);
     if (status != cudaSuccess) return fail(cuda_error_string("cudaEventSynchronize", status));
     cudaPointerAttributes attrs{};
-    status = cudaPointerGetAttributes(&attrs, entry.d_analytics_image);
+    status = cudaPointerGetAttributes(&attrs, source);
     if (status != cudaSuccess || attrs.type != cudaMemoryTypeDevice || attrs.device != device)
         return fail("Native context owned-source CUDA pointer/device mismatch.");
     result->native_bytes.resize(static_cast<size_t>(byte_count));
-    status = cudaMemcpy(result->native_bytes.data(), entry.d_analytics_image,
+    status = cudaMemcpy(result->native_bytes.data(), source,
                         static_cast<size_t>(byte_count), cudaMemcpyDeviceToHost);
     if (status != cudaSuccess) {
         result->native_bytes.clear();
@@ -521,6 +562,7 @@ bool SpatialSnapshotWorker::copy_entry_to_native(
 
     result->capture_mode = "full_resolution_native_stream_snapshot";
     result->capture_representation = "native_bytes";
+    result->native_source_storage = analytics_owned ? "analytics_owned_device" : "pool_owned_ring_device";
     result->width = entry.width;
     result->height = entry.height;
     result->pixel_format = entry.pixelFormat;
@@ -569,11 +611,13 @@ bool SpatialSnapshotWorker::WorkerFunction(WORKER_ENTRY* entry)
             camera_params_ ? camera_params_->camera_serial : "";
         frame_result.requested_frame_count =
             std::max<uint32_t>(1u, request.target_frame_count);
-        frame_result.ok =
-            request.representation ==
-                    SpatialSnapshotRepresentation::kNativeBytes
-                ? copy_entry_to_native(*entry, &frame_result, &error)
-                : copy_entry_to_rgba(*entry, &frame_result, &error);
+        if (request.representation == SpatialSnapshotRepresentation::kNativeBytes) {
+            try {
+                orange::ScopedHousekeepingCpu affinity(request.native_options.housekeeping_cpu);
+                frame_result.ok = copy_entry_to_native(*entry, request.native_options, &frame_result, &error);
+                affinity.Restore();
+            } catch (const std::exception& ex) { frame_result.ok = false; error = ex.what(); }
+        } else frame_result.ok = copy_entry_to_rgba(*entry, &frame_result, &error);
         if (!frame_result.ok) {
             frame_result.error = error.empty()
                 ? "Full-resolution stream snapshot failed."

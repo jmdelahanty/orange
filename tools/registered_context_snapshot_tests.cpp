@@ -26,46 +26,81 @@ struct Source {
     }
     ~Source() { cudaEventDestroy(entry.analytics_ready_event); cudaFree(entry.d_analytics_image); }
 };
+class CheckedSnapshotWorker : public SpatialSnapshotWorker {
+public:
+    using SpatialSnapshotWorker::SpatialSnapshotWorker;
+    bool affinity_restored = false;
+protected:
+    bool WorkerFunction(WORKER_ENTRY* entry) override {
+        cpu_set_t before{}, after{};
+        check(pthread_getaffinity_np(pthread_self(), sizeof(before), &before) == 0, "before affinity unavailable");
+        const bool result = SpatialSnapshotWorker::WorkerFunction(entry);
+        check(pthread_getaffinity_np(pthread_self(), sizeof(after), &after) == 0, "after affinity unavailable");
+        affinity_restored = CPU_EQUAL(&before, &after);
+        return result;
+    }
+};
 void run_case(int test, int cpu) {
     Source source;
     CameraParams params{}; params.camera_serial = "02010093";
     SafeQueue<WORKER_ENTRY*> recycle;
-    SpatialSnapshotWorker worker("context-test", &params, recycle);
+    CheckedSnapshotWorker worker("context-test", &params, recycle);
     worker.SetMaxQueueSize(1);
-    if (test != 4) worker.SetNativeSnapshotCpu(cpu);
+    if (test < 8 && test != 4) worker.SetNativeSnapshotCpu(cpu);
     if (test == 1) source.entry.analytics_owned_frame_valid = false;
     if (test == 2) source.entry.pixelFormat = GVSP_PIX_MONO12;
     if (test == 3) source.entry.source_buffer_bytes = 31;
     if (test == 5) source.entry.analytics_ready_event_recorded = false;
     if (test == 6) source.entry.image_gpu_id = -1;
+    if (test >= 8 && test <= 12) {
+        source.entry.analytics_owned_frame_valid = false;
+        source.entry.d_image_pool = source.entry.d_analytics_image;
+        source.entry.d_image = source.entry.d_image_pool;
+        source.entry.event_ptr = &source.entry.analytics_ready_event;
+    }
+    if (test == 10) source.entry.d_image = nullptr;
+    if (test == 11) source.entry.gpu_direct_mode = true;
+    if (test == 12) source.entry.event_ptr = nullptr;
+    const NativeSnapshotOptions options = test >= 8 ? NativeSnapshotOptions{cpu, test != 9} : NativeSnapshotOptions{};
     uint64_t request = 0; std::string error;
+    if (test == 8) {
+        check(worker.RequestNativeSnapshot("cancel", &request, &error, options), "cancelable request failed");
+        check(!worker.CancelUnclaimedRequest(request + 1), "canceled a different request");
+        check(worker.CancelUnclaimedRequest(request) && !worker.HasPendingRequest() && !worker.TryClaimNextFrame(), "unclaimed native request did not cancel");
+    }
     check(test == 7 ? worker.RequestSnapshot("test", &request, &error) :
-        worker.RequestNativeSnapshot("test", &request, &error), "request failed");
+        worker.RequestNativeSnapshot("test", &request, &error, options), "request failed");
+    check(worker.RequiresOwnedNativeSource() == (test != 7), "native source requirement was not published");
     check(!worker.RequestNativeSnapshot("duplicate", nullptr, &error), "overlapping request accepted");
     check(worker.StartThread() == 0, "worker start failed");
     struct Stop { SpatialSnapshotWorker& worker; ~Stop() { worker.StopThread(); } } stop{worker};
     check(worker.HasPendingRequest() && worker.TryClaimNextFrame(), "claim failed");
     check(!worker.HasPendingRequest() && !worker.TryClaimNextFrame(), "duplicate source claim");
     check(worker.PutObjectToQueueIn(&source.entry), "enqueue failed");
+    check(!worker.CancelUnclaimedRequest(request), "claimed source lease was canceled");
     SpatialSnapshotResult result;
     bool done = false;
     const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (!(done = worker.PopCompletedSnapshot(&result)) && std::chrono::steady_clock::now() < end) {
+    while (!(done = worker.PopCompletedSnapshotForRequest(request, "test", &result)) && std::chrono::steady_clock::now() < end) {
+        check(!worker.PopCompletedSnapshotForRequest(request, "wrong-operation", &result), "stole another operation's snapshot");
         check(!worker.HasFatalError(), "snapshot thread exception");
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     worker.StopThread();
     check(done && result.request_id == request, "missing matching result");
-    check(result.ok == (test == 0 || test == 7), "unexpected capture acceptance");
+    const bool accepted = test == 0 || test == 7 || test == 8 || test == 13;
+    check(result.ok == accepted, "unexpected capture acceptance");
+    check(worker.affinity_restored, "snapshot changed its reusable worker CPU affinity");
     WORKER_ENTRY* returned = nullptr;
     check(source.entry.ref_count == 0 && recycle.pop(returned) && returned == &source.entry && !recycle.pop(returned),
           "source reference not released exactly once");
     check(worker.GetCountQueueOutSize() == 0, "released source pointer escaped to output queue");
     check(!worker.HasPendingRequest(), "one-shot work remained pending");
-    if (test == 0 || test == 7) {
-        if (test == 0) {
+    if (accepted) {
+        if (test != 7) {
             check(result.native_bytes == source.pixels && result.rgba.empty(), "source pixels changed");
             check(result.capture_representation == "native_bytes", "wrong native capture representation");
+            check(result.native_source_storage == (test == 8 ? "pool_owned_ring_device" : "analytics_owned_device"), "source storage identity wrong");
         } else {
             check(result.native_bytes.empty() && result.rgba.size() == source.pixels.size() * 4 &&
                   result.capture_representation == "rgba8", "existing RGBA snapshot representation changed");
@@ -92,8 +127,8 @@ int main() {
         cpu_set_t allowed; CPU_ZERO(&allowed); check(sched_getaffinity(0, sizeof(allowed), &allowed) == 0, "CPU affinity query failed");
         int cpu = 0; while (cpu < CPU_SETSIZE && !CPU_ISSET(cpu, &allowed)) ++cpu;
         check(cpu < CPU_SETSIZE, "no allowed CPU");
-        for (int test = 0; test < 8; ++test) run_case(test, cpu);
-        std::cout << "8 context/compatible RGBA snapshot cases passed (CUDA memory only; no camera).\n";
+        for (int test = 0; test < 14; ++test) run_case(test, cpu);
+        std::cout << "14 context/compatible RGBA snapshot cases passed (CUDA memory only; no camera).\n";
         return 0;
     } catch (const std::exception& ex) { std::cerr << ex.what() << '\n'; return 1; }
 }

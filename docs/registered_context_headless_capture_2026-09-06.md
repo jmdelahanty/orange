@@ -11,6 +11,11 @@ moving-crop selection/placement, lossless encoding and rolling behavior are
 unchanged. No atlas, region routing, visual overview renderer or GUI switch is
 introduced here. Nothing is installed, pushed or deployed by this checkpoint.
 
+Follow-up: the independent GUI daily-registration capture is documented in
+`docs/daily_native_context_capture_2026-09-06.md`. It saves an unbound calibration
+asset before recording, including with detection off. It does not change this
+headless option's fresh-capture behavior or enable reuse/media selection yet.
+
 ## Activation
 
 The existing timed headless experiment spec accepts optional
@@ -185,6 +190,9 @@ checks for this profile. No unrelated ROI branch work is merged.
 
 ## Remaining moving-crop-only work
 
+- [ ] Explicitly select/import a saved daily context with renewed scene
+      confirmation, exact geometry/settings checks and a recording-use receipt;
+      do not manufacture a current-producer identity for a historical image.
 - [ ] Explicit media selector that omits the full-frame encoder/supervisor while
       preserving acquisition, logical recording and the master journal.
 - [ ] Decouple moving-crop supervision/finalization from full-frame artifacts.

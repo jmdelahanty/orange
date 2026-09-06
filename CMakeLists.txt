@@ -324,6 +324,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/spatial_layout/daily_physical_registration_preflight.cpp"
     "${SRC_DIR}/gui/spatial_layout/daily_registration_runtime_selection.cpp"
     "${SRC_DIR}/gui/spatial_layout/daily_registration_workflow.cpp"
+    "${SRC_DIR}/gui/spatial_layout/daily_native_context_capture.cpp"
     "${SRC_DIR}/gui/spatial_layout/geometry.cpp"
     "${SRC_DIR}/gui/spatial_layout/group_capture_controller.cpp"
     "${SRC_DIR}/gui/spatial_layout/hough_panel.cpp"
@@ -542,7 +543,13 @@ target_include_directories(orange_recording_master_journal PUBLIC ${ORANGE_COMMO
 target_compile_features(orange_recording_master_journal PUBLIC cxx_std_17)
 target_link_libraries(orange_recording_master_journal PUBLIC Threads::Threads)
 
+add_library(orange_daily_registered_context STATIC
+    "${SRC_DIR}/daily_registered_context.cpp"
+    "${SRC_DIR}/gui/spatial_layout/daily_registration_runtime_selection.cpp")
+target_link_libraries(orange_daily_registered_context PUBLIC orange_recording_master_journal)
+
 add_executable(orange ${ORANGE_SOURCES})
+target_link_libraries(orange PRIVATE orange_daily_registered_context)
 add_executable(orange_client EXCLUDE_FROM_ALL ${ORANGE_CLIENT_SOURCES})
 add_executable(yolo_offline EXCLUDE_FROM_ALL ${YOLO_OFFLINE_SOURCES})
 add_executable(evt_lens_probe ${EVT_LENS_PROBE_SOURCES})
@@ -564,6 +571,10 @@ add_dependencies(orange nic_thermal_monitor)
 add_dependencies(orange_client nic_thermal_monitor)
 
 if(BUILD_TESTING)
+    add_executable(daily_registered_context_tests "tools/daily_registered_context_tests.cpp")
+    target_link_libraries(daily_registered_context_tests PRIVATE orange_daily_registered_context)
+    add_test(NAME daily_registered_context_tests COMMAND daily_registered_context_tests)
+    set_tests_properties(daily_registered_context_tests PROPERTIES TIMEOUT 30)
     add_executable(nic_thermal_monitor_tests
         "tools/nic_thermal_monitor_tests.cpp"
         "${SRC_DIR}/nic_thermal_monitor.cpp"

@@ -2082,6 +2082,8 @@ void acquire_frames(
                 will_record &&
                 recording_ingress &&
                 recording_ingress->requires_owned_cuda_source();
+            const bool snapshot_requires_owned_source = will_snapshot &&
+                spatial_snapshot_worker->RequiresOwnedNativeSource();
             // ORANGE_ANALYTICS_EARLY_OWNED_FRAME=0 is a diagnostic for the
             // engine-only specs (it selects the ring-copy or, with
             // ORANGE_ACQ_FORCE_DIRECT_READ, the direct-read path). With a
@@ -2105,7 +2107,7 @@ void acquire_frames(
             const bool use_analytics_hybrid = analytics_owned_frame_enabled;
             bool use_ring_copy =
                 use_direct_pointer &&
-                (dispatch_count > 1 || recording_requires_owned_source) &&
+                (dispatch_count > 1 || recording_requires_owned_source || snapshot_requires_owned_source) &&
                 !use_analytics_hybrid;
             // ORANGE_ACQ_FORCE_DIRECT_READ (diagnostic, default off): skip the
             // ring copy that dispatch_count > 1 would otherwise force, so
@@ -2115,7 +2117,7 @@ void acquire_frames(
             // the image, which is what the engine-only specs use.
             static const bool force_direct_read =
                 orange::yolo_flags::EnvFlag("ORANGE_ACQ_FORCE_DIRECT_READ", false);
-            if (force_direct_read && use_ring_copy && !recording_requires_owned_source) {
+            if (force_direct_read && use_ring_copy && !recording_requires_owned_source && !snapshot_requires_owned_source) {
                 use_ring_copy = false;
             }
             if (force_ring_copy) {

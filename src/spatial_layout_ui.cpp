@@ -1,4 +1,5 @@
 #include "spatial_layout_ui.h"
+#include "gui/spatial_layout/daily_native_context_capture.h"
 
 #include "camera_preview_utils.h"
 #include "gui/spatial_layout/calibration_metadata.h"
@@ -827,6 +828,10 @@ void render_spatial_layout_window(
 
     initialize_spatial_layout_defaults(ui_state);
 
+    // Completion and lease release must not depend on panel visibility.
+    orange::gui::spatial_layout::poll_daily_native_context_capture(ui_state, cameras_params, num_cameras, spatial_snapshot_workers,
+        camera_control && (camera_control->record_video || camera_control->recording_draining));
+
     if (!ui_state->show_window) {
         return;
     }
@@ -931,6 +936,7 @@ void render_spatial_layout_window(
             }
             SpatialSnapshotResult snapshot_result;
             while (worker->PopCompletedSnapshot(&snapshot_result)) {
+                if (orange::gui::spatial_layout::consume_daily_native_context_snapshot(ui_state, &snapshot_result)) continue;
                 if (consume_group_snapshot_result(
                         ui_state,
                         snapshot_result,

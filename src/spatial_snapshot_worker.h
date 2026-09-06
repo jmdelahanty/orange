@@ -15,6 +15,11 @@ enum class SpatialSnapshotRepresentation {
     kNativeBytes,
 };
 
+struct NativeSnapshotOptions {
+    int housekeeping_cpu = -1; // -1 retains the worker's preconfigured affinity
+    bool allow_owned_ring = false; // explicit daily-registration profile only
+};
+
 struct SpatialSnapshotResult {
     bool ok = false;
     uint64_t request_id = 0;
@@ -43,6 +48,7 @@ struct SpatialSnapshotResult {
     // source bytes copied from WORKER_ENTRY after its readiness event; no
     // debayer, color conversion, resize, or normalization is applied.
     std::vector<unsigned char> native_bytes;
+    std::string native_source_storage;
 };
 
 class SpatialSnapshotWorker : public CThreadWorker<WORKER_ENTRY> {
@@ -64,14 +70,19 @@ public:
     bool RequestNativeSnapshot(
         const std::string& operation_id,
         uint64_t* request_id_out,
-        std::string* error_out);
+        std::string* error_out,
+        NativeSnapshotOptions options = {});
     // Configure before StartThread. Native context capture fails if the worker
     // did not receive this exact housekeeping CPU affinity.
     void SetNativeSnapshotCpu(int cpu) { native_cpu_ = cpu; SetCPU(cpu); }
     bool HasPendingRequest() const;
+    bool RequiresOwnedNativeSource() const { return native_source_requested_.load(std::memory_order_acquire); }
     bool TryClaimNextFrame();
+    bool CancelUnclaimedRequest(uint64_t request_id);
     void CompleteClaimedRequestWithError(const std::string& error);
     bool PopCompletedSnapshot(SpatialSnapshotResult* result_out);
+    bool PopCompletedSnapshotForRequest(uint64_t request_id, const std::string& operation_id,
+                                       SpatialSnapshotResult* result_out);
 
     uint64_t request_count() const { return request_count_.load(std::memory_order_relaxed); }
     uint64_t completed_count() const { return completed_count_.load(std::memory_order_relaxed); }
@@ -89,6 +100,7 @@ private:
         uint32_t target_frame_count = 1;
         SpatialSnapshotRepresentation representation =
             SpatialSnapshotRepresentation::kRgba8;
+        NativeSnapshotOptions native_options;
     };
 
     struct AverageAccumulator {
@@ -124,6 +136,7 @@ private:
         std::string* error_out);
     bool copy_entry_to_native(
         const WORKER_ENTRY& entry,
+        const NativeSnapshotOptions& options,
         SpatialSnapshotResult* result,
         std::string* error_out);
     bool request_snapshot(
@@ -131,13 +144,15 @@ private:
         uint64_t* request_id_out,
         std::string* error_out,
         uint32_t frame_count,
-        SpatialSnapshotRepresentation representation);
+        SpatialSnapshotRepresentation representation,
+        NativeSnapshotOptions native_options = {});
 
     CameraParams* camera_params_ = nullptr;
     SafeQueue<WORKER_ENTRY*>* recycle_queue_ = nullptr;
 
     mutable std::mutex state_mutex_;
     std::atomic<bool> pending_{false};
+    std::atomic<bool> native_source_requested_{false};
     int native_cpu_ = -1;
     bool in_flight_ = false;
     uint64_t next_request_id_ = 0;
