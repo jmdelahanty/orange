@@ -13,6 +13,10 @@ Coordination baseline: agent-contracts
 response in PR #48. The rolling profile below is an **opt-in candidate for
 consumer review**, not a relaxation of the accepted acquisition mapping v1.
 
+Follow-up: [shared recording packet telemetry](shared_recording_packet_telemetry_2026-09-06.md)
+consolidates native/external packet accounting without changing this timing
+profile or enabling crop-only recording.
+
 ## Implemented checklist
 
 - [x] Native in-process and shared split-GOP CSV writers append

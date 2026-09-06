@@ -594,6 +594,11 @@ if(BUILD_TESTING)
     target_compile_features(recording_output_descriptor_tests PRIVATE cxx_std_17)
     add_test(NAME recording_output_descriptor_tests COMMAND recording_output_descriptor_tests)
 
+    add_executable(recording_packet_telemetry_tests "tools/recording_packet_telemetry_tests.cpp")
+    target_include_directories(recording_packet_telemetry_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(recording_packet_telemetry_tests PRIVATE cxx_std_17)
+    add_test(NAME recording_packet_telemetry_tests COMMAND recording_packet_telemetry_tests)
+
     add_executable(recording_timing_evidence_tests "tools/recording_timing_evidence_tests.cpp")
     target_include_directories(recording_timing_evidence_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(recording_timing_evidence_tests PRIVATE cxx_std_17)

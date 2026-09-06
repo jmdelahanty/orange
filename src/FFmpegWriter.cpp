@@ -233,20 +233,8 @@ FFmpegWriter::~FFmpegWriter()
 {
     OrangeVideoContainerFinalization::Outcome outcome;
     outcome.header_written = open_;
-    const FFmpegWriterPacketWriteStats packet_stats = packet_write_stats();
+    outcome.packet_writes = packet_write_stats();
     outcome.writer_error_latched = writer_thread_failed();
-    outcome.packet_submissions_accepted = packet_stats.submissions_accepted;
-    outcome.packet_submission_bytes_accepted =
-        packet_stats.submission_bytes_accepted;
-    outcome.packet_submissions_rejected = packet_stats.submissions_rejected;
-    outcome.packet_write_attempts = packet_stats.write_attempts;
-    outcome.packets_written = packet_stats.packets_written;
-    outcome.packet_bytes_written = packet_stats.bytes_written;
-    outcome.packet_write_failures = packet_stats.write_failures;
-    if (packet_stats.first_write_error_code != 0) {
-        outcome.first_packet_write_error_code =
-            packet_stats.first_write_error_code;
-    }
     persist_finalization_status(
         output_path_, nFps,
         OrangeVideoContainerFinalization::Status::Finalizing,

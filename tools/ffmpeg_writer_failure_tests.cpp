@@ -184,13 +184,54 @@ void test_finalization_status_classification()
 
     Outcome mux_failed = complete;
     mux_failed.writer_error_latched = true;
-    mux_failed.packet_submissions_accepted = 1;
-    mux_failed.packet_write_attempts = 1;
-    mux_failed.packet_write_failures = 1;
-    mux_failed.first_packet_write_error_code = AVERROR(EIO);
+    mux_failed.packet_writes.submissions_accepted = 1;
+    mux_failed.packet_writes.write_attempts = 1;
+    mux_failed.packet_writes.write_failures = 1;
+    mux_failed.packet_writes.first_write_error_code = AVERROR(EIO);
     expect(ClassifyTerminalStatus(mux_failed) ==
                Status::ContainerFinalizationFailed,
            "a mux packet-write failure must prevent complete finalization");
+}
+
+void test_shared_packet_snapshot_preserves_wire_fields()
+{
+    using namespace OrangeVideoContainerFinalization;
+    const std::filesystem::path dir = make_temp_dir();
+    const std::filesystem::path video = dir / "packet_evidence_fixture.mp4";
+    Outcome outcome;
+    outcome.header_written = true;
+    outcome.trailer_written = true;
+    outcome.output_closed = true;
+    outcome.playback_intent_patch_applied = true;
+    outcome.muxer_flush_attempted = true;
+    outcome.muxer_flush_succeeded = true;
+    // Evidence fixture only: no encoder or camera is invoked by this test.
+    outcome.packet_writes = {3, 900, 0, 3, 3, 900, 0, 0};
+    std::filesystem::path sidecar;
+    std::string error;
+    expect(Persist(video, 100, ClassifyTerminalStatus(outcome), outcome,
+                   &sidecar, &error), "could not persist packet evidence fixture: " + error);
+    const nlohmann::json expected = {
+        {"submissions_accepted", 3}, {"submission_bytes_accepted", 900},
+        {"submissions_rejected", 0}, {"write_attempts", 3},
+        {"packets_written", 3}, {"bytes_written", 900},
+        {"write_failures", 0}, {"first_write_error_code", nullptr},
+        {"writer_error_latched", false}, {"muxer_flush_attempted", true},
+        {"muxer_flush_succeeded", true}, {"muxer_flush_error_code", nullptr},
+        {"muxer_flush_error", nullptr}, {"complete", true},
+    };
+    const auto document = read_json(sidecar);
+    expect(document.at("schema_version") == 2 &&
+               document.at("packet_writes") == expected,
+           "shared snapshot must preserve the exact v2 packet evidence fields");
+    outcome.packet_writes.submissions_rejected = 1;
+    expect(Persist(video, 100, ClassifyTerminalStatus(outcome), outcome,
+                   &sidecar, &error), "could not persist rejected packet fixture: " + error);
+    const auto rejected = read_json(sidecar);
+    expect(rejected.at("status") == "container_finalization_failed" &&
+               !rejected.at("packet_writes").at("complete").get<bool>(),
+           "status and serialized completion must use the same shared rule");
+    std::filesystem::remove_all(dir);
 }
 
 void test_mux_write_failure_is_latched_and_persisted()
@@ -314,6 +355,8 @@ int main()
         {"successful_open_and_finalize", &test_successful_open_and_finalize},
         {"finalization_status_classification",
          &test_finalization_status_classification},
+        {"shared_packet_snapshot_preserves_wire_fields",
+         &test_shared_packet_snapshot_preserves_wire_fields},
         {"mux_write_failure_is_latched_and_persisted",
          &test_mux_write_failure_is_latched_and_persisted},
         {"queue_byte_limit_fails_closed_before_enqueuing",
