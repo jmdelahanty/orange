@@ -3,6 +3,8 @@
 Date: 2026-09-06. Status: GUI implementation and isolated builds/tests complete;
 live GUI/camera validation is pending. Timed-headless reuse is now implemented
 in the follow-up described in `daily_context_recording_reuse_2026-09-06.md`.
+Regular GUI recording reuse is now connected as described in
+`gui_registered_context_recording_2026-09-06.md`; live acceptance is still pending.
 Branch: `agent/acquisition/master-frame-journal-v1-20260906`.
 Implementation base: `0504b17144a516339a2cc8053c4f67da727192a5`.
 
@@ -135,8 +137,8 @@ The following broader interface remains planned, **not yet implemented**:
 - Recording media choice: full frame; full frame plus moving crops; or context
   image plus moving crops only. Established full-frame/split-GOP and supported
   single-subject moving/lossless crops remain first-class modes.
-- GUI recording-time source selection/import (the GUI currently captures the
-  daily asset and exports a headless configuration, not GUI-arm reuse).
+- Fresh context capture during GUI recording arm (saved-daily source selection
+  and import are implemented in the separate GUI recording-context slice).
 - Finish media selection, crop-only supervision/finalization, and actual
   returned-frame/packet/container/decode/hash reconciliation before enabling
   moving-crops-only completion. A context asset alone does not close those gates.

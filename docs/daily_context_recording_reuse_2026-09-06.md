@@ -2,8 +2,9 @@
 
 Date: 2026-09-06. Branch: `agent/acquisition/master-frame-journal-v1-20260906`.
 Base: daily GUI capture checkpoint `21bbfb7f081dc9774f6d5eff2170046081ddead0`.
-Status: opt-in timed-headless implementation; not crop-only media selection or
-GUI recording-time reuse. Live validation remains pending.
+Status: opt-in timed-headless reuse plus regular GUI recording-time reuse in
+`gui_registered_context_recording_2026-09-06.md`. Not crop-only media selection.
+Live validation remains pending.
 
 ## Configuration ownership
 
@@ -13,6 +14,7 @@ not inferred from the most recent image or retained only in GUI state.
 | Surface | What it keeps |
 | --- | --- |
 | Orange experiment spec, `fixed.registered_scene_context` | Versioned source selection, exact descriptor path/size/SHA-256, housekeeping CPUs, timeout and operator declarations. |
+| Orange app config, `recording.registered_context_recording` | Explicitly saved GUI selection and master journal settings; per-arm human confirmation is separate and not restored on launch. |
 | Daily calibration context directory | Immutable original native images, registration/geometry/settings, capture IDs/timestamps and capture declarations. |
 | Run configuration and immutable recording-start snapshot | Resolved configuration and the selected recording-use bindings. |
 | Parent recording directory and completion manifest | Verified copies of daily assets, current recording geometry, a recording-use receipt and terminal integrity result shared by rolling clips. |
@@ -22,8 +24,8 @@ Camera/rig settings remain in their existing configuration; their resolved value
 are compared and recorded here. No workstation app default, canonical canvas or
 existing experiment spec is silently edited. GUI capture controls themselves are
 not new auto-saved global preferences. The persisted configuration is the explicit
-field copied/saved into an experiment spec; per-capture settings are also recorded
-in the daily artifact.
+field copied/saved into an experiment spec or explicitly saved through the GUI
+recording-context panel; per-capture settings are also recorded in the daily artifact.
 
 ## Using a daily image
 
@@ -189,8 +191,9 @@ not admit a daily-reuse configuration without the separate reuse proof.
 
 - [ ] Live GUI clipboard and headless reuse validation against real registration.
 - [ ] Full JSON Schema-engine validation and coordinated consumer acceptance.
-- [ ] GUI recording-time context selection/import (the GUI currently captures
-      and exports configuration for headless; it does not reuse during GUI arm).
+- [x] GUI recording-time context selection/import and per-recording master journal
+      handoff; see `gui_registered_context_recording_2026-09-06.md` for its gates
+      and remaining live acceptance checks.
 - [ ] Explicit recording media selector and crop-only supervision/finalization.
 - [ ] Actual recorder-returned identities, packet/mux/container/decode/hash
       reconciliation before claiming moving-crops-only recording is usable.

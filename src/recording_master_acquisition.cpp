@@ -85,6 +85,8 @@ MasterAcquisitionJournal::Iteration::Iteration(MasterAcquisitionJournal* owner,
     }
     entered_ = true;
     active_ = recording_active;
+    first_recording_ = active_ && !owner_->ever_active_;
+    owner_->ever_active_ = owner_->ever_active_ || active_;
     if (active_ != owner_->previously_active_) {
         MasterFrameFact transition;
         transition.kind = active_ ? MasterFactKind::resume : MasterFactKind::pause;
@@ -120,8 +122,9 @@ void MasterAcquisitionSet::Prepare(const MasterAcquisitionConfig& config, const 
     std::getline(uuid_file, producer);
     require(producer.size() == 36, "cannot obtain master journal producer instance UUID");
     std::set<std::string> unique;
-    // A fresh camera thread is generation zero within this fresh process-run
-    // token. A future in-run reconnect must allocate another token/generation.
+    // Generation zero within a fresh per-recording journal producer identity.
+    // GUI camera threads may continue across these runs; this token does not
+    // assert a hardware/thread restart. In-run reconnect needs a new generation.
     for (const auto& serial : serials) {
         require(unique.insert(serial).second, "duplicate master journal camera");
         MasterJournalOptions options;
@@ -170,14 +173,16 @@ bool MasterAcquisitionSet::Finalize(bool normal_finish, std::string* error) {
     }
     return ok;
 }
-json MasterAcquisitionSet::StartEvidence() const {
+json MasterAcquisitionSet::StartEvidence(const std::string& profile) const {
+    require(profile == "headless_acquisition_loop_v1" || profile == "gui_acquisition_loop_v1",
+            "unsupported master acquisition profile");
     json cameras = json::array();
     for (const auto& entry : entries_) cameras.push_back({
         {"camera_serial", entry->CameraSerial()}, {"recording_id", entry->RecordingId()},
         {"producer_instance_id", entry->ProducerInstanceId()}, {"stream_generation", entry->StreamGeneration()},
         {"descriptor_relative_path", entry->ManifestPath().filename().string()}});
     return {{"schema_version", 1}, {"required", Enabled()},
-            {"profile", "headless_acquisition_loop_v1"},
+            {"profile", profile},
             {"config", config_.ToJson()}, {"cameras", cameras}};
 }
 
@@ -193,12 +198,14 @@ void ApplyRequiredMasterJournalGate(const fs::path& root, json* manifest) {
     const auto& start = snapshot.at("session").at("master_frame_journal");
     if (!start.at("required").get<bool>()) return;
     json result = {{"schema_version", 1}, {"required", true},
-                   {"profile", "headless_acquisition_loop_v1"},
+                   {"profile", start.value("profile", std::string())},
                    {"status", "pending"}, {"cameras", json::array()}};
     const auto status = manifest->value("status", std::string());
     if (status == "completed" || status == "failed" || status == "interrupted") {
         try {
-            require(start.at("schema_version") == 1 && start.at("profile") == "headless_acquisition_loop_v1",
+            require(start.at("schema_version") == 1 &&
+                    (start.at("profile") == "headless_acquisition_loop_v1" ||
+                     start.at("profile") == "gui_acquisition_loop_v1"),
                     "unsupported required master journal profile");
             require(start.at("cameras").is_array() && !start.at("cameras").empty(), "empty master journal camera set");
             std::set<std::string> serials;

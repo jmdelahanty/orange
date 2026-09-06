@@ -818,6 +818,30 @@ void test_abort_pending_start_stops_recorders_and_restores_state()
 
 }  // namespace
 
+void test_gui_context_must_be_ready_before_arm()
+{
+    for (int ready = 0; ready < 2; ++ready) {
+        const auto base = make_temp_base_folder("gui_context_gate");
+        CameraControl control;
+        orange::session::RecordingSessionState state;
+        orange::session::PreparedRecordingRunStart prepared;
+        prepared.valid = true;
+        prepared.recording_folder = base.string();
+        prepared.gui_registered_context_required = true;
+        prepared.gui_registered_context_ready = ready != 0;
+        orange::session::RecordingRunSupervisorStartOutcome outcome;
+        outcome.ok = true;
+        const auto result = orange::session::complete_recording_run(
+            &state, &control, nullptr, 0, nullptr, prepared, std::move(outcome));
+        require(!result.ok && !control.record_video,
+            "GUI context armed without ready evidence and installed master source");
+        require(result.error_message.find("registered context/master journal") != std::string::npos,
+            "GUI context failure was not actionable");
+        std::filesystem::remove_all(base);
+    }
+    std::cout << "PASS test_gui_context_must_be_ready_before_arm\n";
+}
+
 int main(int, char** argv)
 {
     // These tests exercise the phased recorder lifecycle, not the optional
@@ -829,6 +853,7 @@ int main(int, char** argv)
         g_binary_dir = std::filesystem::absolute(argv[0]).parent_path();
     }
     try {
+        test_gui_context_must_be_ready_before_arm();
         test_prepare_creates_run_scaffolding();
         test_prepare_mints_fresh_folder_over_stale_latch();
         test_prepare_mints_fresh_folder_with_empty_base_and_stale_latch();

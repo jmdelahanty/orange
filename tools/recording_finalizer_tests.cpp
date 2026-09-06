@@ -6,6 +6,7 @@
 
 #include "gui/recording_finalizer.h"
 #include "gui/env_util.h"
+#include "gui/spatial_layout/sha256.h"
 
 #include "external_recorder_contract_utils.h"
 #include "external_recorder_supervisor.h"
@@ -787,6 +788,61 @@ void test_phased_finalize_failure_leaves_retryable_state()
               << std::endl;
 }
 
+void test_gui_finalizer_seals_required_master_before_parent()
+{
+    cpu_set_t allowed; CPU_ZERO(&allowed);
+    require(sched_getaffinity(0, sizeof(allowed), &allowed) == 0, "cannot read test affinity");
+    int cpu = -1;
+    for (int i = 0; i < CPU_SETSIZE; ++i) if (CPU_ISSET(i, &allowed)) { cpu = i; break; }
+    require(cpu >= 0, "no test housekeeping CPU available");
+    for (bool incomplete : {false, true}) {
+        ScopedTempDir tmp;
+        const auto root = tmp.path() / "gui_master_parent";
+        std::filesystem::create_directory(root);
+        PhasedFinalizeFixture fixture(root.string());
+        auto journals = std::make_shared<orange::recording::MasterAcquisitionSet>();
+        orange::recording::MasterAcquisitionConfig config;
+        config.enabled = true; config.writer_cpu_ids = {cpu};
+        journals->Prepare(config, root, {fixture.camera.camera_serial});
+        fixture.recording_session.gui_master_frame_journals = journals;
+        fixture.recording_session.gui_context_housekeeping_cpu = cpu;
+        auto* journal = journals->Find(fixture.camera.camera_serial);
+        {
+            orange::recording::MasterAcquisitionJournal::Iteration iteration(journal, true);
+            orange::recording::MasterFrameFact fact;
+            fact.recording_frame_id = 1; fact.local_frame_id = 800; fact.local_frame_id_present = true;
+            iteration.Submit(fact);
+        }
+        if (incomplete) journal->MarkStopTimeout();
+        const nlohmann::json camera_identity = {
+            {"schema_id", "orange.shaman_v2.camera_identity"}, {"schema_version", 1},
+            {"recording_id", root.filename().string()}, {"canonicalization", "canonical_json_utf8_sort_keys_compact_v1"},
+            {"camera_bindings", nlohmann::json::array({{{"acquisition_camera_id", fixture.camera.camera_serial},
+                {"camera_serial", fixture.camera.camera_serial}, {"shaman_numeric_camera_id", 0}}})}};
+        const nlohmann::json snapshot = {
+            {"shaman_v2_camera_identity", camera_identity},
+            {"shaman_v2_camera_identity_sha256", "sha256:" + orange::gui::spatial_layout::checksum::sha256_hex(camera_identity.dump())},
+            {"session", {{"master_frame_journal", journals->StartEvidence("gui_acquisition_loop_v1")}}}};
+        write_text_file(root / "recording_snapshot.json", snapshot.dump());
+        write_text_file(root / "recording_snapshot_start.json", snapshot.dump());
+        auto inputs = gui_prepare_recording_finalize(&fixture.run, &fixture.recording_session,
+            &fixture.camera, &fixture.select, 1, 320, nlohmann::json::object());
+        require(inputs.master_frame_journals == journals && inputs.context_housekeeping_cpu == cpu,
+            "finalize prepare lost master ownership or CPU assignment");
+        const auto outcome = gui_run_recording_finalize(&inputs, nullptr);
+        require(outcome.ok, "GUI finalization plumbing failed: " + outcome.error_message);
+        nlohmann::json parent;
+        { std::ifstream in(root / "recording_session.json"); in >> parent; }
+        require(parent.at("status") == (incomplete ? "failed" : "completed"),
+            "parent status ignored required master seal");
+        require(parent.at("master_frame_journal").at("status") == (incomplete ? "failed" : "complete"),
+            "parent did not validate the newly finalized journal");
+        cpu_set_t restored; CPU_ZERO(&restored);
+        require(sched_getaffinity(0, sizeof(restored), &restored) == 0 && CPU_EQUAL(&allowed, &restored),
+            "finalizer did not restore caller affinity");
+    }
+}
+
 void test_async_finalize_poll_launches_and_completes()
 {
     ScopedEnv gui_stall("ORANGE_GUI_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS");
@@ -968,6 +1024,7 @@ int main()
         {"write_external_rolling_manifest_success",
          &test_write_external_rolling_manifest_success},
         {"finalizer_gating", &test_finalizer_gating},
+        {"gui_finalizer_seals_required_master_before_parent", &test_gui_finalizer_seals_required_master_before_parent},
         {"phased_finalize_failure_leaves_retryable_state",
          &test_phased_finalize_failure_leaves_retryable_state},
         {"async_finalize_poll_launches_and_completes",

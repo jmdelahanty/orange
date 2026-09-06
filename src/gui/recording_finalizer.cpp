@@ -4,6 +4,7 @@
 // called from this translation unit stay in an anonymous namespace here.
 
 #include "gui/recording_finalizer.h"
+#include "scoped_housekeeping_cpu.h"
 
 #include "gui/env_util.h"
 #include "gui/incremental_clip_shadow.h"
@@ -1344,6 +1345,8 @@ GuiRecordingFinalizeInputs gui_prepare_recording_finalize(
     }
 
     if (recording_session) {
+        inputs.master_frame_journals = recording_session->gui_master_frame_journals;
+        inputs.context_housekeeping_cpu = recording_session->gui_context_housekeeping_cpu;
         if (inputs.external_ipc) {
             // Both of these touch live pipeline objects, so they must stay
             // on the GUI thread: reset the IPC connections before the
@@ -1432,6 +1435,15 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
     publish_stage(GuiRecordingFinalizeStage::kStoppingRecorders);
 
     const GuiRecordingRunState& run = inputs->run;
+    orange::ScopedHousekeepingCpu context_affinity(inputs->context_housekeeping_cpu);
+    // Admission has stopped at the source drain gate. Seal before any parent
+    // manifest can claim completion; its required-product gate checks the seal.
+    if (inputs->master_frame_journals) {
+        std::string journal_error;
+        if (!inputs->master_frame_journals->WaitForSourceStop(std::chrono::seconds(2)) ||
+            !inputs->master_frame_journals->Finalize(true, &journal_error))
+            std::cerr << "[GUI][finalize] Required master journal incomplete: " << journal_error << std::endl;
+    }
     const bool external_ipc = inputs->external_ipc;
     const int crop_size_px = inputs->crop_size_px;
     const nlohmann::json& gui_display_frame_rate = inputs->gui_display_frame_rate;

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Opt-in headless acquisition journal configuration v1",
+  "title": "Opt-in acquisition journal configuration v1 (headless or GUI)",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "enabled"],

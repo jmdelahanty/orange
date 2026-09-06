@@ -49,6 +49,9 @@
 #include "gui/incremental_clip_shadow.h"
 #include "gui/recording_finalizer.h"
 #include "gui/recording_panel.h"
+#include "gui/registered_context_recording.h"
+#include "registered_context_camera_configuration.h"
+#include "scoped_housekeeping_cpu.h"
 #include "gui/recording_snapshots.h"
 #include "gui/session_status.h"
 #include "gui/startup_timing.h"
@@ -180,14 +183,14 @@ struct GuiLocalControlStartRequestState {
     uint64_t seq = 0;
 };
 
-// Owns the single background thread that runs the external-recorder
-// supervisor spawn + socket wait for a GUI recording start
+// Owns the single background thread that imports optional context evidence and
+// runs external-recorder supervisor spawn + socket wait for a GUI recording start
 // (orange::session::start_prepared_recording_run_supervisors). Owned by
 // main scope; the worker is joined on completion
 // (gui_poll_async_recording_start), on cancellation, and on shutdown
 // (gui_cancel_async_recording_start) - never detached. The background
 // thread must never touch ImGui, CameraControl, worker objects, or any
-// other GUI state: it only reads `prepared`, writes `outcome`, and then
+// other GUI state: it reads frozen prearm inputs, writes evidence/outcome, then
 // publishes `done`; the GUI thread reads `outcome` only after observing
 // `done` and joining the worker.
 struct GuiAsyncRecordingStartState {
@@ -196,6 +199,10 @@ struct GuiAsyncRecordingStartState {
     bool active = false;
     orange::session::PreparedRecordingRunStart prepared;
     orange::session::RecordingRunSupervisorStartOutcome outcome;
+    orange::recording::GuiRecordingEvidenceConfig evidence_config;
+    std::vector<orange::recording::RegisteredContextCamera> evidence_cameras;
+    nlohmann::json evidence_geometry;
+    orange::recording::GuiRecordingEvidence evidence;
     std::unique_ptr<orange::calibration::TransactionLease>
         recording_start_lease;
     std::string context;
@@ -3792,6 +3799,26 @@ void gui_finish_recording_start_through_operator_path(
     }
 }
 
+// Called only between runs, on the GUI control thread. Retain the old set on
+// timeout; an acquisition lease must never see freed storage. No new set can be
+// installed until every old slot has retired.
+void gui_retire_master_sources(CameraControl* control) {
+    if (control->record_video || control->recording_draining)
+        throw std::runtime_error("cannot replace master journal while recording/draining");
+    if (control->master_frame_journals) control->master_frame_journals->RequestStop();
+    for (auto& item : control->gui_master_sources) item.second->Detach();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    for (;;) {
+        bool idle = true;
+        for (const auto& item : control->gui_master_sources) idle &= item.second->Idle();
+        if (idle) break;
+        if (std::chrono::steady_clock::now() >= deadline)
+            throw std::runtime_error("previous GUI master journal source has not retired; recording remains disarmed");
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    control->master_frame_journals.reset();
+}
+
 GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
     GuiAsyncRecordingStartState* async_start,
     orange::session::RecordingSessionState* recording_session,
@@ -3844,10 +3871,40 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
         if (recording_preflight_errors) {
             *recording_preflight_errors = {
                 "A recording start is already in progress"
-                " (external recorder starting)."};
+                " (context/evidence or external recorder preparation)."};
         }
         std::cerr << "[GUI][recording] Start ignored: a recording start is already pending"
                   << " context=" << context << std::endl;
+        return GuiRecordingStartDispatch::kFailed;
+    }
+
+    orange::recording::GuiRecordingEvidenceConfig evidence_config;
+    std::vector<orange::recording::RegisteredContextCamera> evidence_cameras;
+    try {
+        evidence_config = orange::gui::RegisteredContextRecordingConfigForArm();
+        if (evidence_config.enabled && !async_start)
+            throw std::runtime_error("registered context requires the asynchronous GUI start owner");
+        if (recording_run->active || recording_run->finalizing)
+            throw std::runtime_error("previous recording must finish finalization before another start");
+        gui_retire_master_sources(camera_control);
+        recording_session->gui_master_frame_journals.reset();
+        recording_session->gui_context_housekeeping_cpu = -1;
+        if (evidence_config.enabled) {
+            for (int i = 0; i < num_cameras; ++i) {
+                if (!cameras_select[i].record) continue;
+                const auto& camera = cameras_params[i];
+                if (camera.pixel_format != "Mono8" || camera.camera_id < 0 ||
+                    !camera_control->gui_master_sources.count(camera.camera_serial))
+                    throw std::runtime_error("registered context requires a streaming, master-slot-bound Mono8 camera");
+                evidence_cameras.push_back({camera.camera_serial, {},
+                    static_cast<uint64_t>(camera.camera_id), 0,
+                    static_cast<int>(camera.width), static_cast<int>(camera.height),
+                    orange::recording::RegisteredContextCameraConfiguration(camera)});
+            }
+        }
+    } catch (const std::exception& ex) {
+        if (recording_preflight_errors) *recording_preflight_errors = {ex.what()};
+        std::cerr << "[GUI][recording] Start rejected: " << ex.what() << std::endl;
         return GuiRecordingStartDispatch::kFailed;
     }
 
@@ -4055,95 +4112,100 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
         cameras_select,
         num_cameras);
     update_gui_citrus_runtime_geometry_snapshot(prepared.recording_folder);
-    std::string immutable_snapshot_error;
-    if (!seal_immutable_recording_start_snapshot(
-            prepared.recording_folder,
-            nullptr,
-            &immutable_snapshot_error)) {
-        const std::string error =
-            "Failed to seal immutable recording-start snapshot: " +
-            immutable_snapshot_error;
-        orange::session::abort_prepared_recording_run(
-            recording_session,
-            camera_control,
-            prepared,
-            orange::session::RecordingRunSupervisorStartOutcome{},
-            error);
-        if (recording_preflight_errors) {
-            *recording_preflight_errors = {error};
+    // Context import must precede the immutable seal. Its asynchronous branch
+    // seals below, then the common completion gate performs observation prearm.
+    if (!evidence_config.enabled) {
+        std::string immutable_snapshot_error;
+        if (!seal_immutable_recording_start_snapshot(
+                prepared.recording_folder,
+                nullptr,
+                &immutable_snapshot_error)) {
+            const std::string error =
+                "Failed to seal immutable recording-start snapshot: " +
+                immutable_snapshot_error;
+            orange::session::abort_prepared_recording_run(
+                recording_session,
+                camera_control,
+                prepared,
+                orange::session::RecordingRunSupervisorStartOutcome{},
+                error);
+            if (recording_preflight_errors) {
+                *recording_preflight_errors = {error};
+            }
+            std::cerr << "[GUI][recording] Start rejected: " << error << std::endl;
+            return GuiRecordingStartDispatch::kFailed;
         }
-        std::cerr << "[GUI][recording] Start rejected: " << error << std::endl;
-        return GuiRecordingStartDispatch::kFailed;
-    }
-    std::string observation_binding_mode_error;
-    const std::string observation_binding_mode =
-        orange::session::resolve_recording_observation_binding_mode(
-            &observation_binding_mode_error);
-    orange::session::RecordingObservationBindingRequestMaterialization
-        observation_requests;
-    orange::session::RecordingObservationPreArmResult observation_pre_arm;
-    std::string observation_request_error;
-    if (observation_binding_mode.empty() ||
-        !orange::session::prepare_recording_observation_pre_arm(
-            prepared.recording_folder,
-            observation_binding_mode,
-            get_current_utc_timestamp(),
-            &observation_requests,
-            &observation_pre_arm,
-            &observation_request_error) ||
-        !update_recording_snapshot_observation_binding_requests(
-            prepared.recording_folder,
-            orange::session::
-                recording_observation_binding_request_collection_reference(
-                    observation_requests),
-            &observation_request_error) ||
-        !update_recording_snapshot_observation_binding_pre_arm(
-            prepared.recording_folder,
-            orange::session::recording_observation_pre_arm_decision_reference(
-                observation_pre_arm),
-            &observation_request_error)) {
-        const std::string error =
-            "Failed recording observation pre-arm binding: " +
-            (observation_binding_mode_error.empty()
-                 ? observation_request_error
-                 : observation_binding_mode_error);
-        orange::session::abort_prepared_recording_run(
-            recording_session,
-            camera_control,
-            prepared,
-            orange::session::RecordingRunSupervisorStartOutcome{},
-            error);
-        if (recording_preflight_errors) {
-            *recording_preflight_errors = {error};
+        std::string observation_binding_mode_error;
+        const std::string observation_binding_mode =
+            orange::session::resolve_recording_observation_binding_mode(
+                &observation_binding_mode_error);
+        orange::session::RecordingObservationBindingRequestMaterialization
+            observation_requests;
+        orange::session::RecordingObservationPreArmResult observation_pre_arm;
+        std::string observation_request_error;
+        if (observation_binding_mode.empty() ||
+            !orange::session::prepare_recording_observation_pre_arm(
+                prepared.recording_folder,
+                observation_binding_mode,
+                get_current_utc_timestamp(),
+                &observation_requests,
+                &observation_pre_arm,
+                &observation_request_error) ||
+            !update_recording_snapshot_observation_binding_requests(
+                prepared.recording_folder,
+                orange::session::
+                    recording_observation_binding_request_collection_reference(
+                        observation_requests),
+                &observation_request_error) ||
+            !update_recording_snapshot_observation_binding_pre_arm(
+                prepared.recording_folder,
+                orange::session::recording_observation_pre_arm_decision_reference(
+                    observation_pre_arm),
+                &observation_request_error)) {
+            const std::string error =
+                "Failed recording observation pre-arm binding: " +
+                (observation_binding_mode_error.empty()
+                     ? observation_request_error
+                     : observation_binding_mode_error);
+            orange::session::abort_prepared_recording_run(
+                recording_session,
+                camera_control,
+                prepared,
+                orange::session::RecordingRunSupervisorStartOutcome{},
+                error);
+            if (recording_preflight_errors) {
+                *recording_preflight_errors = {error};
+            }
+            std::cerr << "[GUI][recording] Start rejected: " << error << std::endl;
+            return GuiRecordingStartDispatch::kFailed;
         }
-        std::cerr << "[GUI][recording] Start rejected: " << error << std::endl;
-        return GuiRecordingStartDispatch::kFailed;
-    }
-    if (!observation_pre_arm.arm_allowed) {
-        const std::string error =
-            "Required Citrus observation binding was not accepted before arm: " +
-            observation_pre_arm.reason;
-        orange::session::abort_prepared_recording_run(
-            recording_session,
-            camera_control,
-            prepared,
-            orange::session::RecordingRunSupervisorStartOutcome{},
-            error);
-        if (recording_preflight_errors) {
-            *recording_preflight_errors = {error};
+        if (!observation_pre_arm.arm_allowed) {
+            const std::string error =
+                "Required Citrus observation binding was not accepted before arm: " +
+                observation_pre_arm.reason;
+            orange::session::abort_prepared_recording_run(
+                recording_session,
+                camera_control,
+                prepared,
+                orange::session::RecordingRunSupervisorStartOutcome{},
+                error);
+            if (recording_preflight_errors) {
+                *recording_preflight_errors = {error};
+            }
+            std::cerr << "[GUI][recording] Start rejected: " << error << std::endl;
+            return GuiRecordingStartDispatch::kFailed;
         }
-        std::cerr << "[GUI][recording] Start rejected: " << error << std::endl;
-        return GuiRecordingStartDispatch::kFailed;
+        std::cout << "[GUI][recording] Observation binding request status="
+                  << observation_requests.status
+                  << " count=" << observation_requests.artifacts.size()
+                  << " pre_arm=" << observation_pre_arm.lifecycle_status
+                  << " mode=" << observation_binding_mode
+                  << (observation_requests.reason.empty()
+                          ? std::string()
+                          : " reason=" + observation_requests.reason)
+                  << std::endl;
+
     }
-    std::cout << "[GUI][recording] Observation binding request status="
-              << observation_requests.status
-              << " count=" << observation_requests.artifacts.size()
-              << " pre_arm=" << observation_pre_arm.lifecycle_status
-              << " mode=" << observation_binding_mode
-              << (observation_requests.reason.empty()
-                      ? std::string()
-                      : " reason=" + observation_requests.reason)
-              << std::endl;
 
     orange::calibration::TransactionRequest recording_start_request;
     recording_start_request.owner_id =
@@ -4178,7 +4240,7 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
         return GuiRecordingStartDispatch::kFailed;
     }
 
-    if (!async_start || !prepared.requires_supervisor_start()) {
+    if (!evidence_config.enabled && (!async_start || !prepared.requires_supervisor_start())) {
         // No external recorder processes to wait for (or no async runner):
         // keep the synchronous behavior, which is fast for in-process sinks.
         orange::session::RecordingRunSupervisorStartOutcome outcome =
@@ -4223,6 +4285,12 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
     async_start->done.store(false, std::memory_order_release);
     async_start->active = true;
     async_start->prepared = std::move(prepared);
+    async_start->prepared.gui_registered_context_required = evidence_config.enabled;
+    async_start->evidence_config = evidence_config;
+    async_start->evidence_cameras = std::move(evidence_cameras);
+    async_start->evidence_geometry = recording_geometry_contract;
+    async_start->evidence = orange::recording::GuiRecordingEvidence{};
+    if (evidence_config.enabled) orange::gui::ConsumeRegisteredContextRecordingConfirmation();
     async_start->outcome = orange::session::RecordingRunSupervisorStartOutcome{};
     async_start->recording_start_lease =
         std::move(recording_start_reservation.lease);
@@ -4236,6 +4304,25 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
         // Catch, report through the outcome slot, and let the GUI poll
         // surface the failure loudly.
         try {
+            if (worker_state->evidence_config.enabled) {
+                orange::ScopedHousekeepingCpu context_affinity(worker_state->evidence_config.context.worker_cpu_ids.front());
+                // Keep the requested policy even when context import fails and
+                // the abandoned, unarmed folder never gets an immutable seal.
+                if (!update_recording_snapshot_session_artifacts(worker_state->prepared.recording_folder,
+                        {{"gui_registered_context_recording", worker_state->evidence_config.ToJson()}}))
+                    throw std::runtime_error("cannot persist requested GUI recording context configuration");
+                worker_state->evidence.Prepare(worker_state->evidence_config,
+                    worker_state->prepared.recording_folder, worker_state->evidence_cameras,
+                    worker_state->evidence_geometry);
+                if (!update_recording_snapshot_session_artifacts(worker_state->prepared.recording_folder,
+                        worker_state->evidence.artifacts))
+                    throw std::runtime_error("cannot persist required GUI recording context evidence");
+                std::string seal_error;
+                if (!seal_immutable_recording_start_snapshot(worker_state->prepared.recording_folder, nullptr, &seal_error))
+                    throw std::runtime_error("cannot seal GUI context start snapshot: " + seal_error);
+                worker_state->prepared.gui_registered_context_ready = true;
+                context_affinity.Restore(); // restore before recorder processes inherit affinity
+            }
             worker_state->outcome =
                 orange::session::start_prepared_recording_run_supervisors(
                     worker_state->prepared);
@@ -4243,16 +4330,16 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
             worker_state->outcome =
                 orange::session::RecordingRunSupervisorStartOutcome{};
             worker_state->outcome.error_message =
-                std::string("external recorder start threw: ") + ex.what();
+                std::string("recording prearm/supervisor start threw: ") + ex.what();
         } catch (...) {
             worker_state->outcome =
                 orange::session::RecordingRunSupervisorStartOutcome{};
             worker_state->outcome.error_message =
-                "external recorder start threw a non-std exception";
+                "recording prearm/supervisor start threw a non-std exception";
         }
         worker_state->done.store(true, std::memory_order_release);
     });
-    std::cout << "[GUI][recording] External recorder start pending"
+    std::cout << "[GUI][recording] Recording prearm/supervisor start pending"
               << " context=" << context
               << " sink_mode=" << async_start->prepared.recording_sink_mode
               << " folder=" << async_start->prepared.recording_folder
@@ -4293,6 +4380,19 @@ bool gui_poll_async_recording_start(
     }
     async_start->active = false;
 
+    if (async_start->outcome.ok && async_start->evidence_config.enabled) {
+        try {
+            camera_control->master_frame_journals = async_start->evidence.journals;
+            recording_session->gui_master_frame_journals = async_start->evidence.journals;
+            recording_session->gui_context_housekeeping_cpu = async_start->evidence_config.context.worker_cpu_ids.front();
+            for (const auto& camera : async_start->evidence_cameras)
+                camera_control->gui_master_sources.at(camera.serial)->Attach(
+                    async_start->evidence.journals->Find(camera.serial));
+        } catch (const std::exception& ex) {
+            async_start->outcome.ok = false;
+            async_start->outcome.error_message = ex.what();
+        }
+    }
     const orange::session::RecordingRunStartResult start_result =
         orange::session::complete_recording_run(
             recording_session,
@@ -4303,6 +4403,11 @@ bool gui_poll_async_recording_start(
             async_start->prepared,
             std::move(async_start->outcome));
     const bool started = start_result.ok;
+    if (!started && async_start->evidence.journals) {
+        std::string seal_error;
+        async_start->evidence.journals->WaitForSourceStop(std::chrono::seconds(2));
+        async_start->evidence.journals->Finalize(false, &seal_error);
+    }
     if (started) {
         gui_finish_recording_start_through_operator_path(
             start_result,
@@ -4369,6 +4474,7 @@ bool gui_poll_async_recording_start(
     }
     async_start->prepared = orange::session::PreparedRecordingRunStart{};
     async_start->outcome = orange::session::RecordingRunSupervisorStartOutcome{};
+    async_start->evidence = orange::recording::GuiRecordingEvidence{};
     async_start->from_local_control = false;
     return started;
 }
@@ -4406,6 +4512,12 @@ void gui_cancel_async_recording_start(
         async_start->worker.join();
     }
     async_start->active = false;
+    if (async_start->evidence.journals) {
+        std::string seal_error;
+        async_start->evidence.journals->WaitForSourceStop(std::chrono::seconds(2));
+        async_start->evidence.journals->Finalize(false, &seal_error);
+        async_start->evidence = orange::recording::GuiRecordingEvidence{};
+    }
     orange::session::abort_prepared_recording_run(
         recording_session,
         camera_control,
@@ -4708,6 +4820,7 @@ int main(int /*argc*/, char ** /*args*/) {
     if (!load_app_storage_config(orange_root_dir_str, &app_storage_config, &app_storage_config_error)) {
         std::cerr << "App storage config warning: " << app_storage_config_error << std::endl;
     }
+    orange::gui::LoadRegisteredContextRecordingSettings(build_default_app_config_path(orange_root_dir_str));
     if (app_storage_config.gui_ptp_register_read_decimate > 1 &&
         std::getenv("ORANGE_PTP_REGISTER_READ_DECIMATE") == nullptr) {
         const std::string decimate_value =
@@ -5421,6 +5534,12 @@ int main(int /*argc*/, char ** /*args*/) {
                 cameras_params = product->camera_params.release();
                 cameras_select = product->camera_selection.release();
                 ecams = product->cameras.release();
+                // Camera-open completes before streaming. Slots remain stable
+                // until camera teardown, including between recording runs.
+                camera_control->gui_master_sources.clear();
+                for (int i = 0; i < num_cameras; ++i)
+                    camera_control->gui_master_sources.emplace(cameras_params[i].camera_serial,
+                        std::make_unique<orange::recording::MasterSourceSlot>());
                 ptp_stream_sync = product->ptp_stream_sync;
                 if (product->mixed_ptp_modes) {
                     std::cout << "[GUI] Mixed ptp_gate/non-PTP camera configs"
@@ -6025,6 +6144,10 @@ int main(int /*argc*/, char ** /*args*/) {
             }
 
             const auto recording_panel_draw_start = std::chrono::steady_clock::now();
+            orange::gui::RenderRegisteredContextRecordingSettings(
+                camera_control->record_video || camera_control->recording_draining ||
+                gui_async_recording_start.active ||
+                orange::calibration::global_transaction_coordinator().snapshot().active);
             const orange::gui::RecordingPanelActions recording_panel_actions =
                 orange::gui::render_recording_config_panel(
                     &input_folder,

@@ -4,7 +4,7 @@
 
 namespace orange::recording {
 
-// Closed, opt-in headless configuration. CPU placement is an explicit caller
+// Closed, opt-in recording configuration. CPU placement is an explicit caller
 // choice; this module never silently puts a disk writer on an acquisition core.
 struct MasterAcquisitionConfig {
     bool enabled = false;
@@ -14,8 +14,8 @@ struct MasterAcquisitionConfig {
     nlohmann::json ToJson() const;
 };
 
-// Prearmed before the camera thread is created; retained until that thread is
-// joined. One acquisition producer and one serialized control-plane owner.
+// One acquisition producer and one serialized control-plane owner. Headless
+// retains this until thread join; GUI uses a stable MasterSourceSlot lease.
 class MasterAcquisitionJournal {
 public:
     explicit MasterAcquisitionJournal(MasterJournalOptions options,
@@ -28,11 +28,13 @@ public:
         Iteration(const Iteration&) = delete;
         Iteration& operator=(const Iteration&) = delete;
         bool Active() const noexcept { return active_; }
+        bool FirstRecordingIteration() const noexcept { return first_recording_; }
         void Submit(const MasterFrameFact& fact) noexcept;
     private:
         MasterAcquisitionJournal* owner_;
         bool active_ = false;
         bool entered_ = false;
+        bool first_recording_ = false;
     };
 
     void RequestStop() noexcept;
@@ -54,9 +56,11 @@ private:
     // admission/quiescence handshake. Do not weaken these two atomics alone.
     std::atomic<bool> stopping_{false}, in_iteration_{false}, stop_timed_out_{false};
     bool previously_active_ = false; // acquisition-thread only
+    bool ever_active_ = false; // fresh parent run, not a pause/resume boundary
 };
 
-// Installed once before threads start. Never mutate entries while they run.
+// Immutable membership within one recording. Headless installs before threads
+// start; GUI publishes the per-recording entries through stable source slots.
 class MasterAcquisitionSet {
 public:
     void Prepare(const MasterAcquisitionConfig& config,
@@ -66,9 +70,9 @@ public:
     void RequestStop() noexcept;
     bool SourceQuiescent() const noexcept;
     bool WaitForSourceStop(std::chrono::milliseconds timeout);
-    // After camera join; attempts every camera even if one seal fails.
+    // After source quiescence (or thread join); attempts every camera on failure.
     bool Finalize(bool normal_finish, std::string* error);
-    nlohmann::json StartEvidence() const;
+    nlohmann::json StartEvidence(const std::string& profile = "headless_acquisition_loop_v1") const;
     bool Enabled() const noexcept { return !entries_.empty(); }
 private:
     MasterAcquisitionConfig config_;

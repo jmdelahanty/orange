@@ -3575,6 +3575,16 @@ RecordingRunStartResult complete_recording_run(
                 : outcome.error_message);
     }
 
+    if (prepared.gui_registered_context_required &&
+        (!prepared.gui_registered_context_ready || !camera_control->master_frame_journals ||
+         !camera_control->master_frame_journals->Enabled() ||
+         !state || state->gui_master_frame_journals != camera_control->master_frame_journals)) {
+        stop_pending_recording_run_lifecycle(&outcome.external_crop_recorder_lifecycle);
+        stop_pending_recording_run_lifecycle(&outcome.external_recorder_lifecycle);
+        cleanup_failed_recording_run_start(state, camera_control, prepared.recording_folder);
+        return failed_recording_run_start_result(prepared, "required GUI registered context/master journal is not ready");
+    }
+
     // All callers must cross this create-once evidence gate before any frame
     // can be recorded. GUI callers seal earlier, before supervisor startup;
     // this idempotent check is the lifecycle-level fail-closed backstop.

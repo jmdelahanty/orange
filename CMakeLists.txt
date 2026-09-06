@@ -310,6 +310,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/incremental_clip_shadow.cpp"
     "${SRC_DIR}/gui/recording_finalizer.cpp"
     "${SRC_DIR}/gui/recording_panel.cpp"
+    "${SRC_DIR}/gui/registered_context_recording.cpp"
     "${SRC_DIR}/gui/recording_snapshots.cpp"
     "${SRC_DIR}/gui/session_status.cpp"
     "${SRC_DIR}/gui/session_status_render.cpp"
@@ -534,6 +535,7 @@ link_libraries(orange_project_warnings)
 add_library(orange_recording_master_journal STATIC
     "${SRC_DIR}/recording_master_journal.cpp"
     "${SRC_DIR}/recording_master_acquisition.cpp"
+    "${SRC_DIR}/gui_recording_evidence.cpp"
     "${SRC_DIR}/recording_master_crop_coverage.cpp"
     "${SRC_DIR}/recording_registered_context.cpp"
     "${SRC_DIR}/recording_daily_context_reuse.cpp"
@@ -575,6 +577,14 @@ if(BUILD_TESTING)
     target_link_libraries(daily_registered_context_tests PRIVATE orange_daily_registered_context)
     add_test(NAME daily_registered_context_tests COMMAND daily_registered_context_tests)
     set_tests_properties(daily_registered_context_tests PROPERTIES TIMEOUT 30)
+    add_executable(gui_registered_context_recording_tests
+        "tools/gui_registered_context_recording_tests.cpp"
+        "${SRC_DIR}/gui/registered_context_recording.cpp"
+        "${DIR_IMGUI}/imgui.cpp" "${DIR_IMGUI}/imgui_draw.cpp"
+        "${DIR_IMGUI}/imgui_tables.cpp" "${DIR_IMGUI}/imgui_widgets.cpp")
+    target_link_libraries(gui_registered_context_recording_tests PRIVATE orange_daily_registered_context)
+    add_test(NAME gui_registered_context_recording_tests COMMAND gui_registered_context_recording_tests)
+    set_tests_properties(gui_registered_context_recording_tests PROPERTIES TIMEOUT 30)
     add_executable(nic_thermal_monitor_tests
         "tools/nic_thermal_monitor_tests.cpp"
         "${SRC_DIR}/nic_thermal_monitor.cpp"

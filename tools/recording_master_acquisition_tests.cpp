@@ -1,4 +1,5 @@
 #include "recording_master_acquisition.h"
+#include "recording_master_source_slot.h"
 #include <fstream>
 #include <iostream>
 #include <future>
@@ -84,6 +85,7 @@ void observed_domain() {
     require(journal.Counters().offered == 0, "warmup became recording");
     {
         MasterAcquisitionJournal::Iteration active(&journal, true);
+        require(active.FirstRecordingIteration(), "first parent iteration was not marked");
         active.Submit(frame(1));
         auto rejected = frame(0);
         rejected.kind = MasterFactKind::received_unassigned;
@@ -99,7 +101,8 @@ void observed_domain() {
         active.Submit(failure);
     }
     { MasterAcquisitionJournal::Iteration pause(&journal, false); pause.Submit(frame(42)); }
-    { MasterAcquisitionJournal::Iteration resume(&journal, true); resume.Submit(frame(2)); }
+    { MasterAcquisitionJournal::Iteration resume(&journal, true);
+      require(!resume.FirstRecordingIteration(), "pause reset parent numbering"); resume.Submit(frame(2)); }
     // Clip rollover does not alter admission or parent frame numbering.
     { MasterAcquisitionJournal::Iteration next_clip(&journal, true); next_clip.Submit(frame(3)); }
     refuses([&] { journal.Finalize(true); });
@@ -176,6 +179,13 @@ void required_parent_gate() {
     require(accepted.at("status") == "completed" && accepted.at("master_frame_journal").at("status") == "complete",
             "complete parent refused");
     require(accepted.at("master_frame_journal").at("cameras").size() == 2, "one camera omitted");
+    put_json(fixture.root / "recording_snapshot_start.json",
+        {{"session", {{"master_frame_journal", set.StartEvidence("gui_acquisition_loop_v1")}}}});
+    auto gui = parent;
+    ApplyRequiredMasterJournalGate(fixture.root, &gui);
+    require(gui.at("status") == "completed" && gui.at("master_frame_journal").at("profile") == "gui_acquisition_loop_v1",
+        "GUI profile rejected or mislabeled");
+    refuses([&] { set.StartEvidence("unknown-profile"); });
     const auto descriptor_path = fixture.root / "Cam2010094_master_frames_v1.json";
     json original_descriptor;
     { std::ifstream in(descriptor_path); in >> original_descriptor; }
@@ -226,6 +236,56 @@ void empty_disabled_and_interrupted() {
     std::string error;
     require(!interrupted.Finalize(false, &error) && !error.empty(), "interruption accepted");
 }
+void gui_slot_tail_and_rearm() {
+    MasterSourceSlot slot;
+    { MasterSourceSlot::Lease idle(&slot); require(!idle.Get(), "disabled slot is active"); }
+    for (int run = 0; run < 100; ++run) {
+        Fixture f;
+        auto journal = std::make_unique<MasterAcquisitionJournal>(f.options());
+        slot.Attach(journal.get());
+        std::promise<void> entered, release;
+        auto ready = entered.get_future(); auto finish = release.get_future();
+        std::thread source([&] {
+            MasterSourceSlot::Lease lease(&slot);
+            MasterAcquisitionJournal::Iteration iteration(lease.Get(), true);
+            entered.set_value(); finish.wait(); iteration.Submit(frame(1));
+        });
+        ready.wait(); journal->RequestStop(); slot.Detach();
+        const bool retired_too_early = slot.Idle();
+        bool refused_attach = false;
+        try { slot.Attach(journal.get()); } catch (const std::exception&) { refused_attach = true; }
+        release.set_value(); source.join();
+        require(!retired_too_early && refused_attach, "live GUI source storage was reusable");
+        require(slot.Idle() && journal->SourceQuiescent(), "GUI source lease leaked");
+        require(journal->Finalize(true).at("source").at("assigned_frame_offers") == 1,
+            "GUI tail lost or another run's frame leaked");
+        journal.reset();
+        { MasterSourceSlot::Lease inactive(&slot); require(!inactive.Get(), "retired journal leaked into idle stream"); }
+    }
+}
+void gui_slot_streaming_replacement_stress() {
+    MasterSourceSlot slot;
+    std::atomic<bool> done{false};
+    std::thread source([&] {
+        while (!done.load()) {
+            MasterSourceSlot::Lease lease(&slot);
+            MasterAcquisitionJournal::Iteration iteration(lease.Get(), false);
+        }
+    });
+    for (int run = 0; run < 100; ++run) {
+        Fixture f;
+        auto journal = std::make_unique<MasterAcquisitionJournal>(f.options());
+        // A late, non-dereferencing hazard publication may briefly keep Idle
+        // false after a detach; retirement always waits it out before rearm.
+        while (!slot.Idle()) std::this_thread::yield();
+        slot.Attach(journal.get());
+        journal->RequestStop(); slot.Detach();
+        while (!slot.Idle()) std::this_thread::yield();
+        journal.reset();
+    }
+    done.store(true); source.join();
+    require(slot.Idle(), "streaming replacement leaked source hazard");
+}
 }
 int main() {
     try {
@@ -235,7 +295,9 @@ int main() {
         exceptional_exit_and_timeout();
         required_parent_gate();
         empty_disabled_and_interrupted();
-        std::cout << "6 master acquisition integration groups passed\n";
+        gui_slot_tail_and_rearm();
+        gui_slot_streaming_replacement_stress();
+        std::cout << "8 master acquisition integration groups passed\n";
         return 0;
     } catch (const std::exception& ex) { std::cerr << ex.what() << '\n'; return 1; }
 }

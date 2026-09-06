@@ -4,6 +4,7 @@
 #include "external_recorder_lifecycle.h"
 #include "nic_thermal_monitor.h"
 #include "json.hpp"
+#include "recording_master_acquisition.h"
 
 #include <atomic>
 #include <chrono>
@@ -160,6 +161,8 @@ struct GuiRecordingFinalizeInputs {
     GuiRecordingRunState run;
     bool external_ipc = false;
     bool recording_session_available = false;
+    std::shared_ptr<orange::recording::MasterAcquisitionSet> master_frame_journals;
+    int context_housekeeping_cpu = -1;
     bool crop_external_recorder_active = false;
     std::vector<GuiRecordingFinalizeCameraSnapshot> cameras;
     int crop_size_px = 0;

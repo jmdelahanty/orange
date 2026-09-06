@@ -30,6 +30,8 @@ struct RecordingSessionState {
     std::vector<ResolvedRecordingConfig> resolved_recording_configs;
     std::string recording_sink_mode = "real";
     RecordingControlConfig gui_recording_control;
+    std::shared_ptr<orange::recording::MasterAcquisitionSet> gui_master_frame_journals;
+    int gui_context_housekeeping_cpu = -1;
     std::string external_recorder_config_status;
     std::string external_recorder_contract_source;
     nlohmann::json external_recorder_contract_config = nlohmann::json::object();
@@ -101,6 +103,8 @@ struct PreparedRecordingRunStart {
     // Normalized sink mode used for the latest-recording snapshot refresh.
     std::string normalized_sink_mode;
     bool external_recorder_requested = false;
+    bool gui_registered_context_required = false;
+    bool gui_registered_context_ready = false;
     bool external_crop_recorder_requested = false;
     orange::external_recorder::SupervisedRecorderLifecycleOptions
         external_recorder_lifecycle_options;

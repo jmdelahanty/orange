@@ -1,4 +1,6 @@
 #include "daily_registered_context.h"
+#include "gui_recording_evidence.h"
+#include <sched.h>
 #include "gui/spatial_layout/sha256.h"
 #include <fstream>
 #include <functional>
@@ -249,10 +251,87 @@ void daily_reader_closed_schema() {
         refuses([&] { ReadDailyRegisteredContext(f.plan.output_root, {"context.json", fs::file_size(path), sha}); });
     }
 }
+int available_cpu() {
+    cpu_set_t cpus; CPU_ZERO(&cpus);
+    check(sched_getaffinity(0, sizeof(cpus), &cpus) == 0, "read affinity failed");
+    for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) if (CPU_ISSET(cpu, &cpus)) return cpu;
+    throw std::runtime_error("no allowed CPU");
+}
+void gui_config_and_required_evidence() {
+    using namespace orange::recording;
+    ReuseFixture f;
+    f.config["worker_cpu_ids"] = {available_cpu()};
+    MasterAcquisitionConfig master; master.enabled = true; master.writer_cpu_ids = {available_cpu()};
+    json config = {{"schema_version", 1}, {"enabled", true}, {"master_frame_journal", master.ToJson()},
+                   {"registered_scene_context", f.config}};
+    const auto parsed = GuiRecordingEvidenceConfig::Parse(config);
+    check(GuiRecordingEvidenceConfig::Parse(parsed.ToJson()).ToJson() == parsed.ToJson(), "GUI config roundtrip changed");
+    check(!GuiRecordingEvidenceConfig::Parse({{"schema_version", 1}, {"enabled", false}}).enabled, "GUI default enabled");
+    const auto settings = f.root / "app.json";
+    check(!ReadGuiRecordingEvidenceConfig(settings).enabled, "absent app config enabled GUI evidence");
+    const json unrelated = {{"storage", {{"recording_root", "/untouched"}}},
+        {"recording", {{"sink_mode", "external_ipc"}, {"clip_seconds", 5}}}};
+    put(settings, unrelated);
+    SaveGuiRecordingEvidenceConfig(settings, parsed);
+    check(ReadGuiRecordingEvidenceConfig(settings).ToJson() == parsed.ToJson(), "saved GUI settings did not reload");
+    const auto stored = get(settings);
+    check(stored.at("storage") == unrelated.at("storage") && stored.at("recording").at("sink_mode") == "external_ipc" &&
+        stored.at("recording").at("clip_seconds") == 5, "context save changed other recording settings");
+    auto disabled = parsed; disabled.enabled = false;
+    SaveGuiRecordingEvidenceConfig(settings, disabled);
+    check(!ReadGuiRecordingEvidenceConfig(settings).enabled &&
+        ReadGuiRecordingEvidenceConfig(settings).context.ToJson() == parsed.context.ToJson(), "disable lost saved context selection");
+    auto invalid = stored; invalid["recording"]["registered_context_recording"]["enabled"] = "true";
+    put(settings, invalid);
+    refuses([&] { ReadGuiRecordingEvidenceConfig(settings); });
+    SaveGuiRecordingEvidenceConfig(settings, parsed); // explicit operator repair of this field
+    for (int i = 0; i < 9; ++i) {
+        auto bad = config;
+        if (i == 0) bad["typo"] = true;
+        if (i == 1) bad["schema_version"] = true;
+        if (i == 2) bad["schema_version"] = 4294967297ULL;
+        if (i == 3) bad["enabled"] = 1;
+        if (i == 4) bad.erase("master_frame_journal");
+        if (i == 5) bad["master_frame_journal"]["enabled"] = false;
+        if (i == 6) bad["registered_scene_context"]["source"] = {{"kind", "fresh_capture"}};
+        if (i == 7) bad["registered_scene_context"]["source"]["scene_unchanged_since_capture"] = false;
+        if (i == 8) bad["master_frame_journal"]["writer_cpu_ids"] = json::array();
+        refuses([&] { GuiRecordingEvidenceConfig::Parse(bad); });
+    }
+    GuiRecordingEvidence evidence;
+    evidence.Prepare(parsed, f.recording_root, f.cameras, f.plan.geometry);
+    check(evidence.artifacts.at("gui_registered_context_recording") == parsed.ToJson(), "resolved GUI config missing");
+    put(f.recording_root / "recording_snapshot_start.json", {{"session", evidence.artifacts}});
+    json parent = {{"session_id", f.recording_root.filename().string()}, {"status", "completed"}};
+    auto unsealed = parent;
+    ApplyRequiredMasterJournalGate(f.recording_root, &unsealed);
+    check(unsealed.at("status") == "failed", "unsealed GUI journal accepted");
+    for (const auto& camera : f.cameras) {
+        auto* journal = evidence.journals->Find(camera.serial);
+        check(journal->ProducerInstanceId() != camera.producer_instance_id, "GUI retained old producer identity");
+        MasterFrameFact frame; frame.recording_frame_id = 1;
+        frame.local_frame_id = 912; frame.local_frame_id_present = true;
+        frame.camera_frame_id = 1704; frame.camera_frame_id_present = true;
+        frame.camera_timestamp_ns = 1800000000000001234ULL; frame.camera_timestamp_present = true;
+        MasterAcquisitionJournal::Iteration iteration(journal, true); iteration.Submit(frame);
+    }
+    std::string error;
+    check(evidence.journals->Finalize(true, &error), "GUI journal did not seal");
+    ApplyRequiredMasterJournalGate(f.recording_root, &parent);
+    ApplyRequiredRegisteredContextGate(f.recording_root, &parent);
+    if (parent.at("status") != "completed") std::cerr << parent.dump(2) << '\n';
+    check(parent.at("status") == "completed" && parent.at("registered_scene_context").at("status") == "captured",
+        "GUI context and master evidence did not complete together");
+    // Finalization no longer depends on the original daily directory.
+    fs::rename(f.plan.output_root, f.root / "daily_moved");
+    ApplyRequiredRegisteredContextGate(f.recording_root, &parent);
+    check(parent.at("status") == "completed", "GUI finalization depended on external daily asset");
+}
 }
 int main() {
     try { success_and_custody(); selection_and_geometry_refusal(); input_refusal(); immutable_source_refusal();
         reuse_lifecycle(); reuse_admission_refusal(); reuse_finalization_refusal(); daily_reader_closed_schema();
-        std::cout << "8 daily native context/cross-recording reuse CPU groups passed\n"; return 0;
+        gui_config_and_required_evidence();
+        std::cout << "9 daily native context/cross-recording reuse/GUI CPU groups passed\n"; return 0;
     } catch (const std::exception& ex) { std::cerr << ex.what() << '\n'; return 1; }
 }

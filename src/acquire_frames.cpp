@@ -1678,13 +1678,30 @@ void acquire_frames(
     static thread_local int copy_prof_count = 0;
 #endif
 
-    // Stable prearm ownership; no map lookup, refcount or lock per frame.
-    auto* master_journal = camera_control->master_frame_journals
+    // GUI slot membership is immutable until camera thread join. Headless keeps
+    // its original pre-thread owner; never read the GUI shared_ptr from here.
+    const auto master_slot_it = camera_control->gui_master_sources.find(camera_params->camera_serial);
+    auto* master_slot = master_slot_it == camera_control->gui_master_sources.end()
+        ? nullptr : master_slot_it->second.get();
+    auto* headless_master_journal = !master_slot && camera_control->master_frame_journals
         ? camera_control->master_frame_journals->Find(camera_params->camera_serial) : nullptr;
     bool startup_first_frame_reported = false;
     while (camera_control->subscribe) {
+        // Read arm before the slot: observing a newly armed GUI run then also
+        // observes its published journal. An iteration begun before arm must
+        // not record an unjournaled frame using a later record_video load.
+        const bool recording_at_iteration_start = camera_control->record_video.load();
+        orange::recording::MasterSourceSlot::Lease master_lease(master_slot);
+        auto* master_journal = master_slot ? master_lease.Get() : headless_master_journal;
         orange::recording::MasterAcquisitionJournal::Iteration master_iteration(
-            master_journal, camera_control->record_video.load());
+            master_journal, recording_at_iteration_start);
+        if (master_iteration.FirstRecordingIteration()) {
+            // GUI streams need not receive an idle frame between experiments.
+            // A fresh parent journal resets numbering even in that case; pause
+            // and clip boundaries within the same parent never reset it.
+            local_recording_frame_count = 0;
+            last_recording_frame_count = 0;
+        }
         NVTX_RANGE_PUSH("Frame_Processing_Loop");
 
 #if PIPELINE_PROFILE
@@ -1950,7 +1967,8 @@ void acquire_frames(
                     display_preview_skipped_frames++;
                 }
             }
-            bool will_record = ((master_journal ? master_iteration.Active() : camera_control->record_video.load()) && recording_ingress);
+            bool will_record = ((master_journal ? master_iteration.Active() :
+                ((!master_slot || recording_at_iteration_start) && camera_control->record_video.load())) && recording_ingress);
             bool yolo_enabled = (camera_select->yolo && yolo_worker);
             if (yolo_enabled && !last_yolo_enabled) {
                 yolo_decimate_counter = 0;
@@ -1997,7 +2015,8 @@ void acquire_frames(
             }
 
             // If recording is active, increment and assign the recording-specific frame ID
-            if (master_journal ? master_iteration.Active() : camera_control->record_video.load()) {
+            if (master_journal ? master_iteration.Active() :
+                ((!master_slot || recording_at_iteration_start) && camera_control->record_video.load())) {
                 current_entry->recording_frame_id = ++local_recording_frame_count;
                 master_received.kind = orange::recording::MasterFactKind::assigned_frame;
                 master_received.reject_reason = orange::recording::MasterRejectReason::none;

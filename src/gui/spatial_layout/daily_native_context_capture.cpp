@@ -1,4 +1,5 @@
 #include "gui/spatial_layout/daily_native_context_capture.h"
+#include "gui/registered_context_recording.h"
 #include "daily_registered_context.h"
 #include "registered_context_camera_configuration.h"
 #include "citrus_recording_geometry.h"
@@ -223,18 +224,23 @@ void render_daily_native_context_capture(SpatialLayoutUiState* ui, const CameraP
     if (!capture.error.empty()) ImGui::TextWrapped("Error: %s", capture.error.c_str());
     if (!capture.saved_path.empty()) {
         ImGui::TextWrapped("Context descriptor: %s", capture.saved_path.c_str());
-        ImGui::TextWrapped("This daily asset is not automatically selected for recording. Headless v2 can explicitly reuse it; v1 still captures fresh.");
+        ImGui::TextWrapped("Select this daily asset for normal GUI/Citrus recording, or copy its headless v2 configuration.");
         ImGui::BeginDisabled(capture.active || recording_locked);
         ImGui::Checkbox("Scene unchanged since this capture for the next recording", &capture.reuse_confirmed);
         ImGui::BeginDisabled(!capture.reuse_confirmed);
-        if (ImGui::Button("Copy Headless Context Configuration")) {
+        const bool select_gui = ImGui::Button("Use Context for GUI Recording");
+        ImGui::SameLine();
+        if (ImGui::Button("Copy Headless Context Configuration") || select_gui) {
             json config = {{"schema_version", 2}, {"enabled", true}, {"timeout_ms", 10000},
                 {"worker_cpu_ids", {capture.plan.housekeeping_cpu}}, {"declaration", capture.plan.declaration},
                 {"source", {{"kind", "daily_registration"}, {"descriptor_path", capture.saved_path},
                     {"size_bytes", capture.saved_descriptor_ref.at("size_bytes")}, {"sha256", capture.saved_descriptor_ref.at("sha256")},
                     {"scene_unchanged_since_capture", true}}}};
-            const auto fragment = json({{"registered_scene_context", config}}).dump(2);
-            ImGui::SetClipboardText(fragment.c_str());
+            if (select_gui) orange::gui::SelectDailyContextForGuiRecording(config);
+            else {
+                const auto fragment = json({{"registered_scene_context", config}}).dump(2);
+                ImGui::SetClipboardText(fragment.c_str());
+            }
             capture.reuse_confirmed = false;
         }
         ImGui::EndDisabled(); ImGui::EndDisabled();
