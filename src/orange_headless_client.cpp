@@ -1,4 +1,5 @@
 #include <algorithm>
+#include "recording_master_crop_coverage.h"
 #include <atomic>
 #include <array>
 #include <chrono>
@@ -17,6 +18,7 @@
 #include <limits>
 #include <mutex>
 #include <numeric>
+#include <set>
 #include <sstream>
 #include <thread>
 #include <unordered_map>
@@ -3851,6 +3853,7 @@ struct HeadlessCropAccounting {
     uint64_t queue_full_drops = 0;
     uint64_t encoded_frames = 0;
     uint64_t dropped_frames = 0;
+    bool finalization_failed = false;
 };
 std::map<std::string, HeadlessCropAccounting> g_headless_crop_accounting;
 
@@ -3868,12 +3871,13 @@ void stop_headless_pose_pipeline(
     for (auto& worker : g_headless_crop_encode_workers) {
         if (worker) {
             worker->StopThread();
+            HeadlessCropAccounting acct;
             try {
                 worker->finalize_recording();
             } catch (const std::exception& ex) {
                 std::cerr << "Headless crop recording finalization failed: " << ex.what() << std::endl;
+                acct.finalization_failed = true;
             }
-            HeadlessCropAccounting acct;
             acct.jobs_enqueued = worker->jobs_enqueued_total();
             acct.queue_full_drops = worker->queue_full_drops_total();
             acct.encoded_frames = worker->encoded_frames_total();
@@ -4444,6 +4448,14 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     const orange::recording::MasterAcquisitionConfig& master_config = {})
 {
     std::cout << "start camera sthread..." << std::endl;
+    if (master_config.enabled && crop_recording_config.enabled() &&
+        (!crop_recording_config.external() || !yolo_worker_config.enabled() || yolo_worker_config.decimate != 1 ||
+         pose_worker_config.synthetic_runtime_detection_enabled() ||
+         recording_sink_mode != "external_ipc" || !external_recorder_contract ||
+         !external_recorder_contract->supervise_processes)) {
+        std::cerr << "master journal moving crops require supervised external recording and real full-rate YOLO" << std::endl;
+        return false;
+    }
     if (crop_recording_config.enabled() && !yolo_worker_config.enabled()) {
         std::cerr << "fixed.crop_recording requires fixed.yolo_worker (crops are cut from detections)." << std::endl;
         return false;
@@ -5075,8 +5087,11 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                 for (int idx : selected_indices) master_serials.push_back(cameras_params[idx].camera_serial);
                 camera_control->master_frame_journals = std::make_shared<orange::recording::MasterAcquisitionSet>();
                 camera_control->master_frame_journals->Prepare(master_config, record_folder, master_serials);
+                nlohmann::json master_artifacts = {{"master_frame_journal", camera_control->master_frame_journals->StartEvidence()}};
+                if (crop_recording_config.enabled()) master_artifacts["moving_crop_master_coverage"] = {
+                    {"schema_version", 1}, {"required", true}, {"profile", "external_moving_crop_full_rate_v1"}};
                 if (!update_recording_snapshot_session_artifacts(record_folder,
-                        {{"master_frame_journal", camera_control->master_frame_journals->StartEvidence()}})) {
+                        master_artifacts)) {
                     throw std::runtime_error("cannot publish required master journal prearm evidence");
                 }
             }
@@ -8266,6 +8281,14 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         if (error_out) *error_out = "master_frame_journal v1 requires a timed headless recording";
         return false;
     }
+    if (spec->master_frame_journal.enabled && spec->crop_recording.enabled() &&
+        (!spec->crop_recording.external() || !spec->yolo_worker.enabled() || spec->yolo_worker.decimate != 1 ||
+         spec->pose_worker.synthetic_runtime_detection_enabled() ||
+         spec->recording_sink_mode != "external_ipc" || !spec->external_recorder_contract.enabled() ||
+         !spec->external_recorder_contract.supervise_processes)) {
+        if (error_out) *error_out = "master journal moving crops require supervised external recording and real full-rate YOLO";
+        return false;
+    }
     if (spec->stream_only && spec->recording_control.enabled()) {
         if (error_out) {
             *error_out =
@@ -9324,6 +9347,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     orange::external_recorder::SupervisedRecorderLifecycleState external_crop_recorder_lifecycle;
     auto stop_supervised_external_recorder = [&]() {
         std::string stop_error;
+        bool crop_stop_ok = true;
         if (external_crop_recorder_lifecycle.started) {
             std::string crop_stop_error;
             const bool crop_stopped = orange::external_recorder::StopSupervisedRecorderLifecycle(
@@ -9334,6 +9358,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
                 external_crop_recorder_lifecycle.last_artifact_error.clear();
             }
             if (!crop_stopped) {
+                crop_stop_ok = false;
                 std::cerr << "External crop recorder supervisor shutdown failed: "
                           << crop_stop_error << std::endl;
             }
@@ -9349,7 +9374,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             std::cerr << "External recorder supervisor shutdown failed: "
                       << stop_error << std::endl;
         }
-        return stopped;
+        return stopped && crop_stop_ok;
     };
     if (supervise_external_recorder) {
         const char* verifier_env = std::getenv("ORANGE_EXTERNAL_RECORDER_VERIFY_SCRIPT");
@@ -10099,7 +10124,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     // offered and not encoded is a hole in the crop video, the same class as
     // a cap skip. Fails the run regardless of policy.
     for (const auto& [serial, acct] : g_headless_crop_accounting) {
-        const bool lost = acct.dropped_frames > 0 || acct.queue_full_drops > 0 ||
+        const bool lost = acct.finalization_failed || acct.dropped_frames > 0 || acct.queue_full_drops > 0 ||
                           acct.encoded_frames != acct.jobs_enqueued;
         if (lost) {
             std::cerr << "Crop pipeline for camera " << serial << " lost crops:"
@@ -10108,6 +10133,32 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
                       << " dropped=" << acct.dropped_frames
                       << " queue_full_drops=" << acct.queue_full_drops << std::endl;
             external_crop_recorder_ok = false;
+        }
+    }
+
+    if (options.master_frame_journal.enabled && options.crop_recording.enabled()) {
+        std::set<std::string> completed_crop_cameras;
+        for (const auto& stream : crop_recorder_streams) {
+            try {
+                if (!completed_crop_cameras.insert(stream.camera_serial).second)
+                    throw std::runtime_error("duplicate external crop stream for camera");
+                const auto acct = g_headless_crop_accounting.find(stream.camera_serial);
+                if (acct == g_headless_crop_accounting.end())
+                    throw std::runtime_error("missing crop worker shutdown accounting");
+                const auto summary_relative = std::filesystem::path(stream.summary_json).lexically_relative(active_record_folder);
+                orange::recording::FinalizeMovingCropMetadata(active_record_folder, stream.camera_serial, summary_relative,
+                    master_journal_ok && external_recorder_stop_ok && external_crop_recorder_ok &&
+                    !quit_server && !thread_failure_state.has_failure() && !acct->second.finalization_failed);
+            } catch (const std::exception& ex) {
+                external_crop_recorder_ok = false;
+                std::cerr << "Moving crop master coverage failed for " << stream.camera_serial << ": " << ex.what() << std::endl;
+            }
+        }
+        for (int idx : selected_inventory_indices) {
+            if (!completed_crop_cameras.count(cameras_params[idx].camera_serial)) {
+                external_crop_recorder_ok = false;
+                std::cerr << "Missing required moving crop stream for " << cameras_params[idx].camera_serial << std::endl;
+            }
         }
     }
 

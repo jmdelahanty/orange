@@ -28,10 +28,29 @@ def main():
     ]:
         cases.append((name, {**valid, **update}, False))
     cases.extend([("untimed", valid, False), ("stream_only", valid, False)])
+    cases.extend((name, valid, accepted) for name, accepted in [
+        ("crop_fullrate", True), ("crop_rolling", True), ("crop_decimated", False),
+        ("crop_native", False), ("crop_detector_off", False), ("crop_unsupervised", False),
+        ("crop_synthetic", False)])
     with tempfile.TemporaryDirectory(prefix="orange_master_spec_") as tmp:
         directory = Path(tmp)
         for name, config, accepted in cases:
             spec = copy.deepcopy(base)
+            if name.startswith("crop_"):
+                spec = json.loads((root / "experiment_specs/threecam_detect_latency_levers_gate_registered_crop_synthetic_interleave.json").read_text())
+                spec["fixed"].pop("pose_worker", None)
+                if name == "crop_rolling":
+                    spec["fixed"]["recording_control"]["clip_seconds"] = 10
+                if name == "crop_decimated":
+                    spec["fixed"]["yolo_worker"]["decimate"] = 2
+                if name == "crop_native":
+                    spec["fixed"]["crop_recording"]["mode"] = "in_process"
+                if name == "crop_detector_off":
+                    spec["fixed"].pop("yolo_worker")
+                if name == "crop_unsupervised":
+                    spec["fixed"]["external_recorder_contract"]["supervise_processes"] = False
+                if name == "crop_synthetic":
+                    spec["fixed"]["pose_worker"] = {"mode": "noop", "roi_source": "synthetic_center_box"}
             spec["fixed"]["output_root"] = str(directory / "must_not_be_created")
             if config is not None:
                 spec["fixed"]["master_frame_journal"] = config

@@ -114,7 +114,10 @@ general untrusted external loader or a substitute for JSON Schema-engine validat
 The closed new schemas remain candidate contracts pending downstream agreement.
 Journal-complete means durable offered source facts; it does not mean lossless
 hardware acquisition, encoded-media success, dense IDs, crop parity or physical
-timing certification. The existing crop correspondence utility is still offline.
+timing certification. The follow-up
+[moving-crop metadata completion slice](moving_crop_master_metadata_completion_2026-09-06.md)
+now wires the crop correspondence utility into stopped headless finalization;
+encoded-media certification and crop-only media selection remain separate.
 
 ## Validation and remaining work
 
@@ -135,9 +138,12 @@ It uses synthetic scalar frames, no camera or CUDA calls.
 - [ ] Media-policy separation: full-frame-only, full-frame plus moving crops,
   registered context plus moving crops without continuous full-frame encoding.
 - [ ] Reuse accepted context capture from the ROI branch without unrelated merge.
-- [ ] Wire master-to-moving-crop clip coverage into finalizers, alongside inference
-  status, container/returned-identity and shared packet telemetry checks.
-- [ ] Enforce full-rate detector/crop admission and account for upstream crop losses.
+- [x] Wire master-to-moving-crop metadata coverage and real inference-status
+  checks into the opt-in headless external-crop finalizer.
+- [x] Enforce full-rate detector/crop admission for that metadata profile; reject
+  missing crop rows and source tails against the independent master.
+- [ ] Join final recorder-returned identities and container/media checks into
+  the master-to-crop proof, including native writer failure propagation.
 - [ ] Reviewed external loader, consumer/profile agreement and transfer inventory.
 - [ ] Controlled moving-crop-only headless run, including measured scheduling,
   queue occupancy, drops and latency; then consider deployment/defaults.
@@ -145,7 +151,8 @@ It uses synthetic scalar frames, no camera or CUDA calls.
 See [the foundation contract](master_frame_journal_first_slice_2026-09-06.md) and
 Citrus `docs/detection_crop_only_master_frame_record_plan_2026-09-06.md`.
 
-Validation completed in the isolated `/tmp/orange-timing-build-20260906` build:
+Validation of the acquisition slice (`8c6de2a`) in the isolated
+`/tmp/orange-timing-build-20260906` build (follow-up results are in the link above):
 
 - GUI `orange` and headless `orange_client` builds passed with the installed toolchain.
 - Nine focused CTest suites passed: journal, acquisition integration, packet

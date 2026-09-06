@@ -25,4 +25,24 @@ nlohmann::json CheckMovingCropMetadataCoverage(
     const std::filesystem::path& recording_root,
     const nlohmann::json& finalized_master,
     const std::vector<MovingCropClipMetadata>& clips);
+
+// Control-plane checks only, after acquisition, detector logging, crop workers,
+// and the external recorder have drained. This is a necessary metadata gate,
+// not a substitute for returned-identity, container or decoded-media validation.
+// Creates clip-local metadata projections and a create-once receipt; never edits
+// the original crop CSV or recorder files. Throws on incomplete evidence.
+nlohmann::json FinalizeMovingCropMetadata(
+    const std::filesystem::path& recording_root,
+    const std::string& camera_serial,
+    const std::filesystem::path& recorder_summary_relative_path,
+    bool workers_and_recorder_stopped_normally);
+
+// Parent finalizer gate. Rechecks bound artifacts, camera/parent/producer identity
+// and clip membership against the current complete master descriptor. Returns
+// the receipt reference; throws if missing, incomplete or mutated.
+nlohmann::json RequireMovingCropMetadataReceipt(
+    const std::filesystem::path& recording_root,
+    const nlohmann::json& finalized_master);
+void ApplyRequiredMovingCropMetadataGate(
+    const std::filesystem::path& recording_root, nlohmann::json* parent_manifest);
 }
