@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Moving-crop metadata correspondence v1 (candidate; not media finalization)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "status",
+    "recording_id",
+    "camera_serial",
+    "producer_instance_id",
+    "stream_generation",
+    "authority",
+    "media_finalization_evaluated",
+    "master_csv",
+    "master_record_sha256",
+    "master_record_digest_domain",
+    "assigned_frames",
+    "crop_rows",
+    "clips",
+    "correspondence_sha256",
+    "correspondence_digest_domain"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "orange.recording.moving_crop_metadata_correspondence"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "const": "matched"
+    },
+    "recording_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "camera_serial": {
+      "type": "string",
+      "minLength": 1
+    },
+    "producer_instance_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stream_generation": {
+      "type": "integer",
+      "minimum": 0,
+        "maximum": 18446744073709551615
+    },
+    "authority": {
+      "const": "master_and_crop_metadata_rows_only"
+    },
+    "media_finalization_evaluated": {
+      "const": false
+    },
+    "master_csv": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relative_path",
+        "size_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "relative_path": {
+          "type": "string",
+          "pattern": "^(?![\\s\\S]*(?:^|/)\\.\\.?(?:/|(?![\\s\\S])))[^/\\\\\\u0000-\\u001f]+(?:/[^/\\\\\\u0000-\\u001f]+)*(?![\\s\\S])"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+        "maximum": 18446744073709551615
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+        }
+      }
+    },
+    "master_record_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+    },
+    "master_record_digest_domain": {
+      "const": "nlohmann_sorted_compact_json_utf8_no_lf"
+    },
+    "assigned_frames": {
+      "type": "integer",
+      "minimum": 1,
+        "maximum": 18446744073709551615
+    },
+    "crop_rows": {
+      "type": "integer",
+      "minimum": 1,
+        "maximum": 18446744073709551615
+    },
+    "clips": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "clip_id",
+          "clip_index",
+          "metadata",
+          "row_count",
+          "first_session_crop_video_frame_index",
+          "last_session_crop_video_frame_index"
+        ],
+        "properties": {
+          "clip_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "clip_index": {
+            "type": "integer",
+            "minimum": 0,
+        "maximum": 18446744073709551615
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "relative_path",
+              "size_bytes",
+              "sha256"
+            ],
+            "properties": {
+              "relative_path": {
+                "type": "string",
+                "pattern": "^(?![\\s\\S]*(?:^|/)\\.\\.?(?:/|(?![\\s\\S])))[^/\\\\\\u0000-\\u001f]+(?:/[^/\\\\\\u0000-\\u001f]+)*(?![\\s\\S])"
+              },
+              "size_bytes": {
+                "type": "integer",
+                "minimum": 0,
+        "maximum": 18446744073709551615
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+              }
+            }
+          },
+          "row_count": {
+            "type": "integer",
+            "minimum": 1,
+        "maximum": 18446744073709551615
+          },
+          "first_session_crop_video_frame_index": {
+            "type": "integer",
+            "minimum": 0,
+        "maximum": 18446744073709551615
+          },
+          "last_session_crop_video_frame_index": {
+            "type": "integer",
+            "minimum": 0,
+        "maximum": 18446744073709551615
+          }
+        }
+      }
+    },
+    "correspondence_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+    },
+    "correspondence_digest_domain": {
+      "const": "ascii_clip_index_local_index_session_index_recording_id_master_observation_index_comma_lf_v1"
+    }
+  }
+}

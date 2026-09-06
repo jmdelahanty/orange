@@ -530,6 +530,13 @@ target_include_directories(orange_project_warnings SYSTEM INTERFACE
 )
 link_libraries(orange_project_warnings)
 
+add_library(orange_recording_master_journal STATIC
+    "${SRC_DIR}/recording_master_journal.cpp"
+    "${SRC_DIR}/recording_master_crop_coverage.cpp")
+target_include_directories(orange_recording_master_journal PUBLIC ${ORANGE_COMMON_INCLUDE_DIRS})
+target_compile_features(orange_recording_master_journal PUBLIC cxx_std_17)
+target_link_libraries(orange_recording_master_journal PUBLIC Threads::Threads)
+
 add_executable(orange ${ORANGE_SOURCES})
 add_executable(orange_client EXCLUDE_FROM_ALL ${ORANGE_CLIENT_SOURCES})
 add_executable(yolo_offline EXCLUDE_FROM_ALL ${YOLO_OFFLINE_SOURCES})
@@ -598,6 +605,11 @@ if(BUILD_TESTING)
     target_include_directories(recording_packet_telemetry_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(recording_packet_telemetry_tests PRIVATE cxx_std_17)
     add_test(NAME recording_packet_telemetry_tests COMMAND recording_packet_telemetry_tests)
+
+    add_executable(recording_master_journal_tests "tools/recording_master_journal_tests.cpp")
+    target_link_libraries(recording_master_journal_tests PRIVATE orange_recording_master_journal)
+    add_test(NAME recording_master_journal_tests COMMAND recording_master_journal_tests)
+    set_tests_properties(recording_master_journal_tests PROPERTIES TIMEOUT 30)
 
     add_executable(recording_timing_evidence_tests "tools/recording_timing_evidence_tests.cpp")
     target_include_directories(recording_timing_evidence_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
