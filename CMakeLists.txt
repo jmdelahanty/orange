@@ -391,6 +391,7 @@ set(ORANGE_SOURCES
 
 set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/orange_headless_client.cpp"
+    "${SRC_DIR}/headless_registered_context.cpp"
     "${SRC_DIR}/headless_recording_profile.cpp"
     "${SRC_DIR}/network_base.cpp"
     "${SRC_DIR}/video_container_finalization.cpp"
@@ -533,7 +534,10 @@ link_libraries(orange_project_warnings)
 add_library(orange_recording_master_journal STATIC
     "${SRC_DIR}/recording_master_journal.cpp"
     "${SRC_DIR}/recording_master_acquisition.cpp"
-    "${SRC_DIR}/recording_master_crop_coverage.cpp")
+    "${SRC_DIR}/recording_master_crop_coverage.cpp"
+    "${SRC_DIR}/recording_registered_context.cpp"
+    "${SRC_DIR}/spatial_roi_session_authority_store.cpp"
+    "${SRC_DIR}/session/registered_scene_context_capture_declaration.cpp")
 target_include_directories(orange_recording_master_journal PUBLIC ${ORANGE_COMMON_INCLUDE_DIRS})
 target_compile_features(orange_recording_master_journal PUBLIC cxx_std_17)
 target_link_libraries(orange_recording_master_journal PUBLIC Threads::Threads)
@@ -608,6 +612,20 @@ if(BUILD_TESTING)
     add_test(NAME recording_packet_telemetry_tests COMMAND recording_packet_telemetry_tests)
 
     add_executable(recording_master_journal_tests "tools/recording_master_journal_tests.cpp")
+    add_executable(recording_registered_context_tests "tools/recording_registered_context_tests.cpp")
+    target_link_libraries(recording_registered_context_tests PRIVATE orange_recording_master_journal)
+    add_test(NAME recording_registered_context_tests COMMAND recording_registered_context_tests)
+    set_tests_properties(recording_registered_context_tests PROPERTIES TIMEOUT 30)
+    add_executable(registered_context_snapshot_tests
+        "tools/registered_context_snapshot_tests.cpp"
+        "${SRC_DIR}/spatial_snapshot_worker.cpp"
+        "${SRC_DIR}/offthreadmachine.cpp")
+    target_include_directories(registered_context_snapshot_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(registered_context_snapshot_tests PRIVATE cxx_std_17)
+    target_link_libraries(registered_context_snapshot_tests PRIVATE Threads::Threads ${CUDA_CUDART_LIBRARY}
+        ${OpenCV_LIBS} ${EVT_CAMERA_LIBRARY} ${EVT_GENICAM_LIBRARY} ${EVT_GIGE_LIBRARY})
+    add_test(NAME registered_context_snapshot_tests COMMAND registered_context_snapshot_tests)
+    set_tests_properties(registered_context_snapshot_tests PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77 LABELS "gpu")
     add_executable(recording_moving_crop_completion_tests "tools/recording_moving_crop_completion_tests.cpp")
     target_link_libraries(recording_moving_crop_completion_tests PRIVATE orange_recording_master_journal)
     add_test(NAME recording_moving_crop_completion_tests COMMAND recording_moving_crop_completion_tests)
@@ -1651,6 +1669,7 @@ endif()
 
 if(TARGET recording_session_drain_tests)
     target_link_libraries(recording_session_drain_tests PRIVATE
+        orange_recording_master_journal
         ${EVT_CAMERA_LIBRARY}
         ${EVT_GENICAM_LIBRARY}
         ${EVT_GIGE_LIBRARY}
@@ -1681,6 +1700,7 @@ endif()
 
 if(TARGET recording_session_phased_start_tests)
     target_link_libraries(recording_session_phased_start_tests PRIVATE
+        orange_recording_master_journal
         ${EVT_CAMERA_LIBRARY}
         ${EVT_GENICAM_LIBRARY}
         ${EVT_GIGE_LIBRARY}
@@ -1709,6 +1729,7 @@ if(TARGET recording_session_phased_start_tests)
     endif()
 
     target_link_libraries(recording_folder_reuse_regression_tests PRIVATE
+        orange_recording_master_journal
         ${EVT_CAMERA_LIBRARY}
         ${EVT_GENICAM_LIBRARY}
         ${EVT_GIGE_LIBRARY}

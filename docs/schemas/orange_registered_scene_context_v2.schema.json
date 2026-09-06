@@ -1,0 +1,280 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Candidate camera-native registered scene context v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "profile",
+    "status",
+    "recording_id",
+    "camera_binding",
+    "geometry_contract",
+    "scene_declaration",
+    "native_raster",
+    "source_frame",
+    "image"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "orange.recording.registered_scene_context"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 2
+    },
+    "profile": {
+      "const": "camera_native_mono8_pre_recording_v1"
+    },
+    "status": {
+      "const": "captured"
+    },
+    "recording_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "camera_binding": {
+      "$ref": "#/$defs/camera_binding"
+    },
+    "geometry_contract": {
+      "$ref": "#/$defs/geometry"
+    },
+    "scene_declaration": {
+      "allOf": [
+        {
+          "$ref": "orange_registered_context_capture_declaration_v1.schema.json"
+        },
+        {
+          "properties": {
+            "registration_authority_status": {
+              "const": "accepted_for_experiment"
+            }
+          }
+        }
+      ]
+    },
+    "native_raster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "width",
+        "height",
+        "stride_bytes",
+        "pixel_format",
+        "coordinate_space"
+      ],
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "stride_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "pixel_format": {
+          "const": "Mono8"
+        },
+        "coordinate_space": {
+          "const": "camera_native_pixels"
+        }
+      }
+    },
+    "source_frame": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "local_frame_id",
+        "camera_frame_id",
+        "recording_frame_id",
+        "camera_timestamp_ns",
+        "timestamp_sys_ns"
+      ],
+      "properties": {
+        "local_frame_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "camera_frame_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "recording_frame_id": {
+          "type": "integer",
+          "const": 0
+        },
+        "camera_timestamp_ns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "timestamp_sys_ns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
+    "image": {
+      "$ref": "#/$defs/image"
+    }
+  },
+  "$defs": {
+    "serial": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+    },
+    "identity": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "uint64": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "geometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relative_path",
+        "size_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "relative_path": {
+          "type": "string",
+          "pattern": "^registered_context_geometry_v1\\.json(?![\\s\\S])"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relative_path",
+        "size_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "relative_path": {
+          "type": "string",
+          "pattern": "^Cam[A-Za-z0-9_-]+_registered_context\\.raw(?![\\s\\S])"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+        }
+      }
+    },
+    "descriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relative_path",
+        "size_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "relative_path": {
+          "type": "string",
+          "pattern": "^Cam[A-Za-z0-9_-]+_registered_context_v2\\.json(?![\\s\\S])"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+        }
+      }
+    },
+    "camera_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "camera_serial",
+        "camera_id",
+        "producer_instance_id",
+        "stream_generation",
+        "width",
+        "height",
+        "registration_kind",
+        "descriptor_relative_path"
+      ],
+      "properties": {
+        "camera_serial": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+        },
+        "camera_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "producer_instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "stream_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "registration_kind": {
+          "enum": [
+            "orange_physical_registration",
+            "citrus_daily_registration"
+          ]
+        },
+        "descriptor_relative_path": {
+          "type": "string",
+          "pattern": "^Cam[A-Za-z0-9_-]+_registered_context_v2\\.json(?![\\s\\S])"
+        }
+      }
+    }
+  }
+}

@@ -1410,6 +1410,38 @@ void test_native_rolling_projection_opt_in_seals_existing_v1_authority()
     std::filesystem::remove_all(folder);
 }
 
+void test_required_registered_context_prevents_parent_completion()
+{
+    std::string temp = (std::filesystem::temp_directory_path() / "orange_context_parent_XXXXXX").string();
+    require(mkdtemp(temp.data()) != nullptr, "context parent fixture failed");
+    const std::filesystem::path folder(temp);
+    struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ec; std::filesystem::remove_all(path, ec); } } cleanup{folder};
+    // A required but missing/invalid context must survive a mutable refresh and
+    // fail through the real common manifest writer, not only the library seam.
+    const nlohmann::json camera_identity = {
+        {"schema_id", "orange.shaman_v2.camera_identity"}, {"schema_version", 1},
+        {"recording_id", folder.filename().string()},
+        {"canonicalization", "canonical_json_utf8_sort_keys_compact_v1"},
+        {"camera_bindings", nlohmann::json::array({{{"acquisition_camera_id", "2010096"},
+            {"camera_serial", "2010096"}, {"shaman_numeric_camera_id", 0}}})}};
+    { std::ofstream out(folder / "recording_snapshot_start.json");
+      out << nlohmann::json{{"shaman_v2_camera_identity", camera_identity},
+          {"shaman_v2_camera_identity_sha256", canonical_semantic_sha256(camera_identity)},
+          {"session", {{"registered_scene_context", {{"required", true}, {"schema_version", 1}}}}}}.dump(); }
+    { std::ofstream out(folder / "recording_snapshot.json"); out << "{}"; }
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "test"; options.session_id = folder.filename().string();
+    options.recording_folder = folder.string(); options.status = "completed";
+    options.cameras.push_back(make_camera_artifact("2010096", 1));
+    const auto manifest = orange::session::build_single_clip_recording_session_manifest(options);
+    std::string error;
+    const auto path = folder / "recording_session.json";
+    require(orange::session::write_recording_session_manifest(path.string(), manifest, &error), error);
+    const auto finalized = read_json(path);
+    require(finalized.at("status") == "failed" && finalized.at("registered_scene_context").at("status") == "failed",
+            "required context failure did not propagate through common parent writer");
+}
+
 }  // namespace
 
 int main()
@@ -1420,6 +1452,7 @@ int main()
     };
 
     const TestCase tests[] = {
+        {"required_registered_context_prevents_parent_completion", test_required_registered_context_prevents_parent_completion},
         {"native_rolling_projection_opt_in_seals_existing_v1_authority", test_native_rolling_projection_opt_in_seals_existing_v1_authority},
         {"native_metadata_seals_without_changing_v1_contract", test_native_metadata_seals_without_changing_v1_contract},
         {"clock_classification_requires_closed_successful_readbacks", test_clock_classification_requires_closed_successful_readbacks},

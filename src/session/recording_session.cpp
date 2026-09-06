@@ -1,5 +1,6 @@
 #include "session/recording_session.h"
 #include "recording_master_crop_coverage.h"
+#include "recording_registered_context.h"
 
 #include "citrus_recording_geometry.h"
 #include "external_recorder_contract_utils.h"
@@ -2753,6 +2754,7 @@ bool write_recording_session_manifest(const std::string& path,
     try {
         orange::recording::ApplyRequiredMasterJournalGate(manifest_path.parent_path(), &finalized_manifest);
         orange::recording::ApplyRequiredMovingCropMetadataGate(manifest_path.parent_path(), &finalized_manifest);
+        orange::recording::ApplyRequiredRegisteredContextGate(manifest_path.parent_path(), &finalized_manifest);
     } catch (const std::exception& ex) {
         if (error_out) *error_out = std::string("required master journal gate: ") + ex.what();
         return false;

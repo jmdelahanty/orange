@@ -1,5 +1,6 @@
 #include <algorithm>
 #include "recording_master_crop_coverage.h"
+#include "headless_registered_context.h"
 #include <atomic>
 #include <array>
 #include <chrono>
@@ -203,6 +204,7 @@ struct HeadlessExternalRecorderContractConfig {
 
 struct HeadlessCliOptions {
     orange::recording::MasterAcquisitionConfig master_frame_journal;
+    orange::recording::RegisteredContextConfig registered_scene_context;
     HeadlessMode mode = HeadlessMode::Remote;
     bool show_help = false;
     bool list_cameras = false;
@@ -237,6 +239,7 @@ struct HeadlessCliOptions {
 
 struct ExperimentSpec {
     orange::recording::MasterAcquisitionConfig master_frame_journal;
+    orange::recording::RegisteredContextConfig registered_scene_context;
     std::string source_path;
     nlohmann::json source_json = nlohmann::json::object();
     std::string experiment_id;
@@ -3949,7 +3952,8 @@ void shutdown_headless_run(std::vector<std::thread>& camera_threads,
                            CameraControl* camera_control,
                            PTPParams* ptp_params,
                            bool reset_ptp_state,
-                           const std::string& recording_sink_mode)
+                           const std::string& recording_sink_mode,
+                           orange::recording::HeadlessRegisteredContext* registered_context = nullptr)
 {
     if (camera_control) {
         if (camera_control->record_video ||
@@ -3973,6 +3977,7 @@ void shutdown_headless_run(std::vector<std::thread>& camera_threads,
     }
     camera_threads.clear();
 
+    if (registered_context) registered_context->Stop();
     stop_headless_yolo_workers(yolo_workers);
     stop_headless_pose_pipeline(crop_producer_workers, pose_workers);
 
@@ -4445,9 +4450,16 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     const HeadlessPoseWorkerConfig& pose_worker_config = HeadlessPoseWorkerConfig{},
     const HeadlessExternalRecorderContractConfig* external_recorder_contract = nullptr,
     const HeadlessCropRecordingConfig& crop_recording_config = HeadlessCropRecordingConfig{},
-    const orange::recording::MasterAcquisitionConfig& master_config = {})
+    const orange::recording::MasterAcquisitionConfig& master_config = {},
+    const orange::recording::RegisteredContextConfig& context_config = {},
+    orange::recording::HeadlessRegisteredContext* registered_context = nullptr)
 {
     std::cout << "start camera sthread..." << std::endl;
+    if (context_config.enabled && (!registered_context || !master_config.enabled || !enable_recording ||
+        !yolo_worker_config.enabled() || yolo_worker_config.decimate != 1 || pose_worker_config.synthetic_runtime_detection_enabled())) {
+        std::cerr << "registered_scene_context requires master journal, real full-rate YOLO and a prearm owner" << std::endl;
+        return false;
+    }
     if (master_config.enabled && crop_recording_config.enabled() &&
         (!crop_recording_config.external() || !yolo_worker_config.enabled() || yolo_worker_config.decimate != 1 ||
          pose_worker_config.synthetic_runtime_detection_enabled() ||
@@ -5095,6 +5107,26 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     throw std::runtime_error("cannot publish required master journal prearm evidence");
                 }
             }
+            if (context_config.enabled) {
+                std::vector<orange::recording::RegisteredContextCamera> bindings;
+                for (int idx : selected_indices) {
+                    const auto* master = camera_control->master_frame_journals->Find(cameras_params[idx].camera_serial);
+                    if (!master || cameras_params[idx].pixel_format != "Mono8")
+                        throw std::runtime_error("registered context requires a master-bound Mono8 camera");
+                    bindings.push_back({cameras_params[idx].camera_serial, master->ProducerInstanceId(),
+                        static_cast<uint64_t>(cameras_params[idx].camera_id), master->StreamGeneration(),
+                        static_cast<int>(cameras_params[idx].width), static_cast<int>(cameras_params[idx].height)});
+                }
+                registered_context->evidence.Prepare(context_config, record_folder, bindings, headless_recording_geometry_contract);
+                for (std::size_t c = 0; c < selected_indices.size(); ++c) {
+                    const int idx = selected_indices[c];
+                    registered_context->AddCamera(idx, &cameras_params[idx], *camera_resources[idx].recycle_queue,
+                        context_config.worker_cpu_ids[c % context_config.worker_cpu_ids.size()]);
+                }
+                if (!update_recording_snapshot_session_artifacts(record_folder,
+                    {{"registered_scene_context", registered_context->evidence.StartEvidence()}}))
+                    throw std::runtime_error("cannot publish registered context prearm evidence");
+            }
             std::string immutable_snapshot_error;
             if (!seal_immutable_recording_start_snapshot(
                     record_folder,
@@ -5171,6 +5203,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
         allocate_selected_camera_frame_buffers(ecams, cameras_params, selected_indices);
     } catch (const std::exception& ex) {
         std::cerr << "Failed to initialize headless recording pipelines: " << ex.what() << std::endl;
+        if (registered_context) registered_context->Stop();
         stop_headless_yolo_workers(yolo_workers);
         stop_headless_pose_pipeline(crop_producer_workers, pose_workers);
         stop_headless_frame_ipc_runtime(frame_ipc_runtime);
@@ -5209,7 +5242,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     }
 
     if (master_config.enabled) {
-        camera_control->record_video = enable_recording && (record_start_delay_seconds <= 0);
+        camera_control->record_video = enable_recording && (record_start_delay_seconds <= 0) && !context_config.enabled;
     }
     for (int idx : selected_indices)
     {
@@ -5223,6 +5256,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
         auto* yolo_workers_ptr = &yolo_workers;
         auto* frame_ipc_managers_ptr = &frame_ipc_managers;
         auto* camera_resources_ptr = &camera_resources;
+        auto* context_worker = registered_context ? registered_context->Worker(idx) : nullptr;
         camera_threads.push_back(std::thread(
             [idx,
              thread_failure_state,
@@ -5235,7 +5269,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
              recording_pipelines_ptr,
              yolo_workers_ptr,
              frame_ipc_managers_ptr,
-             camera_resources_ptr]() {
+             camera_resources_ptr,
+             context_worker]() {
                 try {
                     acquire_frames(
                         &ecams_ptr[idx],
@@ -5252,7 +5287,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                         nullptr,
                         &(*camera_resources_ptr)[idx],
                         (*frame_ipc_managers_ptr)[idx].get(),
-                        synthetic_yolo_emitter.get());
+                        synthetic_yolo_emitter.get(), context_worker);
                 } catch (const std::exception& ex) {
                     std::ostringstream message;
                     message << "Headless camera thread failed for camera "
@@ -8089,6 +8124,14 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             return false;
         }
     }
+    if (fixed.contains("registered_scene_context")) {
+        try {
+            spec->registered_scene_context = orange::recording::RegisteredContextConfig::Parse(fixed.at("registered_scene_context"));
+        } catch (const std::exception& ex) {
+            if (error_out) *error_out = std::string("registered_scene_context: ") + ex.what();
+            return false;
+        }
+    }
 
     bool found_camera_serials = false;
     const std::vector<std::string> camera_serials =
@@ -8279,6 +8322,11 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     if (spec->master_frame_journal.enabled &&
         (spec->stream_only || spec->recording_control.record_for_seconds <= 0)) {
         if (error_out) *error_out = "master_frame_journal v1 requires a timed headless recording";
+        return false;
+    }
+    if (spec->registered_scene_context.enabled && (!spec->master_frame_journal.enabled || !spec->yolo_worker.enabled() ||
+        spec->yolo_worker.decimate != 1 || spec->pose_worker.synthetic_runtime_detection_enabled())) {
+        if (error_out) *error_out = "registered_scene_context requires master journal and real full-rate YOLO";
         return false;
     }
     if (spec->master_frame_journal.enabled && spec->crop_recording.enabled() &&
@@ -8745,6 +8793,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             run.options.pose_worker = spec.pose_worker;
                                                             run.options.crop_recording = spec.crop_recording;
                                                             run.options.master_frame_journal = spec.master_frame_journal;
+                                                            run.options.registered_scene_context = spec.registered_scene_context;
                                                             run.options.recording_control =
                                                                 spec.recording_control;
                                                             run.options.external_recorder_contract =
@@ -8818,6 +8867,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                  spec.ptp_register_read_decimate},
                                                                 {"yolo_sync_event", spec.yolo_sync_event},
                                                                 {"master_frame_journal", spec.master_frame_journal.ToJson()},
+                                                                {"registered_scene_context", spec.registered_scene_context.ToJson()},
                                                                 {"ptp_latch_after_fanout",
                                                                  spec.ptp_latch_after_fanout},
                                                                 {"headless_gpu_dmon", spec.headless_gpu_dmon},
@@ -9345,6 +9395,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     orange::external_recorder::SupervisorProcessOptions external_recorder_process_options;
     orange::external_recorder::SupervisedRecorderLifecycleState external_recorder_lifecycle;
     orange::external_recorder::SupervisedRecorderLifecycleState external_crop_recorder_lifecycle;
+    orange::recording::HeadlessRegisteredContext registered_context;
     auto stop_supervised_external_recorder = [&]() {
         std::string stop_error;
         bool crop_stop_ok = true;
@@ -9626,7 +9677,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         options.pose_worker,
         &options.external_recorder_contract,
         options.crop_recording,
-        options.master_frame_journal);
+        options.master_frame_journal, options.registered_scene_context, &registered_context);
 
     if (!started) {
         stop_supervised_external_recorder();
@@ -9879,9 +9930,21 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         : std::chrono::steady_clock::time_point::max();
 
     while (!quit_server && std::chrono::steady_clock::now() < deadline) {
+        if (options.registered_scene_context.enabled && !registered_context.evidence.Complete()) {
+            try {
+                if (!registered_context.Poll() && std::chrono::steady_clock::now() - run_start_time >=
+                    std::chrono::milliseconds(options.registered_scene_context.timeout_ms))
+                    throw std::runtime_error("registered context capture deadline expired before recording arm");
+            } catch (const std::exception& ex) {
+                thread_failure_state.record_failure(ex.what());
+                std::cerr << "Registered context failed: " << ex.what() << std::endl;
+                break;
+            }
+        }
         if (enable_recording &&
             !recording_armed &&
-            options.record_start_delay_seconds > 0 &&
+            (options.record_start_delay_seconds > 0 || options.registered_scene_context.enabled) &&
+            (!options.registered_scene_context.enabled || registered_context.evidence.Complete()) &&
             std::chrono::steady_clock::now() >= record_arm_time) {
             const auto now = std::chrono::steady_clock::now();
             const std::string now_utc = get_current_utc_timestamp();
@@ -10072,7 +10135,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         &camera_control,
         &ptp_params,
         false,
-        options.recording_sink_mode);
+        options.recording_sink_mode, &registered_context);
 
     // shutdown_headless_run has joined every acquisition thread. The journal
     // owner outlives that join and seals before either parent finalizer runs.
@@ -10467,6 +10530,16 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         return 1;
     }
     if (!master_journal_ok) return 1;
+    if (options.registered_scene_context.enabled) {
+        const auto final_parent = read_json_file_best_effort(
+            std::filesystem::path(active_record_folder) / "recording_session.json");
+        if (!final_parent.is_object() || !final_parent.contains("registered_scene_context") ||
+            !final_parent.at("registered_scene_context").is_object() ||
+            final_parent.at("registered_scene_context").value("status", "") != "captured") {
+            std::cerr << "Required registered context did not pass parent finalization." << std::endl;
+            return 1;
+        }
+    }
     if (!external_crop_recorder_ok) {
         std::cerr << "External crop recorder failed; failing the run." << std::endl;
         return 1;

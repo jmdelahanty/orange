@@ -132,9 +132,10 @@ change, GUI journal integration or claim of Palette acceptance is included.
   engine is not installed; schema-engine validation is not claimed.
 - [ ] Decouple logical recording from full-frame media selection and external
   crop supervision from the full-frame supervisor.
-- [ ] Reuse the minimal registered context-capture components deliberately. The
-  ROI branch's context descriptor requires layout/materialization/registration
-  identities; do not invent these for a single-dish geometry contract.
+- [x] Reuse the minimal registered context-capture components deliberately. The
+  next opt-in headless slice introduces a distinct whole-camera context v2
+  descriptor without inventing fixed-region identities; see
+  [the implementation and remaining gates](registered_context_headless_capture_2026-09-06.md).
 - [ ] Integrate per-output returned-identity/container/media evidence into the
   independent master-to-crop completion contract, including native writer failure.
 - [ ] Enable and validate registered-context plus moving-crops-only recording;
