@@ -532,6 +532,7 @@ link_libraries(orange_project_warnings)
 
 add_library(orange_recording_master_journal STATIC
     "${SRC_DIR}/recording_master_journal.cpp"
+    "${SRC_DIR}/recording_master_acquisition.cpp"
     "${SRC_DIR}/recording_master_crop_coverage.cpp")
 target_include_directories(orange_recording_master_journal PUBLIC ${ORANGE_COMMON_INCLUDE_DIRS})
 target_compile_features(orange_recording_master_journal PUBLIC cxx_std_17)
@@ -607,6 +608,10 @@ if(BUILD_TESTING)
     add_test(NAME recording_packet_telemetry_tests COMMAND recording_packet_telemetry_tests)
 
     add_executable(recording_master_journal_tests "tools/recording_master_journal_tests.cpp")
+    add_executable(recording_master_acquisition_tests "tools/recording_master_acquisition_tests.cpp")
+    target_link_libraries(recording_master_acquisition_tests PRIVATE orange_recording_master_journal)
+    add_test(NAME recording_master_acquisition_tests COMMAND recording_master_acquisition_tests)
+    set_tests_properties(recording_master_acquisition_tests PROPERTIES TIMEOUT 30)
     target_link_libraries(recording_master_journal_tests PRIVATE orange_recording_master_journal)
     add_test(NAME recording_master_journal_tests COMMAND recording_master_journal_tests)
     set_tests_properties(recording_master_journal_tests PROPERTIES TIMEOUT 30)
@@ -1487,6 +1492,7 @@ if(TARGET session_status_tests)
 endif()
 
 target_link_libraries(orange PRIVATE
+    orange_recording_master_journal
     ${ENET_LIBRARY}
     ${GLEW_LIBRARY}
     OpenGL::GL
@@ -1518,6 +1524,7 @@ if(ORANGE_ENABLE_NVTX)
 endif()
 
 target_link_libraries(orange_client PRIVATE
+    orange_recording_master_journal
     ${EVT_CAMERA_LIBRARY}
     ${EVT_GENICAM_LIBRARY}
     ${EVT_GIGE_LIBRARY}
@@ -1547,6 +1554,7 @@ endif()
 
 if(TARGET recording_session_manifest_tests)
     target_link_libraries(recording_session_manifest_tests PRIVATE
+        orange_recording_master_journal
         ${EVT_CAMERA_LIBRARY}
         ${EVT_GENICAM_LIBRARY}
         ${EVT_GIGE_LIBRARY}
@@ -1577,6 +1585,7 @@ endif()
 
 if(TARGET recording_finalizer_tests)
     target_link_libraries(recording_finalizer_tests PRIVATE
+        orange_recording_master_journal
         ${EVT_CAMERA_LIBRARY}
         ${EVT_GENICAM_LIBRARY}
         ${EVT_GIGE_LIBRARY}
@@ -1607,6 +1616,7 @@ endif()
 
 if(TARGET session_status_tests)
     target_link_libraries(session_status_tests PRIVATE
+        orange_recording_master_journal
         ${EVT_CAMERA_LIBRARY}
         ${EVT_GENICAM_LIBRARY}
         ${EVT_GIGE_LIBRARY}

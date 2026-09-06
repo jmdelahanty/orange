@@ -1,4 +1,5 @@
 #include "recording_master_journal.h"
+#include "fsuid_guard.h"
 #include "gui/spatial_layout/sha256.h"
 #include <cerrno>
 #include <chrono>
@@ -196,6 +197,7 @@ bool MasterFrameJournal::TrySubmit(const MasterFrameFact& fact) noexcept {
 }
 
 void MasterFrameJournal::Run(std::promise<void> startup) {
+    orange::ScopedFsuid filesystem_identity;
     checksum::StreamingSha256 written_hash;
     try {
         if (!options_.writer_cpu_ids.empty()) {
@@ -264,6 +266,7 @@ MasterJournalCounters MasterFrameJournal::Counters() const noexcept {
 }
 
 const json& MasterFrameJournal::Finalize(bool normal) {
+    orange::ScopedFsuid filesystem_identity;
     if (finalized_) return final_record_;
     stopping_.store(true, std::memory_order_release);
     if (worker_.joinable()) worker_.join();

@@ -1678,8 +1678,13 @@ void acquire_frames(
     static thread_local int copy_prof_count = 0;
 #endif
 
+    // Stable prearm ownership; no map lookup, refcount or lock per frame.
+    auto* master_journal = camera_control->master_frame_journals
+        ? camera_control->master_frame_journals->Find(camera_params->camera_serial) : nullptr;
     bool startup_first_frame_reported = false;
     while (camera_control->subscribe) {
+        orange::recording::MasterAcquisitionJournal::Iteration master_iteration(
+            master_journal, camera_control->record_video.load());
         NVTX_RANGE_PUSH("Frame_Processing_Loop");
 
 #if PIPELINE_PROFILE
@@ -1781,6 +1786,12 @@ void acquire_frames(
 
         if (!got_entry || !got_event) {
             acquisition_resource_starvations++;
+            orange::recording::MasterFrameFact fact;
+            fact.kind = orange::recording::MasterFactKind::resource_starvation_before_receive;
+            fact.reject_reason = !got_entry
+                ? orange::recording::MasterRejectReason::worker_entry_unavailable
+                : orange::recording::MasterRejectReason::readiness_event_unavailable;
+            master_iteration.Submit(fact);
             if (got_entry) {
                 resources->free_entries_queue->push(current_entry);
                 free_entries_available++;
@@ -1861,8 +1872,8 @@ void acquire_frames(
                 }
             };
 
-            struct timespec ts_rt1;
-            clock_gettime(CLOCK_REALTIME, &ts_rt1);
+            struct timespec ts_rt1{};
+            const bool realtime_present = clock_gettime(CLOCK_REALTIME, &ts_rt1) == 0;
             uint64_t real_time = (ts_rt1.tv_sec * 1000000000LL) + ts_rt1.tv_nsec;
             camera_state.dropped_frames += count_camera_frame_id_gaps(
                 camera_state.id_prev,
@@ -1871,6 +1882,17 @@ void acquire_frames(
             camera_state.frames_recd++;
             camera_state.frame_count++;
             current_entry->frame_id = camera_state.frame_count; // Assign absolute frame ID
+            orange::recording::MasterFrameFact master_received;
+            master_received.kind = orange::recording::MasterFactKind::received_unassigned;
+            master_received.reject_reason = orange::recording::MasterRejectReason::detector_event_unavailable;
+            master_received.local_frame_id = current_entry->frame_id;
+            master_received.camera_frame_id = received_frame->frame_id;
+            master_received.camera_timestamp_ns = received_frame->timestamp;
+            master_received.host_receive_steady_ns = receive_host_ns;
+            master_received.host_realtime_ns = real_time;
+            master_received.local_frame_id_present = master_received.camera_frame_id_present = true;
+            master_received.camera_timestamp_present = master_received.host_receive_steady_present = true;
+            master_received.host_realtime_present = realtime_present;
             const uint64_t receive_delta_ns =
                 (last_receive_host_ns > 0 && receive_host_ns >= last_receive_host_ns)
                     ? receive_host_ns - last_receive_host_ns
@@ -1928,7 +1950,7 @@ void acquire_frames(
                     display_preview_skipped_frames++;
                 }
             }
-            bool will_record = (camera_control->record_video && recording_ingress);
+            bool will_record = ((master_journal ? master_iteration.Active() : camera_control->record_video.load()) && recording_ingress);
             bool yolo_enabled = (camera_select->yolo && yolo_worker);
             if (yolo_enabled && !last_yolo_enabled) {
                 yolo_decimate_counter = 0;
@@ -1944,6 +1966,7 @@ void acquire_frames(
             if (will_yolo) {
                 if (!resources->yolo_events_queue) {
                     acquisition_resource_starvations++;
+                    master_iteration.Submit(master_received);
                     EVT_CameraQueueFrame(&ecam->camera, frame_to_requeue);
                     resources->free_events_queue->push(current_event);
                     resources->free_entries_queue->push(current_entry);
@@ -1956,6 +1979,7 @@ void acquire_frames(
                 const bool got_yolo_event = resources->yolo_events_queue->pop(yolo_event);
                 if (!got_yolo_event) {
                     acquisition_resource_starvations++;
+                    master_iteration.Submit(master_received);
                     EVT_CameraQueueFrame(&ecam->camera, frame_to_requeue);
                     resources->free_events_queue->push(current_event);
                     resources->free_entries_queue->push(current_entry);
@@ -1973,8 +1997,12 @@ void acquire_frames(
             }
 
             // If recording is active, increment and assign the recording-specific frame ID
-            if (camera_control->record_video) {
+            if (master_journal ? master_iteration.Active() : camera_control->record_video.load()) {
                 current_entry->recording_frame_id = ++local_recording_frame_count;
+                master_received.kind = orange::recording::MasterFactKind::assigned_frame;
+                master_received.reject_reason = orange::recording::MasterRejectReason::none;
+                master_received.recording_frame_id = current_entry->recording_frame_id;
+                master_iteration.Submit(master_received);
                 last_recording_frame_count = current_entry->recording_frame_id;
                 camera_control->latest_recording_frame_id.store(
                     current_entry->recording_frame_id,
@@ -2858,6 +2886,10 @@ void acquire_frames(
             }
         } else {
             camera_state.get_frame_errors++;
+            orange::recording::MasterFrameFact fact;
+            fact.kind = orange::recording::MasterFactKind::receive_error;
+            fact.reject_reason = orange::recording::MasterRejectReason::receive_failed;
+            master_iteration.Submit(fact);
             camera_state.last_get_frame_error_code = camera_state.camera_return;
             get_frame_errors_by_code[camera_state.camera_return]++;
             std::cerr << "EVT_CameraGetFrame Error, " << camera_state.camera_return

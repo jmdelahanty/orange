@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Opt-in headless acquisition journal configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "enabled"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "enabled": {"type": "boolean"},
+    "queue_capacity": {"type": "integer", "minimum": 2, "maximum": 65536},
+    "writer_cpu_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "integer", "minimum": 0, "maximum": 1023}
+    }
+  },
+  "allOf": [{
+    "if": {"properties": {"enabled": {"const": true}}},
+    "then": {"required": ["writer_cpu_ids"], "properties": {"writer_cpu_ids": {"minItems": 1}}}
+  }]
+}

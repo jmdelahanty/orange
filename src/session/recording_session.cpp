@@ -2749,6 +2749,12 @@ bool write_recording_session_manifest(const std::string& path,
     }
     const std::filesystem::path manifest_path(path);
     nlohmann::json finalized_manifest = manifest;
+    try {
+        orange::recording::ApplyRequiredMasterJournalGate(manifest_path.parent_path(), &finalized_manifest);
+    } catch (const std::exception& ex) {
+        if (error_out) *error_out = std::string("required master journal gate: ") + ex.what();
+        return false;
+    }
     if (!add_shaman_v2_recording_identity_contract(
             &finalized_manifest, error_out)) {
         return false;
@@ -3777,6 +3783,10 @@ void request_stop_recording_run(CameraControl* camera_control)
         return;
     }
 
+    // Close source admission before requesting encoder drain or clearing the
+    // recording folder. Already admitted iterations may still submit their tail.
+    const bool master_source_stopped = !camera_control->master_frame_journals ||
+        camera_control->master_frame_journals->WaitForSourceStop(std::chrono::seconds(2));
     camera_control->record_video = false;
     camera_control->recording_draining = true;
     camera_control->stop_record = true;
@@ -3786,7 +3796,7 @@ void request_stop_recording_run(CameraControl* camera_control)
         camera_control->recording_rollover_at_frame_id = 0;
         camera_control->recording_rollover_request_id = 0;
     }
-    if (camera_control->active_recorders.load(std::memory_order_relaxed) == 0) {
+    if (master_source_stopped && camera_control->active_recorders.load(std::memory_order_relaxed) == 0) {
         camera_control->recording_draining = false;
         camera_control->stop_record = false;
         if (!camera_control->preserve_recording_session_state) {
@@ -3863,6 +3873,8 @@ bool recording_run_drained(
     const std::vector<std::unique_ptr<ModernRecordingPipeline>>* recording_pipelines,
     const CameraControl* camera_control)
 {
+    if (camera_control && camera_control->master_frame_journals &&
+        !camera_control->master_frame_journals->SourceQuiescent()) return false;
     if (camera_control &&
         camera_control->active_recorders.load(std::memory_order_relaxed) > 0) {
         return false;

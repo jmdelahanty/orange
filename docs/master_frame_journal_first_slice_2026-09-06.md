@@ -4,8 +4,10 @@ Date: 2026-09-06. Branch: `agent/acquisition/master-frame-journal-v1-20260906`.
 Base: `fd1459388c8451c5446e3f55b6d9287bf068703e` (timing evidence plus shared
 packet telemetry). Other Orange worktrees/branches were not merged or modified.
 
-Status: CPU library and offline metadata-correspondence utility implemented;
-**not wired into acquisition, not a usable crop-only recording mode, not deployed**.
+Status: CPU library and offline metadata-correspondence utility implemented.
+The follow-up [headless integration](master_frame_journal_headless_integration_2026-09-06.md)
+now wires an opt-in timed headless source journal and required-product gate.
+**Not a usable crop-only recording mode, not deployed**.
 Both JSON records below are closed candidate schemas, not accepted replacements
 for acquisition-index mapping v1, SHAMAN, Citrus v6 or Palette intake.
 
@@ -15,8 +17,8 @@ for acquisition-index mapping v1, SHAMAN, Citrus v6 or Palette intake.
   journal per parent recording/camera/producer instance/stream generation.
 - `src/recording_master_crop_coverage.h/.cpp`: streaming comparison of the journal's
   assigned-frame rows with an explicitly ordered collection of moving-crop CSVs.
-- `orange_recording_master_journal`: reusable CPU-only CMake library. Currently
-  linked by the test target only; camera/session entry points do not construct it.
+- `orange_recording_master_journal`: reusable CPU-only CMake library, now linked
+  by runtime and test targets; the opt-in timed headless path constructs it.
 - `tools/recording_master_journal_tests.cpp`: deterministic failure/backpressure,
   identity, clip correspondence, affinity and drain tests without cameras/GPU/media.
 - Candidate schemas:
@@ -38,9 +40,9 @@ Each candidate descriptor binds `recording_id`, exact `camera_serial` spelling,
 digest must match the closed file readback before claiming complete.
 
 The declared observation boundary is `caller_submitted_acquisition_facts_v1`.
-Until the acquisition hooks below are implemented and validated, this says only
-that **every offered fact** was durably recorded, not that every acquisition was
-offered. `status=complete` is journal completeness, not loss-free acquisition,
+The follow-up wires the acquisition hooks, with live validation still pending.
+This says only that **every offered fact** was durably recorded, not that every
+hardware exposure was received. `status=complete` is journal completeness, not loss-free acquisition,
 encoded-media completeness or scientific eligibility.
 
 `observation_index` starts at zero and advances for every offer, including an
@@ -132,13 +134,14 @@ success, physical timing, every exposure, or a new Palette acquisition index.
 
 ## Remaining integration checklist
 
-- [ ] Add prearm/session ownership and a stable, immutable handoff to each
-  acquisition thread before setting logical recording active.
-- [ ] Place hooks at every assigned frame, received-but-unassigned rejection,
-  pre-receive starvation, receive failure and explicit pause/resume boundary.
-  Existing assignment remains after resource checks; do not move/renumber it.
-- [ ] Quiesce acquisition and drain the master before parent finalization. Route
-  journal failures/timeouts into required-product completion, not just logging.
+- [x] Add prearm/session ownership and a stable, immutable handoff before starting
+  each acquisition thread (opt-in timed headless; GUI rearm remains deferred).
+- [x] Place hooks at every assigned frame, received-but-unassigned rejection,
+  pre-receive starvation, receive failure and sampled pause/resume boundary.
+  Pause/resume is acquisition-observed state, not a timestamped command log.
+  Existing assignment remains after resource checks and is not renumbered.
+- [x] Quiesce acquisition and drain the master before headless parent finalization.
+  Journal failures/timeouts enter required-product completion, not just logging.
 - [ ] Add explicit media selection independently of logical recording activity;
   retain full-frame-only and full-frame+moving-crop paths as first-class modes.
 - [ ] Require compatible full-rate detector/crop configuration and reconcile
