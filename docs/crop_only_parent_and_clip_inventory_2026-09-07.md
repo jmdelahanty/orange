@@ -3,9 +3,10 @@
 Status: implemented and camera-free tested on
 `agent/acquisition/master-frame-journal-v1-20260906`, isolated worktree
 `/tmp/orange-timing-evidence-20260906`, based on `6a8866b`.
-This is the tenth moving-crop-only implementation slice. Runtime admission still
-refuses `registered_context_and_moving_crops`: required startup and headless
-experiment run-result integration remain unfinished. No override flag exists.
+This describes the tenth moving-crop-only implementation slice. The subsequent
+[activation slice](crop_only_activation_2026-09-07.md) implements required startup
+and headless experiment results, enabling `registered_context_and_moving_crops`
+in the isolated build. Live acceptance is still pending. No override flag exists.
 
 ## Recording and video identities
 
@@ -97,11 +98,11 @@ introduced.
 - [x] Immutable per-video manifests and parent-local JSON/CSV index.
 - [x] Actual finalized parent status returned to GUI/headless snapshot writers.
 - [x] Full-frame encoder preflight/native rolling scheduling follows media plan.
-- [ ] Finish headless experiment camera-result and post-run supervisor handling;
+- [x] Finish headless experiment camera-result and post-run supervisor handling;
   these must consume the crop collection without requiring a full-frame video.
-- [ ] Require valid context, independent master, real full-rate detector/logger
+- [x] Require valid context, independent master, real full-rate detector/logger
   and external moving-crop configuration at crop-only arm on both GUI/headless.
-- [ ] Enable the product only after those admission/failure tests pass. Remove
+- [x] Enable the product only after those admission/failure tests pass. Remove
   the temporary implementation refusal, not replace it with an override switch.
 - [ ] Consecutive GUI, Citrus-triggered and headless live validation, cancellation,
   failures and performance checks before deployment or default changes.

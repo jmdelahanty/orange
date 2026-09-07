@@ -50,6 +50,7 @@
 #include "gui/recording_finalizer.h"
 #include "gui/recording_panel.h"
 #include "gui/registered_context_recording.h"
+#include "recording_crop_only_manifest.h"
 #include "registered_context_camera_configuration.h"
 #include "scoped_housekeeping_cpu.h"
 #include "gui/recording_snapshots.h"
@@ -3886,6 +3887,9 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
             recording_session->media_selection.ToJson())
             throw std::runtime_error("recording media selection changed since stream startup; stop and restart streaming");
         evidence_config = orange::gui::RegisteredContextRecordingConfigForArm();
+        orange::recording::RequireCropOnlyRecordingInputs(recording_session->media_selection,
+            evidence_config.enabled && evidence_config.master.enabled, evidence_config.enabled && evidence_config.context.enabled,
+            true, recording_session->crop_recording_sink_mode == "external_ipc");
         if (evidence_config.enabled && !async_start)
             throw std::runtime_error("registered context requires the asynchronous GUI start owner");
         if (recording_run->active || recording_run->finalizing)
@@ -3928,7 +3932,7 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
             cameras_select,
             num_cameras,
             yolo_model,
-            crop_size_px);
+            crop_size_px, recording_session->media_selection);
     if (!preflight.ok) {
         if (recording_preflight_errors) {
             *recording_preflight_errors = preflight.errors;
@@ -4342,6 +4346,11 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
                 std::string seal_error;
                 if (!seal_immutable_recording_start_snapshot(worker_state->prepared.recording_folder, nullptr, &seal_error))
                     throw std::runtime_error("cannot seal GUI context start snapshot: " + seal_error);
+                if (!worker_state->prepared.crop_only_media_plan.is_null()) {
+                    orange::recording::RequireCropOnlyArmEvidence(worker_state->prepared.recording_folder,
+                        worker_state->prepared.crop_only_media_plan);
+                    worker_state->prepared.crop_only_arm_evidence_ready = true;
+                }
                 worker_state->prepared.gui_registered_context_ready = true;
                 context_affinity.Restore(); // restore before recorder processes inherit affinity
             }
@@ -7104,7 +7113,6 @@ int main(int /*argc*/, char ** /*args*/) {
                         std::string start_error;
                         try {
                             const auto selection = orange::gui::RecordingMediaSelectionForStream();
-                            orange::recording::RequireImplementedRecordingMediaSelection(selection);
                             recording_session.media_selection = selection;
                             // This is materialization of an explicit operator product
                             // choice, before any crop/full-frame worker is constructed.

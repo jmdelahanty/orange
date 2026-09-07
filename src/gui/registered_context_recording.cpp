@@ -38,13 +38,11 @@ void RenderRecordingMediaSelection(bool stream_locked) {
         (*media_selection.mode == recording::RecordingMediaMode::FullFrame ? 1 :
          *media_selection.mode == recording::RecordingMediaMode::FullFrameAndMovingCrops ? 2 : 3);
     const char* choices[] = {"Existing per-camera choices", "Full-frame video",
-        "Full-frame video + moving crops", "Registered context + moving crops (not yet available)"};
+        "Full-frame video + moving crops", "Registered context + moving crops"};
     bool changed = false;
     if (ImGui::BeginCombo("Media products", choices[selected])) {
         for (int i = 0; i < 4; ++i) {
-            ImGui::BeginDisabled(i == 3);
             if (ImGui::Selectable(choices[i], selected == i)) { selected = i; changed = true; }
-            ImGui::EndDisabled();
         }
         ImGui::EndCombo();
     }
@@ -66,8 +64,8 @@ void RenderRecordingMediaSelection(bool stream_locked) {
         "An explicit product choice determines moving-crop recording for each participating camera. "
         "Native and split-GOP full-frame recording remain supported.");
     if (media_selection.RequiresContext())
-        ImGui::TextWrapped("Crop-only startup is refused until encoded-media completion and rolling finalization are integrated. "
-            "This selection never starts a full-frame encoder and discards its output.");
+        ImGui::TextWrapped("Requires a selected daily context, a master frame journal, full-rate YOLO/event logging and external moving crops. "
+            "Confirm the scene before each recording. No continuous full-frame video is encoded. Live rig acceptance remains pending.");
     if (!media_error.empty()) ImGui::TextWrapped("Startup blocked: %s", media_error.c_str());
     if (!media_status.empty()) ImGui::TextWrapped("%s", media_status.c_str());
 }
@@ -84,13 +82,16 @@ void SelectDailyContextForGuiRecording(const json& context) {
 recording::GuiRecordingEvidenceConfig RegisteredContextRecordingConfigForArm() {
     if (!error.empty()) throw std::runtime_error("GUI registered-context configuration: " + error);
     const auto config = recording::GuiRecordingEvidenceConfig::Parse(options);
+    if (media_selection.RequiresContext() && !config.enabled)
+        throw std::runtime_error("Crop-only recording requires a selected daily registered context and master frame journal");
     if (config.enabled && !confirmed)
         throw std::runtime_error("Confirm the scene is unchanged in Registered recording context before starting this recording");
     return config;
 }
 void ConsumeRegisteredContextRecordingConfirmation() { confirmed = false; }
 void RenderRegisteredContextRecordingSettings(bool locked) {
-    if (!ImGui::CollapsingHeader("Registered recording context (optional)")) return;
+    if (!ImGui::CollapsingHeader(media_selection.RequiresContext() ? "Registered recording context (required for crop-only)" :
+            "Registered recording context (optional)")) return;
     ImGui::BeginDisabled(locked);
     bool enabled = options.value("enabled", false);
     if (ImGui::Checkbox("Bind daily native context and write master frame journal", &enabled)) {

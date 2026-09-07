@@ -27,9 +27,11 @@ int main() {
               !previous.Find("2010093")->MovingCrops() && previous.Find("2010094")->MovingCrops(), "existing choices changed");
         const auto full = select("full_frame"), both = select("full_frame_and_moving_crops"),
                    crop = select("registered_context_and_moving_crops");
-        RequireImplementedRecordingMediaSelection(full);
-        RequireImplementedRecordingMediaSelection(both);
-        refuses([&] { RequireImplementedRecordingMediaSelection(crop); });
+        RequireCropOnlyRecordingInputs(full, false, false, false, false);
+        RequireCropOnlyRecordingInputs(both, false, false, false, false);
+        RequireCropOnlyRecordingInputs(crop, true, true, true, true);
+        for (int missing = 0; missing < 4; ++missing)
+            refuses([&] { RequireCropOnlyRecordingInputs(crop, missing != 0, missing != 1, missing != 2, missing != 3); });
         for (const auto& selection : {full, both, crop}) {
             check(RecordingMediaSelection::Parse(selection.ToJson()).ToJson() == selection.ToJson(), "selection round trip");
             const auto plan = RecordingMediaPlan::Resolve(selection, cameras);

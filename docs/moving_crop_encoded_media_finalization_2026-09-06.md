@@ -1,10 +1,11 @@
 # Moving-crop encoded-media finalization — 2026-09-06
 
 This slice implements independent headless crop supervision and actual encoded
-media completion checks shared by headless and GUI. It does **not** yet make
-`registered_context_and_moving_crops` available. That mode still needs its own
-run-result path and required startup admission, without full-frame camera
-artifacts. The single/rolling parent inventory was completed in the
+media completion checks shared by headless and GUI. The later
+[2026-09-07 activation slice](crop_only_activation_2026-09-07.md) completes the
+crop-only run-result path and required startup admission, without full-frame
+camera artifacts, and enables the product in the isolated build.
+The single/rolling parent inventory was completed in the
 [2026-09-07 follow-up](crop_only_parent_and_clip_inventory_2026-09-07.md).
 There is no override or full-frame discard workaround.
 
@@ -111,9 +112,9 @@ Headless already stops/joins the detector logger before media validation.
 - [x] Camera-free single/rolling, blank, missing-tail and tampering tests.
 - [x] Crop-only single/rolling parent and per-clip inventories on both paths;
   logical camera membership must not be inferred from full-frame files.
-- [ ] Headless crop-only run-result validation and full-frame-only scheduling
+- [x] Headless crop-only run-result validation and full-frame-only scheduling
   preflights must follow the product plan, not just `record_enabled`/sink mode.
-- [ ] Required context/master admission for crop-only, then remove the temporary
+- [x] Required context/master admission for crop-only, then remove the temporary
   implementation refusal and enable the GUI choice.
 - [ ] Live consecutive GUI, Citrus-triggered and headless recordings, cancellation,
   failure injection and performance measurements before deployment.

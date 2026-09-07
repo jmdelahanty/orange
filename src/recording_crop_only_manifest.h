@@ -5,6 +5,9 @@
 namespace orange::recording {
 inline constexpr const char* kCropOnlyProduct = "registered_context_and_moving_crops";
 bool IsCropOnlyRecordingManifest(const nlohmann::json&);
+// Read-only control-plane checks. No index or manifest is published/repaired.
+nlohmann::json ReadVerifiedCropOnlyRecordingManifest(const std::filesystem::path& root);
+void RequireCropOnlyArmEvidence(const std::filesystem::path& root, const nlohmann::json& media_plan);
 
 // Finalization-only. The caller supplies a lifecycle envelope with logical
 // cameras and no media artifacts. Resolves media exclusively from immutable

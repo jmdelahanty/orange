@@ -84,6 +84,27 @@ std::string quote(const json& value) {
     for (char c : text) { if (c == '"') result += '"'; result += c; }
     return result + '"';
 }
+std::string index_csv(const json& clips) {
+    std::string csv = "recording_id,camera_serial,clip_index,clip_id,frame_count,first_recording_frame_id,last_recording_frame_id,first_video_frame_index,last_video_frame_index,video,crop_metadata,clip_manifest\n";
+    for (const auto& clip : clips) {
+        const auto name = "Cam" + clip.at("camera_serial").get<std::string>() + "_crop_clip_" +
+            std::to_string(clip.at("clip_index").get<uint64_t>()) + "_manifest_v1.json";
+        for (const auto* key : {"recording_id", "camera_serial", "clip_index", "clip_id", "frame_count", "first_recording_frame_id",
+                "last_recording_frame_id", "first_video_frame_index", "last_video_frame_index"}) csv += quote(clip.at(key)) + ',';
+        csv += quote(clip.at("video").at("relative_path")) + ',' + quote(clip.at("crop_metadata").at("relative_path")) + ',' + quote(name) + '\n';
+    }
+    return csv;
+}
+json revalidate(const fs::path& root, const json& parent) {
+    json envelope;
+    for (const auto* key : {"schema_id", "schema_version", "media_product_mode", "session_id", "status", "mode", "cameras"})
+        envelope[key] = parent.at(key);
+    const auto verified = BuildCropOnlyRecordingManifest(root, envelope);
+    need(verified.at("status") == "completed", "crop-only evidence changed before index validation/publication");
+    for (const auto* key : {"crop_only_inventory", "clips", "recording_outputs", "camera_artifacts", "clip_index_scope"})
+        need(parent.at(key) == verified.at(key), "crop-only index differs from verified inventory");
+    return verified;
+}
 }
 
 bool IsCropOnlyRecordingManifest(const json& j) {
@@ -202,13 +223,7 @@ void PublishCropOnlyRecordingIndex(const fs::path& root, json* parent) {
     // Re-resolve before publication: neither a changed artifact nor edited
     // in-memory clip paths may enter a successful immutable index. This runs
     // on the finalization worker, never on acquisition/encoder threads.
-    json envelope;
-    for (const auto* key : {"schema_id", "schema_version", "media_product_mode", "session_id", "status", "mode", "cameras"})
-        envelope[key] = parent->at(key);
-    const auto verified = BuildCropOnlyRecordingManifest(root, envelope);
-    need(verified.at("status") == "completed", "crop-only evidence changed before index publication");
-    for (const auto* key : {"crop_only_inventory", "clips", "recording_outputs", "camera_artifacts", "clip_index_scope"})
-        need(parent->at(key) == verified.at(key), "crop-only index differs from verified inventory");
+    revalidate(root, *parent);
     std::vector<std::string> names{"recording_crop_clip_index_v1.json", "recording_crop_clip_index_v1.csv"};
     for (const auto& clip : parent->at("clips")) names.push_back("Cam" + clip.at("camera_serial").get<std::string>() +
         "_crop_clip_" + std::to_string(clip.at("clip_index").get<uint64_t>()) + "_manifest_v1.json");
@@ -216,16 +231,13 @@ void PublishCropOnlyRecordingIndex(const fs::path& root, json* parent) {
     std::string error;
     need(custody::SpatialRoiSessionAuthorityStore::OpenExisting(root, names, &store, &error), error);
     json records = json::array();
-    std::string csv = "recording_id,camera_serial,clip_index,clip_id,frame_count,first_recording_frame_id,last_recording_frame_id,first_video_frame_index,last_video_frame_index,video,crop_metadata,clip_manifest\n";
+    const auto csv = index_csv(parent->at("clips"));
     std::size_t i = 2;
     for (const auto& clip : parent->at("clips")) {
         const auto& name = names.at(i++);
         const auto ref = publish(*store, name, clip.dump());
         records.push_back({{"camera_serial", clip.at("camera_serial")}, {"clip_index", clip.at("clip_index")},
             {"clip_id", clip.at("clip_id")}, {"manifest", ref}});
-        for (const auto* key : {"recording_id", "camera_serial", "clip_index", "clip_id", "frame_count", "first_recording_frame_id",
-                "last_recording_frame_id", "first_video_frame_index", "last_video_frame_index"}) csv += quote(clip.at(key)) + ',';
-        csv += quote(clip.at("video").at("relative_path")) + ',' + quote(clip.at("crop_metadata").at("relative_path")) + ',' + quote(name) + '\n';
     }
     const auto csv_ref = publish(*store, names.at(1), csv);
     const json index = {{"schema_id", "orange.recording.moving_crop_clip_index"}, {"schema_version", 1},
@@ -234,5 +246,53 @@ void PublishCropOnlyRecordingIndex(const fs::path& root, json* parent) {
         {"inventory", parent->at("crop_only_inventory")}, {"clips", records}, {"csv", csv_ref}};
     const auto ref = publish(*store, names.at(0), index.dump());
     (*parent)["crop_clip_index"] = {{"schema_version", 1}, {"json", ref}, {"csv", csv_ref}};
+}
+json ReadVerifiedCropOnlyRecordingManifest(const fs::path& root) {
+    ScopedFsuid fsuid_guard;
+    const auto parent = read(root, "recording_session.json");
+    need(IsCropOnlyRecordingManifest(parent.value) && parent.value.at("status") == "completed", "crop-only parent did not complete");
+    revalidate(root, parent.value);
+    const auto index = read(root, "recording_crop_clip_index_v1.json");
+    const auto& pointer = parent.value.at("crop_clip_index");
+    need(pointer == json{{"schema_version", 1}, {"json", index.reference}, {"csv", index.value.at("csv")}}, "crop-only index reference mismatch");
+    json records = json::array();
+    for (const auto& clip : parent.value.at("clips")) {
+        const auto name = "Cam" + clip.at("camera_serial").get<std::string>() + "_crop_clip_" +
+            std::to_string(clip.at("clip_index").get<uint64_t>()) + "_manifest_v1.json";
+        const auto manifest = read(root, name);
+        need(manifest.value == clip, "crop-only per-video manifest differs from parent");
+        records.push_back({{"camera_serial", clip.at("camera_serial")}, {"clip_index", clip.at("clip_index")},
+            {"clip_id", clip.at("clip_id")}, {"manifest", manifest.reference}});
+    }
+    const json expected = {{"schema_id", "orange.recording.moving_crop_clip_index"}, {"schema_version", 1},
+        {"recording_id", parent.value.at("session_id")}, {"mode", parent.value.at("mode")},
+        {"path_base", "parent_recording_directory"}, {"clip_index_scope", "camera_stream"},
+        {"inventory", parent.value.at("crop_only_inventory")}, {"clips", records}, {"csv", index.value.at("csv")}};
+    need(index.value == expected, "crop-only clip index membership mismatch");
+    const auto csv = index_csv(parent.value.at("clips"));
+    const json csv_ref = {{"relative_path", "recording_crop_clip_index_v1.csv"}, {"size_bytes", csv.size()},
+        {"sha256", "sha256:" + checksum::sha256_hex(csv)}};
+    need(csv_ref == index.value.at("csv"), "crop-only CSV index differs from inventory");
+    std::unique_ptr<custody::SpatialRoiSessionAuthorityStore> store;
+    std::string error, bytes;
+    need(custody::SpatialRoiSessionAuthorityStore::OpenExisting(root, {"recording_crop_clip_index_v1.csv"}, &store, &error), error);
+    custody::SpatialRoiSessionAuthorityReceipt receipt{"recording_crop_clip_index_v1.csv", csv.size(), csv_ref.at("sha256")};
+    need(store->ReadAndVerify(receipt, &bytes, nullptr, &error) && bytes == csv, "crop-only CSV index custody failed: " + error);
+    need(read(root, "recording_session.json").reference == parent.reference, "crop-only parent changed during validation");
+    return parent.value;
+}
+void RequireCropOnlyArmEvidence(const fs::path& root, const json& media_plan) {
+    ScopedFsuid fsuid_guard;
+    const auto start = read(root, "recording_snapshot_start.json");
+    const auto& session = start.value.at("session");
+    need(session.at("recording_media_plan") == media_plan &&
+        RecordingMediaSelection::Parse(media_plan.at("selection")).RequiresContext(), "crop-only arm media plan mismatch");
+    for (const auto* key : {"master_frame_journal", "registered_scene_context", "moving_crop_master_coverage", "moving_crop_encoded_media"})
+        need(session.at(key).at("required") == true, "crop-only arm missing required product evidence");
+    json proof = {{"session_id", root.filename().string()}, {"status", "completed"}};
+    ApplyRequiredRegisteredContextGate(root, &proof);
+    need(proof.at("status") == "completed" && proof.at("registered_scene_context").at("status") == "captured",
+        "crop-only registered context is not ready for arm");
+    need(read(root, "recording_snapshot_start.json").reference == start.reference, "crop-only start changed at arm");
 }
 }

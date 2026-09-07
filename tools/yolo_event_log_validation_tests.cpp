@@ -326,6 +326,19 @@ void test_spatial_mask_count_mismatch_fails_schema()
     require(stats.schema_errors == 1, "one spatial schema error expected");
 }
 
+void test_crop_metadata_source()
+{
+    TestDir dir("crop_metadata_source");
+    auto config = make_config(); config.mode = "real";
+    write_metadata(dir.path, 20); write_event_log(dir.path, config, 20);
+    const auto crop = dir.path / ("Cam" + std::string(kCameraSerial) + "_crop_meta.csv");
+    std::filesystem::rename(dir.path / ("Cam" + std::string(kCameraSerial) + "_meta.csv"), crop);
+    auto stats = yolo_event_log::summarize_yolo_event_log(dir.path.string(), kCameraSerial, config, crop);
+    require(stats.status == "pass" && stats.metadata_rows == 20, "crop-only detector join required full-frame metadata");
+    std::filesystem::remove(crop);
+    stats = yolo_event_log::summarize_yolo_event_log(dir.path.string(), kCameraSerial, config, crop);
+    require(stats.status == "fail", "missing explicit source silently skipped detector join");
+}
 }  // namespace
 
 int main()
@@ -336,6 +349,7 @@ int main()
     };
 
     const TestCase tests[] = {
+        {"crop_metadata_source", &test_crop_metadata_source},
         {"valid_synthetic_log_passes", &test_valid_synthetic_log_passes},
         {"missing_log_reports_missing", &test_missing_log_reports_missing},
         {"sequence_error_fails", &test_sequence_error_fails},

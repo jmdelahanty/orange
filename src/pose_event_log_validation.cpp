@@ -51,7 +51,8 @@ std::string json_string_or_default(const nlohmann::json& object,
 PoseEventLogValidationStats summarize_pose_event_log(
     const std::string& recording_folder,
     const std::string& camera_serial,
-    const PoseEventLogValidationConfig& config)
+    const PoseEventLogValidationConfig& config,
+    const std::filesystem::path& source_metadata)
 {
     PoseEventLogValidationStats stats;
     if (!config.enabled()) {
@@ -75,9 +76,12 @@ PoseEventLogValidationStats summarize_pose_event_log(
     stats.present = true;
 
     const std::filesystem::path metadata_path =
-        std::filesystem::path(recording_folder) / ("Cam" + camera_serial + "_meta.csv");
+        source_metadata.empty() ? std::filesystem::path(recording_folder) / ("Cam" + camera_serial + "_meta.csv") : source_metadata;
     const std::unordered_set<uint64_t> metadata_frame_ids =
         yolo_event_log::read_recording_metadata_frame_ids(metadata_path, &stats.metadata_rows);
+    if (!source_metadata.empty() && metadata_frame_ids.empty()) {
+        stats.status = "fail"; stats.error = "required source metadata is missing or empty"; return stats;
+    }
 
     std::ifstream file(event_path);
     if (!file) {

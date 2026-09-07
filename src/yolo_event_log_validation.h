@@ -34,6 +34,7 @@ std::unordered_set<uint64_t> read_recording_metadata_frame_ids(
 YoloEventLogValidationStats summarize_yolo_event_log(
     const std::string& recording_folder,
     const std::string& camera_serial,
-    const SyntheticYoloEventConfig& config);
+    const SyntheticYoloEventConfig& config,
+    const std::filesystem::path& source_metadata = {});
 
 }  // namespace yolo_event_log

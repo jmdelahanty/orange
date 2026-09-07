@@ -43,8 +43,7 @@ struct RecordingMediaPlan {
     nlohmann::json ToJson() const;
 };
 
-// Admission is deliberately unavailable for crop-only until its required
-// context/master startup and experiment run-result paths are integrated.
-// No environment variable or operator override can bypass this implementation gate.
-void RequireImplementedRecordingMediaSelection(const RecordingMediaSelection&);
+// Product requirements, independent of transport. Called before claiming a run.
+void RequireCropOnlyRecordingInputs(const RecordingMediaSelection&, bool master_enabled,
+    bool context_enabled, bool real_full_rate_detector, bool external_moving_crops);
 } // namespace orange::recording

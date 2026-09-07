@@ -110,6 +110,8 @@ struct PreparedRecordingRunStart {
     std::string normalized_sink_mode;
     bool external_recorder_requested = false;
     bool gui_registered_context_required = false;
+    nlohmann::json crop_only_media_plan;
+    bool crop_only_arm_evidence_ready = false;
     bool gui_registered_context_ready = false;
     bool external_crop_recorder_requested = false;
     orange::external_recorder::SupervisedRecorderLifecycleOptions

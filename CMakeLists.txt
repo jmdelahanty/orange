@@ -540,6 +540,7 @@ add_library(orange_recording_master_journal STATIC
     "${SRC_DIR}/gui_recording_evidence.cpp"
     "${SRC_DIR}/recording_master_crop_coverage.cpp"
     "${SRC_DIR}/recording_crop_only_manifest.cpp"
+    "${SRC_DIR}/recording_crop_only_result.cpp"
     "${SRC_DIR}/recording_registered_context.cpp"
     "${SRC_DIR}/recording_daily_context_reuse.cpp"
     "${SRC_DIR}/daily_registered_context.cpp"

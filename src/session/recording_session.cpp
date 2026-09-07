@@ -3006,7 +3006,6 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
         return;
     }
 
-    orange::recording::RequireImplementedRecordingMediaSelection(state->media_selection);
     state->recording_pipelines.clear();
     state->recording_pipelines.resize(num_cameras);
     std::vector<orange::recording::RecordingMediaCameraInput> media_inputs;
@@ -3186,7 +3185,6 @@ PreparedRecordingRunStart prepare_recording_run(
     // explicit selections instead of starting a session with stale encoder owners.
     if (state && state->media_selection.mode) {
         try {
-            orange::recording::RequireImplementedRecordingMediaSelection(state->media_selection);
             std::vector<orange::recording::RecordingMediaCameraInput> inputs;
             for (int i = 0; i < num_cameras; ++i) {
                 if (!cameras_select) throw std::runtime_error("media plan requires camera selection");
@@ -3283,6 +3281,8 @@ PreparedRecordingRunStart prepare_recording_run(
     prepared.recording_sink_mode =
         normalized_sink_mode.empty() ? recording_sink_mode : normalized_sink_mode;
     prepared.external_recorder_requested = external_recorder_requested;
+    prepared.gui_registered_context_required = state && state->media_selection.RequiresContext();
+    if (prepared.gui_registered_context_required) prepared.crop_only_media_plan = state->media_plan.ToJson();
 
     write_recording_snapshot(
         recording_folder,
@@ -3397,7 +3397,7 @@ PreparedRecordingRunStart prepare_recording_run(
                 cameras_params,
                 cameras_select,
                 num_cameras,
-                state->recording_sink_mode == "external_ipc"
+                (state->recording_sink_mode == "external_ipc" || state->media_selection.RequiresContext())
                     ? state->gui_recording_control
                     : RecordingControlConfig{});
         state->active_external_crop_recorder_contract = crop_contract;
@@ -3629,8 +3629,8 @@ RecordingRunStartResult complete_recording_run(
                 : outcome.error_message);
     }
 
-    if (prepared.gui_registered_context_required &&
-        (!prepared.gui_registered_context_ready || !camera_control->master_frame_journals ||
+    if ((prepared.gui_registered_context_required || (state && state->media_selection.RequiresContext())) &&
+        (!prepared.gui_registered_context_required || !prepared.gui_registered_context_ready || !camera_control->master_frame_journals ||
          !camera_control->master_frame_journals->Enabled() ||
          !state || state->gui_master_frame_journals != camera_control->master_frame_journals)) {
         stop_pending_recording_run_lifecycle(&outcome.external_crop_recorder_lifecycle);
@@ -3643,6 +3643,20 @@ RecordingRunStartResult complete_recording_run(
     // can be recorded. GUI callers seal earlier, before supervisor startup;
     // this idempotent check is the lifecycle-level fail-closed backstop.
     std::string immutable_snapshot_error;
+    if (state && state->media_selection.RequiresContext()) {
+        try {
+            if (!prepared.crop_only_arm_evidence_ready || prepared.crop_only_media_plan != state->media_plan.ToJson())
+                throw std::runtime_error("crop-only prearm evidence was not validated on the housekeeping worker");
+            if (!prepared.external_crop_recorder_requested || !outcome.external_crop_recorder_attempted ||
+                !outcome.external_crop_recorder_lifecycle.started || outcome.external_crop_recorder_lifecycle.plan.streams.size() != state->media_plan.cameras.size())
+                throw std::runtime_error("crop-only moving-crop supervisors are not ready");
+        } catch (const std::exception& ex) {
+            stop_pending_recording_run_lifecycle(&outcome.external_crop_recorder_lifecycle);
+            stop_pending_recording_run_lifecycle(&outcome.external_recorder_lifecycle);
+            cleanup_failed_recording_run_start(state, camera_control, prepared.recording_folder);
+            return failed_recording_run_start_result(prepared, ex.what());
+        }
+    }
     if (!seal_immutable_recording_start_snapshot(
             prepared.recording_folder,
             nullptr,

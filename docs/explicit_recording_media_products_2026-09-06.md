@@ -1,10 +1,11 @@
 # Explicit recording products — 2026-09-06
 
-Status: shared product-selection and stream-construction slice implemented.
-Full-frame and full-frame-plus-moving-crop selections are available in the GUI
-and timed headless spec path. **Crop-only recording remains unavailable** until
-the separate crop supervisor and full-frame-independent encoded-media/rolling
-finalizers are integrated. No live recording was run for this slice.
+Status (updated 2026-09-07): all three product selections are implemented in the
+isolated GUI and timed headless build. Crop-only now requires verified registered
+context, an independent master journal, real full-rate detection and supervised
+moving crops at startup, and validates its own clip collection at completion.
+See [activation and acceptance](crop_only_activation_2026-09-07.md).
+Live acceptance and production installation remain pending.
 
 ## Operator contract
 
@@ -14,14 +15,13 @@ Choose a product, not an enable-then-suppress combination:
 | --- | --- | --- | --- |
 | `full_frame` | Yes | No | No |
 | `full_frame_and_moving_crops` | Yes | Yes | No |
-| `registered_context_and_moving_crops` | No | Yes | Yes; not yet admitted |
+| `registered_context_and_moving_crops` | No | Yes | Yes, verified before arm |
 
 These choices do not change native/split-GOP transport, codec, GOP, GPU placement,
 crop size, detection selection, moving-window placement, or lossless settings.
 Single-subject moving crops and full-frame split-GOP remain supported products.
-There is no `disable_full_frame` field, discard sink, or override to admit an
-unfinished crop-only session. The current crop-only rejection is an implementation
-availability check, not an operational disable switch.
+There is no `disable_full_frame` field, discard sink, or admission override.
+The product plan directly determines which recorder owners are constructed.
 
 The `Record` camera selection means participation in a logical recording session.
 Acquisition and its recording-frame identities remain independent of selected
@@ -52,8 +52,9 @@ unrelated app settings. Merely making a selection does not edit the app file.
 
 Headless also requires an explicit matching `fixed.crop_recording` backend when
 moving crops are selected. A full-frame-only choice with a configured active crop
-backend is rejected, not silently ignored. Crop-only is rejected during spec
-validation, before cameras, output folders, or recorder processes are started.
+backend is rejected, not silently ignored. Incomplete crop-only requirements are
+rejected during spec validation; actual context and recorder readiness are checked
+again before recording is armed.
 
 For explicit selections, `session.recording_media_plan` in the recording snapshot
 captures each participating camera, effective mode, and required media products
@@ -80,16 +81,16 @@ Schemas:
 - [x] Freeze explicit GUI choices at stream construction; reject later drift.
 - [x] Full-frame pipeline construction uses the planned full-frame product.
 - [x] Record explicit plans before immutable start sealing.
-- [x] Keep unfinished crop-only unavailable, without an override flag.
+- [x] Replace the temporary implementation refusal with required startup evidence.
 - [x] Separate headless moving-crop supervisor options from full-frame contract.
 - [x] Route GUI single/rolling parent finalization without full-frame camera artifacts.
 - [x] Route headless timed-run single/rolling parent finalization without full-frame files.
-- [ ] Complete headless experiment run-result/post-run handling for crop collections.
+- [x] Complete headless experiment run-result/post-run handling for crop collections.
 - [x] Integrate actual encoded-frame identities, packet/mux evidence, media hashes
       and decoded-raster/count checks with master-to-crop coverage on both paths.
-- [ ] Require registered context and an independent master journal at crop-only arm.
-- [ ] Remove the crop-only implementation refusal only once those paths and their
-      failure tests work. Never replace it with an override switch.
+- [x] Require registered context and an independent master journal at crop-only arm.
+- [x] Remove the implementation refusal and enable the GUI choice without an
+      override switch; preserve required-evidence admission checks.
 - [x] Camera-free missing/tampered/tail-loss/zero-detection and rolling validation.
 - [ ] Live GUI/Citrus-triggered and headless validation, then throughput checks.
 
@@ -105,7 +106,7 @@ schema admission, planned context/master requirements, compatibility, app-field
 preservation, explicit removal, and symlink-save refusal. GUI control and phased
 start tests cover restored selections, frozen membership, prearm rejection and
 snapshot persistence. `tools/test_headless_media_products_spec.py` exercises
-camera-free CLI admission, including refusal of crop-only and contradictory
+camera-free CLI admission, including valid crop-only, missing requirements and contradictory
 product/backend combinations. Production builds and focused regression results
 are recorded below. JSON schema documents supplement the C++
 closed parser; full schema-engine validation is not claimed.

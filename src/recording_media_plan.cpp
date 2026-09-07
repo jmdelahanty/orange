@@ -78,8 +78,11 @@ json RecordingMediaPlan::ToJson() const {
     }
     return result;
 }
-void RequireImplementedRecordingMediaSelection(const RecordingMediaSelection& selection) {
-    if (selection.RequiresContext())
-        throw std::runtime_error("crop-only media is not yet available: startup admission and run-result integration are required");
+void RequireCropOnlyRecordingInputs(const RecordingMediaSelection& selection, bool master_enabled,
+        bool context_enabled, bool real_full_rate_detector, bool external_moving_crops) {
+    if (!selection.RequiresContext()) return;
+    if (!master_enabled || !context_enabled || !real_full_rate_detector || !external_moving_crops)
+        throw std::runtime_error("crop-only recording requires registered_scene_context, an independent master_frame_journal, "
+            "real full-rate YOLO with event logging, and supervised external moving crops");
 }
 } // namespace orange::recording

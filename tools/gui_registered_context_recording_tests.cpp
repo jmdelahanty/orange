@@ -22,6 +22,13 @@ int main() {
         LoadRegisteredContextRecordingSettings(path);
         check(!RecordingMediaSelectionForStream().mode, "old GUI configuration opted into a product plan");
         check(!RegisteredContextRecordingConfigForArm().enabled, "missing config is not opt-in");
+        const auto crop_only = orange::recording::RecordingMediaSelection::Parse(
+            {{"schema_version", 1}, {"mode", "registered_context_and_moving_crops"}});
+        orange::recording::SaveGuiRecordingMediaSelection(path, crop_only);
+        LoadRegisteredContextRecordingSettings(path);
+        refuses([&] { RegisteredContextRecordingConfigForArm(); });
+        std::filesystem::remove(path); // unique fixture preference file
+        LoadRegisteredContextRecordingSettings(path);
         const json context = {
             {"schema_version", 2}, {"enabled", true}, {"worker_cpu_ids", {0}},
             {"source", {{"kind", "daily_registration"}, {"descriptor_path", (root / "context.json").string()},
