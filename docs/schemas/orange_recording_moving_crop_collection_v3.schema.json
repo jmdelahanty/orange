@@ -1,0 +1,5 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Moving crop clip-collection output descriptor v3",
+  "$ref": "orange_recording_moving_crop_clip_index_v1.schema.json#/$defs/collection"
+}

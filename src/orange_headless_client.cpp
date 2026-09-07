@@ -1,5 +1,6 @@
 #include <algorithm>
 #include "recording_master_crop_coverage.h"
+#include "recording_crop_only_manifest.h"
 #include "headless_registered_context.h"
 #include "registered_context_camera_configuration.h"
 #include "scoped_housekeeping_cpu.h"
@@ -4548,7 +4549,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
             RecordingValidationCameraInput input;
             input.camera_index = idx;
             input.camera_serial = cameras_params[idx].camera_serial;
-            input.record_enabled = enable_recording;
+            input.record_enabled = enable_recording && media_products.FullFrame();
             input.source_gpu_id = cameras_params[idx].gpu_id;
             input.strategy = cameras_params[idx].recording.strategy;
             input.constraints = cameras_params[idx].recording.constraints;
@@ -9701,6 +9702,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     const std::string encoder_setup = build_headless_encoder_setup_string(options.encoder_settings);
     const bool rolling_clip_recording =
         enable_recording &&
+        options.media_products.FullFrame() &&
         options.recording_sink_mode != "external_ipc" &&
         options.recording_control.record_for_seconds > 0 &&
         options.recording_control.clip_seconds > 0;
@@ -10335,8 +10337,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         for (int idx : selected_inventory_indices) {
             selected_camera_serials.push_back(cameras_params[idx].camera_serial);
         }
-        std::vector<orange::session::RecordingSessionCameraArtifact> camera_artifacts =
-            orange::session::build_recording_camera_artifacts(
+        std::vector<orange::session::RecordingSessionCameraArtifact> camera_artifacts;
+        if (options.media_products.FullFrame()) camera_artifacts = orange::session::build_recording_camera_artifacts(
                 selected_camera_serials,
                 active_record_folder,
                 true);
@@ -10542,18 +10544,37 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             manifest_options.cameras = std::move(camera_artifacts);
             manifest =
                 orange::session::build_single_clip_recording_session_manifest(manifest_options);
+            if (options.media_products.RequiresContext()) {
+                manifest["media_product_mode"] = orange::recording::kCropOnlyProduct;
+                manifest["cameras"] = selected_camera_serials;
+                manifest["mode"] = options.recording_control.clip_seconds > 0 ? "rolling_clips" : "single_clip";
+                manifest["recording_backend"]["mode"] = "moving_crop_external_ipc";
+                if (!master_journal_ok || !external_crop_recorder_ok || quit_server || thread_failure_state.has_failure())
+                    manifest["status"] = "failed";
+            }
         }
 
         std::string manifest_error;
         if (!orange::session::write_recording_session_manifest(
                 (std::filesystem::path(active_record_folder) / "recording_session.json").string(),
                 manifest,
-                &manifest_error)) {
+                &manifest_error,
+                &manifest)) {
             std::cerr << manifest_error << std::endl;
             stop_headless_frame_ipc_managers(frame_ipc_managers);
             stop_headless_frame_ipc_runtime(&frame_ipc_runtime);
             clear_headless_frame_ipc_managers(frame_ipc_managers);
             return 1;
+        }
+        if (options.media_products.RequiresContext()) {
+            nlohmann::json update = {{"recording_mode", manifest.at("mode")},
+                {"recording_session_manifest_path", (std::filesystem::path(active_record_folder) / "recording_session.json").string()},
+                {"recording_session_status", manifest.at("status")}, {"recording_session_camera_count", selected_camera_serials.size()}};
+            if (manifest.contains("crop_clip_index")) update["crop_clip_index"] = manifest.at("crop_clip_index");
+            if (!update_recording_snapshot_session_artifacts(active_record_folder, update)) {
+                std::cerr << "Failed to persist crop-only session/index pointers." << std::endl;
+                return 1;
+            }
         }
         if (rolling_clip_recording) {
             const nlohmann::json snapshot_update =
@@ -10608,6 +10629,13 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         return 1;
     }
     if (!master_journal_ok) return 1;
+    if (options.media_products.RequiresContext()) {
+        const auto parent = read_json_file_best_effort(std::filesystem::path(active_record_folder) / "recording_session.json");
+        if (parent.value("status", "") != "completed" || !parent.contains("crop_clip_index")) {
+            std::cerr << "Crop-only parent/index did not complete." << std::endl;
+            return 1;
+        }
+    }
     if (options.registered_scene_context.enabled) {
         const auto final_parent = read_json_file_best_effort(
             std::filesystem::path(active_record_folder) / "recording_session.json");

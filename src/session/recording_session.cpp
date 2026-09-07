@@ -1,5 +1,6 @@
 #include "session/recording_session.h"
 #include "recording_master_crop_coverage.h"
+#include "recording_crop_only_manifest.h"
 #include "recording_registered_context.h"
 
 #include "citrus_recording_geometry.h"
@@ -2741,7 +2742,8 @@ std::vector<RecordingSessionCameraArtifact> build_recording_camera_artifacts(
 
 bool write_recording_session_manifest(const std::string& path,
                                       const nlohmann::json& manifest,
-                                      std::string* error_out)
+                                      std::string* error_out,
+                                      nlohmann::json* written_manifest)
 {
     if (path.empty()) {
         if (error_out) {
@@ -2751,7 +2753,10 @@ bool write_recording_session_manifest(const std::string& path,
     }
     const std::filesystem::path manifest_path(path);
     nlohmann::json finalized_manifest = manifest;
+    const bool crop_only = orange::recording::IsCropOnlyRecordingManifest(manifest);
     try {
+        if (crop_only)
+            finalized_manifest = orange::recording::BuildCropOnlyRecordingManifest(manifest_path.parent_path(), manifest);
         orange::recording::ApplyRequiredMasterJournalGate(manifest_path.parent_path(), &finalized_manifest);
         orange::recording::ApplyRequiredMovingCropMetadataGate(manifest_path.parent_path(), &finalized_manifest);
         orange::recording::ApplyRequiredMovingCropMediaGate(manifest_path.parent_path(), &finalized_manifest);
@@ -2768,14 +2773,14 @@ bool write_recording_session_manifest(const std::string& path,
             &finalized_manifest, manifest_path, error_out)) {
         return false;
     }
-    if (!add_finalized_frame_identity_contract(
+    if (!crop_only && !add_finalized_frame_identity_contract(
             &finalized_manifest, manifest_path, error_out)) {
         return false;
     }
     // Explicit opt-in until the projection profile is reviewed by both v1
     // consumers. Existing whole mappings and already sealed generations stay
     // byte-for-byte unchanged; no acquisition hot-path work is introduced.
-    if (env_flag_enabled("ORANGE_ROLLING_ACQUISITION_PROJECTION_V1") &&
+    if (!crop_only && env_flag_enabled("ORANGE_ROLLING_ACQUISITION_PROJECTION_V1") &&
         finalized_manifest.value("mode", "") == "rolling_clips" &&
         finalized_manifest.value("status", "") == "completed" &&
         !finalized_manifest.contains("acquisition_index_mapping_sha256")) {
@@ -2790,18 +2795,26 @@ bool write_recording_session_manifest(const std::string& path,
             finalized_manifest.erase("rolling_metadata_projection_sha256");
         }
     }
-    if (!add_acquisition_index_mapping_contract(
+    if (!crop_only && !add_acquisition_index_mapping_contract(
             &finalized_manifest, manifest_path, error_out)) {
         return false;
     }
-    add_finalized_timestamp_clock_contract(&finalized_manifest, manifest_path);
+    if (!crop_only) add_finalized_timestamp_clock_contract(&finalized_manifest, manifest_path);
     if (!apply_recording_observation_finalization_to_manifest(
             manifest_path.parent_path().string(),
             &finalized_manifest,
             error_out)) {
         return false;
     }
-    return write_json_file(manifest_path, finalized_manifest, error_out);
+    try {
+        if (crop_only) orange::recording::PublishCropOnlyRecordingIndex(manifest_path.parent_path(), &finalized_manifest);
+    } catch (const std::exception& ex) {
+        if (error_out) *error_out = std::string("crop-only index publication: ") + ex.what();
+        return false;
+    }
+    if (!write_json_file(manifest_path, finalized_manifest, error_out)) return false;
+    if (written_manifest) *written_manifest = std::move(finalized_manifest);
+    return true;
 }
 
 bool write_rolling_clip_index_artifacts(const std::string& recording_folder,

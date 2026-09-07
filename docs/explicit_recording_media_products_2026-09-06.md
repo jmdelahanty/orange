@@ -59,7 +59,10 @@ For explicit selections, `session.recording_media_plan` in the recording snapsho
 captures each participating camera, effective mode, and required media products
 before immutable start sealing. Headless `runs.json` also retains the selection.
 This is planned output evidence, **not** proof that those media were encoded.
-Existing final output descriptors remain the output inventory. Optional context
+Existing final output descriptors remain the output inventory for full-frame
+products. The crop-only finalizer now writes an explicit clip collection; see
+[crop-only parent and clip inventory](crop_only_parent_and_clip_inventory_2026-09-07.md).
+Optional context
 and master settings for full-frame products remain separately recorded and are not
 made mandatory by this slice. Universal master journaling is still a separate
 rollout; a false `master_frame_record_required` does not mean no journal exists.
@@ -79,8 +82,9 @@ Schemas:
 - [x] Record explicit plans before immutable start sealing.
 - [x] Keep unfinished crop-only unavailable, without an override flag.
 - [x] Separate headless moving-crop supervisor options from full-frame contract.
-- [ ] Route GUI single/rolling parent finalization without full-frame camera artifacts.
-- [ ] Route headless single/rolling parent finalization without full-frame files.
+- [x] Route GUI single/rolling parent finalization without full-frame camera artifacts.
+- [x] Route headless timed-run single/rolling parent finalization without full-frame files.
+- [ ] Complete headless experiment run-result/post-run handling for crop collections.
 - [x] Integrate actual encoded-frame identities, packet/mux evidence, media hashes
       and decoded-raster/count checks with master-to-crop coverage on both paths.
 - [ ] Require registered context and an independent master journal at crop-only arm.

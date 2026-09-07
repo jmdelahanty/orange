@@ -6,6 +6,7 @@
 #include "gui/recording_finalizer.h"
 #include "scoped_housekeeping_cpu.h"
 #include "recording_master_crop_coverage.h"
+#include "recording_crop_only_manifest.h"
 #include "yolo_event_log.h"
 
 #include "gui/env_util.h"
@@ -1324,7 +1325,9 @@ GuiRecordingFinalizeInputs gui_prepare_recording_finalize(
 
     inputs.valid = true;
     inputs.run = *run;
-    inputs.external_ipc = run->recording_sink_mode == "external_ipc";
+    inputs.crop_only = recording_session && recording_session->media_selection.RequiresContext();
+    inputs.crop_clip_seconds = recording_session ? recording_session->gui_recording_control.clip_seconds : 0;
+    inputs.external_ipc = !inputs.crop_only && run->recording_sink_mode == "external_ipc";
     inputs.recording_session_available = recording_session != nullptr;
     inputs.crop_external_recorder_active =
         recording_session &&
@@ -1906,7 +1909,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                 recording_backend["error"] = external_recorder_error;
             }
         }
-    } else {
+    } else if (!inputs->crop_only) {
         camera_artifacts =
             orange::session::build_recording_camera_artifacts(
                 camera_serials,
@@ -2696,7 +2699,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
         manifest_options.recording_backend = recording_backend;
         manifest_options.cameras = std::move(camera_artifacts);
         manifest_options.recording_outputs = external_full_outputs;
-        if (!inputs->cameras.empty()) {
+        if (!inputs->crop_only && !inputs->cameras.empty()) {
             const int resolved_crop_size =
                 CropAndEncodeWorker::SanitizeCropSize(crop_size_px);
             for (const GuiRecordingFinalizeCameraSnapshot& camera : inputs->cameras) {
@@ -2779,11 +2782,20 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
 
         manifest =
             orange::session::build_single_clip_recording_session_manifest(manifest_options);
+        if (inputs->crop_only) {
+            manifest["media_product_mode"] = orange::recording::kCropOnlyProduct;
+            manifest["cameras"] = camera_serials;
+            manifest_mode = inputs->crop_clip_seconds > 0 ? "rolling_clips" : "single_clip";
+            manifest["mode"] = manifest_mode;
+            manifest["recording_control"]["clip_seconds"] = inputs->crop_clip_seconds;
+            manifest["recording_backend"]["mode"] = "moving_crop_external_ipc";
+        }
         std::string manifest_error;
         if (!orange::session::write_recording_session_manifest(
                 manifest_path.string(),
                 manifest,
-                &manifest_error)) {
+                &manifest_error,
+                &manifest)) {
             std::cerr << "[GUI][recording] Failed to write recording_session.json: "
                       << manifest_error << std::endl;
             outcome.error_message =
@@ -2793,7 +2805,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
             return outcome;
         }
         recording_session_bridge = {
-            {"pass", recording_session_ok},
+            {"pass", manifest.value("status", "") == "completed"},
             {"path", manifest_path.string()},
             {"mode", manifest_mode},
             {"producer", manifest_producer},
@@ -2841,12 +2853,12 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
             orange::external_recorder::BuildExternalRecorderFinalizationManifest(
                 finalization_options);
         finalization["recording_session_manifest"] = {
-            {"pass", crop_external_recorder_ok},
+            {"pass", crop_external_recorder_ok && (!inputs->crop_only || manifest.value("status", "") == "completed")},
             {"path", manifest_path.string()},
             {"mode", manifest_mode},
             {"producer", manifest_producer},
             {"output_kind", "crop"},
-            {"crop_mode", "single_clip"},
+            {"crop_mode", inputs->crop_only ? manifest_mode : "single_clip"},
             {"camera_count", external_crop_outputs.size()}
         };
         const orange::external_recorder::ArtifactWriteResult finalization_write =
@@ -2861,9 +2873,9 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
 
     if (!external_rolling_requested) {
         const nlohmann::json snapshot_update = {
-            {"recording_mode", "single_clip"},
+            {"recording_mode", manifest_mode},
             {"recording_session_manifest_path", manifest_path.string()},
-            {"recording_session_status", recording_session_ok ? "completed" : "incomplete"},
+            {"recording_session_status", manifest.value("status", "incomplete")},
             {"recording_session_camera_count", camera_serials.size()},
             {"gui_display_frame_rate", gui_display_frame_rate}
         };
@@ -2876,6 +2888,12 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                 "failed to update recording_snapshot.json session pointers";
             outcome.external_recorder_error = external_recorder_error;
             outcome.crop_external_recorder_error = crop_external_recorder_error;
+            return outcome;
+        }
+        if (inputs->crop_only && manifest.contains("crop_clip_index") &&
+            !update_recording_snapshot_session_artifacts(run.recording_folder,
+                {{"crop_clip_index", manifest.at("crop_clip_index")}})) {
+            outcome.error_message = "failed to persist crop-only clip index pointer";
             return outcome;
         }
         if (manifest.contains("recording_outputs") &&

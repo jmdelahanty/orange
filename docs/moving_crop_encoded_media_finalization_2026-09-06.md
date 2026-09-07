@@ -3,8 +3,10 @@
 This slice implements independent headless crop supervision and actual encoded
 media completion checks shared by headless and GUI. It does **not** yet make
 `registered_context_and_moving_crops` available. That mode still needs its own
-single/rolling parent output inventory and run-result path, without full-frame
-camera artifacts. There is no override or full-frame discard workaround.
+run-result path and required startup admission, without full-frame camera
+artifacts. The single/rolling parent inventory was completed in the
+[2026-09-07 follow-up](crop_only_parent_and_clip_inventory_2026-09-07.md).
+There is no override or full-frame discard workaround.
 
 Full-frame/split-GOP recording and single-subject moving/lossless crops remain
 supported. No fixed-region, multi-fish, atlas, preview-composition, or pose-routing
@@ -107,7 +109,7 @@ Headless already stops/joins the detector logger before media validation.
 - [x] Immutable required-media marker and fail-closed common parent gate.
 - [x] GUI detector-log drain barrier and strict media finalization integration.
 - [x] Camera-free single/rolling, blank, missing-tail and tampering tests.
-- [ ] Crop-only single/rolling parent and per-clip inventories on both paths;
+- [x] Crop-only single/rolling parent and per-clip inventories on both paths;
   logical camera membership must not be inferred from full-frame files.
 - [ ] Headless crop-only run-result validation and full-frame-only scheduling
   preflights must follow the product plan, not just `record_enabled`/sink mode.

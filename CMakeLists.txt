@@ -539,6 +539,7 @@ add_library(orange_recording_master_journal STATIC
     "${SRC_DIR}/recording_master_acquisition.cpp"
     "${SRC_DIR}/gui_recording_evidence.cpp"
     "${SRC_DIR}/recording_master_crop_coverage.cpp"
+    "${SRC_DIR}/recording_crop_only_manifest.cpp"
     "${SRC_DIR}/recording_registered_context.cpp"
     "${SRC_DIR}/recording_daily_context_reuse.cpp"
     "${SRC_DIR}/daily_registered_context.cpp"
@@ -656,6 +657,12 @@ if(BUILD_TESTING)
         ORANGE_CROP_MEDIA_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures/crop_black_five_256_hevc.mp4.b64")
     add_test(NAME recording_moving_crop_completion_tests COMMAND recording_moving_crop_completion_tests)
     set_tests_properties(recording_moving_crop_completion_tests PROPERTIES TIMEOUT 30)
+    add_executable(recording_crop_only_manifest_tests "tools/recording_crop_only_manifest_tests.cpp")
+    target_link_libraries(recording_crop_only_manifest_tests PRIVATE orange_recording_master_journal)
+    target_compile_definitions(recording_crop_only_manifest_tests PRIVATE
+        ORANGE_CROP_MEDIA_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures/crop_black_five_256_hevc.mp4.b64")
+    add_test(NAME recording_crop_only_manifest_tests COMMAND recording_crop_only_manifest_tests)
+    set_tests_properties(recording_crop_only_manifest_tests PROPERTIES TIMEOUT 30)
     add_executable(recording_master_acquisition_tests "tools/recording_master_acquisition_tests.cpp")
     add_executable(recording_media_plan_tests "tools/recording_media_plan_tests.cpp")
     target_link_libraries(recording_media_plan_tests PRIVATE orange_recording_master_journal)
@@ -810,6 +817,8 @@ if(BUILD_TESTING)
     )
     target_include_directories(recording_finalizer_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(recording_finalizer_tests PRIVATE cxx_std_17)
+    target_compile_definitions(recording_finalizer_tests PRIVATE
+        ORANGE_CROP_MEDIA_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures/crop_black_five_256_hevc.mp4.b64")
     add_test(
         NAME recording_finalizer_tests_build
         COMMAND ${CMAKE_COMMAND}

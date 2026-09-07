@@ -80,6 +80,6 @@ json RecordingMediaPlan::ToJson() const {
 }
 void RequireImplementedRecordingMediaSelection(const RecordingMediaSelection& selection) {
     if (selection.RequiresContext())
-        throw std::runtime_error("crop-only media is not yet available: encoded-media completion integration is required");
+        throw std::runtime_error("crop-only media is not yet available: startup admission and run-result integration are required");
 }
 } // namespace orange::recording

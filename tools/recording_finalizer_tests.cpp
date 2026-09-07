@@ -13,6 +13,7 @@
 #include "session/recording_session.h"
 #include "video_capture.h"
 #include "NvEncoder/Logger.h"
+#include "crop_only_manifest_fixture.h"
 
 #include <chrono>
 #include <cstdlib>
@@ -684,6 +685,52 @@ struct PhasedFinalizeFixture {
     }
 };
 
+void test_crop_only_parent_finalization()
+{
+    using namespace orange::recording;
+    for (bool rolling : {false, true}) for (bool missing : {false, true}) {
+        orange::test_crop_media::CropOnlyFixture evidence(rolling);
+        const auto root = evidence.first.root;
+        if (missing) std::filesystem::remove(root / (evidence.first.prefix + "_moving_crop_media_v1.json"));
+        PhasedFinalizeFixture fixture(root.string());
+        fixture.camera.camera_serial = evidence.first.serial;
+        fixture.recording_session.media_selection.mode = RecordingMediaMode::RegisteredContextAndMovingCrops;
+        fixture.recording_session.gui_recording_control.clip_seconds = rolling ? 1 : 0;
+        // A configured full-frame IPC transport must not imply a full-frame
+        // supervisor or media artifact in this selected product.
+        fixture.run.recording_sink_mode = "external_ipc";
+        auto inputs = gui_prepare_recording_finalize(&fixture.run, &fixture.recording_session,
+            &fixture.camera, &fixture.select, 1, 256, nlohmann::json::object());
+        require(inputs.crop_only && !inputs.external_ipc, "crop-only finalizer retained full-recorder ownership");
+        const auto outcome = gui_run_recording_finalize(&inputs, nullptr);
+        require(outcome.ok, "crop-only GUI finalization failed: " + outcome.error_message);
+        const auto parent = nlohmann::json::parse(orange::test_crop_media::read(root / "recording_session.json"));
+        require(parent.at("status") == (missing ? "failed" : "completed"), "GUI lost actual parent completion status");
+        require(parent.at("mode") == (rolling ? "rolling_clips" : "single_clip"), "GUI lost crop rolling mode");
+        require(parent.at("cameras") == evidence.lifecycle.at("cameras") && parent.at("camera_artifacts").empty(),
+            "GUI inferred membership from full-frame media");
+        require(!parent.contains("frame_identity_contract") && !parent.contains("acquisition_index_mapping") &&
+            !parent.contains("timestamp_clock_contract"), "crop-only parent invented full-frame timing contracts");
+        require(parent.contains("shaman_v2_camera_identity") && parent.contains("shaman_v2_recording_identity"),
+            "crop-only parent lost acquisition identity");
+        require(parent.contains("crop_clip_index") != missing, "GUI published missing/failed crop index");
+        const auto snapshot = nlohmann::json::parse(orange::test_crop_media::read(root / "recording_snapshot.json"));
+        require(snapshot.at("session").at("recording_session_status") == parent.at("status"), "GUI snapshot hid a failed parent");
+    }
+    // Headless uses the same empty-media lifecycle builder and common writer.
+    orange::test_crop_media::CropOnlyFixture evidence(true, true, true);
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "orange_client"; options.session_id = evidence.first.root.filename().string();
+    options.recording_folder = evidence.first.root.string(); options.status = "completed";
+    auto parent = orange::session::build_single_clip_recording_session_manifest(options);
+    for (const auto* key : {"media_product_mode", "cameras", "mode"}) parent[key] = evidence.lifecycle.at(key);
+    std::string error;
+    require(orange::session::write_recording_session_manifest((evidence.first.root / "recording_session.json").string(),
+        parent, &error, &parent), "headless-style crop-only parent failed: " + error);
+    require(parent.at("status") == "completed" && parent.at("clips").size() == 4 && parent.contains("crop_clip_index"),
+        "headless-style daily-context rolling inventory failed");
+}
+
 void test_phased_finalize_failure_leaves_retryable_state()
 {
     // Keep the diagnostic finalize stall knobs out of the picture.
@@ -1030,6 +1077,7 @@ int main()
         {"write_external_rolling_manifest_success",
          &test_write_external_rolling_manifest_success},
         {"finalizer_gating", &test_finalizer_gating},
+        {"crop_only_parent_finalization", &test_crop_only_parent_finalization},
         {"gui_finalizer_seals_required_master_before_parent", &test_gui_finalizer_seals_required_master_before_parent},
         {"phased_finalize_failure_leaves_retryable_state",
          &test_phased_finalize_failure_leaves_retryable_state},

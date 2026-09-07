@@ -300,7 +300,8 @@ RecordingOutputDescriptor build_crop_recording_output_descriptor(
     const std::string& status);
 bool write_recording_session_manifest(const std::string& path,
                                       const nlohmann::json& manifest,
-                                      std::string* error_out = nullptr);
+                                      std::string* error_out = nullptr,
+                                      nlohmann::json* written_manifest = nullptr);
 bool write_rolling_clip_index_artifacts(const std::string& recording_folder,
                                         const nlohmann::json& manifest,
                                         RecordingSessionIndexArtifacts* artifacts_out = nullptr,

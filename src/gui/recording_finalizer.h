@@ -161,6 +161,8 @@ struct GuiRecordingFinalizeInputs {
     bool valid = false;
     GuiRecordingRunState run;
     bool external_ipc = false;
+    bool crop_only = false;
+    int crop_clip_seconds = 0;
     bool recording_session_available = false;
     std::shared_ptr<orange::recording::MasterAcquisitionSet> master_frame_journals;
     int context_housekeeping_cpu = -1;

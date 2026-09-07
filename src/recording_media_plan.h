@@ -43,8 +43,8 @@ struct RecordingMediaPlan {
     nlohmann::json ToJson() const;
 };
 
-// Admission is deliberately unavailable for crop-only until its parent/rolling
-// finalizers validate actual encoded output against the independent master.
+// Admission is deliberately unavailable for crop-only until its required
+// context/master startup and experiment run-result paths are integrated.
 // No environment variable or operator override can bypass this implementation gate.
 void RequireImplementedRecordingMediaSelection(const RecordingMediaSelection&);
 } // namespace orange::recording
