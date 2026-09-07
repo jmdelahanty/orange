@@ -6,6 +6,8 @@ namespace {
 using json = nlohmann::json;
 json options = {{"schema_version", 1}, {"enabled", false}};
 std::string config_path, error, status;
+recording::RecordingMediaSelection media_selection;
+std::string media_error, media_status;
 bool confirmed = false;
 void save() {
     recording::SaveGuiRecordingEvidenceConfig(config_path,
@@ -13,12 +15,61 @@ void save() {
     status = "Saved GUI recording context settings (scene confirmation is not restored on launch).";
 }
 }
-void LoadRegisteredContextRecordingSettings(const std::string& path) {
+void LoadRegisteredContextRecordingSettings(const std::string& path, bool load_media) {
     config_path = path; confirmed = false; error.clear();
     options = {{"schema_version", 1}, {"enabled", false}};
     try {
         options = recording::ReadGuiRecordingEvidenceConfig(config_path).ToJson();
     } catch (const std::exception& ex) { error = ex.what(); }
+    if (load_media) {
+        media_selection = {}; media_error.clear();
+        try { media_selection = recording::ReadGuiRecordingMediaSelection(path); }
+        catch (const std::exception& ex) { media_error = ex.what(); }
+    }
+}
+recording::RecordingMediaSelection RecordingMediaSelectionForStream() {
+    if (!media_error.empty()) throw std::runtime_error("GUI media selection: " + media_error);
+    return media_selection;
+}
+void RenderRecordingMediaSelection(bool stream_locked) {
+    if (!ImGui::CollapsingHeader("Recording media products")) return;
+    ImGui::BeginDisabled(stream_locked);
+    int selected = !media_selection.mode ? 0 :
+        (*media_selection.mode == recording::RecordingMediaMode::FullFrame ? 1 :
+         *media_selection.mode == recording::RecordingMediaMode::FullFrameAndMovingCrops ? 2 : 3);
+    const char* choices[] = {"Existing per-camera choices", "Full-frame video",
+        "Full-frame video + moving crops", "Registered context + moving crops (not yet available)"};
+    bool changed = false;
+    if (ImGui::BeginCombo("Media products", choices[selected])) {
+        for (int i = 0; i < 4; ++i) {
+            ImGui::BeginDisabled(i == 3);
+            if (ImGui::Selectable(choices[i], selected == i)) { selected = i; changed = true; }
+            ImGui::EndDisabled();
+        }
+        ImGui::EndCombo();
+    }
+    if (changed) {
+        media_selection.mode.reset();
+        if (selected == 1) media_selection.mode = recording::RecordingMediaMode::FullFrame;
+        if (selected == 2) media_selection.mode = recording::RecordingMediaMode::FullFrameAndMovingCrops;
+        if (selected == 3) media_selection.mode = recording::RecordingMediaMode::RegisteredContextAndMovingCrops;
+        media_error.clear(); media_status = "Selection applies at the next stream startup; not saved yet.";
+    }
+    if (ImGui::Button("Save media product selection")) {
+        try {
+            recording::SaveGuiRecordingMediaSelection(config_path, media_selection);
+            media_error.clear(); media_status = "Saved recording.media_products; encoder settings are unchanged.";
+        } catch (const std::exception& ex) { media_error = ex.what(); }
+    }
+    ImGui::EndDisabled();
+    ImGui::TextWrapped("Choose before streaming. Record still controls session membership. "
+        "An explicit product choice determines moving-crop recording for each participating camera. "
+        "Native and split-GOP full-frame recording remain supported.");
+    if (media_selection.RequiresContext())
+        ImGui::TextWrapped("Crop-only startup is refused until encoded-media completion and rolling finalization are integrated. "
+            "This selection never starts a full-frame encoder and discards its output.");
+    if (!media_error.empty()) ImGui::TextWrapped("Startup blocked: %s", media_error.c_str());
+    if (!media_status.empty()) ImGui::TextWrapped("%s", media_status.c_str());
 }
 void SelectDailyContextForGuiRecording(const json& context) {
     auto c = recording::RegisteredContextConfig::Parse(context);
@@ -64,7 +115,7 @@ void RenderRegisteredContextRecordingSettings(bool locked) {
         try { save(); error.clear(); } catch (const std::exception& ex) { error = ex.what(); }
     }
     ImGui::SameLine();
-    if (ImGui::Button("Reload saved context settings")) LoadRegisteredContextRecordingSettings(config_path);
+    if (ImGui::Button("Reload saved context settings")) LoadRegisteredContextRecordingSettings(config_path, false);
     ImGui::EndDisabled();
     if (!error.empty()) ImGui::TextWrapped("Recording blocked: %s", error.c_str());
     if (!status.empty()) ImGui::TextWrapped("%s", status.c_str());

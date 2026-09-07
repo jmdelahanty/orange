@@ -1,0 +1,50 @@
+#pragma once
+#include "json.hpp"
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace orange::recording {
+// Product identity is independent of encoder transport (native/split-GOP/IPC).
+enum class RecordingMediaMode { FullFrame, FullFrameAndMovingCrops, RegisteredContextAndMovingCrops };
+const char* RecordingMediaModeName(RecordingMediaMode);
+
+struct RecordingMediaSelection {
+    // Absent preserves the existing per-camera recording/crop choices. It is
+    // not a fourth product mode and cannot silently opt a camera into crop-only.
+    std::optional<RecordingMediaMode> mode;
+    static RecordingMediaSelection Parse(const nlohmann::json&);
+    nlohmann::json ToJson() const;
+    bool FullFrame() const;
+    bool MovingCrops(bool existing_crop_choice) const;
+    bool RequiresContext() const;
+};
+
+struct RecordingMediaCameraInput {
+    std::string serial;
+    bool participates = false; // logical recording membership, not an encoder switch
+    bool moving_crops = false;
+};
+struct RecordingMediaCameraPlan {
+    std::string serial;
+    RecordingMediaMode mode = RecordingMediaMode::FullFrame;
+    bool FullFrame() const;
+    bool MovingCrops() const;
+};
+struct RecordingMediaPlan {
+    RecordingMediaSelection selection;
+    std::vector<RecordingMediaCameraPlan> cameras;
+    static RecordingMediaPlan Resolve(const RecordingMediaSelection&,
+                                      const std::vector<RecordingMediaCameraInput>&);
+    bool HasFullFrame() const;
+    bool HasMovingCrops() const;
+    bool RequiresContext() const;
+    const RecordingMediaCameraPlan* Find(const std::string& serial) const;
+    nlohmann::json ToJson() const;
+};
+
+// Admission is deliberately unavailable for crop-only until its parent/rolling
+// finalizers validate actual encoded output against the independent master.
+// No environment variable or operator override can bypass this implementation gate.
+void RequireImplementedRecordingMediaSelection(const RecordingMediaSelection&);
+} // namespace orange::recording

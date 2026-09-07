@@ -6,6 +6,7 @@
 #include "project.h"
 #include "recording_config_state.h"
 #include "recording_output_descriptor.h"
+#include "recording_media_plan.h"
 #include "video_capture.h"
 #include "json.hpp"
 
@@ -26,6 +27,8 @@ struct RecordingControlConfig {
 };
 
 struct RecordingSessionState {
+    orange::recording::RecordingMediaSelection media_selection;
+    orange::recording::RecordingMediaPlan media_plan;
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
     std::vector<ResolvedRecordingConfig> resolved_recording_configs;
     std::string recording_sink_mode = "real";

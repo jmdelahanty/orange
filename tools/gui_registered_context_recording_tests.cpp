@@ -20,6 +20,7 @@ int main() {
     try {
         using namespace orange::gui;
         LoadRegisteredContextRecordingSettings(path);
+        check(!RecordingMediaSelectionForStream().mode, "old GUI configuration opted into a product plan");
         check(!RegisteredContextRecordingConfigForArm().enabled, "missing config is not opt-in");
         const json context = {
             {"schema_version", 2}, {"enabled", true}, {"worker_cpu_ids", {0}},
@@ -35,10 +36,17 @@ int main() {
         check(config.enabled && config.master.enabled && config.master.writer_cpu_ids == std::vector<int>{0},
             "daily selection did not configure journal/context together");
         check(!std::filesystem::exists(path), "selecting context silently saved global config");
+        const auto media = orange::recording::RecordingMediaSelection::Parse(
+            {{"schema_version", 1}, {"mode", "full_frame_and_moving_crops"}});
+        orange::recording::SaveGuiRecordingMediaSelection(path, media);
         orange::recording::SaveGuiRecordingEvidenceConfig(path, config);
         ConsumeRegisteredContextRecordingConfirmation();
         refuses([&] { RegisteredContextRecordingConfigForArm(); });
         LoadRegisteredContextRecordingSettings(path);
+        check(RecordingMediaSelectionForStream().ToJson() == media.ToJson(), "GUI did not restore explicit media choice");
+        orange::recording::SaveGuiRecordingMediaSelection(path, {});
+        LoadRegisteredContextRecordingSettings(path, false);
+        check(RecordingMediaSelectionForStream().ToJson() == media.ToJson(), "context reload changed frozen media choice");
         refuses([&] { RegisteredContextRecordingConfigForArm(); });
         SelectDailyContextForGuiRecording(context);
         check(RegisteredContextRecordingConfigForArm().enabled, "new confirmation did not allow another arm");

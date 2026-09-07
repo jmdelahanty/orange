@@ -3881,6 +3881,9 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
     orange::recording::GuiRecordingEvidenceConfig evidence_config;
     std::vector<orange::recording::RegisteredContextCamera> evidence_cameras;
     try {
+        if (orange::gui::RecordingMediaSelectionForStream().ToJson() !=
+            recording_session->media_selection.ToJson())
+            throw std::runtime_error("recording media selection changed since stream startup; stop and restart streaming");
         evidence_config = orange::gui::RegisteredContextRecordingConfigForArm();
         if (evidence_config.enabled && !async_start)
             throw std::runtime_error("registered context requires the asynchronous GUI start owner");
@@ -6144,6 +6147,10 @@ int main(int /*argc*/, char ** /*args*/) {
             }
 
             const auto recording_panel_draw_start = std::chrono::steady_clock::now();
+            orange::gui::RenderRecordingMediaSelection(
+                camera_control->subscribe || gui_camera_startup.busy() ||
+                camera_control->record_video || camera_control->recording_draining ||
+                gui_async_recording_start.active);
             orange::gui::RenderRegisteredContextRecordingSettings(
                 camera_control->record_video || camera_control->recording_draining ||
                 gui_async_recording_start.active ||
@@ -7070,7 +7077,20 @@ int main(int /*argc*/, char ** /*args*/) {
                         bindings.acquisition_threads = &camera_threads;
 
                         std::string start_error;
-                        if (gui_camera_startup.StartStream(
+                        try {
+                            const auto selection = orange::gui::RecordingMediaSelectionForStream();
+                            orange::recording::RequireImplementedRecordingMediaSelection(selection);
+                            recording_session.media_selection = selection;
+                            // This is materialization of an explicit operator product
+                            // choice, before any crop/full-frame worker is constructed.
+                            if (selection.mode) {
+                                for (int i = 0; i < num_cameras; ++i) {
+                                    cameras_select[i].crop_and_encode =
+                                        cameras_select[i].record && selection.MovingCrops(false);
+                                }
+                            }
+                        } catch (const std::exception& ex) { start_error = ex.what(); }
+                        if (start_error.empty() && gui_camera_startup.StartStream(
                                 std::move(bindings), &start_error)) {
                             recording_preflight_errors.clear();
                             gui_mark_stream_started(&gui_session_timing);

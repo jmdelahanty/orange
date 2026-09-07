@@ -33,14 +33,16 @@ GuiRecordingEvidenceConfig ReadGuiRecordingEvidenceConfig(const std::filesystem:
         return GuiRecordingEvidenceConfig::Parse(root.at("recording").at("registered_context_recording"));
     return {};
 }
-void SaveGuiRecordingEvidenceConfig(const std::filesystem::path& path, const GuiRecordingEvidenceConfig& config) {
+namespace {
+void save_recording_field(const std::filesystem::path& path, const char* field, const json& value) {
     ScopedFsuid filesystem_identity;
     if (std::filesystem::is_symlink(std::filesystem::symlink_status(path)))
         throw std::runtime_error("app config is a symlink; edit its resolved target explicitly instead of replacing the link");
-    const auto validated = GuiRecordingEvidenceConfig::Parse(config.ToJson());
     const auto before = read_app_config(path);
     auto root = before;
-    root["recording"]["registered_context_recording"] = validated.ToJson();
+    if (value.is_null()) {
+        if (root.contains("recording")) root["recording"].erase(field);
+    } else root["recording"][field] = value;
     if (!root.contains("schema_id")) root["schema_id"] = "orange.app.config";
     if (!root.contains("schema_version")) root["schema_version"] = 1;
     const auto bytes = root.dump(2) + '\n';
@@ -73,6 +75,23 @@ void SaveGuiRecordingEvidenceConfig(const std::filesystem::path& path, const Gui
         ::unlink(temp.c_str()); // only the exclusive temporary created above
         throw;
     }
+}
+}
+void SaveGuiRecordingEvidenceConfig(const std::filesystem::path& path, const GuiRecordingEvidenceConfig& config) {
+    save_recording_field(path, "registered_context_recording", GuiRecordingEvidenceConfig::Parse(config.ToJson()).ToJson());
+}
+RecordingMediaSelection ReadGuiRecordingMediaSelection(const std::filesystem::path& path) {
+    ScopedFsuid filesystem_identity;
+    const auto root = read_app_config(path);
+    if (root.contains("recording") && root.at("recording").contains("media_products")) {
+        if (root.at("recording").at("media_products").is_null())
+            throw std::runtime_error("recording.media_products must be a versioned selection, not null");
+        return RecordingMediaSelection::Parse(root.at("recording").at("media_products"));
+    }
+    return {};
+}
+void SaveGuiRecordingMediaSelection(const std::filesystem::path& path, const RecordingMediaSelection& selection) {
+    save_recording_field(path, "media_products", RecordingMediaSelection::Parse(selection.ToJson()).ToJson());
 }
 GuiRecordingEvidenceConfig GuiRecordingEvidenceConfig::Parse(const json& j) {
     if (!j.is_object() || !j.contains("schema_version") || j.at("schema_version").is_boolean() ||

@@ -1,6 +1,7 @@
 #pragma once
 #include "recording_master_acquisition.h"
 #include "recording_registered_context.h"
+#include "recording_media_plan.h"
 
 namespace orange::recording {
 // GUI v1 binds a saved Daily Registration context. Fresh native capture remains
@@ -15,6 +16,9 @@ struct GuiRecordingEvidenceConfig {
 GuiRecordingEvidenceConfig ReadGuiRecordingEvidenceConfig(const std::filesystem::path& app_config);
 void SaveGuiRecordingEvidenceConfig(const std::filesystem::path& app_config,
                                     const GuiRecordingEvidenceConfig&);
+RecordingMediaSelection ReadGuiRecordingMediaSelection(const std::filesystem::path& app_config);
+void SaveGuiRecordingMediaSelection(const std::filesystem::path& app_config,
+                                   const RecordingMediaSelection&);
 
 // CPU-only prearm service. Inputs are frozen value snapshots, never live camera
 // objects. Called on the existing GUI start worker before sealing start evidence.

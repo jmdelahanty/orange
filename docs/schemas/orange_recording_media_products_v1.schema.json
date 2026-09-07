@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.recording.media_products.v1",
+  "title": "Orange recording product selection",
+  "description": "Product selection, independent of encoder settings/transport. The crop-only selection is reserved but refused by current runtime admission until encoded-media completion is integrated. Omit this configuration to retain existing per-camera selections.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "mode"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "mode": {
+      "type": "string",
+      "enum": ["full_frame", "full_frame_and_moving_crops", "registered_context_and_moving_crops"]
+    }
+  }
+}

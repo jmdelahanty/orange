@@ -533,6 +533,7 @@ target_include_directories(orange_project_warnings SYSTEM INTERFACE
 link_libraries(orange_project_warnings)
 
 add_library(orange_recording_master_journal STATIC
+    "${SRC_DIR}/recording_media_plan.cpp"
     "${SRC_DIR}/recording_master_journal.cpp"
     "${SRC_DIR}/recording_master_acquisition.cpp"
     "${SRC_DIR}/gui_recording_evidence.cpp"
@@ -652,6 +653,10 @@ if(BUILD_TESTING)
     add_test(NAME recording_moving_crop_completion_tests COMMAND recording_moving_crop_completion_tests)
     set_tests_properties(recording_moving_crop_completion_tests PROPERTIES TIMEOUT 30)
     add_executable(recording_master_acquisition_tests "tools/recording_master_acquisition_tests.cpp")
+    add_executable(recording_media_plan_tests "tools/recording_media_plan_tests.cpp")
+    target_link_libraries(recording_media_plan_tests PRIVATE orange_recording_master_journal)
+    add_test(NAME recording_media_plan_tests COMMAND recording_media_plan_tests)
+    set_tests_properties(recording_media_plan_tests PROPERTIES TIMEOUT 30)
     target_link_libraries(recording_master_acquisition_tests PRIVATE orange_recording_master_journal)
     add_test(NAME recording_master_acquisition_tests COMMAND recording_master_acquisition_tests)
     set_tests_properties(recording_master_acquisition_tests PROPERTIES TIMEOUT 30)

@@ -842,6 +842,44 @@ void test_gui_context_must_be_ready_before_arm()
     std::cout << "PASS test_gui_context_must_be_ready_before_arm\n";
 }
 
+void test_explicit_media_plan_is_frozen_and_persisted()
+{
+    const auto base = make_temp_base_folder("explicit_media");
+    CameraControl control;
+    CameraParams camera = make_camera_params();
+    CameraEachSelect selected;
+    selected.record = true;
+    PTPParams ptp{};
+    orange::session::RecordingSessionState state;
+    state.media_selection = orange::recording::RecordingMediaSelection::Parse(
+        {{"schema_version", 1}, {"mode", "full_frame"}});
+    state.media_plan = orange::recording::RecordingMediaPlan::Resolve(state.media_selection,
+        {{camera.camera_serial, true, false}});
+    selected.crop_and_encode = true;
+    auto prepared = orange::session::prepare_recording_run(
+        &state, &control, &camera, &selected, 1, base.string(), &ptp, "real", nullptr);
+    require(!prepared.valid && control.recording_folder.empty() && !control.record_video,
+        "changed media selection was allowed to claim a run");
+    selected.crop_and_encode = false;
+    selected.record = false;
+    prepared = orange::session::prepare_recording_run(
+        &state, &control, &camera, &selected, 1, base.string(), &ptp, "real", nullptr);
+    require(!prepared.valid && std::filesystem::is_empty(base), "changed membership created artifacts");
+    selected.record = true;
+    prepared = orange::session::prepare_recording_run(
+        &state, &control, &camera, &selected, 1, base.string(), &ptp, "real", nullptr);
+    require(prepared.valid, "unchanged media plan refused: " + prepared.error_message);
+    nlohmann::json snapshot;
+    { std::ifstream in(std::filesystem::path(prepared.recording_folder) / "recording_snapshot.json"); in >> snapshot; }
+    require(snapshot.at("session").at("recording_media_plan") == state.media_plan.ToJson(),
+        "resolved media plan missing from prearm snapshot");
+    require(!prepared.external_recorder_requested && !prepared.external_crop_recorder_requested,
+        "native full-frame plan requested unexpected supervisors");
+    orange::session::abort_prepared_recording_run(&state, &control, prepared, {}, "test_media_cleanup");
+    std::filesystem::remove_all(base);
+    std::cout << "PASS test_explicit_media_plan_is_frozen_and_persisted\n";
+}
+
 int main(int, char** argv)
 {
     // These tests exercise the phased recorder lifecycle, not the optional
@@ -853,6 +891,7 @@ int main(int, char** argv)
         g_binary_dir = std::filesystem::absolute(argv[0]).parent_path();
     }
     try {
+        test_explicit_media_plan_is_frozen_and_persisted();
         test_gui_context_must_be_ready_before_arm();
         test_prepare_creates_run_scaffolding();
         test_prepare_mints_fresh_folder_over_stale_latch();

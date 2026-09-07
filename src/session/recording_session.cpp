@@ -2992,8 +2992,16 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
         return;
     }
 
+    orange::recording::RequireImplementedRecordingMediaSelection(state->media_selection);
     state->recording_pipelines.clear();
     state->recording_pipelines.resize(num_cameras);
+    std::vector<orange::recording::RecordingMediaCameraInput> media_inputs;
+    for (int i = 0; i < num_cameras; ++i)
+        media_inputs.push_back({cameras_params[i].camera_serial, cameras_select[i].record,
+                               cameras_select[i].crop_and_encode});
+    state->media_plan = state->media_selection.mode
+        ? orange::recording::RecordingMediaPlan::Resolve(state->media_selection, media_inputs)
+        : orange::recording::RecordingMediaPlan{};
     state->resolved_recording_configs.clear();
     state->resolved_recording_configs.resize(num_cameras);
     state->recording_sink_mode =
@@ -3003,6 +3011,9 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
             cameras_select,
             num_cameras);
     state->gui_recording_control = resolve_gui_recording_control(app_storage_config);
+    if (state->media_selection.mode && state->recording_sink_mode != "real" &&
+        state->recording_sink_mode != "external_ipc")
+        throw std::runtime_error("explicit media products require a real or external_ipc recording backend");
     state->crop_recording_sink_mode = resolve_gui_crop_recording_sink_mode();
     state->external_recorder_contract_config =
         resolve_gui_external_recorder_contract_config(
@@ -3015,7 +3026,8 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
     }
 
     for (int i = 0; i < num_cameras; ++i) {
-        if (!cameras_select[i].record) {
+        const auto* media = state->media_plan.Find(cameras_params[i].camera_serial);
+        if (state->media_selection.mode ? (!media || !media->FullFrame()) : !cameras_select[i].record) {
             continue;
         }
 
@@ -3156,6 +3168,25 @@ PreparedRecordingRunStart prepare_recording_run(
         return prepared;
     }
 
+    // A camera's output workers are fixed at stream startup. Reject changed
+    // explicit selections instead of starting a session with stale encoder owners.
+    if (state && state->media_selection.mode) {
+        try {
+            orange::recording::RequireImplementedRecordingMediaSelection(state->media_selection);
+            std::vector<orange::recording::RecordingMediaCameraInput> inputs;
+            for (int i = 0; i < num_cameras; ++i) {
+                if (!cameras_select) throw std::runtime_error("media plan requires camera selection");
+                inputs.push_back({cameras_params[i].camera_serial, cameras_select[i].record,
+                                  cameras_select[i].crop_and_encode});
+                if (cameras_select[i].crop_and_encode !=
+                    (cameras_select[i].record && state->media_selection.MovingCrops(false)))
+                    throw std::runtime_error("recording media products changed; stop and restart streaming");
+            }
+            if (orange::recording::RecordingMediaPlan::Resolve(state->media_selection, inputs).ToJson() != state->media_plan.ToJson())
+                throw std::runtime_error("recording camera membership changed; stop and restart streaming");
+        } catch (const std::exception& ex) { prepared.error_message = ex.what(); return prepared; }
+    }
+
     camera_control->recording_draining = false;
     camera_control->stop_record = false;
     camera_control->latest_recording_frame_id.store(0, std::memory_order_relaxed);
@@ -3228,7 +3259,8 @@ PreparedRecordingRunStart prepare_recording_run(
     }
 
     const std::string normalized_sink_mode = normalize_recording_sink_mode(recording_sink_mode);
-    const bool external_recorder_requested = normalized_sink_mode == "external_ipc";
+    const bool external_recorder_requested = normalized_sink_mode == "external_ipc" &&
+        (!state || !state->media_selection.mode || state->media_plan.HasFullFrame());
 
     prepared.recording_folder = recording_folder;
     prepared.recording_id = recording_id;
@@ -3260,6 +3292,14 @@ PreparedRecordingRunStart prepare_recording_run(
         num_cameras,
         camera_control->sync_camera,
         ptp_params);
+
+    if (state && state->media_selection.mode &&
+        !update_recording_snapshot_session_artifacts(recording_folder,
+            {{"recording_media_plan", state->media_plan.ToJson()}})) {
+        prepared.error_message = "failed to persist explicit recording media plan";
+        cleanup_failed_recording_run_start(state, camera_control, recording_folder);
+        return prepared;
+    }
 
     if (external_recorder_requested) {
         if (!state) {

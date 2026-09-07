@@ -205,6 +205,7 @@ struct HeadlessExternalRecorderContractConfig {
 };
 
 struct HeadlessCliOptions {
+    orange::recording::RecordingMediaSelection media_products;
     orange::recording::MasterAcquisitionConfig master_frame_journal;
     orange::recording::RegisteredContextConfig registered_scene_context;
     HeadlessMode mode = HeadlessMode::Remote;
@@ -240,6 +241,7 @@ struct HeadlessCliOptions {
 };
 
 struct ExperimentSpec {
+    orange::recording::RecordingMediaSelection media_products;
     orange::recording::MasterAcquisitionConfig master_frame_journal;
     orange::recording::RegisteredContextConfig registered_scene_context;
     std::string source_path;
@@ -4454,9 +4456,15 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     const HeadlessCropRecordingConfig& crop_recording_config = HeadlessCropRecordingConfig{},
     const orange::recording::MasterAcquisitionConfig& master_config = {},
     const orange::recording::RegisteredContextConfig& context_config = {},
-    orange::recording::HeadlessRegisteredContext* registered_context = nullptr)
+    orange::recording::HeadlessRegisteredContext* registered_context = nullptr,
+    const orange::recording::RecordingMediaSelection& media_products = {})
 {
     std::cout << "start camera sthread..." << std::endl;
+    try {
+        orange::recording::RequireImplementedRecordingMediaSelection(media_products);
+        if (media_products.mode && media_products.MovingCrops(false) != crop_recording_config.enabled())
+            throw std::runtime_error("media_products conflicts with crop_recording backend selection");
+    } catch (const std::exception& ex) { std::cerr << ex.what() << std::endl; return false; }
     if (context_config.enabled && (!registered_context || !master_config.enabled || !enable_recording ||
         !yolo_worker_config.enabled() || yolo_worker_config.decimate != 1 || pose_worker_config.synthetic_runtime_detection_enabled())) {
         std::cerr << "registered_scene_context requires master journal, real full-rate YOLO and a prearm owner" << std::endl;
@@ -4776,7 +4784,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                 record_folder);
         }
 
-        if (enable_recording) {
+        if (enable_recording && media_products.FullFrame()) {
             for (int idx : selected_indices) {
                 ResolvedRecordingConfigOverrides recording_overrides;
                 recording_overrides.recording_gpu_id = cameras_params[idx].gpu_id;
@@ -5092,6 +5100,16 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     std::cerr << "Failed to persist headless recording geometry "
                                  "contract: " << geometry_error << std::endl;
                 }
+            }
+            if (media_products.mode) {
+                std::vector<orange::recording::RecordingMediaCameraInput> media_inputs;
+                for (int idx : selected_indices)
+                    media_inputs.push_back({cameras_params[idx].camera_serial, enable_recording,
+                                           crop_recording_config.enabled()});
+                const auto plan = orange::recording::RecordingMediaPlan::Resolve(media_products, media_inputs);
+                if (!update_recording_snapshot_session_artifacts(record_folder,
+                        {{"recording_media_plan", plan.ToJson()}}))
+                    throw std::runtime_error("failed to persist headless recording media plan");
             }
             if (master_config.enabled) {
                 if (!enable_recording || !camera_threads.empty()) {
@@ -8124,6 +8142,17 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     const nlohmann::json fixed = root.value("fixed", nlohmann::json::object());
     const nlohmann::json matrix = root.value("matrix", nlohmann::json::object());
     const nlohmann::json policy = root.value("policy", nlohmann::json::object());
+    if (fixed.contains("media_products")) {
+        try {
+            if (fixed.at("media_products").is_null())
+                throw std::runtime_error("media_products must be a versioned selection, not null");
+            spec->media_products = orange::recording::RecordingMediaSelection::Parse(fixed.at("media_products"));
+            orange::recording::RequireImplementedRecordingMediaSelection(spec->media_products);
+        } catch (const std::exception& ex) {
+            if (error_out) *error_out = ex.what();
+            return false;
+        }
+    }
     if (fixed.contains("master_frame_journal")) {
         try {
             spec->master_frame_journal = orange::recording::MasterAcquisitionConfig::Parse(
@@ -8326,6 +8355,20 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             *error_out =
                 "Experiment spec fixed.pose_worker requires recording artifacts; stream_only must be false.";
         }
+        return false;
+    }
+    if (spec->media_products.mode && (spec->stream_only ||
+        spec->media_products.MovingCrops(false) != spec->crop_recording.enabled())) {
+        if (error_out) *error_out = "media_products requires recording and a matching crop_recording backend selection";
+        return false;
+    }
+    if (spec->media_products.mode && spec->crop_recording.enabled() && !spec->yolo_worker.enabled()) {
+        if (error_out) *error_out = "moving-crop media_products requires yolo_worker";
+        return false;
+    }
+    if (spec->media_products.mode && spec->recording_sink_mode != "real" &&
+        spec->recording_sink_mode != "external_ipc") {
+        if (error_out) *error_out = "explicit media_products requires a real or external_ipc recording backend";
         return false;
     }
     if (spec->master_frame_journal.enabled &&
@@ -8801,6 +8844,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             run.options.yolo_worker = spec.yolo_worker;
                                                             run.options.pose_worker = spec.pose_worker;
                                                             run.options.crop_recording = spec.crop_recording;
+                                                            run.options.media_products = spec.media_products;
                                                             run.options.master_frame_journal = spec.master_frame_journal;
                                                             run.options.registered_scene_context = spec.registered_scene_context;
                                                             run.options.recording_control =
@@ -8875,6 +8919,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                 {"ptp_register_read_decimate",
                                                                  spec.ptp_register_read_decimate},
                                                                 {"yolo_sync_event", spec.yolo_sync_event},
+                                                                {"media_products", spec.media_products.ToJson()},
                                                                 {"master_frame_journal", spec.master_frame_journal.ToJson()},
                                                                 {"registered_scene_context", spec.registered_scene_context.ToJson()},
                                                                 {"ptp_latch_after_fanout",
@@ -9398,6 +9443,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     const std::string active_record_folder = options.record_folder;
     const bool supervise_external_recorder =
         enable_recording &&
+        options.media_products.FullFrame() &&
         options.recording_sink_mode == "external_ipc" &&
         options.external_recorder_contract.enabled() &&
         options.external_recorder_contract.supervise_processes;
@@ -9686,7 +9732,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         options.pose_worker,
         &options.external_recorder_contract,
         options.crop_recording,
-        options.master_frame_journal, options.registered_scene_context, &registered_context);
+        options.master_frame_journal, options.registered_scene_context, &registered_context, options.media_products);
 
     if (!started) {
         stop_supervised_external_recorder();
