@@ -2754,6 +2754,7 @@ bool write_recording_session_manifest(const std::string& path,
     try {
         orange::recording::ApplyRequiredMasterJournalGate(manifest_path.parent_path(), &finalized_manifest);
         orange::recording::ApplyRequiredMovingCropMetadataGate(manifest_path.parent_path(), &finalized_manifest);
+        orange::recording::ApplyRequiredMovingCropMediaGate(manifest_path.parent_path(), &finalized_manifest);
         orange::recording::ApplyRequiredRegisteredContextGate(manifest_path.parent_path(), &finalized_manifest);
     } catch (const std::exception& ex) {
         if (error_out) *error_out = std::string("required master journal gate: ") + ex.what();

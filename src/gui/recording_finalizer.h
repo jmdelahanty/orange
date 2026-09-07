@@ -18,6 +18,7 @@
 struct CameraControl;
 struct CameraParams;
 struct CameraEachSelect;
+namespace yolo_event_log { class YoloEventLogger; }
 
 namespace orange::session {
 struct RecordingControlConfig;
@@ -163,6 +164,8 @@ struct GuiRecordingFinalizeInputs {
     bool recording_session_available = false;
     std::shared_ptr<orange::recording::MasterAcquisitionSet> master_frame_journals;
     int context_housekeeping_cpu = -1;
+    bool validate_crop_media = false;
+    std::map<std::string, std::shared_ptr<yolo_event_log::YoloEventLogger>> detection_logs;
     bool crop_external_recorder_active = false;
     std::vector<GuiRecordingFinalizeCameraSnapshot> cameras;
     int crop_size_px = 0;

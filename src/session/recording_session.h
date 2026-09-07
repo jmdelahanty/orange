@@ -12,9 +12,11 @@
 
 #include <chrono>
 #include <memory>
+#include <map>
 #include <string>
 #include <vector>
 
+namespace yolo_event_log { class YoloEventLogger; }
 namespace orange::session {
 
 struct RecordingControlConfig {
@@ -35,6 +37,7 @@ struct RecordingSessionState {
     RecordingControlConfig gui_recording_control;
     std::shared_ptr<orange::recording::MasterAcquisitionSet> gui_master_frame_journals;
     int gui_context_housekeeping_cpu = -1;
+    std::map<std::string, std::shared_ptr<yolo_event_log::YoloEventLogger>> gui_detection_logs;
     std::string external_recorder_config_status;
     std::string external_recorder_contract_source;
     nlohmann::json external_recorder_contract_config = nlohmann::json::object();

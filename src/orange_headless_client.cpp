@@ -124,18 +124,25 @@ struct HeadlessYoloWorkerConfig {
 };
 
 // fixed.crop_recording: headless crop production and crop video encoding,
-// the same CropProducerWorker -> CropAndEncodeWorker pair the GUI runs
-// (in-process NVENC on the detect die; the external crop recorder is not
-// wired headless yet). Added 2026-09-04 so the crop load can be measured
+// the same CropProducerWorker -> CropAndEncodeWorker pair the GUI runs,
+// with native NVENC or independent supervised external encoding.
+// Added 2026-09-04 so the crop load can be measured
 // with the latency specs (docs/detect_latency_review_2026_09_03.md).
 struct HeadlessCropRecordingConfig {
     std::string mode = "off";   // off | in_process | external_ipc
+    std::string recorder_tool_path; // external crop supervisor; independent of full-frame recording
     int crop_size_px = 0;       // 0: the camera config's crop_pipeline.crop_size_px
-    int recorder_gpu = -1;      // external_ipc: -1 = the other die of the camera's card; else this GPU for every camera
+    int recorder_gpu = -1;      // external_ipc: explicit GPU, otherwise existing contract/env defaults
     std::map<std::string, int> recorder_gpus;  // external_ipc: per-camera-serial override, wins over recorder_gpu
     bool interleave = true;     // external_ipc: GOP-parity interleaving across the card's two dies (default on since 2026-09-04)
     bool enabled() const { return mode == "in_process" || mode == "external_ipc"; }
     bool external() const { return mode == "external_ipc"; }
+    nlohmann::json ToJson() const {
+        nlohmann::json result = {{"mode", mode}, {"crop_size_px", crop_size_px}, {"recorder_gpu", recorder_gpu},
+            {"recorder_gpus", recorder_gpus}, {"interleave", interleave}};
+        if (!recorder_tool_path.empty()) result["recorder_tool_path"] = recorder_tool_path;
+        return result;
+    }
 };
 
 struct HeadlessPoseWorkerConfig {
@@ -4473,8 +4480,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     if (master_config.enabled && crop_recording_config.enabled() &&
         (!crop_recording_config.external() || !yolo_worker_config.enabled() || yolo_worker_config.decimate != 1 ||
          pose_worker_config.synthetic_runtime_detection_enabled() ||
-         recording_sink_mode != "external_ipc" || !external_recorder_contract ||
-         !external_recorder_contract->supervise_processes)) {
+         (media_products.FullFrame() && recording_sink_mode == "external_ipc" &&
+          (!external_recorder_contract || !external_recorder_contract->supervise_processes)))) {
         std::cerr << "master journal moving crops require supervised external recording and real full-rate YOLO" << std::endl;
         return false;
     }
@@ -5122,6 +5129,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                 nlohmann::json master_artifacts = {{"master_frame_journal", camera_control->master_frame_journals->StartEvidence()}};
                 if (crop_recording_config.enabled()) master_artifacts["moving_crop_master_coverage"] = {
                     {"schema_version", 1}, {"required", true}, {"profile", "external_moving_crop_full_rate_v1"}};
+                if (crop_recording_config.enabled() && media_products.mode) master_artifacts["moving_crop_encoded_media"] = {
+                    {"schema_version", 1}, {"required", true}, {"profile", "returned_identity_v2_mux_and_full_hevc_decode_v1"}};
                 if (!update_recording_snapshot_session_artifacts(record_folder,
                         master_artifacts)) {
                     throw std::runtime_error("cannot publish required master journal prearm evidence");
@@ -8281,6 +8290,14 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             return false;
         }
         spec->crop_recording.mode = node.value("mode", std::string("off"));
+        if (node.contains("recorder_tool_path")) {
+            if (!node.at("recorder_tool_path").is_string() || node.at("recorder_tool_path").get<std::string>().empty() ||
+                !std::filesystem::path(node.at("recorder_tool_path").get<std::string>()).is_absolute()) {
+                if (error_out) *error_out = "crop_recording.recorder_tool_path must be a nonempty absolute path";
+                return false;
+            }
+            spec->crop_recording.recorder_tool_path = node.at("recorder_tool_path").get<std::string>();
+        }
         spec->crop_recording.crop_size_px = node.value("crop_size_px", 0);
         spec->crop_recording.recorder_gpu = node.value("recorder_gpu", -1);
         spec->crop_recording.interleave = node.value("interleave", true);
@@ -8384,8 +8401,8 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     if (spec->master_frame_journal.enabled && spec->crop_recording.enabled() &&
         (!spec->crop_recording.external() || !spec->yolo_worker.enabled() || spec->yolo_worker.decimate != 1 ||
          spec->pose_worker.synthetic_runtime_detection_enabled() ||
-         spec->recording_sink_mode != "external_ipc" || !spec->external_recorder_contract.enabled() ||
-         !spec->external_recorder_contract.supervise_processes)) {
+         (spec->media_products.FullFrame() && spec->recording_sink_mode == "external_ipc" &&
+          (!spec->external_recorder_contract.enabled() || !spec->external_recorder_contract.supervise_processes)))) {
         if (error_out) *error_out = "master journal moving crops require supervised external recording and real full-rate YOLO";
         return false;
     }
@@ -8920,6 +8937,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                  spec.ptp_register_read_decimate},
                                                                 {"yolo_sync_event", spec.yolo_sync_event},
                                                                 {"media_products", spec.media_products.ToJson()},
+                                                                {"crop_recording", spec.crop_recording.ToJson()},
                                                                 {"master_frame_journal", spec.master_frame_journal.ToJson()},
                                                                 {"registered_scene_context", spec.registered_scene_context.ToJson()},
                                                                 {"ptp_latch_after_fanout",
@@ -9522,17 +9540,11 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
                   << std::endl;
     }
     // fixed.crop_recording mode=external_ipc: supervise the external crop
-    // recorder the way the GUI recording session does, one process per
-    // camera on the other die of the camera's card (the full-frame
-    // contract's shard GPU that is not the detect die), so the crop encode
-    // leaves the detect die entirely. Contract and artifacts live under the
-    // run's recording folder (external_crop_recorder/).
+    // recorder independently of the full-frame backend. Explicit crop GPU/tool
+    // settings take priority; a supplied full-frame contract remains a default
+    // source for existing configurations. Contract and artifacts live under
+    // the parent recording folder (external_crop_recorder/).
     if (enable_recording && options.crop_recording.external()) {
-        if (!supervise_external_recorder) {
-            std::cerr << "fixed.crop_recording mode=external_ipc requires the supervised external recorder (recording_sink_mode external_ipc)." << std::endl;
-            close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
-            return 1;
-        }
         setenv("ORANGE_CROP_EXTERNAL_INTERLEAVE", options.crop_recording.interleave ? "1" : "0", 1);
         for (int inventory_index : selected_inventory_indices) {
             CameraParams& camera = cameras_params[inventory_index];
@@ -9562,8 +9574,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             if (recorder_gpu >= 0) {
                 setenv(per_camera_env.c_str(), std::to_string(recorder_gpu).c_str(), 0);
             } else {
-                std::cerr << "Headless crop recording: no other-die shard GPU for camera "
-                          << camera.camera_serial << " in the external recorder contract;"
+                std::cerr << "Headless crop recording: no explicit or contract-derived recorder GPU for camera "
+                          << camera.camera_serial << ";"
                           << " the crop recorder will use " << per_camera_env
                           << " if set, else the detect die." << std::endl;
             }
@@ -9574,7 +9586,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         const nlohmann::json crop_contract =
             orange::session::build_external_crop_recorder_contract(
                 active_record_folder,
-                options.external_recorder_contract.session_id,
+                std::filesystem::path(active_record_folder).filename().string(),
                 cameras_params.get(),
                 cameras_select.get(),
                 discovered_cam_count,
@@ -9596,9 +9608,11 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         orange::external_recorder::SupervisedRecorderLifecycleOptions crop_lifecycle_options;
         crop_lifecycle_options.contract = crop_contract;
         crop_lifecycle_options.recorder_tool_path =
-            options.external_recorder_contract.recorder_tool_path;
+            !options.crop_recording.recorder_tool_path.empty()
+                ? options.crop_recording.recorder_tool_path
+                : options.external_recorder_contract.recorder_tool_path;
         crop_lifecycle_options.default_session_id =
-            options.external_recorder_contract.session_id;
+            std::filesystem::path(active_record_folder).filename().string();
         crop_lifecycle_options.analytics_root =
             std::filesystem::path(active_record_folder).parent_path().string();
         crop_lifecycle_options.verifier_path = "scripts/verify_external_recorder_session.py";
@@ -10258,6 +10272,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         std::set<std::string> completed_crop_cameras;
         for (const auto& stream : crop_recorder_streams) {
             try {
+                orange::ScopedHousekeepingCpu media_affinity(options.master_frame_journal.writer_cpu_ids.front());
                 if (!completed_crop_cameras.insert(stream.camera_serial).second)
                     throw std::runtime_error("duplicate external crop stream for camera");
                 const auto acct = g_headless_crop_accounting.find(stream.camera_serial);
@@ -10267,6 +10282,14 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
                 orange::recording::FinalizeMovingCropMetadata(active_record_folder, stream.camera_serial, summary_relative,
                     master_journal_ok && external_recorder_stop_ok && external_crop_recorder_ok &&
                     !quit_server && !thread_failure_state.has_failure() && !acct->second.finalization_failed);
+                if (options.media_products.mode) {
+                    const auto* camera = std::find_if(cameras_params.get(), cameras_params.get() + discovered_cam_count,
+                        [&](const auto& c) { return c.camera_serial == stream.camera_serial; });
+                    if (camera == cameras_params.get() + discovered_cam_count)
+                        throw std::runtime_error("encoded crop camera configuration missing");
+                    const int size = CropProducerWorker::SanitizeCropSize(camera->crop_pipeline.crop_size_px);
+                    orange::recording::FinalizeMovingCropMedia(active_record_folder, stream.camera_serial, size, size);
+                }
             } catch (const std::exception& ex) {
                 external_crop_recorder_ok = false;
                 std::cerr << "Moving crop master coverage failed for " << stream.camera_serial << ": " << ex.what() << std::endl;

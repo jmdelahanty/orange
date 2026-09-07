@@ -78,18 +78,23 @@ Schemas:
 - [x] Full-frame pipeline construction uses the planned full-frame product.
 - [x] Record explicit plans before immutable start sealing.
 - [x] Keep unfinished crop-only unavailable, without an override flag.
-- [ ] Separate headless moving-crop supervisor options from full-frame contract.
+- [x] Separate headless moving-crop supervisor options from full-frame contract.
 - [ ] Route GUI single/rolling parent finalization without full-frame camera artifacts.
 - [ ] Route headless single/rolling parent finalization without full-frame files.
-- [ ] Integrate actual encoded-frame identities, packet/mux evidence, media hashes
+- [x] Integrate actual encoded-frame identities, packet/mux evidence, media hashes
       and decoded-raster/count checks with master-to-crop coverage on both paths.
 - [ ] Require registered context and an independent master journal at crop-only arm.
 - [ ] Remove the crop-only implementation refusal only once those paths and their
       failure tests work. Never replace it with an override switch.
-- [ ] Camera-free missing/tampered/tail-loss/zero-detection and rolling validation.
+- [x] Camera-free missing/tampered/tail-loss/zero-detection and rolling validation.
 - [ ] Live GUI/Citrus-triggered and headless validation, then throughput checks.
 
 ## Verification
+
+Follow-up implementation and remaining crop-only activation work:
+[moving-crop encoded-media finalization](moving_crop_encoded_media_finalization_2026-09-06.md).
+The production-build/regression totals below describe the initial product-selector
+slice; follow-up verification is recorded in that document and the Citrus checklist.
 
 `recording_media_plan_tests` covers product ownership, recording membership,
 schema admission, planned context/master requirements, compatibility, app-field

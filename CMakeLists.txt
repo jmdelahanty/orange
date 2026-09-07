@@ -534,6 +534,7 @@ link_libraries(orange_project_warnings)
 
 add_library(orange_recording_master_journal STATIC
     "${SRC_DIR}/recording_media_plan.cpp"
+    "${SRC_DIR}/recording_media_decode.cpp"
     "${SRC_DIR}/recording_master_journal.cpp"
     "${SRC_DIR}/recording_master_acquisition.cpp"
     "${SRC_DIR}/gui_recording_evidence.cpp"
@@ -547,6 +548,7 @@ add_library(orange_recording_master_journal STATIC
 target_include_directories(orange_recording_master_journal PUBLIC ${ORANGE_COMMON_INCLUDE_DIRS})
 target_compile_features(orange_recording_master_journal PUBLIC cxx_std_17)
 target_link_libraries(orange_recording_master_journal PUBLIC Threads::Threads)
+target_link_libraries(orange_recording_master_journal PUBLIC ${AVFORMAT_LIBRARY} ${AVCODEC_LIBRARY} ${AVUTIL_LIBRARY})
 
 add_library(orange_daily_registered_context INTERFACE)
 target_link_libraries(orange_daily_registered_context INTERFACE orange_recording_master_journal)
@@ -650,6 +652,8 @@ if(BUILD_TESTING)
     set_tests_properties(registered_context_snapshot_tests PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77 LABELS "gpu")
     add_executable(recording_moving_crop_completion_tests "tools/recording_moving_crop_completion_tests.cpp")
     target_link_libraries(recording_moving_crop_completion_tests PRIVATE orange_recording_master_journal)
+    target_compile_definitions(recording_moving_crop_completion_tests PRIVATE
+        ORANGE_CROP_MEDIA_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures/crop_black_five_256_hevc.mp4.b64")
     add_test(NAME recording_moving_crop_completion_tests COMMAND recording_moving_crop_completion_tests)
     set_tests_properties(recording_moving_crop_completion_tests PROPERTIES TIMEOUT 30)
     add_executable(recording_master_acquisition_tests "tools/recording_master_acquisition_tests.cpp")
@@ -1056,6 +1060,13 @@ if(BUILD_TESTING)
     target_include_directories(yolo_event_log_validation_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(yolo_event_log_validation_tests PRIVATE cxx_std_17)
     add_test(NAME yolo_event_log_validation_tests COMMAND yolo_event_log_validation_tests)
+
+    add_executable(yolo_event_log_drain_tests
+        "tools/yolo_event_log_drain_tests.cpp" "${SRC_DIR}/yolo_event_log.cpp")
+    target_include_directories(yolo_event_log_drain_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(yolo_event_log_drain_tests PRIVATE cxx_std_17)
+    target_link_libraries(yolo_event_log_drain_tests PRIVATE Threads::Threads)
+    add_test(NAME yolo_event_log_drain_tests COMMAND yolo_event_log_drain_tests)
 
     add_executable(yolo_spatial_mask_tests
         "tools/yolo_spatial_mask_tests.cpp"

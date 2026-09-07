@@ -52,7 +52,7 @@ void YoloEventLogger::Stop() {
         }
         running_ = false;
     }
-    cv_.notify_one();
+    cv_.notify_all();
     if (thread_.joinable()) {
         thread_.join();
     }
@@ -74,17 +74,38 @@ void YoloEventLogger::Enqueue(YoloResultRecord record) {
     EnqueueEvent(std::move(event));
 }
 
-void YoloEventLogger::EnqueueEvent(Event&& event) {
+bool YoloEventLogger::FlushThrough(const std::string& folder, uint64_t last_id,
+                                 std::chrono::milliseconds timeout) {
+    if (folder.empty() || last_id == 0 || timeout.count() <= 0) return false;
+    Event event;
+    event.type = EventType::kFlushThrough;
+    event.result.recording_folder = folder;
+    event.result.recording_frame_id = last_id;
+    event.deadline = std::chrono::steady_clock::now() + timeout;
+    const auto deadline = event.deadline;
+    event.completion = std::make_shared<std::promise<bool>>();
+    auto result = event.completion->get_future();
+    if (!EnqueueEvent(std::move(event))) {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (running_ || !cv_.wait_until(lock, deadline, [&] { return writer_finished_; })) return false;
+        const auto found = last_written_by_folder_.find(folder);
+        return found != last_written_by_folder_.end() && found->second >= last_id && !failed_folders_.count(folder);
+    }
+    return result.wait_until(deadline) == std::future_status::ready && result.get();
+}
+
+bool YoloEventLogger::EnqueueEvent(Event&& event) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!running_) {
-        return;
+        return false;
     }
     if (queue_.size() >= kMaxQueue) {
         dropped_++;
-        return;
+        return false;
     }
     queue_.push_back(std::move(event));
     cv_.notify_one();
+    return true;
 }
 
 std::string YoloEventLogger::RecordingIdFromFolder(const std::string& folder) {
@@ -111,6 +132,7 @@ void YoloEventLogger::OpenFile(const std::string& folder) {
     const auto mode = std::ios::out | (first_open ? std::ios::trunc : std::ios::app);
     file_.open(file_path_, mode);
     if (!file_) {
+        failed_folders_.insert(folder);
         std::cerr << "[YOLO_EVENT_LOG] " << worker_name_
                   << " failed to open " << file_path_ << std::endl;
         current_folder_.clear();
@@ -125,6 +147,7 @@ void YoloEventLogger::OpenFile(const std::string& folder) {
 void YoloEventLogger::CloseFile() {
     if (file_.is_open()) {
         file_.close();
+        if (file_.fail()) failed_folders_.insert(current_folder_);
     }
     current_folder_.clear();
     recording_id_.clear();
@@ -273,31 +296,56 @@ void YoloEventLogger::WriteResult(const YoloResultRecord& record) {
     };
 
     file_ << root.dump() << '\n';
+    if (file_) last_written_by_folder_[record.recording_folder] = record.recording_frame_id;
+    else failed_folders_.insert(record.recording_folder);
 }
 
 void YoloEventLogger::ThreadMain() {
+    std::vector<Event> pending;
     std::unique_lock<std::mutex> lock(mutex_);
     while (running_ || !queue_.empty()) {
         if (queue_.empty()) {
-            cv_.wait(lock);
-            continue;
+            if (pending.empty()) cv_.wait(lock);
+            else cv_.wait_for(lock, std::chrono::milliseconds(50));
         }
-        Event event = std::move(queue_.front());
-        queue_.pop_front();
+        const bool have_event = !queue_.empty();
+        Event event;
+        if (have_event) { event = std::move(queue_.front()); queue_.pop_front(); }
         lock.unlock();
 
-        switch (event.type) {
+        if (have_event) switch (event.type) {
             case EventType::kClose:
                 CloseFile();
                 break;
             case EventType::kYoloResult:
                 WriteResult(event.result);
                 break;
+            case EventType::kFlushThrough:
+                if (pending.size() >= 8) event.completion->set_value(false);
+                else pending.push_back(std::move(event));
+                break;
+        }
+        for (auto it = pending.begin(); it != pending.end();) {
+            const auto& folder = it->result.recording_folder;
+            const auto found = last_written_by_folder_.find(folder);
+            const bool reached = found != last_written_by_folder_.end() &&
+                found->second >= it->result.recording_frame_id;
+            const bool expired = std::chrono::steady_clock::now() >= it->deadline;
+            if (!reached && !expired && !failed_folders_.count(folder)) { ++it; continue; }
+            if (reached && current_folder_ == folder && file_.is_open()) {
+                file_.flush();
+                if (!file_) failed_folders_.insert(folder);
+            }
+            it->completion->set_value(reached && !expired && !failed_folders_.count(folder));
+            it = pending.erase(it);
         }
 
         lock.lock();
     }
     CloseFile();
+    for (auto& event : pending) event.completion->set_value(false);
+    writer_finished_ = true;
+    cv_.notify_all();
     if (dropped_ > 0) {
         std::cerr << "[YOLO_EVENT_LOG] " << worker_name_
                   << " dropped " << dropped_ << " events" << std::endl;

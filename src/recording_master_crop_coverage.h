@@ -45,4 +45,14 @@ nlohmann::json RequireMovingCropMetadataReceipt(
     const nlohmann::json& finalized_master);
 void ApplyRequiredMovingCropMetadataGate(
     const std::filesystem::path& recording_root, nlohmann::json* parent_manifest);
+
+// Requires the metadata receipt, producer returned-identity proof v2, per-output
+// mux finalization, exact recorder metadata identities and full software decode.
+// All paths in the returned receipt are parent-relative and hash-bound.
+nlohmann::json FinalizeMovingCropMedia(const std::filesystem::path& recording_root,
+    const std::string& camera_serial, int expected_width, int expected_height);
+nlohmann::json RequireMovingCropMediaReceipt(const std::filesystem::path& recording_root,
+    const nlohmann::json& finalized_master);
+void ApplyRequiredMovingCropMediaGate(const std::filesystem::path& recording_root,
+    nlohmann::json* parent_manifest);
 }

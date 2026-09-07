@@ -203,6 +203,7 @@ struct GuiAsyncRecordingStartState {
     std::vector<orange::recording::RegisteredContextCamera> evidence_cameras;
     nlohmann::json evidence_geometry;
     orange::recording::GuiRecordingEvidence evidence;
+    bool validate_crop_media = false;
     std::unique_ptr<orange::calibration::TransactionLease>
         recording_start_lease;
     std::string context;
@@ -3891,11 +3892,21 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
             throw std::runtime_error("previous recording must finish finalization before another start");
         gui_retire_master_sources(camera_control);
         recording_session->gui_master_frame_journals.reset();
+        recording_session->gui_detection_logs.clear();
         recording_session->gui_context_housekeeping_cpu = -1;
         if (evidence_config.enabled) {
             for (int i = 0; i < num_cameras; ++i) {
                 if (!cameras_select[i].record) continue;
                 const auto& camera = cameras_params[i];
+                if (recording_session->media_selection.mode && recording_session->media_plan.HasMovingCrops()) {
+                    if (recording_session->crop_recording_sink_mode != "external_ipc" ||
+                        !cameras_select[i].yolo || !cameras_select[i].crop_and_encode ||
+                        static_cast<size_t>(i) >= yolo_workers.size() || !yolo_workers[i] || !yolo_workers[i]->EventLogger())
+                        throw std::runtime_error("master-bound moving crop media requires a real YOLO logger and supervised external crops for every camera");
+                    const char* cadence = std::getenv("ORANGE_YOLO_DECIMATE");
+                    if (cadence && *cadence && std::string(cadence) != "1")
+                        throw std::runtime_error("master-bound moving crops require full-rate YOLO (ORANGE_YOLO_DECIMATE=1 or unset)");
+                }
                 if (camera.pixel_format != "Mono8" || camera.camera_id < 0 ||
                     !camera_control->gui_master_sources.count(camera.camera_serial))
                     throw std::runtime_error("registered context requires a streaming, master-slot-bound Mono8 camera");
@@ -4290,6 +4301,8 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
     async_start->prepared = std::move(prepared);
     async_start->prepared.gui_registered_context_required = evidence_config.enabled;
     async_start->evidence_config = evidence_config;
+    async_start->validate_crop_media = evidence_config.enabled && recording_session->media_selection.mode &&
+        recording_session->media_plan.HasMovingCrops();
     async_start->evidence_cameras = std::move(evidence_cameras);
     async_start->evidence_geometry = recording_geometry_contract;
     async_start->evidence = orange::recording::GuiRecordingEvidence{};
@@ -4317,6 +4330,12 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
                 worker_state->evidence.Prepare(worker_state->evidence_config,
                     worker_state->prepared.recording_folder, worker_state->evidence_cameras,
                     worker_state->evidence_geometry);
+                if (worker_state->validate_crop_media) {
+                    worker_state->evidence.artifacts["moving_crop_master_coverage"] = {
+                        {"schema_version", 1}, {"required", true}, {"profile", "external_moving_crop_full_rate_v1"}};
+                    worker_state->evidence.artifacts["moving_crop_encoded_media"] = {
+                        {"schema_version", 1}, {"required", true}, {"profile", "returned_identity_v2_mux_and_full_hevc_decode_v1"}};
+                }
                 if (!update_recording_snapshot_session_artifacts(worker_state->prepared.recording_folder,
                         worker_state->evidence.artifacts))
                     throw std::runtime_error("cannot persist required GUI recording context evidence");
@@ -4388,6 +4407,12 @@ bool gui_poll_async_recording_start(
             camera_control->master_frame_journals = async_start->evidence.journals;
             recording_session->gui_master_frame_journals = async_start->evidence.journals;
             recording_session->gui_context_housekeeping_cpu = async_start->evidence_config.context.worker_cpu_ids.front();
+            if (async_start->validate_crop_media) {
+                for (int i = 0; i < num_cameras; ++i) {
+                    if (static_cast<size_t>(i) < yolo_workers.size() && yolo_workers[i])
+                        recording_session->gui_detection_logs[cameras_params[i].camera_serial] = yolo_workers[i]->EventLogger();
+                }
+            }
             for (const auto& camera : async_start->evidence_cameras)
                 camera_control->gui_master_sources.at(camera.serial)->Attach(
                     async_start->evidence.journals->Find(camera.serial));

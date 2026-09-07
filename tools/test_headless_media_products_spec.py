@@ -29,7 +29,12 @@ def main():
              ("null", None, base, False),
              ("stream_only", full, base, False),
              ("discard_sink", full, base, False),
-             ("no_detector", both, crops, False)]
+             ("no_detector", both, crops, False),
+             ("native_full_independent_crop", both, crops, True),
+             ("crop_tool", both, crops, True),
+             ("crop_tool_relative", both, crops, False),
+             ("crop_tool_empty", both, crops, False),
+             ("crop_tool_type", both, crops, False)]
     with tempfile.TemporaryDirectory(prefix="orange_media_spec_") as tmp:
         directory = Path(tmp)
         for name, selection, source, accepted in cases:
@@ -42,6 +47,16 @@ def main():
             if name == "no_detector":
                 spec["fixed"].pop("yolo_worker", None)
                 spec["fixed"].pop("pose_worker", None)
+            if name == "native_full_independent_crop":
+                spec["fixed"]["recording_sink_mode"] = "real"
+                spec["fixed"].pop("external_recorder_contract", None)
+                spec["fixed"].pop("pose_worker", None)
+                spec["fixed"]["master_frame_journal"] = {
+                    "schema_version": 1, "enabled": True, "writer_cpu_ids": [0]}
+            if name.startswith("crop_tool"):
+                spec["fixed"]["crop_recording"]["recorder_tool_path"] = {
+                    "crop_tool": "/tmp/not-executed/external_recorder_ipc_probe",
+                    "crop_tool_relative": "relative", "crop_tool_empty": "", "crop_tool_type": 3}[name]
             if name != "absent":
                 spec["fixed"]["media_products"] = selection
             path = directory / f"{name}.json"

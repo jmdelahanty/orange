@@ -1,5 +1,6 @@
 #include "recording_master_crop_coverage.h"
 #include "recording_master_journal.h"
+#include "recording_media_decode.h"
 #include "fsuid_guard.h"
 #include "gui/spatial_layout/sha256.h"
 #include <algorithm>
@@ -470,6 +471,215 @@ json RequireMovingCropMetadataReceipt(const fs::path& recording_root, const json
     require(frames == total, "moving crop receipt partition coverage incomplete");
     require(ref == artifact(root, path), "moving crop receipt changed during parent finalization");
     return ref;
+}
+
+namespace {
+fs::path media_relative(const fs::path& root, const json& path) {
+    const fs::path value = path.get<std::string>();
+    const auto relative = value.is_absolute() ? value.lexically_relative(root) : value;
+    (void)resolve(root, relative); // no traversal, aliases, missing files or non-files
+    return relative;
+}
+void returned_crop_proof(const json& summary, uint64_t count) {
+    const auto& proof = summary.at("frame_identity_proof");
+    require(proof.at("schema_id") == "orange.external_recorder.frame_identity_proof" &&
+        number(proof.at("schema_version")) == 2 && proof.at("status") == "passed" &&
+        proof.at("canonical_field") == "recording_frame_id" &&
+        proof.at("scope") == "recording_session_and_camera_stream" &&
+        proof.at("row_granularity") == "one_encoded_video_frame" &&
+        proof.at("continuity_policy") == "encoded_subset" &&
+        number(proof.at("source_frames_skipped_by_policy")) == 0 &&
+        number(proof.at("source_frames_dropped")) == 0, "crop returned-identity proof invalid");
+    const auto& binding = proof.at("video_binding");
+    require(binding.at("method") == "nvenc_input_timestamp_to_output_timestamp_registry" &&
+        binding.at("metadata_write_event") == "completed_gop_after_returned_identity_match" &&
+        binding.at("verification_rule_id") == "orange.external_recorder.frame_identity.v2" &&
+        binding.at("verified") == true && binding.at("first_packet_write_error_code").is_null(),
+        "crop returned-identity binding invalid");
+    for (const auto* key : {"submitted_frame_identities", "returned_identity_matches", "encoded_video_frames",
+            "metadata_rows", "packet_submissions_accepted", "packet_write_attempts", "packets_written"})
+        require(number(binding.at(key)) == count, "crop returned identity/packet count mismatch");
+    for (const auto* key : {"identity_mismatches", "outstanding_submitted_identities", "packet_submissions_rejected", "packet_write_failures"})
+        require(number(binding.at(key)) == 0, "crop returned identity/packet failure");
+    const auto& merged = summary.at("merged_output");
+    require(merged.at("coordinator_enabled") == true && number(merged.at("pending_gops")) == 0 &&
+            merged.at("failed") == false, "crop GOP coordinator did not finish");
+}
+void container_complete(const json& sidecar, uint64_t count, uint64_t bytes) {
+    require(sidecar.at("schema_id") == "orange.video_container_finalization" && number(sidecar.at("schema_version")) == 2 &&
+            sidecar.at("status") == "complete" && sidecar.at("terminal") == true, "crop container finalization incomplete");
+    const auto& packets = sidecar.at("packet_writes");
+    for (const auto* key : {"submissions_accepted", "write_attempts", "packets_written"})
+        require(number(packets.at(key)) == count, "crop mux packet count mismatch");
+    for (const auto* key : {"submissions_rejected", "write_failures"})
+        require(number(packets.at(key)) == 0, "crop mux packet failure");
+    require(packets.at("complete") == true && packets.at("writer_error_latched") == false &&
+            packets.at("muxer_flush_attempted") == true && packets.at("muxer_flush_succeeded") == true &&
+            packets.at("first_write_error_code").is_null() && packets.at("muxer_flush_error_code").is_null(),
+            "crop packet writer did not finish");
+    const auto& container = sidecar.at("container");
+    for (const auto* key : {"header_written", "trailer_attempted", "trailer_written", "output_close_attempted", "output_closed", "finalized"})
+        require(container.at(key) == true, "crop container close/trailer incomplete");
+    require(number(container.at("file_size_bytes")) == bytes && container.at("trailer_error_code").is_null() &&
+            container.at("output_close_error_code").is_null() && container.at("file_size_error").is_null(),
+            "crop finalized container size/error mismatch");
+}
+}
+
+json FinalizeMovingCropMedia(const fs::path& recording_root, const std::string& serial, int width, int height) {
+    ScopedFsuid fsuid_guard;
+    const auto root = fs::canonical(recording_root);
+    const auto prefix = stem(serial);
+    const auto master = document(root, prefix + "_master_frames_v1.json");
+    const auto metadata_ref = RequireMovingCropMetadataReceipt(root, master);
+    const auto metadata = document(root, metadata_ref.at("relative_path").get<std::string>());
+    const auto summary_ref = metadata.at("recorder_summary");
+    const auto summary = document(root, summary_ref.at("relative_path").get<std::string>());
+    const auto count = number(master.at("source").at("assigned_frame_offers"));
+    returned_crop_proof(summary, count);
+    const bool rolling = summary.at("rolling_output").at("enabled") == true;
+    require(width > 0 && height > 0 && width <= 8192 && height <= 8192, "invalid crop media raster");
+    require(summary.at("codec") == "hevc" && summary.at("tuning") == "lossless", "moving crop codec/profile mismatch");
+    json videos = json::array();
+    std::set<std::string> distinct;
+    std::ifstream crops(resolve(root, prefix + "_crop_meta.csv"));
+    std::string row;
+    require(line(crops, &row), "session crop header missing");
+    const auto crop_header = fields(row);
+    auto column = [](const std::vector<std::string>& header, const char* name) {
+        const auto it = std::find(header.begin(), header.end(), name);
+        require(it != header.end() && std::count(header.begin(), header.end(), name) == 1, "recorder/crop column missing or duplicated");
+        return static_cast<std::size_t>(it - header.begin());
+    };
+    for (std::size_t i = 0; i < metadata.at("partitions").size(); ++i) {
+        const auto& partition = metadata.at("partitions").at(i);
+        const auto& output = rolling ? summary.at("rolling_output").at("clips").at(i) : summary.at("merged_output");
+        const auto video_path = media_relative(root, output.at("mp4"));
+        const auto recorder_path = media_relative(root, output.at("metadata"));
+        const auto sidecar_path = fs::path(video_path.string() + ".finalization.json");
+        require(distinct.insert(video_path.string()).second && distinct.insert(recorder_path.string()).second,
+                "crop media output paths reused");
+        const auto video_ref = artifact(root, video_path), recorder_ref = artifact(root, recorder_path),
+                   sidecar_ref = artifact(root, sidecar_path);
+        const auto n = number(partition.at("frame_count"));
+        container_complete(document(root, sidecar_path), n, number(video_ref.at("size_bytes")));
+        std::ifstream recorder(resolve(root, recorder_path));
+        require(line(recorder, &row), "recorder metadata header missing");
+        const auto header = fields(row);
+        for (uint64_t frame = 0; frame < n; ++frame) {
+            require(line(recorder, &row), "missing recorder metadata row");
+            const auto actual = fields(row);
+            require(line(crops, &row), "missing session crop row");
+            const auto expected = fields(row);
+            require(actual.size() == header.size() && expected.size() == crop_header.size(), "malformed crop/recorder metadata row");
+            for (const auto& names : {std::pair{"recording_frame_id", "recording_frame_id"},
+                    std::pair{"frame_id", "recording_frame_id"}, std::pair{"local_frame_id", "local_frame_id"},
+                    std::pair{"timestamp", "timestamp"}, std::pair{"timestamp_sys", "timestamp_sys"}})
+                require(integer(actual.at(column(header, names.first))) == integer(expected.at(column(crop_header, names.second))),
+                        "encoded crop identity/timestamp differs from master-bound metadata");
+        }
+        require(!line(recorder, &row), "extra recorder metadata row");
+        RequireDecodedCropMedia(resolve(root, video_path), width, height, n);
+        require(video_ref == artifact(root, video_path) && recorder_ref == artifact(root, recorder_path) &&
+                sidecar_ref == artifact(root, sidecar_path), "crop media changed during validation");
+        videos.push_back({{"clip_index", i}, {"clip_id", partition.at("clip_id")}, {"frame_count", n},
+            {"first_recording_frame_id", partition.at("first_recording_frame_id")},
+            {"last_recording_frame_id", partition.at("last_recording_frame_id")},
+            {"video", video_ref}, {"recorder_metadata", recorder_ref}, {"container_finalization", sidecar_ref},
+            {"crop_metadata", metadata.at("metadata_correspondence").at("clips").at(i).at("metadata")}});
+    }
+    require(!line(crops, &row), "extra session crop row");
+    require(metadata_ref == RequireMovingCropMetadataReceipt(root, master), "crop metadata changed during media validation");
+    json receipt = {{"schema_id", "orange.recording.moving_crop_media_completion"}, {"schema_version", 1},
+        {"status", "complete"}, {"recording_id", master.at("recording_id")}, {"camera_serial", serial},
+        {"validation_profile", "returned_identity_v2_mux_and_full_hevc_decode_v1"},
+        {"metadata_completion", metadata_ref}, {"width", width}, {"height", height},
+        {"frame_count", count}, {"mode", rolling ? "rolling_clips" : "single_clip"}, {"videos", videos}};
+    Publication publication(root / (prefix + "_moving_crop_media_v1.json"));
+    publication.Write(receipt.dump() + "\n"); publication.Finish();
+    return receipt;
+}
+
+json RequireMovingCropMediaReceipt(const fs::path& recording_root, const json& master) {
+    const auto root = fs::canonical(recording_root);
+    const auto path = stem(master.at("camera_serial").get<std::string>()) + "_moving_crop_media_v1.json";
+    const auto ref = artifact(root, path), receipt = document(root, path);
+    closed(receipt, {"schema_id", "schema_version", "status", "recording_id", "camera_serial", "validation_profile",
+        "metadata_completion", "width", "height", "frame_count", "mode", "videos"});
+    require(receipt.at("schema_id") == "orange.recording.moving_crop_media_completion" && number(receipt.at("schema_version")) == 1 &&
+        receipt.at("status") == "complete" && receipt.at("recording_id") == master.at("recording_id") &&
+        receipt.at("camera_serial") == master.at("camera_serial") &&
+        receipt.at("validation_profile") == "returned_identity_v2_mux_and_full_hevc_decode_v1" &&
+        receipt.at("metadata_completion") == RequireMovingCropMetadataReceipt(root, master) &&
+        receipt.at("frame_count") == master.at("source").at("assigned_frame_offers"), "crop media receipt identity mismatch");
+    const auto metadata = document(root, receipt.at("metadata_completion").at("relative_path").get<std::string>());
+    const auto summary = document(root, metadata.at("recorder_summary").at("relative_path").get<std::string>());
+    const bool rolling = summary.at("rolling_output").at("enabled") == true;
+    require(number(receipt.at("width")) > 0 && number(receipt.at("width")) <= 8192 &&
+        number(receipt.at("height")) > 0 && number(receipt.at("height")) <= 8192 &&
+        receipt.at("mode") == (rolling ? "rolling_clips" : "single_clip"), "crop media raster/mode invalid");
+    returned_crop_proof(summary, number(receipt.at("frame_count")));
+    require(receipt.at("videos").is_array() && receipt.at("videos").size() == metadata.at("partitions").size(), "crop media partition mismatch");
+    for (std::size_t i = 0; i < receipt.at("videos").size(); ++i) {
+        const auto& video = receipt.at("videos").at(i);
+        closed(video, {"clip_index", "clip_id", "frame_count", "first_recording_frame_id", "last_recording_frame_id",
+            "video", "recorder_metadata", "container_finalization", "crop_metadata"});
+        for (const auto* key : {"clip_index", "clip_id", "frame_count", "first_recording_frame_id", "last_recording_frame_id"})
+            require(video.at(key) == metadata.at("partitions").at(i).at(key), "crop media partition identity mismatch");
+        const auto& output = rolling ? summary.at("rolling_output").at("clips").at(i) : summary.at("merged_output");
+        const auto video_path = media_relative(root, output.at("mp4"));
+        require(video.at("video").at("relative_path") == video_path.generic_string() &&
+            video.at("recorder_metadata").at("relative_path") == media_relative(root, output.at("metadata")).generic_string() &&
+            video.at("container_finalization").at("relative_path") == video_path.generic_string() + ".finalization.json" &&
+            video.at("crop_metadata") == metadata.at("metadata_correspondence").at("clips").at(i).at("metadata"),
+            "crop media receipt differs from recorder/metadata partition");
+        for (const auto* key : {"video", "recorder_metadata", "container_finalization", "crop_metadata"}) {
+            const auto& bound = video.at(key);
+            require(bound == artifact(root, bound.at("relative_path").get<std::string>()), "finalized crop media changed");
+        }
+        RequireCropMediaContainerRaster(resolve(root, video_path), number(receipt.at("width")), number(receipt.at("height")));
+    }
+    require(ref == artifact(root, path), "crop media receipt changed while reading");
+    return ref;
+}
+
+void ApplyRequiredMovingCropMediaGate(const fs::path& recording_root, json* parent) {
+    if (!fs::exists(recording_root)) return;
+    const auto root = fs::canonical(recording_root);
+    const fs::path path = fs::exists(root / "recording_snapshot_start.json") ? "recording_snapshot_start.json" : "recording_snapshot.json";
+    if (!fs::exists(root / path)) return;
+    const auto snapshot = document(root, path);
+    if (!snapshot.contains("session") || !snapshot.at("session").contains("moving_crop_encoded_media")) return;
+    json result = {{"schema_version", 1}, {"required", true}, {"profile", "returned_identity_v2_mux_and_full_hevc_decode_v1"},
+        {"status", "pending"}, {"cameras", json::array()}};
+    const auto status = parent->value("status", std::string());
+    if (status == "completed" || status == "failed" || status == "incomplete" || status == "interrupted") {
+        try {
+            const auto& marker = snapshot.at("session").at("moving_crop_encoded_media");
+            closed(marker, {"schema_version", "required", "profile"});
+            require(number(marker.at("schema_version")) == 1 && marker.at("required") == true &&
+                marker.at("profile") == "returned_identity_v2_mux_and_full_hevc_decode_v1", "invalid required encoded crop media profile");
+            const auto& cameras = snapshot.at("session").at("master_frame_journal").at("cameras");
+            require(cameras.is_array() && !cameras.empty(), "required crop media master cameras absent");
+            std::set<std::string> serials;
+            for (const auto& camera : cameras) {
+                const auto serial = camera.at("camera_serial").get<std::string>();
+                require(serials.insert(serial).second, "duplicate encoded crop camera");
+                const auto master = document(root, stem(serial) + "_master_frames_v1.json");
+                require(master.at("status") == "complete" && master.at("recording_id") == parent->at("session_id") &&
+                    master.at("recording_id") == camera.at("recording_id") &&
+                    master.at("producer_instance_id") == camera.at("producer_instance_id") &&
+                    master.at("stream_generation") == camera.at("stream_generation"), "encoded crop parent/master identity mismatch");
+                const auto ref = RequireMovingCropMediaReceipt(root, master);
+                result["cameras"].push_back({{"camera_serial", serial}, {"receipt", ref}});
+            }
+            result["status"] = "complete";
+        } catch (const std::exception& ex) {
+            result["status"] = "failed"; result["reason"] = ex.what();
+            if (status == "completed") (*parent)["status"] = "failed";
+        }
+    }
+    (*parent)["moving_crop_encoded_media"] = result;
 }
 
 void ApplyRequiredMovingCropMetadataGate(const fs::path& recording_root, json* parent) {

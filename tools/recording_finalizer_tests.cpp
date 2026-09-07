@@ -795,7 +795,9 @@ void test_gui_finalizer_seals_required_master_before_parent()
     int cpu = -1;
     for (int i = 0; i < CPU_SETSIZE; ++i) if (CPU_ISSET(i, &allowed)) { cpu = i; break; }
     require(cpu >= 0, "no test housekeeping CPU available");
-    for (bool incomplete : {false, true}) {
+    for (int scenario : {0, 1, 2}) {
+        const bool incomplete = scenario == 1;
+        const bool missing_required_media = scenario == 2;
         ScopedTempDir tmp;
         const auto root = tmp.path() / "gui_master_parent";
         std::filesystem::create_directory(root);
@@ -819,10 +821,12 @@ void test_gui_finalizer_seals_required_master_before_parent()
             {"recording_id", root.filename().string()}, {"canonicalization", "canonical_json_utf8_sort_keys_compact_v1"},
             {"camera_bindings", nlohmann::json::array({{{"acquisition_camera_id", fixture.camera.camera_serial},
                 {"camera_serial", fixture.camera.camera_serial}, {"shaman_numeric_camera_id", 0}}})}};
-        const nlohmann::json snapshot = {
+        nlohmann::json snapshot = {
             {"shaman_v2_camera_identity", camera_identity},
             {"shaman_v2_camera_identity_sha256", "sha256:" + orange::gui::spatial_layout::checksum::sha256_hex(camera_identity.dump())},
             {"session", {{"master_frame_journal", journals->StartEvidence("gui_acquisition_loop_v1")}}}};
+        if (missing_required_media) snapshot["session"]["moving_crop_encoded_media"] = {
+            {"schema_version", 1}, {"required", true}, {"profile", "returned_identity_v2_mux_and_full_hevc_decode_v1"}};
         write_text_file(root / "recording_snapshot.json", snapshot.dump());
         write_text_file(root / "recording_snapshot_start.json", snapshot.dump());
         auto inputs = gui_prepare_recording_finalize(&fixture.run, &fixture.recording_session,
@@ -833,10 +837,12 @@ void test_gui_finalizer_seals_required_master_before_parent()
         require(outcome.ok, "GUI finalization plumbing failed: " + outcome.error_message);
         nlohmann::json parent;
         { std::ifstream in(root / "recording_session.json"); in >> parent; }
-        require(parent.at("status") == (incomplete ? "failed" : "completed"),
+        require(parent.at("status") == (incomplete || missing_required_media ? "failed" : "completed"),
             "parent status ignored required master seal");
         require(parent.at("master_frame_journal").at("status") == (incomplete ? "failed" : "complete"),
             "parent did not validate the newly finalized journal");
+        if (missing_required_media) require(parent.at("moving_crop_encoded_media").at("status") == "failed",
+            "GUI parent accepted a complete source journal without its required encoded media");
         cpu_set_t restored; CPU_ZERO(&restored);
         require(sched_getaffinity(0, sizeof(restored), &restored) == 0 && CPU_EQUAL(&allowed, &restored),
             "finalizer did not restore caller affinity");

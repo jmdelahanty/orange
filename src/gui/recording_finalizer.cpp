@@ -5,6 +5,8 @@
 
 #include "gui/recording_finalizer.h"
 #include "scoped_housekeeping_cpu.h"
+#include "recording_master_crop_coverage.h"
+#include "yolo_event_log.h"
 
 #include "gui/env_util.h"
 #include "gui/incremental_clip_shadow.h"
@@ -1347,6 +1349,9 @@ GuiRecordingFinalizeInputs gui_prepare_recording_finalize(
     if (recording_session) {
         inputs.master_frame_journals = recording_session->gui_master_frame_journals;
         inputs.context_housekeeping_cpu = recording_session->gui_context_housekeeping_cpu;
+        inputs.validate_crop_media = inputs.master_frame_journals && recording_session->media_selection.mode &&
+            recording_session->media_plan.HasMovingCrops();
+        inputs.detection_logs = recording_session->gui_detection_logs;
         if (inputs.external_ipc) {
             // Both of these touch live pipeline objects, so they must stay
             // on the GUI thread: reset the IPC connections before the
@@ -2394,6 +2399,34 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                 }
             }
 
+            if (inputs->validate_crop_media) {
+                try {
+                    const auto root = std::filesystem::canonical(run.recording_folder);
+                    nlohmann::json master;
+                    std::string error;
+                    if (!gui_read_json_file((root / ("Cam" + serial + "_master_frames_v1.json")).string(), &master, &error))
+                        throw std::runtime_error("master source record unavailable: " + error);
+                    const auto found = inputs->detection_logs.find(serial);
+                    if (found == inputs->detection_logs.end() || !found->second ||
+                        !found->second->FlushThrough(run.recording_folder,
+                            master.at("source").at("assigned_frame_offers").get<uint64_t>(), std::chrono::seconds(5)))
+                        throw std::runtime_error("detector log did not flush through the final master frame");
+                    if (!std::filesystem::exists(root / ("Cam" + serial + "_moving_crop_metadata_v1.json")))
+                        orange::recording::FinalizeMovingCropMetadata(root, serial,
+                            std::filesystem::path(stream.summary_json).lexically_relative(root), stream_ok);
+                    orange::recording::RequireMovingCropMetadataReceipt(root, master);
+                    if (!std::filesystem::exists(root / ("Cam" + serial + "_moving_crop_media_v1.json")))
+                        orange::recording::FinalizeMovingCropMedia(root, serial,
+                            CropAndEncodeWorker::SanitizeCropSize(crop_size_px),
+                            CropAndEncodeWorker::SanitizeCropSize(crop_size_px));
+                    orange::recording::RequireMovingCropMediaReceipt(root, master);
+                } catch (const std::exception& ex) {
+                    stream_ok = false;
+                    crop_external_recorder_ok = false;
+                    append_error_message(stream_error, ex.what());
+                    append_error_message(crop_external_recorder_error, "camera " + serial + ": " + ex.what());
+                }
+            }
             append_external_crop_output(
                 stream,
                 serial,
