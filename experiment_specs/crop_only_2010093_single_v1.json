@@ -1,0 +1,20 @@
+{
+  "experiment_id": "crop_only_2010093_single_v1",
+  "notes": "Acceptance template. Use run_crop_only_headless_validation.py with actual registered context and housekeeping CPUs. Missing context deliberately prevents direct execution. Real single-subject moving crops; no synthetic detections or full-frame encoder.",
+  "selection": {"camera_serials": ["2010093"], "gpu_ids": [3]},
+  "fixed": {
+    "duration_s": 5, "warmup_s": 2, "display": false, "yolo": false,
+    "stream_only": false, "sync_mode": "ptp_gate", "recording_sink_mode": "real",
+    "config_folder": "/home/jeremy/orange-gop-split-a16/config/validated_split_gop_hevc_100fps_gop25_fourcam_a16",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "media_products": {"schema_version": 1, "mode": "registered_context_and_moving_crops"},
+    "ptp_register_read_decimate": 100,
+    "yolo_worker": {"mode": "real", "engine_path": "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.engine", "decimate": 1, "publish_live_ipc": false, "timeout_ms": 500, "prewarm_iterations": 3, "fail_on_init_error": true},
+    "yolo_sync_event": true, "ptp_latch_after_fanout": true, "headless_gpu_dmon": false,
+    "crop_recording": {"mode": "external_ipc", "crop_size_px": 384, "recorder_gpu": 4, "interleave": true,
+      "recorder_tool_path": "/tmp/orange-timing-build-20260906/external_recorder_ipc_probe"},
+    "recording_control": {"record_for_seconds": 5, "clip_seconds": 0}
+  },
+  "matrix": {"codec": ["hevc"], "preset": ["p1"], "tuning": ["ll"], "rate_control_mode": ["vbr"], "quality_value": [20], "gop_length": [25], "aq": ["off"], "temporal_aq": ["off"], "lookahead": ["off"]},
+  "policy": {"target_fps_tolerance_pct": 2.0, "require_zero_acq_starve": true, "require_zero_pre_drops": true, "require_zero_enc_fail": true, "require_zero_camera_drops": true, "require_valid_video_content": true}
+}

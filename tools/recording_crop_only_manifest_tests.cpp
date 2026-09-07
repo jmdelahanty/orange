@@ -1,5 +1,9 @@
 #include "crop_only_manifest_fixture.h"
 #include "recording_crop_only_result.h"
+#include <fcntl.h>
+#include <sched.h>
+#include <sys/wait.h>
+#include <unistd.h>
 namespace {
 using namespace orange::test_crop_media;
 void lifecycle() {
@@ -114,7 +118,43 @@ void arm_and_result_failures() {
         check(row.at("pass_fail") == "fail" && row.at("status") == "failed", "crop result accepted incomplete collection");
     }
 }
-int main() {
-    try { lifecycle(); failures(); daily_context_and_publication_recheck(); arm_and_result_failures(); std::cout << "Crop-only single/rolling inventory, index, custody and failure tests passed.\n"; }
+void verifier_cli(const std::string& executable) {
+    using namespace orange::test_crop_media;
+    cpu_set_t allowed; CPU_ZERO(&allowed);
+    check(sched_getaffinity(0, sizeof(allowed), &allowed) == 0, "cannot query test CPU");
+    int cpu = 0; while (cpu < CPU_SETSIZE && !CPU_ISSET(cpu, &allowed)) ++cpu;
+    check(cpu < CPU_SETSIZE, "test has no CPU");
+    for (bool rolling : {false, true}) {
+        CropOnlyFixture f(rolling, true, true);
+        auto parent = BuildCropOnlyRecordingManifest(f.first.root, f.lifecycle);
+        PublishCropOnlyRecordingIndex(f.first.root, &parent);
+        put(f.first.root / "recording_session.json", parent.dump());
+        for (bool damaged : {false, true}) {
+            if (damaged) fs::remove(f.first.root / "recording_crop_clip_index_v1.json");
+            const auto output = f.first.root / (damaged ? "failed_report.json" : "passed_report.json");
+            const auto pid = fork(); check(pid >= 0, "test fork failed");
+            if (pid == 0) {
+                const int fd = open(output.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+                if (fd < 0 || dup2(fd, STDOUT_FILENO) < 0) _exit(126);
+                close(fd);
+                const auto cpu_text = std::to_string(cpu);
+                execl(executable.c_str(), executable.c_str(), f.first.root.c_str(), "--worker-cpu", cpu_text.c_str(), nullptr);
+                _exit(127);
+            }
+            int status = 0; check(waitpid(pid, &status, 0) == pid && WIFEXITED(status), "test verifier did not exit");
+            check(WEXITSTATUS(status) == (damaged ? 1 : 0), "CLI evidence acceptance differed from shared library");
+            const auto report = json::parse(read(output));
+            check(report.at("status") == (damaged ? "fail" : "pass"), "CLI report status wrong");
+            if (!damaged) check(report.at("recording_session") == parent, "CLI changed parent evidence");
+            else check(!fs::exists(f.first.root / "recording_crop_clip_index_v1.json"), "verifier repaired missing evidence");
+        }
+    }
+}
+int main(int argc, char** argv) {
+    try {
+        if (argc == 3 && std::string(argv[1]) == "--verify-tool") verifier_cli(argv[2]);
+        else { lifecycle(); failures(); daily_context_and_publication_recheck(); arm_and_result_failures(); }
+        std::cout << "Crop-only single/rolling inventory, index, custody and failure tests passed.\n";
+    }
     catch (const std::exception& ex) { std::cerr << ex.what() << '\n'; return 1; }
 }

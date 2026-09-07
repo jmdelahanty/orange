@@ -1039,6 +1039,8 @@ def summarize_yolo(recording_folder: Path, steady_after_frame: int) -> dict[str,
 def summarize_pipeline(recording_folder: Path) -> dict[str, Any]:
     summaries: dict[str, Any] = {}
     fields = [
+        "acq_starve",
+        "pre_drops",
         "camera_dropped_frames",
         "camera_frame_id_gaps",
         "get_frame_errors",

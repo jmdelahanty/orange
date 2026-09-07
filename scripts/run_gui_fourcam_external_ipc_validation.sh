@@ -5,6 +5,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PREVIEW_MODE="${ORANGE_GUI_FOURCAM_PREVIEW_MODE:-hidden}"
 DISPLAY_PROFILE="${ORANGE_GUI_FOURCAM_DISPLAY_PROFILE:-fast}"
 MANUAL_LOCAL_CONTROL_MODE="none"
+CROP_ONLY=0
 
 usage() {
   cat <<'EOF'
@@ -23,6 +24,9 @@ Runs the local four-camera GUI validation profile:
   - GUI display profile: fast (swap_interval=0, frame_max_fps=60, preview=15)
 
 Options:
+  --crop-only                 Require an explicit crop-only app config. Stream,
+                              then wait for operator scene confirmation/start.
+  --app-config <path>          Explicit app config (required with --crop-only).
   --hidden-crop-preview       Hide crop preview windows during autorun (default).
   --visible-crop-preview      Leave crop preview windows visible during autorun.
   --disable-crop-preview      Disable crop preview generation.
@@ -77,6 +81,16 @@ require_nonnegative_integer_in_range() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --crop-only)
+      CROP_ONLY=1
+      shift
+      ;;
+    --app-config)
+      shift
+      [[ $# -gt 0 ]] || { echo "--app-config requires a path" >&2; exit 2; }
+      export ORANGE_APP_CONFIG_PATH="$1"
+      shift
+      ;;
     --hidden-crop-preview)
       PREVIEW_MODE="hidden"
       shift
@@ -317,4 +331,32 @@ export ORANGE_GUI_REQUIRE_SOURCE_VERSION="${ORANGE_GUI_REQUIRE_SOURCE_VERSION:-1
 export ORANGE_GUI_EXPECT_SOURCE_GIT_COMMAND_USER_MODE="${ORANGE_GUI_EXPECT_SOURCE_GIT_COMMAND_USER_MODE:-sudo_invoking_user}"
 export ORANGE_GUI_EXPECT_SOURCE_DIRTY_TRACKED="${ORANGE_GUI_EXPECT_SOURCE_DIRTY_TRACKED:-auto}"
 
+if (( CROP_ONLY )); then
+  export ORANGE_BIN="${ORANGE_BIN:-/tmp/orange-timing-build-20260906/orange}"
+  [[ -n "${ORANGE_APP_CONFIG_PATH:-}" && "${MANUAL_LOCAL_CONTROL_MODE}" == "none" ]] || {
+    echo "--crop-only requires --app-config and cannot combine with manual stop-only profiles." >&2
+    exit 2
+  }
+  python3 - "${ORANGE_APP_CONFIG_PATH}" <<'PY'
+import json, sys
+from pathlib import Path
+recording = json.loads(Path(sys.argv[1]).read_text()).get("recording", {})
+selection = recording.get("media_products", {})
+if type(selection.get("schema_version")) is not int or selection != {"schema_version": 1, "mode": "registered_context_and_moving_crops"}:
+    raise SystemExit("Explicit app config must select registered_context_and_moving_crops")
+evidence = recording.get("registered_context_recording", {})
+if (evidence.get("enabled") is not True or evidence.get("master_frame_journal", {}).get("enabled") is not True or
+        evidence.get("registered_scene_context", {}).get("enabled") is not True):
+    raise SystemExit("App config must select actual registered context and master evidence")
+PY
+  export ORANGE_GUI_AUTORUN_START_RECORDING=0
+  export ORANGE_GUI_RECORD_FOR_SECONDS="${ORANGE_GUI_RECORD_FOR_SECONDS:-${ORANGE_GUI_AUTORUN_RECORD_SECONDS}}"
+  export ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=0
+  export ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=1
+  export ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1
+  export ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1
+  export ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE=0
+  echo "Crop-only: confirm the saved scene in Orange before each manual/Citrus start. No confirmation is fabricated."
+  echo "Validate the exact folder with validate_gui_ptp_recording.py --media-products registered_context_and_moving_crops --crop-validator-cpu <housekeeping-cpu>."
+fi
 exec "${REPO_ROOT}/scripts/run_gui_aq_off_validation.sh"

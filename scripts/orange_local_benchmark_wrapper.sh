@@ -5,7 +5,10 @@ ORANGE_ROOT="/home/jeremy/orange-jeremy"
 DEFAULT_ORANGE_CLIENT="$ORANGE_ROOT/build/orange_client"
 EXPERIMENT_ORANGE_ROOT="/home/jeremy/orange-gop-split-a16"
 EXPERIMENT_ORANGE_CLIENT="$EXPERIMENT_ORANGE_ROOT/targets/release/orange_client"
+ISOLATION_ORANGE_CLIENT="/tmp/orange-spatial-roi-recording-v1-20260830/targets/release/orange_client"
+TIMING_ORANGE_CLIENT="/tmp/orange-timing-build-20260906/orange_client"
 ORANGE_CLIENT="$DEFAULT_ORANGE_CLIENT"
+DRY_RUN=0
 ACQUIRE_WORK_ENTRIES_MAX=""
 ENCODER_ENTRY_POOL_SIZE=""
 YOLO_PERF_LOG=""
@@ -32,6 +35,7 @@ Usage:
   orange_local_benchmark_wrapper.sh [--orange-client <path>] [options] --stream-only --config-folder <path> --camera <serial|all> [stream-options]
 
 Options:
+  --dry-run                         Validate paths/spec and print the launch command only; no sudo needed.
   --orange-client <path>             Use an allowed orange_client binary.
   --acquire-work-entries-max <n>     Export ORANGE_ACQUIRE_WORK_ENTRIES_MAX.
   --encoder-entry-pool-size <n>      Export ORANGE_ENCODER_ENTRY_POOL_SIZE.
@@ -59,6 +63,8 @@ Behavior:
   - Only accepts orange_client binaries at:
       /home/jeremy/orange-jeremy/build/orange_client
       /home/jeremy/orange-gop-split-a16/targets/release/orange_client
+      /tmp/orange-spatial-roi-recording-v1-20260830/targets/release/orange_client
+      /tmp/orange-timing-build-20260906/orange_client
   - Only accepts spec files under:
       /home/jeremy/orange-jeremy/experiment_specs
       /home/jeremy/orange-gop-split-a16/experiment_specs
@@ -76,7 +82,10 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   exit 0
 fi
 
-if [[ "${EUID}" -ne 0 ]]; then
+for arg in "$@"; do
+  if [[ "$arg" == "--dry-run" ]]; then DRY_RUN=1; fi
+done
+if [[ "${EUID}" -ne 0 && "$DRY_RUN" != 1 ]]; then
   echo "This wrapper must be run as root (typically via sudo)." >&2
   exit 1
 fi
@@ -88,7 +97,7 @@ fi
 
 # Restore the EVT SDK environment that the installer normally provides in
 # interactive shells. sudo env_reset commonly strips these variables.
-if [[ -f "$EVT_PROFILE" ]]; then
+if [[ "$DRY_RUN" != 1 && -f "$EVT_PROFILE" ]]; then
   # shellcheck disable=SC1090
   source "$EVT_PROFILE"
 fi
@@ -103,12 +112,16 @@ fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --dry-run)
+      DRY_RUN=1
+      shift
+      ;;
     --orange-client)
       shift
       [[ $# -gt 0 ]] || { echo "--orange-client requires a value." >&2; exit 2; }
       ORANGE_CLIENT="$(realpath -e "$1")"
       case "$ORANGE_CLIENT" in
-        "$DEFAULT_ORANGE_CLIENT"|"$EXPERIMENT_ORANGE_CLIENT")
+        "$DEFAULT_ORANGE_CLIENT"|"$EXPERIMENT_ORANGE_CLIENT"|"$ISOLATION_ORANGE_CLIENT"|"$TIMING_ORANGE_CLIENT")
           ;;
         *)
           echo "Refusing to use orange_client outside allowed binaries: $ORANGE_CLIENT" >&2
@@ -385,6 +398,10 @@ if [[ "$1" == "--stream-only" ]]; then
   fi
   export_optional_runtime_env
 
+  if [[ "$DRY_RUN" == 1 ]]; then
+    printf '[dry-run] '; printf '%q ' "${CMD[@]}"; printf '\n'
+    exit 0
+  fi
   exec "${CMD[@]}"
 fi
 
@@ -438,6 +455,10 @@ echo "[sudo-wrapper] spec=$SPEC_PATH"
 echo "[sudo-wrapper] output_root=$EXPERIMENT_ROOT"
 export_optional_runtime_env
 
+if [[ "$DRY_RUN" == 1 ]]; then
+  printf '[dry-run] '; printf '%q ' "$ORANGE_CLIENT" --mode local --experiment-spec "$SPEC_PATH"; printf '\n'
+  exit 0
+fi
 set +e
 "$ORANGE_CLIENT" --mode local --experiment-spec "$SPEC_PATH"
 STATUS=$?

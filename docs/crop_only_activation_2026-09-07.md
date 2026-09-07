@@ -6,6 +6,11 @@ branch `agent/acquisition/master-frame-journal-v1-20260906`, worktree
 `/tmp/orange-timing-evidence-20260906`, build `/tmp/orange-timing-build-20260906`.
 This is the eleventh slice of the Citrus detection-crop-only checklist.
 
+Runner follow-up: [crop-only runner acceptance](crop_only_runner_acceptance_2026-09-07.md)
+adds dedicated headless templates, GUI/orchestrator profiles and product-aware
+validation. Wrapper source allowlists are updated; installing them is an operator
+step. Live acceptance remains pending.
+
 ## What is selected
 
 `registered_context_and_moving_crops` acquires full camera frames for real YOLO

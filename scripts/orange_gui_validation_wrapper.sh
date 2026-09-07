@@ -5,6 +5,7 @@ DEFAULT_ORANGE_ROOT="/home/jeremy/orange-jeremy"
 EXPERIMENT_ORANGE_ROOT="/home/jeremy/orange-gop-split-a16"
 DEFAULT_ORANGE_BIN="$DEFAULT_ORANGE_ROOT/build/orange"
 EXPERIMENT_ORANGE_BIN="$EXPERIMENT_ORANGE_ROOT/targets/release/orange"
+TIMING_ORANGE_BIN="/tmp/orange-timing-build-20260906/orange"
 ORANGE_BIN="$EXPERIMENT_ORANGE_BIN"
 EVT_PROFILE="/etc/profile.d/evt.sh"
 DRY_RUN=0
@@ -28,6 +29,7 @@ Options:
 Allowed Orange binaries:
   /home/jeremy/orange-jeremy/build/orange
   /home/jeremy/orange-gop-split-a16/targets/release/orange
+  /tmp/orange-timing-build-20260906/orange
 
 Allowed env values are intentionally limited to the GUI validation launcher
 contract: display/session variables, GUI autorun controls such as
@@ -96,6 +98,9 @@ validate_path_under_allowed_roots() {
 resolve_ptp_stack_script_path() {
   local candidate
   case "$ORANGE_BIN" in
+    "$TIMING_ORANGE_BIN")
+      candidate="/tmp/orange-timing-evidence-20260906/scripts/ptp_stack.sh"
+      ;;
     "$DEFAULT_ORANGE_BIN")
       candidate="$DEFAULT_ORANGE_ROOT/scripts/ptp_stack.sh"
       ;;
@@ -504,7 +509,7 @@ while [[ $# -gt 0 ]]; do
       [[ $# -gt 0 ]] || { echo "--orange-bin requires a value." >&2; exit 2; }
       ORANGE_BIN="$(realpath -e "$1")"
       case "$ORANGE_BIN" in
-        "$DEFAULT_ORANGE_BIN"|"$EXPERIMENT_ORANGE_BIN")
+        "$DEFAULT_ORANGE_BIN"|"$EXPERIMENT_ORANGE_BIN"|"$TIMING_ORANGE_BIN")
           ;;
         *)
           echo "Refusing to use Orange GUI binary outside allowed paths: $ORANGE_BIN" >&2

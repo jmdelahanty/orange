@@ -555,6 +555,9 @@ target_link_libraries(orange_recording_master_journal PUBLIC ${AVFORMAT_LIBRARY}
 add_library(orange_daily_registered_context INTERFACE)
 target_link_libraries(orange_daily_registered_context INTERFACE orange_recording_master_journal)
 
+add_executable(verify_crop_only_recording "tools/verify_crop_only_recording.cpp")
+target_link_libraries(verify_crop_only_recording PRIVATE orange_recording_master_journal)
+
 add_executable(orange ${ORANGE_SOURCES})
 target_link_libraries(orange PRIVATE orange_daily_registered_context)
 add_executable(orange_client EXCLUDE_FROM_ALL ${ORANGE_CLIENT_SOURCES})
@@ -663,6 +666,10 @@ if(BUILD_TESTING)
     target_compile_definitions(recording_crop_only_manifest_tests PRIVATE
         ORANGE_CROP_MEDIA_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures/crop_black_five_256_hevc.mp4.b64")
     add_test(NAME recording_crop_only_manifest_tests COMMAND recording_crop_only_manifest_tests)
+    add_dependencies(recording_crop_only_manifest_tests verify_crop_only_recording)
+    add_test(NAME crop_only_evidence_cli_tests COMMAND recording_crop_only_manifest_tests --verify-tool $<TARGET_FILE:verify_crop_only_recording>)
+    set_tests_properties(crop_only_evidence_cli_tests PROPERTIES TIMEOUT 60)
+    add_test(NAME crop_only_runner_tests COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/crop_only_runner_tests.py")
     set_tests_properties(recording_crop_only_manifest_tests PROPERTIES TIMEOUT 30)
     add_executable(recording_master_acquisition_tests "tools/recording_master_acquisition_tests.cpp")
     add_executable(recording_media_plan_tests "tools/recording_media_plan_tests.cpp")
