@@ -67,7 +67,7 @@ scale is constant. The head crop is therefore a smaller fixed crop centred
 on the box centroid, and the pose model retrained on that crop is the head
 model. No coarse pose, no keypoint-driven second ROI, no rotation stage.
 The crop rule and the training path are in
-`docs/analytics_program_design_2026_09_12.md`. The coarse-to-fine design
+`docs/analytics_pipeline_configuration_design_2026_09_12.md`. The coarse-to-fine design
 below is kept as the answer for a rig where the box is not already the
 head.
 

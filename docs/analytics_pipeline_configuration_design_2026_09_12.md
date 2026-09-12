@@ -1,4 +1,4 @@
-# Analytics Programs: A Provider Design For Detect, Pose, And Whatever Comes Next
+# Analytics Pipeline Configurations: A Provider Design For Detect, Pose, And Whatever Comes Next
 
 Design note, 2026-09-12. Follows `docs/pose_second_stage_review_2026_09_04.md`
 (measurements) and `docs/pose_stage_design_notes_2026_09_12.md` (the fused
@@ -71,11 +71,59 @@ boundaries where a different clock or a different process is inherent
 (acquisition, the recorder, crop video, display, log writing). The thread
 count scales with the number of sinks, not the number of analytics stages.
 
-CUDA graphs are how a program with no CPU decisions is launched cheaply;
+CUDA graphs are how a configuration with no CPU decisions is launched cheaply;
 they are not what removes the decisions. Moving the decisions onto the
 device is the design work. Once that is done, the graph executor and a
-threaded executor can run the same program, and the graph one is simply
+threaded executor can run the same pipeline configuration, and the graph one is simply
 faster.
+
+## What a pipeline configuration is, and what a CUDA graph is
+
+The two are easy to conflate, so the vocabulary first.
+
+**A CUDA graph is not an executable and not a thread.** It is an in-memory
+recording of GPU work. A stream is put into capture mode, the ordinary
+calls are issued (kernel launches, TensorRT's `enqueueV3`, async copies,
+event records), and instead of running they are recorded as nodes with
+their exact arguments: which kernel, which buffers, which sizes. Ending
+capture yields a graph object; instantiating it yields an executable graph
+handle; launching that handle on a stream replays the whole recording with
+one driver call instead of one per node. It never leaves the process and it
+is not a file. The detect engine already works this way:
+`capture_infer_graph` records `enqueueV3` plus four device-to-host copies
+once at startup, and every frame after that is one `cudaGraphLaunch`. The
+price of that speed is that everything in the recording is frozen: buffer
+addresses, tensor shapes, kernel arguments, order.
+
+**A TensorRT engine is different again.** It is a compiled network: a file
+on disk built for a specific GPU, loaded into an execution context in
+memory. It is one node's worth of work inside a graph, not the graph.
+
+**A pipeline configuration is an ordinary C++ object inside
+`orange_client`,** built once per camera at startup from the spec. It owns
+the engines it loaded, the kernels it will launch, the buffers between
+them, the events it records, and, under the graph executor, the captured
+graph of all of that. Its per-frame interface is `launch(entry)` and
+`collect()`. `orange_client` stays one executable however many
+configurations exist.
+
+**"A different configuration" therefore means a second such object with
+different constants,** built by the same code path. If the crop size
+changes from 256 to 128, the crop buffer, the pose input tensor and the
+kernel arguments all change, so the recording made for 256 is wrong for
+128. Rather than patching a recording, the provider builds another object
+with the new constants and captures its own graph. Both can exist for the
+same camera at once; one is selected per recording session, never per
+frame. `detect_only` and `detect_pose` are the same idea: two
+configurations of the same stage code, each with its own frozen recording.
+
+**Why not one recording for every case.** A recording cannot branch on data
+in the general case, cannot change shapes, and cannot change pointers
+without an explicit parameter update. The three things that vary per frame
+are handled three ways: the source address by keeping the first preprocess
+outside the recording; the "is there a detection" question by writing a
+validity flag on the device and running anyway; everything else by building
+a different configuration when the constants differ.
 
 ## Three layers
 
@@ -93,18 +141,18 @@ launched per frame.
 | `Engine` | an input tensor matching the plan's binding | the plan's output bindings, in device memory | One TensorRT context, warmed before capture. Contract: binding names, shapes, dtypes, and an `output_format` the decoder understands (`yolo_nms`, `yolo_pose`, `heatmap`). |
 | `Roi` | one of: an NMS output block (top box by score), a fixed rectangle from the spec, a device-side state buffer (temporal prior), or, as a future option only, a keypoint pair from a pose output block | a crop origin and a fixed size, plus a validity flag, in a small device struct | This is the stage that replaces the CPU round trip. For `det_top_box` the origin is the box centroid minus half the crop, clamped to the frame, and the size is a constant from the spec (see the crop rule below). Un-letterboxing uses the constant ratio and offsets of the `Preprocess` that fed the engine. |
 | `Warp` | source plane, `Roi` struct, output size | a crop plane (axis-aligned crop, resize, or rotated sample) | One kernel. Also the producer of the `CropFrame` payload for crop video and preview when those are on. |
-| `Signal` | nothing | an event record on the stream | Mid-program markers: `detect_done` for the recorder gate and the lever 2d copy; `pose_done` for IPC. |
+| `Signal` | nothing | an event record on the stream | Mid-pipeline configuration markers: `detect_done` for the recorder gate and the lever 2d copy; `pose_done` for IPC. |
 | `Emit` | one or more device output blocks | pinned host copies plus a completion event | The single point the CPU waits on. |
 
 Each stage validates its inputs against the previous stage's outputs when
-the program is built, and refuses to build on a mismatch. That is the
+the pipeline configuration is built, and refuses to build on a mismatch. That is the
 "arbitrary engine of the right shape" rule made general: it applies to the
 detector as much as to pose, and it is what lets a SLEAP heatmap engine or
 a different YOLO-pose sit in the same slot.
 
-### Programs
+### Pipeline configurations
 
-A program is an ordered list of stage configurations plus the buffers they
+A pipeline configuration is an ordered list of stage configurations plus the buffers they
 share. The provider builds it from the spec. The four we can name today:
 
 ```
@@ -121,7 +169,7 @@ pose_only:                                  (close-up, embedded fish, no detecto
   Source(camera or window) -> Roi(fixed rectangle from spec) -> Warp(W) -> Preprocess(...)
   -> Engine(pose) -> Signal(pose_done) -> Emit(pose outputs, roi)
 
-detect_pose, head-sized:                    (the production target; same program, smaller constants)
+detect_pose, head-sized:                    (the production target; same pipeline configuration, smaller constants)
   Source(camera) -> Preprocess(640) -> Engine(det) -> Signal(detect_done)
   -> Roi(top box centroid, crop S) -> Warp(S) -> Preprocess(S, exact, no letterbox)
   -> Engine(pose trained on S crops) -> Signal(pose_done) -> Emit
@@ -146,12 +194,12 @@ not known yet; see step 0 of the migration.
 
 In the spec this is one block, `fixed.analytics`, that replaces the
 independent `yolo_worker` and `pose_worker` blocks over time (both remain
-accepted and are translated into the equivalent program):
+accepted and are translated into the equivalent pipeline configuration):
 
 ```json
 "analytics": {
   "executor": "graph",
-  "program": "detect_pose",
+  "pipeline": "detect_pose",
   "stages": {
     "det":  {"engine_path": "...yolo11n...engine", "input": 640, "output_format": "yolo_nms"},
     "roi":  {"source": "det_top_box", "crop_size_px": 128},
@@ -161,30 +209,30 @@ accepted and are translated into the equivalent program):
 }
 ```
 
-Every program emits the same **result record**: a validity flag per stage,
+Every pipeline configuration emits the same **result record**: a validity flag per stage,
 detections (optional), poses per stage (optional), ROI geometry, and
 per-stage GPU timings from event pairs. The event log, the shaman v2 IPC
 slot, the perf CSV and the verifier consume that record and never ask
-which program produced it. Absent stages are absent fields, which the
+which configuration produced it. Absent stages are absent fields, which the
 existing `pose_status` and `detection_status` enums already express.
 
 ### Executors and the provider
 
 ```cpp
-struct AnalyticsProgram {
+struct AnalyticsPipeline {
     // Built once per camera by the provider. Owns buffers, engines, events.
     virtual cudaEvent_t launch(WORKER_ENTRY* entry) = 0;   // enqueue everything; returns the Emit event
     virtual const ResultRecord& collect() = 0;              // valid after the Emit event; decodes host buffers
     virtual cudaEvent_t signal(SignalId id) const = 0;      // detect_done, pose_done: for the recorder gate and IPC
-    virtual const ProgramContract& contract() const = 0;    // stage list, shapes, engines, for the snapshot
+    virtual const PipelineContract& contract() const = 0;    // stage list, shapes, engines, for the snapshot
 };
 
 class AnalyticsProvider {
-    std::unique_ptr<AnalyticsProgram> build(const AnalyticsSpec&, const CameraParams&, cudaStream_t);
+    std::unique_ptr<AnalyticsPipeline> build(const AnalyticsSpec&, const CameraParams&, cudaStream_t);
 };
 ```
 
-Two executors implement `AnalyticsProgram`:
+Two executors implement `AnalyticsPipeline`:
 
 - **Graph executor.** At build time, after warm-up, captures every stage
   from `Preprocess` through `Emit` into one CUDA graph on the camera's
@@ -208,7 +256,7 @@ the entry, calls `launch()`, waits once on the `Emit` event, calls
 
 ## The four things graphs do not do, and how the design handles them
 
-**Data-dependent control flow.** A program cannot branch on the CPU. Two
+**Data-dependent control flow.** A pipeline configuration cannot branch on the CPU. Two
 policies, chosen per `Roi`: *run-and-mask* (the `Roi` writes a validity
 flag; downstream stages run on whatever is there; `Emit` carries the flag
 and the CPU drops invalid results), which costs the pose graph's time on
@@ -225,26 +273,26 @@ preference:
    detect graph does today. One kernel launch per frame from the varying
    address into the fixed input tensor; the graph starts at `Engine(det)`.
    Later stages read the pool copy or the crop buffer, which are fixed per
-   program if `Warp` writes into program-owned buffers. This is the
+   pipeline configuration if `Warp` writes into configuration-owned buffers. This is the
    smallest change and preserves the proven capture.
 2. Update the `Source` node's kernel parameters per launch with
    `cudaGraphExecKernelNodeSetParams` (microseconds, no re-instantiate).
 3. Read through a device-side pointer table indexed by ring slot, written
-   by acquisition. Fully static graph, but couples the program to the
+   by acquisition. Fully static graph, but couples the pipeline configuration to the
    SDK's ring layout.
 
 For any stage that must read the *camera buffer* after detection (the
 crop at 1:1 before the pool copy lands), option 1 means the `Warp` source
-is also outside the graph or uses option 2. Decide when the fused program
+is also outside the graph or uses option 2. Decide when the fused configuration
 is prototyped; both are cheap.
 
-**Fixed shapes.** A program is one shape set. A different crop size, input
-size, or engine is a different program, built by the same provider. Two
-programs may be built for one camera (for example `detect_only` and
+**Fixed shapes.** A configuration is one shape set. A different crop size, input
+size, or engine is a different configuration, built by the same provider. Two
+pipeline configurations may be built for one camera (for example `detect_only` and
 `detect_pose`) and switched between recordings, not between frames.
 
 **CPU consumers and other clocks.** The recorder, crop video, display and
-the log writer stay threads and attach to the program's signals and the
+the log writer stay threads and attach to the configuration's signals and the
 entry's events exactly as the delayed consumers do now. `Warp` producing
 the `CropFrame` payload keeps crop video and preview working without a
 crop producer thread; they lease the buffer after the `pose_done` (or
@@ -259,8 +307,8 @@ gates reuse.
 | Two-stage detect and pose (current pose work) | `detect_pose` | the `Roi(det_top_box)` kernel and `Warp`; the pose decoder as a `collect()` step |
 | Pose only on a close-up of an embedded fish | `pose_only` | `Roi(fixed)`; a `Source` window; nothing else |
 | Head components at full resolution | `detect_pose` with the head-sized constant S | no new stage; a pose model retrained on S crops of the existing labels (yolo11n-pose exported to ONNX, built on the A16 with the existing engine build script) and the exact-mode `Preprocess` |
-| Several cameras on one large GPU (deferred) | a batched program: `Gather` stage across cameras' input tensors, batch-N engines | the gather stage and a per-period scheduler; the same stage contracts |
-| A SLEAP or other framework's engine | any program | nothing; the `Engine` contract and the `heatmap` decoder cover it |
+| Several cameras on one large GPU (deferred) | a batched configuration: `Gather` stage across cameras' input tensors, batch-N engines | the gather stage and a per-period scheduler; the same stage contracts |
+| A SLEAP or other framework's engine | any pipeline configuration | nothing; the `Engine` contract and the `heatmap` decoder cover it |
 
 ## Migration, in order, each step measurable
 
@@ -278,7 +326,7 @@ gates reuse.
    code populating it. No behaviour change; the verifier must pass the
    registered spec unchanged.
 2. **Device-side `Roi` for the top box.** A kernel that reads `num_dets`,
-   `boxes`, `scores` on the device, un-letterboxes with the program's
+   `boxes`, `scores` on the device, un-letterboxes with the configuration's
    constants, writes the ROI struct. The crop producer reads the struct
    instead of `entry->detections`. Gate: crop origin identical to the CPU
    path on every frame of a synthetic run (a diff of the pose event log's
@@ -289,10 +337,10 @@ gates reuse.
    Gate: `infer_ms` unchanged, capture-to-pose-done p95 under 3.3 ms on the
    two-camera synthetic spec (today 3.97), thread count per camera down by
    two.
-4. **`pose_only` and `detect_only` as programs.** Mostly spec and
+4. **`pose_only` and `detect_only` as pipeline configurations.** Mostly spec and
    validation; run the existing engine-only specs through `detect_only`
    and confirm identical numbers.
-5. **Swap in the head-sized program.** Change the two constants (S and
+5. **Swap in the head-sized configuration.** Change the two constants (S and
    the pose engine) in the spec; nothing structural. Gate: pose graph time
    on a die below the current 0.72 ms, keypoint error on held-out crops no
    worse than the 256 model's, and every other gate from step 3 unchanged.
@@ -309,9 +357,9 @@ gates reuse.
 - **Pinned host buffers and pipelining.** With one frame in flight per
   camera the single pinned output set is fine. If the analytics thread
   ever launches frame N+1 before collecting N, `Emit` needs a small ring
-  of host buffers. Not needed at 100 fps with a 3 ms program.
+  of host buffers. Not needed at 100 fps with a 3 ms pipeline configuration.
 - **The lever 2d copy and the pose graph overlap.** With pose inside the
-  program, the pool copy (issued after `detect_done`) runs alongside the
+  pipeline configuration, the pool copy (issued after `detect_done`) runs alongside the
   pose engine. Expect a cost to pose of the order the copy cost detect
   (0.26 ms); measure it, and if it matters, order the copy after
   `pose_done` at the cost of a later recorder handoff, or crop from the
@@ -319,15 +367,15 @@ gates reuse.
 - **Conditional nodes.** Available from CUDA 12.4; the rig's toolkit
   version needs checking before relying on them. Run-and-mask needs
   nothing.
-- **Two programs per camera.** Switching programs between recordings is
+- **Two configurations per camera.** Switching configurations between recordings is
   easy; between frames it is not, and should not be a goal.
-- **Per-program timing.** Event pairs inside the graph give per-stage GPU
+- **Per-configuration timing.** Event pairs inside the graph give per-stage GPU
   time for free; the `pose_pre_ms` / `pose_infer_ms` columns proposed in
   the review fall out of this rather than needing separate plumbing.
 
 ## Decision requested
 
-Adopt the three-layer structure (stages, programs, executors) and the
+Adopt the three-layer structure (stages, pipeline configurations, executors) and the
 one-CPU-wait invariant as the target, keep the threaded executor as the
 migration and fallback path, and take the migration steps in the order
 above with each step's gate as written. Step 2 is the first thing to build;
