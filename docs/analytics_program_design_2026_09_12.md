@@ -16,6 +16,11 @@ queue, a wake-up, and 0.2 to 0.4 ms of p95. The measurements say the GPU
 work is fine (the detect graph is untouched by pose, the pose graph is 0.72
 ms on a die and 0.43 ms on the A6000) and the host slack is what grows.
 
+One clarification on 2026-09-12 shortened the plan: the detector's boxes
+already enclose only the head and the swim bladder, and the fish cannot
+change apparent size, so the "head stage" is not a stage. It is the pose
+stage with a smaller crop and a model retrained for it.
+
 ## Facts the design rests on
 
 All verified in the tree at `5cf21a9` / review branch `d8d8c79`.
@@ -37,6 +42,18 @@ All verified in the tree at `5cf21a9` / review branch `d8d8c79`.
   highest-score box with `max_element` and enqueues the crop
   (`src/crop_producer_worker.cpp:508`). That round trip is a choice of the
   current code, not a requirement of the model.
+- **The detector's boxes are already head-and-bladder boxes.** The
+  training labels came from background subtraction with erosion, which
+  trimmed the tail, so a box encloses the head and the swim bladder and
+  its centroid is the head centroid. The detector is therefore already the
+  head localiser, and the existing three-keypoint pose model (eyes and
+  bladder) is already a head model that is fed a 256 window mostly made of
+  background.
+- **Scale is constant.** The fish are held in about 3 mm of water under a
+  top-down camera that views the whole space, so a fish cannot appear
+  nearer or farther, and the head spans the same number of sensor pixels
+  everywhere in the frame. A fixed crop size is correct; no per-frame
+  scale normalisation is needed.
 - **Delayed consumers attach by event.** The recorder handoff, crop video,
   display and snapshot wait on the entry's ready event through
   `delayed_consumer_event()`; the recorder is additionally gated on
@@ -74,7 +91,7 @@ launched per frame.
 | `Source` | a frame in device memory (camera buffer, pool copy, or a configured window of either) | a mono uint8 plane with pitch | The only stage whose address changes per frame. See "the varying address" below. |
 | `Preprocess` | mono plane, target size, channels (1 or 3), dtype (FP32 or FP16), mode (letterbox or exact) | engine input tensor | The existing fused kernel with a channel and dtype option. |
 | `Engine` | an input tensor matching the plan's binding | the plan's output bindings, in device memory | One TensorRT context, warmed before capture. Contract: binding names, shapes, dtypes, and an `output_format` the decoder understands (`yolo_nms`, `yolo_pose`, `heatmap`). |
-| `Roi` | one of: an NMS output block (top box by score), a keypoint pair from a pose output block, a fixed rectangle from the spec, a device-side state buffer (temporal prior) | a crop origin, size, and optional rotation, plus a validity flag, in a small device struct | This is the stage that replaces the CPU round trip. Un-letterboxing uses the constant ratio and offsets of the `Preprocess` that fed the engine. |
+| `Roi` | one of: an NMS output block (top box by score), a fixed rectangle from the spec, a device-side state buffer (temporal prior), or, as a future option only, a keypoint pair from a pose output block | a crop origin and a fixed size, plus a validity flag, in a small device struct | This is the stage that replaces the CPU round trip. For `det_top_box` the origin is the box centroid minus half the crop, clamped to the frame, and the size is a constant from the spec (see the crop rule below). Un-letterboxing uses the constant ratio and offsets of the `Preprocess` that fed the engine. |
 | `Warp` | source plane, `Roi` struct, output size | a crop plane (axis-aligned crop, resize, or rotated sample) | One kernel. Also the producer of the `CropFrame` payload for crop video and preview when those are on. |
 | `Signal` | nothing | an event record on the stream | Mid-program markers: `detect_done` for the recorder gate and the lever 2d copy; `pose_done` for IPC. |
 | `Emit` | one or more device output blocks | pinned host copies plus a completion event | The single point the CPU waits on. |
@@ -104,11 +121,28 @@ pose_only:                                  (close-up, embedded fish, no detecto
   Source(camera or window) -> Roi(fixed rectangle from spec) -> Warp(W) -> Preprocess(...)
   -> Engine(pose) -> Signal(pose_done) -> Emit(pose outputs, roi)
 
-detect_pose_head:
-  detect_pose
-  -> Roi(eyes from pose output, size 128, rotate to eye-bladder axis) -> Warp(128, rotate)
-  -> Preprocess(128, 1ch, fp16, exact) -> Engine(head, heatmap) -> Emit(+ head outputs, roi2)
+detect_pose, head-sized:                    (the production target; same program, smaller constants)
+  Source(camera) -> Preprocess(640) -> Engine(det) -> Signal(detect_done)
+  -> Roi(top box centroid, crop S) -> Warp(S) -> Preprocess(S, exact, no letterbox)
+  -> Engine(pose trained on S crops) -> Signal(pose_done) -> Emit
 ```
+
+There is no separate head stage. Because the box already encloses head and
+bladder at constant scale, the head crop is the pose crop with a smaller
+constant, and the pose model retrained on that crop is the head model. A
+keypoint-driven second `Roi` (a crop centred between the eyes, rotated to
+the body axis) remains expressible for a future rig where the box is not
+the head, and is deliberately not part of this plan.
+
+**The crop rule.** One constant per rig, set from data: S = the 95th
+percentile of the box's longer side, times a margin of about 1.3 so an
+eroded box never puts an eye on the edge, rounded up to a multiple of 32
+(the YOLO stride). The crop is cut at 1:1 and fed to the model without
+resizing, so `Preprocess` runs in exact mode: no letterbox, no
+interpolation, every pixel the sensor produced. If S came out above about
+192 the model input could be smaller than S with one resize, but at
+constant scale that is a training-time choice, not a per-frame one. S is
+not known yet; see step 0 of the migration.
 
 In the spec this is one block, `fixed.analytics`, that replaces the
 independent `yolo_worker` and `pose_worker` blocks over time (both remain
@@ -120,13 +154,9 @@ accepted and are translated into the equivalent program):
   "program": "detect_pose",
   "stages": {
     "det":  {"engine_path": "...yolo11n...engine", "input": 640, "output_format": "yolo_nms"},
-    "roi":  {"source": "det_top_box", "crop_size_px": 256},
-    "pose": {"engine_path": "...fish_v1...engine", "input": 256, "channels": 3,
-             "dtype": "fp32", "output_format": "yolo_pose", "skeleton_path": "..."},
-    "roi2": {"source": "pose_keypoints", "anchor": ["eye_left", "eye_right"],
-             "axis": ["eye_mid", "bladder"], "crop_size_px": 128, "rotate": true},
-    "head": {"engine_path": "...", "input": 128, "channels": 1, "dtype": "fp16",
-             "output_format": "heatmap", "output_stride": 4}
+    "roi":  {"source": "det_top_box", "crop_size_px": 128},
+    "pose": {"engine_path": "...head crop model...engine", "input": 128, "channels": 3,
+             "dtype": "fp32", "output_format": "yolo_pose", "skeleton_path": "..."}
   }
 }
 ```
@@ -228,12 +258,21 @@ gates reuse.
 | Detections only (current production without pose) | `detect_only` | none; it is the existing graph plus `Emit` |
 | Two-stage detect and pose (current pose work) | `detect_pose` | the `Roi(det_top_box)` kernel and `Warp`; the pose decoder as a `collect()` step |
 | Pose only on a close-up of an embedded fish | `pose_only` | `Roi(fixed)`; a `Source` window; nothing else |
-| Head components at full resolution | `detect_pose_head` | `Roi(keypoints)` with rotation, `Warp(rotate)`, a heatmap decoder, the one-channel FP16 `Preprocess` option |
+| Head components at full resolution | `detect_pose` with the head-sized constant S | no new stage; a pose model retrained on S crops of the existing labels (yolo11n-pose exported to ONNX, built on the A16 with the existing engine build script) and the exact-mode `Preprocess` |
 | Several cameras on one large GPU (deferred) | a batched program: `Gather` stage across cameras' input tensors, batch-N engines | the gather stage and a per-period scheduler; the same stage contracts |
 | A SLEAP or other framework's engine | any program | nothing; the `Engine` contract and the `heatmap` decoder cover it |
 
 ## Migration, in order, each step measurable
 
+0. **Measure S.** One run with a fish in the tank and
+   `roi_source: yolo_top_detection`; the YOLO event log records every box,
+   and the 5th, 50th and 95th percentiles of the longer side give S. In
+   parallel, re-crop the persisted training set around the same box
+   centroids at S (labels are in source pixels, so this is a re-crop, not
+   new annotation), train yolo11n-pose on those crops, export ONNX, build
+   the engine on an A16 die, and check its contract against the `Engine`
+   stage (1x(5+3K)xN output; the YOLO11 pose head decodes exactly as the
+   current v8 one).
 1. **Result record and signals.** Define `ResultRecord` and route the
    event log, IPC slot and perf CSV through it, with the current threaded
    code populating it. No behaviour change; the verifier must pass the
@@ -253,8 +292,10 @@ gates reuse.
 4. **`pose_only` and `detect_only` as programs.** Mostly spec and
    validation; run the existing engine-only specs through `detect_only`
    and confirm identical numbers.
-5. **Head stage.** `Roi(keypoints)`, `Warp(rotate)`, heatmap decoder, the
-   one-channel preprocess option. Needs the head model first.
+5. **Swap in the head-sized program.** Change the two constants (S and
+   the pose engine) in the spec; nothing structural. Gate: pose graph time
+   on a die below the current 0.72 ms, keypoint error on held-out crops no
+   worse than the 256 model's, and every other gate from step 3 unchanged.
 6. **Retire the threaded executor for stages the graph covers**, once the
    endurance spec has passed on the graph executor with every consumer on.
 

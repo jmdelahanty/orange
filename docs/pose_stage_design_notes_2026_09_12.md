@@ -59,6 +59,18 @@ about 0.5 ms of that is host slack rather than GPU work.
 
 ## A second, smaller crop for the head
 
+**Superseded the same day.** The detector's boxes already enclose only the
+head and the swim bladder (the training labels came from background
+subtraction with erosion, which trimmed the tail), and the fish are held in
+about 3 mm of water under a top-down camera that sees the whole space, so
+scale is constant. The head crop is therefore a smaller fixed crop centred
+on the box centroid, and the pose model retrained on that crop is the head
+model. No coarse pose, no keypoint-driven second ROI, no rotation stage.
+The crop rule and the training path are in
+`docs/analytics_program_design_2026_09_12.md`. The coarse-to-fine design
+below is kept as the answer for a rig where the box is not already the
+head.
+
 The 256 crop is already at 1:1 sensor resolution, and its three keypoints
 (eyes and bladder) are head landmarks, so the coarse stage already locates
 and orients the head. The design that follows is coarse-to-fine:
