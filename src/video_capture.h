@@ -6,6 +6,7 @@
 #define ORANGE_VIDEO_CAPTURE
 #include "thread.h"
 #include "camera.h"
+#include "detect_roi.h"
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -114,6 +115,12 @@ typedef struct {
     // True once analytics_ready_event has been recorded for this frame
     // (immediately on the early-copy path; after the copy on the late path).
     std::atomic<bool> analytics_ready_event_recorded;
+    // Device-side crop origin (src/detect_roi.h), written by the YOLO worker
+    // on its stream after the detect graph when ORANGE_ANALYTICS_DEVICE_ROI is
+    // on; h_detect_roi is the pinned host mirror, valid after the completion
+    // event. Allocated per pool entry.
+    DetectRoi* d_detect_roi = nullptr;
+    DetectRoi* h_detect_roi = nullptr;
 
     bool has_analytics_owned_source() const
     {
@@ -350,6 +357,10 @@ struct CameraResources {
             ck(cudaEventCreate(&worker_entry_pool[i].analytics_copy_timing_start));
             ck(cudaEventCreate(&worker_entry_pool[i].analytics_copy_timing_end));
             ck(cudaEventCreateWithFlags(&worker_entry_pool[i].yolo_input_ready_event, cudaEventDisableTiming));
+            ck(cudaMalloc(reinterpret_cast<void**>(&worker_entry_pool[i].d_detect_roi), sizeof(DetectRoi)));
+            ck(cudaMemset(worker_entry_pool[i].d_detect_roi, 0, sizeof(DetectRoi)));
+            ck(cudaHostAlloc(reinterpret_cast<void**>(&worker_entry_pool[i].h_detect_roi), sizeof(DetectRoi), 0));
+            *worker_entry_pool[i].h_detect_roi = DetectRoi{};
             worker_entry_pool[i].image_gpu_id = gpu_id;
             worker_entry_pool[i].yolo_input_ready_event_recorded.store(false);
             worker_entry_pool[i].yolo_completion_event_recorded.store(false);
@@ -404,6 +415,14 @@ struct CameraResources {
                 }
                 if (worker_entry_pool[i].d_image_pool) {
                     cudaFree(worker_entry_pool[i].d_image_pool);
+                }
+                if (worker_entry_pool[i].d_detect_roi) {
+                    cudaFree(worker_entry_pool[i].d_detect_roi);
+                    worker_entry_pool[i].d_detect_roi = nullptr;
+                }
+                if (worker_entry_pool[i].h_detect_roi) {
+                    cudaFreeHost(worker_entry_pool[i].h_detect_roi);
+                    worker_entry_pool[i].h_detect_roi = nullptr;
                 }
                 worker_entry_pool[i].d_image = nullptr;
                 worker_entry_pool[i].d_image_pool = nullptr;

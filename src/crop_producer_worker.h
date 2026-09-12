@@ -61,6 +61,8 @@ public:
     void SetCropPreviewWorker(CropPreviewWorker* crop_preview_worker);
     void SetPoseWorker(PoseWorker* pose_worker);
     CropProducer* GetCropProducer() const { return crop_producer_.get(); }
+    int crop_width() const { return crop_width_; }
+    int crop_height() const { return crop_height_; }
     void RotateRecordingFolder(const std::string& recording_folder);
     void CloseRecording();
     void ResetRecordingCounters();

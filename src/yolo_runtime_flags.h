@@ -50,6 +50,11 @@ struct ResolvedFlags {
     bool inline_crop_producer = false;
     // ORANGE_YOLO_SKIP_CPU_RESULTS: diagnostic; drop postprocess/IPC/tracking.
     bool skip_cpu_results = false;
+    // ORANGE_ANALYTICS_DEVICE_ROI: select the crop origin on the device from
+    // the EfficientNMS outputs (src/detect_roi.h) right after the detect
+    // graph, and compare it against the CPU crop origin on every frame
+    // (device_roi_valid / device_roi_match perf columns). Default off.
+    bool device_roi = false;
     // ORANGE_YOLO_STREAM_PRIORITY: "high" (default), "low", or an integer.
     std::string stream_priority = "high";
     // ORANGE_YOLO_STREAM_NONBLOCKING: create the YOLO stream non-blocking.
@@ -75,6 +80,7 @@ inline ResolvedFlags Resolve()
     flags.ready_event_fast_path = EnvFlag("ORANGE_YOLO_READY_EVENT_FASTPATH", true);
     flags.inline_crop_producer = EnvFlag("ORANGE_INLINE_CROP_PRODUCER", false);
     flags.skip_cpu_results = EnvFlag("ORANGE_YOLO_SKIP_CPU_RESULTS", false);
+    flags.device_roi = EnvFlag("ORANGE_ANALYTICS_DEVICE_ROI", false);
     if (const char* env = std::getenv("ORANGE_YOLO_STREAM_PRIORITY"); env && *env) {
         flags.stream_priority = env;
     }

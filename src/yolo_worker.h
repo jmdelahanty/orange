@@ -111,6 +111,12 @@ private:
     std::unique_ptr<yolo_perf::YoloPerfLogger> perf_logger_;
     std::unique_ptr<yolo_event_log::YoloEventLogger> event_logger_;
     uint64_t perf_sample_counter_ = 0;
+    // ORANGE_ANALYTICS_DEVICE_ROI comparison counters (see detect_roi.h).
+    std::atomic<uint64_t> device_roi_frames_{0};
+    std::atomic<uint64_t> device_roi_matches_{0};
+    std::atomic<uint64_t> device_roi_mismatches_{0};
+    std::atomic<uint64_t> device_roi_masked_{0};
+    std::atomic<uint64_t> device_roi_logged_mismatches_{0};
     int perf_sample_rate_ = 1;
     std::string perf_log_folder_;
 

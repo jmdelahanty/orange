@@ -252,6 +252,7 @@ struct ExperimentSpec {
     bool yolo_sync_event = true;             // ORANGE_YOLO_SYNC_EVENT (default on)
     bool yolo_gpu_timing = true;             // ORANGE_YOLO_GPU_TIMING (default on)
     bool analytics_early_owned_frame = true; // ORANGE_ANALYTICS_EARLY_OWNED_FRAME (default on)
+    bool analytics_device_roi = false;       // ORANGE_ANALYTICS_DEVICE_ROI (default off; device crop origin + CPU comparison)
     bool acq_stream_nonblocking = false;     // ORANGE_ACQ_STREAM_NONBLOCKING (diagnostic)
     bool acq_flush_after_event = false;      // ORANGE_ACQ_FLUSH_AFTER_EVENT (diagnostic)
     bool acq_force_direct_read = false;      // ORANGE_ACQ_FORCE_DIRECT_READ (diagnostic)
@@ -8070,6 +8071,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->yolo_sync_event = fixed.value("yolo_sync_event", true);
     spec->yolo_gpu_timing = fixed.value("yolo_gpu_timing", true);
     spec->analytics_early_owned_frame = fixed.value("analytics_early_owned_frame", true);
+    spec->analytics_device_roi = fixed.value("analytics_device_roi", false);
     spec->acq_stream_nonblocking = fixed.value("acq_stream_nonblocking", false);
     spec->acq_flush_after_event = fixed.value("acq_flush_after_event", false);
     spec->acq_force_direct_read = fixed.value("acq_force_direct_read", false);
@@ -11371,6 +11373,7 @@ int run_local_experiment(const HeadlessCliOptions& options)
     setenv("ORANGE_YOLO_SYNC_EVENT", spec.yolo_sync_event ? "1" : "0", 1);
     setenv("ORANGE_YOLO_GPU_TIMING", spec.yolo_gpu_timing ? "1" : "0", 1);
     setenv("ORANGE_ANALYTICS_EARLY_OWNED_FRAME", spec.analytics_early_owned_frame ? "1" : "0", 1);
+    setenv("ORANGE_ANALYTICS_DEVICE_ROI", spec.analytics_device_roi ? "1" : "0", 1);
     setenv("ORANGE_ACQ_STREAM_NONBLOCKING", spec.acq_stream_nonblocking ? "1" : "0", 1);
     setenv("ORANGE_ACQ_FLUSH_AFTER_EVENT", spec.acq_flush_after_event ? "1" : "0", 1);
     setenv("ORANGE_ACQ_FORCE_DIRECT_READ", spec.acq_force_direct_read ? "1" : "0", 1);
@@ -11398,6 +11401,7 @@ int run_local_experiment(const HeadlessCliOptions& options)
               << " yolo_sync_event=" << (spec.yolo_sync_event ? 1 : 0)
               << " yolo_gpu_timing=" << (spec.yolo_gpu_timing ? 1 : 0)
               << " analytics_early_owned_frame=" << (spec.analytics_early_owned_frame ? 1 : 0)
+              << " analytics_device_roi=" << (spec.analytics_device_roi ? 1 : 0)
               << " acq_stream_nonblocking=" << (spec.acq_stream_nonblocking ? 1 : 0)
               << " acq_flush_after_event=" << (spec.acq_flush_after_event ? 1 : 0)
               << " acq_force_direct_read=" << (spec.acq_force_direct_read ? 1 : 0)

@@ -1,8 +1,6 @@
 // src/detect_roi.cu
 #include "detect_roi.h"
 
-#include <algorithm>
-
 namespace {
 
 // Shared body for device and host. The device instantiation uses the
@@ -10,11 +8,13 @@ namespace {
 // host instantiation uses plain float operations, which is exactly what
 // YOLOv8::postprocess and CropProducerWorker::ProcessEntryImpl compile to.
 struct HostOps {
-    static inline float add(float a, float b) { return a + b; }
-    static inline float sub(float a, float b) { return a - b; }
-    static inline float mul(float a, float b) { return a * b; }
-    static inline float clampf(float v, float lo, float hi) { return std::min(std::max(v, lo), hi); }
-    static inline int clampi(int v, int lo, int hi) { return std::min(std::max(v, lo), hi); }
+    // Marked __host__ __device__ only so the shared template body compiles
+    // for both instantiations; the host instantiation is the one that runs.
+    __host__ __device__ static inline float add(float a, float b) { return a + b; }
+    __host__ __device__ static inline float sub(float a, float b) { return a - b; }
+    __host__ __device__ static inline float mul(float a, float b) { return a * b; }
+    __host__ __device__ static inline float clampf(float v, float lo, float hi) { return (v < lo) ? lo : ((v > hi) ? hi : v); }
+    __host__ __device__ static inline int clampi(int v, int lo, int hi) { return (v < lo) ? lo : ((v > hi) ? hi : v); }
 };
 
 #ifdef __CUDACC__
