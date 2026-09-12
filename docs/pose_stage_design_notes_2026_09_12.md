@@ -47,7 +47,11 @@ on heatmaps.
 | Capture to pose done | 3.559 / 3.974 ms | |
 
 So 3.56 ms end to end on a 10-SM die from a 20 MP frame, against SLEAP's
-3.2 ms on a 72-SM GPU from a 1 MP frame. Same band, a seventh of the
+3.2 ms on a 72-SM GPU from a 1 MP frame. Measured afterwards on this rig's
+own big GPU (one camera into the RTX A6000, review section F): 1.93 ms mean
+/ 2.08 ms p95 capture to pose done, with the pose graph at 0.43 ms by trtexec
+but the pose stage still 0.82 ms p50, because the worker's fixed per-frame
+overhead dominates once the graph is fast. Same band, a seventh of the
 silicon, and a much heavier first stage: our detector is a YOLO at 640 with
 NMS in the graph (2.0 ms), where SLEAP's centroid stage is a small UNet on a
 downsampled frame. The pose stage plus its two hops is about 1.3 ms, and

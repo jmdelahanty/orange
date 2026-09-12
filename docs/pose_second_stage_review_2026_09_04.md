@@ -74,8 +74,10 @@ re-derived here:
   and costs 0.13 ms mean / 0.15 ms p95 of acquisition-to-detect, all of it
   host-side (thread wake-ups and CPU work around the graph), with the pose
   stage itself at 0.90 ms p50 / 1.28 ms p95 and capture-to-pose-done at
-  3.5 ms mean / 4.0 ms p95. The A6000 option is closed by the other
-  session's finding that the A16 dies have no peer access to it.
+  3.5 ms mean / 4.0 ms p95. On the A6000 (one camera, 2026-09-12) capture-to-pose-done is
+  1.93 ms mean / 2.08 ms p95, almost entirely from the faster detect graph; the pose
+  worker's fixed per-frame overhead, not the pose graph, then dominates the pose stage.
+  The A6000 stays closed for production because recording cannot follow it there.
 
 ## A. Where The Pose Worker Gets Its Crop Today
 
@@ -571,6 +573,76 @@ thread (a CUDA graph for resize plus inference plus output copy, and an
 event-based completion instead of `cudaStreamSynchronize`). Off-die
 placement would not remove any of it, since the threads and the driver
 lock stay on the host.
+
+### The pose stage on the A6000, one camera (2026-09-12 16:22)
+
+Asked for after the design notes: what a big GPU buys the pose stage, even
+though recording cannot follow it there. Spec
+`experiment_specs/onecam_a6000_pose_engine_only_synthetic.json` (this
+worktree): the other session's `onecam_engine_only_direct_read_omnifin_a6000`
+(camera 2010094 acquired by GPUDirect into GPU 0, true direct read, the
+A6000-built omnifin detect engine, `immediate_recycle`) plus the same pose
+block as run 2. The pose engine is the GA107-built plan loaded on the GA102
+(same compute capability, TensorRT warns and runs). Citrus was rendering on
+GPU 0 throughout (about 30% SM before the run). Verifier passed, 5900 of
+5900 crops, zero drops, queue high-water 1. Because the read is direct
+there is no pool copy; the crop producer took its source-stage path (a
+20 MB copy into a staging buffer on GPU 0, then the ROI).
+
+First the engine alone, `trtexec --useCudaGraph --noDataTransfers`, 2000
+iterations (ms):
+
+| Device | median | mean | p95 | p99 |
+|---|---|---|---|---|
+| RTX A6000, GPU 0, citrus rendering | 0.433 | 0.461 | 0.676 | 1.115 |
+| A16 die 1, idle | 0.720 | 0.719 | 0.721 | 0.721 |
+
+Then the pipeline (ms, mean / p50 / p95 / p99), A6000 one camera against
+run 2 on die 1:
+
+| Stage | A6000, GPU 0 | A16 die 1 (run 2) |
+|---|---|---|
+| Acquisition to detect done | 0.910 / 0.911 / 0.955 / 0.997 | 2.275 / 2.274 / 2.326 / 2.358 |
+| Detect graph (`infer_ms` mean / p95) | 0.706 / 0.710 | 1.974 / 1.980 |
+| Preprocess (`pre_ms`) | 0.097 / 0.112 | 0.076 / 0.077 |
+| Detect done to crop thread start | 0.061 / 0.061 / 0.065 / 0.068 | 0.167 / 0.084 / 0.403 / 0.503 |
+| Crop thread to crop enqueued | 0.073 / 0.072 / 0.079 / 0.084 | 0.096 / 0.095 / 0.112 / 0.125 |
+| Crop enqueued to pose thread start | 0.033 / 0.027 / 0.061 / 0.073 | 0.064 / 0.053 / 0.183 / 0.256 |
+| Pose start to pose done | 0.849 / 0.823 / 0.992 / 1.160 | 0.957 / 0.900 / 1.279 / 1.311 |
+| Capture to pose done | 1.926 / 1.893 / 2.082 / 2.203 | 3.559 / 3.525 / 3.974 / 4.146 |
+
+Reading:
+
+- **End to end, the A6000 is 1.6 ms faster (3.56 to 1.93 mean, 3.97 to
+  2.08 p95),** and nearly all of it is the detect graph (1.97 to 0.71 ms).
+  The detect-side numbers match what the other session measured on the
+  A6000 without pose (0.89 / 0.94 / 1.01), so pose costs detect nothing
+  there either.
+- **The pose stage gained far less than the engine did.** trtexec says the
+  graph is 0.43 ms on the A6000 against 0.72 on the die, but
+  `pose_start_to_pose_done` only moved from 0.90 to 0.82 ms at p50. On the
+  die the worker's overhead around the graph (crop-ready wait, resize
+  launch, plain `enqueueV3`, output copy, `cudaStreamSynchronize`) is about
+  0.18 ms; on the A6000 it is about 0.4 ms, and the p99 tail (1.16 ms, max
+  6.3 ms) is the render context time-slicing that trtexec also showed (p99
+  1.1 ms). A big GPU makes the fixed per-frame cost of the current
+  synchronous pose worker the dominant term, which is the same conclusion
+  as the host-side attribution in run 2 and the same fix: the fused graph
+  with an event-based completion.
+- **The thread hops were shorter here** (0.06 and 0.03 ms against 0.17 and
+  0.06) with one camera's threads on the host instead of two; that is a
+  CPU contention effect, not a GPU one.
+- **Utilisation:** GPU 0 averaged 16.7% SM over the run with citrus
+  included, so one camera's detect plus pose uses a small fraction of the
+  card. Three cameras would share it well for pose; the other session's
+  three-camera detect measurement (1.43 / 1.78 / 2.40) shows the batch-1
+  graphs only partly overlap, which is where a batched launch would pay.
+
+What this does not change: the 2026-09-05 deferral stands. Recording
+cannot move to the A6000 (one NVENC, no peer access to the A16 dies), so
+this is what a second card would buy the pose loop, not a configuration
+the four-camera pipeline can run today. Artifacts:
+`orange_data/exp/unsorted/onecam_a6000_pose_engine_only_synthetic_20260912_162217`.
 
 ### Updates to sections C and E from the other session's work
 
