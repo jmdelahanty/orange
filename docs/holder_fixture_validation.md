@@ -38,14 +38,14 @@ an old accepted pointer with a matching schema is not current authority. The
 runner's intensity-resolution check alone is not a full canvas-compatibility
 preflight.
 
-### 2026-09-14 handoff state
+### Earlier 2026-09-14 handoff state (superseded by capture below)
 
 The new holder-removed reference fit is
 `homography_set_homography_fit_2026-09-14T14_55_17Z` under the Shadow
 `calibration_artifacts/homography_candidates/` root. All four 100-point fits
 passed, but the fit-only runner finalized the live transaction with reason
 `quality_passed_but_accept_homographies_not_armed`. The set remains reloadable
-for guarded review. The current Shadow canvas checksum is
+for guarded review. The Shadow canvas checksum at that time was
 `sha256:09e5269acb9c6854a124dd278c477adf72c923c922de15a65a0466c638683b2b`;
 the July reference pointers were accepted against an older canvas and must
 not be treated as current. The operator has reported the holder and gels
@@ -56,6 +56,35 @@ restore the unobstructed dry shelf, recapture the reference, review all four
 overlays and quality results, and explicitly accept the new reference before
 reinstalling the holder. The 2026-09-14 rejected fit remains diagnostic
 evidence in either path.
+
+### 2026-09-14 holder capture and independent reanalysis
+
+After accepting the new dry-shelf reference and reinstalling the holder with
+flattened gels (no dishes, water, or scale disks), the four-camera capture at
+`/home/jeremy/orange_data/calibrations/commissioning/holder_fixture_20260914T211305Z/`
+completed all five PTP-grouped scenes. A first independent analysis failed
+because its dot search used the older active operational homographies from
+before the camera move. That failed `validation_report.json` and its images
+remain in place as audit evidence.
+
+The corrected analyzer checks the accepted dry-reference pointer and SHA-256
+recorded before capture, uses its matrix only to locate the holder pattern,
+and retains the older active operational matrix as a read-only drift
+comparison. It evaluates the independently fitted holder-plane candidate on
+held-out verification points. A separate reanalysis of the **same immutable
+images** passed for all four cameras at
+`reference_seed_reanalysis_v1/validation_report.json` below that run directory.
+Each camera had 79/81 ring points and 13/13 verification points; held-out RMS
+was 0.060–0.125 canvas px. The original failed report is not superseded in
+place, and neither analysis promoted a homography.
+
+For review, use the passing package at
+`/home/jeremy/orange_data/calibrations/sessions/calsess_2026_09_14T21_13_33Z_shadow/derived/holder_fixture/reference_seed_reanalysis_v1/manifest.json`
+with Citrus candidate set
+`homography_set_holder_operational_calgrp_2026_09_14T21_14_03Z_shadow_homography_grid_projected_surface_g4`.
+Promotion still requires explicit operator review and the guarded acceptance
+command below. The holder and gels must remain fixed until the subsequent
+physical-scale capture.
 
 The fixture aperture is its own geometry:
 
@@ -90,7 +119,7 @@ appends five PTP-grouped captures to one Orange calibration session:
    illuminated support visible through the holder;
 3. `arena_outline` — full arena rectangle with its center fiducial;
 4. `homography_rings` for the current circular holder, or `homography_grid` for
-   a rectangular holder — primary support against the active transform;
+   a rectangular holder — primary support for the holder-plane candidate;
 5. `verification_dots` — an independent validation point set.
 
 All persisted image sets use
@@ -109,7 +138,7 @@ transaction with a rejection receipt whose reason is
 transaction without deleting the reloadable candidate set and without changing
 runtime authority.
 
-## Run tomorrow
+## Run capture
 
 After rebuilding Orange, reinstall the narrow privileged wrapper because this
 workflow adds two whitelisted environment fields:
@@ -132,8 +161,9 @@ from the immutable projector-intensity commissioning report referenced by the
 selected cameras' commissioning-reference homographies. They verify the
 report checksum, passing status, all-camera gate, and each selected camera's
 quality result before asking Citrus to render. Missing or contradictory
-authority fails closed. The current qualified Shadow report resolves to gray
-`72`; gray `76` retained good geometry but saturated dot cores on cameras
+authority fails closed. The current qualified Shadow report used for the
+2026-09-14 holder capture resolves to gray `84`. An earlier report resolved to
+gray `72`; gray `76` retained good geometry but saturated dot cores on cameras
 2010094 and 2010095, while gray `64` was below the circular detector's reliable
 range. Use `--foreground-gray-u8` only when deliberately testing a different
 intensity; the override and the commissioned reference are both recorded.
@@ -224,9 +254,10 @@ samples explained by the configured arena in gold, and only directly observed
 holder-aperture arcs in green. The JSON preserves both the complete support
 boundary and the partial holder-arc evidence in camera-native and final-display
 canvas pixels. A shape fit from partial arcs is diagnostic-only and is never
-represented as a fully measured aperture. The analyzer then uses the existing
-active Citrus homography as a read-only input and measures ring/grid and
-verification-dot residuals.
+represented as a fully measured aperture. The analyzer uses the accepted,
+pre-capture-checksummed dry commissioning reference to locate the ring/grid
+and verification dots. It separately measures residuals against the previous
+active operational homography as a read-only drift comparison.
 
 Default gates require:
 
@@ -238,10 +269,10 @@ Default gates require:
 
 Expected points outside the observed holder aperture are classified as
 occluded, not as calibration failures. The report gives two distinct outcomes:
-active dry-reference agreement and operational-candidate assessment. The first
+previous-active agreement and operational-candidate assessment. The first
 may fail when the installed gels change the practical mapping, while the second
 can pass on the primary rings and independent verification dots. The report and
-runner use the operational assessment as their pass/fail result; dry-reference
+runner use the operational assessment as their pass/fail result; previous-active
 disagreement is retained under `commissioning_reference_comparison` as a
 diagnostic finding. Neither outcome authorizes an automatic transform rewrite.
 

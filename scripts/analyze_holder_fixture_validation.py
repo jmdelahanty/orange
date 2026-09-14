@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Characterize a fixture aperture and revalidate an active Citrus homography."""
+"""Characterize a fixture aperture using its accepted dry registration seed."""
 
 from __future__ import annotations
 
@@ -64,6 +64,72 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return "sha256:" + digest.hexdigest()
+
+
+def load_commissioning_reference_seed(
+    manifest: dict[str, Any], citrus_path: Path, arena_id: str,
+    camera_serial: str,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """Use the pre-capture-bound dry reference to find current holder dots.
+
+    The previous operational active homography is still evaluated separately;
+    it must not seed detection after a camera has been moved.
+    """
+    expected_path = (
+        citrus_path.parent / "calibration_artifacts" /
+        f"homography_reference_{arena_id}_{camera_serial}_projected_surface.json"
+    ).resolve()
+    evidence = [
+        row for row in manifest.get("projection", {}).get(
+            "projector_intensity_commissioning", {}
+        ).get("source_evidence", [])
+        if isinstance(row, dict)
+        and str(row.get("camera_serial")) == camera_serial
+        and str(row.get("arena_id")) == arena_id
+    ]
+    if len(evidence) != 1 or Path(str(evidence[0].get("pointer_path", ""))).resolve() != expected_path:
+        raise ValueError(
+            f"missing or noncanonical pre-capture commissioning reference for {camera_serial}"
+        )
+    recorded_sha256 = str(evidence[0].get("pointer_sha256", ""))
+    if not expected_path.is_file() or sha256_file(expected_path) != recorded_sha256:
+        raise ValueError(
+            f"commissioning reference changed since capture for {camera_serial}"
+        )
+    pointer = json.loads(expected_path.read_text(encoding="utf-8"))
+    expected_rig = citrus_path.parent.parent.name
+    expected_canvas = citrus_path.parent.name
+    expected_canvas_sha256 = manifest.get("inputs", {}).get(
+        "citrus_canvas_sha256_before_capture"
+    )
+    if (
+        pointer.get("schema_id") != "citrus.calibration.active_homography"
+        or pointer.get("schema_version") != 1
+        or pointer.get("status") != "accepted"
+        or pointer.get("homography_role") != "commissioning_reference"
+        or pointer.get("target_plane") != "projected_surface"
+        or pointer.get("rig_id") != expected_rig
+        or pointer.get("canvas_name") != expected_canvas
+        or pointer.get("arena_id") != arena_id
+        or str(pointer.get("camera_id")) != camera_serial
+        or pointer.get("canvas_checksum_at_acceptance") != expected_canvas_sha256
+    ):
+        raise ValueError(
+            f"commissioning reference identity or authority mismatch for {camera_serial}"
+        )
+    matrix = np.asarray(pointer.get("homography_matrix"), dtype=np.float64)
+    if matrix.shape != (3, 3) or not np.isfinite(matrix).all() or abs(np.linalg.det(matrix)) < 1e-12:
+        raise ValueError(f"invalid commissioning reference matrix for {camera_serial}")
+    return matrix, {
+        "role": "accepted_dry_commissioning_reference_detection_seed",
+        "pointer_path": str(expected_path),
+        "pointer_sha256": recorded_sha256,
+        "candidate_id": pointer.get("candidate_id"),
+        "candidate_set_id": pointer.get("candidate_set_id"),
+        "canvas_checksum_at_acceptance": pointer.get("canvas_checksum_at_acceptance"),
+        "matrix_camera_native_px_to_final_display_canvas_px": matrix.tolist(),
+        "used_read_only": True,
+    }
 
 
 def relative_to_checked(path: Path, parent: Path, label: str) -> Path:
@@ -368,11 +434,12 @@ def detect_expected_dots(
     pattern: np.ndarray,
     black: np.ndarray,
     expected_canvas: np.ndarray,
-    homography: np.ndarray,
+    prediction_homography: np.ndarray,
     aperture_contour: np.ndarray,
     edge_margin_camera_px: float,
+    evaluation_homography: np.ndarray | None = None,
 ) -> dict[str, Any]:
-    inverse = np.linalg.inv(homography)
+    inverse = np.linalg.inv(prediction_homography)
     predicted_camera = transform_points(expected_canvas, inverse)
     if len(predicted_camera) > 1:
         distances = np.linalg.norm(
@@ -441,7 +508,11 @@ def detect_expected_dots(
     residuals: list[float] = []
     detected_canvas: list[list[float]] = []
     if len(detected):
-        projected = transform_points(detected, homography)
+        projected = transform_points(
+            detected,
+            prediction_homography if evaluation_homography is None
+            else evaluation_homography,
+        )
         detected_canvas = projected.astype(float).tolist()
         residuals = np.linalg.norm(projected - expected, axis=1).astype(float).tolist()
     return {
@@ -778,13 +849,14 @@ def persist_holder_fixture_evidence(
             ),
             "homography_evaluation": {
                 "evaluation_input": camera.get("active_homography", {}),
+                "detection_seed": camera.get("detection_seed", {}),
                 "primary_support": camera.get("primary_support", {}),
                 "held_out_verification": camera.get("verification", {}),
                 "diagnostic_refit": camera.get("diagnostic_refit", {}),
                 "operational_candidate_assessment": camera.get(
                     "operational_candidate_assessment", {}
                 ),
-                "commissioning_reference_role": "evaluated_read_only_input",
+                "commissioning_reference_role": "read_only_detection_seed",
                 "operational_candidate_role": "not_created_by_this_analysis",
                 "runtime_authority_changed": False,
                 "persisted_citrus_candidate_set": report.get(
@@ -948,6 +1020,10 @@ def draw_overlay(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("manifest", type=Path)
+    parser.add_argument(
+        "--analysis-output-dir", type=Path,
+        help="write derived analysis to this directory, preserving the capture's original report",
+    )
     parser.add_argument("--max-rms-canvas-px", type=float, default=0.75)
     parser.add_argument("--max-point-error-canvas-px", type=float, default=1.5)
     parser.add_argument("--min-visible-detection-fraction", type=float, default=0.95)
@@ -955,6 +1031,7 @@ def main() -> int:
     parser.add_argument("--arena-edge-margin-canvas-px", type=float, default=3.0)
     parser.add_argument("--sensor-edge-margin-camera-px", type=float, default=12.0)
     args = parser.parse_args()
+    output_dir = args.analysis_output_dir or args.manifest.parent
 
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     if manifest.get("schema_id") != "orange.holder_fixture_validation.run_manifest":
@@ -1040,6 +1117,9 @@ def main() -> int:
                 "active homography pointer changed between pre-capture snapshot and analysis"
             )
         homography = np.asarray(active["homography_matrix"], dtype=np.float64)
+        reference_homography, reference_seed = load_commissioning_reference_seed(
+            manifest, citrus_path, arena_id, camera
+        )
 
         contour, _, segmentation = segment_aperture(
             images["uniform_gray"], images["black_reference"]
@@ -1047,7 +1127,7 @@ def main() -> int:
         boundary_camera = resample_contour(contour, maximum_points=512)
         boundary_classification = classify_visibility_boundary(
             boundary_camera,
-            homography,
+            reference_homography,
             target,
             images["uniform_gray"].shape,
             args.arena_edge_margin_canvas_px,
@@ -1075,11 +1155,13 @@ def main() -> int:
         )
         primary = detect_expected_dots(
             images[primary_recipe], images["black_reference"], primary_expected,
-            homography, contour, args.edge_margin_camera_px,
+            reference_homography, contour, args.edge_margin_camera_px,
+            evaluation_homography=homography,
         )
         verification = detect_expected_dots(
             images["verification_dots"], images["black_reference"],
-            verification_expected, homography, contour, args.edge_margin_camera_px,
+            verification_expected, reference_homography, contour,
+            args.edge_margin_camera_px, evaluation_homography=homography,
         )
         refit = diagnostic_refit(primary, verification)
         operational_candidate_assessment = assess_operational_candidate(
@@ -1146,7 +1228,7 @@ def main() -> int:
             if not camera_reference_errors
             else "mismatch_detected"
         )
-        overlay_path = args.manifest.parent / "overlays" / f"Cam{camera}.png"
+        overlay_path = output_dir / "overlays" / f"Cam{camera}.png"
         draw_overlay(
             images["uniform_gray"], contour, boundary_camera,
             boundary_classification,
@@ -1154,11 +1236,11 @@ def main() -> int:
             overlay_path, status,
         )
         primary_qc_path = (
-            args.manifest.parent / "homography_qc" /
+            output_dir / "homography_qc" /
             f"Cam{camera}_active_primary_reprojection.png"
         )
         verification_qc_path = (
-            args.manifest.parent / "homography_qc" /
+            output_dir / "homography_qc" /
             f"Cam{camera}_active_heldout_reprojection.png"
         )
         draw_reprojection_debug(
@@ -1177,6 +1259,7 @@ def main() -> int:
             "warnings": camera_warnings,
             "commissioning_reference_comparison": {
                 "status": reference_status,
+                "compared_transform_role": "previous_active_operational_homography",
                 "within_operational_tolerance": not camera_reference_errors,
                 "findings": camera_reference_errors,
                 "authority_effect": "diagnostic_only",
@@ -1198,6 +1281,7 @@ def main() -> int:
                     commissioning_debug_evidence(active)
                 ),
             },
+            "detection_seed": reference_seed,
             "source_images": {
                 recipe: {
                     "path": str(image_paths[recipe].resolve()),
@@ -1228,7 +1312,7 @@ def main() -> int:
                 "coordinate_contract": {
                     "camera_boundary_space": "camera_native_px",
                     "canvas_boundary_space": "final_display_canvas_px",
-                    "canvas_transform_source": "active_dry_commissioning_homography",
+                    "canvas_transform_source": "accepted_dry_commissioning_reference",
                 },
                 "segmentation": segmentation,
                 "observed_illuminated_support": {
@@ -1326,10 +1410,12 @@ def main() -> int:
             "within_operational_tolerance": not reference_comparison_errors,
             "findings": reference_comparison_errors,
             "authority_effect": "diagnostic_only",
+            "compared_transform_role": "previous_active_operational_homography",
             "commissioning_reference_modified": False,
             "interpretation": (
-                "The dry commissioning reference remains provenance evidence; "
-                "the holder-plane candidate is judged independently."
+                "The pre-capture-bound dry commissioning reference seeds detection; "
+                "the previous active operational homography is a read-only drift "
+                "comparison. The holder-plane candidate is judged independently."
             ),
         },
         "run_manifest_path": str(args.manifest.resolve()),
@@ -1375,15 +1461,17 @@ def main() -> int:
             "citrus_canvas_modified": False,
         },
     }
-    report_path = args.manifest.parent / "validation_report.json"
-    markdown = args.manifest.parent / "validation_report.md"
+    report_path = output_dir / "validation_report.json"
+    markdown = output_dir / "validation_report.md"
     lines = [
         "# Holder Fixture Validation",
         "",
         f"Status: **{report['status'].upper()}**",
         "",
         "The installed holder aperture was characterized separately from the "
-        "experimental area and dish inner rim. Active dry homographies were read-only inputs.",
+        "experimental area and dish inner rim. The accepted dry commissioning "
+        "reference seeded detection; previous active operational homographies "
+        "were read-only drift comparisons.",
         "",
         "| Camera | Aperture | Active primary RMS | Active verification RMS | Holder-plane candidate verification RMS | Reference comparison | Operational status |",
         "|---|---|---:|---:|---:|---|---|",
@@ -1413,7 +1501,7 @@ def main() -> int:
         lines.extend(
             [
                 "",
-                "## Dry commissioning reference mismatch (diagnostic)",
+                "## Previous active operational homography mismatch (diagnostic)",
                 "",
                 "These findings do not reject an independently passing holder-plane "
                 "candidate and do not mutate the commissioning reference.",

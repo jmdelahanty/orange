@@ -98,6 +98,19 @@ def main() -> int:
     assert metrics["detected_visible_count"] == len(expected)
     assert metrics["active_homography_rms_canvas_px"] < 0.75
     assert metrics["active_homography_max_canvas_px"] < 1.0
+    # Once a camera moves, the accepted dry reference locates dots while the
+    # previous operational active homography remains a drift comparison only.
+    previous_active = np.array(
+        [[1.0, 0.0, 75.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        dtype=np.float64,
+    )
+    moved = analysis.detect_expected_dots(
+        pattern, black, expected, np.eye(3, dtype=np.float64), contour, 12.0,
+        evaluation_homography=previous_active,
+    )
+    assert moved["detected_visible_count"] == len(expected)
+    assert moved["active_homography_rms_canvas_px"] > 70.0
+    assert analysis.diagnostic_refit(moved, moved)["status"] == "available"
     refit = analysis.diagnostic_refit(metrics, metrics)
     assert refit["status"] == "available"
     assert refit["authority_role"] == "diagnostic_only_not_a_candidate"
@@ -124,6 +137,54 @@ def main() -> int:
     }
     verification = analysis.expected_verification_points(verification_target, {})
     assert len(verification) == 13
+
+    with tempfile.TemporaryDirectory() as temporary_text:
+        temporary = Path(temporary_text)
+        canvas = temporary / "rig" / "shadow" / "shadow.json"
+        canvas.parent.mkdir(parents=True)
+        canvas.write_text('{}\n', encoding="utf-8")
+        pointer = canvas.parent / "calibration_artifacts" / \
+            "homography_reference_arena_1_2010093_projected_surface.json"
+        pointer.parent.mkdir()
+        pointer.write_text(json.dumps({
+            "schema_id": "citrus.calibration.active_homography",
+            "schema_version": 1,
+            "status": "accepted",
+            "homography_role": "commissioning_reference",
+            "target_plane": "projected_surface",
+            "rig_id": "rig",
+            "canvas_name": "shadow",
+            "arena_id": "arena_1",
+            "camera_id": "2010093",
+            "canvas_checksum_at_acceptance": analysis.sha256_file(canvas),
+            "homography_matrix": np.eye(3).tolist(),
+        }), encoding="utf-8")
+        seed_manifest = {
+            "inputs": {
+                "citrus_canvas_sha256_before_capture": analysis.sha256_file(canvas),
+            },
+            "projection": {"projector_intensity_commissioning": {
+                "source_evidence": [{
+                    "arena_id": "arena_1", "camera_serial": "2010093",
+                    "pointer_path": str(pointer),
+                    "pointer_sha256": analysis.sha256_file(pointer),
+                }],
+            }},
+        }
+        seed, provenance = analysis.load_commissioning_reference_seed(
+            seed_manifest, canvas, "arena_1", "2010093"
+        )
+        np.testing.assert_array_equal(seed, np.eye(3))
+        assert provenance["pointer_sha256"] == analysis.sha256_file(pointer)
+        pointer.write_text(pointer.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        try:
+            analysis.load_commissioning_reference_seed(
+                seed_manifest, canvas, "arena_1", "2010093"
+            )
+        except ValueError as error:
+            assert "changed since capture" in str(error)
+        else:
+            raise AssertionError("changed reference seed was accepted")
 
     # Holder overlays are derived evidence inside the source calibration
     # session. Persist them without rewriting the immutable image_set or its
