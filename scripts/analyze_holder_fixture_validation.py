@@ -430,15 +430,58 @@ def geometry_for_shape(points: np.ndarray, shape: str) -> dict[str, Any]:
     }
 
 
-def detect_expected_dots(
+def projected_pattern_marker_roles(
+    pattern: dict[str, Any], expected_count: int,
+) -> dict[int, tuple[str, float]]:
+    """Return the deliberately enlarged markers in Citrus pattern order."""
+    mode = str(pattern.get("pattern_mode", ""))
+    roles: dict[int, tuple[str, float]] = {}
+    if mode == "circular_rings":
+        if int(pattern.get("pattern_revision", 0)) != 2:
+            raise ValueError("unsupported circular-ring marker revision")
+        outer_count = int(pattern["ring_dots_outer"])
+        if outer_count < 4 or outer_count > expected_count:
+            raise ValueError("invalid circular-ring outer marker count")
+        outer_start = expected_count - outer_count
+        if bool(pattern.get("ring_show_orientation_marker", False)):
+            roles[outer_start] = (
+                "primary_axis", float(pattern["ring_orientation_marker_radius_scale"])
+            )
+        if bool(pattern.get("ring_show_chirality_marker", False)):
+            roles[outer_start + outer_count // 4] = (
+                "secondary_chiral", float(pattern["ring_chirality_marker_radius_scale"])
+            )
+    elif mode == "rectangular_grid":
+        if bool(pattern.get("rectangular_show_orientation_marker", False)):
+            row = int(pattern["rectangular_orientation_marker_row"])
+            col = int(pattern["rectangular_orientation_marker_col"])
+            cols = int(pattern["grid_cols"])
+            index = row * cols + col
+            if index < 0 or index >= expected_count:
+                raise ValueError("invalid rectangular marker index")
+            roles[index] = (
+                "primary_axis",
+                float(pattern["rectangular_orientation_marker_radius_scale"]),
+            )
+    elif mode != "verification_dots":
+        raise ValueError(f"unsupported projected point pattern: {mode}")
+    if any(not math.isfinite(scale) or scale < 1.0 or scale > 3.0
+           for _, scale in roles.values()):
+        raise ValueError("invalid projected marker radius scale")
+    return roles
+
+
+def detect_projected_pattern_points(
     pattern: np.ndarray,
     black: np.ndarray,
     expected_canvas: np.ndarray,
+    pattern_spec: dict[str, Any],
     prediction_homography: np.ndarray,
     aperture_contour: np.ndarray,
     edge_margin_camera_px: float,
     evaluation_homography: np.ndarray | None = None,
 ) -> dict[str, Any]:
+    marker_roles = projected_pattern_marker_roles(pattern_spec, len(expected_canvas))
     inverse = np.linalg.inv(prediction_homography)
     predicted_camera = transform_points(expected_canvas, inverse)
     if len(predicted_camera) > 1:
@@ -455,8 +498,10 @@ def detect_expected_dots(
     matched_expected: list[list[float]] = []
     predicted_visible: list[list[float]] = []
     missed: list[list[float]] = []
+    visible_marker_roles: list[str] = []
+    detected_marker_roles: list[str] = []
     height, width = delta.shape
-    for expected, predicted in zip(expected_canvas, predicted_camera):
+    for index, (expected, predicted) in enumerate(zip(expected_canvas, predicted_camera)):
         signed_distance = cv2.pointPolygonTest(
             aperture_contour,
             (float(predicted[0]), float(predicted[1])),
@@ -465,6 +510,9 @@ def detect_expected_dots(
         if signed_distance < edge_margin_camera_px:
             continue
         predicted_visible.append(predicted.astype(float).tolist())
+        marker_role, marker_scale = marker_roles.get(index, ("none", 1.0))
+        if marker_role != "none":
+            visible_marker_roles.append(marker_role)
         x0 = max(0, int(round(predicted[0])) - half_window)
         x1 = min(width, int(round(predicted[0])) + half_window + 1)
         y0 = max(0, int(round(predicted[1])) - half_window)
@@ -490,7 +538,8 @@ def detect_expected_dots(
         patch_area = float(patch.shape[0] * patch.shape[1])
         for component in range(1, count):
             area = float(stats[component, cv2.CC_STAT_AREA])
-            if area < 20.0 or area > patch_area * 0.35:
+            maximum_area = patch_area * min(0.9, 0.35 * marker_scale ** 2)
+            if area < 20.0 or area > maximum_area:
                 continue
             center = centroids[component] + np.asarray([x0, y0], dtype=float)
             distance = float(np.linalg.norm(center - predicted))
@@ -502,6 +551,8 @@ def detect_expected_dots(
         center = min(candidates, key=lambda value: value[0])[1]
         detected_camera.append(center.astype(float).tolist())
         matched_expected.append(expected.astype(float).tolist())
+        if marker_role != "none":
+            detected_marker_roles.append(marker_role)
 
     detected = np.asarray(detected_camera, dtype=np.float64).reshape(-1, 2)
     expected = np.asarray(matched_expected, dtype=np.float64).reshape(-1, 2)
@@ -516,6 +567,14 @@ def detect_expected_dots(
         detected_canvas = projected.astype(float).tolist()
         residuals = np.linalg.norm(projected - expected, axis=1).astype(float).tolist()
     return {
+        "detector_schema_id": "orange.holder.projected_pattern_point_detector",
+        "detector_schema_version": 2,
+        "pattern_mode": pattern_spec["pattern_mode"],
+        "visible_marker_roles": visible_marker_roles,
+        "detected_marker_roles": detected_marker_roles,
+        "all_visible_markers_detected": (
+            sorted(visible_marker_roles) == sorted(detected_marker_roles)
+        ),
         "expected_total_count": int(len(expected_canvas)),
         "expected_visible_count": int(len(predicted_visible)),
         "detected_visible_count": int(len(detected_camera)),
@@ -1153,14 +1212,16 @@ def main() -> int:
         verification_expected = expected_verification_points(
             verification_target, arena_config
         )
-        primary = detect_expected_dots(
+        primary = detect_projected_pattern_points(
             images[primary_recipe], images["black_reference"], primary_expected,
+            target["projected_pattern"],
             reference_homography, contour, args.edge_margin_camera_px,
             evaluation_homography=homography,
         )
-        verification = detect_expected_dots(
+        verification = detect_projected_pattern_points(
             images["verification_dots"], images["black_reference"],
-            verification_expected, reference_homography, contour,
+            verification_expected, verification_target["projected_pattern"],
+            reference_homography, contour,
             args.edge_margin_camera_px, evaluation_homography=homography,
         )
         refit = diagnostic_refit(primary, verification)
@@ -1194,6 +1255,10 @@ def main() -> int:
             == image_paths[primary_recipe].resolve()
         )
         for label, metrics in (("primary_support", primary), ("verification", verification)):
+            if not metrics["all_visible_markers_detected"]:
+                camera_errors.append(
+                    f"{label} did not detect every visible orientation/chirality marker"
+                )
             if metrics["expected_visible_count"] < 4:
                 camera_errors.append(f"{label} has fewer than four visible expected points")
             if metrics["visible_detection_fraction"] < args.min_visible_detection_fraction:

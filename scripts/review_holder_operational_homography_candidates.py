@@ -113,6 +113,48 @@ def validate_evidence(
     expected = {(row["arena_id"], row["camera_id"]) for row in targets}
     if observed != expected:
         raise ValueError("holder evidence target set does not match candidates")
+    report_file = evidence.get("files", {}).get("validation_report_json", {})
+    report_path = path.parent / "validation_report.json"
+    if (
+        report_file.get("path") != "validation_report.json"
+        or not report_path.is_file()
+        or sha256_file(report_path) != report_file.get("sha256")
+    ):
+        raise ValueError("holder validation report is missing or checksum-mismatched")
+    report = read_json(report_path)
+    if (
+        report.get("schema_id") != "orange.holder_fixture_validation.report"
+        or report.get("schema_version") != 3
+        or report.get("status") != "pass"
+        or report.get("operational_candidate_assessment", {}).get("status")
+        != "passed"
+    ):
+        raise ValueError("holder validation report is not passed")
+    report_cameras = report.get("camera_results", [])
+    if not isinstance(report_cameras, list) or {
+        (str(row.get("arena_id", "")), str(row.get("camera_serial", "")))
+        for row in report_cameras if isinstance(row, dict)
+    } != expected or len(report_cameras) != len(targets):
+        raise ValueError("holder validation report target set does not match candidates")
+    for camera in report_cameras:
+        primary = camera.get("primary_support", {})
+        verification = camera.get("verification", {})
+        marker_roles = {
+            "circular_rings": {"primary_axis", "secondary_chiral"},
+            "rectangular_grid": {"primary_axis"},
+        }.get(primary.get("pattern_mode"))
+        if (
+            camera.get("status") != "pass"
+            or marker_roles is None
+            or primary.get("detector_schema_id")
+            != "orange.holder.projected_pattern_point_detector"
+            or primary.get("detector_schema_version") != 2
+            or primary.get("all_visible_markers_detected") is not True
+            or set(primary.get("visible_marker_roles", [])) != marker_roles
+            or set(primary.get("detected_marker_roles", [])) != marker_roles
+            or verification.get("detector_schema_version") != 2
+        ):
+            raise ValueError("holder report uses a retired or incomplete point checker")
     return evidence, sha256_file(path)
 
 

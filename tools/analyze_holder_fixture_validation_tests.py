@@ -71,6 +71,8 @@ def main() -> int:
     target = {
         "arena": {"origin_final_display_canvas_px": {"x": 0, "y": 0}},
         "projected_pattern": {
+            "pattern_mode": "circular_rings",
+            "pattern_revision": 2,
             "center_x_px": 400,
             "center_y_px": 400,
             "ring_count": 3,
@@ -86,10 +88,11 @@ def main() -> int:
     pattern = np.zeros(shape, dtype=np.uint8)
     for x, y in expected:
         cv2.circle(pattern, (int(round(x)), int(round(y))), 9, 100, cv2.FILLED)
-    metrics = analysis.detect_expected_dots(
+    metrics = analysis.detect_projected_pattern_points(
         pattern,
         black,
         expected,
+        target["projected_pattern"],
         np.eye(3, dtype=np.float64),
         contour,
         12.0,
@@ -104,13 +107,45 @@ def main() -> int:
         [[1.0, 0.0, 75.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         dtype=np.float64,
     )
-    moved = analysis.detect_expected_dots(
-        pattern, black, expected, np.eye(3, dtype=np.float64), contour, 12.0,
+    moved = analysis.detect_projected_pattern_points(
+        pattern, black, expected, target["projected_pattern"],
+        np.eye(3, dtype=np.float64), contour, 12.0,
         evaluation_homography=previous_active,
     )
     assert moved["detected_visible_count"] == len(expected)
     assert moved["active_homography_rms_canvas_px"] > 70.0
     assert analysis.diagnostic_refit(moved, moved)["status"] == "available"
+
+    # Revision-2 circular support enlarges the primary-axis and chiral
+    # markers. The retired generic area cap rejected both as non-dots.
+    marked_points = np.asarray(
+        [[250, 400], [350, 400], [450, 400], [550, 400]], dtype=np.float64
+    )
+    marked_pattern = np.zeros(shape, dtype=np.uint8)
+    for point, radius in zip(marked_points, (32, 26, 20, 20)):
+        cv2.circle(marked_pattern, tuple(point.astype(int)), radius, 100, cv2.FILLED)
+    marked_spec = {
+        "pattern_mode": "circular_rings", "pattern_revision": 2,
+        "ring_dots_outer": 4,
+        "ring_show_orientation_marker": True,
+        "ring_show_chirality_marker": True,
+        "ring_orientation_marker_radius_scale": 1.6,
+        "ring_chirality_marker_radius_scale": 1.3,
+    }
+    marked = analysis.detect_projected_pattern_points(
+        marked_pattern, black, marked_points, marked_spec,
+        np.eye(3, dtype=np.float64), contour, 12.0,
+    )
+    assert marked["detected_visible_count"] == 4
+    assert marked["all_visible_markers_detected"] is True
+    assert marked["detected_marker_roles"] == ["primary_axis", "secondary_chiral"]
+    cv2.circle(marked_pattern, (250, 400), 35, 0, cv2.FILLED)
+    missing_marker = analysis.detect_projected_pattern_points(
+        marked_pattern, black, marked_points, marked_spec,
+        np.eye(3, dtype=np.float64), contour, 12.0,
+    )
+    assert missing_marker["all_visible_markers_detected"] is False
+    assert missing_marker["detected_marker_roles"] == ["secondary_chiral"]
     refit = analysis.diagnostic_refit(metrics, metrics)
     assert refit["status"] == "available"
     assert refit["authority_role"] == "diagnostic_only_not_a_candidate"
@@ -125,6 +160,7 @@ def main() -> int:
     verification_target = {
         "arena": {"origin_final_display_canvas_px": {"x": 0, "y": 0}},
         "projected_pattern": {
+            "pattern_mode": "verification_dots",
             "center_x_px": 400,
             "center_y_px": 400,
             "verification_area_radius_px": 250,

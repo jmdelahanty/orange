@@ -52,12 +52,38 @@ def main() -> int:
 
         evidence_path = root / "holder_evidence" / "manifest.json"
         evidence_path.parent.mkdir()
+        report_path = evidence_path.parent / "validation_report.json"
+        report = {
+            "schema_id": "orange.holder_fixture_validation.report",
+            "schema_version": 3,
+            "status": "pass",
+            "operational_candidate_assessment": {"status": "passed"},
+            "camera_results": [{
+                "arena_id": row["arena_id"],
+                "camera_serial": row["camera_id"],
+                "status": "pass",
+                "primary_support": {
+                    "pattern_mode": "circular_rings",
+                    "detector_schema_id": "orange.holder.projected_pattern_point_detector",
+                    "detector_schema_version": 2,
+                    "all_visible_markers_detected": True,
+                    "visible_marker_roles": ["primary_axis", "secondary_chiral"],
+                    "detected_marker_roles": ["primary_axis", "secondary_chiral"],
+                },
+                "verification": {"detector_schema_version": 2},
+            } for row in targets],
+        }
+        report_path.write_text(json.dumps(report) + "\n", encoding="utf-8")
         evidence = {
             "schema_id": review.EVIDENCE_SCHEMA,
             "schema_version": 1,
             "source_image_sets_modified": False,
             "physical_state": {"state_id": "holder_installed_dish_absent"},
             "operational_candidate_assessment": {"status": "passed"},
+            "files": {"validation_report_json": {
+                "path": "validation_report.json",
+                "sha256": review.sha256_file(report_path),
+            }},
             "camera_observations": [
                 {"arena_id": row["arena_id"], "camera_serial": row["camera_id"]}
                 for row in targets
@@ -66,6 +92,17 @@ def main() -> int:
         evidence_path.write_text(json.dumps(evidence) + "\n", encoding="utf-8")
         _, checksum = review.validate_evidence(evidence_path, targets)
         assert checksum.startswith("sha256:") and len(checksum) == 71
+        report["camera_results"][0]["primary_support"]["detector_schema_version"] = 1
+        report_path.write_text(json.dumps(report) + "\n", encoding="utf-8")
+        evidence["files"]["validation_report_json"]["sha256"] = \
+            review.sha256_file(report_path)
+        evidence_path.write_text(json.dumps(evidence) + "\n", encoding="utf-8")
+        try:
+            review.validate_evidence(evidence_path, targets)
+        except ValueError as error:
+            assert "retired or incomplete" in str(error)
+        else:
+            raise AssertionError("retired generic point checker was accepted")
         ready_status = {
             "state": "ready_for_review",
             "candidate_set_id": set_id,

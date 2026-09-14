@@ -57,7 +57,7 @@ overlays and quality results, and explicitly accept the new reference before
 reinstalling the holder. The 2026-09-14 rejected fit remains diagnostic
 evidence in either path.
 
-### 2026-09-14 holder capture and independent reanalysis
+### 2026-09-14 holder capture and marker-aware reanalysis
 
 After accepting the new dry-shelf reference and reinstalling the holder with
 flattened gels (no dishes, water, or scale disks), the four-camera capture at
@@ -70,16 +70,21 @@ remain in place as audit evidence.
 The corrected analyzer checks the accepted dry-reference pointer and SHA-256
 recorded before capture, uses its matrix only to locate the holder pattern,
 and retains the older active operational matrix as a read-only drift
-comparison. It evaluates the independently fitted holder-plane candidate on
-held-out verification points. A separate reanalysis of the **same immutable
-images** passed for all four cameras at
-`reference_seed_reanalysis_v1/validation_report.json` below that run directory.
-Each camera had 79/81 ring points and 13/13 verification points; held-out RMS
-was 0.060–0.125 canvas px. The original failed report is not superseded in
-place, and neither analysis promoted a homography.
+comparison. The first reference-seeded analysis found 79/81 ring points on
+each camera because its generic dot-area cap rejected the deliberately enlarged
+primary-axis and secondary-chiral markers. That generic checker has been
+removed. Its replacement reads marker roles and radius scales from the captured
+projection snapshot and explicitly requires both visible markers. Reanalysis
+of the **same immutable images** passes for all four cameras at
+`marker_aware_reanalysis_v2/validation_report.json` below that run directory.
+Each camera has 81/81 ring points, including both markers, and 13/13
+verification points; held-out RMS is 0.059–0.126 canvas px. The earlier
+reports are not superseded in place, and no analysis promoted a homography.
+The review command rejects the older packages because they lack marker-aware
+detector-v2 evidence; only the checksummed v2 package below is eligible.
 
 For review, use the passing package at
-`/home/jeremy/orange_data/calibrations/sessions/calsess_2026_09_14T21_13_33Z_shadow/derived/holder_fixture/reference_seed_reanalysis_v1/manifest.json`
+`/home/jeremy/orange_data/calibrations/sessions/calsess_2026_09_14T21_13_33Z_shadow/derived/holder_fixture/marker_aware_reanalysis_v2/manifest.json`
 with Citrus candidate set
 `homography_set_holder_operational_calgrp_2026_09_14T21_14_03Z_shadow_homography_grid_projected_surface_g4`.
 Promotion still requires explicit operator review and the guarded acceptance
