@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
@@ -126,7 +127,8 @@ bool SpatialSnapshotWorker::RequestSnapshot(
     const std::string& operation_id,
     uint64_t* request_id_out,
     std::string* error_out,
-    uint32_t frame_count)
+    uint32_t frame_count,
+    SpatialSnapshotAlignmentPlan alignment_plan)
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (pending_ || in_flight_ || average_accumulator_.request_id != 0) {
@@ -142,6 +144,7 @@ bool SpatialSnapshotWorker::RequestSnapshot(
         operation_id.empty() ? "spatial_layout_full_resolution_stream_snapshot" : operation_id;
     pending_request_.target_frame_count =
         std::clamp<uint32_t>(frame_count, 1u, kMaxSpatialSnapshotAverageFrames);
+    pending_request_.alignment_plan = alignment_plan;
     if (request_id_out) {
         *request_id_out = pending_request_.request_id;
     }
@@ -149,22 +152,58 @@ bool SpatialSnapshotWorker::RequestSnapshot(
     return true;
 }
 
-bool SpatialSnapshotWorker::HasPendingRequest() const
+bool SpatialSnapshotWorker::HasPendingRequest(uint64_t camera_timestamp_ns) const
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    return pending_ && !in_flight_;
+    if (!pending_ || in_flight_) {
+        return false;
+    }
+    if (!pending_request_.alignment_plan.enabled()) {
+        return true;
+    }
+    uint64_t expected_timestamp_ns = 0;
+    if (!spatial_snapshot_expected_frame_timestamp(
+            pending_request_.alignment_plan,
+            average_accumulator_.captured_frame_count,
+            &expected_timestamp_ns)) {
+        return true;  // Claim a frame and fail explicitly.
+    }
+    return spatial_snapshot_frame_decision(
+               camera_timestamp_ns,
+               expected_timestamp_ns,
+               pending_request_.alignment_plan.tolerance_ns) !=
+           SpatialSnapshotFrameDecision::wait;
 }
 
-bool SpatialSnapshotWorker::TryClaimNextFrame()
+bool SpatialSnapshotWorker::TryClaimNextFrame(uint64_t camera_timestamp_ns)
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (!pending_ || in_flight_) {
         return false;
     }
 
+    uint64_t expected_timestamp_ns = 0;
+    if (pending_request_.alignment_plan.enabled()) {
+        if (!spatial_snapshot_expected_frame_timestamp(
+                pending_request_.alignment_plan,
+                average_accumulator_.captured_frame_count,
+                &expected_timestamp_ns)) {
+            // Claim the frame so WorkerFunction can terminate the request with
+            // an explicit error instead of leaving it pending indefinitely.
+            expected_timestamp_ns = std::numeric_limits<uint64_t>::max();
+        } else if (spatial_snapshot_frame_decision(
+                       camera_timestamp_ns,
+                       expected_timestamp_ns,
+                       pending_request_.alignment_plan.tolerance_ns) ==
+                   SpatialSnapshotFrameDecision::wait) {
+            return false;
+        }
+    }
+
     in_flight_ = true;
     pending_ = false;
     in_flight_request_ = pending_request_;
+    in_flight_request_.expected_frame_timestamp_ns = expected_timestamp_ns;
     pending_request_ = ClaimedRequest{};
     return true;
 }
@@ -479,7 +518,22 @@ bool SpatialSnapshotWorker::WorkerFunction(WORKER_ENTRY* entry)
             entry,
             release_context,
             true);
-        frame_result.ok = copy_entry_to_rgba(*entry, &frame_result, &error);
+        if (request.alignment_plan.enabled() &&
+            spatial_snapshot_frame_decision(
+                entry->timestamp,
+                request.expected_frame_timestamp_ns,
+                request.alignment_plan.tolerance_ns) !=
+                SpatialSnapshotFrameDecision::accept) {
+            std::ostringstream message;
+            message << "PTP grouped snapshot missed its common frame: expected="
+                    << request.expected_frame_timestamp_ns
+                    << " observed=" << entry->timestamp
+                    << " tolerance_ns=" << request.alignment_plan.tolerance_ns;
+            error = message.str();
+            frame_result.ok = false;
+        } else {
+            frame_result.ok = copy_entry_to_rgba(*entry, &frame_result, &error);
+        }
         if (!frame_result.ok) {
             frame_result.error = error.empty() ? "Full-resolution stream snapshot failed." : error;
         }

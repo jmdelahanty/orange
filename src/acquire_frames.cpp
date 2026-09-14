@@ -1900,6 +1900,9 @@ void acquire_frames(
                     : 0;
             last_receive_host_ns = receive_host_ns;
             const uint64_t camera_timestamp_ns = received_frame->timestamp;
+            if (spatial_snapshot_worker != nullptr) {
+                spatial_snapshot_worker->ObserveCameraTimestamp(camera_timestamp_ns);
+            }
             const uint64_t camera_timestamp_delta_ns =
                 (last_camera_timestamp_ns > 0 && camera_timestamp_ns >= last_camera_timestamp_ns)
                     ? camera_timestamp_ns - last_camera_timestamp_ns
@@ -2046,7 +2049,7 @@ void acquire_frames(
             if (will_yolo) dispatch_count++;
             const bool will_snapshot =
                 spatial_snapshot_worker &&
-                spatial_snapshot_worker->HasPendingRequest();
+                spatial_snapshot_worker->HasPendingRequest(camera_timestamp_ns);
             if (will_snapshot) dispatch_count++;
 
             cudaPointerAttributes attrs{};
@@ -2509,7 +2512,8 @@ void acquire_frames(
                 if (dispatch_yolo_before_recording) {
                     enqueue_yolo();
                 }
-                if (will_snapshot && spatial_snapshot_worker->TryClaimNextFrame()) {
+                if (will_snapshot &&
+                    spatial_snapshot_worker->TryClaimNextFrame(camera_timestamp_ns)) {
                     bool enqueue_rejected = false;
                     if (!retain_and_enqueue_worker_entry(
                             spatial_snapshot_worker,

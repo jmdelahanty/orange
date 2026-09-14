@@ -1,4 +1,5 @@
 #include "spatial_calibration_snapshot.h"
+#include "spatial_snapshot_alignment.h"
 
 #include <chrono>
 #include <filesystem>
@@ -242,6 +243,47 @@ bool run_missing_artifact_test()
            expect(!error.empty(), "missing artifact reports an error");
 }
 
+bool run_grouped_snapshot_alignment_test()
+{
+    SpatialSnapshotAlignmentPlan plan;
+    constexpr uint64_t frame = 1789416623620559400ull;
+    bool ok = true;
+    ok &= expect(make_spatial_snapshot_alignment_plan(
+                     {frame, frame + 13u, frame + 200000020u, frame + 200000008u},
+                     5u, &plan),
+                 "one-frame-separated PTP observations select a shared future frame");
+    ok &= expect(plan.first_camera_timestamp_ns == frame + 800000020u &&
+                     plan.frame_period_ns == 200000000u &&
+                     plan.tolerance_ns == 5000000u,
+                 "shared frame is three periods beyond the latest observation");
+    ok &= expect(spatial_snapshot_frame_decision(
+                     frame + 600000020u,
+                     plan.first_camera_timestamp_ns,
+                     plan.tolerance_ns) == SpatialSnapshotFrameDecision::wait,
+                 "an early frame remains pending");
+    ok &= expect(spatial_snapshot_frame_decision(
+                     plan.first_camera_timestamp_ns + 23u,
+                     plan.first_camera_timestamp_ns,
+                     plan.tolerance_ns) == SpatialSnapshotFrameDecision::accept,
+                 "PTP nanosecond skew accepts the same intended frame");
+    ok &= expect(spatial_snapshot_frame_decision(
+                     plan.first_camera_timestamp_ns + plan.frame_period_ns,
+                     plan.first_camera_timestamp_ns,
+                     plan.tolerance_ns) == SpatialSnapshotFrameDecision::missed,
+                 "a camera that missed the intended frame fails closed");
+    uint64_t expected_last = 0;
+    ok &= expect(spatial_snapshot_expected_frame_timestamp(plan, 59u, &expected_last) &&
+                     expected_last == plan.first_camera_timestamp_ns +
+                         59u * plan.frame_period_ns,
+                 "a temporal mean checks every frame against the same PTP cadence");
+    ok &= expect(!make_spatial_snapshot_alignment_plan({frame, 0}, 5u, &plan),
+                 "a camera without a current PTP observation is rejected");
+    ok &= expect(!make_spatial_snapshot_alignment_plan(
+                     {frame, frame + 400000000u}, 5u, &plan),
+                 "a stale camera observation is rejected");
+    return ok;
+}
+
 } // namespace
 
 int main()
@@ -250,6 +292,9 @@ int main()
         return 1;
     }
     if (!run_missing_artifact_test()) {
+        return 1;
+    }
+    if (!run_grouped_snapshot_alignment_test()) {
         return 1;
     }
     std::cout << "spatial_calibration_snapshot_tests passed" << std::endl;

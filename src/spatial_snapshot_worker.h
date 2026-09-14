@@ -3,6 +3,7 @@
 
 #include "threadworker.h"
 #include "video_capture.h"
+#include "spatial_snapshot_alignment.h"
 
 #include <atomic>
 #include <cstdint>
@@ -50,9 +51,18 @@ public:
         const std::string& operation_id,
         uint64_t* request_id_out,
         std::string* error_out,
-        uint32_t frame_count = 1);
-    bool HasPendingRequest() const;
-    bool TryClaimNextFrame();
+        uint32_t frame_count = 1,
+        SpatialSnapshotAlignmentPlan alignment_plan = {});
+    void ObserveCameraTimestamp(uint64_t timestamp_ns)
+    {
+        latest_camera_timestamp_ns_.store(timestamp_ns, std::memory_order_relaxed);
+    }
+    uint64_t LatestObservedCameraTimestampNs() const
+    {
+        return latest_camera_timestamp_ns_.load(std::memory_order_relaxed);
+    }
+    bool HasPendingRequest(uint64_t camera_timestamp_ns) const;
+    bool TryClaimNextFrame(uint64_t camera_timestamp_ns);
     void CompleteClaimedRequestWithError(const std::string& error);
     bool PopCompletedSnapshot(SpatialSnapshotResult* result_out);
 
@@ -70,6 +80,8 @@ private:
         uint64_t request_id = 0;
         std::string operation_id;
         uint32_t target_frame_count = 1;
+        SpatialSnapshotAlignmentPlan alignment_plan;
+        uint64_t expected_frame_timestamp_ns = 0;
     };
 
     struct AverageAccumulator {
@@ -121,6 +133,7 @@ private:
     std::atomic<uint64_t> completed_count_{0};
     std::atomic<uint64_t> failed_count_{0};
     std::atomic<uint64_t> enqueue_rejected_count_{0};
+    std::atomic<uint64_t> latest_camera_timestamp_ns_{0};
 };
 
 #endif

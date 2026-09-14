@@ -576,6 +576,7 @@ struct SpatialLayoutUiState {
     bool group_capture_camera_scope_initialized = false;
     bool group_capture_restore_required = false;
     uint32_t group_capture_target_frame_count = 1;
+    nlohmann::json group_capture_alignment_plan = nlohmann::json::object();
     double group_capture_next_scene_poll_at_seconds = 0.0;
     double group_capture_scene_deadline_at_seconds = 0.0;
     double group_capture_presented_not_before_seconds = 0.0;

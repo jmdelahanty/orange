@@ -789,6 +789,34 @@ nlohmann::json make_group_membership(const SpatialLayoutUiState& ui_state)
          daily_status != "same_candidate_preview")) {
         status = completed.empty() ? "failed" : "invalid_scene";
     }
+    std::string alignment_status = "not_requested";
+    uint64_t expected_last_timestamp_ns = 0;
+    if (ui_state.group_capture_alignment_plan.value(
+            "mode", std::string()) == "ptp_common_frame_epoch_v1") {
+        const SpatialSnapshotAlignmentPlan plan{
+            ui_state.group_capture_alignment_plan.value(
+                "first_camera_timestamp_ns", uint64_t{0}),
+            ui_state.group_capture_alignment_plan.value(
+                "frame_period_ns", uint64_t{0}),
+            ui_state.group_capture_alignment_plan.value(
+                "tolerance_ns", uint64_t{0}),
+        };
+        bool aligned = spatial_snapshot_expected_frame_timestamp(
+            plan,
+            std::max<uint32_t>(1u, ui_state.group_capture_target_frame_count) - 1u,
+            &expected_last_timestamp_ns);
+        for (const SpatialLayoutGroupCaptureFrame& capture : ui_state.group_captures) {
+            aligned = aligned &&
+                spatial_snapshot_frame_decision(
+                    capture.camera_timestamp_ns,
+                    expected_last_timestamp_ns,
+                    plan.tolerance_ns) == SpatialSnapshotFrameDecision::accept;
+        }
+        alignment_status = !complete ? "incomplete" : aligned ? "aligned" : "misaligned";
+        if (complete && !aligned) {
+            status = "failed";
+        }
+    }
     nlohmann::json membership = {
         {"schema_id", "orange.calibration.capture_group_membership"},
         {"schema_version", 1},
@@ -815,6 +843,9 @@ nlohmann::json make_group_membership(const SpatialLayoutUiState& ui_state)
         {"all_camera_timestamps_nonzero", all_camera_timestamps_nonzero},
         {"camera_timestamp_span_ns", camera_timestamp_span_ns},
         {"per_camera", capture_timestamps},
+        {"selection_plan", ui_state.group_capture_alignment_plan},
+        {"alignment_status", alignment_status},
+        {"expected_last_camera_timestamp_ns", expected_last_timestamp_ns},
     };
     membership["scene_options"] = ui_state.group_capture_scene_options;
     if (ui_state.group_capture_scene_options.is_object() &&
@@ -2055,6 +2086,64 @@ void advance_group_capture_workflow(
                     : nlohmann::json::object();
         }
 
+        SpatialSnapshotAlignmentPlan alignment_plan;
+        ui_state->group_capture_alignment_plan = {
+            {"mode", "unconstrained_next_frame"},
+        };
+        if (ui_state->group_capture_expected_camera_serials.size() > 1) {
+            bool any_ptp = false;
+            bool all_ptp = true;
+            uint32_t frame_rate_hz = 0;
+            std::vector<uint64_t> latest_timestamps;
+            for (const std::string& camera_serial :
+                 ui_state->group_capture_expected_camera_serials) {
+                const int camera_index = find_camera_index_by_serial(
+                    cameras_params, num_cameras, camera_serial);
+                if (camera_index < 0 ||
+                    !camera_is_group_capture_eligible(
+                        cameras_select, spatial_snapshot_workers, camera_index)) {
+                    continue;  // The request loop below records this camera as failed.
+                }
+                const bool uses_ptp = camera_sync_mode_uses_ptp(
+                    &cameras_params[camera_index]);
+                any_ptp = any_ptp || uses_ptp;
+                all_ptp = all_ptp && uses_ptp;
+                if (frame_rate_hz == 0) {
+                    frame_rate_hz = cameras_params[camera_index].frame_rate;
+                } else if (frame_rate_hz != cameras_params[camera_index].frame_rate) {
+                    fail_group_workflow_and_restore(
+                        ui_state,
+                        "Grouped PTP snapshot requires the same frame rate on every camera.");
+                    return;
+                }
+                latest_timestamps.push_back(
+                    spatial_snapshot_workers[camera_index]
+                        ->LatestObservedCameraTimestampNs());
+            }
+            if (any_ptp && !all_ptp) {
+                fail_group_workflow_and_restore(
+                    ui_state,
+                    "Grouped snapshot mixes PTP and free-run cameras; no common frame can be selected.");
+                return;
+            }
+            if (any_ptp) {
+                if (!make_spatial_snapshot_alignment_plan(
+                        latest_timestamps, frame_rate_hz, &alignment_plan)) {
+                    fail_group_workflow_and_restore(
+                        ui_state,
+                        "Grouped PTP snapshot could not select a common future frame from fresh camera timestamps.");
+                    return;
+                }
+                ui_state->group_capture_alignment_plan = {
+                    {"mode", "ptp_common_frame_epoch_v1"},
+                    {"first_camera_timestamp_ns", alignment_plan.first_camera_timestamp_ns},
+                    {"frame_period_ns", alignment_plan.frame_period_ns},
+                    {"tolerance_ns", alignment_plan.tolerance_ns},
+                    {"requested_frame_count", ui_state->group_capture_target_frame_count},
+                };
+            }
+        }
+
         int requested = 0;
         for (const std::string& camera_serial :
              ui_state->group_capture_expected_camera_serials) {
@@ -2083,7 +2172,8 @@ void advance_group_capture_workflow(
                     operation_id,
                     &request_id,
                     &request_error,
-                    ui_state->group_capture_target_frame_count)) {
+                    ui_state->group_capture_target_frame_count,
+                    alignment_plan)) {
                 pending_request.failed = true;
                 pending_request.error =
                     request_error.empty() ? "snapshot request rejected" : request_error;
