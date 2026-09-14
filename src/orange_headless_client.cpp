@@ -151,6 +151,7 @@ struct HeadlessPoseWorkerConfig {
     double synthetic_detection_confidence = 0.99;
     int queue_depth = 32;
     int crop_frame_pool_size = 0;
+    int crop_size_px = 0;  // pose (head-sized) crop; 0 = same as the video crop. Exported as ORANGE_POSE_CROP_SIZE_PX.
     int timeout_ms = 500;
     int prewarm_iterations = 0;
     bool fail_on_init_error = true;
@@ -883,6 +884,7 @@ nlohmann::json build_headless_pose_worker_config_json(
         }},
         {"queue_depth", config.queue_depth},
         {"crop_frame_pool_size", config.crop_frame_pool_size},
+        {"crop_size_px", config.crop_size_px},
         {"timeout_ms", config.timeout_ms},
         {"prewarm_iterations", config.prewarm_iterations},
         {"fail_on_init_error", config.fail_on_init_error},
@@ -2361,6 +2363,7 @@ bool validate_headless_pose_worker_config(const HeadlessPoseWorkerConfig& config
             config.synthetic_detection_confidence != 0.99 ||
             config.queue_depth != 32 ||
             config.crop_frame_pool_size != 0 ||
+            config.crop_size_px != 0 ||
             config.timeout_ms != 500 ||
             config.prewarm_iterations != 0 ||
             !config.fail_on_init_error ||
@@ -2452,6 +2455,12 @@ bool validate_headless_pose_worker_config(const HeadlessPoseWorkerConfig& config
     if (config.crop_frame_pool_size < 0 || config.crop_frame_pool_size > 512) {
         if (error_out) {
             *error_out = prefix + "pose_worker.crop_frame_pool_size must be in [0,512]";
+        }
+        return false;
+    }
+    if (config.crop_size_px < 0 || config.crop_size_px > 4096) {
+        if (error_out) {
+            *error_out = prefix + "pose_worker.crop_size_px must be in [0,4096]";
         }
         return false;
     }
@@ -2954,6 +2963,7 @@ bool parse_headless_pose_worker_json(
         config.queue_depth = node.value("queue_depth", config.queue_depth);
         config.crop_frame_pool_size =
             node.value("crop_frame_pool_size", config.crop_frame_pool_size);
+        config.crop_size_px = node.value("crop_size_px", config.crop_size_px);
         config.timeout_ms = node.value("timeout_ms", config.timeout_ms);
         config.prewarm_iterations =
             node.value("prewarm_iterations", config.prewarm_iterations);
@@ -9477,6 +9487,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     std::unique_ptr<ScopedEnvVarOverride> pose_synthetic_confidence_override;
     std::unique_ptr<ScopedEnvVarOverride> pose_prewarm_iterations_override;
     std::unique_ptr<ScopedEnvVarOverride> pose_crop_frame_pool_size_override;
+    std::unique_ptr<ScopedEnvVarOverride> pose_crop_size_override;
     if (options.pose_worker.enabled()) {
         pose_mode_override = std::make_unique<ScopedEnvVarOverride>(
             "ORANGE_POSE_MODE",
@@ -9515,6 +9526,11 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             pose_crop_frame_pool_size_override = std::make_unique<ScopedEnvVarOverride>(
                 "ORANGE_CROP_FRAME_POOL_SIZE",
                 std::to_string(options.pose_worker.crop_frame_pool_size).c_str());
+        }
+        if (options.pose_worker.crop_size_px > 0) {
+            pose_crop_size_override = std::make_unique<ScopedEnvVarOverride>(
+                "ORANGE_POSE_CROP_SIZE_PX",
+                std::to_string(options.pose_worker.crop_size_px).c_str());
         }
     }
 

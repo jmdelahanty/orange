@@ -1846,6 +1846,13 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             device_roi_params.src_h_int = entry->height;
             device_roi_params.crop_w = crop_px;
             device_roi_params.crop_h = crop_px;
+            static const int pose_crop_px = []() {
+                const char* env = std::getenv("ORANGE_POSE_CROP_SIZE_PX");
+                const int v = (env && *env) ? std::atoi(env) : 0;
+                return v > 0 ? sanitize_camera_crop_size_px(v) : 0;
+            }();
+            device_roi_params.pose_crop_w = pose_crop_px;
+            device_roi_params.pose_crop_h = pose_crop_px;
             device_roi_params.max_dets = static_cast<int>(yolov8_instance_->output_bindings[1].size / 4);
             const int base = yolov8_instance_->num_inputs;
             launch_detect_roi_kernel(
@@ -2103,7 +2110,9 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 device_roi_masked_.fetch_add(1, std::memory_order_relaxed);
             } else {
                 const bool cpu_has = !entry->detections.empty();
-                int cpu_x = 0, cpu_y = 0;
+                int cpu_x = 0, cpu_y = 0, cpu_px = 0, cpu_py = 0;
+                const int pose_w = device_roi_params.pose_crop_w > 0 ? device_roi_params.pose_crop_w : device_roi_params.crop_w;
+                const int pose_h = device_roi_params.pose_crop_h > 0 ? device_roi_params.pose_crop_h : device_roi_params.crop_h;
                 if (cpu_has) {
                     const pose::Object best = *std::max_element(
                         entry->detections.begin(), entry->detections.end(),
@@ -2114,9 +2123,12 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                                        entry->width - device_roi_params.crop_w);
                     cpu_y = std::clamp(static_cast<int>(cy) - device_roi_params.crop_h / 2, 0,
                                        entry->height - device_roi_params.crop_h);
+                    cpu_px = std::clamp(static_cast<int>(cx) - pose_w / 2, 0, entry->width - pose_w);
+                    cpu_py = std::clamp(static_cast<int>(cy) - pose_h / 2, 0, entry->height - pose_h);
                 }
                 const bool match = (cpu_has == (dev.valid == 1)) &&
-                    (!cpu_has || (cpu_x == dev.crop_x && cpu_y == dev.crop_y));
+                    (!cpu_has || (cpu_x == dev.crop_x && cpu_y == dev.crop_y &&
+                                  cpu_px == dev.pose_crop_x && cpu_py == dev.pose_crop_y));
                 device_roi_match_col = match ? 1 : 0;
                 if (match) {
                     device_roi_matches_.fetch_add(1, std::memory_order_relaxed);
@@ -2127,7 +2139,9 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                                   << associated_camera_params_->camera_serial
                                   << " frame=" << entry->frame_id
                                   << " cpu has=" << cpu_has << " crop=(" << cpu_x << "," << cpu_y << ")"
+                                  << " pose=(" << cpu_px << "," << cpu_py << ")"
                                   << " device valid=" << dev.valid << " crop=(" << dev.crop_x << "," << dev.crop_y << ")"
+                                  << " pose=(" << dev.pose_crop_x << "," << dev.pose_crop_y << " size " << dev.pose_crop_w << ")"
                                   << " n=" << dev.num_dets << " best=" << dev.best_index
                                   << " score=" << dev.score << " cpu_n=" << entry->detections.size()
                                   << std::endl;

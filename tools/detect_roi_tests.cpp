@@ -114,6 +114,7 @@ OracleCrop oracle_crop(const std::vector<Object>& detections, int width, int hei
 struct Case {
     std::string name;
     int src_w, src_h, inp_w, inp_h, crop;
+    int pose_crop = 0;  // 0 = single crop
     int capacity;
     int num_dets;
     std::vector<float> boxes;   // capacity * 4
@@ -135,6 +136,8 @@ DetectRoiParams params_for(const Case& c, float* dw_out, float* dh_out, float* i
     p.src_h_int = c.src_h;
     p.crop_w = c.crop;
     p.crop_h = c.crop;
+    p.pose_crop_w = c.pose_crop;
+    p.pose_crop_h = c.pose_crop;
     p.max_dets = c.capacity;
     *dw_out = p.dw; *dh_out = p.dh; *inv_out = p.inv_ratio;
     return p;
@@ -151,6 +154,8 @@ void check_case(const Case& c, cudaStream_t stream)
     const std::vector<Object> objs = oracle_postprocess(&c.num_dets, c.boxes.data(), c.scores.data(),
                                                         c.labels.data(), dw, dh, inv, p.src_w, p.src_h, c.capacity);
     const OracleCrop oc = oracle_crop(objs, c.src_w, c.src_h, c.crop, c.crop);
+    const int pose_size = c.pose_crop > 0 ? c.pose_crop : c.crop;
+    const OracleCrop op = oracle_crop(objs, c.src_w, c.src_h, pose_size, pose_size);
 
     // Host reference.
     const DetectRoi host = compute_detect_roi_host(&c.num_dets, c.boxes.data(), c.scores.data(), c.labels.data(), p);
@@ -192,6 +197,8 @@ void check_case(const Case& c, cudaStream_t stream)
         EXPECT_TRUE(r.crop_w == c.crop && r.crop_h == c.crop, report(what, r).c_str());
         if (!oc.has_detection) continue;
         EXPECT_TRUE(r.crop_x == oc.ix && r.crop_y == oc.iy, report(what, r).c_str());
+        EXPECT_TRUE(r.pose_crop_w == pose_size && r.pose_crop_h == pose_size, report(what, r).c_str());
+        EXPECT_TRUE(r.pose_crop_x == op.ix && r.pose_crop_y == op.iy, report(what, r).c_str());
         EXPECT_TRUE(same_float(r.score, oc.prob), report(what, r).c_str());
         EXPECT_TRUE(r.label == oc.label, report(what, r).c_str());
         EXPECT_TRUE(same_float(r.box_x, oc.rect.x) && same_float(r.box_y, oc.rect.y) &&
@@ -255,6 +262,9 @@ int main()
                     Case c = make_case("geo" + std::to_string(g.w) + "x" + std::to_string(g.h) + "_crop" + std::to_string(crop) +
                                        "_n" + std::to_string(n) + (edge ? "_edge" : ""), g.w, g.h, 640, crop, 100, n, rng, edge);
                     check_case(c, stream); ++cases;
+                    // Same inputs with a head-sized pose crop alongside the video crop.
+                    Case c2 = c; c2.name += "_pose" ; c2.pose_crop = std::max(32, crop / 2);
+                    check_case(c2, stream); ++cases;
                 }
             }
         }

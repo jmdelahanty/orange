@@ -1,6 +1,6 @@
 {
   "experiment_id": "twocam_device_roi_realfish_engine_only",
-  "notes": "Device-side crop origin (ORANGE_ANALYTICS_DEVICE_ROI) compared against the CPU crop origin on every frame, with a real subject in the tank (roi_source=yolo_top_detection; synthetic boxes never pass through the engine). Engine-only (immediate_recycle), real YOLO and real pose, crop 256. Pass: [YOLO] device ROI summary lines show mismatch=0 on every camera, device_roi_match==1 on every frame with a detection in Cam*_yolo_perf.csv, and acquisition-to-detect within +0.03 ms of the same spec with analytics_device_roi=false. Step 2 gate of docs/analytics_pipeline_configuration_design_2026_09_12.md.",
+  "notes": "Device-side crop origin (ORANGE_ANALYTICS_DEVICE_ROI) compared against the CPU crop origin on every frame, with a real subject in the tank (roi_source=yolo_top_detection; synthetic boxes never pass through the engine). Engine-only (immediate_recycle), real YOLO and real pose, crop 256. Pass: [YOLO] device ROI summary lines show mismatch=0 on every camera, device_roi_match==1 on every frame with a detection in Cam*_yolo_perf.csv, and acquisition-to-detect within +0.03 ms of the same spec with analytics_device_roi=false. Step 2 gate of docs/analytics_pipeline_configuration_design_2026_09_12.md. pose_worker.crop_size_px=128 is provisional (S is set from the label percentiles); it only drives the second origin the device kernel computes and compares, the pose worker still consumes the video crop.",
   "selection": {
     "camera_serials": [
       "2010094",
@@ -53,7 +53,8 @@
       "timeout_ms": 500,
       "prewarm_iterations": 3,
       "fail_on_init_error": true,
-      "write_events_jsonl": true
+      "write_events_jsonl": true,
+      "crop_size_px": 128
     },
     "analytics_device_roi": true
   },

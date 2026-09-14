@@ -140,7 +140,7 @@ launched per frame.
 | `Preprocess` | mono plane, target size, channels (1 or 3), dtype (FP32 or FP16), mode (letterbox or exact) | engine input tensor | The existing fused kernel with a channel and dtype option. |
 | `Engine` | an input tensor matching the plan's binding | the plan's output bindings, in device memory | One TensorRT context, warmed before capture. Contract: binding names, shapes, dtypes, and an `output_format` the decoder understands (`yolo_nms`, `yolo_pose`, `heatmap`). |
 | `Roi` | one of: an NMS output block (top box by score), a fixed rectangle from the spec, a device-side state buffer (temporal prior), or, as a future option only, a keypoint pair from a pose output block | a crop origin and a fixed size, plus a validity flag, in a small device struct | This is the stage that replaces the CPU round trip. For `det_top_box` the origin is the box centroid minus half the crop, clamped to the frame, and the size is a constant from the spec (see the crop rule below). Un-letterboxing uses the constant ratio and offsets of the `Preprocess` that fed the engine. |
-| `Warp` | source plane, `Roi` struct, output size | a crop plane (axis-aligned crop, resize, or rotated sample) | One kernel. Also the producer of the `CropFrame` payload for crop video and preview when those are on. |
+| `Warp` | source plane, `Roi` struct, output size | a crop plane (axis-aligned crop, resize, or rotated sample) | One kernel per crop. Two crops share one centroid and differ in size: the **video crop** (`crop_recording.crop_size_px`, whole fish, for the crop recorder and preview, the `CropFrame` payload) and the **pose crop** (`pose_worker.crop_size_px` = S, head-sized, into the pose input, never encoded). `Roi` emits both origins; each is clamped to the frame independently, so the pose crop is cut from the source, not as a sub-window of the video crop. |
 | `Signal` | nothing | an event record on the stream | Mid-pipeline configuration markers: `detect_done` for the recorder gate and the lever 2d copy; `pose_done` for IPC. |
 | `Emit` | one or more device output blocks | pinned host copies plus a completion event | The single point the CPU waits on. |
 
@@ -182,10 +182,22 @@ keypoint-driven second `Roi` (a crop centred between the eyes, rotated to
 the body axis) remains expressible for a future rig where the box is not
 the head, and is deliberately not part of this plan.
 
+**Two crops, not one.** Today's code cuts a single `CropFrame` per camera
+and feeds it to the crop recorder, the preview and the pose worker alike.
+The video crop must keep capturing the whole fish (384 in the crop
+recording specs) and the pose crop must be head-sized, so the pipeline
+gains a second crop with the same centroid: `pose_worker.crop_size_px`
+(exported as `ORANGE_POSE_CROP_SIZE_PX`; 0 means "same as the video crop",
+which is today's behaviour). The device `Roi` kernel already computes both
+origins (`crop_x/y` for the video crop, `pose_crop_x/y` for the pose crop)
+and the comparison checks both against the CPU arithmetic. Wiring the pose
+worker to cut and consume its own S-sized crop is part of migration step 3.
+
 **The crop rule.** One constant per rig, set from data: S = the 95th
 percentile of the box's longer side, times a margin of about 1.3 so an
 eroded box never puts an eye on the edge, rounded up to a multiple of 32
-(the YOLO stride). The crop is cut at 1:1 and fed to the model without
+(the YOLO stride). The box percentiles can come from the training labels
+(same tank, same optics, constant scale) rather than from a rig run. The crop is cut at 1:1 and fed to the model without
 resizing, so `Preprocess` runs in exact mode: no letterbox, no
 interpolation, every pixel the sensor produced. If S came out above about
 192 the model input could be smaller than S with one resize, but at
@@ -202,7 +214,7 @@ accepted and are translated into the equivalent pipeline configuration):
   "pipeline": "detect_pose",
   "stages": {
     "det":  {"engine_path": "...yolo11n...engine", "input": 640, "output_format": "yolo_nms"},
-    "roi":  {"source": "det_top_box", "crop_size_px": 128},
+    "roi":  {"source": "det_top_box", "video_crop_size_px": 384, "pose_crop_size_px": 128},
     "pose": {"engine_path": "...head crop model...engine", "input": 128, "channels": 3,
              "dtype": "fp32", "output_format": "yolo_pose", "skeleton_path": "..."}
   }
@@ -340,8 +352,9 @@ gates reuse.
 4. **`pose_only` and `detect_only` as pipeline configurations.** Mostly spec and
    validation; run the existing engine-only specs through `detect_only`
    and confirm identical numbers.
-5. **Swap in the head-sized configuration.** Change the two constants (S and
-   the pose engine) in the spec; nothing structural. Gate: pose graph time
+5. **Swap in the head-sized configuration.** Change the three constants in
+   the spec: the video crop size where it already lives, `pose_worker.crop_size_px`
+   = S, and the pose engine path; nothing structural. Gate: pose graph time
    on a die below the current 0.72 ms, keypoint error on held-out crops no
    worse than the 256 model's, and every other gate from step 3 unchanged.
 6. **Retire the threaded executor for stages the graph covers**, once the

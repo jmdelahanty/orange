@@ -39,6 +39,10 @@ __host__ __device__ inline void select_detect_roi(
     DetectRoi r;
     r.crop_w = p.crop_w;
     r.crop_h = p.crop_h;
+    const int pw = p.pose_crop_w > 0 ? p.pose_crop_w : p.crop_w;
+    const int ph = p.pose_crop_h > 0 ? p.pose_crop_h : p.crop_h;
+    r.pose_crop_w = pw;
+    r.pose_crop_h = ph;
 
     // YOLOv8::postprocess: clamp an unreasonable count; then never read past
     // the binding (postprocess trusts the count up to 1000; the bindings are
@@ -96,6 +100,8 @@ __host__ __device__ inline void select_detect_roi(
     r.box_h = bh;
     r.crop_x = Ops::clampi(static_cast<int>(cx) - p.crop_w / 2, 0, p.src_w_int - p.crop_w);
     r.crop_y = Ops::clampi(static_cast<int>(cy) - p.crop_h / 2, 0, p.src_h_int - p.crop_h);
+    r.pose_crop_x = Ops::clampi(static_cast<int>(cx) - pw / 2, 0, p.src_w_int - pw);
+    r.pose_crop_y = Ops::clampi(static_cast<int>(cy) - ph / 2, 0, p.src_h_int - ph);
     *out = r;
 }
 

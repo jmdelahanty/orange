@@ -31,6 +31,10 @@ struct DetectRoi {
     int crop_y = 0;
     int crop_w = 0;
     int crop_h = 0;
+    int pose_crop_x = 0;  // origin of the pose (head-sized) crop, same centroid, size pose_crop_w/h;
+    int pose_crop_y = 0;  // equal to crop_x/crop_y when pose_crop_w/h are zero (single crop)
+    int pose_crop_w = 0;
+    int pose_crop_h = 0;
     int label = 0;        // label of the selected box
     int num_dets = 0;     // detections considered (after the postprocess clamp)
     int best_index = -1;  // index of the selected box in the NMS output
@@ -51,8 +55,10 @@ struct DetectRoiParams {
     float src_h = 0.0f;
     int src_w_int = 0;    // and as ints (the crop clamp uses entry->width/height)
     int src_h_int = 0;
-    int crop_w = 0;       // fixed crop size (crop_pipeline.crop_size_px, sanitized)
+    int crop_w = 0;       // fixed crop size (crop_pipeline.crop_size_px, sanitized): the video/preview crop
     int crop_h = 0;
+    int pose_crop_w = 0;  // pose (head-sized) crop, same centroid; 0 = same as crop_w/h
+    int pose_crop_h = 0;
     int max_dets = 0;     // capacity of the boxes/scores/labels bindings
 };
 
