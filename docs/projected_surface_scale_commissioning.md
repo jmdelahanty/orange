@@ -12,6 +12,13 @@ surfaces, use the holder-installed profile and measure on those installed gels;
 an unobstructed shelf measurement is commissioning reference evidence, not a
 substitute for the operational holder plane.
 
+The required preceding order is explicit in
+`docs/holder_fixture_validation.md`: accept the current dry-shelf
+commissioning-reference homographies, then capture and accept the separate
+holder-installed operational homographies, and only then place the disks for
+this physical-scale measurement. A fit-only or rejected homography candidate
+does not satisfy an acceptance prerequisite.
+
 The physical target is the 3 mm acrylic disk. Its 5 mm hole pitch is the scale
 authority. The 25 mm distance from `C` to `XPLUS` and the measured 77 mm outside
 diameter are independent validation measurements; neither may rescale the fit.

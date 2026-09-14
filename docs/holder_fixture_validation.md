@@ -7,6 +7,56 @@ separate holder-installed operational candidate through the visible aperture,
 and independently validates that candidate. Capture and fitting never promote
 the candidate automatically.
 
+## Required predecessor: accept the dry-shelf reference
+
+The holder-installed workflow requires an **accepted, current**
+`commissioning_reference` homography for every selected arena/camera before
+capture. The required order is:
+
+1. With the holder removed, fit the unobstructed rectangular-grid reference,
+   review its image overlays and quality gates, and explicitly promote it as
+   `commissioning_reference` for the current canvas.
+2. Install the holder and flatten the operational gels; leave disks, dishes,
+   and water out. Capture the circular ring support and independent holder
+   validation evidence, then review and explicitly promote the separate
+   `operational_candidate` homographies.
+3. Only after those holder-plane homographies are active, place one known-size
+   acrylic disk on each gel and run projected-surface physical-scale capture.
+
+A passing fit alone does not satisfy step 1. A fit-only centering run ends with
+`rejection_receipt.json` when `--accept-homographies` was not armed. Citrus can
+reload that immutable set with `load_homography_candidate_set_for_review` after
+a restart, revalidate its exact canvas/configuration/source images and quality,
+and then accept it with a separate explicit promotion arm. This can be done
+without removing an already installed holder; if revalidation fails, restore
+the unobstructed physical state and recapture rather than bypassing the gate.
+
+The holder runner resolves its projector-intensity authority through the
+accepted reference pointers. Before using it, also verify each pointer is
+compatible with the **current canvas checksum and rig geometry revision**;
+an old accepted pointer with a matching schema is not current authority. The
+runner's intensity-resolution check alone is not a full canvas-compatibility
+preflight.
+
+### 2026-09-14 handoff state
+
+The new holder-removed reference fit is
+`homography_set_homography_fit_2026-09-14T14_55_17Z` under the Shadow
+`calibration_artifacts/homography_candidates/` root. All four 100-point fits
+passed, but the fit-only runner finalized the live transaction with reason
+`quality_passed_but_accept_homographies_not_armed`. The set remains reloadable
+for guarded review. The current Shadow canvas checksum is
+`sha256:09e5269acb9c6854a124dd278c477adf72c923c922de15a65a0466c638683b2b`;
+the July reference pointers were accepted against an older canvas and must
+not be treated as current. The operator has reported the holder and gels
+installed. Confirm disks, dishes, and water are absent before holder capture.
+Alternatively, to exercise the full fresh capture-to-accept workflow, remove
+the holder and gels without moving the cameras, lenses, projector, or canvas;
+restore the unobstructed dry shelf, recapture the reference, review all four
+overlays and quality results, and explicitly accept the new reference before
+reinstalling the holder. The 2026-09-14 rejected fit remains diagnostic
+evidence in either path.
+
 The fixture aperture is its own geometry:
 
 - it describes what the camera can see through the installed holder;
