@@ -2038,7 +2038,8 @@ void advance_group_capture_workflow(
         }
 
         ui_state->group_capture_scene_pre_capture = scene;
-        if (ui_state->group_capture_scene_authority == "calibration_scene") {
+        if (ui_state->group_capture_scene_authority == "calibration_scene" ||
+            ui_state->group_capture_scene_authority == "arena_centering") {
             ui_state->group_capture_metadata.citrus_calibration_scene_pre_capture =
                 scene;
         }
@@ -2234,12 +2235,14 @@ void advance_group_capture_workflow(
                 : nlohmann::json::object();
         ui_state->group_capture_metadata.citrus_projection_epoch_consistency =
             nlohmann::json::object();
-        if (ui_state->group_capture_scene_authority == "calibration_scene") {
+        if (ui_state->group_capture_scene_authority == "calibration_scene" ||
+            ui_state->group_capture_scene_authority == "arena_centering") {
             ui_state->group_capture_metadata.citrus_calibration_scene_post_capture =
                 ui_state->group_capture_scene_post_capture;
             ui_state->group_capture_metadata.citrus_calibration_scene_consistency =
                 make_group_scene_consistency(*ui_state);
-        } else if (ui_state->group_capture_scene_authority == "arena_centering") {
+        }
+        if (ui_state->group_capture_scene_authority == "arena_centering") {
             ui_state->group_capture_metadata.citrus_arena_centering_consistency =
                 make_arena_centering_consistency(*ui_state);
         } else if (ui_state->group_capture_scene_authority ==

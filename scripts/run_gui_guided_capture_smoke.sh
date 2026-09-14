@@ -29,7 +29,7 @@ XAUTHORITY_VALUE="${XAUTHORITY:-/run/user/1000/gdm/Xauthority}"
 XDG_RUNTIME_DIR_VALUE="${XDG_RUNTIME_DIR:-/run/user/1000}"
 RESULT_JSON=""
 CITRUS_CONFIG="/home/jeremy/citrus/targets/rigs/omnifin0/shadow/shadow.json"
-CITRUS_BIN="/home/jeremy/citrus/targets/citrus"
+CITRUS_BIN="${CITRUS_BIN:-/home/jeremy/citrus/targets/citrus}"
 CITRUS_PROTOCOL="/home/jeremy/citrus/protocols/good_cop_bad_cop_demo.json"
 CITRUS_SOCKET="/tmp/citrus_local_control.sock"
 ORANGE_SOCKET="/tmp/orange_local_control.sock"
@@ -77,6 +77,9 @@ Options:
   --xauthority <path>
   --citrus-config <path>
   --help
+
+Environment:
+  CITRUS_BIN  Citrus executable (default: /home/jeremy/citrus/targets/citrus).
 EOF
 }
 
