@@ -2514,22 +2514,19 @@ void acquire_frames(
                 }
                 if (will_snapshot &&
                     spatial_snapshot_worker->TryClaimNextFrame(camera_timestamp_ns)) {
-                    bool enqueue_rejected = false;
-                    if (!retain_and_enqueue_worker_entry(
+                    if (!retain_and_try_enqueue_worker_entry(
                             spatial_snapshot_worker,
                             resources->recycle_queue,
                             current_entry,
                             WorkerEntryReleaseContext{
                                 camera_params->camera_serial.c_str(),
                                 "spatial_snapshot"},
-                            &enqueue_rejected)) {
-                        spatial_snapshot_worker->CompleteClaimedRequestWithError(
-                            enqueue_rejected
-                                ? "Full-resolution stream snapshot enqueue was rejected during shutdown."
-                                : "Full-resolution stream snapshot could not retain the acquisition frame.");
-                        if (enqueue_rejected) {
-                            log_fanout_enqueue_rejected("spatial_snapshot");
+                            8u)) {
+                        if (!spatial_snapshot_worker->UndoClaimAfterEnqueueFailure()) {
+                            spatial_snapshot_worker->CompleteClaimedRequestWithError(
+                                "Full-resolution stream snapshot could not enqueue the acquisition frame.");
                         }
+                        log_fanout_enqueue_rejected("spatial_snapshot");
                     }
                 }
                 if (will_record) {

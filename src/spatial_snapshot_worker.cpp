@@ -16,6 +16,16 @@ namespace {
 
 constexpr uint32_t kMaxSpatialSnapshotAverageFrames = 256;
 
+struct OutstandingFrameGuard {
+    std::atomic<uint32_t>* count = nullptr;
+    ~OutstandingFrameGuard()
+    {
+        if (count != nullptr) {
+            count->fetch_sub(1, std::memory_order_release);
+        }
+    }
+};
+
 size_t spatial_snapshot_frame_byte_count(int pixel_type, int width, int height)
 {
     if (width <= 0 || height <= 0) {
@@ -131,7 +141,8 @@ bool SpatialSnapshotWorker::RequestSnapshot(
     SpatialSnapshotAlignmentPlan alignment_plan)
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    if (pending_ || in_flight_ || average_accumulator_.request_id != 0) {
+    if (pending_ || in_flight_ || average_accumulator_.request_id != 0 ||
+        outstanding_frame_count_.load(std::memory_order_acquire) != 0) {
         if (error_out) {
             *error_out = "A full-resolution stream snapshot is already pending for this camera.";
         }
@@ -139,6 +150,7 @@ bool SpatialSnapshotWorker::RequestSnapshot(
     }
 
     pending_ = true;
+    claimed_frame_count_ = 0;
     pending_request_.request_id = ++next_request_id_;
     pending_request_.operation_id =
         operation_id.empty() ? "spatial_layout_full_resolution_stream_snapshot" : operation_id;
@@ -155,7 +167,8 @@ bool SpatialSnapshotWorker::RequestSnapshot(
 bool SpatialSnapshotWorker::HasPendingRequest(uint64_t camera_timestamp_ns) const
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    if (!pending_ || in_flight_) {
+    if (!pending_ ||
+        (in_flight_ && !pending_request_.alignment_plan.enabled())) {
         return false;
     }
     if (!pending_request_.alignment_plan.enabled()) {
@@ -164,7 +177,7 @@ bool SpatialSnapshotWorker::HasPendingRequest(uint64_t camera_timestamp_ns) cons
     uint64_t expected_timestamp_ns = 0;
     if (!spatial_snapshot_expected_frame_timestamp(
             pending_request_.alignment_plan,
-            average_accumulator_.captured_frame_count,
+            claimed_frame_count_,
             &expected_timestamp_ns)) {
         return true;  // Claim a frame and fail explicitly.
     }
@@ -178,7 +191,8 @@ bool SpatialSnapshotWorker::HasPendingRequest(uint64_t camera_timestamp_ns) cons
 bool SpatialSnapshotWorker::TryClaimNextFrame(uint64_t camera_timestamp_ns)
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    if (!pending_ || in_flight_) {
+    if (!pending_ ||
+        (in_flight_ && !pending_request_.alignment_plan.enabled())) {
         return false;
     }
 
@@ -186,7 +200,7 @@ bool SpatialSnapshotWorker::TryClaimNextFrame(uint64_t camera_timestamp_ns)
     if (pending_request_.alignment_plan.enabled()) {
         if (!spatial_snapshot_expected_frame_timestamp(
                 pending_request_.alignment_plan,
-                average_accumulator_.captured_frame_count,
+                claimed_frame_count_,
                 &expected_timestamp_ns)) {
             // Claim the frame so WorkerFunction can terminate the request with
             // an explicit error instead of leaving it pending indefinitely.
@@ -201,11 +215,30 @@ bool SpatialSnapshotWorker::TryClaimNextFrame(uint64_t camera_timestamp_ns)
     }
 
     in_flight_ = true;
-    pending_ = false;
     in_flight_request_ = pending_request_;
     in_flight_request_.expected_frame_timestamp_ns = expected_timestamp_ns;
-    pending_request_ = ClaimedRequest{};
+    if (pending_request_.alignment_plan.enabled()) {
+        ++claimed_frame_count_;
+        pending_ = claimed_frame_count_ < pending_request_.target_frame_count;
+    } else {
+        pending_ = false;
+        pending_request_ = ClaimedRequest{};
+    }
+    outstanding_frame_count_.fetch_add(1, std::memory_order_release);
     return true;
+}
+
+bool SpatialSnapshotWorker::UndoClaimAfterEnqueueFailure()
+{
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (in_flight_request_.alignment_plan.enabled() && claimed_frame_count_ > 0) {
+        --claimed_frame_count_;
+        pending_ = true;
+        outstanding_frame_count_.fetch_sub(1, std::memory_order_release);
+        enqueue_rejected_count_.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+    return false;
 }
 
 void SpatialSnapshotWorker::CompleteClaimedRequestWithError(const std::string& error)
@@ -219,6 +252,7 @@ void SpatialSnapshotWorker::CompleteClaimedRequestWithError(const std::string& e
         request = in_flight_request_;
         in_flight_ = false;
         in_flight_request_ = ClaimedRequest{};
+        outstanding_frame_count_.fetch_sub(1, std::memory_order_release);
     }
 
     SpatialSnapshotResult result;
@@ -254,13 +288,23 @@ bool SpatialSnapshotWorker::PopCompletedSnapshot(SpatialSnapshotResult* result_o
 SpatialSnapshotWorker::ClaimedRequest
 SpatialSnapshotWorker::current_claimed_request_locked() const
 {
-    return in_flight_request_;
+    ClaimedRequest request = in_flight_request_;
+    if (request.alignment_plan.enabled() &&
+        !spatial_snapshot_expected_frame_timestamp(
+            request.alignment_plan,
+            average_accumulator_.captured_frame_count,
+            &request.expected_frame_timestamp_ns)) {
+        request.expected_frame_timestamp_ns =
+            std::numeric_limits<uint64_t>::max();
+    }
+    return request;
 }
 
 void SpatialSnapshotWorker::reset_active_request_locked()
 {
     pending_ = false;
     in_flight_ = false;
+    claimed_frame_count_ = 0;
     pending_request_ = ClaimedRequest{};
     in_flight_request_ = ClaimedRequest{};
     average_accumulator_ = AverageAccumulator{};
@@ -302,6 +346,10 @@ bool SpatialSnapshotWorker::accumulate_frame_or_complete(
         completed_result->last_local_frame_id = frame.local_frame_id;
         completed_result->first_camera_frame_id = frame.camera_frame_id;
         completed_result->last_camera_frame_id = frame.camera_frame_id;
+        if (request.alignment_plan.enabled()) {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            reset_active_request_locked();
+        }
         return true;
     }
 
@@ -350,10 +398,12 @@ bool SpatialSnapshotWorker::accumulate_frame_or_complete(
     average_accumulator_.last_timestamp_sys_ns = frame.timestamp_sys_ns;
 
     if (average_accumulator_.captured_frame_count < average_accumulator_.target_frame_count) {
-        pending_ = true;
-        in_flight_ = false;
-        pending_request_ = request;
-        in_flight_request_ = ClaimedRequest{};
+        if (!request.alignment_plan.enabled()) {
+            pending_ = true;
+            in_flight_ = false;
+            pending_request_ = request;
+            in_flight_request_ = ClaimedRequest{};
+        }
         return false;
     }
 
@@ -498,11 +548,17 @@ bool SpatialSnapshotWorker::WorkerFunction(WORKER_ENTRY* entry)
     const WorkerEntryReleaseContext release_context{
         camera_params_ ? camera_params_->camera_serial.c_str() : nullptr,
         "spatial_snapshot"};
+    const OutstandingFrameGuard outstanding_guard{&outstanding_frame_count_};
 
     ClaimedRequest request;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         request = current_claimed_request_locked();
+    }
+    if (request.request_id == 0) {
+        WorkerEntryRefGuard source_guard(
+            recycle_queue_, entry, release_context, true);
+        return false;  // A queued frame from an already failed request.
     }
 
     SpatialSnapshotResult frame_result;

@@ -2,7 +2,9 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <condition_variable>
 #include <cstdint>
 #include <exception>
@@ -35,6 +37,9 @@ public:
 
     // Type-safe methods using templates
     bool PutObjectToQueueIn(T* f);
+    // Diagnostic consumers that must never block acquisition can use a
+    // stricter per-call queue bound. Rejection leaves ownership with caller.
+    bool TryPutObjectToQueueIn(T* f, size_t max_queued_items);
 
     // Enqueue an ordered flush marker. Because it rides the input queue, the
     // worker processes every item ahead of it FIRST, then OnFlushTick() runs
@@ -257,6 +262,27 @@ bool CThreadWorker<T>::PutObjectToQueueIn(T* f)
         return queueIn.size() < static_cast<size_t>(maxQueueSize) || stopRequested;
     });
     if (stopRequested) {
+        return false;
+    }
+    queueIn.push(f);
+    countQueueIn++;
+    countInTotal++;
+    if (countQueueInMax < countQueueIn) {
+        countQueueInMax = countQueueIn.load();
+    }
+    OnQueueInEnqueued(f, countQueueIn);
+    lock.unlock();
+    queueInNotEmptyCv.notify_one();
+    return true;
+}
+
+template<typename T>
+bool CThreadWorker<T>::TryPutObjectToQueueIn(T* f, size_t max_queued_items)
+{
+    std::unique_lock<std::mutex> lock(mutexQueueIn);
+    const size_t limit = std::min<size_t>(
+        static_cast<size_t>(maxQueueSize), max_queued_items);
+    if (stopRequested || limit == 0 || queueIn.size() >= limit) {
         return false;
     }
     queueIn.push(f);

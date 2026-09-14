@@ -43,6 +43,30 @@ private:
     std::atomic<int> processed_{0};
 };
 
+void test_nonblocking_queue_bound()
+{
+    IntWorker worker;
+    worker.SetMaxQueueSize(4);
+    int first = 1;
+    int second = 2;
+    int third = 3;
+    require(worker.TryPutObjectToQueueIn(&first, 2),
+            "first diagnostic enqueue should succeed");
+    require(worker.TryPutObjectToQueueIn(&second, 2),
+            "second diagnostic enqueue should succeed");
+    require(!worker.TryPutObjectToQueueIn(&third, 2),
+            "diagnostic enqueue should reject instead of blocking at its bound");
+    require(worker.GetObjectFromQueueIn() == &first,
+            "diagnostic queue should preserve FIFO order");
+    require(worker.TryPutObjectToQueueIn(&third, 2),
+            "diagnostic enqueue should resume after a dequeue");
+    require(worker.GetObjectFromQueueIn() == &second &&
+                worker.GetObjectFromQueueIn() == &third,
+            "diagnostic queue should retain all accepted inputs in order");
+    require(!worker.TryPutObjectToQueueIn(&first, 0),
+            "zero-capacity diagnostic enqueue should reject");
+}
+
 class BlockingWorker final : public CThreadWorker<int> {
 public:
     BlockingWorker()
@@ -485,6 +509,7 @@ void test_queue_out_bound_through_worker_thread()
 int main()
 {
     try {
+        test_nonblocking_queue_bound();
         test_worker_exception_latches_fatal_error();
         test_enqueue_reports_true_while_running();
         test_enqueue_reports_false_after_stop();

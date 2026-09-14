@@ -171,6 +171,25 @@ inline WorkerEntryLease TryRetainWorkerEntryLease(
 }
 
 template <typename WorkerT>
+inline bool retain_and_try_enqueue_worker_entry(
+    WorkerT* worker,
+    SafeQueue<WORKER_ENTRY*>* recycle_queue,
+    WORKER_ENTRY* entry,
+    const WorkerEntryReleaseContext& context,
+    size_t max_queued_items)
+{
+    if (worker == nullptr) {
+        return false;
+    }
+    auto lease = TryRetainWorkerEntryLease(recycle_queue, entry, context);
+    if (!lease || !worker->TryPutObjectToQueueIn(entry, max_queued_items)) {
+        return false;
+    }
+    lease.TransferToConsumer();
+    return true;
+}
+
+template <typename WorkerT>
 inline bool retain_and_enqueue_worker_entry(
     WorkerT* worker,
     SafeQueue<WORKER_ENTRY*>* recycle_queue,

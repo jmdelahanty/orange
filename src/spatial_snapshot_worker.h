@@ -63,6 +63,7 @@ public:
     }
     bool HasPendingRequest(uint64_t camera_timestamp_ns) const;
     bool TryClaimNextFrame(uint64_t camera_timestamp_ns);
+    bool UndoClaimAfterEnqueueFailure();
     void CompleteClaimedRequestWithError(const std::string& error);
     bool PopCompletedSnapshot(SpatialSnapshotResult* result_out);
 
@@ -122,6 +123,7 @@ private:
     mutable std::mutex state_mutex_;
     bool pending_ = false;
     bool in_flight_ = false;
+    uint32_t claimed_frame_count_ = 0;
     uint64_t next_request_id_ = 0;
     ClaimedRequest pending_request_;
     ClaimedRequest in_flight_request_;
@@ -134,6 +136,7 @@ private:
     std::atomic<uint64_t> failed_count_{0};
     std::atomic<uint64_t> enqueue_rejected_count_{0};
     std::atomic<uint64_t> latest_camera_timestamp_ns_{0};
+    std::atomic<uint32_t> outstanding_frame_count_{0};
 };
 
 #endif
