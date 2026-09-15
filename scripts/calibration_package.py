@@ -24,6 +24,7 @@ from calibration_package_lib import (
     package_id,
     pretty_json_bytes,
     compare_projection_geometry,
+    experimental_region_geometry_fingerprint,
     projection_geometry_fingerprint,
     read_json,
     seal_candidate_package,
@@ -163,8 +164,14 @@ def commissioning_identity(
         "target_plane": "projected_surface",
         "projection_geometry_identity": {
             "schema_id": "citrus.calibration.canvas_projection_geometry_identity",
-            "schema_version": 1,
+            "schema_version": 2,
             "fingerprint": projection_geometry_fingerprint(canvas),
+        },
+        "experimental_region_geometry_identity": {
+            "schema_id":
+                "citrus.calibration.experimental_region_geometry_identity",
+            "schema_version": 1,
+            "fingerprint": experimental_region_geometry_fingerprint(canvas),
         },
         "canvas_raster": {
             "width_px": int(canvas.get("canvas_width_px")),

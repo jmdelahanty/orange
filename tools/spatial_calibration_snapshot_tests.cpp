@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 
 namespace {
 
@@ -252,12 +253,13 @@ bool run_grouped_snapshot_alignment_test()
                      {frame, frame + 13u, frame + 200000020u, frame + 200000008u},
                      5u, &plan),
                  "one-frame-separated PTP observations select a shared future frame");
-    ok &= expect(plan.first_camera_timestamp_ns == frame + 800000020u &&
+    ok &= expect(plan.first_camera_timestamp_ns == frame + 1200000020u &&
                      plan.frame_period_ns == 200000000u &&
-                     plan.tolerance_ns == 5000000u,
-                 "shared frame is three periods beyond the latest observation");
+                     plan.tolerance_ns == 5000000u &&
+                     plan.capture_stride_frames == 3u,
+                 "shared frame has at least one second of arming lead at 5 fps");
     ok &= expect(spatial_snapshot_frame_decision(
-                     frame + 600000020u,
+                     frame + 1000000020u,
                      plan.first_camera_timestamp_ns,
                      plan.tolerance_ns) == SpatialSnapshotFrameDecision::wait,
                  "an early frame remains pending");
@@ -274,13 +276,41 @@ bool run_grouped_snapshot_alignment_test()
     uint64_t expected_last = 0;
     ok &= expect(spatial_snapshot_expected_frame_timestamp(plan, 59u, &expected_last) &&
                      expected_last == plan.first_camera_timestamp_ns +
-                         59u * plan.frame_period_ns,
-                 "a temporal mean checks every frame against the same PTP cadence");
+                         59u * 3u * plan.frame_period_ns,
+                 "a temporal mean uses a shared, worker-safe subset of the PTP cadence");
     ok &= expect(!make_spatial_snapshot_alignment_plan({frame, 0}, 5u, &plan),
                  "a camera without a current PTP observation is rejected");
     ok &= expect(!make_spatial_snapshot_alignment_plan(
                      {frame, frame + 400000000u}, 5u, &plan),
                  "a stale camera observation is rejected");
+    ok &= expect(make_spatial_snapshot_alignment_plan(
+                     {frame, frame + 13u, frame + 20u, frame + 8u},
+                     100u, &plan) &&
+                     plan.first_camera_timestamp_ns == frame + 1000000020u &&
+                     plan.frame_period_ns == 10000000u &&
+                     plan.tolerance_ns == 1250000u &&
+                     plan.capture_stride_frames == 50u,
+                 "100 fps group has safe lead and sampling without widening frame tolerance");
+    ok &= expect(spatial_snapshot_frame_decision(
+                     frame + 300000020u,
+                     plan.first_camera_timestamp_ns,
+                     plan.tolerance_ns) == SpatialSnapshotFrameDecision::wait &&
+                     spatial_snapshot_frame_decision(
+                         plan.first_camera_timestamp_ns,
+                         plan.first_camera_timestamp_ns,
+                         plan.tolerance_ns) == SpatialSnapshotFrameDecision::accept &&
+                     spatial_snapshot_frame_decision(
+                         plan.first_camera_timestamp_ns + plan.frame_period_ns,
+                         plan.first_camera_timestamp_ns,
+                         plan.tolerance_ns) == SpatialSnapshotFrameDecision::missed,
+                 "100 fps group can arm after 300 ms but still rejects the next frame");
+    ok &= expect(spatial_snapshot_expected_frame_timestamp(plan, 1u, &expected_last) &&
+                     expected_last == plan.first_camera_timestamp_ns + 500000000u,
+                 "100 fps temporal-mean samples are spaced by 500 ms");
+    ok &= expect(!make_spatial_snapshot_alignment_plan(
+                     {std::numeric_limits<uint64_t>::max() - 500000000u},
+                     100u, &plan),
+                 "an arm target past the timestamp limit is rejected");
     return ok;
 }
 

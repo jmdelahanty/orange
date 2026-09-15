@@ -258,7 +258,7 @@ bool load_homography_matrix_from_citrus_sidecar(const std::filesystem::path& con
                 "status", "") != "passed") {
             template_state->homography_authority_status = "stale_or_incompatible";
             template_state->homography_import_error =
-                "Accepted homography identity, coordinate semantics, canvas geometry, "
+                "Accepted homography identity, coordinate semantics, canvas transform, "
                 "or configuration fingerprint does not match the current canvas.";
             if (!canvas_compatibility_result.error.empty()) {
                 template_state->homography_import_error +=

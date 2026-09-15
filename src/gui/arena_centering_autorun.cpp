@@ -165,10 +165,13 @@ nlohmann::json ptp_alignment_json(const SpatialLayoutUiState& spatial_state)
     };
 }
 
-bool stage_requires_rectangle_analysis(const std::string& stage_id)
+bool stage_requires_rectangle_analysis(
+    const ArenaCenteringAutorunConfig& config,
+    const std::string& stage_id)
 {
-    return stage_id == kBaseline || stage_id == kCandidate ||
-           stage_id == kRefinedCandidate || stage_id == kResizedCandidate;
+    return !config.bootstrap_centers_only &&
+           (stage_id == kBaseline || stage_id == kCandidate ||
+            stage_id == kRefinedCandidate || stage_id == kResizedCandidate);
 }
 
 bool rectangle_has_two_sided_edge_support(
@@ -276,7 +279,7 @@ bool prepare_projection_stability_reference(
     nlohmann::json rectangles_json = nullptr;
     std::map<std::string, arena_centering::RectangleBoundaryDetection>
         rectangles_by_camera;
-    if (stage_requires_rectangle_analysis(state->current_stage_id)) {
+    if (stage_requires_rectangle_analysis(config, state->current_stage_id)) {
         RectangleBoundaryDetectorConfig rectangle_config;
         rectangle_config.minimum_visible_margin_camera_px =
             config.rectangle_safety_margin_camera_px;
@@ -430,7 +433,7 @@ nlohmann::json compare_projection_stability(
             confirmation->second.center_camera_px);
         camera["center_delta_camera_px"] = center_delta;
         double maximum_corner_delta = 0.0;
-        if (stage_requires_rectangle_analysis(state.current_stage_id)) {
+        if (stage_requires_rectangle_analysis(config, state.current_stage_id)) {
             const auto reference_rectangle =
                 state.stability_reference_rectangles.find(target.camera_serial);
             const auto confirmation_rectangles =
@@ -500,7 +503,7 @@ nlohmann::json compare_projection_stability(
         const bool camera_stable =
             center_delta <=
                 config.projection_stability_max_center_delta_camera_px &&
-            (!stage_requires_rectangle_analysis(state.current_stage_id) ||
+            (!stage_requires_rectangle_analysis(config, state.current_stage_id) ||
              maximum_corner_delta <= allowed_corner_delta);
         camera["status"] = camera_stable ? "stable" : "unstable";
         if (!camera_stable && failure.empty()) {
@@ -1342,6 +1345,18 @@ ArenaCenteringAutorunRequests arena_centering_autorun_update(
         break;
 
     case ArenaCenteringAutorunStage::kPrepare: {
+        if (config.bootstrap_centers_only &&
+            (config.resize_arenas || config.save_verified_layout_armed ||
+             config.fit_homographies_after_centering ||
+             config.accept_homographies_armed ||
+             !config.require_projection_stability_capture ||
+             !config.save_captures)) {
+            schedule_abort(
+                state,
+                "bootstrap centering requires saved stable captures and forbids "
+                "arena resizing or homography fitting/promotion");
+            break;
+        }
         if (config.citrus_config_path.empty() ||
             !std::filesystem::is_regular_file(config.citrus_config_path)) {
             schedule_abort(state, "Citrus canvas config is missing: " +
@@ -1702,7 +1717,7 @@ ArenaCenteringAutorunRequests arena_centering_autorun_update(
             std::move(detections);
         state->pending_detection_batch = batch.ToJson();
         const bool analyze_rectangle =
-            stage_requires_rectangle_analysis(state->current_stage_id);
+            stage_requires_rectangle_analysis(config, state->current_stage_id);
         if (analyze_rectangle) {
             RectangleBoundaryDetectorConfig rectangle_config;
             rectangle_config.minimum_visible_margin_camera_px =
@@ -2533,7 +2548,10 @@ nlohmann::json arena_centering_autorun_result_json(
     }
     return {
         {"schema_id", "orange.gui_arena_centering_commissioning_result"},
-        {"schema_version", 3},
+        {"schema_version", 4},
+        {"workflow_mode", config.bootstrap_centers_only
+            ? "bootstrap_center_fiducial_v1"
+            : "center_rectangle_v1"},
         {"created_utc", get_current_utc_timestamp()},
         {"status", state.run_passed ? "pass" : "fail"},
         {"stage", arena_centering_autorun_stage_name(state.stage)},
@@ -2546,6 +2564,10 @@ nlohmann::json arena_centering_autorun_result_json(
             {"camera_serials", config.camera_serials},
             {"frame_count", config.frame_count},
             {"foreground_gray_u8", config.foreground_gray_u8},
+            {"foreground_gray_qualification", config.bootstrap_centers_only
+                ? "provisional_for_center_fiducial_only"
+                : "passing_projector_intensity_report"},
+            {"bootstrap_centers_only", config.bootstrap_centers_only},
             {"symmetric_probe_canvas_px", config.symmetric_probe_canvas_px},
             {"verification_tolerance_camera_px",
              config.verification_tolerance_camera_px},

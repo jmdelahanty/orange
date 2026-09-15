@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXECUTE=0
 ARM_SAVE=0
+BOOTSTRAP_CENTERS_ONLY=0
 RESIZE_ARENAS=0
 ARM_LAYOUT_SAVE=0
 FIT_HOMOGRAPHIES=0
@@ -31,6 +32,7 @@ XDG_RUNTIME_DIR_VALUE="${XDG_RUNTIME_DIR:-/run/user/1000}"
 RESULT_JSON=""
 CITRUS_CONFIG="/home/jeremy/citrus/targets/rigs/omnifin0/shadow/shadow.json"
 PROJECTOR_INTENSITY_REPORT="/home/jeremy/orange_data/calibrations/commissioning/projector_intensity_20260719T014235Z/commissioning_report.json"
+PROJECTOR_INTENSITY_REPORT_EXPLICIT=0
 CITRUS_BIN="${CITRUS_BIN:-/home/jeremy/citrus/targets/citrus}"
 CITRUS_PROTOCOL="/home/jeremy/citrus/protocols/good_cop_bad_cop_demo.json"
 CITRUS_SOCKET="/tmp/citrus_local_control.sock"
@@ -48,10 +50,14 @@ Citrus and one Orange invocation. It is a dry-run unless --execute is given.
 Verified centers are rolled back unless --save-verified-centers is also given.
 Arena resizing is opt-in and is independently persistence-armed.
 Homography fitting is opt-in; promotion has a separate explicit arm.
+Use --bootstrap-centers-only after camera motion, before a full-grid intensity
+report exists. This mode verifies center fiducials and symmetric probes only;
+it cannot resize arenas, fit homographies, or qualify projector intensity.
 
 Options:
   --execute
   --save-verified-centers
+  --bootstrap-centers-only
   --resize-arenas
   --save-verified-layout
   --fit-homographies
@@ -97,6 +103,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --execute) EXECUTE=1; shift ;;
     --save-verified-centers) ARM_SAVE=1; shift ;;
+    --bootstrap-centers-only) BOOTSTRAP_CENTERS_ONLY=1; shift ;;
     --resize-arenas) RESIZE_ARENAS=1; shift ;;
     --save-verified-layout)
       RESIZE_ARENAS=1
@@ -123,6 +130,7 @@ while [[ $# -gt 0 ]]; do
       shift
       require_value --projector-intensity-report "$#"
       PROJECTOR_INTENSITY_REPORT="$1"
+      PROJECTOR_INTENSITY_REPORT_EXPLICIT=1
       shift
       ;;
     --probe-canvas-px) shift; require_value --probe-canvas-px "$#"; PROBE_CANVAS_PX="$1"; shift ;;
@@ -150,40 +158,53 @@ done
 [[ "${CAMERAS}" =~ ^[0-9]+(,[0-9]+)*$ ]] || {
   echo "--cameras must contain comma-separated numeric serials" >&2; exit 2;
 }
-[[ -f "${PROJECTOR_INTENSITY_REPORT}" ]] || {
-  echo "Missing projector-intensity commissioning report: ${PROJECTOR_INTENSITY_REPORT}" >&2
-  exit 1
-}
-jq -e '
-  .schema_id == "orange.projector_intensity_commissioning.report" and
-  .schema_version == 1 and
-  .status == "pass"
-' "${PROJECTOR_INTENSITY_REPORT}" >/dev/null || {
-  echo "Projector-intensity report is not a passing schema-v1 report" >&2
-  exit 1
-}
-COMMISSIONED_FOREGROUND_GRAY_U8="$(
-  jq -er '.recommended_foreground_gray_u8 | select(type == "number")' \
-    "${PROJECTOR_INTENSITY_REPORT}"
-)"
-if (( ! FOREGROUND_GRAY_EXPLICIT )); then
-  FOREGROUND_GRAY_U8="${COMMISSIONED_FOREGROUND_GRAY_U8}"
+if (( BOOTSTRAP_CENTERS_ONLY )); then
+  if (( RESIZE_ARENAS || ARM_LAYOUT_SAVE || FIT_HOMOGRAPHIES || ACCEPT_HOMOGRAPHIES ||
+        PROJECTOR_INTENSITY_REPORT_EXPLICIT || ! FOREGROUND_GRAY_EXPLICIT )); then
+    echo "--bootstrap-centers-only requires an explicit provisional gray and forbids a commissioned report, resize, or homography options" >&2
+    exit 2
+  fi
+  PROJECTOR_INTENSITY_REPORT=""
+  PROJECTOR_INTENSITY_REPORT_SHA256=""
+  SATURATION_PIXEL_THRESHOLD_U8=250
+  MAXIMUM_DOT_CORE_SATURATION_FRACTION=0.005
+  MINIMUM_DOT_BACKGROUND_CONTRAST_U8=20
+else
+  [[ -f "${PROJECTOR_INTENSITY_REPORT}" ]] || {
+    echo "Missing projector-intensity commissioning report: ${PROJECTOR_INTENSITY_REPORT}" >&2
+    exit 1
+  }
+  jq -e '
+    .schema_id == "orange.projector_intensity_commissioning.report" and
+    .schema_version == 1 and
+    .status == "pass"
+  ' "${PROJECTOR_INTENSITY_REPORT}" >/dev/null || {
+    echo "Projector-intensity report is not a passing schema-v1 report" >&2
+    exit 1
+  }
+  COMMISSIONED_FOREGROUND_GRAY_U8="$(
+    jq -er '.recommended_foreground_gray_u8 | select(type == "number")' \
+      "${PROJECTOR_INTENSITY_REPORT}"
+  )"
+  if (( ! FOREGROUND_GRAY_EXPLICIT )); then
+    FOREGROUND_GRAY_U8="${COMMISSIONED_FOREGROUND_GRAY_U8}"
+  fi
+  SATURATION_PIXEL_THRESHOLD_U8="$(
+    jq -er '.method.saturation_pixel_threshold_u8 | select(type == "number")' \
+      "${PROJECTOR_INTENSITY_REPORT}"
+  )"
+  MAXIMUM_DOT_CORE_SATURATION_FRACTION="$(
+    jq -er '.method.quality_gates.max_core_saturation_fraction | select(type == "number")' \
+      "${PROJECTOR_INTENSITY_REPORT}"
+  )"
+  MINIMUM_DOT_BACKGROUND_CONTRAST_U8="$(
+    jq -er '.method.quality_gates.min_dot_background_contrast_u8 | select(type == "number")' \
+      "${PROJECTOR_INTENSITY_REPORT}"
+  )"
+  read -r PROJECTOR_INTENSITY_REPORT_SHA256 _ < <(
+    sha256sum "${PROJECTOR_INTENSITY_REPORT}"
+  )
 fi
-SATURATION_PIXEL_THRESHOLD_U8="$(
-  jq -er '.method.saturation_pixel_threshold_u8 | select(type == "number")' \
-    "${PROJECTOR_INTENSITY_REPORT}"
-)"
-MAXIMUM_DOT_CORE_SATURATION_FRACTION="$(
-  jq -er '.method.quality_gates.max_core_saturation_fraction | select(type == "number")' \
-    "${PROJECTOR_INTENSITY_REPORT}"
-)"
-MINIMUM_DOT_BACKGROUND_CONTRAST_U8="$(
-  jq -er '.method.quality_gates.min_dot_background_contrast_u8 | select(type == "number")' \
-    "${PROJECTOR_INTENSITY_REPORT}"
-)"
-read -r PROJECTOR_INTENSITY_REPORT_SHA256 _ < <(
-  sha256sum "${PROJECTOR_INTENSITY_REPORT}"
-)
 for value in FRAME_COUNT PROBE_CANVAS_PX MAX_PTP_SPAN_NS CALIBRATION_FRAME_RATE_HZ CALIBRATION_EXPOSURE_US TIMEOUT_SECONDS; do
   [[ "${!value}" =~ ^[1-9][0-9]*$ ]] || {
     echo "${value} must be a positive integer" >&2; exit 2;
@@ -312,8 +333,6 @@ ORANGE_ENV=(
   "ORANGE_GUI_ARENA_CENTERING_CAMERAS=${CAMERAS}"
   "ORANGE_GUI_ARENA_CENTERING_FRAME_COUNT=${FRAME_COUNT}"
   "ORANGE_GUI_ARENA_CENTERING_FOREGROUND_GRAY_U8=${FOREGROUND_GRAY_U8}"
-  "ORANGE_GUI_ARENA_CENTERING_PROJECTOR_INTENSITY_REPORT_PATH=${PROJECTOR_INTENSITY_REPORT}"
-  "ORANGE_GUI_ARENA_CENTERING_PROJECTOR_INTENSITY_REPORT_SHA256=${PROJECTOR_INTENSITY_REPORT_SHA256}"
   "ORANGE_GUI_HOMOGRAPHY_SATURATION_PIXEL_THRESHOLD_U8=${SATURATION_PIXEL_THRESHOLD_U8}"
   "ORANGE_GUI_HOMOGRAPHY_MAXIMUM_DOT_CORE_SATURATION_FRACTION=${MAXIMUM_DOT_CORE_SATURATION_FRACTION}"
   "ORANGE_GUI_HOMOGRAPHY_MINIMUM_DOT_BACKGROUND_CONTRAST_U8=${MINIMUM_DOT_BACKGROUND_CONTRAST_U8}"
@@ -334,6 +353,7 @@ ORANGE_ENV=(
   "ORANGE_GUI_RESERVED_MONITOR=${STIMULUS_MONITOR}"
   "ORANGE_CITRUS_EXPECTED_STIMULUS_MONITOR=${STIMULUS_MONITOR}"
   "ORANGE_GUI_ARENA_CENTERING_SAVE_CAPTURES=1"
+  "ORANGE_GUI_ARENA_CENTERING_BOOTSTRAP_CENTERS_ONLY=${BOOTSTRAP_CENTERS_ONLY}"
   "ORANGE_GUI_ARENA_CENTERING_SAVE_VERIFIED_CENTERS_ARMED=${ARM_SAVE}"
   "ORANGE_GUI_ARENA_CENTERING_SAVE_VERIFIED_LAYOUT_ARMED=${ARM_LAYOUT_SAVE}"
   "ORANGE_GUI_ARENA_CENTERING_FIT_HOMOGRAPHIES=${FIT_HOMOGRAPHIES}"
@@ -341,17 +361,28 @@ ORANGE_ENV=(
   "ORANGE_GUI_ARENA_CENTERING_EXIT_AFTER_COMPLETION=1"
   "ORANGE_GUI_ARENA_CENTERING_RESULT_JSON=${RESULT_JSON}"
 )
+if (( ! BOOTSTRAP_CENTERS_ONLY )); then
+  ORANGE_ENV+=(
+    "ORANGE_GUI_ARENA_CENTERING_PROJECTOR_INTENSITY_REPORT_PATH=${PROJECTOR_INTENSITY_REPORT}"
+    "ORANGE_GUI_ARENA_CENTERING_PROJECTOR_INTENSITY_REPORT_SHA256=${PROJECTOR_INTENSITY_REPORT_SHA256}"
+  )
+fi
 
 echo "Arena-centering commissioning plan:"
+echo "  bootstrap_centers_only=${BOOTSTRAP_CENTERS_ONLY}"
 echo "  cameras=${CAMERAS} gray=${FOREGROUND_GRAY_U8} probe_canvas_px=${PROBE_CANVAS_PX}"
-echo "  intensity_report=${PROJECTOR_INTENSITY_REPORT} sha256=${PROJECTOR_INTENSITY_REPORT_SHA256}"
-echo "  photometry=max_core_saturation:${MAXIMUM_DOT_CORE_SATURATION_FRACTION}@>=${SATURATION_PIXEL_THRESHOLD_U8} min_contrast_u8:${MINIMUM_DOT_BACKGROUND_CONTRAST_U8}"
+if (( BOOTSTRAP_CENTERS_ONLY )); then
+  echo "  intensity_report=none gray_qualification=provisional_for_center_fiducial_only"
+else
+  echo "  intensity_report=${PROJECTOR_INTENSITY_REPORT} sha256=${PROJECTOR_INTENSITY_REPORT_SHA256}"
+  echo "  photometry=max_core_saturation:${MAXIMUM_DOT_CORE_SATURATION_FRACTION}@>=${SATURATION_PIXEL_THRESHOLD_U8} min_contrast_u8:${MINIMUM_DOT_BACKGROUND_CONTRAST_U8}"
+fi
 echo "  tolerance_camera_px=${VERIFICATION_TOLERANCE_CAMERA_PX} max_ptp_span_ns=${MAX_PTP_SPAN_NS}"
 echo "  camera_timing=${CALIBRATION_FRAME_RATE_HZ}fps/${CALIBRATION_EXPOSURE_US}us PTP=enabled"
 echo "  displays=operator:${OPERATOR_MONITOR} stimulus_reserved:${STIMULUS_MONITOR} overlap_rejection=enabled"
 echo "  projection_settle=${PROJECTION_SETTLE_MS}ms post_fence_settle=${POST_PRESENTATION_SETTLE_MS}ms"
 echo "  stability_pair=required interval=${STABILITY_INTERVAL_MS}ms ghosted_marker_rejection=enabled"
-echo "  rectangle_edges=enabled resize_arenas=${RESIZE_ARENAS} safety_margin_camera_px=${RECTANGLE_SAFETY_MARGIN_CAMERA_PX}"
+echo "  rectangle_edges=$((1 - BOOTSTRAP_CENTERS_ONLY)) resize_arenas=${RESIZE_ARENAS} safety_margin_camera_px=${RECTANGLE_SAFETY_MARGIN_CAMERA_PX}"
 echo "  save_verified_centers_armed=${ARM_SAVE} save_verified_layout_armed=${ARM_LAYOUT_SAVE}"
 echo "  fit_homographies=${FIT_HOMOGRAPHIES} accept_homographies_armed=${ACCEPT_HOMOGRAPHIES}"
 echo "  one_process_pair=true one_session=true"
@@ -433,6 +464,7 @@ VALIDATOR=(
   "${RESULT_JSON}"
   "--expected-cameras" "${CAMERAS}"
 )
+if (( BOOTSTRAP_CENTERS_ONLY )); then VALIDATOR+=("--require-bootstrap-centers"); fi
 if (( ARM_SAVE )); then VALIDATOR+=("--require-committed"); fi
 if (( FIT_HOMOGRAPHIES )); then VALIDATOR+=("--require-homography-fit"); fi
 if (( ACCEPT_HOMOGRAPHIES )); then VALIDATOR+=("--require-homography-committed"); fi

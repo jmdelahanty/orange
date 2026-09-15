@@ -84,9 +84,19 @@ void test_cache_only_and_geometry_changes()
         fingerprint_error);
     require(
         accepted_fingerprint ==
-            "sha256:01932ac4c8edd3b539c5b9a46b2a341761dc2149f83fa49129b0fa2af9da0857",
+            "sha256:cd64f850745722bba9e79a4388dfb2fa6da9386f7ab4b13a07d24170a9bb8673",
         "cross-language projection-geometry fingerprint vector changed: " +
             accepted_fingerprint);
+    std::string accepted_region_fingerprint;
+    require(
+        compatibility::experimental_region_geometry_fingerprint(
+            accepted.dump(2), &accepted_region_fingerprint, &fingerprint_error),
+        fingerprint_error);
+    require(
+        accepted_region_fingerprint ==
+            "sha256:66c98f9057f664c6ae520be0386e2de9c60d5348c502432a9cd66dc12a052a89",
+        "cross-language experimental-region fingerprint vector changed: " +
+            accepted_region_fingerprint);
     auto current = accepted;
     auto& arena = current["arenas"]["arena_1"];
     arena["calibration_pattern_mode"] = "rectangular_grid";
@@ -102,16 +112,34 @@ void test_cache_only_and_geometry_changes()
     require(result.compatible, "cache-only changes should be compatible");
     require(!result.exact_file_checksum_match, "fixture should differ by bytes");
     require(result.projection_geometry_match, "geometry identity should match");
-    require(result.basis == "projection_geometry_identity_v1", "wrong basis");
+    require(result.experimental_region_geometry_match,
+            "derived cache changes must not alter region identity");
+    require(result.basis == "projection_geometry_identity_v2", "wrong basis");
     require(
         result.warning == "canvas_non_geometry_calibration_state_only_change",
         "semantic relaxation must be explicit");
 
+    auto region_change = accepted;
+    region_change["arenas"]["arena_1"]["experimental_area_radius_mm"] = 40.5;
+    region_change["arenas"]["arena_1"]["experimental_area_radius_px"] = 162.0;
+    result = compatibility::compare_canvas_bytes(
+        region_change.dump(2), accepted.dump(2));
+    require(result.compatible,
+            "experimental radius change must preserve the homography");
+    require(result.projection_geometry_match,
+            "experimental radius leaked into transform identity");
+    require(!result.experimental_region_geometry_match,
+            "experimental radius change must alter region identity");
+    require(
+        result.warning == "canvas_experimental_region_geometry_changed",
+        "region-only change must be explicit");
+
+    current = accepted;
     current["arenas"]["arena_1"]["camera_calibrations"][0]
            ["arena_center_x_px"] = 260;
     result = compatibility::compare_canvas_bytes(current.dump(2), accepted.dump(2));
     require(!result.compatible, "arena-center change must fail closed");
-    require(result.error == "canvas_projection_geometry_changed", "wrong failure");
+    require(result.error == "canvas_projection_transform_changed", "wrong failure");
 }
 
 void test_release_anchored_relaxation()
@@ -187,7 +215,7 @@ void test_release_anchored_relaxation()
             commissioning_pointer_path);
         require(result.compatible, "release-anchored cache change should pass");
         require(result.commissioning_release_id == "release1", "release not recorded");
-        require(result.basis == "projection_geometry_identity_v1", "wrong basis");
+        require(result.basis == "projection_geometry_identity_v2", "wrong basis");
 
         write_exact(artifact_pointer_path, "tampered\n");
         result = compatibility::validate_active_artifact_canvas(

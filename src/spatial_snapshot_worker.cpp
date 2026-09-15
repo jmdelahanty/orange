@@ -167,8 +167,7 @@ bool SpatialSnapshotWorker::RequestSnapshot(
 bool SpatialSnapshotWorker::HasPendingRequest(uint64_t camera_timestamp_ns) const
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    if (!pending_ ||
-        (in_flight_ && !pending_request_.alignment_plan.enabled())) {
+    if (!pending_ || in_flight_) {
         return false;
     }
     if (!pending_request_.alignment_plan.enabled()) {
@@ -191,8 +190,7 @@ bool SpatialSnapshotWorker::HasPendingRequest(uint64_t camera_timestamp_ns) cons
 bool SpatialSnapshotWorker::TryClaimNextFrame(uint64_t camera_timestamp_ns)
 {
     std::lock_guard<std::mutex> lock(state_mutex_);
-    if (!pending_ ||
-        (in_flight_ && !pending_request_.alignment_plan.enabled())) {
+    if (!pending_ || in_flight_) {
         return false;
     }
 
@@ -234,6 +232,8 @@ bool SpatialSnapshotWorker::UndoClaimAfterEnqueueFailure()
     if (in_flight_request_.alignment_plan.enabled() && claimed_frame_count_ > 0) {
         --claimed_frame_count_;
         pending_ = true;
+        in_flight_ = false;
+        in_flight_request_ = ClaimedRequest{};
         outstanding_frame_count_.fetch_sub(1, std::memory_order_release);
         enqueue_rejected_count_.fetch_add(1, std::memory_order_relaxed);
         return true;
@@ -288,16 +288,10 @@ bool SpatialSnapshotWorker::PopCompletedSnapshot(SpatialSnapshotResult* result_o
 SpatialSnapshotWorker::ClaimedRequest
 SpatialSnapshotWorker::current_claimed_request_locked() const
 {
-    ClaimedRequest request = in_flight_request_;
-    if (request.alignment_plan.enabled() &&
-        !spatial_snapshot_expected_frame_timestamp(
-            request.alignment_plan,
-            average_accumulator_.captured_frame_count,
-            &request.expected_frame_timestamp_ns)) {
-        request.expected_frame_timestamp_ns =
-            std::numeric_limits<uint64_t>::max();
-    }
-    return request;
+    // TryClaimNextFrame freezes the exact schedule entry in this request.
+    // Do not derive it again from the image accumulator: that accumulator is
+    // worker-owned and deliberately updated without holding state_mutex_.
+    return in_flight_request_;
 }
 
 void SpatialSnapshotWorker::reset_active_request_locked()
@@ -353,7 +347,10 @@ bool SpatialSnapshotWorker::accumulate_frame_or_complete(
         return true;
     }
 
-    std::lock_guard<std::mutex> lock(state_mutex_);
+    // The potentially hundreds-of-megabytes accumulation below is owned by
+    // this worker thread.  In particular, do not hold state_mutex_ while
+    // allocating or walking the image: the GUI completion poll and the camera
+    // acquisition path both need that mutex for short request-state checks.
     if (average_accumulator_.request_id == 0) {
         average_accumulator_.request_id = request.request_id;
         average_accumulator_.operation_id = request.operation_id;
@@ -375,7 +372,10 @@ bool SpatialSnapshotWorker::accumulate_frame_or_complete(
         completed_result->camera_serial = camera_params_ ? camera_params_->camera_serial : "";
         completed_result->error =
             "Averaged full-resolution snapshot frame shape changed during capture.";
-        reset_active_request_locked();
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            reset_active_request_locked();
+        }
         if (error_out) {
             *error_out = completed_result->error;
         }
@@ -398,11 +398,20 @@ bool SpatialSnapshotWorker::accumulate_frame_or_complete(
     average_accumulator_.last_timestamp_sys_ns = frame.timestamp_sys_ns;
 
     if (average_accumulator_.captured_frame_count < average_accumulator_.target_frame_count) {
-        if (!request.alignment_plan.enabled()) {
-            pending_ = true;
-            in_flight_ = false;
-            pending_request_ = request;
-            in_flight_request_ = ClaimedRequest{};
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            if (request.alignment_plan.enabled()) {
+                // Keep the original shared schedule pending, but do not admit
+                // its next timestamp until this full-resolution copy and
+                // accumulation have completed.
+                in_flight_ = false;
+                in_flight_request_ = ClaimedRequest{};
+            } else {
+                pending_ = true;
+                in_flight_ = false;
+                pending_request_ = request;
+                in_flight_request_ = ClaimedRequest{};
+            }
         }
         return false;
     }
@@ -436,7 +445,16 @@ bool SpatialSnapshotWorker::accumulate_frame_or_complete(
                 255u,
                 rounded / std::max<uint32_t>(1u, average_accumulator_.captured_frame_count)));
     }
-    reset_active_request_locked();
+    // Move the large accumulator out while holding the state lock, then let
+    // its storage be released after the lock is gone.  Moving the vector is
+    // constant-time; freeing hundreds of megabytes need not block the GUI or
+    // acquisition thread either.
+    AverageAccumulator retired_accumulator;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        retired_accumulator = std::move(average_accumulator_);
+        reset_active_request_locked();
+    }
     return true;
 }
 

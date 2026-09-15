@@ -51,6 +51,7 @@ struct ArenaCenteringAutorunConfig {
     bool enabled = false;
     bool save_captures = true;
     bool save_verified_centers_armed = false;
+    bool bootstrap_centers_only = false;
     bool resize_arenas = false;
     bool save_verified_layout_armed = false;
     bool fit_homographies_after_centering = false;

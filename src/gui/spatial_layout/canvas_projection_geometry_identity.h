@@ -17,12 +17,16 @@ namespace fs = std::filesystem;
 
 inline constexpr const char* kIdentitySchemaId =
     "citrus.calibration.canvas_projection_geometry_identity";
-inline constexpr int kIdentitySchemaVersion = 1;
+inline constexpr int kIdentitySchemaVersion = 2;
+inline constexpr const char* kExperimentalRegionIdentitySchemaId =
+    "citrus.calibration.experimental_region_geometry_identity";
+inline constexpr int kExperimentalRegionIdentitySchemaVersion = 1;
 
 struct Result {
     bool compatible = false;
     bool exact_file_checksum_match = false;
     bool projection_geometry_match = false;
+    bool experimental_region_geometry_match = false;
     std::string basis;
     std::string error;
     std::string warning;
@@ -30,6 +34,8 @@ struct Result {
     std::string accepted_canvas_sha256;
     std::string current_geometry_fingerprint;
     std::string accepted_geometry_fingerprint;
+    std::string current_experimental_region_geometry_fingerprint;
+    std::string accepted_experimental_region_geometry_fingerprint;
     std::string commissioning_release_id;
 };
 
@@ -65,6 +71,17 @@ inline bool has_prefix(std::string_view value, std::string_view prefix)
 {
     return value.size() >= prefix.size() &&
         value.substr(0, prefix.size()) == prefix;
+}
+
+inline void copy_if_present(const nlohmann::json& source,
+                            std::string_view key,
+                            nlohmann::json* destination)
+{
+    if (destination == nullptr) return;
+    const auto it = source.find(std::string(key));
+    if (it != source.end()) {
+        (*destination)[std::string(key)] = *it;
+    }
 }
 
 // This is the same projection-geometry identity v1 rule used by Citrus.
@@ -144,39 +161,105 @@ inline bool build_projection_geometry_identity(const nlohmann::json& canvas,
         if (error) *error = "canvas_geometry_identity_invalid";
         return false;
     }
-    nlohmann::json geometry = canvas;
-    for (auto& arena_entry : geometry["arenas"].items()) {
-        auto& arena = arena_entry.value();
+    nlohmann::json arenas = nlohmann::json::object();
+    for (const auto& arena_entry : canvas.at("arenas").items()) {
+        const auto& arena = arena_entry.value();
         if (!arena.is_object()) {
             if (error) *error = "canvas_arena_geometry_invalid";
             return false;
         }
-        for (auto it = arena.begin(); it != arena.end();) {
-            if (is_calibration_presentation_field(it.key())) {
-                it = arena.erase(it);
-            } else {
-                ++it;
-            }
-        }
-        remove_scale_derived_experimental_area_pixel_caches(&arena);
+        nlohmann::json transform_arena = nlohmann::json::object();
+        copy_if_present(arena, "config_name", &transform_arena);
+        copy_if_present(arena, "active_camera_id", &transform_arena);
         const auto cameras = arena.find("camera_calibrations");
-        if (cameras == arena.end()) continue;
-        if (!cameras->is_array()) {
-            if (error) *error = "canvas_camera_calibrations_invalid";
-            return false;
-        }
-        for (auto& camera : *cameras) {
-            if (!camera.is_object()) {
-                if (error) *error = "canvas_camera_calibration_invalid";
+        if (cameras != arena.end()) {
+            if (!cameras->is_array()) {
+                if (error) *error = "canvas_camera_calibrations_invalid";
                 return false;
             }
-            remove_runtime_projected_surface_scale_cache(&camera);
+            nlohmann::json transform_cameras = nlohmann::json::array();
+            for (const auto& camera : *cameras) {
+                if (!camera.is_object()) {
+                    if (error) *error = "canvas_camera_calibration_invalid";
+                    return false;
+                }
+                nlohmann::json transform_camera = nlohmann::json::object();
+                for (const char* key : {
+                         "camera_id", "native_width_px", "native_height_px",
+                         "arena_center_x_px", "arena_center_y_px",
+                         "arena_width_px", "arena_height_px",
+                     }) {
+                    copy_if_present(camera, key, &transform_camera);
+                }
+                transform_cameras.push_back(std::move(transform_camera));
+            }
+            transform_arena["camera_calibrations"] =
+                std::move(transform_cameras);
         }
+        arenas[arena_entry.key()] = std::move(transform_arena);
     }
     *identity = {
         {"schema_id", kIdentitySchemaId},
         {"schema_version", kIdentitySchemaVersion},
-        {"canvas", std::move(geometry)},
+        {"canvas", {
+            {"canvas_name", canvas.at("canvas_name")},
+            {"canvas_width_px", canvas.at("canvas_width_px")},
+            {"canvas_height_px", canvas.at("canvas_height_px")},
+            {"arenas", std::move(arenas)},
+        }},
+    };
+    return true;
+}
+
+inline bool build_experimental_region_geometry_identity(
+    const nlohmann::json& canvas,
+    nlohmann::json* identity,
+    std::string* error = nullptr)
+{
+    if (identity == nullptr) {
+        if (error) *error = "experimental_region_identity_output_missing";
+        return false;
+    }
+    if (!canvas.is_object() || !canvas.contains("canvas_name") ||
+        !canvas.contains("canvas_width_px") ||
+        !canvas.contains("canvas_height_px") ||
+        !canvas.contains("arenas") || !canvas.at("arenas").is_object()) {
+        if (error) *error = "experimental_region_identity_invalid";
+        return false;
+    }
+
+    nlohmann::json arenas = nlohmann::json::object();
+    for (const auto& arena_entry : canvas.at("arenas").items()) {
+        const auto& arena = arena_entry.value();
+        if (!arena.is_object()) {
+            if (error) *error = "experimental_region_arena_invalid";
+            return false;
+        }
+        nlohmann::json region = nlohmann::json::object();
+        for (const auto& field : arena.items()) {
+            if (has_prefix(field.key(), "experimental_area_")) {
+                region[field.key()] = field.value();
+            }
+        }
+        for (const char* key : {
+                 "config_name", "active_camera_id", "arena_region_width_mm",
+                 "arena_region_height_mm", "dish_shape", "dish_config",
+                 "experimental_chamber", "selected_dish_type",
+                 "selected_dish_type_name", "tank_design_id",
+                 "tank_design_spec_filename",
+             }) {
+            copy_if_present(arena, key, &region);
+        }
+        remove_scale_derived_experimental_area_pixel_caches(&region);
+        arenas[arena_entry.key()] = std::move(region);
+    }
+    *identity = {
+        {"schema_id", kExperimentalRegionIdentitySchemaId},
+        {"schema_version", kExperimentalRegionIdentitySchemaVersion},
+        {"canvas_name", canvas.at("canvas_name")},
+        {"canvas_width_px", canvas.at("canvas_width_px")},
+        {"canvas_height_px", canvas.at("canvas_height_px")},
+        {"arenas", std::move(arenas)},
     };
     return true;
 }
@@ -201,6 +284,29 @@ inline bool projection_geometry_fingerprint(const std::string& canvas_bytes,
     return true;
 }
 
+inline bool experimental_region_geometry_fingerprint(
+    const std::string& canvas_bytes,
+    std::string* fingerprint,
+    std::string* error = nullptr)
+{
+    if (fingerprint == nullptr) {
+        if (error) *error = "experimental_region_fingerprint_output_missing";
+        return false;
+    }
+    const nlohmann::json canvas = nlohmann::json::parse(
+        canvas_bytes, nullptr, false);
+    if (canvas.is_discarded()) {
+        if (error) *error = "canvas_json_invalid";
+        return false;
+    }
+    nlohmann::json identity;
+    if (!build_experimental_region_geometry_identity(canvas, &identity, error)) {
+        return false;
+    }
+    *fingerprint = sha256(identity.dump());
+    return true;
+}
+
 inline Result compare_canvas_bytes(const std::string& current_canvas_bytes,
                                    const std::string& accepted_canvas_bytes)
 {
@@ -212,6 +318,14 @@ inline Result compare_canvas_bytes(const std::string& current_canvas_bytes,
             &result.error) ||
         !projection_geometry_fingerprint(
             accepted_canvas_bytes, &result.accepted_geometry_fingerprint,
+            &result.error) ||
+        !experimental_region_geometry_fingerprint(
+            current_canvas_bytes,
+            &result.current_experimental_region_geometry_fingerprint,
+            &result.error) ||
+        !experimental_region_geometry_fingerprint(
+            accepted_canvas_bytes,
+            &result.accepted_experimental_region_geometry_fingerprint,
             &result.error)) {
         return result;
     }
@@ -219,14 +333,19 @@ inline Result compare_canvas_bytes(const std::string& current_canvas_bytes,
         result.current_canvas_sha256 == result.accepted_canvas_sha256;
     result.projection_geometry_match =
         result.current_geometry_fingerprint == result.accepted_geometry_fingerprint;
+    result.experimental_region_geometry_match =
+        result.current_experimental_region_geometry_fingerprint ==
+        result.accepted_experimental_region_geometry_fingerprint;
     result.compatible = result.projection_geometry_match;
     result.basis = result.exact_file_checksum_match
         ? "exact_full_file_sha256"
-        : "projection_geometry_identity_v1";
+        : "projection_geometry_identity_v2";
     if (!result.exact_file_checksum_match && result.projection_geometry_match) {
-        result.warning = "canvas_non_geometry_calibration_state_only_change";
+        result.warning = result.experimental_region_geometry_match
+            ? "canvas_non_geometry_calibration_state_only_change"
+            : "canvas_experimental_region_geometry_changed";
     } else if (!result.projection_geometry_match) {
-        result.error = "canvas_projection_geometry_changed";
+        result.error = "canvas_projection_transform_changed";
     }
     return result;
 }

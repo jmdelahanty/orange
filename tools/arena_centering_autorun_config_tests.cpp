@@ -39,6 +39,7 @@ void test_defaults_are_safe()
 {
     ScopedEnv enabled("ORANGE_GUI_ARENA_CENTERING_AUTORUN");
     ScopedEnv arm("ORANGE_GUI_ARENA_CENTERING_SAVE_VERIFIED_CENTERS_ARMED");
+    ScopedEnv bootstrap("ORANGE_GUI_ARENA_CENTERING_BOOTSTRAP_CENTERS_ONLY");
     ScopedEnv resize("ORANGE_GUI_ARENA_CENTERING_RESIZE_ARENAS");
     ScopedEnv layout_arm("ORANGE_GUI_ARENA_CENTERING_SAVE_VERIFIED_LAYOUT_ARMED");
     ScopedEnv save("ORANGE_GUI_ARENA_CENTERING_SAVE_CAPTURES");
@@ -62,6 +63,8 @@ void test_defaults_are_safe()
     require(config.save_captures, "evidence capture defaults enabled");
     require(!config.save_verified_centers_armed,
             "persistent center save defaults explicitly disarmed");
+    require(!config.bootstrap_centers_only,
+            "bootstrap centering defaults disabled");
     require(!config.resize_arenas,
             "arena resizing defaults opt-in");
     require(!config.save_verified_layout_armed,
@@ -102,6 +105,7 @@ void test_overrides_are_bounded_and_deduplicated()
 {
     ScopedEnv enabled("ORANGE_GUI_ARENA_CENTERING_AUTORUN");
     ScopedEnv arm("ORANGE_GUI_ARENA_CENTERING_SAVE_VERIFIED_CENTERS_ARMED");
+    ScopedEnv bootstrap("ORANGE_GUI_ARENA_CENTERING_BOOTSTRAP_CENTERS_ONLY");
     ScopedEnv resize("ORANGE_GUI_ARENA_CENTERING_RESIZE_ARENAS");
     ScopedEnv layout_arm("ORANGE_GUI_ARENA_CENTERING_SAVE_VERIFIED_LAYOUT_ARMED");
     ScopedEnv margin("ORANGE_GUI_ARENA_CENTERING_RECTANGLE_SAFETY_MARGIN_CAMERA_PX");
@@ -126,6 +130,7 @@ void test_overrides_are_bounded_and_deduplicated()
         "ORANGE_GUI_HOMOGRAPHY_MINIMUM_DOT_BACKGROUND_CONTRAST_U8");
     enabled.Set("1");
     arm.Set("true");
+    bootstrap.Set("true");
     resize.Set("true");
     layout_arm.Set("true");
     margin.Set("2");
@@ -148,6 +153,8 @@ void test_overrides_are_bounded_and_deduplicated()
     const auto config = orange::gui::resolve_arena_centering_autorun_config();
     require(config.enabled && config.save_verified_centers_armed,
             "enabled and arm overrides apply");
+    require(config.bootstrap_centers_only,
+            "bootstrap-centering override applies independently");
     require(config.resize_arenas && config.save_verified_layout_armed,
             "resize and strong layout arm overrides apply");
     require(config.rectangle_safety_margin_camera_px == 4.0,

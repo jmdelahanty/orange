@@ -29,6 +29,7 @@ def main() -> int:
     parser.add_argument("result", type=Path)
     parser.add_argument("--expected-cameras", required=True)
     parser.add_argument("--require-committed", action="store_true")
+    parser.add_argument("--require-bootstrap-centers", action="store_true")
     parser.add_argument("--require-homography-fit", action="store_true")
     parser.add_argument("--require-homography-committed", action="store_true")
     args = parser.parse_args()
@@ -38,6 +39,8 @@ def main() -> int:
     if payload.get("schema_id") != "orange.gui_arena_centering_commissioning_result":
         fail("unexpected result schema")
     schema_version = int(payload.get("schema_version", 1))
+    if schema_version not in (1, 2, 3, 4):
+        fail(f"unsupported result schema version: {schema_version}")
     if payload.get("status") != "pass":
         fail(f"run did not pass: {payload.get('error')}")
     targets = payload.get("targets", [])
@@ -45,6 +48,28 @@ def main() -> int:
     if actual != expected:
         fail(f"camera target order mismatch: {actual} != {expected}")
     config = payload.get("config", {})
+    bootstrap_centers_only = bool(config.get("bootstrap_centers_only", False))
+    if args.require_bootstrap_centers and not bootstrap_centers_only:
+        fail("expected bootstrap-centers-only evidence")
+    if bootstrap_centers_only:
+        if schema_version < 4 or payload.get("workflow_mode") != "bootstrap_center_fiducial_v1":
+            fail("bootstrap centering requires explicit schema-v4 workflow identity")
+        if config.get("foreground_gray_qualification") != "provisional_for_center_fiducial_only":
+            fail("bootstrap gray was not labeled provisional")
+        if not config.get("require_projection_stability_capture") or not config.get("save_captures"):
+            fail("bootstrap centering requires saved two-capture stability evidence")
+        if any(config.get(key) for key in (
+            "resize_arenas", "save_verified_layout_armed",
+            "fit_homographies_after_centering", "accept_homographies_armed"
+        )):
+            fail("bootstrap centering must not resize or fit/promote homographies")
+        thresholds = config.get("homography_quality_thresholds", {})
+        if thresholds.get("projector_intensity_report_path") or thresholds.get(
+            "projector_intensity_report_sha256"
+        ):
+            fail("bootstrap centering must not claim commissioned intensity provenance")
+    elif schema_version >= 4 and payload.get("workflow_mode") != "center_rectangle_v1":
+        fail("standard centering requires explicit rectangle workflow identity")
     resize_enabled = bool(config.get("resize_arenas", False))
     ownership = payload.get("ownership", {})
     expected_mutation = (
@@ -107,7 +132,9 @@ def main() -> int:
                 for row in reference_centers.get("detections", [])
             ):
                 fail(f"{stage_id}: stability-reference center detections failed")
-        if schema_version >= 2 and stage_id in {
+        if bootstrap_centers_only and analysis.get("rectangle_boundaries") is not None:
+            fail(f"{stage_id}: bootstrap evidence unexpectedly contains rectangle analysis")
+        if schema_version >= 2 and not bootstrap_centers_only and stage_id in {
             "baseline", "candidate", "refined_candidate", "resized_candidate"
         }:
             rectangles = analysis.get("rectangle_boundaries", {})
@@ -153,7 +180,7 @@ def main() -> int:
         rectangle_overlays = artifacts.get("rectangle_overlays", [])
         expected_rectangle_overlays = (
             len(expected)
-            if schema_version >= 2 and stage_id in {
+            if schema_version >= 2 and not bootstrap_centers_only and stage_id in {
                 "baseline", "candidate", "refined_candidate", "resized_candidate"
             }
             else 0
@@ -190,6 +217,11 @@ def main() -> int:
         fail(f"terminal receipt is missing or invalid: {outcome!r}")
 
     homography = payload.get("homography", {})
+    if bootstrap_centers_only and (
+        homography.get("fit_requested") or homography.get("promotion_requested")
+        or homography.get("committed")
+    ):
+        fail("bootstrap centering unexpectedly fit or promoted a homography")
     if args.require_homography_fit or args.require_homography_committed:
         if schema_version < 3:
             fail("homography validation requires result schema version 3")

@@ -1476,10 +1476,17 @@ void render_spatial_layout_window(
                     ui_state->citrus_template.homography_commissioning_release_id.c_str());
             }
             if (!ui_state->citrus_template.homography_canvas_compatibility_warning.empty()) {
-                ImGui::TextColored(
-                    ImVec4(1.0f, 0.80f, 0.25f, 1.0f),
-                    "Compatibility warning: %s",
-                    ui_state->citrus_template.homography_canvas_compatibility_warning.c_str());
+                if (ui_state->citrus_template.homography_canvas_compatibility_warning ==
+                    "canvas_experimental_region_geometry_changed") {
+                    ImGui::TextColored(
+                        ImVec4(1.0f, 0.80f, 0.25f, 1.0f),
+                        "Homography retained: experimental-region geometry changed and has a separate identity.");
+                } else {
+                    ImGui::TextColored(
+                        ImVec4(1.0f, 0.80f, 0.25f, 1.0f),
+                        "Compatibility warning: %s",
+                        ui_state->citrus_template.homography_canvas_compatibility_warning.c_str());
+                }
             }
             if (ui_state->citrus_template.has_homography_quality) {
                 ImGui::TextDisabled(

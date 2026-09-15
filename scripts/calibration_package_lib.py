@@ -127,12 +127,11 @@ def _positive_number(value: Any) -> bool:
 
 
 def projection_geometry_identity(canvas: Mapping[str, Any]) -> dict[str, Any]:
-    """Build Citrus/Orange canvas projection-geometry identity v1.
+    """Build Citrus/Orange camera-to-canvas transform identity v2.
 
-    Keep this rule structurally identical to
-    ``canvas_projection_geometry_identity.h``. It excludes only calibration
-    presentation controls, accepted projected-surface scale caches, and pixel
-    dimensions that are derived from explicit positive physical dimensions.
+    Experimental-region shape and size are deliberately excluded. They select
+    where stimuli are valid after projection; they do not change the
+    camera-native-pixel to final-canvas transform.
     """
 
     if not isinstance(canvas, dict) or not all(
@@ -140,60 +139,102 @@ def projection_geometry_identity(canvas: Mapping[str, Any]) -> dict[str, Any]:
         for key in ("canvas_name", "canvas_width_px", "canvas_height_px", "arenas")
     ) or not isinstance(canvas.get("arenas"), dict):
         raise CalibrationPackageError("canvas_geometry_identity_invalid")
-    geometry = copy.deepcopy(dict(canvas))
-    for arena in geometry["arenas"].values():
+    transform_arenas: dict[str, Any] = {}
+    for arena_id, arena in canvas["arenas"].items():
         if not isinstance(arena, dict):
             raise CalibrationPackageError("canvas_arena_geometry_invalid")
-        for key in list(arena):
-            if (
-                key in {
-                    "calibration_pattern_mode",
-                    "calibration_pattern_mask_policy",
-                    "dot_radius_px",
-                    "grid_cols",
-                    "grid_rows",
-                }
-                or key.startswith("calibration_ring_")
-                or key.startswith("calibration_verification_")
-            ):
-                del arena[key]
+        transform_arena = {
+            key: copy.deepcopy(arena[key])
+            for key in ("config_name", "active_camera_id")
+            if key in arena
+        }
+        cameras = arena.get("camera_calibrations")
+        if cameras is not None:
+            if not isinstance(cameras, list):
+                raise CalibrationPackageError("canvas_camera_calibrations_invalid")
+            transform_cameras = []
+            for camera in cameras:
+                if not isinstance(camera, dict):
+                    raise CalibrationPackageError("canvas_camera_calibration_invalid")
+                transform_cameras.append(
+                    {
+                        key: copy.deepcopy(camera[key])
+                        for key in (
+                            "camera_id",
+                            "native_width_px",
+                            "native_height_px",
+                            "arena_center_x_px",
+                            "arena_center_y_px",
+                            "arena_width_px",
+                            "arena_height_px",
+                        )
+                        if key in camera
+                    }
+                )
+            transform_arena["camera_calibrations"] = transform_cameras
+        transform_arenas[arena_id] = transform_arena
+    return {
+        "schema_id": "citrus.calibration.canvas_projection_geometry_identity",
+        "schema_version": 2,
+        "canvas": {
+            "canvas_name": copy.deepcopy(canvas["canvas_name"]),
+            "canvas_width_px": copy.deepcopy(canvas["canvas_width_px"]),
+            "canvas_height_px": copy.deepcopy(canvas["canvas_height_px"]),
+            "arenas": transform_arenas,
+        },
+    }
+
+
+def experimental_region_geometry_identity(
+    canvas: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build the physical/experimental-region identity independent of projection."""
+
+    if not isinstance(canvas, dict) or not all(
+        key in canvas
+        for key in ("canvas_name", "canvas_width_px", "canvas_height_px", "arenas")
+    ) or not isinstance(canvas.get("arenas"), dict):
+        raise CalibrationPackageError("experimental_region_identity_invalid")
+    regions: dict[str, Any] = {}
+    for arena_id, arena in canvas["arenas"].items():
+        if not isinstance(arena, dict):
+            raise CalibrationPackageError("experimental_region_arena_invalid")
+        region = {
+            key: copy.deepcopy(value)
+            for key, value in arena.items()
+            if key.startswith("experimental_area_")
+        }
+        for key in (
+            "config_name",
+            "active_camera_id",
+            "arena_region_width_mm",
+            "arena_region_height_mm",
+            "dish_shape",
+            "dish_config",
+            "experimental_chamber",
+            "selected_dish_type",
+            "selected_dish_type_name",
+            "tank_design_id",
+            "tank_design_spec_filename",
+        ):
+            if key in arena:
+                region[key] = copy.deepcopy(arena[key])
         for physical_key, pixel_key in (
             ("experimental_area_width_mm", "experimental_area_width_px"),
             ("experimental_area_height_mm", "experimental_area_height_px"),
             ("experimental_area_radius_mm", "experimental_area_radius_px"),
             ("experimental_area_corner_radius_mm", "experimental_area_corner_radius_px"),
         ):
-            if _positive_number(arena.get(physical_key)):
-                arena.pop(pixel_key, None)
-        cameras = arena.get("camera_calibrations")
-        if cameras is None:
-            continue
-        if not isinstance(cameras, list):
-            raise CalibrationPackageError("canvas_camera_calibrations_invalid")
-        for camera in cameras:
-            if not isinstance(camera, dict):
-                raise CalibrationPackageError("canvas_camera_calibration_invalid")
-            for key in (
-                "scale_image_path",
-                "real_world_ref_mm",
-                "pixels_per_mm_camera",
-                "pixels_per_mm_projector",
-            ):
-                camera.pop(key, None)
-            models = camera.get("scale_models")
-            if isinstance(models, list):
-                camera["scale_models"] = [
-                    model
-                    for model in models
-                    if not (
-                        isinstance(model, dict)
-                        and model.get("target_plane") == "projected_surface"
-                    )
-                ]
+            if _positive_number(region.get(physical_key)):
+                region.pop(pixel_key, None)
+        regions[arena_id] = region
     return {
-        "schema_id": "citrus.calibration.canvas_projection_geometry_identity",
+        "schema_id": "citrus.calibration.experimental_region_geometry_identity",
         "schema_version": 1,
-        "canvas": geometry,
+        "canvas_name": copy.deepcopy(canvas["canvas_name"]),
+        "canvas_width_px": copy.deepcopy(canvas["canvas_width_px"]),
+        "canvas_height_px": copy.deepcopy(canvas["canvas_height_px"]),
+        "arenas": regions,
     }
 
 
@@ -212,21 +253,46 @@ def projection_geometry_fingerprint(canvas: Mapping[str, Any]) -> str:
     return sha256_bytes(encoded)
 
 
+def experimental_region_geometry_fingerprint(canvas: Mapping[str, Any]) -> str:
+    identity = experimental_region_geometry_identity(canvas)
+    encoded = json.dumps(
+        identity,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return sha256_bytes(encoded)
+
+
 def compare_projection_geometry(
     current: Mapping[str, Any], accepted: Mapping[str, Any]
 ) -> dict[str, Any]:
     current_fingerprint = projection_geometry_fingerprint(current)
     accepted_fingerprint = projection_geometry_fingerprint(accepted)
+    current_region_fingerprint = experimental_region_geometry_fingerprint(current)
+    accepted_region_fingerprint = experimental_region_geometry_fingerprint(accepted)
     compatible = current_fingerprint == accepted_fingerprint
+    region_compatible = current_region_fingerprint == accepted_region_fingerprint
     return {
         "compatible": compatible,
-        "basis": "projection_geometry_identity_v1",
-        "warning": "canvas_non_geometry_calibration_state_only_change"
-        if compatible and current != accepted
-        else None,
-        "error": None if compatible else "canvas_projection_geometry_changed",
+        "basis": "projection_geometry_identity_v2",
+        "warning": (
+            "canvas_experimental_region_geometry_changed"
+            if compatible and not region_compatible
+            else "canvas_non_geometry_calibration_state_only_change"
+            if compatible and current != accepted
+            else None
+        ),
+        "error": None if compatible else "canvas_projection_transform_changed",
+        "projection_geometry_match": compatible,
+        "experimental_region_geometry_match": region_compatible,
         "current_geometry_fingerprint": current_fingerprint,
         "accepted_geometry_fingerprint": accepted_fingerprint,
+        "current_experimental_region_geometry_fingerprint":
+            current_region_fingerprint,
+        "accepted_experimental_region_geometry_fingerprint":
+            accepted_region_fingerprint,
     }
 
 
@@ -802,11 +868,23 @@ def validate_candidate_package(
             not isinstance(projection_identity, dict)
             or projection_identity.get("schema_id")
             != "citrus.calibration.canvas_projection_geometry_identity"
-            or projection_identity.get("schema_version") != 1
+            or projection_identity.get("schema_version") != 2
             or projection_identity.get("fingerprint") != observed_fingerprint
         ):
             raise CalibrationPackageError(
                 "commissioned setup projection geometry fingerprint mismatch"
+            )
+        observed_region_fingerprint = experimental_region_geometry_fingerprint(canvas)
+        region_identity = identity.get("experimental_region_geometry_identity")
+        if (
+            not isinstance(region_identity, dict)
+            or region_identity.get("schema_id")
+            != "citrus.calibration.experimental_region_geometry_identity"
+            or region_identity.get("schema_version") != 1
+            or region_identity.get("fingerprint") != observed_region_fingerprint
+        ):
+            raise CalibrationPackageError(
+                "commissioned setup experimental region geometry fingerprint mismatch"
             )
     elif package_kind == "experiment_canvas_binding":
         canvas_rows = [

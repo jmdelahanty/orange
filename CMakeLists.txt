@@ -1270,6 +1270,10 @@ if(BUILD_TESTING)
     target_compile_features(arena_centering_autorun_config_tests PRIVATE cxx_std_17)
     add_test(NAME arena_centering_autorun_config_tests COMMAND arena_centering_autorun_config_tests)
     add_test(
+        NAME validate_gui_arena_centering_result_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/validate_gui_arena_centering_result_tests.py"
+    )
+    add_test(
         NAME validate_gui_guided_capture_result_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/validate_gui_guided_capture_result_tests.py"
     )

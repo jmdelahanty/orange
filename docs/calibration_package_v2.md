@@ -70,24 +70,26 @@ is permitted.
 
 ## Canvas compatibility
 
-Orange and Citrus now use the same
-`citrus.calibration.canvas_projection_geometry_identity`, version 1 rule for
-accepted projection products. Exact whole-file SHA-256 remains the first and
-strongest match. A raw checksum mismatch is accepted only when:
+Orange and Citrus use the same
+`citrus.calibration.canvas_projection_geometry_identity`, version 2 rule for
+accepted projection products. This identity contains only the canvas raster
+and camera-to-canvas member placement. Exact whole-file SHA-256 remains the
+first and strongest match. A raw checksum mismatch is accepted only when:
 
 1. the active commissioning pointer checksum-binds an accepted release;
 2. that release checksum-binds the exact active homography pointer;
 3. the release checksum-binds its accepted canvas snapshot; and
-4. current and accepted snapshots have the same projection-geometry identity.
+4. current and accepted snapshots have the same projection-transform identity.
 
-The identity excludes only calibration presentation controls, mutable
-projected-surface scale caches already superseded by accepted scale artifacts,
-and pixel sizes derived from positive physical experimental dimensions. Arena
-placement/size, camera mapping/native raster, physical dimensions, tank/dish
-semantics, canvas raster, and every field not explicitly excluded remain
-fail-closed. A semantic acceptance records basis
-`projection_geometry_identity_v1` and warning
-`canvas_non_geometry_calibration_state_only_change`.
+Experimental-area shape, center, and physical dimensions plus tank/dish
+semantics are recorded separately by
+`citrus.calibration.experimental_region_geometry_identity`, version 1. Such a
+change does not alter the homography and is accepted with basis
+`projection_geometry_identity_v2` and warning
+`canvas_experimental_region_geometry_changed`. Calibration presentation or
+derived-cache-only changes retain the warning
+`canvas_non_geometry_calibration_state_only_change`. Canvas raster,
+camera-native raster, and camera-to-canvas placement remain fail-closed.
 
 The shared Orange C++ implementation is
 `src/gui/spatial_layout/canvas_projection_geometry_identity.h`; the standalone

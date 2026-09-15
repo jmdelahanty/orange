@@ -800,6 +800,8 @@ nlohmann::json make_group_membership(const SpatialLayoutUiState& ui_state)
                 "frame_period_ns", uint64_t{0}),
             ui_state.group_capture_alignment_plan.value(
                 "tolerance_ns", uint64_t{0}),
+            ui_state.group_capture_alignment_plan.value(
+                "capture_stride_frames", uint32_t{1}),
         };
         bool aligned = spatial_snapshot_expected_frame_timestamp(
             plan,
@@ -2139,6 +2141,10 @@ void advance_group_capture_workflow(
                     {"first_camera_timestamp_ns", alignment_plan.first_camera_timestamp_ns},
                     {"frame_period_ns", alignment_plan.frame_period_ns},
                     {"tolerance_ns", alignment_plan.tolerance_ns},
+                    {"capture_stride_frames", alignment_plan.capture_stride_frames},
+                    {"capture_interval_ns",
+                     alignment_plan.frame_period_ns *
+                         alignment_plan.capture_stride_frames},
                     {"requested_frame_count", ui_state->group_capture_target_frame_count},
                 };
             }

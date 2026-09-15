@@ -60,6 +60,8 @@ ArenaCenteringAutorunConfig resolve_arena_centering_autorun_config()
         "ORANGE_GUI_ARENA_CENTERING_SAVE_CAPTURES", true);
     config.save_verified_centers_armed = gui_env_flag_enabled(
         "ORANGE_GUI_ARENA_CENTERING_SAVE_VERIFIED_CENTERS_ARMED", false);
+    config.bootstrap_centers_only = gui_env_flag_enabled(
+        "ORANGE_GUI_ARENA_CENTERING_BOOTSTRAP_CENTERS_ONLY", false);
     config.resize_arenas = gui_env_flag_enabled(
         "ORANGE_GUI_ARENA_CENTERING_RESIZE_ARENAS", false);
     config.save_verified_layout_armed = gui_env_flag_enabled(
