@@ -116,3 +116,51 @@ or in the memory notes under
 - Keypoint label naming (`bladder` vs `swim_bladder`) and threshold spec keys.
 - Whether the shaman-v2 remote head has moved beyond what the shared
   worktree shows; fetch before rebasing.
+
+## Addendum 2026-09-16 (evening): 192 engine built
+
+Built on GPU 5 (NVIDIA A16, `GPU-840b0989…`, CC 8.6, TensorRT 10.0.1,
+driver 535.183.06) with direct `trtexec` at the production tier
+(`--fp16 --builderOptimizationLevel=5 --avgTiming=32
+--profilingVerbosity=detailed`, plus `--timingCacheFile`, `--exportLayerInfo`,
+`--exportProfile`). Build time 279.8 s, engine 7.95 MiB. Everything is under
+`~/orange_data/pose/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915/engines/`
+with a `SHA256SUMS`; the active 256 engine in `~/` was not touched.
+
+- Engine: `pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915_a16_gpu5_trt100_fp16_bo5_avg32.engine`
+- Bindings: input `images` FP32 `1x3x192x192`; output `output0` FP32 `1x14x756`.
+- Manifest: `<stem>.manifest.json`, written by
+  `scripts/write_pose_tensorrt_engine_manifest.py` (new; takes the identity
+  preprocessing from `pose_model_input_contract.json` instead of the detect
+  writer's hardcoded letterbox/114 fields). Status `candidate`, parity pending,
+  `selector_activation: false`. The Palette export manifest (gap 7) is still
+  absent and is recorded as such.
+- `scripts/build_tensorrt_detect_engine.sh` was NOT used: it requires the gap-7
+  file and, fed the canonical manifest, would silently skip the SHA check and
+  record `[1,3,640,640]` with detect preprocessing. Four small edits would make
+  it pose-capable (`--task`, optional/adapted manifest, task profile in the
+  writer, timing-cache and `--useCudaGraph` benchmark flags).
+
+trtexec on the same idle die, `--warmUp=1000 --duration=10`, GPU compute time
+mean / p95 / p99 in ms:
+
+| Engine | plain enqueue | `--useCudaGraph` |
+|---|---|---|
+| 256 cedar (yolov8n-pose, active) | 0.840 / 0.849 / 0.852 | 0.722 / 0.726 / 0.727 |
+| 192 head (yolo11n-pose, new) | 0.734 / 0.740 / 0.745 | 0.575 / 0.578 / 0.581 |
+
+So 192 saves 0.11 ms plain and 0.15 ms graphed; graphing saves 0.12 to 0.16 ms
+on either engine. The pose worker today does plain enqueue (no graph) and a
+blocking stream sync. The remembered "0.720 ms on an idle die" for the 256
+engine was the graphed number.
+
+Two-stage speedup assessment (read-only, 2026-09-16): capture-to-pose-done
+3.56 mean / 3.97 p95 today is 2.00 detect graph + ~0.72 pose + ~0.6 mean
+(1.08 p95) of thread hops, CPU waits and the blocking sync. Estimates: device
+ROI crop on the YOLO stream + pose graph + event completion with two threads
+kept gives ~3.15-3.25 / 3.50-3.60; a single fused graph with one CPU wait
+gives ~3.05-3.15 / 3.20-3.30 at 256 and ~2.90-2.95 / 3.05-3.15 at 192.
+Conditional graph nodes need CUDA 12.4; the rig has 12.2, so pose runs every
+frame and results are masked by ROI validity. The one missing piece for
+capture is a crop kernel that reads its origin from the device `DetectRoi`
+(today's `mono_roi_copy_kernel` takes host ints).
