@@ -660,3 +660,49 @@ the teardown backtrace (`sudo coredumpctl gdb 3874037` or the
 `orange-gdb-headless-bt` wrapper, which only runs the shared worktree's
 client, itself a useful bisect: if that binary also segfaults on this
 spec the crash predates this branch), and the decomposition above.
+
+## Addendum 2026-09-17: recorder-on measurement, fused path vs crop-producer path
+
+Run `fourcam_fused_recorder_realfish_20260917_121251` (fused path, steps
+1 to 4, 256 cedar engine, pose crop 256, video crop 384, both recorders
+on, four cameras, fish) against the control `…_off_20260917_120207`
+(crop-producer path, same recorders). The fused run passed the run policy
+on every camera, all recorders acknowledged every frame, crops all
+encoded, and the client exited cleanly (the control had segfaulted at
+teardown; that crash is on the crop-producer path with both recorders and
+real pose, and needs a fresh reproduction for a usable backtrace because
+the binary was rebuilt after the core was taken).
+
+| Metric (ms, mean over four cameras) | Crop producer + recorders | Fused + recorders |
+|---|---|---|
+| acquisition to worker start | 0.461 | 0.328 |
+| pre_ms (GPU preprocess) | 0.146 | 0.090 |
+| infer_ms mean / p95 | 2.120 / 2.814 | 2.163 / 2.822 |
+| cpu_post_sync | 0.475 | 0.524 |
+| acquisition to detect done mean / p95 / p99 | 3.272 / 3.896 / 4.412 | 3.229 / 3.747 / 4.104 |
+| capture to pose done mean / p95 / p99 | 5.268 / 6.241 / 6.680 | 3.802 / 4.379 / 4.781 |
+| device_stage_gpu mean | n/a | 0.780 |
+| recorder enqueue age p95 | 20.6 | 18.0 |
+| recorder detach total p95 | 0.427 | 0.270 |
+| recorder peak pending GOPs / frontier age | 3 / 524 | 3 / 524 |
+| recorder frames encoded / dropped / copy fallbacks | 5901 / 0 / 0 | 5900 / 0 / 0 |
+| crops encoded / dropped, crop queue high-water | 5901 / 0, 0 | 5900 / 0, 0 |
+
+Answers: (1) receiving the owned frame after pose costs the recorder
+nothing measurable; its enqueue age and detach timing both improved, and
+its pending depth did not move. (2) The fused path keeps its advantage
+under full load: 1.5 ms off the pose mean and 1.9 ms off the p95, and
+even the detect side is slightly better (fewer host calls to lose to the
+recorder processes). (3) The 0.8 ms four-camera contention on detect is
+common to both paths (infer_ms bimodal at 2.0 / 2.8 in both) and is not
+touched by this branch.
+
+**Pose quality on the crop-producer path collapses once the video crop is
+384.** The old path poses on the video crop (384 letterboxed into the 256
+engine), so the head is smaller than the model was trained on: pose
+status `poses` on only 22 of 5901 frames on cam 2010093 and 4465 / 5899 /
+5633 on the others, confidence 0.29 to 0.78. The device path poses on its
+own 256 crop: `poses` on every frame, confidence 0.90 to 0.94. The
+production GUI records 384 crops, so this is the production condition of
+the old path. The two-crop split is therefore a correctness fix as well
+as a latency one.
