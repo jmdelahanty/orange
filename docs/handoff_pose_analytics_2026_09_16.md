@@ -1081,3 +1081,77 @@ full-frame recorder (the client refuses `crop_recording external_ipc`
 without it), so "crop video only" is not a configuration that exists; the
 figure that answers it is the full-frame-only row, which equals both.
 The journal's figures carry these five configurations.
+
+## Addendum 2026-09-17: per-card split of the slow frames, and the paced-copy test (no cameras)
+
+A second-opinion review (`~/pose_latency_regression_second_opinion_2026_09_17.md`,
+section 7) joined the 13:33 fused+recorders run by shard GOP and found the
+two mechanisms live on different cards. Re-joined here from the same run
+with the recorder's `Cam*_external_meta.csv` (`assigned_gpu_id` per
+`recording_frame_id`), slow = infer_ms > 2.3:
+
+| Camera, detect die, card | slow fraction, local-shard GOPs | slow fraction, other-die GOPs | infer mean local / other |
+|---|---|---|---|
+| 2010093, die 3, A | 0.173 | 0.033 | 2.186 / 2.085 |
+| 2010094, die 1, A | 0.161 | 0.049 | 2.172 / 2.091 |
+| 2010095, die 7, B | 0.172 | 0.178 | 2.177 / 2.166 |
+| 2010096, die 5, B | 0.165 | 0.154 | 2.170 / 2.160 |
+
+So: the local-shard half is slow on every die (the engine encoding on the
+detect die), and the other-die half is slow only on card B (dies 5 to 8).
+The other-die pull sweep described in the previous addendum is a card B
+effect; on card A the pull costs a few percent of slow frames. A push (or
+a phase-controlled pull) can therefore remove at most card B's other-half
+share, roughly a quarter of all slow frames, and none of the local-half
+term. Gate any A/B per camera and per shard half, not pooled, plus the
+other-die shard's `prepare_ms` falling by about 3.2 ms as the direct
+proof it reads locally, plus `camera_frame_id_gaps` and
+`get_frame_errors` at zero (a saturated detect-die link starves RDMA).
+
+The review's no-camera test, run 14:07 (`tools/paced_peer_copy.cu`, one
+20 MB copy engine transfer out of the die every 10 ms, 3.24 ms each;
+`trtexec --loadEngine --useCudaGraph` of the detect engine on the same
+die, 8 s):
+
+| Die | graph alone mean / p95 / p99 / max | with the paced copy out of the die |
+|---|---|---|
+| 1 (card A) | 1.973 / 1.981 / 1.986 / 2.108 | 2.002 / 2.054 / 2.061 / 2.225 |
+| 7 (card B) | 1.972 / 1.979 / 1.983 / 2.152 | 1.999 / 2.051 / 2.057 / 2.230 |
+
+A paced peer read out of a detect die costs its graph +0.03 mean and
++0.07 p95 on both cards alike, with no card difference and nothing like
+the 2.6 to 2.8 ms slow mode. So the pull by itself is not the slow mode;
+on card B the slow other-half frames need something the test lacks, most
+plausibly the camera's RDMA inflow sharing card B's root port with the
+peer read (the review notes card B's dies are PHB to the NIC ports that
+serve its cameras, card A is SYS to every NIC). And the local-half term
+on every die is the engine's own work, which the review ties to the
+bitstream size of the frame NVENC is on (a 1 MB I-frame and a ~10-frame
+rate-control oscillation of the P-frames, 118 to 178 KB): encoder-side
+levers (CBR or a sized VBV, a smaller I-frame, a longer GOP) are spec
+matrix changes and should run as controls alongside any code A/B.
+
+Telemetry from the review (50 ms samples on the 13:58 run): every detect
+die at 1755 MHz on slow and fast frames alike, 42 W of the 62.5 W cap; no
+clock or power lever exists, the contention is in the memory system.
+
+Plan, revised. (1) The cheap change first, in the recorder only: the
+other-die shard stages its copy at descriptor arrival (already
+detect-gated) into a local NVENC-registered staging buffer, instead of at
+NVENC pace; the implementation map (this session's mapping agent) puts it
+at about 60 lines in `tools/external_recorder_ipc_probe.cpp` using the
+existing `acquire_staging_buffer` / `use_staging` /
+`SetNextInputRegisteredResource` machinery, no protocol change, no new
+pool, and the pool entry is released about 3 ms earlier. Gate as above;
+expected to move card B's other half only. (2) In the same session, one
+encoder-side control (CBR or VBV) for the local-half term on all dies.
+(3) The two-pool push (analytics copies to a pool on the partner die by
+copy engine, hello and FRAME carry a per-shard source GPU) only if the
+residual read still shows in `infer_ms` after (1); it is the larger
+change (pool allocation on the partner die, peer access in the analytics
+process, per-shard prewarm descriptors, IPC import per device) and by the
+14:07 test its extra gain over (1) is at most the +0.03 / +0.07 the read
+itself costs. Note from the map: the two shards are threads in one
+recorder process per camera, the recorder assigns GOP routing itself
+(`gop_index % shards`), and the analytics side does not know the shard
+GPUs today.
