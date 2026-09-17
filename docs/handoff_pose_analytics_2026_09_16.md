@@ -1011,3 +1011,51 @@ idle and under the pipeline) to learn whether that pull is contended or
 mis-implemented; if a bulk transfer reaches the 6 GB/s the switch
 allows, pushing the frame from the analytics side after pose would halve
 the time the link is busy.
+
+## Addendum 2026-09-17: peer copy microbenchmark, what `prepare_ms` really is, and the beat
+
+Microbenchmark (scratchpad `peer_copy_bench.cu`, 20,358,144 bytes, 40
+iterations, GPU events): between the two dies of a pair (1->2, 3->4,
+5->6) and across pairs (1->3, 1->5) the transfer is identical:
+`cudaMemcpyPeerAsync` 3.18 ms pull / 3.09 ms push (6.4 to 6.6 GB/s), a
+kernel reading the peer mapping 3.18 ms, and a pitched
+`cudaMemcpy2DPeerAsync` (4512 -> 4608 or 4864 pitch) also 3.19 ms. Local
+D2D on a die: 0.25 ms (80 GB/s). **While the four-camera fused pipeline
+ran (no recorders) the peer copy still ran at 6.4 GB/s**, so the camera
+inflow does not slow the copy; but that run then failed with camera
+frame drops on every camera: back-to-back peer copies saturating a die's
+link starve the GPUDirect RDMA writes. The copy wins the arbitration, the
+camera loses. Never run link-saturating transfers on a detect die during
+acquisition; a paced 3.2 ms burst per 10 ms is what the recorder already
+does and it drops nothing.
+
+`prepare_ms` (tools/external_recorder_ipc_probe.cpp:4377-4401) is not the
+copy: it is `WaitForNextInputFrameAvailable` (waiting for NVENC to free
+an input buffer, i.e. waiting for the engine's pace) plus the 2D peer
+copy plus an event synchronize. On the other-die shard the copy is about
+3.2 ms of it; the remaining 4 to 6 ms is the wait for the engine. The
+earlier reading of "7 to 9 ms per frame across the switch at 2.2 to 2.8
+GB/s" is withdrawn: the link carries one 3.2 ms burst at 6.4 GB/s per
+frame during the other-die half, about a third of that half's time.
+
+The beat, now with a mechanism. The other-die shard's copy of frame k
+starts when NVENC frees a buffer, which is tied to the completion of an
+earlier frame's encode, so the copy's start time drifts against the
+frame period by (encode period - 10 ms) per frame and sweeps through the
+period with a beat of about 9 frames; whenever the 3.2 ms burst sweeps
+across the next frame's inference window (0 to 2.2 ms after arrival) the
+graph runs slow for one or two frames. That is the lag-9 autocorrelation
+and the two-frame bursts. The local shard's engine at full duty during
+its half adds the smaller, steady penalty.
+
+Lever this implies (a design change in the recorder handoff, not a
+tuning): give the other-die shard its frame by a push from the analytics
+side at a controlled time, right after detect, into a buffer resident on
+that die (a per-die owned-copy pool: for other-die GOPs the late owned
+copy targets the shard's die, peer copy by kernel or copy engine at 6.4
+GB/s, then the shard reads locally and the detect die is never read across
+the link at an uncontrolled phase). The transfer would then occupy 2.3
+to 5.5 ms of each period, never the next frame's 0 to 2.2 ms window. The
+fused graph's trailing copy node is the natural place: same kernel, peer
+destination. Expected gain: the other-die half's slow bursts and most of
+the +0.85 ms p95; the local half's engine read remains.
