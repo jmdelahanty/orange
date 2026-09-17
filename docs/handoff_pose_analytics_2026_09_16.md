@@ -1245,3 +1245,25 @@ Next: (1) endurance `fourcam_fused_recorder_realfish_earlystage_endurance`
 (600 s, started 14:38) → flip the default if clean; (2) encoder-side
 control for the local-half term (CBR / sized VBV / longer GOP) as a spec
 matrix change; (3) paced push only if the 4% residual on card B matters.
+
+## Addendum 2026-09-17 15:00: endurance passed, early peer staging is the default
+
+`fourcam_fused_recorder_realfish_earlystage_endurance_20260917_143856`
+(600 s, four cameras, both recorders, real fish): 59,900 frames per
+camera, 29,950 encoded per shard, `camera_dropped_frames` /
+`get_frame_errors` / `acq_starve` 0 on every camera,
+`early_stage_exhausted` 0, staging buffers bounded at 6 to 7 per shard,
+other-die-half slow fraction (infer > 2.3) steady at 0.03 to 0.04 in
+every two-minute slice (cams 93/94/95/96: 0.038 / 0.038 / 0.033 / 0.031;
+local half 0.147 / 0.154 / 0.165 / 0.158), capture-to-pose-done mean
+3.17 / 3.17 / 3.24 / 3.24, p99 3.87 / 3.89 / 4.07 / 3.83, device-stage
+p95 0.75 on all; GPU-timed copy p50 7.2 ms (card A) / 8.3 ms (card B),
+max 9.4.
+
+Default flipped: `ORANGE_EXTERNAL_RECORDER_EARLY_PEER_STAGE` defaults to
+1 in the probe and `external_recorder_early_peer_stage` to true in the
+headless spec parser (`=0` / `false` restores the in-loop copy). Verified
+with the unmodified `fourcam_fused_recorder_realfish` spec
+(`…_20260917_145056`, pass): every other-die shard reports
+`early_stage_frames=2950`. `external_recorder_peer_access` and
+`external_recorder_early_stage_push` stay off (no effect / camera drops).

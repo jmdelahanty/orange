@@ -267,7 +267,7 @@ struct ExperimentSpec {
     bool external_recorder_detect_priority = true;  // ORANGE_EXTERNAL_RECORDER_DETECT_PRIORITY (default on)
     bool external_recorder_registered_source = true;   // ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE + ORANGE_POOL_NV12_LAYOUT (default on since 2026-09-04)
     bool external_recorder_deferred_release = false;  // ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE (diagnostic)
-    bool external_recorder_early_peer_stage = false;  // ORANGE_EXTERNAL_RECORDER_EARLY_PEER_STAGE (other-die shard stages its peer copy at descriptor arrival)
+    bool external_recorder_early_peer_stage = true;  // ORANGE_EXTERNAL_RECORDER_EARLY_PEER_STAGE (other-die shard stages its peer copy at descriptor arrival; default on since 2026-09-17)
     bool external_recorder_peer_access = false;  // ORANGE_EXTERNAL_RECORDER_PEER_ACCESS (other-die shard enables CUDA peer access to the source die)
     bool external_recorder_early_stage_push = false;  // ORANGE_EXTERNAL_RECORDER_EARLY_STAGE_PUSH (early staging copy issued from the source die)
     int external_recorder_max_deferred = -1;  // ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED (-1: ingress default)
@@ -8134,7 +8134,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->external_recorder_deferred_release =
         fixed.value("external_recorder_deferred_release", false);
     spec->external_recorder_early_peer_stage =
-        fixed.value("external_recorder_early_peer_stage", false);
+        fixed.value("external_recorder_early_peer_stage", true);
     spec->external_recorder_peer_access =
         fixed.value("external_recorder_peer_access", false);
     spec->external_recorder_early_stage_push =

@@ -231,7 +231,7 @@ void signal_handler(int)
         << "  --direct-input-source Copy IPC source directly into NVENC input before ACK. Experimental.\n"
         << "  --deferred-source-release Send RELEASE after source consumption; ACK only accepts work. Experimental.\n"
         << "  --registered-source   Encode from the NV12-shaped pool buffer registered with NVENC (no copy); implies the two above. Default on since 2026-09-04 (env ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE=0 disables).\n"
-        << "  --early-peer-stage    Other-GPU shards copy the pool frame into a staging buffer at descriptor arrival, before the NVENC input wait (env ORANGE_EXTERNAL_RECORDER_EARLY_PEER_STAGE=1).\n"
+        << "  --early-peer-stage    Other-GPU shards copy the pool frame into a staging buffer at descriptor arrival, before the NVENC input wait. Default on since 2026-09-17 (env ORANGE_EXTERNAL_RECORDER_EARLY_PEER_STAGE=0 disables).\n"
         << "  --early-stage-push    Issue the early staging copy from the source GPU (push) instead of the shard GPU (pull) (env ORANGE_EXTERNAL_RECORDER_EARLY_STAGE_PUSH=1).\n"
         << "  --peer-access         Enable CUDA peer access from an other-GPU shard to the source GPU before its copies (env ORANGE_EXTERNAL_RECORDER_PEER_ACCESS=1).\n"
         << "  --fps <int>           Encoder nominal FPS. Default 60.\n"
@@ -407,8 +407,10 @@ Options parse_options(int argc, char** argv)
     // ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE=0 restores the copy path.
     options.registered_source =
         env_flag_enabled("ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE", true);
+    // Default on since 2026-09-17 (600 s endurance passed, zero camera drops).
+    // ORANGE_EXTERNAL_RECORDER_EARLY_PEER_STAGE=0 restores the in-loop copy.
     options.early_peer_stage =
-        env_flag_enabled("ORANGE_EXTERNAL_RECORDER_EARLY_PEER_STAGE", false);
+        env_flag_enabled("ORANGE_EXTERNAL_RECORDER_EARLY_PEER_STAGE", true);
     options.peer_access =
         env_flag_enabled("ORANGE_EXTERNAL_RECORDER_PEER_ACCESS", false);
     options.early_stage_push =
