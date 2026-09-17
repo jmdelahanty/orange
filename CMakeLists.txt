@@ -568,6 +568,7 @@ if(BUILD_TESTING)
         "tools/detect_roi_tests.cpp"
         "${SRC_DIR}/detect_roi.cu"
         "${SRC_DIR}/pose_crop_from_roi.cu"
+        "${SRC_DIR}/optimized_yolo_preprocess.cu"
     )
     target_include_directories(detect_roi_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS} "${ORANGE_CUDA_ROOT}/include")
     target_compile_features(detect_roi_tests PRIVATE cxx_std_17)

@@ -143,7 +143,33 @@ __global__ void detect_roi_kernel(
     }
 }
 
+__global__ void detect_roi_kernel_indirect(
+    const int* num_dets,
+    const float* boxes,
+    const float* scores,
+    const int* labels,
+    const DetectRoiParams* params,
+    DetectRoi* out)
+{
+    if (threadIdx.x == 0 && blockIdx.x == 0) {
+        const DetectRoiParams p = *params;
+        select_detect_roi<DeviceOps>(num_dets, boxes, scores, labels, p, out);
+    }
+}
+
 }  // namespace
+
+void launch_detect_roi_kernel_indirect(
+    const int* d_num_dets,
+    const float* d_boxes,
+    const float* d_scores,
+    const int* d_labels,
+    DetectRoi* d_out,
+    const DetectRoiParams* d_params,
+    cudaStream_t stream)
+{
+    detect_roi_kernel_indirect<<<1, 1, 0, stream>>>(d_num_dets, d_boxes, d_scores, d_labels, d_params, d_out);
+}
 
 void launch_detect_roi_kernel(
     const int* d_num_dets,

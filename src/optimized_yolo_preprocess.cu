@@ -3,6 +3,7 @@
 // Mono 4512x4512 -> BGR 640x640 -> Normalized Float Planar in one pass
 
 #include "optimized_yolo_preprocess.h"
+#include "fused_frame_args.h"
 
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
@@ -15,26 +16,26 @@
 // 4. Add letterbox padding
 // 5. Normalize to [0,1] 
 // 6. Convert to planar format (CCCCC instead of CRGBCRGB)
+// One output pixel of the mono path. Shared by the direct kernel and the
+// fused-graph (indirect) kernel so the two are bit-identical; the mask
+// branch is a compile-time constant in the direct kernel and a runtime
+// flag in the indirect one, with the same float expressions either way.
 template <bool ApplyCircleMask>
-__global__ void mono_to_yolo_optimized(
-    const unsigned char* __restrict__ src_mono,    // Input: 4512x4512 mono
-    float* __restrict__ dst_planar,                // Output: 640x640x3 planar float
-    int src_width,                                 // 4512
-    int src_height,                                // 4512  
-    int dst_width,                                 // 640
-    int dst_height,                                // 640
-    float scale_x,                                 // scaling factors
+__device__ __forceinline__ void mono_to_yolo_pixel(
+    const unsigned char* __restrict__ src_mono,
+    float* __restrict__ dst_planar,
+    int src_width,
+    int src_height,
+    int dst_width,
+    int dst_height,
+    float scale_x,
     float scale_y,
-    int pad_left,                                  // letterbox padding
+    int pad_left,
     int pad_top,
-    YoloPreprocessCircleMask circle_mask)
+    const YoloPreprocessCircleMask& circle_mask,
+    int dst_x,
+    int dst_y)
 {
-    // Calculate output pixel coordinates
-    int dst_x = blockIdx.x * blockDim.x + threadIdx.x;
-    int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
-    
-    if (dst_x >= dst_width || dst_y >= dst_height) return;
-    
     float pixel_value = ApplyCircleMask
         ? circle_mask.outside_tensor_value * 255.0f
         : 114.0f; // Preserve the original unmasked letterbox value.
@@ -89,6 +90,58 @@ __global__ void mono_to_yolo_optimized(
     dst_planar[pixel_idx] = pixel_value;                    // B channel
     dst_planar[pixel_idx + channel_size] = pixel_value;     // G channel  
     dst_planar[pixel_idx + 2 * channel_size] = pixel_value; // R channel
+}
+
+template <bool ApplyCircleMask>
+__global__ void mono_to_yolo_optimized(
+    const unsigned char* __restrict__ src_mono,    // Input: 4512x4512 mono
+    float* __restrict__ dst_planar,                // Output: 640x640x3 planar float
+    int src_width,                                 // 4512
+    int src_height,                                // 4512  
+    int dst_width,                                 // 640
+    int dst_height,                                // 640
+    float scale_x,                                 // scaling factors
+    float scale_y,
+    int pad_left,                                  // letterbox padding
+    int pad_top,
+    YoloPreprocessCircleMask circle_mask)
+{
+    // Calculate output pixel coordinates
+    int dst_x = blockIdx.x * blockDim.x + threadIdx.x;
+    int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
+    
+    if (dst_x >= dst_width || dst_y >= dst_height) return;
+    mono_to_yolo_pixel<ApplyCircleMask>(src_mono, dst_planar, src_width, src_height, dst_width, dst_height,
+                                        scale_x, scale_y, pad_left, pad_top, circle_mask, dst_x, dst_y);
+}
+
+// Fused-graph variant: the source pointer and the mask come from the
+// per-slot argument block, so the captured launch never changes.
+__global__ void mono_to_yolo_indirect(
+    const FusedFrameArgs* __restrict__ args,
+    float* __restrict__ dst_planar,
+    int src_width,
+    int src_height,
+    int dst_width,
+    int dst_height,
+    float scale_x,
+    float scale_y,
+    int pad_left,
+    int pad_top)
+{
+    int dst_x = blockIdx.x * blockDim.x + threadIdx.x;
+    int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (dst_x >= dst_width || dst_y >= dst_height) return;
+    const unsigned char* src_mono = args->src_frame;
+    if (args->mask_enabled) {
+        const YoloPreprocessCircleMask mask = args->mask;
+        mono_to_yolo_pixel<true>(src_mono, dst_planar, src_width, src_height, dst_width, dst_height,
+                                 scale_x, scale_y, pad_left, pad_top, mask, dst_x, dst_y);
+    } else {
+        const YoloPreprocessCircleMask unused{};
+        mono_to_yolo_pixel<false>(src_mono, dst_planar, src_width, src_height, dst_width, dst_height,
+                                  scale_x, scale_y, pad_left, pad_top, unused, dst_x, dst_y);
+    }
 }
 
 // Alternative version for color images (if needed later)
@@ -232,6 +285,29 @@ void launch_optimized_yolo_preprocess_circle_masked(
         dst_width, dst_height,
         is_color, circle_mask, stream);
 }
+}
+
+void launch_optimized_yolo_preprocess_indirect(
+    const FusedFrameArgs* d_args,
+    float* d_dst_planar,
+    int src_width, int src_height,
+    int dst_width, int dst_height,
+    cudaStream_t stream)
+{
+    // Same letterbox arithmetic as launch_optimized_yolo_preprocess_impl.
+    float scale = fminf((float)dst_width / src_width, (float)dst_height / src_height);
+    int scaled_width = (int)(src_width * scale);
+    int scaled_height = (int)(src_height * scale);
+    int pad_left = (dst_width - scaled_width) / 2;
+    int pad_top = (dst_height - scaled_height) / 2;
+    float scale_x = (float)src_width / scaled_width;
+    float scale_y = (float)src_height / scaled_height;
+    dim3 block(16, 16);
+    dim3 grid((dst_width + block.x - 1) / block.x,
+              (dst_height + block.y - 1) / block.y);
+    mono_to_yolo_indirect<<<grid, block, 0, stream>>>(
+        d_args, d_dst_planar, src_width, src_height,
+        dst_width, dst_height, scale_x, scale_y, pad_left, pad_top);
 }
 
 // Helper function to calculate memory requirements

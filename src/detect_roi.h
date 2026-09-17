@@ -87,6 +87,17 @@ void launch_detect_roi_kernel(
     const DetectRoiParams& params,
     cudaStream_t stream);
 
+// The same selection with the parameters read from device (or mapped host)
+// memory, for the fused graph where the parameters change per frame.
+void launch_detect_roi_kernel_indirect(
+    const int* d_num_dets,
+    const float* d_boxes,
+    const float* d_scores,
+    const int* d_labels,
+    DetectRoi* d_out,
+    const DetectRoiParams* d_params,
+    cudaStream_t stream);
+
 // CPU reference with the same arithmetic, on host copies of the same buffers.
 DetectRoi compute_detect_roi_host(
     const int* num_dets,

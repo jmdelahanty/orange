@@ -649,6 +649,13 @@ struct PoseWorker::DeviceStageSlot {
     cudaEvent_t input_ready_event = nullptr;  // YOLO stream, after crop + preprocess (timing on)
     cudaEvent_t done_event = nullptr;         // pose stream, after the output copy (timing on)
     cudaGraphExec_t graph_exec = nullptr;     // step 2: enqueueV3 + output copy, bound to this slot
+    // Step 3 (fused frame graph) pieces.
+    DetectRoi* d_roi = nullptr;
+    FusedFrameArgs* h_args = nullptr;
+    FusedFrameArgs* d_args = nullptr;
+    cudaEvent_t detect_done_event = nullptr;
+    cudaEvent_t graph_end_event = nullptr;    // fused graph: last node; the slot is reused only after it
+    cudaGraphExec_t fused_exec = nullptr;
     std::atomic<int> state{kFree};
     uint64_t enqueue_host_ns = 0;
 };
@@ -850,6 +857,13 @@ bool PoseWorker::EnableDeviceStage(int pose_crop_px, std::string* error_out)
             *slot->h_roi = DetectRoi{};
             ck(cudaEventCreate(&slot->input_ready_event));
             ck(cudaEventCreate(&slot->done_event));
+            ck(cudaMalloc(reinterpret_cast<void**>(&slot->d_roi), sizeof(DetectRoi)));
+            ck(cudaMemset(slot->d_roi, 0, sizeof(DetectRoi)));
+            ck(cudaHostAlloc(reinterpret_cast<void**>(&slot->h_args), sizeof(FusedFrameArgs), cudaHostAllocMapped));
+            *slot->h_args = FusedFrameArgs{};
+            ck(cudaHostGetDevicePointer(reinterpret_cast<void**>(&slot->d_args), slot->h_args, 0));
+            ck(cudaEventCreate(&slot->detect_done_event));
+            ck(cudaEventCreateWithFlags(&slot->graph_end_event, cudaEventDisableTiming));
             slot->view.d_crop_mono = slot->d_crop_mono;
             device_slots_.push_back(std::move(slot));
         }
@@ -910,6 +924,11 @@ void PoseWorker::free_device_slots()
         if (slot->input_ready_event) cudaEventDestroy(slot->input_ready_event);
         if (slot->done_event) cudaEventDestroy(slot->done_event);
         if (slot->graph_exec) cudaGraphExecDestroy(slot->graph_exec);
+        if (slot->fused_exec) cudaGraphExecDestroy(slot->fused_exec);
+        if (slot->d_roi) cudaFree(slot->d_roi);
+        if (slot->h_args) cudaFreeHost(slot->h_args);
+        if (slot->detect_done_event) cudaEventDestroy(slot->detect_done_event);
+        if (slot->graph_end_event) cudaEventDestroy(slot->graph_end_event);
     }
     device_slots_.clear();
     device_stage_enabled_ = false;
@@ -923,6 +942,158 @@ PoseWorker::DeviceStageSlot* PoseWorker::find_device_slot(CropFrame* crop_frame)
         }
     }
     return nullptr;
+}
+
+void PoseWorker::fill_slot_snapshot(DeviceStageSlot& slot, WORKER_ENTRY* entry, uint64_t enqueue_host_ns)
+{
+    CropFrameSnapshot& frame = slot.view.frame;
+    frame.ResetForReuse();
+    frame.recording_frame_id = entry->recording_frame_id;
+    frame.local_frame_id = entry->frame_id;
+    frame.camera_frame_id = entry->camera_frame_id;
+    frame.timestamp = entry->timestamp;
+    frame.timestamp_sys = entry->timestamp_sys;
+    frame.recording_folder = entry->recording_folder;
+    frame.source_width = entry->width;
+    frame.source_height = entry->height;
+    frame.acquisition_receive_host_ns = entry->acquisition_receive_host_ns;
+    frame.crop_w = device_stage_crop_px_;
+    frame.crop_h = device_stage_crop_px_;
+    slot.enqueue_host_ns = enqueue_host_ns;
+}
+
+// Hand a slot whose GPU work is queued to the pose thread. On failure the
+// slot is freed after its work completes and false is returned.
+bool PoseWorker::publish_slot(DeviceStageSlot& slot)
+{
+    const CropFrameSnapshot& frame = slot.view.frame;
+    slot.state.store(DeviceStageSlot::kQueued, std::memory_order_release);
+    const bool record_active =
+        frame.recording_frame_id > 0 && !frame.recording_folder.empty();
+    const int queue_depth = GetCountQueueInSize();
+    queue_high_water_.store(
+        std::max(queue_high_water_.load(std::memory_order_relaxed), queue_depth + 1),
+        std::memory_order_relaxed);
+    if (record_active) {
+        run_queue_high_water_.store(
+            std::max(run_queue_high_water_.load(std::memory_order_relaxed), queue_depth + 1),
+            std::memory_order_relaxed);
+    }
+    if (!PutObjectToQueueIn(&slot.view)) {
+        cudaEventSynchronize(slot.done_event);
+        slot.state.store(DeviceStageSlot::kFree, std::memory_order_release);
+        device_stage_failed_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    frames_enqueued_.fetch_add(1, std::memory_order_relaxed);
+    device_stage_enqueued_.fetch_add(1, std::memory_order_relaxed);
+    if (record_active) {
+        run_frames_enqueued_.fetch_add(1, std::memory_order_relaxed);
+    }
+    return true;
+}
+
+int PoseWorker::AcquireFusedSlot()
+{
+    if (!device_stage_enabled_ || device_slot_count_ <= 0) {
+        return -1;
+    }
+    DeviceStageSlot& slot = *device_slots_[device_slot_next_ % static_cast<uint64_t>(device_slot_count_)];
+    int expected = DeviceStageSlot::kFree;
+    if (!slot.state.compare_exchange_strong(expected, DeviceStageSlot::kFilling)) {
+        device_stage_slot_busy_.fetch_add(1, std::memory_order_relaxed);
+        return -1;
+    }
+    const int index = static_cast<int>(device_slot_next_ % static_cast<uint64_t>(device_slot_count_));
+    ++device_slot_next_;
+    return index;
+}
+
+void PoseWorker::ReleaseFusedSlotUnused(int index)
+{
+    if (index < 0 || index >= device_slot_count_) {
+        return;
+    }
+    device_slots_[static_cast<size_t>(index)]->state.store(DeviceStageSlot::kFree, std::memory_order_release);
+}
+
+bool PoseWorker::GetFusedSlot(int index, FusedSlotView* out) const
+{
+    if (!out || index < 0 || index >= device_slot_count_) {
+        return false;
+    }
+    const DeviceStageSlot& slot = *device_slots_[static_cast<size_t>(index)];
+    out->index = index;
+    out->h_args = slot.h_args;
+    out->d_args = slot.d_args;
+    out->d_roi = slot.d_roi;
+    out->h_roi = slot.h_roi;
+    out->detect_done_event = slot.detect_done_event;
+    out->done_event = slot.done_event;
+    out->graph_end_event = slot.graph_end_event;
+    out->fused_exec = slot.fused_exec;
+    return true;
+}
+
+bool PoseWorker::WarmPoseSlot(int index, cudaStream_t stream, std::string* error_out)
+{
+    if (index < 0 || index >= device_slot_count_ || !tensorrt_backend_) {
+        if (error_out) *error_out = "no such slot";
+        return false;
+    }
+    DeviceStageSlot& slot = *device_slots_[static_cast<size_t>(index)];
+    std::string error;
+    ck(cudaMemsetAsync(slot.d_input, 0, tensorrt_backend_->input_bytes(), stream));
+    if (!tensorrt_backend_->enqueue_with_buffers(slot.d_input, slot.d_output, slot.h_output, stream, &error)) {
+        if (error_out) *error_out = error;
+        return false;
+    }
+    ck(cudaStreamSynchronize(stream));
+    return true;
+}
+
+bool PoseWorker::EnqueuePoseStageForCapture(int index, cudaStream_t stream, std::string* error_out)
+{
+    if (index < 0 || index >= device_slot_count_ || !tensorrt_backend_) {
+        if (error_out) *error_out = "no such slot";
+        return false;
+    }
+    DeviceStageSlot& slot = *device_slots_[static_cast<size_t>(index)];
+    launch_pose_crop_from_roi_indirect(
+        slot.d_args, slot.d_roi, slot.d_crop_mono,
+        device_stage_crop_px_, device_stage_crop_px_, stream);
+    tensorrt_backend_->preprocess_into(
+        slot.d_crop_mono, device_stage_crop_px_, device_stage_crop_px_, slot.d_input, stream);
+    // Inside a capture: external record, so the pose thread can time it.
+    ck(cudaEventRecordWithFlags(slot.input_ready_event, stream, cudaEventRecordExternal));
+    std::string error;
+    if (!tensorrt_backend_->enqueue_with_buffers(slot.d_input, slot.d_output, slot.h_output, stream, &error)) {
+        if (error_out) *error_out = error;
+        return false;
+    }
+    return true;
+}
+
+void PoseWorker::SetFusedGraph(int index, cudaGraphExec_t exec)
+{
+    if (index < 0 || index >= device_slot_count_) {
+        return;
+    }
+    DeviceStageSlot& slot = *device_slots_[static_cast<size_t>(index)];
+    if (slot.fused_exec && slot.fused_exec != exec) {
+        cudaGraphExecDestroy(slot.fused_exec);
+    }
+    slot.fused_exec = exec;
+}
+
+bool PoseWorker::PublishFusedSlot(int index, WORKER_ENTRY* entry, uint64_t enqueue_host_ns)
+{
+    if (index < 0 || index >= device_slot_count_ || !entry) {
+        return false;
+    }
+    DeviceStageSlot& slot = *device_slots_[static_cast<size_t>(index)];
+    fill_slot_snapshot(slot, entry, enqueue_host_ns);
+    return publish_slot(slot);
 }
 
 int PoseWorker::EnqueueDeviceStage(
@@ -949,20 +1120,8 @@ int PoseWorker::EnqueueDeviceStage(
     }
     ++device_slot_next_;
 
-    CropFrameSnapshot& frame = slot.view.frame;
-    frame.ResetForReuse();
-    frame.recording_frame_id = entry->recording_frame_id;
-    frame.local_frame_id = entry->frame_id;
-    frame.camera_frame_id = entry->camera_frame_id;
-    frame.timestamp = entry->timestamp;
-    frame.timestamp_sys = entry->timestamp_sys;
-    frame.recording_folder = entry->recording_folder;
-    frame.source_width = entry->width;
-    frame.source_height = entry->height;
-    frame.acquisition_receive_host_ns = entry->acquisition_receive_host_ns;
-    frame.crop_w = device_stage_crop_px_;
-    frame.crop_h = device_stage_crop_px_;
-    slot.enqueue_host_ns = start_ns;
+    fill_slot_snapshot(slot, entry, start_ns);
+    const CropFrameSnapshot& frame = slot.view.frame;
 
     try {
         // YOLO stream: crop from the device ROI, preprocess into the slot's
@@ -1014,30 +1173,9 @@ int PoseWorker::EnqueueDeviceStage(
         return -2;
     }
 
-    slot.state.store(DeviceStageSlot::kQueued, std::memory_order_release);
-    const bool record_active =
-        frame.recording_frame_id > 0 && !frame.recording_folder.empty();
-    const int queue_depth = GetCountQueueInSize();
-    queue_high_water_.store(
-        std::max(queue_high_water_.load(std::memory_order_relaxed), queue_depth + 1),
-        std::memory_order_relaxed);
-    if (record_active) {
-        run_queue_high_water_.store(
-            std::max(run_queue_high_water_.load(std::memory_order_relaxed), queue_depth + 1),
-            std::memory_order_relaxed);
-    }
-    if (!PutObjectToQueueIn(&slot.view)) {
-        // Worker stopped: the GPU work is in flight, so wait for it before
-        // handing the slot back.
-        cudaEventSynchronize(slot.done_event);
-        slot.state.store(DeviceStageSlot::kFree, std::memory_order_release);
-        device_stage_failed_.fetch_add(1, std::memory_order_relaxed);
+    (void)frame;
+    if (!publish_slot(slot)) {
         return -2;
-    }
-    frames_enqueued_.fetch_add(1, std::memory_order_relaxed);
-    device_stage_enqueued_.fetch_add(1, std::memory_order_relaxed);
-    if (record_active) {
-        run_frames_enqueued_.fetch_add(1, std::memory_order_relaxed);
     }
     if (cpu_ms_out) {
         *cpu_ms_out = elapsed_ms(start_ns, steady_now_ns());
@@ -1110,6 +1248,12 @@ void PoseWorker::process_device_slot(DeviceStageSlot& slot)
             frame, pose_start_host_ns, pose_done_host_ns, pose_status, pose_error, poses));
     }
     publish_pose_result_v2(frame, pose_status, poses);
+    // Fused graph: the pool copy trails the pose in the same graph and reads
+    // the slot's argument block, so the slot goes back only once the whole
+    // graph has run. Never recorded on the device crop path: returns at once.
+    if (slot.graph_end_event) {
+        cudaEventSynchronize(slot.graph_end_event);
+    }
     slot.state.store(DeviceStageSlot::kFree, std::memory_order_release);
 }
 

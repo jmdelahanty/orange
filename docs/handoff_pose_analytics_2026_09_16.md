@@ -465,3 +465,81 @@ event before the device-stage launches, which needs a second event to
 keep the entry alive until the crop has read the source in ring-copy
 mode. Whether +0.09 ms on detect is acceptable against -0.7 ms on pose
 depends on which signal closes the loop; both are now measured.
+
+## Addendum 2026-09-17: step 3, one captured graph per slot for the whole frame
+
+`ORANGE_ANALYTICS_FUSED_FRAME` (spec `fixed.analytics_fused_frame`,
+default off; needs the device crop path). Per pose slot one CUDA graph:
+[pre_start] preprocess (indirect) [pre_end][infer_start] detect enqueue +
+four output copies [infer_end] -> ROI (indirect params) -> ROI mirror to
+the slot -> detect_done node -> pose crop (indirect) -> pose preprocess ->
+input_ready node -> pose enqueue -> pose output copy -> done node -> pool
+copy (indirect kernel) -> graph_end node. Everything per frame (source
+address, pool copy addresses and size, input mask, ROI parameters
+including the centroid gate) is read from the slot's `FusedFrameArgs`
+block in pinned mapped memory (`src/fused_frame_args.h`), written by the
+YOLO thread before the launch. Per frame the YOLO thread does the graph
+launch plus the entry's own event records (completion, analytics_ready,
+input_ready, all recorded after the launch so they fire when the whole
+graph is done), then waits on the slot's detect_done node; the host work
+after the wait is unchanged. Graphs are captured in `Warmup` on the warm
+source. The pose thread waits on the slot's done node, and frees the slot
+only after the graph_end node so the trailing copy never reads a rewritten
+argument block. Any capture failure disables the path for the run and the
+device crop path (steps 1, 2, 4) stays in use.
+
+Run `fourcam_fused_realfish_20260917_114351` (four cameras, fish detected
+on every frame, CPU results path on, no recorder), against the same-day
+controls `fourcam_device_crop_realfish_off_…_111027` (crop producer) and
+`fourcam_device_crop_realfish_…_113152` (steps 1, 2, 4):
+
+| Metric (ms, range over four cameras) | Crop producer | Steps 1+2+4 | Step 3 fused |
+|---|---|---|---|
+| acquisition to detect done mean | 2.455 to 2.469 | 2.541 to 2.556 | 2.473 to 2.486 |
+| acquisition to detect done p95 | 2.511 to 2.525 | 2.644 to 2.660 | 2.527 to 2.536 |
+| infer_ms mean | 1.999 to 2.008 | 2.016 to 2.026 | 2.005 to 2.014 |
+| cpu_pre_sync mean | 0.166 to 0.173 | 0.263 to 0.313 | 0.140 to 0.150 |
+| cpu_post_sync mean | 0.223 to 0.236 | 0.248 to 0.260 | 0.243 to 0.248 |
+| launch CPU (cpu_pose_enqueue) mean | n/a | 0.028 to 0.040 | 0.057 to 0.065 (the whole frame) |
+| capture to pose done mean | 3.81 to 3.88 | 3.18 to 3.19 | 3.13 to 3.14 |
+| capture to pose done p95 | 3.95 to 4.24 | 3.28 to 3.30 | 3.18 to 3.21 |
+| capture to pose done p99 | 4.24 to 4.31 | 3.40 to 3.42 | 3.29 to 3.33 |
+| device_stage_gpu mean | n/a | 0.746 | 0.739 |
+| device ROI match | 5900/5900, 0 mismatch | same | 5901/5901, 0 mismatch |
+| pose status `poses` | every frame | every frame | every frame |
+
+Gates: detect delta vs the crop-producer control +0.017 mean / +0.012 p95
+(gate +0.03) passes; infer_ms within 0.006; capture to pose done p95 3.19
+against the 3.3 target passes; ROI match and slot ring pass; pose results
+agree in distribution (confidence 0.86 to 0.94, keypoint centroid at the
+crop centre). Against the old path: -0.7 ms mean, -0.9 ms p95, -1.0 ms
+p99 on capture to pose done, at a detect cost inside the noise.
+
+Three capture traps, each cost one run:
+
+1. **Events recorded inside a capture must use
+   `cudaEventRecordWithFlags(ev, stream, cudaEventRecordExternal)`.** A
+   plain `cudaEventRecord` during capture is only a capture dependency
+   marker; waiting on that event afterwards fails with
+   `cudaErrorInvalidValue` (every fused frame threw at the completion
+   wait). Step 2 worked because its events were recorded outside the
+   capture.
+2. **The captured stream must be non-blocking.** The YOLO stream was
+   legacy-blocking by default; other threads' null-stream work during the
+   capture invalidated it (TensorRT "previous error during capture",
+   `cudaErrorStreamCaptureInvalidated`, Cask and plugin execution errors,
+   flaky per camera). `YOLOv8` now creates the stream non-blocking when
+   the fused flag is set.
+3. **Capture in Warmup, not on the first frame.** Eight captures with warm
+   launches on the worker thread stalled the camera ring (dropped frames)
+   and raced other threads.
+
+Also learned: the done node must sit before the trailing pool copy, or the
+pose thread waits for the copy too (measured +0.21 ms on capture to pose
+done, 3.39 vs 3.18, in run `…_114057`); with graph_end as the slot-reuse
+guard the copy trails the pose in the graph for free.
+
+Perf: `device_crop == 5` marks fused frames; on them `cpu_pose_enqueue_ms`
+is the whole launch, `pre_ms`/`gap_ms`/`infer_ms` come from the graph's
+external timing nodes, and the entry's input-ready timestamp is the end of
+the graph (about 1 ms later than on the other paths).

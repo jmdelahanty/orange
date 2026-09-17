@@ -3,6 +3,7 @@
 
 #include "bounded_sample_statistics.h"
 #include "crop_producer.h"
+#include "fused_frame_args.h"
 #include "pose_event_log.h"
 #include "threadworker.h"
 
@@ -14,7 +15,6 @@
 
 class TensorRtPoseBackend;
 class FrameIPCManager;
-struct DetectRoi;
 
 class PoseWorker : public CThreadWorker<CropFrame>
 {
@@ -41,6 +41,37 @@ public:
     // The pose stream: work queued on it after EnqueueDeviceStage follows
     // this frame's pose graph in stream order.
     cudaStream_t device_stage_stream() const { return stream_; }
+
+    // Step 3, fused frame graph: the YOLO worker captures one graph per slot
+    // covering preprocess, detect, ROI, crop, pose, output copies and the
+    // pool copy, with everything that varies per frame read from the slot's
+    // FusedFrameArgs block. These calls expose the slot pieces it needs.
+    struct FusedSlotView {
+        int index = -1;
+        FusedFrameArgs* h_args = nullptr;        // pinned, mapped: the YOLO thread writes it per frame
+        const FusedFrameArgs* d_args = nullptr;  // device mapping of h_args
+        DetectRoi* d_roi = nullptr;              // per-slot ROI output (replaces the entry's on this path)
+        DetectRoi* h_roi = nullptr;
+        cudaEvent_t detect_done_event = nullptr; // graph node after the detect output copies
+        cudaEvent_t done_event = nullptr;        // graph node after the pose output copy
+        cudaEvent_t graph_end_event = nullptr;   // graph node after the pool copy (last node)
+        cudaGraphExec_t fused_exec = nullptr;
+    };
+    int device_slot_count() const { return device_slot_count_; }
+    int AcquireFusedSlot();                          // kFree -> kFilling; -1 when every slot is busy
+    void ReleaseFusedSlotUnused(int index);          // kFilling -> kFree without any GPU work queued
+    bool GetFusedSlot(int index, FusedSlotView* out) const;
+    // One ordinary pose enqueue with the slot's addresses (TensorRT needs it
+    // before a capture); synchronous.
+    bool WarmPoseSlot(int index, cudaStream_t stream, std::string* error_out);
+    // Inside a capture on `stream`: crop (indirect), preprocess, input-ready
+    // event, pose enqueue with the slot's buffers, output copy.
+    bool EnqueuePoseStageForCapture(int index, cudaStream_t stream, std::string* error_out);
+    void SetFusedGraph(int index, cudaGraphExec_t exec);
+    // After the fused graph launch: fill the snapshot from the entry and hand
+    // the slot to the pose thread. On failure the slot is freed after its
+    // GPU work completes.
+    bool PublishFusedSlot(int index, WORKER_ENTRY* entry, uint64_t enqueue_host_ns);
     // Called on the YOLO worker thread, on the YOLO stream, after the ROI
     // kernel and before the frame's completion event (so the source read is
     // covered by that event). d_source is the mono frame the ROI refers to.
@@ -65,6 +96,8 @@ private:
     DeviceStageSlot* find_device_slot(CropFrame* crop_frame);
     void process_device_slot(DeviceStageSlot& slot);
     void free_device_slots();
+    void fill_slot_snapshot(DeviceStageSlot& slot, WORKER_ENTRY* entry, uint64_t enqueue_host_ns);
+    bool publish_slot(DeviceStageSlot& slot);
     // Flush tick (drain cascade marker from CropProducerWorker, or shutdown):
     // all queued crops have been processed; close the event log + summary.
     void OnFlushTick() override { CloseRecording(); }

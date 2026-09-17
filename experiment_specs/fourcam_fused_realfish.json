@@ -1,0 +1,104 @@
+{
+  "experiment_id": "fourcam_fused_realfish",
+  "notes": "Step 3 gate with a real fish: ORANGE_ANALYTICS_FUSED_FRAME on top of the device crop path (device ROI, device crop, copy after pose). One captured CUDA graph per pose slot runs preprocess, detect, ROI, crop, pose, output copies and the pool copy; the YOLO thread does one launch plus the entry's event records and waits on the slot's detect-done node. Control: fourcam_device_crop_realfish (same spec, fused off). Pass: [YOLO] fused frame summary ready=1 and device_crop==5 on every frame; device ROI summary mismatch=0; acquisition_to_detect_done within +0.03 of fourcam_device_crop_realfish_off (the crop-producer control) or at least below the device crop run; infer_ms unchanged; capture_to_pose_done p95 at or below the device crop run. Step 1+2+4 gate with a real fish. All four cameras: Cam2010096's GPO_0 (Exposure mode) drives the IR lights, so it must be in the array for any detection. Config folder /tmp/orange_device_crop_config_a16 = /home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam (schema 4: exposure 100, focus, iris, ptp_gate) with crop_pipeline.crop_size_px 256 on every camera so both pose paths see the same 256 crop; regenerate after a reboot. CPU results path ON; recording_sink_mode=immediate_recycle only removes the recorder. pose_worker.crop_size_px=256. Pass: [YOLO] device ROI summary mismatch=0; device_roi_match==1 on every detected frame; device_crop==1 with slot_busy=0; infer_ms within +0.02 of the control; Cam*_pose_perf.csv capture_to_pose_done p95 below the control; pose event log keypoints agree with the control on the same frames.",
+  "selection": {
+    "camera_serials": [
+      "2010093",
+      "2010094",
+      "2010095",
+      "2010096"
+    ],
+    "gpu_ids": [
+      3,
+      1,
+      7,
+      5
+    ]
+  },
+  "fixed": {
+    "duration_s": 60,
+    "warmup_s": 2,
+    "display": false,
+    "yolo": false,
+    "stream_only": false,
+    "sync_mode": "ptp_gate",
+    "recording_sink_mode": "immediate_recycle",
+    "config_folder": "/tmp/orange_device_crop_config_a16",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "ptp_register_read_decimate": 100,
+    "nvenc_direct_input": false,
+    "yolo_worker": {
+      "mode": "real",
+      "engine_path": "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.engine",
+      "decimate": 1,
+      "publish_live_ipc": false,
+      "timeout_ms": 500,
+      "prewarm_iterations": 3,
+      "fail_on_init_error": true
+    },
+    "yolo_sync_event": true,
+    "ptp_latch_after_fanout": true,
+    "headless_gpu_dmon": true,
+    "external_recorder_direct_input": false,
+    "external_recorder_detect_priority": false,
+    "analytics_early_owned_frame": true,
+    "pose_worker": {
+      "mode": "real",
+      "engine_path": "/home/jeremy/pose_cedar_shadow_filtered_gray_latest_traditional_a4c30ae1_v001_r001_fp16.engine",
+      "skeleton_id": "fish_v1",
+      "input_width": 256,
+      "input_height": 256,
+      "input_layout": "nchw",
+      "input_dtype": "fp32",
+      "normalization": "model_default",
+      "roi_source": "yolo_top_detection",
+      "queue_depth": 32,
+      "crop_frame_pool_size": 32,
+      "timeout_ms": 500,
+      "prewarm_iterations": 3,
+      "fail_on_init_error": true,
+      "write_events_jsonl": true,
+      "crop_size_px": 256
+    },
+    "analytics_device_roi": true,
+    "analytics_device_crop": true,
+    "analytics_fused_frame": true
+  },
+  "matrix": {
+    "codec": [
+      "hevc"
+    ],
+    "preset": [
+      "p1"
+    ],
+    "tuning": [
+      "ll"
+    ],
+    "rate_control_mode": [
+      "vbr"
+    ],
+    "quality_value": [
+      20
+    ],
+    "gop_length": [
+      25
+    ],
+    "aq": [
+      "off"
+    ],
+    "temporal_aq": [
+      "off"
+    ],
+    "lookahead": [
+      "off"
+    ]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 2.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true,
+    "require_zero_camera_drops": true,
+    "require_valid_video_content": false
+  }
+}

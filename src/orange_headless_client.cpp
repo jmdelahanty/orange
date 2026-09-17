@@ -257,6 +257,7 @@ struct ExperimentSpec {
     bool analytics_device_roi = false;       // ORANGE_ANALYTICS_DEVICE_ROI (default off; device crop origin + CPU comparison)
     bool analytics_device_crop = false;      // ORANGE_ANALYTICS_DEVICE_CROP (default off; needs device_roi; pose crop + enqueue from the YOLO thread)
     bool analytics_copy_after_pose = true;   // ORANGE_ANALYTICS_COPY_AFTER_POSE (default on; late owned copy behind pose done on the device crop path)
+    bool analytics_fused_frame = false;      // ORANGE_ANALYTICS_FUSED_FRAME (default off; needs device_crop; one graph per slot for the whole frame)
     bool acq_stream_nonblocking = false;     // ORANGE_ACQ_STREAM_NONBLOCKING (diagnostic)
     bool acq_flush_after_event = false;      // ORANGE_ACQ_FLUSH_AFTER_EVENT (diagnostic)
     bool acq_force_direct_read = false;      // ORANGE_ACQ_FORCE_DIRECT_READ (diagnostic)
@@ -8115,6 +8116,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->analytics_device_roi = fixed.value("analytics_device_roi", false);
     spec->analytics_device_crop = fixed.value("analytics_device_crop", false);
     spec->analytics_copy_after_pose = fixed.value("analytics_copy_after_pose", true);
+    spec->analytics_fused_frame = fixed.value("analytics_fused_frame", false);
     spec->acq_stream_nonblocking = fixed.value("acq_stream_nonblocking", false);
     spec->acq_flush_after_event = fixed.value("acq_flush_after_event", false);
     spec->acq_force_direct_read = fixed.value("acq_force_direct_read", false);
@@ -11425,6 +11427,7 @@ int run_local_experiment(const HeadlessCliOptions& options)
     setenv("ORANGE_ANALYTICS_DEVICE_ROI", spec.analytics_device_roi ? "1" : "0", 1);
     setenv("ORANGE_ANALYTICS_DEVICE_CROP", spec.analytics_device_crop ? "1" : "0", 1);
     setenv("ORANGE_ANALYTICS_COPY_AFTER_POSE", spec.analytics_copy_after_pose ? "1" : "0", 1);
+    setenv("ORANGE_ANALYTICS_FUSED_FRAME", spec.analytics_fused_frame ? "1" : "0", 1);
     setenv("ORANGE_ACQ_STREAM_NONBLOCKING", spec.acq_stream_nonblocking ? "1" : "0", 1);
     setenv("ORANGE_ACQ_FLUSH_AFTER_EVENT", spec.acq_flush_after_event ? "1" : "0", 1);
     setenv("ORANGE_ACQ_FORCE_DIRECT_READ", spec.acq_force_direct_read ? "1" : "0", 1);
@@ -11455,6 +11458,7 @@ int run_local_experiment(const HeadlessCliOptions& options)
               << " analytics_device_roi=" << (spec.analytics_device_roi ? 1 : 0)
               << " analytics_device_crop=" << (spec.analytics_device_crop ? 1 : 0)
               << " analytics_copy_after_pose=" << (spec.analytics_copy_after_pose ? 1 : 0)
+              << " analytics_fused_frame=" << (spec.analytics_fused_frame ? 1 : 0)
               << " acq_stream_nonblocking=" << (spec.acq_stream_nonblocking ? 1 : 0)
               << " acq_flush_after_event=" << (spec.acq_flush_after_event ? 1 : 0)
               << " acq_force_direct_read=" << (spec.acq_force_direct_read ? 1 : 0)

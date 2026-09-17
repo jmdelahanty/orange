@@ -11,6 +11,7 @@
 
 #include "detect_roi.h"
 #include "pose_crop_from_roi.h"
+#include "fused_frame_args.h"
 
 #include <cuda_runtime_api.h>
 
@@ -303,6 +304,108 @@ void check_crop(const char* name, int src_w, int src_h, const DetectRoi& roi, in
     }
 }
 
+// Fused-graph indirection: the indirect preprocess, ROI selection, crop and
+// copy must produce exactly what the direct launches produce.
+void check_indirect(std::mt19937& rng, cudaStream_t stream, int& cases)
+{
+    const int src_w = 1024, src_h = 768, dst = 640, crop = 128;
+    std::vector<unsigned char> src(static_cast<size_t>(src_w) * src_h);
+    std::uniform_int_distribution<int> byte(0, 255);
+    for (unsigned char& v : src) v = static_cast<unsigned char>(byte(rng));
+    unsigned char* d_src = nullptr; unsigned char* d_copy = nullptr; float* d_a = nullptr; float* d_b = nullptr;
+    FusedFrameArgs* h_args = nullptr; FusedFrameArgs* d_args = nullptr;
+    CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_src), src.size()));
+    CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_copy), src.size()));
+    CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_a), static_cast<size_t>(dst) * dst * 3 * sizeof(float)));
+    CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_b), static_cast<size_t>(dst) * dst * 3 * sizeof(float)));
+    CUDA_OK(cudaHostAlloc(reinterpret_cast<void**>(&h_args), sizeof(FusedFrameArgs), cudaHostAllocMapped));
+    CUDA_OK(cudaHostGetDevicePointer(reinterpret_cast<void**>(&d_args), h_args, 0));
+    CUDA_OK(cudaMemcpyAsync(d_src, src.data(), src.size(), cudaMemcpyHostToDevice, stream));
+    std::vector<float> a(static_cast<size_t>(dst) * dst * 3), b(a.size());
+
+    for (int masked = 0; masked < 2; ++masked) {
+        *h_args = FusedFrameArgs{};
+        h_args->src_frame = d_src; h_args->src_pitch = src_w; h_args->src_width = src_w; h_args->src_height = src_h;
+        h_args->mask_enabled = masked;
+        h_args->mask.center_x = 500.0f; h_args->mask.center_y = 400.0f; h_args->mask.radius_squared = 300.0f * 300.0f;
+        h_args->mask.outside_tensor_value = 0.2f;
+        if (masked) {
+            launch_optimized_yolo_preprocess_circle_masked(d_src, d_a, src_w, src_h, dst, dst, false, h_args->mask, stream);
+        } else {
+            launch_optimized_yolo_preprocess(d_src, d_a, src_w, src_h, dst, dst, false, stream);
+        }
+        launch_optimized_yolo_preprocess_indirect(d_args, d_b, src_w, src_h, dst, dst, stream);
+        CUDA_OK(cudaGetLastError());
+        CUDA_OK(cudaMemcpyAsync(a.data(), d_a, a.size() * sizeof(float), cudaMemcpyDeviceToHost, stream));
+        CUDA_OK(cudaMemcpyAsync(b.data(), d_b, b.size() * sizeof(float), cudaMemcpyDeviceToHost, stream));
+        CUDA_OK(cudaStreamSynchronize(stream));
+        EXPECT_TRUE(std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0,
+                    masked ? "indirect masked preprocess differs from the direct kernel"
+                           : "indirect preprocess differs from the direct kernel");
+        ++cases;
+    }
+
+    // ROI with indirect params, and the indirect crop, against the direct launches.
+    {
+        Case c = make_case("indirect_roi", src_w, src_h, dst, crop, 100, 7, rng);
+        c.gate.enabled = true; c.gate.cx = 500.0f; c.gate.cy = 400.0f; c.gate.radius = 350.0f;
+        float dw, dh, inv; const DetectRoiParams p = params_for(c, &dw, &dh, &inv);
+        h_args->roi_params = p;
+        int* d_num = nullptr; float* d_boxes = nullptr; float* d_scores = nullptr; int* d_labels = nullptr; DetectRoi* d_r1 = nullptr; DetectRoi* d_r2 = nullptr;
+        CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_num), sizeof(int)));
+        CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_boxes), c.boxes.size() * sizeof(float)));
+        CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_scores), c.scores.size() * sizeof(float)));
+        CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_labels), c.labels.size() * sizeof(int)));
+        CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_r1), sizeof(DetectRoi)));
+        CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_r2), sizeof(DetectRoi)));
+        CUDA_OK(cudaMemcpyAsync(d_num, &c.num_dets, sizeof(int), cudaMemcpyHostToDevice, stream));
+        CUDA_OK(cudaMemcpyAsync(d_boxes, c.boxes.data(), c.boxes.size() * sizeof(float), cudaMemcpyHostToDevice, stream));
+        CUDA_OK(cudaMemcpyAsync(d_scores, c.scores.data(), c.scores.size() * sizeof(float), cudaMemcpyHostToDevice, stream));
+        CUDA_OK(cudaMemcpyAsync(d_labels, c.labels.data(), c.labels.size() * sizeof(int), cudaMemcpyHostToDevice, stream));
+        launch_detect_roi_kernel(d_num, d_boxes, d_scores, d_labels, d_r1, p, stream);
+        launch_detect_roi_kernel_indirect(d_num, d_boxes, d_scores, d_labels, d_r2, &d_args->roi_params, stream);
+        DetectRoi r1, r2;
+        CUDA_OK(cudaMemcpyAsync(&r1, d_r1, sizeof(DetectRoi), cudaMemcpyDeviceToHost, stream));
+        CUDA_OK(cudaMemcpyAsync(&r2, d_r2, sizeof(DetectRoi), cudaMemcpyDeviceToHost, stream));
+        CUDA_OK(cudaStreamSynchronize(stream));
+        EXPECT_TRUE(std::memcmp(&r1, &r2, sizeof(DetectRoi)) == 0, "indirect ROI params differ from the direct launch");
+        ++cases;
+        // Indirect crop vs direct crop from the same ROI.
+        unsigned char* d_c1 = nullptr; unsigned char* d_c2 = nullptr;
+        CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_c1), static_cast<size_t>(crop) * crop));
+        CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_c2), static_cast<size_t>(crop) * crop));
+        launch_pose_crop_from_roi(d_src, src_w, src_w, src_h, d_r1, d_c1, crop, crop, stream);
+        launch_pose_crop_from_roi_indirect(d_args, d_r2, d_c2, crop, crop, stream);
+        std::vector<unsigned char> c1(static_cast<size_t>(crop) * crop), c2(c1.size());
+        CUDA_OK(cudaMemcpyAsync(c1.data(), d_c1, c1.size(), cudaMemcpyDeviceToHost, stream));
+        CUDA_OK(cudaMemcpyAsync(c2.data(), d_c2, c2.size(), cudaMemcpyDeviceToHost, stream));
+        CUDA_OK(cudaStreamSynchronize(stream));
+        EXPECT_TRUE(c1 == c2, "indirect crop differs from the direct crop");
+        ++cases;
+        CUDA_OK(cudaFree(d_num)); CUDA_OK(cudaFree(d_boxes)); CUDA_OK(cudaFree(d_scores)); CUDA_OK(cudaFree(d_labels));
+        CUDA_OK(cudaFree(d_r1)); CUDA_OK(cudaFree(d_r2)); CUDA_OK(cudaFree(d_c1)); CUDA_OK(cudaFree(d_c2));
+    }
+
+    // Indirect copy: aligned full frame, an odd byte count, and zero bytes.
+    {
+        const size_t sizes[] = {src.size(), src.size() - 13, 0};
+        for (size_t bytes : sizes) {
+            CUDA_OK(cudaMemsetAsync(d_copy, 0x5A, src.size(), stream));
+            h_args->copy_src = d_src; h_args->copy_dst = d_copy; h_args->copy_bytes = bytes;
+            launch_indirect_copy(d_args, stream);
+            CUDA_OK(cudaGetLastError());
+            std::vector<unsigned char> got(src.size());
+            CUDA_OK(cudaMemcpyAsync(got.data(), d_copy, got.size(), cudaMemcpyDeviceToHost, stream));
+            CUDA_OK(cudaStreamSynchronize(stream));
+            bool ok = std::equal(src.begin(), src.begin() + bytes, got.begin());
+            for (size_t i = bytes; i < got.size() && ok; ++i) ok = got[i] == 0x5A;
+            EXPECT_TRUE(ok, "indirect copy wrote the wrong bytes");
+            ++cases;
+        }
+    }
+    CUDA_OK(cudaFree(d_src)); CUDA_OK(cudaFree(d_copy)); CUDA_OK(cudaFree(d_a)); CUDA_OK(cudaFree(d_b)); CUDA_OK(cudaFreeHost(h_args));
+}
+
 }  // namespace
 
 int main()
@@ -449,6 +552,8 @@ int main()
         DetectRoi neg = big; neg.pose_crop_x = -17; neg.pose_crop_y = -3;
         check_crop("negative_origin", 640, 480, neg, 256, 256, rng, stream); ++cases;
     }
+
+    check_indirect(rng, stream, cases);
 
     CUDA_OK(cudaStreamDestroy(stream));
     if (g_failures == 0) {
