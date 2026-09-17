@@ -267,6 +267,9 @@ struct ExperimentSpec {
     bool external_recorder_detect_priority = true;  // ORANGE_EXTERNAL_RECORDER_DETECT_PRIORITY (default on)
     bool external_recorder_registered_source = true;   // ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE + ORANGE_POOL_NV12_LAYOUT (default on since 2026-09-04)
     bool external_recorder_deferred_release = false;  // ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE (diagnostic)
+    bool external_recorder_early_peer_stage = false;  // ORANGE_EXTERNAL_RECORDER_EARLY_PEER_STAGE (other-die shard stages its peer copy at descriptor arrival)
+    bool external_recorder_peer_access = false;  // ORANGE_EXTERNAL_RECORDER_PEER_ACCESS (other-die shard enables CUDA peer access to the source die)
+    bool external_recorder_early_stage_push = false;  // ORANGE_EXTERNAL_RECORDER_EARLY_STAGE_PUSH (early staging copy issued from the source die)
     int external_recorder_max_deferred = -1;  // ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED (-1: ingress default)
     std::string recording_sink_mode = "real";
     bool helper_noop_source_read = false;
@@ -8130,6 +8133,12 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         fixed.value("external_recorder_registered_source", true);
     spec->external_recorder_deferred_release =
         fixed.value("external_recorder_deferred_release", false);
+    spec->external_recorder_early_peer_stage =
+        fixed.value("external_recorder_early_peer_stage", false);
+    spec->external_recorder_peer_access =
+        fixed.value("external_recorder_peer_access", false);
+    spec->external_recorder_early_stage_push =
+        fixed.value("external_recorder_early_stage_push", false);
     spec->external_recorder_max_deferred =
         fixed.value("external_recorder_max_deferred", -1);
     spec->recording_sink_mode = fixed.value("recording_sink_mode", "real");
@@ -8814,6 +8823,12 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                  spec.external_recorder_detect_priority},
                                                                 {"external_recorder_registered_source",
                                                                  spec.external_recorder_registered_source},
+                                                                {"external_recorder_early_peer_stage",
+                                                                 spec.external_recorder_early_peer_stage},
+                                                                {"external_recorder_peer_access",
+                                                                 spec.external_recorder_peer_access},
+                                                                {"external_recorder_early_stage_push",
+                                                                 spec.external_recorder_early_stage_push},
                                                                 {"recording_sink_mode", spec.recording_sink_mode},
                                                                 {"helper_noop_source_read",
                                                                  spec.helper_noop_source_read},
@@ -11447,6 +11462,12 @@ int run_local_experiment(const HeadlessCliOptions& options)
     if (spec.external_recorder_deferred_release) {
         setenv("ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE", "1", 1);
     }
+    setenv("ORANGE_EXTERNAL_RECORDER_EARLY_PEER_STAGE",
+           spec.external_recorder_early_peer_stage ? "1" : "0", 1);
+    setenv("ORANGE_EXTERNAL_RECORDER_PEER_ACCESS",
+           spec.external_recorder_peer_access ? "1" : "0", 1);
+    setenv("ORANGE_EXTERNAL_RECORDER_EARLY_STAGE_PUSH",
+           spec.external_recorder_early_stage_push ? "1" : "0", 1);
     if (spec.external_recorder_max_deferred > 0) {
         setenv("ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED",
                std::to_string(spec.external_recorder_max_deferred).c_str(), 1);
