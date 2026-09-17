@@ -1059,3 +1059,25 @@ to 5.5 ms of each period, never the next frame's 0 to 2.2 ms window. The
 fused graph's trailing copy node is the natural place: same kernel, peer
 destination. Expected gain: the other-die half's slow bursts and most of
 the +0.85 ms p95; the local half's engine read remains.
+
+## Addendum 2026-09-17: crop recorder's share on the fast clock
+
+`fourcam_fused_recorder_fullframe_only_20260917_135836` (fused path,
+full-frame split-GOP recorder only, crop video off, four cameras, fish,
+TSC clock), against the same-day both-recorders run (`…_133343`) and the
+no-recorder run (`…_133225`), cams 2010094 / 2010096:
+
+| Configuration | acq to worker | infer mean / p95 | slow fraction | acq to detect mean / p95 | capture to pose done mean / p95 / p99 |
+|---|---|---|---|---|---|
+| fused, no recorders | 0.018 | 2.005 / 2.018 | 0.00 | 2.15 / 2.18 | 2.90 / 2.92 / 2.94 |
+| fused, full-frame recorder only | 0.019 | 2.145 to 2.172 / 2.82 | 0.12 to 0.18 | 2.40 to 2.44 / 3.03 | 3.18 to 3.26 / 3.79 to 3.80 / 3.87 to 3.92 |
+| fused, both recorders | 0.019 | 2.131 to 2.165 / 2.82 | 0.11 to 0.16 | 2.41 to 2.49 / 3.04 | 3.18 to 3.30 / 3.80 to 3.85 / 3.93 to 4.11 |
+
+The crop video recorder costs nothing measurable on the fast clock (the
+0.2 ms host-side share seen on the slow clock was the clock). The whole
+recorder cost is the full-frame split-GOP recorder, and it is GPU-side:
+the detect graph itself, in bursts. Crop video cannot run without the
+full-frame recorder (the client refuses `crop_recording external_ipc`
+without it), so "crop video only" is not a configuration that exists; the
+figure that answers it is the full-frame-only row, which equals both.
+The journal's figures carry these five configurations.
