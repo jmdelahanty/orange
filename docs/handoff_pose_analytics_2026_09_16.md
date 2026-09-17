@@ -746,3 +746,13 @@ Teardown: the fused+both run exited cleanly; the fused full-frame-only run
 aborted (SIGABRT) after its 60 s with the perf CSVs complete, and the
 crop-producer control segfaulted. The abort's core matches the current
 binary (no rebuild since); see the journal for the PID to dump.
+
+Note: `fourcam_fused_recorder_crop_only` cannot run as written: the
+client refuses `fixed.crop_recording mode=external_ipc` without the
+supervised full-frame external recorder (`recording_sink_mode
+external_ipc`). The crop recorder's share is therefore the difference
+between the both-recorders and full-frame-only runs: about +0.2 ms on
+the acquisition-to-detect mean, host-side, none on the detect graph. The
+abort core that matches the current binary is PID 3878883
+(2026-09-17 12:17:58, the full-frame-only fused run); dump with
+`sudo coredumpctl dump 3878883 -o /tmp/orange_core_3878883 && sudo chown jeremy /tmp/orange_core_3878883`.
