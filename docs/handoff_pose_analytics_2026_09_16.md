@@ -1155,3 +1155,93 @@ itself costs. Note from the map: the two shards are threads in one
 recorder process per camera, the recorder assigns GOP routing itself
 (`gop_index % shards`), and the analytics side does not know the shard
 GPUs today.
+
+## Addendum 2026-09-17 14:40: early peer staging in the recorder (plan step 1) — card B gate met
+
+Commit `b0921f9`. The other-die shard of the external recorder now
+copies the pool frame into a recorder-owned, NVENC-registered NV12
+staging buffer on the intake thread at descriptor arrival (already
+detect-gated), records a per-buffer event, and enqueues the work item
+with the staging index; the encode thread waits for an input slot, waits
+for the copy event (usually landed), sends RELEASE, points NVENC at the
+staging buffer through the external input slots and encodes. Same-die
+shards are untouched (registered source). Flag: spec key
+`external_recorder_early_peer_stage` → env
+`ORANGE_EXTERNAL_RECORDER_EARLY_PEER_STAGE=1` (`--early-peer-stage`);
+opt-in until the endurance run below passes. New shard CSV columns
+`stage_wait_ms` (encode-thread wait for the copy) and `stage_copy_ms`
+(GPU-timed copy). Staging buffers are allocated on demand up to
+max(encoder buffers, queue depth) + 2 (30.5 MB each; 5 to 7 were used),
+registered lazily by the encode thread (the encoder may not exist yet at
+the first frames), shared under `staging_mutex_`; the summary prints
+`early_stage_frames` and `early_stage_exhausted`.
+
+Trap found on the first run: the intake thread's current device is the
+source GPU (it imports the pool handles there); the staging block
+switched it to the shard GPU and did not switch back, so the next
+`cudaIpcOpenMemHandle` landed in the shard die's context and the
+same-die shard's `nvEncRegisterResource` failed with error 23 after 25
+frames (both shards then stopped; the client reported acquisition
+starvation because the ingress held the deferred entries). The block
+now saves and restores the device.
+
+A/B, four cameras, fused path, both recorders, real fish, TSC clock,
+60 s each, back to back (`fourcam_fused_recorder_realfish_earlystage_20260917_142320`
+vs `fourcam_fused_recorder_realfish_20260917_142450`), joined per
+camera and per shard half via `Cam*_external_meta.csv`, slow =
+infer_ms > 2.3:
+
+| Camera, die, card | slow local-half: control → staging | slow other-half: control → staging | other-half infer p95 | capture→pose mean / p99 | device-stage GPU p95 | other shard prepare p50 |
+|---|---|---|---|---|---|---|
+| 2010093, 3, A | 0.166 → 0.169 | 0.092 → 0.031 | 2.39 → 2.09 | 3.23/3.95 → 3.16/3.88 | 0.97 → 0.75 | 10.5 → 6.4 |
+| 2010094, 1, A | 0.165 → 0.144 | 0.076 → 0.036 | 2.37 → 2.09 | 3.22/3.90 → 3.16/3.91 | 0.95 → 0.75 | 10.3 → 6.6 |
+| 2010095, 7, B | 0.182 → 0.174 | 0.156 → 0.040 | 2.42 → 2.27 | 3.30/4.13 → 3.26/4.06 | 1.05 → 0.75 | 10.9 → 6.0 |
+| 2010096, 5, B | 0.180 → 0.171 | 0.161 → 0.042 | 2.42 → 2.27 | 3.30/4.07 → 3.25/3.86 | 1.04 → 0.75 | 10.8 → 6.0 |
+
+Gates: card B other half 0.16 → 0.04 (target ≤ 0.05) — pass; local half
+unchanged — as predicted; other-die prepare down 4.4 ms (more than the
+copy: the copy now overlaps the NVENC input wait) — pass; camera drops,
+`get_frame_errors`, `acq_starve` all 0, 2950 frames per shard in both
+arms — pass; pose device-stage GPU p95 back to the no-recorder 0.75 ms.
+
+Controls:
+
+- `external_recorder_peer_access` (explicit `cudaDeviceEnablePeerAccess`
+  shard → source; the probe only ever relied on
+  `cudaIpcMemLazyEnablePeerAccess`, which acts for the importing device):
+  no change in either arm (peer-only run `…_peer_20260917_143142` ≈
+  control; `…_earlystage_peer_20260917_143020` ≈ staging). The copy was
+  already a peer transfer. `nvidia-smi topo -p2p r` shows P2P OK between
+  all A16 dies; card B's dies are PHB to NIC4–7, card A's are SYS to every NIC.
+- GPU-timed copy under load (`stage_copy_ms`): p50 7.0 ms card A, 8.3 ms
+  card B (p95 7.6 / 8.9), not the idle 3.2 ms of `tools/peer_copy_bench.cu`:
+  the pull yields to the detect die's own traffic. Issued at ~2.5 ms after
+  acquisition it lands at ~9.5 ms (card A, before the next detect) and
+  ~10.8 ms (card B, 0.8 ms into the next detect) — the residual 4%.
+- `external_recorder_early_stage_push` (the same copy issued from the
+  source die's context with `cudaMemcpyPeerAsync` on a stream on the
+  detect die; run `…_earlystage_push_20260917_143548`): copy 3.1 ms p50,
+  other-half slow 0.1 to 0.7%, capture→pose mean 3.02 to 3.07 ms, but
+  the run FAILED with camera drops: 2749 / 1876 / 664 / 1365 dropped
+  frames, acquisition at 50 / 82 / 95 / 84 fps. The detect die's outbound
+  copy starves camera intake (the second opinion's caution, confirmed);
+  the detect numbers describe a lighter load and are not comparable.
+  Negative as implemented; only a paced, chunked push remains untested.
+
+Files: `tools/external_recorder_ipc_probe.cpp` (options
+`early_peer_stage`, `peer_access`, `early_stage_push`;
+`enqueue_direct_source` staging block; `encode_one_direct_source`
+early-staged branch; `acquire_staging_buffer_locked`,
+`ensure_staging_registered`, `register_pending_staging_buffers`,
+`ensure_peer_access`, `ensure_push_peer_access`, `ensure_stage_stream`,
+`release_staging_buffer`, `recycle_staged_frame`),
+`src/orange_headless_client.cpp` (the three spec keys → env), specs
+`experiment_specs/fourcam_fused_recorder_realfish_{earlystage,earlystage_peer,peer,earlystage_push,earlystage_endurance}.json`.
+Analysis: `scratchpad/ab4.py` pattern — merge `Cam*_yolo_perf.csv` with
+`Cam*_external_meta.csv` on `recording_frame_id`, half = assigned_gpu_id
+== source_gpu_id, and read the shard CSVs skipping the first 50 rows.
+
+Next: (1) endurance `fourcam_fused_recorder_realfish_earlystage_endurance`
+(600 s, started 14:38) → flip the default if clean; (2) encoder-side
+control for the local-half term (CBR / sized VBV / longer GOP) as a spec
+matrix change; (3) paced push only if the 4% residual on card B matters.
