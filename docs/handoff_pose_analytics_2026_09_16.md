@@ -843,3 +843,48 @@ to the kernel command line first. After the reboot, re-run
 `fourcam_fused_realfish`, `fourcam_fused_recorder_realfish` and its
 `_off` control before drawing any further conclusion about the fourth
 camera.
+
+## Addendum 2026-09-17: what the clocksource switch is, and how 2.15 becomes 3.2 to 3.5
+
+**What happened, in plain terms.** Every "what time is it" call (this
+pipeline makes tens per frame per thread; the CUDA driver and the EVT SDK
+make their own) reads a hardware counter. Normally that is the TSC, a
+cycle counter in each core, read in about 20 ns with no system call. The
+kernel runs a watchdog that compares the TSC against a slower chipset
+timer; if they ever disagree by too much it declares the TSC unusable and
+switches to the slow timer, permanently, without telling anyone. That
+happened on pancake0 on 2026-09-11 at 07:03 (kernel log: "Marking TSC
+unstable due to clocksource watchdog ... most likely due to broken BIOS
+... Switched to clocksource acpi_pm"). The skew was exactly one watchdog
+interval, the signature of one glitchy comparison, a known occasional
+event on Threadripper boards. Nobody ran anything to cause it. The slow
+timer, acpi_pm, costs about 2 us per read (measured) through a system
+call, and all cores read it through one port, so it gets slower the more
+threads ask. A reboot re-validates the TSC; `tsc=reliable` on the kernel
+command line stops the watchdog switching again.
+
+**How much of the slowdown it is.** It is not most of the 2.15 -> 3.5. It
+is the layer under the other two, and it makes them worse. Cam 2010094,
+means in ms, fused path unless noted:
+
+| Layer | Configuration | acq -> detect | What moved |
+|---|---|---|---|
+| true host floor (fast clock, 2026-09-04) | two cameras, engine-only | 2.149 | graph 1.976; every host segment tiny (worker start 0.023, post-sync 0.065) |
+| + slow clock | two cameras, engine-only (today) | 2.261 | +0.11, all of it host segments; graph unchanged 1.979 |
+| + two more cameras | four cameras, no recorders (today) | 2.474 | +0.21, again host segments (worker start 0.161, post-sync 0.245); graph 2.005 |
+| + both recorders, GPU side | four cameras, recorders (today) | | graph 2.005 -> 2.140 mean, p95 2.02 -> 2.82 (content-dependent NVENC contention; 2.28 p95 on dark frames) |
+| + both recorders, host side | same run | 3.194 | worker start 0.161 -> 0.327, pre-sync 0.138 -> 0.303, post-sync 0.245 -> 0.522 |
+| p95 | same run | 3.700 | the GOP-locked slow-graph bursts (11 % of frames at 2.6 to 2.8) |
+
+So: +0.11 clock at two cameras, +0.21 more at four (more threads sharing
+the slow clock), +0.15 GPU-side from the encoder on lit frames, and about
++0.55 host-side under the recorders. That last, largest, term is the one
+the clock is suspected of amplifying rather than causing outright: 16
+recorder processes each timestamping and calling the driver all read the
+same serialised clock. The evidence for that reading is the 2026-09-04
+three-camera run with the same recorders on a fast clock, where the host
+segments did not grow at all (worker start 0.021, post-sync 0.051 with
+recorders and interleaved crops). It is inference until the reboot A/B;
+the GPU-side term and the p95 bursts are independent of the clock and
+will remain after it, and the 09-04 interleave result stands as
+measured.
