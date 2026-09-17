@@ -165,7 +165,7 @@
     },
     "yolo_sync_event": true,
     "ptp_latch_after_fanout": true,
-    "headless_gpu_dmon": false,
+    "headless_gpu_dmon": true,
     "external_recorder_direct_input": false,
     "recording_control": {
       "record_for_seconds": 60

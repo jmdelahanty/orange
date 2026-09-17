@@ -1,6 +1,6 @@
 {
-  "experiment_id": "fourcam_fused_recorder_fullframe_only",
-  "notes": "Decomposition of the four-camera full-consumer detect cost: fused path with the full-frame split-GOP recorder only (crop video recorder off). Compare against fourcam_fused_recorder_realfish (both) and fourcam_fused_realfish (none).",
+  "experiment_id": "fourcam_fused_recorder_darkconfig",
+  "notes": "Content A/B: identical to fourcam_fused_recorder_realfish but on the dark 2026-09-04 config folder (exposure 50, focus 0 on two cameras) that every run of the lever campaign used. If detect latency drops back toward 2.3 ms, the recorder contention scales with frame content (NVENC work, bitstream traffic) and the campaign numbers were measured on near-idle encoders.",
   "selection": {
     "camera_serials": [
       "2010093",
@@ -23,7 +23,7 @@
     "stream_only": false,
     "sync_mode": "ptp_gate",
     "recording_sink_mode": "external_ipc",
-    "config_folder": "/tmp/orange_recorder_config_a16",
+    "config_folder": "/home/jeremy/orange-gop-split-a16/config/validated_split_gop_hevc_100fps_gop25_fourcam_a16",
     "output_root": "/home/jeremy/orange_data/exp/unsorted",
     "ptp_register_read_decimate": 100,
     "nvenc_direct_input": false,
@@ -173,7 +173,9 @@
     "external_recorder_detect_priority": true,
     "external_recorder_registered_source": true,
     "crop_recording": {
-      "mode": "off"
+      "mode": "external_ipc",
+      "crop_size_px": 384,
+      "interleave": true
     },
     "pose_worker": {
       "mode": "real",
