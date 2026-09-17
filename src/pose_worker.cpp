@@ -7,6 +7,7 @@
 #include "optimized_yolo_preprocess.h"
 #include "pose_crop_from_roi.h"
 #include "project.h"
+#include "yolo_runtime_flags.h"
 
 #include <algorithm>
 #include <chrono>
@@ -374,6 +375,65 @@ public:
         return true;
     }
 
+    // Step 2: capture the pose stage (enqueueV3 + output copy) into a CUDA
+    // graph bound to one slot's buffers. A captured graph bakes in the
+    // addresses its kernels were launched with, which is why there is one
+    // graph per slot and not one for the stage: the slots exist so frame
+    // N+1's input can be written while frame N's output is still being
+    // decoded, and each needs its own baked addresses. TensorRT wants one
+    // ordinary enqueue with the same addresses before capture (lazy
+    // allocation happens there, and would break the capture). Capture is
+    // thread-local so other threads' CUDA calls do not join the graph. The
+    // execution context's scratch workspace is shared by every graph made
+    // from it, so the graphs must run serialised on one stream, which the
+    // pose stream guarantees.
+    bool capture_slot_graph(void* d_input, void* d_output, float* h_output,
+                            cudaStream_t stream, cudaGraphExec_t* exec_out,
+                            std::string* error_out)
+    {
+        *exec_out = nullptr;
+        if (!context_->setTensorAddress(input_name_.c_str(), d_input) ||
+            !context_->setTensorAddress(output_name_.c_str(), d_output)) {
+            *error_out = "bind_failed";
+            return false;
+        }
+        bound_to_defaults_ = false;
+        ck(cudaMemsetAsync(d_input, 0, input_bytes_, stream));
+        if (!context_->enqueueV3(stream)) {
+            *error_out = "warm_enqueue_failed";
+            return false;
+        }
+        ck(cudaMemcpyAsync(h_output, d_output, output_bytes_, cudaMemcpyDeviceToHost, stream));
+        ck(cudaStreamSynchronize(stream));
+
+        cudaGraph_t graph = nullptr;
+        ck(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
+        if (!context_->enqueueV3(stream)) {
+            cudaStreamEndCapture(stream, &graph);
+            if (graph) {
+                cudaGraphDestroy(graph);
+            }
+            *error_out = "captured_enqueue_failed";
+            return false;
+        }
+        ck(cudaMemcpyAsync(h_output, d_output, output_bytes_, cudaMemcpyDeviceToHost, stream));
+        ck(cudaStreamEndCapture(stream, &graph));
+        cudaGraphExec_t exec = nullptr;
+        const cudaError_t inst = cudaGraphInstantiate(&exec, graph, nullptr, nullptr, 0);
+        cudaGraphDestroy(graph);
+        if (inst != cudaSuccess) {
+            cudaGetLastError();
+            *error_out = std::string("graph_instantiate_failed: ") + cudaGetErrorString(inst);
+            return false;
+        }
+        // One un-timed launch so the first real frame does not pay the
+        // graph upload.
+        ck(cudaGraphLaunch(exec, stream));
+        ck(cudaStreamSynchronize(stream));
+        *exec_out = exec;
+        return true;
+    }
+
     void decode_from(const float* h_output, int crop_w, int crop_h,
                      std::string* status_out,
                      std::vector<pose_event_log::PoseInstanceRecord>* poses_out) const
@@ -588,6 +648,7 @@ struct PoseWorker::DeviceStageSlot {
     DetectRoi* h_roi = nullptr;
     cudaEvent_t input_ready_event = nullptr;  // YOLO stream, after crop + preprocess (timing on)
     cudaEvent_t done_event = nullptr;         // pose stream, after the output copy (timing on)
+    cudaGraphExec_t graph_exec = nullptr;     // step 2: enqueueV3 + output copy, bound to this slot
     std::atomic<int> state{kFree};
     uint64_t enqueue_host_ns = 0;
 };
@@ -669,6 +730,7 @@ PoseWorker::~PoseWorker()
                   << " slot_busy_drops=" << device_stage_slot_busy_.load(std::memory_order_relaxed)
                   << " failed=" << device_stage_failed_.load(std::memory_order_relaxed)
                   << " slots=" << device_slot_count_
+                  << " graphs=" << device_stage_graphs_
                   << " crop_px=" << device_stage_crop_px_
                   << std::endl;
     }
@@ -795,15 +857,41 @@ bool PoseWorker::EnableDeviceStage(int pose_crop_px, std::string* error_out)
         free_device_slots();
         return fail(std::string("device crop slot allocation failed: ") + ex.what());
     }
+    // ORANGE_POSE_DEVICE_GRAPH (default on): one CUDA graph per slot for the
+    // pose enqueue + output copy. Off = plain enqueueV3 per frame (the step 1
+    // path, 0.40 ms of CPU on the YOLO thread).
+    const bool want_graphs = orange::yolo_flags::EnvFlag("ORANGE_POSE_DEVICE_GRAPH", true);
+    int captured = 0;
+    if (want_graphs) {
+        for (auto& slot : device_slots_) {
+            std::string error;
+            try {
+                if (tensorrt_backend_->capture_slot_graph(
+                        slot->d_input, slot->d_output, slot->h_output, stream_,
+                        &slot->graph_exec, &error)) {
+                    ++captured;
+                } else {
+                    std::cerr << "[PoseWorker] pose graph capture failed for " << threadName
+                              << ": " << error << "; that slot uses plain enqueue" << std::endl;
+                }
+            } catch (const std::exception& ex) {
+                std::cerr << "[PoseWorker] pose graph capture threw for " << threadName
+                          << ": " << ex.what() << "; that slot uses plain enqueue" << std::endl;
+                slot->graph_exec = nullptr;
+            }
+        }
+    }
     device_slot_count_ = slots;
     device_stage_crop_px_ = pose_crop_px;
     device_stage_enabled_ = true;
+    device_stage_graphs_ = captured;
     std::cout << "[PoseWorker] Device crop path (ORANGE_ANALYTICS_DEVICE_CROP) enabled for "
               << threadName
               << " crop_px=" << pose_crop_px
               << " engine_input=" << tensorrt_backend_->input_width() << "x"
               << tensorrt_backend_->input_height()
               << " slots=" << slots
+              << " graphs=" << captured << "/" << slots
               << std::endl;
     return true;
 }
@@ -821,6 +909,7 @@ void PoseWorker::free_device_slots()
         if (slot->h_roi) cudaFreeHost(slot->h_roi);
         if (slot->input_ready_event) cudaEventDestroy(slot->input_ready_event);
         if (slot->done_event) cudaEventDestroy(slot->done_event);
+        if (slot->graph_exec) cudaGraphExecDestroy(slot->graph_exec);
     }
     device_slots_.clear();
     device_stage_enabled_ = false;
@@ -891,8 +980,20 @@ int PoseWorker::EnqueueDeviceStage(
         // and mark done. The pose thread waits on done_event and decodes.
         ck(cudaStreamWaitEvent(stream_, slot.input_ready_event, 0));
         std::string error;
-        if (!tensorrt_backend_->enqueue_with_buffers(
-                slot.d_input, slot.d_output, slot.h_output, stream_, &error)) {
+        bool queued = false;
+        if (slot.graph_exec) {
+            const cudaError_t launch = cudaGraphLaunch(slot.graph_exec, stream_);
+            if (launch == cudaSuccess) {
+                queued = true;
+            } else {
+                cudaGetLastError();
+                error = std::string("graph_launch_failed: ") + cudaGetErrorString(launch);
+            }
+        } else {
+            queued = tensorrt_backend_->enqueue_with_buffers(
+                slot.d_input, slot.d_output, slot.h_output, stream_, &error);
+        }
+        if (!queued) {
             std::cerr << "[PoseWorker] device stage enqueue failed for " << threadName
                       << ": " << error << std::endl;
             ck(cudaStreamSynchronize(yolo_stream));

@@ -281,3 +281,72 @@ were predicted:
 Gate status: device ROI match passes; slot ring passes; capture to pose
 done p95 3.38 < 3.6 passes; detect latency +0.05 fails narrowly until step
 2. The real-fish comparison is still owed.
+
+## Addendum 2026-09-17: step 2, one pose CUDA graph per slot
+
+Run `twocam_device_crop_realfish_20260917_090611` (same spec, same two
+cameras, empty tank, 8/8 graphs captured per camera, 5900 frames each, no
+slot-busy drops). `ORANGE_POSE_DEVICE_GRAPH` (default on) selects the
+graph; off restores the step 1 plain enqueue for an A/B.
+
+| Metric (ms, cam 2010094) | Control | Step 1 | Step 2 |
+|---|---|---|---|
+| cpu_pose_enqueue mean / p99 (YOLO thread) | n/a | 0.400 / 0.452 | 0.026 / 0.030 |
+| capture to pose done mean / p95 / p99 | none | 3.358 / 3.376 / 3.416 | 3.237 / 3.255 / 3.282 |
+| device_stage_gpu mean (input ready to output copied) | n/a | 1.11 | 1.00 |
+| infer_ms mean / p95 | 1.979 / 1.985 | 1.998 / 2.004 | 1.994 / 2.001 |
+| cpu_pre_sync mean | 0.100 | 0.507 | 0.134 |
+| cpu_post_sync mean | 0.099 | 0.130 | 0.130 |
+| acquisition to detect done mean / p95 | 2.262 / 2.311 | 2.312 / 2.356 | 2.300 / 2.342 |
+
+Detect-latency delta against the control after step 2: +0.038 mean,
++0.031 p95, at the +0.03 gate's edge. Attribution from the per-phase
+columns: infer_ms +0.015 (GPU, the graph runs while the YOLO thread's
+device-stage launches hit the driver); cpu_pre_sync +0.034 (the crop,
+preprocess, ROI mirror, event, wait-event and graph launch calls, all
+before the completion event, so overlapped by the graph and not on the
+pose path); cpu_post_sync +0.031, unattributed (post_ms and ipc_ms account
+for 0.006; the rest is suspected driver contention with the pose graph
+executing during the late owned copy issue and the timing-event reads).
+Step 4 (copy placement) is the next lever for both the pose GPU time
+(1.00 vs 0.72 for the graphed engine alone) and this residual.
+
+### Why one graph per slot, and what "per slot" means
+
+A CUDA graph is instantiated once and reused, and that is still true here:
+each of the eight graphs is captured and instantiated at
+`EnableDeviceStage` and launched every eighth frame with no per-frame
+work. There are eight because a captured graph stores the device pointers
+of every kernel argument as literal values. The TensorRT enqueue captured
+for slot 3 reads slot 3's input buffer and writes slot 3's output buffer,
+forever. The device stage keeps eight slots so that frame N+1's crop can
+be written while the pose thread is still decoding frame N's output; each
+slot therefore needs a graph with its own baked addresses. The alternative
+(one graph, one input buffer, copy each slot's input into it before
+launch) would also force the YOLO thread to wait until the pose thread has
+finished reading the single output buffer, which is the hop step 1
+removed. TensorRT does not expose its kernel nodes, so updating node
+parameters per launch (`cudaGraphExecKernelNodeSetParams`) is not an
+option either.
+
+What must stay stable for a graph: the memory behind every captured
+pointer, at the same address, for the graph's lifetime. Buffer contents
+may change between launches; addresses may not. Hence the slot buffers
+are allocated once in `EnableDeviceStage` and freed only after the graphs
+(`free_device_slots`), the TensorRT context (whose scratch workspace the
+captured kernels also address) outlives the graphs, and the pinned host
+output buffer of the captured D2H copy is fixed. The detect graph obeys
+the same rule by running preprocess outside the graph into a fixed input
+buffer, which is how the varying camera-frame address stays out of it.
+
+TensorRT rules the capture follows (`capture_slot_graph` in
+`src/pose_worker.cpp`): one ordinary enqueue with the slot's addresses
+before capture, because TensorRT's lazy first-use allocation would break
+the capture; thread-local capture mode so the recorder's CUDA calls on
+other threads cannot join the graph; one un-timed launch after
+instantiation so the first real frame does not pay the graph upload. The
+eight graphs share the context's workspace, so they must run serialised,
+which the single pose stream guarantees. Per frame the YOLO thread now
+does: crop kernel, preprocess kernel, ROI mirror copy, event record (YOLO
+stream), then wait-event, `cudaGraphLaunch`, event record (pose stream):
+about 0.03 ms of CPU in total.

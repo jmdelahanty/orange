@@ -111,6 +111,7 @@ private:
     bool device_stage_enabled_ = false;
     int device_stage_crop_px_ = 0;
     int device_slot_count_ = 0;
+    int device_stage_graphs_ = 0;   // slots whose pose stage is a captured CUDA graph
     uint64_t device_slot_next_ = 0;
     std::vector<std::unique_ptr<DeviceStageSlot>> device_slots_;
     std::atomic<uint64_t> device_stage_enqueued_{0};
