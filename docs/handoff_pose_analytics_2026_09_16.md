@@ -350,3 +350,52 @@ which the single pose stream guarantees. Per frame the YOLO thread now
 does: crop kernel, preprocess kernel, ROI mirror copy, event record (YOLO
 stream), then wait-event, `cudaGraphLaunch`, event record (pose stream):
 about 0.03 ms of CPU in total.
+
+## Addendum 2026-09-17: step 4, the late owned copy behind pose
+
+Goal: stop the 20 MB late owned pool copy (lever 2d, issued on the
+acquisition stream at detect done) from overlapping the pose graph on the
+die, which cost pose 0.27 ms of GPU time (1.00 vs 0.72 for the engine
+alone). `ORANGE_ANALYTICS_COPY_AFTER_POSE` (spec
+`fixed.analytics_copy_after_pose`, default on) selects it; off restores
+the copy at detect done for an A/B.
+
+First attempt (run `…_094122`, and `…_094447` with the extra timing
+columns): keep the copy on the acquisition stream but make it wait on the
+slot's pose-done event with `cudaStreamWaitEvent`. Pose GPU fell to 0.74
+and capture to pose done to 2.99 / 3.01, but acquisition-to-detect p95
+jumped from 2.34 to 3.07: on about one frame in eight the host call that
+issues the copy blocked for 0.78 ms, the pose time (new column
+`cpu_late_copy_ms`: p50 0.027, p90 0.770). A cross-stream wait on an
+incomplete event followed by the memcpy stalls the issuing host call on
+some frames; the mechanism in the driver was not chased further because
+the fix removes the wait.
+
+Fix (run `…_094750`): queue the copy on the pose stream itself, right
+behind the slot's graph launch, at enqueue time on the YOLO thread
+(`issue_late_owned_copy_on_stream` in `late_owned_copy.h`;
+`PoseWorker::device_stage_stream()`). Stream order gives the same GPU
+ordering with no cross-stream dependency, and the issue cost moves off
+the post-sync path (it is overlapped by the detect graph). The later
+issue site is a no-op because the pending flag is already clear; if the
+device stage did not enqueue, the copy goes out at detect done as before.
+
+| Metric (ms, cam 2010094) | Control | Step 2 | Step 4 |
+|---|---|---|---|
+| capture to pose done mean / p50 / p95 / p99 | none | 3.237 / 3.235 / 3.255 / 3.282 | 2.982 / 2.979 / 3.003 / 3.056 |
+| device_stage_gpu mean / p95 | n/a | 1.00 / 1.01 | 0.743 / 0.747 |
+| cpu_late_copy (YOLO thread) mean / p99 | n/a | (0.03, inside post_sync) | 0.012 / 0.018 |
+| cpu_pre_sync / cpu_post_sync mean | 0.100 / 0.099 | 0.134 / 0.130 | 0.148 / 0.128 |
+| infer_ms mean / p95 | 1.979 / 1.985 | 1.994 / 2.001 | 1.994 / 2.001 |
+| acquisition to detect done mean / p95 / p99 | 2.262 / 2.311 / 2.367 | 2.300 / 2.342 / 2.372 | 2.298 / 2.326 / 2.373 |
+
+Gate status after step 4 (empty tank, two cameras): capture to pose done
+2.98 mean / 3.00 p95, below the 3.3 target of step 3 already; detect
+delta vs control +0.036 mean (gate +0.03, still 0.006 over) and +0.015
+p95 (passes). The remaining mean excess sits in cpu_post_sync (+0.03,
+unattributed; post_ms and ipc_ms account for 0.006) and infer_ms (+0.015).
+The recorder and display now see the owned frame about 0.75 ms later;
+that cost has not been measured with a recorder on. Real-fish comparison
+still owed, and add about 0.1 ms of decode with a fish.
+
+New perf columns this step: `cpu_late_copy_ms`, `cpu_timing_reads_ms`.

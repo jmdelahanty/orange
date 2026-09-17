@@ -243,6 +243,21 @@ bool UseDeviceCrop()
     return enabled;
 }
 
+bool UseCopyAfterPose()
+{
+    static const bool enabled = []() {
+        const bool on = orange::yolo_flags::EnvFlag("ORANGE_ANALYTICS_COPY_AFTER_POSE", true);
+        if (UseDeviceCrop()) {
+            std::cout << "[YOLO] Late owned copy ordered "
+                      << (on ? "after pose done (ORANGE_ANALYTICS_COPY_AFTER_POSE on)."
+                             : "at detect done (ORANGE_ANALYTICS_COPY_AFTER_POSE off).")
+                      << std::endl;
+        }
+        return on;
+    }();
+    return enabled;
+}
+
 bool UseInlineCropProducer()
 {
     static const bool enabled = []() {
@@ -771,6 +786,8 @@ struct YoloPerfRecord {
     // input without an owned copy); -2 enqueue failed.
     int device_crop = -1;
     double cpu_pose_enqueue_ms = -1.0;  // CPU cost of the device-stage enqueue
+    double cpu_late_copy_ms = -1.0;     // CPU cost of issuing the late owned copy (after the wait)
+    double cpu_timing_reads_ms = -1.0;  // CPU cost of the GPU timing event reads (after the wait)
 };
 
 enum class YoloPerfEventType {
@@ -871,7 +888,7 @@ private:
                  "service_sequence,camera_service_sequence,active_camera_count,same_camera_service_gap_ms,service_skew_latest_other_ms,service_skew_oldest_other_ms,service_count_skew_vs_min,service_count_skew_range,"
                  "ingress_event_ready_before_wait,wait_ms,pre_ms,gap_ms,enqueue_ms,infer_ms,sync_ms,completion_event_ready_before_sync,"
                  "cpu_wait_event_ms,cpu_ingress_event_query_ms,cpu_stream_wait_event_ms,cpu_npp_set_stream_ms,cpu_preprocess_ms,cpu_input_ready_event_record_ms,cpu_dump_ms,cpu_infer_call_ms,cpu_event_record_ms,cpu_pre_sync_ms,cpu_pre_sync_other_ms,cpu_post_sync_ms,"
-                 "queue_ms,post_ms,track_ms,ipc_ms,enet_ms,total_ms,sync_mode,early_copy_ms,gpu_timing,device_roi_valid,device_roi_match,device_crop,cpu_pose_enqueue_ms\n";
+                 "queue_ms,post_ms,track_ms,ipc_ms,enet_ms,total_ms,sync_mode,early_copy_ms,gpu_timing,device_roi_valid,device_roi_match,device_crop,cpu_pose_enqueue_ms,cpu_late_copy_ms,cpu_timing_reads_ms\n";
         file_ << std::fixed << std::setprecision(6);
         std::cout << "[YOLO_PERF] " << worker_name_ << " logging to " << file_path_ << std::endl;
     }
@@ -965,7 +982,9 @@ private:
               << record.device_roi_valid << ","
               << record.device_roi_match << ","
               << record.device_crop << ","
-              << record.cpu_pose_enqueue_ms << "\n";
+              << record.cpu_pose_enqueue_ms << ","
+              << record.cpu_late_copy_ms << ","
+              << record.cpu_timing_reads_ms << "\n";
     }
 
     void ThreadMain() {
@@ -1511,6 +1530,8 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         double ms_cpu_pre_sync = -1.0;
         double ms_cpu_pre_sync_other = -1.0;
         double ms_cpu_post_sync = -1.0;
+        double ms_cpu_late_copy = -1.0;
+        double ms_cpu_timing_reads = -1.0;
         double ms_total = -1.0;
         double ms_acquisition_to_worker_start = -1.0;
         double ms_acquisition_to_ptp_done = -1.0;
@@ -1916,6 +1937,7 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         // thread only wakes to decode.
         int device_crop_col = -1;
         double ms_cpu_pose_enqueue = -1.0;
+        cudaEvent_t device_pose_done_event = nullptr;
         if (UseDeviceCrop() && m_pose_worker && m_pose_worker->device_stage_enabled()) {
             if (!device_roi_enabled) {
                 device_crop_col = 2;
@@ -1946,9 +1968,21 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                     device_crop_skipped_.fetch_add(1, std::memory_order_relaxed);
                 } else {
                     device_crop_col = m_pose_worker->EnqueueDeviceStage(
-                        entry, d_source, entry->width, yolov8_instance_->stream, &ms_cpu_pose_enqueue);
+                        entry, d_source, entry->width, yolov8_instance_->stream, &ms_cpu_pose_enqueue,
+                        &device_pose_done_event);
                     if (device_crop_col == 1) {
                         device_crop_enqueued_.fetch_add(1, std::memory_order_relaxed);
+                        // Step 4: queue the late owned pool copy on the pose
+                        // stream, right behind the pose graph, so it does not
+                        // overlap pose on the die and needs no cross-stream
+                        // wait (which stalled this thread; see late_owned_copy.h).
+                        if (UseCopyAfterPose() && entry->late_owned_copy_pending) {
+                            const auto late_copy_start = std::chrono::steady_clock::now();
+                            issue_late_owned_copy_on_stream(
+                                entry, m_pose_worker->device_stage_stream(), nullptr, gpu_timing);
+                            ms_cpu_late_copy = std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - late_copy_start).count();
+                        }
                     } else if (device_crop_col == 0) {
                         device_crop_slot_busy_.fetch_add(1, std::memory_order_relaxed);
                     } else {
@@ -2051,12 +2085,20 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             if (!finished_in_time && yolov8_instance_ && yolov8_instance_->stream) {
                 cudaStreamSynchronize(yolov8_instance_->stream);
             }
-            issue_late_owned_copy(
-                entry,
-                (finished_in_time && entry->yolo_completion_event) ? entry->yolo_completion_event : nullptr,
-                gpu_timing);
+            // (On the device crop path with ORANGE_ANALYTICS_COPY_AFTER_POSE
+            // the copy was already queued on the pose stream at enqueue time
+            // and late_owned_copy_pending is false here.)
+            cudaEvent_t* copy_after = nullptr;
+            if (finished_in_time && entry->yolo_completion_event) {
+                copy_after = entry->yolo_completion_event;
+            }
+            const auto late_copy_start = std::chrono::steady_clock::now();
+            issue_late_owned_copy(entry, copy_after, gpu_timing);
+            ms_cpu_late_copy = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - late_copy_start).count();
         }
         float ms_early_copy = -1.0f;
+        const auto timing_reads_start = std::chrono::steady_clock::now();
         if (gpu_timing && finished_in_time) {
             // infer_end precedes the completion event on the same stream, so
             // this synchronize returns immediately after the wait above.
@@ -2090,6 +2132,8 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 }
             }
         }
+        ms_cpu_timing_reads = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - timing_reads_start).count();
         if (finished_in_time) {
             // Now that the GPU is finished, process the results.
             // This completely REPLACES entry->detections, preventing stale data
@@ -2557,6 +2601,8 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 record.device_roi_match = device_roi_match_col;
                 record.device_crop = device_crop_col;
                 record.cpu_pose_enqueue_ms = ms_cpu_pose_enqueue;
+                record.cpu_late_copy_ms = ms_cpu_late_copy;
+                record.cpu_timing_reads_ms = ms_cpu_timing_reads;
                 perf_logger_->Enqueue(record);
             }
         }

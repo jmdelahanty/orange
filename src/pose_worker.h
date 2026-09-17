@@ -38,17 +38,24 @@ public:
     bool EnableDeviceStage(int pose_crop_px, std::string* error_out);
     bool device_stage_enabled() const { return device_stage_enabled_; }
     int device_stage_crop_px() const { return device_stage_crop_px_; }
+    // The pose stream: work queued on it after EnqueueDeviceStage follows
+    // this frame's pose graph in stream order.
+    cudaStream_t device_stage_stream() const { return stream_; }
     // Called on the YOLO worker thread, on the YOLO stream, after the ROI
     // kernel and before the frame's completion event (so the source read is
     // covered by that event). d_source is the mono frame the ROI refers to.
     // Returns 1 when queued, 0 when every slot is still busy (the frame gets
     // no pose), -2 when the enqueue failed.
+    // done_event_out (optional) receives the slot's pose-done event, recorded
+    // on the pose stream after the output copy, so the caller can order
+    // later GPU work (the late owned copy, step 4) behind this frame's pose.
     int EnqueueDeviceStage(
         WORKER_ENTRY* entry,
         const unsigned char* d_source,
         int source_pitch,
         cudaStream_t yolo_stream,
-        double* cpu_ms_out);
+        double* cpu_ms_out,
+        cudaEvent_t* done_event_out = nullptr);
     void RotateRecordingFolder(const std::string& recording_folder);
     void CloseRecording();
 

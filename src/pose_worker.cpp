@@ -930,9 +930,13 @@ int PoseWorker::EnqueueDeviceStage(
     const unsigned char* d_source,
     int source_pitch,
     cudaStream_t yolo_stream,
-    double* cpu_ms_out)
+    double* cpu_ms_out,
+    cudaEvent_t* done_event_out)
 {
     const uint64_t start_ns = steady_now_ns();
+    if (done_event_out) {
+        *done_event_out = nullptr;
+    }
     if (!device_stage_enabled_ || !tensorrt_backend_ || !entry || !d_source ||
         !entry->d_detect_roi || !yolo_stream) {
         return -1;
@@ -1037,6 +1041,9 @@ int PoseWorker::EnqueueDeviceStage(
     }
     if (cpu_ms_out) {
         *cpu_ms_out = elapsed_ms(start_ns, steady_now_ns());
+    }
+    if (done_event_out) {
+        *done_event_out = slot.done_event;
     }
     return 1;
 }

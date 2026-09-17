@@ -60,6 +60,14 @@ struct ResolvedFlags {
     // YOLO thread (no crop-thread hop; step 1 of the fused-graph plan).
     // The crop producer keeps feeding the recorder and preview. Default off.
     bool device_crop = false;
+    // ORANGE_ANALYTICS_COPY_AFTER_POSE: with the device crop path, queue the
+    // late owned pool copy (lever 2d) on the pose stream right behind the
+    // pose graph instead of on the acquisition stream at detect done, so the
+    // 20 MB copy does not overlap the pose graph on the die (step 4) and no
+    // cross-stream wait is needed. The recorder and display see the owned
+    // frame about one pose later. Default on; off restores the copy at
+    // detect done for an A/B.
+    bool copy_after_pose = true;
     // ORANGE_YOLO_STREAM_PRIORITY: "high" (default), "low", or an integer.
     std::string stream_priority = "high";
     // ORANGE_YOLO_STREAM_NONBLOCKING: create the YOLO stream non-blocking.
@@ -87,6 +95,7 @@ inline ResolvedFlags Resolve()
     flags.skip_cpu_results = EnvFlag("ORANGE_YOLO_SKIP_CPU_RESULTS", false);
     flags.device_roi = EnvFlag("ORANGE_ANALYTICS_DEVICE_ROI", false);
     flags.device_crop = EnvFlag("ORANGE_ANALYTICS_DEVICE_CROP", false);
+    flags.copy_after_pose = EnvFlag("ORANGE_ANALYTICS_COPY_AFTER_POSE", true);
     if (const char* env = std::getenv("ORANGE_YOLO_STREAM_PRIORITY"); env && *env) {
         flags.stream_priority = env;
     }
