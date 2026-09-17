@@ -888,3 +888,47 @@ recorders and interleaved crops). It is inference until the reboot A/B;
 the GPU-side term and the p95 bursts are independent of the clock and
 will remain after it, and the 09-04 interleave result stands as
 measured.
+
+## Addendum 2026-09-17 (after the reboot): the fast-clock numbers
+
+Rebooted 13:16 with `tsc=reliable`; kernel log "Switched to clocksource
+tsc", a clock read 80 ns (was 1946). Four cameras, fish detected on every
+frame, CPU results path on, dmon on. All four runs exited cleanly,
+including the crop-producer control with both recorders that had
+segfaulted at teardown on the slow clock.
+
+| Run (means over cams 2010094 / 2010096) | acq to worker | cpu_post_sync | infer mean / p95 | acq to detect mean / p95 / p99 | capture to pose done mean / p95 / p99 |
+|---|---|---|---|---|---|
+| crop-producer path, no recorders (`…_off_133106`) | 0.021 | 0.065 | 2.004 / 2.017 | 2.18 / 2.23 / 2.26 | 3.29 / 3.33 / 3.51 |
+| fused path, no recorders (`fused_realfish_133225`) | 0.018 | 0.030 | 2.005 / 2.018 | 2.15 / 2.18 / 2.20 | 2.90 / 2.92 / 2.94 |
+| fused path + both recorders (`…_133343`) | 0.019 | 0.027 | 2.15 / 2.82 | 2.45 / 3.04 / 3.23 | 3.24 / 3.82 / 4.02 |
+| crop-producer + both recorders (`…_off_133505`) | 0.019 | 0.050 | 2.14 / 2.81 | 2.43 / 3.06 / 3.15 | 3.70 / 4.46 / 4.74 |
+
+What the reboot settled. (1) The host-side inflation was the clocksource:
+every host segment is back at or below the 2026-09-04 values (worker
+start 0.02, post-sync 0.03 on the fused path), with recorders on or off.
+(2) The fused pose path with a fish on four cameras is **2.90 ms mean /
+2.92 p95 / 2.94 p99** without recorders and 3.24 / 3.82 / 4.02 with both
+recorders, against 3.29 / 3.33 and 3.70 / 4.46 on the crop-producer path;
+the p99 spread on the fused path without recorders is 0.04 ms. (3) The
+detect side with no recorders is 2.15 mean on the fused path, i.e. the
+four-camera engine-only floor equals the three-camera one. (4) The whole
+remaining recorder cost is GPU-side and unchanged by the clock: infer_ms
+2.00 -> 2.15 mean with 10 to 16 % of frames at 2.6 to 2.8 ms, acquisition
+to detect +0.25 mean / +0.85 p95. The recorder itself: 5901/5901 frames,
+0 drops, enqueue age p95 11.9 (fused) vs 13.2 (crop producer), detach
+0.003 ms, pending 3 GOPs, 1.50 Mbit per frame at the cap.
+
+dmon (1 s samples) during the fused+recorders run: detect dies (1,3,5,7)
+sm 44 to 50 %, memory controller 20 % mean / 28 % max, enc 51 to 58 %
+mean (100 % during their GOP half), PCIe rx about 1.97 GB/s mean (the
+camera inflow; max 2.6) and tx about 1.0 GB/s mean (max 2.6, the other
+die's shard reading frames during its half); the other dies (2,4,6,8) sm
+22 to 33 %, mem 7 %, rx about 1.0 GB/s mean (max 2.5), tx 0.1. Neither
+the link (peaks about 40 % of a Gen4 x4 direction) nor the memory
+controller is saturated on 1 s averages, so the mechanism is sub-second.
+The slow detect frames are not at the GOP boundary: by frame phase they
+recur every 7 to 9 frames (70 to 90 ms) in bursts of a few frames, on
+every camera, with the exact phases differing per camera pair. Something
+with that period on the encoder side is the next thing to identify (see
+the per-frame encoder CSV correlation that follows).
