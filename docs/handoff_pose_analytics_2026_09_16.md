@@ -795,3 +795,51 @@ i.e. with all levers on, the fourth camera brings detect latency back to
 roughly the August level, and the heartbeat returns as GOP-locked bursts.
 The three-camera gains therefore do not carry over; the fourth camera
 fills the last two dies so every die carries a detect graph plus shards.
+
+## Addendum 2026-09-17: the host is on a slow clocksource since 2026-09-11 (root cause of the host-side step change)
+
+Every host-side segment of the YOLO perf row, including pure CPU
+segments with no CUDA call in them, is uniformly 2 to 5 us slower on
+every run since 2026-09-12 than on 2026-09-04, on the same binary and the
+same two-camera engine-only spec; the excess scales with the number of
+cameras and threads. Cam 2010094, means:
+
+| Segment (ms) | 09-04 engine-only | 09-12 engine-only | today two-camera control | today four cameras, no recorders |
+|---|---|---|---|---|
+| acquisition to PTP done (a timestamp pair) | 0.0001 | 0.0026 | 0.0026 | 0.0067 |
+| YOLO enqueue push | 0.0004 | 0.0027 | 0.0028 | 0.0059 |
+| YOLO enqueue to dequeue (queue hop) | 0.0128 | 0.0375 | 0.0314 | 0.0628 |
+| acquisition to worker start | 0.023 | 0.080 | 0.073 | 0.161 |
+| cpu_wait_event (one CUDA call) | 0.0032 | 0.0127 | 0.0147 | 0.0296 |
+| cpu_pre_sync | 0.056 | 0.111 | 0.099 | 0.138 |
+| cpu_post_sync | 0.065 | 0.135 | 0.099 | 0.245 |
+| infer_ms (GPU graph) | 1.976 | 1.974 | 1.979 | 2.005 |
+| acquisition to detect done | 2.149 | 2.275 | 2.261 | 2.474 |
+
+Cause, from the kernel log: on **2026-09-11 07:03:06** the clocksource
+watchdog marked the TSC unstable ("skewed -485 ms over watchdog 'acpi_pm'
+interval of 485 ms ... TSC found unstable after boot, most likely due to
+broken BIOS") and the kernel **switched to clocksource acpi_pm**. A clock
+read now costs about 1.95 us (measured; the TSC vDSO path is 20 to 40 ns)
+and acpi_pm reads serialise on one I/O port across all CPUs, so the cost
+grows with concurrent readers, which is why four cameras pay twice what
+two do. The pipeline takes tens of timestamps per frame per thread, the
+CUDA driver and the EVT SDK read the clock too, and every wake and every
+queue hop is stretched. The machine has not rebooted since 2026-08-09.
+
+Consequences: (1) every measurement since 2026-09-12, including all of
+today's, carries this host-side inflation; comparisons between paths made
+on the same day stay valid, absolute numbers do not, and the 09-04
+figures are the true host baseline. (2) The "four-camera contention" is
+two things: a GPU-side, content-dependent NVENC effect on the detect
+graph (infer_ms p95 2.82 with lit frames vs 2.28 with the dark config,
+none without recorders) and a host-side thread-count effect that is
+mostly the clocksource. (3) The unexplained 09-12 odd/even post-sync
+alternation appeared with the switch.
+
+Fix: reboot (the TSC is re-validated at boot); to stop the watchdog from
+switching again, add `tsc=reliable` (or `clocksource=tsc tsc=nowatchdog`)
+to the kernel command line first. After the reboot, re-run
+`fourcam_fused_realfish`, `fourcam_fused_recorder_realfish` and its
+`_off` control before drawing any further conclusion about the fourth
+camera.
