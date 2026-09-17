@@ -1267,3 +1267,35 @@ with the unmodified `fourcam_fused_recorder_realfish` spec
 (`…_20260917_145056`, pass): every other-die shard reports
 `early_stage_frames=2950`. `external_recorder_peer_access` and
 `external_recorder_early_stage_push` stay off (no effect / camera drops).
+
+## Addendum 2026-09-17 15:40: the GPUDirect ring cannot alternate dies on SDK 2.55.02 (tested)
+
+Question answered locally instead of by Emergent, with a probe mode
+added to `tools/evt_stream_smoke.cpp` (run as root; the sudo wrapper
+only allows the gop-split worktree's binary, so the user ran
+`sudo …/orange-device-roi-20260912/targets/release/evt_stream_smoke`):
+
+- `--gpu-direct-switch 4` (camera 2010093 on die 3, 8 buffers, switch
+  `gpuDirectDeviceId` to 4 before buffers 4 to 7): every zero-copy
+  buffer has `imagePtr == 0` at allocation (they are descriptors), and
+  every received frame is a device-3 pointer into one contiguous SDK
+  ring, 20,375,040 bytes apart, in order, wrapping after 24 frames. The
+  allocation-time device is ignored.
+- `--user-ring device --user-ring-mb 512` (a `cudaMalloc` ring on die 3
+  passed as `EVTStreamAttribute{ringBufferPtr, ringBufferSize}`):
+  `EVT_CameraOpenStream` returns 0 but frames land in the SDK's own
+  ring, `in_user_ring=0` on all 30 frames.
+- `--user-ring vmm-split --user-ring-gpu2 4` (a 512 MB
+  `cuMemAddressReserve` range, first half `cuMemCreate` on die 3, second
+  on die 4, `cuMemSetAccess` for both): same result, ignored.
+
+So on SDK 2.55.02.21104 the landing device is fixed at stream open and
+the user ring attribute is not used under GPUDirect. The alternating
+landing design (journal entry "Would alternating the landing buffer
+between the dies help?") needs Emergent. The question is rewritten in
+`~/emergent_sdk_question_gpudirect_ring_two_devices_2026_09_17.md` with
+these results as context, the SDK version filled in, and five questions
+(application-supplied GPU ring incl. a VMM range; SDK-side split;
+registration limits; PHB vs SYS receive; multicast to two ports as a
+fallback). The local-half term stays the encoder's, and the encoder-side
+controls remain the next lever.
