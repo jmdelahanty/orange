@@ -59,7 +59,9 @@ public:
 
     void SetCropAndEncodeWorker(CropAndEncodeWorker* crop_worker);
     void SetCropPreviewWorker(CropPreviewWorker* crop_preview_worker);
-    void SetPoseWorker(PoseWorker* pose_worker);
+    // crop_fanout=false keeps the pose worker for flush ticks but stops
+    // offering it crops (the device crop path feeds it from the YOLO thread).
+    void SetPoseWorker(PoseWorker* pose_worker, bool crop_fanout = true);
     CropProducer* GetCropProducer() const { return crop_producer_.get(); }
     int crop_width() const { return crop_width_; }
     int crop_height() const { return crop_height_; }

@@ -10,6 +10,7 @@
 // Needs one CUDA device. Cameras are not touched.
 
 #include "detect_roi.h"
+#include "pose_crop_from_roi.h"
 
 #include <cuda_runtime_api.h>
 
@@ -90,6 +91,28 @@ std::vector<Object> oracle_postprocess(const int* num_dets, const float* boxes, 
     return objs;
 }
 
+// Transcribed from orange::analytics_mask::evaluate_box_centroid
+// (src/yolo_spatial_mask.h) and the in-place compaction in YoloWorker that
+// drops detections outside the centroid gate when the mask policy enforces it.
+struct OracleGate { bool enabled = false; float cx = 0.f, cy = 0.f, radius = 0.f; };
+
+std::vector<Object> oracle_gate_filter(const std::vector<Object>& detections, const OracleGate& gate)
+{
+    if (!gate.enabled) return detections;
+    std::vector<Object> kept;
+    for (const Object& detection : detections) {
+        const float centroid_x = detection.rect.x + detection.rect.width * 0.5f;
+        const float centroid_y = detection.rect.y + detection.rect.height * 0.5f;
+        const float dx = centroid_x - gate.cx;
+        const float dy = centroid_y - gate.cy;
+        const float distance = std::sqrt(dx * dx + dy * dy);
+        const float signed_boundary_distance_px = gate.radius - distance;
+        const bool inside = signed_boundary_distance_px >= 0.0f;
+        if (inside) kept.push_back(detection);
+    }
+    return kept;
+}
+
 // Transcribed from CropProducerWorker::ProcessEntryImpl.
 struct OracleCrop { bool has_detection; int ix, iy; float prob; int label; Rect rect; };
 
@@ -115,6 +138,7 @@ struct Case {
     std::string name;
     int src_w, src_h, inp_w, inp_h, crop;
     int pose_crop = 0;  // 0 = single crop
+    OracleGate gate;    // spatial-mask centroid gate (off by default)
     int capacity;
     int num_dets;
     std::vector<float> boxes;   // capacity * 4
@@ -139,6 +163,10 @@ DetectRoiParams params_for(const Case& c, float* dw_out, float* dh_out, float* i
     p.pose_crop_w = c.pose_crop;
     p.pose_crop_h = c.pose_crop;
     p.max_dets = c.capacity;
+    p.centroid_gate = c.gate.enabled ? 1 : 0;
+    p.gate_cx = c.gate.cx;
+    p.gate_cy = c.gate.cy;
+    p.gate_radius = c.gate.radius;
     *dw_out = p.dw; *dh_out = p.dh; *inv_out = p.inv_ratio;
     return p;
 }
@@ -151,8 +179,10 @@ void check_case(const Case& c, cudaStream_t stream)
     const DetectRoiParams p = params_for(c, &dw, &dh, &inv);
 
     // Oracle.
-    const std::vector<Object> objs = oracle_postprocess(&c.num_dets, c.boxes.data(), c.scores.data(),
-                                                        c.labels.data(), dw, dh, inv, p.src_w, p.src_h, c.capacity);
+    const std::vector<Object> raw_objs = oracle_postprocess(&c.num_dets, c.boxes.data(), c.scores.data(),
+                                                            c.labels.data(), dw, dh, inv, p.src_w, p.src_h, c.capacity);
+    const std::vector<Object> objs = oracle_gate_filter(raw_objs, c.gate);
+    const int oracle_gated = static_cast<int>(raw_objs.size() - objs.size());
     const OracleCrop oc = oracle_crop(objs, c.src_w, c.src_h, c.crop, c.crop);
     const int pose_size = c.pose_crop > 0 ? c.pose_crop : c.crop;
     const OracleCrop op = oracle_crop(objs, c.src_w, c.src_h, pose_size, pose_size);
@@ -195,6 +225,7 @@ void check_case(const Case& c, cudaStream_t stream)
         const char* what = (pair == &host) ? "host" : "device";
         EXPECT_TRUE((r.valid == 1) == oc.has_detection, report(what, r).c_str());
         EXPECT_TRUE(r.crop_w == c.crop && r.crop_h == c.crop, report(what, r).c_str());
+        EXPECT_TRUE(r.num_gated == oracle_gated, report(what, r).c_str());
         if (!oc.has_detection) continue;
         EXPECT_TRUE(r.crop_x == oc.ix && r.crop_y == oc.iy, report(what, r).c_str());
         EXPECT_TRUE(r.pose_crop_w == pose_size && r.pose_crop_h == pose_size, report(what, r).c_str());
@@ -229,6 +260,47 @@ Case make_case(const std::string& name, int src_w, int src_h, int inp, int crop,
         c.labels[i] = label(rng);
     }
     return c;
+}
+
+// Device crop against the host reference, for a synthetic mono frame.
+void check_crop(const char* name, int src_w, int src_h, const DetectRoi& roi, int crop_w, int crop_h,
+                std::mt19937& rng, cudaStream_t stream)
+{
+    std::vector<unsigned char> src(static_cast<size_t>(src_w) * src_h);
+    std::uniform_int_distribution<int> byte(0, 255);
+    for (unsigned char& v : src) v = static_cast<unsigned char>(byte(rng));
+    std::vector<unsigned char> expected(static_cast<size_t>(crop_w) * crop_h, 0xAA);
+    pose_crop_from_roi_host(src.data(), src_w, src_w, src_h, roi, expected.data(), crop_w, crop_h);
+
+    unsigned char* d_src = nullptr; unsigned char* d_dst = nullptr; DetectRoi* d_roi = nullptr;
+    CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_src), src.size()));
+    CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_dst), expected.size()));
+    CUDA_OK(cudaMalloc(reinterpret_cast<void**>(&d_roi), sizeof(DetectRoi)));
+    CUDA_OK(cudaMemcpyAsync(d_src, src.data(), src.size(), cudaMemcpyHostToDevice, stream));
+    CUDA_OK(cudaMemcpyAsync(d_roi, &roi, sizeof(DetectRoi), cudaMemcpyHostToDevice, stream));
+    CUDA_OK(cudaMemsetAsync(d_dst, 0xAA, expected.size(), stream));
+    launch_pose_crop_from_roi(d_src, src_w, src_w, src_h, d_roi, d_dst, crop_w, crop_h, stream);
+    CUDA_OK(cudaGetLastError());
+    std::vector<unsigned char> got(expected.size());
+    CUDA_OK(cudaMemcpyAsync(got.data(), d_dst, got.size(), cudaMemcpyDeviceToHost, stream));
+    CUDA_OK(cudaStreamSynchronize(stream));
+    CUDA_OK(cudaFree(d_src)); CUDA_OK(cudaFree(d_dst)); CUDA_OK(cudaFree(d_roi));
+
+    char msg[256];
+    std::snprintf(msg, sizeof msg, "crop %s: device output differs from host reference (valid=%d origin=%d,%d size=%dx%d)",
+                  name, roi.valid, roi.pose_crop_x, roi.pose_crop_y, crop_w, crop_h);
+    EXPECT_TRUE(got == expected, msg);
+    // Sanity on the reference itself: an interior crop is a straight copy.
+    if (roi.valid && roi.pose_crop_x >= 0 && roi.pose_crop_y >= 0 &&
+        roi.pose_crop_x + crop_w <= src_w && roi.pose_crop_y + crop_h <= src_h) {
+        bool straight = true;
+        for (int y = 0; y < crop_h && straight; ++y)
+            for (int x = 0; x < crop_w; ++x)
+                if (expected[static_cast<size_t>(y) * crop_w + x] !=
+                    src[static_cast<size_t>(roi.pose_crop_y + y) * src_w + roi.pose_crop_x + x]) { straight = false; break; }
+        std::snprintf(msg, sizeof msg, "crop %s: host reference is not a straight copy", name);
+        EXPECT_TRUE(straight, msg);
+    }
 }
 
 }  // namespace
@@ -307,6 +379,75 @@ int main()
             c.name = "integer_boundary_" + std::to_string(k);
             check_case(c, stream); ++cases;
         }
+    }
+
+    // Spatial-mask centroid gate: the device must select the same box the CPU
+    // selects after dropping detections whose centroid is outside the circle.
+    {
+        std::uniform_real_distribution<float> radius_frac(0.05f, 0.7f);
+        std::uniform_real_distribution<float> centre_frac(0.2f, 0.8f);
+        for (const Geo& g : geos) {
+            for (int rep = 0; rep < 24; ++rep) {
+                const int n = counts[rep % 6];
+                Case c = make_case("gate_geo" + std::to_string(g.w) + "x" + std::to_string(g.h) + "_rep" + std::to_string(rep),
+                                   g.w, g.h, 640, 256, 100, n, rng, (rep % 3) == 1);
+                c.gate.enabled = true;
+                c.gate.cx = g.w * centre_frac(rng);
+                c.gate.cy = g.h * centre_frac(rng);
+                c.gate.radius = std::min(g.w, g.h) * radius_frac(rng);
+                check_case(c, stream); ++cases;
+                Case p = c; p.name += "_pose"; p.pose_crop = 128;
+                check_case(p, stream); ++cases;
+            }
+        }
+        // Boundary: centroids placed exactly on and just off the circle along
+        // the x axis, where the >= 0 test decides.
+        Case c = make_case("gate_boundary", 4512, 4512, 640, 256, 100, 1, rng);
+        c.gate.enabled = true; c.gate.cx = 2256.0f; c.gate.cy = 2256.0f; c.gate.radius = 900.0f;
+        const float inv = 4512.0f / 640.0f;
+        for (int k = -8; k <= 8; ++k) {
+            const float centre_src = 2256.0f + 900.0f + 0.25f * k;
+            const float half_w_src = 12.0f;
+            c.boxes[0] = (centre_src - half_w_src) / inv; c.boxes[1] = (2256.0f - 10.0f) / inv;
+            c.boxes[2] = (centre_src + half_w_src) / inv; c.boxes[3] = (2256.0f + 10.0f) / inv;
+            c.scores[0] = 0.9f;
+            c.name = "gate_boundary_" + std::to_string(k + 8);
+            check_case(c, stream); ++cases;
+        }
+        // Best box outside the gate, second best inside: the second must win.
+        Case d = make_case("gate_best_outside", 4512, 4512, 640, 256, 100, 3, rng);
+        d.gate.enabled = true; d.gate.cx = 2256.0f; d.gate.cy = 2256.0f; d.gate.radius = 500.0f;
+        const float b[3][4] = {{10, 10, 30, 30}, {310, 310, 330, 330}, {600, 600, 630, 630}};
+        for (int i = 0; i < 3; ++i) for (int k = 0; k < 4; ++k) d.boxes[i * 4 + k] = b[i][k];
+        d.scores[0] = 0.95f; d.scores[1] = 0.6f; d.scores[2] = 0.7f;
+        check_case(d, stream); ++cases;
+        // Everything outside: no valid ROI, all counted as gated.
+        Case e = d; e.name = "gate_all_outside"; e.gate.radius = 5.0f;
+        check_case(e, stream); ++cases;
+    }
+
+    // Pose crop kernel: interior, every edge clamp, invalid ROI, and a crop
+    // larger than the source (pinned origin, zero fill outside).
+    {
+        std::uniform_int_distribution<int> pick(0, 1000000);
+        for (int rep = 0; rep < 40; ++rep) {
+            const int src_w = 640 + (pick(rng) % 400);
+            const int src_h = 480 + (pick(rng) % 400);
+            const int crop = (rep % 4 == 0) ? 96 : (rep % 4 == 1) ? 128 : (rep % 4 == 2) ? 192 : 256;
+            DetectRoi roi;
+            roi.valid = 1;
+            roi.pose_crop_w = crop; roi.pose_crop_h = crop;
+            roi.pose_crop_x = pick(rng) % std::max(1, src_w - crop + 1);
+            roi.pose_crop_y = pick(rng) % std::max(1, src_h - crop + 1);
+            if (rep % 5 == 1) { roi.pose_crop_x = 0; roi.pose_crop_y = 0; }
+            if (rep % 5 == 2) { roi.pose_crop_x = src_w - crop; roi.pose_crop_y = src_h - crop; }
+            if (rep % 5 == 3) { roi.valid = 0; }
+            check_crop(("rep" + std::to_string(rep)).c_str(), src_w, src_h, roi, crop, crop, rng, stream); ++cases;
+        }
+        DetectRoi big; big.valid = 1; big.pose_crop_x = 0; big.pose_crop_y = 0; big.pose_crop_w = 256; big.pose_crop_h = 256;
+        check_crop("larger_than_source", 200, 150, big, 256, 256, rng, stream); ++cases;
+        DetectRoi neg = big; neg.pose_crop_x = -17; neg.pose_crop_y = -3;
+        check_crop("negative_origin", 640, 480, neg, 256, 256, rng, stream); ++cases;
     }
 
     CUDA_OK(cudaStreamDestroy(stream));

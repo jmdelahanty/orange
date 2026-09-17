@@ -14,6 +14,7 @@
 
 class TensorRtPoseBackend;
 class FrameIPCManager;
+struct DetectRoi;
 
 class PoseWorker : public CThreadWorker<CropFrame>
 {
@@ -26,11 +27,37 @@ public:
 
     void SetMaxQueueSize(int size);
     bool TryEnqueueCrop(CropFrameLease crop_frame_lease);
+
+    // Device crop path (ORANGE_ANALYTICS_DEVICE_CROP, step 1 of
+    // docs/handoff_pose_analytics_2026_09_16.md): the YOLO worker thread cuts
+    // the pose crop from the device ROI and queues preprocess and the pose
+    // enqueue right behind the detect graph, so no CPU hop sits between
+    // detect and pose. This thread then only waits for the result and
+    // decodes it. Slots are a small ring owned here; pose runs on every
+    // frame (run-and-mask) and an invalid ROI yields "no_result".
+    bool EnableDeviceStage(int pose_crop_px, std::string* error_out);
+    bool device_stage_enabled() const { return device_stage_enabled_; }
+    int device_stage_crop_px() const { return device_stage_crop_px_; }
+    // Called on the YOLO worker thread, on the YOLO stream, after the ROI
+    // kernel and before the frame's completion event (so the source read is
+    // covered by that event). d_source is the mono frame the ROI refers to.
+    // Returns 1 when queued, 0 when every slot is still busy (the frame gets
+    // no pose), -2 when the enqueue failed.
+    int EnqueueDeviceStage(
+        WORKER_ENTRY* entry,
+        const unsigned char* d_source,
+        int source_pitch,
+        cudaStream_t yolo_stream,
+        double* cpu_ms_out);
     void RotateRecordingFolder(const std::string& recording_folder);
     void CloseRecording();
 
 private:
+    struct DeviceStageSlot;
     bool WorkerFunction(CropFrame* crop_frame) override;
+    DeviceStageSlot* find_device_slot(CropFrame* crop_frame);
+    void process_device_slot(DeviceStageSlot& slot);
+    void free_device_slots();
     // Flush tick (drain cascade marker from CropProducerWorker, or shutdown):
     // all queued crops have been processed; close the event log + summary.
     void OnFlushTick() override { CloseRecording(); }
@@ -80,6 +107,18 @@ private:
     orange::BoundedSampleStatistics crop_ready_to_pose_start_samples_ms_;
     orange::BoundedSampleStatistics pose_start_to_pose_done_samples_ms_;
     orange::BoundedSampleStatistics capture_to_pose_done_samples_ms_;
+    // Device crop path.
+    bool device_stage_enabled_ = false;
+    int device_stage_crop_px_ = 0;
+    int device_slot_count_ = 0;
+    uint64_t device_slot_next_ = 0;
+    std::vector<std::unique_ptr<DeviceStageSlot>> device_slots_;
+    std::atomic<uint64_t> device_stage_enqueued_{0};
+    std::atomic<uint64_t> device_stage_slot_busy_{0};
+    std::atomic<uint64_t> device_stage_failed_{0};
+    // GPU time from the pose input being ready (after crop + preprocess on
+    // the YOLO stream) to the pose output copied back, per frame.
+    orange::BoundedSampleStatistics device_stage_gpu_samples_ms_;
 };
 
 #endif  // ORANGE_POSE_WORKER_H

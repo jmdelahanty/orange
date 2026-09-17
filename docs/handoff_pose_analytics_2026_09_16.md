@@ -164,3 +164,78 @@ Conditional graph nodes need CUDA 12.4; the rig has 12.2, so pose runs every
 frame and results are masked by ROI validity. The one missing piece for
 capture is a crop kernel that reads its origin from the device `DetectRoi`
 (today's `mono_roi_copy_kernel` takes host ints).
+
+## Addendum 2026-09-16 (late): step 1 implemented, not yet run on the rig
+
+Step 1 of the plan (device-origin crop cut and pose queued from the YOLO
+thread right behind the detect graph, two threads kept, CPU results path
+kept and reordered) is implemented and builds; the kernel tests pass
+(`detect_roi_tests`, 2293 cases). It has not run on cameras: the sudo
+benchmark wrapper refuses this worktree's binary. Add
+`DEVICE_ROI_ORANGE_CLIENT="/home/jeremy/orange-device-roi-20260912/targets/release/orange_client"`
+to `/usr/local/bin/orange-local-benchmark` (after line 9 and in the `case`
+at line 124), then:
+
+```
+scripts/run_detect_latency_spec.sh twocam_device_crop_realfish_off   # control
+scripts/run_detect_latency_spec.sh twocam_device_crop_realfish       # device crop
+```
+
+(absolute path from this worktree; `pgrep -f 'orange_clien[t] --mode local'`
+first; the pair needs a fish for the ROI comparison, but the timing path
+runs on an empty tank too: pose runs on a blank crop every frame.)
+
+What changed:
+
+- `src/detect_roi.{h,cu}`: `DetectRoiParams` gained the spatial-mask
+  centroid gate (`centroid_gate`, `gate_cx/cy/radius`), enabled by the YOLO
+  worker only when the mask policy enforces the centroid (audit leaves it
+  off), reproducing `evaluate_box_centroid` operation for operation;
+  `DetectRoi.num_gated` counts rejected boxes. Crop origins are pinned at 0
+  when the crop is larger than the frame instead of clamping to a negative
+  bound. The device-vs-CPU comparison now compares mask-trimmed frames when
+  the gate is on (match code 2 only without the gate).
+- `src/pose_crop_from_roi.{h,cu}`: crop kernel reading its origin from the
+  device `DetectRoi`; zero fill outside the source and for an invalid ROI.
+- `src/pose_worker.{h,cpp}`: device stage. `EnableDeviceStage(px)` allocates
+  a ring of `ORANGE_POSE_DEVICE_SLOTS` (default 8) slots (mono crop, engine
+  input, engine output, pinned output, pinned ROI mirror, two timing events).
+  `EnqueueDeviceStage(entry, source, pitch, yolo_stream)` runs on the YOLO
+  thread: crop + the existing preprocess + ROI mirror + event on the YOLO
+  stream, then wait-event + `enqueueV3` with the slot's buffers + output copy
+  + done event on the pose stream, then pushes the slot onto the worker
+  queue. `process_device_slot` on the pose thread waits on the done event,
+  decodes from the slot, fills the snapshot from the ROI mirror, logs and
+  publishes. In this mode the TensorRT context is driven only by the YOLO
+  thread. `Cam*_pose_perf.csv` gained six trailing `device_stage_gpu_*`
+  columns (GPU time from input ready to output copied); on this path
+  `pose_start_to_pose_done` spans detect + pose (pose_start is the YOLO
+  thread's enqueue) and the crop-thread columns have no samples.
+- `src/yolo_worker.{h,cpp}`: `SetPoseWorker`, `ORANGE_ANALYTICS_DEVICE_CROP`
+  (`UseDeviceCrop`), the launch block after the ROI mirror and before the
+  completion event, source selection per the late-owned-copy contract (late
+  copy pending: camera buffer; early owned copy: behind its ready event;
+  pool copy: the entry; detached camera buffer without an owned copy: skip,
+  code 4), synthetic detections skipped (code 3). New perf columns
+  `device_crop` and `cpu_pose_enqueue_ms`; a `[YOLO] device crop summary`
+  line at teardown.
+- `src/crop_producer_worker.{h,cpp}`: `SetPoseWorker(pose, crop_fanout)`;
+  with fan-out off the producer keeps the pose worker for flush ticks only
+  and no longer forces a crop on every frame.
+- Plumbing: `fixed.analytics_device_crop` -> `ORANGE_ANALYTICS_DEVICE_CROP`
+  (`src/orange_headless_client.cpp`, `src/yolo_runtime_flags.h`,
+  `src/project.cpp`); the headless client enables the device stage when the
+  flag is on, device ROI is on, the camera is mono and the pose mode is
+  real, else logs why and falls back to the crop-producer fan-out.
+- Specs: `experiment_specs/{twocam,threecam}_device_crop_realfish{,_off}.json`
+  (pose crop 256 = video crop so the pose input matches the control).
+- Tests: `tools/detect_roi_tests.cpp` gained the gate oracle (transcribed
+  from `yolo_spatial_mask.h` and the YOLO worker's compaction loop),
+  boundary and best-outside cases, and crop-kernel cases (interior, edges,
+  invalid ROI, crop larger than the source, negative origin).
+
+Known limits of step 1: one wake remains (the pose thread waking to decode);
+the pose enqueue is still a CPU call on the YOLO thread (about 0.05 ms);
+the video crop still runs when recording or preview need it; not yet
+exercised under the GUI client (env-gated, `SetPoseWorker` is only wired in
+the headless client).

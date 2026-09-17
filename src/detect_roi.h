@@ -43,6 +43,7 @@ struct DetectRoi {
     float box_y = 0.0f;
     float box_w = 0.0f;
     float box_h = 0.0f;
+    int num_gated = 0;    // boxes rejected by the centroid gate (0 when the gate is off)
 };
 
 struct DetectRoiParams {
@@ -60,6 +61,15 @@ struct DetectRoiParams {
     int pose_crop_w = 0;  // pose (head-sized) crop, same centroid; 0 = same as crop_w/h
     int pose_crop_h = 0;
     int max_dets = 0;     // capacity of the boxes/scores/labels bindings
+    // Spatial-mask centroid gate, the device twin of the CPU filter in
+    // YoloWorker (orange::analytics_mask::evaluate_box_centroid under
+    // gate_only / gate_and_input_mask): a box whose un-letterboxed centroid
+    // lies outside the circle is ignored, so the selected box matches the
+    // CPU's mask-filtered selection. 0 = off (audit mode leaves it off too).
+    int centroid_gate = 0;
+    float gate_cx = 0.0f;
+    float gate_cy = 0.0f;
+    float gate_radius = 0.0f;
 };
 
 // The same clamp YOLOv8::postprocess applies to num_dets.

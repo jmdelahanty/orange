@@ -250,6 +250,7 @@ set_property(
 set(ORANGE_CUDA_SOURCES
     "${SRC_DIR}/kernel.cu"
     "${SRC_DIR}/detect_roi.cu"
+    "${SRC_DIR}/pose_crop_from_roi.cu"
 )
 if(EXISTS "${SRC_DIR}/optimized_yolo_preprocess.cu")
     list(APPEND ORANGE_CUDA_SOURCES "${SRC_DIR}/optimized_yolo_preprocess.cu")
@@ -566,6 +567,7 @@ if(BUILD_TESTING)
     add_executable(detect_roi_tests
         "tools/detect_roi_tests.cpp"
         "${SRC_DIR}/detect_roi.cu"
+        "${SRC_DIR}/pose_crop_from_roi.cu"
     )
     target_include_directories(detect_roi_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS} "${ORANGE_CUDA_ROOT}/include")
     target_compile_features(detect_roi_tests PRIVATE cxx_std_17)

@@ -55,6 +55,11 @@ struct ResolvedFlags {
     // graph, and compare it against the CPU crop origin on every frame
     // (device_roi_valid / device_roi_match perf columns). Default off.
     bool device_roi = false;
+    // ORANGE_ANALYTICS_DEVICE_CROP: with device_roi, cut the pose crop from
+    // the device ROI and queue pose right behind the detect graph on the
+    // YOLO thread (no crop-thread hop; step 1 of the fused-graph plan).
+    // The crop producer keeps feeding the recorder and preview. Default off.
+    bool device_crop = false;
     // ORANGE_YOLO_STREAM_PRIORITY: "high" (default), "low", or an integer.
     std::string stream_priority = "high";
     // ORANGE_YOLO_STREAM_NONBLOCKING: create the YOLO stream non-blocking.
@@ -81,6 +86,7 @@ inline ResolvedFlags Resolve()
     flags.inline_crop_producer = EnvFlag("ORANGE_INLINE_CROP_PRODUCER", false);
     flags.skip_cpu_results = EnvFlag("ORANGE_YOLO_SKIP_CPU_RESULTS", false);
     flags.device_roi = EnvFlag("ORANGE_ANALYTICS_DEVICE_ROI", false);
+    flags.device_crop = EnvFlag("ORANGE_ANALYTICS_DEVICE_CROP", false);
     if (const char* env = std::getenv("ORANGE_YOLO_STREAM_PRIORITY"); env && *env) {
         flags.stream_priority = env;
     }

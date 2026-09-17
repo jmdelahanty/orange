@@ -58,6 +58,7 @@
 #include "citrus_recording_geometry.h"
 #include "recording_physical_registration.h"
 #include "pose_worker.h"
+#include "yolo_runtime_flags.h"
 #include "pose_event_log_validation.h"
 #include <signal.h>
 
@@ -254,6 +255,7 @@ struct ExperimentSpec {
     bool yolo_gpu_timing = true;             // ORANGE_YOLO_GPU_TIMING (default on)
     bool analytics_early_owned_frame = true; // ORANGE_ANALYTICS_EARLY_OWNED_FRAME (default on)
     bool analytics_device_roi = false;       // ORANGE_ANALYTICS_DEVICE_ROI (default off; device crop origin + CPU comparison)
+    bool analytics_device_crop = false;      // ORANGE_ANALYTICS_DEVICE_CROP (default off; needs device_roi; pose crop + enqueue from the YOLO thread)
     bool acq_stream_nonblocking = false;     // ORANGE_ACQ_STREAM_NONBLOCKING (diagnostic)
     bool acq_flush_after_event = false;      // ORANGE_ACQ_FLUSH_AFTER_EVENT (diagnostic)
     bool acq_force_direct_read = false;      // ORANGE_ACQ_FORCE_DIRECT_READ (diagnostic)
@@ -4880,7 +4882,32 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     frame_ipc_managers[idx].get());
                 pose_workers[idx]->SetMaxQueueSize(pose_worker_config.queue_depth);
                 pose_workers[idx]->RotateRecordingFolder(record_folder);
-                crop_producer_workers[idx]->SetPoseWorker(pose_workers[idx].get());
+                // Device crop path: the YOLO thread feeds the pose worker
+                // straight from the device ROI; the crop producer keeps the
+                // pose worker only for flush ticks. Falls back to the
+                // crop-producer fan-out when the path cannot be enabled.
+                bool device_crop_fanout = true;
+                const bool device_crop_requested =
+                    orange::yolo_flags::EnvFlag("ORANGE_ANALYTICS_DEVICE_CROP", false);
+                if (device_crop_requested) {
+                    std::string device_crop_error;
+                    const int pose_crop_px = pose_worker_config.crop_size_px > 0
+                        ? CropProducerWorker::SanitizeCropSize(pose_worker_config.crop_size_px)
+                        : crop_size_px;
+                    if (!orange::yolo_flags::EnvFlag("ORANGE_ANALYTICS_DEVICE_ROI", false)) {
+                        device_crop_error = "analytics_device_crop requires analytics_device_roi";
+                    } else if (cameras_params[idx].color) {
+                        device_crop_error = "device crop supports mono cameras only";
+                    } else if (pose_workers[idx]->EnableDeviceStage(pose_crop_px, &device_crop_error)) {
+                        device_crop_fanout = false;
+                    }
+                    if (device_crop_fanout) {
+                        std::cerr << "[EXPERIMENT] device crop disabled for camera "
+                                  << cameras_params[idx].camera_serial << ": "
+                                  << device_crop_error << std::endl;
+                    }
+                }
+                crop_producer_workers[idx]->SetPoseWorker(pose_workers[idx].get(), device_crop_fanout);
             }
         }
 
@@ -4908,6 +4935,9 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     if (crop_producer_workers[idx]) {
                         yolo_workers[idx]->SetCropProducerWorker(
                             crop_producer_workers[idx].get());
+                    }
+                    if (pose_workers[idx] && pose_workers[idx]->device_stage_enabled()) {
+                        yolo_workers[idx]->SetPoseWorker(pose_workers[idx].get());
                     }
                     yolo_workers[idx]->SetMaxQueueSize(240);
                 } catch (const std::exception& ex) {
@@ -8082,6 +8112,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->yolo_gpu_timing = fixed.value("yolo_gpu_timing", true);
     spec->analytics_early_owned_frame = fixed.value("analytics_early_owned_frame", true);
     spec->analytics_device_roi = fixed.value("analytics_device_roi", false);
+    spec->analytics_device_crop = fixed.value("analytics_device_crop", false);
     spec->acq_stream_nonblocking = fixed.value("acq_stream_nonblocking", false);
     spec->acq_flush_after_event = fixed.value("acq_flush_after_event", false);
     spec->acq_force_direct_read = fixed.value("acq_force_direct_read", false);
@@ -11390,6 +11421,7 @@ int run_local_experiment(const HeadlessCliOptions& options)
     setenv("ORANGE_YOLO_GPU_TIMING", spec.yolo_gpu_timing ? "1" : "0", 1);
     setenv("ORANGE_ANALYTICS_EARLY_OWNED_FRAME", spec.analytics_early_owned_frame ? "1" : "0", 1);
     setenv("ORANGE_ANALYTICS_DEVICE_ROI", spec.analytics_device_roi ? "1" : "0", 1);
+    setenv("ORANGE_ANALYTICS_DEVICE_CROP", spec.analytics_device_crop ? "1" : "0", 1);
     setenv("ORANGE_ACQ_STREAM_NONBLOCKING", spec.acq_stream_nonblocking ? "1" : "0", 1);
     setenv("ORANGE_ACQ_FLUSH_AFTER_EVENT", spec.acq_flush_after_event ? "1" : "0", 1);
     setenv("ORANGE_ACQ_FORCE_DIRECT_READ", spec.acq_force_direct_read ? "1" : "0", 1);
@@ -11418,6 +11450,7 @@ int run_local_experiment(const HeadlessCliOptions& options)
               << " yolo_gpu_timing=" << (spec.yolo_gpu_timing ? 1 : 0)
               << " analytics_early_owned_frame=" << (spec.analytics_early_owned_frame ? 1 : 0)
               << " analytics_device_roi=" << (spec.analytics_device_roi ? 1 : 0)
+              << " analytics_device_crop=" << (spec.analytics_device_crop ? 1 : 0)
               << " acq_stream_nonblocking=" << (spec.acq_stream_nonblocking ? 1 : 0)
               << " acq_flush_after_event=" << (spec.acq_flush_after_event ? 1 : 0)
               << " acq_force_direct_read=" << (spec.acq_force_direct_read ? 1 : 0)

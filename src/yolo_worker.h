@@ -25,6 +25,7 @@
 
 class COpenGLDisplay;
 class CropProducerWorker;
+class PoseWorker;
 namespace yolo_perf {
 class YoloPerfLogger;
 }
@@ -43,6 +44,9 @@ public:
     void SetENetTarget(EnetContext* host_ctx, ENetPeer* target_peer);
     void SetDisplayWorker(COpenGLDisplay* display_worker);
     void SetCropProducerWorker(CropProducerWorker* crop_worker);
+    // Device crop path (ORANGE_ANALYTICS_DEVICE_CROP): the pose worker whose
+    // device stage this thread feeds right after the detect graph.
+    void SetPoseWorker(PoseWorker* pose_worker);
     void Warmup(int iterations);
     // Policies are requested from the control thread and applied only at a
     // worker frame boundary. A nonzero generation is acknowledged by
@@ -106,6 +110,7 @@ private:
     shaman::SharedBoxQueue* shaman_ipc_queue_;
     COpenGLDisplay* m_display_worker = nullptr;
     CropProducerWorker* m_crop_worker = nullptr;
+    PoseWorker* m_pose_worker = nullptr;
     VelocityTracker velocity_tracker_;
     SafeQueue<WORKER_ENTRY*>& m_recycle_queue;
     std::unique_ptr<yolo_perf::YoloPerfLogger> perf_logger_;
@@ -117,6 +122,11 @@ private:
     std::atomic<uint64_t> device_roi_mismatches_{0};
     std::atomic<uint64_t> device_roi_masked_{0};
     std::atomic<uint64_t> device_roi_logged_mismatches_{0};
+    // ORANGE_ANALYTICS_DEVICE_CROP counters (see PoseWorker::EnqueueDeviceStage).
+    std::atomic<uint64_t> device_crop_enqueued_{0};
+    std::atomic<uint64_t> device_crop_slot_busy_{0};
+    std::atomic<uint64_t> device_crop_skipped_{0};
+    std::atomic<uint64_t> device_crop_failed_{0};
     int perf_sample_rate_ = 1;
     std::string perf_log_folder_;
 

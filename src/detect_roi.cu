@@ -13,6 +13,7 @@ struct HostOps {
     __host__ __device__ static inline float add(float a, float b) { return a + b; }
     __host__ __device__ static inline float sub(float a, float b) { return a - b; }
     __host__ __device__ static inline float mul(float a, float b) { return a * b; }
+    __host__ __device__ static inline float sqrt(float a) { return sqrtf(a); }
     __host__ __device__ static inline float clampf(float v, float lo, float hi) { return (v < lo) ? lo : ((v > hi) ? hi : v); }
     __host__ __device__ static inline int clampi(int v, int lo, int hi) { return (v < lo) ? lo : ((v > hi) ? hi : v); }
 };
@@ -22,6 +23,7 @@ struct DeviceOps {
     __device__ static inline float add(float a, float b) { return __fadd_rn(a, b); }
     __device__ static inline float sub(float a, float b) { return __fsub_rn(a, b); }
     __device__ static inline float mul(float a, float b) { return __fmul_rn(a, b); }
+    __device__ static inline float sqrt(float a) { return __fsqrt_rn(a); }
     __device__ static inline float clampf(float v, float lo, float hi) { return fminf(fmaxf(v, lo), hi); }
     __device__ static inline int clampi(int v, int lo, int hi) { return min(max(v, lo), hi); }
 };
@@ -68,6 +70,22 @@ __host__ __device__ inline void select_detect_roi(
         const float y0 = Ops::clampf(Ops::mul(Ops::sub(b[1], p.dh), p.inv_ratio), 0.0f, p.src_h);
         const float x1 = Ops::clampf(Ops::mul(Ops::sub(b[2], p.dw), p.inv_ratio), 0.0f, p.src_w);
         const float y1 = Ops::clampf(Ops::mul(Ops::sub(b[3], p.dh), p.inv_ratio), 0.0f, p.src_h);
+        if (p.centroid_gate) {
+            // orange::analytics_mask::evaluate_box_centroid on the
+            // un-letterboxed, clamped rect, same operation order.
+            const float w = Ops::sub(x1, x0);
+            const float h = Ops::sub(y1, y0);
+            const float gcx = Ops::add(x0, Ops::mul(w, 0.5f));
+            const float gcy = Ops::add(y0, Ops::mul(h, 0.5f));
+            const float dx = Ops::sub(gcx, p.gate_cx);
+            const float dy = Ops::sub(gcy, p.gate_cy);
+            const float distance = Ops::sqrt(Ops::add(Ops::mul(dx, dx), Ops::mul(dy, dy)));
+            const float signed_boundary_distance = Ops::sub(p.gate_radius, distance);
+            if (!(signed_boundary_distance >= 0.0f)) {
+                ++r.num_gated;
+                continue;
+            }
+        }
         const float prob = scores[i];
         if (best < 0 || prob > best_prob) {
             best = i;
@@ -98,10 +116,17 @@ __host__ __device__ inline void select_detect_roi(
     r.box_y = by;
     r.box_w = bw;
     r.box_h = bh;
-    r.crop_x = Ops::clampi(static_cast<int>(cx) - p.crop_w / 2, 0, p.src_w_int - p.crop_w);
-    r.crop_y = Ops::clampi(static_cast<int>(cy) - p.crop_h / 2, 0, p.src_h_int - p.crop_h);
-    r.pose_crop_x = Ops::clampi(static_cast<int>(cx) - pw / 2, 0, p.src_w_int - pw);
-    r.pose_crop_y = Ops::clampi(static_cast<int>(cy) - ph / 2, 0, p.src_h_int - ph);
+    // A crop larger than the frame has no valid origin range; the CPU path
+    // drops such frames before the clamp. Pin the origin at 0 instead of
+    // clamping to a negative bound (the crop kernel bounds-checks its reads).
+    const int hi_x = p.src_w_int - p.crop_w > 0 ? p.src_w_int - p.crop_w : 0;
+    const int hi_y = p.src_h_int - p.crop_h > 0 ? p.src_h_int - p.crop_h : 0;
+    const int hi_px = p.src_w_int - pw > 0 ? p.src_w_int - pw : 0;
+    const int hi_py = p.src_h_int - ph > 0 ? p.src_h_int - ph : 0;
+    r.crop_x = Ops::clampi(static_cast<int>(cx) - p.crop_w / 2, 0, hi_x);
+    r.crop_y = Ops::clampi(static_cast<int>(cy) - p.crop_h / 2, 0, hi_y);
+    r.pose_crop_x = Ops::clampi(static_cast<int>(cx) - pw / 2, 0, hi_px);
+    r.pose_crop_y = Ops::clampi(static_cast<int>(cy) - ph / 2, 0, hi_py);
     *out = r;
 }
 

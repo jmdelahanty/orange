@@ -90,12 +90,12 @@ void CropProducerWorker::SetCropPreviewWorker(CropPreviewWorker* crop_preview_wo
     }
 }
 
-void CropProducerWorker::SetPoseWorker(PoseWorker* pose_worker)
+void CropProducerWorker::SetPoseWorker(PoseWorker* pose_worker, bool crop_fanout)
 {
     pose_worker_ = pose_worker;
-    pose_enabled_ = (pose_worker != nullptr);
+    pose_enabled_ = (pose_worker != nullptr) && crop_fanout;
     if (crop_producer_) {
-        crop_producer_->SetPoseWorker(pose_worker);
+        crop_producer_->SetPoseWorker(crop_fanout ? pose_worker : nullptr);
     }
 }
 
