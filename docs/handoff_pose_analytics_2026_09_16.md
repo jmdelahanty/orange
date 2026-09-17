@@ -932,3 +932,48 @@ recur every 7 to 9 frames (70 to 90 ms) in bursts of a few frames, on
 every camera, with the exact phases differing per camera pair. Something
 with that period on the encoder side is the next thing to identify (see
 the per-frame encoder CSV correlation that follows).
+
+## Addendum 2026-09-17: what the recorder's per-frame CSVs say about the bursts
+
+From `Cam2010094_external_encode_shard{0,1}_gpu{1,2}.csv` of the
+fused+recorders run (`…_133343`), joined to the YOLO perf rows by
+`recording_frame_id`:
+
+- **The local shard (die 1, the detect die) encodes a frame in about 4 ms,
+  not 10.** `encode_total_ms` 4.04 (fast detect frames) / 4.19 (slow),
+  almost all of it `lock_bitstream_ms` waiting for the engine; submit 0.04
+  ms. So during its GOP half the local NVENC is busy about 40 % of each
+  10 ms period, not 100 %. The earlier claim on this page and in the
+  journal that the engine runs at full duty came from the 2026-09-05
+  single-shard measurement (95.6 fps), which was the copy path with copy
+  fallbacks and a pinned pending cap, i.e. bound by the recorder's copies,
+  not by NVENC. With the registered source the engine itself appears more
+  than twice as fast as that. This needs a direct test (below).
+- **The other-die shard (die 2) spends 7 to 9 ms per frame in
+  `prepare_ms`**: 9.29 on fast detect frames, 7.20 on slow ones, encode
+  itself 0.05. Prepare is that shard pulling the 20 MB Y plane out of the
+  detect die's memory across the card switch into its own NVENC input.
+  At 20 MB per 7 to 9 ms that is 2.2 to 2.8 GB/s, the `txpci` peak dmon
+  shows on the detect dies, and it runs for 7 to 9 of every 10 ms during
+  the other-die half: a nearly continuous read of the detect die's memory
+  over its PCIe link, concurrent with the camera's 2 GB/s inflow on the
+  same link. A peer copy through the on-card switch was measured at about
+  6 GB/s in September, so this copy runs at well under half that rate,
+  which says it is contending (with the inflow, with the detect die's own
+  memory traffic) or is not a bulk copy engine transfer.
+- **Burst structure**: 623 slow detect frames in 346 bursts of median 2
+  frames; autocorrelation of the slow indicator peaks at lag 50 (0.49, the
+  two-GOP cycle) and lag 9 (0.37). Half A (local shard) infer 2.17 vs half
+  B (other-die shard) 2.10; the bursts straddle both halves. The 9-frame
+  sub-period is not explained yet; the varying prepare time (7 to 9 ms)
+  drifting against the 10 ms frame period is the natural candidate.
+
+Two consequences. First, the split-GOP design rests on "one NVENC cannot
+do 100 fps of 20 MP"; if the registered-source engine really takes 4 ms
+per frame, one shard per camera on the detect die would encode at 100 fps
+with margin, and the other-die shard, its 20 MB per frame across the
+switch, and the whole card-level contention would disappear. Test: the
+single-shard capacity spec with registered source, lit frames, and real
+detections. Second, if split-GOP must stay, the lever is the other-die
+shard's pull: push the frame with a copy engine transfer scheduled after
+pose, or find why the pull runs at a third of the link's rate.
