@@ -1356,3 +1356,40 @@ the 192 head model is slower than the 256 cedar model (launch-bound with
 decision of 2026-09-05 unchanged. Correction: an earlier chat remark that
 the A6000 build was slow was wrong; the background watcher had matched
 its own process name and never returned.
+
+## Addendum 2026-09-17 evening: Emergent's answer on the GPUDirect ring; multicast route
+
+Emergent (senior engineer, same day): the NIC must operate on one
+physically contiguous ring buffer, so (2) a ring split across two GPUs
+by the SDK is not possible; (1) `EVTStreamAttribute.ringBufferPtr` is
+host memory only today, they could extend it to GPU memory and take a
+two-device VMM range but flag NIC/Rivermax support of the layout, DMA
+efficiency across the boundary, and the wrap-around frame being split
+across GPUs; (3) registration limit ~8 GB, one ring; (4) same-root-
+complex transfers efficient, otherwise latency expected; (5) multicast
+would work ("the NIC transmits the data to two GPUs by duplicating it;
+you pick the frames to process"), performance concerns, worth trying.
+They asked how we move data between GPUs and suggested NVLink P2P.
+Answer: cudaMemcpyAsync peer over the A16's on-card PCIe switch (6.4 GB/s
+idle, 2.5 to 2.9 GB/s under load); the A16 has no NVLink
+(`nvidia-smi nvlink -s`: all links inactive; only the A6000 has NVLink
+and only to another A6000).
+
+Multicast route (no SDK change): SDK streaming modes 2 (master multicast
+with subscription) and 4 (slave multicast) in `EmergentCamera.h`,
+examples `/opt/EVT/eSDK/Examples/EVT_Mcast/{EVT_Mcast_Master,EVT_Mcast_Slave}`.
+Master opens the camera + stream to a multicast address/port; a slave
+process opens only the stream (`ifaceAddress` = the NIC port IP,
+`multicastAddress`, `portMulticast`) with its own `gpuDirectDeviceId`.
+Both dies then hold every frame → the alternating design (die A infers
+even GOPs from its ring while die B encodes the previous odd GOP from
+its ring, then swap) with no peer copy and no die encoding while it
+infers. Costs to measure: 2x RDMA inflow per camera, a second SDK
+receiver per camera on the CPU, a second ring (~600 MB), inflow cost on
+the detect graph.
+
+First test: add a `--mcast-master <ip:port>` / `--mcast-slave <iface>
+<ip:port>` mode to `tools/evt_stream_smoke.cpp`; master on die 1,
+slave on die 2, camera 2010096 at 100 fps for 60 s, both counting frames
+and drops; trtexec detect graph looping on die 1 during it. Pass: both
+rings at 100 fps, zero drops, graph within +0.05 ms of alone.
