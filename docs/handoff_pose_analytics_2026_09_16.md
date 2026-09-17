@@ -977,3 +977,37 @@ single-shard capacity spec with registered source, lit frames, and real
 detections. Second, if split-GOP must stay, the lever is the other-die
 shard's pull: push the frame with a copy engine transfer scheduled after
 pose, or find why the pull runs at a third of the link's rate.
+
+## Addendum 2026-09-17: single shard per camera cannot keep up; the 4 ms was latency, not throughput
+
+Run `fourcam_fused_single_shard_fullframe_20260917_134036`: four cameras,
+fused path, one full-frame shard per camera on its detect die
+(`routing_policy single_shard`), registered source, crop video off, lit
+frames. Result per camera: about 4,940 to 5,140 frames encoded of 5,733
+submitted, 760 to 960 dropped, copy fallbacks on nearly every frame
+(5,609 to 5,659: the recorder could not hold registered buffers and fell
+back to copies), enqueue age p95 370 to 390 ms, run policy fail on three
+cameras. Effective encoder throughput about 85 to 88 fps per engine on
+lit 20 MP frames, in line with the 2026-09-05 figure of 95.6 fps on dark
+frames. The detect side got worse than with split GOP (infer p95 3.09,
+acquisition to detect p95 3.36) because the saturated engine and the
+fallback copies both sit on the detect die.
+
+So the 4 ms `encode_total` of the local shard in the split-GOP run is the
+pipelined per-frame latency of an engine fed one frame every 10 ms, not
+its throughput; at 100 fps the engine needs about 11 ms of work per
+frame and saturates. The earlier correction in this document ("busy
+about 40 %") is withdrawn: during its GOP half the local engine is at
+full duty, as first stated, and split GOP is required as the September
+capacity note said. Spec kept for reference; it fails the verifier by
+design.
+
+What stands from the CSVs: the other-die shard's 7 to 9 ms per-frame
+pull of 20 MB across the card switch at 2.2 to 2.8 GB/s is the largest
+single traffic on the detect die's link and memory, and it runs almost
+continuously during the other-die half. The next diagnostic is a peer
+copy microbenchmark between the two dies of a pair (20 MB, copy engine,
+idle and under the pipeline) to learn whether that pull is contended or
+mis-implemented; if a bulk transfer reaches the 6 GB/s the switch
+allows, pushing the frame from the analytics side after pose would halve
+the time the link is busy.
