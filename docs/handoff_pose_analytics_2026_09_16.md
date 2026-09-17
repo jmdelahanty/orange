@@ -756,3 +756,42 @@ the acquisition-to-detect mean, host-side, none on the detect graph. The
 abort core that matches the current binary is PID 3878883
 (2026-09-17 12:17:58, the full-frame-only fused run); dump with
 `sudo coredumpctl dump 3878883 -o /tmp/orange_core_3878883 && sudo chown jeremy /tmp/orange_core_3878883`.
+
+## Addendum 2026-09-17: the teardown abort, from the core
+
+Core of PID 3878883 (fused full-frame-only run, current binary):
+`munmap_chunk(): invalid pointer` raised from `__libc_free` inside
+`RecordingIngress::ExternalIpcHandoffWorker::ThreadRunning()` (frame 9,
+callee inlined; the Release build has no `-g`, so the line is not
+recoverable). At that moment the main thread was in
+`orange::session::wait_for_recording_run_drain`, three other ingress
+handoff workers were in `ExternalIpcHandoffWorker::OnFlushTick`, one YOLO
+worker was inside `WorkerFunction` and one pose worker inside
+`process_device_slot`, every other worker idle in its queue wait. So the
+abort is a teardown-ordering fault in the recording ingress drain while
+analytics is still producing, in code this branch has not changed
+(`git log 5cf21a9..HEAD -- src/recording_ingress.cpp` in the shared
+worktree is empty). The crop-producer control's SIGSEGV happened with the
+device stage off entirely, which points away from this branch's memory
+too. What is new in these runs versus the 2026-09-04 endurance that exited
+cleanly: four cameras, real pose instead of noop, both recorders. Next
+step to localise it: rebuild with `-g` (no codegen change), rerun
+`fourcam_fused_recorder_fullframe_only`, dump the core again.
+
+## Addendum 2026-09-17: was the recording slowdown solved before?
+
+For three cameras, yes; for four, it was never measured until today. The
+2026-09-04 levers (registered source, detect-priority gate, late owned
+copy, GOP-parity crop interleave) brought the three-camera registered
+spec to 2.20 mean / 2.29 p95 and the three-camera endurance with crops to
+2.26 / 2.34, and the review doc shows the square wave reduced to a
+boundary tick (halves 2.254 vs 2.249). The four-camera runs were planned
+for 2026-09-05 "once 2010096 is up"; its link stayed down until this week,
+and `~/orange_data/exp/unsorted` holds no four-camera run before today.
+The only earlier four-camera figure is the August profile in
+`docs/a16_tensorrt_detect_engine_rebuild.md`, p95 3.81 to 3.93 before any
+lever. Today's four-camera both-recorders run sits at p95 3.70 to 3.90,
+i.e. with all levers on, the fourth camera brings detect latency back to
+roughly the August level, and the heartbeat returns as GOP-locked bursts.
+The three-camera gains therefore do not carry over; the fourth camera
+fills the last two dies so every die carries a detect graph plus shards.
