@@ -543,3 +543,50 @@ Perf: `device_crop == 5` marks fused frames; on them `cpu_pose_enqueue_ms`
 is the whole launch, `pre_ms`/`gap_ms`/`infer_ms` come from the graph's
 external timing nodes, and the entry's input-ready timestamp is the end of
 the graph (about 1 ms later than on the other paths).
+
+## Addendum 2026-09-17: step 6, the 192 px head engine on the fused path
+
+Spec `fourcam_fused_realfish_192` = the fused spec with the candidate 192
+engine (`…_a16_gpu5_trt100_fp16_bo5_avg32.engine`), `pose_worker.input_width/height 192`,
+`pose_worker.crop_size_px 192` (video crop stays 256, so this is the first
+run with the two crops split), `skeleton_id pose_schema:traditional_v1`.
+Preprocess 192 -> 192 is the identity the input contract asks for (ratio
+1, no padding, bilinear at integer coordinates reduces to the pixel, then
+/255 into three planes). Run `fourcam_fused_realfish_192_20260917_115309`
+against `fourcam_fused_realfish_20260917_114351` (256 cedar), same fish,
+four cameras, CPU results path on, no recorder:
+
+| Metric (ms, range over four cameras) | 256 cedar, fused | 192 head, fused |
+|---|---|---|
+| capture to pose done mean | 3.131 to 3.142 | 2.968 to 2.986 |
+| capture to pose done p95 | 3.182 to 3.211 | 3.005 to 3.024 |
+| capture to pose done p99 | 3.291 to 3.329 | 3.124 to 3.151 |
+| device_stage_gpu mean / p95 | 0.739 / 0.75 | 0.586 / 0.59 |
+| acquisition to detect done mean / p95 | 2.47 to 2.49 / 2.53 to 2.54 | 2.47 to 2.49 / 2.52 to 2.53 |
+| device ROI match (pose crop 192, video crop 256) | 5901/5901 | 5901/5901, 0 mismatch |
+| pose status `poses` | every frame | every frame |
+| pose confidence mean / p10 | 0.86 to 0.94 / 0.83 to 0.92 | 0.96 to 0.97 / 0.95 to 0.97 |
+| keypoints visible | all | all |
+
+Latency gates pass: pose GPU 0.586 (gate < 0.65; trtexec predicted
+0.575 vs 0.722), capture to pose done p95 3.02, detect unchanged. Against
+the crop-producer path of this morning (3.84 / 4.11 / 4.28) the fused
+192 path is 0.87 ms faster on the mean and 1.1 ms on the tails.
+
+**Accuracy is not established, and the live data shows a systematic
+difference that needs the offline check before activation.** The two
+models were run minutes apart on the same fish, so frames cannot be
+paired, but the within-run landmark geometry differs consistently across
+cameras: inter-eye distance 13.9 to 14.5 px on the 256 model vs 17.1 to
+17.6 px on the 192 model, and eye-midpoint-to-bladder 32.9 to 38.7 px vs
+40.1 to 44.4 px (cameras 2010093 and 2010096, where the fish held still
+within each run, keypoint sd 1 to 5 px). Both crops are 1:1 scale, so
+pixel distances are comparable; a 20 % difference in both spans points at
+different landmark conventions between the two label sets (the 192 set is
+the recovered, reviewed head set), not at the crop or preprocess. The
+higher confidence of the 192 model is not evidence either way. Claims 3, 4
+and 7 of the inspection report (probe digest, fixed-crop parity against
+the training runtime with a tolerance, reviewed overlays) remain the
+gate; selector activation stays off. Label names are still `bladder,
+eye_left, eye_right` from the K=3 default (the contract says
+`swim_bladder`), a metadata-only difference noted in the inspection report.
