@@ -590,3 +590,73 @@ the training runtime with a tolerance, reviewed overlays) remain the
 gate; selector activation stays off. Label names are still `bladder,
 eye_left, eye_right` from the K=3 default (the contract says
 `swim_bladder`), a metadata-only difference noted in the inspection report.
+
+## Addendum 2026-09-17: recorder-on measurement, first attempt (blocked mid-way)
+
+Specs `fourcam_fused_recorder_realfish{,_off}`: the four-camera split-GOP
+full-frame external recorder (registered source, detect priority, shards
+[3,4] [1,2] [7,8] [5,6]) plus the external crop video recorder at 384 px,
+GOP-parity interleaved, real fish, real pose (256 cedar, pose crop 256),
+CPU results path on. Config folder `/tmp/orange_recorder_config_a16` =
+the standard 100_cam4 folder with `crop_pipeline.crop_size_px 384`
+(the `validated_split_gop_hevc_100fps_gop25_fourcam_a16` folder every
+recording spec used is the same dark 2026-09-04 schema-3 copy: exposure
+50, focus 0). The two crop sizes are separate spec keys:
+`crop_recording.crop_size_px` (video crop) and `pose_worker.crop_size_px`
+(inference crop, meant to equal the engine input; a mismatch now logs a
+warning at startup and is letterbox-resized).
+
+Needed to run at all: `external_recorder_ipc_probe` must be built in the
+worktree whose client runs (`make external_recorder_ipc_probe`); the
+supervisor otherwise reports "external recorder exited before socket
+readiness".
+
+Control run `fourcam_fused_recorder_realfish_off_20260917_120207`
+(crop-producer path) recorded the full 60 s cleanly on every camera
+(5901/5901 frames encoded per stream, 0 drops, 0 copy fallbacks, identity
+proof passed, merged-output pending peak 3 GOPs; crops: 5901 rows, 0
+dropped, queue depth 0) and then the client **segfaulted at teardown**
+(after "Acquire frames thread finished", exit 139; core in
+systemd-coredump, PID 3874037, root-owned). The perf CSVs are complete;
+`runs.json` and `latency_phases.json` are missing. The crash left all
+four cameras with stale control sessions (`GVCP ACK error`), which needs
+`evt_force_reboot <serial> <ip>` (93 192.168.110.2, 94 192.168.120.2,
+95 192.168.170.2, 96 192.168.180.2); this session's reboot attempt was
+blocked by its permission policy. The fused run
+(`…_120324`) therefore failed at camera open and has no data.
+
+**The four-camera full-consumer configuration is much slower than the
+three-camera numbers of 2026-09-04, on the crop-producer path, before any
+of this branch's changes take effect** (cam 2010094; other cameras alike):
+
+| Phase (ms) | no recorders (11:10 run) | full-frame + crop recorders |
+|---|---|---|
+| acquisition to worker start mean / p95 | 0.146 / 0.168 | 0.458 / 0.753 |
+| cpu_pre_sync | 0.167 / 0.185 | 0.355 / 0.512 |
+| pre_ms (GPU preprocess) | 0.076 / 0.078 | 0.148 / 0.183 |
+| infer_ms (GPU detect graph) mean / p95 / p99 | 2.003 / 2.017 / 2.03 | 2.107 / 2.804 / 2.83 |
+| cpu_post_sync | 0.223 / 0.287 | 0.458 / 0.631 |
+| acquisition to detect done mean / p95 | 2.458 / 2.514 | 3.231 / 3.857 |
+| capture to pose done mean / p95 | 3.86 / 4.23 | 5.21 / 6.08 |
+
+Steady over the 60 s (per-10 s means 3.20 to 3.34), no affinity applied
+(`yolo_affinity_configured 0`), no acquisition starvation (free entries
+min 57 of 63, pending requeues max 2). infer_ms is bimodal: about 10 %
+of frames (573 of 5901) run the detect graph at 2.8 ms instead of 2.0,
+in short runs, with cross-camera correlation of acquisition-to-detect
+0.2 to 0.7 by frame id, so a shared cause. Host side, the crop encode
+submission costs 1.15 ms of CPU per crop on the crop thread
+(`encode_submit_cpu_ms`), and the 16 recorder processes plus the crop
+threads compete with the unpinned YOLO and pose threads (acquisition to
+worker start 0.15 -> 0.46). Reference: the three-camera endurance of
+2026-09-04 with the same consumer set minus real pose was 2.26 / 2.34.
+Candidate decomposition runs once cameras are back: full-frame recorder
+only; crop recorder only; YOLO/pose threads pinned
+(`ORANGE_YOLO_AFFINITY_CAM_<serial>`); three cameras with this consumer
+set; pose noop.
+
+Still owed: the fused-path recorder run (same spec with the flags on),
+the teardown backtrace (`sudo coredumpctl gdb 3874037` or the
+`orange-gdb-headless-bt` wrapper, which only runs the shared worktree's
+client, itself a useful bisect: if that binary also segfaults on this
+spec the crash predates this branch), and the decomposition above.

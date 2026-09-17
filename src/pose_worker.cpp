@@ -842,6 +842,16 @@ bool PoseWorker::EnableDeviceStage(int pose_crop_px, std::string* error_out)
     if (pose_crop_px <= 0) {
         return fail("device crop requires a positive pose crop size");
     }
+    if (pose_crop_px != tensorrt_backend_->input_width() ||
+        pose_crop_px != tensorrt_backend_->input_height()) {
+        // The pose crop is meant to be the model's native input so the
+        // preprocess is an identity; a mismatch is letterbox-resized, which
+        // is not the training contract of the 192 head model.
+        std::cerr << "[PoseWorker] WARNING: pose crop " << pose_crop_px << " px does not match the engine input "
+                  << tensorrt_backend_->input_width() << "x" << tensorrt_backend_->input_height()
+                  << " for " << threadName << "; the crop will be letterbox-resized (set pose_worker.crop_size_px to the engine input)"
+                  << std::endl;
+    }
     const int slots = env_int_or_default("ORANGE_POSE_DEVICE_SLOTS", 8, 2, 64);
     try {
         ck(cudaSetDevice(camera_params_->gpu_id));
