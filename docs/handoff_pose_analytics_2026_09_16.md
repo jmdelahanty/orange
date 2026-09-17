@@ -706,3 +706,43 @@ own 256 crop: `poses` on every frame, confidence 0.90 to 0.94. The
 production GUI records 384 crops, so this is the production condition of
 the old path. The two-crop split is therefore a correctness fix as well
 as a latency one.
+
+## Addendum 2026-09-17: decomposition of the four-camera recorder cost, and the heartbeat
+
+Fused path, four cameras, fish, cam 2010094 (2010096 alike):
+
+| Configuration | acq to worker | pre_ms | infer_ms mean / p95 | slow-frame fraction (infer > 2.3) | cpu_post_sync | acq to detect mean / p95 | capture to pose done mean / p95 |
+|---|---|---|---|---|---|---|---|
+| no recorders (`fourcam_fused_realfish_…_114351`) | 0.161 | 0.072 | 2.005 / 2.019 | 0.000 | 0.245 | 2.476 / 2.527 | 3.137 / 3.211 |
+| full-frame recorder only (`…_fullframe_only_…_121644`) | 0.276 | 0.088 | 2.138 / 2.820 | 0.113 | 0.418 | 2.988 / 3.626 | (client aborted at teardown before the pose summary) |
+| both recorders (`…_recorder_realfish_…_121251`) | 0.327 | 0.085 | 2.140 / 2.814 | 0.115 | 0.522 | 3.194 / 3.700 | 3.742 / 4.270 |
+
+The full-frame split-GOP recorder alone accounts for the whole detect-graph
+slowdown (infer_ms 2.00 -> 2.14 mean, p95 2.82, 11 to 17 % of frames at
+about 2.6 to 2.8 ms) and most of the wake-time growth; the crop video
+recorder adds about 0.2 ms on the mean (more host work: acq to worker
++0.05, post-sync +0.10) and nothing to infer_ms. The crop-only run could
+not start (cameras stale after the previous abort).
+
+**The split-GOP heartbeat is back with four cameras.** By frame phase
+(frame id mod 50, two GOPs of 25): the slow detect frames are not spread
+out, they come in three bursts per 50 frames, at phases 8 to 11, 17 to 21
+and 26 to 30, where 40 to 78 % of frames run the graph slow, against under
+5 % elsewhere; infer_ms by phase ranges 2.03 to 2.64 and acq-to-detect
+2.71 to 3.72 (full-frame only) with the two GOP halves at 2.92 vs 3.05
+(both recorders: 3.09 vs 3.30). Identical phase pattern on the
+crop-producer control, so it is the recorders' doing, not this branch's.
+On 2026-09-04 with three cameras and interleaved crops the square wave had
+gone (halves met at 2.25, one boundary tick on 1 frame in 50). With the
+fourth camera every die serves a detect graph plus a full-frame shard plus
+a crop shard, and something GOP-periodic on the shard (I-frame, bitstream
+lock, merged-output push) now steals SM or memory bandwidth from the
+detect graph on the same die. Next levers to test, in order: full-frame
+shards off the detect dies (contract `expected_shard_gpu_ids` on the
+non-analytics dies only, if NVENC capacity allows two shards per die),
+detect-priority gate settings, and pinning the analytics threads.
+
+Teardown: the fused+both run exited cleanly; the fused full-frame-only run
+aborted (SIGABRT) after its 60 s with the perf CSVs complete, and the
+crop-producer control segfaulted. The abort's core matches the current
+binary (no rebuild since); see the journal for the PID to dump.
