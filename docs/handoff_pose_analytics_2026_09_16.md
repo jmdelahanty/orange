@@ -1299,3 +1299,28 @@ these results as context, the SDK version filled in, and five questions
 registration limits; PHB vs SYS receive; multicast to two ports as a
 fallback). The local-half term stays the encoder's, and the encoder-side
 controls remain the next lever.
+
+## Addendum 2026-09-17 15:46: clean-room proof that same-die NVENC slows the detect graph
+
+For colleagues who doubt that encoding on the detect die matters. No
+cameras, no recorder, no pipeline: `trtexec --loadEngine=<detect engine>
+--device=1 --useCudaGraph --duration=8 --noDataTransfers` on die 1,
+alone and with `targets/release/nvenc_stress_load --gpu-id <die> --fps
+100 --pattern <host-noise|solid> --duration 30` (4512x4512 HEVC p1 ll,
+GOP 25, 150 Mbit/s; it cannot hold 100 fps so it runs the engine at
+full duty, harder than production's 50 %):
+
+| Condition | trtexec GPU compute mean / p95 / p99 / max (ms) |
+|---|---|
+| graph alone, die 1 | 1.960 / 1.963 / 1.965 / 2.124 |
+| + NVENC on die 2 (neighbour, noise content) | 1.968 / 1.982 / 1.985 / 2.189 |
+| + NVENC on die 1 (solid content, no host copies) | 2.453 / 3.028 / 3.051 / 3.076 |
+| + NVENC on die 1 (noise content) | 2.585 / 3.058 / 3.201 / 3.936 |
+
+Neighbouring-die encode: no effect. Same-die encode: +0.5 to 0.6 mean,
++1.1 p95, and the solid-content run (device memset input, no H2D)
+shows it is the encoder's own memory traffic. With the earlier telemetry
+(no clock or power change) this is memory-system contention. In the
+pipeline it is the local-half term: 0.16 of frames at 2.6 to 2.8 ms
+during the detect die's own GOPs vs 0.03 to 0.04 during the other die's
+GOPs, same camera, same run, alternating every 250 ms.
