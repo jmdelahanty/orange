@@ -1324,3 +1324,35 @@ shows it is the encoder's own memory traffic. With the earlier telemetry
 pipeline it is the local-half term: 0.16 of frames at 2.6 to 2.8 ms
 during the detect die's own GOPs vs 0.03 to 0.04 during the other die's
 GOPs, same camera, same run, alternating every 250 ms.
+
+## Addendum 2026-09-17 17:20: one camera on the RTX A6000 (fused path, no recorders)
+
+Engines built for the A6000 (GPU 0) at the production tier:
+`~/orange_data/detect/…_a6000_gpu0_trt100_fp16_bo5_avg32.engine` (+ manifest,
+via `scripts/build_tensorrt_detect_engine.sh --device 0
+--target-hardware-class A6000`, 367 s, standalone 0.80 ms) and
+`~/orange_data/pose/pose_head_192_…/engines/…_a6000_gpu0_trt100_fp16_bo5_avg32.engine`
+(direct trtexec, 258 s). The 256 cedar pose model has no ONNX on disk, so
+its A16-built engine ran on the A6000 (TensorRT warns; same as 2026-09-12).
+Specs `onecam_{a6000,a16}_fused_realfish{,_192}` (camera 2010096, 60 s;
+runs `…_171543`, `…_171656`, `…_171809`, `…_171922`), all pass, 5,900
+frames each with a pose, zero drops:
+
+| | A6000 256 | A16 die 5 256 | A6000 192 | A16 die 5 192 |
+|---|---|---|---|---|
+| infer_ms mean / p95 | 0.708 / 0.716 | 2.002 / 2.017 | 0.713 / 0.717 | 2.003 / 2.018 |
+| acq→detect mean / p95 | 0.945 / 2.161 | 2.141 / 2.157 | 0.997 / 2.398 | 2.151 / 2.168 |
+| device-stage GPU mean / p95 | 0.464 / 0.471 | 0.737 / 0.741 | 0.568 / 0.572 | 0.585 / 0.589 |
+| capture→pose done mean / p95 / p99 | 1.502 / 3.737 / 4.529 | 2.899 / 2.915 / 2.923 | 1.674 / 3.977 / 4.712 | 2.746 / 2.764 / 2.770 |
+
+A6000 tail: 6.9 % of frames have acq→detect > 1.5 ms; on them `sync_ms`
+is 2.31 mean / 2.94 p95 vs 0.68 while `infer_ms` stays 0.707, i.e. the
+graph launch waited for the GPU (time-sliced against Xorg, gnome-shell
+and a Chrome GPU process on GPU 0). Slow frames come in bursts of 1 to 2
+about every 90 ms and grow over the run (1 to 2 per 5 s early, 54 to 78
+per 5 s late). A clean number needs the desktop off GPU 0. On the A6000
+the 192 head model is slower than the 256 cedar model (launch-bound with
+84 SMs; yolo11n-pose has more layers than yolov8n-pose). Production
+decision of 2026-09-05 unchanged. Correction: an earlier chat remark that
+the A6000 build was slow was wrong; the background watcher had matched
+its own process name and never returned.
