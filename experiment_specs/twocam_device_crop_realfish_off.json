@@ -1,6 +1,6 @@
 {
   "experiment_id": "twocam_device_crop_realfish_off",
-  "notes": "Control for twocam_device_crop_realfish: identical spec with analytics_device_crop=false (device ROI still on for the comparison columns; pose fed by the crop producer as today).",
+  "notes": "LATENCY ONLY, NO DETECTIONS: this selection excludes Cam2010096, whose GPO_0 (Exposure mode) drives the IR lights, and its config folder is the 2026-09-04 engine-only copy (exposure 50, focus 0/3100, schema 3). Use fourcam_device_crop_realfish{,_off} for anything that needs a fish. Control for twocam_device_crop_realfish: identical spec with analytics_device_crop=false (device ROI still on for the comparison columns; pose fed by the crop producer as today).",
   "selection": {
     "camera_serials": [
       "2010094",

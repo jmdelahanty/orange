@@ -399,3 +399,69 @@ that cost has not been measured with a recorder on. Real-fish comparison
 still owed, and add about 0.1 ms of decode with a fish.
 
 New perf columns this step: `cpu_late_copy_ms`, `cpu_timing_reads_ms`.
+
+## Addendum 2026-09-17: real-fish gate, four cameras
+
+Two traps explained the two weeks of zero detections, and both are now
+recorded in the spec notes:
+
+1. **Cam2010096 drives the IR lights** (its `GPO_0_Mode` is `Exposure`,
+   the strobe output). Every latency spec since 2026-09-03 excluded it
+   (its link was down that day), so the tank was dark in every run.
+2. **The engine-only config folder** `/tmp/orange_pose_engine_only_config_a16`
+   is a 2026-09-04 schema-3 copy: exposure 50 (standard 100), focus 0 on
+   two cameras, iris 5 to 19, PTP off. The standard folder
+   `~/orange_data/config/local/100_cam4_ptp_fourcam` moved to schema 4 on
+   2026-09-14 and is re-saved by the GUI.
+
+New specs `fourcam_device_crop_realfish{,_off}` use all four cameras
+(dies 3, 1, 7, 5) and `/tmp/orange_device_crop_config_a16`, a copy of
+the standard folder with `crop_pipeline.crop_size_px 256` on every
+camera (regenerate after a reboot or after the GUI saves the configs).
+The twocam/threecam specs are marked latency-only. Also: the GUI
+validation session (`orange-gui-validation`, the shared worktree's
+`orange` binary) holds all four cameras while it runs; a headless launch
+then fails at open with `GVCP ACK error` on the first camera. Check
+`ps -eo cmd | grep orange-gui-validation` as well as the `orange_clien[t]`
+guard, and never force-reboot a camera the GUI holds.
+
+Runs `fourcam_device_crop_realfish_off_20260917_111027` (control:
+crop-producer path, real pose) and `fourcam_device_crop_realfish_20260917_111140`
+(steps 1, 2, 4), 60 s at 100 fps, one fish, detections on 100% of frames
+on all four cameras, CPU results path on, no recorder.
+
+| Metric (ms, range over the four cameras) | Control | Device crop |
+|---|---|---|
+| capture to pose done mean | 3.81 to 3.88 | 3.12 to 3.14 |
+| capture to pose done p95 | 3.95 to 4.24 | 3.15 to 3.17 |
+| capture to pose done p99 | 4.24 to 4.31 | 3.24 to 3.27 |
+| device ROI match | 5900/5900 per camera, 0 mismatch | 5900/5900 per camera, 0 mismatch |
+| device_stage_gpu mean | n/a | 0.745 to 0.747 |
+| infer_ms mean / p95 (cam 2010094) | 2.003 / 2.017 | 2.017 / 2.031 |
+| acquisition to detect done mean / p95 (cam 2010094) | 2.458 / 2.514 | 2.545 / 2.657 |
+| cpu_pre_sync / cpu_post_sync mean (cam 2010094) | 0.167 / 0.223 | 0.225 / 0.298 |
+
+Pose results agree in distribution (frame-to-frame comparison is not
+possible across two live runs): status `poses` on every frame in both,
+pose confidence mean 0.88 to 0.94 (control) vs 0.89 to 0.93 (device),
+keypoint confidence 0.99+ and all keypoints visible in both, and the
+keypoint centroid sits at about (125, 125) of the 256 crop in both, i.e.
+both paths centre the crop on the fish. Pose crop and pose input are the
+same 256 crop through the same preprocess, and the ROI match proves the
+origin is the same, so agreement is by construction.
+
+Gate status with a fish: capture to pose done p95 3.16 vs 4.0 to 4.2 on
+the control, a 0.7 ms mean and 1.0 ms p95 improvement; ROI match passes;
+slot ring never full. Detect side: infer_ms +0.014, acquisition to
+detect done +0.087 mean / +0.14 p95, which fails the +0.03 gate. The
+per-column diff puts it in cpu_pre_sync +0.058 (the six CUDA calls of the
+device-stage launch, before the completion event: crop, preprocess, ROI
+mirror, event, wait-event, graph launch) and cpu_post_sync +0.075
+(post_ms +0.009 with detections present, ipc +0.007, enet +0.006, timing
+reads +0.025 with a p95 of 0.146, rest unattributed). Step 3 (one
+capture for the whole frame) collapses the six launch calls into one and
+is the designed answer; a cheaper interim is to record the completion
+event before the device-stage launches, which needs a second event to
+keep the entry alive until the crop has read the source in ring-copy
+mode. Whether +0.09 ms on detect is acceptable against -0.7 ms on pose
+depends on which signal closes the loop; both are now measured.

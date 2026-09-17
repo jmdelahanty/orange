@@ -1,16 +1,18 @@
 {
-  "experiment_id": "threecam_device_crop_realfish_off",
-  "notes": "LATENCY ONLY, NO DETECTIONS: this selection excludes Cam2010096, whose GPO_0 (Exposure mode) drives the IR lights, and its config folder is the 2026-09-04 engine-only copy (exposure 50, focus 0/3100, schema 3). Use fourcam_device_crop_realfish{,_off} for anything that needs a fish. Control for threecam_device_crop_realfish: identical spec with analytics_device_crop=false (device ROI still on for the comparison columns; pose fed by the crop producer as today).",
+  "experiment_id": "fourcam_device_crop_realfish_off",
+  "notes": "Control for fourcam_device_crop_realfish: identical spec with analytics_device_crop=false (pose fed by the crop producer). All four cameras: Cam2010096's GPO_0 (Exposure mode) drives the IR lights, so it must be in the array for any detection. Config folder /tmp/orange_device_crop_config_a16 = /home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam (schema 4: exposure 100, focus, iris, ptp_gate) with crop_pipeline.crop_size_px 256 on every camera so both pose paths see the same 256 crop; regenerate after a reboot. CPU results path ON; recording_sink_mode=immediate_recycle only removes the recorder. pose_worker.crop_size_px=256. Pass: [YOLO] device ROI summary mismatch=0; device_roi_match==1 on every detected frame; device_crop==1 with slot_busy=0; infer_ms within +0.02 of the control; Cam*_pose_perf.csv capture_to_pose_done p95 below the control; pose event log keypoints agree with the control on the same frames.",
   "selection": {
     "camera_serials": [
       "2010093",
       "2010094",
-      "2010095"
+      "2010095",
+      "2010096"
     ],
     "gpu_ids": [
       3,
       1,
-      7
+      7,
+      5
     ]
   },
   "fixed": {
@@ -21,7 +23,7 @@
     "stream_only": false,
     "sync_mode": "ptp_gate",
     "recording_sink_mode": "immediate_recycle",
-    "config_folder": "/tmp/orange_pose_engine_only_config_a16",
+    "config_folder": "/tmp/orange_device_crop_config_a16",
     "output_root": "/home/jeremy/orange_data/exp/unsorted",
     "ptp_register_read_decimate": 100,
     "nvenc_direct_input": false,
