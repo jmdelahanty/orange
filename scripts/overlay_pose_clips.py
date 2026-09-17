@@ -23,8 +23,9 @@ count matches the meta rows and ``crop_video_frame_index`` is exactly
 
 Clips are chosen automatically (lowest pose confidence, largest keypoint
 jump, around no-pose stretches, plus random controls) or given as second
-ranges. Each clip is written at native rate and at quarter speed, with a
-contact sheet, into ``<run>/pose_overlays/<serial>/``.
+ranges. Each clip is written at native rate and at the slowed rates of
+``--slow-fps`` (default 25 and 10 fps, every frame kept), with a contact
+sheet, into ``<run>/pose_overlays/<serial>/``.
 
 Usage:
   overlay_pose_clips.py --run <run dir> --camera 2010096 [--clips 6]
@@ -383,12 +384,14 @@ class ClipWriter:
         return True
 
 
-def write_slow_copy(ffmpeg: tuple[str, list[str]] | None, src: Path, dst: Path, factor: int, fps: float) -> None:
+def write_slow_copy(ffmpeg: tuple[str, list[str]] | None, src: Path, dst: Path, fps: float, slow_fps: float) -> None:
+    """Re-time the native clip so every frame is shown at slow_fps (no frames dropped or duplicated)."""
     if not ffmpeg:
         return
+    factor = fps / slow_fps
     binary, codec_args = ffmpeg
     subprocess.run([binary, "-hide_banner", "-loglevel", "error", "-y", "-i", str(src),
-                    "-filter:v", f"setpts={factor}*PTS", "-r", f"{fps / factor:g}",
+                    "-filter:v", f"setpts={factor:g}*PTS", "-r", f"{slow_fps:g}",
                     *codec_args, "-pix_fmt", "yuv420p", str(dst)], check=False)
 
 
@@ -406,7 +409,8 @@ def contact_sheet(frames: list[np.ndarray], path: Path, columns: int = 5) -> Non
 
 
 def render(table: pd.DataFrame, metrics: pd.DataFrame, video_path: Path, clips: list[Clip],
-           out_dir: Path, serial: str, fps: float, ffmpeg: tuple[str, list[str]] | None, sheet_every: int) -> list[dict]:
+           out_dir: Path, serial: str, fps: float, ffmpeg: tuple[str, list[str]] | None, sheet_every: int,
+           slow_fps: list[float]) -> list[dict]:
     out_dir.mkdir(parents=True, exist_ok=True)
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -445,9 +449,13 @@ def render(table: pd.DataFrame, metrics: pd.DataFrame, video_path: Path, clips: 
             if idx + 1 >= active.end_frame:
                 ok_write = writer.close()
                 native = out_dir / f"{active.name}.mp4"
-                slow = out_dir / f"{active.name}_quarter_speed.mp4"
+                slow_files = {}
                 if ok_write:
-                    write_slow_copy(ffmpeg, native, slow, 4, fps)
+                    for sf in slow_fps:
+                        slow = out_dir / f"{active.name}_slow{sf:g}fps.mp4"
+                        write_slow_copy(ffmpeg, native, slow, fps, sf)
+                        if slow.exists():
+                            slow_files[f"slow_{sf:g}fps"] = slow.name
                 contact_sheet(sheet_frames, out_dir / f"{active.name}_sheet.png")
                 results.append({
                     "clip": active.name,
@@ -462,8 +470,7 @@ def render(table: pd.DataFrame, metrics: pd.DataFrame, video_path: Path, clips: 
                     "frames_with_pose": clip_stats["with_pose"],
                     "mean_pose_conf": (clip_stats["conf_sum"] / clip_stats["with_pose"]) if clip_stats["with_pose"] else None,
                     "max_keypoint_jump_px": clip_stats["max_jump"],
-                    "files": {"native": native.name, "quarter_speed": slow.name if slow.exists() else None,
-                              "sheet": f"{active.name}_sheet.png"},
+                    "files": {"native": native.name, **slow_files, "sheet": f"{active.name}_sheet.png"},
                 })
                 print(f"[overlay] wrote {native.name} ({clip_stats['frames']} frames, "
                       f"{clip_stats['with_pose']} with pose)", file=sys.stderr)
@@ -485,6 +492,8 @@ def main() -> int:
     ap.add_argument("--fps", type=float, default=100.0)
     ap.add_argument("--sheet-every", type=int, default=20)
     ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--slow-fps", default="25,10",
+                    help="comma-separated playback rates for slowed copies, every frame kept (default 25,10)")
     args = ap.parse_args()
 
     run_dir = find_run_dir(Path(args.run).resolve())
@@ -500,7 +509,9 @@ def main() -> int:
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
         print("[overlay] ffmpeg not found; writing mp4v with OpenCV, no slow copies", file=sys.stderr)
-    results = render(table, metrics, video_path, clips, out_dir, args.camera, args.fps, ffmpeg, args.sheet_every)
+    slow_fps = [float(v) for v in args.slow_fps.split(",") if v.strip()]
+    results = render(table, metrics, video_path, clips, out_dir, args.camera, args.fps, ffmpeg, args.sheet_every,
+                     slow_fps)
     summary = {
         "run_dir": str(run_dir),
         "camera_serial": args.camera,
