@@ -239,3 +239,45 @@ the pose enqueue is still a CPU call on the YOLO thread (about 0.05 ms);
 the video crop still runs when recording or preview need it; not yet
 exercised under the GUI client (env-gated, `SetPoseWorker` is only wired in
 the headless client).
+
+## Addendum 2026-09-17: step 1 first rig run (empty tank, two cameras)
+
+Runs `twocam_device_crop_realfish_off_20260917_085621` (control) and
+`twocam_device_crop_realfish_20260917_085745` (device crop), cameras
+2010094 (die 1) and 2010095 (die 7), 60 s at 100 fps, CPU results path on,
+no recorder. The tank was empty: `device_roi_valid` 0 on every frame, so
+the control produced no crops and no pose at all (the crop producer only
+crops on a detection), while the device path posed a blank crop on every
+frame. Device ROI comparison: 5901/5901 match on both cameras, 0 mismatch.
+Device crop: 5900 enqueued, 0 slot-busy, 0 skipped, 0 failed, queue
+high-water 1.
+
+| Metric (ms, per camera, both alike) | Control | Device crop |
+|---|---|---|
+| infer_ms mean / p95 | 1.979 / 1.985 | 1.998 / 2.004 |
+| acquisition to detect done mean / p95 / p99 | 2.262 / 2.311 / 2.367 | 2.312 / 2.356 / 2.42 |
+| cpu_post_sync mean | 0.099 | 0.130 |
+| cpu_pose_enqueue mean / p95 / p99 (YOLO thread) | n/a | 0.40 / 0.42 / 0.45 |
+| capture to pose done mean / p50 / p95 / p99 | none (no pose) | 3.358 / 3.356 / 3.376 / 3.416 |
+| device_stage_gpu (input ready to output copied) mean / p95 | n/a | 1.11 / 1.12 |
+
+Against the 2026-09-12 measurement of today's path (3.56 mean / 3.97 p95
+capture to pose done, real detection, synthetic box) the p95 collapsed as
+predicted and the mean fell 0.2 ms, with no decode in this run (invalid
+ROI skips it; add about 0.1 ms with a fish). Two costs stand out and both
+were predicted:
+
+1. **The pose enqueue costs 0.40 ms of CPU on the YOLO thread** (trtexec
+   Enqueue Time for the 256 engine is 0.33 ms without a graph, 0.016 ms
+   with `--useCudaGraph`). It overlaps the detect graph so it is not on the
+   pose critical path, but the driver activity shows up as infer_ms +0.02
+   and acquisition-to-detect +0.05 (gate is +0.03). Step 2 (capture the
+   pose stage into a CUDA graph per slot) removes it.
+2. **Pose GPU time is 1.11 ms, not 0.84**: the late owned pool copy (lever
+   2d) now overlaps pose and steals about 0.27 ms, the figure the design
+   notes estimated. Step 4 (issue the copy after pose done, or measure the
+   alternatives) recovers it.
+
+Gate status: device ROI match passes; slot ring passes; capture to pose
+done p95 3.38 < 3.6 passes; detect latency +0.05 fails narrowly until step
+2. The real-fish comparison is still owed.
