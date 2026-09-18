@@ -1518,3 +1518,20 @@ Results (camera 2010096, endurance recording, device 5):
   near-edge, re-acquire reasons init 2 / watchdog 10 / no_pose 107,
   keypoints 1.0-1.9 px median vs the reference on the 264 shared frames.
 Outputs under `<run>/pose_overlays/replay_2010096_{jump,loss}/`.
+
+## Addendum 2026-09-18 17:10: 192 head model full-run replay, four cameras
+
+`replay_pose_pipeline.py --every 5` over the endurance recordings
+(11,980 frames per camera), fp16_256 (YOLOv8n-pose 256 cedar) vs
+head_192 (YOLO11n-pose), same detector: keypoint median / p95 px and
+span ratios (192 as % of 256, inter-eye / eyes-to-bladder): 2010093
+3.3 / 12.5, 110 / 110, conf +0.14, poses 10,987 vs 11,144; 2010094
+1.8 / 5.3, 103 / 104; 2010095 1.3 / 3.0, 101 / 101; 2010096 1.5 / 3.6,
+100 / 101. Cam 93: disagreement in the bladder keypoint (median 3.9 px,
+p95 12.5; eyes 2.7 to 3.4), 192 more confident on those frames (0.94 vs
+0.79), smallest fish (ref inter-eye 16.4 px). Anatomical call owed from
+the clips; gate open on that only. Outputs
+`<run>/pose_overlays/replay_192_fullrun/Cam<serial>/{stats,clip_*}`
+(stats summaries, six side-by-side clips per camera: 256 | 192 | track).
+Trap: a python process inside `while read` consumes the rest of the
+list on stdin; feed the loop from fd 3 and give the process `< /dev/null`.
