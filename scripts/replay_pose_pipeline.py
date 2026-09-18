@@ -241,6 +241,7 @@ def main() -> int:
     ap.add_argument("--fps", type=float, default=100.0)
     ap.add_argument("--slow-fps", default="25,10")
     ap.add_argument("--max-frames", type=int, default=0)
+    ap.add_argument("--every", type=int, default=1, help="run the engines on every Nth frame (statistics runs; not for track mode)")
     args = ap.parse_args()
 
     cfgs = [parse_config(c) for c in args.config]
@@ -271,7 +272,13 @@ def main() -> int:
     clip_cam = None
     sheet = []
     n = 0
+    seen = 0
+    if args.every > 1 and any(c.mode == "track" for c in cfgs):
+        raise SystemExit("--every needs consecutive frames for track mode; drop --every or the track config")
     for cam, rec, mono in frames:
+        seen += 1
+        if args.every > 1 and (seen - 1) % args.every:
+            continue
         if args.max_frames and n >= args.max_frames:
             break
         n += 1
