@@ -255,6 +255,19 @@ bool UseFusedFrame()
     return enabled;
 }
 
+bool UseCopyStream()
+{
+    static const bool enabled = []() {
+        const bool on = orange::yolo_flags::EnvFlag("ORANGE_ANALYTICS_COPY_STREAM", false);
+        if (on) {
+            std::cout << "[YOLO] Fused frame: pool copy on its own stream after the graph "
+                         "(ORANGE_ANALYTICS_COPY_STREAM on)." << std::endl;
+        }
+        return on;
+    }();
+    return enabled;
+}
+
 bool UseCopyAfterPose()
 {
     static const bool enabled = []() {
@@ -1350,7 +1363,9 @@ bool YoloWorker::CaptureFusedGraphs(
             // done_event fires after the pose output copy so the pose thread
             // wakes before the pool copy; graph_end_event guards slot reuse.
             ck(cudaEventRecordWithFlags(v.done_event, stream, cudaEventRecordExternal));
-            launch_indirect_copy(v.d_args, stream);
+            if (!UseCopyStream()) {
+                launch_indirect_copy(v.d_args, stream);
+            }
             ck(cudaEventRecordWithFlags(v.graph_end_event, stream, cudaEventRecordExternal));
             ck(cudaStreamEndCapture(stream, &graph));
             cudaGraphExec_t exec = nullptr;
@@ -2052,7 +2067,8 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                     args.src_width = entry->width;
                     args.src_height = entry->height;
                     const bool copy_pending = entry->late_owned_copy_pending;
-                    if (copy_pending && entry->d_analytics_image && entry->late_owned_copy_bytes > 0) {
+                    const bool copy_on_stream = UseCopyStream();
+                    if (!copy_on_stream && copy_pending && entry->d_analytics_image && entry->late_owned_copy_bytes > 0) {
                         args.copy_src = entry->d_image;
                         args.copy_dst = entry->d_analytics_image;
                         args.copy_bytes = entry->late_owned_copy_bytes;
@@ -2075,7 +2091,16 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                         ck(cudaEventRecord(*entry->yolo_completion_event, yolov8_instance_->stream));
                         entry->yolo_completion_event_recorded.store(true, std::memory_order_release);
                     }
-                    if (copy_pending) {
+                    if (copy_pending && copy_on_stream) {
+                        // The pool copy runs on the device stage stream (idle
+                        // on the fused path) after the graph's end node, so
+                        // the next frame's graph never queues behind it.
+                        const auto late_copy_start = std::chrono::steady_clock::now();
+                        issue_late_owned_copy_on_stream(
+                            entry, m_pose_worker->device_stage_stream(), &fused_view.graph_end_event, gpu_timing);
+                        ms_cpu_late_copy = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - late_copy_start).count();
+                    } else if (copy_pending) {
                         entry->analytics_copy_timed = false;
                         ck(cudaEventRecord(entry->analytics_ready_event, yolov8_instance_->stream));
                         entry->late_owned_copy_pending = false;

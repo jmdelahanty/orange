@@ -258,6 +258,7 @@ struct ExperimentSpec {
     bool analytics_device_crop = false;      // ORANGE_ANALYTICS_DEVICE_CROP (default off; needs device_roi; pose crop + enqueue from the YOLO thread)
     bool analytics_copy_after_pose = true;   // ORANGE_ANALYTICS_COPY_AFTER_POSE (default on; late owned copy behind pose done on the device crop path)
     bool analytics_fused_frame = false;      // ORANGE_ANALYTICS_FUSED_FRAME (default off; needs device_crop; one graph per slot for the whole frame)
+    bool analytics_copy_stream = false;      // ORANGE_ANALYTICS_COPY_STREAM (fused frame: pool copy on its own stream after the graph)
     bool acq_stream_nonblocking = false;     // ORANGE_ACQ_STREAM_NONBLOCKING (diagnostic)
     bool acq_flush_after_event = false;      // ORANGE_ACQ_FLUSH_AFTER_EVENT (diagnostic)
     bool acq_force_direct_read = false;      // ORANGE_ACQ_FORCE_DIRECT_READ (diagnostic)
@@ -8130,6 +8131,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->analytics_device_crop = fixed.value("analytics_device_crop", false);
     spec->analytics_copy_after_pose = fixed.value("analytics_copy_after_pose", true);
     spec->analytics_fused_frame = fixed.value("analytics_fused_frame", false);
+    spec->analytics_copy_stream = fixed.value("analytics_copy_stream", false);
     spec->acq_stream_nonblocking = fixed.value("acq_stream_nonblocking", false);
     spec->acq_flush_after_event = fixed.value("acq_flush_after_event", false);
     spec->acq_force_direct_read = fixed.value("acq_force_direct_read", false);
@@ -11453,6 +11455,7 @@ int run_local_experiment(const HeadlessCliOptions& options)
     setenv("ORANGE_ANALYTICS_DEVICE_CROP", spec.analytics_device_crop ? "1" : "0", 1);
     setenv("ORANGE_ANALYTICS_COPY_AFTER_POSE", spec.analytics_copy_after_pose ? "1" : "0", 1);
     setenv("ORANGE_ANALYTICS_FUSED_FRAME", spec.analytics_fused_frame ? "1" : "0", 1);
+    setenv("ORANGE_ANALYTICS_COPY_STREAM", spec.analytics_copy_stream ? "1" : "0", 1);
     setenv("ORANGE_ACQ_STREAM_NONBLOCKING", spec.acq_stream_nonblocking ? "1" : "0", 1);
     setenv("ORANGE_ACQ_FLUSH_AFTER_EVENT", spec.acq_flush_after_event ? "1" : "0", 1);
     setenv("ORANGE_ACQ_FORCE_DIRECT_READ", spec.acq_force_direct_read ? "1" : "0", 1);

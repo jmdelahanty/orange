@@ -72,6 +72,12 @@ struct ResolvedFlags {
     // CUDA graph per pose slot covering preprocess, detect, ROI, crop, pose,
     // the output copies and the pool copy (step 3). Default off.
     bool fused_frame = false;
+    // ORANGE_ANALYTICS_COPY_STREAM: with the fused frame graph, leave the pool
+    // copy out of the captured graph and issue it on the pose worker's device
+    // stage stream after the graph's end node. The next frame's graph on the
+    // analytics stream then never waits for the copy, which runs slow while
+    // the die's encoder reads the pool (the recorder-on tail, 2026-09-18).
+    bool copy_stream = false;
     // ORANGE_YOLO_STREAM_PRIORITY: "high" (default), "low", or an integer.
     std::string stream_priority = "high";
     // ORANGE_YOLO_STREAM_NONBLOCKING: create the YOLO stream non-blocking.
@@ -101,6 +107,7 @@ inline ResolvedFlags Resolve()
     flags.device_crop = EnvFlag("ORANGE_ANALYTICS_DEVICE_CROP", false);
     flags.copy_after_pose = EnvFlag("ORANGE_ANALYTICS_COPY_AFTER_POSE", true);
     flags.fused_frame = EnvFlag("ORANGE_ANALYTICS_FUSED_FRAME", false);
+    flags.copy_stream = EnvFlag("ORANGE_ANALYTICS_COPY_STREAM", false);
     if (const char* env = std::getenv("ORANGE_YOLO_STREAM_PRIORITY"); env && *env) {
         flags.stream_priority = env;
     }
