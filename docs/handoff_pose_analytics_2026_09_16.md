@@ -1486,3 +1486,35 @@ input, tracking-driven crops with a watchdog detector, or one pose pass
 on a megapixel ROI). Architecture check from engine strings: detect v004
 = YOLO11n (head model.23, attention), pose 256 cedar = YOLOv8n-pose
 (head model.22, no attention), pose 192 head = YOLO11n-pose.
+
+## Addendum 2026-09-18 evening: offline replay tool (overlay plan step 3) and first replay results
+
+`scripts/replay_pose_pipeline.py`: runs N pipeline configurations
+(`name=detect.engine:pose.engine:pose_input:pose_crop[:detect|track]`)
+over the same frames (PGM dir + manifest, or `--video <mp4>
+--video-range a-b`), mirroring the pipeline arithmetic (letterbox
+sampler, crop origin int(centre)-crop/2 clamped, pose letterbox from
+crop to input, decode = best candidate by channel 4, keypoints 5+3k
+mapped to crop px, thresholds 0.25). `track` mode: crop from the
+previous pose centroid (`--velocity` = constant-velocity), detector
+still run each frame as the trailing check, re-acquire on init / loss
+(no pose, conf < `--min-pose-conf`, keypoint within `--edge-margin` of
+the crop edge, detector centre > `--reacquire-px` away) / watchdog
+(`--watchdog-every`, default 25). Outputs per-config JSONL, summary.json
+with pairwise keypoint px (median/p95/max per label) and track stats,
+side-by-side clips (`--clip`, native + slow) and a contact sheet. Env:
+juicebox python with `LD_LIBRARY_PATH=/usr/local/TensorRT-10.0.1.6/lib:/usr/local/cuda/lib64`.
+
+Results (camera 2010096, endurance recording, device 5):
+- Fast-turn clip rec 35880-36280 (401 frames, jumps to 97 px/frame):
+  int8_256 vs fp16_256 keypoints 0.75-1.0 px median, 2.5 p95, 5 max,
+  conf -0.002; head_192 vs fp16_256 1.3-1.6 px median, 2.4-3.2 p95,
+  8.6 max, conf +0.046, no missing poses; track_256 (velocity) vs
+  fp16_256 1.1-1.4 px median, 2.7-3.3 p95, 4.9 max, poses on 401/401,
+  0 near-edge frames, 384 tracked frames, 17 re-acquires (1 init + 16
+  watchdog), tracked-vs-detected centre p50 6.6 px / p99 74 px.
+- Loss clip rec 43194-43594 (fish along the air tube; detector has
+  264/401): track_256 poses on 294/401 (+30 over detect-driven), 0
+  near-edge, re-acquire reasons init 2 / watchdog 10 / no_pose 107,
+  keypoints 1.0-1.9 px median vs the reference on the 264 shared frames.
+Outputs under `<run>/pose_overlays/replay_2010096_{jump,loss}/`.
