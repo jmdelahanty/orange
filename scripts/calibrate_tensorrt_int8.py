@@ -159,6 +159,16 @@ class PgmEntropyCalibrator(trt.IInt8EntropyCalibrator2):
 
     def write_calibration_cache(self, cache):
         self.cache_path.write_bytes(cache)
+        # trtexec only accepts a cache whose header names its own calibrator
+        # (EntropyCalibration2) and otherwise silently calibrates on nothing
+        # and fails the build. The scales are per-tensor floats either way,
+        # so a min-max cache is also written with the entropy header as
+        # <cache>.trtexec for scripts/build_tensorrt_detect_engine.sh; the
+        # JSON record keeps the true calibrator.
+        header, _, rest = bytes(cache).partition(b"\n")
+        if b"MinMax" in header:
+            twin = self.cache_path.with_suffix(self.cache_path.suffix + ".trtexec")
+            twin.write_bytes(b"TRT-100001-EntropyCalibration2\n" + rest)
 
     def free(self):
         if self.device_ptr.value:
@@ -280,7 +290,7 @@ def main() -> int:
         "onnx": {"path": str(onnx_path.resolve()), "sha256": sha256(onnx_path)},
         "tensorrt_version": trt.__version__,
         "device": args.device,
-        "calibrator": "IInt8EntropyCalibrator2",
+        "calibrator": "IInt8MinMaxCalibrator" if args.minmax else "IInt8EntropyCalibrator2",
         "batch_size": 1,
         "input_name": input_name,
         "preprocessing": ["Mono/luma source frame", "letterbox resize to 640x640 (bilinear, src = dst * scale, no half-pixel offset)",
