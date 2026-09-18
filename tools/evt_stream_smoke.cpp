@@ -4,6 +4,9 @@
 #include <EmergentCameraAPIs.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <gigevisiondeviceinfo.h>
 
 #include <algorithm>
@@ -36,6 +39,12 @@ struct Options {
     // GPU before allocating the second half of the zero-copy buffers, and
     // report where every buffer and every received frame actually lands.
     int gpu_direct_switch = -1;
+    // Raw frame dump (INT8 calibration capture): during --measure-seconds,
+    // copy every Nth received frame from the ring to the host and write it
+    // as a binary PGM (Mono8) named Cam<serial>_frame<id>.pgm in dump_dir.
+    std::string dump_dir;
+    int dump_every = 0;
+    int dump_max = 0;
     // User-supplied stream ring (EVTStreamAttribute): "device" = one
     // cudaMalloc on the camera's GPU; "vmm-split" = one CUDA virtual-address
     // range whose first half is physical memory on the camera's GPU and
@@ -46,6 +55,13 @@ struct Options {
     bool frame_stats = false;
     bool show_help = false;
 };
+
+void check_cuda_or_throw(cudaError_t err, const char* what)
+{
+    if (err != cudaSuccess) {
+        throw std::runtime_error(std::string(what) + " failed: " + cudaGetErrorString(err));
+    }
+}
 
 std::string trim_copy(const std::string& value)
 {
@@ -125,6 +141,9 @@ void print_usage(const char* argv0)
         << "  --all                    Probe every discovered camera with a usable config/default.\n"
         << "  --list-only              List discovered cameras and config match state only.\n"
         << "  --frames <n>             After stream open, acquire n frames before close (default 0).\n"
+        << "  --dump-dir <dir>         With --measure-seconds: write every --dump-every-th frame as a Mono8 PGM into <dir>.\n"
+        << "  --dump-every <n>         Dump period in frames (default 10 when --dump-dir is set).\n"
+        << "  --dump-max <n>           Stop dumping after n frames (default unlimited).\n"
         << "  --user-ring <device|vmm-split>  Open the stream on a user-supplied ring (EVTStreamAttribute) and report where frames land.\n"
         << "  --user-ring-gpu2 <g>     vmm-split: GPU holding the second half of the ring.\n"
         << "  --user-ring-mb <n>       User ring size in MB (default 512).\n"
@@ -192,6 +211,12 @@ bool parse_args(int argc, char** argv, Options* options)
             options->all = true;
         } else if (arg == "--list-only") {
             options->list_only = true;
+        } else if (arg == "--dump-dir") {
+            options->dump_dir = require_next("--dump-dir");
+        } else if (arg == "--dump-every") {
+            options->dump_every = std::atoi(require_next("--dump-every"));
+        } else if (arg == "--dump-max") {
+            options->dump_max = std::atoi(require_next("--dump-max"));
         } else if (arg == "--user-ring") {
             options->user_ring_mode = require_next("--user-ring");
         } else if (arg == "--user-ring-gpu2") {
@@ -604,6 +629,14 @@ ProbeResult probe_camera(
                 std::uint64_t first_frame_id = 0;
                 std::uint64_t last_frame_id = 0;
                 std::uint64_t frame_id_gaps = 0;
+                const bool dumping = !options.dump_dir.empty();
+                const int dump_every = options.dump_every > 0 ? options.dump_every : 10;
+                int dumped = 0;
+                std::vector<unsigned char> dump_host;
+                if (dumping) {
+                    std::filesystem::create_directories(options.dump_dir);
+                    check_cuda_or_throw(cudaSetDevice(params.gpu_direct ? params.gpu_id : 0), "cudaSetDevice(dump)");
+                }
 
                 while (std::chrono::steady_clock::now() < deadline) {
                     Emergent::CEmergentFrame frame{};
@@ -631,9 +664,39 @@ ProbeResult probe_camera(
                     last_frame_id = frame_id;
                     ++received;
 
+                    if (dumping && (received - 1) % dump_every == 0 &&
+                        (options.dump_max <= 0 || dumped < options.dump_max) &&
+                        frame.imagePtr != nullptr && frame.bufferSize > 0) {
+                        const std::size_t bytes = static_cast<std::size_t>(frame.size_x) *
+                                                  static_cast<std::size_t>(frame.size_y);
+                        if (bytes <= static_cast<std::size_t>(frame.bufferSize)) {
+                            dump_host.resize(bytes);
+                            cudaPointerAttributes attrs{};
+                            const bool on_device = cudaPointerGetAttributes(&attrs, frame.imagePtr) == cudaSuccess &&
+                                                   attrs.type == cudaMemoryTypeDevice;
+                            (void)cudaGetLastError();
+                            if (on_device) {
+                                check_cuda_or_throw(cudaMemcpy(dump_host.data(), frame.imagePtr, bytes, cudaMemcpyDeviceToHost),
+                                                    "cudaMemcpy(dump frame)");
+                            } else {
+                                std::memcpy(dump_host.data(), frame.imagePtr, bytes);
+                            }
+                            std::ostringstream name;
+                            name << options.dump_dir << "/Cam" << params.camera_serial << "_frame"
+                                 << std::setw(6) << std::setfill('0') << frame_id << ".pgm";
+                            std::ofstream out(name.str(), std::ios::binary);
+                            out << "P5\n" << frame.size_x << " " << frame.size_y << "\n255\n";
+                            out.write(reinterpret_cast<const char*>(dump_host.data()), static_cast<std::streamsize>(bytes));
+                            ++dumped;
+                        }
+                    }
+
                     check_camera_errors(
                         Emergent::EVT_CameraQueueFrame(&ecam.camera, &frame),
                         params.camera_serial.c_str());
+                }
+                if (dumping) {
+                    std::cout << "[DUMP] " << params.camera_serial << " wrote " << dumped << " frames to " << options.dump_dir << std::endl;
                 }
 
                 const double elapsed =

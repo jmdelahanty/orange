@@ -18,7 +18,8 @@ Required:
   --device <gpu-id>                Explicit CUDA device for trtexec.
 
 Options:
-  --precision <fp16>               Build precision. Default fp16. INT8 is intentionally not implemented here yet.
+  --precision <fp16|int8>          Build precision. Default fp16. int8 needs --calib-cache (scripts/calibrate_tensorrt_int8.py) and builds with --int8 --fp16.
+  --calib-cache <path>             INT8 calibration cache; its sidecar <cache>.json (frames used) is recorded when present.
   --target-hardware-class <name>   Hardware class label. Default A16.
   --trtexec <path>                 trtexec path.
                                    Default /usr/local/TensorRT-10.0.1.6/targets/x86_64-linux-gnu/bin/trtexec
@@ -63,6 +64,7 @@ ONNX_MANIFEST=""
 RUN_ID=""
 DEVICE=""
 PRECISION="fp16"
+CALIB_CACHE=""
 TARGET_HARDWARE_CLASS="A16"
 TRTEXEC="/usr/local/TensorRT-10.0.1.6/targets/x86_64-linux-gnu/bin/trtexec"
 TRT_TAG="trt100"
@@ -116,6 +118,11 @@ while [[ $# -gt 0 ]]; do
       shift
       [[ $# -gt 0 ]] || { echo "--precision requires a value." >&2; exit 2; }
       PRECISION="$1"
+      ;;
+    --calib-cache)
+      shift
+      [[ $# -gt 0 ]] || { echo "--calib-cache requires a value." >&2; exit 2; }
+      CALIB_CACHE="$1"
       shift
       ;;
     --target-hardware-class)
@@ -240,9 +247,13 @@ done
 
 PRECISION="$(printf '%s' "$PRECISION" | tr '[:upper:]' '[:lower:]')"
 TARGET_HARDWARE_LOWER="$(printf '%s' "$TARGET_HARDWARE_CLASS" | tr '[:upper:]' '[:lower:]')"
-if [[ "$PRECISION" != "fp16" ]]; then
-  echo "Only --precision fp16 is implemented in this wrapper. INT8 needs a calibration cache/data contract first." >&2
+if [[ "$PRECISION" != "fp16" && "$PRECISION" != "int8" ]]; then
+  echo "--precision must be fp16 or int8." >&2
   exit 2
+fi
+if [[ "$PRECISION" == "int8" ]]; then
+  [[ -n "$CALIB_CACHE" ]] || { echo "--precision int8 requires --calib-cache <file> (see scripts/calibrate_tensorrt_int8.py)." >&2; exit 2; }
+  CALIB_CACHE="$(realpath -e "$CALIB_CACHE")"
 fi
 if [[ "$STATUS" != "candidate" && "$STATUS" != "validated" ]]; then
   echo "--status must be candidate or validated." >&2
@@ -288,6 +299,11 @@ BUILD_CMD=(
   "--exportProfile=$PROFILE_JSON"
   "--exportLayerInfo=$LAYER_INFO_JSON"
 )
+if [[ "$PRECISION" == "int8" ]]; then
+  # --fp16 stays on so layers without an INT8 gain keep FP16 tactics; the
+  # cache fixes the scales so the build is reproducible from the same frames.
+  BUILD_CMD+=("--int8" "--calib=$CALIB_CACHE")
+fi
 BENCHMARK_CMD=(
   "$TRTEXEC"
   "--device=$DEVICE"
@@ -358,6 +374,7 @@ python3 "$MANIFEST_WRITER" \
   --target-hardware-class "$TARGET_HARDWARE_CLASS" \
   --deployment-runtime orange \
   --precision "$PRECISION" \
+  ${CALIB_CACHE:+--calib-cache "$CALIB_CACHE"} \
   --trt-tag "$TRT_TAG" \
   --builder-optimization-level "$BUILDER_OPTIMIZATION_LEVEL" \
   --avg-timing "$AVG_TIMING" \
