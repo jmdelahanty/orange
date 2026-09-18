@@ -1431,3 +1431,40 @@ FP16); backbone / neck / head+attention forced FP16 individually: still
 0. Cache scales plausible. Single-layer INT8 and min-max tests pending
 (`scratchpad/int8_bisect2.log`, `int8_minmax.log`). Do not use the INT8
 engine until parity passes.
+
+## Addendum 2026-09-18 01:30 (written 12:50): INT8 root cause and min-max engine gates
+
+Root cause of the blind INT8 engine: entropy (KL) calibration clipped
+the early feature activations on this background-dominated data
+(model.0 act range 8 vs 64 true, model.1 act 24 vs 133, several neck
+activations 3 to 4 vs 23 to 34; head ranges agree). Found by: cache
+decode → same failure via trtexec and the Python builder → all-layers-
+FP16 INT8 build detects → backbone/neck/head/attention FP16 one at a
+time still blind → single-layer INT8 (model.1 alone kills it) → min-max
+recalibration detects (0.728 vs FP16 0.715). Comparison script:
+`scratchpad` python in the journal entry; caches
+`calibration_hevc_20260917/int8_entropy_v2.cache` (do not use) and
+`int8_minmax.cache` (+ `.trtexec` twin: trtexec only accepts a cache
+whose header names EntropyCalibration2; the calibrator now writes the
+twin automatically; the JSON record keeps the true calibrator).
+
+Engine `…_a16_gpu5_trt100_int8mm_bo5_avg32.engine` (+ manifest; build
+id passed with `--build-id`), 437 s. trtexec CUDA graph die 5: INT8
+1.544 mean / 1.548 p95 / 1.707 max vs FP16 1.959 / 1.962 / 2.123.
+Parity (`compare_tensorrt_engines.py`): holdout HEVC 156 frames: FP16
+146 / INT8 150 detections, 0 missed, 4 extras at 0.33 to 0.50 (FP16 <
+0.3), IoU median 0.944 p05 0.81, centre offset 1.7 px median / 6.5 p95,
+conf delta mean -0.027 (p05 -0.09, p95 +0.04); raw sleeping set 881
+frames: 660 / 660, 0 missed, IoU median 0.959, offset 1.8 / 7.1 px, conf
+delta mean +0.014 (p05 -0.07, p95 +0.13). The 0.05 confidence gate
+fails on both sets; the threshold-crossing gate passes. 31 frames on
+cam 2010095 (no visible fish, debris specks): FP16 top detection a
+speck at 0.47, INT8 a different speck at 0.69 (`parity_int8mm_vs_fp16.json`
+rows with iou 0); empty-tank false positives exist in FP16 too, INT8 is
+more confident on them on that camera. Status: candidate; rig run with
+fish + raw fish calibration set decide. Reports:
+`calibration_hevc_20260917/parity_int8mm_vs_fp16_holdout.json`,
+`calibration_raw_20260918_sleeping/parity_int8mm_vs_fp16.json`.
+Trap: `pkill -f`/`pgrep -f` patterns that appear in the calling shell's
+own command line match that shell (a heredoc mentioning the script name
+counts); kill by pid.
