@@ -2658,7 +2658,8 @@ nlohmann::json build_pre_encoder_reference_capture_json(const PreEncoderReferenc
         {"enabled", config.enabled},
         {"max_frames", config.max_frames},
         {"max_seconds", config.max_seconds},
-        {"sample_every", config.sample_every}
+        {"sample_every", config.sample_every},
+        {"synchronous", config.synchronous}
     };
     if (!config.output_dir.empty()) {
         out["output_dir"] = config.output_dir;
@@ -2689,6 +2690,7 @@ bool parse_pre_encoder_reference_capture_json(const nlohmann::json& node,
     config.max_frames = node.value("max_frames", 0);
     config.max_seconds = node.value("max_seconds", 0);
     config.sample_every = node.value("sample_every", 1);
+    config.synchronous = node.value("synchronous", false);
     config.output_dir = node.value("output_dir", "");
     if (config.sample_every < 1) {
         if (error_out) {
