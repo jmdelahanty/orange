@@ -1468,3 +1468,21 @@ fish + raw fish calibration set decide. Reports:
 Trap: `pkill -f`/`pgrep -f` patterns that appear in the calling shell's
 own command line match that shell (a heredoc mentioning the script name
 counts); kill by pid.
+
+## Addendum 2026-09-18 15:30: INT8 on the A6000
+
+`…_a6000_gpu0_trt100_int8mm_bo5_avg32.engine` (+ manifest) built from
+the same `int8_minmax_trtexec.cache` (386 s). trtexec CUDA graph on GPU 0:
+INT8 median 0.569 / p90 0.570 vs FP16 0.641 / 0.644 (means 0.59 vs 0.71
+carry the desktop tail; compare medians): 11 % vs 21 % on a die (the
+A6000 is launch-bound on this network). Parity A6000 INT8 vs A6000 FP16
+on the 881 raw sleeping frames: 660/660, IoU median 0.959, offset p95
+6.4 px, conf delta p95 0.13, same cam-95 debris disagreements
+(`calibration_raw_20260918_sleeping/parity_a6000_int8mm_vs_fp16.json`).
+Spec `onecam_a6000_fused_realfish_int8` (control `onecam_a6000_fused_realfish`).
+Floor note for the 600 fps target: detect ≈ 0.57 ms on a big GPU is
+kernel-count-bound; below that needs fewer kernels (smaller detector
+input, tracking-driven crops with a watchdog detector, or one pose pass
+on a megapixel ROI). Architecture check from engine strings: detect v004
+= YOLO11n (head model.23, attention), pose 256 cedar = YOLOv8n-pose
+(head model.22, no attention), pose 192 head = YOLO11n-pose.
