@@ -1600,3 +1600,27 @@ registered pitch-linear NV12 buffer on map). Next: nsys trace of a
 standalone registered-input encode loop (no rig) to see the per-frame
 CUDA activity; then either an input layout NVENC consumes without a
 copy, or encoding off the detect die. MPS is stopped.
+
+## Addendum 2026-09-18 19:15: NVENC driver kernels per frame = the local-half term
+
+`tools/nvenc_stress_load.cpp` gained `--pattern registered` (external
+input slots fed from device NV12 buffers registered once, no per-frame
+copy: the recorder's registered-source path), `--pattern registered-array`
+(CUDA array input, NV_ENC_INPUT_RESOURCE_TYPE_CUDAARRAY) and `--aq/--temporal-aq/--lookahead`
+flags (the tool's defaults had AQ + temporal AQ ON, unlike production).
+nsys (`--trace=cuda`, die 1, 100 fps, 6 s): registered + production
+flags (AQ 0, TAQ 0, LA 0): Convert_PL2BL x2 per frame, 0.31 ms each →
+0.62 ms of SM kernels per encoded frame in the encoder process's context;
+CUDA-array input: Convert_BL2BL x2, 0.57 ms (the conversion is not
+avoided); const-QP: same; tool defaults add Subsample2x2_NV12BL,
+calculateCost, QPDelta etc. (1.2 ms total; AQ features, not production).
+Traces: `scratchpad/nvenc_{registered_prod,array_prod,registered_cqp,registered,solid}.nsys-rep`.
+This is the local-half term: 0.62 ms of SM work per locally encoded
+frame in another context, drifting across the 10 ms period with the
+encoder queue, landing on the detect graph on ~1 frame in 6 (time-sliced
+start delay without MPS; concurrent slowdown under MPS). Crop recorder:
+384 px → microseconds, never visible. Next: phase-locked encode
+submission in the recorder's local shard (hold the frame, call
+EncodePicture at capture + ~3.2 ms using the PTP timestamp; spec key
+`external_recorder_encode_phase_ms`), A/B on `…_recorder_realfish_int8_192`;
+expect recorder-on p95 3.14 → ~2.4.
