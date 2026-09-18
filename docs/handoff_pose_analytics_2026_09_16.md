@@ -1535,3 +1535,26 @@ the clips; gate open on that only. Outputs
 (stats summaries, six side-by-side clips per camera: 256 | 192 | track).
 Trap: a python process inside `while read` consumes the rest of the
 list on stdin; feed the loop from fd 3 and give the process `< /dev/null`.
+
+## Addendum 2026-09-18 18:30: live fish runs, INT8 detect and 192 head, with and without recorders
+
+Eight runs (`fourcam_fused_realfish{,_192,_int8,_int8_192}_20260918_18{1645,1803,1921,2039}`,
+`fourcam_fused_recorder_realfish{,_192,_int8,_int8_192}_20260918_18{2318,2440,2602,2758}`),
+all pass, ROI match 5901/5901, zero drops. Capture→pose mean / p95 / p99:
+no recorders FP16+256 2.91/2.94/2.95, FP16+192 2.75/2.77/2.79, INT8+256
+2.49/2.51/2.53, INT8+192 2.33/2.35/2.36; both recorders FP16+256
+3.17-3.24/3.78/3.81-4.07, FP16+192 2.98-3.07/3.62/3.66-3.93, INT8+256
+2.67-2.78/3.26-3.30/3.32-3.48, INT8+192 2.51-2.61/3.14/3.17-3.21. Detect
+graph with recorders: FP16 p95 2.81 (+0.8 over mean, the local-half
+term); INT8 p95 1.63 card A / 1.72-1.74 card B (+0.02 / +0.1): INT8
+halves the activation traffic and so the encoder contention penalty.
+192 head: 0 no-pose frames everywhere, pose conf 0.97 std 0.003-0.004;
+256 cedar: 757 no-pose frames on cam 2010096 without recorders (132
+episodes, longest 111, det conf 0.44 on those frames, box size normal),
+203 with recorders, 8 / 64 with INT8 detect. INT8 det conf p05 on cam
+96 0.69-0.73 vs FP16 0.78-0.79 (all detections still made). Raw fish
+calibration capture `calibration_raw_20260918_fish_preenc` (220 frames
+per camera, PTP-gated, synchronous capture) → `…_fish/frames`; raw
+recalibration + `int8mmraw` engine + parity vs the HEVC-calibrated one
+in `scratchpad/raw_recal.log`. Analysis script: `scratchpad/fish_analyze.py`
+(pose_events + yolo_perf + pose_perf per camera).
