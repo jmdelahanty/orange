@@ -123,6 +123,10 @@ bool PreEncoderReferenceWriter::ShouldCaptureNextFrame()
         close_internal("budget_reached");
         return false;
     }
+    const uint64_t offered = frames_offered_++;
+    if (config_.sample_every > 1 && (offered % static_cast<uint64_t>(config_.sample_every)) != 0) {
+        return false;
+    }
     return true;
 }
 
@@ -204,6 +208,8 @@ nlohmann::json PreEncoderReferenceWriter::BuildSummaryJson() const
         {"enabled", config_.enabled},
         {"max_frames", config_.max_frames},
         {"max_seconds", config_.max_seconds},
+        {"sample_every", config_.sample_every},
+        {"frames_offered", frames_offered_},
         {"status", status_},
         {"frames_captured", frames_captured_},
         {"bytes_written", bytes_written_},
@@ -335,6 +341,7 @@ void PreEncoderReferenceWriter::reset_runtime_state()
     metadata_written_ = false;
     budget_reached_ = false;
     frames_captured_ = 0;
+    frames_offered_ = 0;
     bytes_written_ = 0;
     next_byte_offset_ = 0;
     error_.clear();

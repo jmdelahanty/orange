@@ -149,8 +149,13 @@ class PgmEntropyCalibrator(trt.IInt8EntropyCalibrator2):
             print(f"[calib] {self.index}/{len(self.frames)} frames", file=sys.stderr, flush=True)
         return [int(self.device_ptr.value)]
 
+    reuse_cache = False
+
     def read_calibration_cache(self):
-        return None  # always calibrate from frames; never reuse a stale cache silently
+        # Only when explicitly asked (--reuse-cache): otherwise always calibrate from frames.
+        if self.reuse_cache and self.cache_path.exists():
+            return self.cache_path.read_bytes()
+        return None
 
     def write_calibration_cache(self, cache):
         self.cache_path.write_bytes(cache)
@@ -159,6 +164,27 @@ class PgmEntropyCalibrator(trt.IInt8EntropyCalibrator2):
         if self.device_ptr.value:
             _cudart.cudaFree(self.device_ptr)
             self.device_ptr = ctypes.c_void_p()
+
+
+class PgmMinMaxCalibrator(trt.IInt8MinMaxCalibrator):
+    """Same batches as PgmEntropyCalibrator, min-max scale selection."""
+
+    def __init__(self, frames, cache_path, input_name):
+        trt.IInt8MinMaxCalibrator.__init__(self)
+        self._impl = PgmEntropyCalibrator.__new__(PgmEntropyCalibrator)
+        # share the implementation without double-initialising the TRT base
+        self.frames, self.cache_path, self.input_name = frames, cache_path, input_name
+        self.index, self.sampler, self.used = 0, None, []
+        self.nbytes = 3 * INPUT_SIZE * INPUT_SIZE * 4
+        self.device_ptr = ctypes.c_void_p()
+        cuda_check(_cudart.cudaMalloc(ctypes.byref(self.device_ptr), self.nbytes), "cudaMalloc(calibration batch)")
+        self.reuse_cache = False
+
+    get_batch_size = PgmEntropyCalibrator.get_batch_size
+    get_batch = PgmEntropyCalibrator.get_batch
+    read_calibration_cache = PgmEntropyCalibrator.read_calibration_cache
+    write_calibration_cache = PgmEntropyCalibrator.write_calibration_cache
+    free = PgmEntropyCalibrator.free
 
 
 def sha256(path: Path) -> str:
@@ -178,6 +204,11 @@ def main() -> int:
     ap.add_argument("--device", type=int, default=5)
     ap.add_argument("--max-frames", type=int, default=1000)
     ap.add_argument("--workspace-gb", type=float, default=4.0)
+    ap.add_argument("--save-engine", help="also serialize the calibration build's engine here (diagnostic; built at --opt-level)")
+    ap.add_argument("--opt-level", type=int, default=0, help="builder optimisation level for the calibration build (default 0)")
+    ap.add_argument("--reuse-cache", action="store_true", help="reuse an existing --cache instead of recalibrating (experiments)")
+    ap.add_argument("--fp16-layers", default="", help="regex; matching layer names are forced to FP16 (OBEY_PRECISION_CONSTRAINTS)")
+    ap.add_argument("--minmax", action="store_true", help="use IInt8MinMaxCalibrator instead of entropy v2")
     args = ap.parse_args()
 
     frames = sorted(Path(args.frames).glob("*.pgm"))[: args.max_frames]
@@ -204,11 +235,32 @@ def main() -> int:
     config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, int(args.workspace_gb * (1 << 30)))
     config.set_flag(trt.BuilderFlag.FP16)
     config.set_flag(trt.BuilderFlag.INT8)
-    config.builder_optimization_level = 0  # the engine is discarded; only the cache matters
+    config.builder_optimization_level = args.opt_level  # the engine is normally discarded; only the cache matters
     cache_path = Path(args.cache)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    calibrator = PgmEntropyCalibrator(frames, cache_path, input_name)
+    calibrator = (PgmMinMaxCalibrator if args.minmax else PgmEntropyCalibrator)(frames, cache_path, input_name)
+    calibrator.reuse_cache = args.reuse_cache
     config.int8_calibrator = calibrator
+    if args.fp16_layers:
+        import re
+        pattern = re.compile(args.fp16_layers)
+        forced = 0
+        for i in range(network.num_layers):
+            layer = network.get_layer(i)
+            if not pattern.search(layer.name) or layer.name.startswith("ONNXTRT"):
+                continue
+            outs = [layer.get_output(j) for j in range(layer.num_outputs)]
+            if not outs or any(t.dtype not in (trt.float32, trt.float16) for t in outs) or any(t.is_shape_tensor for t in outs):
+                continue
+            if layer.type in (trt.LayerType.SHAPE, trt.LayerType.CONSTANT, trt.LayerType.SHUFFLE, trt.LayerType.CONCATENATION,
+                              trt.LayerType.SLICE, trt.LayerType.GATHER, trt.LayerType.IDENTITY, trt.LayerType.PLUGIN_V2):
+                continue
+            layer.precision = trt.float16
+            for j, out_t in enumerate(outs):
+                layer.set_output_type(j, trt.float16)
+            forced += 1
+        config.set_flag(trt.BuilderFlag.OBEY_PRECISION_CONSTRAINTS)
+        print(f"[calib] forced {forced} of {network.num_layers} layers to FP16 (pattern {args.fp16_layers!r})", file=sys.stderr)
 
     start = time.time()
     print(f"[calib] calibrating on {len(frames)} frames from {args.frames} (device {args.device})", file=sys.stderr)
@@ -217,6 +269,9 @@ def main() -> int:
     if serialized is None or not cache_path.exists():
         raise SystemExit("calibration build failed; no cache written")
     elapsed = time.time() - start
+    if args.save_engine:
+        Path(args.save_engine).write_bytes(bytes(serialized))
+        print(f"[calib] engine saved to {args.save_engine}", file=sys.stderr)
 
     record = {
         "schema_id": "orange.tensorrt_int8_calibration",
