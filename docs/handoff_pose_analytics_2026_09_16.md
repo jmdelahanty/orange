@@ -1393,3 +1393,41 @@ First test: add a `--mcast-master <ip:port>` / `--mcast-slave <iface>
 slave on die 2, camera 2010096 at 100 fps for 60 s, both counting frames
 and drops; trtexec detect graph looping on die 1 during it. Pass: both
 rings at 100 fps, zero drops, graph within +0.05 ms of alone.
+
+## Addendum 2026-09-18 01:20: INT8 detect engine work (in progress) and PTP-gated raw capture
+
+Tooling (commits d12325f, 6564b26, e20402f, 1305ada..dcd66ae):
+`scripts/calibrate_tensorrt_int8.py` (production preprocessing mirrored
+from `optimized_yolo_preprocess.cu`, entropy v2 or `--minmax`, cache +
+JSON record; `--reuse-cache`, `--fp16-layers <regex>`, `--save-engine`,
+`--opt-level` for experiments), `scripts/compare_tensorrt_engines.py`
+(held-out parity: missed/extra, IoU, centre offset, confidence delta),
+`scripts/build_tensorrt_detect_engine.sh --precision int8 --calib-cache`
+(trtexec `--int8 --fp16 --calib=`; manifest records cache hash and
+record), `scripts/extract_preenc_ref_frames.py` (NV12 dumps → PGM +
+manifest), `pre_encoder_reference_capture.sample_every` and
+`.synchronous`, spec `fourcam_fused_calibration_capture_raw`,
+`scripts/evt_dump_frames.sh` (single-camera smoke dump; NOT for lit
+multi-camera capture: only 2010096 lights the tanks and the others must
+be PTP-gated to its exposure). TensorRT 10.0.1 Python wheel installed
+into the juicebox env (cudart via ctypes; run with
+`LD_LIBRARY_PATH=/usr/local/TensorRT-10.0.1.6/lib:/usr/local/cuda/lib64`
+and `PYTHONDONTWRITEBYTECODE=1`, `scripts/__pycache__` is root-owned).
+
+Calibration sets: provisional decoded-HEVC set from the 09-17 endurance
+recordings (`calibration_hevc_20260917/{calib,holdout}`: 975 + 156 PGMs,
+manifest with detection confidences); PTP-gated raw sleeping-fish set
+(`calibration_raw_20260918_sleeping_preenc/` dumps, `…_sleeping/frames`
+881 PGMs, luma means 160 to 205, cross-camera timestamps on the 10 ms
+grid). Async capture ring fails on the 4th capture in this configuration
+(stride or not) → `synchronous: true` in the spec.
+
+INT8 results so far: engine `…_a16_gpu5_trt100_int8_bo5_avg32.engine`
+builds (cache used, 178 layers, 77 INT8 convolutions); trtexec CUDA
+graph on die 5: 1.572 mean / 1.545 median / 1.72 p95 vs FP16 1.962 /
+1.959 / 1.964. Parity FAILS: 0 of 146 detections. Diagnosis: same with
+the Python builder; all-layers-FP16 INT8-flagged build detects (0.715 =
+FP16); backbone / neck / head+attention forced FP16 individually: still
+0. Cache scales plausible. Single-layer INT8 and min-max tests pending
+(`scratchpad/int8_bisect2.log`, `int8_minmax.log`). Do not use the INT8
+engine until parity passes.
