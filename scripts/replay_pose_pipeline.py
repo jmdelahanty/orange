@@ -76,6 +76,7 @@ class TrackState:
     frames_since_acquire: int = 0
     reacquires: int = 0
     reasons: dict = field(default_factory=dict)
+    last_origin: tuple[int, int] | None = None
 
 
 def parse_config(text: str) -> Config:
@@ -232,6 +233,10 @@ def main() -> int:
     ap.add_argument("--pose-conf", type=float, default=0.25)
     ap.add_argument("--kpt-conf", type=float, default=0.25)
     ap.add_argument("--velocity", action="store_true", help="track mode: constant-velocity prediction")
+    ap.add_argument("--velocity-min-px", type=float, default=6.0,
+                    help="track mode: apply the velocity term only when the last displacement exceeds this (px)")
+    ap.add_argument("--deadband-px", type=float, default=0.0,
+                    help="track mode: keep the crop where it is until the centroid drifts more than this from the crop centre (px)")
     ap.add_argument("--watchdog-every", type=int, default=25)
     ap.add_argument("--edge-margin", type=float, default=16.0)
     ap.add_argument("--min-pose-conf", type=float, default=0.5)
@@ -316,7 +321,14 @@ def main() -> int:
                 else:
                     pred = ts.centre
                     if args.velocity and ts.prev_centre:
-                        pred = (2 * ts.centre[0] - ts.prev_centre[0], 2 * ts.centre[1] - ts.prev_centre[1])
+                        dx, dy = ts.centre[0] - ts.prev_centre[0], ts.centre[1] - ts.prev_centre[1]
+                        if math.hypot(dx, dy) >= args.velocity_min_px:
+                            pred = (ts.centre[0] + dx, ts.centre[1] + dy)
+                    if args.deadband_px > 0 and ts.last_origin is not None:
+                        half = c.pose_crop / 2
+                        cur_centre = (ts.last_origin[0] + half, ts.last_origin[1] + half)
+                        if math.hypot(pred[0] - cur_centre[0], pred[1] - cur_centre[1]) <= args.deadband_px:
+                            pred = cur_centre
                     origin = st.crop_origin(pred)
                     source = "tracked"
                 row["reacquire_reason"] = reason
@@ -328,6 +340,8 @@ def main() -> int:
             pose, crop = (st.run_pose(mono, origin) if origin else (None, np.zeros((c.pose_crop, c.pose_crop), np.uint8)))
             row["crop_origin"] = origin
             row["crop_source"] = source if origin else None
+            if c.mode == "track" and origin is not None:
+                states[(c.name, cam)].last_origin = origin
             row["pose_conf"] = pose["conf"] if pose else None
             row["keypoints_full"] = ({k: [x, y, cf] for k, (x, y, cf) in kp_full(pose["keypoints"], origin).items()} if pose else None)
             if c.mode == "track":
@@ -393,6 +407,11 @@ def main() -> int:
             s["tracked_vs_detected_px_p50"] = float(np.median(offs)) if offs else None
             s["tracked_vs_detected_px_p99"] = float(np.quantile(offs, 0.99)) if offs else None
             s["near_edge_frames"] = sum(1 for r in rows if r.get("near_edge"))
+        origins = [r["crop_origin"] for r in rows if r["crop_origin"]]
+        if len(origins) > 1:
+            moves = [math.hypot(a[0] - b[0], a[1] - b[1]) for a, b in zip(origins[1:], origins[:-1])]
+            s["crop_move_px_mean"] = float(np.mean(moves))
+            s["crop_still_fraction"] = float(np.mean([m == 0 for m in moves]))
         summary["configs"][c.name] = s
         if c.name == ref:
             continue
