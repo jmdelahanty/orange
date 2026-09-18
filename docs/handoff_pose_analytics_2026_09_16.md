@@ -1558,3 +1558,28 @@ per camera, PTP-gated, synchronous capture) → `…_fish/frames`; raw
 recalibration + `int8mmraw` engine + parity vs the HEVC-calibrated one
 in `scratchpad/raw_recal.log`. Analysis script: `scratchpad/fish_analyze.py`
 (pose_events + yolo_perf + pose_perf per camera).
+
+## Addendum 2026-09-18 18:45: raw recalibration equivalence; live overlays; tail decomposition
+
+Raw fish set `calibration_raw_20260918_fish/frames` (882 PGMs, luma
+medians 168-217) + every 8th sleeping frame → `calibration_raw_20260918/`
+(992 frames, `int8_minmax.cache` + `.trtexec` twin) → engine
+`…_a16_gpu5_trt100_int8mmraw_bo5_avg32.engine` (452 s). On the raw fish
+frames vs FP16 (879 detections): raw-cal 881 detections, 0 missed, IoU
+median 0.950 p05 0.894, offset p95 4.4 px, conf delta p95 0.075; hevc-cal
+882, 0 missed, 0.941 / 0.893, 3.8 px, 0.068; raw-cal vs hevc-cal IoU
+0.95, conf delta p95 0.053, 1 missed. Decoded HEVC frames are an
+acceptable calibration source for this detector; the hevc-cal engine
+(`int8mm`) stays the candidate. Overlays from the live 192 recorder run:
+`fourcam_fused_recorder_realfish_192_20260918_182440/run_0001*/pose_overlays/{2010096,2010093}`.
+
+Recorder-on tail (INT8+192, cam 2010095): infer p95-mean 0.086,
+device-stage p95-mean 0.006, sync_ms p95-mean 0.528, acq→detect p95 local-
+die GOPs 2.556 vs other-die 2.267 → the graph starts late on local-die
+GOPs. `external_recorder_registered_source: false` control made it worse
+(c2p p95 3.51 / p99 3.83, spec `…_int8_192_copysource`). Hypothesis: the
+in-graph 20 MB pool copy at the end of the fused graph delays the next
+graph on the same stream while the encoder reads the pool. Fix under
+test: `ORANGE_ANALYTICS_COPY_STREAM` / spec `analytics_copy_stream`
+(copy issued on the device stage stream after graph_end_event via
+issue_late_owned_copy_on_stream; spec `…_int8_192_copystream`).
