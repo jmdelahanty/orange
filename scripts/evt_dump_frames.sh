@@ -16,8 +16,17 @@ CALIB_ROOT="${ORANGE_CALIB_ROOT:-/home/jeremy/orange_data/model_sources/detect/d
 SERIAL="${1:?serial}"; SET="${2:?set name (empty|fish)}"
 if [[ "$SET" == "empty" ]]; then D_SECS=20; D_EVERY=20; D_MAX=100; else D_SECS=100; D_EVERY=10; D_MAX=300; fi
 SECS="${3:-$D_SECS}"; EVERY="${4:-$D_EVERY}"; MAX="${5:-$D_MAX}"
-OUT="$CALIB_ROOT/calibration_raw_$(date +%Y%m%d)/$SET/Cam$SERIAL"
+SET_ROOT="$CALIB_ROOT/calibration_raw_$(date +%Y%m%d)"
+OUT="$SET_ROOT/$SET/Cam$SERIAL"
 mkdir -p "$OUT"
-# Keep the files owned by the invoking user when run through sudo.
-exec stdbuf -oL "$BIN" --config-dir "$CONFIG_DIR" --serial "$SERIAL" --measure-seconds "$SECS" --buffer-count 8 \
+set +e
+stdbuf -oL "$BIN" --config-dir "$CONFIG_DIR" --serial "$SERIAL" --measure-seconds "$SECS" --buffer-count 8 \
   --dump-dir "$OUT" --dump-every "$EVERY" --dump-max "$MAX" 2>&1 | grep -E 'DUMP|MEASURE|RESULT|FAIL|rror'
+status=${PIPESTATUS[0]}
+set -e
+# Same handoff as orange_local_benchmark_wrapper.sh: give the capture tree
+# back to the invoking user when run through sudo.
+if [[ -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" && -d "$SET_ROOT" ]]; then
+  chown -R "${SUDO_UID}:${SUDO_GID}" "$SET_ROOT"
+fi
+exit "$status"
