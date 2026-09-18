@@ -1583,3 +1583,20 @@ graph on the same stream while the encoder reads the pool. Fix under
 test: `ORANGE_ANALYTICS_COPY_STREAM` / spec `analytics_copy_stream`
 (copy issued on the device stage stream after graph_end_event via
 issue_late_owned_copy_on_stream; spec `…_int8_192_copystream`).
+
+## Addendum 2026-09-18 19:00: copy-stream and MPS tests, both negative; recorder-side GPU work per frame
+
+Copy-stream (`analytics_copy_stream`, spec `…_int8_192_copystream_184344`):
+sync p95 2.43-2.45 vs 2.41-2.42, c2p p95 3.18-3.21 vs 3.14, host issue
+cost 0.02 ms → the in-graph pool copy was not delaying the next graph.
+MPS (`nvidia-cuda-mps-control -d` as root, spec `…_int8_192_mps_185435`,
+RDMA + NVENC fine under MPS): graph GPU time mean 1.86-1.89 / p95 2.40
+(from 1.61-1.63 / 1.63-1.72), wait p95 2.38 (unchanged), c2p mean
+2.75-2.82 / p95 3.24 / p99 3.27-3.48 (worse). Two contexts: graph flat,
+starts late; one context: starts on time, runs slow. Conclusion: the
+recorder process executes ~0.5 ms of real GPU work on the detect die per
+locally encoded frame (candidate: driver-side surface conversion of the
+registered pitch-linear NV12 buffer on map). Next: nsys trace of a
+standalone registered-input encode loop (no rig) to see the per-frame
+CUDA activity; then either an input layout NVENC consumes without a
+copy, or encoding off the detect die. MPS is stopped.
