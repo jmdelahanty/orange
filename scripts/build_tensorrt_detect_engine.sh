@@ -118,6 +118,7 @@ while [[ $# -gt 0 ]]; do
       shift
       [[ $# -gt 0 ]] || { echo "--precision requires a value." >&2; exit 2; }
       PRECISION="$1"
+      shift
       ;;
     --calib-cache)
       shift
