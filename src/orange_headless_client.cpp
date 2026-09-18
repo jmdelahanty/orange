@@ -271,6 +271,8 @@ struct ExperimentSpec {
     bool external_recorder_early_peer_stage = true;  // ORANGE_EXTERNAL_RECORDER_EARLY_PEER_STAGE (other-die shard stages its peer copy at descriptor arrival; default on since 2026-09-17)
     bool external_recorder_peer_access = false;  // ORANGE_EXTERNAL_RECORDER_PEER_ACCESS (other-die shard enables CUDA peer access to the source die)
     bool external_recorder_early_stage_push = false;  // ORANGE_EXTERNAL_RECORDER_EARLY_STAGE_PUSH (early staging copy issued from the source die)
+    double external_recorder_encode_phase_ms = 0.0;   // ORANGE_EXTERNAL_RECORDER_ENCODE_PHASE_MS (local full-frame shard submits at capture + ms)
+    int external_recorder_extra_output_delay = -1;    // ORANGE_EXTERNAL_RECORDER_EXTRA_OUTPUT_DELAY (-1: probe default 3)
     int external_recorder_max_deferred = -1;  // ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED (-1: ingress default)
     std::string recording_sink_mode = "real";
     bool helper_noop_source_read = false;
@@ -8151,6 +8153,10 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         fixed.value("external_recorder_peer_access", false);
     spec->external_recorder_early_stage_push =
         fixed.value("external_recorder_early_stage_push", false);
+    spec->external_recorder_encode_phase_ms =
+        fixed.value("external_recorder_encode_phase_ms", 0.0);
+    spec->external_recorder_extra_output_delay =
+        fixed.value("external_recorder_extra_output_delay", -1);
     spec->external_recorder_max_deferred =
         fixed.value("external_recorder_max_deferred", -1);
     spec->recording_sink_mode = fixed.value("recording_sink_mode", "real");
@@ -11481,6 +11487,12 @@ int run_local_experiment(const HeadlessCliOptions& options)
            spec.external_recorder_peer_access ? "1" : "0", 1);
     setenv("ORANGE_EXTERNAL_RECORDER_EARLY_STAGE_PUSH",
            spec.external_recorder_early_stage_push ? "1" : "0", 1);
+    setenv("ORANGE_EXTERNAL_RECORDER_ENCODE_PHASE_MS",
+           std::to_string(spec.external_recorder_encode_phase_ms).c_str(), 1);
+    if (spec.external_recorder_extra_output_delay >= 0) {
+        setenv("ORANGE_EXTERNAL_RECORDER_EXTRA_OUTPUT_DELAY",
+               std::to_string(spec.external_recorder_extra_output_delay).c_str(), 1);
+    }
     if (spec.external_recorder_max_deferred > 0) {
         setenv("ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED",
                std::to_string(spec.external_recorder_max_deferred).c_str(), 1);

@@ -1624,3 +1624,25 @@ submission in the recorder's local shard (hold the frame, call
 EncodePicture at capture + ~3.2 ms using the PTP timestamp; spec key
 `external_recorder_encode_phase_ms`), A/B on `…_recorder_realfish_int8_192`;
 expect recorder-on p95 3.14 → ~2.4.
+
+## Addendum 2026-09-18 19:30: phase-locked submission (three variants, no closure)
+
+Probe: `--encode-phase-ms` / env `ORANGE_EXTERNAL_RECORDER_ENCODE_PHASE_MS`
+(spec `external_recorder_encode_phase_ms`; local full-frame shard only;
+uses desc.timestamp_sys = CLOCK_REALTIME ns at capture; clock_nanosleep
+to -150 us then spin; `phase_wait_ms` CSV column; summary `phase_waits`,
+`phase_clock_skips`), and env `ORANGE_EXTERNAL_RECORDER_EXTRA_OUTPUT_DELAY`
+(spec `external_recorder_extra_output_delay`). Runs vs baseline
+`…_int8_192_182758` (c2p p95 3.14 / p99 3.17-3.21, sync tail 0.53-0.63):
+phase3p2 (od 3) `…_191823`: 50 % held ≤0.3 ms, p95 3.14, no change;
+od1 alone `…_192411`: p95 3.07-3.09 / p99 3.10-3.27; phase3p2+od1
+`…_192249`: 5 % held, p95 3.08-3.09. nsys on the stress tool: with od 3
+the Convert_PL2BL kernels start 20 ms after cuLaunchKernel (engine
+cadence, 2 frames later); with od 0/1 0.22 ms after. With od 1 each
+EncodeFrame blocks ~11 ms on the previous frame's bitstream (encode_total
+p50 11.3), so the encode thread lags capture and the phase rarely
+applies. Next recorder-side step: separate submit (at phase, non-
+blocking) and harvest (blocking bitstream lock) threads in the probe /
+NvEncoder wrapper (EncodeFrame = encode + GetEncodedPacket today). Group
+conversion is not possible (driver-internal, per map) and would bunch
+the SM work anyway.

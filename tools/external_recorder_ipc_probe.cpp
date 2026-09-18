@@ -86,6 +86,14 @@ struct Options {
     // posted PCIe writes) instead of the shard GPU pulling (PCIe reads).
     // Only meaningful with early_peer_stage.
     bool early_stage_push = false;
+    // Phase-locked encode submission (2026-09-18): on the same-GPU (local)
+    // full-frame shard, hold each frame and submit it to NVENC no earlier
+    // than capture + encode_phase_ms (system clock, from the descriptor's
+    // timestamp_sys). The driver's Convert_PL2BL kernels (0.62 ms of SM
+    // time per 4512x4512 frame, in this process's context) then land in a
+    // window after the analytics' detect and pose graphs instead of drifting
+    // onto them. 0 = off.
+    double encode_phase_ms = 0.0;
     uint32_t fps = 60;
     std::string codec = "hevc";
     std::string preset = "p1";
@@ -232,6 +240,7 @@ void signal_handler(int)
         << "  --deferred-source-release Send RELEASE after source consumption; ACK only accepts work. Experimental.\n"
         << "  --registered-source   Encode from the NV12-shaped pool buffer registered with NVENC (no copy); implies the two above. Default on since 2026-09-04 (env ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE=0 disables).\n"
         << "  --early-peer-stage    Other-GPU shards copy the pool frame into a staging buffer at descriptor arrival, before the NVENC input wait. Default on since 2026-09-17 (env ORANGE_EXTERNAL_RECORDER_EARLY_PEER_STAGE=0 disables).\n"
+        << "  --encode-phase-ms <ms> Local full-frame shard: submit each frame to NVENC no earlier than capture + ms (env ORANGE_EXTERNAL_RECORDER_ENCODE_PHASE_MS). 0 = off.\n"
         << "  --early-stage-push    Issue the early staging copy from the source GPU (push) instead of the shard GPU (pull) (env ORANGE_EXTERNAL_RECORDER_EARLY_STAGE_PUSH=1).\n"
         << "  --peer-access         Enable CUDA peer access from an other-GPU shard to the source GPU before its copies (env ORANGE_EXTERNAL_RECORDER_PEER_ACCESS=1).\n"
         << "  --fps <int>           Encoder nominal FPS. Default 60.\n"
@@ -415,6 +424,16 @@ Options parse_options(int argc, char** argv)
         env_flag_enabled("ORANGE_EXTERNAL_RECORDER_PEER_ACCESS", false);
     options.early_stage_push =
         env_flag_enabled("ORANGE_EXTERNAL_RECORDER_EARLY_STAGE_PUSH", false);
+    if (const char* phase_env = std::getenv("ORANGE_EXTERNAL_RECORDER_ENCODE_PHASE_MS"); phase_env && *phase_env) {
+        options.encode_phase_ms = std::atof(phase_env);
+    }
+    // NVENC pipelining depth. With the default 3 the driver defers its input
+    // conversion kernels (Convert_PL2BL) until the engine picks the frame up,
+    // about two frames after submission, so the phase lock cannot place them;
+    // with 0 or 1 they run about 0.2 ms after the encode call (nsys, 2026-09-18).
+    if (const char* od_env = std::getenv("ORANGE_EXTERNAL_RECORDER_EXTRA_OUTPUT_DELAY"); od_env && *od_env) {
+        options.extra_output_delay = static_cast<uint32_t>(std::atoi(od_env));
+    }
     options.min_free_bytes =
         env_u64("ORANGE_EXTERNAL_RECORDER_MIN_FREE_BYTES", 0);
     options.low_space_warning_bytes =
@@ -473,6 +492,8 @@ Options parse_options(int argc, char** argv)
             options.peer_access = true;
         } else if (arg == "--early-stage-push") {
             options.early_stage_push = true;
+        } else if (arg == "--encode-phase-ms") {
+            options.encode_phase_ms = std::atof(consume(arg.c_str()).c_str());
         } else if (arg == "--fps") {
             options.fps = parse_u32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--codec") {
@@ -1995,6 +2016,9 @@ struct EncodeSample {
     double stage_wait_ms = 0.0;
     // Early peer staging: GPU-timed duration of the staging copy itself.
     double stage_copy_ms = 0.0;
+    // Phase-locked submission: how long the encode thread held the frame
+    // before submitting (0 when the target time had already passed).
+    double phase_wait_ms = 0.0;
     double encode_total_ms = 0.0;
     double encode_picture_ms = 0.0;
     double completion_wait_ms = 0.0;
@@ -2530,7 +2554,7 @@ void write_encode_csv_header(std::ofstream& csv)
     csv << "encode_index,source_frame_index,camera_serial,session_id,stream_id,"
            "recording_frame_id,local_frame_id,gop_index,frame_index_within_gop,"
            "source_gpu_id,assigned_gpu_id,assigned_shard_id,routing_policy,bytes,"
-           "enqueue_age_ms,prepare_ms,slot_reuse_wait_ms,stage_wait_ms,stage_copy_ms,encode_total_ms,"
+           "enqueue_age_ms,prepare_ms,slot_reuse_wait_ms,stage_wait_ms,stage_copy_ms,phase_wait_ms,encode_total_ms,"
            "encode_picture_ms,completion_wait_ms,lock_bitstream_ms,"
            "bitstream_copy_ms,unlock_bitstream_ms,unmap_input_resource_ms,"
            "bitstream_fetch_ms,output_packets,output_bytes,returned_packets,"
@@ -2559,6 +2583,7 @@ void write_encode_csv_row(std::ofstream& csv, const EncodeSample& sample)
         << sample.slot_reuse_wait_ms << ","
         << sample.stage_wait_ms << ","
         << sample.stage_copy_ms << ","
+        << sample.phase_wait_ms << ","
         << sample.encode_total_ms << ","
         << sample.encode_picture_ms << ","
         << sample.completion_wait_ms << ","
@@ -4357,6 +4382,50 @@ private:
             "cudaEventCreateWithFlags(external direct input ready)");
     }
 
+    // Phase-locked submission: sleep until capture + encode_phase_ms on the
+    // system clock (timestamp_sys is CLOCK_REALTIME ns at acquisition), only
+    // for the local full-frame shard. Returns the time held in ms.
+    double wait_for_encode_phase(const FrameDescriptor& desc)
+    {
+        if (options_.encode_phase_ms <= 0.0 || options_.stream_kind != "full_frame" ||
+            desc.source_gpu_id != options_.gpu_id || desc.timestamp_sys == 0) {
+            return 0.0;
+        }
+        const uint64_t target_ns = desc.timestamp_sys +
+            static_cast<uint64_t>(options_.encode_phase_ms * 1e6);
+        timespec now{};
+        clock_gettime(CLOCK_REALTIME, &now);
+        const uint64_t now_ns = static_cast<uint64_t>(now.tv_sec) * 1000000000ull + static_cast<uint64_t>(now.tv_nsec);
+        if (now_ns >= target_ns) {
+            return 0.0;
+        }
+        const uint64_t hold_ns = target_ns - now_ns;
+        if (hold_ns > 50000000ull) {  // more than 50 ms: clocks disagree; do not hold
+            phase_clock_skips_++;
+            return 0.0;
+        }
+        timespec target{};
+        target.tv_sec = static_cast<time_t>(target_ns / 1000000000ull);
+        target.tv_nsec = static_cast<long>(target_ns % 1000000000ull);
+        // Sleep to within ~150 us, then spin for the rest.
+        if (hold_ns > 250000ull) {
+            timespec coarse = target;
+            const uint64_t coarse_ns = target_ns - 150000ull;
+            coarse.tv_sec = static_cast<time_t>(coarse_ns / 1000000000ull);
+            coarse.tv_nsec = static_cast<long>(coarse_ns % 1000000000ull);
+            clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &coarse, nullptr);
+        }
+        for (;;) {
+            clock_gettime(CLOCK_REALTIME, &now);
+            const uint64_t t = static_cast<uint64_t>(now.tv_sec) * 1000000000ull + static_cast<uint64_t>(now.tv_nsec);
+            if (t >= target_ns) {
+                break;
+            }
+        }
+        phase_waits_++;
+        return static_cast<double>(hold_ns) / 1e6;
+    }
+
     bool send_source_release(const FrameDescriptor& desc)
     {
         if (!options_.deferred_source_release) {
@@ -4855,6 +4924,7 @@ private:
             } else {
                 registered = it->second;
             }
+            sample.phase_wait_ms = wait_for_encode_phase(item.desc);
             encoder_->SetNextInputRegisteredResource(registered);
             registered_in_flight_[item.desc.recording_frame_id] = item.desc;
             registered_source_frames_++;
@@ -5417,6 +5487,8 @@ private:
                       << " registered_release_failures=" << registered_release_failures_
                       << " fallback_frames=" << registered_fallback_frames_
                       << " copy_fallback_frames=" << copy_fallback_frames_
+                      << " phase_waits=" << phase_waits_
+                      << " phase_clock_skips=" << phase_clock_skips_
                       << " early_stage_frames=" << early_stage_frames_
                       << " early_stage_exhausted=" << early_stage_exhausted_.load(std::memory_order_relaxed)
                       << " staging_buffers=" << staging_buffers_.size()
@@ -5546,6 +5618,8 @@ private:
     std::unordered_map<uint64_t, size_t> staging_in_flight_;
     uint64_t copy_fallback_frames_ = 0;
     uint64_t early_stage_frames_ = 0;
+    uint64_t phase_waits_ = 0;
+    uint64_t phase_clock_skips_ = 0;
     std::atomic<uint64_t> early_stage_exhausted_{0};
     std::unique_ptr<FFmpegWriter> mp4_writer_;
     std::ofstream bitstream_out_;
