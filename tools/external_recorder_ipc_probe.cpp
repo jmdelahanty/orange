@@ -94,6 +94,14 @@ struct Options {
     // window after the analytics' detect and pose graphs instead of drifting
     // onto them. 0 = off.
     double encode_phase_ms = 0.0;
+    // Split submit/harvest (2026-09-18): on Linux nvEncLockBitstream blocks
+    // until the frame is encoded, so one encode thread that submits and then
+    // locks sits about 11 ms per frame (extra_output_delay 1) and cannot hold
+    // the phase for the next frame. With split_submit the encode thread only
+    // maps and submits (SubmitFrameOnly, returns in ~0.2 ms) and a harvest
+    // thread locks the bitstreams in order, writes the packets and releases
+    // the sources. Direct-source (registered / early-staged) loop only.
+    bool split_submit = false;
     uint32_t fps = 60;
     std::string codec = "hevc";
     std::string preset = "p1";
@@ -238,6 +246,7 @@ void signal_handler(int)
         << "  --prewarm-peer-copy   After first IPC import, copy 1 byte into each shard to warm peer paths.\n"
         << "  --direct-input-source Copy IPC source directly into NVENC input before ACK. Experimental.\n"
         << "  --deferred-source-release Send RELEASE after source consumption; ACK only accepts work. Experimental.\n"
+        << "  --split-submit        Submit on the encode thread, lock bitstreams on a harvest thread (env ORANGE_EXTERNAL_RECORDER_SPLIT_SUBMIT=1). Default off.\n"
         << "  --registered-source   Encode from the NV12-shaped pool buffer registered with NVENC (no copy); implies the two above. Default on since 2026-09-04 (env ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE=0 disables).\n"
         << "  --early-peer-stage    Other-GPU shards copy the pool frame into a staging buffer at descriptor arrival, before the NVENC input wait. Default on since 2026-09-17 (env ORANGE_EXTERNAL_RECORDER_EARLY_PEER_STAGE=0 disables).\n"
         << "  --encode-phase-ms <ms> Local full-frame shard: submit each frame to NVENC no earlier than capture + ms (env ORANGE_EXTERNAL_RECORDER_ENCODE_PHASE_MS). 0 = off.\n"
@@ -427,6 +436,8 @@ Options parse_options(int argc, char** argv)
     if (const char* phase_env = std::getenv("ORANGE_EXTERNAL_RECORDER_ENCODE_PHASE_MS"); phase_env && *phase_env) {
         options.encode_phase_ms = std::atof(phase_env);
     }
+    options.split_submit =
+        env_flag_enabled("ORANGE_EXTERNAL_RECORDER_SPLIT_SUBMIT", false);
     // NVENC pipelining depth. With the default 3 the driver defers its input
     // conversion kernels (Convert_PL2BL) until the engine picks the frame up,
     // about two frames after submission, so the phase lock cannot place them;
@@ -494,6 +505,8 @@ Options parse_options(int argc, char** argv)
             options.early_stage_push = true;
         } else if (arg == "--encode-phase-ms") {
             options.encode_phase_ms = std::atof(consume(arg.c_str()).c_str());
+        } else if (arg == "--split-submit") {
+            options.split_submit = true;
         } else if (arg == "--fps") {
             options.fps = parse_u32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--codec") {
@@ -4729,6 +4742,9 @@ private:
         slot_reuse_wait_samples_.observe(sample.slot_reuse_wait_ms);
         encode_total_samples_.observe(sample.encode_total_ms);
         encode_picture_samples_.observe(sample.encode_picture_ms);
+        if (options_.split_submit) {
+            return;  // the harvest thread observes lock and fetch times
+        }
         lock_bitstream_samples_.observe(sample.lock_bitstream_ms);
         bitstream_fetch_samples_.observe(sample.bitstream_fetch_ms);
     }
@@ -4926,7 +4942,10 @@ private:
             }
             sample.phase_wait_ms = wait_for_encode_phase(item.desc);
             encoder_->SetNextInputRegisteredResource(registered);
-            registered_in_flight_[item.desc.recording_frame_id] = item.desc;
+            {
+                std::lock_guard<std::mutex> lock(registered_mutex_);
+                registered_in_flight_[item.desc.recording_frame_id] = item.desc;
+            }
             registered_source_frames_++;
             sample.prepare_ms = ns_to_ms(elapsed_ns(prepare_start));
         } else if (use_staging) {
@@ -4999,6 +5018,39 @@ private:
         pic_params.inputDuration = 1;
         apply_importance_map(&pic_params);
 
+        if (options_.split_submit) {
+            // Submit only; the harvest thread locks this frame's bitstream
+            // later, pushes the packets and releases the source. The slot
+            // wait below is a no-op on the registered and staged paths (they
+            // waited before choosing the input) and covers the copy fallback.
+            while (!encoder_->WaitForNextInputFrameAvailable(100)) {
+                if (stopping_requested() || failed()) {
+                    frames_dropped_.fetch_add(1, std::memory_order_relaxed);
+                    return;
+                }
+            }
+            NvEncoderEncodeFrameTiming submit_timing;
+            const auto submit_start = std::chrono::steady_clock::now();
+            encoder_->SubmitFrameOnly(&pic_params, &submit_timing);
+            sample.encode_total_ms = ns_to_ms(elapsed_ns(submit_start));
+            sample.encode_picture_ms = ns_to_ms(submit_timing.encode_picture_ns);
+            if (encode_csv_) {
+                write_encode_csv_row(encode_csv_, sample);
+                if ((sample.encode_index % 60) == 0) {
+                    encode_csv_.flush();
+                }
+            }
+            record_encode_sample(sample);
+            write_frame_metadata(item.desc);
+            frames_encoded_.fetch_add(1, std::memory_order_relaxed);
+            {
+                std::lock_guard<std::mutex> lock(harvest_mutex_);
+                harvest_wake_ = true;
+            }
+            harvest_cv_.notify_one();
+            return;
+        }
+
         std::vector<std::vector<uint8_t>> packets;
         std::vector<uint64_t> output_timestamps;
         NvEncoderEncodeFrameTiming timing;
@@ -5049,6 +5101,7 @@ private:
     // so those pool buffers can go back to the acquisition pool now.
     void release_registered_sources(const std::vector<uint64_t>& output_timestamps)
     {
+        std::lock_guard<std::mutex> registered_lock(registered_mutex_);
         if (registered_in_flight_.empty() && staging_in_flight_empty()) {
             return;
         }
@@ -5083,10 +5136,13 @@ private:
 
     void release_all_registered_sources()
     {
-        for (const auto& entry : registered_in_flight_) {
-            (void)send_source_release(entry.second);
+        {
+            std::lock_guard<std::mutex> registered_lock(registered_mutex_);
+            for (const auto& entry : registered_in_flight_) {
+                (void)send_source_release(entry.second);
+            }
+            registered_in_flight_.clear();
         }
-        registered_in_flight_.clear();
         std::lock_guard<std::mutex> lock(staging_mutex_);
         for (const auto& entry : staging_in_flight_) {
             staging_free_.push_back(entry.second);
@@ -5444,8 +5500,93 @@ private:
         finish_frame_metadata();
     }
 
+    // Split harvest (options_.split_submit): drain every bitstream NVENC has
+    // finished (output delay respected), release the sources, push packets.
+    bool harvest_split_packets(bool output_delay)
+    {
+        if (!encoder_) {
+            return false;
+        }
+        std::vector<std::vector<uint8_t>> packets;
+        std::vector<uint64_t> output_timestamps;
+        NvEncoderEncodeFrameTiming timing;
+        uint64_t fetch_ns = 0;
+        encoder_->HarvestEncodedPackets(
+            packets,
+            output_delay,
+            nullptr,
+            &output_timestamps,
+            &fetch_ns,
+            &timing);
+        if (packets.empty()) {
+            return false;
+        }
+        release_registered_sources(output_timestamps);
+        if (merged_output_) {
+            merged_output_->submit_packets(packets, output_timestamps);
+        }
+        for (const auto& packet : packets) {
+            returned_bytes_ += packet.size();
+            push_packet_to_outputs(packet, false);
+        }
+        returned_packets_ += packets.size();
+        split_harvest_calls_++;
+        split_harvest_packets_ += packets.size();
+        lock_bitstream_samples_.observe(ns_to_ms(timing.lock_bitstream_ns));
+        bitstream_fetch_samples_.observe(
+            ns_to_ms(fetch_ns > 0 ? fetch_ns : timing.bitstream_fetch_ns));
+        return true;
+    }
+
+    void run_split_harvest()
+    {
+        try {
+            check_cuda(cudaSetDevice(options_.gpu_id), "cudaSetDevice(split harvest)");
+            for (;;) {
+                {
+                    std::unique_lock<std::mutex> lock(harvest_mutex_);
+                    harvest_cv_.wait(lock, [&]() { return harvest_stop_ || harvest_wake_; });
+                    harvest_wake_ = false;
+                    if (harvest_stop_) {
+                        break;
+                    }
+                }
+                while (harvest_split_packets(true)) {
+                }
+            }
+            while (harvest_split_packets(true)) {
+            }
+        } catch (const std::exception& ex) {
+            failed_.store(true, std::memory_order_release);
+            std::cerr << "external_recorder_ipc_probe split harvest failed: "
+                      << ex.what() << std::endl;
+        }
+    }
+
+    void start_split_harvest()
+    {
+        if (!options_.split_submit || harvest_thread_.joinable()) {
+            return;
+        }
+        harvest_thread_ = std::thread(&ExternalEncodeWorker::run_split_harvest, this);
+    }
+
+    void stop_split_harvest()
+    {
+        if (!harvest_thread_.joinable()) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(harvest_mutex_);
+            harvest_stop_ = true;
+        }
+        harvest_cv_.notify_all();
+        harvest_thread_.join();
+    }
+
     void run_direct_source()
     {
+        start_split_harvest();
         try {
             while (true) {
                 DirectSourceWorkItem item;
@@ -5478,10 +5619,14 @@ private:
                     throw;
                 }
             }
+            stop_split_harvest();
             flush_encoder();
             std::cout << "external_recorder_ipc_probe direct-source encoder complete"
                       << " encoded=" << frames_encoded()
                       << " dropped=" << frames_dropped()
+                      << " split_submit=" << (options_.split_submit ? 1 : 0)
+                      << " split_harvest_calls=" << split_harvest_calls_
+                      << " split_harvest_packets=" << split_harvest_packets_
                       << " registered_frames=" << registered_source_frames_
                       << " registered_releases=" << registered_releases_sent_
                       << " registered_release_failures=" << registered_release_failures_
@@ -5497,6 +5642,7 @@ private:
             failed_.store(true, std::memory_order_release);
             std::cerr << "external_recorder_ipc_probe direct-source encoder failed: "
                       << ex.what() << std::endl;
+            stop_split_harvest();
         }
     }
 
@@ -5595,6 +5741,15 @@ private:
     // frames NVENC still holds, keyed by recording_frame_id (= inputTimeStamp).
     std::unordered_map<const void*, NV_ENC_REGISTERED_PTR> registered_sources_;
     std::unordered_map<uint64_t, FrameDescriptor> registered_in_flight_;
+    std::mutex registered_mutex_;  // registered_in_flight_: submit thread inserts, harvest thread erases
+    // Split submit/harvest thread state (options_.split_submit).
+    std::thread harvest_thread_;
+    std::mutex harvest_mutex_;
+    std::condition_variable harvest_cv_;
+    bool harvest_wake_ = false;
+    bool harvest_stop_ = false;
+    uint64_t split_harvest_calls_ = 0;
+    uint64_t split_harvest_packets_ = 0;
     uint64_t registered_source_frames_ = 0;
     uint64_t registered_releases_sent_ = 0;
     uint64_t registered_release_failures_ = 0;
@@ -5846,6 +6001,8 @@ void write_summary_json(const Options& options,
         << (options.deferred_source_release ? "true" : "false") << ",\n";
     out << "  \"registered_source\": "
         << (options.registered_source ? "true" : "false") << ",\n";
+    out << "  \"split_submit\": "
+        << (options.split_submit ? "true" : "false") << ",\n";
     out << "  \"preserve_shard_mp4s\": "
         << (options.preserve_shard_mp4s ? "true" : "false") << ",\n";
     out << "  \"authoritative_video_output\": {\n";

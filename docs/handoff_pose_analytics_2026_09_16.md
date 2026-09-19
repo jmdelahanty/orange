@@ -1646,3 +1646,45 @@ blocking) and harvest (blocking bitstream lock) threads in the probe /
 NvEncoder wrapper (EncodeFrame = encode + GetEncodedPacket today). Group
 conversion is not possible (driver-internal, per map) and would bunch
 the SM work anyway.
+
+## Addendum 2026-09-18 20:20: split submit/harvest built and measured; the engine cadence is the real limit
+
+Probe option `--split-submit` / env `ORANGE_EXTERNAL_RECORDER_SPLIT_SUBMIT=1`
+/ spec `external_recorder_split_submit` (default off): in the direct-source
+loop the encode thread now maps and submits only (`SubmitFrameOnly`) and a
+harvest thread (`run_split_harvest`, `harvest_split_packets`) locks the
+bitstreams in order, pushes packets, releases the sources
+(`registered_in_flight_` under `registered_mutex_`). Summary JSON gains
+`split_submit`; the completion log line gains `split_harvest_calls` /
+`split_harvest_packets`. Specs `…_int8_192_split_od1` and
+`…_int8_192_split_phase3p2_od1`.
+
+Runs (60 s, four cameras, both recorders, real fish, vs baseline
+`…_int8_192_182758` c2p p95 3.14): split od1 `…_201437`: submit p95 0.09 ms
+(was 11.6 to 12.0 with the joined call), lock p95 11.8 to 12.1 on the harvest
+thread, 2951 local frames encoded and harvested per camera, zero drops;
+c2p p95 3.07 to 3.09, p99 3.10 to 3.29: identical to od1 alone. split +
+phase 3.2 `…_201558`: phase held on 147 of 2950 local frames (5 %, same as
+the joined phase run), c2p p95 3.08 to 3.09.
+
+Why the phase still cannot hold: lock p95 is 11.8 to 12.1 ms in every run,
+i.e. the NVENC engine on a GA107 die takes about 12 ms per 4512² real-content
+frame at p1/ll/150 Mbps, longer than the 10 ms frame period. The local shard
+receives its 25-frame GOP as a burst at 100 fps, so within the burst the
+engine runs back to back, the two input slots (od 1) are both in flight, and
+the submit thread waits for a slot (prepare p95 11.7 to 12.1 ms = the slot
+wait; enqueue age p95 21 to 31 ms). Submission time is therefore set by the
+engine's 12 ms completion cadence, not by capture, and the driver's
+Convert_PL2BL kernels (run at map/submit with od 1, at engine pick-up with
+od 3) walk through the 10 ms capture period with that cadence, landing on
+the detect graph on a fraction of frames. More slots (od 3) free the submit
+thread but move the conversion to engine pick-up, which is the same cadence.
+Phase-locking is closed for this engine speed. The split stays as a
+non-blocking encode thread (default off; no latency effect on its own).
+
+Remaining levers for the local-half term: an input layout NVENC consumes
+without the conversion (prompt `~/nvenc_nv12_input_layout_prompt_2026_09_18.md`),
+or an encoder that finishes a frame in under 10 ms (engine time vs codec,
+bitrate and preset is unmeasured; H.264 or a lower bitrate may be faster),
+or a third engine per camera. One GA107 engine at ~12 ms/frame cannot take a
+whole 100 fps stream, which is why the GOP split exists.
