@@ -1704,3 +1704,44 @@ the nine `fourcam_fused_recorder_realfish_int8_192*` runs (80 GB). The 14
 other `/tmp/orange_external_recorder_*` folders from 2026-09-17/18 were
 left in place and can be deleted. IPC socket paths (`/tmp/orange_external_recorder_<serial>.sock`)
 are unchanged.
+
+## Addendum 2026-09-18 20:55: NVENC engine-speed sweep with real frames (no setting beats 10 ms)
+
+`tools/nvenc_stress_load.cpp --pattern raw-file` on idle die 2, HEVC mono
+4512², two inputs: 32 consecutive decoded frames from
+`external_recorder/…_int8_192_split_od1_20260918_201437/Cam2010096_external.mp4`
+(pitch 4512) and the raw PTP-gated sensor dumps
+`calibration_raw_20260918_fish_preenc/Cam2010096_preenc_ref.bin` (pitch 4608,
+every 10th frame). Output delay 0 = one frame in flight, so encode_total is
+the engine's per-frame latency; output delay 3 paced at 100 fps = pipelined
+throughput. Log: scratchpad `nvenc_sweep.log`. H.264 is out (NVENC H.264
+tops out at 4096 px).
+
+| setting (p1 ll 150M unless noted) | decoded mean / p95 ms | raw mean / p95 ms |
+| --- | --- | --- |
+| production, od 0 | 17.7 / 22.2 | 18.0 / 18.6 |
+| ull tuning | 20.9 / 24.9 | 21.3 / 21.7 |
+| 75 Mbps | 17.3 / 18.3 | 17.6 / 18.0 |
+| 40 Mbps | 17.0 / 17.5 | 17.4 / 17.7 |
+| VBV 15 Mb | 17.6 / 20.2 | 18.0 / 18.9 |
+| p3 | 29.1 / 29.5 | 29.2 / 29.2 |
+| GOP 100 | 17.5 / 19.9 | 17.8 / 18.0 |
+| production, od 3, paced 100 fps | 11.2 / 12.5, 87 fps achieved | 11.5 / 12.1, 85 fps achieved |
+| solid grey, od 0 | 11.8 / 11.5 | |
+
+Reading: a real 4512² frame costs the GA107 engine about 17.5 ms of latency
+and about 11.5 ms of pipelined throughput (85 to 87 fps ceiling; one engine
+cannot carry a 100 fps stream, which is why the GOP split exists). Bitrate
+moves it 2 to 4 %, ull is slower, p3 is 65 % slower, VBV and GOP length do
+nothing; decoded and raw content agree within 2 %. The in-rig lock p95 of
+11.8 to 12.1 ms is the pipelined cadence. Nothing on this engine gets a
+frame under the 10 ms period, so phase-locked submission is closed for good
+on the A16, independent of the thread structure.
+
+Levers still open for the local-half term: (1) a conversion-free input
+layout (prompt handed to another agent); (2) an asymmetric GOP split that
+sends 2 of 3 or 3 of 4 GOPs to the other die, which its engine can absorb
+(85 fps ceiling vs 67 or 75 fps average, burst backlog 7 to 10 frames held
+in staging), cutting the local frames from 1/2 to 1/3 or 1/4 and the tail
+fraction with them, not to zero; (3) a third engine per camera (none spare
+on the A16s; the A6000 has one engine at about the same speed).
