@@ -1688,3 +1688,19 @@ or an encoder that finishes a frame in under 10 ms (engine time vs codec,
 bitrate and preset is unmeasured; H.264 or a lower bitrate may be faster),
 or a third engine per camera. One GA107 engine at ~12 ms/frame cannot take a
 whole 100 fps stream, which is why the GOP split exists.
+
+## Addendum 2026-09-18 20:40: full-frame recordings moved out of /tmp
+
+All 63 recorder specs now put the external recorder's artifact root at
+`/home/jeremy/orange_data/external_recorder/<experiment_id>` (the runner
+still appends the stamp), instead of `/tmp/orange_external_recorder_<id>`.
+The merged full-frame MP4s (`Cam<serial>_external.mp4`, 4512², 100 fps,
+both dies' GOP shards in order), shard encode CSVs, GOP routing and
+summaries land there; crop videos stay in the run folder under
+`exp/unsorted/.../external_crop_recorder/`. Moved on 2026-09-18 (same
+filesystem): the 10-minute early-staging endurance run
+`fourcam_fused_recorder_realfish_earlystage_endurance_20260917_143856` and
+the nine `fourcam_fused_recorder_realfish_int8_192*` runs (80 GB). The 14
+other `/tmp/orange_external_recorder_*` folders from 2026-09-17/18 were
+left in place and can be deleted. IPC socket paths (`/tmp/orange_external_recorder_<serial>.sock`)
+are unchanged.
