@@ -177,6 +177,14 @@ public:
               const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_MAX_AGE_MS");
               return (env && *env) ? std::atof(env) : 8.0;
           }()),
+          owner_push_deadline_ms_([]() {
+              const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_DEADLINE_MS");
+              return (env && *env) ? std::atof(env) : 10.0;
+          }()),
+          owner_push_transfer_allowance_ms_([]() {
+              const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_TRANSFER_ALLOWANCE_MS");
+              return (env && *env) ? std::atof(env) : 3.6;
+          }()),
           owner_push_chunk_bytes_([]() {
               const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_CHUNK_BYTES");
               const long long value = (env && *env) ? std::atoll(env) : 0;
@@ -805,10 +813,11 @@ private:
             timespec now{};
             clock_gettime(CLOCK_REALTIME, &now);
             const uint64_t now_ns = static_cast<uint64_t>(now.tv_sec) * 1000000000ull + static_cast<uint64_t>(now.tv_nsec);
-            if (now_ns > entry->timestamp_sys &&
-                static_cast<double>(now_ns - entry->timestamp_sys) / 1e6 > owner_push_max_age_ms_) {
+            const double age_ms = now_ns > entry->timestamp_sys ? static_cast<double>(now_ns - entry->timestamp_sys) / 1e6 : 0.0;
+            if (age_ms > owner_push_max_age_ms_ ||
+                (owner_push_deadline_ms_ > 0.0 && age_ms + owner_push_transfer_allowance_ms_ > owner_push_deadline_ms_)) {
                 owner_push_age_fallbacks_.fetch_add(1, std::memory_order_relaxed);
-                owner_push_csv_row("too_old", entry, 0, 0, static_cast<double>(now_ns - entry->timestamp_sys) / 1e6, -1, -1);
+                owner_push_csv_row("too_old", entry, 0, 0, age_ms, -1, -1);
                 return -1;
             }
         }
@@ -871,8 +880,9 @@ private:
             timespec now{};
             clock_gettime(CLOCK_REALTIME, &now);
             const uint64_t now_ns = static_cast<uint64_t>(now.tv_sec) * 1000000000ull + static_cast<uint64_t>(now.tv_nsec);
-            if (now_ns > entry->timestamp_sys &&
-                static_cast<double>(now_ns - entry->timestamp_sys) / 1e6 > owner_push_max_age_ms_) {
+            const double age_ms = now_ns > entry->timestamp_sys ? static_cast<double>(now_ns - entry->timestamp_sys) / 1e6 : 0.0;
+            if (age_ms > owner_push_max_age_ms_ ||
+                (owner_push_deadline_ms_ > 0.0 && age_ms + owner_push_transfer_allowance_ms_ > owner_push_deadline_ms_)) {
                 card_lock.unlock();
                 owner_push_age_fallbacks_.fetch_add(1, std::memory_order_relaxed);
                 owner_push_csv_row("too_old_after_card_wait", entry, 0, 0, static_cast<double>(now_ns - entry->timestamp_sys) / 1e6, -1, -1);
@@ -1553,6 +1563,13 @@ private:
     // any stall) starve the camera's RDMA into the same die. Older frames
     // take the recorder's pull path. 0 disables the gate.
     double owner_push_max_age_ms_ = 8.0;
+    // Deadline form of the gate (review, 2026-09-20): push only if the
+    // transfer can finish before the next frame arrives, i.e. age at push
+    // start + a conservative transfer allowance <= period. Defaults: 10 ms
+    // period, 3.6 ms allowance (measured 3.2 mean, 3.9 max), so a push may
+    // start no later than 6.4 ms after capture.
+    double owner_push_deadline_ms_ = 10.0;
+    double owner_push_transfer_allowance_ms_ = 3.6;
     std::atomic<uint64_t> owner_push_age_fallbacks_{0};
     std::ofstream owner_push_csv_;      // Cam<serial>_owner_push.csv in the recording folder (diagnostic)
     std::string owner_push_csv_folder_;
