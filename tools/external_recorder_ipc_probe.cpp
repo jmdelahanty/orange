@@ -42,6 +42,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -106,6 +107,16 @@ struct Options {
     // thread locks the bitstreams in order, writes the packets and releases
     // the sources. Direct-source (registered / early-staged) loop only.
     bool split_submit = false;
+    // Owner push (2026-09-19): the analytics process copies each frame that
+    // routes to a peer-GPU shard into a staging buffer this recorder exported
+    // (STAGE lines at prewarm), and sends the FRAME with staged=<index> once
+    // the copy is complete. The peer shard then never reads the pool buffer:
+    // a peer read of an IPC-imported buffer collapses to ~3 GB/s under load
+    // while a push from the source die holds 6 GB/s (tools/p2p_ipc_pull_bench).
+    // The shard returns slots with STAGEFREE <index>. Full-frame shards only.
+    bool owner_push = false;
+    uint32_t owner_push_slots = 8;
+    size_t shard_count = 1;  // set by make_shard_options; the STAGE line tells the client the routing modulus
     uint32_t fps = 60;
     std::string codec = "hevc";
     std::string preset = "p1";
@@ -167,7 +178,8 @@ struct FrameDescriptor {
     uint64_t timestamp_sys = 0;
     std::string routing_policy = "single_shard";
     std::string handle_hex;
-    bool nv12_pool = false;  // source buffer is Y plane + chroma(128) plane
+    bool nv12_pool = false;
+    int staged_index = -1;  // owner push: frame already copied into this shard staging slot  // source buffer is Y plane + chroma(128) plane
     // Ingress reached its deferred-release cap: copy the frame into a
     // recorder-owned staging buffer and RELEASE the source at once instead
     // of holding the pool entry until NVENC unmaps it.
@@ -251,6 +263,7 @@ void signal_handler(int)
         << "  --direct-input-source Copy IPC source directly into NVENC input before ACK. Experimental.\n"
         << "  --deferred-source-release Send RELEASE after source consumption; ACK only accepts work. Experimental.\n"
         << "  --split-submit        Submit on the encode thread, lock bitstreams on a harvest thread (env ORANGE_EXTERNAL_RECORDER_SPLIT_SUBMIT=1). Default off.\n"
+        << "  --owner-push          Peer-GPU shards export staging slots; the analytics process pushes frames into them (env ORANGE_EXTERNAL_RECORDER_OWNER_PUSH=1, slots ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_SLOTS). Default off.\n"
         << "  --native-local-input  Native NV12 arrays for same-GPU full-frame shards (isolated API13 build only).\n"
         << "  --native-local-kernel-ptx <path> Use PTX surface-write Y updates for native local input (env ORANGE_EXTERNAL_RECORDER_NATIVE_KERNEL_PTX).\n"
         << "  --registered-source   Encode from the NV12-shaped pool buffer registered with NVENC (no copy); implies --direct-input-source and --deferred-source-release. Default on since 2026-09-04 (env ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE=0 disables).\n"
@@ -450,6 +463,11 @@ Options parse_options(int argc, char** argv)
     }
     options.split_submit =
         env_flag_enabled("ORANGE_EXTERNAL_RECORDER_SPLIT_SUBMIT", false);
+    options.owner_push =
+        env_flag_enabled("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH", false);
+    if (const char* slots_env = std::getenv("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_SLOTS"); slots_env && *slots_env) {
+        options.owner_push_slots = static_cast<uint32_t>(std::max(1, std::atoi(slots_env)));
+    }
     // NVENC pipelining depth. With the default 3 the driver defers its input
     // conversion kernels (Convert_PL2BL) until the engine picks the frame up,
     // about two frames after submission, so the phase lock cannot place them;
@@ -523,6 +541,8 @@ Options parse_options(int argc, char** argv)
             options.encode_phase_ms = std::atof(consume(arg.c_str()).c_str());
         } else if (arg == "--split-submit") {
             options.split_submit = true;
+        } else if (arg == "--owner-push") {
+            options.owner_push = true;
         } else if (arg == "--fps") {
             options.fps = parse_u32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--codec") {
@@ -783,6 +803,19 @@ double elapsed_ms(std::chrono::steady_clock::time_point start)
     return static_cast<double>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - start).count()) / 1000000.0;
+}
+
+std::string ipc_handle_to_hex(const cudaIpcMemHandle_t& handle)
+{
+    static const char* digits = "0123456789abcdef";
+    const auto* bytes = reinterpret_cast<const unsigned char*>(&handle);
+    std::string hex;
+    hex.reserve(sizeof(cudaIpcMemHandle_t) * 2);
+    for (size_t i = 0; i < sizeof(cudaIpcMemHandle_t); ++i) {
+        hex.push_back(digits[bytes[i] >> 4]);
+        hex.push_back(digits[bytes[i] & 0x0f]);
+    }
+    return hex;
 }
 
 bool hex_to_ipc_handle(const std::string& hex, cudaIpcMemHandle_t* handle)
@@ -1949,6 +1982,8 @@ bool parse_frame_descriptor(const std::string& line, FrameDescriptor* desc)
             desc->copy_release = true;
         } else if (extra_token.rfind("pool_bytes=", 0) == 0) {
             desc->pool_bytes = std::strtoull(extra_token.c_str() + 11, nullptr, 10);
+        } else if (extra_token.rfind("staged=", 0) == 0) {
+            desc->staged_index = std::atoi(extra_token.c_str() + 7);
         }
     }
     if (desc->stream_id.empty()) {
@@ -3742,6 +3777,7 @@ struct DirectSourceWorkItem {
     bool source_released = false;
     bool source_release_safe = true;
     bool source_copy_pending = false;
+    bool owner_staged = false;  // frame arrived in an exported slot; no pull, no RELEASE, STAGEFREE on retire
 };
 
 class ExternalEncodeWorker {
@@ -4800,7 +4836,23 @@ private:
         // encoder may not exist yet (prewarm in flight); the staging buffer is
         // registered with NVENC by the worker on first use.
         size_t early_staging_index = SIZE_MAX;
+        bool owner_staged = false;
+        if (desc.staged_index >= 0) {
+            // Owner push: the analytics process already copied this frame
+            // into one of the slots exported by export_owner_push_slots().
+            if (desc.source_gpu_id == options_.gpu_id ||
+                owner_slot_indices_.count(static_cast<size_t>(desc.staged_index)) == 0) {
+                throw std::runtime_error(
+                    "owner push: staged frame " + std::to_string(desc.recording_frame_id) +
+                    " routed to shard gpu " + std::to_string(options_.gpu_id) +
+                    " which does not own slot " + std::to_string(desc.staged_index));
+            }
+            early_staging_index = static_cast<size_t>(desc.staged_index);
+            owner_staged = true;
+            owner_staged_frames_.fetch_add(1, std::memory_order_relaxed);
+        }
         const bool stage_early =
+            !owner_staged &&
             options_.early_peer_stage &&
             options_.registered_source &&
             desc.nv12_pool &&
@@ -4899,8 +4951,10 @@ private:
                 imported_ptr,
                 std::chrono::steady_clock::now()};
             item.early_staging_index = early_staging_index;
-            item.source_release_safe = early_staging_index == SIZE_MAX;
-            item.source_copy_pending = early_staging_index != SIZE_MAX;
+            item.owner_staged = owner_staged;
+            item.source_release_safe = early_staging_index == SIZE_MAX || owner_staged;
+            item.source_copy_pending = early_staging_index != SIZE_MAX && !owner_staged;
+            item.source_released = owner_staged;  // the owner released its pool buffer itself
             direct_source_queue_.push_back(item);
             if (sample) {
                 sample->encode_enqueued = true;
@@ -5267,13 +5321,15 @@ private:
             }
             const size_t staging_index = item.early_staging_index;
             const auto copy_wait_start = std::chrono::steady_clock::now();
-            check_cuda(
-                cudaEventSynchronize(staging_events_[staging_index]),
-                "cudaEventSynchronize(external early peer stage)");
+            if (!item.owner_staged) {
+                check_cuda(
+                    cudaEventSynchronize(staging_events_[staging_index]),
+                    "cudaEventSynchronize(external early peer stage)");
+            }
             item.source_copy_pending = false;
             item.source_release_safe = true;
             sample.stage_wait_ms = ns_to_ms(elapsed_ns(copy_wait_start));
-            {
+            if (!item.owner_staged) {
                 float copy_ms = 0.0f;
                 if (cudaEventElapsedTime(
                         &copy_ms,
@@ -5540,7 +5596,9 @@ private:
         }
         std::lock_guard<std::mutex> lock(staging_mutex_);
         for (const auto& entry : staging_in_flight_) {
-            staging_free_.push_back(entry.second);
+            if (owner_slot_indices_.count(entry.second) == 0) {
+                staging_free_.push_back(entry.second);
+            }
         }
         staging_in_flight_.clear();
     }
@@ -5553,20 +5611,105 @@ private:
 
     bool recycle_staged_frame(const uint64_t recording_frame_id)
     {
-        std::lock_guard<std::mutex> lock(staging_mutex_);
-        const auto staged = staging_in_flight_.find(recording_frame_id);
-        if (staged == staging_in_flight_.end()) {
-            return false;
+        size_t index = SIZE_MAX;
+        {
+            std::lock_guard<std::mutex> lock(staging_mutex_);
+            const auto staged = staging_in_flight_.find(recording_frame_id);
+            if (staged == staging_in_flight_.end()) {
+                return false;
+            }
+            index = staged->second;
+            staging_in_flight_.erase(staged);
+            if (owner_slot_indices_.count(index) == 0) {
+                staging_free_.push_back(index);
+                return true;
+            }
         }
-        staging_free_.push_back(staged->second);
-        staging_in_flight_.erase(staged);
+        return_owner_slot(index);
         return true;
     }
 
     void release_staging_buffer(const size_t index)
     {
+        if (owner_slot_indices_.count(index)) {
+            return_owner_slot(index);
+            return;
+        }
         std::lock_guard<std::mutex> lock(staging_mutex_);
         staging_free_.push_back(index);
+    }
+
+    // Owner push: hand a slot back to the analytics process once NVENC has
+    // retired it (the input was unmapped before the bitstream came back).
+    void return_owner_slot(const size_t index)
+    {
+        int fd = -1;
+        std::mutex* write_mutex = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            fd = protocol_fd_;
+            write_mutex = protocol_write_mutex_;
+        }
+        if (fd < 0) {
+            return;
+        }
+        if (write_protocol_line(fd, write_mutex, "STAGEFREE " + std::to_string(index) + "\n")) {
+            stagefree_sent_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    // Owner push: allocate the exported slots on this (peer) shard and tell
+    // the analytics process about them. Runs on the worker thread at prewarm,
+    // after the encoder exists, so the slots are registered like any staging
+    // buffer on first use. Local shards and crop recorders export nothing.
+    void export_owner_push_slots(const FrameDescriptor& desc)
+    {
+        if (!options_.owner_push || owner_slots_exported_ ||
+            options_.stream_kind != "full_frame" ||
+            desc.source_gpu_id < 0 || desc.source_gpu_id == options_.gpu_id ||
+            !desc.nv12_pool) {
+            return;
+        }
+        // Export at the client hello (prewarm), before any frame flows: the
+        // pool buffer is width x height x 3/2 bytes, which the hello carries,
+        // so the analytics imports the slots during warmup instead of
+        // stalling its handoff thread mid-stream (2026-09-19).
+        owner_slots_exported_ = true;
+        int fd = -1;
+        std::mutex* write_mutex = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            fd = protocol_fd_;
+            write_mutex = protocol_write_mutex_;
+        }
+        if (fd < 0) {
+            std::cerr << "external_recorder_ipc_probe owner push: no protocol writer at prewarm; slots not exported" << std::endl;
+            return;
+        }
+        check_cuda(cudaSetDevice(options_.gpu_id), "cudaSetDevice(owner push slots)");
+        const size_t shard_count = std::max<size_t>(1, options_.shard_count);
+        for (uint32_t i = 0; i < options_.owner_push_slots; ++i) {
+            const size_t index = acquire_staging_buffer_locked(desc, /*allow_unregistered=*/true);
+            if (index == SIZE_MAX) {
+                break;
+            }
+            cudaIpcMemHandle_t handle{};
+            check_cuda(cudaIpcGetMemHandle(&handle, staging_buffers_[index]), "cudaIpcGetMemHandle(owner push slot)");
+            owner_slot_indices_.insert(index);
+            const size_t nv12_bytes = desc.pool_bytes > 0
+                ? static_cast<size_t>(desc.pool_bytes)
+                : static_cast<size_t>(desc.width) * static_cast<size_t>(desc.height) * 3 / 2;
+            const std::string line =
+                "STAGE " + std::to_string(options_.shard_id) + " " + std::to_string(shard_count) + " " +
+                std::to_string(options_.gpu_id) + " " + std::to_string(index) + " " +
+                ipc_handle_to_hex(handle) + " " + std::to_string(nv12_bytes) + "\n";
+            if (!write_protocol_line(fd, write_mutex, line)) {
+                throw std::runtime_error("owner push: failed to send STAGE line");
+            }
+        }
+        std::cout << "external_recorder_ipc_probe owner push: exported " << owner_slot_indices_.size()
+                  << " staging slots on gpu " << options_.gpu_id << " (shard " << options_.shard_id
+                  << " of " << shard_count << ")" << std::endl;
     }
 
     // Staging buffers: NV12-shaped buffers on the encode GPU, the same size
@@ -6010,10 +6153,14 @@ private:
                 if (item.prewarm_only) {
                     const auto prewarm_start = std::chrono::steady_clock::now();
                     initialize_encoder(item.desc, /*record_first_desc=*/false);
+                    export_owner_push_slots(item.desc);
                     std::cout << "external_recorder_ipc_probe encoder prewarmed at hello in "
                               << ns_to_ms(elapsed_ns(prewarm_start)) << " ms ("
                               << item.desc.width << "x" << item.desc.height << ")" << std::endl;
                     continue;
+                }
+                if (!owner_slots_exported_) {
+                    export_owner_push_slots(item.desc);
                 }
                 try {
                     encode_one_direct_source(item);
@@ -6032,6 +6179,8 @@ private:
                       << " split_submit=" << (options_.split_submit ? 1 : 0)
                       << " split_harvest_calls=" << split_harvest_calls_
                       << " split_harvest_packets=" << split_harvest_packets_
+                      << " owner_staged_frames=" << owner_staged_frames_.load(std::memory_order_relaxed)
+                      << " stagefree_sent=" << stagefree_sent_.load(std::memory_order_relaxed)
                       << " native_frames=" << native_frames_
                       << " native_update="
                       << (native_local_enabled_
@@ -6170,6 +6319,11 @@ private:
     bool harvest_stop_ = false;
     uint64_t split_harvest_calls_ = 0;
     uint64_t split_harvest_packets_ = 0;
+    // Owner push slot bookkeeping (see export_owner_push_slots).
+    std::unordered_set<size_t> owner_slot_indices_;
+    bool owner_slots_exported_ = false;
+    std::atomic<uint64_t> owner_staged_frames_{0};
+    std::atomic<uint64_t> stagefree_sent_{0};
     uint64_t registered_source_frames_ = 0;
     uint64_t registered_releases_sent_ = 0;
     uint64_t registered_release_failures_ = 0;
@@ -6281,6 +6435,7 @@ Options make_shard_options(const Options& base,
     Options out = base;
     out.gpu_id = gpu_id;
     out.shard_id = static_cast<int>(shard_index);
+    out.shard_count = shard_count;
     if (shard_count > 1) {
         out.routing_policy = "gop_modulo";
         const std::string suffix = shard_suffix(shard_index, gpu_id);
@@ -7535,7 +7690,7 @@ int main(int argc, char** argv)
                     "ACK " + std::to_string(desc.recording_frame_id) + " " +
                         std::to_string(desc.assigned_gpu_id) + " " +
                         std::to_string(desc.assigned_shard_id) +
-                        (options.deferred_source_release ? " deferred_release" : "") +
+                        (options.deferred_source_release && desc.staged_index < 0 ? " deferred_release" : "") +
                         "\n")) {
                 mark_intake_end("ack_write_failed", false);
                 break;
@@ -7543,7 +7698,7 @@ int main(int argc, char** argv)
             if (release_deferred_by_worker && target_encode_worker) {
                 target_encode_worker->notify_deferred_ack_sent(desc.recording_frame_id);
             }
-            if (options.deferred_source_release && !release_deferred_by_worker) {
+            if (options.deferred_source_release && !release_deferred_by_worker && desc.staged_index < 0) {
                 if (!write_protocol_line(
                         client_fd,
                         &protocol_write_mutex,

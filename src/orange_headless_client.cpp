@@ -273,6 +273,8 @@ struct ExperimentSpec {
     bool external_recorder_early_stage_push = false;  // ORANGE_EXTERNAL_RECORDER_EARLY_STAGE_PUSH (early staging copy issued from the source die)
     double external_recorder_encode_phase_ms = 0.0;   // ORANGE_EXTERNAL_RECORDER_ENCODE_PHASE_MS (local full-frame shard submits at capture + ms)
     bool external_recorder_split_submit = false;      // ORANGE_EXTERNAL_RECORDER_SPLIT_SUBMIT (encode thread submits only; harvest thread locks bitstreams)
+    bool external_recorder_owner_push = false;  // ORANGE_EXTERNAL_RECORDER_OWNER_PUSH (analytics pushes peer-shard frames into recorder-exported slots)
+    long long external_recorder_owner_push_chunk_bytes = 0;  // ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_CHUNK_BYTES (0: client default 2 MB)
     bool external_recorder_native_local_input = false;  // full-frame recorders get --native-local-input (CUDA 13 recorder build; contract recorder_tool_path must point at it)
     std::string external_recorder_native_kernel_ptx;    // optional --native-local-kernel-ptx path
     int external_recorder_extra_output_delay = -1;    // ORANGE_EXTERNAL_RECORDER_EXTRA_OUTPUT_DELAY (-1: probe default 3)
@@ -8160,6 +8162,10 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         fixed.value("external_recorder_encode_phase_ms", 0.0);
     spec->external_recorder_split_submit =
         fixed.value("external_recorder_split_submit", false);
+    spec->external_recorder_owner_push =
+        fixed.value("external_recorder_owner_push", false);
+    spec->external_recorder_owner_push_chunk_bytes =
+        fixed.value("external_recorder_owner_push_chunk_bytes", 0LL);
     spec->external_recorder_native_local_input =
         fixed.value("external_recorder_native_local_input", false);
     spec->external_recorder_native_kernel_ptx =
@@ -8860,6 +8866,8 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                  spec.external_recorder_encode_phase_ms},
                                                                 {"external_recorder_split_submit",
                                                                  spec.external_recorder_split_submit},
+                                                                {"external_recorder_owner_push",
+                                                                 spec.external_recorder_owner_push},
                                                                 {"external_recorder_native_local_input",
                                                                  spec.external_recorder_native_local_input},
                                                                 {"external_recorder_native_kernel_ptx",
@@ -11518,6 +11526,12 @@ int run_local_experiment(const HeadlessCliOptions& options)
            spec.external_recorder_split_submit ? "1" : "0", 1);
     // Client-internal names: the recorder's own ORANGE_EXTERNAL_RECORDER_NATIVE_*
     // env would also reach the crop recorders, which reject native input.
+    setenv("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH",
+           spec.external_recorder_owner_push ? "1" : "0", 1);
+    if (spec.external_recorder_owner_push_chunk_bytes > 0) {
+        setenv("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_CHUNK_BYTES",
+               std::to_string(spec.external_recorder_owner_push_chunk_bytes).c_str(), 1);
+    }
     setenv("ORANGE_HEADLESS_NATIVE_LOCAL_INPUT",
            spec.external_recorder_native_local_input ? "1" : "0", 1);
     setenv("ORANGE_HEADLESS_NATIVE_KERNEL_PTX",
