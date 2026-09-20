@@ -281,6 +281,7 @@ struct ExperimentSpec {
     std::string external_recorder_native_kernel_ptx;    // optional --native-local-kernel-ptx path
     int external_recorder_extra_output_delay = -1;    // ORANGE_EXTERNAL_RECORDER_EXTRA_OUTPUT_DELAY (-1: probe default 3); reaches crop recorders too
     int external_recorder_full_frame_extra_output_delay = -1;  // --extra-output-delay argv on full_frame recorders only (-1: off)
+    int external_recorder_owner_push_slots = 0;       // ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_SLOTS (0: recorder default 8); must exceed the peer shard's encoder buffers
     int external_recorder_max_deferred = -1;  // ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED (-1: ingress default)
     std::string recording_sink_mode = "real";
     bool helper_noop_source_read = false;
@@ -8179,6 +8180,8 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         fixed.value("external_recorder_extra_output_delay", -1);
     spec->external_recorder_full_frame_extra_output_delay =
         fixed.value("external_recorder_full_frame_extra_output_delay", -1);
+    spec->external_recorder_owner_push_slots =
+        fixed.value("external_recorder_owner_push_slots", 0);
     spec->external_recorder_max_deferred =
         fixed.value("external_recorder_max_deferred", -1);
     spec->recording_sink_mode = fixed.value("recording_sink_mode", "real");
@@ -8881,6 +8884,8 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                  spec.external_recorder_native_kernel_ptx},
                                                                 {"external_recorder_full_frame_extra_output_delay",
                                                                  spec.external_recorder_full_frame_extra_output_delay},
+                                                                {"external_recorder_owner_push_slots",
+                                                                 spec.external_recorder_owner_push_slots},
                                                                 {"recording_sink_mode", spec.recording_sink_mode},
                                                                 {"helper_noop_source_read",
                                                                  spec.helper_noop_source_read},
@@ -11553,6 +11558,10 @@ int run_local_experiment(const HeadlessCliOptions& options)
            spec.external_recorder_native_kernel_ptx.c_str(), 1);
     setenv("ORANGE_HEADLESS_FULL_FRAME_EXTRA_OUTPUT_DELAY",
            std::to_string(spec.external_recorder_full_frame_extra_output_delay).c_str(), 1);
+    if (spec.external_recorder_owner_push_slots > 0) {
+        setenv("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_SLOTS",
+               std::to_string(spec.external_recorder_owner_push_slots).c_str(), 1);
+    }
     if (spec.external_recorder_extra_output_delay >= 0) {
         setenv("ORANGE_EXTERNAL_RECORDER_EXTRA_OUTPUT_DELAY",
                std::to_string(spec.external_recorder_extra_output_delay).c_str(), 1);
