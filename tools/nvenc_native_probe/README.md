@@ -50,15 +50,68 @@ result therefore documents observed driver behavior rather than resolving
 that generic wording for every format or driver. `--native-storage-width` and
 `--native-register-pitch` keep both values directly testable.
 
-The matched linear control uses `cuMemAllocPitch` with the same arguments as
-`NvEncoderCuda::AllocateInputBuffers` and registers CUDA's returned pitch. On
-this system the returned pitch is 4608 bytes. An earlier packed `cuMemAlloc`
-control used the nominally legal 4512-byte pitch and produced packets, but its
-decoded raster was invalid: NVENC emitted all even source rows followed by all
-odd source rows (normal-order frame-0 MAE about 82.87; MAE about 0.377 after
-that exact field reordering). CUDA's API does not document 4512 as illegal, so
-the working 4608 linear pitch is also recorded as empirical behavior of this
-driver/encode path. Packet output alone is not a sufficient control.
+The original matched linear control uses `cuMemAllocPitch` with the same
+arguments as `NvEncoderCuda::AllocateInputBuffers`; its returned pitch is 4608
+bytes on this system. An early packed control produced a field-reordered image,
+but that control was malformed. The corrected progressive packed-registration
+control at pitch 4512 passes exact-source decoded-image checks and produces the
+same encoded bytes as the pitched and native-array controls. Do not interpret
+the earlier failure as a restriction against tightly packed linear input.
+Packet output alone is not a sufficient correctness check.
+
+## Live-like cached-source comparison
+
+`--update registered-source` adds a linear-only control for the external
+recorder shape. Every cached source is a complete device NV12 buffer: source Y
+comes from the generated pattern or raw record and UV is initialized to 128.
+The buffers are registered once with NVENC and selected directly in stable
+`frame_index % source_count` order; there is no per-frame CUDA copy. The cache
+must contain at least as many sources as the encoder has in-flight buffers.
+
+The corresponding native case is `--input native-array --update per-frame`.
+It selects sources in the same order, copies only visible Y into a retired
+reusable native array, and keeps that array's UV plane at 128. Do not use the
+native `prefilled` mode as a camera-like comparison: it binds content to
+encoder slots rather than presenting a new source for every submitted frame.
+
+Cached NV12 allocations support `--source-layout pitched` (the default,
+`cuMemAllocPitch`) and `--source-layout packed` (`cuMemAlloc` with pitch equal
+to visible width). The packed option models the current tight-pitch IPC pool
+and is a correctness discriminator; the CUDA API does not document that layout
+as invalid. Decode and compare each variant before interpreting timings. Raw
+records still use `--raw-pitch` and `--raw-frame-bytes` to extract Y; cached
+device UV is deliberately neutral for the monochrome comparison.
+
+`--pacing split-gop` submits one GOP at the configured active rate, skips
+`--split-gop-idle-frames` frame periods, and repeats. With the defaults below,
+each local shard receives 25 frames at 100 fps followed by 25 idle periods,
+for an average 50 submitted frames/s. Source order remains contiguous across
+the idle interval. `timeline_frame_index` and NVENC input timestamps include
+the skipped periods.
+
+Example real-frame pair using 25 cached sources and two warmup bursts:
+
+```bash
+COMMON="--gpu-id 1 --fps 100 --frames 250 --warmup-frames 50 \
+  --source-frames 25 --source-layout packed --extra-output-delay 3 \
+  --pacing split-gop --split-gop-idle-frames 25 \
+  --raw-file /home/jeremy/orange_data/model_sources/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/calibration_raw_20260918_fish_preenc/Cam2010096_preenc_ref.bin \
+  --raw-pitch 4608 --raw-frame-bytes 31186944"
+
+/tmp/build-nvenc-native-probe/nvenc_native_nv12_probe $COMMON \
+  --input linear --update registered-source \
+  --bitstream-out /tmp/registered-source.hevc --csv /tmp/registered-source.csv
+
+/tmp/build-nvenc-native-probe/nvenc_native_nv12_probe $COMMON \
+  --input native-array --update per-frame \
+  --bitstream-out /tmp/native-array-updated.hevc --csv /tmp/native-array-updated.csv
+```
+
+The CSV retains the existing warmup/measure phase and operation durations, and
+adds source layout, actual cached-source pitch, submitted NVENC input pitch,
+pacing mode, logical timeline frame, burst and in-burst indices, skipped
+periods before a burst, absolute steady-clock timestamps for
+schedule/input-ready/copy/encode/frame completion, and schedule lateness.
 
 Use NVIDIA's official standalone interface archive, not the checkout's older
 API 11.1 header:
@@ -73,7 +126,7 @@ Build into a separate directory:
 ```bash
 unzip -q /tmp/Video_Codec_Interface_13.1.15.zip -d /tmp/nvenc-interface-13.1.15
 cmake -S tools/nvenc_native_probe -B /tmp/build-nvenc-native-probe \
-  -DORANGE_SOURCE_ROOT=/home/jeremy/orange-nvenc-layout-20260918 \
+  -DORANGE_SOURCE_ROOT=/home/jeremy/orange-nvenc-native-integration-20260919 \
   -DCUDA_13_ROOT=/home/jeremy/.local/opt/cuda-13.1.1-nvenc \
   -DNVENC_13_INTERFACE_DIR=/tmp/nvenc-interface-13.1.15/Video_Codec_Interface_13.1.15/Interface
 cmake --build /tmp/build-nvenc-native-probe -j
@@ -159,3 +212,66 @@ activities, CUDA API activity through resource teardown, and no import or
 profiling errors. An earlier Nsight Systems 2023 attempt reported an unknown
 CUDA driver API and `TargetProfilingFailed`; any zero-count result from that
 older artifact is invalid.
+
+## Optional external-recorder integration
+
+The camera-free integration tools and build recipe are documented in
+[`docs/nvenc_native_integration_20260919.md`](../../docs/nvenc_native_integration_20260919.md).
+The separate CMake switches `BUILD_NATIVE_RECORDER`, `BUILD_CONTENTION_TOOLS`,
+and `BUILD_LEGACY_RECORDER_CONTROL` keep this work outside Orange's main build.
+
+- `external_recorder_ipc_probe_native` uses isolated CUDA 13.1 and the pinned
+  NVENC 13.1 interface. Native arrays are opt-in with `--native-local-input`.
+- `external_recorder_ipc_probe_legacy` checks the same recorder source against
+  the existing CUDA 12.2/NVENC headers and rejects the native option.
+- `trt_contention_probe` runs a required CUDA graph on the production CUDA 12.2
+  and TensorRT installation. Input stays zero; it measures contention only.
+- `ipc_replay_probe` exports a bounded CUDA 12.2 NV12-shaped pool with real
+  cached luma, and verifies the recorder's ACK/RELEASE ownership protocol.
+- `run_contention_comparison.py` interleaves three inference conditions in
+  three orders, preserves commands/provenance, and uses actual time overlap.
+- `run_ipc_replay_validation.py` exercises native off/on, same/split GPU,
+  and submit/harvest off/on. `validate_ipc_replay_content.py` fully decodes each
+  video and compares selected frames with their exact raw sources.
+
+Use `python3 SCRIPT --help` for required paths. The content validator requires
+NumPy; the orchestration runners use only the Python standard library.
+
+## Experimental native surface-write kernel
+
+Configure `-DBUILD_NATIVE_KERNEL=ON` to build `native_nv12_write.ptx` with the
+isolated CUDA compiler. Add these flags to the native-array per-frame probe:
+
+```bash
+--native-update kernel \
+--native-kernel-ptx /tmp/build-nvenc-native-integration/native_nv12_write.ptx
+```
+
+The default remains `--native-update copy`. Kernel mode writes visible Y with
+vectorized surface stores and preserves neutral UV; it still moves the pixels
+and consumes SM resources. The original `copy_*` CSV columns are retained as
+compatibility aliases, and `native_update` plus generic `update_*` columns
+identify and time the selected operation. The external recorder's native backend also supports this experimental kernel
+with `--native-local-input --native-local-kernel-ptx PATH` (or
+`ORANGE_EXTERNAL_RECORDER_NATIVE_LOCAL_INPUT=1` and
+`ORANGE_EXTERNAL_RECORDER_NATIVE_KERNEL_PTX=PATH`). The copy remains its default.
+The kernel and arrays stay inside the external recorder process. Source RELEASE
+waits for the selected operation to finish, and summaries distinguish `copy`
+from `kernel`. The option applies only to validated local full-frame shards;
+peer shards retain linear staging. Do not enable it globally for crop recorders.
+
+The contention runner can add a fourth condition with
+`--include-native-kernel --native-kernel-ptx PATH`. For matched encoder/inference
+phasing across the three repetitions, use
+`--phase-offsets-ms 0,3.333333,6.666667`. It assigns future absolute monotonic
+starts, keeps TensorRT warmup immediately before measurement, and records the
+derived epochs in each run's artifacts. Without that option the original
+naturally phased comparison is retained. The NVENC probe's optional
+`--start-at-monotonic-ns T` refers to its first frame, including warmup; the
+TensorRT probe's corresponding option refers to its first measured iteration.
+
+The IPC replay matrix accepts `--native-kernel-ptx PATH` to replace its four
+native-copy cases with native-kernel cases while retaining all four linear
+controls. It records PTX provenance, explicitly clears inherited kernel settings
+for linear/default-copy cases, and checks the resolved update and RELEASE
+boundary in addition to frame ownership, packets, metadata, and decoded pixels.

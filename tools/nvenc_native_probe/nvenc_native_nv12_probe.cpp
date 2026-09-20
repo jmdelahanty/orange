@@ -43,6 +43,22 @@ enum class InputKind {
 enum class UpdateMode {
     Prefilled,
     PerFrame,
+    RegisteredSource,
+};
+
+enum class PacingMode {
+    Continuous,
+    SplitGop,
+};
+
+enum class SourceLayout {
+    Pitched,
+    Packed,
+};
+
+enum class NativeUpdate {
+    Copy,
+    Kernel,
 };
 
 struct Options {
@@ -52,9 +68,13 @@ struct Options {
     uint32_t native_storage_width = 0;
     uint32_t native_register_pitch = 0;
     uint32_t fps = 100;
+    uint64_t start_at_monotonic_ns = 0;
+    PacingMode pacing = PacingMode::Continuous;
+    uint32_t split_gop_idle_frames = 0;
     uint64_t frames = 300;
     uint64_t warmup_frames = 50;
     uint32_t source_frames = 4;
+    SourceLayout source_layout = SourceLayout::Pitched;
     uint32_t extra_output_delay = 0;
     uint32_t gop = 25;
     uint32_t bitrate_bps = 150000000;
@@ -64,6 +84,8 @@ struct Options {
     bool monochrome = true;
     InputKind input = InputKind::NativeArray;
     UpdateMode update = UpdateMode::Prefilled;
+    NativeUpdate native_update = NativeUpdate::Copy;
+    std::string native_kernel_ptx;
     std::string raw_file;
     uint32_t raw_pitch = 0;
     uint64_t raw_frame_bytes = 0;
@@ -76,6 +98,7 @@ struct Options {
 struct DeviceSource {
     CUdeviceptr pointer = 0;
     size_t pitch = 0;
+    NV_ENC_REGISTERED_PTR registered = nullptr;
 };
 
 struct InputSurface {
@@ -85,6 +108,7 @@ struct InputSurface {
     CUarray array = nullptr;
     CUarray y_plane = nullptr;
     CUarray uv_plane = nullptr;
+    CUsurfObject y_surface = 0;
     NV_ENC_REGISTERED_PTR registered = nullptr;
 };
 
@@ -92,9 +116,11 @@ struct FrameSample {
     uint64_t frame_index = 0;
     uint32_t slot = 0;
     uint32_t source = 0;
+    uint32_t source_pitch = 0;
+    uint32_t input_pitch = 0;
     bool measured = false;
-    double copy_wall_ms = 0.0;
-    double copy_gpu_ms = 0.0;
+    double update_wall_ms = 0.0;
+    double update_gpu_ms = 0.0;
     double encode_wall_ms = 0.0;
     double map_ms = 0.0;
     double encode_picture_ms = 0.0;
@@ -105,6 +131,19 @@ struct FrameSample {
     double unmap_ms = 0.0;
     uint32_t returned_packets = 0;
     uint64_t returned_bytes = 0;
+    uint64_t timeline_frame_index = 0;
+    uint64_t burst_index = 0;
+    uint32_t frame_in_burst = 0;
+    uint32_t idle_periods_before = 0;
+    uint64_t scheduled_steady_ns = 0;
+    uint64_t loop_start_steady_ns = 0;
+    uint64_t input_ready_steady_ns = 0;
+    uint64_t update_start_steady_ns = 0;
+    uint64_t update_end_steady_ns = 0;
+    uint64_t encode_start_steady_ns = 0;
+    uint64_t encode_end_steady_ns = 0;
+    uint64_t frame_done_steady_ns = 0;
+    double schedule_lateness_ms = 0.0;
 };
 
 void signal_handler(int)
@@ -129,7 +168,44 @@ const char* input_name(InputKind input)
 
 const char* update_name(UpdateMode update)
 {
-    return update == UpdateMode::PerFrame ? "per-frame" : "prefilled";
+    if (update == UpdateMode::PerFrame) {
+        return "per-frame";
+    }
+    if (update == UpdateMode::RegisteredSource) {
+        return "registered-source";
+    }
+    return "prefilled";
+}
+
+const char* pacing_name(PacingMode pacing)
+{
+    return pacing == PacingMode::SplitGop ? "split-gop" : "continuous";
+}
+
+const char* source_layout_name(SourceLayout layout)
+{
+    return layout == SourceLayout::Packed ? "packed" : "pitched";
+}
+
+const char* native_update_name(NativeUpdate update)
+{
+    return update == NativeUpdate::Kernel ? "kernel" : "copy";
+}
+
+uint64_t steady_ns(Clock::time_point time)
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count());
+}
+
+uint64_t scheduled_timeline_frame(const Options& options, uint64_t submitted_frame)
+{
+    if (options.pacing != PacingMode::SplitGop) {
+        return submitted_frame;
+    }
+    const uint64_t burst = submitted_frame / options.gop;
+    const uint64_t in_burst = submitted_frame % options.gop;
+    return burst * (static_cast<uint64_t>(options.gop) + options.split_gop_idle_frames) + in_burst;
 }
 
 void check_cu(CUresult status, const char* call)
@@ -181,19 +257,25 @@ int parse_nonnegative_int(const std::string& value, const char* option)
 {
     std::ostream& out = exit_code == 0 ? std::cout : std::cerr;
     out
-        << "Usage: " << argv0 << " --input <linear|native-array> --update <prefilled|per-frame> [options]\n\n"
+        << "Usage: " << argv0 << " --input <linear|native-array> --update <prefilled|per-frame|registered-source> [options]\n\n"
         << "Matched comparison defaults: HEVC, P1, low latency, VBR 150 Mbps, GOP 25,\n"
         << "AQ off, temporal AQ off, lookahead off, 4512x4512 at 100 fps.\n\n"
         << "  --gpu-id <n>                 CUDA device ordinal (default 0)\n"
         << "  --input <kind>               linear or native-array (default native-array)\n"
-        << "  --update <mode>              prefilled or per-frame (default prefilled)\n"
+        << "  --update <mode>              prefilled, per-frame, or registered-source (default prefilled)\n"
         << "  --width <n> --height <n>     Frame dimensions (default 4512x4512)\n"
         << "  --native-storage-width <n>  Native array allocation/row pitch (default width aligned to 128)\n"
         << "  --native-register-pitch <n> NVENC CUDAARRAY registration pitch (default storage width)\n"
         << "  --fps <n>                    Encode and pacing rate (default 100)\n"
+        << "  --start-at-monotonic-ns <n> First frame CLOCK_MONOTONIC deadline (default 0=current behavior)\n"
+        << "  --pacing <mode>              continuous or split-gop (default continuous)\n"
+        << "  --split-gop-idle-frames <n> Missing frame periods after each GOP (default gop length)\n"
         << "  --frames <n>                 Total submitted frames (default 300)\n"
         << "  --warmup-frames <n>          Rows excluded from summary (default 50)\n"
         << "  --source-frames <n>          Cached patterned/raw Mono8 frames (default 4)\n"
+        << "  --source-layout <layout>    Cached NV12 allocation: pitched or packed (default pitched)\n"
+        << "  --native-update <mode>      Native per-frame Y update: copy or kernel (default copy)\n"
+        << "  --native-kernel-ptx <path>  PTX containing orange_native_nv12_write_luma (kernel mode)\n"
         << "  --extra-output-delay <n>     NvEncoder output delay (default 0)\n"
         << "  --raw-file <path>            Optional cached Mono8/raw source sequence\n"
         << "  --raw-pitch <n>              Raw Y row pitch (default width)\n"
@@ -248,8 +330,10 @@ Options parse_options(int argc, char** argv)
                 options.update = UpdateMode::Prefilled;
             } else if (value == "per-frame") {
                 options.update = UpdateMode::PerFrame;
+            } else if (value == "registered-source") {
+                options.update = UpdateMode::RegisteredSource;
             } else {
-                throw std::runtime_error("--update must be prefilled or per-frame");
+                throw std::runtime_error("--update must be prefilled, per-frame, or registered-source");
             }
         } else if (argument == "--width") {
             options.width = parse_u32(consume(argument.c_str()), argument.c_str());
@@ -261,12 +345,45 @@ Options parse_options(int argc, char** argv)
             options.native_register_pitch = parse_u32(consume(argument.c_str()), argument.c_str());
         } else if (argument == "--fps") {
             options.fps = parse_u32(consume(argument.c_str()), argument.c_str());
+        } else if (argument == "--start-at-monotonic-ns") {
+            options.start_at_monotonic_ns = parse_u64(consume(argument.c_str()), argument.c_str());
+        } else if (argument == "--pacing") {
+            const std::string value = consume(argument.c_str());
+            if (value == "continuous") {
+                options.pacing = PacingMode::Continuous;
+            } else if (value == "split-gop") {
+                options.pacing = PacingMode::SplitGop;
+            } else {
+                throw std::runtime_error("--pacing must be continuous or split-gop");
+            }
+        } else if (argument == "--split-gop-idle-frames") {
+            options.split_gop_idle_frames = parse_u32(consume(argument.c_str()), argument.c_str());
         } else if (argument == "--frames") {
             options.frames = parse_u64(consume(argument.c_str()), argument.c_str());
         } else if (argument == "--warmup-frames") {
             options.warmup_frames = parse_u64(consume(argument.c_str()), argument.c_str());
         } else if (argument == "--source-frames") {
             options.source_frames = parse_u32(consume(argument.c_str()), argument.c_str());
+        } else if (argument == "--source-layout") {
+            const std::string value = consume(argument.c_str());
+            if (value == "pitched") {
+                options.source_layout = SourceLayout::Pitched;
+            } else if (value == "packed") {
+                options.source_layout = SourceLayout::Packed;
+            } else {
+                throw std::runtime_error("--source-layout must be pitched or packed");
+            }
+        } else if (argument == "--native-update") {
+            const std::string value = consume(argument.c_str());
+            if (value == "copy") {
+                options.native_update = NativeUpdate::Copy;
+            } else if (value == "kernel") {
+                options.native_update = NativeUpdate::Kernel;
+            } else {
+                throw std::runtime_error("--native-update must be copy or kernel");
+            }
+        } else if (argument == "--native-kernel-ptx") {
+            options.native_kernel_ptx = consume(argument.c_str());
         } else if (argument == "--extra-output-delay") {
             options.extra_output_delay = parse_u32(consume(argument.c_str()), argument.c_str());
         } else if (argument == "--raw-file") {
@@ -318,6 +435,28 @@ Options parse_options(int argc, char** argv)
     }
     if (options.pace && options.fps == 0) {
         throw std::runtime_error("--fps must be positive unless --no-pace is used");
+    }
+    if (options.start_at_monotonic_ns >
+        static_cast<uint64_t>(std::numeric_limits<std::chrono::nanoseconds::rep>::max())) {
+        throw std::runtime_error("--start-at-monotonic-ns exceeds the steady-clock range");
+    }
+    if (options.gop == 0) {
+        throw std::runtime_error("GOP length must be positive");
+    }
+    if (options.split_gop_idle_frames == 0) {
+        options.split_gop_idle_frames = options.gop;
+    }
+    if (options.update == UpdateMode::RegisteredSource && options.input != InputKind::Linear) {
+        throw std::runtime_error("--update registered-source requires --input linear");
+    }
+    if (options.native_update == NativeUpdate::Kernel) {
+        if (options.input != InputKind::NativeArray || options.update != UpdateMode::PerFrame) {
+            throw std::runtime_error(
+                "--native-update kernel requires --input native-array --update per-frame");
+        }
+        if (options.native_kernel_ptx.empty()) {
+            throw std::runtime_error("--native-update kernel requires --native-kernel-ptx");
+        }
     }
     if (options.extra_output_delay > 64) {
         throw std::runtime_error("--extra-output-delay must be <= 64");
@@ -425,9 +564,23 @@ std::vector<DeviceSource> make_sources(const Options& options)
         }
 
         DeviceSource source;
-        check_cu(
-            cuMemAllocPitch(&source.pointer, &source.pitch, options.width, options.height, 16),
-            "cuMemAllocPitch(source Y)");
+        if (options.source_layout == SourceLayout::Pitched) {
+            check_cu(
+                cuMemAllocPitch(
+                    &source.pointer,
+                    &source.pitch,
+                    options.width,
+                    options.height * 3 / 2,
+                    16),
+                "cuMemAllocPitch(source NV12)");
+        } else {
+            source.pitch = options.width;
+            check_cu(
+                cuMemAlloc(
+                    &source.pointer,
+                    source.pitch * options.height * 3 / 2),
+                "cuMemAlloc(packed source NV12)");
+        }
         CUDA_MEMCPY2D copy = {};
         copy.srcMemoryType = CU_MEMORYTYPE_HOST;
         copy.srcHost = host->data();
@@ -438,6 +591,14 @@ std::vector<DeviceSource> make_sources(const Options& options)
         copy.WidthInBytes = options.width;
         copy.Height = options.height;
         check_cu(cuMemcpy2D(&copy), "cuMemcpy2D(source Y upload)");
+        check_cu(
+            cuMemsetD2D8(
+                source.pointer + source.pitch * options.height,
+                source.pitch,
+                128,
+                options.width,
+                options.height / 2),
+            "cuMemsetD2D8(source UV)");
         sources.push_back(source);
     }
     return sources;
@@ -495,6 +656,14 @@ void create_surface(const Options& options, InputSurface& surface)
     check_cu(cuArray3DCreate(&surface.array, &descriptor), "cuArray3DCreate(native NV12)");
     check_cu(cuArrayGetPlane(&surface.y_plane, surface.array, 0), "cuArrayGetPlane(Y)");
     check_cu(cuArrayGetPlane(&surface.uv_plane, surface.array, 1), "cuArrayGetPlane(UV)");
+    if (options.native_update == NativeUpdate::Kernel) {
+        CUDA_RESOURCE_DESC resource = {};
+        resource.resType = CU_RESOURCE_TYPE_ARRAY;
+        resource.res.array.hArray = surface.y_plane;
+        check_cu(
+            cuSurfObjectCreate(&surface.y_surface, &resource),
+            "cuSurfObjectCreate(native Y)");
+    }
     // Current FFmpeg CUARRAY registration uses the first plane's byte width,
     // not parent Width * NumChannels, for multi-planar video arrays.
     surface.pitch = options.native_storage_width;
@@ -537,34 +706,82 @@ void describe_native_surface(const InputSurface& surface)
         << std::endl;
 }
 
-std::pair<double, double> copy_luma_timed(
+CUfunction load_native_update_kernel(const Options& options, CUmodule& module)
+{
+    if (options.native_update != NativeUpdate::Kernel) {
+        return nullptr;
+    }
+    check_cu(
+        cuModuleLoad(&module, options.native_kernel_ptx.c_str()),
+        "cuModuleLoad(native update PTX)");
+    CUfunction function = nullptr;
+    check_cu(
+        cuModuleGetFunction(&function, module, "orange_native_nv12_write_luma"),
+        "cuModuleGetFunction(orange_native_nv12_write_luma)");
+    return function;
+}
+
+std::pair<double, double> update_luma_timed(
     const Options& options,
     const DeviceSource& source,
     InputSurface& destination,
+    CUfunction native_kernel,
     CUstream stream,
     CUevent start_event,
     CUevent stop_event)
 {
     const auto wall_start = Clock::now();
-    check_cu(cuEventRecord(start_event, stream), "cuEventRecord(copy start)");
+    check_cu(cuEventRecord(start_event, stream), "cuEventRecord(update start)");
 
-    CUDA_MEMCPY2D copy = {};
-    copy.srcMemoryType = CU_MEMORYTYPE_DEVICE;
-    copy.srcDevice = source.pointer;
-    copy.srcPitch = source.pitch;
-    if (options.input == InputKind::NativeArray) {
-        copy.dstMemoryType = CU_MEMORYTYPE_ARRAY;
-        copy.dstArray = destination.y_plane;
+    if (options.native_update == NativeUpdate::Kernel) {
+        if (!native_kernel || destination.y_surface == 0) {
+            throw std::runtime_error("Native update kernel or Y surface object is unavailable");
+        }
+        CUsurfObject output = destination.y_surface;
+        CUdeviceptr input = source.pointer;
+        size_t source_pitch = source.pitch;
+        uint32_t width = options.width;
+        uint32_t height = options.height;
+        void* arguments[] = {&output, &input, &source_pitch, &width, &height};
+        constexpr uint32_t kBytesPerThread = 16;
+        constexpr uint32_t kBlockX = 32;
+        constexpr uint32_t kBlockY = 8;
+        const uint32_t grid_x =
+            (width + kBytesPerThread * kBlockX - 1) / (kBytesPerThread * kBlockX);
+        const uint32_t grid_y = (height + kBlockY - 1) / kBlockY;
+        check_cu(
+            cuLaunchKernel(
+                native_kernel,
+                grid_x,
+                grid_y,
+                1,
+                kBlockX,
+                kBlockY,
+                1,
+                0,
+                stream,
+                arguments,
+                nullptr),
+            "cuLaunchKernel(native Y update)");
     } else {
-        copy.dstMemoryType = CU_MEMORYTYPE_DEVICE;
-        copy.dstDevice = destination.linear;
-        copy.dstPitch = destination.pitch;
+        CUDA_MEMCPY2D copy = {};
+        copy.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+        copy.srcDevice = source.pointer;
+        copy.srcPitch = source.pitch;
+        if (options.input == InputKind::NativeArray) {
+            copy.dstMemoryType = CU_MEMORYTYPE_ARRAY;
+            copy.dstArray = destination.y_plane;
+        } else {
+            copy.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+            copy.dstDevice = destination.linear;
+            copy.dstPitch = destination.pitch;
+        }
+        copy.WidthInBytes = options.width;
+        copy.Height = options.height;
+        check_cu(cuMemcpy2DAsync(&copy, stream), "cuMemcpy2DAsync(Y update)");
     }
-    copy.WidthInBytes = options.width;
-    copy.Height = options.height;
-    check_cu(cuMemcpy2DAsync(&copy, stream), "cuMemcpy2DAsync(Y update)");
-    check_cu(cuEventRecord(stop_event, stream), "cuEventRecord(copy stop)");
-    check_cu(cuEventSynchronize(stop_event), "cuEventSynchronize(copy stop)");
+    check_cu(cuEventRecord(stop_event, stream), "cuEventRecord(update stop)");
+    check_cu(cuEventSynchronize(stop_event), "cuEventSynchronize(update stop)");
 
     float gpu_ms = 0.0f;
     check_cu(cuEventElapsedTime(&gpu_ms, start_event, stop_event), "cuEventElapsedTime(Y update)");
@@ -777,22 +994,42 @@ void write_csv(const Options& options, const std::vector<FrameSample>& samples)
     }
     csv << "frame_index,phase,slot,source,input,update,copy_wall_ms,copy_gpu_ms,"
            "encode_wall_ms,map_ms,encode_picture_ms,completion_wait_ms,lock_bitstream_ms,"
-           "bitstream_copy_ms,unlock_bitstream_ms,unmap_ms,returned_packets,returned_bytes\n";
+           "bitstream_copy_ms,unlock_bitstream_ms,unmap_ms,returned_packets,returned_bytes,"
+           "source_layout,source_pitch,input_pitch,pacing,timeline_frame_index,burst_index,frame_in_burst,"
+           "idle_periods_before,scheduled_steady_ns,loop_start_steady_ns,input_ready_steady_ns,"
+           "copy_start_steady_ns,copy_end_steady_ns,encode_start_steady_ns,encode_end_steady_ns,"
+           "frame_done_steady_ns,schedule_lateness_ms,native_update,update_wall_ms,update_gpu_ms,"
+           "update_start_steady_ns,update_end_steady_ns\n";
     for (const FrameSample& sample : samples) {
         csv << sample.frame_index << ',' << (sample.measured ? "measure" : "warmup") << ','
             << sample.slot << ',' << sample.source << ',' << input_name(options.input) << ','
             << update_name(options.update) << ',' << std::fixed << std::setprecision(6)
-            << sample.copy_wall_ms << ',' << sample.copy_gpu_ms << ',' << sample.encode_wall_ms << ','
+            << sample.update_wall_ms << ',' << sample.update_gpu_ms << ',' << sample.encode_wall_ms << ','
             << sample.map_ms << ',' << sample.encode_picture_ms << ',' << sample.completion_wait_ms << ','
             << sample.lock_bitstream_ms << ',' << sample.bitstream_copy_ms << ','
             << sample.unlock_bitstream_ms << ',' << sample.unmap_ms << ','
-            << sample.returned_packets << ',' << sample.returned_bytes << '\n';
+            << sample.returned_packets << ',' << sample.returned_bytes << ','
+            << source_layout_name(options.source_layout) << ','
+            << sample.source_pitch << ',' << sample.input_pitch << ','
+            << (options.pace ? pacing_name(options.pacing) : "disabled") << ','
+            << sample.timeline_frame_index << ',' << sample.burst_index << ','
+            << sample.frame_in_burst << ',' << sample.idle_periods_before << ','
+            << sample.scheduled_steady_ns << ',' << sample.loop_start_steady_ns << ','
+            << sample.input_ready_steady_ns << ',' << sample.update_start_steady_ns << ','
+            << sample.update_end_steady_ns << ',' << sample.encode_start_steady_ns << ','
+            << sample.encode_end_steady_ns << ',' << sample.frame_done_steady_ns << ','
+            << sample.schedule_lateness_ms << ',' << native_update_name(options.native_update) << ','
+            << sample.update_wall_ms << ',' << sample.update_gpu_ms << ','
+            << sample.update_start_steady_ns << ',' << sample.update_end_steady_ns << '\n';
     }
 }
 
 void free_surfaces(std::vector<InputSurface>& surfaces)
 {
     for (InputSurface& surface : surfaces) {
+        if (surface.y_surface) {
+            cuSurfObjectDestroy(surface.y_surface);
+        }
         if (surface.array) {
             cuArrayDestroy(surface.array);
         }
@@ -820,8 +1057,10 @@ int main(int argc, char** argv)
     CUdevice device = 0;
     CUcontext context = nullptr;
     CUstream stream = nullptr;
-    CUevent copy_start_event = nullptr;
-    CUevent copy_stop_event = nullptr;
+    CUevent update_start_event = nullptr;
+    CUevent update_stop_event = nullptr;
+    CUmodule native_update_module = nullptr;
+    CUfunction native_update_kernel = nullptr;
     std::vector<DeviceSource> sources;
     std::vector<InputSurface> surfaces;
 
@@ -837,8 +1076,9 @@ int main(int argc, char** argv)
         check_cu(cuDevicePrimaryCtxRetain(&context, device), "cuDevicePrimaryCtxRetain");
         check_cu(cuCtxSetCurrent(context), "cuCtxSetCurrent");
         check_cu(cuStreamCreate(&stream, CU_STREAM_NON_BLOCKING), "cuStreamCreate");
-        check_cu(cuEventCreate(&copy_start_event, CU_EVENT_DEFAULT), "cuEventCreate(start)");
-        check_cu(cuEventCreate(&copy_stop_event, CU_EVENT_DEFAULT), "cuEventCreate(stop)");
+        check_cu(cuEventCreate(&update_start_event, CU_EVENT_DEFAULT), "cuEventCreate(start)");
+        check_cu(cuEventCreate(&update_stop_event, CU_EVENT_DEFAULT), "cuEventCreate(stop)");
+        native_update_kernel = load_native_update_kernel(options, native_update_module);
 
         char device_name[256] = {};
         check_cu(cuDeviceGetName(device_name, sizeof(device_name), device), "cuDeviceGetName");
@@ -847,17 +1087,30 @@ int main(int argc, char** argv)
             << "  gpu=" << options.gpu_id << " name=" << device_name << "\n"
             << "  cuda_driver_api=" << driver_version << " cuda_header=" << CUDA_VERSION << "\n"
             << "  nvenc_header=" << NVENCAPI_MAJOR_VERSION << '.' << NVENCAPI_MINOR_VERSION << "\n"
-            << "  input=" << input_name(options.input) << " update=" << update_name(options.update) << "\n"
+            << "  input=" << input_name(options.input) << " update=" << update_name(options.update)
+            << " native_update=" << native_update_name(options.native_update) << "\n"
             << "  resolution=" << options.width << 'x' << options.height
             << " fps=" << options.fps << " frames=" << options.frames
             << " warmup=" << options.warmup_frames << "\n"
+            << "  start_at_monotonic_ns=" << options.start_at_monotonic_ns << "\n"
+            << "  pacing=" << (options.pace ? pacing_name(options.pacing) : "disabled")
+            << " split_gop_on_frames=" << options.gop
+            << " split_gop_idle_frames=" << options.split_gop_idle_frames << "\n"
             << "  codec=hevc preset=p1 tuning=low_latency rc=vbr bitrate=" << options.bitrate_bps
             << " aq=0 temporal_aq=0 lookahead=0 gop=" << options.gop << "\n"
             << "  raw_source=" << (options.raw_file.empty() ? "generated-structured" : options.raw_file)
+            << " source_layout=" << source_layout_name(options.source_layout)
+            << " native_kernel_ptx="
+            << (options.native_kernel_ptx.empty() ? "none" : options.native_kernel_ptx)
             << std::endl;
 
         const auto setup_start = Clock::now();
         sources = make_sources(options);
+        std::cout << "source_nv12 count=" << sources.size()
+                  << " layout=" << source_layout_name(options.source_layout)
+                  << " pitch=" << sources.front().pitch
+                  << " bytes_each=" << (sources.front().pitch * options.height * 3 / 2)
+                  << std::endl;
 
         double prefill_copy_wall_ms = 0.0;
         double prefill_copy_gpu_ms = 0.0;
@@ -892,50 +1145,78 @@ int main(int argc, char** argv)
             encoder.PrepareExternalRegisteredSlots();
 
             const uint32_t surface_count = encoder.GetEncoderBufferCount();
-            surfaces.resize(surface_count);
-            for (uint32_t slot = 0; slot < surface_count; ++slot) {
-                create_surface(options, surfaces[slot]);
-                void* resource = options.input == InputKind::NativeArray
-                    ? reinterpret_cast<void*>(surfaces[slot].array)
-                    : reinterpret_cast<void*>(surfaces[slot].linear);
-                const NV_ENC_INPUT_RESOURCE_TYPE resource_type = options.input == InputKind::NativeArray
-                    ? NV_ENC_INPUT_RESOURCE_TYPE_CUDAARRAY
-                    : NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR;
-                surfaces[slot].registered = encoder.RegisterExternalResource(
-                    resource, resource_type, static_cast<int>(surfaces[slot].register_pitch));
-            }
-            if (options.input == InputKind::NativeArray && !surfaces.empty()) {
-                describe_native_surface(surfaces.front());
-            } else if (!surfaces.empty()) {
-                std::cout << "linear_surface pitch=" << surfaces.front().pitch
-                          << " bytes=" << (surfaces.front().pitch * options.height * 3 / 2)
+            const bool registered_source = options.update == UpdateMode::RegisteredSource;
+            if (registered_source) {
+                if (sources.size() < surface_count) {
+                    throw std::runtime_error(
+                        "registered-source requires at least one cached source per encoder buffer (" +
+                        std::to_string(surface_count) + ")");
+                }
+                for (DeviceSource& source : sources) {
+                    source.registered = encoder.RegisterExternalResource(
+                        reinterpret_cast<void*>(source.pointer),
+                        NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR,
+                        static_cast<int>(source.pitch));
+                }
+                std::cout << "registered_source_nv12 count=" << sources.size()
+                          << " pitch=" << sources.front().pitch
+                          << " bytes_each=" << (sources.front().pitch * options.height * 3 / 2)
                           << std::endl;
+            } else {
+                surfaces.resize(surface_count);
+                for (uint32_t slot = 0; slot < surface_count; ++slot) {
+                    create_surface(options, surfaces[slot]);
+                    void* resource = options.input == InputKind::NativeArray
+                        ? reinterpret_cast<void*>(surfaces[slot].array)
+                        : reinterpret_cast<void*>(surfaces[slot].linear);
+                    const NV_ENC_INPUT_RESOURCE_TYPE resource_type = options.input == InputKind::NativeArray
+                        ? NV_ENC_INPUT_RESOURCE_TYPE_CUDAARRAY
+                        : NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR;
+                    surfaces[slot].registered = encoder.RegisterExternalResource(
+                        resource, resource_type, static_cast<int>(surfaces[slot].register_pitch));
+                }
+                if (options.input == InputKind::NativeArray && !surfaces.empty()) {
+                    describe_native_surface(surfaces.front());
+                } else if (!surfaces.empty()) {
+                    std::cout << "linear_surface pitch=" << surfaces.front().pitch
+                              << " bytes=" << (surfaces.front().pitch * options.height * 3 / 2)
+                              << std::endl;
+                }
             }
 
             if (options.update == UpdateMode::Prefilled) {
                 for (uint32_t slot = 0; slot < surface_count; ++slot) {
-                    const auto timing = copy_luma_timed(
+                    const auto timing = update_luma_timed(
                         options,
                         sources[slot % sources.size()],
                         surfaces[slot],
+                        native_update_kernel,
                         stream,
-                        copy_start_event,
-                        copy_stop_event);
+                        update_start_event,
+                        update_stop_event);
                     prefill_copy_wall_ms += timing.first;
                     prefill_copy_gpu_ms += timing.second;
                 }
             }
             if (!options.readback_prefix.empty()) {
-                if (options.update == UpdateMode::PerFrame) {
-                    copy_luma_timed(
+                if (registered_source) {
+                    InputSurface source_view;
+                    source_view.linear = sources.front().pointer;
+                    source_view.pitch = sources.front().pitch;
+                    verify_input_readback(options, sources.front(), source_view);
+                } else if (options.update == UpdateMode::PerFrame) {
+                    update_luma_timed(
                         options,
                         sources.front(),
                         surfaces.front(),
+                        native_update_kernel,
                         stream,
-                        copy_start_event,
-                        copy_stop_event);
+                        update_start_event,
+                        update_stop_event);
+                    verify_input_readback(options, sources.front(), surfaces.front());
+                } else {
+                    verify_input_readback(options, sources.front(), surfaces.front());
                 }
-                verify_input_readback(options, sources.front(), surfaces.front());
             }
 
             encoder.SetIOCudaStreams(
@@ -947,11 +1228,21 @@ int main(int argc, char** argv)
                 : std::chrono::nanoseconds(0);
             std::vector<std::vector<uint8_t>> packets;
             setup_wall_ms = elapsed_ms(setup_start);
-            const auto run_start = Clock::now();
+            const auto setup_done = Clock::now();
+            auto run_start = setup_done;
+            if (options.start_at_monotonic_ns != 0) {
+                run_start = Clock::time_point(std::chrono::duration_cast<Clock::duration>(
+                    std::chrono::nanoseconds(options.start_at_monotonic_ns)));
+                if (run_start <= setup_done) {
+                    throw std::runtime_error(
+                        "--start-at-monotonic-ns expired before encoder setup completed");
+                }
+            }
 
             for (uint64_t frame_index = 0;
                  frame_index < options.frames && !g_stop_requested.load(std::memory_order_acquire);
                  ++frame_index) {
+                const auto loop_start = Clock::now();
                 while (!encoder.WaitForNextInputFrameAvailable(100)) {
                     if (g_stop_requested.load(std::memory_order_acquire)) {
                         break;
@@ -964,33 +1255,67 @@ int main(int argc, char** argv)
                 FrameSample sample;
                 sample.frame_index = frame_index;
                 sample.slot = encoder.GetNextInputFrameIndex();
-                sample.source = options.update == UpdateMode::PerFrame
+                sample.timeline_frame_index = scheduled_timeline_frame(options, frame_index);
+                sample.burst_index = frame_index / options.gop;
+                sample.frame_in_burst = static_cast<uint32_t>(frame_index % options.gop);
+                sample.idle_periods_before = options.pacing == PacingMode::SplitGop &&
+                        sample.frame_in_burst == 0 && frame_index != 0
+                    ? options.split_gop_idle_frames
+                    : 0;
+                const auto scheduled_time = run_start +
+                    frame_period * static_cast<int64_t>(sample.timeline_frame_index);
+                const auto input_ready = Clock::now();
+                if ((options.pace && frame_period.count() > 0) ||
+                    (frame_index == 0 && options.start_at_monotonic_ns != 0)) {
+                    std::this_thread::sleep_until(scheduled_time);
+                }
+                const auto frame_start = Clock::now();
+                sample.scheduled_steady_ns = steady_ns(scheduled_time);
+                sample.loop_start_steady_ns = steady_ns(loop_start);
+                sample.input_ready_steady_ns = steady_ns(input_ready);
+                sample.schedule_lateness_ms =
+                    std::chrono::duration<double, std::milli>(frame_start - scheduled_time).count();
+                sample.source = options.update == UpdateMode::PerFrame || registered_source
                     ? static_cast<uint32_t>(frame_index % sources.size())
                     : static_cast<uint32_t>(sample.slot % sources.size());
+                sample.source_pitch = static_cast<uint32_t>(sources[sample.source].pitch);
                 sample.measured = frame_index >= options.warmup_frames;
 
                 if (options.update == UpdateMode::PerFrame) {
-                    const auto timing = copy_luma_timed(
+                    sample.update_start_steady_ns = steady_ns(Clock::now());
+                    const auto timing = update_luma_timed(
                         options,
                         sources[sample.source],
                         surfaces[sample.slot],
+                        native_update_kernel,
                         stream,
-                        copy_start_event,
-                        copy_stop_event);
-                    sample.copy_wall_ms = timing.first;
-                    sample.copy_gpu_ms = timing.second;
+                        update_start_event,
+                        update_stop_event);
+                    sample.update_wall_ms = timing.first;
+                    sample.update_gpu_ms = timing.second;
+                    sample.update_end_steady_ns = steady_ns(Clock::now());
                 }
 
-                encoder.SetNextInputRegisteredResource(surfaces[sample.slot].registered);
+                const NV_ENC_REGISTERED_PTR registered = registered_source
+                    ? sources[sample.source].registered
+                    : surfaces[sample.slot].registered;
+                const size_t input_pitch = registered_source
+                    ? sources[sample.source].pitch
+                    : surfaces[sample.slot].pitch;
+                sample.input_pitch = static_cast<uint32_t>(input_pitch);
+                encoder.SetNextInputRegisteredResource(registered);
                 NV_ENC_PIC_PARAMS picture = {NV_ENC_PIC_PARAMS_VER};
                 picture.frameIdx = static_cast<uint32_t>(frame_index);
-                picture.inputTimeStamp = frame_index;
+                picture.inputTimeStamp = sample.timeline_frame_index;
                 picture.inputDuration = 1;
-                picture.inputPitch = static_cast<uint32_t>(surfaces[sample.slot].pitch);
+                picture.inputPitch = static_cast<uint32_t>(input_pitch);
 
                 NvEncoderEncodeFrameTiming encode_timing;
                 const auto encode_start = Clock::now();
+                sample.encode_start_steady_ns = steady_ns(encode_start);
                 encoder.EncodeFrame(packets, &picture, nullptr, nullptr, nullptr, &encode_timing);
+                const auto encode_end = Clock::now();
+                sample.encode_end_steady_ns = steady_ns(encode_end);
                 sample.encode_wall_ms = elapsed_ms(encode_start);
                 sample.map_ms = ns_to_ms(encode_timing.map_input_resource_ns);
                 sample.encode_picture_ms = ns_to_ms(encode_timing.encode_picture_ns);
@@ -1004,11 +1329,14 @@ int main(int argc, char** argv)
                     sample.returned_bytes += packet.size();
                 }
                 append_packets(bitstream, packets, packet_count, byte_count);
+                sample.frame_done_steady_ns = steady_ns(Clock::now());
                 samples.push_back(sample);
                 ++submitted_frames;
 
                 if (options.pace && frame_period.count() > 0) {
-                    std::this_thread::sleep_until(run_start + frame_period * static_cast<int64_t>(frame_index + 1));
+                    const uint64_t next_timeline_frame = scheduled_timeline_frame(options, frame_index + 1);
+                    std::this_thread::sleep_until(
+                        run_start + frame_period * static_cast<int64_t>(next_timeline_frame));
                 }
             }
             submission_seconds = std::chrono::duration<double>(Clock::now() - run_start).count();
@@ -1020,39 +1348,51 @@ int main(int argc, char** argv)
 
         write_csv(options, samples);
 
-        std::vector<double> copy_wall;
-        std::vector<double> copy_gpu;
+        std::vector<double> update_wall;
+        std::vector<double> update_gpu;
         std::vector<double> encode_wall;
         std::vector<double> map;
         std::vector<double> encode_picture;
         std::vector<double> lock;
+        std::vector<double> schedule_lateness;
         for (const FrameSample& sample : samples) {
             if (!sample.measured) {
                 continue;
             }
-            copy_wall.push_back(sample.copy_wall_ms);
-            copy_gpu.push_back(sample.copy_gpu_ms);
+            update_wall.push_back(sample.update_wall_ms);
+            update_gpu.push_back(sample.update_gpu_ms);
             encode_wall.push_back(sample.encode_wall_ms);
             map.push_back(sample.map_ms);
             encode_picture.push_back(sample.encode_picture_ms);
             lock.push_back(sample.lock_bitstream_ms);
+            schedule_lateness.push_back(sample.schedule_lateness_ms);
         }
+
+        const uint64_t timeline_periods = scheduled_timeline_frame(options, submitted_frames);
+        const double scheduled_seconds = options.fps > 0
+            ? static_cast<double>(timeline_periods) / options.fps
+            : 0.0;
 
         std::cout << std::fixed << std::setprecision(6)
                   << "summary\n"
                   << "  submitted_frames=" << submitted_frames
-                  << " measured_frames=" << copy_wall.size()
+                  << " measured_frames=" << update_wall.size()
                   << " packets=" << packet_count << " bytes=" << byte_count << "\n"
                   << "  setup_wall_ms=" << setup_wall_ms << "\n"
                   << "  achieved_fps=" << (submission_seconds > 0.0 ? submitted_frames / submission_seconds : 0.0) << "\n"
+                  << "  timeline_periods=" << timeline_periods
+                  << " scheduled_seconds=" << scheduled_seconds
+                  << " scheduled_average_fps="
+                  << (scheduled_seconds > 0.0 ? submitted_frames / scheduled_seconds : 0.0) << "\n"
                   << "  prefill_copy_wall_total_ms=" << prefill_copy_wall_ms
                   << " prefill_copy_gpu_total_ms=" << prefill_copy_gpu_ms << "\n";
-        print_metric("copy_wall_ms", copy_wall);
-        print_metric("copy_gpu_ms", copy_gpu);
+        print_metric("update_wall_ms", update_wall);
+        print_metric("update_gpu_ms", update_gpu);
         print_metric("encode_wall_ms", encode_wall);
         print_metric("map_ms", map);
         print_metric("encode_picture_ms", encode_picture);
         print_metric("lock_bitstream_ms", lock);
+        print_metric("schedule_lateness_ms", schedule_lateness);
         if (!options.bitstream_path.empty()) {
             std::cout << "  bitstream=" << options.bitstream_path << '\n';
         }
@@ -1060,12 +1400,18 @@ int main(int argc, char** argv)
             std::cout << "  csv=" << options.csv_path << '\n';
         }
 
+        check_cu(cuStreamSynchronize(stream), "cuStreamSynchronize(before surface destroy)");
         free_surfaces(surfaces);
         free_sources(sources);
-        check_cu(cuEventDestroy(copy_stop_event), "cuEventDestroy(stop)");
-        copy_stop_event = nullptr;
-        check_cu(cuEventDestroy(copy_start_event), "cuEventDestroy(start)");
-        copy_start_event = nullptr;
+        if (native_update_module) {
+            check_cu(cuModuleUnload(native_update_module), "cuModuleUnload(native update PTX)");
+            native_update_module = nullptr;
+            native_update_kernel = nullptr;
+        }
+        check_cu(cuEventDestroy(update_stop_event), "cuEventDestroy(stop)");
+        update_stop_event = nullptr;
+        check_cu(cuEventDestroy(update_start_event), "cuEventDestroy(start)");
+        update_start_event = nullptr;
         check_cu(cuStreamDestroy(stream), "cuStreamDestroy");
         stream = nullptr;
         check_cu(cuDevicePrimaryCtxRelease(device), "cuDevicePrimaryCtxRelease");
@@ -1075,13 +1421,19 @@ int main(int argc, char** argv)
         std::cerr << "nvenc_native_nv12_probe: " << error.what() << std::endl;
         if (context) {
             cuCtxSetCurrent(context);
+            if (stream) {
+                (void)cuStreamSynchronize(stream);
+            }
             free_surfaces(surfaces);
             free_sources(sources);
-            if (copy_stop_event) {
-                cuEventDestroy(copy_stop_event);
+            if (native_update_module) {
+                cuModuleUnload(native_update_module);
             }
-            if (copy_start_event) {
-                cuEventDestroy(copy_start_event);
+            if (update_stop_event) {
+                cuEventDestroy(update_stop_event);
+            }
+            if (update_start_event) {
+                cuEventDestroy(update_start_event);
             }
             if (stream) {
                 cuStreamDestroy(stream);
