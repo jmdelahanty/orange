@@ -1095,6 +1095,11 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
                                &stream_plan.routing_policy,
                                error_out,
                                context) ||
+            !read_int_field(stream,
+                            "gop_route_offset",
+                            &stream_plan.gop_route_offset,
+                            error_out,
+                            context) ||
             !read_string_field(stream,
                                "summary_json",
                                &stream_plan.summary_json,
@@ -1654,6 +1659,10 @@ std::vector<std::string> BuildRecorderCommand(const SupervisorPlan& plan,
     if (plan.preserve_shard_mp4s) {
         argv.push_back("--preserve-shard-mp4s");
     }
+    if (stream.gop_route_offset > 0) {
+        argv.push_back("--gop-route-offset");
+        argv.push_back(std::to_string(stream.gop_route_offset));
+    }
     if (plan.native_local_input && stream.stream_kind == "full_frame") {
         argv.push_back("--native-local-input");
         if (!plan.native_local_kernel_ptx.empty()) {
@@ -1679,6 +1688,7 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
             {"recorder_gpu_id", stream.recorder_gpu_id},
             {"expected_shard_gpu_ids", stream.expected_shard_gpu_ids},
             {"routing_policy", stream.routing_policy},
+            {"gop_route_offset", stream.gop_route_offset},
             {"socket_path", stream.socket_path},
             {"summary_json", stream.summary_json},
             {"status_json", stream.status_json},

@@ -695,6 +695,7 @@ private:
         size_t index = 0;
         std::string handle_hex;
         size_t bytes = 0;
+        uint64_t gop_route_offset = 0;
         in >> kind >> shard_id >> shard_count >> gpu >> index >> handle_hex >> bytes;
         if (!in || handle_hex.size() != sizeof(cudaIpcMemHandle_t) * 2 || gpu < 0 || shard_count == 0) {
             log_limited("malformed STAGE line: " + line);
@@ -724,7 +725,11 @@ private:
             log_limited(std::string("owner push: cudaIpcOpenMemHandle failed: ") + cudaGetErrorString(open_status));
             return false;
         }
+        if (!(in >> gop_route_offset)) {
+            gop_route_offset = 0;  // older recorder: no offset token
+        }
         std::lock_guard<std::mutex> lock(owner_mutex_);
+        owner_gop_route_offset_ = gop_route_offset;
         if (owner_slots_.size() <= index) {
             owner_slots_.resize(index + 1);
         }
@@ -746,32 +751,35 @@ private:
     // frame gaps; one push at a time per card at the same duty was clean. The
     // card is identified from the die's PCI bus number (dies of one card sit
     // behind one switch: buses 0x2f-0x32 and 0x45-0x48 on pancake0).
-    static std::mutex& card_push_mutex_for(int gpu)
+    static std::mutex* card_push_mutex_for(int gpu)
     {
         static std::mutex registry_mutex;
         // The dies of one A16 sit behind one PCIe switch: key the lock on the
         // switch's upstream port, three levels above the die in sysfs
         // (pancake0: 2f..32 -> 2d:00.0, 45..48 -> 43:00.0). Fall back to the
         // die's own address when sysfs is unavailable.
+        // Fail closed: a die whose card cannot be established gets no lock,
+        // and the caller then uses the validated pull path instead of
+        // pushing unserialized (review, 2026-09-20).
         char bus_id[32] = {0};
-        std::string key = "gpu" + std::to_string(gpu);
-        if (cudaDeviceGetPCIBusId(bus_id, sizeof(bus_id), gpu) == cudaSuccess) {
-            // CUDA prints hex upper-case ("0000:2F:00.0"); sysfs names are lower-case.
-            for (char* c = bus_id; *c; ++c) {
-                *c = static_cast<char>(std::tolower(static_cast<unsigned char>(*c)));
-            }
-            key = bus_id;
-            std::error_code ec;
-            std::filesystem::path dev = std::filesystem::canonical(
-                std::filesystem::path("/sys/bus/pci/devices") / bus_id, ec);
-            if (!ec) {
-                std::filesystem::path up = dev.parent_path().parent_path().parent_path();
-                if (!up.filename().empty()) {
-                    key = up.filename().string();
-                }
-            }
-        } else {
+        if (cudaDeviceGetPCIBusId(bus_id, sizeof(bus_id), gpu) != cudaSuccess) {
             (void)cudaGetLastError();
+            return nullptr;
+        }
+        // CUDA prints hex upper-case ("0000:2F:00.0"); sysfs names are lower-case.
+        for (char* c = bus_id; *c; ++c) {
+            *c = static_cast<char>(std::tolower(static_cast<unsigned char>(*c)));
+        }
+        std::error_code ec;
+        std::filesystem::path dev = std::filesystem::canonical(
+            std::filesystem::path("/sys/bus/pci/devices") / bus_id, ec);
+        if (ec) {
+            return nullptr;
+        }
+        std::filesystem::path up = dev.parent_path().parent_path().parent_path();
+        const std::string key = up.filename().string();
+        if (key.empty() || key.rfind("0000:", 0) != 0) {
+            return nullptr;  // not a PCI bridge address: topology not understood
         }
         static std::map<std::string, std::unique_ptr<std::mutex>> registry_by_key;
         std::lock_guard<std::mutex> lock(registry_mutex);
@@ -779,7 +787,7 @@ private:
         if (!entry) {
             entry = std::make_unique<std::mutex>();
         }
-        return *entry;
+        return entry.get();
     }
     std::atomic<uint64_t> owner_push_card_wait_total_ns_{0};
     std::atomic<uint64_t> owner_push_card_wait_max_ns_{0};
@@ -810,8 +818,8 @@ private:
             if (owner_slots_.empty() || owner_shard_count_ == 0 || owner_peer_shard_id_ < 0) {
                 return -1;
             }
-            // Mirror the recorder's routing: shard = gop_index % shard_count.
-            if (static_cast<int>(gop_index % owner_shard_count_) != owner_peer_shard_id_) {
+            // Mirror the recorder's routing: shard = (gop_index + offset) % shard_count.
+            if (static_cast<int>((gop_index + owner_gop_route_offset_) % owner_shard_count_) != owner_peer_shard_id_) {
                 return -1;
             }
             if (owner_free_.empty()) {
@@ -842,7 +850,16 @@ private:
         }
         // One push at a time per card; re-check freshness after the wait.
         const auto card_wait_start = std::chrono::steady_clock::now();
-        std::unique_lock<std::mutex> card_lock(card_push_mutex_for(source_gpu_id_));
+        std::mutex* card_mutex = card_push_mutex_for(source_gpu_id_);
+        if (!card_mutex) {
+            log_limited("owner push: cannot establish which card gpu " + std::to_string(source_gpu_id_) +
+                        " belongs to; owner push disabled for this camera (pull path)");
+            owner_push_ = false;
+            std::lock_guard<std::mutex> lock(owner_mutex_);
+            owner_free_.push_back(slot.index);
+            return -1;
+        }
+        std::unique_lock<std::mutex> card_lock(*card_mutex);
         {
             const uint64_t card_wait_ns = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - card_wait_start).count());
@@ -890,13 +907,25 @@ private:
             }
             return -1;
         }
-        cudaEventRecord(owner_push_done_, owner_push_stream_);
-        const cudaError_t sync_status = cudaEventSynchronize(owner_push_done_);
+        const cudaError_t record_status = cudaEventRecord(owner_push_done_, owner_push_stream_);
+        const cudaError_t sync_status = record_status == cudaSuccess
+            ? cudaEventSynchronize(owner_push_done_) : record_status;
         if (sync_status != cudaSuccess) {
             log_limited(std::string("owner push: completion wait failed: ") + cudaGetErrorString(sync_status));
             (void)cudaGetLastError();
-            log_limited("owner push: slot " + std::to_string(slot.index) + " quarantined after a failed completion wait");
-            return -1;  // the copy's state is unknown: keep the slot out of circulation
+            // The copy's state is unknown: the slot stays out of circulation.
+            // The source may still be read: drain the stream before anyone
+            // reuses it, and if even that fails, retain the source entry
+            // (never recycle it) and stop pushing.
+            if (cudaStreamSynchronize(owner_push_stream_) == cudaSuccess) {
+                log_limited("owner push: slot " + std::to_string(slot.index) + " quarantined; stream drained, source safe");
+                return -1;
+            }
+            (void)cudaGetLastError();
+            owner_push_ = false;
+            log_limited("owner push: stream drain failed; slot " + std::to_string(slot.index) +
+                        " quarantined, source entry retained, owner push disabled for this camera");
+            return -2;  // caller: send the frame unstaged and never recycle this entry
         }
         const auto push_done = std::chrono::steady_clock::now();
         const uint64_t wait_ns = static_cast<uint64_t>(
@@ -1312,7 +1341,9 @@ private:
         // Owner push: frames for the peer shard are copied into the
         // recorder's slot from here; the recorder then never reads the pool
         // buffer, so no deferred release is needed for them.
-        const int staged_index = copy_release ? -1 : owner_push_frame(entry, source_ptr, gop_index);
+        const int push_result = copy_release ? -1 : owner_push_frame(entry, source_ptr, gop_index);
+        const bool retain_source = push_result == -2;  // uncertain push: this entry is never recycled
+        const int staged_index = push_result >= 0 ? push_result : -1;
 
         msg << "FRAME "
             << camera_serial_ << " "
@@ -1387,6 +1418,19 @@ private:
         }
         if (force_deferred_release || ack_deferred_release) {
             poll_protocol_lines(false);
+        }
+        if (retain_source) {
+            // Drop any deferred-release bookkeeping for this entry and keep it
+            // out of the pool for good: an outstanding read may still target it.
+            {
+                std::lock_guard<std::mutex> lock(pending_release_mutex_);
+                pending_release_entries_.erase(entry->recording_frame_id);
+            }
+            if (release_entry_now) {
+                *release_entry_now = false;
+            }
+            log_limited("owner push: pool entry for recording_frame " + std::to_string(entry->recording_frame_id) +
+                        " retained permanently after an uncertain push");
         }
         return true;
     }
@@ -1496,6 +1540,7 @@ private:
     std::vector<size_t> owner_free_;
     int owner_peer_shard_id_ = -1;
     size_t owner_shard_count_ = 0;
+    uint64_t owner_gop_route_offset_ = 0;  // from the STAGE line; mirrors the recorder's routing
     cudaStream_t owner_push_stream_ = nullptr;
     cudaEvent_t owner_push_done_ = nullptr;
     // The push is issued as a sequence of chunk copies so that this process's

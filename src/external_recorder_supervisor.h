@@ -50,6 +50,10 @@ struct RecorderStreamPlan {
     int recorder_gpu_id = -1;
     std::vector<int> expected_shard_gpu_ids;
     std::string routing_policy = "single_shard";
+    // Added to the GOP index before the shard modulus, so the two cameras of
+    // one card can be in their peer-shard windows at different times
+    // (owner push serialization, 2026-09-20). 0 = as before.
+    int gop_route_offset = 0;
     std::string socket_path;
     std::string summary_json;
     std::string status_json;

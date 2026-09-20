@@ -117,6 +117,9 @@ struct Options {
     bool owner_push = false;
     uint32_t owner_push_slots = 8;
     size_t shard_count = 1;  // set by make_shard_options; the STAGE line tells the client the routing modulus
+    // Added to gop_index before the shard modulus (env ORANGE_EXTERNAL_RECORDER_GOP_ROUTE_OFFSET,
+    // --gop-route-offset): lets the two cameras of one card alternate their peer windows.
+    uint32_t gop_route_offset = 0;
     uint32_t fps = 60;
     std::string codec = "hevc";
     std::string preset = "p1";
@@ -465,6 +468,9 @@ Options parse_options(int argc, char** argv)
         env_flag_enabled("ORANGE_EXTERNAL_RECORDER_SPLIT_SUBMIT", false);
     options.owner_push =
         env_flag_enabled("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH", false);
+    if (const char* off_env = std::getenv("ORANGE_EXTERNAL_RECORDER_GOP_ROUTE_OFFSET"); off_env && *off_env) {
+        options.gop_route_offset = static_cast<uint32_t>(std::max(0, std::atoi(off_env)));
+    }
     if (const char* slots_env = std::getenv("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_SLOTS"); slots_env && *slots_env) {
         options.owner_push_slots = static_cast<uint32_t>(std::max(1, std::atoi(slots_env)));
     }
@@ -543,6 +549,8 @@ Options parse_options(int argc, char** argv)
             options.split_submit = true;
         } else if (arg == "--owner-push") {
             options.owner_push = true;
+        } else if (arg == "--gop-route-offset") {
+            options.gop_route_offset = parse_u32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--fps") {
             options.fps = parse_u32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--codec") {
@@ -5702,7 +5710,8 @@ private:
             const std::string line =
                 "STAGE " + std::to_string(options_.shard_id) + " " + std::to_string(shard_count) + " " +
                 std::to_string(options_.gpu_id) + " " + std::to_string(index) + " " +
-                ipc_handle_to_hex(handle) + " " + std::to_string(nv12_bytes) + "\n";
+                ipc_handle_to_hex(handle) + " " + std::to_string(nv12_bytes) + " " +
+                std::to_string(options_.gop_route_offset) + "\n";
             if (!write_protocol_line(fd, write_mutex, line)) {
                 throw std::runtime_error("owner push: failed to send STAGE line");
             }
@@ -7570,7 +7579,7 @@ int main(int argc, char** argv)
             ExternalEncodeWorker* target_encode_worker = nullptr;
             if (!encode_workers.empty()) {
                 const size_t target_shard =
-                    static_cast<size_t>(desc.gop_index % encode_workers.size());
+                    static_cast<size_t>((desc.gop_index + options.gop_route_offset) % encode_workers.size());
                 target_encode_worker = encode_workers[target_shard].get();
                 desc.assigned_gpu_id = target_encode_worker->gpu_id();
                 desc.assigned_shard_id = target_encode_worker->shard_id();
