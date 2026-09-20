@@ -14,6 +14,11 @@ class ScopedExternalRecorderEnvOverride;
 struct SupervisedRecorderLifecycleOptions {
     nlohmann::json contract = nlohmann::json::object();
     std::string recorder_tool_path;
+    // Native NV12 array input on the recorder's same-GPU full-frame shard
+    // (2026-09-19; needs the CUDA 13 recorder build). Passed as recorder
+    // argv for full_frame streams only; crop recorders never see it.
+    bool native_local_input = false;
+    std::string native_local_kernel_ptx;
     std::string default_session_id;
     std::string analytics_root;
     std::string verifier_path = "scripts/verify_external_recorder_session.py";

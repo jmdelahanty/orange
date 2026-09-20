@@ -145,6 +145,8 @@ bool StartSupervisedRecorderLifecycle(const SupervisedRecorderLifecycleOptions& 
     plan_options.recorder_tool_path =
         ResolveExternalRecorderToolPath(options.recorder_tool_path);
     plan_options.default_session_id = options.default_session_id;
+    plan_options.native_local_input = options.native_local_input;
+    plan_options.native_local_kernel_ptx = options.native_local_kernel_ptx;
     if (!BuildSupervisorPlanFromContract(
             options.contract,
             plan_options,

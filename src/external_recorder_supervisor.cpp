@@ -831,6 +831,8 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
 
     SupervisorPlan plan;
     plan.recorder_tool_path = options.recorder_tool_path;
+    plan.native_local_input = options.native_local_input;
+    plan.native_local_kernel_ptx = options.native_local_kernel_ptx;
     plan.mode = "off";
     if (!read_string_field(contract,
                            "mode",
@@ -1652,6 +1654,13 @@ std::vector<std::string> BuildRecorderCommand(const SupervisorPlan& plan,
     if (plan.preserve_shard_mp4s) {
         argv.push_back("--preserve-shard-mp4s");
     }
+    if (plan.native_local_input && stream.stream_kind == "full_frame") {
+        argv.push_back("--native-local-input");
+        if (!plan.native_local_kernel_ptx.empty()) {
+            argv.push_back("--native-local-kernel-ptx");
+            argv.push_back(plan.native_local_kernel_ptx);
+        }
+    }
     return argv;
 }
 
@@ -1723,6 +1732,8 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
         {"schema_id", plan.schema_id},
         {"schema_version", plan.schema_version},
         {"recorder_tool_path", plan.recorder_tool_path},
+        {"native_local_input", plan.native_local_input},
+        {"native_local_kernel_ptx", plan.native_local_kernel_ptx},
         {"source_path", plan.source_path},
         {"mode", plan.mode},
         {"artifact_root", plan.artifact_root},

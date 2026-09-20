@@ -12,6 +12,8 @@ namespace orange::external_recorder {
 
 struct SupervisorPlanOptions {
     std::string recorder_tool_path = "external_recorder_ipc_probe";
+    bool native_local_input = false;         // --native-local-input on full_frame streams
+    std::string native_local_kernel_ptx;     // --native-local-kernel-ptx <path> (optional)
     std::string default_session_id;
     int default_encode_fps = 100;
     int default_encode_max_fps = 0;
@@ -106,6 +108,8 @@ struct SupervisorPlan {
     std::string schema_id = "orange.external_recorder.supervisor_plan";
     int schema_version = 1;
     std::string recorder_tool_path;
+    bool native_local_input = false;
+    std::string native_local_kernel_ptx;
     std::string source_path;
     std::string mode;
     std::string artifact_root;
