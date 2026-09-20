@@ -7,16 +7,23 @@ surface without launching the per-frame `Convert_PL2BL` or `Convert_BL2BL`
 kernels seen on the A16. If a supported input path exists, determine whether
 Orange can produce that surface during an existing copy/preparation operation.
 
-Current status on 2026-09-19: the isolated native-NV12 CUDA-array probe passes
-on A16 with driver 610.57.04. Four matched 600-frame runs produce identical
-encoded video; linear input launches two tiling kernels per frame (about
-0.620 ms combined), while native input traces contain no CUDA kernels. Native
-Y updates still cost a transfer. Inference benefit and production integration
-remain unvalidated. Production Orange stays on CUDA 12.2; the side-by-side
-CUDA 13.1 toolkit and newer profiler have maintained pancakebatter recipes.
-See the final dated entry for accepted evidence, failed controls, limitations,
-and the checksummed Data2 archive. Earlier dated entries preserve the sequence
-of investigation, backup, driver migration, and qualification.
+Current status on 2026-09-19: native NV12 arrays remove the tiling kernels,
+and an opt-in local-shard backend is integrated in a fresh worktree based on
+recorder HEAD `152278d`. The eight-case 1,600-frame IPC replay matrix and a
+two-camera PTP live comparison passed. Repeated camera-free inference tests
+showed essentially unchanged p95 and lower p99 (about 2.48 to 2.13 ms); the
+short live pair also showed lower tails but is not a repeated causal test.
+A follow-up surface-write kernel prepares native Y in about 0.260 ms versus
+0.411 ms for the array copy. Three scheduled phase offsets show essentially
+equal copy/kernel inference p95 (~2.125 ms), with only small p99 differences;
+both retain lower tails than original linear input (~2.493 ms p99). The final
+kernel IPC matrix and a copy/kernel live two-camera pair also passed. The
+principal success is more consistent inference, not a proven higher camera rate.
+Production Orange remains on CUDA 12.2 and the existing backend stays default.
+See [the integration report](nvenc_native_integration_20260919.md) for code,
+commands, evidence, limitations, and the local-versus-remote shard scope.
+Earlier dated entries preserve the backup, driver migration, standalone proof,
+and their separate frozen archives.
 
 ## Reproducible starting point
 
@@ -1269,6 +1276,52 @@ matrix, invalid earlier matrix, allocation/correctness failures, original
 linear baseline, tool/header downloads, probe source/binary, maintenance
 recipes, journal snapshot and SHA256SUMS. It is separate from the frozen
 driver-upgrade and runtime-acceptance archives.
+
+### 2026-09-19 — Optional external-recorder native-array integration
+
+The validated standalone proof was committed as `3ffa701` and cherry-picked
+as `8979ebd` onto `agent/encoder/nvenc-native-integration-20260919`, based on
+original recorder HEAD `152278d10659de827a2134cf18f15b439f84c680`. The original
+recorder agent's worktree was left unchanged.
+
+The new backend uses recorder-owned native arrays on the analytics GPU's local
+shard, waits for copy completion before source RELEASE, and preserves the
+existing linear early-peer staging path on other shards. ACK readiness and
+teardown lifetimes were tightened and reviewed with parallel Sol agents.
+CUDA 13.1/API 13.1 remain confined to an isolated recorder target. The API 11/
+CUDA 12.2 target also builds and passed real-frame replay.
+
+Artifacts are at `/tmp/nvenc-native-integration-20260919`, with the durable
+copy at `/mnt/Data2/nvenc-native-integration-20260919`. The detailed result and
+handoff are in [nvenc_native_integration_20260919.md](nvenc_native_integration_20260919.md).
+Native peer-to-array transfer, longer live performance comparisons, and
+GUI/rolling/crop/pose acceptance remain follow-up work before default promotion.
+
+### 2026-09-19 — External surface-write kernel and consistency result
+
+The requested bounded preprocessing experiment now exists both in the standalone
+probe and, optionally, in the external recorder. It replaces the native Y copy
+with one vectorized surface-write kernel; it does not fuse the producer's owned
+copy or move NVENC back into Orange. Copy remains the default native update.
+
+The phase-controlled comparison retained 24,000 inference samples with zero
+missed deadlines. Original linear input p99 averaged 2.493 ms, native copy
+2.148 ms, and native kernel 2.134 ms. Copy/kernel p95 was effectively identical
+at 2.125 ms. The kernel's isolated preparation was shorter, but it did not
+provide a material additional inference improvement. Exact scheduled phase is
+recorded; actual late-burst encoder submissions drift under backpressure.
+
+The final eight-case IPC kernel matrix passed 1,600 frames with zero drops and
+correct source leases, pixels, packets, and metadata. Two-camera PTP copy/kernel
+runs each recorded 802 frames per camera with no drops or camera gaps and valid
+video. The integrated 64-frame trace shows 64 surface-write kernels, no driver
+tiling, and about 0.260 ms/frame preparation. Long GUI/rolling and positive
+crop/pose acceptance remain before default promotion.
+
+The user's performance priority is predictable high-resolution operation as
+frame rates increase. The handoff therefore prioritizes tail latency, deadline
+misses, queue growth, and zero drops over average preparation time alone.
+See [the handoff](nvenc_native_handoff_20260919.md) for integration and next gates.
 
 ### Template for the next entry
 
