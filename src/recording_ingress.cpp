@@ -8,6 +8,10 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <map>
+#include <memory>
+#include <fstream>
 #include <ctime>
 #include <iomanip>
 #include <iostream>
@@ -314,11 +318,16 @@ protected:
             }
             usleep(1000);
         }
+        if (owner_push_csv_.is_open()) {
+            owner_push_csv_.close();
+        }
         if (owner_push_) {
             std::cout << "[ExternalIpcRecorder] camera=" << camera_serial_
                       << " owner push summary: pushes=" << owner_pushes()
                       << " fallbacks=" << owner_push_fallbacks()
                       << " age_fallbacks=" << owner_push_age_fallbacks_.load(std::memory_order_relaxed)
+                      << " card_wait_mean_ms=" << (owner_pushes() ? owner_push_card_wait_total_ns_.load(std::memory_order_relaxed) / 1e6 / owner_pushes() : 0.0)
+                      << " card_wait_max_ms=" << owner_push_card_wait_max_ns_.load(std::memory_order_relaxed) / 1e6
                       << " slots=" << owner_slots_.size()
                       << " push_wait_mean_ms=" << owner_push_wait_mean_ms()
                       << " push_wait_max_ms=" << owner_push_wait_max_ms()
@@ -731,6 +740,50 @@ private:
         return true;
     }
 
+    // Per-card push serialization (2026-09-20): two dies of the same A16
+    // pushing at the same instant (which the PTP gate produces on every peer
+    // frame) drove hundreds of thousands of NIC rx discards and ~1 % camera
+    // frame gaps; one push at a time per card at the same duty was clean. The
+    // card is identified from the die's PCI bus number (dies of one card sit
+    // behind one switch: buses 0x2f-0x32 and 0x45-0x48 on pancake0).
+    static std::mutex& card_push_mutex_for(int gpu)
+    {
+        static std::mutex registry_mutex;
+        // The dies of one A16 sit behind one PCIe switch: key the lock on the
+        // switch's upstream port, three levels above the die in sysfs
+        // (pancake0: 2f..32 -> 2d:00.0, 45..48 -> 43:00.0). Fall back to the
+        // die's own address when sysfs is unavailable.
+        char bus_id[32] = {0};
+        std::string key = "gpu" + std::to_string(gpu);
+        if (cudaDeviceGetPCIBusId(bus_id, sizeof(bus_id), gpu) == cudaSuccess) {
+            // CUDA prints hex upper-case ("0000:2F:00.0"); sysfs names are lower-case.
+            for (char* c = bus_id; *c; ++c) {
+                *c = static_cast<char>(std::tolower(static_cast<unsigned char>(*c)));
+            }
+            key = bus_id;
+            std::error_code ec;
+            std::filesystem::path dev = std::filesystem::canonical(
+                std::filesystem::path("/sys/bus/pci/devices") / bus_id, ec);
+            if (!ec) {
+                std::filesystem::path up = dev.parent_path().parent_path().parent_path();
+                if (!up.filename().empty()) {
+                    key = up.filename().string();
+                }
+            }
+        } else {
+            (void)cudaGetLastError();
+        }
+        static std::map<std::string, std::unique_ptr<std::mutex>> registry_by_key;
+        std::lock_guard<std::mutex> lock(registry_mutex);
+        auto& entry = registry_by_key[key];
+        if (!entry) {
+            entry = std::make_unique<std::mutex>();
+        }
+        return *entry;
+    }
+    std::atomic<uint64_t> owner_push_card_wait_total_ns_{0};
+    std::atomic<uint64_t> owner_push_card_wait_max_ns_{0};
+
     // Owner push for one frame: returns the slot index used, or -1 when the
     // frame is not routed to the peer shard, no slot is free, or pushing is
     // off. The source buffer is ready (the caller synchronized its ready
@@ -747,6 +800,7 @@ private:
             if (now_ns > entry->timestamp_sys &&
                 static_cast<double>(now_ns - entry->timestamp_sys) / 1e6 > owner_push_max_age_ms_) {
                 owner_push_age_fallbacks_.fetch_add(1, std::memory_order_relaxed);
+                owner_push_csv_row("too_old", entry, 0, 0, static_cast<double>(now_ns - entry->timestamp_sys) / 1e6, -1, -1);
                 return -1;
             }
         }
@@ -762,6 +816,7 @@ private:
             }
             if (owner_free_.empty()) {
                 owner_push_fallbacks_.fetch_add(1, std::memory_order_relaxed);
+                owner_push_csv_row("no_slot", entry, 0, 0, 0.0, -1, -1);
                 return -1;
             }
             slot = owner_slots_[owner_free_.back()];
@@ -785,6 +840,30 @@ private:
                 return -1;
             }
         }
+        // One push at a time per card; re-check freshness after the wait.
+        const auto card_wait_start = std::chrono::steady_clock::now();
+        std::unique_lock<std::mutex> card_lock(card_push_mutex_for(source_gpu_id_));
+        {
+            const uint64_t card_wait_ns = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - card_wait_start).count());
+            owner_push_card_wait_total_ns_.fetch_add(card_wait_ns, std::memory_order_relaxed);
+            uint64_t seen_w = owner_push_card_wait_max_ns_.load(std::memory_order_relaxed);
+            while (card_wait_ns > seen_w && !owner_push_card_wait_max_ns_.compare_exchange_weak(seen_w, card_wait_ns, std::memory_order_relaxed)) {}
+        }
+        if (owner_push_max_age_ms_ > 0.0 && entry->timestamp_sys > 0) {
+            timespec now{};
+            clock_gettime(CLOCK_REALTIME, &now);
+            const uint64_t now_ns = static_cast<uint64_t>(now.tv_sec) * 1000000000ull + static_cast<uint64_t>(now.tv_nsec);
+            if (now_ns > entry->timestamp_sys &&
+                static_cast<double>(now_ns - entry->timestamp_sys) / 1e6 > owner_push_max_age_ms_) {
+                card_lock.unlock();
+                owner_push_age_fallbacks_.fetch_add(1, std::memory_order_relaxed);
+                owner_push_csv_row("too_old_after_card_wait", entry, 0, 0, static_cast<double>(now_ns - entry->timestamp_sys) / 1e6, -1, -1);
+                std::lock_guard<std::mutex> lock(owner_mutex_);
+                owner_free_.push_back(slot.index);
+                return -1;
+            }
+        }
         const auto push_start = std::chrono::steady_clock::now();
         cudaError_t copy_status = cudaSuccess;
         const size_t total = static_cast<size_t>(entry->source_buffer_bytes);
@@ -797,20 +876,42 @@ private:
         }
         if (copy_status != cudaSuccess) {
             log_limited(std::string("owner push: cudaMemcpyPeerAsync failed: ") + cudaGetErrorString(copy_status));
-            std::lock_guard<std::mutex> lock(owner_mutex_);
-            owner_free_.push_back(slot.index);
+            // Earlier chunks of this frame may still be in flight on the
+            // stream: drain them before the slot or the source buffer can be
+            // reused. If the drain itself fails, quarantine the slot (never
+            // return it) rather than risk a write into a reused buffer.
+            if (cudaStreamSynchronize(owner_push_stream_) == cudaSuccess) {
+                std::lock_guard<std::mutex> lock(owner_mutex_);
+                owner_free_.push_back(slot.index);
+            } else {
+                (void)cudaGetLastError();
+                log_limited("owner push: stream drain failed after a chunk error; slot " +
+                            std::to_string(slot.index) + " quarantined");
+            }
             return -1;
         }
         cudaEventRecord(owner_push_done_, owner_push_stream_);
         const cudaError_t sync_status = cudaEventSynchronize(owner_push_done_);
         if (sync_status != cudaSuccess) {
             log_limited(std::string("owner push: completion wait failed: ") + cudaGetErrorString(sync_status));
-            std::lock_guard<std::mutex> lock(owner_mutex_);
-            owner_free_.push_back(slot.index);
-            return -1;
+            (void)cudaGetLastError();
+            log_limited("owner push: slot " + std::to_string(slot.index) + " quarantined after a failed completion wait");
+            return -1;  // the copy's state is unknown: keep the slot out of circulation
         }
+        const auto push_done = std::chrono::steady_clock::now();
         const uint64_t wait_ns = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - push_start).count());
+            std::chrono::duration_cast<std::chrono::nanoseconds>(push_done - push_start).count());
+        {
+            timespec rt{};
+            clock_gettime(CLOCK_REALTIME, &rt);
+            const uint64_t rt_ns = static_cast<uint64_t>(rt.tv_sec) * 1000000000ull + static_cast<uint64_t>(rt.tv_nsec);
+            const double age_ms = (entry->timestamp_sys > 0 && rt_ns > entry->timestamp_sys)
+                ? static_cast<double>(rt_ns - entry->timestamp_sys) / 1e6 : 0.0;
+            owner_push_csv_row("push", entry,
+                               static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(push_start.time_since_epoch()).count()),
+                               static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(push_done.time_since_epoch()).count()),
+                               age_ms, static_cast<int>(slot.index), slot.gpu);
+        }
         owner_push_wait_total_ns_.fetch_add(wait_ns, std::memory_order_relaxed);
         uint64_t seen = owner_push_wait_max_ns_.load(std::memory_order_relaxed);
         while (wait_ns > seen && !owner_push_wait_max_ns_.compare_exchange_weak(seen, wait_ns, std::memory_order_relaxed)) {}
@@ -1408,6 +1509,34 @@ private:
     // take the recorder's pull path. 0 disables the gate.
     double owner_push_max_age_ms_ = 8.0;
     std::atomic<uint64_t> owner_push_age_fallbacks_{0};
+    std::ofstream owner_push_csv_;      // Cam<serial>_owner_push.csv in the recording folder (diagnostic)
+    std::string owner_push_csv_folder_;
+    void owner_push_csv_row(const char* kind, WORKER_ENTRY* entry, uint64_t start_ns, uint64_t done_ns,
+                            double age_ms, int slot, int gpu)
+    {
+        if (!entry || entry->recording_folder.empty()) {
+            return;
+        }
+        if (owner_push_csv_folder_ != entry->recording_folder) {
+            if (owner_push_csv_.is_open()) {
+                owner_push_csv_.close();
+            }
+            owner_push_csv_folder_ = entry->recording_folder;
+            owner_push_csv_.open(entry->recording_folder + "/Cam" + camera_serial_ + "_owner_push.csv",
+                                 std::ios::out | std::ios::trunc);
+            if (owner_push_csv_) {
+                owner_push_csv_ << "kind,recording_frame_id,local_frame_id,capture_sys_ns,push_start_steady_ns,"
+                                   "push_done_steady_ns,wait_ms,age_at_push_ms,queue_in,pending_release,slot,gpu\n";
+            }
+        }
+        if (!owner_push_csv_) {
+            return;
+        }
+        owner_push_csv_ << kind << "," << entry->recording_frame_id << "," << entry->frame_id << ","
+                        << entry->timestamp_sys << "," << start_ns << "," << done_ns << ","
+                        << (done_ns > start_ns ? (done_ns - start_ns) / 1e6 : 0.0) << "," << age_ms << ","
+                        << GetCountQueueIn() << "," << pending_release_count() << "," << slot << "," << gpu << "\n";
+    }
     size_t owner_push_chunk_bytes_ = 2u * 1024u * 1024u;
     std::atomic<uint64_t> owner_pushes_{0};
     std::atomic<uint64_t> owner_push_fallbacks_{0};

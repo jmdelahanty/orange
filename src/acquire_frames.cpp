@@ -373,6 +373,70 @@ struct AcquisitionCadenceProbeSample {
     RecordingIngressStats ingress_stats;
 };
 
+// Ring release timeline (ORANGE_ACQ_RING_RELEASE_LOG=1, diagnostic): one row
+// per camera frame buffer returned to the SDK, with when the frame arrived,
+// when its pool copy and consumer were first seen complete by the
+// acquisition loop, when the buffer was actually requeued, and how many
+// buffers were still held. Aligns with Cam<serial>_owner_push.csv from the
+// external handoff worker via local_frame_id (2026-09-19).
+class RingReleaseRecorder {
+public:
+    explicit RingReleaseRecorder(const CameraParams* camera_params)
+        : camera_params_(camera_params),
+          enabled_(orange::yolo_flags::EnvFlag("ORANGE_ACQ_RING_RELEASE_LOG", false)) {}
+    ~RingReleaseRecorder() { Close(); }
+    void Rotate(const std::string& folder) {
+        if (!enabled_ || folder == current_folder_) {
+            return;
+        }
+        Close();
+        if (folder.empty()) {
+            return;
+        }
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
+        make_folder(folder);
+        current_folder_ = folder;
+        const std::string serial = camera_params_ ? camera_params_->camera_serial : "unknown";
+        const std::string path = (std::filesystem::path(folder) / ("Cam" + serial + "_ring_release.csv")).string();
+        file_.open(path, std::ios::out | std::ios::trunc);
+        if (!file_) {
+            std::cerr << "[ACQ_RING] Cam " << serial << " failed to open " << path << std::endl;
+            current_folder_.clear();
+            return;
+        }
+        file_ << "local_frame_id,camera_frame_id,receive_host_ns,copy_ready_seen_ns,consumer_done_seen_ns,"
+                 "requeue_host_ns,hold_ns,pending_after,camera_dropped_frames_total,forced\n";
+        std::cout << "[ACQ_RING] Cam " << serial << " logging ring releases to " << path << std::endl;
+    }
+    void Record(uint64_t local_frame_id, uint64_t camera_frame_id, uint64_t receive_ns,
+                uint64_t copy_seen_ns, uint64_t consumer_seen_ns, uint64_t requeue_ns,
+                size_t pending_after, uint64_t dropped_total, bool forced) {
+        if (!file_.is_open()) {
+            return;
+        }
+        file_ << local_frame_id << "," << camera_frame_id << "," << receive_ns << "," << copy_seen_ns << ","
+              << consumer_seen_ns << "," << requeue_ns << "," << (requeue_ns > receive_ns ? requeue_ns - receive_ns : 0) << ","
+              << pending_after << "," << dropped_total << "," << (forced ? 1 : 0) << "\n";
+        if ((++rows_ % 200) == 0) {
+            file_.flush();
+        }
+    }
+    void Close() {
+        if (file_.is_open()) {
+            file_.flush();
+            file_.close();
+        }
+        current_folder_.clear();
+    }
+private:
+    const CameraParams* camera_params_ = nullptr;
+    bool enabled_ = false;
+    std::string current_folder_;
+    std::ofstream file_;
+    uint64_t rows_ = 0;
+};
+
 class AcquisitionCadenceProbeRecorder {
 public:
     explicit AcquisitionCadenceProbeRecorder(const CameraParams* camera_params)
@@ -476,6 +540,13 @@ public:
 
 private:
     bool ShouldRecord(const AcquisitionCadenceProbeSample& sample) const {
+        // ORANGE_ACQ_CADENCE_PROBE_ALL=1: every frame instead of the 80-160
+        // window (diagnostic; one row per frame, buffered).
+        static const bool record_all =
+            orange::yolo_flags::EnvFlag("ORANGE_ACQ_CADENCE_PROBE_ALL", false);
+        if (record_all) {
+            return true;
+        }
         const uint64_t probe_frame =
             sample.recording_frame_id > 0 ? sample.recording_frame_id : sample.local_frame_id;
         return probe_frame >= kAcquisitionCadenceProbeFrameMin &&
@@ -1279,6 +1350,12 @@ void acquire_frames(
         // worker, so a query before that would see the previous frame's
         // completion. nullptr on the early-copy and ring-copy paths.
         std::atomic<bool>* copy_ready_event_recorded = nullptr;
+        // Ring release timeline (RingReleaseRecorder).
+        uint64_t local_frame_id = 0;
+        uint64_t camera_frame_id = 0;
+        uint64_t receive_host_ns = 0;
+        uint64_t copy_ready_seen_ns = 0;
+        uint64_t consumer_done_seen_ns = 0;
     };
     std::deque<PendingRequeue> pending_requeues;
     int yolo_decimate = 1;
@@ -1294,6 +1371,7 @@ void acquire_frames(
     bool last_yolo_enabled = false;
     PipelinePerfRecorder pipeline_perf_recorder(camera_params);
     AcquisitionCadenceProbeRecorder acquisition_cadence_probe_recorder(camera_params);
+    RingReleaseRecorder ring_release_recorder(camera_params);
     std::deque<PtpReceiveHistoryEntry> ptp_receive_history;
     std::deque<RecordingSubmitHistoryEntry> recording_submit_history;
     bool ptp_stale_history_dumped = false;
@@ -1756,8 +1834,17 @@ void acquire_frames(
                     it->consumer_done_event,
                     "consumer-done",
                     it->consumer_done_event_recorded);
+            if (copy_status == cudaSuccess && it->copy_ready_seen_ns == 0) {
+                it->copy_ready_seen_ns = steady_clock_now_ns();
+            }
+            if (consumer_status == cudaSuccess && it->consumer_done_seen_ns == 0) {
+                it->consumer_done_seen_ns = steady_clock_now_ns();
+            }
             if (copy_status == cudaSuccess && consumer_status == cudaSuccess) {
                 EVT_CameraQueueFrame(it->camera, it->frame);
+                ring_release_recorder.Record(it->local_frame_id, it->camera_frame_id, it->receive_host_ns,
+                                             it->copy_ready_seen_ns, it->consumer_done_seen_ns, steady_clock_now_ns(),
+                                             pending_requeues.size() - 1, camera_state.dropped_frames, false);
                 it = pending_requeues.erase(it);
                 continue;
             }
@@ -1766,6 +1853,9 @@ void acquire_frames(
                 continue;
             }
             EVT_CameraQueueFrame(it->camera, it->frame);
+            ring_release_recorder.Record(it->local_frame_id, it->camera_frame_id, it->receive_host_ns,
+                                         it->copy_ready_seen_ns, it->consumer_done_seen_ns, steady_clock_now_ns(),
+                                         pending_requeues.size() - 1, camera_state.dropped_frames, true);
             it = pending_requeues.erase(it);
         }
 
@@ -2026,6 +2116,7 @@ void acquire_frames(
                 (void)finalize_pipeline_perf_recorder_if_drained();
             }
             acquisition_cadence_probe_recorder.Rotate(live_recording_folder);
+            ring_release_recorder.Rotate(live_recording_folder);
             if (live_recording_folder != ptp_summary_recording_folder) {
                 if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera) {
                     update_ptp_sync_summary_camera(
@@ -2220,6 +2311,9 @@ void acquire_frames(
             if (use_ring_copy) {
                 pending_requeues.push_back(
                     {&ecam->camera, frame_to_requeue, current_entry->event_ptr, nullptr, nullptr});
+                pending_requeues.back().local_frame_id = camera_state.frame_count;
+                pending_requeues.back().camera_frame_id = received_frame->frame_id;
+                pending_requeues.back().receive_host_ns = receive_host_ns;
             } else if (use_analytics_hybrid) {
                 cudaEvent_t* yolo_source_done_event = current_entry->yolo_completion_event;
                 std::atomic<bool>* yolo_source_done_event_recorded =
@@ -2237,6 +2331,9 @@ void acquire_frames(
                      yolo_source_done_event,
                      yolo_source_done_event_recorded,
                      &current_entry->analytics_ready_event_recorded});
+                pending_requeues.back().local_frame_id = camera_state.frame_count;
+                pending_requeues.back().camera_frame_id = received_frame->frame_id;
+                pending_requeues.back().receive_host_ns = receive_host_ns;
             }
 
             current_entry->width = received_frame->size_x;
@@ -2933,6 +3030,7 @@ void acquire_frames(
 
         (void)finalize_pipeline_perf_recorder_if_drained();
         acquisition_cadence_probe_recorder.Close();
+        ring_release_recorder.Close();
 
         {
             NVTX_CAMERA("Camera_Acquisition_Stop");
