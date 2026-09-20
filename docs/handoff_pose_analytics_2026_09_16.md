@@ -1745,3 +1745,44 @@ sends 2 of 3 or 3 of 4 GOPs to the other die, which its engine can absorb
 in staging), cutting the local frames from 1/2 to 1/3 or 1/4 and the tail
 fraction with them, not to zero; (3) a third engine per camera (none spare
 on the A16s; the A6000 has one engine at about the same speed).
+
+## Addendum 2026-09-19 21:05: native NV12 array input removes the local-half term
+
+Driver 610.57.04 (Clonezilla backup first), CUDA 12.2 kept for the
+application; the external recorder is built separately against CUDA 13.1 and
+the NVENC 13.1 interface (`tools/nvenc_native_probe/CMakeLists.txt`, build
+dir `targets/native`, binary `external_recorder_ipc_probe_native`, PTX
+`native_nv12_write.ptx`; interface headers now persistent at
+`~/.local/opt/nvenc-interface-13.1.15/`, toolkit at
+`~/.local/opt/cuda-13.1.1-nvenc`). The layout agent's commits (`8979ebd`,
+`c83e10d`, `02cb66a`, on top of `152278d`) are fast-forwarded onto this
+branch. Their path: the local shard allocates `CU_AD_FORMAT_NV12` arrays with
+`CUDA_ARRAY3D_VIDEO_ENCODE_DECODE`, registers them as CUDAARRAY once, and per
+frame copies the Y plane from the pool buffer with `cuMemcpy2DAsync`
+(copy engine, no SM kernel; 0.41 ms of copy-engine time), releasing the pool
+buffer after the copy instead of after the encode. Peer shards unchanged.
+
+Plumbing (this commit): spec key `external_recorder_native_local_input`
+(and `external_recorder_native_kernel_ptx`) -> client-internal env ->
+`SupervisedRecorderLifecycleOptions::native_local_input` -> supervisor adds
+`--native-local-input` to full_frame recorder argv only (crop recorders reject
+it); contract `recorder_tool_path` points at the native binary. Specs
+`fourcam_fused_recorder_realfish_int8_192_native{,_off}` (same binary, flag
+on/off, INT8 detect + 192 head, both recorders, 60 s, fish in the tank).
+
+| camera | control c2p p95 / p99 | native c2p p95 / p99 | control a2d p95 | native a2d p95 |
+| --- | --- | --- | --- | --- |
+| 2010093 | 3.04 / 3.12 | 2.48 / 2.58 | 2.46 | 1.90 |
+| 2010094 | 3.05 / 3.13 | 2.50 / 2.78 | 2.47 | 1.92 |
+| 2010095 | 3.08 / 3.15 | 2.73 / 3.01 | 2.49 | 2.14 |
+| 2010096 | 3.03 / 3.11 | 2.64 / 2.71 | 2.45 | 2.06 |
+
+Detect worker same-die p95 2.49-2.51 -> 1.81-2.10, now below the other-die
+half (delta p95 -0.03 to -0.24): the local-half term is gone. Recorder side
+unchanged (lock p95 11.1-11.6 = engine cadence, queue age p95 10-17 ms,
+2951 local frames encoded per camera, zero drops). Capture-to-pose with both
+recorders (2.48-2.73 p95) is now within 0.1-0.3 ms of the recorders-off
+figure (2.33-2.40). Remaining: 2010095/2010096 sit 0.15-0.25 higher than
+2010093/2010094 (their peer dies 8 and 6 also host crop recorders); the
+layout agent's proposed three-round alternating A/B and a 30-minute
+endurance before this becomes the production default.
