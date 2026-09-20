@@ -279,7 +279,8 @@ struct ExperimentSpec {
     bool acq_cadence_probe_all = false;  // ORANGE_ACQ_CADENCE_PROBE_ALL (cadence probe on every frame)  // ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_CHUNK_BYTES (0: client default 2 MB)
     bool external_recorder_native_local_input = false;  // full-frame recorders get --native-local-input (CUDA 13 recorder build; contract recorder_tool_path must point at it)
     std::string external_recorder_native_kernel_ptx;    // optional --native-local-kernel-ptx path
-    int external_recorder_extra_output_delay = -1;    // ORANGE_EXTERNAL_RECORDER_EXTRA_OUTPUT_DELAY (-1: probe default 3)
+    int external_recorder_extra_output_delay = -1;    // ORANGE_EXTERNAL_RECORDER_EXTRA_OUTPUT_DELAY (-1: probe default 3); reaches crop recorders too
+    int external_recorder_full_frame_extra_output_delay = -1;  // --extra-output-delay argv on full_frame recorders only (-1: off)
     int external_recorder_max_deferred = -1;  // ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED (-1: ingress default)
     std::string recording_sink_mode = "real";
     bool helper_noop_source_read = false;
@@ -8176,6 +8177,8 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         fixed.value("external_recorder_native_kernel_ptx", std::string());
     spec->external_recorder_extra_output_delay =
         fixed.value("external_recorder_extra_output_delay", -1);
+    spec->external_recorder_full_frame_extra_output_delay =
+        fixed.value("external_recorder_full_frame_extra_output_delay", -1);
     spec->external_recorder_max_deferred =
         fixed.value("external_recorder_max_deferred", -1);
     spec->recording_sink_mode = fixed.value("recording_sink_mode", "real");
@@ -8876,6 +8879,8 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                  spec.external_recorder_native_local_input},
                                                                 {"external_recorder_native_kernel_ptx",
                                                                  spec.external_recorder_native_kernel_ptx},
+                                                                {"external_recorder_full_frame_extra_output_delay",
+                                                                 spec.external_recorder_full_frame_extra_output_delay},
                                                                 {"recording_sink_mode", spec.recording_sink_mode},
                                                                 {"helper_noop_source_read",
                                                                  spec.helper_noop_source_read},
@@ -9446,6 +9451,10 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
                 ptx_env && *ptx_env) {
                 lifecycle_options.native_local_kernel_ptx = ptx_env;
             }
+        }
+        if (const char* od_env = std::getenv("ORANGE_HEADLESS_FULL_FRAME_EXTRA_OUTPUT_DELAY");
+            od_env && *od_env) {
+            lifecycle_options.full_frame_extra_output_delay = std::atoi(od_env);
         }
         lifecycle_options.default_session_id =
             options.external_recorder_contract.session_id;
@@ -11542,6 +11551,8 @@ int run_local_experiment(const HeadlessCliOptions& options)
            spec.external_recorder_native_local_input ? "1" : "0", 1);
     setenv("ORANGE_HEADLESS_NATIVE_KERNEL_PTX",
            spec.external_recorder_native_kernel_ptx.c_str(), 1);
+    setenv("ORANGE_HEADLESS_FULL_FRAME_EXTRA_OUTPUT_DELAY",
+           std::to_string(spec.external_recorder_full_frame_extra_output_delay).c_str(), 1);
     if (spec.external_recorder_extra_output_delay >= 0) {
         setenv("ORANGE_EXTERNAL_RECORDER_EXTRA_OUTPUT_DELAY",
                std::to_string(spec.external_recorder_extra_output_delay).c_str(), 1);

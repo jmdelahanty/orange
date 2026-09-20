@@ -19,6 +19,8 @@ struct SupervisedRecorderLifecycleOptions {
     // argv for full_frame streams only; crop recorders never see it.
     bool native_local_input = false;
     std::string native_local_kernel_ptx;
+    // --extra-output-delay for full_frame recorders only (-1: leave to the recorder).
+    int full_frame_extra_output_delay = -1;
     std::string default_session_id;
     std::string analytics_root;
     std::string verifier_path = "scripts/verify_external_recorder_session.py";

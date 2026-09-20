@@ -14,6 +14,7 @@ struct SupervisorPlanOptions {
     std::string recorder_tool_path = "external_recorder_ipc_probe";
     bool native_local_input = false;         // --native-local-input on full_frame streams
     std::string native_local_kernel_ptx;     // --native-local-kernel-ptx <path> (optional)
+    int full_frame_extra_output_delay = -1;  // --extra-output-delay <n> on full_frame streams only (-1: recorder default/env)
     std::string default_session_id;
     int default_encode_fps = 100;
     int default_encode_max_fps = 0;
@@ -114,6 +115,7 @@ struct SupervisorPlan {
     std::string recorder_tool_path;
     bool native_local_input = false;
     std::string native_local_kernel_ptx;
+    int full_frame_extra_output_delay = -1;
     std::string source_path;
     std::string mode;
     std::string artifact_root;

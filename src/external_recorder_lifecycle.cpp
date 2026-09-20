@@ -147,6 +147,7 @@ bool StartSupervisedRecorderLifecycle(const SupervisedRecorderLifecycleOptions& 
     plan_options.default_session_id = options.default_session_id;
     plan_options.native_local_input = options.native_local_input;
     plan_options.native_local_kernel_ptx = options.native_local_kernel_ptx;
+    plan_options.full_frame_extra_output_delay = options.full_frame_extra_output_delay;
     if (!BuildSupervisorPlanFromContract(
             options.contract,
             plan_options,

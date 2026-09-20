@@ -440,7 +440,8 @@ private:
 class AcquisitionCadenceProbeRecorder {
 public:
     explicit AcquisitionCadenceProbeRecorder(const CameraParams* camera_params)
-        : camera_params_(camera_params) {}
+        : camera_params_(camera_params),
+          record_all_(orange::yolo_flags::EnvFlag("ORANGE_ACQ_CADENCE_PROBE_ALL", false)) {}
 
     ~AcquisitionCadenceProbeRecorder() {
         Close();
@@ -538,13 +539,15 @@ public:
         file_path_.clear();
     }
 
+    bool RecordsAllFrames() const { return record_all_; }
+
 private:
     bool ShouldRecord(const AcquisitionCadenceProbeSample& sample) const {
         // ORANGE_ACQ_CADENCE_PROBE_ALL=1: every frame instead of the 80-160
-        // window (diagnostic; one row per frame, buffered).
-        static const bool record_all =
-            orange::yolo_flags::EnvFlag("ORANGE_ACQ_CADENCE_PROBE_ALL", false);
-        if (record_all) {
+        // window (diagnostic; one row per frame, buffered). The acquisition
+        // loop's outer window gate must also consult RecordsAllFrames(); until
+        // 2026-09-20 it did not, which is why the flag produced 82 rows.
+        if (record_all_) {
             return true;
         }
         const uint64_t probe_frame =
@@ -590,14 +593,19 @@ private:
                  "helper_fallback_frames,helper_dispatched_frames,last_target_gpu_id,last_route_mode,"
                  "pre_q,enc_q,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow,"
                  "ptp_latch_deferred,ptp_latch_ns\n";
-        std::cout << "[ACQ_CADENCE] Cam " << serial
-                  << " logging frames "
-                  << kAcquisitionCadenceProbeFrameMin << "-"
-                  << kAcquisitionCadenceProbeFrameMax
-                  << " to " << file_path_ << std::endl;
+        if (record_all_) {
+            std::cout << "[ACQ_CADENCE] Cam " << serial << " logging EVERY frame to " << file_path_ << std::endl;
+        } else {
+            std::cout << "[ACQ_CADENCE] Cam " << serial
+                      << " logging frames "
+                      << kAcquisitionCadenceProbeFrameMin << "-"
+                      << kAcquisitionCadenceProbeFrameMax
+                      << " to " << file_path_ << std::endl;
+        }
     }
 
     const CameraParams* camera_params_ = nullptr;
+    bool record_all_ = false;
     std::string current_folder_;
     std::string file_path_;
     std::ofstream file_;
@@ -2704,9 +2712,13 @@ void acquire_frames(
                     current_entry->recording_frame_id > 0
                         ? current_entry->recording_frame_id
                         : current_entry->frame_id;
+                // The recorder applies the 80-160 window (or every frame with
+                // ORANGE_ACQ_CADENCE_PROBE_ALL=1); this outer gate only skips
+                // building the sample outside the window when not recording all.
                 if (!live_recording_folder.empty() &&
-                    probe_frame_id >= kAcquisitionCadenceProbeFrameMin &&
-                    probe_frame_id <= kAcquisitionCadenceProbeFrameMax) {
+                    (acquisition_cadence_probe_recorder.RecordsAllFrames() ||
+                     (probe_frame_id >= kAcquisitionCadenceProbeFrameMin &&
+                      probe_frame_id <= kAcquisitionCadenceProbeFrameMax))) {
                     AcquisitionCadenceProbeSample cadence_sample;
                     cadence_sample.timestamp_utc = get_current_utc_timestamp();
                     cadence_sample.local_frame_id = current_entry->frame_id;

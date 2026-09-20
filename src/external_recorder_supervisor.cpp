@@ -833,6 +833,7 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
     plan.recorder_tool_path = options.recorder_tool_path;
     plan.native_local_input = options.native_local_input;
     plan.native_local_kernel_ptx = options.native_local_kernel_ptx;
+    plan.full_frame_extra_output_delay = options.full_frame_extra_output_delay;
     plan.mode = "off";
     if (!read_string_field(contract,
                            "mode",
@@ -1670,6 +1671,13 @@ std::vector<std::string> BuildRecorderCommand(const SupervisorPlan& plan,
             argv.push_back(plan.native_local_kernel_ptx);
         }
     }
+    // Full-frame-only NVENC pipeline depth (2026-09-20): the env form
+    // ORANGE_EXTERNAL_RECORDER_EXTRA_OUTPUT_DELAY reaches every supervised
+    // recorder (crop recorders included); argv wins inside the probe.
+    if (plan.full_frame_extra_output_delay >= 0 && stream.stream_kind == "full_frame") {
+        argv.push_back("--extra-output-delay");
+        argv.push_back(std::to_string(plan.full_frame_extra_output_delay));
+    }
     return argv;
 }
 
@@ -1744,6 +1752,7 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
         {"recorder_tool_path", plan.recorder_tool_path},
         {"native_local_input", plan.native_local_input},
         {"native_local_kernel_ptx", plan.native_local_kernel_ptx},
+        {"full_frame_extra_output_delay", plan.full_frame_extra_output_delay},
         {"source_path", plan.source_path},
         {"mode", plan.mode},
         {"artifact_root", plan.artifact_root},
