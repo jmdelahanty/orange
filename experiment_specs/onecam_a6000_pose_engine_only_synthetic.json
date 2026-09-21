@@ -1,0 +1,114 @@
+{
+  "experiment_id": "onecam_a6000_pose_engine_only_synthetic",
+  "notes": "Pose stage on the RTX A6000: onecam_engine_only_direct_read_omnifin_a6000 (camera 2010094 acquired by GPUDirect into GPU 0, true direct read, A6000-built omnifin detect engine, immediate_recycle) plus the real TensorRT pose worker on GPU 0 with roi_source=synthetic_center_box every frame, crop 256. The pose engine is the GA107-built fp16 plan loaded on the GA102 (same compute capability; trtexec 0.433 ms median on the A6000 vs 0.720 on an A16 die). Measures the pose graph and capture-to-pose-done on a big GPU under the citrus render load. Not a runnable production configuration (recording cannot move to the A6000); see docs/pose_stage_design_notes_2026_09_12.md.",
+  "selection": {
+    "camera_serials": [
+      "2010094"
+    ],
+    "gpu_ids": [
+      0
+    ]
+  },
+  "fixed": {
+    "duration_s": 60,
+    "warmup_s": 2,
+    "display": false,
+    "yolo": false,
+    "stream_only": false,
+    "sync_mode": "ptp_gate",
+    "recording_sink_mode": "immediate_recycle",
+    "config_folder": "/tmp/orange_pose_engine_only_config_a16",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "ptp_register_read_decimate": 100,
+    "nvenc_direct_input": false,
+    "yolo_worker": {
+      "mode": "real",
+      "engine_path": "/home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_a6000_gpu0_trt100_fp16.engine",
+      "decimate": 1,
+      "publish_live_ipc": false,
+      "timeout_ms": 500,
+      "prewarm_iterations": 3,
+      "fail_on_init_error": true
+    },
+    "yolo_sync_event": true,
+    "ptp_latch_after_fanout": true,
+    "headless_gpu_dmon": true,
+    "external_recorder_direct_input": false,
+    "external_recorder_detect_priority": false,
+    "analytics_early_owned_frame": false,
+    "acq_force_direct_read": true,
+    "recording": {
+      "mode": "single_session",
+      "split_gop": {
+        "placement": "single_gpu",
+        "encoder_gpu_ids": [
+          0
+        ]
+      },
+      "constraints": {
+        "require_peer_access": false
+      }
+    },
+    "pose_worker": {
+      "mode": "real",
+      "engine_path": "/home/jeremy/pose_cedar_shadow_filtered_gray_latest_traditional_a4c30ae1_v001_r001_fp16.engine",
+      "skeleton_id": "fish_v1",
+      "input_width": 256,
+      "input_height": 256,
+      "input_layout": "nchw",
+      "input_dtype": "fp32",
+      "normalization": "model_default",
+      "roi_source": "synthetic_center_box",
+      "queue_depth": 32,
+      "crop_frame_pool_size": 32,
+      "timeout_ms": 500,
+      "prewarm_iterations": 3,
+      "fail_on_init_error": true,
+      "write_events_jsonl": true,
+      "synthetic_detection": {
+        "every_n_frames": 1,
+        "box_width_px": 64,
+        "box_height_px": 64,
+        "label": 0,
+        "confidence": 0.99
+      }
+    }
+  },
+  "matrix": {
+    "codec": [
+      "hevc"
+    ],
+    "preset": [
+      "p1"
+    ],
+    "tuning": [
+      "ll"
+    ],
+    "rate_control_mode": [
+      "vbr"
+    ],
+    "quality_value": [
+      20
+    ],
+    "gop_length": [
+      25
+    ],
+    "aq": [
+      "off"
+    ],
+    "temporal_aq": [
+      "off"
+    ],
+    "lookahead": [
+      "off"
+    ]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 2.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true,
+    "require_zero_camera_drops": true,
+    "require_valid_video_content": false
+  }
+}

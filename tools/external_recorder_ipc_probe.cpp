@@ -42,6 +42,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -67,6 +68,58 @@ struct Options {
     // and deferred-release. Frames from another GPU, or without the nv12_pool
     // layout token, fall back to the direct-source copy.
     bool registered_source = false;
+    bool native_local_input = false;  // opt-in same-GPU full-frame API13 backend
+    // Optional PTX surface-write update for the native local backend. Empty
+    // keeps the validated CUDA copy-engine path.
+    std::string native_local_kernel_ptx;
+    // Early peer staging (2026-09-17): a shard on a GPU other than the
+    // source GPU copies the pool frame into a recorder-owned NV12 staging
+    // buffer at descriptor arrival (intake thread, detect-gated) instead of
+    // inside the encode loop. The 3.2 ms peer copy then overlaps the NVENC
+    // input wait instead of adding to it, and the pool entry is released as
+    // soon as the copy lands. Requires registered_source (external input
+    // slots) and the nv12_pool layout; same-GPU shards are unaffected.
+    bool early_peer_stage = false;
+    // Explicit CUDA peer access from an other-GPU shard to the source GPU
+    // (2026-09-17). Without it a device-to-device copy between the two dies
+    // is not guaranteed to use the PCIe peer path; the probe only ever
+    // relied on cudaIpcMemLazyEnablePeerAccess at handle import, which acts
+    // for the importing (source) device's context.
+    bool peer_access = false;
+    // Early staging as a push: issue the staging copy from the source GPU's
+    // context (its copy engine writes into the shard GPU's staging buffer,
+    // posted PCIe writes) instead of the shard GPU pulling (PCIe reads).
+    // Only meaningful with early_peer_stage.
+    bool early_stage_push = false;
+    // Phase-locked encode submission (2026-09-18): on the same-GPU (local)
+    // full-frame shard, hold each frame and submit it to NVENC no earlier
+    // than capture + encode_phase_ms (system clock, from the descriptor's
+    // timestamp_sys). The driver's Convert_PL2BL kernels (0.62 ms of SM
+    // time per 4512x4512 frame, in this process's context) then land in a
+    // window after the analytics' detect and pose graphs instead of drifting
+    // onto them. 0 = off.
+    double encode_phase_ms = 0.0;
+    // Split submit/harvest (2026-09-18): on Linux nvEncLockBitstream blocks
+    // until the frame is encoded, so one encode thread that submits and then
+    // locks sits about 11 ms per frame (extra_output_delay 1) and cannot hold
+    // the phase for the next frame. With split_submit the encode thread only
+    // maps and submits (SubmitFrameOnly, returns in ~0.2 ms) and a harvest
+    // thread locks the bitstreams in order, writes the packets and releases
+    // the sources. Direct-source (registered / early-staged) loop only.
+    bool split_submit = false;
+    // Owner push (2026-09-19): the analytics process copies each frame that
+    // routes to a peer-GPU shard into a staging buffer this recorder exported
+    // (STAGE lines at prewarm), and sends the FRAME with staged=<index> once
+    // the copy is complete. The peer shard then never reads the pool buffer:
+    // a peer read of an IPC-imported buffer collapses to ~3 GB/s under load
+    // while a push from the source die holds 6 GB/s (tools/p2p_ipc_pull_bench).
+    // The shard returns slots with STAGEFREE <index>. Full-frame shards only.
+    bool owner_push = false;
+    uint32_t owner_push_slots = 8;
+    size_t shard_count = 1;  // set by make_shard_options; the STAGE line tells the client the routing modulus
+    // Added to gop_index before the shard modulus (env ORANGE_EXTERNAL_RECORDER_GOP_ROUTE_OFFSET,
+    // --gop-route-offset): lets the two cameras of one card alternate their peer windows.
+    uint32_t gop_route_offset = 0;
     uint32_t fps = 60;
     std::string codec = "hevc";
     std::string preset = "p1";
@@ -128,7 +181,8 @@ struct FrameDescriptor {
     uint64_t timestamp_sys = 0;
     std::string routing_policy = "single_shard";
     std::string handle_hex;
-    bool nv12_pool = false;  // source buffer is Y plane + chroma(128) plane
+    bool nv12_pool = false;
+    int staged_index = -1;  // owner push: frame already copied into this shard staging slot  // source buffer is Y plane + chroma(128) plane
     // Ingress reached its deferred-release cap: copy the frame into a
     // recorder-owned staging buffer and RELEASE the source at once instead
     // of holding the pool entry until NVENC unmaps it.
@@ -211,7 +265,15 @@ void signal_handler(int)
         << "  --prewarm-peer-copy   After first IPC import, copy 1 byte into each shard to warm peer paths.\n"
         << "  --direct-input-source Copy IPC source directly into NVENC input before ACK. Experimental.\n"
         << "  --deferred-source-release Send RELEASE after source consumption; ACK only accepts work. Experimental.\n"
-        << "  --registered-source   Encode from the NV12-shaped pool buffer registered with NVENC (no copy); implies the two above. Default on since 2026-09-04 (env ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE=0 disables).\n"
+        << "  --split-submit        Submit on the encode thread, lock bitstreams on a harvest thread (env ORANGE_EXTERNAL_RECORDER_SPLIT_SUBMIT=1). Default off.\n"
+        << "  --owner-push          Peer-GPU shards export staging slots; the analytics process pushes frames into them (env ORANGE_EXTERNAL_RECORDER_OWNER_PUSH=1, slots ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_SLOTS). Default off.\n"
+        << "  --native-local-input  Native NV12 arrays for same-GPU full-frame shards (isolated API13 build only).\n"
+        << "  --native-local-kernel-ptx <path> Use PTX surface-write Y updates for native local input (env ORANGE_EXTERNAL_RECORDER_NATIVE_KERNEL_PTX).\n"
+        << "  --registered-source   Encode from the NV12-shaped pool buffer registered with NVENC (no copy); implies --direct-input-source and --deferred-source-release. Default on since 2026-09-04 (env ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE=0 disables).\n"
+        << "  --early-peer-stage    Other-GPU shards copy the pool frame into a staging buffer at descriptor arrival, before the NVENC input wait. Default on since 2026-09-17 (env ORANGE_EXTERNAL_RECORDER_EARLY_PEER_STAGE=0 disables).\n"
+        << "  --encode-phase-ms <ms> Local full-frame shard: submit each frame to NVENC no earlier than capture + ms (env ORANGE_EXTERNAL_RECORDER_ENCODE_PHASE_MS). 0 = off.\n"
+        << "  --early-stage-push    Issue the early staging copy from the source GPU (push) instead of the shard GPU (pull) (env ORANGE_EXTERNAL_RECORDER_EARLY_STAGE_PUSH=1).\n"
+        << "  --peer-access         Enable CUDA peer access from an other-GPU shard to the source GPU before its copies (env ORANGE_EXTERNAL_RECORDER_PEER_ACCESS=1).\n"
         << "  --fps <int>           Encoder nominal FPS. Default 60.\n"
         << "  --codec <hevc|h264>   Default hevc.\n"
         << "  --preset <p1|p3|p5|p7> Default p1.\n"
@@ -383,8 +445,42 @@ Options parse_options(int argc, char** argv)
         env_flag_enabled("ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE", false);
     // Default on since 2026-09-04 (lever 2c; 30-minute endurance passed).
     // ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE=0 restores the copy path.
+    options.native_local_input =
+        env_flag_enabled("ORANGE_EXTERNAL_RECORDER_NATIVE_LOCAL_INPUT", false);
+    if (const char* kernel_env = std::getenv("ORANGE_EXTERNAL_RECORDER_NATIVE_KERNEL_PTX");
+        kernel_env && *kernel_env) {
+        options.native_local_kernel_ptx = kernel_env;
+    }
     options.registered_source =
         env_flag_enabled("ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE", true);
+    // Default on since 2026-09-17 (600 s endurance passed, zero camera drops).
+    // ORANGE_EXTERNAL_RECORDER_EARLY_PEER_STAGE=0 restores the in-loop copy.
+    options.early_peer_stage =
+        env_flag_enabled("ORANGE_EXTERNAL_RECORDER_EARLY_PEER_STAGE", true);
+    options.peer_access =
+        env_flag_enabled("ORANGE_EXTERNAL_RECORDER_PEER_ACCESS", false);
+    options.early_stage_push =
+        env_flag_enabled("ORANGE_EXTERNAL_RECORDER_EARLY_STAGE_PUSH", false);
+    if (const char* phase_env = std::getenv("ORANGE_EXTERNAL_RECORDER_ENCODE_PHASE_MS"); phase_env && *phase_env) {
+        options.encode_phase_ms = std::atof(phase_env);
+    }
+    options.split_submit =
+        env_flag_enabled("ORANGE_EXTERNAL_RECORDER_SPLIT_SUBMIT", false);
+    options.owner_push =
+        env_flag_enabled("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH", false);
+    if (const char* off_env = std::getenv("ORANGE_EXTERNAL_RECORDER_GOP_ROUTE_OFFSET"); off_env && *off_env) {
+        options.gop_route_offset = static_cast<uint32_t>(std::max(0, std::atoi(off_env)));
+    }
+    if (const char* slots_env = std::getenv("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_SLOTS"); slots_env && *slots_env) {
+        options.owner_push_slots = static_cast<uint32_t>(std::max(1, std::atoi(slots_env)));
+    }
+    // NVENC pipelining depth. With the default 3 the driver defers its input
+    // conversion kernels (Convert_PL2BL) until the engine picks the frame up,
+    // about two frames after submission, so the phase lock cannot place them;
+    // with 0 or 1 they run about 0.2 ms after the encode call (nsys, 2026-09-18).
+    if (const char* od_env = std::getenv("ORANGE_EXTERNAL_RECORDER_EXTRA_OUTPUT_DELAY"); od_env && *od_env) {
+        options.extra_output_delay = static_cast<uint32_t>(std::atoi(od_env));
+    }
     options.min_free_bytes =
         env_u64("ORANGE_EXTERNAL_RECORDER_MIN_FREE_BYTES", 0);
     options.low_space_warning_bytes =
@@ -435,8 +531,26 @@ Options parse_options(int argc, char** argv)
             options.direct_input_source = true;
         } else if (arg == "--deferred-source-release") {
             options.deferred_source_release = true;
+        } else if (arg == "--native-local-input") {
+            options.native_local_input = true;
+        } else if (arg == "--native-local-kernel-ptx") {
+            options.native_local_kernel_ptx = consume(arg.c_str());
         } else if (arg == "--registered-source") {
             options.registered_source = true;
+        } else if (arg == "--early-peer-stage") {
+            options.early_peer_stage = true;
+        } else if (arg == "--peer-access") {
+            options.peer_access = true;
+        } else if (arg == "--early-stage-push") {
+            options.early_stage_push = true;
+        } else if (arg == "--encode-phase-ms") {
+            options.encode_phase_ms = std::atof(consume(arg.c_str()).c_str());
+        } else if (arg == "--split-submit") {
+            options.split_submit = true;
+        } else if (arg == "--owner-push") {
+            options.owner_push = true;
+        } else if (arg == "--gop-route-offset") {
+            options.gop_route_offset = parse_u32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--fps") {
             options.fps = parse_u32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--codec") {
@@ -638,6 +752,32 @@ Options parse_options(int argc, char** argv)
         throw std::runtime_error(
             "Importance maps are currently supported only for full_frame streams");
     }
+    if (options.native_local_input) {
+#ifndef ORANGE_NVENC_NATIVE_ARRAY_INPUT
+        throw std::runtime_error("--native-local-input requires the isolated CUDA13/NVENC13 recorder build");
+#endif
+        if (options.stream_kind != "full_frame" || options.codec != "hevc") {
+            throw std::runtime_error("Native local input currently requires full-frame HEVC");
+        }
+        options.registered_source = true;
+    }
+    if (!options.native_local_kernel_ptx.empty()) {
+#ifndef ORANGE_NVENC_NATIVE_ARRAY_INPUT
+        throw std::runtime_error(
+            "--native-local-kernel-ptx requires the isolated CUDA13/NVENC13 recorder build");
+#else
+        if (!options.native_local_input) {
+            throw std::runtime_error(
+                "--native-local-kernel-ptx requires --native-local-input");
+        }
+        std::ifstream kernel_ptx(options.native_local_kernel_ptx, std::ios::binary);
+        if (!kernel_ptx) {
+            throw std::runtime_error(
+                "Native local kernel PTX is missing or unreadable: " +
+                options.native_local_kernel_ptx);
+        }
+#endif
+    }
     if (options.registered_source) {
         options.direct_input_source = true;
         options.deferred_source_release = true;
@@ -671,6 +811,19 @@ double elapsed_ms(std::chrono::steady_clock::time_point start)
     return static_cast<double>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - start).count()) / 1000000.0;
+}
+
+std::string ipc_handle_to_hex(const cudaIpcMemHandle_t& handle)
+{
+    static const char* digits = "0123456789abcdef";
+    const auto* bytes = reinterpret_cast<const unsigned char*>(&handle);
+    std::string hex;
+    hex.reserve(sizeof(cudaIpcMemHandle_t) * 2);
+    for (size_t i = 0; i < sizeof(cudaIpcMemHandle_t); ++i) {
+        hex.push_back(digits[bytes[i] >> 4]);
+        hex.push_back(digits[bytes[i] & 0x0f]);
+    }
+    return hex;
 }
 
 bool hex_to_ipc_handle(const std::string& hex, cudaIpcMemHandle_t* handle)
@@ -1837,6 +1990,8 @@ bool parse_frame_descriptor(const std::string& line, FrameDescriptor* desc)
             desc->copy_release = true;
         } else if (extra_token.rfind("pool_bytes=", 0) == 0) {
             desc->pool_bytes = std::strtoull(extra_token.c_str() + 11, nullptr, 10);
+        } else if (extra_token.rfind("staged=", 0) == 0) {
+            desc->staged_index = std::atoi(extra_token.c_str() + 7);
         }
     }
     if (desc->stream_id.empty()) {
@@ -1954,6 +2109,14 @@ struct EncodeSample {
     double enqueue_age_ms = 0.0;
     double prepare_ms = 0.0;
     double slot_reuse_wait_ms = 0.0;
+    // Early peer staging: time the encode thread waited for the copy queued
+    // at descriptor arrival to land (0 when it had already landed).
+    double stage_wait_ms = 0.0;
+    // Early peer staging: GPU-timed duration of the staging copy itself.
+    double stage_copy_ms = 0.0;
+    // Phase-locked submission: how long the encode thread held the frame
+    // before submitting (0 when the target time had already passed).
+    double phase_wait_ms = 0.0;
     double encode_total_ms = 0.0;
     double encode_picture_ms = 0.0;
     double completion_wait_ms = 0.0;
@@ -1969,6 +2132,11 @@ struct EncodeSample {
 };
 
 struct EncodeSummary {
+    bool native_local_requested = false;
+    bool native_local_resolved = false;
+    uint64_t native_frames = 0;
+    std::string native_update = "none";
+    std::string native_source_release_boundary;
     int assigned_gpu_id = -1;
     int assigned_shard_id = 0;
     std::string routing_policy = "single_shard";
@@ -2313,6 +2481,19 @@ EncodeSummary aggregate_encode_summaries(const std::vector<EncodeSummary>& summa
     out.pixel_format = summaries.front().pixel_format;
     out.importance_map = summaries.front().importance_map;
     for (const EncodeSummary& summary : summaries) {
+        out.native_local_requested |= summary.native_local_requested;
+        out.native_local_resolved |= summary.native_local_resolved;
+        out.native_frames += summary.native_frames;
+        if (summary.native_local_resolved) {
+            if (out.native_update == "none") {
+                out.native_update = summary.native_update;
+                out.native_source_release_boundary =
+                    summary.native_source_release_boundary;
+            } else if (out.native_update != summary.native_update) {
+                out.native_update = "mixed";
+                out.native_source_release_boundary = "mixed";
+            }
+        }
         out.frames_encoded += summary.frames_encoded;
         out.frames_dropped += summary.frames_dropped;
         out.source_releases_sent += summary.source_releases_sent;
@@ -2489,7 +2670,7 @@ void write_encode_csv_header(std::ofstream& csv)
     csv << "encode_index,source_frame_index,camera_serial,session_id,stream_id,"
            "recording_frame_id,local_frame_id,gop_index,frame_index_within_gop,"
            "source_gpu_id,assigned_gpu_id,assigned_shard_id,routing_policy,bytes,"
-           "enqueue_age_ms,prepare_ms,slot_reuse_wait_ms,encode_total_ms,"
+           "enqueue_age_ms,prepare_ms,slot_reuse_wait_ms,stage_wait_ms,stage_copy_ms,phase_wait_ms,encode_total_ms,"
            "encode_picture_ms,completion_wait_ms,lock_bitstream_ms,"
            "bitstream_copy_ms,unlock_bitstream_ms,unmap_input_resource_ms,"
            "bitstream_fetch_ms,output_packets,output_bytes,returned_packets,"
@@ -2516,6 +2697,9 @@ void write_encode_csv_row(std::ofstream& csv, const EncodeSample& sample)
         << sample.enqueue_age_ms << ","
         << sample.prepare_ms << ","
         << sample.slot_reuse_wait_ms << ","
+        << sample.stage_wait_ms << ","
+        << sample.stage_copy_ms << ","
+        << sample.phase_wait_ms << ","
         << sample.encode_total_ms << ","
         << sample.encode_picture_ms << ","
         << sample.completion_wait_ms << ","
@@ -3590,9 +3774,18 @@ struct DirectSourceWorkItem {
     FrameDescriptor desc;
     void* source_ptr = nullptr;
     std::chrono::steady_clock::time_point enqueued_at;
+    // Early peer staging: index into the staging set when the intake thread
+    // already queued the peer copy into a recorder-owned buffer (the pool
+    // entry was released at enqueue), else SIZE_MAX.
+    size_t early_staging_index = SIZE_MAX;
     // Create the encoder for desc's geometry and do nothing else (client
     // hello carried the frame size); see prewarm_encoder().
     bool prewarm_only = false;
+    bool ack_ready = false;
+    bool source_released = false;
+    bool source_release_safe = true;
+    bool source_copy_pending = false;
+    bool owner_staged = false;  // frame arrived in an exported slot; no pull, no RELEASE, STAGEFREE on retire
 };
 
 class ExternalEncodeWorker {
@@ -3604,14 +3797,65 @@ public:
     ~ExternalEncodeWorker()
     {
         stop();
+        (void)cudaSetDevice(options_.gpu_id);
+#ifdef ORANGE_NVENC_NATIVE_ARRAY_INPUT
+        // A failed asynchronous copy or kernel may still target a native array
+        // after the worker exits. Quiesce it before unregistering or destroying storage.
+        if (native_copy_stream_) { cuStreamSynchronize(native_copy_stream_); }
+#endif
+        if (stage_stream_) {
+            if (stage_stream_device_ >= 0) {
+                (void)cudaSetDevice(stage_stream_device_);
+            }
+            (void)cudaStreamSynchronize(stage_stream_);
+            (void)cudaSetDevice(options_.gpu_id);
+        }
         release_slots();
-        // The encoder unregistered the staging resources in its destructor
-        // (stop() joins the worker, which owns encoder_); free the memory now.
+        // NvEncoder owns every external registration. Destroy it before the
+        // registered arrays and staging allocations that back those handles.
         encoder_.reset();
+        if (stream_) {
+            cudaStreamDestroy(stream_);
+            stream_ = nullptr;
+        }
+#ifdef ORANGE_NVENC_NATIVE_ARRAY_INPUT
+        if (native_copy_event_) { cuEventDestroy(native_copy_event_); }
+        if (native_copy_stream_) { cuStreamDestroy(native_copy_stream_); }
+        native_copy_event_ = nullptr;
+        native_copy_stream_ = nullptr;
+        for (const auto& surface : native_surfaces_) {
+            if (surface.y_surface) { cuSurfObjectDestroy(surface.y_surface); }
+            if (surface.parent) { cuArrayDestroy(surface.parent); }
+        }
+        native_surfaces_.clear();
+        if (native_kernel_module_) { cuModuleUnload(native_kernel_module_); }
+        native_kernel_function_ = nullptr;
+        native_kernel_module_ = nullptr;
+#endif
         for (void* ptr : staging_buffers_) {
             cudaFree(ptr);
         }
         staging_buffers_.clear();
+        if (stage_stream_device_ >= 0) {
+            (void)cudaSetDevice(stage_stream_device_);
+        }
+        for (cudaEvent_t event : staging_events_) {
+            if (event) {
+                cudaEventDestroy(event);
+            }
+        }
+        staging_events_.clear();
+        for (cudaEvent_t event : staging_start_events_) {
+            if (event) {
+                cudaEventDestroy(event);
+            }
+        }
+        staging_start_events_.clear();
+        if (stage_stream_) {
+            cudaStreamDestroy(stage_stream_);
+            stage_stream_ = nullptr;
+        }
+        stage_stream_device_ = -1;
     }
 
     void start()
@@ -3654,8 +3898,19 @@ public:
         return options_.direct_input_source && options_.deferred_source_release;
     }
 
-    void notify_deferred_ack_sent()
+    void notify_deferred_ack_sent(uint64_t recording_frame_id)
     {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto item = std::find_if(direct_source_queue_.begin(), direct_source_queue_.end(),
+                [&](const DirectSourceWorkItem& queued) {
+                    return !queued.prewarm_only && queued.desc.recording_frame_id == recording_frame_id;
+                });
+            if (item == direct_source_queue_.end()) {
+                throw std::runtime_error("Deferred ACK has no pending recorder work item");
+            }
+            item->ack_ready = true;
+        }
         cv_.notify_one();
     }
 
@@ -3668,6 +3923,14 @@ public:
         cv_.notify_all();
         if (worker_.joinable()) {
             worker_.join();
+        }
+        // Intake writes ACK before it marks the queued item ready. If the
+        // worker fails in that interval, its failure drain can miss the newly
+        // ACKed item. Main calls stop after intake has ended, so drain once
+        // more after joining the worker to close that race.
+        if (uses_deferred_source_release()) {
+            (void)cudaSetDevice(options_.gpu_id);
+            release_acknowledged_queued_sources();
         }
         running_ = false;
     }
@@ -3763,6 +4026,18 @@ public:
     EncodeSummary summary() const
     {
         EncodeSummary out;
+        out.native_local_requested = options_.native_local_input;
+        out.native_local_resolved = native_local_enabled_;
+        out.native_frames = native_frames_;
+        if (native_local_enabled_) {
+            out.native_update = options_.native_local_kernel_ptx.empty()
+                ? "copy"
+                : "kernel";
+            out.native_source_release_boundary =
+                options_.native_local_kernel_ptx.empty()
+                    ? "copy_complete"
+                    : "kernel_complete";
+        }
         out.assigned_gpu_id = options_.gpu_id;
         out.assigned_shard_id = options_.shard_id;
         out.routing_policy = options_.routing_policy;
@@ -4027,6 +4302,74 @@ private:
         }
     }
 
+#ifdef ORANGE_NVENC_NATIVE_ARRAY_INPUT
+    void initialize_native_surfaces(const FrameDescriptor& desc)
+    {
+        check_cu(cuStreamCreate(&native_copy_stream_, CU_STREAM_NON_BLOCKING), "cuStreamCreate(native recorder update)");
+        check_cu(cuEventCreate(&native_copy_event_, CU_EVENT_DISABLE_TIMING), "cuEventCreate(native recorder update)");
+        if (!options_.native_local_kernel_ptx.empty()) {
+            check_cu(
+                cuModuleLoad(
+                    &native_kernel_module_,
+                    options_.native_local_kernel_ptx.c_str()),
+                "cuModuleLoad(native recorder kernel PTX)");
+            check_cu(
+                cuModuleGetFunction(
+                    &native_kernel_function_,
+                    native_kernel_module_,
+                    "orange_native_nv12_write_luma"),
+                "cuModuleGetFunction(orange_native_nv12_write_luma)");
+        }
+        native_surfaces_.reserve(encoder_->GetEncoderBufferCount());
+        std::vector<uint8_t> y_padding(4608 * static_cast<size_t>(desc.height), 0);
+        std::vector<uint8_t> neutral_uv(4608 * static_cast<size_t>(desc.height / 2), 128);
+        for (int i = 0; i < encoder_->GetEncoderBufferCount(); ++i) {
+            native_surfaces_.emplace_back();
+            auto& surface = native_surfaces_.back();
+            CUDA_ARRAY3D_DESCRIPTOR allocation{};
+            allocation.Width = 4608;
+            allocation.Height = desc.height;
+            allocation.Format = CU_AD_FORMAT_NV12;
+            allocation.NumChannels = 3;
+            allocation.Flags = CUDA_ARRAY3D_VIDEO_ENCODE_DECODE | CUDA_ARRAY3D_SURFACE_LDST;
+            check_cu(cuArray3DCreate(&surface.parent, &allocation), "cuArray3DCreate(native recorder)");
+            check_cu(cuArrayGetPlane(&surface.y, surface.parent, 0), "cuArrayGetPlane(native recorder Y)");
+            check_cu(cuArrayGetPlane(&surface.uv, surface.parent, 1), "cuArrayGetPlane(native recorder UV)");
+            if (native_kernel_function_) {
+                CUDA_RESOURCE_DESC resource{};
+                resource.resType = CU_RESOURCE_TYPE_ARRAY;
+                resource.res.array.hArray = surface.y;
+                check_cu(
+                    cuSurfObjectCreate(&surface.y_surface, &resource),
+                    "cuSurfObjectCreate(native recorder Y)");
+            }
+            CUDA_MEMCPY2D fill{};
+            fill.srcMemoryType = CU_MEMORYTYPE_HOST;
+            fill.srcHost = y_padding.data();
+            fill.srcPitch = 4608;
+            fill.dstMemoryType = CU_MEMORYTYPE_ARRAY;
+            fill.dstArray = surface.y;
+            fill.WidthInBytes = 4608;
+            fill.Height = desc.height;
+            check_cu(cuMemcpy2D(&fill), "cuMemcpy2D(native recorder Y initialize)");
+            fill.srcHost = neutral_uv.data();
+            fill.dstArray = surface.uv;
+            fill.Height = desc.height / 2;
+            check_cu(cuMemcpy2D(&fill), "cuMemcpy2D(native recorder UV initialize)");
+            surface.registered = encoder_->RegisterExternalResource(
+                reinterpret_cast<void*>(surface.parent), NV_ENC_INPUT_RESOURCE_TYPE_CUDAARRAY, 4608);
+        }
+        std::cout << "external_recorder_ipc_probe input_backend=native_nv12_array"
+                  << " gpu=" << options_.gpu_id << " visible=4512x4512 storage_width=4608"
+                  << " register_pitch=4608 input_pitch=4608 native_update="
+                  << (native_kernel_function_ ? "kernel" : "copy")
+                  << " source_release_boundary="
+                  << (native_kernel_function_ ? "kernel_complete" : "copy_complete")
+                  << " cuda_header=" << CUDA_VERSION << " nvenc_header=" << NVENCAPI_MAJOR_VERSION
+                  << "." << NVENCAPI_MINOR_VERSION << std::endl;
+    }
+#endif
+
     void initialize_encoder(const FrameDescriptor& desc, const bool record_first_desc = true)
     {
         if (record_first_desc && !has_first_desc_) {
@@ -4090,18 +4433,48 @@ private:
         // nv12_pool condition a crop recorder on the detect die prepared
         // external slots and then had no input frame for the copy fallback
         // (2026-09-04).
+        native_local_enabled_ = options_.native_local_input && desc.source_gpu_id == options_.gpu_id;
+        if (native_local_enabled_ && (!desc.nv12_pool || desc.width != 4512 || desc.height != 4512)) {
+            throw std::runtime_error("Native local input requires the validated 4512x4512 NV12-shaped pool");
+        }
         registered_mode_enabled_ =
             options_.registered_source &&
             desc.source_gpu_id == options_.gpu_id &&
             desc.nv12_pool;
-        if (registered_mode_enabled_) {
+        // Early peer staging: an other-GPU shard also runs on external input
+        // slots, fed from recorder-owned NV12 staging buffers that the intake
+        // thread fills at descriptor arrival. Every frame of such a shard is
+        // staged (external mode has no owned input frames to copy into).
+        early_stage_enabled_ =
+            options_.early_peer_stage &&
+            options_.registered_source &&
+            desc.nv12_pool &&
+            desc.source_gpu_id != options_.gpu_id;
+        external_slots_enabled_ = registered_mode_enabled_ || early_stage_enabled_ || native_local_enabled_;
+        if (external_slots_enabled_) {
             encoder_->SetExternalInputBufferMode(true);
         }
         encoder_->CreateEncoder(&initialize_params);
-        if (registered_mode_enabled_) {
+        if (external_slots_enabled_) {
             encoder_->PrepareExternalRegisteredSlots();
-            std::cout << "external_recorder_ipc_probe registered-source mode: gpu=" << options_.gpu_id
+#ifdef ORANGE_NVENC_NATIVE_ARRAY_INPUT
+            if (native_local_enabled_) { initialize_native_surfaces(desc); }
+#endif
+            std::cout << "external_recorder_ipc_probe "
+                      << (native_local_enabled_ ? "native-local"
+                          : registered_mode_enabled_ ? "registered-source"
+                          : (options_.early_stage_push ? "early-peer-stage(push)" : "early-peer-stage(pull)"))
+                      << " mode: gpu=" << options_.gpu_id
+                      << " source_gpu=" << desc.source_gpu_id
                       << " encoder_buffers=" << encoder_->GetEncoderBufferCount() << std::endl;
+        }
+        if (early_stage_enabled_) {
+            // Buffers the intake thread allocated before the encoder existed
+            // (first frames arrive while the prewarm item is still running).
+            register_pending_staging_buffers();
+        }
+        if (desc.source_gpu_id >= 0 && desc.source_gpu_id != options_.gpu_id) {
+            ensure_peer_access(desc.source_gpu_id);
         }
         encoder_->SetIOCudaStreams(
             reinterpret_cast<NV_ENC_CUSTREAM_PTR>(&stream_),
@@ -4272,6 +4645,50 @@ private:
             "cudaEventCreateWithFlags(external direct input ready)");
     }
 
+    // Phase-locked submission: sleep until capture + encode_phase_ms on the
+    // system clock (timestamp_sys is CLOCK_REALTIME ns at acquisition), only
+    // for the local full-frame shard. Returns the time held in ms.
+    double wait_for_encode_phase(const FrameDescriptor& desc)
+    {
+        if (options_.encode_phase_ms <= 0.0 || options_.stream_kind != "full_frame" ||
+            desc.source_gpu_id != options_.gpu_id || desc.timestamp_sys == 0) {
+            return 0.0;
+        }
+        const uint64_t target_ns = desc.timestamp_sys +
+            static_cast<uint64_t>(options_.encode_phase_ms * 1e6);
+        timespec now{};
+        clock_gettime(CLOCK_REALTIME, &now);
+        const uint64_t now_ns = static_cast<uint64_t>(now.tv_sec) * 1000000000ull + static_cast<uint64_t>(now.tv_nsec);
+        if (now_ns >= target_ns) {
+            return 0.0;
+        }
+        const uint64_t hold_ns = target_ns - now_ns;
+        if (hold_ns > 50000000ull) {  // more than 50 ms: clocks disagree; do not hold
+            phase_clock_skips_++;
+            return 0.0;
+        }
+        timespec target{};
+        target.tv_sec = static_cast<time_t>(target_ns / 1000000000ull);
+        target.tv_nsec = static_cast<long>(target_ns % 1000000000ull);
+        // Sleep to within ~150 us, then spin for the rest.
+        if (hold_ns > 250000ull) {
+            timespec coarse = target;
+            const uint64_t coarse_ns = target_ns - 150000ull;
+            coarse.tv_sec = static_cast<time_t>(coarse_ns / 1000000000ull);
+            coarse.tv_nsec = static_cast<long>(coarse_ns % 1000000000ull);
+            clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &coarse, nullptr);
+        }
+        for (;;) {
+            clock_gettime(CLOCK_REALTIME, &now);
+            const uint64_t t = static_cast<uint64_t>(now.tv_sec) * 1000000000ull + static_cast<uint64_t>(now.tv_nsec);
+            if (t >= target_ns) {
+                break;
+            }
+        }
+        phase_waits_++;
+        return static_cast<double>(hold_ns) / 1e6;
+    }
+
     bool send_source_release(const FrameDescriptor& desc)
     {
         if (!options_.deferred_source_release) {
@@ -4302,6 +4719,103 @@ private:
         return true;
     }
 
+    bool release_source_once(DirectSourceWorkItem& item)
+    {
+        if (item.source_released) {
+            return true;
+        }
+        if (!item.ack_ready || !item.source_release_safe) {
+            return false;
+        }
+        item.source_released = send_source_release(item.desc);
+        return item.source_released;
+    }
+
+    void quiesce_source_copy_after_failure(DirectSourceWorkItem& item)
+    {
+#ifdef ORANGE_NVENC_NATIVE_ARRAY_INPUT
+        if (item.source_copy_pending && native_local_enabled_) {
+            if (native_copy_stream_ &&
+                cuStreamSynchronize(native_copy_stream_) == CUDA_SUCCESS) {
+                item.source_copy_pending = false;
+                item.source_release_safe = true;
+            }
+            return;
+        }
+#endif
+        if (item.source_copy_pending && item.early_staging_index != SIZE_MAX) {
+            if (quiesce_stage_stream()) {
+                item.source_copy_pending = false;
+                item.source_release_safe = true;
+                release_staging_buffer(item.early_staging_index);
+                item.early_staging_index = SIZE_MAX;
+            }
+            return;
+        }
+        if (item.source_copy_pending && stream_) {
+            if (cudaStreamSynchronize(stream_) == cudaSuccess) {
+                item.source_copy_pending = false;
+                item.source_release_safe = true;
+            }
+            return;
+        }
+    }
+
+    bool quiesce_stage_stream()
+    {
+        if (!stage_stream_) {
+            return true;
+        }
+        if (stage_stream_device_ >= 0 &&
+            cudaSetDevice(stage_stream_device_) != cudaSuccess) {
+            (void)cudaGetLastError();
+            (void)cudaSetDevice(options_.gpu_id);
+            return false;
+        }
+        const cudaError_t status = cudaStreamSynchronize(stage_stream_);
+        (void)cudaSetDevice(options_.gpu_id);
+        if (status != cudaSuccess) {
+            std::cerr << "external_recorder_ipc_probe failed to quiesce early-stage stream: "
+                      << cudaGetErrorString(status) << std::endl;
+            (void)cudaGetLastError();
+            return false;
+        }
+        return true;
+    }
+
+    void release_acknowledged_queued_sources()
+    {
+        const bool staged_copies_safe = quiesce_stage_stream();
+        std::vector<DirectSourceWorkItem> acknowledged;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            auto item = direct_source_queue_.begin();
+            while (item != direct_source_queue_.end()) {
+                if (item->prewarm_only) {
+                    item = direct_source_queue_.erase(item);
+                    continue;
+                }
+                if (!item->ack_ready) {
+                    ++item;
+                    continue;
+                }
+                acknowledged.push_back(*item);
+                item = direct_source_queue_.erase(item);
+            }
+        }
+        for (DirectSourceWorkItem& item : acknowledged) {
+            if (item.early_staging_index != SIZE_MAX) {
+                if (!staged_copies_safe) {
+                    continue;
+                }
+                release_staging_buffer(item.early_staging_index);
+            }
+            item.source_release_safe = true;
+            (void)release_source_once(item);
+            frames_dropped_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
     bool enqueue_direct_source(const FrameDescriptor& desc,
                                void* imported_ptr,
                                uint64_t source_frame_index,
@@ -4325,6 +4839,100 @@ private:
             }
             return false;
         }
+        // Early peer staging: queue the peer copy now, on the intake thread,
+        // so it runs while this frame waits for an NVENC input slot. The
+        // encoder may not exist yet (prewarm in flight); the staging buffer is
+        // registered with NVENC by the worker on first use.
+        size_t early_staging_index = SIZE_MAX;
+        bool owner_staged = false;
+        if (desc.staged_index >= 0) {
+            // Owner push: the analytics process already copied this frame
+            // into one of the slots exported by export_owner_push_slots().
+            if (desc.source_gpu_id == options_.gpu_id ||
+                owner_slot_indices_.count(static_cast<size_t>(desc.staged_index)) == 0) {
+                throw std::runtime_error(
+                    "owner push: staged frame " + std::to_string(desc.recording_frame_id) +
+                    " routed to shard gpu " + std::to_string(options_.gpu_id) +
+                    " which does not own slot " + std::to_string(desc.staged_index));
+            }
+            early_staging_index = static_cast<size_t>(desc.staged_index);
+            owner_staged = true;
+            owner_staged_frames_.fetch_add(1, std::memory_order_relaxed);
+        }
+        const bool stage_early =
+            !owner_staged &&
+            options_.early_peer_stage &&
+            options_.registered_source &&
+            desc.nv12_pool &&
+            desc.source_gpu_id != options_.gpu_id;
+        if (stage_early) {
+            // The intake thread's current device is the source GPU (it
+            // imports the pool handles there); switch to the shard GPU for
+            // the copy and restore it before returning, or the next handle
+            // import lands in the wrong context and the same-GPU shard's
+            // NVENC registration fails (error 23, 2026-09-17).
+            int intake_device = -1;
+            check_cuda(cudaGetDevice(&intake_device), "cudaGetDevice(external early peer stage)");
+            struct RestoreDevice {
+                int device;
+                ~RestoreDevice() { if (device >= 0) { cudaSetDevice(device); } }
+            } restore_device{intake_device};
+            check_cuda(cudaSetDevice(options_.gpu_id), "cudaSetDevice(external early peer stage)");
+            ensure_peer_access(desc.source_gpu_id);
+            early_staging_index = acquire_staging_buffer_locked(desc, /*allow_unregistered=*/true);
+            if (early_staging_index == SIZE_MAX) {
+                early_stage_exhausted_.fetch_add(1, std::memory_order_relaxed);
+                frames_dropped_.fetch_add(1, std::memory_order_relaxed);
+                if (sample) {
+                    sample->encode_dropped = true;
+                    sample->detach_copied = false;
+                    sample->encode_queue_depth = queue_depth();
+                }
+                return false;
+            }
+            // Pull (default): the shard GPU's copy engine reads the peer
+            // frame. Push: the source GPU's copy engine writes it. The stream
+            // and the per-buffer events live on the copying device.
+            const bool push = options_.early_stage_push && desc.source_gpu_id >= 0;
+            const int copy_device = push ? desc.source_gpu_id : options_.gpu_id;
+            check_cuda(cudaSetDevice(copy_device), "cudaSetDevice(external early stage copy device)");
+            if (push) {
+                ensure_push_peer_access(desc.source_gpu_id);
+            }
+            ensure_stage_stream();
+            ensure_staging_events(early_staging_index);
+            const auto copy_start = std::chrono::steady_clock::now();
+            check_cuda(
+                cudaEventRecord(staging_start_events_[early_staging_index], stage_stream_),
+                "cudaEventRecord(external early peer stage start)");
+            if (push) {
+                check_cuda(
+                    cudaMemcpyPeerAsync(
+                        staging_buffers_[early_staging_index],
+                        options_.gpu_id,
+                        imported_ptr,
+                        desc.source_gpu_id,
+                        static_cast<size_t>(desc.bytes),
+                        stage_stream_),
+                    "cudaMemcpyPeerAsync(external early stage push)");
+            } else {
+                check_cuda(
+                    cudaMemcpyAsync(
+                        staging_buffers_[early_staging_index],
+                        imported_ptr,
+                        static_cast<size_t>(desc.bytes),
+                        cudaMemcpyDeviceToDevice,
+                        stage_stream_),
+                    "cudaMemcpyAsync(external early peer stage)");
+            }
+            check_cuda(
+                cudaEventRecord(staging_events_[early_staging_index], stage_stream_),
+                "cudaEventRecord(external early peer stage)");
+            if (sample) {
+                sample->copy_ms = elapsed_ms(copy_start);
+                sample->detach_copied = true;
+            }
+        }
         {
             std::lock_guard<std::mutex> lock(mutex_);
             if (direct_source_queue_.size() >= options_.encode_queue_depth) {
@@ -4334,13 +4942,28 @@ private:
                     sample->detach_copied = false;
                     sample->encode_queue_depth = direct_source_queue_.size();
                 }
+                if (early_staging_index != SIZE_MAX) {
+                    // The intake thread will ACK and RELEASE this dropped
+                    // descriptor. Finish its peer read before the producer is
+                    // allowed to recycle the source allocation.
+                    check_cuda(
+                        cudaEventSynchronize(staging_events_[early_staging_index]),
+                        "cudaEventSynchronize(dropped early peer stage)");
+                    release_staging_buffer(early_staging_index);
+                }
                 return false;
             }
-            direct_source_queue_.push_back(DirectSourceWorkItem{
+            DirectSourceWorkItem item{
                 source_frame_index,
                 desc,
                 imported_ptr,
-                std::chrono::steady_clock::now()});
+                std::chrono::steady_clock::now()};
+            item.early_staging_index = early_staging_index;
+            item.owner_staged = owner_staged;
+            item.source_release_safe = early_staging_index == SIZE_MAX || owner_staged;
+            item.source_copy_pending = early_staging_index != SIZE_MAX && !owner_staged;
+            item.source_released = owner_staged;  // the owner released its pool buffer itself
+            direct_source_queue_.push_back(item);
             if (sample) {
                 sample->encode_enqueued = true;
                 sample->encode_queue_depth = direct_source_queue_.size();
@@ -4492,6 +5115,9 @@ private:
         slot_reuse_wait_samples_.observe(sample.slot_reuse_wait_ms);
         encode_total_samples_.observe(sample.encode_total_ms);
         encode_picture_samples_.observe(sample.encode_picture_ms);
+        if (options_.split_submit) {
+            return;  // the harvest thread observes lock and fetch times
+        }
         lock_bitstream_samples_.observe(sample.lock_bitstream_ms);
         bitstream_fetch_samples_.observe(sample.bitstream_fetch_ms);
     }
@@ -4567,7 +5193,7 @@ private:
         mp4_writer_.reset();
     }
 
-    void encode_one_direct_source(const DirectSourceWorkItem& item)
+    void encode_one_direct_source(DirectSourceWorkItem& item)
     {
         initialize_encoder(item.desc);
         last_desc_ = item.desc;
@@ -4606,17 +5232,144 @@ private:
         // pressure costs a copy, never a frame.
         const bool use_staging = registered_eligible && item.desc.copy_release;
         const bool use_registered = registered_eligible && !use_staging;
-        if (options_.registered_source && !registered_eligible && !registered_fallback_logged_) {
+        const bool use_early_staged = item.early_staging_index != SIZE_MAX;
+        if (use_early_staged && !early_stage_enabled_) {
+            release_staging_buffer(item.early_staging_index);
+            throw std::runtime_error("early-staged frame reached a shard without external input slots");
+        }
+        if (options_.registered_source && !registered_eligible && !use_early_staged &&
+            !registered_fallback_logged_) {
             registered_fallback_logged_ = true;
             std::cout << "external_recorder_ipc_probe registered-source fallback to copy:"
                       << " nv12_pool=" << (item.desc.nv12_pool ? 1 : 0)
                       << " source_gpu=" << item.desc.source_gpu_id
                       << " encode_gpu=" << options_.gpu_id << std::endl;
         }
-        if (use_registered) {
+#ifdef ORANGE_NVENC_NATIVE_ARRAY_INPUT
+        if (native_local_enabled_) {
             while (!encoder_->WaitForNextInputFrameAvailable(100)) {
                 if (stopping_requested() || failed()) {
-                    (void)send_source_release(item.desc);
+                    (void)release_source_once(item);
+                    frames_dropped_.fetch_add(1, std::memory_order_relaxed);
+                    return;
+                }
+            }
+            const auto slot = encoder_->GetNextInputFrameIndex();
+            const auto& surface = native_surfaces_.at(slot);
+            item.source_copy_pending = true;
+            item.source_release_safe = false;
+            if (native_kernel_function_) {
+                if (!surface.y_surface) {
+                    throw std::runtime_error(
+                        "Native recorder kernel Y surface object is unavailable");
+                }
+                CUsurfObject output = surface.y_surface;
+                CUdeviceptr input = reinterpret_cast<CUdeviceptr>(item.source_ptr);
+                size_t source_pitch = static_cast<size_t>(item.desc.width);
+                uint32_t width = static_cast<uint32_t>(item.desc.width);
+                uint32_t height = static_cast<uint32_t>(item.desc.height);
+                void* arguments[] = {&output, &input, &source_pitch, &width, &height};
+                constexpr uint32_t kBytesPerThread = 16;
+                constexpr uint32_t kBlockX = 32;
+                constexpr uint32_t kBlockY = 8;
+                const uint32_t grid_x =
+                    (width + kBytesPerThread * kBlockX - 1) /
+                    (kBytesPerThread * kBlockX);
+                const uint32_t grid_y = (height + kBlockY - 1) / kBlockY;
+                check_cu(
+                    cuLaunchKernel(
+                        native_kernel_function_,
+                        grid_x,
+                        grid_y,
+                        1,
+                        kBlockX,
+                        kBlockY,
+                        1,
+                        0,
+                        native_copy_stream_,
+                        arguments,
+                        nullptr),
+                    "cuLaunchKernel(native recorder Y update)");
+            } else {
+                CUDA_MEMCPY2D copy{};
+                copy.srcMemoryType = CU_MEMORYTYPE_DEVICE;
+                copy.srcDevice = reinterpret_cast<CUdeviceptr>(item.source_ptr);
+                copy.srcPitch = static_cast<size_t>(item.desc.width);
+                copy.dstMemoryType = CU_MEMORYTYPE_ARRAY;
+                copy.dstArray = surface.y;
+                copy.WidthInBytes = static_cast<size_t>(item.desc.width);
+                copy.Height = static_cast<size_t>(item.desc.height);
+                check_cu(
+                    cuMemcpy2DAsync(&copy, native_copy_stream_),
+                    "cuMemcpy2DAsync(native recorder Y)");
+            }
+            check_cu(cuEventRecord(native_copy_event_, native_copy_stream_), "cuEventRecord(native recorder update)");
+            check_cu(cuEventSynchronize(native_copy_event_), "cuEventSynchronize(native recorder update)");
+            item.source_copy_pending = false;
+            item.source_release_safe = true;
+            if (!release_source_once(item)) {
+                throw std::runtime_error("Failed source RELEASE after native input update completed");
+            }
+            encoder_->SetNextInputRegisteredResource(surface.registered);
+            native_frames_++;
+            sample.prepare_ms = ns_to_ms(elapsed_ns(prepare_start));
+        } else
+#endif
+        if (use_early_staged) {
+            // The peer copy was queued at descriptor arrival; wait for an
+            // input slot, then for the copy (usually already landed), release
+            // the pool entry and point NVENC at the staging buffer.
+            while (!encoder_->WaitForNextInputFrameAvailable(100)) {
+                if (stopping_requested() || failed()) {
+                    quiesce_source_copy_after_failure(item);
+                    (void)release_source_once(item);
+                    frames_dropped_.fetch_add(1, std::memory_order_relaxed);
+                    return;
+                }
+            }
+            const size_t staging_index = item.early_staging_index;
+            const auto copy_wait_start = std::chrono::steady_clock::now();
+            if (!item.owner_staged) {
+                check_cuda(
+                    cudaEventSynchronize(staging_events_[staging_index]),
+                    "cudaEventSynchronize(external early peer stage)");
+            }
+            item.source_copy_pending = false;
+            item.source_release_safe = true;
+            sample.stage_wait_ms = ns_to_ms(elapsed_ns(copy_wait_start));
+            if (!item.owner_staged) {
+                float copy_ms = 0.0f;
+                if (cudaEventElapsedTime(
+                        &copy_ms,
+                        staging_start_events_[staging_index],
+                        staging_events_[staging_index]) == cudaSuccess) {
+                    sample.stage_copy_ms = copy_ms;
+                } else {
+                    (void)cudaGetLastError();
+                }
+            }
+            sample.prepare_ms = ns_to_ms(elapsed_ns(prepare_start));
+            if (!release_source_once(item)) {
+                release_staging_buffer(staging_index);
+                throw std::runtime_error("failed to send external source RELEASE (early peer stage)");
+            }
+            ensure_staging_registered(staging_index, item.desc);
+            encoder_->SetNextInputRegisteredResource(staging_registered_[staging_index]);
+            {
+                std::lock_guard<std::mutex> lock(staging_mutex_);
+                staging_in_flight_[item.desc.recording_frame_id] = staging_index;
+            }
+            early_stage_frames_++;
+            if (early_stage_frames_ == 1) {
+                std::cout << "external_recorder_ipc_probe early peer stage: first staged frame recording_frame "
+                          << item.desc.recording_frame_id << " (" << item.desc.bytes << " bytes)"
+                          << " stage_wait_ms=" << sample.stage_wait_ms
+                          << " stage_copy_ms=" << sample.stage_copy_ms << std::endl;
+            }
+        } else if (use_registered) {
+            while (!encoder_->WaitForNextInputFrameAvailable(100)) {
+                if (stopping_requested() || failed()) {
+                    (void)release_source_once(item);
                     frames_dropped_.fetch_add(1, std::memory_order_relaxed);
                     return;
                 }
@@ -4634,19 +5387,31 @@ private:
             } else {
                 registered = it->second;
             }
+            sample.phase_wait_ms = wait_for_encode_phase(item.desc);
             encoder_->SetNextInputRegisteredResource(registered);
-            registered_in_flight_[item.desc.recording_frame_id] = item.desc;
+            {
+                std::lock_guard<std::mutex> lock(registered_mutex_);
+                registered_in_flight_[item.desc.recording_frame_id] = item.desc;
+            }
+            // This lease is now owned by registered_in_flight_. Even an
+            // encode exception must unmap/unregister before releasing it.
+            item.source_release_safe = false;
             registered_source_frames_++;
             sample.prepare_ms = ns_to_ms(elapsed_ns(prepare_start));
         } else if (use_staging) {
             while (!encoder_->WaitForNextInputFrameAvailable(100)) {
                 if (stopping_requested() || failed()) {
-                    (void)send_source_release(item.desc);
+                    (void)release_source_once(item);
                     frames_dropped_.fetch_add(1, std::memory_order_relaxed);
                     return;
                 }
             }
-            const size_t staging_index = acquire_staging_buffer(item.desc);
+            const size_t staging_index = acquire_staging_buffer_locked(item.desc, /*allow_unregistered=*/false);
+            if (staging_index == SIZE_MAX) {
+                throw std::runtime_error("copy-fallback staging exhausted; NVENC is not returning outputs");
+            }
+            item.source_copy_pending = true;
+            item.source_release_safe = false;
             check_cuda(
                 cudaMemcpyAsync(
                     staging_buffers_[staging_index],
@@ -4661,13 +5426,19 @@ private:
             check_cuda(
                 cudaEventSynchronize(direct_input_ready_event_),
                 "cudaEventSynchronize(external copy-fallback staged)");
+            item.source_copy_pending = false;
+            item.source_release_safe = true;
             sample.prepare_ms = ns_to_ms(elapsed_ns(prepare_start));
-            if (!send_source_release(item.desc)) {
-                staging_free_.push_back(staging_index);
+            if (!release_source_once(item)) {
+                release_staging_buffer(staging_index);
                 throw std::runtime_error("failed to send external source RELEASE (copy fallback)");
             }
+            ensure_staging_registered(staging_index, item.desc);
             encoder_->SetNextInputRegisteredResource(staging_registered_[staging_index]);
-            staging_in_flight_[item.desc.recording_frame_id] = staging_index;
+            {
+                std::lock_guard<std::mutex> lock(staging_mutex_);
+                staging_in_flight_[item.desc.recording_frame_id] = staging_index;
+            }
             copy_fallback_frames_++;
             if (copy_fallback_frames_ == 1) {
                 std::cout << "external_recorder_ipc_probe copy fallback: first staged frame recording_frame "
@@ -4679,6 +5450,8 @@ private:
             if (!input_frame || !input_frame->inputPtr) {
                 throw std::runtime_error("NvEncoder returned no direct source input frame");
             }
+            item.source_copy_pending = true;
+            item.source_release_safe = false;
             prepare_input_frame_from_source(item.desc, item.source_ptr, *input_frame);
             check_cuda(
                 cudaEventRecord(direct_input_ready_event_, stream_),
@@ -4686,8 +5459,10 @@ private:
             check_cuda(
                 cudaEventSynchronize(direct_input_ready_event_),
                 "cudaEventSynchronize(external direct source copied)");
+            item.source_copy_pending = false;
+            item.source_release_safe = true;
             sample.prepare_ms = ns_to_ms(elapsed_ns(prepare_start));
-            if (!send_source_release(item.desc)) {
+            if (!release_source_once(item)) {
                 throw std::runtime_error("failed to send external source RELEASE");
             }
         }
@@ -4699,7 +5474,41 @@ private:
         pic_params.frameIdx = static_cast<uint32_t>(sample.encode_index & 0xffffffffu);
         pic_params.inputTimeStamp = item.desc.recording_frame_id;
         pic_params.inputDuration = 1;
+        if (native_local_enabled_) { pic_params.inputPitch = 4608; }
         apply_importance_map(&pic_params);
+
+        if (options_.split_submit) {
+            // Submit only; the harvest thread locks this frame's bitstream
+            // later, pushes the packets and releases the source. The slot
+            // wait below is a no-op on the registered and staged paths (they
+            // waited before choosing the input) and covers the copy fallback.
+            while (!encoder_->WaitForNextInputFrameAvailable(100)) {
+                if (stopping_requested() || failed()) {
+                    frames_dropped_.fetch_add(1, std::memory_order_relaxed);
+                    return;
+                }
+            }
+            NvEncoderEncodeFrameTiming submit_timing;
+            const auto submit_start = std::chrono::steady_clock::now();
+            encoder_->SubmitFrameOnly(&pic_params, &submit_timing);
+            sample.encode_total_ms = ns_to_ms(elapsed_ns(submit_start));
+            sample.encode_picture_ms = ns_to_ms(submit_timing.encode_picture_ns);
+            if (encode_csv_) {
+                write_encode_csv_row(encode_csv_, sample);
+                if ((sample.encode_index % 60) == 0) {
+                    encode_csv_.flush();
+                }
+            }
+            record_encode_sample(sample);
+            write_frame_metadata(item.desc);
+            frames_encoded_.fetch_add(1, std::memory_order_relaxed);
+            {
+                std::lock_guard<std::mutex> lock(harvest_mutex_);
+                harvest_wake_ = true;
+            }
+            harvest_cv_.notify_one();
+            return;
+        }
 
         std::vector<std::vector<uint8_t>> packets;
         std::vector<uint64_t> output_timestamps;
@@ -4751,14 +5560,12 @@ private:
     // so those pool buffers can go back to the acquisition pool now.
     void release_registered_sources(const std::vector<uint64_t>& output_timestamps)
     {
-        if (registered_in_flight_.empty() && staging_in_flight_.empty()) {
+        std::lock_guard<std::mutex> registered_lock(registered_mutex_);
+        if (registered_in_flight_.empty() && staging_in_flight_empty()) {
             return;
         }
         for (const uint64_t recording_frame_id : output_timestamps) {
-            const auto staged = staging_in_flight_.find(recording_frame_id);
-            if (staged != staging_in_flight_.end()) {
-                staging_free_.push_back(staged->second);
-                staging_in_flight_.erase(staged);
+            if (recycle_staged_frame(recording_frame_id)) {
                 continue;
             }
             const auto it = registered_in_flight_.find(recording_frame_id);
@@ -4788,32 +5595,166 @@ private:
 
     void release_all_registered_sources()
     {
-        for (const auto& entry : registered_in_flight_) {
-            (void)send_source_release(entry.second);
+        {
+            std::lock_guard<std::mutex> registered_lock(registered_mutex_);
+            for (const auto& entry : registered_in_flight_) {
+                (void)send_source_release(entry.second);
+            }
+            registered_in_flight_.clear();
         }
-        registered_in_flight_.clear();
+        std::lock_guard<std::mutex> lock(staging_mutex_);
         for (const auto& entry : staging_in_flight_) {
-            staging_free_.push_back(entry.second);
+            if (owner_slot_indices_.count(entry.second) == 0) {
+                staging_free_.push_back(entry.second);
+            }
         }
         staging_in_flight_.clear();
     }
 
-    // Copy-fallback staging: NV12-shaped buffers on the encode GPU, the same
-    // size and layout as the pool buffers, registered with NVENC once. NVENC
-    // can hold at most its buffer count of inputs, so the set grows to that
-    // bound on demand and is recycled when the frame's bitstream returns.
-    size_t acquire_staging_buffer(const FrameDescriptor& desc)
+    bool staging_in_flight_empty()
     {
+        std::lock_guard<std::mutex> lock(staging_mutex_);
+        return staging_in_flight_.empty();
+    }
+
+    bool recycle_staged_frame(const uint64_t recording_frame_id)
+    {
+        size_t index = SIZE_MAX;
+        {
+            std::lock_guard<std::mutex> lock(staging_mutex_);
+            const auto staged = staging_in_flight_.find(recording_frame_id);
+            if (staged == staging_in_flight_.end()) {
+                return false;
+            }
+            index = staged->second;
+            staging_in_flight_.erase(staged);
+            if (owner_slot_indices_.count(index) == 0) {
+                staging_free_.push_back(index);
+                return true;
+            }
+        }
+        return_owner_slot(index);
+        return true;
+    }
+
+    void release_staging_buffer(const size_t index)
+    {
+        if (owner_slot_indices_.count(index)) {
+            return_owner_slot(index);
+            return;
+        }
+        std::lock_guard<std::mutex> lock(staging_mutex_);
+        staging_free_.push_back(index);
+    }
+
+    // Owner push: hand a slot back to the analytics process once NVENC has
+    // retired it (the input was unmapped before the bitstream came back).
+    void return_owner_slot(const size_t index)
+    {
+        int fd = -1;
+        std::mutex* write_mutex = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            fd = protocol_fd_;
+            write_mutex = protocol_write_mutex_;
+        }
+        if (fd < 0) {
+            return;
+        }
+        if (write_protocol_line(fd, write_mutex, "STAGEFREE " + std::to_string(index) + "\n")) {
+            stagefree_sent_.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    // Owner push: allocate the exported slots on this (peer) shard and tell
+    // the analytics process about them. Runs on the worker thread at prewarm,
+    // after the encoder exists, so the slots are registered like any staging
+    // buffer on first use. Local shards and crop recorders export nothing.
+    void export_owner_push_slots(const FrameDescriptor& desc)
+    {
+        if (!options_.owner_push || owner_slots_exported_ ||
+            options_.stream_kind != "full_frame" ||
+            desc.source_gpu_id < 0 || desc.source_gpu_id == options_.gpu_id ||
+            !desc.nv12_pool) {
+            return;
+        }
+        // Export at the client hello (prewarm), before any frame flows: the
+        // pool buffer is width x height x 3/2 bytes, which the hello carries,
+        // so the analytics imports the slots during warmup instead of
+        // stalling its handoff thread mid-stream (2026-09-19).
+        owner_slots_exported_ = true;
+        int fd = -1;
+        std::mutex* write_mutex = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            fd = protocol_fd_;
+            write_mutex = protocol_write_mutex_;
+        }
+        if (fd < 0) {
+            std::cerr << "external_recorder_ipc_probe owner push: no protocol writer at prewarm; slots not exported" << std::endl;
+            return;
+        }
+        check_cuda(cudaSetDevice(options_.gpu_id), "cudaSetDevice(owner push slots)");
+        const size_t shard_count = std::max<size_t>(1, options_.shard_count);
+        for (uint32_t i = 0; i < options_.owner_push_slots; ++i) {
+            const size_t index = acquire_staging_buffer_locked(desc, /*allow_unregistered=*/true);
+            if (index == SIZE_MAX) {
+                break;
+            }
+            cudaIpcMemHandle_t handle{};
+            check_cuda(cudaIpcGetMemHandle(&handle, staging_buffers_[index]), "cudaIpcGetMemHandle(owner push slot)");
+            owner_slot_indices_.insert(index);
+            const size_t nv12_bytes = desc.pool_bytes > 0
+                ? static_cast<size_t>(desc.pool_bytes)
+                : static_cast<size_t>(desc.width) * static_cast<size_t>(desc.height) * 3 / 2;
+            const std::string line =
+                "STAGE " + std::to_string(options_.shard_id) + " " + std::to_string(shard_count) + " " +
+                std::to_string(options_.gpu_id) + " " + std::to_string(index) + " " +
+                ipc_handle_to_hex(handle) + " " + std::to_string(nv12_bytes) + " " +
+                std::to_string(options_.gop_route_offset) + "\n";
+            if (!write_protocol_line(fd, write_mutex, line)) {
+                throw std::runtime_error("owner push: failed to send STAGE line");
+            }
+        }
+        std::cout << "external_recorder_ipc_probe owner push: exported " << owner_slot_indices_.size()
+                  << " staging slots on gpu " << options_.gpu_id << " (shard " << options_.shard_id
+                  << " of " << shard_count << ")" << std::endl;
+    }
+
+    // Staging buffers: NV12-shaped buffers on the encode GPU, the same size
+    // and layout as the pool buffers, each registered with NVENC once. Used
+    // by the copy fallback (encode thread) and by early peer staging (intake
+    // thread fills, encode thread consumes), so the set is under
+    // staging_mutex_. NVENC can hold at most its buffer count of inputs, so
+    // the set grows on demand to that bound plus the queue depth (early
+    // staged frames wait in direct_source_queue_ holding a buffer) and is
+    // recycled when the frame's bitstream returns. Returns SIZE_MAX when
+    // exhausted. allow_unregistered lets the intake thread allocate before
+    // the encoder exists; the worker registers on first use.
+    size_t acquire_staging_buffer_locked(const FrameDescriptor& desc, const bool allow_unregistered)
+    {
+        std::lock_guard<std::mutex> lock(staging_mutex_);
         if (!staging_free_.empty()) {
             const size_t index = staging_free_.back();
             staging_free_.pop_back();
             return index;
         }
-        const size_t limit = static_cast<size_t>(encoder_->GetEncoderBufferCount()) + 2;
+        const size_t encoder_buffers = encoder_
+            ? static_cast<size_t>(encoder_->GetEncoderBufferCount())
+            : 0;
+        // Owner-push slots are reserved out of this same set at the client
+        // hello and never serve the pull path, so they extend the bound:
+        // with 16 slots against the old bound of 34 the startup pull path
+        // (the first peer GOP arrives before the analytics has imported the
+        // slots) ran out of buffers and dropped frames 44-50 (2026-09-21).
+        const size_t owner_slots = options_.owner_push ? static_cast<size_t>(options_.owner_push_slots) : 0;
+        const size_t limit =
+            std::max<size_t>(encoder_buffers + 2, options_.encode_queue_depth + 2) + owner_slots;
         if (staging_buffers_.size() >= limit) {
-            throw std::runtime_error(
-                "copy-fallback staging exhausted (" + std::to_string(limit) +
-                " buffers in flight); NVENC is not returning outputs");
+            return SIZE_MAX;
+        }
+        if (!encoder_ && !allow_unregistered) {
+            return SIZE_MAX;
         }
         // The FRAME byte count is the Y plane; the registration needs the
         // full NV12-shaped allocation (Y + chroma at 128), like the pool.
@@ -4821,22 +5762,133 @@ private:
             ? static_cast<size_t>(desc.pool_bytes)
             : static_cast<size_t>(desc.width) * static_cast<size_t>(desc.height) * 3 / 2;
         if (nv12_bytes < static_cast<size_t>(desc.bytes)) {
-            throw std::runtime_error("copy-fallback staging: pool_bytes smaller than the Y plane");
+            throw std::runtime_error("staging: pool_bytes smaller than the Y plane");
         }
         void* ptr = nullptr;
         check_cuda(
             cudaMalloc(&ptr, nv12_bytes),
-            "cudaMalloc(external copy-fallback staging)");
+            "cudaMalloc(external staging)");
+        // Synchronous memset: the chroma plane must be grey before any copy
+        // or NVENC read, and the caller's stream is not necessarily stream_.
         check_cuda(
-            cudaMemsetAsync(ptr, 128, nv12_bytes, stream_),
-            "cudaMemsetAsync(external copy-fallback staging chroma)");
-        NV_ENC_REGISTERED_PTR registered = encoder_->RegisterExternalResource(
-            ptr, NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR, desc.width);
+            cudaMemset(ptr, 128, nv12_bytes),
+            "cudaMemset(external staging chroma)");
         staging_buffers_.push_back(ptr);
-        staging_registered_.push_back(registered);
-        std::cout << "external_recorder_ipc_probe copy fallback: staging buffer #"
-                  << staging_buffers_.size() << " (" << nv12_bytes << " bytes) registered with NVENC" << std::endl;
+        // Early-staging events are created on first use, on the device that
+        // issues the copy (ensure_staging_events).
+        staging_events_.push_back(nullptr);
+        staging_start_events_.push_back(nullptr);
+        staging_registered_.push_back(nullptr);
+        staging_width_.push_back(desc.width);
+        std::cout << "external_recorder_ipc_probe staging buffer #"
+                  << staging_buffers_.size() << " (" << nv12_bytes << " bytes) allocated on gpu "
+                  << options_.gpu_id << (encoder_ ? "" : " (encoder not yet created)") << std::endl;
         return staging_buffers_.size() - 1;
+    }
+
+    // Encode thread only: register a staging buffer with NVENC on first use.
+    void ensure_staging_registered(const size_t index, const FrameDescriptor& desc)
+    {
+        if (staging_registered_[index]) {
+            return;
+        }
+        staging_registered_[index] = encoder_->RegisterExternalResource(
+            staging_buffers_[index], NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR, desc.width);
+        std::cout << "external_recorder_ipc_probe staging buffer #" << (index + 1)
+                  << " registered with NVENC" << std::endl;
+    }
+
+    // Peer access from this shard's GPU (current device) to the source GPU.
+    // Idempotent; the primary context is shared by the intake and encode
+    // threads, so enabling it once from either thread covers both.
+    void ensure_peer_access(const int source_gpu_id)
+    {
+        if (!options_.peer_access || source_gpu_id < 0 || source_gpu_id == options_.gpu_id) {
+            return;
+        }
+        if (peer_access_checked_.exchange(true)) {
+            return;
+        }
+        int can_access = 0;
+        const cudaError_t can_err = cudaDeviceCanAccessPeer(&can_access, options_.gpu_id, source_gpu_id);
+        if (can_err != cudaSuccess || !can_access) {
+            (void)cudaGetLastError();
+            std::cout << "external_recorder_ipc_probe peer access: gpu " << options_.gpu_id
+                      << " cannot access peer gpu " << source_gpu_id << " (copies stay on the default path)"
+                      << std::endl;
+            return;
+        }
+        const cudaError_t err = cudaDeviceEnablePeerAccess(source_gpu_id, 0);
+        if (err == cudaErrorPeerAccessAlreadyEnabled) {
+            (void)cudaGetLastError();
+        } else if (err != cudaSuccess) {
+            (void)cudaGetLastError();
+            std::cout << "external_recorder_ipc_probe peer access: enable failed for gpu " << options_.gpu_id
+                      << " -> " << source_gpu_id << ": " << cudaGetErrorString(err) << std::endl;
+            return;
+        }
+        std::cout << "external_recorder_ipc_probe peer access enabled: gpu " << options_.gpu_id
+                  << " -> source gpu " << source_gpu_id << std::endl;
+    }
+
+    // Intake thread, current device = the copying device.
+    void ensure_stage_stream()
+    {
+        if (stage_stream_) {
+            return;
+        }
+        check_cuda(
+            cudaGetDevice(&stage_stream_device_),
+            "cudaGetDevice(external early stage stream)");
+        check_cuda(
+            cudaStreamCreateWithFlags(&stage_stream_, cudaStreamNonBlocking),
+            "cudaStreamCreateWithFlags(external early stage)");
+    }
+
+    void ensure_staging_events(const size_t index)
+    {
+        if (staging_events_[index]) {
+            return;
+        }
+        check_cuda(cudaEventCreate(&staging_events_[index]), "cudaEventCreate(external staging)");
+        check_cuda(cudaEventCreate(&staging_start_events_[index]), "cudaEventCreate(external staging start)");
+    }
+
+    // Push mode: peer access from the source GPU (current device) to this
+    // shard's GPU, so cudaMemcpyPeerAsync takes the direct PCIe path.
+    void ensure_push_peer_access(const int source_gpu_id)
+    {
+        if (push_peer_access_checked_.exchange(true)) {
+            return;
+        }
+        int can_access = 0;
+        if (cudaDeviceCanAccessPeer(&can_access, source_gpu_id, options_.gpu_id) != cudaSuccess || !can_access) {
+            (void)cudaGetLastError();
+            std::cout << "external_recorder_ipc_probe early stage push: gpu " << source_gpu_id
+                      << " cannot access peer gpu " << options_.gpu_id << std::endl;
+            return;
+        }
+        const cudaError_t err = cudaDeviceEnablePeerAccess(options_.gpu_id, 0);
+        if (err != cudaSuccess && err != cudaErrorPeerAccessAlreadyEnabled) {
+            (void)cudaGetLastError();
+            std::cout << "external_recorder_ipc_probe early stage push: enable peer access failed for gpu "
+                      << source_gpu_id << " -> " << options_.gpu_id << ": " << cudaGetErrorString(err) << std::endl;
+            return;
+        }
+        (void)cudaGetLastError();
+        std::cout << "external_recorder_ipc_probe early stage push: peer access enabled gpu " << source_gpu_id
+                  << " -> shard gpu " << options_.gpu_id << std::endl;
+    }
+
+    void register_pending_staging_buffers()
+    {
+        std::lock_guard<std::mutex> lock(staging_mutex_);
+        for (size_t i = 0; i < staging_buffers_.size(); ++i) {
+            if (!staging_registered_[i]) {
+                staging_registered_[i] = encoder_->RegisterExternalResource(
+                    staging_buffers_[i], NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR, staging_width_[i]);
+            }
+        }
     }
 
     bool harvest_direct_packets(bool output_delay)
@@ -5005,15 +6057,101 @@ private:
         finish_frame_metadata();
     }
 
+    // Split harvest (options_.split_submit): drain every bitstream NVENC has
+    // finished (output delay respected), release the sources, push packets.
+    bool harvest_split_packets(bool output_delay)
+    {
+        if (!encoder_) {
+            return false;
+        }
+        std::vector<std::vector<uint8_t>> packets;
+        std::vector<uint64_t> output_timestamps;
+        NvEncoderEncodeFrameTiming timing;
+        uint64_t fetch_ns = 0;
+        encoder_->HarvestEncodedPackets(
+            packets,
+            output_delay,
+            nullptr,
+            &output_timestamps,
+            &fetch_ns,
+            &timing);
+        if (packets.empty()) {
+            return false;
+        }
+        release_registered_sources(output_timestamps);
+        if (merged_output_) {
+            merged_output_->submit_packets(packets, output_timestamps);
+        }
+        for (const auto& packet : packets) {
+            returned_bytes_ += packet.size();
+            push_packet_to_outputs(packet, false);
+        }
+        returned_packets_ += packets.size();
+        split_harvest_calls_++;
+        split_harvest_packets_ += packets.size();
+        lock_bitstream_samples_.observe(ns_to_ms(timing.lock_bitstream_ns));
+        bitstream_fetch_samples_.observe(
+            ns_to_ms(fetch_ns > 0 ? fetch_ns : timing.bitstream_fetch_ns));
+        return true;
+    }
+
+    void run_split_harvest()
+    {
+        try {
+            check_cuda(cudaSetDevice(options_.gpu_id), "cudaSetDevice(split harvest)");
+            for (;;) {
+                {
+                    std::unique_lock<std::mutex> lock(harvest_mutex_);
+                    harvest_cv_.wait(lock, [&]() { return harvest_stop_ || harvest_wake_; });
+                    harvest_wake_ = false;
+                    if (harvest_stop_) {
+                        break;
+                    }
+                }
+                while (harvest_split_packets(true)) {
+                }
+            }
+            while (harvest_split_packets(true)) {
+            }
+        } catch (const std::exception& ex) {
+            failed_.store(true, std::memory_order_release);
+            std::cerr << "external_recorder_ipc_probe split harvest failed: "
+                      << ex.what() << std::endl;
+        }
+    }
+
+    void start_split_harvest()
+    {
+        if (!options_.split_submit || harvest_thread_.joinable()) {
+            return;
+        }
+        harvest_thread_ = std::thread(&ExternalEncodeWorker::run_split_harvest, this);
+    }
+
+    void stop_split_harvest()
+    {
+        if (!harvest_thread_.joinable()) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(harvest_mutex_);
+            harvest_stop_ = true;
+        }
+        harvest_cv_.notify_all();
+        harvest_thread_.join();
+    }
+
     void run_direct_source()
     {
+        start_split_harvest();
         try {
             while (true) {
                 DirectSourceWorkItem item;
                 {
                     std::unique_lock<std::mutex> lock(mutex_);
                     cv_.wait(lock, [&]() {
-                        return stopping_ || !direct_source_queue_.empty();
+                        return stopping_ || (!direct_source_queue_.empty() &&
+                            (direct_source_queue_.front().prewarm_only || direct_source_queue_.front().ack_ready));
                     });
                     if (direct_source_queue_.empty()) {
                         if (stopping_) {
@@ -5021,39 +6159,75 @@ private:
                         }
                         continue;
                     }
+                    if (!direct_source_queue_.front().prewarm_only && !direct_source_queue_.front().ack_ready) {
+                        // Intake failed before ACK. Do not RELEASE or read that source.
+                        break;
+                    }
                     item = direct_source_queue_.front();
                     direct_source_queue_.pop_front();
                 }
                 if (item.prewarm_only) {
                     const auto prewarm_start = std::chrono::steady_clock::now();
                     initialize_encoder(item.desc, /*record_first_desc=*/false);
+                    export_owner_push_slots(item.desc);
                     std::cout << "external_recorder_ipc_probe encoder prewarmed at hello in "
                               << ns_to_ms(elapsed_ns(prewarm_start)) << " ms ("
                               << item.desc.width << "x" << item.desc.height << ")" << std::endl;
                     continue;
                 }
+                if (!owner_slots_exported_) {
+                    export_owner_push_slots(item.desc);
+                }
                 try {
                     encode_one_direct_source(item);
                 } catch (...) {
-                    (void)send_source_release(item.desc);
+                    quiesce_source_copy_after_failure(item);
+                    (void)release_source_once(item);
                     throw;
                 }
             }
+            stop_split_harvest();
             flush_encoder();
+            release_acknowledged_queued_sources();
             std::cout << "external_recorder_ipc_probe direct-source encoder complete"
                       << " encoded=" << frames_encoded()
                       << " dropped=" << frames_dropped()
+                      << " split_submit=" << (options_.split_submit ? 1 : 0)
+                      << " split_harvest_calls=" << split_harvest_calls_
+                      << " split_harvest_packets=" << split_harvest_packets_
+                      << " owner_staged_frames=" << owner_staged_frames_.load(std::memory_order_relaxed)
+                      << " stagefree_sent=" << stagefree_sent_.load(std::memory_order_relaxed)
+                      << " native_frames=" << native_frames_
+                      << " native_update="
+                      << (native_local_enabled_
+                              ? (options_.native_local_kernel_ptx.empty() ? "copy" : "kernel")
+                              : "none")
                       << " registered_frames=" << registered_source_frames_
                       << " registered_releases=" << registered_releases_sent_
                       << " registered_release_failures=" << registered_release_failures_
                       << " fallback_frames=" << registered_fallback_frames_
                       << " copy_fallback_frames=" << copy_fallback_frames_
+                      << " phase_waits=" << phase_waits_
+                      << " phase_clock_skips=" << phase_clock_skips_
+                      << " early_stage_frames=" << early_stage_frames_
+                      << " early_stage_exhausted=" << early_stage_exhausted_.load(std::memory_order_relaxed)
                       << " staging_buffers=" << staging_buffers_.size()
                       << std::endl;
         } catch (const std::exception& ex) {
             failed_.store(true, std::memory_order_release);
             std::cerr << "external_recorder_ipc_probe direct-source encoder failed: "
                       << ex.what() << std::endl;
+            stop_split_harvest();
+            // Retire every mapped/registered input before returning any lease
+            // managed by registered_in_flight_. Queued acknowledged work was
+            // never submitted and can be released after its early copy lands.
+#ifdef ORANGE_NVENC_NATIVE_ARRAY_INPUT
+            if (native_copy_stream_) { (void)cuStreamSynchronize(native_copy_stream_); }
+#endif
+            (void)quiesce_stage_stream();
+            encoder_.reset();
+            release_all_registered_sources();
+            release_acknowledged_queued_sources();
         }
     }
 
@@ -5152,18 +6326,63 @@ private:
     // frames NVENC still holds, keyed by recording_frame_id (= inputTimeStamp).
     std::unordered_map<const void*, NV_ENC_REGISTERED_PTR> registered_sources_;
     std::unordered_map<uint64_t, FrameDescriptor> registered_in_flight_;
+    std::mutex registered_mutex_;  // registered_in_flight_: submit thread inserts, harvest thread erases
+    // Split submit/harvest thread state (options_.split_submit).
+    std::thread harvest_thread_;
+    std::mutex harvest_mutex_;
+    std::condition_variable harvest_cv_;
+    bool harvest_wake_ = false;
+    bool harvest_stop_ = false;
+    uint64_t split_harvest_calls_ = 0;
+    uint64_t split_harvest_packets_ = 0;
+    // Owner push slot bookkeeping (see export_owner_push_slots).
+    std::unordered_set<size_t> owner_slot_indices_;
+    bool owner_slots_exported_ = false;
+    std::atomic<uint64_t> owner_staged_frames_{0};
+    std::atomic<uint64_t> stagefree_sent_{0};
     uint64_t registered_source_frames_ = 0;
     uint64_t registered_releases_sent_ = 0;
     uint64_t registered_release_failures_ = 0;
     uint64_t registered_fallback_frames_ = 0;
     bool registered_fallback_logged_ = false;
     bool registered_mode_enabled_ = false;
-    // Copy-fallback staging (see acquire_staging_buffer).
+    bool native_local_enabled_ = false;
+    uint64_t native_frames_ = 0;
+#ifdef ORANGE_NVENC_NATIVE_ARRAY_INPUT
+    struct NativeSurface {
+        CUarray parent = nullptr;
+        CUarray y = nullptr;
+        CUarray uv = nullptr;
+        CUsurfObject y_surface = 0;
+        NV_ENC_REGISTERED_PTR registered = nullptr;
+    };
+    std::vector<NativeSurface> native_surfaces_;
+    CUstream native_copy_stream_ = nullptr;
+    CUevent native_copy_event_ = nullptr;
+    CUmodule native_kernel_module_ = nullptr;
+    CUfunction native_kernel_function_ = nullptr;
+#endif
+    bool early_stage_enabled_ = false;
+    bool external_slots_enabled_ = false;
+    // Staging buffers (see acquire_staging_buffer_locked); shared between
+    // the intake thread (early peer staging) and the encode thread.
+    std::mutex staging_mutex_;
     std::vector<void*> staging_buffers_;
     std::vector<NV_ENC_REGISTERED_PTR> staging_registered_;
+    std::vector<cudaEvent_t> staging_events_;
+    std::vector<cudaEvent_t> staging_start_events_;
+    cudaStream_t stage_stream_ = nullptr;  // early staging copies (intake thread)
+    int stage_stream_device_ = -1;
+    std::atomic<bool> peer_access_checked_{false};
+    std::atomic<bool> push_peer_access_checked_{false};
+    std::vector<uint32_t> staging_width_;
     std::vector<size_t> staging_free_;
     std::unordered_map<uint64_t, size_t> staging_in_flight_;
     uint64_t copy_fallback_frames_ = 0;
+    uint64_t early_stage_frames_ = 0;
+    uint64_t phase_waits_ = 0;
+    uint64_t phase_clock_skips_ = 0;
+    std::atomic<uint64_t> early_stage_exhausted_{0};
     std::unique_ptr<FFmpegWriter> mp4_writer_;
     std::ofstream bitstream_out_;
     std::ofstream encode_csv_;
@@ -5232,6 +6451,7 @@ Options make_shard_options(const Options& base,
     Options out = base;
     out.gpu_id = gpu_id;
     out.shard_id = static_cast<int>(shard_index);
+    out.shard_count = shard_count;
     if (shard_count > 1) {
         out.routing_policy = "gop_modulo";
         const std::string suffix = shard_suffix(shard_index, gpu_id);
@@ -5389,6 +6609,8 @@ void write_summary_json(const Options& options,
         << (options.deferred_source_release ? "true" : "false") << ",\n";
     out << "  \"registered_source\": "
         << (options.registered_source ? "true" : "false") << ",\n";
+    out << "  \"split_submit\": "
+        << (options.split_submit ? "true" : "false") << ",\n";
     out << "  \"preserve_shard_mp4s\": "
         << (options.preserve_shard_mp4s ? "true" : "false") << ",\n";
     out << "  \"authoritative_video_output\": {\n";
@@ -5475,6 +6697,28 @@ void write_summary_json(const Options& options,
     out << "  \"encode_dropped\": " << encode_dropped << ",\n";
     out << "  \"encode_queue_high_water\": " << encode_queue_high_water << ",\n";
     out << "  \"frames_encoded\": " << enc.frames_encoded << ",\n";
+    out << "  \"native_local_requested\": " << (options.native_local_input ? "true" : "false") << ",\n";
+    out << "  \"native_update_requested\": ";
+    if (options.native_local_input) {
+        out << "\""
+            << (options.native_local_kernel_ptx.empty() ? "copy" : "kernel")
+            << "\",\n";
+    } else {
+        out << "null,\n";
+    }
+    out << "  \"native_update\": ";
+    if (enc.native_local_resolved) {
+        out << "\"" << json_escape(enc.native_update) << "\",\n";
+    } else {
+        out << "null,\n";
+    }
+    out << "  \"native_source_release_boundary\": ";
+    if (enc.native_local_resolved) {
+        out << "\"" << json_escape(enc.native_source_release_boundary) << "\",\n";
+    } else {
+        out << "null,\n";
+    }
+    out << "  \"native_frames\": " << enc.native_frames << ",\n";
     out << "  \"encoding_budget\": "
         << json_dump_for_inline_value(aggregate_encoding_budget, "  ")
         << ",\n";
@@ -5558,6 +6802,21 @@ void write_summary_json(const Options& options,
         out << "      \"assigned_shard_id\": " << shard.assigned_shard_id << ",\n";
         out << "      \"routing_policy\": \"" << json_escape(shard.routing_policy) << "\",\n";
         out << "      \"frames_encoded\": " << shard.frames_encoded << ",\n";
+        out << "      \"native_local_requested\": " << (shard.native_local_requested ? "true" : "false") << ",\n";
+        out << "      \"input_backend\": \"" << (shard.native_local_resolved ? "native_nv12_array" : "linear") << "\",\n";
+        out << "      \"native_update\": ";
+        if (shard.native_local_resolved) {
+            out << "\"" << json_escape(shard.native_update) << "\",\n";
+        } else {
+            out << "null,\n";
+        }
+        out << "      \"native_frames\": " << shard.native_frames << ",\n";
+        out << "      \"native_source_release_boundary\": ";
+        if (shard.native_local_resolved) {
+            out << "\"" << json_escape(shard.native_source_release_boundary) << "\",\n";
+        } else {
+            out << "null,\n";
+        }
         out << "      \"frames_dropped\": " << shard.frames_dropped << ",\n";
         out << "      \"source_releases_sent\": " << shard.source_releases_sent << ",\n";
         out << "      \"source_release_failures\": " << shard.source_release_failures << ",\n";
@@ -5857,11 +7116,10 @@ int main(int argc, char** argv)
         check_cuda(cudaFree(nullptr), "cudaFree(0)");
 
         std::unique_ptr<MergedGopOutput> merged_output;
-        // Workers retain a non-owning pointer to the merger.  Declare the
-        // merger first so reverse destruction order always stops and destroys
-        // every worker before destroying its output coordinator.
-        std::vector<std::unique_ptr<ExternalEncodeWorker>> encode_workers;
+        // Workers retain non-owning pointers to the merger and protocol mutex.
+        // Keep both alive through worker joins, including exceptional unwinding.
         std::mutex protocol_write_mutex;
+        std::vector<std::unique_ptr<ExternalEncodeWorker>> encode_workers;
         bool encode_workers_prewarmed = false;
         bool encode_workers_peer_prewarmed = false;
         if (options.encode) {
@@ -6328,7 +7586,7 @@ int main(int argc, char** argv)
             ExternalEncodeWorker* target_encode_worker = nullptr;
             if (!encode_workers.empty()) {
                 const size_t target_shard =
-                    static_cast<size_t>(desc.gop_index % encode_workers.size());
+                    static_cast<size_t>((desc.gop_index + options.gop_route_offset) % encode_workers.size());
                 target_encode_worker = encode_workers[target_shard].get();
                 desc.assigned_gpu_id = target_encode_worker->gpu_id();
                 desc.assigned_shard_id = target_encode_worker->shard_id();
@@ -6448,15 +7706,15 @@ int main(int argc, char** argv)
                     "ACK " + std::to_string(desc.recording_frame_id) + " " +
                         std::to_string(desc.assigned_gpu_id) + " " +
                         std::to_string(desc.assigned_shard_id) +
-                        (options.deferred_source_release ? " deferred_release" : "") +
+                        (options.deferred_source_release && desc.staged_index < 0 ? " deferred_release" : "") +
                         "\n")) {
                 mark_intake_end("ack_write_failed", false);
                 break;
             }
             if (release_deferred_by_worker && target_encode_worker) {
-                target_encode_worker->notify_deferred_ack_sent();
+                target_encode_worker->notify_deferred_ack_sent(desc.recording_frame_id);
             }
-            if (options.deferred_source_release && !release_deferred_by_worker) {
+            if (options.deferred_source_release && !release_deferred_by_worker && desc.staged_index < 0) {
                 if (!write_protocol_line(
                         client_fd,
                         &protocol_write_mutex,
@@ -6633,6 +7891,13 @@ int main(int argc, char** argv)
             (any_worker_failed || intake_failed) ? "failed" : "completed",
             terminal_error,
             false);
+        const bool had_encode_workers = !encode_workers.empty();
+        const uint64_t final_frames_encoded = encode_summary.frames_encoded;
+        const uint64_t final_frames_dropped = encode_summary.frames_dropped;
+        // Worker destruction unregisters every imported-pointer resource.
+        // Keep the CUDA IPC mappings alive until those registrations are gone.
+        encode_workers.clear();
+        (void)cudaSetDevice(options.gpu_id);
         for (auto& [handle_hex, imported] : imported_handles) {
             (void)handle_hex;
             if (imported.ptr) {
@@ -6650,19 +7915,9 @@ int main(int argc, char** argv)
             unlink(options.socket_path.c_str());
         }
         std::cout << "external_recorder_ipc_probe complete frames=" << frame_count;
-        if (!encode_workers.empty()) {
-            uint64_t total_encoded = 0;
-            uint64_t total_dropped = 0;
-            for (const auto& worker : encode_workers) {
-                if (!worker) {
-                    continue;
-                }
-                total_encoded += worker->frames_encoded();
-                total_dropped += worker->frames_dropped();
-                any_worker_failed = any_worker_failed || worker->failed();
-            }
-            std::cout << " encoded=" << total_encoded
-                      << " encode_dropped=" << total_dropped
+        if (had_encode_workers) {
+            std::cout << " encoded=" << final_frames_encoded
+                      << " encode_dropped=" << final_frames_dropped
                       << " worker_failed=" << (any_worker_failed ? "true" : "false");
         }
         std::cout << std::endl;

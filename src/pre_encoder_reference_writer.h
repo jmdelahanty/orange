@@ -58,6 +58,7 @@ private:
     std::ofstream raw_dump_;
     std::ofstream index_;
     bool is_open_ = false;
+    uint64_t frames_offered_ = 0;  // frames seen by ShouldCaptureNextFrame (sample_every stride)
     bool metadata_written_ = false;
     bool budget_reached_ = false;
     uint64_t frames_captured_ = 0;

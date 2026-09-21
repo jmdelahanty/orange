@@ -45,6 +45,9 @@ struct Options {
     bool monochrome = true;
     bool pace = true;
     std::string pattern = "solid";
+    int aq = 1;            // --aq 0|1 (tool default 1; production runs use 0)
+    int temporal_aq = 1;   // --temporal-aq 0|1 (production 0)
+    int lookahead = -1;    // --lookahead 0|1 (-1 = tool default: on unless low-latency tuning)
     std::string raw_file_path;
     uint32_t raw_pitch = 0;
     uint64_t raw_frame_bytes = 0;
@@ -118,7 +121,7 @@ std::string lower_ascii(std::string value)
         << "  --max-bitrate-bps <int>     Max bitrate. Default 150000000.\n"
         << "  --vbv-buffer-size <int>     VBV buffer size. Default 150000000.\n"
         << "  --extra-output-delay <int>  NvEncoder extra output delay. Default 3.\n"
-        << "  --pattern <solid|host-noise|raw-file>\n"
+        << "  --pattern <solid|host-noise|raw-file|registered>\n"
         << "                              Input pattern. solid uses device memset; host-noise copies one of several pinned random NV12 frames; raw-file loops cached NV12 frames. Default solid.\n"
         << "  --raw-file <path>           Required for --pattern raw-file. Raw NV12 frame dump.\n"
         << "  --raw-pitch <int>           Source pitch for raw-file frames. Default width.\n"
@@ -129,6 +132,7 @@ std::string lower_ascii(std::string value)
         << "  --monochrome                Enable NVENC monochrome encoding. Default.\n"
         << "  --no-monochrome             Disable monochrome encoding.\n"
         << "  --no-pace                   Run as fast as possible instead of FPS pacing.\n"
+        << "  --aq <0|1> --temporal-aq <0|1> --lookahead <0|1>  Rate-control features (production: 0 0 0).\n"
         << "  --help\n";
     std::exit(exit_code);
 }
@@ -228,6 +232,12 @@ Options parse_options(int argc, char** argv)
             options.monochrome = true;
         } else if (arg == "--no-monochrome") {
             options.monochrome = false;
+        } else if (arg == "--aq") {
+            options.aq = static_cast<int>(parse_u32(consume(arg.c_str()), arg.c_str()));
+        } else if (arg == "--temporal-aq") {
+            options.temporal_aq = static_cast<int>(parse_u32(consume(arg.c_str()), arg.c_str()));
+        } else if (arg == "--lookahead") {
+            options.lookahead = static_cast<int>(parse_u32(consume(arg.c_str()), arg.c_str()));
         } else if (arg == "--no-pace") {
             options.pace = false;
         } else {
@@ -257,8 +267,10 @@ Options parse_options(int argc, char** argv)
     }
     if (options.pattern != "solid" &&
         options.pattern != "host-noise" &&
-        options.pattern != "raw-file") {
-        throw std::runtime_error("--pattern must be solid, host-noise, or raw-file");
+        options.pattern != "raw-file" &&
+        options.pattern != "registered" &&
+        options.pattern != "registered-array") {
+        throw std::runtime_error("--pattern must be solid, host-noise, raw-file, registered, or registered-array");
     }
     if (options.raw_pitch == 0) {
         options.raw_pitch = options.width;
@@ -383,9 +395,10 @@ void configure_encoder_params(const Options& options,
         encode_config->rcParams.maxBitRate = std::max(options.max_bitrate_bps, options.bitrate_bps);
         encode_config->rcParams.vbvBufferSize =
             options.vbv_buffer_size > 0 ? options.vbv_buffer_size : encode_config->rcParams.maxBitRate;
-        encode_config->rcParams.enableAQ = 1;
-        encode_config->rcParams.enableTemporalAQ = 1;
-        encode_config->rcParams.enableLookahead = low_latency ? 0 : 1;
+        encode_config->rcParams.enableAQ = options.aq ? 1 : 0;
+        encode_config->rcParams.enableTemporalAQ = options.temporal_aq ? 1 : 0;
+        encode_config->rcParams.enableLookahead =
+            options.lookahead >= 0 ? (options.lookahead ? 1 : 0) : (low_latency ? 0 : 1);
         encode_config->rcParams.lowDelayKeyFrameScale = low_latency ? 1 : 0;
     }
 
@@ -691,7 +704,50 @@ int main(int argc, char** argv)
         NV_ENC_INITIALIZE_PARAMS initialize_params = {NV_ENC_INITIALIZE_PARAMS_VER};
         NV_ENC_CONFIG encode_config = {NV_ENC_CONFIG_VER};
         configure_encoder_params(options, &initialize_params, &encode_config, &encoder);
+        // registered: the recorder's registered-source path (external input
+        // slots fed from NV12 device buffers registered once with NVENC; no
+        // per-frame copy or fill), so a profiler trace shows only what the
+        // driver itself does per encoded frame.
+        const bool registered_array = options.pattern == "registered-array";
+        const bool registered = options.pattern == "registered" || registered_array;
+        if (registered) {
+            encoder.SetExternalInputBufferMode(true);
+        }
         encoder.CreateEncoder(&initialize_params);
+        std::vector<void*> registered_buffers;
+        std::vector<NV_ENC_REGISTERED_PTR> registered_handles;
+        if (registered) {
+            encoder.PrepareExternalRegisteredSlots();
+            const size_t count = static_cast<size_t>(encoder.GetEncoderBufferCount()) + 2;
+            const size_t bytes = static_cast<size_t>(options.width) * options.height * 3 / 2;
+            for (size_t i = 0; i < count; ++i) {
+                if (registered_array) {
+                    // Block-linear input: a CUDA array (8-bit, width x height*3/2 for NV12)
+                    // registered as NV_ENC_INPUT_RESOURCE_TYPE_CUDAARRAY. If NVENC consumes
+                    // it without its Convert_PL2BL kernels, the pool copy can target an array.
+                    cudaArray_t array = nullptr;
+                    const cudaChannelFormatDesc desc = cudaCreateChannelDesc<unsigned char>();
+                    check_cuda(cudaMallocArray(&array, &desc, options.width, options.height * 3 / 2, cudaArraySurfaceLoadStore),
+                               "cudaMallocArray(registered input)");
+                    std::vector<unsigned char> fill(bytes, static_cast<unsigned char>(40 + 20 * i));
+                    check_cuda(cudaMemcpy2DToArray(array, 0, 0, fill.data(), options.width, options.width,
+                                                   options.height * 3 / 2, cudaMemcpyHostToDevice),
+                               "cudaMemcpy2DToArray(registered input)");
+                    registered_buffers.push_back(array);
+                    registered_handles.push_back(encoder.RegisterExternalResource(
+                        array, NV_ENC_INPUT_RESOURCE_TYPE_CUDAARRAY, static_cast<int>(options.width)));
+                    continue;
+                }
+                void* ptr = nullptr;
+                check_cuda(cudaMalloc(&ptr, bytes), "cudaMalloc(registered input)");
+                check_cuda(cudaMemset(ptr, static_cast<int>(40 + 20 * i), bytes), "cudaMemset(registered input)");
+                registered_buffers.push_back(ptr);
+                registered_handles.push_back(encoder.RegisterExternalResource(
+                    ptr, NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR, static_cast<int>(options.width)));
+            }
+            std::cout << "NVENC registered-input mode: " << count << " NV12 buffers of " << bytes
+                      << " bytes registered (encoder buffers " << encoder.GetEncoderBufferCount() << ")" << std::endl;
+        }
         encoder.SetIOCudaStreams(
             reinterpret_cast<NV_ENC_CUSTREAM_PTR>(&stream),
             reinterpret_cast<NV_ENC_CUSTREAM_PTR>(&stream));
@@ -772,11 +828,24 @@ int main(int argc, char** argv)
             sample.frame_index = frame_index;
 
             const auto fill_start = std::chrono::steady_clock::now();
-            const NvEncInputFrame* input_frame = encoder.GetNextInputFrame();
-            if (!input_frame || !input_frame->inputPtr) {
-                throw std::runtime_error("NvEncoder returned no input frame");
+            const NvEncInputFrame* input_frame = nullptr;
+            if (registered) {
+                while (!encoder.WaitForNextInputFrameAvailable(100)) {
+                    if (g_stop_requested.load(std::memory_order_acquire)) {
+                        break;
+                    }
+                }
+                encoder.SetNextInputRegisteredResource(
+                    registered_handles[static_cast<size_t>(frame_index) % registered_handles.size()]);
+            } else {
+                input_frame = encoder.GetNextInputFrame();
+                if (!input_frame || !input_frame->inputPtr) {
+                    throw std::runtime_error("NvEncoder returned no input frame");
+                }
             }
-            if (options.pattern == "host-noise") {
+            if (registered) {
+                // nothing to fill: the registered buffer is the input
+            } else if (options.pattern == "host-noise") {
                 const PinnedHostFrame& host_frame =
                     host_noise_frames[frame_index % host_noise_frames.size()];
                 copy_host_frame_to_input(

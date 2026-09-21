@@ -58,6 +58,7 @@
 #include "citrus_recording_geometry.h"
 #include "recording_physical_registration.h"
 #include "pose_worker.h"
+#include "yolo_runtime_flags.h"
 #include "pose_event_log_validation.h"
 #include <signal.h>
 
@@ -151,6 +152,7 @@ struct HeadlessPoseWorkerConfig {
     double synthetic_detection_confidence = 0.99;
     int queue_depth = 32;
     int crop_frame_pool_size = 0;
+    int crop_size_px = 0;  // pose (head-sized) crop; 0 = same as the video crop. Exported as ORANGE_POSE_CROP_SIZE_PX.
     int timeout_ms = 500;
     int prewarm_iterations = 0;
     bool fail_on_init_error = true;
@@ -252,6 +254,11 @@ struct ExperimentSpec {
     bool yolo_sync_event = true;             // ORANGE_YOLO_SYNC_EVENT (default on)
     bool yolo_gpu_timing = true;             // ORANGE_YOLO_GPU_TIMING (default on)
     bool analytics_early_owned_frame = true; // ORANGE_ANALYTICS_EARLY_OWNED_FRAME (default on)
+    bool analytics_device_roi = false;       // ORANGE_ANALYTICS_DEVICE_ROI (default off; device crop origin + CPU comparison)
+    bool analytics_device_crop = false;      // ORANGE_ANALYTICS_DEVICE_CROP (default off; needs device_roi; pose crop + enqueue from the YOLO thread)
+    bool analytics_copy_after_pose = true;   // ORANGE_ANALYTICS_COPY_AFTER_POSE (default on; late owned copy behind pose done on the device crop path)
+    bool analytics_fused_frame = false;      // ORANGE_ANALYTICS_FUSED_FRAME (default off; needs device_crop; one graph per slot for the whole frame)
+    bool analytics_copy_stream = false;      // ORANGE_ANALYTICS_COPY_STREAM (fused frame: pool copy on its own stream after the graph)
     bool acq_stream_nonblocking = false;     // ORANGE_ACQ_STREAM_NONBLOCKING (diagnostic)
     bool acq_flush_after_event = false;      // ORANGE_ACQ_FLUSH_AFTER_EVENT (diagnostic)
     bool acq_force_direct_read = false;      // ORANGE_ACQ_FORCE_DIRECT_READ (diagnostic)
@@ -261,6 +268,20 @@ struct ExperimentSpec {
     bool external_recorder_detect_priority = true;  // ORANGE_EXTERNAL_RECORDER_DETECT_PRIORITY (default on)
     bool external_recorder_registered_source = true;   // ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE + ORANGE_POOL_NV12_LAYOUT (default on since 2026-09-04)
     bool external_recorder_deferred_release = false;  // ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE (diagnostic)
+    bool external_recorder_early_peer_stage = true;  // ORANGE_EXTERNAL_RECORDER_EARLY_PEER_STAGE (other-die shard stages its peer copy at descriptor arrival; default on since 2026-09-17)
+    bool external_recorder_peer_access = false;  // ORANGE_EXTERNAL_RECORDER_PEER_ACCESS (other-die shard enables CUDA peer access to the source die)
+    bool external_recorder_early_stage_push = false;  // ORANGE_EXTERNAL_RECORDER_EARLY_STAGE_PUSH (early staging copy issued from the source die)
+    double external_recorder_encode_phase_ms = 0.0;   // ORANGE_EXTERNAL_RECORDER_ENCODE_PHASE_MS (local full-frame shard submits at capture + ms)
+    bool external_recorder_split_submit = false;      // ORANGE_EXTERNAL_RECORDER_SPLIT_SUBMIT (encode thread submits only; harvest thread locks bitstreams)
+    bool external_recorder_owner_push = false;  // ORANGE_EXTERNAL_RECORDER_OWNER_PUSH (analytics pushes peer-shard frames into recorder-exported slots)
+    long long external_recorder_owner_push_chunk_bytes = 0;
+    bool acq_ring_release_log = false;   // ORANGE_ACQ_RING_RELEASE_LOG (per-frame ring release timeline)
+    bool acq_cadence_probe_all = false;  // ORANGE_ACQ_CADENCE_PROBE_ALL (cadence probe on every frame)  // ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_CHUNK_BYTES (0: client default 2 MB)
+    bool external_recorder_native_local_input = false;  // full-frame recorders get --native-local-input (CUDA 13 recorder build; contract recorder_tool_path must point at it)
+    std::string external_recorder_native_kernel_ptx;    // optional --native-local-kernel-ptx path
+    int external_recorder_extra_output_delay = -1;    // ORANGE_EXTERNAL_RECORDER_EXTRA_OUTPUT_DELAY (-1: probe default 3); reaches crop recorders too
+    int external_recorder_full_frame_extra_output_delay = -1;  // --extra-output-delay argv on full_frame recorders only (-1: off)
+    int external_recorder_owner_push_slots = 0;       // ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_SLOTS (0: recorder default 8); must exceed the peer shard's encoder buffers
     int external_recorder_max_deferred = -1;  // ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED (-1: ingress default)
     std::string recording_sink_mode = "real";
     bool helper_noop_source_read = false;
@@ -882,6 +903,7 @@ nlohmann::json build_headless_pose_worker_config_json(
         }},
         {"queue_depth", config.queue_depth},
         {"crop_frame_pool_size", config.crop_frame_pool_size},
+        {"crop_size_px", config.crop_size_px},
         {"timeout_ms", config.timeout_ms},
         {"prewarm_iterations", config.prewarm_iterations},
         {"fail_on_init_error", config.fail_on_init_error},
@@ -2360,6 +2382,7 @@ bool validate_headless_pose_worker_config(const HeadlessPoseWorkerConfig& config
             config.synthetic_detection_confidence != 0.99 ||
             config.queue_depth != 32 ||
             config.crop_frame_pool_size != 0 ||
+            config.crop_size_px != 0 ||
             config.timeout_ms != 500 ||
             config.prewarm_iterations != 0 ||
             !config.fail_on_init_error ||
@@ -2451,6 +2474,12 @@ bool validate_headless_pose_worker_config(const HeadlessPoseWorkerConfig& config
     if (config.crop_frame_pool_size < 0 || config.crop_frame_pool_size > 512) {
         if (error_out) {
             *error_out = prefix + "pose_worker.crop_frame_pool_size must be in [0,512]";
+        }
+        return false;
+    }
+    if (config.crop_size_px < 0 || config.crop_size_px > 4096) {
+        if (error_out) {
+            *error_out = prefix + "pose_worker.crop_size_px must be in [0,4096]";
         }
         return false;
     }
@@ -2640,7 +2669,9 @@ nlohmann::json build_pre_encoder_reference_capture_json(const PreEncoderReferenc
     nlohmann::json out = {
         {"enabled", config.enabled},
         {"max_frames", config.max_frames},
-        {"max_seconds", config.max_seconds}
+        {"max_seconds", config.max_seconds},
+        {"sample_every", config.sample_every},
+        {"synchronous", config.synchronous}
     };
     if (!config.output_dir.empty()) {
         out["output_dir"] = config.output_dir;
@@ -2670,7 +2701,15 @@ bool parse_pre_encoder_reference_capture_json(const nlohmann::json& node,
     config.enabled = node.value("enabled", true);
     config.max_frames = node.value("max_frames", 0);
     config.max_seconds = node.value("max_seconds", 0);
+    config.sample_every = node.value("sample_every", 1);
+    config.synchronous = node.value("synchronous", false);
     config.output_dir = node.value("output_dir", "");
+    if (config.sample_every < 1) {
+        if (error_out) {
+            *error_out = context + ": pre_encoder_reference_capture.sample_every must be >= 1";
+        }
+        return false;
+    }
     if (!validate_pre_encoder_reference_capture_config(config, error_out, context)) {
         return false;
     }
@@ -2953,6 +2992,7 @@ bool parse_headless_pose_worker_json(
         config.queue_depth = node.value("queue_depth", config.queue_depth);
         config.crop_frame_pool_size =
             node.value("crop_frame_pool_size", config.crop_frame_pool_size);
+        config.crop_size_px = node.value("crop_size_px", config.crop_size_px);
         config.timeout_ms = node.value("timeout_ms", config.timeout_ms);
         config.prewarm_iterations =
             node.value("prewarm_iterations", config.prewarm_iterations);
@@ -4869,7 +4909,32 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     frame_ipc_managers[idx].get());
                 pose_workers[idx]->SetMaxQueueSize(pose_worker_config.queue_depth);
                 pose_workers[idx]->RotateRecordingFolder(record_folder);
-                crop_producer_workers[idx]->SetPoseWorker(pose_workers[idx].get());
+                // Device crop path: the YOLO thread feeds the pose worker
+                // straight from the device ROI; the crop producer keeps the
+                // pose worker only for flush ticks. Falls back to the
+                // crop-producer fan-out when the path cannot be enabled.
+                bool device_crop_fanout = true;
+                const bool device_crop_requested =
+                    orange::yolo_flags::EnvFlag("ORANGE_ANALYTICS_DEVICE_CROP", false);
+                if (device_crop_requested) {
+                    std::string device_crop_error;
+                    const int pose_crop_px = pose_worker_config.crop_size_px > 0
+                        ? CropProducerWorker::SanitizeCropSize(pose_worker_config.crop_size_px)
+                        : crop_size_px;
+                    if (!orange::yolo_flags::EnvFlag("ORANGE_ANALYTICS_DEVICE_ROI", false)) {
+                        device_crop_error = "analytics_device_crop requires analytics_device_roi";
+                    } else if (cameras_params[idx].color) {
+                        device_crop_error = "device crop supports mono cameras only";
+                    } else if (pose_workers[idx]->EnableDeviceStage(pose_crop_px, &device_crop_error)) {
+                        device_crop_fanout = false;
+                    }
+                    if (device_crop_fanout) {
+                        std::cerr << "[EXPERIMENT] device crop disabled for camera "
+                                  << cameras_params[idx].camera_serial << ": "
+                                  << device_crop_error << std::endl;
+                    }
+                }
+                crop_producer_workers[idx]->SetPoseWorker(pose_workers[idx].get(), device_crop_fanout);
             }
         }
 
@@ -4897,6 +4962,9 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     if (crop_producer_workers[idx]) {
                         yolo_workers[idx]->SetCropProducerWorker(
                             crop_producer_workers[idx].get());
+                    }
+                    if (pose_workers[idx] && pose_workers[idx]->device_stage_enabled()) {
+                        yolo_workers[idx]->SetPoseWorker(pose_workers[idx].get());
                     }
                     yolo_workers[idx]->SetMaxQueueSize(240);
                 } catch (const std::exception& ex) {
@@ -8070,6 +8138,11 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->yolo_sync_event = fixed.value("yolo_sync_event", true);
     spec->yolo_gpu_timing = fixed.value("yolo_gpu_timing", true);
     spec->analytics_early_owned_frame = fixed.value("analytics_early_owned_frame", true);
+    spec->analytics_device_roi = fixed.value("analytics_device_roi", false);
+    spec->analytics_device_crop = fixed.value("analytics_device_crop", false);
+    spec->analytics_copy_after_pose = fixed.value("analytics_copy_after_pose", true);
+    spec->analytics_fused_frame = fixed.value("analytics_fused_frame", false);
+    spec->analytics_copy_stream = fixed.value("analytics_copy_stream", false);
     spec->acq_stream_nonblocking = fixed.value("acq_stream_nonblocking", false);
     spec->acq_flush_after_event = fixed.value("acq_flush_after_event", false);
     spec->acq_force_direct_read = fixed.value("acq_force_direct_read", false);
@@ -8083,6 +8156,32 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         fixed.value("external_recorder_registered_source", true);
     spec->external_recorder_deferred_release =
         fixed.value("external_recorder_deferred_release", false);
+    spec->external_recorder_early_peer_stage =
+        fixed.value("external_recorder_early_peer_stage", true);
+    spec->external_recorder_peer_access =
+        fixed.value("external_recorder_peer_access", false);
+    spec->external_recorder_early_stage_push =
+        fixed.value("external_recorder_early_stage_push", false);
+    spec->external_recorder_encode_phase_ms =
+        fixed.value("external_recorder_encode_phase_ms", 0.0);
+    spec->external_recorder_split_submit =
+        fixed.value("external_recorder_split_submit", false);
+    spec->external_recorder_owner_push =
+        fixed.value("external_recorder_owner_push", false);
+    spec->external_recorder_owner_push_chunk_bytes =
+        fixed.value("external_recorder_owner_push_chunk_bytes", 0LL);
+    spec->acq_ring_release_log = fixed.value("acq_ring_release_log", false);
+    spec->acq_cadence_probe_all = fixed.value("acq_cadence_probe_all", false);
+    spec->external_recorder_native_local_input =
+        fixed.value("external_recorder_native_local_input", false);
+    spec->external_recorder_native_kernel_ptx =
+        fixed.value("external_recorder_native_kernel_ptx", std::string());
+    spec->external_recorder_extra_output_delay =
+        fixed.value("external_recorder_extra_output_delay", -1);
+    spec->external_recorder_full_frame_extra_output_delay =
+        fixed.value("external_recorder_full_frame_extra_output_delay", -1);
+    spec->external_recorder_owner_push_slots =
+        fixed.value("external_recorder_owner_push_slots", 0);
     spec->external_recorder_max_deferred =
         fixed.value("external_recorder_max_deferred", -1);
     spec->recording_sink_mode = fixed.value("recording_sink_mode", "real");
@@ -8767,6 +8866,26 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                  spec.external_recorder_detect_priority},
                                                                 {"external_recorder_registered_source",
                                                                  spec.external_recorder_registered_source},
+                                                                {"external_recorder_early_peer_stage",
+                                                                 spec.external_recorder_early_peer_stage},
+                                                                {"external_recorder_peer_access",
+                                                                 spec.external_recorder_peer_access},
+                                                                {"external_recorder_early_stage_push",
+                                                                 spec.external_recorder_early_stage_push},
+                                                                {"external_recorder_encode_phase_ms",
+                                                                 spec.external_recorder_encode_phase_ms},
+                                                                {"external_recorder_split_submit",
+                                                                 spec.external_recorder_split_submit},
+                                                                {"external_recorder_owner_push",
+                                                                 spec.external_recorder_owner_push},
+                                                                {"external_recorder_native_local_input",
+                                                                 spec.external_recorder_native_local_input},
+                                                                {"external_recorder_native_kernel_ptx",
+                                                                 spec.external_recorder_native_kernel_ptx},
+                                                                {"external_recorder_full_frame_extra_output_delay",
+                                                                 spec.external_recorder_full_frame_extra_output_delay},
+                                                                {"external_recorder_owner_push_slots",
+                                                                 spec.external_recorder_owner_push_slots},
                                                                 {"recording_sink_mode", spec.recording_sink_mode},
                                                                 {"helper_noop_source_read",
                                                                  spec.helper_noop_source_read},
@@ -9330,6 +9449,18 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
                 options.duration_seconds);
         lifecycle_options.recorder_tool_path =
             options.external_recorder_contract.recorder_tool_path;
+        if (const char* native_env = std::getenv("ORANGE_HEADLESS_NATIVE_LOCAL_INPUT");
+            native_env && std::string(native_env) == "1") {
+            lifecycle_options.native_local_input = true;
+            if (const char* ptx_env = std::getenv("ORANGE_HEADLESS_NATIVE_KERNEL_PTX");
+                ptx_env && *ptx_env) {
+                lifecycle_options.native_local_kernel_ptx = ptx_env;
+            }
+        }
+        if (const char* od_env = std::getenv("ORANGE_HEADLESS_FULL_FRAME_EXTRA_OUTPUT_DELAY");
+            od_env && *od_env) {
+            lifecycle_options.full_frame_extra_output_delay = std::atoi(od_env);
+        }
         lifecycle_options.default_session_id =
             options.external_recorder_contract.session_id;
         lifecycle_options.analytics_root = analytics_root.string();
@@ -9475,6 +9606,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     std::unique_ptr<ScopedEnvVarOverride> pose_synthetic_confidence_override;
     std::unique_ptr<ScopedEnvVarOverride> pose_prewarm_iterations_override;
     std::unique_ptr<ScopedEnvVarOverride> pose_crop_frame_pool_size_override;
+    std::unique_ptr<ScopedEnvVarOverride> pose_crop_size_override;
     if (options.pose_worker.enabled()) {
         pose_mode_override = std::make_unique<ScopedEnvVarOverride>(
             "ORANGE_POSE_MODE",
@@ -9513,6 +9645,11 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             pose_crop_frame_pool_size_override = std::make_unique<ScopedEnvVarOverride>(
                 "ORANGE_CROP_FRAME_POOL_SIZE",
                 std::to_string(options.pose_worker.crop_frame_pool_size).c_str());
+        }
+        if (options.pose_worker.crop_size_px > 0) {
+            pose_crop_size_override = std::make_unique<ScopedEnvVarOverride>(
+                "ORANGE_POSE_CROP_SIZE_PX",
+                std::to_string(options.pose_worker.crop_size_px).c_str());
         }
     }
 
@@ -11371,6 +11508,11 @@ int run_local_experiment(const HeadlessCliOptions& options)
     setenv("ORANGE_YOLO_SYNC_EVENT", spec.yolo_sync_event ? "1" : "0", 1);
     setenv("ORANGE_YOLO_GPU_TIMING", spec.yolo_gpu_timing ? "1" : "0", 1);
     setenv("ORANGE_ANALYTICS_EARLY_OWNED_FRAME", spec.analytics_early_owned_frame ? "1" : "0", 1);
+    setenv("ORANGE_ANALYTICS_DEVICE_ROI", spec.analytics_device_roi ? "1" : "0", 1);
+    setenv("ORANGE_ANALYTICS_DEVICE_CROP", spec.analytics_device_crop ? "1" : "0", 1);
+    setenv("ORANGE_ANALYTICS_COPY_AFTER_POSE", spec.analytics_copy_after_pose ? "1" : "0", 1);
+    setenv("ORANGE_ANALYTICS_FUSED_FRAME", spec.analytics_fused_frame ? "1" : "0", 1);
+    setenv("ORANGE_ANALYTICS_COPY_STREAM", spec.analytics_copy_stream ? "1" : "0", 1);
     setenv("ORANGE_ACQ_STREAM_NONBLOCKING", spec.acq_stream_nonblocking ? "1" : "0", 1);
     setenv("ORANGE_ACQ_FLUSH_AFTER_EVENT", spec.acq_flush_after_event ? "1" : "0", 1);
     setenv("ORANGE_ACQ_FORCE_DIRECT_READ", spec.acq_force_direct_read ? "1" : "0", 1);
@@ -11390,6 +11532,40 @@ int run_local_experiment(const HeadlessCliOptions& options)
     if (spec.external_recorder_deferred_release) {
         setenv("ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE", "1", 1);
     }
+    setenv("ORANGE_EXTERNAL_RECORDER_EARLY_PEER_STAGE",
+           spec.external_recorder_early_peer_stage ? "1" : "0", 1);
+    setenv("ORANGE_EXTERNAL_RECORDER_PEER_ACCESS",
+           spec.external_recorder_peer_access ? "1" : "0", 1);
+    setenv("ORANGE_EXTERNAL_RECORDER_EARLY_STAGE_PUSH",
+           spec.external_recorder_early_stage_push ? "1" : "0", 1);
+    setenv("ORANGE_EXTERNAL_RECORDER_ENCODE_PHASE_MS",
+           std::to_string(spec.external_recorder_encode_phase_ms).c_str(), 1);
+    setenv("ORANGE_EXTERNAL_RECORDER_SPLIT_SUBMIT",
+           spec.external_recorder_split_submit ? "1" : "0", 1);
+    // Client-internal names: the recorder's own ORANGE_EXTERNAL_RECORDER_NATIVE_*
+    // env would also reach the crop recorders, which reject native input.
+    setenv("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH",
+           spec.external_recorder_owner_push ? "1" : "0", 1);
+    setenv("ORANGE_ACQ_RING_RELEASE_LOG", spec.acq_ring_release_log ? "1" : "0", 1);
+    setenv("ORANGE_ACQ_CADENCE_PROBE_ALL", spec.acq_cadence_probe_all ? "1" : "0", 1);
+    if (spec.external_recorder_owner_push_chunk_bytes > 0) {
+        setenv("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_CHUNK_BYTES",
+               std::to_string(spec.external_recorder_owner_push_chunk_bytes).c_str(), 1);
+    }
+    setenv("ORANGE_HEADLESS_NATIVE_LOCAL_INPUT",
+           spec.external_recorder_native_local_input ? "1" : "0", 1);
+    setenv("ORANGE_HEADLESS_NATIVE_KERNEL_PTX",
+           spec.external_recorder_native_kernel_ptx.c_str(), 1);
+    setenv("ORANGE_HEADLESS_FULL_FRAME_EXTRA_OUTPUT_DELAY",
+           std::to_string(spec.external_recorder_full_frame_extra_output_delay).c_str(), 1);
+    if (spec.external_recorder_owner_push_slots > 0) {
+        setenv("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_SLOTS",
+               std::to_string(spec.external_recorder_owner_push_slots).c_str(), 1);
+    }
+    if (spec.external_recorder_extra_output_delay >= 0) {
+        setenv("ORANGE_EXTERNAL_RECORDER_EXTRA_OUTPUT_DELAY",
+               std::to_string(spec.external_recorder_extra_output_delay).c_str(), 1);
+    }
     if (spec.external_recorder_max_deferred > 0) {
         setenv("ORANGE_EXTERNAL_RECORDER_MAX_DEFERRED",
                std::to_string(spec.external_recorder_max_deferred).c_str(), 1);
@@ -11398,6 +11574,10 @@ int run_local_experiment(const HeadlessCliOptions& options)
               << " yolo_sync_event=" << (spec.yolo_sync_event ? 1 : 0)
               << " yolo_gpu_timing=" << (spec.yolo_gpu_timing ? 1 : 0)
               << " analytics_early_owned_frame=" << (spec.analytics_early_owned_frame ? 1 : 0)
+              << " analytics_device_roi=" << (spec.analytics_device_roi ? 1 : 0)
+              << " analytics_device_crop=" << (spec.analytics_device_crop ? 1 : 0)
+              << " analytics_copy_after_pose=" << (spec.analytics_copy_after_pose ? 1 : 0)
+              << " analytics_fused_frame=" << (spec.analytics_fused_frame ? 1 : 0)
               << " acq_stream_nonblocking=" << (spec.acq_stream_nonblocking ? 1 : 0)
               << " acq_flush_after_event=" << (spec.acq_flush_after_event ? 1 : 0)
               << " acq_force_direct_read=" << (spec.acq_force_direct_read ? 1 : 0)

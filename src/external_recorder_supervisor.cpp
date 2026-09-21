@@ -831,6 +831,9 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
 
     SupervisorPlan plan;
     plan.recorder_tool_path = options.recorder_tool_path;
+    plan.native_local_input = options.native_local_input;
+    plan.native_local_kernel_ptx = options.native_local_kernel_ptx;
+    plan.full_frame_extra_output_delay = options.full_frame_extra_output_delay;
     plan.mode = "off";
     if (!read_string_field(contract,
                            "mode",
@@ -1093,6 +1096,11 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
                                &stream_plan.routing_policy,
                                error_out,
                                context) ||
+            !read_int_field(stream,
+                            "gop_route_offset",
+                            &stream_plan.gop_route_offset,
+                            error_out,
+                            context) ||
             !read_string_field(stream,
                                "summary_json",
                                &stream_plan.summary_json,
@@ -1652,6 +1660,24 @@ std::vector<std::string> BuildRecorderCommand(const SupervisorPlan& plan,
     if (plan.preserve_shard_mp4s) {
         argv.push_back("--preserve-shard-mp4s");
     }
+    if (stream.gop_route_offset > 0) {
+        argv.push_back("--gop-route-offset");
+        argv.push_back(std::to_string(stream.gop_route_offset));
+    }
+    if (plan.native_local_input && stream.stream_kind == "full_frame") {
+        argv.push_back("--native-local-input");
+        if (!plan.native_local_kernel_ptx.empty()) {
+            argv.push_back("--native-local-kernel-ptx");
+            argv.push_back(plan.native_local_kernel_ptx);
+        }
+    }
+    // Full-frame-only NVENC pipeline depth (2026-09-20): the env form
+    // ORANGE_EXTERNAL_RECORDER_EXTRA_OUTPUT_DELAY reaches every supervised
+    // recorder (crop recorders included); argv wins inside the probe.
+    if (plan.full_frame_extra_output_delay >= 0 && stream.stream_kind == "full_frame") {
+        argv.push_back("--extra-output-delay");
+        argv.push_back(std::to_string(plan.full_frame_extra_output_delay));
+    }
     return argv;
 }
 
@@ -1670,6 +1696,7 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
             {"recorder_gpu_id", stream.recorder_gpu_id},
             {"expected_shard_gpu_ids", stream.expected_shard_gpu_ids},
             {"routing_policy", stream.routing_policy},
+            {"gop_route_offset", stream.gop_route_offset},
             {"socket_path", stream.socket_path},
             {"summary_json", stream.summary_json},
             {"status_json", stream.status_json},
@@ -1723,6 +1750,9 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
         {"schema_id", plan.schema_id},
         {"schema_version", plan.schema_version},
         {"recorder_tool_path", plan.recorder_tool_path},
+        {"native_local_input", plan.native_local_input},
+        {"native_local_kernel_ptx", plan.native_local_kernel_ptx},
+        {"full_frame_extra_output_delay", plan.full_frame_extra_output_delay},
         {"source_path", plan.source_path},
         {"mode", plan.mode},
         {"artifact_root", plan.artifact_root},

@@ -8,6 +8,11 @@
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <map>
+#include <memory>
+#include <fstream>
+#include <ctime>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
@@ -21,6 +26,7 @@
 #include <utility>
 
 #include "encoder_preprocess_worker.h"
+#include "async_line_sink.h"
 #include "external_recorder_ipc_protocol.h"
 #include "threadworker.h"
 #include "worker_entry_release.h"
@@ -166,6 +172,25 @@ public:
           ack_timeout_ms_(resolve_ack_timeout_ms()),
           deferred_release_(recording_ingress_env_flag_enabled(
               "ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE", false)),
+          owner_push_(recording_ingress_env_flag_enabled(
+              "ORANGE_EXTERNAL_RECORDER_OWNER_PUSH", false)),
+          owner_push_max_age_ms_([]() {
+              const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_MAX_AGE_MS");
+              return (env && *env) ? std::atof(env) : 8.0;
+          }()),
+          owner_push_deadline_ms_([]() {
+              const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_DEADLINE_MS");
+              return (env && *env) ? std::atof(env) : 10.0;
+          }()),
+          owner_push_transfer_allowance_ms_([]() {
+              const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_TRANSFER_ALLOWANCE_MS");
+              return (env && *env) ? std::atof(env) : 3.6;
+          }()),
+          owner_push_chunk_bytes_([]() {
+              const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_CHUNK_BYTES");
+              const long long value = (env && *env) ? std::atoll(env) : 0;
+              return value > 0 ? static_cast<size_t>(value) : static_cast<size_t>(2u * 1024u * 1024u);
+          }()),
           detect_priority_gate_(recording_ingress_env_flag_enabled(
               "ORANGE_EXTERNAL_RECORDER_DETECT_PRIORITY", true)),
           max_deferred_pending_(resolve_max_deferred_pending()),
@@ -211,6 +236,12 @@ public:
     uint64_t deferred_release_cap_skips() const { return deferred_cap_skips_.load(std::memory_order_relaxed); }
     uint64_t deferred_release_copy_fallbacks() const { return deferred_copy_fallbacks_.load(std::memory_order_relaxed); }
     uint64_t deferred_release_pending_max() const { return deferred_pending_max_.load(std::memory_order_relaxed); }
+    uint64_t owner_pushes() const { return owner_pushes_.load(std::memory_order_relaxed); }
+    uint64_t owner_push_fallbacks() const { return owner_push_fallbacks_.load(std::memory_order_relaxed); }
+    double owner_push_wait_mean_ms() const { const uint64_t n = owner_pushes(); return n ? owner_push_wait_total_ns_.load(std::memory_order_relaxed) / 1e6 / n : 0.0; }
+    double owner_push_wait_max_ms() const { return owner_push_wait_max_ns_.load(std::memory_order_relaxed) / 1e6; }
+    double owner_push_done_after_capture_mean_ms() const { const uint64_t n = owner_pushes(); return n ? owner_push_done_after_capture_total_ns_.load(std::memory_order_relaxed) / 1e6 / n : 0.0; }
+    double owner_push_done_after_capture_max_ms() const { return owner_push_done_after_capture_max_ns_.load(std::memory_order_relaxed) / 1e6; }
     uint64_t deferred_release_pending() const { return static_cast<uint64_t>(pending_release_count()); }
     void RequestRecordingDrain(const char* reason)
     {
@@ -295,6 +326,25 @@ protected:
                 continue;
             }
             usleep(1000);
+        }
+        if (owner_push_csv_.IsOpen() && owner_push_csv_.dropped() > 0) {
+            std::cerr << "[ExternalIpcRecorder] camera=" << camera_serial_ << " owner push csv dropped "
+                      << owner_push_csv_.dropped() << " rows" << std::endl;
+        }
+        owner_push_csv_.Close();
+        if (owner_push_) {
+            std::cout << "[ExternalIpcRecorder] camera=" << camera_serial_
+                      << " owner push summary: pushes=" << owner_pushes()
+                      << " fallbacks=" << owner_push_fallbacks()
+                      << " age_fallbacks=" << owner_push_age_fallbacks_.load(std::memory_order_relaxed)
+                      << " card_wait_mean_ms=" << (owner_pushes() ? owner_push_card_wait_total_ns_.load(std::memory_order_relaxed) / 1e6 / owner_pushes() : 0.0)
+                      << " card_wait_max_ms=" << owner_push_card_wait_max_ns_.load(std::memory_order_relaxed) / 1e6
+                      << " slots=" << owner_slots_.size()
+                      << " push_wait_mean_ms=" << owner_push_wait_mean_ms()
+                      << " push_wait_max_ms=" << owner_push_wait_max_ms()
+                      << " done_after_capture_mean_ms=" << owner_push_done_after_capture_mean_ms()
+                      << " done_after_capture_max_ms=" << owner_push_done_after_capture_max_ms()
+                      << std::endl;
         }
         std::cout << "Child Thread DONE 0 (ExternalIpcRecorder_Cam_"
                   << camera_serial_ << ")" << std::endl;
@@ -643,6 +693,287 @@ private:
         return true;
     }
 
+    // STAGE <shard_id> <shard_count> <gpu> <index> <handle_hex> <bytes>:
+    // import the recorder's slot on the source GPU (the push is issued from
+    // there) with peer access to the slot's GPU.
+    bool handle_stage_line(const std::string& line)
+    {
+        std::istringstream in(line);
+        std::string kind;
+        int shard_id = -1;
+        size_t shard_count = 0;
+        int gpu = -1;
+        size_t index = 0;
+        std::string handle_hex;
+        size_t bytes = 0;
+        uint64_t gop_route_offset = 0;
+        in >> kind >> shard_id >> shard_count >> gpu >> index >> handle_hex >> bytes;
+        if (!in || handle_hex.size() != sizeof(cudaIpcMemHandle_t) * 2 || gpu < 0 || shard_count == 0) {
+            log_limited("malformed STAGE line: " + line);
+            return false;
+        }
+        if (!owner_push_) {
+            log_limited("recorder exported owner-push slots but ORANGE_EXTERNAL_RECORDER_OWNER_PUSH is off; ignoring");
+            return true;
+        }
+        cudaIpcMemHandle_t handle{};
+        auto* raw = reinterpret_cast<unsigned char*>(&handle);
+        for (size_t i = 0; i < sizeof(cudaIpcMemHandle_t); ++i) {
+            raw[i] = static_cast<unsigned char>(std::strtoul(handle_hex.substr(i * 2, 2).c_str(), nullptr, 16));
+        }
+        if (source_gpu_id_ >= 0) {
+            cudaSetDevice(source_gpu_id_);
+        }
+        const cudaError_t peer_status = cudaDeviceEnablePeerAccess(gpu, 0);
+        if (peer_status != cudaSuccess && peer_status != cudaErrorPeerAccessAlreadyEnabled) {
+            log_limited(std::string("owner push: cudaDeviceEnablePeerAccess failed: ") + cudaGetErrorString(peer_status));
+            return false;
+        }
+        (void)cudaGetLastError();
+        void* ptr = nullptr;
+        const cudaError_t open_status = cudaIpcOpenMemHandle(&ptr, handle, cudaIpcMemLazyEnablePeerAccess);
+        if (open_status != cudaSuccess) {
+            log_limited(std::string("owner push: cudaIpcOpenMemHandle failed: ") + cudaGetErrorString(open_status));
+            return false;
+        }
+        if (!(in >> gop_route_offset)) {
+            gop_route_offset = 0;  // older recorder: no offset token
+        }
+        std::lock_guard<std::mutex> lock(owner_mutex_);
+        owner_gop_route_offset_ = gop_route_offset;
+        if (owner_slots_.size() <= index) {
+            owner_slots_.resize(index + 1);
+        }
+        owner_slots_[index] = OwnerSlot{gpu, index, ptr, bytes};
+        owner_free_.push_back(index);
+        owner_peer_shard_id_ = shard_id;
+        owner_shard_count_ = shard_count;
+        if (owner_free_.size() == 1) {
+            std::cout << "[ExternalIpcRecorder] camera=" << camera_serial_
+                      << " owner push: first staging slot imported (shard " << shard_id
+                      << " of " << shard_count << ", gpu " << gpu << ", " << bytes << " bytes)" << std::endl;
+        }
+        return true;
+    }
+
+    // Per-card push serialization (2026-09-20): two dies of the same A16
+    // pushing at the same instant (which the PTP gate produces on every peer
+    // frame) drove hundreds of thousands of NIC rx discards and ~1 % camera
+    // frame gaps; one push at a time per card at the same duty was clean. The
+    // card is identified from the die's PCI bus number (dies of one card sit
+    // behind one switch: buses 0x2f-0x32 and 0x45-0x48 on pancake0).
+    static std::mutex* card_push_mutex_for(int gpu)
+    {
+        static std::mutex registry_mutex;
+        // The dies of one A16 sit behind one PCIe switch: key the lock on the
+        // switch's upstream port, three levels above the die in sysfs
+        // (pancake0: 2f..32 -> 2d:00.0, 45..48 -> 43:00.0). Fall back to the
+        // die's own address when sysfs is unavailable.
+        // Fail closed: a die whose card cannot be established gets no lock,
+        // and the caller then uses the validated pull path instead of
+        // pushing unserialized (review, 2026-09-20).
+        char bus_id[32] = {0};
+        if (cudaDeviceGetPCIBusId(bus_id, sizeof(bus_id), gpu) != cudaSuccess) {
+            (void)cudaGetLastError();
+            return nullptr;
+        }
+        // CUDA prints hex upper-case ("0000:2F:00.0"); sysfs names are lower-case.
+        for (char* c = bus_id; *c; ++c) {
+            *c = static_cast<char>(std::tolower(static_cast<unsigned char>(*c)));
+        }
+        std::error_code ec;
+        std::filesystem::path dev = std::filesystem::canonical(
+            std::filesystem::path("/sys/bus/pci/devices") / bus_id, ec);
+        if (ec) {
+            return nullptr;
+        }
+        std::filesystem::path up = dev.parent_path().parent_path().parent_path();
+        const std::string key = up.filename().string();
+        if (key.empty() || key.rfind("0000:", 0) != 0) {
+            return nullptr;  // not a PCI bridge address: topology not understood
+        }
+        static std::map<std::string, std::unique_ptr<std::mutex>> registry_by_key;
+        std::lock_guard<std::mutex> lock(registry_mutex);
+        auto& entry = registry_by_key[key];
+        if (!entry) {
+            entry = std::make_unique<std::mutex>();
+        }
+        return entry.get();
+    }
+    std::atomic<uint64_t> owner_push_card_wait_total_ns_{0};
+    std::atomic<uint64_t> owner_push_card_wait_max_ns_{0};
+
+    // Owner push for one frame: returns the slot index used, or -1 when the
+    // frame is not routed to the peer shard, no slot is free, or pushing is
+    // off. The source buffer is ready (the caller synchronized its ready
+    // event) and stays owned by this process until the push has completed.
+    int owner_push_frame(WORKER_ENTRY* entry, unsigned char* source_ptr, uint64_t gop_index)
+    {
+        if (!owner_push_ || !entry->pool_nv12_layout || source_gpu_id_ < 0) {
+            return -1;
+        }
+        if (owner_push_max_age_ms_ > 0.0 && entry->timestamp_sys > 0) {
+            timespec now{};
+            clock_gettime(CLOCK_REALTIME, &now);
+            const uint64_t now_ns = static_cast<uint64_t>(now.tv_sec) * 1000000000ull + static_cast<uint64_t>(now.tv_nsec);
+            const double age_ms = now_ns > entry->timestamp_sys ? static_cast<double>(now_ns - entry->timestamp_sys) / 1e6 : 0.0;
+            if (age_ms > owner_push_max_age_ms_ ||
+                (owner_push_deadline_ms_ > 0.0 && age_ms + owner_push_transfer_allowance_ms_ > owner_push_deadline_ms_)) {
+                owner_push_age_fallbacks_.fetch_add(1, std::memory_order_relaxed);
+                owner_push_csv_row("too_old", entry, 0, 0, age_ms, -1, -1);
+                return -1;
+            }
+        }
+        OwnerSlot slot;
+        {
+            std::lock_guard<std::mutex> lock(owner_mutex_);
+            if (owner_slots_.empty() || owner_shard_count_ == 0 || owner_peer_shard_id_ < 0) {
+                return -1;
+            }
+            // Mirror the recorder's routing: shard = (gop_index + offset) % shard_count.
+            if (static_cast<int>((gop_index + owner_gop_route_offset_) % owner_shard_count_) != owner_peer_shard_id_) {
+                return -1;
+            }
+            if (owner_free_.empty()) {
+                owner_push_fallbacks_.fetch_add(1, std::memory_order_relaxed);
+                owner_push_csv_row("no_slot", entry, 0, 0, 0.0, -1, -1);
+                return -1;
+            }
+            slot = owner_slots_[owner_free_.back()];
+            owner_free_.pop_back();
+        }
+        if (slot.bytes < entry->source_buffer_bytes) {
+            log_limited("owner push: slot smaller than the frame; falling back");
+            std::lock_guard<std::mutex> lock(owner_mutex_);
+            owner_free_.push_back(slot.index);
+            return -1;
+        }
+        cudaSetDevice(source_gpu_id_);
+        if (!owner_push_stream_) {
+            int lowest = 0, highest = 0;
+            cudaDeviceGetStreamPriorityRange(&lowest, &highest);
+            if (cudaStreamCreateWithPriority(&owner_push_stream_, cudaStreamNonBlocking, lowest) != cudaSuccess ||
+                cudaEventCreateWithFlags(&owner_push_done_, cudaEventDisableTiming | cudaEventBlockingSync) != cudaSuccess) {
+                log_limited("owner push: stream/event creation failed; falling back");
+                std::lock_guard<std::mutex> lock(owner_mutex_);
+                owner_free_.push_back(slot.index);
+                return -1;
+            }
+        }
+        // One push at a time per card; re-check freshness after the wait.
+        const auto card_wait_start = std::chrono::steady_clock::now();
+        std::mutex* card_mutex = card_push_mutex_for(source_gpu_id_);
+        if (!card_mutex) {
+            log_limited("owner push: cannot establish which card gpu " + std::to_string(source_gpu_id_) +
+                        " belongs to; owner push disabled for this camera (pull path)");
+            owner_push_ = false;
+            std::lock_guard<std::mutex> lock(owner_mutex_);
+            owner_free_.push_back(slot.index);
+            return -1;
+        }
+        std::unique_lock<std::mutex> card_lock(*card_mutex);
+        {
+            const uint64_t card_wait_ns = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - card_wait_start).count());
+            owner_push_card_wait_total_ns_.fetch_add(card_wait_ns, std::memory_order_relaxed);
+            uint64_t seen_w = owner_push_card_wait_max_ns_.load(std::memory_order_relaxed);
+            while (card_wait_ns > seen_w && !owner_push_card_wait_max_ns_.compare_exchange_weak(seen_w, card_wait_ns, std::memory_order_relaxed)) {}
+        }
+        if (owner_push_max_age_ms_ > 0.0 && entry->timestamp_sys > 0) {
+            timespec now{};
+            clock_gettime(CLOCK_REALTIME, &now);
+            const uint64_t now_ns = static_cast<uint64_t>(now.tv_sec) * 1000000000ull + static_cast<uint64_t>(now.tv_nsec);
+            const double age_ms = now_ns > entry->timestamp_sys ? static_cast<double>(now_ns - entry->timestamp_sys) / 1e6 : 0.0;
+            if (age_ms > owner_push_max_age_ms_ ||
+                (owner_push_deadline_ms_ > 0.0 && age_ms + owner_push_transfer_allowance_ms_ > owner_push_deadline_ms_)) {
+                card_lock.unlock();
+                owner_push_age_fallbacks_.fetch_add(1, std::memory_order_relaxed);
+                owner_push_csv_row("too_old_after_card_wait", entry, 0, 0, static_cast<double>(now_ns - entry->timestamp_sys) / 1e6, -1, -1);
+                std::lock_guard<std::mutex> lock(owner_mutex_);
+                owner_free_.push_back(slot.index);
+                return -1;
+            }
+        }
+        const auto push_start = std::chrono::steady_clock::now();
+        cudaError_t copy_status = cudaSuccess;
+        const size_t total = static_cast<size_t>(entry->source_buffer_bytes);
+        const size_t chunk = owner_push_chunk_bytes_ > 0 ? owner_push_chunk_bytes_ : total;
+        for (size_t offset = 0; offset < total && copy_status == cudaSuccess; offset += chunk) {
+            const size_t n = std::min(chunk, total - offset);
+            copy_status = cudaMemcpyPeerAsync(
+                static_cast<unsigned char*>(slot.ptr) + offset, slot.gpu,
+                source_ptr + offset, source_gpu_id_, n, owner_push_stream_);
+        }
+        if (copy_status != cudaSuccess) {
+            log_limited(std::string("owner push: cudaMemcpyPeerAsync failed: ") + cudaGetErrorString(copy_status));
+            // Earlier chunks of this frame may still be in flight on the
+            // stream: drain them before the slot or the source buffer can be
+            // reused. If the drain itself fails, quarantine the slot (never
+            // return it) rather than risk a write into a reused buffer.
+            if (cudaStreamSynchronize(owner_push_stream_) == cudaSuccess) {
+                std::lock_guard<std::mutex> lock(owner_mutex_);
+                owner_free_.push_back(slot.index);
+            } else {
+                (void)cudaGetLastError();
+                log_limited("owner push: stream drain failed after a chunk error; slot " +
+                            std::to_string(slot.index) + " quarantined");
+            }
+            return -1;
+        }
+        const cudaError_t record_status = cudaEventRecord(owner_push_done_, owner_push_stream_);
+        const cudaError_t sync_status = record_status == cudaSuccess
+            ? cudaEventSynchronize(owner_push_done_) : record_status;
+        if (sync_status != cudaSuccess) {
+            log_limited(std::string("owner push: completion wait failed: ") + cudaGetErrorString(sync_status));
+            (void)cudaGetLastError();
+            // The copy's state is unknown: the slot stays out of circulation.
+            // The source may still be read: drain the stream before anyone
+            // reuses it, and if even that fails, retain the source entry
+            // (never recycle it) and stop pushing.
+            if (cudaStreamSynchronize(owner_push_stream_) == cudaSuccess) {
+                log_limited("owner push: slot " + std::to_string(slot.index) + " quarantined; stream drained, source safe");
+                return -1;
+            }
+            (void)cudaGetLastError();
+            owner_push_ = false;
+            log_limited("owner push: stream drain failed; slot " + std::to_string(slot.index) +
+                        " quarantined, source entry retained, owner push disabled for this camera");
+            return -2;  // caller: send the frame unstaged and never recycle this entry
+        }
+        const auto push_done = std::chrono::steady_clock::now();
+        const uint64_t wait_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(push_done - push_start).count());
+        {
+            timespec rt{};
+            clock_gettime(CLOCK_REALTIME, &rt);
+            const uint64_t rt_ns = static_cast<uint64_t>(rt.tv_sec) * 1000000000ull + static_cast<uint64_t>(rt.tv_nsec);
+            const double age_ms = (entry->timestamp_sys > 0 && rt_ns > entry->timestamp_sys)
+                ? static_cast<double>(rt_ns - entry->timestamp_sys) / 1e6 : 0.0;
+            owner_push_csv_row("push", entry,
+                               static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(push_start.time_since_epoch()).count()),
+                               static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(push_done.time_since_epoch()).count()),
+                               age_ms, static_cast<int>(slot.index), slot.gpu);
+        }
+        owner_push_wait_total_ns_.fetch_add(wait_ns, std::memory_order_relaxed);
+        uint64_t seen = owner_push_wait_max_ns_.load(std::memory_order_relaxed);
+        while (wait_ns > seen && !owner_push_wait_max_ns_.compare_exchange_weak(seen, wait_ns, std::memory_order_relaxed)) {}
+        if (entry->timestamp_sys > 0) {
+            timespec now{};
+            clock_gettime(CLOCK_REALTIME, &now);
+            const uint64_t now_ns = static_cast<uint64_t>(now.tv_sec) * 1000000000ull + static_cast<uint64_t>(now.tv_nsec);
+            const uint64_t after_ns = now_ns > entry->timestamp_sys ? now_ns - entry->timestamp_sys : 0;
+            owner_push_done_after_capture_total_ns_.fetch_add(after_ns, std::memory_order_relaxed);
+            uint64_t seen_after = owner_push_done_after_capture_max_ns_.load(std::memory_order_relaxed);
+            while (after_ns > seen_after && !owner_push_done_after_capture_max_ns_.compare_exchange_weak(seen_after, after_ns, std::memory_order_relaxed)) {}
+        }
+        if (owner_pushes_.fetch_add(1, std::memory_order_relaxed) == 0) {
+            std::cout << "[ExternalIpcRecorder] camera=" << camera_serial_
+                      << " owner push: first frame pushed to gpu " << slot.gpu << " slot " << slot.index
+                      << " in " << (wait_ns / 1e6) << " ms" << std::endl;
+        }
+        return static_cast<int>(slot.index);
+    }
+
     bool handle_protocol_line(const std::string& line,
                               uint64_t expected_ack_frame_id,
                               bool* matched_expected_ack,
@@ -668,6 +999,28 @@ private:
             recorder_status_messages_received_.fetch_add(
                 1,
                 std::memory_order_relaxed);
+            return true;
+        }
+        if (line.rfind("STAGE ", 0) == 0) {
+            return handle_stage_line(line);
+        }
+        if (line.rfind("STAGEFREE ", 0) == 0) {
+            size_t index = 0;
+            {
+                std::istringstream sin(line);
+                std::string sk;
+                sin >> sk >> index;
+                if (!sin) {
+                    log_limited("malformed STAGEFREE line: " + line);
+                    return false;
+                }
+            }
+            std::lock_guard<std::mutex> lock(owner_mutex_);
+            if (index >= owner_slots_.size()) {
+                log_limited("STAGEFREE for unknown slot " + std::to_string(index));
+                return false;
+            }
+            owner_free_.push_back(index);
             return true;
         }
         std::istringstream in(line);
@@ -998,6 +1351,12 @@ private:
             zero_based_frame / static_cast<uint64_t>(recording_gop_length_);
         const uint32_t frame_index_within_gop = static_cast<uint32_t>(
             zero_based_frame % static_cast<uint64_t>(recording_gop_length_));
+        // Owner push: frames for the peer shard are copied into the
+        // recorder's slot from here; the recorder then never reads the pool
+        // buffer, so no deferred release is needed for them.
+        const int push_result = copy_release ? -1 : owner_push_frame(entry, source_ptr, gop_index);
+        const bool retain_source = push_result == -2;  // uncertain push: this entry is never recycled
+        const int staged_index = push_result >= 0 ? push_result : -1;
 
         msg << "FRAME "
             << camera_serial_ << " "
@@ -1022,6 +1381,7 @@ private:
             << (entry->pool_nv12_layout && entry->pool_buffer_bytes > 0
                     ? " pool_bytes=" + std::to_string(entry->pool_buffer_bytes) : "")
             << (copy_release ? " copy_release" : "")
+            << (staged_index >= 0 ? " staged=" + std::to_string(staged_index) : "")
             << "\n";
 
         if (!send_all(msg.str())) {
@@ -1029,7 +1389,7 @@ private:
             close_socket();
             return false;
         }
-        const bool force_deferred_release = deferred_release_;
+        const bool force_deferred_release = deferred_release_ && staged_index < 0;
         if (force_deferred_release) {
             {
                 std::lock_guard<std::mutex> lock(pending_release_mutex_);
@@ -1059,7 +1419,7 @@ private:
             close_socket();
             return false;
         }
-        if (ack_deferred_release && !force_deferred_release) {
+        if (ack_deferred_release && !force_deferred_release && staged_index < 0) {
             {
                 std::lock_guard<std::mutex> lock(pending_release_mutex_);
                 pending_release_entries_[entry->recording_frame_id] = entry;
@@ -1071,6 +1431,19 @@ private:
         }
         if (force_deferred_release || ack_deferred_release) {
             poll_protocol_lines(false);
+        }
+        if (retain_source) {
+            // Drop any deferred-release bookkeeping for this entry and keep it
+            // out of the pool for good: an outstanding read may still target it.
+            {
+                std::lock_guard<std::mutex> lock(pending_release_mutex_);
+                pending_release_entries_.erase(entry->recording_frame_id);
+            }
+            if (release_entry_now) {
+                *release_entry_now = false;
+            }
+            log_limited("owner push: pool entry for recording_frame " + std::to_string(entry->recording_frame_id) +
+                        " retained permanently after an uncertain push");
         }
         return true;
     }
@@ -1162,6 +1535,78 @@ private:
     int frame_height_ = 0;
     std::chrono::steady_clock::time_point last_eager_connect_attempt_{};
     bool deferred_release_ = false;
+    // Owner push (2026-09-19, ORANGE_EXTERNAL_RECORDER_OWNER_PUSH): the
+    // recorder's peer-GPU shard exports staging slots (STAGE lines); frames
+    // routed to that shard are pushed into a slot from this process, on the
+    // source GPU, after the pool copy, and sent as FRAME ... staged=<index>.
+    // The recorder returns slots with STAGEFREE. A push from the source die
+    // holds 6 GB/s under load where the recorder's pull collapses to 3.
+    bool owner_push_ = false;
+    struct OwnerSlot {
+        int gpu = -1;
+        size_t index = 0;
+        void* ptr = nullptr;
+        size_t bytes = 0;
+    };
+    std::mutex owner_mutex_;
+    std::vector<OwnerSlot> owner_slots_;
+    std::vector<size_t> owner_free_;
+    int owner_peer_shard_id_ = -1;
+    size_t owner_shard_count_ = 0;
+    uint64_t owner_gop_route_offset_ = 0;  // from the STAGE line; mirrors the recorder's routing
+    cudaStream_t owner_push_stream_ = nullptr;
+    cudaEvent_t owner_push_done_ = nullptr;
+    // The push is issued as a sequence of chunk copies so that this process's
+    // other copy-engine work (the copies that free camera ring slots) waits
+    // behind at most one chunk instead of a whole 5 ms frame transfer. A
+    // single 20 MB push cost 88 camera frame gaps in 60 s on 2026-09-19.
+    // Only push frames that are still fresh: a push that starts more than
+    // this long after capture cannot finish before the next frame's
+    // preprocess anyway, and back-to-back pushes of a backlog (startup, or
+    // any stall) starve the camera's RDMA into the same die. Older frames
+    // take the recorder's pull path. 0 disables the gate.
+    double owner_push_max_age_ms_ = 8.0;
+    // Deadline form of the gate (review, 2026-09-20): push only if the
+    // transfer can finish before the next frame arrives, i.e. age at push
+    // start + a conservative transfer allowance <= period. Defaults: 10 ms
+    // period, 3.6 ms allowance (measured 3.2 mean, 3.9 max), so a push may
+    // start no later than 6.4 ms after capture.
+    double owner_push_deadline_ms_ = 10.0;
+    double owner_push_transfer_allowance_ms_ = 3.6;
+    std::atomic<uint64_t> owner_push_age_fallbacks_{0};
+    orange::AsyncLineSink owner_push_csv_;  // Cam<serial>_owner_push.csv in the recording folder (diagnostic; sink thread writes)
+    std::string owner_push_csv_folder_;
+    void owner_push_csv_row(const char* kind, WORKER_ENTRY* entry, uint64_t start_ns, uint64_t done_ns,
+                            double age_ms, int slot, int gpu)
+    {
+        if (!entry || entry->recording_folder.empty()) {
+            return;
+        }
+        if (owner_push_csv_folder_ != entry->recording_folder) {
+            owner_push_csv_.Close();
+            owner_push_csv_folder_ = entry->recording_folder;
+            (void)owner_push_csv_.Open(
+                entry->recording_folder + "/Cam" + camera_serial_ + "_owner_push.csv",
+                "kind,recording_frame_id,local_frame_id,capture_sys_ns,push_start_steady_ns,"
+                "push_done_steady_ns,wait_ms,age_at_push_ms,queue_in,pending_release,slot,gpu\n");
+        }
+        if (!owner_push_csv_.IsOpen()) {
+            return;
+        }
+        std::ostringstream line;
+        line << kind << "," << entry->recording_frame_id << "," << entry->frame_id << ","
+             << entry->timestamp_sys << "," << start_ns << "," << done_ns << ","
+             << (done_ns > start_ns ? (done_ns - start_ns) / 1e6 : 0.0) << "," << age_ms << ","
+             << GetCountQueueIn() << "," << pending_release_count() << "," << slot << "," << gpu << "\n";
+        owner_push_csv_.Append(line.str());
+    }
+    size_t owner_push_chunk_bytes_ = 2u * 1024u * 1024u;
+    std::atomic<uint64_t> owner_pushes_{0};
+    std::atomic<uint64_t> owner_push_fallbacks_{0};
+    std::atomic<uint64_t> owner_push_wait_total_ns_{0};
+    std::atomic<uint64_t> owner_push_wait_max_ns_{0};
+    std::atomic<uint64_t> owner_push_done_after_capture_max_ns_{0};
+    std::atomic<uint64_t> owner_push_done_after_capture_total_ns_{0};
     bool detect_priority_gate_ = false;
     size_t max_deferred_pending_ = 32;
     size_t hard_max_deferred_pending_ = 48;

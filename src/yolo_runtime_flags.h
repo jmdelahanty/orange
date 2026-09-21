@@ -50,6 +50,34 @@ struct ResolvedFlags {
     bool inline_crop_producer = false;
     // ORANGE_YOLO_SKIP_CPU_RESULTS: diagnostic; drop postprocess/IPC/tracking.
     bool skip_cpu_results = false;
+    // ORANGE_ANALYTICS_DEVICE_ROI: select the crop origin on the device from
+    // the EfficientNMS outputs (src/detect_roi.h) right after the detect
+    // graph, and compare it against the CPU crop origin on every frame
+    // (device_roi_valid / device_roi_match perf columns). Default off.
+    bool device_roi = false;
+    // ORANGE_ANALYTICS_DEVICE_CROP: with device_roi, cut the pose crop from
+    // the device ROI and queue pose right behind the detect graph on the
+    // YOLO thread (no crop-thread hop; step 1 of the fused-graph plan).
+    // The crop producer keeps feeding the recorder and preview. Default off.
+    bool device_crop = false;
+    // ORANGE_ANALYTICS_COPY_AFTER_POSE: with the device crop path, queue the
+    // late owned pool copy (lever 2d) on the pose stream right behind the
+    // pose graph instead of on the acquisition stream at detect done, so the
+    // 20 MB copy does not overlap the pose graph on the die (step 4) and no
+    // cross-stream wait is needed. The recorder and display see the owned
+    // frame about one pose later. Default on; off restores the copy at
+    // detect done for an A/B.
+    bool copy_after_pose = true;
+    // ORANGE_ANALYTICS_FUSED_FRAME: with the device crop path, capture one
+    // CUDA graph per pose slot covering preprocess, detect, ROI, crop, pose,
+    // the output copies and the pool copy (step 3). Default off.
+    bool fused_frame = false;
+    // ORANGE_ANALYTICS_COPY_STREAM: with the fused frame graph, leave the pool
+    // copy out of the captured graph and issue it on the pose worker's device
+    // stage stream after the graph's end node. The next frame's graph on the
+    // analytics stream then never waits for the copy, which runs slow while
+    // the die's encoder reads the pool (the recorder-on tail, 2026-09-18).
+    bool copy_stream = false;
     // ORANGE_YOLO_STREAM_PRIORITY: "high" (default), "low", or an integer.
     std::string stream_priority = "high";
     // ORANGE_YOLO_STREAM_NONBLOCKING: create the YOLO stream non-blocking.
@@ -75,6 +103,11 @@ inline ResolvedFlags Resolve()
     flags.ready_event_fast_path = EnvFlag("ORANGE_YOLO_READY_EVENT_FASTPATH", true);
     flags.inline_crop_producer = EnvFlag("ORANGE_INLINE_CROP_PRODUCER", false);
     flags.skip_cpu_results = EnvFlag("ORANGE_YOLO_SKIP_CPU_RESULTS", false);
+    flags.device_roi = EnvFlag("ORANGE_ANALYTICS_DEVICE_ROI", false);
+    flags.device_crop = EnvFlag("ORANGE_ANALYTICS_DEVICE_CROP", false);
+    flags.copy_after_pose = EnvFlag("ORANGE_ANALYTICS_COPY_AFTER_POSE", true);
+    flags.fused_frame = EnvFlag("ORANGE_ANALYTICS_FUSED_FRAME", false);
+    flags.copy_stream = EnvFlag("ORANGE_ANALYTICS_COPY_STREAM", false);
     if (const char* env = std::getenv("ORANGE_YOLO_STREAM_PRIORITY"); env && *env) {
         flags.stream_priority = env;
     }

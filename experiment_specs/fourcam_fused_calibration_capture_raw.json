@@ -1,0 +1,114 @@
+{
+  "experiment_id": "fourcam_fused_calibration_capture_raw",
+  "notes": "PTP-gated four-camera raw frame capture for INT8 calibration: the in-process recording path (recording_sink_mode real) with pre_encoder_reference_capture taking every 10th frame up to 300 per camera (30 s of the 45 s run) as raw NV12 dumps with a PTP-aligned index (Cam<serial>_preenc_ref.{bin,json} + _index.csv). Camera 2010096 drives the IR lights, so all four run together under the PTP gate and exposures fall inside the light pulses. Fused analytics on as in production. Convert with scripts/extract_preenc_ref_frames.py, then calibrate.",
+  "selection": {
+    "camera_serials": [
+      "2010093",
+      "2010094",
+      "2010095",
+      "2010096"
+    ],
+    "gpu_ids": [
+      3,
+      1,
+      7,
+      5
+    ]
+  },
+  "fixed": {
+    "duration_s": 45,
+    "warmup_s": 2,
+    "display": false,
+    "yolo": false,
+    "stream_only": false,
+    "sync_mode": "ptp_gate",
+    "recording_sink_mode": "real",
+    "config_folder": "/tmp/orange_device_crop_config_a16",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "ptp_register_read_decimate": 100,
+    "nvenc_direct_input": false,
+    "yolo_worker": {
+      "mode": "real",
+      "engine_path": "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.engine",
+      "decimate": 1,
+      "publish_live_ipc": false,
+      "timeout_ms": 500,
+      "prewarm_iterations": 3,
+      "fail_on_init_error": true
+    },
+    "yolo_sync_event": true,
+    "ptp_latch_after_fanout": true,
+    "headless_gpu_dmon": true,
+    "external_recorder_direct_input": false,
+    "external_recorder_detect_priority": false,
+    "analytics_early_owned_frame": true,
+    "pose_worker": {
+      "mode": "real",
+      "engine_path": "/home/jeremy/pose_cedar_shadow_filtered_gray_latest_traditional_a4c30ae1_v001_r001_fp16.engine",
+      "skeleton_id": "fish_v1",
+      "input_width": 256,
+      "input_height": 256,
+      "input_layout": "nchw",
+      "input_dtype": "fp32",
+      "normalization": "model_default",
+      "roi_source": "yolo_top_detection",
+      "queue_depth": 32,
+      "crop_frame_pool_size": 32,
+      "timeout_ms": 500,
+      "prewarm_iterations": 3,
+      "fail_on_init_error": true,
+      "write_events_jsonl": true,
+      "crop_size_px": 256
+    },
+    "analytics_device_roi": true,
+    "analytics_device_crop": true,
+    "analytics_fused_frame": true,
+    "recording_control": {
+      "record_for_seconds": 45
+    },
+    "pre_encoder_reference_capture": {
+      "enabled": true,
+      "max_frames": 300,
+      "sample_every": 10,
+      "output_dir": "/home/jeremy/orange_data/model_sources/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/calibration_raw_preenc",
+      "synchronous": true
+    }
+  },
+  "matrix": {
+    "codec": [
+      "hevc"
+    ],
+    "preset": [
+      "p1"
+    ],
+    "tuning": [
+      "ll"
+    ],
+    "rate_control_mode": [
+      "vbr"
+    ],
+    "quality_value": [
+      20
+    ],
+    "gop_length": [
+      25
+    ],
+    "aq": [
+      "off"
+    ],
+    "temporal_aq": [
+      "off"
+    ],
+    "lookahead": [
+      "off"
+    ]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 2.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true,
+    "require_zero_camera_drops": true,
+    "require_valid_video_content": false
+  }
+}

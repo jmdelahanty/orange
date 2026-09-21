@@ -516,6 +516,17 @@ EncoderHwWorker::EncoderHwWorker(
     pre_encoder_reference_writer_.Configure(pre_encoder_reference_capture_config_);
     pre_encoder_reference_async_enabled_ =
         pre_encoder_reference_capture_config_.enabled && !direct_input_enabled_;
+    // ORANGE_PRE_ENCODER_REFERENCE_SYNC=1 forces the synchronous capture path
+    // (copy, stream sync, append inline). The async path's staging ring
+    // reported "exhausted before copy completion" on the fourth capture in
+    // the fused four-camera configuration (2026-09-18); the sync path is
+    // fine for a strided calibration capture.
+    const char* sync_env = std::getenv("ORANGE_PRE_ENCODER_REFERENCE_SYNC");
+    if (pre_encoder_reference_capture_config_.synchronous || (sync_env && sync_env[0] == '1')) {
+        pre_encoder_reference_async_enabled_ = false;
+        std::cout << "[EncoderHwWorker] pre-encoder reference capture forced synchronous for "
+                  << threadName << std::endl;
+    }
     if (split_harvest_requested()) {
         if (direct_input_enabled_) {
             std::cout << "[EncoderHwWorker] ORANGE_NVENC_SPLIT_HARVEST=1 ignored for "

@@ -12,6 +12,9 @@ namespace orange::external_recorder {
 
 struct SupervisorPlanOptions {
     std::string recorder_tool_path = "external_recorder_ipc_probe";
+    bool native_local_input = false;         // --native-local-input on full_frame streams
+    std::string native_local_kernel_ptx;     // --native-local-kernel-ptx <path> (optional)
+    int full_frame_extra_output_delay = -1;  // --extra-output-delay <n> on full_frame streams only (-1: recorder default/env)
     std::string default_session_id;
     int default_encode_fps = 100;
     int default_encode_max_fps = 0;
@@ -48,6 +51,10 @@ struct RecorderStreamPlan {
     int recorder_gpu_id = -1;
     std::vector<int> expected_shard_gpu_ids;
     std::string routing_policy = "single_shard";
+    // Added to the GOP index before the shard modulus, so the two cameras of
+    // one card can be in their peer-shard windows at different times
+    // (owner push serialization, 2026-09-20). 0 = as before.
+    int gop_route_offset = 0;
     std::string socket_path;
     std::string summary_json;
     std::string status_json;
@@ -106,6 +113,9 @@ struct SupervisorPlan {
     std::string schema_id = "orange.external_recorder.supervisor_plan";
     int schema_version = 1;
     std::string recorder_tool_path;
+    bool native_local_input = false;
+    std::string native_local_kernel_ptx;
+    int full_frame_extra_output_delay = -1;
     std::string source_path;
     std::string mode;
     std::string artifact_root;

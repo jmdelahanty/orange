@@ -77,6 +77,10 @@ here is the overview of the steps -- detailed instructions for each are in the s
       GRUB_TIMEOUT=5
       # pci=realloc=off is needed for adding two graphics cards -- there maybe other arguments in the following variable -- that case, keep them
       GRUB_CMDLINE_LINUX_DEFAULT="quiet splash pci=realloc=off"
+
+      (The rig host has since gained CPU isolation and, from 2026-09-17,
+      `tsc=reliable`; the live line and the reasons for each option are in
+      `docs/pancake0_kernel_cmdline.md`.)
       ```
 
   3. save the file and update grub with the above changes

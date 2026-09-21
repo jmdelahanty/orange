@@ -249,6 +249,8 @@ set_property(
 
 set(ORANGE_CUDA_SOURCES
     "${SRC_DIR}/kernel.cu"
+    "${SRC_DIR}/detect_roi.cu"
+    "${SRC_DIR}/pose_crop_from_roi.cu"
 )
 if(EXISTS "${SRC_DIR}/optimized_yolo_preprocess.cu")
     list(APPEND ORANGE_CUDA_SOURCES "${SRC_DIR}/optimized_yolo_preprocess.cu")
@@ -561,6 +563,17 @@ if(BUILD_TESTING)
     target_link_libraries(nic_thermal_monitor_tests PRIVATE Threads::Threads)
     add_dependencies(nic_thermal_monitor_tests nic_thermal_monitor)
     add_test(NAME nic_thermal_monitor_tests COMMAND nic_thermal_monitor_tests)
+
+    add_executable(detect_roi_tests
+        "tools/detect_roi_tests.cpp"
+        "${SRC_DIR}/detect_roi.cu"
+        "${SRC_DIR}/pose_crop_from_roi.cu"
+        "${SRC_DIR}/optimized_yolo_preprocess.cu"
+    )
+    target_include_directories(detect_roi_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS} "${ORANGE_CUDA_ROOT}/include")
+    target_compile_features(detect_roi_tests PRIVATE cxx_std_17)
+    target_link_libraries(detect_roi_tests PRIVATE ${CUDA_CUDART_LIBRARY})
+    add_test(NAME detect_roi_tests COMMAND detect_roi_tests)
 
     add_executable(headless_recording_profile_tests
         "tools/headless_recording_profile_tests.cpp"

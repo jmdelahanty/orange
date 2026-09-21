@@ -11,6 +11,8 @@
 #include "shaman.h"           // For shaman::SharedBoxQueue
 #include "velocity_tracker.h" // For VelocityTracker
 #include "yolo_spatial_mask.h"
+#include "fused_frame_args.h"
+#include <functional>
 #include <chrono>
 #include <vector>
 #include <chrono>
@@ -25,6 +27,7 @@
 
 class COpenGLDisplay;
 class CropProducerWorker;
+class PoseWorker;
 namespace yolo_perf {
 class YoloPerfLogger;
 }
@@ -43,7 +46,17 @@ public:
     void SetENetTarget(EnetContext* host_ctx, ENetPeer* target_peer);
     void SetDisplayWorker(COpenGLDisplay* display_worker);
     void SetCropProducerWorker(CropProducerWorker* crop_worker);
+    // Device crop path (ORANGE_ANALYTICS_DEVICE_CROP): the pose worker whose
+    // device stage this thread feeds right after the detect graph.
+    void SetPoseWorker(PoseWorker* pose_worker);
     void Warmup(int iterations);
+    // Step 3: per-worker timing events the fused graph records as nodes.
+    struct FusedTimingEvents {
+        cudaEvent_t pre_start = nullptr;
+        cudaEvent_t pre_end = nullptr;
+        cudaEvent_t infer_start = nullptr;
+        cudaEvent_t infer_end = nullptr;
+    };
     // Policies are requested from the control thread and applied only at a
     // worker frame boundary. A nonzero generation is acknowledged by
     // WaitForSpatialMaskPolicy before recording is allowed to begin.
@@ -106,11 +119,43 @@ private:
     shaman::SharedBoxQueue* shaman_ipc_queue_;
     COpenGLDisplay* m_display_worker = nullptr;
     CropProducerWorker* m_crop_worker = nullptr;
+    PoseWorker* m_pose_worker = nullptr;
     VelocityTracker velocity_tracker_;
     SafeQueue<WORKER_ENTRY*>& m_recycle_queue;
     std::unique_ptr<yolo_perf::YoloPerfLogger> perf_logger_;
     std::unique_ptr<yolo_event_log::YoloEventLogger> event_logger_;
     uint64_t perf_sample_counter_ = 0;
+    // ORANGE_ANALYTICS_DEVICE_ROI comparison counters (see detect_roi.h).
+    std::atomic<uint64_t> device_roi_frames_{0};
+    std::atomic<uint64_t> device_roi_matches_{0};
+    std::atomic<uint64_t> device_roi_mismatches_{0};
+    std::atomic<uint64_t> device_roi_masked_{0};
+    std::atomic<uint64_t> device_roi_logged_mismatches_{0};
+    // ORANGE_ANALYTICS_DEVICE_CROP counters (see PoseWorker::EnqueueDeviceStage).
+    std::atomic<uint64_t> device_crop_enqueued_{0};
+    std::atomic<uint64_t> device_crop_slot_busy_{0};
+    std::atomic<uint64_t> device_crop_skipped_{0};
+    std::atomic<uint64_t> device_crop_failed_{0};
+    // ORANGE_ANALYTICS_FUSED_FRAME (step 3): one captured graph per pose slot.
+    bool fused_frame_ready_ = false;
+    bool fused_frame_failed_ = false;
+    std::atomic<uint64_t> fused_frames_{0};
+    std::atomic<uint64_t> fused_slot_busy_{0};
+    FusedTimingEvents fused_timing_;
+    bool fused_timing_created_ = false;
+    // Captured in Warmup, before acquisition starts, on the warm source.
+    bool CaptureFusedGraphs(
+        const unsigned char* d_source,
+        int source_width,
+        int source_height,
+        const FusedTimingEvents* timing,
+        const YoloPreprocessCircleMask* mask);
+    // Device ROI parameters for a frame of this size under this mask policy.
+    void FillDeviceRoiParams(
+        DetectRoiParams& p,
+        int source_width,
+        int source_height,
+        const orange::analytics_mask::Policy& policy) const;
     int perf_sample_rate_ = 1;
     std::string perf_log_folder_;
 

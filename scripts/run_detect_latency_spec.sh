@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Stamp, run, and analyse one detect-latency experiment spec.
 #
-#   scripts/run_detect_latency_spec.sh <spec-name-or-path> [baseline.json]
+#   scripts/run_detect_latency_spec.sh [--orange-client <binary>] <spec-name-or-path> [baseline.json]
+#
+# --orange-client selects the client binary (default: this worktree's
+# targets/release/orange_client). The sudo wrapper accepts only its allowed
+# paths; a new worktree's binary must be added there first.
 #
 # - stamps a copy of the spec into /tmp with a unique experiment_id and
 #   external_recorder_contract.artifact_root (the client refuses to reuse a
@@ -18,12 +22,24 @@
 #   targets/release/evt_force_reboot <serial> <camera-ip>
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CLIENT_OVERRIDE=""
+while [[ $# -gt 0 && "$1" == --* ]]; do
+  case "$1" in
+    --orange-client)
+      [[ $# -ge 2 ]] || { echo "--orange-client requires a path" >&2; exit 2; }
+      CLIENT_OVERRIDE="$(realpath -e "$2" 2>/dev/null || true)"
+      [[ -x "$CLIENT_OVERRIDE" ]] || { echo "orange_client not executable: $2" >&2; exit 2; }
+      shift 2 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
 SPEC_ARG="${1:?spec name or path required}"
 BASELINE_JSON="${2:-}"
 if [[ -f "$SPEC_ARG" ]]; then SPEC_SRC="$(realpath "$SPEC_ARG")"; else SPEC_SRC="$REPO_ROOT/experiment_specs/${SPEC_ARG%.json}.json"; fi
 [[ -f "$SPEC_SRC" ]] || { echo "spec not found: $SPEC_SRC" >&2; exit 2; }
-CLIENT="$REPO_ROOT/targets/release/orange_client"
+CLIENT="${CLIENT_OVERRIDE:-$REPO_ROOT/targets/release/orange_client}"
 [[ -x "$CLIENT" ]] || { echo "build first: cmake --build targets/release --target orange_client external_recorder_ipc_probe" >&2; exit 2; }
+echo "[run] orange_client=$CLIENT"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 STAMPED="/tmp/$(basename "${SPEC_SRC%.json}")_${STAMP}.json"
 python3 - "$SPEC_SRC" "$STAMP" "$STAMPED" <<'PY'

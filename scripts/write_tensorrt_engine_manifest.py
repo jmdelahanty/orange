@@ -98,6 +98,24 @@ def collect_warnings(text: str) -> list[str]:
     return warnings[:50]
 
 
+def int8_calibration_record(cache: Path | None) -> dict | None:
+    if cache is None:
+        return None
+    record = {"cache_path": str(cache), "cache_sha256": sha256(cache), "cache_bytes": cache.stat().st_size}
+    sidecar = cache.with_suffix(cache.suffix + ".json")
+    if sidecar.exists():
+        try:
+            side = json.loads(sidecar.read_text())
+        except json.JSONDecodeError:
+            side = None
+        if isinstance(side, dict):
+            record["record_path"] = str(sidecar)
+            for key in ("calibrator", "frame_count", "frames_dir", "preprocessing", "created_at_utc", "onnx"):
+                if key in side:
+                    record[key] = side[key]
+    return record
+
+
 def build_command(args: argparse.Namespace, staged_engine: Path) -> list[str]:
     command = [
         str(args.trtexec),
@@ -105,10 +123,11 @@ def build_command(args: argparse.Namespace, staged_engine: Path) -> list[str]:
         f"--onnx={args.source_onnx}",
         f"--saveEngine={staged_engine}",
     ]
-    if args.precision == "fp16":
-        command.append("--fp16")
-    elif args.precision == "int8":
+    command.append("--fp16")
+    if args.precision == "int8":
         command.append("--int8")
+        if args.calib_cache:
+            command.append(f"--calib={args.calib_cache}")
     command.extend(
         [
             f"--builderOptimizationLevel={args.builder_optimization_level}",
@@ -183,6 +202,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-hardware-class", required=True)
     parser.add_argument("--deployment-runtime", default="orange")
     parser.add_argument("--precision", choices=["fp16", "int8"], required=True)
+    parser.add_argument("--calib-cache", type=Path, default=None,
+                        help="INT8 calibration cache; the sidecar <cache>.json record is embedded when present")
     parser.add_argument("--trt-tag", required=True)
     parser.add_argument("--builder-optimization-level", type=int, required=True)
     parser.add_argument("--avg-timing", type=int, required=True)
@@ -315,6 +336,7 @@ def main() -> int:
             "tensorrt_log_version": first_match(build_text, r"TensorRT\.trtexec \[TensorRT ([^\]]+)\]"),
             "selected_gpu": selected_gpu,
             "precision": args.precision,
+            "int8_calibration": int8_calibration_record(args.calib_cache),
             "builder_optimization_level": args.builder_optimization_level,
             "avg_timing": args.avg_timing,
             "profiling_verbosity": args.profiling_verbosity,

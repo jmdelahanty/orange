@@ -23,6 +23,14 @@ struct PreEncoderReferenceCaptureConfig {
     bool enabled = false;
     int max_frames = 0;
     int max_seconds = 0;
+    // Capture every Nth offered frame (1 = every frame). Spreads a bounded
+    // budget over the run instead of taking consecutive frames, for
+    // calibration sets.
+    int sample_every = 1;
+    // Copy, sync and append inline instead of the async staging ring (the
+    // ring reported "exhausted before copy completion" on the fourth capture
+    // in the fused four-camera configuration, 2026-09-18).
+    bool synchronous = false;
     std::string output_dir;
 
     bool has_frame_bound() const { return max_frames > 0; }

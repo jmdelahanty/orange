@@ -1,0 +1,235 @@
+{
+  "experiment_id": "fourcam_fused_single_shard_fullframe",
+  "notes": "NVENC capacity with the registered source, lit frames and real detections: four cameras (Cam2010096 drives the IR lights), the fused pose path, and ONE full-frame recorder shard per camera on its detect die (routing single_shard), crop video off. Motivated by the per-frame encoder CSVs of 2026-09-17: the local shard encodes a frame in about 4 ms (lock_bitstream), so one engine may sustain 100 fps, which would remove the other-die shard and its 20 MB per frame pull across the card switch. Read: recorder frames_encoded, drops, cap skips and copy fallbacks (any of these nonzero = the engine cannot keep up), encode CSV enqueue_age growth, and the detect graph's infer_ms mean/p95 and slow-frame fraction against fourcam_fused_recorder_fullframe_only (split-GOP).",
+  "selection": {
+    "camera_serials": [
+      "2010093",
+      "2010094",
+      "2010095",
+      "2010096"
+    ],
+    "gpu_ids": [
+      3,
+      1,
+      7,
+      5
+    ]
+  },
+  "fixed": {
+    "duration_s": 60,
+    "warmup_s": 2,
+    "display": false,
+    "yolo": false,
+    "stream_only": false,
+    "sync_mode": "ptp_gate",
+    "recording_sink_mode": "external_ipc",
+    "config_folder": "/tmp/orange_recorder_config_a16",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "ptp_register_read_decimate": 100,
+    "nvenc_direct_input": false,
+    "external_recorder_contract": {
+      "schema_id": "orange.external_recorder.contract",
+      "schema_version": 1,
+      "mode": "diagnostic_ipc_v1",
+      "supervise_processes": true,
+      "artifact_root": "/home/jeremy/orange_data/external_recorder/fourcam_fused_single_shard_fullframe",
+      "session_id": "fourcam_fused_single_shard_fullframe",
+      "require_summary": true,
+      "require_video_sanity": false,
+      "require_merged_mp4": true,
+      "require_gop_routing": true,
+      "preserve_shard_mp4s": false,
+      "streams": {
+        "2010093": {
+          "stream_id": "2010093",
+          "camera_serial": "2010093",
+          "analytics_gpu_id": 3,
+          "recorder_gpu_id": 3,
+          "expected_shard_gpu_ids": [
+            3
+          ],
+          "routing_policy": "single_shard",
+          "summary_json": "/home/jeremy/orange_data/external_recorder/fourcam_fused_single_shard_fullframe/Cam2010093_external_summary.json",
+          "video_sanity_json": "/home/jeremy/orange_data/external_recorder/fourcam_fused_single_shard_fullframe/Cam2010093_external_video_sanity.json",
+          "mp4": "/home/jeremy/orange_data/external_recorder/fourcam_fused_single_shard_fullframe/Cam2010093_external.mp4",
+          "gop_routing_csv": "/home/jeremy/orange_data/external_recorder/fourcam_fused_single_shard_fullframe/Cam2010093_external_gop_routing.csv",
+          "encode_fps": 100,
+          "encode_max_fps": 0,
+          "encode_queue_depth": 32,
+          "prewarm_slots": 4,
+          "prewarm_bytes": 20358144,
+          "prewarm_peer_copy": true,
+          "codec": "hevc",
+          "preset": "p1",
+          "tuning": "ll",
+          "gop": 25,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000
+        },
+        "2010094": {
+          "stream_id": "2010094",
+          "camera_serial": "2010094",
+          "analytics_gpu_id": 1,
+          "recorder_gpu_id": 1,
+          "expected_shard_gpu_ids": [
+            1
+          ],
+          "routing_policy": "single_shard",
+          "summary_json": "/home/jeremy/orange_data/external_recorder/fourcam_fused_single_shard_fullframe/Cam2010094_external_summary.json",
+          "video_sanity_json": "/home/jeremy/orange_data/external_recorder/fourcam_fused_single_shard_fullframe/Cam2010094_external_video_sanity.json",
+          "mp4": "/home/jeremy/orange_data/external_recorder/fourcam_fused_single_shard_fullframe/Cam2010094_external.mp4",
+          "gop_routing_csv": "/home/jeremy/orange_data/external_recorder/fourcam_fused_single_shard_fullframe/Cam2010094_external_gop_routing.csv",
+          "encode_fps": 100,
+          "encode_max_fps": 0,
+          "encode_queue_depth": 32,
+          "prewarm_slots": 4,
+          "prewarm_bytes": 20358144,
+          "prewarm_peer_copy": true,
+          "codec": "hevc",
+          "preset": "p1",
+          "tuning": "ll",
+          "gop": 25,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000
+        },
+        "2010095": {
+          "stream_id": "2010095",
+          "camera_serial": "2010095",
+          "analytics_gpu_id": 7,
+          "recorder_gpu_id": 7,
+          "expected_shard_gpu_ids": [
+            7
+          ],
+          "routing_policy": "single_shard",
+          "summary_json": "/home/jeremy/orange_data/external_recorder/fourcam_fused_single_shard_fullframe/Cam2010095_external_summary.json",
+          "video_sanity_json": "/home/jeremy/orange_data/external_recorder/fourcam_fused_single_shard_fullframe/Cam2010095_external_video_sanity.json",
+          "mp4": "/home/jeremy/orange_data/external_recorder/fourcam_fused_single_shard_fullframe/Cam2010095_external.mp4",
+          "gop_routing_csv": "/home/jeremy/orange_data/external_recorder/fourcam_fused_single_shard_fullframe/Cam2010095_external_gop_routing.csv",
+          "encode_fps": 100,
+          "encode_max_fps": 0,
+          "encode_queue_depth": 32,
+          "prewarm_slots": 4,
+          "prewarm_bytes": 20358144,
+          "prewarm_peer_copy": true,
+          "codec": "hevc",
+          "preset": "p1",
+          "tuning": "ll",
+          "gop": 25,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000
+        },
+        "2010096": {
+          "stream_id": "2010096",
+          "camera_serial": "2010096",
+          "analytics_gpu_id": 5,
+          "recorder_gpu_id": 5,
+          "expected_shard_gpu_ids": [
+            5
+          ],
+          "routing_policy": "single_shard",
+          "summary_json": "/home/jeremy/orange_data/external_recorder/fourcam_fused_single_shard_fullframe/Cam2010096_external_summary.json",
+          "video_sanity_json": "/home/jeremy/orange_data/external_recorder/fourcam_fused_single_shard_fullframe/Cam2010096_external_video_sanity.json",
+          "mp4": "/home/jeremy/orange_data/external_recorder/fourcam_fused_single_shard_fullframe/Cam2010096_external.mp4",
+          "gop_routing_csv": "/home/jeremy/orange_data/external_recorder/fourcam_fused_single_shard_fullframe/Cam2010096_external_gop_routing.csv",
+          "encode_fps": 100,
+          "encode_max_fps": 0,
+          "encode_queue_depth": 32,
+          "prewarm_slots": 4,
+          "prewarm_bytes": 20358144,
+          "prewarm_peer_copy": true,
+          "codec": "hevc",
+          "preset": "p1",
+          "tuning": "ll",
+          "gop": 25,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000
+        }
+      }
+    },
+    "yolo_worker": {
+      "mode": "real",
+      "engine_path": "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.engine",
+      "decimate": 1,
+      "publish_live_ipc": false,
+      "timeout_ms": 500,
+      "prewarm_iterations": 3,
+      "fail_on_init_error": true
+    },
+    "yolo_sync_event": true,
+    "ptp_latch_after_fanout": true,
+    "headless_gpu_dmon": true,
+    "external_recorder_direct_input": false,
+    "recording_control": {
+      "record_for_seconds": 60
+    },
+    "external_recorder_detect_priority": true,
+    "external_recorder_registered_source": true,
+    "crop_recording": {
+      "mode": "off"
+    },
+    "pose_worker": {
+      "mode": "real",
+      "engine_path": "/home/jeremy/pose_cedar_shadow_filtered_gray_latest_traditional_a4c30ae1_v001_r001_fp16.engine",
+      "skeleton_id": "fish_v1",
+      "input_width": 256,
+      "input_height": 256,
+      "input_layout": "nchw",
+      "input_dtype": "fp32",
+      "normalization": "model_default",
+      "roi_source": "yolo_top_detection",
+      "queue_depth": 32,
+      "crop_frame_pool_size": 32,
+      "timeout_ms": 500,
+      "prewarm_iterations": 3,
+      "fail_on_init_error": true,
+      "write_events_jsonl": true,
+      "crop_size_px": 256
+    },
+    "analytics_early_owned_frame": true,
+    "analytics_device_roi": true,
+    "analytics_device_crop": true,
+    "analytics_copy_after_pose": true,
+    "analytics_fused_frame": true
+  },
+  "matrix": {
+    "codec": [
+      "hevc"
+    ],
+    "preset": [
+      "p1"
+    ],
+    "tuning": [
+      "ll"
+    ],
+    "rate_control_mode": [
+      "vbr"
+    ],
+    "quality_value": [
+      20
+    ],
+    "gop_length": [
+      25
+    ],
+    "aq": [
+      "off"
+    ],
+    "temporal_aq": [
+      "off"
+    ],
+    "lookahead": [
+      "off"
+    ]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 2.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true,
+    "require_zero_camera_drops": true,
+    "require_valid_video_content": false
+  }
+}

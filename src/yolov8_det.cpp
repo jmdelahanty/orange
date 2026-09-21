@@ -166,6 +166,17 @@ void YOLOv8::make_pipe(bool warmup, int /*max_width*/, int /*max_height*/)
         if (nonblocking_env && *nonblocking_env && std::strcmp(nonblocking_env, "0") != 0) {
             stream_flags = cudaStreamNonBlocking;
         }
+        // The fused frame graph (step 3) is captured on this stream. A
+        // legacy-blocking stream inherits an implicit dependency on any
+        // other thread's null-stream work during capture, which invalidates
+        // it (seen as TensorRT "previous error during capture"), so the
+        // stream must be non-blocking on that path.
+        const char* fused_env = std::getenv("ORANGE_ANALYTICS_FUSED_FRAME");
+        if (fused_env && *fused_env && std::strcmp(fused_env, "0") != 0 &&
+            stream_flags != cudaStreamNonBlocking) {
+            stream_flags = cudaStreamNonBlocking;
+            std::cout << "[YOLOv8] Stream created non-blocking for the fused frame graph." << std::endl;
+        }
         if (priority < greatest_priority) {
             priority = greatest_priority;
         } else if (priority > least_priority) {
@@ -247,6 +258,37 @@ void YOLOv8::preprocess_gpu(
         );
     }
 
+    this->pparam.ratio  = 1.0f / r;
+    this->pparam.dw     = (inp_w - source_width * r) / 2.0f;
+    this->pparam.dh     = (inp_h - source_height * r) / 2.0f;
+    this->pparam.width  = (float)source_width;
+    this->pparam.height = (float)source_height;
+}
+
+void YOLOv8::enqueue_for_capture()
+{
+    if (!this->tensor_addresses_set_) {
+        this->bind_tensors();
+    }
+    if (!this->context->enqueueV3(this->stream)) {
+        throw std::runtime_error("YOLOv8::enqueue_for_capture: enqueueV3 failed");
+    }
+    for (int i = 0; i < this->num_outputs; ++i) {
+        size_t osize = this->output_bindings[i].size * this->output_bindings[i].dsize;
+        CHECK(cudaMemcpyAsync(
+            this->host_ptrs[i],
+            this->device_ptrs[this->num_inputs + i],
+            osize,
+            cudaMemcpyDeviceToHost,
+            this->stream));
+    }
+}
+
+void YOLOv8::set_preprocess_params(int source_width, int source_height)
+{
+    const float inp_h  = (float)inp_h_int;
+    const float inp_w  = (float)inp_w_int;
+    float r = std::min(inp_h / (float)source_height, inp_w / (float)source_width);
     this->pparam.ratio  = 1.0f / r;
     this->pparam.dw     = (inp_w - source_width * r) / 2.0f;
     this->pparam.dh     = (inp_h - source_height * r) / 2.0f;

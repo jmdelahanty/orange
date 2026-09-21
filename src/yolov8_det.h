@@ -26,6 +26,14 @@ public:
         bool is_color,
         const YoloPreprocessCircleMask* circle_mask = nullptr);
     void infer();
+    // Fused-graph support: enqueue the engine and the output copies on
+    // `stream` without touching this object's own graph. Called inside a
+    // stream capture by the YOLO worker; the context must have run at least
+    // once before (make_pipe warmup does that).
+    void enqueue_for_capture();
+    // Set the letterbox parameters postprocess() needs for a source of this
+    // size, as preprocess_gpu would; the fused graph runs its own preprocess.
+    void set_preprocess_params(int source_width, int source_height);
     void postprocess(std::vector<Object> &objs);
     static void draw_objects(const cv::Mat&                                image,
                            cv::Mat&                                      res,

@@ -2,6 +2,11 @@
 #include "project.h"
 
 #include <EmergentCameraAPIs.h>
+#include <cuda.h>
+#include <cuda_runtime.h>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <gigevisiondeviceinfo.h>
 
 #include <algorithm>
@@ -30,9 +35,33 @@ struct Options {
     double measure_seconds = 0.0;
     int override_frame_rate = -1;
     int override_gpu_direct = -1;
+    // GPUDirect ring probe: after stream open, set gpuDirectDeviceId to this
+    // GPU before allocating the second half of the zero-copy buffers, and
+    // report where every buffer and every received frame actually lands.
+    int gpu_direct_switch = -1;
+    // Raw frame dump (INT8 calibration capture): during --measure-seconds,
+    // copy every Nth received frame from the ring to the host and write it
+    // as a binary PGM (Mono8) named Cam<serial>_frame<id>.pgm in dump_dir.
+    std::string dump_dir;
+    int dump_every = 0;
+    int dump_max = 0;
+    // User-supplied stream ring (EVTStreamAttribute): "device" = one
+    // cudaMalloc on the camera's GPU; "vmm-split" = one CUDA virtual-address
+    // range whose first half is physical memory on the camera's GPU and
+    // second half on user_ring_gpu2 (cuMemCreate/cuMemMap).
+    std::string user_ring_mode;
+    int user_ring_gpu2 = -1;
+    std::size_t user_ring_mb = 512;
     bool frame_stats = false;
     bool show_help = false;
 };
+
+void check_cuda_or_throw(cudaError_t err, const char* what)
+{
+    if (err != cudaSuccess) {
+        throw std::runtime_error(std::string(what) + " failed: " + cudaGetErrorString(err));
+    }
+}
 
 std::string trim_copy(const std::string& value)
 {
@@ -112,6 +141,13 @@ void print_usage(const char* argv0)
         << "  --all                    Probe every discovered camera with a usable config/default.\n"
         << "  --list-only              List discovered cameras and config match state only.\n"
         << "  --frames <n>             After stream open, acquire n frames before close (default 0).\n"
+        << "  --dump-dir <dir>         With --measure-seconds: write every --dump-every-th frame as a Mono8 PGM into <dir>.\n"
+        << "  --dump-every <n>         Dump period in frames (default 10 when --dump-dir is set).\n"
+        << "  --dump-max <n>           Stop dumping after n frames (default unlimited).\n"
+        << "  --user-ring <device|vmm-split>  Open the stream on a user-supplied ring (EVTStreamAttribute) and report where frames land.\n"
+        << "  --user-ring-gpu2 <g>     vmm-split: GPU holding the second half of the ring.\n"
+        << "  --user-ring-mb <n>       User ring size in MB (default 512).\n"
+        << "  --gpu-direct-switch <g>  Ring probe: allocate the second half of the buffers after switching gpuDirectDeviceId to GPU g; print each buffer's and frame's CUDA device.\n"
         << "  --measure-seconds <s>    Timed raw acquisition FPS measurement after stream open.\n"
         << "  --buffer-count <n>       EVT frame buffers when grabbing frames (default 4).\n"
         << "  --timeout-ms <ms>        Frame wait timeout when grabbing frames (default 1000).\n"
@@ -175,6 +211,20 @@ bool parse_args(int argc, char** argv, Options* options)
             options->all = true;
         } else if (arg == "--list-only") {
             options->list_only = true;
+        } else if (arg == "--dump-dir") {
+            options->dump_dir = require_next("--dump-dir");
+        } else if (arg == "--dump-every") {
+            options->dump_every = std::atoi(require_next("--dump-every"));
+        } else if (arg == "--dump-max") {
+            options->dump_max = std::atoi(require_next("--dump-max"));
+        } else if (arg == "--user-ring") {
+            options->user_ring_mode = require_next("--user-ring");
+        } else if (arg == "--user-ring-gpu2") {
+            options->user_ring_gpu2 = std::atoi(require_next("--user-ring-gpu2"));
+        } else if (arg == "--user-ring-mb") {
+            options->user_ring_mb = static_cast<std::size_t>(std::atoll(require_next("--user-ring-mb")));
+        } else if (arg == "--gpu-direct-switch") {
+            options->gpu_direct_switch = std::atoi(require_next("--gpu-direct-switch"));
         } else if (arg == "--frames") {
             const char* value = require_next("--frames");
             if (!value) return false;
@@ -346,7 +396,74 @@ ProbeResult probe_camera(
                       << "\n";
         }
 
-        camera_open_stream(&ecam.camera, &params, "evt_stream_smoke");
+        unsigned char* user_ring = nullptr;
+        std::size_t user_ring_bytes = 0;
+        if (!options.user_ring_mode.empty()) {
+            user_ring_bytes = options.user_ring_mb * 1024ull * 1024ull;
+            auto cu_check = [](CUresult r, const char* what) {
+                if (r != CUDA_SUCCESS) {
+                    const char* name = nullptr;
+                    cuGetErrorName(r, &name);
+                    throw std::runtime_error(std::string(what) + " failed: " + (name ? name : "?"));
+                }
+            };
+            if (cudaSetDevice(params.gpu_id) != cudaSuccess || cudaFree(nullptr) != cudaSuccess) {
+                throw std::runtime_error("cudaSetDevice/cudaFree(0) failed for the user ring");
+            }
+            if (options.user_ring_mode == "device") {
+                void* ptr = nullptr;
+                if (cudaMalloc(&ptr, user_ring_bytes) != cudaSuccess) {
+                    throw std::runtime_error("cudaMalloc(user ring) failed");
+                }
+                user_ring = static_cast<unsigned char*>(ptr);
+            } else if (options.user_ring_mode == "vmm-split") {
+                const int gpu2 = options.user_ring_gpu2 >= 0 ? options.user_ring_gpu2 : options.gpu_direct_switch;
+                if (gpu2 < 0) {
+                    throw std::runtime_error("--user-ring vmm-split needs --user-ring-gpu2");
+                }
+                cu_check(cuInit(0), "cuInit");
+                CUmemAllocationProp prop{};
+                prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+                prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+                prop.location.id = params.gpu_id;
+                std::size_t granularity = 0;
+                cu_check(cuMemGetAllocationGranularity(&granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM),
+                         "cuMemGetAllocationGranularity");
+                std::size_t half = (user_ring_bytes / 2 + granularity - 1) / granularity * granularity;
+                user_ring_bytes = half * 2;
+                CUdeviceptr base = 0;
+                cu_check(cuMemAddressReserve(&base, user_ring_bytes, granularity, 0, 0), "cuMemAddressReserve");
+                CUmemGenericAllocationHandle h1 = 0, h2 = 0;
+                cu_check(cuMemCreate(&h1, half, &prop, 0), "cuMemCreate(gpu1)");
+                prop.location.id = gpu2;
+                cu_check(cuMemCreate(&h2, half, &prop, 0), "cuMemCreate(gpu2)");
+                cu_check(cuMemMap(base, half, 0, h1, 0), "cuMemMap(half 1)");
+                cu_check(cuMemMap(base + half, half, 0, h2, 0), "cuMemMap(half 2)");
+                CUmemAccessDesc access[2]{};
+                access[0].location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+                access[0].location.id = params.gpu_id;
+                access[0].flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+                access[1] = access[0];
+                access[1].location.id = gpu2;
+                cu_check(cuMemSetAccess(base, user_ring_bytes, access, 2), "cuMemSetAccess");
+                user_ring = reinterpret_cast<unsigned char*>(base);
+                std::cout << "[PROBE] " << params.camera_serial << " vmm-split ring: half=" << half
+                          << " gpu1=" << params.gpu_id << " gpu2=" << gpu2 << "\n";
+            } else {
+                throw std::runtime_error("unknown --user-ring mode: " + options.user_ring_mode);
+            }
+            std::cout << "[PROBE] " << params.camera_serial << " user ring mode=" << options.user_ring_mode
+                      << " ptr=" << static_cast<const void*>(user_ring) << " bytes=" << user_ring_bytes << "\n";
+            Emergent::EVTStreamAttribute attr{};
+            attr.ringBufferPtr = user_ring;
+            attr.ringBufferSize = user_ring_bytes;
+            const EVT_ERROR open_err = Emergent::EVT_CameraOpenStream(&ecam.camera, &attr);
+            std::cout << "[PROBE] " << params.camera_serial << " EVT_CameraOpenStream(user ring) -> " << open_err
+                      << " " << get_evt_error_string(open_err) << "\n";
+            check_camera_errors(open_err, params.camera_serial.c_str());
+        } else {
+            camera_open_stream(&ecam.camera, &params, "evt_stream_smoke");
+        }
         stream_opened = true;
         std::cout << "[PASS] " << params.camera_serial << " stream open\n";
 
@@ -354,7 +471,29 @@ ProbeResult probe_camera(
             const int buffer_count = std::max(options.buffer_count, 2);
             ecam.evt_frame = new Emergent::CEmergentFrame[buffer_count]();
             ecam.evt_frame_count = buffer_count;
+            auto describe_pointer = [](const void* ptr) {
+                cudaPointerAttributes attrs{};
+                const cudaError_t err = cudaPointerGetAttributes(&attrs, ptr);
+                std::ostringstream out;
+                if (err != cudaSuccess) {
+                    (void)cudaGetLastError();
+                    out << "cuda_query_failed(" << cudaGetErrorString(err) << ")";
+                    return out.str();
+                }
+                const char* type = attrs.type == cudaMemoryTypeDevice ? "device"
+                    : attrs.type == cudaMemoryTypeHost ? "host"
+                    : attrs.type == cudaMemoryTypeManaged ? "managed" : "unregistered";
+                out << "type=" << type << " device=" << attrs.device;
+                return out.str();
+            };
+            const int switch_at = options.gpu_direct_switch >= 0 ? buffer_count / 2 : buffer_count;
             for (int buffer_idx = 0; buffer_idx < buffer_count; ++buffer_idx) {
+                if (buffer_idx == switch_at) {
+                    ecam.camera.gpuDirectDeviceId = options.gpu_direct_switch;
+                    std::cout << "[PROBE] " << params.camera_serial
+                              << " gpuDirectDeviceId switched to " << options.gpu_direct_switch
+                              << " before buffer " << buffer_idx << "\n";
+                }
                 set_frame_buffer(&ecam.evt_frame[buffer_idx], &params);
                 check_camera_errors(
                     Emergent::EVT_AllocateFrameBuffer(
@@ -363,6 +502,15 @@ ProbeResult probe_camera(
                         EVT_FRAME_BUFFER_ZERO_COPY),
                     params.camera_serial.c_str());
                 ++buffers_allocated;
+                if (options.gpu_direct_switch >= 0) {
+                    const void* ptr = ecam.evt_frame[buffer_idx].imagePtr;
+                    std::cout << "[PROBE] " << params.camera_serial
+                              << " buffer " << buffer_idx
+                              << " requested_gpu=" << ecam.camera.gpuDirectDeviceId
+                              << " ptr=" << ptr
+                              << " offset_from_buffer0=" << (static_cast<const char*>(ptr) - static_cast<const char*>(static_cast<const void*>(ecam.evt_frame[0].imagePtr)))
+                              << " " << describe_pointer(ptr) << "\n";
+                }
                 check_camera_errors(
                     Emergent::EVT_CameraQueueFrame(&ecam.camera, &ecam.evt_frame[buffer_idx]),
                     params.camera_serial.c_str());
@@ -390,6 +538,31 @@ ProbeResult probe_camera(
                               << " timestamp=" << frame.timestamp
                               << " bytes=" << frame.bufferSize
                               << "\n";
+                }
+                if (options.gpu_direct_switch >= 0 || user_ring) {
+                    int matched = -1;
+                    for (int b = 0; b < ecam.evt_frame_count; ++b) {
+                        if (ecam.evt_frame[b].imagePtr == frame.imagePtr) {
+                            matched = b;
+                            break;
+                        }
+                    }
+                    std::cout << "[PROBE] " << params.camera_serial
+                              << " frame " << frame_number
+                              << " frame_id=" << frame.frame_id
+                              << " ptr=" << static_cast<const void*>(frame.imagePtr)
+                              << " buffer=" << matched
+                              << " " << describe_pointer(frame.imagePtr);
+                    if (user_ring) {
+                        const unsigned char* fp = static_cast<const unsigned char*>(frame.imagePtr);
+                        const bool inside = fp >= user_ring && fp < user_ring + user_ring_bytes;
+                        std::cout << " in_user_ring=" << (inside ? 1 : 0);
+                        if (inside) {
+                            const std::size_t off = static_cast<std::size_t>(fp - user_ring);
+                            std::cout << " ring_offset=" << off << " half=" << (off < user_ring_bytes / 2 ? 1 : 2);
+                        }
+                    }
+                    std::cout << "\n";
                 }
                 if (options.frame_stats && frame.imagePtr != nullptr && frame.bufferSize > 0) {
                     const auto* pixels = static_cast<const unsigned char*>(frame.imagePtr);
@@ -456,6 +629,14 @@ ProbeResult probe_camera(
                 std::uint64_t first_frame_id = 0;
                 std::uint64_t last_frame_id = 0;
                 std::uint64_t frame_id_gaps = 0;
+                const bool dumping = !options.dump_dir.empty();
+                const int dump_every = options.dump_every > 0 ? options.dump_every : 10;
+                int dumped = 0;
+                std::vector<unsigned char> dump_host;
+                if (dumping) {
+                    std::filesystem::create_directories(options.dump_dir);
+                    check_cuda_or_throw(cudaSetDevice(params.gpu_direct ? params.gpu_id : 0), "cudaSetDevice(dump)");
+                }
 
                 while (std::chrono::steady_clock::now() < deadline) {
                     Emergent::CEmergentFrame frame{};
@@ -483,9 +664,39 @@ ProbeResult probe_camera(
                     last_frame_id = frame_id;
                     ++received;
 
+                    if (dumping && (received - 1) % dump_every == 0 &&
+                        (options.dump_max <= 0 || dumped < options.dump_max) &&
+                        frame.imagePtr != nullptr && frame.bufferSize > 0) {
+                        const std::size_t bytes = static_cast<std::size_t>(frame.size_x) *
+                                                  static_cast<std::size_t>(frame.size_y);
+                        if (bytes <= static_cast<std::size_t>(frame.bufferSize)) {
+                            dump_host.resize(bytes);
+                            cudaPointerAttributes attrs{};
+                            const bool on_device = cudaPointerGetAttributes(&attrs, frame.imagePtr) == cudaSuccess &&
+                                                   attrs.type == cudaMemoryTypeDevice;
+                            (void)cudaGetLastError();
+                            if (on_device) {
+                                check_cuda_or_throw(cudaMemcpy(dump_host.data(), frame.imagePtr, bytes, cudaMemcpyDeviceToHost),
+                                                    "cudaMemcpy(dump frame)");
+                            } else {
+                                std::memcpy(dump_host.data(), frame.imagePtr, bytes);
+                            }
+                            std::ostringstream name;
+                            name << options.dump_dir << "/Cam" << params.camera_serial << "_frame"
+                                 << std::setw(6) << std::setfill('0') << frame_id << ".pgm";
+                            std::ofstream out(name.str(), std::ios::binary);
+                            out << "P5\n" << frame.size_x << " " << frame.size_y << "\n255\n";
+                            out.write(reinterpret_cast<const char*>(dump_host.data()), static_cast<std::streamsize>(bytes));
+                            ++dumped;
+                        }
+                    }
+
                     check_camera_errors(
                         Emergent::EVT_CameraQueueFrame(&ecam.camera, &frame),
                         params.camera_serial.c_str());
+                }
+                if (dumping) {
+                    std::cout << "[DUMP] " << params.camera_serial << " wrote " << dumped << " frames to " << options.dump_dir << std::endl;
                 }
 
                 const double elapsed =
