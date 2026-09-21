@@ -345,6 +345,22 @@ transforms. A camera keeps top-left/right/down sensor coordinates; the fitted
 homography accounts for the complete effective optical relationship, including
 reflection.
 
+Manual daily-registration X/Y adjustments are always expressed in
+`final_display_canvas_px`, so `+X` is logical canvas right and `+Y` is logical
+canvas down. The operator UI must not relabel those controls as physical room
+directions. It may show per-camera native-raster direction guidance derived
+from the accepted canvas-to-camera homography (camera `+X` right, camera `+Y`
+down), and must identify that guidance as the camera image perspective rather
+than laboratory gravity or projector-body orientation.
+
+Detection diagnostics and correction residuals also require explicit
+subtraction labels. A fiducial detector's center error is
+`detected_center - expected_center`; geometry-review center residual is
+`corrected_projected_center - accepted_rim_center`. Centering solver correction
+vectors elsewhere may use `target_center - detected_center`. Existing numeric
+fields retain their established values; artifacts name the definition so a
+consumer never guesses the sign from an unqualified "error."
+
 Every immutable candidate makes this relationship visual. Its camera overlay
 draws the camera raster basis and the detected `G00 -> G01` logical +X and
 `G00 -> G10` logical +Y vectors, while its receipt records the corresponding

@@ -157,6 +157,60 @@ const SpatialLayoutGroupCaptureFrame* FindCapture(
     return nullptr;
 }
 
+std::string ShortCameraRasterDirectionLabel(
+    const daily_geometry::Point2d& delta)
+{
+    const double abs_x = std::abs(delta.x);
+    const double abs_y = std::abs(delta.y);
+    const char* horizontal = delta.x >= 0.0 ? "right" : "left";
+    const char* vertical = delta.y >= 0.0 ? "down" : "up";
+    if (abs_x >= abs_y && abs_y < abs_x * 0.10) {
+        return horizontal;
+    }
+    if (abs_y > abs_x && abs_x < abs_y * 0.10) {
+        return vertical;
+    }
+    std::ostringstream out;
+    out << horizontal << "/" << vertical;
+    return out.str();
+}
+
+void RenderCanvasAxisCameraHint(
+    const char* canvas_axis,
+    const daily_geometry::Point2d* camera_delta,
+    const char* unavailable_reason)
+{
+    if (camera_delta == nullptr) {
+        ImGui::TextDisabled(
+            "+1 canvas %s px: camera unavailable", canvas_axis);
+        if (ImGui::IsItemHovered()) {
+            ImGui::SetTooltip(
+                "Native-camera direction guidance is unavailable: %s",
+                unavailable_reason != nullptr
+                    ? unavailable_reason
+                    : "accepted canvas-to-camera homography missing");
+        }
+        return;
+    }
+    ImGui::TextDisabled(
+        "+1 canvas %s px -> camera %s",
+        canvas_axis,
+        ShortCameraRasterDirectionLabel(*camera_delta).c_str());
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Per +1 integer logical canvas %s pixel: native camera raster "
+            "dx=%+.4f px, "
+            "dy=%+.4f px. Camera raster origin is top-left; +x is right and "
+            "+y is down. A -1 canvas %s pixel adjustment reverses this vector. "
+            "This is camera-image perspective, not room or projector-body "
+            "orientation.",
+            canvas_axis,
+            camera_delta->x,
+            camera_delta->y,
+            canvas_axis);
+    }
+}
+
 std::vector<unsigned char> GrayFromRgba(
     const SpatialLayoutGroupCaptureFrame& capture)
 {
@@ -375,6 +429,8 @@ nlohmann::json WorkflowSnapshot(const DailyRegistrationWorkflowUiState& workflow
                     {"x", target.preview_residual_x_camera_px},
                     {"y", target.preview_residual_y_camera_px},
                     {"norm", target.preview_residual_norm_camera_px}}},
+                {"center_residual_definition",
+                 "detected_projected_center_minus_accepted_rim_center"},
                 {"image_set_path", target.preview_image_set_path},
                 {"manifest_path", target.preview_manifest_path},
                 {"validation_observation_path", target.validation_observation_path},
@@ -406,6 +462,8 @@ nlohmann::json WorkflowSnapshot(const DailyRegistrationWorkflowUiState& workflow
                     {"x", target.geometry_center_residual_x_camera_px},
                     {"y", target.geometry_center_residual_y_camera_px},
                     {"norm", target.geometry_center_residual_norm_camera_px}}},
+                {"center_residual_definition",
+                 "corrected_projected_center_minus_accepted_rim_center"},
                 {"integer_translation_quantization_bound_camera_px",
                  target.geometry_center_quantization_bound_camera_px},
                 {"predicted_radius_camera_px", {
@@ -1383,6 +1441,8 @@ bool WriteGeometryReviewObservation(
                 {"x", target->geometry_center_residual_x_camera_px},
                 {"y", target->geometry_center_residual_y_camera_px},
                 {"norm", target->geometry_center_residual_norm_camera_px}}},
+            {"center_residual_definition",
+             "corrected_projected_center_minus_accepted_rim_center"},
             {"integer_translation_quantization_bound_camera_px",
              target->geometry_center_quantization_bound_camera_px},
             {"predicted_radius_camera_px", {
@@ -3344,9 +3404,14 @@ void render_daily_registration_workflow_panel(
     } else if (workflow.stage == "manual_alignment") {
         ImGui::TextWrapped(
             "Look directly at the physical projected outline and center crosshair. "
-            "Offsets are integer Citrus canvas pixels (about 0.24 mm here), are "
+            "Offsets are integer logical Citrus canvas pixels (+X right, +Y down "
+            "in the canvas), are "
             "absolute relative to the automatic result, and never edit shadow.json, "
             "the commissioned homography, arena size, or radius.");
+        ImGui::TextWrapped(
+            "Per-camera direction hints below are computed from the accepted "
+            "canvas-to-camera homography. They describe motion in the native camera "
+            "raster (+X right, +Y down), not physical room up/down or projector-body axes.");
         RenderDailyReviewImages(*ui_state, workflow, "manual_alignment");
         ImGui::Checkbox(
             "I can see and am judging the physical projected outlines",
@@ -3359,14 +3424,38 @@ void render_daily_registration_workflow_panel(
             ImGui::TableSetupColumn("Automatic");
             ImGui::TableSetupColumn("Manual delta");
             ImGui::TableSetupColumn("Final");
-            ImGui::TableSetupColumn("Adjust X");
-            ImGui::TableSetupColumn("Adjust Y");
+            ImGui::TableSetupColumn("Adjust logical canvas X");
+            ImGui::TableSetupColumn("Adjust logical canvas Y");
             ImGui::TableSetupColumn("Confirm");
             ImGui::TableHeadersRow();
             for (auto& target : workflow.targets) {
                 ImGui::PushID(
                     ("manual-" + target.camera_serial + target.arena_id).c_str());
                 ImGui::TableNextRow();
+                daily_geometry::CanvasAxisCameraDirections directions;
+                bool direction_guidance_available = false;
+                const char* direction_guidance_unavailable_reason =
+                    "accepted canvas-to-camera homography missing";
+                const int template_index = find_citrus_template_index_for_camera(
+                    *ui_state, target.camera_serial);
+                if (template_index >= 0 &&
+                    template_index < static_cast<int>(
+                        ui_state->citrus_canvas_templates.size())) {
+                    const auto& template_state =
+                        ui_state->citrus_canvas_templates[template_index];
+                    if (template_state.has_canvas_to_camera_homography) {
+                        directions =
+                            daily_geometry::ComputeCanvasAxisCameraDirections(
+                                template_state.canvas_to_camera_homography,
+                                {target.effective_experimental_center_x_canvas_px,
+                                 target.effective_experimental_center_y_canvas_px});
+                        direction_guidance_available = directions.ok;
+                        if (!directions.ok) {
+                            direction_guidance_unavailable_reason =
+                                "homography is invalid or locally degenerate";
+                        }
+                    }
+                }
                 ImGui::TableSetColumnIndex(0);
                 ImGui::Text("%s / Cam%s", target.arena_id.c_str(),
                             target.camera_serial.c_str());
@@ -3417,6 +3506,12 @@ void render_daily_registration_workflow_panel(
                 if (ImGui::SmallButton("+1##x")) apply_delta(1, 0);
                 ImGui::SameLine();
                 if (ImGui::SmallButton("+5##x")) apply_delta(5, 0);
+                RenderCanvasAxisCameraHint(
+                    "X",
+                    direction_guidance_available
+                        ? &directions.positive_canvas_x_camera_delta_px
+                        : nullptr,
+                    direction_guidance_unavailable_reason);
                 ImGui::TableSetColumnIndex(5);
                 if (ImGui::SmallButton("-5##y")) apply_delta(0, -5);
                 ImGui::SameLine();
@@ -3425,6 +3520,12 @@ void render_daily_registration_workflow_panel(
                 if (ImGui::SmallButton("+1##y")) apply_delta(0, 1);
                 ImGui::SameLine();
                 if (ImGui::SmallButton("+5##y")) apply_delta(0, 5);
+                RenderCanvasAxisCameraHint(
+                    "Y",
+                    direction_guidance_available
+                        ? &directions.positive_canvas_y_camera_delta_px
+                        : nullptr,
+                    direction_guidance_unavailable_reason);
                 ImGui::TableSetColumnIndex(6);
                 ImGui::Checkbox(
                     "Physical outline aligned",

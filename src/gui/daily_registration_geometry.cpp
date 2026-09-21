@@ -85,6 +85,50 @@ TranslationCompositionResult ComposeTranslation(
     return result;
 }
 
+CanvasAxisCameraDirections ComputeCanvasAxisCameraDirections(
+    const std::array<double, 9>& canvas_to_camera_homography,
+    Point2d reference_canvas_px)
+{
+    CanvasAxisCameraDirections result;
+    Point2d origin;
+    Point2d positive_x;
+    Point2d positive_y;
+    if (!std::isfinite(reference_canvas_px.x) ||
+        !std::isfinite(reference_canvas_px.y) ||
+        !Project(canvas_to_camera_homography,
+                 reference_canvas_px.x,
+                 reference_canvas_px.y,
+                 &origin) ||
+        !Project(canvas_to_camera_homography,
+                 reference_canvas_px.x + 1.0,
+                 reference_canvas_px.y,
+                 &positive_x) ||
+        !Project(canvas_to_camera_homography,
+                 reference_canvas_px.x,
+                 reference_canvas_px.y + 1.0,
+                 &positive_y)) {
+        result.error = "canvas_axis_camera_direction_projection_failed";
+        return result;
+    }
+    result.positive_canvas_x_camera_delta_px = {
+        positive_x.x - origin.x, positive_x.y - origin.y};
+    result.positive_canvas_y_camera_delta_px = {
+        positive_y.x - origin.x, positive_y.y - origin.y};
+    const double x_norm = std::hypot(
+        result.positive_canvas_x_camera_delta_px.x,
+        result.positive_canvas_x_camera_delta_px.y);
+    const double y_norm = std::hypot(
+        result.positive_canvas_y_camera_delta_px.x,
+        result.positive_canvas_y_camera_delta_px.y);
+    if (!std::isfinite(x_norm) || !std::isfinite(y_norm) ||
+        x_norm <= 1e-12 || y_norm <= 1e-12) {
+        result.error = "canvas_axis_camera_direction_degenerate";
+        return result;
+    }
+    result.ok = true;
+    return result;
+}
+
 GeometryReviewResult ComputeGeometryReview(const GeometryReviewInput& input)
 {
     GeometryReviewResult result;

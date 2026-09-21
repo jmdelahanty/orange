@@ -172,6 +172,65 @@ void TestTranslationOverflowFailsClosed()
             "overflow should expose a stable error");
 }
 
+void TestCanvasAxisDirectionsFollowReflectedHomography()
+{
+    const std::array<double, 9> canvas_to_camera{
+        12.5, 0.0, 20.0,
+        0.0, -12.5, 400.0,
+        0.0, 0.0, 1.0};
+    const auto directions = daily::ComputeCanvasAxisCameraDirections(
+        canvas_to_camera, {100.0, 200.0});
+    Require(directions.ok, "reflected direction guidance should project");
+    RequireNear(directions.positive_canvas_x_camera_delta_px.x, 12.5, 1e-9,
+                "+canvas X should appear camera-right");
+    RequireNear(directions.positive_canvas_x_camera_delta_px.y, 0.0, 1e-9,
+                "+canvas X should have no camera-vertical component");
+    RequireNear(directions.positive_canvas_y_camera_delta_px.x, 0.0, 1e-9,
+                "+canvas Y should have no camera-horizontal component");
+    RequireNear(directions.positive_canvas_y_camera_delta_px.y, -12.5, 1e-9,
+                "+canvas Y should appear camera-up on the reflected rig");
+}
+
+void TestCanvasAxisDirectionsSupportRotationAndPerspective()
+{
+    const std::array<double, 9> canvas_to_camera{
+        0.0, -4.0, 300.0,
+        5.0, 0.0, 100.0,
+        0.0005, -0.0002, 1.0};
+    const auto directions = daily::ComputeCanvasAxisCameraDirections(
+        canvas_to_camera, {120.0, 80.0});
+    Require(directions.ok, "projective rotated direction guidance should project");
+    Require(directions.positive_canvas_x_camera_delta_px.y > 0.0,
+            "+canvas X should appear primarily camera-down after rotation");
+    Require(directions.positive_canvas_y_camera_delta_px.x < 0.0,
+            "+canvas Y should appear primarily camera-left after rotation");
+}
+
+void TestCanvasAxisDirectionsRejectInvalidAndDegenerateHomographies()
+{
+    const std::array<double, 9> invalid_at_reference{
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0};
+    const auto invalid = daily::ComputeCanvasAxisCameraDirections(
+        invalid_at_reference, {10.0, 20.0});
+    Require(!invalid.ok,
+            "direction guidance must reject an invalid projective denominator");
+    Require(invalid.error == "canvas_axis_camera_direction_projection_failed",
+            "invalid homography should expose a stable projection error");
+
+    const std::array<double, 9> locally_degenerate{
+        0.0, 0.0, 25.0,
+        0.0, 0.0, 30.0,
+        0.0, 0.0, 1.0};
+    const auto degenerate = daily::ComputeCanvasAxisCameraDirections(
+        locally_degenerate, {10.0, 20.0});
+    Require(!degenerate.ok,
+            "direction guidance must reject zero local canvas-axis motion");
+    Require(degenerate.error == "canvas_axis_camera_direction_degenerate",
+            "degenerate homography should expose a stable direction error");
+}
+
 }  // namespace
 
 int main()
@@ -183,6 +242,9 @@ int main()
         TestAutomaticAndManualTranslationsComposeInCanvasCoordinates();
         TestZeroManualDeltaRestoresAutomaticResult();
         TestTranslationOverflowFailsClosed();
+        TestCanvasAxisDirectionsFollowReflectedHomography();
+        TestCanvasAxisDirectionsSupportRotationAndPerspective();
+        TestCanvasAxisDirectionsRejectInvalidAndDegenerateHomographies();
         std::cout << "daily registration geometry tests passed\n";
         return 0;
     } catch (const std::exception& error) {

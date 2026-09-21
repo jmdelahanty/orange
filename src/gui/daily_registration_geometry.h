@@ -35,6 +35,20 @@ struct TranslationCompositionResult {
 TranslationCompositionResult ComposeTranslation(
     const TranslationCompositionInput& input);
 
+struct CanvasAxisCameraDirections {
+    bool ok = false;
+    std::string error;
+    Point2d positive_canvas_x_camera_delta_px;
+    Point2d positive_canvas_y_camera_delta_px;
+};
+
+// Describe logical-canvas adjustment controls in the native camera raster.
+// These vectors are camera-image directions (+x right, +y down), not claims
+// about laboratory gravity or the projector chassis.
+CanvasAxisCameraDirections ComputeCanvasAxisCameraDirections(
+    const std::array<double, 9>& canvas_to_camera_homography,
+    Point2d reference_canvas_px);
+
 struct GeometryReviewInput {
     std::array<double, 9> canvas_to_camera_homography{
         1.0, 0.0, 0.0,
