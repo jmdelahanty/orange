@@ -135,7 +135,12 @@ void test_missing_config_uses_defaults()
     require(config.gui_crop_external_encode_queue_depth == -1, "default crop queue unset");
     require(config.gui_crop_external_recorder_gpu_id == -1, "default crop recorder GPU unset");
     require(
-        config.gui_crop_external_recorder_gpu_ids_by_serial.empty(),
+        config.gui_crop_external_recorder_gpu_ids_by_serial.empty() &&
+            !config.gui_external_ipc_owner_push_configured &&
+            config.gui_external_ipc_owner_push_slots == -1 &&
+            config.gui_external_ipc_full_frame_extra_output_delay == -1 &&
+            !config.gui_external_ipc_native_local_input_configured &&
+            config.gui_external_ipc_recorder_tool_path.empty(),
         "default per-camera crop recorder GPU map unset");
     require(config.gui_crop_frame_pool_size == -1, "default crop frame pool unset");
     require(config.gui_ptp_register_read_decimate == 1, "default PTP decimate");
@@ -191,7 +196,15 @@ void test_loads_gui_and_crop_defaults()
         }
       }
     },
-    "ptp_register_read_decimate": 100
+    "ptp_register_read_decimate": 100,
+    "external_ipc": {
+      "owner_push": true,
+      "owner_push_slots": 16,
+      "full_frame_extra_output_delay": 8,
+      "native_local_input": true,
+      "native_kernel_ptx": "",
+      "recorder_tool_path": "/opt/orange/bin/external_recorder_ipc_probe_native"
+    }
   },
   "gui": {
     "stream": {
@@ -233,6 +246,18 @@ void test_loads_gui_and_crop_defaults()
         config.gui_crop_external_recorder_gpu_ids_by_serial.at("2010096") == 6,
         "per-camera crop recorder GPU should load for 2010096");
     require(config.gui_crop_frame_pool_size == 256, "crop frame pool should load");
+    require(config.gui_external_ipc_owner_push && config.gui_external_ipc_owner_push_configured,
+            "recording.external_ipc.owner_push should load");
+    require(config.gui_external_ipc_owner_push_slots == 16, "owner_push_slots should load");
+    require(config.gui_external_ipc_full_frame_extra_output_delay == 8,
+            "full_frame_extra_output_delay should load");
+    require(config.gui_external_ipc_native_local_input &&
+                config.gui_external_ipc_native_local_input_configured,
+            "native_local_input should load");
+    require(config.gui_external_ipc_native_kernel_ptx.empty(), "empty native_kernel_ptx stays empty");
+    require(config.gui_external_ipc_recorder_tool_path ==
+                "/opt/orange/bin/external_recorder_ipc_probe_native",
+            "recorder_tool_path should load");
     require(config.gui_ptp_register_read_decimate == 100, "PTP decimate should load");
     require(config.gui_stream_downsample == 4, "GUI stream downsample should load");
     require(config.gui_display_profile == "citrus_safe", "display profile should normalize");

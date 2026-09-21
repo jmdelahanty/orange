@@ -5,6 +5,8 @@ ORANGE_ROOT="/home/jeremy/orange-jeremy"
 DEFAULT_ORANGE_CLIENT="$ORANGE_ROOT/build/orange_client"
 EXPERIMENT_ORANGE_ROOT="/home/jeremy/orange-gop-split-a16"
 EXPERIMENT_ORANGE_CLIENT="$EXPERIMENT_ORANGE_ROOT/targets/release/orange_client"
+INTEGRATION_ORANGE_ROOT="/home/jeremy/orange-integration-20260921"
+INTEGRATION_ORANGE_CLIENT="$INTEGRATION_ORANGE_ROOT/targets/release/orange_client"
 ORANGE_CLIENT="$DEFAULT_ORANGE_CLIENT"
 ACQUIRE_WORK_ENTRIES_MAX=""
 ENCODER_ENTRY_POOL_SIZE=""
@@ -21,6 +23,7 @@ CITRUS_RECORDING_CANVAS_CONFIG_PATH=""
 ALLOWED_SPEC_DIR_1="$ORANGE_ROOT/experiment_specs"
 ALLOWED_SPEC_DIR_2="/tmp"
 ALLOWED_SPEC_DIR_3="$EXPERIMENT_ORANGE_ROOT/experiment_specs"
+ALLOWED_SPEC_DIR_4="$INTEGRATION_ORANGE_ROOT/experiment_specs"
 ALLOWED_CITRUS_RIG_DIR="/home/jeremy/citrus/targets/rigs"
 ALLOWED_CITRUS_TEST_DIR="/tmp"
 EVT_PROFILE="/etc/profile.d/evt.sh"
@@ -108,7 +111,7 @@ while [[ $# -gt 0 ]]; do
       [[ $# -gt 0 ]] || { echo "--orange-client requires a value." >&2; exit 2; }
       ORANGE_CLIENT="$(realpath -e "$1")"
       case "$ORANGE_CLIENT" in
-        "$DEFAULT_ORANGE_CLIENT"|"$EXPERIMENT_ORANGE_CLIENT")
+        "$DEFAULT_ORANGE_CLIENT"|"$EXPERIMENT_ORANGE_CLIENT"|"$INTEGRATION_ORANGE_CLIENT")
           ;;
         *)
           echo "Refusing to use orange_client outside allowed binaries: $ORANGE_CLIENT" >&2
@@ -395,7 +398,7 @@ fi
 
 SPEC_PATH="$(realpath -e "$1")"
 case "$SPEC_PATH" in
-  "$ALLOWED_SPEC_DIR_1"/*|"$ALLOWED_SPEC_DIR_2"/*|"$ALLOWED_SPEC_DIR_3"/*)
+  "$ALLOWED_SPEC_DIR_1"/*|"$ALLOWED_SPEC_DIR_2"/*|"$ALLOWED_SPEC_DIR_3"/*|"$ALLOWED_SPEC_DIR_4"/*)
     ;;
   *)
     echo "Refusing to use experiment spec outside allowed roots: $SPEC_PATH" >&2

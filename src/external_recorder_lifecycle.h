@@ -27,6 +27,14 @@ struct SupervisedRecorderLifecycleOptions {
     SupervisorProcessOptions process_options;
 };
 
+// Fill native_local_input / native_local_kernel_ptx /
+// full_frame_extra_output_delay from the environment when set:
+// ORANGE_EXTERNAL_RECORDER_NATIVE_LOCAL_INPUT (1/0),
+// ORANGE_EXTERNAL_RECORDER_NATIVE_KERNEL_PTX,
+// ORANGE_EXTERNAL_RECORDER_FULL_FRAME_EXTRA_OUTPUT_DELAY. The GUI exports
+// these from recording.external_ipc in the app config; env always wins.
+void ApplyLifecycleEnvOverrides(SupervisedRecorderLifecycleOptions* options);
+
 struct SupervisedRecorderLifecycleState {
     SupervisedRecorderLifecycleState();
     ~SupervisedRecorderLifecycleState();

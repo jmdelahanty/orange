@@ -3273,6 +3273,8 @@ PreparedRecordingRunStart prepare_recording_run(
         prepared.external_recorder_lifecycle_options.analytics_root = recording_folder;
         prepared.external_recorder_lifecycle_options.verifier_path =
             "scripts/verify_external_recorder_session.py";
+        orange::external_recorder::ApplyLifecycleEnvOverrides(
+            &prepared.external_recorder_lifecycle_options);
     }
 
     if (state &&

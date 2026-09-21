@@ -1533,6 +1533,53 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                 }
             }
         }
+        if (recording.contains("external_ipc")) {
+            if (!recording["external_ipc"].is_object()) {
+                if (error_out) {
+                    *error_out = "recording.external_ipc must be an object in " + config_path.string();
+                }
+                return false;
+            }
+            const nlohmann::json& external_ipc = recording["external_ipc"];
+            const std::string ctx = "recording.external_ipc";
+            if (external_ipc.contains("owner_push") && !external_ipc["owner_push"].is_null()) {
+                if (!read_optional_bool_field(external_ipc, "owner_push",
+                                              &config.gui_external_ipc_owner_push, error_out, ctx)) {
+                    return false;
+                }
+                config.gui_external_ipc_owner_push_configured = true;
+            }
+            if (!read_optional_bounded_int_field(external_ipc, "owner_push_slots",
+                                                 &config.gui_external_ipc_owner_push_slots, 1, 64,
+                                                 error_out, ctx)) {
+                return false;
+            }
+            if (!read_optional_bounded_int_field(external_ipc, "full_frame_extra_output_delay",
+                                                 &config.gui_external_ipc_full_frame_extra_output_delay,
+                                                 0, 64, error_out, ctx)) {
+                return false;
+            }
+            if (external_ipc.contains("native_local_input") && !external_ipc["native_local_input"].is_null()) {
+                if (!read_optional_bool_field(external_ipc, "native_local_input",
+                                              &config.gui_external_ipc_native_local_input, error_out, ctx)) {
+                    return false;
+                }
+                config.gui_external_ipc_native_local_input_configured = true;
+            }
+            for (const auto& [key, target] : {
+                     std::pair<const char*, std::string*>{"native_kernel_ptx", &config.gui_external_ipc_native_kernel_ptx},
+                     std::pair<const char*, std::string*>{"recorder_tool_path", &config.gui_external_ipc_recorder_tool_path}}) {
+                if (external_ipc.contains(key) && !external_ipc[key].is_null()) {
+                    if (!external_ipc[key].is_string()) {
+                        if (error_out) {
+                            *error_out = ctx + "." + key + " must be a string in " + config_path.string();
+                        }
+                        return false;
+                    }
+                    *target = trim_ascii_copy(external_ipc[key].get<std::string>());
+                }
+            }
+        }
         if (recording.contains("external_recorder_contract")) {
             const nlohmann::json& contract = recording["external_recorder_contract"];
             if (contract.is_string()) {

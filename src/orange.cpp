@@ -4758,6 +4758,45 @@ int main(int /*argc*/, char ** /*args*/) {
             std::to_string(gpu_id),
             label.c_str());
     }
+    // Full-frame external recorder shape from recording.external_ipc
+    // (2026-09-21): the same knobs the headless gate used, as env the
+    // analytics handoff, the recorder processes and the lifecycle read.
+    if (app_storage_config.gui_external_ipc_owner_push_configured) {
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_EXTERNAL_RECORDER_OWNER_PUSH",
+            app_storage_config.gui_external_ipc_owner_push ? "1" : "0",
+            "external recorder owner push");
+    }
+    if (app_storage_config.gui_external_ipc_owner_push_slots > 0) {
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_SLOTS",
+            std::to_string(app_storage_config.gui_external_ipc_owner_push_slots),
+            "external recorder owner push slots");
+    }
+    if (app_storage_config.gui_external_ipc_full_frame_extra_output_delay >= 0) {
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_EXTERNAL_RECORDER_FULL_FRAME_EXTRA_OUTPUT_DELAY",
+            std::to_string(app_storage_config.gui_external_ipc_full_frame_extra_output_delay),
+            "full-frame external recorder extra output delay");
+    }
+    if (app_storage_config.gui_external_ipc_native_local_input_configured) {
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_EXTERNAL_RECORDER_NATIVE_LOCAL_INPUT",
+            app_storage_config.gui_external_ipc_native_local_input ? "1" : "0",
+            "external recorder native local input");
+    }
+    if (!app_storage_config.gui_external_ipc_native_kernel_ptx.empty()) {
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_EXTERNAL_RECORDER_NATIVE_KERNEL_PTX",
+            app_storage_config.gui_external_ipc_native_kernel_ptx,
+            "external recorder native kernel PTX");
+    }
+    if (!app_storage_config.gui_external_ipc_recorder_tool_path.empty()) {
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_EXTERNAL_RECORDER_TOOL",
+            app_storage_config.gui_external_ipc_recorder_tool_path,
+            "external recorder tool path");
+    }
 
     const u32 gui_swap_interval_default =
         app_storage_config.gui_swap_interval >= 0

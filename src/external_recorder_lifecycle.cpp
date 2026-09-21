@@ -121,6 +121,22 @@ std::string ResolveExternalRecorderToolPath(const std::string& configured_tool_p
     return "external_recorder_ipc_probe";
 }
 
+void ApplyLifecycleEnvOverrides(SupervisedRecorderLifecycleOptions* options)
+{
+    if (!options) {
+        return;
+    }
+    if (const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_NATIVE_LOCAL_INPUT"); env && *env) {
+        options->native_local_input = std::string(env) == "1";
+    }
+    if (const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_NATIVE_KERNEL_PTX"); env && *env) {
+        options->native_local_kernel_ptx = env;
+    }
+    if (const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_FULL_FRAME_EXTRA_OUTPUT_DELAY"); env && *env) {
+        options->full_frame_extra_output_delay = std::atoi(env);
+    }
+}
+
 bool StartSupervisedRecorderLifecycle(const SupervisedRecorderLifecycleOptions& options,
                                       SupervisedRecorderLifecycleState* state_out,
                                       std::string* error_out)

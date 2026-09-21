@@ -38,6 +38,16 @@ struct AppStorageConfig {
     int gui_crop_external_recorder_gpu_id = -1;
     std::map<std::string, int> gui_crop_external_recorder_gpu_ids_by_serial;
     int gui_crop_frame_pool_size = -1;
+    // recording.external_ipc: the validated full-frame external recorder
+    // shape (2026-09-21 gate). Exported as env if absent; env wins.
+    bool gui_external_ipc_owner_push = false;
+    bool gui_external_ipc_owner_push_configured = false;
+    int gui_external_ipc_owner_push_slots = -1;
+    int gui_external_ipc_full_frame_extra_output_delay = -1;
+    bool gui_external_ipc_native_local_input = false;
+    bool gui_external_ipc_native_local_input_configured = false;
+    std::string gui_external_ipc_native_kernel_ptx;
+    std::string gui_external_ipc_recorder_tool_path;
     std::string gui_external_recorder_contract_path;
     nlohmann::json gui_external_recorder_contract = nlohmann::json::object();
     int gui_ptp_register_read_decimate = 1;
