@@ -169,7 +169,7 @@
     "headless_gpu_dmon": true,
     "external_recorder_direct_input": false,
     "recording_control": {
-      "record_for_seconds": 60
+      "record_for_seconds": 1800
     },
     "external_recorder_detect_priority": true,
     "external_recorder_registered_source": true,

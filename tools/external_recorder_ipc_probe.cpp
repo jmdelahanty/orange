@@ -5742,7 +5742,14 @@ private:
         const size_t encoder_buffers = encoder_
             ? static_cast<size_t>(encoder_->GetEncoderBufferCount())
             : 0;
-        const size_t limit = std::max<size_t>(encoder_buffers + 2, options_.encode_queue_depth + 2);
+        // Owner-push slots are reserved out of this same set at the client
+        // hello and never serve the pull path, so they extend the bound:
+        // with 16 slots against the old bound of 34 the startup pull path
+        // (the first peer GOP arrives before the analytics has imported the
+        // slots) ran out of buffers and dropped frames 44-50 (2026-09-21).
+        const size_t owner_slots = options_.owner_push ? static_cast<size_t>(options_.owner_push_slots) : 0;
+        const size_t limit =
+            std::max<size_t>(encoder_buffers + 2, options_.encode_queue_depth + 2) + owner_slots;
         if (staging_buffers_.size() >= limit) {
             return SIZE_MAX;
         }
