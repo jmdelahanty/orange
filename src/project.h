@@ -55,6 +55,21 @@ struct AppStorageConfig {
     int gui_analytics_device_crop = -1;
     int gui_analytics_fused_frame = -1;
     int gui_analytics_copy_after_pose = -1;
+    int gui_analytics_early_owned_frame = -1;
+    int gui_analytics_copy_stream = -1;
+    // analytics.yolo.*
+    int gui_analytics_yolo_prewarm_iterations = -1;   // ORANGE_YOLO_PREWARM_ITERATIONS (fused graph capture)
+    int gui_analytics_yolo_decimate = -1;             // ORANGE_YOLO_DECIMATE
+    int gui_analytics_yolo_sync_event = -1;
+    int gui_analytics_yolo_gpu_timing = -1;
+    int gui_analytics_yolo_detach_input = -1;
+    int gui_analytics_yolo_ready_event_fastpath = -1;
+    // analytics.pose.*
+    int gui_analytics_pose_device_stage = -1;         // ORANGE_POSE_DEVICE_STAGE (GUI EnableDeviceStage gate)
+    int gui_analytics_pose_prewarm_iterations = -1;   // ORANGE_POSE_PREWARM_ITERATIONS
+    int gui_analytics_pose_device_graph = -1;         // ORANGE_POSE_DEVICE_GRAPH
+    int gui_analytics_pose_device_slots = -1;         // ORANGE_POSE_DEVICE_SLOTS
+    int gui_analytics_pose_queue_depth = -1;          // ORANGE_POSE_QUEUE_DEPTH
     // models.pose_*: pose worker (ORANGE_POSE_ENGINE_PATH / _MODE /
     // _SKELETON_ID / _CROP_SIZE_PX if absent).
     std::string pose_engine_path;

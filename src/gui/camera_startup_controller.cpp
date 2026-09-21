@@ -871,7 +871,58 @@ struct GuiCameraStartupController::Impl {
                             &stream_bindings.camera_params[i],
                             producer->GetCropProducer(),
                             runtime.frame_ipc_manager()));
-                    producer->SetPoseWorker(runtime.pose_worker());
+                    // Mirror the headless client (orange_headless_client.cpp
+                    // 4917-4937, 4966-4968, 5102): decide the device crop
+                    // stage, enable it on the pose worker, and derive BOTH the
+                    // crop fan-out and the YOLO attach from that one result;
+                    // then Warmup() captures the fused per-slot graphs. All
+                    // before any worker thread or acquisition starts. Without
+                    // this the GUI silently ran the pre-fused path
+                    // (device_crop = -1, +0.4 ms detect) — 2026-09-21.
+                    PoseWorker* pose = runtime.pose_worker();
+                    bool device_crop_fanout = true;
+                    const bool device_crop_requested =
+                        gui_env_flag_enabled("ORANGE_ANALYTICS_DEVICE_CROP", false) &&
+                        gui_env_flag_enabled("ORANGE_POSE_DEVICE_STAGE", true);
+                    if (device_crop_requested) {
+                        const int configured_pose_crop_px =
+                            gui_env_int("ORANGE_POSE_CROP_SIZE_PX", 0, 0);
+                        const int pose_crop_px = CropProducerWorker::SanitizeCropSize(
+                            configured_pose_crop_px > 0 ? configured_pose_crop_px
+                                                        : stream_bindings.crop_size_px);
+                        std::string device_crop_error;
+                        if (!gui_env_flag_enabled("ORANGE_ANALYTICS_DEVICE_ROI", false)) {
+                            device_crop_error = "ORANGE_ANALYTICS_DEVICE_ROI is off";
+                        } else if (stream_bindings.camera_params[i].color) {
+                            device_crop_error = "device crop stage is mono-only";
+                        } else if (pose->EnableDeviceStage(pose_crop_px, &device_crop_error)) {
+                            device_crop_fanout = false;
+                        }
+                        if (device_crop_fanout) {
+                            std::cout << "[GUI][analytics] device crop disabled for camera "
+                                      << stream_bindings.camera_params[i].camera_serial << ": "
+                                      << device_crop_error << " (crop fan-out path stays on)"
+                                      << std::endl;
+                        }
+                    }
+                    producer->SetPoseWorker(pose, device_crop_fanout);
+                    YoloWorker* yolo = runtime.yolo_worker();
+                    if (yolo && pose->device_stage_enabled()) {
+                        yolo->SetPoseWorker(pose);
+                        const int prewarm_iterations =
+                            gui_env_int("ORANGE_YOLO_PREWARM_ITERATIONS", 3, 0);
+                        if (prewarm_iterations > 0) {
+                            try {
+                                yolo->Warmup(prewarm_iterations);
+                            } catch (const std::exception& ex) {
+                                std::cerr << "[GUI][analytics] YOLO warmup failed for camera "
+                                          << stream_bindings.camera_params[i].camera_serial
+                                          << ": " << ex.what()
+                                          << " (fused graph not captured; device crop path continues)"
+                                          << std::endl;
+                            }
+                        }
+                    }
                 }
                 if (gui_camera_has_acquisition_work(
                         stream_bindings.camera_selection[i])) {
@@ -1194,7 +1245,8 @@ struct GuiCameraStartupController::Impl {
                     (*stream_bindings.crop_preview_workers)[i]->StartThread();
                 }
                 if ((*stream_bindings.pose_workers)[i]) {
-                    (*stream_bindings.pose_workers)[i]->SetMaxQueueSize(32);
+                    (*stream_bindings.pose_workers)[i]->SetMaxQueueSize(
+                        gui_env_int("ORANGE_POSE_QUEUE_DEPTH", 32, 1));
                     (*stream_bindings.pose_workers)[i]->StartThread();
                 }
                 if ((*stream_bindings.spatial_snapshot_workers)[i]) {

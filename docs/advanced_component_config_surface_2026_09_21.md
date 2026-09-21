@@ -95,7 +95,16 @@ removed; `ORANGE_CROP_FRAME_POOL_SIZE` has two config owners today.
 ## 3. Proposed layout
 
 Precedence everywhere: environment (validation one-offs) > camera config (for
-per-camera keys) > app config (per rig) > code default. The GUI exports the
+per-camera keys) > app config (per rig) > code default. The env tier is gated
+by app config `precedence.allow_env_overrides` (false on the production rig;
+the validation wrapper sets it), restricted to names that map to a config key
+through the same export table, printed as one block at startup
+(`analytics.yolo.prewarm_iterations = 5 (env ORANGE_YOLO_PREWARM_ITERATIONS,
+overrides app 3)`), and recorded per run under `config_resolution` in
+`recording_snapshot.json`. A value seen at the env tier in more than one
+snapshot gets a config key. Decisions D1-D3 agreed 2026-09-21 (single rig, so
+no legacy fallbacks: the app-config serial map and the launcher's per-camera
+env go away in slice 3). The GUI exports the
 resolved values as the env the workers read, in `src/orange.cpp` in the block
 that already does this (after `load_app_storage_config`, before any worker or
 the autorun config resolve).

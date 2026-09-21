@@ -4844,9 +4844,27 @@ int main(int /*argc*/, char ** /*args*/) {
              std::tuple<const char*, int, const char*>{"ORANGE_ANALYTICS_DEVICE_ROI", app_storage_config.gui_analytics_device_roi, "analytics device ROI"},
              std::tuple<const char*, int, const char*>{"ORANGE_ANALYTICS_DEVICE_CROP", app_storage_config.gui_analytics_device_crop, "analytics device crop"},
              std::tuple<const char*, int, const char*>{"ORANGE_ANALYTICS_FUSED_FRAME", app_storage_config.gui_analytics_fused_frame, "analytics fused frame graph"},
-             std::tuple<const char*, int, const char*>{"ORANGE_ANALYTICS_COPY_AFTER_POSE", app_storage_config.gui_analytics_copy_after_pose, "analytics copy after pose"}}) {
+             std::tuple<const char*, int, const char*>{"ORANGE_ANALYTICS_COPY_AFTER_POSE", app_storage_config.gui_analytics_copy_after_pose, "analytics copy after pose"},
+             std::tuple<const char*, int, const char*>{"ORANGE_ANALYTICS_EARLY_OWNED_FRAME", app_storage_config.gui_analytics_early_owned_frame, "analytics early owned frame"},
+             std::tuple<const char*, int, const char*>{"ORANGE_ANALYTICS_COPY_STREAM", app_storage_config.gui_analytics_copy_stream, "analytics copy stream"},
+             std::tuple<const char*, int, const char*>{"ORANGE_YOLO_SYNC_EVENT", app_storage_config.gui_analytics_yolo_sync_event, "YOLO sync event"},
+             std::tuple<const char*, int, const char*>{"ORANGE_YOLO_GPU_TIMING", app_storage_config.gui_analytics_yolo_gpu_timing, "YOLO GPU timing"},
+             std::tuple<const char*, int, const char*>{"ORANGE_YOLO_DETACH_INPUT", app_storage_config.gui_analytics_yolo_detach_input, "YOLO detach input"},
+             std::tuple<const char*, int, const char*>{"ORANGE_YOLO_READY_EVENT_FASTPATH", app_storage_config.gui_analytics_yolo_ready_event_fastpath, "YOLO ready-event fast path"},
+             std::tuple<const char*, int, const char*>{"ORANGE_POSE_DEVICE_STAGE", app_storage_config.gui_analytics_pose_device_stage, "pose device stage"},
+             std::tuple<const char*, int, const char*>{"ORANGE_POSE_DEVICE_GRAPH", app_storage_config.gui_analytics_pose_device_graph, "pose device graph"}}) {
         if (value >= 0) {
             set_gui_env_from_app_config_if_absent(name, value ? "1" : "0", label);
+        }
+    }
+    for (const auto& [name, value, label] : {
+             std::tuple<const char*, int, const char*>{"ORANGE_YOLO_PREWARM_ITERATIONS", app_storage_config.gui_analytics_yolo_prewarm_iterations, "YOLO prewarm iterations"},
+             std::tuple<const char*, int, const char*>{"ORANGE_YOLO_DECIMATE", app_storage_config.gui_analytics_yolo_decimate, "YOLO decimate"},
+             std::tuple<const char*, int, const char*>{"ORANGE_POSE_PREWARM_ITERATIONS", app_storage_config.gui_analytics_pose_prewarm_iterations, "pose prewarm iterations"},
+             std::tuple<const char*, int, const char*>{"ORANGE_POSE_DEVICE_SLOTS", app_storage_config.gui_analytics_pose_device_slots, "pose device slots"},
+             std::tuple<const char*, int, const char*>{"ORANGE_POSE_QUEUE_DEPTH", app_storage_config.gui_analytics_pose_queue_depth, "pose queue depth"}}) {
+        if (value >= 0) {
+            set_gui_env_from_app_config_if_absent(name, std::to_string(value), label);
         }
     }
     if (!app_storage_config.pose_engine_path.empty()) {

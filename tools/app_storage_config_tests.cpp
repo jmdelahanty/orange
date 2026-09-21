@@ -140,7 +140,10 @@ void test_missing_config_uses_defaults()
             config.gui_external_ipc_owner_push_slots == -1 &&
             config.gui_external_ipc_full_frame_extra_output_delay == -1 &&
             !config.gui_external_ipc_native_local_input_configured &&
-            config.gui_external_ipc_recorder_tool_path.empty(),
+            config.gui_external_ipc_recorder_tool_path.empty() &&
+            config.gui_analytics_device_roi == -1 && config.gui_analytics_early_owned_frame == -1 &&
+            config.gui_analytics_yolo_prewarm_iterations == -1 && config.gui_analytics_pose_device_stage == -1 &&
+            config.gui_analytics_pose_queue_depth == -1,
         "default per-camera crop recorder GPU map unset");
     require(config.gui_crop_frame_pool_size == -1, "default crop frame pool unset");
     require(config.gui_ptp_register_read_decimate == 1, "default PTP decimate");
@@ -206,6 +209,14 @@ void test_loads_gui_and_crop_defaults()
       "recorder_tool_path": "/opt/orange/bin/external_recorder_ipc_probe_native"
     }
   },
+  "analytics": {
+    "device_roi": true, "device_crop": true, "fused_frame": true, "copy_after_pose": true,
+    "early_owned_frame": true, "copy_stream": false,
+    "yolo": { "prewarm_iterations": 3, "decimate": 1, "sync_event": true, "gpu_timing": true,
+              "detach_input": true, "ready_event_fastpath": true },
+    "pose": { "device_stage": true, "prewarm_iterations": 3, "device_graph": true,
+              "device_slots": 8, "queue_depth": 32 }
+  },
   "gui": {
     "stream": {
       "downsample": 4
@@ -259,6 +270,20 @@ void test_loads_gui_and_crop_defaults()
                 "/opt/orange/bin/external_recorder_ipc_probe_native",
             "recorder_tool_path should load");
     require(config.gui_ptp_register_read_decimate == 100, "PTP decimate should load");
+    require(config.gui_analytics_device_roi == 1 && config.gui_analytics_device_crop == 1 &&
+                config.gui_analytics_fused_frame == 1 && config.gui_analytics_copy_after_pose == 1,
+            "analytics flags should load as 1");
+    require(config.gui_analytics_early_owned_frame == 1 && config.gui_analytics_copy_stream == 0,
+            "analytics early_owned_frame/copy_stream should load (false as 0)");
+    require(config.gui_analytics_yolo_prewarm_iterations == 3 && config.gui_analytics_yolo_decimate == 1,
+            "analytics.yolo ints should load");
+    require(config.gui_analytics_yolo_sync_event == 1 && config.gui_analytics_yolo_gpu_timing == 1 &&
+                config.gui_analytics_yolo_detach_input == 1 && config.gui_analytics_yolo_ready_event_fastpath == 1,
+            "analytics.yolo flags should load");
+    require(config.gui_analytics_pose_device_stage == 1 && config.gui_analytics_pose_prewarm_iterations == 3 &&
+                config.gui_analytics_pose_device_graph == 1 && config.gui_analytics_pose_device_slots == 8 &&
+                config.gui_analytics_pose_queue_depth == 32,
+            "analytics.pose keys should load");
     require(config.gui_stream_downsample == 4, "GUI stream downsample should load");
     require(config.gui_display_profile == "citrus_safe", "display profile should normalize");
     require(config.gui_display_preview_max_fps == 10, "citrus-safe preview cap should apply");

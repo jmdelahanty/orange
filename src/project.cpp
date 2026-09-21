@@ -1390,13 +1390,65 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                  std::pair<const char*, int*>{"device_roi", &config.gui_analytics_device_roi},
                  std::pair<const char*, int*>{"device_crop", &config.gui_analytics_device_crop},
                  std::pair<const char*, int*>{"fused_frame", &config.gui_analytics_fused_frame},
-                 std::pair<const char*, int*>{"copy_after_pose", &config.gui_analytics_copy_after_pose}}) {
+                 std::pair<const char*, int*>{"copy_after_pose", &config.gui_analytics_copy_after_pose},
+                 std::pair<const char*, int*>{"early_owned_frame", &config.gui_analytics_early_owned_frame},
+                 std::pair<const char*, int*>{"copy_stream", &config.gui_analytics_copy_stream}}) {
             if (analytics.contains(key) && !analytics[key].is_null()) {
                 bool value = false;
                 if (!read_optional_bool_field(analytics, key, &value, error_out, "analytics")) {
                     return false;
                 }
                 *target = value ? 1 : 0;
+            }
+        }
+        // analytics.yolo / analytics.pose (2026-09-21): the knobs the headless
+        // gate sets through its spec; the GUI exports them as env at startup.
+        auto read_bool_block = [&](const nlohmann::json& block, const std::string& ctx,
+                                   std::initializer_list<std::pair<const char*, int*>> keys) -> bool {
+            for (const auto& [key, target] : keys) {
+                if (block.contains(key) && !block[key].is_null()) {
+                    bool value = false;
+                    if (!read_optional_bool_field(block, key, &value, error_out, ctx)) {
+                        return false;
+                    }
+                    *target = value ? 1 : 0;
+                }
+            }
+            return true;
+        };
+        if (analytics.contains("yolo") && !analytics["yolo"].is_null()) {
+            if (!analytics["yolo"].is_object()) {
+                if (error_out) {
+                    *error_out = "analytics.yolo must be an object in " + config_path.string();
+                }
+                return false;
+            }
+            const nlohmann::json& yolo = analytics["yolo"];
+            if (!read_optional_bounded_int_field(yolo, "prewarm_iterations", &config.gui_analytics_yolo_prewarm_iterations, 0, 1000, error_out, "analytics.yolo") ||
+                !read_optional_bounded_int_field(yolo, "decimate", &config.gui_analytics_yolo_decimate, 1, 9999, error_out, "analytics.yolo") ||
+                !read_bool_block(yolo, "analytics.yolo", {
+                    {"sync_event", &config.gui_analytics_yolo_sync_event},
+                    {"gpu_timing", &config.gui_analytics_yolo_gpu_timing},
+                    {"detach_input", &config.gui_analytics_yolo_detach_input},
+                    {"ready_event_fastpath", &config.gui_analytics_yolo_ready_event_fastpath}})) {
+                return false;
+            }
+        }
+        if (analytics.contains("pose") && !analytics["pose"].is_null()) {
+            if (!analytics["pose"].is_object()) {
+                if (error_out) {
+                    *error_out = "analytics.pose must be an object in " + config_path.string();
+                }
+                return false;
+            }
+            const nlohmann::json& pose = analytics["pose"];
+            if (!read_optional_bounded_int_field(pose, "prewarm_iterations", &config.gui_analytics_pose_prewarm_iterations, 0, 1000, error_out, "analytics.pose") ||
+                !read_optional_bounded_int_field(pose, "device_slots", &config.gui_analytics_pose_device_slots, 2, 64, error_out, "analytics.pose") ||
+                !read_optional_bounded_int_field(pose, "queue_depth", &config.gui_analytics_pose_queue_depth, 1, 4096, error_out, "analytics.pose") ||
+                !read_bool_block(pose, "analytics.pose", {
+                    {"device_stage", &config.gui_analytics_pose_device_stage},
+                    {"device_graph", &config.gui_analytics_pose_device_graph}})) {
+                return false;
             }
         }
     }
