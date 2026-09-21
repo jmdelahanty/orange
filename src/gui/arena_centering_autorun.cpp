@@ -1029,10 +1029,13 @@ nlohmann::json build_verification(
                 {"x", detection->second.center_camera_px.x},
                 {"y", detection->second.center_camera_px.y}}},
             {"residual_camera_px", {{"x", error_x}, {"y", error_y}}},
+            {"residual_definition", "target_center_minus_detected_candidate_center"},
             {"residual_norm_camera_px", raw_norm},
             {"predicted_integer_quantization_residual_camera_px", {
                 {"x", predicted_quantization_error_x},
                 {"y", predicted_quantization_error_y}}},
+            {"predicted_integer_quantization_residual_definition",
+             "target_center_minus_detected_integer_candidate_center"},
             {"predicted_integer_quantization_residual_norm_camera_px",
              std::hypot(
                  predicted_quantization_error_x,

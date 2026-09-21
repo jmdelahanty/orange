@@ -454,6 +454,7 @@ nlohmann::json FiducialDetection::ToJson() const
         {"center_error_camera_px", {
             {"x", center_error_x_camera_px},
             {"y", center_error_y_camera_px}}},
+        {"center_error_definition", "detected_center_minus_expected_center"},
         {"score", score},
         {"strategy", strategy},
         {"worker_thread_id_hash", worker_thread_id_hash},
@@ -1143,6 +1144,7 @@ nlohmann::json CenteringSolveResult::ToJson() const
         {"target_camera_px", {{"x", target_camera_px.x}, {"y", target_camera_px.y}}},
         {"baseline_error_camera_px", {
             {"x", baseline_error_camera_px.x}, {"y", baseline_error_camera_px.y}}},
+        {"baseline_error_definition", "target_center_minus_detected_baseline_center"},
         {"jacobian_camera_px_per_canvas_px", {
             {jacobian_camera_px_per_canvas_px[0][0],
              jacobian_camera_px_per_canvas_px[0][1]},
@@ -1159,7 +1161,9 @@ nlohmann::json CenteringSolveResult::ToJson() const
             {"x", candidate_canvas_px.x}, {"y", candidate_canvas_px.y}}},
         {"predicted_integer_quantization_residual_camera_px", {
             {"x", predicted_integer_quantization_residual_camera_px.x},
-            {"y", predicted_integer_quantization_residual_camera_px.y}}},
+             {"y", predicted_integer_quantization_residual_camera_px.y}}},
+        {"predicted_integer_quantization_residual_definition",
+         "target_center_minus_detected_integer_candidate_center"},
         {"predicted_integer_quantization_residual_norm_camera_px",
          predicted_integer_quantization_residual_norm_camera_px},
         {"candidate_center_canvas_px_integer", {

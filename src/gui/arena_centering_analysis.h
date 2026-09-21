@@ -57,6 +57,9 @@ struct FiducialDetection {
     double ring_contrast_u8 = 0.0;
     double filled_disk_contrast_u8 = 0.0;
     double center_dot_contrast_u8 = 0.0;
+    // Detection minus the configured expected center. This diagnostic sign is
+    // intentionally opposite to the target-minus-detection correction vector
+    // used by CenteringSolveResult::baseline_error_camera_px.
     double center_error_x_camera_px = 0.0;
     double center_error_y_camera_px = 0.0;
     double score = 0.0;
@@ -213,6 +216,8 @@ struct CenteringSolveResult {
     bool ok = false;
     std::string error;
     Point2d target_camera_px;
+    // Target minus detected baseline: the camera displacement the projection
+    // must produce. FiducialDetection::center_error_* is detected minus target.
     Point2d baseline_error_camera_px;
     Point2d delta_canvas_px;
     Point2d candidate_canvas_px;

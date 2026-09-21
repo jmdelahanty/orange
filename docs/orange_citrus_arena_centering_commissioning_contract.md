@@ -162,6 +162,16 @@ delta_canvas = inverse(J) * (target_camera_px - camera_center(baseline))
 candidate_canvas = round(original_canvas + delta_canvas)
 ```
 
+Two persisted diagnostics deliberately use opposite subtraction orders and
+must remain explicitly labeled. Fiducial `center_error_camera_px` is
+`detected_center - expected_center`, which describes where the marker was
+observed relative to its search target. Solver `baseline_error_camera_px`,
+verification `residual_camera_px`, and predicted integer-candidate residuals
+are `target_center - detected_center`, which describe the camera-space motion
+still required from the projection. Consumers must use each field's adjacent
+`*_definition` metadata rather than inferring a sign convention from the word
+"error" or "residual."
+
 The solver rejects missing detections, ambiguous fits, probe displacements
 below the configured minimum, excessive symmetric nonlinearity, an ill-
 conditioned or singular Jacobian, an excessive requested move, or a

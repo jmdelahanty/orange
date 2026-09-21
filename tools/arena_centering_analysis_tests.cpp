@@ -282,6 +282,20 @@ ac::Point2d Project(ac::Point2d baseline_camera,
         baseline_camera.y + 0.5 * dx + 8.0 * dy};
 }
 
+ac::Point2d ProjectWithJacobian(ac::Point2d baseline_camera,
+                                ac::Point2d baseline_canvas,
+                                ac::Point2d canvas,
+                                double j00,
+                                double j01,
+                                double j10,
+                                double j11)
+{
+    const double dx = canvas.x - baseline_canvas.x;
+    const double dy = canvas.y - baseline_canvas.y;
+    return {baseline_camera.x + j00 * dx + j01 * dy,
+            baseline_camera.y + j10 * dx + j11 * dy};
+}
+
 void TestSymmetricProbeSolver()
 {
     const ac::Point2d baseline_canvas{100.0, 200.0};
@@ -334,6 +348,108 @@ void TestSymmetricProbeNonlinearityIsRejected()
             "nonlinearity should have a stable error code");
 }
 
+void TestReflectedJacobianMovesCameraLeftDownToRightUp()
+{
+    // Native camera raster is +x right, +y down. This models the measured
+    // Shadow orientation: logical canvas +X appears camera-right, while
+    // logical canvas +Y appears camera-up.
+    const ac::Point2d baseline_canvas{50.0, 60.0};
+    const ac::Point2d baseline_camera{90.0, 120.0};  // left/down of target
+    constexpr double probe = 3.0;
+    constexpr double j00 = 10.0;
+    constexpr double j01 = 0.0;
+    constexpr double j10 = 0.0;
+    constexpr double j11 = -8.0;
+    const auto projected = [&](ac::Point2d canvas) {
+        return ProjectWithJacobian(
+            baseline_camera, baseline_canvas, canvas, j00, j01, j10, j11);
+    };
+    ac::SymmetricProbeObservations observations;
+    observations.baseline = {baseline_camera, baseline_canvas};
+    observations.plus_x = {projected({50.0 + probe, 60.0}),
+                           {50.0 + probe, 60.0}};
+    observations.minus_x = {projected({50.0 - probe, 60.0}),
+                            {50.0 - probe, 60.0}};
+    observations.plus_y = {projected({50.0, 60.0 + probe}),
+                           {50.0, 60.0 + probe}};
+    observations.minus_y = {projected({50.0, 60.0 - probe}),
+                            {50.0, 60.0 - probe}};
+    ac::SolverConfig config;
+    config.require_positive_determinant = false;
+    const ac::Point2d target{100.0, 100.0};
+    const auto solved = ac::SolveSymmetricArenaCentering(
+        observations, target, config);
+    Require(solved.ok, "reflected Shadow-like Jacobian should solve");
+    Require(solved.determinant < 0.0,
+            "camera-up canvas +Y should produce a reflected determinant");
+    RequireNear(solved.baseline_error_camera_px.x, 10.0, 1e-9,
+                "left marker requires camera-right correction");
+    RequireNear(solved.baseline_error_camera_px.y, -20.0, 1e-9,
+                "down marker requires camera-up correction");
+    RequireNear(solved.delta_canvas_px.x, 1.0, 1e-9,
+                "camera-right correction should use logical canvas +X");
+    RequireNear(solved.delta_canvas_px.y, 2.5, 1e-9,
+                "camera-up correction should use logical canvas +Y on reflected rig");
+    const ac::Point2d continuous = projected(solved.candidate_canvas_px);
+    RequireNear(continuous.x, target.x, 1e-9,
+                "continuous reflected candidate should reach target x");
+    RequireNear(continuous.y, target.y, 1e-9,
+                "continuous reflected candidate should reach target y");
+    Require(solved.candidate_center_x_canvas_px == 51,
+            "quantization should preserve logical +X correction");
+    Require(solved.candidate_center_y_canvas_px == 62,
+            "equal reflected Y quantization tie should select the first integer");
+    RequireNear(solved.predicted_integer_quantization_residual_camera_px.x,
+                0.0, 1e-9, "integer x residual sign mismatch");
+    RequireNear(solved.predicted_integer_quantization_residual_camera_px.y,
+                -4.0, 1e-9,
+                "integer residual must be target minus detected candidate");
+    const ac::Point2d refinement = ac::ApplyJacobianCorrection(
+        solved, {10.0, -20.0});
+    RequireNear(refinement.x, 1.0, 1e-9,
+                "refinement should retain reflected x sign");
+    RequireNear(refinement.y, 2.5, 1e-9,
+                "refinement should retain reflected y sign");
+}
+
+void TestRotatedAxisSwapJacobianUsesMeasuredColumns()
+{
+    const ac::Point2d baseline_canvas{40.0, 30.0};
+    const ac::Point2d baseline_camera{200.0, 150.0};
+    constexpr double probe = 4.0;
+    // +canvas X -> camera down; +canvas Y -> camera left.
+    const auto projected = [&](ac::Point2d canvas) {
+        return ProjectWithJacobian(
+            baseline_camera, baseline_canvas, canvas,
+            0.0, -6.0, 5.0, 0.0);
+    };
+    ac::SymmetricProbeObservations observations;
+    observations.baseline = {baseline_camera, baseline_canvas};
+    observations.plus_x = {projected({40.0 + probe, 30.0}),
+                           {40.0 + probe, 30.0}};
+    observations.minus_x = {projected({40.0 - probe, 30.0}),
+                            {40.0 - probe, 30.0}};
+    observations.plus_y = {projected({40.0, 30.0 + probe}),
+                           {40.0, 30.0 + probe}};
+    observations.minus_y = {projected({40.0, 30.0 - probe}),
+                            {40.0, 30.0 - probe}};
+    ac::SolverConfig config;
+    config.require_positive_determinant = false;
+    const ac::Point2d target{188.0, 160.0};
+    const auto solved = ac::SolveSymmetricArenaCentering(
+        observations, target, config);
+    Require(solved.ok, "rotated axis-swap Jacobian should solve");
+    RequireNear(solved.delta_canvas_px.x, 2.0, 1e-9,
+                "camera-down correction should follow measured canvas X column");
+    RequireNear(solved.delta_canvas_px.y, 2.0, 1e-9,
+                "camera-left correction should follow measured canvas Y column");
+    const ac::Point2d reprojection = projected(solved.candidate_canvas_px);
+    RequireNear(reprojection.x, target.x, 1e-9,
+                "axis-swapped candidate should reach target x");
+    RequireNear(reprojection.y, target.y, 1e-9,
+                "axis-swapped candidate should reach target y");
+}
+
 }  // namespace
 
 int main()
@@ -346,6 +462,8 @@ int main()
         TestRectangleVisibilityMarginRejectsNearClipping();
         TestSymmetricProbeSolver();
         TestSymmetricProbeNonlinearityIsRejected();
+        TestReflectedJacobianMovesCameraLeftDownToRightUp();
+        TestRotatedAxisSwapJacobianUsesMeasuredColumns();
     } catch (const std::exception& error) {
         std::cerr << "arena_centering_analysis_tests failed: "
                   << error.what() << std::endl;
