@@ -1623,6 +1623,14 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                     }
                     return false;
                 }
+                if (external_ipc.contains("interleave") && !external_ipc["interleave"].is_null()) {
+                    bool interleave = false;
+                    if (!read_optional_bool_field(external_ipc, "interleave", &interleave, error_out,
+                                                  "recording.crop.external_ipc")) {
+                        return false;
+                    }
+                    config.gui_crop_external_interleave = interleave ? 1 : 0;
+                }
             }
         }
         if (recording.contains("external_ipc")) {

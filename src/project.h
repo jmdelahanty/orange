@@ -37,6 +37,7 @@ struct AppStorageConfig {
     int gui_crop_external_encode_queue_depth = -1;
     int gui_crop_external_recorder_gpu_id = -1;
     std::map<std::string, int> gui_crop_external_recorder_gpu_ids_by_serial;
+    int gui_crop_external_interleave = -1;  // recording.crop.external_ipc.interleave -> ORANGE_CROP_EXTERNAL_INTERLEAVE (GOP-parity two-shard crops)
     int gui_crop_frame_pool_size = -1;
     // recording.external_ipc: the validated full-frame external recorder
     // shape (2026-09-21 gate). Exported as env if absent; env wins.

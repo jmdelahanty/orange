@@ -126,14 +126,19 @@ void ApplyLifecycleEnvOverrides(SupervisedRecorderLifecycleOptions* options)
     if (!options) {
         return;
     }
-    if (const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_NATIVE_LOCAL_INPUT"); env && *env) {
+    if (const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_FULL_FRAME_NATIVE_LOCAL_INPUT"); env && *env) {
         options->native_local_input = std::string(env) == "1";
     }
-    if (const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_NATIVE_KERNEL_PTX"); env && *env) {
+    if (const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_FULL_FRAME_NATIVE_KERNEL_PTX"); env && *env) {
         options->native_local_kernel_ptx = env;
     }
     if (const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_FULL_FRAME_EXTRA_OUTPUT_DELAY"); env && *env) {
         options->full_frame_extra_output_delay = std::atoi(env);
+    }
+    // Tool path for the full-frame lifecycle only; crop lifecycles keep the
+    // generic resolution (ORANGE_EXTERNAL_RECORDER_TOOL / sibling binary).
+    if (const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_FULL_FRAME_TOOL"); env && *env) {
+        options->recorder_tool_path = env;
     }
 }
 

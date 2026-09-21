@@ -29,10 +29,14 @@ struct SupervisedRecorderLifecycleOptions {
 
 // Fill native_local_input / native_local_kernel_ptx /
 // full_frame_extra_output_delay from the environment when set:
-// ORANGE_EXTERNAL_RECORDER_NATIVE_LOCAL_INPUT (1/0),
-// ORANGE_EXTERNAL_RECORDER_NATIVE_KERNEL_PTX,
-// ORANGE_EXTERNAL_RECORDER_FULL_FRAME_EXTRA_OUTPUT_DELAY. The GUI exports
-// these from recording.external_ipc in the app config; env always wins.
+// ORANGE_EXTERNAL_RECORDER_FULL_FRAME_NATIVE_LOCAL_INPUT (1/0),
+// ORANGE_EXTERNAL_RECORDER_FULL_FRAME_NATIVE_KERNEL_PTX (the un-prefixed
+// names are read by the recorder binary itself and must not reach crop
+// recorders),
+// ORANGE_EXTERNAL_RECORDER_FULL_FRAME_EXTRA_OUTPUT_DELAY,
+// ORANGE_EXTERNAL_RECORDER_FULL_FRAME_TOOL (recorder_tool_path; full-frame
+// lifecycle only, crop recorders keep the generic tool resolution). The GUI
+// exports these from recording.external_ipc in the app config; env wins.
 void ApplyLifecycleEnvOverrides(SupervisedRecorderLifecycleOptions* options);
 
 struct SupervisedRecorderLifecycleState {

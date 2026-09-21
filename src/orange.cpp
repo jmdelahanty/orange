@@ -4801,6 +4801,16 @@ int main(int /*argc*/, char ** /*args*/) {
             std::to_string(gpu_id),
             label.c_str());
     }
+    // GOP-parity crop interleave (2026-09-21): without it the GUI's crop
+    // contract is single-shard with gop 1 on the paired die, which is not
+    // the headless-validated shape (the validation launcher's env for it
+    // never reached the GUI process).
+    if (app_storage_config.gui_crop_external_interleave >= 0) {
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_CROP_EXTERNAL_INTERLEAVE",
+            app_storage_config.gui_crop_external_interleave ? "1" : "0",
+            "crop external GOP-parity interleave");
+    }
     // Full-frame external recorder shape from recording.external_ipc
     // (2026-09-21): the same knobs the headless gate used, as env the
     // analytics handoff, the recorder processes and the lifecycle read.

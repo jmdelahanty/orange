@@ -196,7 +196,8 @@ void test_loads_gui_and_crop_defaults()
         "recorder_gpu_ids_by_serial": {
           "2010095": 8,
           "2010096": 6
-        }
+        },
+        "interleave": true
       }
     },
     "ptp_register_read_decimate": 100,
@@ -257,6 +258,7 @@ void test_loads_gui_and_crop_defaults()
         config.gui_crop_external_recorder_gpu_ids_by_serial.at("2010096") == 6,
         "per-camera crop recorder GPU should load for 2010096");
     require(config.gui_crop_frame_pool_size == 256, "crop frame pool should load");
+    require(config.gui_crop_external_interleave == 1, "crop external interleave should load");
     require(config.gui_external_ipc_owner_push && config.gui_external_ipc_owner_push_configured,
             "recording.external_ipc.owner_push should load");
     require(config.gui_external_ipc_owner_push_slots == 16, "owner_push_slots should load");
