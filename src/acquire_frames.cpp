@@ -35,6 +35,8 @@
 #include <fstream>
 #include <filesystem>
 #include <iomanip>
+#include <sstream>
+#include "async_line_sink.h"
 #include <limits>
 #include <map>
 
@@ -399,43 +401,70 @@ public:
         current_folder_ = folder;
         const std::string serial = camera_params_ ? camera_params_->camera_serial : "unknown";
         const std::string path = (std::filesystem::path(folder) / ("Cam" + serial + "_ring_release.csv")).string();
-        file_.open(path, std::ios::out | std::ios::trunc);
-        if (!file_) {
+        if (!sink_.Open(path,
+                        "local_frame_id,camera_frame_id,receive_host_ns,copy_ready_seen_ns,consumer_done_seen_ns,"
+                        "requeue_host_ns,hold_ns,pending_after,camera_dropped_frames_total,forced\n")) {
             std::cerr << "[ACQ_RING] Cam " << serial << " failed to open " << path << std::endl;
             current_folder_.clear();
             return;
         }
-        file_ << "local_frame_id,camera_frame_id,receive_host_ns,copy_ready_seen_ns,consumer_done_seen_ns,"
-                 "requeue_host_ns,hold_ns,pending_after,camera_dropped_frames_total,forced\n";
         std::cout << "[ACQ_RING] Cam " << serial << " logging ring releases to " << path << std::endl;
     }
     void Record(uint64_t local_frame_id, uint64_t camera_frame_id, uint64_t receive_ns,
                 uint64_t copy_seen_ns, uint64_t consumer_seen_ns, uint64_t requeue_ns,
                 size_t pending_after, uint64_t dropped_total, bool forced) {
-        if (!file_.is_open()) {
+        if (!sink_.IsOpen()) {
             return;
         }
-        file_ << local_frame_id << "," << camera_frame_id << "," << receive_ns << "," << copy_seen_ns << ","
-              << consumer_seen_ns << "," << requeue_ns << "," << (requeue_ns > receive_ns ? requeue_ns - receive_ns : 0) << ","
-              << pending_after << "," << dropped_total << "," << (forced ? 1 : 0) << "\n";
-        if ((++rows_ % 200) == 0) {
-            file_.flush();
+        // Formatted here, written by the sink's thread: the acquisition
+        // thread never calls write() (2026-09-21).
+        char buf[256];
+        const int n = std::snprintf(
+            buf, sizeof(buf), "%llu,%llu,%llu,%llu,%llu,%llu,%llu,%zu,%llu,%d\n",
+            static_cast<unsigned long long>(local_frame_id), static_cast<unsigned long long>(camera_frame_id),
+            static_cast<unsigned long long>(receive_ns), static_cast<unsigned long long>(copy_seen_ns),
+            static_cast<unsigned long long>(consumer_seen_ns), static_cast<unsigned long long>(requeue_ns),
+            static_cast<unsigned long long>(requeue_ns > receive_ns ? requeue_ns - receive_ns : 0),
+            pending_after, static_cast<unsigned long long>(dropped_total), forced ? 1 : 0);
+        if (n > 0) {
+            sink_.Append(std::string(buf, static_cast<size_t>(n)));
         }
     }
     void Close() {
-        if (file_.is_open()) {
-            file_.flush();
-            file_.close();
+        if (sink_.IsOpen() && sink_.dropped() > 0) {
+            std::cerr << "[ACQ_RING] " << sink_.path() << " dropped " << sink_.dropped() << " rows" << std::endl;
         }
+        sink_.Close();
         current_folder_.clear();
     }
 private:
     const CameraParams* camera_params_ = nullptr;
     bool enabled_ = false;
     std::string current_folder_;
-    std::ofstream file_;
-    uint64_t rows_ = 0;
+    orange::AsyncLineSink sink_;
 };
+
+static const char kAcquisitionCadenceProbeHeader[] =
+    "timestamp_utc,local_frame_id,recording_frame_id,camera_frame_id,"
+                 "camera_timestamp_ns,camera_timestamp_delta_ns,"
+                 "receive_host_ns,receive_delta_ns,get_frame_wait_ns,"
+                 "ptp_active,ptp_register_read,ptp_register_read_decimate,ptp_register_read_age_frames,latched_ptp_time_ns,latch_minus_frame_ns,latch_delta_ns,"
+                 "record_active,dispatch_count,will_display,"
+                 "display_preview_max_fps,display_preview_eligible,"
+                 "display_preview_selected,display_preview_skipped,"
+                 "will_record,will_yolo,"
+                 "direct,ring_copy,"
+                 "free_entries,free_entries_low,free_events,free_events_low,"
+                 "yolo_events,yolo_events_low,pending_requeues,acq_starve,"
+                 "worker_enqueue_rejections,"
+                 "camera_dropped_frames,get_frame_errors,last_get_frame_error_code,"
+                 "recording_submit_host_ns,receive_to_submit_ns,"
+                 "recording_target_gpu_id,recording_helper_requested,recording_route_helper,"
+                 "helper_enqueue_q,helper_enqueue_buffers,helper_enqueue_events,helper_enqueue_delay_ns,"
+                 "submitted_frames,enqueue_rejected_frames,primary_routed_frames,helper_requested_frames,"
+                 "helper_fallback_frames,helper_dispatched_frames,last_target_gpu_id,last_route_mode,"
+                 "pre_q,enc_q,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow,"
+                 "ptp_latch_deferred,ptp_latch_ns\n";
 
 class AcquisitionCadenceProbeRecorder {
 public:
@@ -458,11 +487,12 @@ public:
     }
 
     void Record(const AcquisitionCadenceProbeSample& sample) {
-        if (!file_.is_open() || !ShouldRecord(sample)) {
+        if (!sink_.IsOpen() || !ShouldRecord(sample)) {
             return;
         }
 
-        file_ << sample.timestamp_utc << ","
+        std::ostringstream line;
+        line << sample.timestamp_utc << ","
               << sample.local_frame_id << ","
               << sample.recording_frame_id << ","
               << sample.camera_frame_id << ","
@@ -528,13 +558,14 @@ public:
               << sample.ingress_stats.encode_slow_frames << ","
               << (sample.ptp_latch_deferred ? 1 : 0) << ","
               << sample.ptp_latch_ns << "\n";
-        file_.flush();
+        sink_.Append(line.str());
     }
 
     void Close() {
-        if (file_.is_open()) {
-            file_.close();
+        if (sink_.IsOpen() && sink_.dropped() > 0) {
+            std::cerr << "[ACQ_CADENCE] " << sink_.path() << " dropped " << sink_.dropped() << " rows" << std::endl;
         }
+        sink_.Close();
         current_folder_.clear();
         file_path_.clear();
     }
@@ -544,7 +575,7 @@ public:
 private:
     bool ShouldRecord(const AcquisitionCadenceProbeSample& sample) const {
         // ORANGE_ACQ_CADENCE_PROBE_ALL=1: every frame instead of the 80-160
-        // window (diagnostic; one row per frame, buffered). The acquisition
+        // window (diagnostic; one row per frame, handed to the sink thread). The acquisition
         // loop's outer window gate must also consult RecordsAllFrames(); until
         // 2026-09-20 it did not, which is why the flag produced 82 rows.
         if (record_all_) {
@@ -565,34 +596,13 @@ private:
         const std::string serial = camera_params_ ? camera_params_->camera_serial : "unknown";
         file_path_ = (std::filesystem::path(current_folder_) /
                       ("Cam" + serial + "_acquisition_cadence_probe.csv")).string();
-        file_.open(file_path_, std::ios::out | std::ios::trunc);
-        if (!file_) {
+        if (!sink_.Open(file_path_, kAcquisitionCadenceProbeHeader)) {
             std::cerr << "[ACQ_CADENCE] Cam " << serial
                       << " failed to open " << file_path_ << std::endl;
             current_folder_.clear();
             file_path_.clear();
             return;
         }
-        file_ << "timestamp_utc,local_frame_id,recording_frame_id,camera_frame_id,"
-                 "camera_timestamp_ns,camera_timestamp_delta_ns,"
-                 "receive_host_ns,receive_delta_ns,get_frame_wait_ns,"
-                 "ptp_active,ptp_register_read,ptp_register_read_decimate,ptp_register_read_age_frames,latched_ptp_time_ns,latch_minus_frame_ns,latch_delta_ns,"
-                 "record_active,dispatch_count,will_display,"
-                 "display_preview_max_fps,display_preview_eligible,"
-                 "display_preview_selected,display_preview_skipped,"
-                 "will_record,will_yolo,"
-                 "direct,ring_copy,"
-                 "free_entries,free_entries_low,free_events,free_events_low,"
-                 "yolo_events,yolo_events_low,pending_requeues,acq_starve,"
-                 "worker_enqueue_rejections,"
-                 "camera_dropped_frames,get_frame_errors,last_get_frame_error_code,"
-                 "recording_submit_host_ns,receive_to_submit_ns,"
-                 "recording_target_gpu_id,recording_helper_requested,recording_route_helper,"
-                 "helper_enqueue_q,helper_enqueue_buffers,helper_enqueue_events,helper_enqueue_delay_ns,"
-                 "submitted_frames,enqueue_rejected_frames,primary_routed_frames,helper_requested_frames,"
-                 "helper_fallback_frames,helper_dispatched_frames,last_target_gpu_id,last_route_mode,"
-                 "pre_q,enc_q,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow,"
-                 "ptp_latch_deferred,ptp_latch_ns\n";
         if (record_all_) {
             std::cout << "[ACQ_CADENCE] Cam " << serial << " logging EVERY frame to " << file_path_ << std::endl;
         } else {
@@ -608,7 +618,7 @@ private:
     bool record_all_ = false;
     std::string current_folder_;
     std::string file_path_;
-    std::ofstream file_;
+    orange::AsyncLineSink sink_;
 };
 
 void append_ptp_receive_history(std::deque<PtpReceiveHistoryEntry>* history,

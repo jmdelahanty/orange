@@ -1,5 +1,10 @@
 // src/FFmpegWriter.cpp
 
+#include <fcntl.h>
+#include <unistd.h>
+#include <cerrno>
+#include <cstdlib>
+#include <cstring>
 #include "FFmpegWriter.h"
 #include "fsuid_guard.h"
 #include "nvtx_profiling.h"
@@ -193,6 +198,7 @@ FFmpegWriter::FFmpegWriter(
             std::string("FFmpegWriter: could not open output file ") +
             (szOutFilePath ? szOutFilePath : "(null)"));
     }
+    open_pace_fd(szOutFilePath);
 
     AVDictionary* muxer_options = nullptr;
     if (av_dict_set(&muxer_options, "movflags", "use_metadata_tags", 0) < 0) {
@@ -280,6 +286,7 @@ FFmpegWriter::~FFmpegWriter()
         if (oc->pb) {
             outcome.output_close_attempted = true;
             const int close_result = avio_closep(&oc->pb);
+            close_pace_fd();
             outcome.output_closed = close_result >= 0;
             if (close_result < 0) {
                 outcome.output_close_error_code = close_result;
@@ -460,6 +467,45 @@ void FFmpegWriter::join_thread()
     }
 }
 
+void FFmpegWriter::open_pace_fd(const char* path)
+{
+    close_pace_fd();
+    pace_bytes_since_ = 0;
+    if (const char* env = std::getenv("ORANGE_MP4_WRITEBACK_PACE_BYTES"); env && *env) {
+        pace_interval_bytes_ = static_cast<size_t>(std::strtoull(env, nullptr, 10));
+    }
+    if (pace_interval_bytes_ == 0 || !path) {
+        return;
+    }
+    pace_fd_ = ::open(path, O_RDONLY | O_CLOEXEC);
+    if (pace_fd_ < 0) {
+        std::cerr << "FFMPEG: writeback pacing disabled for " << output_path_
+                  << ": open failed: " << std::strerror(errno) << std::endl;
+    }
+}
+
+void FFmpegWriter::pace_after_write(size_t bytes)
+{
+    if (pace_fd_ < 0) {
+        return;
+    }
+    pace_bytes_since_ += bytes;
+    if (pace_bytes_since_ < pace_interval_bytes_) {
+        return;
+    }
+    pace_bytes_since_ = 0;
+    // Start writeback of every dirty page of this file; does not wait.
+    (void)::sync_file_range(pace_fd_, 0, 0, SYNC_FILE_RANGE_WRITE);
+}
+
+void FFmpegWriter::close_pace_fd()
+{
+    if (pace_fd_ >= 0) {
+        ::close(pace_fd_);
+        pace_fd_ = -1;
+    }
+}
+
 bool FFmpegWriter::record_packet_write_result(int result, size_t packet_bytes)
 {
     packet_write_attempts_.fetch_add(1, std::memory_order_relaxed);
@@ -485,6 +531,9 @@ bool FFmpegWriter::write_one_pkt(AVPacket* pkt)
     const size_t packet_bytes = static_cast<size_t>(std::max(0, pkt->size));
     NVTX_ENCODE_DYNAMIC(std::string("FFmpegWriter av_interleaved_write_frame"));
     int ret = av_interleaved_write_frame(oc, pkt);
+    if (ret >= 0) {
+        pace_after_write(packet_bytes);
+    }
     if (ret < 0) {
         std::cerr << "FFMPEG: Error while writing video frame for "
                   << output_path_ << ": " << av_error_string(ret) << std::endl;

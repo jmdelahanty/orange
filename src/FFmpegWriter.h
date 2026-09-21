@@ -105,6 +105,17 @@ private:
     AVCodecID codec_id_ = AV_CODEC_ID_NONE;
     std::string output_label_;
     std::string output_path_;
+    // Writeback pacing (2026-09-21): an O_RDONLY fd on the output file used
+    // to call sync_file_range(SYNC_FILE_RANGE_WRITE) every pace_interval_bytes_
+    // of packets, so the kernel writes the file back continuously instead of
+    // accumulating up to 30 s of dirty pages and flushing them in one burst
+    // (ORANGE_MP4_WRITEBACK_PACE_BYTES; 0 disables; default 32 MB).
+    int pace_fd_ = -1;
+    size_t pace_interval_bytes_ = 32u * 1024u * 1024u;
+    size_t pace_bytes_since_ = 0;
+    void open_pace_fd(const char* path);
+    void pace_after_write(size_t bytes);
+    void close_pace_fd();
     std::string keyframe_file_;
     std::vector<int64_t> keyframe_frames_;
     FFmpegWriterQueueConfig queue_config_;

@@ -26,6 +26,7 @@
 #include <utility>
 
 #include "encoder_preprocess_worker.h"
+#include "async_line_sink.h"
 #include "external_recorder_ipc_protocol.h"
 #include "threadworker.h"
 #include "worker_entry_release.h"
@@ -326,9 +327,11 @@ protected:
             }
             usleep(1000);
         }
-        if (owner_push_csv_.is_open()) {
-            owner_push_csv_.close();
+        if (owner_push_csv_.IsOpen() && owner_push_csv_.dropped() > 0) {
+            std::cerr << "[ExternalIpcRecorder] camera=" << camera_serial_ << " owner push csv dropped "
+                      << owner_push_csv_.dropped() << " rows" << std::endl;
         }
+        owner_push_csv_.Close();
         if (owner_push_) {
             std::cout << "[ExternalIpcRecorder] camera=" << camera_serial_
                       << " owner push summary: pushes=" << owner_pushes()
@@ -1571,7 +1574,7 @@ private:
     double owner_push_deadline_ms_ = 10.0;
     double owner_push_transfer_allowance_ms_ = 3.6;
     std::atomic<uint64_t> owner_push_age_fallbacks_{0};
-    std::ofstream owner_push_csv_;      // Cam<serial>_owner_push.csv in the recording folder (diagnostic)
+    orange::AsyncLineSink owner_push_csv_;  // Cam<serial>_owner_push.csv in the recording folder (diagnostic; sink thread writes)
     std::string owner_push_csv_folder_;
     void owner_push_csv_row(const char* kind, WORKER_ENTRY* entry, uint64_t start_ns, uint64_t done_ns,
                             double age_ms, int slot, int gpu)
@@ -1580,24 +1583,22 @@ private:
             return;
         }
         if (owner_push_csv_folder_ != entry->recording_folder) {
-            if (owner_push_csv_.is_open()) {
-                owner_push_csv_.close();
-            }
+            owner_push_csv_.Close();
             owner_push_csv_folder_ = entry->recording_folder;
-            owner_push_csv_.open(entry->recording_folder + "/Cam" + camera_serial_ + "_owner_push.csv",
-                                 std::ios::out | std::ios::trunc);
-            if (owner_push_csv_) {
-                owner_push_csv_ << "kind,recording_frame_id,local_frame_id,capture_sys_ns,push_start_steady_ns,"
-                                   "push_done_steady_ns,wait_ms,age_at_push_ms,queue_in,pending_release,slot,gpu\n";
-            }
+            (void)owner_push_csv_.Open(
+                entry->recording_folder + "/Cam" + camera_serial_ + "_owner_push.csv",
+                "kind,recording_frame_id,local_frame_id,capture_sys_ns,push_start_steady_ns,"
+                "push_done_steady_ns,wait_ms,age_at_push_ms,queue_in,pending_release,slot,gpu\n");
         }
-        if (!owner_push_csv_) {
+        if (!owner_push_csv_.IsOpen()) {
             return;
         }
-        owner_push_csv_ << kind << "," << entry->recording_frame_id << "," << entry->frame_id << ","
-                        << entry->timestamp_sys << "," << start_ns << "," << done_ns << ","
-                        << (done_ns > start_ns ? (done_ns - start_ns) / 1e6 : 0.0) << "," << age_ms << ","
-                        << GetCountQueueIn() << "," << pending_release_count() << "," << slot << "," << gpu << "\n";
+        std::ostringstream line;
+        line << kind << "," << entry->recording_frame_id << "," << entry->frame_id << ","
+             << entry->timestamp_sys << "," << start_ns << "," << done_ns << ","
+             << (done_ns > start_ns ? (done_ns - start_ns) / 1e6 : 0.0) << "," << age_ms << ","
+             << GetCountQueueIn() << "," << pending_release_count() << "," << slot << "," << gpu << "\n";
+        owner_push_csv_.Append(line.str());
     }
     size_t owner_push_chunk_bytes_ = 2u * 1024u * 1024u;
     std::atomic<uint64_t> owner_pushes_{0};
