@@ -65,6 +65,11 @@ GuiAutorunConfig resolve_gui_autorun_config()
         gui_env_flag_enabled("ORANGE_GUI_AUTORUN_ENABLE_YOLO", true);
     config.enable_crop =
         gui_env_flag_enabled("ORANGE_GUI_AUTORUN_ENABLE_CROP", true);
+    {
+        const char* pose_engine = std::getenv("ORANGE_POSE_ENGINE_PATH");
+        config.enable_pose = gui_env_flag_enabled(
+            "ORANGE_GUI_AUTORUN_ENABLE_POSE", pose_engine != nullptr && *pose_engine != '\0');
+    }
     config.start_recording =
         gui_env_flag_enabled("ORANGE_GUI_AUTORUN_START_RECORDING", true);
     config.stop_streaming_after_warmup = gui_env_flag_enabled(
@@ -373,6 +378,10 @@ void apply_gui_autorun_camera_selection(const GuiAutorunConfig& config,
         cameras_select[i].record = config.enable_record;
         cameras_select[i].yolo = config.enable_yolo;
         cameras_select[i].crop_and_encode = config.enable_crop;
+        cameras_select[i].pose = config.enable_pose;
+        if (cameras_select[i].pose) {
+            cameras_select[i].crop_and_encode = true;
+        }
         if (cameras_select[i].crop_and_encode) {
             cameras_select[i].record = true;
             cameras_select[i].yolo = true;
@@ -383,6 +392,7 @@ void apply_gui_autorun_camera_selection(const GuiAutorunConfig& config,
               << " record=" << (config.enable_record ? 1 : 0)
               << " yolo=" << (config.enable_yolo ? 1 : 0)
               << " crop=" << (config.enable_crop ? 1 : 0)
+              << " pose=" << (config.enable_pose ? 1 : 0)
               << " cameras=" << num_cameras
               << std::endl;
 }

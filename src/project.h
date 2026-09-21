@@ -48,6 +48,19 @@ struct AppStorageConfig {
     bool gui_external_ipc_native_local_input_configured = false;
     std::string gui_external_ipc_native_kernel_ptx;
     std::string gui_external_ipc_recorder_tool_path;
+    // analytics.*: the fused analytics shape the 2026-09-21 gate used
+    // (device ROI, device crop, fused per-slot graph, copy after pose).
+    // Exported as ORANGE_ANALYTICS_* env if absent; -1 = not configured.
+    int gui_analytics_device_roi = -1;
+    int gui_analytics_device_crop = -1;
+    int gui_analytics_fused_frame = -1;
+    int gui_analytics_copy_after_pose = -1;
+    // models.pose_*: pose worker (ORANGE_POSE_ENGINE_PATH / _MODE /
+    // _SKELETON_ID / _CROP_SIZE_PX if absent).
+    std::string pose_engine_path;
+    std::string pose_mode;
+    std::string pose_skeleton_id;
+    int pose_crop_size_px = -1;
     std::string gui_external_recorder_contract_path;
     nlohmann::json gui_external_recorder_contract = nlohmann::json::object();
     int gui_ptp_register_read_decimate = 1;

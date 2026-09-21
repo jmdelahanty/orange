@@ -36,6 +36,7 @@ struct GuiAutorunConfig {
     bool enable_record = true;
     bool enable_yolo = true;
     bool enable_crop = true;
+    bool enable_pose = false;  // ORANGE_GUI_AUTORUN_ENABLE_POSE; default on when ORANGE_POSE_ENGINE_PATH is set
     bool start_recording = true;
     // Stream-only lifecycle diagnostics can request an ordinary stream stop
     // after warmup instead of leaving the GUI streaming for local control.

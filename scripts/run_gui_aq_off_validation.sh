@@ -71,7 +71,18 @@ YOLO_MAX_ENQUEUE_DEQUEUE_P95_MS="${ORANGE_GUI_MAX_YOLO_ENQUEUE_TO_DEQUEUE_P95_MS
 YOLO_MAX_DEQUEUE_WORKER_P95_MS="${ORANGE_GUI_MAX_YOLO_DEQUEUE_TO_WORKER_START_P95_MS:-}"
 YOLO_MAX_SERVICE_GAP_P95_MS="${ORANGE_GUI_MAX_YOLO_SAME_CAMERA_SERVICE_GAP_P95_MS:-}"
 DEFAULT_DETECT_ENGINE="/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.engine"
-DETECT_ENGINE="${ORANGE_GUI_DETECT_ENGINE:-${DEFAULT_DETECT_ENGINE}}"
+# Prefer the app config's models.default_detect_engine (the gated INT8 engine
+# since 2026-09-21); the hardcoded FP16 path is only the last fallback.
+APP_CONFIG_DETECT_ENGINE="$(python3 - <<'PY' 2>/dev/null
+import json, os
+p = os.path.expanduser('~/orange_data/config/app/default.json')
+try:
+    print(json.load(open(p)).get('models', {}).get('default_detect_engine', '') or '')
+except Exception:
+    print('')
+PY
+)"
+DETECT_ENGINE="${ORANGE_GUI_DETECT_ENGINE:-${APP_CONFIG_DETECT_ENGINE:-${DEFAULT_DETECT_ENGINE}}}"
 APP_CONFIG_PATH="${ORANGE_APP_CONFIG_PATH:-${ORANGE_GUI_APP_CONFIG_PATH:-${HOME}/orange_data/config/app/default.json}}"
 APP_CONFIG_ENV_KEY=""
 APP_CONFIG_ENV_VALUE=""

@@ -200,6 +200,12 @@ struct GuiAsyncRecordingStartState {
         recording_start_lease;
     std::string context;
     std::chrono::steady_clock::time_point started_at{};
+    // Owner-push readiness gate (2026-09-21): after the supervisors report
+    // socket readiness, wait (bounded) until every recording camera's ingress
+    // has imported its peer shard's staging slots, so the first peer GOPs are
+    // pushed instead of pulled (the pull path costs camera frames on startup).
+    std::chrono::steady_clock::time_point supervisors_done_at{};
+    bool push_ready_wait_logged = false;
     // Deferred local-control ack bookkeeping, copied from the start request
     // at launch time (the live request state may be overwritten by a newer
     // command while this start is still pending).
@@ -4288,6 +4294,43 @@ bool gui_poll_async_recording_start(
         !async_start->done.load(std::memory_order_acquire)) {
         return false;
     }
+    if (async_start->supervisors_done_at == std::chrono::steady_clock::time_point{}) {
+        async_start->supervisors_done_at = std::chrono::steady_clock::now();
+    }
+    if (async_start->outcome.error_message.empty() && recording_session) {
+        static const double kPushReadyBudgetS = [] {
+            const char* env = std::getenv("ORANGE_GUI_OWNER_PUSH_READY_TIMEOUT_S");
+            return (env && *env) ? std::atof(env) : 6.0;
+        }();
+        bool waiting = false;
+        for (int i = 0; i < num_cameras; ++i) {
+            RecordingIngress* ingress =
+                orange::session::recording_ingress_for_camera(*recording_session, i);
+            if (!ingress) {
+                continue;
+            }
+            const RecordingIngressStats stats = ingress->GetStats();
+            if (stats.external_ipc_owner_push_enabled && stats.external_ipc_owner_push_slots == 0) {
+                waiting = true;
+            }
+        }
+        const double waited_s = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - async_start->supervisors_done_at).count();
+        if (waiting && waited_s < kPushReadyBudgetS) {
+            if (!async_start->push_ready_wait_logged) {
+                async_start->push_ready_wait_logged = true;
+                std::cout << "[GUI][recording] waiting for owner-push staging slots before starting frames"
+                          << " (budget " << kPushReadyBudgetS << " s)" << std::endl;
+            }
+            return false;
+        }
+        if (async_start->push_ready_wait_logged) {
+            std::cout << "[GUI][recording] owner-push slots "
+                      << (waiting ? "NOT imported within budget; starting anyway (peer GOPs will pull)"
+                                  : "imported")
+                      << " after " << waited_s << " s" << std::endl;
+        }
+    }
     if (async_start->worker.joinable()) {
         async_start->worker.join();
     }
@@ -4780,22 +4823,52 @@ int main(int /*argc*/, char ** /*args*/) {
             "full-frame external recorder extra output delay");
     }
     if (app_storage_config.gui_external_ipc_native_local_input_configured) {
+        // FULL_FRAME_ prefix: the recorder binary itself reads
+        // ORANGE_EXTERNAL_RECORDER_NATIVE_LOCAL_INPUT, and a crop recorder
+        // exits on it ("Native local input currently requires full-frame HEVC").
         set_gui_env_from_app_config_if_absent(
-            "ORANGE_EXTERNAL_RECORDER_NATIVE_LOCAL_INPUT",
+            "ORANGE_EXTERNAL_RECORDER_FULL_FRAME_NATIVE_LOCAL_INPUT",
             app_storage_config.gui_external_ipc_native_local_input ? "1" : "0",
-            "external recorder native local input");
+            "full-frame external recorder native local input");
     }
     if (!app_storage_config.gui_external_ipc_native_kernel_ptx.empty()) {
         set_gui_env_from_app_config_if_absent(
-            "ORANGE_EXTERNAL_RECORDER_NATIVE_KERNEL_PTX",
+            "ORANGE_EXTERNAL_RECORDER_FULL_FRAME_NATIVE_KERNEL_PTX",
             app_storage_config.gui_external_ipc_native_kernel_ptx,
-            "external recorder native kernel PTX");
+            "full-frame external recorder native kernel PTX");
+    }
+    // Analytics shape and pose worker from the app config (2026-09-21): the
+    // GUI otherwise runs the pre-fused path (+0.4 ms detect, no device crop,
+    // no pose), which is not what the headless gates validated.
+    for (const auto& [name, value, label] : {
+             std::tuple<const char*, int, const char*>{"ORANGE_ANALYTICS_DEVICE_ROI", app_storage_config.gui_analytics_device_roi, "analytics device ROI"},
+             std::tuple<const char*, int, const char*>{"ORANGE_ANALYTICS_DEVICE_CROP", app_storage_config.gui_analytics_device_crop, "analytics device crop"},
+             std::tuple<const char*, int, const char*>{"ORANGE_ANALYTICS_FUSED_FRAME", app_storage_config.gui_analytics_fused_frame, "analytics fused frame graph"},
+             std::tuple<const char*, int, const char*>{"ORANGE_ANALYTICS_COPY_AFTER_POSE", app_storage_config.gui_analytics_copy_after_pose, "analytics copy after pose"}}) {
+        if (value >= 0) {
+            set_gui_env_from_app_config_if_absent(name, value ? "1" : "0", label);
+        }
+    }
+    if (!app_storage_config.pose_engine_path.empty()) {
+        set_gui_env_from_app_config_if_absent("ORANGE_POSE_ENGINE_PATH", app_storage_config.pose_engine_path, "pose engine path");
+    }
+    if (!app_storage_config.pose_mode.empty()) {
+        set_gui_env_from_app_config_if_absent("ORANGE_POSE_MODE", app_storage_config.pose_mode, "pose mode");
+    }
+    if (!app_storage_config.pose_skeleton_id.empty()) {
+        set_gui_env_from_app_config_if_absent("ORANGE_POSE_SKELETON_ID", app_storage_config.pose_skeleton_id, "pose skeleton id");
+    }
+    if (app_storage_config.pose_crop_size_px > 0) {
+        set_gui_env_from_app_config_if_absent("ORANGE_POSE_CROP_SIZE_PX", std::to_string(app_storage_config.pose_crop_size_px), "pose crop size");
     }
     if (!app_storage_config.gui_external_ipc_recorder_tool_path.empty()) {
+        // Full-frame recorders only: the generic ORANGE_EXTERNAL_RECORDER_TOOL
+        // would also send the CUDA 13 native binary to the crop recorders
+        // (2026-09-21 GUI gate: crop recorder exited before socket readiness).
         set_gui_env_from_app_config_if_absent(
-            "ORANGE_EXTERNAL_RECORDER_TOOL",
+            "ORANGE_EXTERNAL_RECORDER_FULL_FRAME_TOOL",
             app_storage_config.gui_external_ipc_recorder_tool_path,
-            "external recorder tool path");
+            "full-frame external recorder tool path");
     }
 
     const u32 gui_swap_interval_default =

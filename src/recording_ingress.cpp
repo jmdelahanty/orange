@@ -233,6 +233,8 @@ public:
     uint64_t frames_acked() const { return frames_acked_.load(std::memory_order_relaxed); }
     uint64_t failures() const { return failures_.load(std::memory_order_relaxed); }
     uint64_t ack_timeouts() const { return ack_timeouts_.load(std::memory_order_relaxed); }
+    bool owner_push_enabled() const { return owner_push_; }
+    uint64_t owner_push_slots_imported() const { return owner_slots_imported_.load(std::memory_order_relaxed); }
     uint64_t deferred_release_cap_skips() const { return deferred_cap_skips_.load(std::memory_order_relaxed); }
     uint64_t deferred_release_copy_fallbacks() const { return deferred_copy_fallbacks_.load(std::memory_order_relaxed); }
     uint64_t deferred_release_pending_max() const { return deferred_pending_max_.load(std::memory_order_relaxed); }
@@ -287,7 +289,10 @@ protected:
             if (!IsMachineOn()) {
                 send_client_drain_control("worker_draining");
             }
-            if (deferred_release_ || pending_release_count() > 0) {
+            // Also drain while idle with owner push on: the peer shard's
+            // STAGE lines arrive after its hello prewarm, before any frame,
+            // and the GUI's push-ready gate waits for them (2026-09-21).
+            if (deferred_release_ || pending_release_count() > 0 || owner_push_) {
                 poll_protocol_lines(false);
             }
             WORKER_ENTRY* entry = GetObjectFromQueueIn();
@@ -746,6 +751,7 @@ private:
         }
         owner_slots_[index] = OwnerSlot{gpu, index, ptr, bytes};
         owner_free_.push_back(index);
+        owner_slots_imported_.fetch_add(1, std::memory_order_relaxed);
         owner_peer_shard_id_ = shard_id;
         owner_shard_count_ = shard_count;
         if (owner_free_.size() == 1) {
@@ -1549,6 +1555,7 @@ private:
         size_t bytes = 0;
     };
     std::mutex owner_mutex_;
+    std::atomic<uint64_t> owner_slots_imported_{0};  // STAGE lines applied (readable without owner_mutex_)
     std::vector<OwnerSlot> owner_slots_;
     std::vector<size_t> owner_free_;
     int owner_peer_shard_id_ = -1;
@@ -2025,6 +2032,10 @@ RecordingIngressStats RecordingIngress::GetStats() const
             external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->failures() : 0;
         stats.external_ipc_ack_timeouts =
             external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->ack_timeouts() : 0;
+        stats.external_ipc_owner_push_enabled =
+            external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->owner_push_enabled() : false;
+        stats.external_ipc_owner_push_slots =
+            external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->owner_push_slots_imported() : 0;
         if (external_ipc_handoff_worker_) {
             stats.deferred_release_pending =
                 external_ipc_handoff_worker_->deferred_release_pending();

@@ -36,6 +36,11 @@ struct RecordingIngressStats {
     uint64_t external_ipc_frames_acked = 0;
     uint64_t external_ipc_failures = 0;
     uint64_t external_ipc_ack_timeouts = 0;
+    // Owner-push staging slots imported from the peer shard's STAGE lines
+    // (0 until the recorder has prewarmed and exported them; frames routed
+    // to the peer shard before that go through the recorder's pull path).
+    uint64_t external_ipc_owner_push_slots = 0;
+    bool external_ipc_owner_push_enabled = false;
     // Deferred source release (external recorder holds pool entries until it
     // has read them): entries currently held, and frames skipped on the
     // recording side because the cap on held entries was reached.

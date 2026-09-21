@@ -1358,8 +1358,48 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
             config.default_detect_engine =
                 trim_ascii_copy(models["default_detect_engine"].get<std::string>());
         }
+        for (const auto& [key, target] : {
+                 std::pair<const char*, std::string*>{"pose_engine", &config.pose_engine_path},
+                 std::pair<const char*, std::string*>{"pose_mode", &config.pose_mode},
+                 std::pair<const char*, std::string*>{"pose_skeleton_id", &config.pose_skeleton_id}}) {
+            if (models.contains(key) && !models[key].is_null()) {
+                if (!models[key].is_string()) {
+                    if (error_out) {
+                        *error_out = std::string("models.") + key + " must be a string in " + config_path.string();
+                    }
+                    return false;
+                }
+                *target = trim_ascii_copy(models[key].get<std::string>());
+            }
+        }
+        if (!read_optional_bounded_int_field(models, "pose_crop_size_px", &config.pose_crop_size_px,
+                                             32, 4096, error_out, "models")) {
+            return false;
+        }
     }
 
+    if (root.contains("analytics")) {
+        if (!root["analytics"].is_object()) {
+            if (error_out) {
+                *error_out = "analytics must be an object in " + config_path.string();
+            }
+            return false;
+        }
+        const nlohmann::json& analytics = root["analytics"];
+        for (const auto& [key, target] : {
+                 std::pair<const char*, int*>{"device_roi", &config.gui_analytics_device_roi},
+                 std::pair<const char*, int*>{"device_crop", &config.gui_analytics_device_crop},
+                 std::pair<const char*, int*>{"fused_frame", &config.gui_analytics_fused_frame},
+                 std::pair<const char*, int*>{"copy_after_pose", &config.gui_analytics_copy_after_pose}}) {
+            if (analytics.contains(key) && !analytics[key].is_null()) {
+                bool value = false;
+                if (!read_optional_bool_field(analytics, key, &value, error_out, "analytics")) {
+                    return false;
+                }
+                *target = value ? 1 : 0;
+            }
+        }
+    }
     if (root.contains("recording")) {
         if (!root["recording"].is_object()) {
             if (error_out) {
