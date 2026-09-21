@@ -25,6 +25,11 @@ commands, evidence, limitations, and the local-versus-remote shard scope.
 Earlier dated entries preserve the backup, driver migration, standalone proof,
 and their separate frozen archives.
 
+For the later peer-copy investigation, see
+[push, pull, and the proposed scheduling](#peer-transfers-push-pull-and-scheduling-2026-09-19).
+That entry explains the process boundaries and buffer lifetimes with a diagram;
+the owner-push schedule is a proposal, not an implemented or accepted result here.
+
 ## Reproducible starting point
 
 - Worktree: `/home/jeremy/orange-nvenc-layout-20260918`
@@ -1322,6 +1327,159 @@ The user's performance priority is predictable high-resolution operation as
 frame rates increase. The handoff therefore prioritizes tail latency, deadline
 misses, queue growth, and zero drops over average preparation time alone.
 See [the handoff](nvenc_native_handoff_20260919.md) for integration and next gates.
+
+### Peer transfers: push, pull, and scheduling (2026-09-19)
+
+This is a learning note and review of the other agent's reported experiments.
+The analytics process continues to own its frame pool, each camera's full-frame
+recorder stays in a separate process, and crop recording stays separate too.
+The proposed change is who initiates the GPU-to-GPU copy for a peer-shard GOP.
+NVENC and file writing stay in the recorder.
+
+In this explanation, **GPU A is the source die** running analytics and **GPU B
+is the destination die** for this frame's recorder shard. These letters do not
+mean the physical A16 cards called card A and card B elsewhere in the investigation.
+Both dies can be on one A16 card. The local shard on the source die does not need
+this peer transfer.
+
+All three methods below move the frame in the same direction:
+
+```text
+GPU A                                      GPU B
+Analytics-owned pool frame -- one copy --> Recorder-owned staging slot
+                                          |
+                                          v
+                                          NVENC --> recorded video
+```
+
+| Method | Process requesting the copy | GPU side where the copy is submitted | Plain-language instruction |
+| --- | --- | --- | --- |
+| Recorder pull, current approach | Recorder | Destination GPU B | Fetch the frame from A into my slot on B. |
+| Recorder push, earlier experiment | Recorder | Source GPU A | Send the frame from A into my slot on B. |
+| Analytics push, proposed approach | Analytics | Source GPU A | Send my frame into the recorder's available slot on B. |
+
+Here, push and pull name the submission arrangement. They do not establish the
+exact physical PCIe route or hardware copy-engine assignment by themselves.
+
+**Importing gives access; copying moves bytes.** CUDA IPC lets an allocation's
+owner export a handle that another process imports. Importing creates access to
+the existing GPU allocation; it does not move, duplicate, or rearrange the frame.
+In the recorder pull, the recorder imports access to the analytics source. In the
+proposed analytics push, the recorder instead exports its destination allocations
+and analytics imports access to those. Handles are exchanged during setup and
+reused; a frame descriptor identifies the ready frame and destination slot.
+
+**Pixel layout is a separate choice.** NV12 describes the Y and UV planes; pitch
+and tiling describe how those pixels occupy memory. This experiment preserves
+the image and agreed staging layout and changes ownership and transfer scheduling.
+It does not itself remove a tiling operation or the one required peer copy. The
+previous local-shard native-array work is a different optimization.
+
+**A context is a process's CUDA execution environment on a GPU. A stream is an
+ordered work queue within that context.** Submitting a push on GPU A from the
+recorder adds work in the recorder's context on that die. Submitting it from
+analytics instead puts it in the context already doing acquisition copies and
+inference. Separate streams let us express which operations depend on each other
+without making all later camera work wait behind the transfer.
+
+The proposed schedule below shows dependencies, not measured times. The first
+three lanes belong to analytics; the last lane is the separate recorder process.
+The transfer stream and intake stream share analytics' context on GPU A.
+`FRAME_READY` and `SLOT_FREE` are explanatory message names, not an implemented
+wire protocol. Startup exports/imports allocations once. Each frame must reserve
+one available destination slot before starting a push.
+
+```mermaid
+sequenceDiagram
+    participant I as Analytics intake<br/>GPU A stream
+    participant P as Analytics transfer<br/>GPU A stream
+    participant C as Analytics completion<br/>CPU worker
+    participant R as Separate recorder<br/>GPU B and NVENC
+
+    Note over I,R: Setup: recorder exports slots on B, analytics imports their handles
+    R-->>C: Slot S is available
+    C->>C: Reserve S for frame N and retain source pool lease
+    I->>I: Prepare frame N in owned pool on A
+    I-->>P: Pool-ready event for N
+    Note over I,P: Transfer waits for N's event, intake has no wait on this push
+    par Independent work, if hardware permits overlap
+        P->>P: Copy frame N from A into slot S on B
+    and When the next camera frame arrives
+        I->>I: Prepare N+1 in a different pool slot
+    end
+    P-->>C: Push-complete event for N
+    C->>C: Drop transfer's source lease, other readers keep theirs
+    C->>R: FRAME_READY for N in slot S
+    R->>R: Consume S, including NVENC input use
+    R-->>C: SLOT_FREE after final consumer finishes with S
+    Note over C,R: Only now may S be reserved and overwritten for another frame
+```
+
+Read the diagram downward. Solid arrows describe work or a message; dashed arrows
+mark readiness/completion notifications. GPU events establish the dependencies;
+the CPU completion worker observes transfer completion and sends the descriptor.
+The intake thread does not wait synchronously for the long peer copy. The parallel
+region means those operations have no dependency requiring serialization; it is
+not a promise that the GPU executes them simultaneously, or that N's transfer
+still overlaps N+1 in a successful run.
+
+In a plain-text viewer, the essential order is:
+
+```text
+Reserve destination S + retain source N
+    -> source N becomes ready
+    -> push N from A to B
+    -> push completes
+         -> release the transfer's reference to source N
+         -> notify recorder that N in S is ready
+              -> recorder consumes S
+              -> return S for reuse
+
+Intake of N+1 uses a different pool slot and has no wait on N's push.
+Actual overlap still depends on hardware resources and scheduling.
+```
+
+There are two distinct lifetimes. The source cannot be overwritten while the
+push reads it; after the push, other analytics consumers may still hold it.
+The destination cannot be overwritten while the recorder or NVENC reads it;
+receiving a descriptor or submitting an encode is not by itself completion.
+If the recorder has no free slots, a bounded queue and explicit backpressure or
+failure policy are needed; a busy slot must never be silently reused. Shutdown
+must also finish or safely retire outstanding transfers before freeing exported
+allocations.
+
+The hoped-for scheduling benefit is to avoid the earlier recorder-owned push's
+competition with analytics from a separate context on the source die. Two copy
+engines do not guarantee that the intake copy and peer push run concurrently.
+They still share GPU and interconnect resources; the explanation that coarse
+context scheduling caused the earlier camera drops remains a hypothesis needing
+trace evidence. See NVIDIA's
+[CUDA streams and asynchronous execution documentation](https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/asynchronous-execution.html).
+
+The other agent reported approximately 9.3-10.0 ms per frame for its imported
+pull benchmark under encoder load, and 4.9 ms for both source-import recorder push
+and analytics-owner push, with no observed card difference in the fast cases.
+Benchmarks were committed as `a6aed8b` in
+`/home/jeremy/orange-device-roi-20260912`. This review read the code, not a new
+benchmark run. The results support testing owner push before changing slots.
+They do not yet prove that live inference tails or camera intake improve.
+
+Two reproduction details remain important. The benchmark uses `cudaMemcpyAsync`
+for pull and `cudaMemcpyPeerAsync` for push, so API choice changes alongside
+context and import placement. Its pull also imports on the destination die,
+whereas the recorder intake code describes importing on the source die before
+switching to the destination for the pull; verify the actual launch context.
+The benchmark averages 20 consecutive copies of a tightly packed NV12 frame
+after three warmup copies, rather than measuring a paced per-frame distribution.
+Thus the predicted 7.4 ms completion after capture is a target to measure, not an
+established scheduling guarantee.
+
+The next useful acceptance is a bounded live A/B with crop recording enabled:
+correct frames and metadata, zero gaps/drops, source/destination reuse checks,
+ring-copy and peer-copy tails, peer-GOP preprocess and inference tails, and queue
+growth. No-fish tests can validate transfer scheduling and recording; positive
+detection-to-crop/pose behavior still needs a detectable subject. This journal
+update implements no transport or scheduling changes.
 
 ### Template for the next entry
 
