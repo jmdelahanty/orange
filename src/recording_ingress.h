@@ -40,6 +40,7 @@ struct RecordingIngressStats {
     // (0 until the recorder has prewarmed and exported them; frames routed
     // to the peer shard before that go through the recorder's pull path).
     uint64_t external_ipc_owner_push_slots = 0;
+    uint64_t external_ipc_owner_push_slots_expected = 0;  // ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_SLOTS (recorder default 8)
     bool external_ipc_owner_push_enabled = false;
     // Preparation handshake: pool buffers announced with PREPARE lines and the
     // recorder's PREPARED reply (imports done before the first frame).

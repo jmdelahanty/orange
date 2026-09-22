@@ -3769,6 +3769,13 @@ struct EncodeWorkItem {
     std::chrono::steady_clock::time_point enqueued_at;
 };
 
+// PREPARED is sent only after every shard worker finished its preparation
+// warm-up (readiness means completed work, 2026-09-21).
+struct PreparedReply {
+    std::string line;
+    std::atomic<int> remaining{0};
+};
+
 struct DirectSourceWorkItem {
     uint64_t source_frame_index = 0;
     FrameDescriptor desc;
@@ -3781,6 +3788,10 @@ struct DirectSourceWorkItem {
     // Create the encoder for desc's geometry and do nothing else (client
     // hello carried the frame size); see prewarm_encoder().
     bool prewarm_only = false;
+    // Preparation warm-up: one real peer pull of source_ptr into a staging
+    // buffer after the encoder exists, then (last worker) send prepared_line.
+    bool prewarm_peer_stage = false;
+    std::shared_ptr<struct PreparedReply> prepared_reply;
     bool ack_ready = false;
     bool source_released = false;
     bool source_release_safe = true;
@@ -3891,6 +3902,102 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         protocol_fd_ = fd;
         protocol_write_mutex_ = mutex;
+    }
+
+    // Queue the preparation warm-up behind the hello-time encoder prewarm
+    // (push_back vs the prewarm's push_front) so early_stage_enabled_ is
+    // known when it runs. Returns false when this worker takes no part.
+    bool queue_prewarm_peer_stage(const FrameDescriptor& desc, void* imported_ptr,
+                                  const std::shared_ptr<PreparedReply>& reply)
+    {
+        if (!(options_.direct_input_source && options_.deferred_source_release) || !imported_ptr) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        DirectSourceWorkItem item;
+        item.desc = desc;
+        item.source_ptr = imported_ptr;
+        item.enqueued_at = std::chrono::steady_clock::now();
+        item.prewarm_peer_stage = true;
+        item.prepared_reply = reply;
+        direct_source_queue_.push_back(item);
+        cv_.notify_all();
+        return true;
+    }
+
+    // One real peer pull (the early-peer-stage path) into a staging buffer,
+    // then release it: pays the lazy peer mapping, the first staging
+    // allocation and the copy engine's first touch before the first frame.
+    // prewarm_detach_slots() cannot do this in direct-input mode.
+    void prewarm_early_peer_stage(const FrameDescriptor& desc, const void* imported_ptr)
+    {
+        if (!early_stage_enabled_ || early_peer_prewarmed_ || !imported_ptr || desc.bytes == 0) {
+            return;
+        }
+        const auto started = std::chrono::steady_clock::now();
+        int intake_device = -1;
+        check_cuda(cudaGetDevice(&intake_device), "cudaGetDevice(external prewarm peer stage)");
+        struct RestoreDevice {
+            int device;
+            ~RestoreDevice() { if (device >= 0) { cudaSetDevice(device); } }
+        } restore_device{intake_device};
+        check_cuda(cudaSetDevice(options_.gpu_id), "cudaSetDevice(external prewarm peer stage)");
+        ensure_peer_access(desc.source_gpu_id);
+        const size_t index = acquire_staging_buffer_locked(desc, /*allow_unregistered=*/true);
+        if (index == SIZE_MAX) {
+            std::cout << "external_recorder_ipc_probe prewarm peer stage: no staging buffer available" << std::endl;
+            return;
+        }
+        const bool push = options_.early_stage_push && desc.source_gpu_id >= 0;
+        const int copy_device = push ? desc.source_gpu_id : options_.gpu_id;
+        check_cuda(cudaSetDevice(copy_device), "cudaSetDevice(external prewarm peer stage copy device)");
+        if (push) {
+            ensure_push_peer_access(desc.source_gpu_id);
+        }
+        ensure_stage_stream();
+        ensure_staging_events(index);
+        if (push) {
+            check_cuda(
+                cudaMemcpyPeerAsync(
+                    staging_buffers_[index], options_.gpu_id, imported_ptr, desc.source_gpu_id,
+                    static_cast<size_t>(desc.bytes), stage_stream_),
+                "cudaMemcpyPeerAsync(external prewarm peer stage push)");
+        } else {
+            check_cuda(
+                cudaMemcpyAsync(
+                    staging_buffers_[index], imported_ptr, static_cast<size_t>(desc.bytes),
+                    cudaMemcpyDeviceToDevice, stage_stream_),
+                "cudaMemcpyAsync(external prewarm peer stage)");
+        }
+        check_cuda(cudaEventRecord(staging_events_[index], stage_stream_), "cudaEventRecord(external prewarm peer stage)");
+        check_cuda(cudaEventSynchronize(staging_events_[index]), "cudaEventSynchronize(external prewarm peer stage)");
+        release_staging_buffer(index);
+        early_peer_prewarmed_ = true;
+        std::cout << "external_recorder_ipc_probe prewarmed early peer stage"
+                  << " gpu_id=" << options_.gpu_id << " source_gpu=" << desc.source_gpu_id
+                  << " bytes=" << desc.bytes << " push=" << (push ? "true" : "false")
+                  << " ms=" << ns_to_ms(elapsed_ns(started)) << std::endl;
+    }
+
+    void finish_prepared_reply(const std::shared_ptr<PreparedReply>& reply)
+    {
+        if (!reply) {
+            return;
+        }
+        if (reply->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            int fd = -1;
+            std::mutex* write_mutex = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                fd = protocol_fd_;
+                write_mutex = protocol_write_mutex_;
+            }
+            if (fd >= 0 && write_mutex) {
+                (void)write_protocol_line(fd, write_mutex, reply->line);
+            } else {
+                std::cerr << "external_recorder_ipc_probe: no protocol writer for PREPARED" << std::endl;
+            }
+        }
     }
 
     bool uses_deferred_source_release() const
@@ -4791,7 +4898,7 @@ private:
             std::lock_guard<std::mutex> lock(mutex_);
             auto item = direct_source_queue_.begin();
             while (item != direct_source_queue_.end()) {
-                if (item->prewarm_only) {
+                if (item->prewarm_only || item->prewarm_peer_stage) {
                     item = direct_source_queue_.erase(item);
                     continue;
                 }
@@ -6151,7 +6258,8 @@ private:
                     std::unique_lock<std::mutex> lock(mutex_);
                     cv_.wait(lock, [&]() {
                         return stopping_ || (!direct_source_queue_.empty() &&
-                            (direct_source_queue_.front().prewarm_only || direct_source_queue_.front().ack_ready));
+                            (direct_source_queue_.front().prewarm_only || direct_source_queue_.front().prewarm_peer_stage ||
+                             direct_source_queue_.front().ack_ready));
                     });
                     if (direct_source_queue_.empty()) {
                         if (stopping_) {
@@ -6159,7 +6267,8 @@ private:
                         }
                         continue;
                     }
-                    if (!direct_source_queue_.front().prewarm_only && !direct_source_queue_.front().ack_ready) {
+                    if (!direct_source_queue_.front().prewarm_only && !direct_source_queue_.front().prewarm_peer_stage &&
+                        !direct_source_queue_.front().ack_ready) {
                         // Intake failed before ACK. Do not RELEASE or read that source.
                         break;
                     }
@@ -6173,6 +6282,15 @@ private:
                     std::cout << "external_recorder_ipc_probe encoder prewarmed at hello in "
                               << ns_to_ms(elapsed_ns(prewarm_start)) << " ms ("
                               << item.desc.width << "x" << item.desc.height << ")" << std::endl;
+                    continue;
+                }
+                if (item.prewarm_peer_stage) {
+                    try {
+                        prewarm_early_peer_stage(item.desc, item.source_ptr);
+                    } catch (const std::exception& e) {
+                        std::cerr << "external_recorder_ipc_probe prewarm peer stage failed: " << e.what() << std::endl;
+                    }
+                    finish_prepared_reply(item.prepared_reply);
                     continue;
                 }
                 if (!owner_slots_exported_) {
@@ -6363,6 +6481,7 @@ private:
     CUfunction native_kernel_function_ = nullptr;
 #endif
     bool early_stage_enabled_ = false;
+    bool early_peer_prewarmed_ = false;
     bool external_slots_enabled_ = false;
     // Staging buffers (see acquire_staging_buffer_locked); shared between
     // the intake thread (early peer staging) and the encode thread.
@@ -7261,6 +7380,8 @@ int main(int argc, char** argv)
         uint64_t prepare_generation = 0;
         uint64_t prepare_imported = 0;
         uint64_t prepare_failed = 0;
+        void* prepare_warm_source_ptr = nullptr;
+        FrameDescriptor prepare_warm_desc;
         void* owned_device_buffer = nullptr;
         uint64_t owned_device_buffer_bytes = 0;
         uint64_t frame_count = 0;
@@ -7596,16 +7717,53 @@ int main(int argc, char** argv)
                 } else {
                     ++prepare_failed;
                 }
+                if (ok && !prepare_warm_source_ptr) {
+                    prepare_warm_source_ptr = imported_handles[hex].ptr;
+                    prepare_warm_desc = FrameDescriptor{};
+                    prepare_warm_desc.source_gpu_id = source_gpu;
+                    prepare_warm_desc.bytes = bytes;
+                    prepare_warm_desc.pool_bytes = bytes;
+                    prepare_warm_desc.nv12_pool = true;
+                }
                 if (index + 1 == count) {
-                    if (!write_protocol_line(
-                            client_fd,
-                            &protocol_write_mutex,
-                            "PREPARED " + session + " " + stream + " " + std::to_string(generation) + " " +
-                                std::to_string(prepare_imported) + " " + std::to_string(prepare_failed) + "\n")) {
-                        throw std::runtime_error("PREPARE: failed to send PREPARED line");
+                    const std::string prepared_line =
+                        "PREPARED " + session + " " + stream + " " + std::to_string(generation) + " " +
+                        std::to_string(prepare_imported) + " " + std::to_string(prepare_failed) + "\n";
+                    // Warm the peer pull on every shard worker first; the last
+                    // worker to finish sends PREPARED. Without a worker taking
+                    // part (or nothing imported), reply now.
+                    auto reply = std::make_shared<PreparedReply>();
+                    reply->line = prepared_line;
+                    int queued = 0;
+                    if (prepare_warm_source_ptr && prepare_failed == 0) {
+                        for (auto& worker : encode_workers) {
+                            if (worker) {
+                                ++queued;
+                            }
+                        }
+                        reply->remaining.store(queued, std::memory_order_release);
+                        int accepted = 0;
+                        for (auto& worker : encode_workers) {
+                            if (worker && worker->queue_prewarm_peer_stage(prepare_warm_desc, prepare_warm_source_ptr, reply)) {
+                                ++accepted;
+                            }
+                        }
+                        // Workers that took no part still count down so the
+                        // reply is not stranded.
+                        for (int i = accepted; i < queued; ++i) {
+                            if (reply->remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                                queued = 0;  // nobody accepted: reply below
+                            }
+                        }
+                    }
+                    if (queued == 0) {
+                        if (!write_protocol_line(client_fd, &protocol_write_mutex, prepared_line)) {
+                            throw std::runtime_error("PREPARE: failed to send PREPARED line");
+                        }
                     }
                     std::cout << "external_recorder_ipc_probe prepared " << prepare_imported << "/" << count
-                              << " source buffers (failed " << prepare_failed << ")" << std::endl;
+                              << " source buffers (failed " << prepare_failed << ")"
+                              << (queued ? "; peer-stage warm-up queued, PREPARED follows it" : "") << std::endl;
                 }
                 continue;
             }

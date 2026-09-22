@@ -4311,8 +4311,9 @@ bool gui_poll_async_recording_start(
                 continue;
             }
             const RecordingIngressStats stats = ingress->GetStats();
-            if (stats.external_ipc_owner_push_enabled && stats.external_ipc_owner_push_slots == 0) {
-                waiting = true;
+            if (stats.external_ipc_owner_push_enabled &&
+                stats.external_ipc_owner_push_slots < std::max<uint64_t>(1, stats.external_ipc_owner_push_slots_expected)) {
+                waiting = true;  // every staging slot imported, not just the first (2026-09-21)
             }
             if (stats.external_ipc_prepare_expected > 0 && !stats.external_ipc_prepared) {
                 waiting = true;
@@ -4340,7 +4341,7 @@ bool gui_poll_async_recording_start(
             return false;
         }
         {
-            std::string conditions = "checked=owner_push_slots_imported>0_per_recording_camera budget_s=" +
+            std::string conditions = "checked=owner_push_slots_imported>=expected_per_recording_camera budget_s=" +
                 std::to_string(kPushReadyBudgetS) + " waited_s=" + std::to_string(waited_s) +
                 " result=" + (waiting ? "budget_exceeded" : "all_prepared") + " per_camera=";
             for (int i = 0; i < num_cameras; ++i) {
@@ -4350,7 +4351,7 @@ bool gui_poll_async_recording_start(
                     continue;
                 }
                 const RecordingIngressStats st = ingress->GetStats();
-                conditions += cameras_params[i].camera_serial + ":" + std::to_string(st.external_ipc_owner_push_slots) + ";";
+                conditions += cameras_params[i].camera_serial + ":" + std::to_string(st.external_ipc_owner_push_slots) + "/" + std::to_string(st.external_ipc_owner_push_slots_expected) + ";";
             }
             conditions += " crop=";
             for (int i = 0; crop_and_encode_workers && i < num_cameras; ++i) {

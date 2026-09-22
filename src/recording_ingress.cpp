@@ -245,6 +245,20 @@ public:
     uint64_t prepare_failed() const { return prepare_failed_.load(std::memory_order_relaxed); }
     bool prepared() const { return prepared_.load(std::memory_order_acquire); }
     uint64_t owner_push_slots_imported() const { return owner_slots_imported_.load(std::memory_order_relaxed); }
+    // Slots the peer shard will export (the recorder reads the same env,
+    // default 8); the GUI readiness gate waits for all of them (2026-09-21).
+    uint64_t owner_push_slots_expected() const
+    {
+        if (!owner_push_) {
+            return 0;
+        }
+        static const uint64_t expected = [] {
+            const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_SLOTS");
+            const long parsed = (env && *env) ? std::atol(env) : 8;
+            return static_cast<uint64_t>(parsed > 0 ? parsed : 8);
+        }();
+        return expected;
+    }
     uint64_t deferred_release_cap_skips() const { return deferred_cap_skips_.load(std::memory_order_relaxed); }
     uint64_t deferred_release_copy_fallbacks() const { return deferred_copy_fallbacks_.load(std::memory_order_relaxed); }
     uint64_t deferred_release_pending_max() const { return deferred_pending_max_.load(std::memory_order_relaxed); }
@@ -2230,6 +2244,8 @@ RecordingIngressStats RecordingIngress::GetStats() const
             external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->owner_push_enabled() : false;
         stats.external_ipc_owner_push_slots =
             external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->owner_push_slots_imported() : 0;
+        stats.external_ipc_owner_push_slots_expected =
+            external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->owner_push_slots_expected() : 0;
         stats.external_ipc_prepare_expected =
             external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->prepare_expected() : 0;
         stats.external_ipc_prepared_count =
