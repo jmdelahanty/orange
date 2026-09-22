@@ -135,6 +135,7 @@ public:
                " imported=" + std::to_string(prepared_count_.load(std::memory_order_relaxed)) +
                " failed=" + std::to_string(prepare_failed_.load(std::memory_order_relaxed)) +
                " prepared=" + std::string(prepared_.load(std::memory_order_acquire) ? "1" : "0") +
+               " client_stage=" + std::to_string(stage_.load(std::memory_order_relaxed)) +
                " polls=" + std::to_string(poll_calls_.load(std::memory_order_relaxed)) +
                " lines=" + std::to_string(poll_lines_.load(std::memory_order_relaxed)) +
                " bytes=" + std::to_string(poll_bytes_.load(std::memory_order_relaxed));
@@ -369,13 +370,16 @@ public:
             << (gop_length_ > 1 ? "gop_modulo" : "single_shard")
             << "\n";
 
+        stage_.store(4, std::memory_order_relaxed);
         if (!send_all(msg.str())) {
             log_limited("send crop frame descriptor failed: " +
                         std::string(std::strerror(errno)));
             close_socket();
             return false;
         }
+        stage_.store(5, std::memory_order_relaxed);
         if (!read_ack(frame.recording_frame_id)) {
+            stage_.store(0, std::memory_order_relaxed);
             log_limited("crop detach ack failed for frame " +
                         std::to_string(frame.recording_frame_id));
             close_socket();
@@ -479,6 +483,7 @@ private:
         if (socket_fd_ >= 0) {
             return true;
         }
+        stage_.store(1, std::memory_order_relaxed);
         socket_fd_ = socket(AF_UNIX, SOCK_STREAM, 0);
         if (socket_fd_ < 0) {
             log_limited("socket() failed: " + std::string(std::strerror(errno)));
@@ -509,15 +514,20 @@ private:
                   << camera_serial_ << " to " << socket_path_ << " client=" << static_cast<const void*>(this)
                   << " generation_before=" << prepare_generation_ << std::endl;
         orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "crop_recorder_connected", "socket=" + socket_path_);
+        stage_.store(2, std::memory_order_relaxed);
         if (!read_recorder_hello()) {
             close_socket();
+            stage_.store(0, std::memory_order_relaxed);
             return false;
         }
         orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "crop_recorder_hello_done");
+        stage_.store(3, std::memory_order_relaxed);
         if (!send_prepare_manifest()) {
             close_socket();
+            stage_.store(0, std::memory_order_relaxed);
             return false;
         }
+        stage_.store(0, std::memory_order_relaxed);
         return true;
     }
 
@@ -749,6 +759,7 @@ private:
 
     void close_socket()
     {
+        stage_.store(6, std::memory_order_relaxed);
         if (socket_fd_ >= 0) {
             close(socket_fd_);
             socket_fd_ = -1;
@@ -793,6 +804,7 @@ private:
     std::atomic<uint64_t> prepared_count_{0};
     std::atomic<uint64_t> prepare_failed_{0};
     std::atomic<bool> prepared_{false};
+    std::atomic<int> stage_{0};  // 0 idle, 1 connect, 2 hello, 3 manifest, 4 send, 5 ack, 6 close (diagnostic)
     std::atomic<uint64_t> poll_calls_{0};
     std::atomic<uint64_t> poll_lines_{0};
     std::atomic<uint64_t> poll_bytes_{0};
@@ -1448,6 +1460,7 @@ void CropAndEncodeWorker::write_perf_row(const CropFrameSnapshot& frame, const C
 }
 
 void CropAndEncodeWorker::flush_and_close() {
+    worker_stage_.store(4, std::memory_order_relaxed);
     std::cout << "[CropAndEncodeWorker] Flushing and closing for " << threadName << std::endl;
 
     if (external_crop_ipc_) {
@@ -1495,6 +1508,7 @@ void CropAndEncodeWorker::finalize_recording()
     if (!is_recording_) {
         return;
     }
+    worker_stage_.store(3, std::memory_order_relaxed);
 
     write_sidecar_summary();
     flush_and_close();
@@ -1576,6 +1590,12 @@ void CropAndEncodeWorker::SetCropProducer(CropProducer* crop_producer)
     }
 }
 
+static uint64_t steady_now_ns_diag()
+{
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
 bool CropAndEncodeWorker::crop_recorder_expected() const
 {
     return external_crop_ipc_ != nullptr;
@@ -1583,7 +1603,17 @@ bool CropAndEncodeWorker::crop_recorder_expected() const
 
 std::string CropAndEncodeWorker::crop_recorder_prepare_state() const
 {
-    return external_crop_ipc_ ? external_crop_ipc_->prepare_state() : std::string("no_client");
+    const uint64_t now = steady_now_ns_diag();
+    const uint64_t tick = last_tick_ns_.load(std::memory_order_relaxed);
+    const uint64_t job = last_job_ns_.load(std::memory_order_relaxed);
+    const std::string worker =
+        "worker_stage=" + std::to_string(worker_stage_.load(std::memory_order_relaxed)) +
+        " ticks=" + std::to_string(flush_ticks_) +
+        " queue_in=" + std::to_string(const_cast<CropAndEncodeWorker*>(this)->GetCountQueueInSize()) +
+        " last_tick_age_ms=" + (tick ? std::to_string((now - tick) / 1000000) : std::string("never")) +
+        " last_job_age_ms=" + (job ? std::to_string((now - job) / 1000000) : std::string("never")) +
+        " is_recording=" + std::string(is_recording_ ? "1" : "0");
+    return worker + " " + (external_crop_ipc_ ? external_crop_ipc_->prepare_state() : std::string("no_client"));
 }
 
 bool CropAndEncodeWorker::crop_recorder_prepared() const
@@ -1601,6 +1631,8 @@ void CropAndEncodeWorker::OnFlushTick() {
     // PREPARE handshake it triggers) every 250 ms while disconnected, and
     // drain PREPARED/status lines while idle once connected.
     ++flush_ticks_;
+    last_tick_ns_.store(steady_now_ns_diag(), std::memory_order_relaxed);
+    worker_stage_.store(5, std::memory_order_relaxed);
     if (flush_ticks_ <= 3 || (flush_ticks_ % 500) == 0) {
         std::cout << "[CropAndEncodeWorker] " << camera_params_->camera_serial << " flush tick " << flush_ticks_
                   << " is_recording=" << (is_recording_ ? 1 : 0)
@@ -1632,6 +1664,8 @@ void CropAndEncodeWorker::OnFlushTick() {
 }
 
 bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
+    worker_stage_.store(1, std::memory_order_relaxed);
+    last_job_ns_.store(steady_now_ns_diag(), std::memory_order_relaxed);
     if (!raw_job) {
         return false;  // defensive; flush ticks arrive via OnFlushTick()
     }
@@ -1822,7 +1856,9 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
                       << ": " << e.what()
                       << "; synchronizing consumer stream before recycle." << std::endl;
             const uint64_t stream_sync_start_ns = steady_now_ns();
+            worker_stage_.store(2, std::memory_order_relaxed);
             cudaError_t status = cudaStreamSynchronize(m_stream);
+            worker_stage_.store(1, std::memory_order_relaxed);
             perf.stream_sync_ms += elapsed_ms(stream_sync_start_ns, steady_now_ns());
             if (status != cudaSuccess) {
                 std::cerr << "[CropAndEncodeWorker] CropFrame fallback sync failed for frame "
@@ -1838,5 +1874,6 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
         crop_producer_->DrainPending(false);
     }
 
+    worker_stage_.store(0, std::memory_order_relaxed);
     return false; // This worker does not pass items to its own output queue
 }

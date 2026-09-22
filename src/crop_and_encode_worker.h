@@ -49,6 +49,9 @@ public:
     bool crop_recorder_prepared() const;
     std::string crop_recorder_prepare_state() const;
     uint64_t flush_ticks_ = 0;  // OnFlushTick calls (diagnostic)
+    std::atomic<int> worker_stage_{0};        // 0 idle, 1 job, 2 stream sync, 3 finalize, 4 flush/close, 5 tick
+    std::atomic<uint64_t> last_tick_ns_{0};
+    std::atomic<uint64_t> last_job_ns_{0};
     void SetCropProducerWorker(CropProducerWorker* crop_producer_worker) { crop_producer_worker_ = crop_producer_worker; }
     void SetCropPreviewWorker(CropPreviewWorker* crop_preview_worker) { crop_preview_worker_ = crop_preview_worker; }
     void RotateRecordingFolder(const std::string& recording_folder);
