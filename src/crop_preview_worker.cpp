@@ -1,4 +1,5 @@
 #include "crop_preview_worker.h"
+#include "gui/preview_staging_lock.h"
 
 #include "crop_producer_worker.h"
 #include "kernel.cuh"
@@ -311,8 +312,11 @@ bool CropPreviewWorker::WorkerFunction(CropPreviewJob* raw_job)
     try {
         ck(cudaSetDevice(camera_params_->gpu_id));
         if (job->blank_preview) {
-            clear_display_preview();
-            synchronize_display_preview();
+            {
+                auto staging_lock = orange::gui::lock_preview_staging(d_display_buffer_pbo_);
+                clear_display_preview();
+                synchronize_display_preview();
+            }
             if (crop_preview_active()) {
                 mark_display_preview_updated(true);
             }
@@ -338,8 +342,13 @@ bool CropPreviewWorker::WorkerFunction(CropPreviewJob* raw_job)
             crop_width_,
             crop_height_,
             stream_);
-        copy_crop_to_display_preview();
-        synchronize_display_preview();
+        {
+            // Exclusive ownership of the staging buffer until the write has
+            // completed; the GUI copies it into the PBO under the same lock.
+            auto staging_lock = orange::gui::lock_preview_staging(d_display_buffer_pbo_);
+            copy_crop_to_display_preview();
+            synchronize_display_preview();
+        }
         if (crop_preview_active()) {
             mark_display_preview_updated(false);
         }

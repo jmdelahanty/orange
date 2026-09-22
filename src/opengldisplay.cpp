@@ -1,6 +1,7 @@
 // src/opengldisplay.cpp
 
 #include "opengldisplay.h"
+#include "gui/preview_staging_lock.h"
 #include "enet_thread.h"
 #include "cuda_context_debug.h"
 #include <vector>
@@ -210,13 +211,19 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
             }
         }
 
-        launch_mono_to_rgba_kernel(
-            display_buffer_pbo_cuda_ptr_,
-            display_mono_source,
-            display_width,
-            display_height,
-            m_stream);
-        ck(cudaStreamSynchronize(m_stream));
+        {
+            // Exclusive ownership of the staging buffer until the write has
+            // completed on the GPU (the GUI copies it into the PBO under the
+            // same lock).
+            auto staging_lock = orange::gui::lock_preview_staging(display_buffer_pbo_cuda_ptr_);
+            launch_mono_to_rgba_kernel(
+                display_buffer_pbo_cuda_ptr_,
+                display_mono_source,
+                display_width,
+                display_height,
+                m_stream);
+            ck(cudaStreamSynchronize(m_stream));
+        }
         preview_serial_.fetch_add(1, std::memory_order_acq_rel);
 
         auto now = std::chrono::steady_clock::now();
@@ -300,10 +307,12 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
     }
     
     // Perform the efficient GPU->GPU copy into the PBO buffer
-    ck(cudaMemcpyAsync(display_buffer_pbo_cuda_ptr_, final_image_source, copy_size, cudaMemcpyDeviceToDevice, m_stream));
-    
-    // Synchronize this worker's stream to ensure the copy is complete before OpenGL uses it
-    ck(cudaStreamSynchronize(m_stream));
+    {
+        auto staging_lock = orange::gui::lock_preview_staging(display_buffer_pbo_cuda_ptr_);
+        ck(cudaMemcpyAsync(display_buffer_pbo_cuda_ptr_, final_image_source, copy_size, cudaMemcpyDeviceToDevice, m_stream));
+        // Synchronize this worker's stream so the staging write is complete before the lock is released
+        ck(cudaStreamSynchronize(m_stream));
+    }
     preview_serial_.fetch_add(1, std::memory_order_acq_rel);
 
     auto now = std::chrono::steady_clock::now();
