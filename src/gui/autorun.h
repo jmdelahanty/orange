@@ -41,6 +41,10 @@ struct GuiAutorunConfig {
     // Stream-only lifecycle diagnostics can request an ordinary stream stop
     // after warmup instead of leaving the GUI streaming for local control.
     bool stop_streaming_after_warmup = false;
+    // Keep the stream running after the autorun recording finalizes so a
+    // second in-application recording can be driven by local control.
+    // ORANGE_GUI_AUTORUN_KEEP_STREAMING_AFTER_FINALIZE (default off).
+    bool keep_streaming_after_finalize = false;
     // Negative disables the expected-cancellation diagnostic. A non-negative
     // value requests the normal stream toggle after this many milliseconds in
     // kStartStreaming and treats the resulting stopped timing report as success.

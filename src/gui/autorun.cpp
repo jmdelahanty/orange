@@ -74,6 +74,8 @@ GuiAutorunConfig resolve_gui_autorun_config()
         gui_env_flag_enabled("ORANGE_GUI_AUTORUN_START_RECORDING", true);
     config.stop_streaming_after_warmup = gui_env_flag_enabled(
         "ORANGE_GUI_AUTORUN_STOP_STREAMING_AFTER_WARMUP", false);
+    config.keep_streaming_after_finalize = gui_env_flag_enabled(
+        "ORANGE_GUI_AUTORUN_KEEP_STREAMING_AFTER_FINALIZE", false);
     config.cancel_stream_startup_after_ms = gui_env_int(
         "ORANGE_GUI_AUTORUN_CANCEL_STREAM_STARTUP_AFTER_MS", -1, -1);
     const char* config_dir = std::getenv("ORANGE_GUI_CONFIG_DIR");
@@ -328,7 +330,12 @@ GuiAutorunRequests gui_autorun_update(
             if (!camera_control->record_video &&
                 !camera_control->recording_draining &&
                 !run_active) {
-                gui_autorun_enter_stage(state, GuiAutorunStage::kStopStreaming);
+                if (config.keep_streaming_after_finalize) {
+                    std::cout << "[GUI][autorun] recording finalized; keeping the stream on for local control" << std::endl;
+                    gui_autorun_enter_stage(state, GuiAutorunStage::kDone);
+                } else {
+                    gui_autorun_enter_stage(state, GuiAutorunStage::kStopStreaming);
+                }
             } else if (gui_autorun_stage_elapsed_s(*state) > 300.0) {
                 gui_autorun_fail(state, "timed out finalizing recording");
             }

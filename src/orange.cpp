@@ -5029,6 +5029,8 @@ int main(int /*argc*/, char ** /*args*/) {
                   << " start_recording=" << gui_autorun_config.start_recording
                   << " stop_streaming_after_warmup="
                   << gui_autorun_config.stop_streaming_after_warmup
+                  << " keep_streaming_after_finalize="
+                  << gui_autorun_config.keep_streaming_after_finalize
                   << " cancel_stream_startup_after_ms="
                   << gui_autorun_config.cancel_stream_startup_after_ms
                   << std::endl;
