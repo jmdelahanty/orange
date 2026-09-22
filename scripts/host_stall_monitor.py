@@ -13,9 +13,9 @@ Three probes, all cheap:
                   /proc/diskstats (nvme sectors written), /proc/interrupts
                   (total IRQs on the isolated cores), Dirty/Writeback from
                   /proc/meminfo.
-  3. SMI count  - MSR 0x34 on cpu0 (needs root and the msr module); if it
-                  cannot be read the column is -1 and firmware stalls stay
-                  unknown for that run.
+  3. SMI count  - MSR 0x34 on cpu0 (Intel only; needs root and the msr
+                  module). On AMD hosts, or when it cannot be read, the
+                  column is -1 and firmware stalls stay unknown for that run.
 
 Outputs <prefix>_heartbeat.csv, <prefix>_counters.csv and <prefix>_summary.json.
 Stop with SIGINT/SIGTERM or by creating <prefix>.stop.
@@ -55,7 +55,18 @@ def read_isolated():
     return out
 
 
+def cpu_is_amd():
+    try:
+        return "AuthenticAMD" in open("/proc/cpuinfo").read(4096)
+    except OSError:
+        return False
+
+
 def read_smi():
+    # MSR 0x34 (MSR_SMI_COUNT) exists on Intel only; AMD exposes no SMI
+    # counter from Linux, so the column stays -1 there.
+    if cpu_is_amd():
+        return -1
     try:
         with open("/dev/cpu/0/msr", "rb") as f:
             f.seek(0x34)
@@ -168,7 +179,7 @@ def main():
     signal.signal(signal.SIGINT, lambda *_: stopping.set())
     signal.signal(signal.SIGTERM, lambda *_: stopping.set())
     print("host_stall_monitor: heartbeat core=%d gap>%.1f ms, smi=%s, isolated=%s" % (
-        core, a.gap_ms, "readable" if first["smi_count"] >= 0 else "unavailable (run as root)",
+        core, a.gap_ms, "readable" if first["smi_count"] >= 0 else ("not supported on AMD" if cpu_is_amd() else "unavailable (run as root)"),
         ",".join(map(str, sorted(isolated))) or "none"), flush=True)
     last = first
     while not stopping.is_set() and not os.path.exists(stop_file):
