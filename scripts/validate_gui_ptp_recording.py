@@ -4116,33 +4116,44 @@ def video_content_sanity(
     else:
         sample_indices = [0]
 
-    select_expr = "+".join(f"eq(n\\,{index})" for index in sample_indices)
-    decode_cmd = [
-        ffmpeg,
-        "-v",
-        "error",
-        "-i",
-        str(mp4_path),
-        "-vf",
-        f"select='{select_expr}'",
-        "-vsync",
-        "0",
-        "-pix_fmt",
-        "gray",
-        "-f",
-        "rawvideo",
-        "-",
-    ]
+    # Seek to each sample instead of decoding the whole file through a
+    # select filter: a 10 min 4512x4512 HEVC recording took longer than the
+    # 120 s budget to decode linearly (2026-09-21). The seek lands on the
+    # preceding keyframe and decodes forward to the requested frame.
+    frame_rate_text = str(stream.get("r_frame_rate") or "100/1")
     try:
-        decoded = subprocess.run(
-            decode_cmd,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=120,
-        ).stdout
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        return {"status": "decode_failed", "content_valid": False, "detail": str(exc)}
+        num, den = frame_rate_text.split("/")
+        fps = float(num) / float(den) if float(den) else 100.0
+    except ValueError:
+        fps = 100.0
+    decoded = b""
+    for index in sample_indices:
+        decode_cmd = [
+            ffmpeg,
+            "-v",
+            "error",
+            "-ss",
+            f"{index / fps:.6f}",
+            "-i",
+            str(mp4_path),
+            "-frames:v",
+            "1",
+            "-pix_fmt",
+            "gray",
+            "-f",
+            "rawvideo",
+            "-",
+        ]
+        try:
+            decoded += subprocess.run(
+                decode_cmd,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=120,
+            ).stdout
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            return {"status": "decode_failed", "content_valid": False, "detail": f"frame {index}: {exc}"}
 
     frame_bytes = width * height
     decoded_frames = len(decoded) // frame_bytes if frame_bytes else 0
