@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Correlate pipeline stall events in a run folder with host_stall_monitor output.
 
-usage: host_stall_correlate.py <run folder> <monitor prefix> [--window-ms 20]
+usage: host_stall_correlate.py <run folder>|--latest [<monitor prefix>] [--window-ms 20]
+
+The prefix defaults to session.host_stall_monitor_prefix in the run's
+recording_snapshot.json, or the newest monitor output overlapping the run.
 
 Events come from every Cam*_owner_push.csv (pull fallbacks and pushes slower
 than 7 ms, after recording frame 100) and Cam*_yolo_perf.csv (acquisition-to-
@@ -17,11 +20,44 @@ import sys
 import pandas as pd
 
 
+def find_prefix(run):
+    """Monitor prefix for a run: recording_snapshot.json session pointer first,
+    otherwise the newest monitor in the diagnostics folder that overlaps the
+    run's first owner-push capture time."""
+    try:
+        snap = json.load(open(run + "/recording_snapshot.json"))
+        p = snap.get("session", {}).get("host_stall_monitor_prefix", "")
+        if p and glob.glob(p + "_counters.csv"):
+            return p
+    except (OSError, json.JSONDecodeError):
+        pass
+    t0 = None
+    for f in glob.glob(run + "/Cam*_owner_push.csv"):
+        try:
+            t = pd.read_csv(f, usecols=["capture_sys_ns"], nrows=1).capture_sys_ns.iloc[0]
+            t0 = t if t0 is None else min(t0, t)
+        except Exception:
+            pass
+    for summ in sorted(glob.glob("/home/jeremy/orange_data/diagnostics/host_stall/*_summary.json"), reverse=True):
+        d = json.load(open(summ))
+        if t0 is None or d["started_t_ns"] <= t0 <= d["ended_t_ns"]:
+            return summ[: -len("_summary.json")]
+    sys.exit("no host stall monitor output found for %s (run the GUI through the wrapper with ORANGE_HOST_STALL_MONITOR=1)" % run)
+
+
 def main():
-    if len(sys.argv) < 3:
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if not args:
         print(__doc__)
         sys.exit(2)
-    run, prefix = sys.argv[1], sys.argv[2]
+    run = args[0]
+    if run == "--latest" or "--latest" in sys.argv:
+        runs = sorted(glob.glob("/home/jeremy/orange_data/exp/unsorted/20*_*_*_*"))
+        runs = [r for r in runs if glob.glob(r + "/Cam*_owner_push.csv")]
+        run = runs[-1]
+    prefix = args[1] if len(args) > 1 else find_prefix(run)
+    print("run:", run)
+    print("monitor prefix:", prefix)
     window_ms = float(sys.argv[sys.argv.index("--window-ms") + 1]) if "--window-ms" in sys.argv else 20.0
     ev = []
     for f in sorted(glob.glob(run + "/Cam*_owner_push.csv")):

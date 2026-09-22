@@ -33,6 +33,16 @@
 #include <utility>
 #include <vector>
 
+namespace {
+// Pointer to the wrapper-launched host stall monitor for this GUI session
+// (scripts/host_stall_monitor.py); empty when the wrapper did not start one.
+std::string host_stall_monitor_prefix_from_env()
+{
+    const char* value = std::getenv("ORANGE_HOST_STALL_MONITOR_PREFIX");
+    return (value && *value) ? std::string(value) : std::string();
+}
+}  // namespace
+
 
 namespace {
 
@@ -606,7 +616,8 @@ nlohmann::json gui_build_rolling_recording_session_snapshot_update(
         {"recording_session_index", indexes},
         {"rolling_clip_count", manifest.value("clips", nlohmann::json::array()).size()},
         {"rolling_index_row_count", indexes.value("row_count", 0)},
-        {"gui_display_frame_rate", gui_display_frame_rate}
+        {"gui_display_frame_rate", gui_display_frame_rate},
+        {"host_stall_monitor_prefix", host_stall_monitor_prefix_from_env()}
     };
     if (manifest.contains("recording_backend")) {
         update["recording_backend"] = manifest["recording_backend"];
@@ -2820,7 +2831,8 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
             {"recording_session_manifest_path", manifest_path.string()},
             {"recording_session_status", recording_session_ok ? "completed" : "incomplete"},
             {"recording_session_camera_count", camera_serials.size()},
-            {"gui_display_frame_rate", gui_display_frame_rate}
+            {"gui_display_frame_rate", gui_display_frame_rate},
+            {"host_stall_monitor_prefix", host_stall_monitor_prefix_from_env()}
         };
         if (!update_recording_snapshot_session_artifacts(
                 run.recording_folder,
