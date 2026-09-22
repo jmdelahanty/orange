@@ -77,6 +77,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cmath>
 #include <fstream>
 #include <array>
@@ -4814,6 +4815,28 @@ simplelogger::Logger *logger = simplelogger::LoggerFactory::CreateConsoleLogger(
 
 #define display_gpu_id 0
 
+// Termination signals (SIGTERM/SIGINT/SIGHUP): the default disposition
+// would kill the process with the cameras streaming and leave their control
+// channels owned by a dead process (every later EVT_CameraOpen then fails with
+// GVCP ACK error until the camera is rebooted). The handler only records the
+// signal; the main loop stops the recording, then the stream, then closes the
+// window so the ordinary teardown runs (2026-09-22).
+static volatile sig_atomic_t g_gui_termination_signal = 0;
+static void gui_termination_signal_handler(int signal_number)
+{
+    g_gui_termination_signal = signal_number;
+}
+static void gui_install_termination_signal_handlers()
+{
+    struct sigaction action{};
+    action.sa_handler = gui_termination_signal_handler;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = 0;
+    sigaction(SIGTERM, &action, nullptr);
+    sigaction(SIGINT, &action, nullptr);
+    sigaction(SIGHUP, &action, nullptr);
+}
+
 int main(int /*argc*/, char ** /*args*/) {
 
     // Initialize the YOLOv8 plugins
@@ -5209,6 +5232,11 @@ int main(int /*argc*/, char ** /*args*/) {
         gui_local_control_exit_after_finalize_enabled(&app_storage_config);
     bool gui_local_control_exit_pending_after_finalize = false;
     bool gui_local_control_exit_stream_stop_requested = false;
+    bool gui_signal_exit_pending = false;
+    bool gui_signal_recording_stop_requested = false;
+    bool gui_signal_stream_stop_requested = false;
+    std::chrono::steady_clock::time_point gui_signal_received_at{};
+    gui_install_termination_signal_handlers();
     GuiDisplayFrameRateStats gui_display_frame_rate_stats;
     orange::gui::GuiTimingSidecarWriter gui_timing_sidecar_writer;
     GuiExternalRecorderLifecycleRefreshState gui_external_recorder_refresh_state;
@@ -6013,6 +6041,39 @@ int main(int /*argc*/, char ** /*args*/) {
                     });
                 glfwSetWindowShouldClose(window->render_target, GLFW_TRUE);
                 gui_local_control_exit_pending_after_finalize = false;
+            }
+        }
+        if (g_gui_termination_signal != 0 && !gui_signal_exit_pending) {
+            gui_signal_exit_pending = true;
+            gui_signal_received_at = std::chrono::steady_clock::now();
+            std::cout << "[GUI][signal] received signal " << static_cast<int>(g_gui_termination_signal)
+                      << "; stopping recording and stream before exit" << std::endl;
+        }
+        if (gui_signal_exit_pending) {
+            const bool run_active = gui_recording_run.active || gui_recording_run.finalizing;
+            const double since_signal_s = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - gui_signal_received_at).count();
+            if (camera_control->record_video) {
+                if (!gui_signal_recording_stop_requested) {
+                    gui_autorun_requests.toggle_recording = true;
+                    gui_signal_recording_stop_requested = true;
+                    std::cout << "[GUI][signal] requesting recording stop" << std::endl;
+                }
+            } else if (!camera_control->recording_draining && !run_active) {
+                if (camera_control->subscribe) {
+                    if (!gui_signal_stream_stop_requested) {
+                        gui_autorun_requests.toggle_streaming = true;
+                        gui_signal_stream_stop_requested = true;
+                        std::cout << "[GUI][signal] requesting stream stop" << std::endl;
+                    }
+                } else if (!glfwWindowShouldClose(window->render_target)) {
+                    std::cout << "[GUI][signal] stream stopped; closing the window" << std::endl;
+                    glfwSetWindowShouldClose(window->render_target, GLFW_TRUE);
+                }
+            }
+            if (since_signal_s > 120.0 && !glfwWindowShouldClose(window->render_target)) {
+                std::cout << "[GUI][signal] teardown did not complete within 120 s; closing the window anyway" << std::endl;
+                glfwSetWindowShouldClose(window->render_target, GLFW_TRUE);
             }
         }
         if (gui_local_control_server.running()) {
