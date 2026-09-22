@@ -4238,6 +4238,16 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
     async_start->context = context;
     async_start->started_at = std::chrono::steady_clock::now();
     async_start->from_local_control = false;
+    // The readiness gate measures its budget from supervisors_done_at, which
+    // the first poll after the supervisors finish sets. Reset it (and the
+    // poll bookkeeping) per start: a second in-application recording start
+    // otherwise inherits the previous run's timestamp, sees the budget as
+    // already exhausted on its first poll, and refuses before the crop
+    // recorder handshake has had a single tick (2026-09-22).
+    async_start->supervisors_done_at = std::chrono::steady_clock::time_point{};
+    async_start->push_ready_wait_logged = false;
+    async_start->last_readiness_poll_at = std::chrono::steady_clock::time_point{};
+    async_start->readiness_polls = 0;
     GuiAsyncRecordingStartState* worker_state = async_start;
     async_start->worker = std::thread([worker_state]() {
         // Thread boundary (docs/error_handling_convention.md): an exception
