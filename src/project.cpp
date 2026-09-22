@@ -1666,6 +1666,12 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                 }
                 config.gui_external_ipc_native_local_input_configured = true;
             }
+            if (external_ipc.contains("prepare_fault_inject") && !external_ipc["prepare_fault_inject"].is_null()) {
+                if (!read_optional_bool_field(external_ipc, "prepare_fault_inject",
+                                              &config.gui_external_ipc_prepare_fault_inject, error_out, ctx)) {
+                    return false;
+                }
+            }
             for (const auto& [key, target] : {
                      std::pair<const char*, std::string*>{"native_kernel_ptx", &config.gui_external_ipc_native_kernel_ptx},
                      std::pair<const char*, std::string*>{"recorder_tool_path", &config.gui_external_ipc_recorder_tool_path}}) {

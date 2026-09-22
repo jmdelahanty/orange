@@ -3715,6 +3715,10 @@ void abort_prepared_recording_run(
     // artifacts into the abandoned run folder for forensics.
     stop_pending_recording_run_lifecycle(&outcome.external_crop_recorder_lifecycle);
     stop_pending_recording_run_lifecycle(&outcome.external_recorder_lifecycle);
+    // A refused or aborted start still writes its startup audit so the
+    // readiness conditions that blocked it are in the abandoned run folder.
+    orange::RecordingStartupAudit::Instance().Mark(std::string(), "recording_start_aborted", abort_reason);
+    orange::RecordingStartupAudit::Instance().EndSession();
 
     if (state) {
         if (outcome.external_recorder_attempted) {

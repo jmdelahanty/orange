@@ -4892,6 +4892,12 @@ int main(int /*argc*/, char ** /*args*/) {
             app_storage_config.gui_external_ipc_native_local_input ? "1" : "0",
             "full-frame external recorder native local input");
     }
+    if (app_storage_config.gui_external_ipc_prepare_fault_inject) {
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_EXTERNAL_RECORDER_PREPARE_FAULT_INJECT",
+            "1",
+            "TEST ONLY: external recorder PREPARE fault injection");
+    }
     if (!app_storage_config.gui_external_ipc_native_kernel_ptx.empty()) {
         set_gui_env_from_app_config_if_absent(
             "ORANGE_EXTERNAL_RECORDER_FULL_FRAME_NATIVE_KERNEL_PTX",

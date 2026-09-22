@@ -47,6 +47,9 @@ struct AppStorageConfig {
     int gui_external_ipc_full_frame_extra_output_delay = -1;
     bool gui_external_ipc_native_local_input = false;
     bool gui_external_ipc_native_local_input_configured = false;
+    // TEST ONLY: corrupt one PREPARE handle so the recorder reports a failed
+    // import and the strict GUI readiness gate must refuse the start.
+    bool gui_external_ipc_prepare_fault_inject = false;
     std::string gui_external_ipc_native_kernel_ptx;
     std::string gui_external_ipc_recorder_tool_path;
     // analytics.*: the fused analytics shape the 2026-09-21 gate used

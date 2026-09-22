@@ -705,6 +705,16 @@ private:
             } else {
                 hex = it->second;
             }
+            // TEST ONLY (ORANGE_EXTERNAL_RECORDER_PREPARE_FAULT_INJECT=1, from the
+            // app config key recording.external_ipc.prepare_fault_inject): corrupt
+            // the first buffer's handle so the recorder reports one failed import
+            // and the strict GUI readiness gate has to refuse the start.
+            static const bool fault_inject =
+                recording_ingress_env_flag_enabled("ORANGE_EXTERNAL_RECORDER_PREPARE_FAULT_INJECT", false);
+            if (fault_inject && i == 0) {
+                hex = std::string("zz") + hex.substr(2);
+                orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "prepare_fault_injected", "buffer=0");
+            }
             const std::string line =
                 std::string(orange::external_recorder::ipc::kPrepareKind) + " " + session + " " + stream + " " +
                 std::to_string(prepare_generation_) + " " + std::to_string(i) + " " +
