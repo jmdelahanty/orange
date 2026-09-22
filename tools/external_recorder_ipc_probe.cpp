@@ -6289,7 +6289,7 @@ private:
                 if (item.prewarm_peer_stage) {
                     try {
                         prewarm_early_peer_stage(item.desc, item.source_ptr);
-                        std::cout << "external_recorder_ipc_probe peer-stage warm-up done on shard gpu_id=" << gpu_id_ << std::endl;
+                        std::cout << "external_recorder_ipc_probe peer-stage warm-up done on shard gpu_id=" << options_.gpu_id << std::endl;
                     } catch (const std::exception& e) {
                         std::cerr << "external_recorder_ipc_probe prewarm peer stage failed: " << e.what() << std::endl;
                     }
