@@ -4314,6 +4314,20 @@ bool gui_poll_async_recording_start(
             if (stats.external_ipc_owner_push_enabled && stats.external_ipc_owner_push_slots == 0) {
                 waiting = true;
             }
+            if (stats.external_ipc_prepare_expected > 0 && !stats.external_ipc_prepared) {
+                waiting = true;
+            }
+        }
+        for (int i = 0; crop_and_encode_workers && i < num_cameras; ++i) {
+            CropAndEncodeWorker* crop = crop_and_encode_workers[i];
+            if (crop && crop->crop_recorder_expected() && !crop->crop_recorder_prepared()) {
+                waiting = true;
+                // The crop worker's thread only wakes for queued work or a
+                // flush tick; post a tick so its bounded connect retry and
+                // PREPARE handshake run now, on its own thread, while the
+                // start is pending (2026-09-21).
+                (void)crop->EnqueueFlushTick();
+            }
         }
         const double waited_s = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - async_start->supervisors_done_at).count();
@@ -4328,7 +4342,7 @@ bool gui_poll_async_recording_start(
         {
             std::string conditions = "checked=owner_push_slots_imported>0_per_recording_camera budget_s=" +
                 std::to_string(kPushReadyBudgetS) + " waited_s=" + std::to_string(waited_s) +
-                " result=" + (waiting ? "budget_exceeded_starting_anyway" : "slots_imported") + " per_camera=";
+                " result=" + (waiting ? "budget_exceeded" : "all_prepared") + " per_camera=";
             for (int i = 0; i < num_cameras; ++i) {
                 RecordingIngress* ingress =
                     orange::session::recording_ingress_for_camera(*recording_session, i);
@@ -4338,8 +4352,28 @@ bool gui_poll_async_recording_start(
                 const RecordingIngressStats st = ingress->GetStats();
                 conditions += cameras_params[i].camera_serial + ":" + std::to_string(st.external_ipc_owner_push_slots) + ";";
             }
-            conditions += " not_checked=encoder_init,owner_push_stream,crop_recorder_connection,first_ack";
-            orange::RecordingStartupAudit::Instance().Mark(std::string(), "gui_readiness_check_passed", conditions);
+            conditions += " crop=";
+            for (int i = 0; crop_and_encode_workers && i < num_cameras; ++i) {
+                CropAndEncodeWorker* crop = crop_and_encode_workers[i];
+                if (crop) {
+                    conditions += cameras_params[i].camera_serial + ":" +
+                        (crop->crop_recorder_expected() ? (crop->crop_recorder_prepared() ? "prepared" : "NOT_prepared") : "none") + ";";
+                }
+            }
+            conditions += " checked_also=full_frame_pool_prepared,crop_pool_prepared not_checked=owner_push_stream";
+            static const bool strict = [] {
+                const char* env = std::getenv("ORANGE_GUI_RECORDER_PREPARE_STRICT");
+                return !(env && *env && std::string(env) == "0");
+            }();
+            if (waiting && strict) {
+                async_start->outcome.error_message =
+                    "recording start refused: external recorder preparation incomplete after " +
+                    std::to_string(waited_s) + " s (" + conditions + ")";
+                async_start->outcome.ok = false;
+                orange::RecordingStartupAudit::Instance().Mark(std::string(), "gui_readiness_check_failed", conditions);
+            } else {
+                orange::RecordingStartupAudit::Instance().Mark(std::string(), "gui_readiness_check_passed", conditions);
+            }
         }
         if (async_start->push_ready_wait_logged) {
             std::cout << "[GUI][recording] owner-push slots "

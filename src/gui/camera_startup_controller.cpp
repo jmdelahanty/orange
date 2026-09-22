@@ -622,6 +622,8 @@ struct GuiCameraStartupController::Impl {
                                 bindings.camera_selection[i].yolo,
                                 bindings.camera_params[i].recording.resources
                                     .acquire_work_entries);
+                            bindings.camera_params[i].recording_pool_buffers =
+                                runtime.camera_resources().pool_buffers();
                             if (cancellation.requested()) {
                                 return GuiAsyncStartupWorkResult::Canceled(
                                     current_cancel_reason());

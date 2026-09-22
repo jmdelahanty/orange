@@ -7258,6 +7258,9 @@ int main(int argc, char** argv)
         }
 
         std::unordered_map<std::string, ImportedHandle> imported_handles;
+        uint64_t prepare_generation = 0;
+        uint64_t prepare_imported = 0;
+        uint64_t prepare_failed = 0;
         void* owned_device_buffer = nullptr;
         uint64_t owned_device_buffer_bytes = 0;
         uint64_t frame_count = 0;
@@ -7539,6 +7542,72 @@ int main(int argc, char** argv)
             if (!protocol_state.client_hello_received) {
                 throw std::runtime_error(
                     "external recorder FRAME received before validated CLIENT_HELLO");
+            }
+
+            // Preparation handshake (2026-09-21): import every announced source
+            // pool buffer now, prewarm the detach slots on the first one, and
+            // answer PREPARED after the last, so the first frames of a start
+            // never pay cudaIpcOpenMemHandle or the slot prewarm.
+            if (line.rfind("PREPARE ", 0) == 0) {
+                std::istringstream pin(line);
+                std::string kind, session, stream, hex;
+                uint64_t generation = 0, index = 0, count = 0, bytes = 0;
+                int source_gpu = -1;
+                pin >> kind >> session >> stream >> generation >> index >> count >> bytes >> source_gpu >> hex;
+                if (!pin || count == 0 || hex.empty()) {
+                    throw std::runtime_error("malformed PREPARE line: " + line);
+                }
+                if (generation != prepare_generation) {
+                    prepare_generation = generation;
+                    prepare_imported = 0;
+                    prepare_failed = 0;
+                }
+                bool ok = true;
+                if (imported_handles.find(hex) == imported_handles.end()) {
+                    cudaIpcMemHandle_t handle{};
+                    void* imported_ptr = nullptr;
+                    if (!hex_to_ipc_handle(hex, &handle)) {
+                        ok = false;
+                    } else {
+                        const cudaError_t status = cudaIpcOpenMemHandle(
+                            &imported_ptr, handle, cudaIpcMemLazyEnablePeerAccess);
+                        if (status != cudaSuccess) {
+                            ok = false;
+                            std::cerr << "external_recorder_ipc_probe PREPARE: cudaIpcOpenMemHandle failed for buffer "
+                                      << index << ": " << cudaGetErrorString(status) << std::endl;
+                        } else {
+                            imported_handles.emplace(hex, ImportedHandle{imported_ptr});
+                        }
+                    }
+                }
+                if (ok) {
+                    ++prepare_imported;
+                    if (!encode_workers.empty() && options.encode_prewarm_slots > 0 && !encode_workers_prewarmed) {
+                        const void* peer_source_ptr =
+                            options.encode_prewarm_peer_copy ? imported_handles[hex].ptr : nullptr;
+                        for (auto& worker : encode_workers) {
+                            if (worker) {
+                                worker->prewarm_detach_slots(bytes, peer_source_ptr);
+                            }
+                        }
+                        encode_workers_prewarmed = true;
+                        encode_workers_peer_prewarmed = peer_source_ptr != nullptr;
+                    }
+                } else {
+                    ++prepare_failed;
+                }
+                if (index + 1 == count) {
+                    if (!write_protocol_line(
+                            client_fd,
+                            &protocol_write_mutex,
+                            "PREPARED " + session + " " + stream + " " + std::to_string(generation) + " " +
+                                std::to_string(prepare_imported) + " " + std::to_string(prepare_failed) + "\n")) {
+                        throw std::runtime_error("PREPARE: failed to send PREPARED line");
+                    }
+                    std::cout << "external_recorder_ipc_probe prepared " << prepare_imported << "/" << count
+                              << " source buffers (failed " << prepare_failed << ")" << std::endl;
+                }
+                continue;
             }
 
             FrameDescriptor desc;

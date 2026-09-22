@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <stdexcept>
 #include <vector>
+#include <utility>
 #include <numeric>
 #include "encoder_pipeline.h"
 #include "json.hpp"
@@ -131,6 +132,10 @@ inline int sanitize_camera_crop_preview_max_fps(int requested_max_fps)
 }
 
 struct CameraParams{
+    // Owned recording pool buffers (pointer, bytes), filled after the camera's
+    // CameraResources are initialized; the recording ingress pre-exports them
+    // to the external recorder before recording starts (2026-09-21).
+    std::vector<std::pair<unsigned char*, size_t>> recording_pool_buffers;
     unsigned int width;
     unsigned int height;
     unsigned int frame_rate;

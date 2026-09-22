@@ -234,6 +234,22 @@ struct CameraResources {
     SafeQueue<cudaEvent_t*>* yolo_events_queue = nullptr;
     int acquire_work_entries_max = DEFAULT_ACQUIRE_WORK_ENTRIES_MAX;
 
+    // Every owned pool buffer with its byte size, for the external recorder
+    // preparation handshake (PREPARE lines, 2026-09-21).
+    std::vector<std::pair<unsigned char*, size_t>> pool_buffers() const {
+        std::vector<std::pair<unsigned char*, size_t>> out;
+        if (!worker_entry_pool) {
+            return out;
+        }
+        for (int i = 0; i < acquire_work_entries_max; ++i) {
+            if (worker_entry_pool[i].d_image_pool) {
+                out.emplace_back(worker_entry_pool[i].d_image_pool,
+                                 static_cast<size_t>(worker_entry_pool[i].pool_buffer_bytes));
+            }
+        }
+        return out;
+    }
+
     CameraResources() = default;
     CameraResources(const CameraResources&) = delete;
     CameraResources& operator=(const CameraResources&) = delete;

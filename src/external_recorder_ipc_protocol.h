@@ -18,6 +18,14 @@ inline constexpr const char* kRecorderHelloKind = "RECORDER_HELLO";
 inline constexpr const char* kClientHelloKind = "CLIENT_HELLO";
 inline constexpr const char* kRecorderStatusKind = "RECORDER_STATUS";
 inline constexpr const char* kClientControlKind = "CLIENT_CONTROL";
+// Preparation handshake (2026-09-21): after the hellos the client sends one
+// PREPARE line per source pool buffer so the recorder imports every CUDA IPC
+// handle (and prewarms its detach slots) before the first FRAME, instead of
+// paying cudaIpcOpenMemHandle on each of the first N frames of every start.
+//   PREPARE <session_id> <stream_id> <generation> <index> <count> <bytes> <source_gpu> <handle_hex>
+//   PREPARED <session_id> <stream_id> <generation> <imported> <failed>
+inline constexpr const char* kPrepareKind = "PREPARE";
+inline constexpr const char* kPreparedKind = "PREPARED";
 inline constexpr const char* kClientControlDrain = "drain";
 inline constexpr const char* kClientControlFinalize = "finalize";
 

@@ -41,6 +41,12 @@ struct RecordingIngressStats {
     // to the peer shard before that go through the recorder's pull path).
     uint64_t external_ipc_owner_push_slots = 0;
     bool external_ipc_owner_push_enabled = false;
+    // Preparation handshake: pool buffers announced with PREPARE lines and the
+    // recorder's PREPARED reply (imports done before the first frame).
+    uint64_t external_ipc_prepare_expected = 0;
+    uint64_t external_ipc_prepared_count = 0;
+    uint64_t external_ipc_prepare_failed = 0;
+    bool external_ipc_prepared = false;
     // Deferred source release (external recorder holds pool entries until it
     // has read them): entries currently held, and frames skipped on the
     // recording side because the cap on held entries was reached.
@@ -87,6 +93,9 @@ public:
     void shutdown();
     void reset_external_ipc_connection();
     bool requires_owned_cuda_source() const;
+    // Owned pool buffers (pointer, bytes) to pre-export to the external
+    // recorder right after the hello (PREPARE handshake, 2026-09-21).
+    void SetPoolBuffers(const std::vector<std::pair<unsigned char*, size_t>>& buffers);
 
     EncoderPreprocessWorker* primary_preprocess_worker() const { return primary_preprocess_worker_; }
     bool fail_on_drop() const { return resolved_recording_config_.fail_on_drop; }
@@ -108,6 +117,7 @@ private:
     uint32_t recording_frame_rate_ = 1;
     ResolvedRecordingConfig resolved_recording_config_;
     SafeQueue<WORKER_ENTRY*>* recycle_queue_ = nullptr;
+    std::vector<std::pair<unsigned char*, size_t>> pool_buffers_;
     std::string recording_sink_mode_ = "real";
     std::string camera_serial_;
     int frame_width_ = 0;

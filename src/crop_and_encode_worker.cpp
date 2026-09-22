@@ -122,6 +122,122 @@ public:
                       << " connected at start; recorder prewarming its crop encoder(s)" << std::endl;
         }
     }
+    bool connected() const { return socket_fd_ >= 0; }
+    void SetPoolBuffers(const std::vector<std::pair<unsigned char*, size_t>>& buffers) { pool_buffers_ = buffers; }
+    uint64_t prepare_expected() const { return prepare_expected_.load(std::memory_order_relaxed); }
+    bool prepared() const { return prepared_.load(std::memory_order_acquire); }
+
+    // Non-blocking drain of recorder lines while idle (status, PREPARED);
+    // anything else is queued for read_ack(). Worker thread only.
+    void PollPrepared()
+    {
+        if (socket_fd_ < 0) {
+            return;
+        }
+        char buf[512];
+        while (true) {
+            const ssize_t n = recv(socket_fd_, buf, sizeof(buf), MSG_DONTWAIT);
+            if (n <= 0) {
+                break;
+            }
+            receive_buffer_.append(buf, static_cast<size_t>(n));
+            if (receive_buffer_.size() > 65536) {
+                log_limited("recorder line buffer overflow while idle; disconnecting");
+                close_socket();
+                return;
+            }
+        }
+        size_t newline = std::string::npos;
+        while ((newline = receive_buffer_.find('\n')) != std::string::npos) {
+            const std::string line = receive_buffer_.substr(0, newline);
+            receive_buffer_.erase(0, newline + 1);
+            bool malformed_status = false;
+            if (handle_recorder_status_line(line, &malformed_status)) {
+                continue;
+            }
+            if (handle_prepared_line(line)) {
+                continue;
+            }
+            pending_lines_.push_back(line);
+        }
+    }
+
+    bool handle_prepared_line(const std::string& line)
+    {
+        if (line.rfind("PREPARED ", 0) != 0) {
+            return false;
+        }
+        std::istringstream pin(line);
+        std::string kind, session, stream;
+        uint64_t generation = 0, imported = 0, failed = 0;
+        pin >> kind >> session >> stream >> generation >> imported >> failed;
+        if (!pin) {
+            log_limited("malformed PREPARED line: " + line);
+            return true;
+        }
+        if (generation != prepare_generation_) {
+            return true;  // stale generation
+        }
+        prepared_count_.store(imported, std::memory_order_relaxed);
+        prepare_failed_.store(failed, std::memory_order_relaxed);
+        const bool ok = failed == 0 && imported == prepare_expected_.load(std::memory_order_relaxed);
+        prepared_.store(ok, std::memory_order_release);
+        orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "crop_recorder_prepared",
+            "imported=" + std::to_string(imported) + " failed=" + std::to_string(failed) +
+            " expected=" + std::to_string(prepare_expected_.load(std::memory_order_relaxed)) + (ok ? " ok=1" : " ok=0"));
+        return true;
+    }
+
+    bool send_prepare_manifest()
+    {
+        prepared_.store(false, std::memory_order_release);
+        prepared_count_.store(0, std::memory_order_relaxed);
+        prepare_failed_.store(0, std::memory_order_relaxed);
+        prepare_expected_.store(pool_buffers_.size(), std::memory_order_relaxed);
+        prepare_sent_ = false;
+        if (pool_buffers_.empty()) {
+            return true;
+        }
+        ++prepare_generation_;
+        const auto start = std::chrono::steady_clock::now();
+        size_t exported_now = 0;
+        const std::string session = orange::external_recorder::ipc::token_value(session_id_);
+        const std::string stream = orange::external_recorder::ipc::token_value(stream_id_);
+        for (size_t i = 0; i < pool_buffers_.size(); ++i) {
+            unsigned char* ptr = pool_buffers_[i].first;
+            std::string hex;
+            auto cached = handle_cache_.find(ptr);
+            if (cached == handle_cache_.end()) {
+                cudaIpcMemHandle_t handle{};
+                const cudaError_t status = cudaIpcGetMemHandle(&handle, static_cast<void*>(ptr));
+                if (status != cudaSuccess) {
+                    log_limited(std::string("PREPARE: cudaIpcGetMemHandle failed: ") + cudaGetErrorString(status));
+                    prepare_failed_.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
+                hex = handle_to_hex(handle);
+                handle_cache_.emplace(ptr, hex);
+                ++exported_now;
+            } else {
+                hex = cached->second;
+            }
+            const std::string line =
+                std::string(orange::external_recorder::ipc::kPrepareKind) + " " + session + " " + stream + " " +
+                std::to_string(prepare_generation_) + " " + std::to_string(i) + " " +
+                std::to_string(pool_buffers_.size()) + " " + std::to_string(pool_buffers_[i].second) + " " +
+                std::to_string(source_gpu_id_) + " " + hex + "\n";
+            if (!send_all(line)) {
+                log_limited("PREPARE: send failed: " + std::string(std::strerror(errno)));
+                return false;
+            }
+        }
+        prepare_sent_ = true;
+        orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "crop_prepare_manifest_sent",
+            "buffers=" + std::to_string(pool_buffers_.size()) + " exported_now=" + std::to_string(exported_now) +
+            " generation=" + std::to_string(prepare_generation_) + " ms=" +
+            std::to_string(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count()));
+        return true;
+    }
 
     ExternalCropIpcClient(std::string camera_serial,
                           int source_gpu_id,
@@ -364,6 +480,10 @@ private:
             return false;
         }
         orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "crop_recorder_hello_done");
+        if (!send_prepare_manifest()) {
+            close_socket();
+            return false;
+        }
         return true;
     }
 
@@ -384,6 +504,13 @@ private:
 
     bool read_protocol_line(std::string* line)
     {
+        if (!pending_lines_.empty()) {
+            if (line) {
+                *line = pending_lines_.front();
+            }
+            pending_lines_.pop_front();
+            return true;
+        }
         while (receive_buffer_.find('\n') == std::string::npos) {
             char ch = '\0';
             const ssize_t n = recv(socket_fd_, &ch, 1, 0);
@@ -419,6 +546,9 @@ private:
                 continue;
             }
 
+            if (handle_prepared_line(line)) {
+                continue;
+            }
             std::istringstream in(line);
             std::string kind;
             uint64_t frame_id = 0;
@@ -588,7 +718,10 @@ private:
         if (socket_fd_ >= 0) {
             close(socket_fd_);
             socket_fd_ = -1;
-        }
+            pending_lines_.clear();
+        prepare_sent_ = false;
+        prepared_.store(false, std::memory_order_release);
+    }
         receive_buffer_.clear();
         client_hello_sent_ = false;
         client_drain_sent_ = false;
@@ -618,6 +751,14 @@ private:
     bool client_drain_sent_ = false;
     bool client_finalize_sent_ = false;
     std::string receive_buffer_;
+    std::deque<std::string> pending_lines_;  // lines read by PollPrepared() that belong to read_ack()
+    std::vector<std::pair<unsigned char*, size_t>> pool_buffers_;
+    uint64_t prepare_generation_ = 0;
+    bool prepare_sent_ = false;
+    std::atomic<uint64_t> prepare_expected_{0};
+    std::atomic<uint64_t> prepared_count_{0};
+    std::atomic<uint64_t> prepare_failed_{0};
+    std::atomic<bool> prepared_{false};
     std::unordered_map<unsigned char*, std::string> handle_cache_;
     uint64_t failures_logged_ = 0;
 };
@@ -1390,9 +1531,44 @@ void CropAndEncodeWorker::release_job(CropEncodeJob* job)
 }
 
 
+void CropAndEncodeWorker::SetCropProducer(CropProducer* crop_producer)
+{
+    crop_producer_ = crop_producer;
+    if (external_crop_ipc_ && crop_producer_) {
+        external_crop_ipc_->SetPoolBuffers(crop_producer_->crop_frame_pool_buffers());
+    }
+}
+
+bool CropAndEncodeWorker::crop_recorder_expected() const
+{
+    return external_crop_ipc_ != nullptr;
+}
+
+bool CropAndEncodeWorker::crop_recorder_prepared() const
+{
+    return external_crop_ipc_ && external_crop_ipc_->connected() &&
+           (external_crop_ipc_->prepare_expected() == 0 || external_crop_ipc_->prepared());
+}
+
 void CropAndEncodeWorker::OnFlushTick() {
     ck(cudaSetDevice(camera_params_->gpu_id));
     EnsureNppStream(m_stream);
+
+    // Startup ordering (2026-09-21): the crop recorder process only exists
+    // once a recording start has launched it, so retry the connect (and the
+    // PREPARE handshake it triggers) every 250 ms while disconnected, and
+    // drain PREPARED/status lines while idle once connected.
+    if (external_crop_ipc_) {
+        if (!external_crop_ipc_->connected()) {
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last_crop_connect_attempt_ > std::chrono::milliseconds(250)) {
+                last_crop_connect_attempt_ = now;
+                external_crop_ipc_->PrewarmConnect(base_folder_name_);
+            }
+        } else {
+            external_crop_ipc_->PollPrepared();
+        }
+    }
 
     if (camera_control_ && !camera_control_->record_video && is_recording_ &&
         external_crop_ipc_) {

@@ -42,7 +42,10 @@ public:
     void finalize_recording();
     void SetMaxQueueSize(int size);
     bool TryEnqueueJob(CropEncodeJob* job);
-    void SetCropProducer(CropProducer* crop_producer) { crop_producer_ = crop_producer; }
+    void SetCropProducer(CropProducer* crop_producer);  // also hands the crop pool to the external client
+    // Preparation handshake state for the GUI readiness gate.
+    bool crop_recorder_expected() const;
+    bool crop_recorder_prepared() const;
     void SetCropProducerWorker(CropProducerWorker* crop_producer_worker) { crop_producer_worker_ = crop_producer_worker; }
     void SetCropPreviewWorker(CropPreviewWorker* crop_preview_worker) { crop_preview_worker_ = crop_preview_worker; }
     void RotateRecordingFolder(const std::string& recording_folder);
@@ -93,6 +96,7 @@ private:
     std::string crop_perf_file_;
     std::ofstream crop_perf_;
     CropProducer* crop_producer_ = nullptr;
+    std::chrono::steady_clock::time_point last_crop_connect_attempt_{};
     CropProducerWorker* crop_producer_worker_ = nullptr;
     CropPreviewWorker* crop_preview_worker_ = nullptr;
     std::string crop_sidecar_perf_file_;

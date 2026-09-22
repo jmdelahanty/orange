@@ -4674,6 +4674,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                 max_frame_size_bytes,
                 enable_real_yolo,
                 cameras_params[idx].recording.resources.acquire_work_entries);
+            cameras_params[idx].recording_pool_buffers = camera_resources[idx].pool_buffers();
         }
 
     } catch (const std::exception& ex) {

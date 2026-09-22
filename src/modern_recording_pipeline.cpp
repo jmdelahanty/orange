@@ -79,6 +79,7 @@ ModernRecordingPipeline::ModernRecordingPipeline(
             camera_params_->camera_serial,
             static_cast<int>(camera_params_->width),
             static_cast<int>(camera_params_->height));
+        recording_ingress_->SetPoolBuffers(camera_params_->recording_pool_buffers);
 
         const RecordingStrategyConfig& resolved_strategy = resolved_recording_config_.strategy;
         const std::string& policy = resolved_strategy.split_gop.source_encoder_policy;
@@ -139,6 +140,7 @@ ModernRecordingPipeline::ModernRecordingPipeline(
             camera_params_->camera_serial,
             static_cast<int>(camera_params_->width),
             static_cast<int>(camera_params_->height));
+        recording_ingress_->SetPoolBuffers(camera_params_->recording_pool_buffers);
     } else {
         shared_recording_output_ = std::make_shared<SharedRecordingOutput>();
 
@@ -182,6 +184,7 @@ ModernRecordingPipeline::ModernRecordingPipeline(
             camera_params_->camera_serial,
             static_cast<int>(camera_params_->width),
             static_cast<int>(camera_params_->height));
+        recording_ingress_->SetPoolBuffers(camera_params_->recording_pool_buffers);
 
         const RecordingStrategyConfig& resolved_strategy = resolved_recording_config_.strategy;
         const std::string& policy = resolved_strategy.split_gop.source_encoder_policy;

@@ -220,6 +220,18 @@ public:
     CropProducer(const CropProducer&) = delete;
     CropProducer& operator=(const CropProducer&) = delete;
     int crop_frame_pool_size() const { return crop_frame_pool_size_; }
+    // Every crop pool buffer with its byte size, for the external crop
+    // recorder preparation handshake (2026-09-21).
+    std::vector<std::pair<unsigned char*, size_t>> crop_frame_pool_buffers() const {
+        std::vector<std::pair<unsigned char*, size_t>> out;
+        for (const auto& frame : crop_frame_pool_) {
+            if (frame.d_crop_mono) {
+                out.emplace_back(frame.d_crop_mono,
+                                 static_cast<size_t>(crop_width_) * static_cast<size_t>(crop_height_));
+            }
+        }
+        return out;
+    }
 
     ProduceResult Produce(
         WORKER_ENTRY*& entry,

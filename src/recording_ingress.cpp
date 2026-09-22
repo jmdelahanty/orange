@@ -235,6 +235,15 @@ public:
     uint64_t failures() const { return failures_.load(std::memory_order_relaxed); }
     uint64_t ack_timeouts() const { return ack_timeouts_.load(std::memory_order_relaxed); }
     bool owner_push_enabled() const { return owner_push_; }
+    void SetPoolBuffers(const std::vector<std::pair<unsigned char*, size_t>>& buffers)
+    {
+        std::lock_guard<std::mutex> lock(pool_buffers_mutex_);
+        pool_buffers_ = buffers;
+    }
+    uint64_t prepare_expected() const { return prepare_expected_.load(std::memory_order_relaxed); }
+    uint64_t prepared_count() const { return prepared_count_.load(std::memory_order_relaxed); }
+    uint64_t prepare_failed() const { return prepare_failed_.load(std::memory_order_relaxed); }
+    bool prepared() const { return prepared_.load(std::memory_order_acquire); }
     uint64_t owner_push_slots_imported() const { return owner_slots_imported_.load(std::memory_order_relaxed); }
     uint64_t deferred_release_cap_skips() const { return deferred_cap_skips_.load(std::memory_order_relaxed); }
     uint64_t deferred_release_copy_fallbacks() const { return deferred_copy_fallbacks_.load(std::memory_order_relaxed); }
@@ -293,7 +302,8 @@ protected:
             // Also drain while idle with owner push on: the peer shard's
             // STAGE lines arrive after its hello prewarm, before any frame,
             // and the GUI's push-ready gate waits for them (2026-09-21).
-            if (deferred_release_ || pending_release_count() > 0 || owner_push_) {
+            if (deferred_release_ || pending_release_count() > 0 || owner_push_ ||
+                (prepare_sent_ && !prepared_.load(std::memory_order_acquire))) {
                 poll_protocol_lines(false);
             }
             WORKER_ENTRY* entry = GetObjectFromQueueIn();
@@ -599,6 +609,8 @@ private:
         client_hello_sent_ = false;
         client_drain_sent_ = false;
         client_finalize_sent_ = false;
+        prepare_sent_ = false;
+        prepared_.store(false, std::memory_order_release);
     }
 
     bool ensure_connected()
@@ -641,6 +653,73 @@ private:
             return false;
         }
         orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "full_frame_recorder_hello_done");
+        if (!send_prepare_manifest()) {
+            close_socket();
+            return false;
+        }
+        return true;
+    }
+
+    // PREPARE handshake: export every pool buffer's CUDA IPC handle now (this
+    // also fills handle_cache_, the cache detach_frame() uses) and send one
+    // PREPARE line per buffer. The recorder imports them and answers PREPARED;
+    // the GUI readiness gate waits for that before enabling recording.
+    bool send_prepare_manifest()
+    {
+        std::vector<std::pair<unsigned char*, size_t>> buffers;
+        {
+            std::lock_guard<std::mutex> lock(pool_buffers_mutex_);
+            buffers = pool_buffers_;
+        }
+        prepared_.store(false, std::memory_order_release);
+        prepared_count_.store(0, std::memory_order_relaxed);
+        prepare_failed_.store(0, std::memory_order_relaxed);
+        prepare_expected_.store(buffers.size(), std::memory_order_relaxed);
+        prepare_sent_ = false;
+        if (buffers.empty()) {
+            return true;  // nothing announced (e.g. no pool): the gate does not wait
+        }
+        ++prepare_generation_;
+        const auto start = std::chrono::steady_clock::now();
+        if (source_gpu_id_ >= 0) {
+            cudaSetDevice(source_gpu_id_);
+        }
+        size_t exported_now = 0;
+        const std::string session = orange::external_recorder::ipc::token_value(session_id_);
+        const std::string stream = orange::external_recorder::ipc::token_value(stream_id_);
+        for (size_t i = 0; i < buffers.size(); ++i) {
+            unsigned char* ptr = buffers[i].first;
+            std::string hex;
+            auto it = handle_cache_.find(ptr);
+            if (it == handle_cache_.end()) {
+                cudaIpcMemHandle_t handle{};
+                const cudaError_t status = cudaIpcGetMemHandle(&handle, static_cast<void*>(ptr));
+                if (status != cudaSuccess) {
+                    log_limited(std::string("PREPARE: cudaIpcGetMemHandle failed: ") + cudaGetErrorString(status));
+                    prepare_failed_.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
+                hex = handle_to_hex(handle);
+                handle_cache_.emplace(ptr, hex);
+                ++exported_now;
+            } else {
+                hex = it->second;
+            }
+            const std::string line =
+                std::string(orange::external_recorder::ipc::kPrepareKind) + " " + session + " " + stream + " " +
+                std::to_string(prepare_generation_) + " " + std::to_string(i) + " " +
+                std::to_string(buffers.size()) + " " + std::to_string(buffers[i].second) + " " +
+                std::to_string(source_gpu_id_) + " " + hex + "\n";
+            if (!send_all(line)) {
+                log_limited("PREPARE: send failed: " + std::string(std::strerror(errno)));
+                return false;
+            }
+        }
+        prepare_sent_ = true;
+        orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "prepare_manifest_sent",
+            "buffers=" + std::to_string(buffers.size()) + " exported_now=" + std::to_string(exported_now) +
+            " generation=" + std::to_string(prepare_generation_) + " ms=" +
+            std::to_string(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count()));
         return true;
     }
 
@@ -1049,6 +1128,33 @@ private:
         }
         if (line.rfind("STAGE ", 0) == 0) {
             return handle_stage_line(line);
+        }
+        if (line.rfind("PREPARED ", 0) == 0) {
+            std::istringstream pin(line);
+            std::string kind, session, stream;
+            uint64_t generation = 0, imported = 0, failed = 0;
+            pin >> kind >> session >> stream >> generation >> imported >> failed;
+            if (!pin) {
+                log_limited("malformed PREPARED line: " + line);
+                return false;
+            }
+            if (generation != prepare_generation_) {
+                log_limited("ignoring stale PREPARED (generation " + std::to_string(generation) + ")");
+                return true;
+            }
+            prepared_count_.store(imported, std::memory_order_relaxed);
+            prepare_failed_.store(failed, std::memory_order_relaxed);
+            const bool ok = failed == 0 && imported == prepare_expected_.load(std::memory_order_relaxed);
+            prepared_.store(ok, std::memory_order_release);
+            orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "recorder_prepared",
+                "imported=" + std::to_string(imported) + " failed=" + std::to_string(failed) +
+                " expected=" + std::to_string(prepare_expected_.load(std::memory_order_relaxed)) +
+                (ok ? " ok=1" : " ok=0"));
+            if (!ok) {
+                log_limited("recorder PREPARED reports failures: imported=" + std::to_string(imported) +
+                            " failed=" + std::to_string(failed));
+            }
+            return true;
         }
         if (line.rfind("STAGEFREE ", 0) == 0) {
             size_t index = 0;
@@ -1603,6 +1709,15 @@ private:
     // holds 6 GB/s under load where the recorder's pull collapses to 3.
     bool owner_push_ = false;
     bool audit_first_frame_ = false;
+    // PREPARE handshake state (handoff thread only, except the atomics read by GetStats()).
+    std::vector<std::pair<unsigned char*, size_t>> pool_buffers_;
+    std::mutex pool_buffers_mutex_;
+    uint64_t prepare_generation_ = 0;
+    bool prepare_sent_ = false;
+    std::atomic<uint64_t> prepare_expected_{0};
+    std::atomic<uint64_t> prepared_count_{0};
+    std::atomic<uint64_t> prepare_failed_{0};
+    std::atomic<bool> prepared_{false};
     double audit_phase_ready_sync_ms_ = 0.0;   // wait for the owned copy (analytics-ready event)
     double audit_phase_export_ms_ = 0.0;       // cudaIpcGetMemHandle (cache miss) + descriptor build
     double audit_phase_push_ms_ = 0.0;         // owner_push_frame incl. card wait and the peer copy
@@ -1764,6 +1879,7 @@ RecordingIngress::RecordingIngress(EncoderPreprocessWorker* primary_preprocess_w
                 recording_frame_rate_,
                 frame_width_,
                 frame_height_);
+        external_ipc_handoff_worker_->SetPoolBuffers(pool_buffers_);
     }
 
     if (recording_sink_mode_ != "real") {
@@ -2104,6 +2220,14 @@ RecordingIngressStats RecordingIngress::GetStats() const
             external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->owner_push_enabled() : false;
         stats.external_ipc_owner_push_slots =
             external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->owner_push_slots_imported() : 0;
+        stats.external_ipc_prepare_expected =
+            external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->prepare_expected() : 0;
+        stats.external_ipc_prepared_count =
+            external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->prepared_count() : 0;
+        stats.external_ipc_prepare_failed =
+            external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->prepare_failed() : 0;
+        stats.external_ipc_prepared =
+            external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->prepared() : false;
         if (external_ipc_handoff_worker_) {
             stats.deferred_release_pending =
                 external_ipc_handoff_worker_->deferred_release_pending();
@@ -2228,4 +2352,12 @@ void RecordingIngress::release_entry(WORKER_ENTRY* entry)
         recycle_queue_,
         entry,
         WorkerEntryReleaseContext{camera_serial_.c_str(), "recording_ingress"});
+}
+
+void RecordingIngress::SetPoolBuffers(const std::vector<std::pair<unsigned char*, size_t>>& buffers)
+{
+    pool_buffers_ = buffers;
+    if (external_ipc_handoff_worker_) {
+        external_ipc_handoff_worker_->SetPoolBuffers(pool_buffers_);
+    }
 }
