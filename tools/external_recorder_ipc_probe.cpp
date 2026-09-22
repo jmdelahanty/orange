@@ -3993,7 +3993,9 @@ public:
                 write_mutex = protocol_write_mutex_;
             }
             if (fd >= 0 && write_mutex) {
-                (void)write_protocol_line(fd, write_mutex, reply->line);
+                const bool sent = write_protocol_line(fd, write_mutex, reply->line);
+                std::cout << "external_recorder_ipc_probe PREPARED " << (sent ? "sent" : "SEND FAILED")
+                          << " after peer-stage warm-up: " << reply->line;
             } else {
                 std::cerr << "external_recorder_ipc_probe: no protocol writer for PREPARED" << std::endl;
             }
@@ -6287,6 +6289,7 @@ private:
                 if (item.prewarm_peer_stage) {
                     try {
                         prewarm_early_peer_stage(item.desc, item.source_ptr);
+                        std::cout << "external_recorder_ipc_probe peer-stage warm-up done on shard gpu_id=" << gpu_id_ << std::endl;
                     } catch (const std::exception& e) {
                         std::cerr << "external_recorder_ipc_probe prewarm peer stage failed: " << e.what() << std::endl;
                     }
@@ -7760,6 +7763,7 @@ int main(int argc, char** argv)
                         if (!write_protocol_line(client_fd, &protocol_write_mutex, prepared_line)) {
                             throw std::runtime_error("PREPARE: failed to send PREPARED line");
                         }
+                        std::cout << "external_recorder_ipc_probe PREPARED sent immediately: " << prepared_line;
                     }
                     std::cout << "external_recorder_ipc_probe prepared " << prepare_imported << "/" << count
                               << " source buffers (failed " << prepare_failed << ")"

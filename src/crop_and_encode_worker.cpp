@@ -176,8 +176,13 @@ public:
             return true;
         }
         if (generation != prepare_generation_) {
+            log_limited("ignoring stale PREPARED (generation " + std::to_string(generation) +
+                        ", expected " + std::to_string(prepare_generation_) + ")");
             return true;  // stale generation
         }
+        std::cout << "[ExternalCropIpcRecorder] camera=" << camera_serial_ << " PREPARED generation="
+                  << generation << " imported=" << imported << " failed=" << failed
+                  << " expected=" << prepare_expected_.load(std::memory_order_relaxed) << std::endl;
         prepared_count_.store(imported, std::memory_order_relaxed);
         prepare_failed_.store(failed, std::memory_order_relaxed);
         const bool ok = failed == 0 && imported == prepare_expected_.load(std::memory_order_relaxed);

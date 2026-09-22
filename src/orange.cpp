@@ -4372,6 +4372,9 @@ bool gui_poll_async_recording_start(
                     std::to_string(waited_s) + " s (" + conditions + ")";
                 async_start->outcome.ok = false;
                 orange::RecordingStartupAudit::Instance().Mark(std::string(), "gui_readiness_check_failed", conditions);
+                // Keep the evidence of a refused start: the abort path may not
+                // reach the audit flush.
+                orange::RecordingStartupAudit::Instance().EndSession();
             } else {
                 orange::RecordingStartupAudit::Instance().Mark(std::string(), "gui_readiness_check_passed", conditions);
             }

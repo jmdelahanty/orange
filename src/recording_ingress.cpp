@@ -678,6 +678,34 @@ private:
     // also fills handle_cache_, the cache detach_frame() uses) and send one
     // PREPARE line per buffer. The recorder imports them and answers PREPARED;
     // the GUI readiness gate waits for that before enabling recording.
+    void reset_owner_slots_for_new_session()
+    {
+        std::lock_guard<std::mutex> lock(owner_mutex_);
+        size_t closed = 0;
+        if (!owner_slots_.empty() && source_gpu_id_ >= 0) {
+            cudaSetDevice(source_gpu_id_);
+        }
+        for (auto& slot : owner_slots_) {
+            if (slot.ptr) {
+                if (cudaIpcCloseMemHandle(slot.ptr) == cudaSuccess) {
+                    ++closed;
+                }
+                slot.ptr = nullptr;
+            }
+        }
+        (void)cudaGetLastError();
+        if (!owner_slots_.empty()) {
+            std::cout << "[ExternalIpcRecorder] camera=" << camera_serial_
+                      << " owner push: released " << closed << "/" << owner_slots_.size()
+                      << " staging slots from the previous recorder session" << std::endl;
+        }
+        owner_slots_.clear();
+        owner_free_.clear();
+        owner_peer_shard_id_ = -1;
+        owner_shard_count_ = 0;
+        owner_slots_imported_.store(0, std::memory_order_relaxed);
+    }
+
     bool send_prepare_manifest()
     {
         std::vector<std::pair<unsigned char*, size_t>> buffers;
@@ -690,6 +718,11 @@ private:
         prepare_failed_.store(0, std::memory_order_relaxed);
         prepare_expected_.store(buffers.size(), std::memory_order_relaxed);
         prepare_sent_ = false;
+        // A new recorder process stages its slots from scratch. Drop the
+        // previous session's imported slots (they point into a process that
+        // has exited), so the free list holds each index once and the GUI
+        // full-slot gate counts only this recorder's imports.
+        reset_owner_slots_for_new_session();
         if (buffers.empty()) {
             return true;  // nothing announced (e.g. no pool): the gate does not wait
         }
