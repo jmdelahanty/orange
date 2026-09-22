@@ -20,6 +20,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
 #include <filesystem>
 #include <iomanip>
 #include <limits>
@@ -126,7 +127,9 @@ public:
     // One-line handshake state for the GUI readiness refusal message.
     std::string prepare_state() const
     {
-        return "connected=" + std::string(socket_fd_ >= 0 ? "1" : "0") +
+        char self[32];
+        std::snprintf(self, sizeof(self), "%p", static_cast<const void*>(this));
+        return "client=" + std::string(self) + " connected=" + std::string(socket_fd_ >= 0 ? "1" : "0") +
                " generation=" + std::to_string(prepare_generation_) +
                " expected=" + std::to_string(prepare_expected_.load(std::memory_order_relaxed)) +
                " imported=" + std::to_string(prepared_count_.load(std::memory_order_relaxed)) +
@@ -503,7 +506,8 @@ private:
             return false;
         }
         std::cout << "[ExternalCropIpcRecorder] Connected crop stream "
-                  << camera_serial_ << " to " << socket_path_ << std::endl;
+                  << camera_serial_ << " to " << socket_path_ << " client=" << static_cast<const void*>(this)
+                  << " generation_before=" << prepare_generation_ << std::endl;
         orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "crop_recorder_connected", "socket=" + socket_path_);
         if (!read_recorder_hello()) {
             close_socket();
@@ -1596,6 +1600,14 @@ void CropAndEncodeWorker::OnFlushTick() {
     // once a recording start has launched it, so retry the connect (and the
     // PREPARE handshake it triggers) every 250 ms while disconnected, and
     // drain PREPARED/status lines while idle once connected.
+    ++flush_ticks_;
+    if (flush_ticks_ <= 3 || (flush_ticks_ % 500) == 0) {
+        std::cout << "[CropAndEncodeWorker] " << camera_params_->camera_serial << " flush tick " << flush_ticks_
+                  << " is_recording=" << (is_recording_ ? 1 : 0)
+                  << " record_video=" << ((camera_control_ && camera_control_->record_video) ? 1 : 0)
+                  << " crop_connected=" << ((external_crop_ipc_ && external_crop_ipc_->connected()) ? 1 : 0)
+                  << std::endl;
+    }
     if (external_crop_ipc_) {
         if (!external_crop_ipc_->connected()) {
             const auto now = std::chrono::steady_clock::now();

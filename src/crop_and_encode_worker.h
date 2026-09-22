@@ -48,6 +48,7 @@ public:
     bool crop_recorder_expected() const;
     bool crop_recorder_prepared() const;
     std::string crop_recorder_prepare_state() const;
+    uint64_t flush_ticks_ = 0;  // OnFlushTick calls (diagnostic)
     void SetCropProducerWorker(CropProducerWorker* crop_producer_worker) { crop_producer_worker_ = crop_producer_worker; }
     void SetCropPreviewWorker(CropPreviewWorker* crop_preview_worker) { crop_preview_worker_ = crop_preview_worker; }
     void RotateRecordingFolder(const std::string& recording_folder);
