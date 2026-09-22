@@ -4327,7 +4327,7 @@ bool gui_poll_async_recording_start(
                 // flush tick; post a tick so its bounded connect retry and
                 // PREPARE handshake run now, on its own thread, while the
                 // start is pending (2026-09-21).
-                (void)crop->EnqueueFlushTick();
+                (void)crop->PostReadinessTick();
             }
         }
         const double waited_s = std::chrono::duration<double>(

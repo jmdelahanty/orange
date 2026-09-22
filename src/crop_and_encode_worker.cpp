@@ -295,9 +295,13 @@ public:
 
     void Close()
     {
+        stage_.store(61, std::memory_order_relaxed);
         send_client_drain_control("crop_recording_drained");
+        stage_.store(62, std::memory_order_relaxed);
         send_client_finalize_control("crop_recording_drained");
+        stage_.store(63, std::memory_order_relaxed);
         close_socket();
+        stage_.store(64, std::memory_order_relaxed);
     }
 
     void NotifyDrain(const char* reason)
@@ -1466,6 +1470,7 @@ void CropAndEncodeWorker::flush_and_close() {
     if (external_crop_ipc_) {
         external_crop_ipc_->Close();
     }
+    worker_stage_.store(41, std::memory_order_relaxed);
 
     if (encoder_ && writer_.video && !encoder_flushed_) {
         std::vector<std::vector<uint8_t>> packets;
@@ -1498,9 +1503,11 @@ void CropAndEncodeWorker::flush_and_close() {
         writer_.metadata = nullptr;
     }
 
+    worker_stage_.store(42, std::memory_order_relaxed);
     if (crop_perf_.is_open()) {
         crop_perf_.close();
     }
+    worker_stage_.store(43, std::memory_order_relaxed);
 }
 
 void CropAndEncodeWorker::finalize_recording()
@@ -1511,16 +1518,20 @@ void CropAndEncodeWorker::finalize_recording()
     worker_stage_.store(3, std::memory_order_relaxed);
 
     write_sidecar_summary();
+    worker_stage_.store(31, std::memory_order_relaxed);
     flush_and_close();
+    worker_stage_.store(32, std::memory_order_relaxed);
     is_recording_ = false;
     crop_sidecar_perf_file_.clear();
     current_sidecar_recording_folder_.clear();
     const std::string finalized_session_folder = active_recording_session_folder_;
     active_recording_session_folder_.clear();
     reset_recording_counters();
+    worker_stage_.store(33, std::memory_order_relaxed);
     if (crop_producer_worker_) {
         crop_producer_worker_->CloseRecording();
     }
+    worker_stage_.store(34, std::memory_order_relaxed);
 
     if (camera_control_) {
         int remaining = camera_control_->active_recorders.fetch_sub(1, std::memory_order_relaxed) - 1;
@@ -1601,6 +1612,12 @@ bool CropAndEncodeWorker::crop_recorder_expected() const
     return external_crop_ipc_ != nullptr;
 }
 
+bool CropAndEncodeWorker::PostReadinessTick()
+{
+    gate_ticks_posted_.fetch_add(1, std::memory_order_relaxed);
+    return EnqueueFlushTick();
+}
+
 std::string CropAndEncodeWorker::crop_recorder_prepare_state() const
 {
     const uint64_t now = steady_now_ns_diag();
@@ -1609,6 +1626,7 @@ std::string CropAndEncodeWorker::crop_recorder_prepare_state() const
     const std::string worker =
         "worker_stage=" + std::to_string(worker_stage_.load(std::memory_order_relaxed)) +
         " ticks=" + std::to_string(flush_ticks_) +
+        " gate_ticks_posted=" + std::to_string(gate_ticks_posted_.load(std::memory_order_relaxed)) +
         " queue_in=" + std::to_string(const_cast<CropAndEncodeWorker*>(this)->GetCountQueueInSize()) +
         " last_tick_age_ms=" + (tick ? std::to_string((now - tick) / 1000000) : std::string("never")) +
         " last_job_age_ms=" + (job ? std::to_string((now - job) / 1000000) : std::string("never")) +
@@ -1652,15 +1670,18 @@ void CropAndEncodeWorker::OnFlushTick() {
         }
     }
 
+    worker_stage_.store(51, std::memory_order_relaxed);
     if (camera_control_ && !camera_control_->record_video && is_recording_ &&
         external_crop_ipc_) {
         external_crop_ipc_->NotifyDrain("crop_recording_draining");
     }
+    worker_stage_.store(52, std::memory_order_relaxed);
     if (camera_control_ && !camera_control_->record_video && is_recording_) {
         if (!camera_control_->recording_draining || drain_ready()) {
             finalize_recording();
         }
     }
+    worker_stage_.store(0, std::memory_order_relaxed);
 }
 
 bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {

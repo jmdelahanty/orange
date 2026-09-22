@@ -48,6 +48,8 @@ public:
     bool crop_recorder_expected() const;
     bool crop_recorder_prepared() const;
     std::string crop_recorder_prepare_state() const;
+    bool PostReadinessTick();  // EnqueueFlushTick + counter (GUI readiness gate)
+    std::atomic<uint64_t> gate_ticks_posted_{0};
     uint64_t flush_ticks_ = 0;  // OnFlushTick calls (diagnostic)
     std::atomic<int> worker_stage_{0};        // 0 idle, 1 job, 2 stream sync, 3 finalize, 4 flush/close, 5 tick
     std::atomic<uint64_t> last_tick_ns_{0};
