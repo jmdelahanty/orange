@@ -118,7 +118,7 @@ the autorun config resolve).
   "pose_mode": "real", "pose_skeleton_id": "fish_v1", "pose_crop_size_px": 192
 },
 "analytics": {
-  "device_roi": true, "device_crop": true, "fused_frame": true,
+  "device_roi": true, "device_crop": true, "fused_frame": false,  // GUI: fused on loses card-A frames (2026-09-21 bisect)
   "copy_after_pose": true, "early_owned_frame": true, "copy_stream": false,
   "yolo": { "prewarm_iterations": 3, "decimate": 1,
             "sync_event": true, "gpu_timing": true,

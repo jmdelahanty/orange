@@ -92,6 +92,19 @@ GUI validation: `scripts/run_gui_fourcam_external_ipc_validation.sh` then
 `scripts/validate_gui_ptp_recording.py --latest-complete`; the Citrus
 completion path is in `docs/manual_orange_citrus_completion_runbook.md`.
 
+GUI caveat (2026-09-21, eleven 60 s bisect runs): with
+`analytics.fused_frame = true` the GUI loses 22-122 frames/min on 2010093
+and 4-39 on 2010094 (mlnx1 `rx_discards_phy` +10k per run, PCIe write
+back-pressure into card A; headless is clean with the same graph). With
+`fused_frame = false` and device ROI, device crop and the pose device stage
+still on, the GUI loses 8/2/0/1 with the same a2d p95 (1.87 ms) and
+capture-to-pose-done p95 (2.44 ms). The host app config therefore keeps
+`analytics.fused_frame = false` for GUI use; headless specs may keep it on.
+Judge GUI runs by the mlnx1 `rx_discards_phy` delta as well as the drop
+count, since drop counts vary 5x between identical runs. The residual GUI
+loss (8/2 per minute) and the `no_result` pose rows on the non-device crop
+path (no-analytics run) are open.
+
 ## Native recorder build
 
 CUDA 13.1 toolkit at `~/.local/opt/cuda-13.1.1-nvenc`, Video Codec SDK 13.1
