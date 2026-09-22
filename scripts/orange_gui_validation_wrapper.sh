@@ -664,12 +664,27 @@ env \
 orange_pid=$!
 wrapper_pid=$$
 launcher_parent_pid="$(awk '{print $4}' "/proc/${wrapper_pid}/stat" 2>/dev/null || true)"
+# The launcher execs into sudo, so the wrapper's parent is sudo and the
+# launcher's own parent (the orchestrating script or shell) is the wrapper's
+# grandparent. Watch both: when either changes (a killed launcher reparents
+# sudo to init), terminate the GUI child instead of leaving a root-owned GUI
+# holding the cameras.
+launcher_grandparent_pid=""
+if [[ -n "${launcher_parent_pid}" && "${launcher_parent_pid}" != "1" ]]; then
+  launcher_grandparent_pid="$(awk '{print $4}' "/proc/${launcher_parent_pid}/stat" 2>/dev/null || true)"
+fi
 if [[ -n "${launcher_parent_pid}" ]]; then
   (
     while kill -0 "${orange_pid}" 2>/dev/null; do
       current_parent_pid="$(awk '{print $4}' "/proc/${wrapper_pid}/stat" 2>/dev/null || true)"
-      if [[ -z "${current_parent_pid}" || "${current_parent_pid}" != "${launcher_parent_pid}" ]]; then
-        echo "[sudo-wrapper] launcher parent exited; terminating Orange child" >&2
+      current_grandparent_pid=""
+      if [[ -n "${launcher_grandparent_pid}" && "${launcher_grandparent_pid}" != "1" ]]; then
+        current_grandparent_pid="$(awk '{print $4}' "/proc/${launcher_parent_pid}/stat" 2>/dev/null || true)"
+      fi
+      if [[ -z "${current_parent_pid}" || "${current_parent_pid}" != "${launcher_parent_pid}" ||
+            ( -n "${launcher_grandparent_pid}" && "${launcher_grandparent_pid}" != "1" &&
+              "${current_grandparent_pid}" != "${launcher_grandparent_pid}" ) ]]; then
+        echo "[sudo-wrapper] launcher parent or grandparent exited; terminating Orange child" >&2
         kill -TERM "${orange_pid}" 2>/dev/null || true
         for _ in $(seq 1 20); do
           kill -0 "${orange_pid}" 2>/dev/null || exit 0
