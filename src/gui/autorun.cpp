@@ -305,7 +305,11 @@ GuiAutorunRequests gui_autorun_update(
 
         case GuiAutorunStage::kRecording:
             if (!camera_control->record_video) {
-                gui_autorun_enter_stage(state, GuiAutorunStage::kStopStreaming);
+                gui_autorun_enter_stage(
+                    state,
+                    config.keep_streaming_after_finalize
+                        ? GuiAutorunStage::kWaitFinalize
+                        : GuiAutorunStage::kStopStreaming);
             } else if (gui_autorun_stage_elapsed_s(*state) >=
                        static_cast<double>(config.record_seconds)) {
                 gui_autorun_enter_stage(state, GuiAutorunStage::kStopRecording);
@@ -314,7 +318,13 @@ GuiAutorunRequests gui_autorun_update(
 
         case GuiAutorunStage::kStopRecording:
             if (!camera_control->record_video) {
-                gui_autorun_enter_stage(state, GuiAutorunStage::kStopStreaming);
+                // With keep-streaming, wait for the finalize to complete and
+                // then stay in the done stage with the stream on.
+                gui_autorun_enter_stage(
+                    state,
+                    config.keep_streaming_after_finalize
+                        ? GuiAutorunStage::kWaitFinalize
+                        : GuiAutorunStage::kStopStreaming);
             } else if (!state->action_requested) {
                 requests.toggle_recording = true;
                 state->action_requested = true;
