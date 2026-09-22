@@ -1,4 +1,5 @@
 #include "session/recording_session.h"
+#include "recording_startup_audit.h"
 
 #include "citrus_recording_geometry.h"
 #include "external_recorder_contract_utils.h"
@@ -3187,6 +3188,7 @@ PreparedRecordingRunStart prepare_recording_run(
 
     prepared.recording_folder = recording_folder;
     prepared.recording_id = recording_id;
+    orange::RecordingStartupAudit::Instance().BeginSession(recording_id, recording_folder);
     prepared.resolved_base_folder = resolved_base_folder;
     prepared.normalized_sink_mode = normalized_sink_mode;
     prepared.recording_sink_mode =
@@ -3626,6 +3628,7 @@ RecordingRunStartResult complete_recording_run(
                       << artifact_error << std::endl;
         }
 
+        orange::RecordingStartupAudit::Instance().Mark(std::string(), "full_frame_supervisor_started");
         std::cout << "[recording_session] GUI external recorder supervisor started."
                   << " streams=" << state->external_recorder_lifecycle.plan.streams.size()
                   << " artifact_root=" << state->external_recorder_lifecycle.plan.artifact_root
@@ -3653,6 +3656,7 @@ RecordingRunStartResult complete_recording_run(
                       << artifact_error << std::endl;
         }
 
+        orange::RecordingStartupAudit::Instance().Mark(std::string(), "crop_supervisor_started");
         std::cout << "[recording_session] GUI external crop recorder supervisor started."
                   << " streams=" << state->external_crop_recorder_lifecycle.plan.streams.size()
                   << " artifact_root=" << state->external_crop_recorder_lifecycle.plan.artifact_root
@@ -3690,6 +3694,7 @@ RecordingRunStartResult complete_recording_run(
                   << std::endl;
     }
 
+    orange::RecordingStartupAudit::Instance().MarkRecordingEnabled("sink=" + prepared.recording_sink_mode);
     camera_control->record_video = true;
     result.ok = true;
     result.recording_folder = prepared.recording_folder;
@@ -3747,6 +3752,8 @@ void request_stop_recording_run(CameraControl* camera_control)
     camera_control->record_video = false;
     camera_control->recording_draining = true;
     camera_control->stop_record = true;
+    orange::RecordingStartupAudit::Instance().Mark(std::string(), "recording_stop_requested");
+    orange::RecordingStartupAudit::Instance().EndSession();
     {
         std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
         camera_control->pending_recording_output_folder.clear();

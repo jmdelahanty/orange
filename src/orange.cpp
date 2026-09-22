@@ -1,6 +1,7 @@
 // src/orange.cpp
 
 #include "video_capture.h"
+#include "recording_startup_audit.h"
 #include <iostream>
 #include "camera.h"
 #include "imgui.h"
@@ -4323,6 +4324,22 @@ bool gui_poll_async_recording_start(
                           << " (budget " << kPushReadyBudgetS << " s)" << std::endl;
             }
             return false;
+        }
+        {
+            std::string conditions = "checked=owner_push_slots_imported>0_per_recording_camera budget_s=" +
+                std::to_string(kPushReadyBudgetS) + " waited_s=" + std::to_string(waited_s) +
+                " result=" + (waiting ? "budget_exceeded_starting_anyway" : "slots_imported") + " per_camera=";
+            for (int i = 0; i < num_cameras; ++i) {
+                RecordingIngress* ingress =
+                    orange::session::recording_ingress_for_camera(*recording_session, i);
+                if (!ingress) {
+                    continue;
+                }
+                const RecordingIngressStats st = ingress->GetStats();
+                conditions += cameras_params[i].camera_serial + ":" + std::to_string(st.external_ipc_owner_push_slots) + ";";
+            }
+            conditions += " not_checked=encoder_init,owner_push_stream,crop_recorder_connection,first_ack";
+            orange::RecordingStartupAudit::Instance().Mark(std::string(), "gui_readiness_check_passed", conditions);
         }
         if (async_start->push_ready_wait_logged) {
             std::cout << "[GUI][recording] owner-push slots "

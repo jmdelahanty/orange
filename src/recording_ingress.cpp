@@ -1,4 +1,5 @@
 #include "recording_ingress.h"
+#include "recording_startup_audit.h"
 
 #include <algorithm>
 #include <array>
@@ -405,14 +406,32 @@ protected:
             return false;  // defensive; flush ticks arrive via OnFlushTick()
         }
         in_flight_.fetch_add(1, std::memory_order_relaxed);
+        if (!audit_first_frame_) {
+            audit_first_frame_ = true;
+            orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "first_frame_submitted",
+                "queue_in=" + std::to_string(GetCountQueueIn()), entry->recording_frame_id);
+        }
         if (deferred_release_) {
             poll_protocol_lines(false);
         }
+        const auto detect_wait_start = std::chrono::steady_clock::now();
         wait_for_detect_priority(entry);
+        const double detect_wait_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - detect_wait_start).count();
         bool release_entry_now = true;
+        const auto detach_start = std::chrono::steady_clock::now();
         const bool ok = detach_frame(entry, &release_entry_now);
+        if (orange::RecordingStartupAudit::Instance().InWindow()) {
+            orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "ingress_frame",
+                std::string("ok=") + (ok ? "1" : "0") + " queue_in=" + std::to_string(GetCountQueueIn()) +
+                " source_ready_wait_ms=" + std::to_string(detect_wait_ms) +
+                " detach_ms=" + std::to_string(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - detach_start).count()) +
+                " pending_release=" + std::to_string(pending_release_count()),
+                entry->recording_frame_id);
+        }
         if (ok) {
-            frames_acked_.fetch_add(1, std::memory_order_relaxed);
+            if (frames_acked_.fetch_add(1, std::memory_order_relaxed) == 0) {
+                orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "first_frame_acked", "", entry->recording_frame_id);
+            }
         } else {
             failures_.fetch_add(1, std::memory_order_relaxed);
         }
@@ -610,10 +629,12 @@ private:
         }
         std::cout << "[ExternalIpcRecorder] Connected camera " << camera_serial_
                   << " to " << socket_path_ << std::endl;
+        orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "full_frame_recorder_connected", "socket=" + socket_path_);
         if (!read_recorder_hello()) {
             close_socket();
             return false;
         }
+        orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "full_frame_recorder_hello_done");
         return true;
     }
 
@@ -736,7 +757,9 @@ private:
         }
         (void)cudaGetLastError();
         void* ptr = nullptr;
+        const auto ipc_open_start = std::chrono::steady_clock::now();
         const cudaError_t open_status = cudaIpcOpenMemHandle(&ptr, handle, cudaIpcMemLazyEnablePeerAccess);
+        const double ipc_open_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ipc_open_start).count();
         if (open_status != cudaSuccess) {
             log_limited(std::string("owner push: cudaIpcOpenMemHandle failed: ") + cudaGetErrorString(open_status));
             return false;
@@ -752,6 +775,10 @@ private:
         owner_slots_[index] = OwnerSlot{gpu, index, ptr, bytes};
         owner_free_.push_back(index);
         owner_slots_imported_.fetch_add(1, std::memory_order_relaxed);
+        orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "staging_slot_imported",
+            "slot=" + std::to_string(index) + " gpu=" + std::to_string(gpu) + " shard=" + std::to_string(shard_id) +
+            " imported=" + std::to_string(owner_slots_imported_.load(std::memory_order_relaxed)) +
+            " ipc_open_ms=" + std::to_string(ipc_open_ms) + " peer_access_ms_included=0");
         owner_peer_shard_id_ = shard_id;
         owner_shard_count_ = shard_count;
         if (owner_free_.size() == 1) {
@@ -856,10 +883,14 @@ private:
         }
         cudaSetDevice(source_gpu_id_);
         if (!owner_push_stream_) {
+            orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "owner_push_stream_create_start", "", entry->recording_frame_id);
             int lowest = 0, highest = 0;
             cudaDeviceGetStreamPriorityRange(&lowest, &highest);
-            if (cudaStreamCreateWithPriority(&owner_push_stream_, cudaStreamNonBlocking, lowest) != cudaSuccess ||
-                cudaEventCreateWithFlags(&owner_push_done_, cudaEventDisableTiming | cudaEventBlockingSync) != cudaSuccess) {
+            const bool stream_ok =
+                cudaStreamCreateWithPriority(&owner_push_stream_, cudaStreamNonBlocking, lowest) == cudaSuccess &&
+                cudaEventCreateWithFlags(&owner_push_done_, cudaEventDisableTiming | cudaEventBlockingSync) == cudaSuccess;
+            orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "owner_push_stream_create_done", stream_ok ? "ok" : "failed", entry->recording_frame_id);
+            if (!stream_ok) {
                 log_limited("owner push: stream/event creation failed; falling back");
                 std::lock_guard<std::mutex> lock(owner_mutex_);
                 owner_free_.push_back(slot.index);
@@ -973,6 +1004,9 @@ private:
             while (after_ns > seen_after && !owner_push_done_after_capture_max_ns_.compare_exchange_weak(seen_after, after_ns, std::memory_order_relaxed)) {}
         }
         if (owner_pushes_.fetch_add(1, std::memory_order_relaxed) == 0) {
+            orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "first_owner_push_done",
+                "gpu=" + std::to_string(slot.gpu) + " slot=" + std::to_string(slot.index) + " push_ms=" + std::to_string(wait_ns / 1e6),
+                entry->recording_frame_id);
             std::cout << "[ExternalIpcRecorder] camera=" << camera_serial_
                       << " owner push: first frame pushed to gpu " << slot.gpu << " slot " << slot.index
                       << " in " << (wait_ns / 1e6) << " ms" << std::endl;
@@ -1548,6 +1582,7 @@ private:
     // The recorder returns slots with STAGEFREE. A push from the source die
     // holds 6 GB/s under load where the recorder's pull collapses to 3.
     bool owner_push_ = false;
+    bool audit_first_frame_ = false;
     struct OwnerSlot {
         int gpu = -1;
         size_t index = 0;
@@ -1596,6 +1631,13 @@ private:
                 entry->recording_folder + "/Cam" + camera_serial_ + "_owner_push.csv",
                 "kind,recording_frame_id,local_frame_id,capture_sys_ns,push_start_steady_ns,"
                 "push_done_steady_ns,wait_ms,age_at_push_ms,queue_in,pending_release,slot,gpu\n");
+        }
+        if (orange::RecordingStartupAudit::Instance().InWindow()) {
+            orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "owner_push_decision",
+                std::string("kind=") + kind + " age_ms=" + std::to_string(age_ms) +
+                " push_ms=" + std::to_string(done_ns > start_ns ? (done_ns - start_ns) / 1e6 : 0.0) +
+                " slot=" + std::to_string(slot) + " gpu=" + std::to_string(gpu),
+                entry->recording_frame_id);
         }
         if (!owner_push_csv_.IsOpen()) {
             return;

@@ -1,6 +1,7 @@
 // src/acquire_frames.cpp
 
 #include "acquire_frames.h"
+#include "recording_startup_audit.h"
 #include "nvtx_profiling.h"
 #include "NvEncoder/NvCodecUtils.h"
 #include "image_processing.h"
@@ -1995,9 +1996,20 @@ void acquire_frames(
             struct timespec ts_rt1;
             clock_gettime(CLOCK_REALTIME, &ts_rt1);
             uint64_t real_time = (ts_rt1.tv_sec * 1000000000LL) + ts_rt1.tv_nsec;
-            camera_state.dropped_frames += count_camera_frame_id_gaps(
-                camera_state.id_prev,
-                received_frame->frame_id);
+            {
+                const uint64_t gap_count = count_camera_frame_id_gaps(
+                    camera_state.id_prev,
+                    received_frame->frame_id);
+                camera_state.dropped_frames += gap_count;
+                if (gap_count > 0) {
+                    orange::RecordingStartupAudit::Instance().Mark(
+                        camera_params->camera_serial, "camera_frame_gap",
+                        "missing=" + std::to_string(gap_count) + " next_camera_frame_id=" +
+                            std::to_string(received_frame->frame_id) + " receive_realtime_ns=" +
+                            std::to_string(real_time) + " dropped_total=" + std::to_string(camera_state.dropped_frames),
+                        camera_state.frame_count + 1);
+                }
+            }
             camera_state.id_prev = next_camera_frame_id_prev(received_frame->frame_id);
             camera_state.frames_recd++;
             camera_state.frame_count++;

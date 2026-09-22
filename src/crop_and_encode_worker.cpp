@@ -1,6 +1,7 @@
 // src/crop_and_encode_worker.cpp
 
 #include "crop_and_encode_worker.h"
+#include "recording_startup_audit.h"
 #include "crop_preview_worker.h"
 #include "crop_producer_worker.h"
 #include "external_recorder_ipc_protocol.h"
@@ -357,10 +358,12 @@ private:
         }
         std::cout << "[ExternalCropIpcRecorder] Connected crop stream "
                   << camera_serial_ << " to " << socket_path_ << std::endl;
+        orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "crop_recorder_connected", "socket=" + socket_path_);
         if (!read_recorder_hello()) {
             close_socket();
             return false;
         }
+        orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "crop_recorder_hello_done");
         return true;
     }
 
