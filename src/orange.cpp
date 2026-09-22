@@ -4893,6 +4893,12 @@ int main(int /*argc*/, char ** /*args*/) {
             app_storage_config.gui_external_ipc_native_local_input ? "1" : "0",
             "full-frame external recorder native local input");
     }
+    if (app_storage_config.gui_display_skip_pushed_gops > 0) {
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_DISPLAY_SKIP_PUSHED_GOPS",
+            std::to_string(app_storage_config.gui_display_skip_pushed_gops),
+            "display preview skips peer-routed GOPs (GOP length)");
+    }
     if (app_storage_config.gui_external_ipc_prepare_fault_inject) {
         set_gui_env_from_app_config_if_absent(
             "ORANGE_EXTERNAL_RECORDER_PREPARE_FAULT_INJECT",

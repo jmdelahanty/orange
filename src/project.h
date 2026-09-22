@@ -86,6 +86,10 @@ struct AppStorageConfig {
     int gui_stream_downsample = -1;
     std::string gui_display_profile;
     int gui_display_preview_max_fps = -1;
+    // Diagnostic (2026-09-22): when > 0 (the recording GOP length), the
+    // full-frame preview skips frames whose GOP is routed to the peer shard,
+    // so the 20 MB display read never overlaps an owner push on the same die.
+    int gui_display_skip_pushed_gops = 0;
     int gui_swap_interval = -1;
     int gui_frame_max_fps = -1;
     bool gui_show_speed_graphs = false;

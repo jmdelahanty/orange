@@ -1790,6 +1790,16 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
             }
             if (!read_optional_bounded_int_field(
                     display,
+                    "skip_pushed_gops",
+                    &config.gui_display_skip_pushed_gops,
+                    0,
+                    10000,
+                    error_out,
+                    "gui.display")) {
+                return false;
+            }
+            if (!read_optional_bounded_int_field(
+                    display,
                     "display_preview_max_fps",
                     &config.gui_display_preview_max_fps,
                     0,

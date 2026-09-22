@@ -2075,8 +2075,25 @@ void acquire_frames(
             // display worker) while analytics and recording stay at full rate.
             static const bool preview_disabled =
                 env_flag_enabled("ORANGE_DISPLAY_PREVIEW_DISABLE", false);
+            // Diagnostic (2026-09-22): ORANGE_DISPLAY_SKIP_PUSHED_GOPS=<gop length>
+            // keeps the preview off frames whose GOP goes to the peer shard
+            // (gop_modulo, two shards, offset 0): the 20 MB display read from
+            // the landing die was slowing the next frame's owner push 2.6x on
+            // every display frame and the fallback pull that followed read the
+            // landing die under load; the soak's three card-A losses sat 3 to
+            // 5 frames after a display frame at the end of pushed GOPs.
+            static const int skip_pushed_gop_len = []() {
+                const char* env = std::getenv("ORANGE_DISPLAY_SKIP_PUSHED_GOPS");
+                return (env && *env) ? std::atoi(env) : 0;
+            }();
+            bool display_eligible = true;
+            if (skip_pushed_gop_len > 0 && camera_control->record_video) {
+                const uint64_t next_recording_frame_id = local_recording_frame_count + 1;
+                const uint64_t gop_index = (next_recording_frame_id - 1) / static_cast<uint64_t>(skip_pushed_gop_len);
+                display_eligible = (gop_index % 2) == 0;
+            }
             bool will_display = false;
-            if (!preview_disabled && camera_select->stream_on && openGLDisplay) {
+            if (!preview_disabled && display_eligible && camera_select->stream_on && openGLDisplay) {
                 display_preview_eligible_frames++;
                 will_display = display_preview_cadence.ShouldDisplayNextFrame();
                 if (will_display) {
