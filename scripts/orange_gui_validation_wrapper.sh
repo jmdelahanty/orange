@@ -686,11 +686,14 @@ if [[ -n "${launcher_parent_pid}" ]]; then
               "${current_grandparent_pid}" != "${launcher_grandparent_pid}" ) ]]; then
         echo "[sudo-wrapper] launcher parent or grandparent exited; terminating Orange child" >&2
         kill -TERM "${orange_pid}" 2>/dev/null || true
-        for _ in $(seq 1 20); do
+        # A streaming four-camera GUI needs well over 5 s to close its
+        # cameras and recorders; a KILL in the middle of that leaves a
+        # camera's control channel locked until the camera is rebooted.
+        for _ in $(seq 1 240); do
           kill -0 "${orange_pid}" 2>/dev/null || exit 0
           sleep 0.25
         done
-        echo "[sudo-wrapper] Orange child did not exit after TERM; sending KILL" >&2
+        echo "[sudo-wrapper] Orange child did not exit 60 s after TERM; sending KILL" >&2
         kill -KILL "${orange_pid}" 2>/dev/null || true
         exit 0
       fi
