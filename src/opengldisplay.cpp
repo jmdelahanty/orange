@@ -17,6 +17,7 @@
 #include "worker_entry_release.h"
 #include <algorithm>
 #include <cstring>
+#include <string>
 
 #define display_gpu_id 0 
 
@@ -32,6 +33,16 @@ bool SkipDisplayYoloWait()
         return on;
     }();
     return enabled;
+}
+
+bool env_flag_enabled(const char* name, bool default_value)
+{
+    const char* value = std::getenv(name);
+    if (!value || !*value) return default_value;
+    std::string normalized(value);
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return normalized != "0" && normalized != "false" && normalized != "off" && normalized != "no";
 }
 
 int display_downsample_factor(const CameraEachSelect* camera_select)
@@ -100,7 +111,35 @@ COpenGLDisplay::COpenGLDisplay(const char* name, CameraParams *camera_params, Ca
 
     size_t staging_buffer_size = (size_t)camera_params->width * camera_params->height * 4;
     ck(cudaHostAlloc(&h_p2p_copy_buffer_, staging_buffer_size, cudaHostAllocDefault));
-    std::cout << "[OPENGL_DISPLAY] Constructor completed for " << camera_params->camera_name << std::endl;
+
+    // Source-side preview downsample (default on; ORANGE_DISPLAY_SOURCE_DOWNSAMPLE=0
+    // restores the full-resolution transfer for A/B diagnostics). Only the
+    // Mono8 path is covered; color cameras keep the debayer path.
+    source_downsample_factor_ = display_downsample;
+    source_downsample_enabled_ =
+        env_flag_enabled("ORANGE_DISPLAY_SOURCE_DOWNSAMPLE", true) &&
+        !camera_params->color &&
+        source_downsample_factor_ > 1;
+    if (source_downsample_enabled_) {
+        ck(cudaSetDevice(camera_params->gpu_id));
+        ck(cudaStreamCreateWithFlags(&source_stream_, cudaStreamNonBlocking));
+        ck(cudaEventCreateWithFlags(&source_done_event_, cudaEventDisableTiming));
+        ck(cudaMalloc(
+            &d_source_downsample_buffer_,
+            static_cast<size_t>(output_display_size_.width) *
+                static_cast<size_t>(output_display_size_.height)));
+        ck(cudaMemsetAsync(
+            d_source_downsample_buffer_,
+            0,
+            static_cast<size_t>(output_display_size_.width) *
+                static_cast<size_t>(output_display_size_.height),
+            source_stream_));
+        ck(cudaStreamSynchronize(source_stream_));
+        ck(cudaSetDevice(display_gpu_id));
+    }
+    std::cout << "[OPENGL_DISPLAY] Constructor completed for " << camera_params->camera_name
+              << " source_downsample=" << (source_downsample_enabled_ ? 1 : 0)
+              << " factor=" << source_downsample_factor_ << std::endl;
 }
 
 COpenGLDisplay::~COpenGLDisplay()
@@ -121,6 +160,16 @@ COpenGLDisplay::~COpenGLDisplay()
     if (d_skeleton_for_drawing_) cudaFree(d_skeleton_for_drawing_);
     if (d_display_mono_resize_buffer_) cudaFree(d_display_mono_resize_buffer_);
     if (d_display_resize_buffer_) cudaFree(d_display_resize_buffer_);
+
+    if (source_downsample_enabled_ && camera_params) {
+        if (cudaSetDevice(camera_params->gpu_id) != cudaSuccess) {
+            std::cerr << "[OPENGL_DISPLAY] destructor: source cudaSetDevice failed; continuing teardown" << std::endl;
+        }
+        if (source_stream_) cudaStreamSynchronize(source_stream_);
+        if (source_done_event_) cudaEventDestroy(source_done_event_);
+        if (source_stream_) cudaStreamDestroy(source_stream_);
+        if (d_source_downsample_buffer_) cudaFree(d_source_downsample_buffer_);
+    }
 }
 
 
@@ -172,6 +221,109 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
     size_t frame_size = (size_t)camera_params->width * camera_params->height;
 
     unsigned char* display_source = latest_frame->delayed_consumer_image();
+
+    if (source_downsample_enabled_) {
+        // Reduce on the acquisition GPU first so only the preview-sized image
+        // (1/factor^2 of the frame) leaves the landing die. The pool buffer is
+        // read only on source_stream_; m_stream waits on source_done_event_
+        // and is synchronized before the pool reference is released below, so
+        // buffer lifetime is unchanged from the full-frame path.
+        const int ds_width = mono_resize_output_size_.width;
+        const int ds_height = mono_resize_output_size_.height;
+        const size_t ds_bytes = static_cast<size_t>(ds_width) * static_cast<size_t>(ds_height);
+        const bool cross_gpu = camera_params->gpu_id != display_gpu_id;
+
+        ck(cudaSetDevice(camera_params->gpu_id));
+        if (source_ready_event) {
+            ck(cudaStreamWaitEvent(source_stream_, *source_ready_event, 0));
+        }
+        launch_mono_box_downsample_kernel(
+            d_source_downsample_buffer_,
+            display_source,
+            static_cast<int>(camera_params->width),
+            static_cast<int>(camera_params->height),
+            source_downsample_factor_,
+            source_stream_);
+        if (cross_gpu) {
+            ck(cudaMemcpyAsync(h_p2p_copy_buffer_, d_source_downsample_buffer_, ds_bytes, cudaMemcpyDeviceToHost, source_stream_));
+        }
+        ck(cudaEventRecord(source_done_event_, source_stream_));
+
+        ck(cudaSetDevice(display_gpu_id));
+        ck(cudaStreamWaitEvent(m_stream, source_done_event_, 0));
+        if (cross_gpu) {
+            ck(cudaMemcpyAsync(d_display_mono_resize_buffer_, h_p2p_copy_buffer_, ds_bytes, cudaMemcpyHostToDevice, m_stream));
+            display_cross_gpu_frames_++;
+        } else {
+            ck(cudaMemcpyAsync(d_display_mono_resize_buffer_, d_source_downsample_buffer_, ds_bytes, cudaMemcpyDeviceToDevice, m_stream));
+            display_same_gpu_frames_++;
+        }
+        display_source_downsample_frames_++;
+
+        const bool draw_overlay = allow_overlay && !latest_frame->detections.empty();
+        if (!draw_overlay) {
+            auto staging_lock = orange::gui::lock_preview_staging(display_buffer_pbo_cuda_ptr_);
+            launch_mono_to_rgba_kernel(
+                display_buffer_pbo_cuda_ptr_,
+                d_display_mono_resize_buffer_,
+                ds_width,
+                ds_height,
+                m_stream);
+            ck(cudaStreamSynchronize(m_stream));
+        } else {
+            // Expand to RGBA at preview size, draw boxes with coordinates
+            // scaled from the full frame, then copy into the staging buffer.
+            launch_mono_to_rgba_kernel(
+                d_display_resize_buffer_,
+                d_display_mono_resize_buffer_,
+                ds_width,
+                ds_height,
+                m_stream);
+            ck(cudaMemcpyAsync(d_detections_for_drawing_,
+                               latest_frame->detections.data(),
+                               latest_frame->detections.size() * sizeof(pose::Object),
+                               cudaMemcpyHostToDevice,
+                               m_stream));
+            gpu_draw_box_scaled(
+                d_display_resize_buffer_,
+                ds_width,
+                ds_height,
+                d_detections_for_drawing_,
+                static_cast<int>(latest_frame->detections.size()),
+                1.0f / static_cast<float>(source_downsample_factor_),
+                m_stream);
+            auto staging_lock = orange::gui::lock_preview_staging(display_buffer_pbo_cuda_ptr_);
+            ck(cudaMemcpyAsync(display_buffer_pbo_cuda_ptr_, d_display_resize_buffer_, ds_bytes * 4, cudaMemcpyDeviceToDevice, m_stream));
+            ck(cudaStreamSynchronize(m_stream));
+        }
+        preview_serial_.fetch_add(1, std::memory_order_acq_rel);
+
+        auto now = std::chrono::steady_clock::now();
+        std::chrono::duration<double> log_elapsed = now - last_display_log_time_;
+        if (log_elapsed.count() >= 1.0) {
+            std::cout << "[DISPLAY] Cam " << camera_params->camera_serial
+                      << " GPU " << camera_params->gpu_id
+                      << " display_gpu " << display_gpu_id
+                      << " same_gpu=" << display_same_gpu_frames_
+                      << " cross_gpu=" << display_cross_gpu_frames_
+                      << " source_downsample=" << display_source_downsample_frames_
+                      << " overlay=" << (draw_overlay ? 1 : 0)
+                      << " factor=" << source_downsample_factor_
+                      << std::endl;
+            display_same_gpu_frames_ = 0;
+            display_cross_gpu_frames_ = 0;
+            display_source_downsample_frames_ = 0;
+            last_display_log_time_ = now;
+        }
+
+        release_worker_entry_to_recycle(
+            m_recycle_queue,
+            latest_frame,
+            WorkerEntryReleaseContext{
+                camera_params ? camera_params->camera_serial.c_str() : nullptr,
+                "opengl_display"});
+        return false;
+    }
 
     // Handle P2P copy if the acquisition GPU is different from the display GPU
     if (camera_params->gpu_id != display_gpu_id) {

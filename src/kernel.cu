@@ -225,7 +225,7 @@ void gpu_draw_cicles(unsigned char* src, int width, int height, float* d_points,
 }
 
 
-__global__ void gpu_draw_box_kernel(unsigned char* src, const int width, const int height, const pose::Object* d_detections, int num_objects)
+__global__ void gpu_draw_box_kernel(unsigned char* src, const int width, const int height, const pose::Object* d_detections, int num_objects, const float coord_scale)
 {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
     const int y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -235,10 +235,10 @@ __global__ void gpu_draw_box_kernel(unsigned char* src, const int width, const i
         for (int i = 0; i < num_objects; i++) {
             // Read detection data for the current object
             const pose::Object det = d_detections[i];
-            const float x1 = det.rect.x;
-            const float y1 = det.rect.y;
-            const float x2 = det.rect.x + det.rect.width;
-            const float y2 = det.rect.y + det.rect.height;
+            const float x1 = det.rect.x * coord_scale;
+            const float y1 = det.rect.y * coord_scale;
+            const float x2 = (det.rect.x + det.rect.width) * coord_scale;
+            const float y2 = (det.rect.y + det.rect.height) * coord_scale;
 
             // Check if the current pixel (x,y) is on one of the four lines of the bounding box
             // Add a thickness of 2 pixels for better visibility
@@ -260,7 +260,14 @@ void gpu_draw_box(unsigned char* src, int width, int height, const pose::Object*
 {
     dim3 threads_per_block(32, 32);
     dim3 num_blocks((width + threads_per_block.x -1) / threads_per_block.x, (height + threads_per_block.y -1) / threads_per_block.y);
-    gpu_draw_box_kernel <<<num_blocks, threads_per_block, 0, stream>>> (src, width, height, d_detections, num_objects);
+    gpu_draw_box_kernel <<<num_blocks, threads_per_block, 0, stream>>> (src, width, height, d_detections, num_objects, 1.0f);
+}
+
+void gpu_draw_box_scaled(unsigned char* src, int width, int height, const pose::Object* d_detections, int num_objects, float coord_scale, cudaStream_t stream)
+{
+    dim3 threads_per_block(32, 32);
+    dim3 num_blocks((width + threads_per_block.x -1) / threads_per_block.x, (height + threads_per_block.y -1) / threads_per_block.y);
+    gpu_draw_box_kernel <<<num_blocks, threads_per_block, 0, stream>>> (src, width, height, d_detections, num_objects, coord_scale);
 }
 
 
@@ -350,6 +357,36 @@ void launch_mono_to_rgba_kernel(unsigned char* dst_rgba, const unsigned char* sr
     dim3 num_blocks((width + threads_per_block.x - 1) / threads_per_block.x,
                    (height + threads_per_block.y - 1) / threads_per_block.y);
     mono_to_rgba_kernel<<<num_blocks, threads_per_block, 0, stream>>>(dst_rgba, src_mono, width, height);
+}
+
+__global__ void mono_box_downsample_kernel(unsigned char* dst_mono, const unsigned char* src_mono, const int src_width, const int src_height, const int factor, const int dst_width, const int dst_height)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= dst_width || y >= dst_height) return;
+
+    const unsigned char* block = src_mono + (static_cast<size_t>(y) * factor) * src_width + static_cast<size_t>(x) * factor;
+    unsigned int sum = 0;
+    for (int dy = 0; dy < factor; ++dy) {
+        const unsigned char* row = block + static_cast<size_t>(dy) * src_width;
+        for (int dx = 0; dx < factor; ++dx) {
+            sum += row[dx];
+        }
+    }
+    const unsigned int count = static_cast<unsigned int>(factor * factor);
+    dst_mono[static_cast<size_t>(y) * dst_width + x] = static_cast<unsigned char>((sum + count / 2) / count);
+}
+
+void launch_mono_box_downsample_kernel(unsigned char* dst_mono, const unsigned char* src_mono, int src_width, int src_height, int factor, cudaStream_t stream)
+{
+    if (factor < 1) factor = 1;
+    const int dst_width = src_width / factor;
+    const int dst_height = src_height / factor;
+    if (dst_width <= 0 || dst_height <= 0) return;
+    dim3 threads_per_block(32, 8);
+    dim3 num_blocks((dst_width + threads_per_block.x - 1) / threads_per_block.x,
+                    (dst_height + threads_per_block.y - 1) / threads_per_block.y);
+    mono_box_downsample_kernel<<<num_blocks, threads_per_block, 0, stream>>>(dst_mono, src_mono, src_width, src_height, factor, dst_width, dst_height);
 }
 
 __global__ void interleave_uv_planes_kernel(

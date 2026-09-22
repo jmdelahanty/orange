@@ -49,6 +49,15 @@ private:
     NppiRect output_roi_for_display_resize_;
     uint64_t display_same_gpu_frames_ = 0;
     uint64_t display_cross_gpu_frames_ = 0;
+    // Source-side (landing die) preview downsample. When enabled, the worker
+    // reduces the frame on the acquisition GPU and only the reduced image
+    // crosses to the display GPU, instead of the full-resolution owned copy.
+    bool source_downsample_enabled_ = false;
+    int source_downsample_factor_ = 1;
+    unsigned char* d_source_downsample_buffer_ = nullptr;  // acquisition GPU
+    cudaStream_t source_stream_ = nullptr;                 // acquisition GPU
+    cudaEvent_t source_done_event_ = nullptr;              // acquisition GPU
+    uint64_t display_source_downsample_frames_ = 0;
     std::atomic<uint64_t> preview_serial_{0};
     std::chrono::steady_clock::time_point last_display_log_time_;
 

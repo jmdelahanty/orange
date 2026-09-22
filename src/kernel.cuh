@@ -12,6 +12,9 @@ void rgba2rgb_convert(unsigned char* dest, unsigned char* src, int width, int he
 void rgba2bgr_convert(unsigned char* dest, unsigned char* src, int width, int height, cudaStream_t stream);
 void gpu_draw_cicles(unsigned char* src, int width, int height, float* d_points, int num_points, cudaStream_t stream);
 void gpu_draw_box(unsigned char* src, int width, int height, const pose::Object* d_detections, int num_objects, cudaStream_t stream);
+// Same as gpu_draw_box, but detection coordinates are multiplied by
+// coord_scale before drawing (for boxes on a downsampled preview).
+void gpu_draw_box_scaled(unsigned char* src, int width, int height, const pose::Object* d_detections, int num_objects, float coord_scale, cudaStream_t stream);
 void gpu_draw_rat_pose(unsigned char* src, int width, int height, float* d_points, unsigned int* d_skeleton, cudaStream_t stream, int num_channels);
 
 void gpu_crop_and_resize(
@@ -63,5 +66,8 @@ void launch_rgba_to_nv12_kernel(const unsigned char* d_rgba,
 
 void launch_mono_to_rgb_kernel(unsigned char* dst_rgb, const unsigned char* src_mono, int width, int height, cudaStream_t stream);
 void launch_mono_to_rgba_kernel(unsigned char* dst_rgba, const unsigned char* src_mono, int width, int height, cudaStream_t stream);
+// Box-average downsample of a Mono8 image by an integer factor. dst is
+// (src_width / factor) x (src_height / factor), tightly packed.
+void launch_mono_box_downsample_kernel(unsigned char* dst_mono, const unsigned char* src_mono, int src_width, int src_height, int factor, cudaStream_t stream);
 
 #endif // KERNEL_H
