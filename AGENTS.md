@@ -100,6 +100,13 @@ back-pressure into card A; headless is clean with the same graph). With
 still on, the GUI loses 8/2/0/1 with the same a2d p95 (1.87 ms) and
 capture-to-pose-done p95 (2.44 ms). The host app config therefore keeps
 `analytics.fused_frame = false` for GUI use; headless specs may keep it on.
+Root cause found later the same evening: the preview PBOs stayed CUDA-mapped
+while OpenGL read them (undefined behaviour per the CUDA interop contract);
+fixed in `src/gui/texture_resources.cpp` + `gui/preview_staging_lock.h`
+(map, copy, unmap, sync, then upload; exclusive staging ownership). With the
+fix, fused on with live previews lost 0/0 steady-state frames on
+2010093/2010094 (mlnx1 +843/+0). Re-enable `fused_frame` in the app config
+only after a repeat 60 s gate and a longer GUI soak with the fix.
 Judge GUI runs by the mlnx1 `rx_discards_phy` delta as well as the drop
 count, since drop counts vary 5x between identical runs. The residual GUI
 loss (8/2 per minute) and the `no_result` pose rows on the non-device crop
