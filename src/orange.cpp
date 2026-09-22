@@ -207,6 +207,8 @@ struct GuiAsyncRecordingStartState {
     // pushed instead of pulled (the pull path costs camera frames on startup).
     std::chrono::steady_clock::time_point supervisors_done_at{};
     bool push_ready_wait_logged = false;
+    std::chrono::steady_clock::time_point last_readiness_poll_at{};  // diagnostic: poll cadence
+    uint64_t readiness_polls = 0;
     // Deferred local-control ack bookkeeping, copied from the start request
     // at launch time (the live request state may be overwritten by a newer
     // command while this start is still pending).
@@ -4298,6 +4300,21 @@ bool gui_poll_async_recording_start(
     if (async_start->supervisors_done_at == std::chrono::steady_clock::time_point{}) {
         async_start->supervisors_done_at = std::chrono::steady_clock::now();
     }
+    {
+        // Diagnostic (2026-09-22): the crop recorder handshake progresses only
+        // on ticks posted from this poll, so a gap between polls is a gap in
+        // the handshake. Log any gap above 250 ms.
+        const auto poll_now = std::chrono::steady_clock::now();
+        if (async_start->last_readiness_poll_at != std::chrono::steady_clock::time_point{}) {
+            const double gap_s = std::chrono::duration<double>(poll_now - async_start->last_readiness_poll_at).count();
+            if (gap_s > 0.25) {
+                std::cout << "[GUI][recording] readiness poll gap " << gap_s << " s (poll #"
+                          << async_start->readiness_polls << ")" << std::endl;
+            }
+        }
+        async_start->last_readiness_poll_at = poll_now;
+        ++async_start->readiness_polls;
+    }
     if (async_start->outcome.error_message.empty() && recording_session) {
         static const double kPushReadyBudgetS = [] {
             const char* env = std::getenv("ORANGE_GUI_OWNER_PUSH_READY_TIMEOUT_S");
@@ -4343,6 +4360,7 @@ bool gui_poll_async_recording_start(
         {
             std::string conditions = "checked=owner_push_slots_imported>=expected_per_recording_camera budget_s=" +
                 std::to_string(kPushReadyBudgetS) + " waited_s=" + std::to_string(waited_s) +
+                " readiness_polls=" + std::to_string(async_start->readiness_polls) +
                 " result=" + (waiting ? "budget_exceeded" : "all_prepared") + " per_camera=";
             for (int i = 0; i < num_cameras; ++i) {
                 RecordingIngress* ingress =
@@ -5613,6 +5631,14 @@ int main(int /*argc*/, char ** /*args*/) {
             std::this_thread::sleep_until(previous_gui_frame_start + gui_frame_min_interval);
         }
         const auto gui_frame_start = std::chrono::steady_clock::now();
+        {
+            // Diagnostic (2026-09-22): a main-loop iteration above 300 ms
+            // starves every per-frame poll (readiness ticks, local control).
+            const double frame_gap_s = std::chrono::duration<double>(gui_frame_start - previous_gui_frame_start).count();
+            if (frame_gap_s > 0.3 && previous_gui_frame_start != std::chrono::steady_clock::time_point{}) {
+                std::cout << "[GUI][mainloop] slow iteration " << frame_gap_s << " s" << std::endl;
+            }
+        }
         previous_gui_frame_start = gui_frame_start;
         GuiFrameTimingSample gui_frame_timing;
         orange::gui::GuiCameraStartupEvent startup_event =
