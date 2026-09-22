@@ -112,7 +112,12 @@ recording) was the recorders' first-use CUDA IPC imports: fixed by the
 PREPARE/PREPARED handshake (33189a2; both recorder builds), crop recorders
 prepared before recording is enabled, and a strict readiness gate. First
 strict GUI gate pass: `2026_09_21_22_28_51` (0 drops, 0 NIC discards on
-all four ports, live previews). Diagnostics for any regression:
+all four ports, live previews). With the full-slot gate and the recorder's
+preparation peer-pull warm-up (f8a8067), three consecutive fresh starts
+(`2026_09_21_22_55_55`, `_22_56_51`, `_22_57_47`) lost no frames and no
+NIC port recorded a discard. If a start is refused by the strict gate the
+GUI stays open at `stage=failed`; the root-owned process must be closed by
+hand (`sudo pkill -f targets/release/orange`) before the next run. Diagnostics for any regression:
 `scripts/recording_startup_audit_report.py <folder>` (audit is always on)
 and `ethtool -S mlnx{1,2}_p{1,2}_25g` deltas around the run.
 Judge GUI runs by the mlnx1 `rx_discards_phy` delta as well as the drop
