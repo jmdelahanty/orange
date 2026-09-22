@@ -78,6 +78,7 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <pthread.h>
 #include <cmath>
 #include <fstream>
 #include <array>
@@ -4826,6 +4827,26 @@ static void gui_termination_signal_handler(int signal_number)
 {
     g_gui_termination_signal = signal_number;
 }
+static sigset_t gui_termination_signal_set()
+{
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGTERM);
+    sigaddset(&set, SIGINT);
+    sigaddset(&set, SIGHUP);
+    return set;
+}
+// Block the termination signals in the calling thread. Called first thing in
+// main, before any thread exists, so every worker, SDK and driver thread
+// inherits the blocked mask: a signal delivered to an acquisition thread
+// inside the Rivermax receive call otherwise breaks the stream
+// (rmx_input_get_next_chunk_ld error 500, then a GetFrame error storm). The
+// main loop consumes pending signals with sigtimedwait instead.
+static void gui_block_termination_signals_in_this_thread()
+{
+    sigset_t set = gui_termination_signal_set();
+    pthread_sigmask(SIG_BLOCK, &set, nullptr);
+}
 static void gui_install_termination_signal_handlers()
 {
     struct sigaction action{};
@@ -4836,8 +4857,18 @@ static void gui_install_termination_signal_handlers()
     sigaction(SIGINT, &action, nullptr);
     sigaction(SIGHUP, &action, nullptr);
 }
+// Non-blocking check for a pending (blocked) termination signal.
+static int gui_poll_termination_signal()
+{
+    sigset_t set = gui_termination_signal_set();
+    const timespec zero{0, 0};
+    const int signal_number = sigtimedwait(&set, nullptr, &zero);
+    return signal_number > 0 ? signal_number : 0;
+}
 
 int main(int /*argc*/, char ** /*args*/) {
+    // Must precede every thread creation (see gui_block_termination_signals_in_this_thread).
+    gui_block_termination_signals_in_this_thread();
 
     // Initialize the YOLOv8 plugins
     YOLOv8::initialize_plugins();
@@ -6042,6 +6073,9 @@ int main(int /*argc*/, char ** /*args*/) {
                 glfwSetWindowShouldClose(window->render_target, GLFW_TRUE);
                 gui_local_control_exit_pending_after_finalize = false;
             }
+        }
+        if (g_gui_termination_signal == 0) {
+            g_gui_termination_signal = gui_poll_termination_signal();
         }
         if (g_gui_termination_signal != 0 && !gui_signal_exit_pending) {
             gui_signal_exit_pending = true;
