@@ -423,10 +423,16 @@ protected:
         if (orange::RecordingStartupAudit::Instance().InWindow()) {
             orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "ingress_frame",
                 std::string("ok=") + (ok ? "1" : "0") + " queue_in=" + std::to_string(GetCountQueueIn()) +
-                " source_ready_wait_ms=" + std::to_string(detect_wait_ms) +
+                " detect_priority_wait_ms=" + std::to_string(detect_wait_ms) +
                 " detach_ms=" + std::to_string(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - detach_start).count()) +
+                " ready_sync_ms=" + std::to_string(audit_phase_ready_sync_ms_) +
+                " export_ms=" + std::to_string(audit_phase_export_ms_) + (audit_phase_export_new_handle_ ? " new_handle=1" : " new_handle=0") +
+                " push_ms=" + std::to_string(audit_phase_push_ms_) +
+                " send_ms=" + std::to_string(audit_phase_send_ms_) +
+                " ack_wait_ms=" + std::to_string(audit_phase_ack_ms_) +
                 " pending_release=" + std::to_string(pending_release_count()),
                 entry->recording_frame_id);
+            audit_phase_export_new_handle_ = false;
         }
         if (ok) {
             if (frames_acked_.fetch_add(1, std::memory_order_relaxed) == 0) {
@@ -1343,6 +1349,8 @@ private:
         // delayed_consumer_event() blocks until the owned copy's ready
         // event has been recorded for this frame (video_capture.h).
         cudaEvent_t* ready_event = entry->delayed_consumer_event();
+        audit_phase_ready_sync_ms_ = audit_phase_export_ms_ = audit_phase_push_ms_ = audit_phase_send_ms_ = audit_phase_ack_ms_ = 0.0;
+        const auto phase_ready_start = std::chrono::steady_clock::now();
         if (ready_event) {
             const cudaError_t wait_status = cudaEventSynchronize(*ready_event);
             if (wait_status != cudaSuccess) {
@@ -1363,8 +1371,11 @@ private:
         }
 
         std::string handle_hex;
+        audit_phase_ready_sync_ms_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - phase_ready_start).count();
+        const auto phase_export_start = std::chrono::steady_clock::now();
         auto handle_it = handle_cache_.find(source_ptr);
         if (handle_it == handle_cache_.end()) {
+            audit_phase_export_new_handle_ = true;
             cudaIpcMemHandle_t handle{};
             const cudaError_t handle_status = cudaIpcGetMemHandle(
                 &handle,
@@ -1394,7 +1405,10 @@ private:
         // Owner push: frames for the peer shard are copied into the
         // recorder's slot from here; the recorder then never reads the pool
         // buffer, so no deferred release is needed for them.
+        audit_phase_export_ms_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - phase_export_start).count();
+        const auto phase_push_start = std::chrono::steady_clock::now();
         const int push_result = copy_release ? -1 : owner_push_frame(entry, source_ptr, gop_index);
+        audit_phase_push_ms_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - phase_push_start).count();
         const bool retain_source = push_result == -2;  // uncertain push: this entry is never recycled
         const int staged_index = push_result >= 0 ? push_result : -1;
 
@@ -1424,7 +1438,10 @@ private:
             << (staged_index >= 0 ? " staged=" + std::to_string(staged_index) : "")
             << "\n";
 
-        if (!send_all(msg.str())) {
+        const auto phase_send_start = std::chrono::steady_clock::now();
+        const bool sent = send_all(msg.str());
+        audit_phase_send_ms_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - phase_send_start).count();
+        if (!sent) {
             log_limited("send frame descriptor failed: " + std::string(std::strerror(errno)));
             close_socket();
             return false;
@@ -1441,7 +1458,10 @@ private:
             }
         }
         bool ack_deferred_release = false;
-        if (!read_ack(entry->recording_frame_id, &ack_deferred_release)) {
+        const auto phase_ack_start = std::chrono::steady_clock::now();
+        const bool acked = read_ack(entry->recording_frame_id, &ack_deferred_release);
+        audit_phase_ack_ms_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - phase_ack_start).count();
+        if (!acked) {
             log_limited("detach ack failed for frame " +
                         std::to_string(entry->recording_frame_id));
             bool still_pending = false;
@@ -1583,6 +1603,12 @@ private:
     // holds 6 GB/s under load where the recorder's pull collapses to 3.
     bool owner_push_ = false;
     bool audit_first_frame_ = false;
+    double audit_phase_ready_sync_ms_ = 0.0;   // wait for the owned copy (analytics-ready event)
+    double audit_phase_export_ms_ = 0.0;       // cudaIpcGetMemHandle (cache miss) + descriptor build
+    double audit_phase_push_ms_ = 0.0;         // owner_push_frame incl. card wait and the peer copy
+    double audit_phase_send_ms_ = 0.0;         // descriptor transmission
+    double audit_phase_ack_ms_ = 0.0;          // recorder-side import/registration + encode enqueue until ACK
+    bool audit_phase_export_new_handle_ = false;
     struct OwnerSlot {
         int gpu = -1;
         size_t index = 0;

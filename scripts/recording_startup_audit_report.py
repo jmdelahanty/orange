@@ -67,14 +67,21 @@ for r in events:
         dec[r['camera']][kv(r['detail']).get('kind', '?')] += 1
     elif r['milestone'] == 'ingress_frame':
         d = kv(r['detail'])
-        waits[r['camera']].append((float(d.get('source_ready_wait_ms', 0)), float(d.get('detach_ms', 0)), int(d.get('queue_in', 0)), r['frame_id'], rel(r)))
+        waits[r['camera']].append((float(d.get('detect_priority_wait_ms', d.get('source_ready_wait_ms', 0))), float(d.get('detach_ms', 0)), int(d.get('queue_in', 0)), r['frame_id'], rel(r),
+                                   {k: float(d[k]) for k in ('ready_sync_ms', 'export_ms', 'push_ms', 'send_ms', 'ack_wait_ms') if k in d}, d.get('new_handle', '0')))
 for cam in sorted(set(list(dec) + list(waits))):
     w = waits.get(cam, [])
     if w:
         sw = sorted(x[0] for x in w); dt = sorted(x[1] for x in w); q = max(x[2] for x in w)
         p = lambda a, f: a[min(len(a) - 1, int(f * len(a)))]
-        slow = [f"f{x[3]}@{x[4]:.0f}ms wait={x[0]:.1f} detach={x[1]:.1f}" for x in w if x[0] > 15 or x[1] > 15][:6]
-        print(f"  {cam}: frames={len(w)} source_ready_wait p50/p99/max={p(sw,.5):.2f}/{p(sw,.99):.2f}/{sw[-1]:.2f} ms detach p50/p99/max={p(dt,.5):.2f}/{p(dt,.99):.2f}/{dt[-1]:.2f} ms queue_in max={q} pushes={dict(dec.get(cam, {}))}" + (f" slow: {slow}" if slow else ''))
+        slow = [f"f{x[3]}@{x[4]:.0f}ms detect_wait={x[0]:.1f} detach={x[1]:.1f} [" + ' '.join(f"{k.replace('_ms','')}={v:.1f}" for k, v in x[5].items()) + (" new_handle" if x[6] == '1' else '') + "]" for x in w if x[0] > 15 or x[1] > 15][:8]
+        print(f"  {cam}: frames={len(w)} detect_priority_wait p50/p99/max={p(sw,.5):.2f}/{p(sw,.99):.2f}/{sw[-1]:.2f} ms detach p50/p99/max={p(dt,.5):.2f}/{p(dt,.99):.2f}/{dt[-1]:.2f} ms queue_in max={q} pushes={dict(dec.get(cam, {}))}")
+        if w and w[0][5]:
+            for k in ('ready_sync_ms', 'export_ms', 'push_ms', 'send_ms', 'ack_wait_ms'):
+                vals = sorted(x[5].get(k, 0.0) for x in w)
+                print(f"      {k:14s} p50/p99/max = {p(vals,.5):.2f} / {p(vals,.99):.2f} / {vals[-1]:.2f} ms")
+        if slow:
+            print('      slow frames: ' + '; '.join(slow))
 
 gaps = [r for r in events if r['milestone'] == 'camera_frame_gap']
 print(f"\n== gaps: {len(gaps)} ==")
