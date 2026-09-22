@@ -169,3 +169,33 @@ The pre-2026-09 notes (in-process recorder baselines, headless PTP runs,
 Orange/Citrus commissioning) are in git history of this file and in
 `docs/gui_external_ipc_status_2026_05_28.md`; the analytics campaign from
 2026-09-03 onward is in the journal and in `docs/device_roi_merge_plan_2026_09_21.md`.
+
+## GUI Parity Status, 2026-09-22
+
+- All card-A GUI frame-loss mechanisms are fixed and soaked: the CUDA/OpenGL
+  preview PBO ownership bug, the recorder first-use imports and cold peer
+  pull (PREPARE/PREPARED handshake, full-slot gate, warm-up), and the display
+  worker's full-frame read (the preview is now box-downsampled on the
+  acquisition GPU before the transfer, `ORANGE_DISPLAY_SOURCE_DOWNSAMPLE=0`
+  restores the old path). `gui.display.skip_pushed_gops` is back to `0`.
+  Ten-minute four-camera soaks with both previews live pass the strict
+  validator with 0 gaps, 0 SDK drops and 0 NIC discards.
+- A second in-application recording works: the readiness gate resets its
+  budget per start (`supervisors_done_at`), the full-frame client releases
+  the previous session's imported staging slots, and autorun can keep the
+  stream on after its finalize (`ORANGE_GUI_AUTORUN_KEEP_STREAMING_AFTER_FINALIZE=1`).
+- SIGTERM/SIGINT/SIGHUP are blocked in every thread and consumed by the main
+  loop, which stops the recording, then the stream, then closes. A signal
+  delivered to an acquisition thread otherwise breaks the Rivermax stream.
+  A hard-killed streaming GUI leaves the cameras refusing `EVT_CameraOpen`
+  (GVCP ACK error); `targets/release/evt_force_reboot <serial> <ip>` clears
+  that, and `orange-evt-stream-smoke` is the light comms check.
+- The GUI validation wrapper runs `scripts/host_stall_monitor.py` beside
+  every run (heartbeat + 1 Hz kernel counters; SMI counter is Intel-only);
+  `scripts/host_stall_correlate.py --latest` says per stall cluster whether
+  the host or Orange paused. The wrapper guard watches the launcher's parent
+  and grandparent and waits 60 s before KILL. Reinstall the wrapper after
+  editing it.
+- Card-B camera traffic arrives on `mlnx2_p3_25g`/`mlnx2_p4_25g`; `p1`/`p2`
+  are down. Card A uses `mlnx1_p1_25g`/`mlnx1_p2_25g`.
+- Open: the `analytics.fused_frame` decision (app config keeps `false`).
