@@ -1,6 +1,7 @@
 #ifndef CROP_AND_ENCODE_WORKER_H
 #define CROP_AND_ENCODE_WORKER_H
 
+#include <string>
 #include "crop_pipeline_types.h"
 #include "threadworker.h"
 #include "video_capture.h"
@@ -46,6 +47,7 @@ public:
     // Preparation handshake state for the GUI readiness gate.
     bool crop_recorder_expected() const;
     bool crop_recorder_prepared() const;
+    std::string crop_recorder_prepare_state() const;
     void SetCropProducerWorker(CropProducerWorker* crop_producer_worker) { crop_producer_worker_ = crop_producer_worker; }
     void SetCropPreviewWorker(CropPreviewWorker* crop_preview_worker) { crop_preview_worker_ = crop_preview_worker; }
     void RotateRecordingFolder(const std::string& recording_folder);

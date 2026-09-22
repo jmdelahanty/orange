@@ -4358,7 +4358,7 @@ bool gui_poll_async_recording_start(
                 CropAndEncodeWorker* crop = crop_and_encode_workers[i];
                 if (crop) {
                     conditions += cameras_params[i].camera_serial + ":" +
-                        (crop->crop_recorder_expected() ? (crop->crop_recorder_prepared() ? "prepared" : "NOT_prepared") : "none") + ";";
+                        (crop->crop_recorder_expected() ? (crop->crop_recorder_prepared() ? "prepared" : "NOT_prepared[" + crop->crop_recorder_prepare_state() + "]") : "none") + ";";
                 }
             }
             conditions += " checked_also=full_frame_pool_prepared,crop_pool_prepared not_checked=owner_push_stream";

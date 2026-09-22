@@ -123,6 +123,19 @@ public:
         }
     }
     bool connected() const { return socket_fd_ >= 0; }
+    // One-line handshake state for the GUI readiness refusal message.
+    std::string prepare_state() const
+    {
+        return "connected=" + std::string(socket_fd_ >= 0 ? "1" : "0") +
+               " generation=" + std::to_string(prepare_generation_) +
+               " expected=" + std::to_string(prepare_expected_.load(std::memory_order_relaxed)) +
+               " imported=" + std::to_string(prepared_count_.load(std::memory_order_relaxed)) +
+               " failed=" + std::to_string(prepare_failed_.load(std::memory_order_relaxed)) +
+               " prepared=" + std::string(prepared_.load(std::memory_order_acquire) ? "1" : "0") +
+               " polls=" + std::to_string(poll_calls_.load(std::memory_order_relaxed)) +
+               " lines=" + std::to_string(poll_lines_.load(std::memory_order_relaxed)) +
+               " bytes=" + std::to_string(poll_bytes_.load(std::memory_order_relaxed));
+    }
     void SetPoolBuffers(const std::vector<std::pair<unsigned char*, size_t>>& buffers) { pool_buffers_ = buffers; }
     uint64_t prepare_expected() const { return prepare_expected_.load(std::memory_order_relaxed); }
     bool prepared() const { return prepared_.load(std::memory_order_acquire); }
@@ -131,15 +144,22 @@ public:
     // anything else is queued for read_ack(). Worker thread only.
     void PollPrepared()
     {
+        poll_calls_.fetch_add(1, std::memory_order_relaxed);
         if (socket_fd_ < 0) {
             return;
         }
         char buf[512];
         while (true) {
             const ssize_t n = recv(socket_fd_, buf, sizeof(buf), MSG_DONTWAIT);
-            if (n <= 0) {
+            if (n == 0) {
+                log_limited("recorder closed the connection while idle");
+                close_socket();
+                return;
+            }
+            if (n < 0) {
                 break;
             }
+            poll_bytes_.fetch_add(static_cast<uint64_t>(n), std::memory_order_relaxed);
             receive_buffer_.append(buf, static_cast<size_t>(n));
             if (receive_buffer_.size() > 65536) {
                 log_limited("recorder line buffer overflow while idle; disconnecting");
@@ -151,6 +171,11 @@ public:
         while ((newline = receive_buffer_.find('\n')) != std::string::npos) {
             const std::string line = receive_buffer_.substr(0, newline);
             receive_buffer_.erase(0, newline + 1);
+            const uint64_t line_index = poll_lines_.fetch_add(1, std::memory_order_relaxed);
+            if (line_index < 8) {
+                std::cout << "[ExternalCropIpcRecorder] camera=" << camera_serial_ << " idle line " << line_index
+                          << ": " << line.substr(0, 120) << std::endl;
+            }
             bool malformed_status = false;
             if (handle_recorder_status_line(line, &malformed_status)) {
                 continue;
@@ -764,6 +789,9 @@ private:
     std::atomic<uint64_t> prepared_count_{0};
     std::atomic<uint64_t> prepare_failed_{0};
     std::atomic<bool> prepared_{false};
+    std::atomic<uint64_t> poll_calls_{0};
+    std::atomic<uint64_t> poll_lines_{0};
+    std::atomic<uint64_t> poll_bytes_{0};
     std::unordered_map<unsigned char*, std::string> handle_cache_;
     uint64_t failures_logged_ = 0;
 };
@@ -1547,6 +1575,11 @@ void CropAndEncodeWorker::SetCropProducer(CropProducer* crop_producer)
 bool CropAndEncodeWorker::crop_recorder_expected() const
 {
     return external_crop_ipc_ != nullptr;
+}
+
+std::string CropAndEncodeWorker::crop_recorder_prepare_state() const
+{
+    return external_crop_ipc_ ? external_crop_ipc_->prepare_state() : std::string("no_client");
 }
 
 bool CropAndEncodeWorker::crop_recorder_prepared() const
