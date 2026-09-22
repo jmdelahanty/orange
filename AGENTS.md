@@ -107,6 +107,14 @@ fixed in `src/gui/texture_resources.cpp` + `gui/preview_staging_lock.h`
 fix, fused on with live previews lost 0/0 steady-state frames on
 2010093/2010094 (mlnx1 +843/+0). Re-enable `fused_frame` in the app config
 only after a repeat 60 s gate and a longer GUI soak with the fix.
+Startup loss (a few frames on 2010093 in the first seconds of every
+recording) was the recorders' first-use CUDA IPC imports: fixed by the
+PREPARE/PREPARED handshake (33189a2; both recorder builds), crop recorders
+prepared before recording is enabled, and a strict readiness gate. First
+strict GUI gate pass: `2026_09_21_22_28_51` (0 drops, 0 NIC discards on
+all four ports, live previews). Diagnostics for any regression:
+`scripts/recording_startup_audit_report.py <folder>` (audit is always on)
+and `ethtool -S mlnx{1,2}_p{1,2}_25g` deltas around the run.
 Judge GUI runs by the mlnx1 `rx_discards_phy` delta as well as the drop
 count, since drop counts vary 5x between identical runs. The residual GUI
 loss (8/2 per minute) and the `no_result` pose rows on the non-device crop
