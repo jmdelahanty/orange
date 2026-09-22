@@ -116,8 +116,16 @@ all four ports, live previews). With the full-slot gate and the recorder's
 preparation peer-pull warm-up (f8a8067), three consecutive fresh starts
 (`2026_09_21_22_55_55`, `_22_56_51`, `_22_57_47`) lost no frames and no
 NIC port recorded a discard. If a start is refused by the strict gate the
-GUI stays open at `stage=failed`; the root-owned process must be closed by
-hand (`sudo pkill -f targets/release/orange`) before the next run. Diagnostics for any regression:
+GUI closes itself when exit-after-finalize is on; a root-owned instance that
+is truly hung needs `sudo pkill -f targets/release/orange`.
+Steady-state card-A loss (three paired frames per 10 min at the end of
+pushed GOPs) was the full-frame preview: its 20 MB device-to-host read of the
+owned copy slows the next frame's owner push 2.6x, the other camera's push
+then falls back to the recorder's pull, and that pull reads the landing die
+while the NIC writes into it. `gui.display.skip_pushed_gops = 25` in the app
+config keeps the preview off peer-routed GOPs (10-min soak: 0 losses, 0 NIC
+discards, preview about 5 fps in bursts). The proper fix is to downsample the
+preview on the landing die before the transfer. Diagnostics for any regression:
 `scripts/recording_startup_audit_report.py <folder>` (audit is always on)
 and `ethtool -S mlnx{1,2}_p{1,2}_25g` deltas around the run.
 Judge GUI runs by the mlnx1 `rx_discards_phy` delta as well as the drop
