@@ -928,6 +928,14 @@ done < <(compgen -e ORANGE_YOLO_RT_PRIORITY_CAM_ | sort)
 if [[ -n "${ORANGE_RECORDING_DETECT_PRIORITY:-}" ]]; then
   ENV_ARGS+=("ORANGE_RECORDING_DETECT_PRIORITY=${ORANGE_RECORDING_DETECT_PRIORITY}")
 fi
+# Acquisition-thread diagnostics (async line sink; safe to leave on): the
+# GPUDirect ring release timeline and the all-frames cadence probe.
+if [[ -n "${ORANGE_ACQ_RING_RELEASE_LOG:-}" ]]; then
+  ENV_ARGS+=("ORANGE_ACQ_RING_RELEASE_LOG=${ORANGE_ACQ_RING_RELEASE_LOG}")
+fi
+if [[ -n "${ORANGE_ACQ_CADENCE_PROBE_ALL:-}" ]]; then
+  ENV_ARGS+=("ORANGE_ACQ_CADENCE_PROBE_ALL=${ORANGE_ACQ_CADENCE_PROBE_ALL}")
+fi
 if [[ -n "${APP_CONFIG_ENV_KEY}" ]]; then
   ENV_ARGS+=("${APP_CONFIG_ENV_KEY}=${APP_CONFIG_ENV_VALUE}")
 fi
