@@ -2002,11 +2002,17 @@ void acquire_frames(
                     received_frame->frame_id);
                 camera_state.dropped_frames += gap_count;
                 if (gap_count > 0) {
+                    // SDK-side accounting at the moment of the gap: frames the
+                    // SDK itself discarded as incomplete (the packet counters
+                    // are declared inline and not exported by the SDK library).
+                    // A gap without an SDK dropped-frame increment means the
+                    // SDK never saw that frame at all (2026-09-21).
                     orange::RecordingStartupAudit::Instance().Mark(
                         camera_params->camera_serial, "camera_frame_gap",
                         "missing=" + std::to_string(gap_count) + " next_camera_frame_id=" +
                             std::to_string(received_frame->frame_id) + " receive_realtime_ns=" +
-                            std::to_string(real_time) + " dropped_total=" + std::to_string(camera_state.dropped_frames),
+                            std::to_string(real_time) + " dropped_total=" + std::to_string(camera_state.dropped_frames) +
+                            " sdk_dropped_frames=" + std::to_string(ecam->camera.GetDroppedFrameCount()),
                         camera_state.frame_count + 1);
                 }
             }
@@ -3027,6 +3033,10 @@ void acquire_frames(
         NVTX_RANGE_POP();
     }
 
+    std::cout << "[SDK_COUNTERS] Cam " << camera_params->camera_serial
+              << " sdk_dropped_frames=" << ecam->camera.GetDroppedFrameCount()
+              << " orange_frame_id_gaps=" << camera_state.dropped_frames
+              << " get_frame_errors=" << camera_state.get_frame_errors << std::endl;
     for (const auto& pending : pending_requeues) {
         if (pending.copy_ready_event) {
             cudaEventSynchronize(*pending.copy_ready_event);
