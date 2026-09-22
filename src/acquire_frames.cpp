@@ -2052,8 +2052,13 @@ void acquire_frames(
             current_entry->analytics_ready_event_recorded.store(false);
             current_entry->late_owned_copy_pending = false;
 
+            // Diagnostic (2026-09-21): ORANGE_DISPLAY_PREVIEW_DISABLE=1 removes
+            // the full-frame preview fan-out entirely (no frames reach the
+            // display worker) while analytics and recording stay at full rate.
+            static const bool preview_disabled =
+                env_flag_enabled("ORANGE_DISPLAY_PREVIEW_DISABLE", false);
             bool will_display = false;
-            if (camera_select->stream_on && openGLDisplay) {
+            if (!preview_disabled && camera_select->stream_on && openGLDisplay) {
                 display_preview_eligible_frames++;
                 will_display = display_preview_cadence.ShouldDisplayNextFrame();
                 if (will_display) {

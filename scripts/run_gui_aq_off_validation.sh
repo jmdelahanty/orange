@@ -936,6 +936,14 @@ fi
 if [[ -n "${ORANGE_ACQ_CADENCE_PROBE_ALL:-}" ]]; then
   ENV_ARGS+=("ORANGE_ACQ_CADENCE_PROBE_ALL=${ORANGE_ACQ_CADENCE_PROBE_ALL}")
 fi
+# Preview bisect diagnostics (2026-09-21): skip the GL PBO upload, or remove
+# the full-frame preview fan-out, while analytics and recording stay unchanged.
+if [[ -n "${ORANGE_GUI_SKIP_PBO_UPLOAD:-}" ]]; then
+  ENV_ARGS+=("ORANGE_GUI_SKIP_PBO_UPLOAD=${ORANGE_GUI_SKIP_PBO_UPLOAD}")
+fi
+if [[ -n "${ORANGE_DISPLAY_PREVIEW_DISABLE:-}" ]]; then
+  ENV_ARGS+=("ORANGE_DISPLAY_PREVIEW_DISABLE=${ORANGE_DISPLAY_PREVIEW_DISABLE}")
+fi
 if [[ -n "${APP_CONFIG_ENV_KEY}" ]]; then
   ENV_ARGS+=("${APP_CONFIG_ENV_KEY}=${APP_CONFIG_ENV_VALUE}")
 fi

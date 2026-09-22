@@ -1,6 +1,8 @@
 #include "gui/texture_resources.h"
 
 #include <cuda_runtime.h>
+#include <cstdlib>
+#include <cstring>
 
 namespace {
 
@@ -68,6 +70,17 @@ void upload_texture_from_pbo(
     const int width,
     const int height)
 {
+    // Diagnostic (2026-09-21): ORANGE_GUI_SKIP_PBO_UPLOAD=1 keeps every CUDA
+    // preview copy but never reads the PBO from OpenGL, so the displayed
+    // textures freeze. Separates GL consumption of the CUDA-mapped PBO from
+    // the preview transfers themselves in the card-A frame-loss bisect.
+    static const bool skip_upload = [] {
+        const char* value = std::getenv("ORANGE_GUI_SKIP_PBO_UPLOAD");
+        return value && *value && std::strcmp(value, "0") != 0;
+    }();
+    if (skip_upload) {
+        return;
+    }
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, texture.pbo);
     glBindTexture(GL_TEXTURE_2D, texture.texture);
     glTexSubImage2D(
