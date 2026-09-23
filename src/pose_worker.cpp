@@ -1445,6 +1445,10 @@ pose_event_log::PoseResultRecord PoseWorker::build_pose_event_record(
     record.engine_path = pose_engine_path_;
     record.skeleton_id = pose_skeleton_id_;
     record.skeleton_path = pose_skeleton_path_;
+    record.skeleton_sha256 = pose_skeleton_sha256_;
+    record.engine_sha256 = pose_model_sha256_;
+    record.ipc_skeleton_id_hash = pose_skeleton_hash64_ ? pose_skeleton_hash64_ : fnv1a64(pose_skeleton_id_);
+    record.ipc_model_id_hash = pose_model_hash64_ ? pose_model_hash64_ : fnv1a64(pose_model_id_);
     record.gpu_id = camera_params_ ? camera_params_->gpu_id : -1;
 
     record.local_frame_id = frame.local_frame_id;

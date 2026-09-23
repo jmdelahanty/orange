@@ -222,6 +222,10 @@ void PoseEventLogger::WriteResult(PoseResultRecord record)
         {"engine_path", record.engine_path},
         {"skeleton_id", record.skeleton_id},
         {"skeleton_path", record.skeleton_path},
+        {"skeleton_sha256", record.skeleton_sha256},
+        {"engine_sha256", record.engine_sha256},
+        {"ipc_skeleton_id_hash", record.ipc_skeleton_id_hash},
+        {"ipc_model_id_hash", record.ipc_model_id_hash},
         {"gpu_id", record.gpu_id},
         {"coordinate_space", "crop_pixels"},
         {"instance_count", static_cast<int>(record.poses.size())}
@@ -285,6 +289,25 @@ void PoseEventLogger::WriteResult(PoseResultRecord record)
     };
 
     file_ << root.dump() << '\n';
+    ++rows_written_;
+    ++rows_since_flush_;
+    MaybeFlush(false);
+}
+
+// Bound what a crash can lose to about a second of rows: flush after one
+// second of buffered rows, or when the queue goes idle with rows pending.
+void PoseEventLogger::MaybeFlush(bool force)
+{
+    if (rows_since_flush_ == 0 || !file_.is_open()) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (force || now - last_flush_ >= std::chrono::seconds(1)) {
+        file_.flush();
+        last_flush_ = now;
+        rows_since_flush_ = 0;
+        ++flushes_;
+    }
 }
 
 void PoseEventLogger::ThreadMain()
@@ -292,7 +315,15 @@ void PoseEventLogger::ThreadMain()
     std::unique_lock<std::mutex> lock(mutex_);
     while (running_ || !queue_.empty()) {
         if (queue_.empty()) {
-            cv_.wait(lock);
+            if (rows_since_flush_ > 0) {
+                lock.unlock();
+                MaybeFlush(true);
+                lock.lock();
+                if (!queue_.empty()) {
+                    continue;
+                }
+            }
+            cv_.wait_for(lock, std::chrono::seconds(1));
             continue;
         }
         Event event = std::move(queue_.front());
@@ -311,6 +342,8 @@ void PoseEventLogger::ThreadMain()
         lock.lock();
     }
     CloseFile();
+    std::cout << "[POSE_EVENT_LOG] " << worker_name_ << " wrote " << rows_written_
+              << " rows, flushes " << flushes_ << ", dropped " << dropped_ << std::endl;
     if (dropped_ > 0) {
         std::cerr << "[POSE_EVENT_LOG] " << worker_name_
                   << " dropped " << dropped_ << " events" << std::endl;

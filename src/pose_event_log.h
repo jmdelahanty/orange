@@ -7,6 +7,7 @@
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <chrono>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -49,6 +50,13 @@ struct PoseResultRecord {
     std::string engine_path;
     std::string skeleton_id = "unknown";
     std::string skeleton_path;
+    // Content identity (2026-09-23): the sidecar and engine file SHA-256s and
+    // the 64-bit hashes carried in the Shaman v2 slots, so a pose file is
+    // self-describing without the recording snapshot.
+    std::string skeleton_sha256;
+    std::string engine_sha256;
+    uint64_t ipc_skeleton_id_hash = 0;
+    uint64_t ipc_model_id_hash = 0;
     int gpu_id = -1;
 
     uint64_t local_frame_id = 0;
@@ -125,6 +133,11 @@ private:
     std::unordered_set<std::string> opened_folders_;
     std::unordered_map<std::string, uint64_t> next_sequence_by_folder_;
     size_t dropped_ = 0;
+    size_t rows_written_ = 0;
+    size_t rows_since_flush_ = 0;
+    size_t flushes_ = 0;
+    std::chrono::steady_clock::time_point last_flush_{};
+    void MaybeFlush(bool force);
 };
 
 } // namespace pose_event_log
