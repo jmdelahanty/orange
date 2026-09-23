@@ -551,6 +551,68 @@ void test_frame_ipc_manager_pose_update_keys_on_absolute_frame_id()
     shaman_v2::unlink_queue(v2_name);
 }
 
+// Arrival-order drain (2026-09-23): base N, YOLO N and pose N enqueued before
+// base N+1 must all publish even when the writer thread only wakes after
+// base N+1 has been enqueued. Draining all base frames first used to make
+// YOLO N and pose N stale.
+void test_frame_ipc_manager_drains_in_arrival_order()
+{
+    const std::string serial = "v2order" + std::to_string(getpid());
+    const std::string v1_name = "/shm_cam_" + serial;
+    const std::string v2_name = shaman_v2::queue_name_for_camera_serial(serial);
+    shaman_v2::unlink_queue(v1_name);
+    shaman_v2::unlink_queue(v2_name);
+
+    {
+        CameraParams camera = make_test_camera(serial);
+        FrameIPCManager manager(&camera, true /* force_v2_live_state */);
+        require(manager.isV2Enabled(), "v2 frame IPC manager should initialize for order test");
+        shaman_v2::SharedLiveStateQueue reader(v2_name, false);
+
+        manager.PauseWriterForTest();
+        FrameIPCFrameIdentity base;
+        base.legacy_frame_id = 501;
+        base.state_frame_id = 501;
+        require(manager.sendFrame(base, true), "base 501 enqueue");
+        std::vector<shaman::Object> objects(1);
+        require(manager.updateFrameWithDetectionResult(501, 501, shaman_v2::DetectionStatus::kDetections, objects),
+                "yolo 501 enqueue");
+        shaman_v2::Slot pose;
+        pose.state_frame_id = 501;
+        pose.source_frame_id = 501;
+        pose.pose_status = static_cast<uint32_t>(shaman_v2::PoseStatus::kPoses);
+        pose.object_count = 1;
+        pose.objects[0].flags = shaman_v2::kObjectHasBbox | shaman_v2::kObjectHasPose;
+        pose.objects[0].keypoint_count = 1;
+        require(manager.updateFrameWithPoseResult(pose), "pose 501 enqueue");
+        base.legacy_frame_id = 502;
+        base.state_frame_id = 502;
+        require(manager.sendFrame(base, true), "base 502 enqueue");
+        manager.ResumeWriterForTest();
+
+        const std::vector<shaman_v2::Slot> slots = wait_for_v2_slots(reader, 4);
+        require(slots.size() == 4, "base 501, yolo 501, pose 501 and base 502 should all publish: got " +
+                                   std::to_string(slots.size()));
+        require(slots[0].state_frame_id == 501 &&
+                    slots[0].detection_status == static_cast<uint32_t>(shaman_v2::DetectionStatus::kPending),
+                "first slot is base 501");
+        require(slots[1].state_frame_id == 501 &&
+                    slots[1].detection_status == static_cast<uint32_t>(shaman_v2::DetectionStatus::kDetections),
+                "second slot is yolo 501");
+        require(slots[2].state_frame_id == 501 &&
+                    slots[2].pose_status == static_cast<uint32_t>(shaman_v2::PoseStatus::kPoses),
+                "third slot is pose 501");
+        require(slots[3].state_frame_id == 502, "fourth slot is base 502");
+        const auto counters = manager.getV2Counters();
+        require(counters.yolo_stale_suppressed == 0 && counters.pose_stale_suppressed == 0,
+                "nothing stale-suppressed when events arrive in order");
+        manager.stop();
+    }
+
+    shaman_v2::unlink_queue(v1_name);
+    shaman_v2::unlink_queue(v2_name);
+}
+
 void test_frame_ipc_manager_publishes_terminal_zero_detection_state()
 {
     const std::string serial = "v2zero" + std::to_string(getpid());
@@ -605,6 +667,7 @@ int main()
         test_frame_ipc_manager_opt_in_v2_base_yolo_and_stale();
         test_frame_ipc_manager_publishes_v2_pose_update();
         test_frame_ipc_manager_pose_update_keys_on_absolute_frame_id();
+        test_frame_ipc_manager_drains_in_arrival_order();
         test_frame_ipc_manager_publishes_terminal_zero_detection_state();
     } catch (const std::exception& ex) {
         std::cerr << "shaman_v2_tests failed: " << ex.what() << std::endl;

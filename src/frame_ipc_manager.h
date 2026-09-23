@@ -9,6 +9,7 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <deque>
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <mutex>
@@ -72,6 +73,20 @@ public:
         StopThread();
     }
 
+    // Test hooks: hold the writer thread so a test can enqueue base, YOLO and
+    // pose events in a chosen order before any of them is drained.
+    void PauseWriterForTest() {
+        std::lock_guard<std::mutex> lock(mutex_);
+        writer_paused_for_test_ = true;
+    }
+    void ResumeWriterForTest() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            writer_paused_for_test_ = false;
+        }
+        cv_.notify_one();
+    }
+
     // `timestamp` is the original camera/acquisition timestamp from Orange
     // (`camera_timestamp_ns` terminology). The current `/shm_cam_<serial>`
     // queue does not expose that value; SharedBoxQueue stamps publish-time SHM
@@ -88,7 +103,7 @@ public:
         bool dropped = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            frame_queue_.PushDropOldest(std::move(event), &dropped);
+            frame_queue_.PushDropOldest(std::move(event), ++arrival_sequence_, &dropped);
         }
         if (dropped) {
             base_queue_drops_++;
@@ -137,7 +152,7 @@ public:
         bool dropped = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            update_queue_.PushDropOldest(std::move(event), &dropped);
+            update_queue_.PushDropOldest(std::move(event), ++arrival_sequence_, &dropped);
         }
         if (dropped) {
             update_queue_drops_++;
@@ -168,7 +183,7 @@ public:
         bool dropped = false;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            pose_update_queue_.PushDropOldest(std::move(pose_slot), &dropped);
+            pose_update_queue_.PushDropOldest(std::move(pose_slot), ++arrival_sequence_, &dropped);
         }
         if (dropped) {
             pose_update_queue_drops_++;
@@ -209,12 +224,14 @@ private:
         std::vector<shaman::Object> detections;
     };
 
+    // Each entry carries the manager-wide arrival sequence so DrainQueues can
+    // process base, YOLO and pose events in the order they were enqueued.
     template <typename T>
     class BoundedQueue {
     public:
         explicit BoundedQueue(size_t capacity) : capacity_(capacity) {}
 
-        void PushDropOldest(T item, bool* dropped) {
+        void PushDropOldest(T item, uint64_t arrival_sequence, bool* dropped) {
             if (dropped) {
                 *dropped = false;
             }
@@ -224,15 +241,25 @@ private:
                     *dropped = true;
                 }
             }
-            queue_.push_back(std::move(item));
+            queue_.push_back(Entry{arrival_sequence, std::move(item)});
         }
 
         bool Pop(T& out) {
             if (queue_.empty()) {
                 return false;
             }
-            out = std::move(queue_.front());
+            out = std::move(queue_.front().item);
             queue_.pop_front();
+            return true;
+        }
+
+        bool PeekSequence(uint64_t* arrival_sequence) const {
+            if (queue_.empty()) {
+                return false;
+            }
+            if (arrival_sequence) {
+                *arrival_sequence = queue_.front().arrival_sequence;
+            }
             return true;
         }
 
@@ -241,8 +268,12 @@ private:
         }
 
     private:
+        struct Entry {
+            uint64_t arrival_sequence = 0;
+            T item;
+        };
         size_t capacity_;
-        std::deque<T> queue_;
+        std::deque<Entry> queue_;
     };
 
     static bool env_enabled(const char* name) {
@@ -295,8 +326,10 @@ private:
         std::unique_lock<std::mutex> lock(mutex_);
         while (running_) {
             cv_.wait(lock, [this]() {
-                return !running_ || !frame_queue_.Empty() || !update_queue_.Empty() ||
-                       !pose_update_queue_.Empty();
+                return !running_ ||
+                       (!writer_paused_for_test_ &&
+                        (!frame_queue_.Empty() || !update_queue_.Empty() ||
+                         !pose_update_queue_.Empty()));
             });
             lock.unlock();
             DrainQueues();
@@ -306,74 +339,92 @@ private:
         DrainQueues();
     }
 
+    enum class DrainKind { kNone, kBase, kUpdate, kPose };
+
+    // Events are drained in arrival order across the three queues
+    // (2026-09-23). Draining every base frame first, then the YOLO updates,
+    // then the pose updates let a writer thread that woke one frame period
+    // late apply base N+1 before YOLO N and pose N, which the live-state
+    // publisher then dropped as stale (about 0.9 % of frames at 100 fps
+    // even though inference finishes in about 3 ms).
     void DrainQueues() {
         if (!enabled_ || !ipc_queue_) {
             return;
         }
-
-        FrameEvent frame;
         while (true) {
+            FrameEvent frame;
+            UpdateEvent update;
+            shaman_v2::Slot pose_update;
+            DrainKind kind = DrainKind::kNone;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
-                if (!frame_queue_.Pop(frame)) {
-                    break;
+                uint64_t best = UINT64_MAX;
+                uint64_t seq = 0;
+                if (frame_queue_.PeekSequence(&seq) && seq < best) {
+                    best = seq;
+                    kind = DrainKind::kBase;
+                }
+                if (update_queue_.PeekSequence(&seq) && seq < best) {
+                    best = seq;
+                    kind = DrainKind::kUpdate;
+                }
+                if (pose_update_queue_.PeekSequence(&seq) && seq < best) {
+                    best = seq;
+                    kind = DrainKind::kPose;
+                }
+                switch (kind) {
+                    case DrainKind::kBase: frame_queue_.Pop(frame); break;
+                    case DrainKind::kUpdate: update_queue_.Pop(update); break;
+                    case DrainKind::kPose: pose_update_queue_.Pop(pose_update); break;
+                    case DrainKind::kNone: return;
                 }
             }
-            bool sent = EmitBase(frame);
-            if (!sent && !v2_publisher_) {
-                continue;
-            }
-            last_base_frame_id_ = frame.identity.legacy_frame_id;
-
-            if (pending_update_valid_ &&
-                pending_update_.legacy_frame_id == last_base_frame_id_) {
-                EmitLegacyUpdate(pending_update_);
-                pending_update_valid_ = false;
+            switch (kind) {
+                case DrainKind::kBase: ProcessBaseEvent(frame); break;
+                case DrainKind::kUpdate: ProcessUpdateEvent(std::move(update)); break;
+                case DrainKind::kPose: EmitV2Pose(pose_update); break;
+                case DrainKind::kNone: return;
             }
         }
+    }
 
-        UpdateEvent update;
-        while (true) {
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (!update_queue_.Pop(update)) {
-                    break;
-                }
-            }
-            // V2 owns a separate monotonic identity and performs its own
-            // bounded pending/stale decision. Do not couple it to the legacy
-            // recording/local identifier switch below.
-            EmitV2Yolo(update);
-            if (update.legacy_frame_id == last_base_frame_id_) {
-                EmitLegacyUpdate(update);
-                continue;
-            }
-            if (update.legacy_frame_id > last_base_frame_id_) {
-                if (!pending_update_valid_ ||
-                    update.legacy_frame_id >= pending_update_.legacy_frame_id) {
-                    pending_update_ = std::move(update);
-                    pending_update_valid_ = true;
-                } else {
-                    // Preserve Citrus latest-state semantics by suppressing
-                    // older delayed detections from the live queue.
-                    update_stale_drops_++;
-                }
+    void ProcessBaseEvent(const FrameEvent& frame) {
+        bool sent = EmitBase(frame);
+        if (!sent && !v2_publisher_) {
+            return;
+        }
+        last_base_frame_id_ = frame.identity.legacy_frame_id;
+
+        if (pending_update_valid_ &&
+            pending_update_.legacy_frame_id == last_base_frame_id_) {
+            EmitLegacyUpdate(pending_update_);
+            pending_update_valid_ = false;
+        }
+    }
+
+    void ProcessUpdateEvent(UpdateEvent update) {
+        // V2 owns a separate monotonic identity and performs its own
+        // bounded pending/stale decision. Do not couple it to the legacy
+        // recording/local identifier switch below.
+        EmitV2Yolo(update);
+        if (update.legacy_frame_id == last_base_frame_id_) {
+            EmitLegacyUpdate(update);
+            return;
+        }
+        if (update.legacy_frame_id > last_base_frame_id_) {
+            if (!pending_update_valid_ ||
+                update.legacy_frame_id >= pending_update_.legacy_frame_id) {
+                pending_update_ = std::move(update);
+                pending_update_valid_ = true;
             } else {
                 // Preserve Citrus latest-state semantics by suppressing
                 // older delayed detections from the live queue.
                 update_stale_drops_++;
             }
-        }
-
-        shaman_v2::Slot pose_update;
-        while (true) {
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                if (!pose_update_queue_.Pop(pose_update)) {
-                    break;
-                }
-            }
-            EmitV2Pose(pose_update);
+        } else {
+            // Preserve Citrus latest-state semantics by suppressing
+            // older delayed detections from the live queue.
+            update_stale_drops_++;
         }
     }
 
@@ -520,6 +571,8 @@ private:
     BoundedQueue<FrameEvent> frame_queue_;
     BoundedQueue<UpdateEvent> update_queue_;
     BoundedQueue<shaman_v2::Slot> pose_update_queue_{kQueueDepth};
+    uint64_t arrival_sequence_ = 0;        // under mutex_
+    bool writer_paused_for_test_ = false;  // under mutex_
     std::mutex mutex_;
     std::condition_variable cv_;
     std::thread writer_thread_;
