@@ -3,6 +3,16 @@
 This is what a Citrus-side agent needs to read pose keypoints from Orange
 today, what Orange guarantees, and what is still convention.
 
+## ABI revision (updated 2026-09-23, later)
+
+Orange now publishes Shaman v2 ABI revision 4 (integration commit 54721ba,
+cherry-picked from the spatial-roi branch): `kSchemaVersion = 4`, 35368-byte
+slots, grouped-live observation provenance, producer restart identity,
+detection reasons and counts, and payload validation. The struct layouts
+are byte-identical to Citrus's `src/ipc/shaman/shaman_v2.h`. Revision 3
+queues from older Orange builds fail closed in a revision-4 reader, which
+is the intended behaviour.
+
 ## Transport
 
 - One POSIX shared-memory ring per camera: `/shm_cam_<serial>_v2`
@@ -37,9 +47,13 @@ far. Take the newest `sequence_id` per `state_frame_id`.
   `objects[i].flags & kObjectHasPose` AND `objects[i].keypoint_count > 0`.
   `kNoResult (4)` means the pose stage ran and found nothing; `kDisabled (0)`
   means no pose stage or no result for this frame yet.
-- When pose is present the object list is the single selected detection
-  (bbox in source pixels), `confidence` is the pose confidence,
-  `track_id = -1`, `keypoint_count` is 3 with the current models.
+- Under revision 4 a pose result is merged INTO the detection object with
+  the same bbox (exact match); it no longer replaces the object list. A pose
+  that arrives before its frame's authoritative YOLO update is held as
+  pending evidence and merged when the YOLO update lands, so the other
+  detections stay in the slot and a later YOLO update cannot strip the
+  keypoints. Apply the reader rule per object. `keypoint_count` is 3 with
+  the current models, `track_id = -1`.
 - Keypoints are in SOURCE (full-frame, 4512x4512) pixels. `Keypoint.flags &
   kKeypointVisible` marks confidence >= 0.25. `label_id` is the keypoint
   index in the model's training order.
@@ -75,7 +89,41 @@ shared-memory segment header and therefore accumulate across runs (the
 segment persists in /dev/shm); compare deltas, or unlink the queues before
 a run. `sequence_gaps = 0` on the reader side is the delivery check.
 
-## Skeleton identity (convention today)
+## Skeleton identity (sidecar adopted 2026-09-23)
+
+Orange now loads Palette's sidecar (`palette.pose_model_skeleton` v1) from
+app config `models.pose_skeleton_path`, currently the byte-identical copy at
+`.../pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915/engines/pose_model_skeleton.json`
+(SHA-256 `c238af6f3b35bb19c1b9dfeb5b1d5d9ffe2086f5f1fd1c4ca73e2766f51c3f11`,
+source `palette_deployment_20260923_v2/`, read `README.acquisition.md`
+there first). At start each pose worker checks the sidecar's K against the
+engine output, adopts the exact ordered labels `0:swim_bladder 1:eye_left
+2:eye_right` and edges `[0,1] [0,2] [1,2]`, and logs
+`skeleton sidecar adopted: ...`. Unsupported schema versions, node/edge
+inconsistencies or a K mismatch refuse to start.
+
+Identity in the slots (content hashes, first 8 bytes of the file SHA-256s):
+
+| field | value with the current model | derived from |
+| --- | --- | --- |
+| `pose_skeleton_id_hash` | 13995128734323424025 | sidecar file SHA-256 `c238af6f...` |
+| `pose_model_id_hash` | 17167804398972226780 | engine file SHA-256 `ee404b245620ccdcc4297a65513e4bf64e87d288af1a6fa9ca479a8a8ad0e944` |
+
+The recording snapshot republishes the resolved identity under
+`models[<camera>].pose`: `skeleton_id`, `skeleton.labels`, `skeleton.edges`,
+`skeleton.kpt_shape`, `skeleton.sidecar_path`, `skeleton.sidecar_sha256`,
+`skeleton.ipc_skeleton_id_hash`, `engine_sha256`, `ipc_model_id_hash`. A
+reader should join a slot to the sidecar by the 64-bit hash, then verify and
+retain the exact sidecar bytes (full SHA-256) rather than treating the
+64-bit value as the identity.
+
+Heading: the sidecar's `model_schema_binding.pose_schema.metadata.heading_computation`
+(version 1) defines it: direction from `swim_bladder` toward the midpoint of
+`eye_left`/`eye_right`, origin at that midpoint. Citrus should implement
+heading from that policy keyed on the skeleton identity, by label name, with
+confidence and missing-point checks; Orange does not compute heading.
+
+## Skeleton identity before the sidecar (historical)
 
 The model payload does not name its skeleton. The ONNX metadata carries
 only `kpt_shape=[3,3]` and `names={0:'fish'}`; the engine manifest's
