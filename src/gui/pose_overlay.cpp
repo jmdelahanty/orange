@@ -78,11 +78,19 @@ bool map_pose_keypoint_to_screen(const PoseOverlaySnapshot& snapshot,
         return map_normalized(kp.x_px / static_cast<float>(source_width),
                               kp.y_px / static_cast<float>(source_height), rect, out);
     }
-    if (snapshot.crop_w <= 0 || snapshot.crop_h <= 0) {
+    // The crop window shows the video crop, which can be larger than the pose
+    // crop the keypoints came from (both are source-pixel rectangles, so no
+    // rescaling of the keypoints is needed: only the right rectangle).
+    const bool use_preview = snapshot.preview_crop_w > 0 && snapshot.preview_crop_h > 0;
+    const int crop_x = use_preview ? snapshot.preview_crop_x : snapshot.crop_x;
+    const int crop_y = use_preview ? snapshot.preview_crop_y : snapshot.crop_y;
+    const int crop_w = use_preview ? snapshot.preview_crop_w : snapshot.crop_w;
+    const int crop_h = use_preview ? snapshot.preview_crop_h : snapshot.crop_h;
+    if (crop_w <= 0 || crop_h <= 0) {
         return false;
     }
-    return map_normalized((kp.x_px - static_cast<float>(snapshot.crop_x)) / static_cast<float>(snapshot.crop_w),
-                          (kp.y_px - static_cast<float>(snapshot.crop_y)) / static_cast<float>(snapshot.crop_h),
+    return map_normalized((kp.x_px - static_cast<float>(crop_x)) / static_cast<float>(crop_w),
+                          (kp.y_px - static_cast<float>(crop_y)) / static_cast<float>(crop_h),
                           rect, out);
 }
 

@@ -45,6 +45,10 @@ struct PoseOverlaySnapshot {
     int crop_y = 0;
     int crop_w = 0;
     int crop_h = 0;
+    int preview_crop_x = 0;           // the crop the preview window shows (video crop, e.g. 384 px);
+    int preview_crop_y = 0;           // kCrop maps against this. 0 = same as the pose crop.
+    int preview_crop_w = 0;
+    int preview_crop_h = 0;
     float bbox_x = 0.0f;              // detection box in source pixels
     float bbox_y = 0.0f;
     float bbox_w = 0.0f;

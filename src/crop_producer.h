@@ -37,6 +37,13 @@ struct CropFrameSnapshot {
     float detection_y = 0.0f;
     float detection_w = 0.0f;
     float detection_h = 0.0f;
+    // The video/preview crop (crop_pipeline.crop_size_px) when it differs from
+    // the pose crop above (device ROI path: pose crop is head-sized, e.g. 192,
+    // inside the 384 recording crop, same centroid). 0 = same as crop_*.
+    int preview_crop_x = 0;
+    int preview_crop_y = 0;
+    int preview_crop_w = 0;
+    int preview_crop_h = 0;
 
     void ResetForReuse()
     {
@@ -63,6 +70,10 @@ struct CropFrameSnapshot {
         detection_y = 0.0f;
         detection_w = 0.0f;
         detection_h = 0.0f;
+        preview_crop_x = 0;
+        preview_crop_y = 0;
+        preview_crop_w = 0;
+        preview_crop_h = 0;
     }
 };
 

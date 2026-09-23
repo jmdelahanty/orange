@@ -136,6 +136,30 @@ void test_mapping_crop()
     require(!map_pose_keypoint_to_screen(s, 0, PoseOverlayImageSpace::kCrop, 4512, 4512, rect, &p), "degenerate crop rejected");
 }
 
+void test_mapping_crop_uses_preview_rect()
+{
+    // Device ROI path: 192 px pose crop centred inside the 384 px video crop
+    // that the preview window shows. A keypoint at the pose crop centre must
+    // land at the centre of the drawn image, not at (0.5 * 384/192) of it.
+    PoseOverlaySnapshot s = fish_snapshot();
+    s.crop_x = 3132; s.crop_y = 1857; s.crop_w = 192; s.crop_h = 192;
+    s.preview_crop_x = 3036; s.preview_crop_y = 1761; s.preview_crop_w = 384; s.preview_crop_h = 384;
+    s.keypoint_count = 2;
+    s.keypoints[0].x_px = 3132.0f + 96.0f; s.keypoints[0].y_px = 1857.0f + 96.0f; s.keypoints[0].confidence = 0.99f; s.keypoints[0].visible = true;
+    s.keypoints[1].x_px = 3132.0f; s.keypoints[1].y_px = 1857.0f; s.keypoints[1].confidence = 0.99f; s.keypoints[1].visible = true;
+    const PoseOverlayRect rect{0.0f, 0.0f, 400.0f, 400.0f};
+    PoseOverlayPoint p;
+    require(map_pose_keypoint_to_screen(s, 0, PoseOverlayImageSpace::kCrop, 4512, 4512, rect, &p), "centre maps");
+    require_near(p.x, 200.0, 1e-3, "pose-crop centre is the preview centre (x)");
+    require_near(p.y, 200.0, 1e-3, "pose-crop centre is the preview centre (y)");
+    require(map_pose_keypoint_to_screen(s, 1, PoseOverlayImageSpace::kCrop, 4512, 4512, rect, &p), "pose-crop corner maps");
+    require_near(p.x, 100.0, 1e-3, "pose-crop corner sits a quarter in from the preview edge");
+    // Without a preview rect the pose crop is the image (single-crop path).
+    s.preview_crop_w = 0; s.preview_crop_h = 0;
+    require(map_pose_keypoint_to_screen(s, 1, PoseOverlayImageSpace::kCrop, 4512, 4512, rect, &p), "single-crop corner maps");
+    require_near(p.x, 0.0, 1e-3, "single crop: corner on the rect min");
+}
+
 void test_skeleton_validation()
 {
     require(validate_pose_skeleton({{0, 1}, {1, 2}}, 3), "valid skeleton");
@@ -211,6 +235,7 @@ int main()
     test_mailbox_concurrent_reads_are_consistent();
     test_mapping_full_frame();
     test_mapping_crop();
+    test_mapping_crop_uses_preview_rect();
     test_skeleton_validation();
     test_commands_full_frame();
     test_commands_crop_and_filters();

@@ -1228,6 +1228,12 @@ void PoseWorker::process_device_slot(DeviceStageSlot& slot)
         frame.crop_y = roi.pose_crop_y;
         frame.crop_w = roi.pose_crop_w > 0 ? roi.pose_crop_w : device_stage_crop_px_;
         frame.crop_h = roi.pose_crop_h > 0 ? roi.pose_crop_h : device_stage_crop_px_;
+        // The crop preview window shows the video crop (roi.crop_*), which is
+        // larger than the pose crop; the overlay needs its rectangle.
+        frame.preview_crop_x = roi.crop_x;
+        frame.preview_crop_y = roi.crop_y;
+        frame.preview_crop_w = roi.crop_w;
+        frame.preview_crop_h = roi.crop_h;
         if (frame.has_detection && tensorrt_backend_) {
             tensorrt_backend_->decode_from(slot.h_output, frame.crop_w, frame.crop_h,
                                            &pose_status, &poses);
@@ -1566,6 +1572,13 @@ void PoseWorker::publish_pose_overlay(
     snapshot.crop_y = frame.crop_y;
     snapshot.crop_w = frame.crop_w;
     snapshot.crop_h = frame.crop_h;
+    // Rectangle of the image the crop preview actually shows (the video
+    // crop); falls back to the pose crop when the two are the same crop.
+    const bool has_preview_crop = frame.preview_crop_w > 0 && frame.preview_crop_h > 0;
+    snapshot.preview_crop_x = has_preview_crop ? frame.preview_crop_x : frame.crop_x;
+    snapshot.preview_crop_y = has_preview_crop ? frame.preview_crop_y : frame.crop_y;
+    snapshot.preview_crop_w = has_preview_crop ? frame.preview_crop_w : frame.crop_w;
+    snapshot.preview_crop_h = has_preview_crop ? frame.preview_crop_h : frame.crop_h;
     snapshot.bbox_x = frame.detection_x;
     snapshot.bbox_y = frame.detection_y;
     snapshot.bbox_w = frame.detection_w;
