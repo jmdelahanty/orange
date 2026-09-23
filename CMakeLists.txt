@@ -1395,6 +1395,13 @@ if(BUILD_TESTING)
     target_compile_features(shaman_v2_tests PRIVATE cxx_std_17)
     add_test(NAME shaman_v2_tests COMMAND shaman_v2_tests)
 
+    # Reference Shaman v2 reader (drains /shm_cam_<serial>_v2, counts pose slots).
+    add_executable(shaman_v2_reader_probe
+        "tools/shaman_v2_reader_probe.cpp"
+    )
+    target_include_directories(shaman_v2_reader_probe PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(shaman_v2_reader_probe PRIVATE cxx_std_17)
+
     add_executable(encoder_qp_map_tests
         "tools/encoder_qp_map_tests.cpp"
         "${SRC_DIR}/encoder_qp_map.cpp"
