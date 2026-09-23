@@ -101,15 +101,23 @@ def read_counters(isolated):
             wr += int(f[9])
     row["nvme_wr_sectors"] = wr
     iso_irq = 0
+    per_irq = {}
     with open("/proc/interrupts") as f:
         header = f.readline().split()
         cols = [i for i, c in enumerate(header) if c.startswith("CPU") and int(c[3:]) in isolated]
         for line in f:
             parts = line.split()
+            if not parts or not parts[0].endswith(":"):
+                continue
+            total = 0
             for i in cols:
                 if i + 1 < len(parts) and parts[i + 1].isdigit():
-                    iso_irq += int(parts[i + 1])
+                    total += int(parts[i + 1])
+            iso_irq += total
+            name = parts[0] + " " + " ".join(parts[len(header) + 1:])[:48] if len(parts) > len(header) + 1 else parts[0]
+            per_irq[name] = total
     row["isolated_core_irqs"] = iso_irq
+    row["_per_irq"] = per_irq  # not written to the counters row; see top-IRQ log
     row["smi_count"] = read_smi()
     return row
 
@@ -171,10 +179,16 @@ def main():
     hb.start()
     counters_out = open(a.prefix + "_counters.csv", "w", newline="")
     first = read_counters(isolated)
+    per_irq_prev = first.pop("_per_irq")
     cw = csv.DictWriter(counters_out, fieldnames=list(first.keys()))
     cw.writeheader()
     cw.writerow(first)
     counters_out.flush()
+    # Top interrupt sources on the isolated cores per sample (name, delta),
+    # so an interrupt burst can be attributed to a device or IPI kind.
+    irq_out = open(a.prefix + "_irq_top.csv", "w", newline="")
+    iw = csv.writer(irq_out)
+    iw.writerow(["t_ns", "isolated_irq_delta", "top1", "top1_delta", "top2", "top2_delta", "top3", "top3_delta"])
     stopping = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stopping.set())
     signal.signal(signal.SIGTERM, lambda *_: stopping.set())
@@ -182,15 +196,23 @@ def main():
         core, a.gap_ms, "readable" if first["smi_count"] >= 0 else ("not supported on AMD" if cpu_is_amd() else "unavailable (run as root)"),
         ",".join(map(str, sorted(isolated))) or "none"), flush=True)
     last = first
+    prev_iso = first["isolated_core_irqs"]
     while not stopping.is_set() and not os.path.exists(stop_file):
         time.sleep(a.interval_s)
         last = read_counters(isolated)
+        per_irq = last.pop("_per_irq")
         cw.writerow(last)
         counters_out.flush()
+        deltas = sorted(((per_irq[k] - per_irq_prev.get(k, 0), k) for k in per_irq), reverse=True)[:3]
+        iw.writerow([last["t_ns"], last["isolated_core_irqs"] - prev_iso] + [x for d, k in deltas for x in (k, d)])
+        irq_out.flush()
+        per_irq_prev = per_irq
+        prev_iso = last["isolated_core_irqs"]
     hb.stop.set()
     hb.join(timeout=2)
     hb_out.close()
     counters_out.close()
+    irq_out.close()
     summary = {
         "started_t_ns": first["t_ns"], "ended_t_ns": last["t_ns"],
         "duration_s": (last["t_ns"] - first["t_ns"]) / 1e9,
