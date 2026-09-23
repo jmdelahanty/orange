@@ -8090,8 +8090,16 @@ int main(int /*argc*/, char ** /*args*/) {
                             }
                         }
             
+                        // Reserve the lower half of the window for the speed
+                        // graph only when it will actually be drawn; the
+                        // unconditional halving shrank the video during every
+                        // recording with YOLO on, graph shown or not.
+                        const bool draw_speed_graph =
+                            show_yolo_speed_graphs && cameras_select[i].yolo && yolo_worker;
                         ImVec2 avail_size = ImGui::GetContentRegionAvail();
-                        avail_size.y *= 0.5f;
+                        if (draw_speed_graph) {
+                            avail_size.y *= 0.5f;
+                        }
                         const float display_width =
                             static_cast<float>(cameras_params[i].width / cameras_select[i].downsample);
                         const float display_height =
@@ -8110,7 +8118,7 @@ int main(int /*argc*/, char ** /*args*/) {
                                 orange::gui::PoseOverlayRect{0.0f, 0.0f, display_width, display_height},
                                 &gui_pose_overlay_main_stats));
 
-                        if (show_yolo_speed_graphs && cameras_select[i].yolo && yolo_worker) {
+                        if (draw_speed_graph) {
                             const auto speed_graph_start = std::chrono::steady_clock::now();
                             RenderSpeedGraph(i, yolo_worker, speed_tracking_data[i]);
                             gui_frame_timing.speed_graph_draw_ms += gui_elapsed_ms(
