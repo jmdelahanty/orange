@@ -5210,6 +5210,9 @@ int main(int /*argc*/, char ** /*args*/) {
     if (!app_storage_config.pose_mode.empty()) {
         set_gui_env_from_app_config_if_absent("ORANGE_POSE_MODE", app_storage_config.pose_mode, "pose mode");
     }
+    if (!app_storage_config.pose_skeleton_path.empty()) {
+        set_gui_env_from_app_config_if_absent("ORANGE_POSE_SKELETON_PATH", app_storage_config.pose_skeleton_path, "pose skeleton sidecar path");
+    }
     if (!app_storage_config.pose_skeleton_id.empty()) {
         set_gui_env_from_app_config_if_absent("ORANGE_POSE_SKELETON_ID", app_storage_config.pose_skeleton_id, "pose skeleton id");
     }
@@ -5402,7 +5405,7 @@ int main(int /*argc*/, char ** /*args*/) {
         gui_env_flag_enabled("ORANGE_GUI_POSE_OVERLAY", false);
     std::deque<orange::gui::PoseOverlayMailbox> gui_pose_overlay_mailboxes;
     std::vector<bool> gui_pose_overlay_bound;
-    const std::vector<orange::gui::PoseOverlaySkeletonEdge> gui_pose_overlay_edges{{0, 1}, {0, 2}, {1, 2}};
+    std::vector<orange::gui::PoseOverlaySkeletonEdge> gui_pose_overlay_edges{{0, 1}, {0, 2}, {1, 2}};
     orange::gui::PoseOverlayOptions gui_pose_overlay_options;
     orange::gui::PoseOverlayStats gui_pose_overlay_main_stats;
     orange::gui::PoseOverlayStats gui_pose_overlay_crop_stats;
@@ -5422,7 +5425,16 @@ int main(int /*argc*/, char ** /*args*/) {
         if (!gui_pose_overlay_bound[camera_index]) {
             poseWorkers[camera_index]->SetOverlayMailbox(&gui_pose_overlay_mailboxes[camera_index]);
             gui_pose_overlay_bound[camera_index] = true;
-            std::cout << "[GUI][pose_overlay] bound camera index " << camera_index << std::endl;
+            const auto& sidecar_edges = poseWorkers[camera_index]->SkeletonEdges();
+            if (!sidecar_edges.empty()) {
+                gui_pose_overlay_edges.clear();
+                for (const auto& e : sidecar_edges) {
+                    gui_pose_overlay_edges.push_back({e.first, e.second});
+                }
+            }
+            std::cout << "[GUI][pose_overlay] bound camera index " << camera_index
+                      << " edges=" << gui_pose_overlay_edges.size()
+                      << (sidecar_edges.empty() ? " (default K=3)" : " (skeleton sidecar)") << std::endl;
         }
         return &gui_pose_overlay_mailboxes[camera_index];
     };

@@ -2,6 +2,7 @@
 #define ORANGE_POSE_WORKER_H
 
 #include "gui/pose_overlay.h"
+#include <utility>
 #include "bounded_sample_statistics.h"
 #include "crop_producer.h"
 #include "fused_frame_args.h"
@@ -27,6 +28,14 @@ public:
     {
         overlay_mailbox_.store(mailbox, std::memory_order_release);
     }
+    // Loaded pose identities (Palette skeleton sidecar + engine bytes); set at
+    // construction, constant afterwards. Empty when no sidecar was configured.
+    const std::vector<std::pair<int, int>>& SkeletonEdges() const { return skeleton_edges_; }
+    const std::vector<std::string>& SkeletonLabels() const { return skeleton_labels_; }
+    const std::string& SkeletonId() const { return pose_skeleton_id_; }
+    const std::string& SkeletonSha256() const { return pose_skeleton_sha256_; }
+    const std::string& SkeletonPath() const { return pose_skeleton_path_; }
+    const std::string& ModelSha256() const { return pose_model_sha256_; }
     PoseWorker(const char* name,
                CameraParams* camera_params,
                CropProducer* crop_producer,
@@ -125,6 +134,7 @@ private:
     void publish_pose_overlay(
         const CropFrameSnapshot& frame,
         const std::vector<pose_event_log::PoseInstanceRecord>& poses);
+    void adopt_pose_skeleton_sidecar();
     std::atomic<orange::gui::PoseOverlayMailbox*> overlay_mailbox_{nullptr};
 
     CameraParams* camera_params_ = nullptr;
@@ -139,6 +149,12 @@ private:
     std::string pose_engine_path_;
     std::string pose_skeleton_id_ = "unknown";
     std::string pose_skeleton_path_;
+    std::string pose_skeleton_sha256_;                 // sidecar file bytes
+    uint64_t pose_skeleton_hash64_ = 0;                // sha256 prefix; 0 = fall back to fnv1a64(id)
+    std::string pose_model_sha256_;                    // engine file bytes
+    uint64_t pose_model_hash64_ = 0;
+    std::vector<std::pair<int, int>> skeleton_edges_;
+    std::vector<std::string> skeleton_labels_;
     int pose_prewarm_iterations_ = 0;
     int max_queue_size_ = 32;
     std::mutex recording_mutex_;

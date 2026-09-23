@@ -79,6 +79,7 @@ struct AppStorageConfig {
     std::string pose_engine_path;
     std::string pose_mode;
     std::string pose_skeleton_id;
+    std::string pose_skeleton_path;  // models.pose_skeleton_path -> ORANGE_POSE_SKELETON_PATH
     int pose_crop_size_px = -1;
     std::string gui_external_recorder_contract_path;
     nlohmann::json gui_external_recorder_contract = nlohmann::json::object();

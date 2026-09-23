@@ -274,6 +274,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/texture_resources.cpp"
     "${SRC_DIR}/gui/preview_staging_lock.cpp"
     "${SRC_DIR}/gui/pose_overlay.cpp"
+    "${SRC_DIR}/pose_skeleton_sidecar.cpp"
     "${SRC_DIR}/gui/pose_overlay_draw.cpp"
     "${SRC_DIR}/gui/startup_timing.cpp"
     "${SRC_DIR}/offthreadmachine.cpp"
@@ -455,6 +456,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/pose_worker.cpp"
     "${SRC_DIR}/gui/preview_staging_lock.cpp"
     "${SRC_DIR}/gui/pose_overlay.cpp"
+    "${SRC_DIR}/pose_skeleton_sidecar.cpp"
     ${NVENCODER_SOURCES}
     ${ORANGE_CUDA_SOURCES}
 )
@@ -905,6 +907,14 @@ if(BUILD_TESTING)
 
     # Pose keypoint overlay (pure geometry + mailbox); not yet wired into the
     # orange target, so this test is its only consumer for now.
+    add_executable(pose_skeleton_sidecar_tests
+        "tools/pose_skeleton_sidecar_tests.cpp"
+        "${SRC_DIR}/pose_skeleton_sidecar.cpp"
+    )
+    target_include_directories(pose_skeleton_sidecar_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(pose_skeleton_sidecar_tests PRIVATE cxx_std_17)
+    add_test(NAME pose_skeleton_sidecar_tests COMMAND pose_skeleton_sidecar_tests)
+
     add_executable(gui_pose_overlay_tests
         "tools/gui_pose_overlay_tests.cpp"
         "${SRC_DIR}/gui/pose_overlay.cpp"

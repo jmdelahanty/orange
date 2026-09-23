@@ -1,3 +1,5 @@
+#include "pose_skeleton_sidecar.h"
+#include <map>
 #include "gui/recording_snapshots.h"
 #include "citrus_recording_geometry.h"
 #include "gui/spatial_layout/projection_snapshot_client.h"
@@ -224,6 +226,42 @@ nlohmann::json build_gui_pose_model_snapshot(const CameraParams& camera_params,
     if (const char* env_pose_skeleton_path = std::getenv("ORANGE_POSE_SKELETON_PATH")) {
         pose_skeleton_path = env_pose_skeleton_path;
     }
+    // Skeleton identity for downstream joins (Palette deployment contract):
+    // the sidecar's exact labels/edges and file SHA-256, and the engine SHA-256.
+    nlohmann::json skeleton = nlohmann::json{{"source", "none"}};
+    if (enabled && !pose_skeleton_path.empty()) {
+        orange::pose::PoseSkeletonSidecar sidecar;
+        std::string error;
+        if (orange::pose::load_pose_skeleton_sidecar(pose_skeleton_path, &sidecar, &error)) {
+            nlohmann::json edges = nlohmann::json::array();
+            for (const auto& e : sidecar.edges) edges.push_back({e.first, e.second});
+            skeleton = {
+                {"source", "palette_sidecar"},
+                {"schema_id", sidecar.schema_id},
+                {"schema_version", sidecar.schema_version},
+                {"skeleton_id", sidecar.skeleton_id},
+                {"labels", sidecar.labels},
+                {"edges", edges},
+                {"kpt_shape", {sidecar.kpt_k, sidecar.kpt_d}},
+                {"sidecar_path", sidecar.path},
+                {"sidecar_sha256", sidecar.file_sha256},
+                {"ipc_skeleton_id_hash", sidecar.file_sha256_prefix64},
+                {"source_run_id", sidecar.source_run_id},
+                {"source_onnx_sha256", sidecar.source_onnx_sha256}};
+            pose_skeleton_id = sidecar.skeleton_id;
+        } else {
+            skeleton = {{"source", "palette_sidecar_invalid"}, {"error", error}};
+        }
+    }
+    static std::map<std::string, std::string> engine_sha_cache;
+    std::string engine_sha256;
+    if (enabled && !pose_engine_path.empty()) {
+        auto it = engine_sha_cache.find(pose_engine_path);
+        if (it == engine_sha_cache.end()) {
+            it = engine_sha_cache.emplace(pose_engine_path, orange::pose::file_sha256_hex(pose_engine_path)).first;
+        }
+        engine_sha256 = it->second;
+    }
 
     return {
         {"enabled", enabled},
@@ -241,6 +279,9 @@ nlohmann::json build_gui_pose_model_snapshot(const CameraParams& camera_params,
             {"model_id", enabled && !pose_engine_path.empty() ? build_model_id_from_path(pose_engine_path) : "none"},
             {"skeleton_id", enabled ? pose_skeleton_id : "none"},
             {"skeleton_path", enabled ? pose_skeleton_path : ""},
+            {"skeleton", skeleton},
+            {"engine_sha256", engine_sha256},
+            {"ipc_model_id_hash", engine_sha256.empty() ? 0ULL : orange::pose::sha256_prefix64(engine_sha256)},
             {"gpu_id", camera_params.gpu_id},
             {"queue_size", enabled ? 32 : 0},
             {"files", files}

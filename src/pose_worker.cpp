@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include "pose_skeleton_sidecar.h"
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
@@ -343,6 +344,8 @@ public:
     int input_width() const { return input_width_; }
     int input_height() const { return input_height_; }
     int keypoint_count() const { return static_cast<int>(keypoint_count_); }
+    const std::vector<std::string>& keypoint_labels() const { return keypoint_labels_; }
+    void SetKeypointLabels(std::vector<std::string> labels) { keypoint_labels_ = std::move(labels); }
     size_t input_bytes() const { return input_bytes_; }
     size_t output_bytes() const { return output_bytes_; }
 
@@ -705,6 +708,7 @@ PoseWorker::PoseWorker(const char* name,
             pose_engine_path_,
             camera_params_->gpu_id,
             stream_);
+        adopt_pose_skeleton_sidecar();
         pose_prewarm_iterations_ =
             env_int_or_default("ORANGE_POSE_PREWARM_ITERATIONS", 0, 0, 1000);
         tensorrt_backend_->Warmup(pose_prewarm_iterations_);
@@ -1486,6 +1490,58 @@ pose_event_log::PoseResultRecord PoseWorker::build_pose_event_record(
     return record;
 }
 
+// Palette skeleton sidecar adoption (deployment contract, 2026-09-23): the
+// sidecar's ordered labels and edges replace the hard-coded defaults, K must
+// match the engine output, the file's SHA-256 identifies the skeleton and the
+// engine file's SHA-256 identifies the model. Any mismatch refuses to start:
+// a pose stage with wrong keypoint semantics is worse than none.
+void PoseWorker::adopt_pose_skeleton_sidecar()
+{
+    if (!tensorrt_backend_) {
+        return;
+    }
+    const size_t keypoint_count = static_cast<size_t>(tensorrt_backend_->keypoint_count());
+    skeleton_labels_ = tensorrt_backend_->keypoint_labels();
+    if (pose_skeleton_path_.empty()) {
+        std::cout << "[PoseWorker] " << threadName << " no skeleton sidecar configured (ORANGE_POSE_SKELETON_PATH);"
+                  << " using default labels for K=" << keypoint_count << " and fnv1a64('" << pose_skeleton_id_
+                  << "') as the skeleton hash" << std::endl;
+        return;
+    }
+    orange::pose::PoseSkeletonSidecar sidecar;
+    std::string error;
+    if (!orange::pose::load_pose_skeleton_sidecar(pose_skeleton_path_, &sidecar, &error)) {
+        throw std::runtime_error("Pose: " + error);
+    }
+    if (sidecar.labels.size() != keypoint_count) {
+        throw std::runtime_error("Pose: skeleton sidecar " + pose_skeleton_path_ + " has " +
+                                 std::to_string(sidecar.labels.size()) + " keypoints but the engine " +
+                                 pose_engine_path_ + " outputs K=" + std::to_string(keypoint_count));
+    }
+    if (!pose_skeleton_id_.empty() && pose_skeleton_id_ != "unknown" && pose_skeleton_id_ != sidecar.skeleton_id) {
+        std::cout << "[PoseWorker] " << threadName << " configured skeleton id '" << pose_skeleton_id_
+                  << "' replaced by the sidecar's '" << sidecar.skeleton_id << "'" << std::endl;
+    }
+    tensorrt_backend_->SetKeypointLabels(sidecar.labels);
+    skeleton_labels_ = sidecar.labels;
+    skeleton_edges_ = sidecar.edges;
+    pose_skeleton_id_ = sidecar.skeleton_id;
+    pose_skeleton_sha256_ = sidecar.file_sha256;
+    pose_skeleton_hash64_ = sidecar.file_sha256_prefix64;
+    if (!pose_engine_path_.empty()) {
+        pose_model_sha256_ = orange::pose::file_sha256_hex(pose_engine_path_);
+        pose_model_hash64_ = orange::pose::sha256_prefix64(pose_model_sha256_);
+    }
+    std::cout << "[PoseWorker] " << threadName << " skeleton sidecar adopted: id=" << pose_skeleton_id_
+              << " K=" << keypoint_count << " labels=";
+    for (size_t i = 0; i < skeleton_labels_.size(); ++i) {
+        std::cout << (i ? "," : "") << i << ":" << skeleton_labels_[i];
+    }
+    std::cout << " edges=" << skeleton_edges_.size() << " sidecar_sha256=" << pose_skeleton_sha256_
+              << " engine_sha256=" << (pose_model_sha256_.empty() ? "n/a" : pose_model_sha256_)
+              << " ipc_hashes=" << pose_model_hash64_ << "/" << pose_skeleton_hash64_ << std::endl;
+}
+
 void PoseWorker::publish_pose_overlay(
     const CropFrameSnapshot& frame,
     const std::vector<pose_event_log::PoseInstanceRecord>& poses)
@@ -1574,8 +1630,10 @@ void PoseWorker::publish_pose_result_v2(
     } else {
         slot.pose_status = static_cast<uint32_t>(shaman_v2::PoseStatus::kNoResult);
     }
-    slot.pose_model_id_hash = fnv1a64(pose_model_id_);
-    slot.pose_skeleton_id_hash = fnv1a64(pose_skeleton_id_);
+    // With a sidecar the IPC hashes are content hashes (first 8 bytes of the
+    // file SHA-256s); without one they stay fnv1a64 of the id strings.
+    slot.pose_model_id_hash = pose_model_hash64_ ? pose_model_hash64_ : fnv1a64(pose_model_id_);
+    slot.pose_skeleton_id_hash = pose_skeleton_hash64_ ? pose_skeleton_hash64_ : fnv1a64(pose_skeleton_id_);
 
     const bool publish_detection_bbox = frame.has_detection &&
         frame.detection_w > 0.0f && frame.detection_h > 0.0f;

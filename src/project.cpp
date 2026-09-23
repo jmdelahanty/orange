@@ -1361,7 +1361,8 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
         for (const auto& [key, target] : {
                  std::pair<const char*, std::string*>{"pose_engine", &config.pose_engine_path},
                  std::pair<const char*, std::string*>{"pose_mode", &config.pose_mode},
-                 std::pair<const char*, std::string*>{"pose_skeleton_id", &config.pose_skeleton_id}}) {
+                 std::pair<const char*, std::string*>{"pose_skeleton_id", &config.pose_skeleton_id},
+                 std::pair<const char*, std::string*>{"pose_skeleton_path", &config.pose_skeleton_path}}) {
             if (models.contains(key) && !models[key].is_null()) {
                 if (!models[key].is_string()) {
                     if (error_out) {
