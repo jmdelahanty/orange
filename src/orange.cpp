@@ -6970,6 +6970,16 @@ int main(int /*argc*/, char ** /*args*/) {
                     }
                 }
 
+                // Like the others: the header box reflects the current state
+                // (checked only when every camera has YOLO selected).
+                bool yolo_all_cameras = true;
+                for (int i = 0; i < num_cameras; i++) {
+                    if (!cameras_select[i].yolo) {
+                        yolo_all_cameras = false;
+                        break;
+                    }
+                }
+
                 if (camera_startup_busy) {
                     ImGui::BeginDisabled();
                 }
@@ -7013,6 +7023,12 @@ int main(int /*argc*/, char ** /*args*/) {
 
                     ImGui::TableNextColumn();
                     ImGui::Text("YOLO "); ImGui::SameLine();
+                    if(ImGui::Checkbox("All##yolo", &yolo_all_cameras))
+                    {
+                        for (int i = 0; i < num_cameras; i++) {
+                            cameras_select[i].yolo = yolo_all_cameras;
+                        }
+                    }
 
                     ImGui::TableNextColumn();
                     ImGui::Text("Crop "); ImGui::SameLine();
