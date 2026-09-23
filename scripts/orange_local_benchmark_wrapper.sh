@@ -64,8 +64,6 @@ Behavior:
   - Only accepts orange_client binaries at:
       /home/jeremy/orange-jeremy/build/orange_client
       /home/jeremy/orange-gop-split-a16/targets/release/orange_client
-      /tmp/orange-spatial-roi-recording-v1-20260830/targets/release/orange_client
-      /tmp/orange-timing-build-20260906/orange_client
   - Only accepts spec files under:
       /home/jeremy/orange-jeremy/experiment_specs
       /home/jeremy/orange-gop-split-a16/experiment_specs
