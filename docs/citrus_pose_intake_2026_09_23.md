@@ -139,10 +139,14 @@ Identity in the slots (content hashes, first 8 bytes of the file SHA-256s):
 The recording snapshot republishes the resolved identity under
 `models[<camera>].pose`: `skeleton_id`, `skeleton.labels`, `skeleton.edges`,
 `skeleton.kpt_shape`, `skeleton.sidecar_path`, `skeleton.sidecar_sha256`,
-`skeleton.ipc_skeleton_id_hash`, `engine_sha256`, `ipc_model_id_hash`. A
-reader should join a slot to the sidecar by the 64-bit hash, then verify and
-retain the exact sidecar bytes (full SHA-256) rather than treating the
-64-bit value as the identity.
+`skeleton.ipc_skeleton_id_hash`, `engine_sha256`, `ipc_model_id_hash`. Since 5d2538a the snapshot also embeds the sidecar itself:
+`skeleton.sidecar_text` is the exact file bytes (its SHA-256 equals
+`skeleton.sidecar_sha256`; verified on 2026_09_23_04_47_36) and
+`skeleton.sidecar_document` the parsed content, including the
+`heading_computation` policy. A reader should join a slot to the sidecar by
+the 64-bit hash, then verify the embedded text against the full SHA-256 and
+take labels, edges and the heading policy from it rather than from static
+configuration.
 
 Heading: the sidecar's `model_schema_binding.pose_schema.metadata.heading_computation`
 (version 1) defines it: direction from `swim_bladder` toward the midpoint of
