@@ -3592,6 +3592,28 @@ nlohmann::json build_camera_runtime_snapshot(const CameraParams& camera_params)
     };
     snapshot["coordinate_frame"] = build_camera_coordinate_frame_snapshot(camera_params);
     snapshot["runtime"] = build_camera_config_json_from_params(camera_params);
+    snapshot["lens_feedback"] = {
+        {"schema_id", "orange.camera.lens_feedback"},
+        {"schema_version", 1},
+        {"available", camera_params.lens_feedback_available},
+        {"iris_commanded", camera_params.iris},
+        {"iris_current", camera_params.iris_current},
+        {"focus_commanded", camera_params.focus},
+        {"focus_current", camera_params.focus_current},
+        {"lens_busy_at_capture", camera_params.lens_busy},
+        {"iris_settle_ms", camera_params.iris_settle_ms},
+        {"focus_settle_ms", camera_params.focus_settle_ms},
+        {"busy_wait_ms_max", camera_params.lens_busy_wait_ms_max},
+        {"write_retries", camera_params.lens_write_retries},
+        {"write_failures", camera_params.lens_write_failures},
+        {"focus_tolerance_counts", 2},
+        {"match", camera_params.lens_feedback_available &&
+                      camera_params.iris_current == camera_params.iris &&
+                      (camera_params.focus_current > camera_params.focus
+                           ? camera_params.focus_current - camera_params.focus
+                           : camera_params.focus - camera_params.focus_current) <= 2u},
+        {"note", "IrisCurrent/FocusCurrent are the mount's reported positions; the EF mount drops writes issued while LensBusy, and the commanded registers cannot show that."}
+    };
     snapshot["sensor_pipeline"] = camera_params.sensor_pipeline_state.empty()
         ? nlohmann::json{
             {"schema_id", "orange.camera.sensor_pipeline_state"},

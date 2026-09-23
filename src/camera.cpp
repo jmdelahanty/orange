@@ -1,4 +1,8 @@
 #include "camera.h"
+#include "lens_write_verify.h"
+#include <iomanip>
+#include <chrono>
+#include <algorithm>
 #include "camera_sensor_pipeline_state.h"
 #include <iostream>
 #include <cctype>
@@ -13,7 +17,16 @@ namespace {
 constexpr useconds_t kFocusPollIntervalUs = 200 * 1000;  // 200ms
 constexpr int kFocusPollAttemptsBeforeUart = 5;          // 1s total
 constexpr int kFocusPollAttemptsAfterUart = 10;          // 2s total
-constexpr useconds_t kIrisPrimeSettleUs = 150 * 1000;    // 150ms
+// Lens writes are gated on LensBusy and verified against IrisCurrent/FocusCurrent
+// (the EF mount drops a write that arrives while it is busy, and the commanded
+// register still reads back the new value). Measured on HB-20000SBM + EF100mm:
+// a move takes 50-120 ms, an iris init ~200 ms, a cold focus transaction ~1 s.
+constexpr double kLensIdleTimeoutMs = 2500.0;
+constexpr double kLensSettleTimeoutMs = 2000.0;
+constexpr int kLensPollIntervalMs = 5;
+constexpr int kLensWriteAttempts = 2;
+constexpr unsigned int kFocusSettleToleranceCounts = 2;  // encoder lands +/-1 count off target
+constexpr unsigned int kIrisSettleToleranceCounts = 0;
 
 bool has_param(Emergent::CEmergentCamera* camera, const char* name)
 {
@@ -839,6 +852,110 @@ void ensure_focus_range_ready(Emergent::CEmergentCamera* camera, CameraParams* c
               << std::endl;
 }
 
+orange::lens::LensPollers make_lens_pollers(Emergent::CEmergentCamera* camera)
+{
+    orange::lens::LensPollers p;
+    p.read_busy = [camera](bool* busy) {
+        return EVT_CameraGetBoolParam(camera, "LensBusy", busy) == EVT_SUCCESS;
+    };
+    p.read_current = nullptr;  // set per node by the caller
+    p.now_ms = []() {
+        return std::chrono::duration<double, std::milli>(
+                   std::chrono::steady_clock::now().time_since_epoch()).count();
+    };
+    p.sleep_poll_interval = []() { usleep(kLensPollIntervalMs * 1000); };
+    return p;
+}
+
+struct LensWriteOutcome {
+    bool ok = false;
+    bool verified = false;       // *Current node confirmed the move
+    unsigned int readback = 0;   // commanded register (what Orange used to trust)
+    unsigned int current = 0;    // *Current node after settle
+    double busy_wait_ms = 0.0;
+    double settle_ms = 0.0;
+    int attempts = 0;
+};
+
+// Write `node` (Iris/Focus) with the mount idle, then verify through
+// `current_node` (IrisCurrent/FocusCurrent). Retries once if the mount dropped
+// the command. Without a readable *Current node it degrades to the legacy
+// set+readback behaviour and says so.
+LensWriteOutcome write_lens_node_verified(
+    Emergent::CEmergentCamera* camera,
+    CameraParams* camera_params,
+    const char* node,
+    const char* current_node,
+    unsigned int target,
+    unsigned int tolerance,
+    const char* context)
+{
+    LensWriteOutcome out;
+    orange::lens::LensPollers pollers = make_lens_pollers(camera);
+    pollers.read_current = [camera, current_node](unsigned int* v) {
+        return EVT_CameraGetUInt32Param(camera, current_node, v) == EVT_SUCCESS;
+    };
+    const std::string& serial = camera_params->camera_serial;
+
+    for (int attempt = 1; attempt <= kLensWriteAttempts; ++attempt) {
+        out.attempts = attempt;
+        const orange::lens::WaitIdleResult idle = orange::lens::wait_lens_idle(pollers, kLensIdleTimeoutMs);
+        out.busy_wait_ms += idle.waited_ms;
+        camera_params->lens_busy_wait_ms_max = std::max(camera_params->lens_busy_wait_ms_max, idle.waited_ms);
+        if (!idle.idle) {
+            std::cout << serial << " [" << context << "] " << node
+                      << " set WARN: LensBusy stayed true for " << std::fixed << std::setprecision(1)
+                      << idle.waited_ms << " ms before write" << std::endl;
+        } else if (idle.waited_ms >= 1.0) {
+            std::cout << serial << " [" << context << "] " << node
+                      << " waited " << std::fixed << std::setprecision(1) << idle.waited_ms
+                      << " ms for LensBusy to clear" << std::endl;
+        }
+
+        const EVT_ERROR set_err = EVT_CameraSetUInt32Param(camera, node, target);
+        if (set_err != EVT_SUCCESS) {
+            std::cout << serial << " [" << context << "] " << node
+                      << " set FAIL: " << get_evt_error_string(set_err) << std::endl;
+            return out;
+        }
+
+        const EVT_ERROR get_err = EVT_CameraGetUInt32Param(camera, node, &out.readback);
+        if (get_err != EVT_SUCCESS) {
+            std::cout << serial << " [" << context << "] " << node
+                      << " set WARN: set ok, readback failed: " << get_evt_error_string(get_err) << std::endl;
+        }
+
+        const orange::lens::SettleResult settle = orange::lens::wait_lens_settled(pollers, target, kLensSettleTimeoutMs, tolerance);
+        out.settle_ms = settle.settle_ms;
+        out.current = settle.current;
+        if (!settle.current_readable) {
+            // Old firmware without *Current: nothing better than the register.
+            camera_params->lens_feedback_available = false;
+            out.ok = (get_err == EVT_SUCCESS && out.readback == target);
+            out.verified = false;
+            std::cout << serial << " [" << context << "] " << node
+                      << " set " << (out.ok ? "PASS" : "WARN") << " (unverified: no " << current_node
+                      << " node): target=" << target << " readback=" << out.readback << std::endl;
+            return out;
+        }
+        camera_params->lens_feedback_available = true;
+        if (settle.settled) {
+            out.ok = true;
+            out.verified = true;
+            return out;
+        }
+        camera_params->lens_write_retries += (attempt < kLensWriteAttempts) ? 1 : 0;
+        std::cout << serial << " [" << context << "] " << node
+                  << " set DROPPED by lens (attempt " << attempt << "/" << kLensWriteAttempts
+                  << "): target=" << target << " readback=" << out.readback
+                  << " " << current_node << "=" << settle.current
+                  << " busy_seen=" << (settle.busy_seen ? "yes" : "no")
+                  << " after " << std::fixed << std::setprecision(1) << settle.settle_ms << " ms" << std::endl;
+    }
+    camera_params->lens_write_failures += 1;
+    return out;
+}
+
 bool set_focus_value_checked(
     Emergent::CEmergentCamera* camera,
     int focus_value,
@@ -864,40 +981,35 @@ bool set_focus_value_checked(
         return false;
     }
 
-    EVT_ERROR set_err = EVT_CameraSetUInt32Param(camera, "Focus", static_cast<unsigned int>(focus_value));
-    if (set_err != EVT_SUCCESS)
-    {
-        std::cout << camera_params->camera_serial
-                  << " [" << context << "] Focus set FAIL: " << get_evt_error_string(set_err)
-                  << std::endl;
-        return false;
-    }
-
+    const LensWriteOutcome out = write_lens_node_verified(
+        camera, camera_params, "Focus", "FocusCurrent", static_cast<unsigned int>(focus_value), kFocusSettleToleranceCounts, context);
     camera_params->focus = static_cast<unsigned int>(focus_value);
-
-    unsigned int readback = 0;
-    EVT_ERROR get_err = EVT_CameraGetUInt32Param(camera, "Focus", &readback);
-    if (get_err != EVT_SUCCESS)
+    camera_params->focus_settle_ms = out.settle_ms;
+    if (camera_params->lens_feedback_available) {
+        camera_params->focus_current = out.current;
+    }
+    if (!out.ok)
     {
         std::cout << camera_params->camera_serial
-                  << " [" << context << "] Focus set WARN: set ok, readback failed: "
-                  << get_evt_error_string(get_err)
+                  << " [" << context << "] Focus set FAIL: target=" << focus_value
+                  << " readback=" << out.readback
+                  << " FocusCurrent=" << out.current
+                  << " attempts=" << out.attempts
                   << std::endl;
         return false;
     }
-
-    if (readback != static_cast<unsigned int>(focus_value))
+    if (!out.verified)
     {
-        std::cout << camera_params->camera_serial
-                  << " [" << context << "] Focus set WARN: target=" << focus_value
-                  << " readback=" << readback
-                  << std::endl;
-        return false;
+        return true;  // legacy PASS already logged
     }
 
     std::cout << camera_params->camera_serial
               << " [" << context << "] Focus set PASS: target=" << focus_value
-              << " readback=" << readback
+              << " readback=" << out.readback
+              << " FocusCurrent=" << out.current
+              << " settle_ms=" << std::fixed << std::setprecision(1) << out.settle_ms
+              << " busy_wait_ms=" << out.busy_wait_ms
+              << " attempts=" << out.attempts
               << " range=[" << camera_params->focus_min << "," << camera_params->focus_max << "]"
               << std::endl;
     return true;
@@ -927,40 +1039,35 @@ bool set_iris_value_checked(
         return false;
     }
 
-    EVT_ERROR set_err = EVT_CameraSetUInt32Param(camera, "Iris", static_cast<unsigned int>(iris_value));
-    if (set_err != EVT_SUCCESS)
-    {
-        std::cout << camera_params->camera_serial
-                  << " [" << context << "] Iris set FAIL: " << get_evt_error_string(set_err)
-                  << std::endl;
-        return false;
-    }
-
+    const LensWriteOutcome out = write_lens_node_verified(
+        camera, camera_params, "Iris", "IrisCurrent", static_cast<unsigned int>(iris_value), kIrisSettleToleranceCounts, context);
     camera_params->iris = static_cast<unsigned int>(iris_value);
-
-    unsigned int readback = 0;
-    EVT_ERROR get_err = EVT_CameraGetUInt32Param(camera, "Iris", &readback);
-    if (get_err != EVT_SUCCESS)
+    camera_params->iris_settle_ms = out.settle_ms;
+    if (camera_params->lens_feedback_available) {
+        camera_params->iris_current = out.current;
+    }
+    if (!out.ok)
     {
         std::cout << camera_params->camera_serial
-                  << " [" << context << "] Iris set WARN: set ok, readback failed: "
-                  << get_evt_error_string(get_err)
+                  << " [" << context << "] Iris set FAIL: target=" << iris_value
+                  << " readback=" << out.readback
+                  << " IrisCurrent=" << out.current
+                  << " attempts=" << out.attempts
                   << std::endl;
         return false;
     }
-
-    if (readback != static_cast<unsigned int>(iris_value))
+    if (!out.verified)
     {
-        std::cout << camera_params->camera_serial
-                  << " [" << context << "] Iris set WARN: target=" << iris_value
-                  << " readback=" << readback
-                  << std::endl;
-        return false;
+        return true;  // legacy PASS already logged
     }
 
     std::cout << camera_params->camera_serial
               << " [" << context << "] Iris set PASS: target=" << iris_value
-              << " readback=" << readback
+              << " readback=" << out.readback
+              << " IrisCurrent=" << out.current
+              << " settle_ms=" << std::fixed << std::setprecision(1) << out.settle_ms
+              << " busy_wait_ms=" << out.busy_wait_ms
+              << " attempts=" << out.attempts
               << " range=[" << camera_params->iris_min << "," << camera_params->iris_max << "]"
               << std::endl;
     return true;
@@ -992,13 +1099,32 @@ bool set_startup_iris_value_checked(
                   << " [" << context << "] Iris startup prime: iris_min=" << iris_prime_value
                   << " then configured=" << configured_iris_value
                   << std::endl;
+        // The verified write returns only once IrisCurrent reports the prime
+        // value and LensBusy has cleared, so no blind settle sleep is needed.
         (void)set_iris_value_checked(camera, iris_prime_value, camera_params, "open_camera_with_params iris_prime");
-        usleep(kIrisPrimeSettleUs);
     }
 
     return set_iris_value_checked(camera, configured_iris_value, camera_params, context);
 }
 }  // namespace
+
+bool refresh_lens_feedback(Emergent::CEmergentCamera* camera, CameraParams* camera_params)
+{
+    if (camera == nullptr || camera_params == nullptr) {
+        return false;
+    }
+    unsigned int iris_current = 0;
+    unsigned int focus_current = 0;
+    bool busy = false;
+    const bool iris_ok = EVT_CameraGetUInt32Param(camera, "IrisCurrent", &iris_current) == EVT_SUCCESS;
+    const bool focus_ok = EVT_CameraGetUInt32Param(camera, "FocusCurrent", &focus_current) == EVT_SUCCESS;
+    const bool busy_ok = EVT_CameraGetBoolParam(camera, "LensBusy", &busy) == EVT_SUCCESS;
+    camera_params->lens_feedback_available = iris_ok && focus_ok;
+    if (iris_ok) camera_params->iris_current = iris_current;
+    if (focus_ok) camera_params->focus_current = focus_current;
+    if (busy_ok) camera_params->lens_busy = busy;
+    return camera_params->lens_feedback_available;
+}
 
 bool get_camera_string_param(Emergent::CEmergentCamera* camera, const char* name, std::string* out_value)
 {
@@ -1870,9 +1996,15 @@ void open_camera_with_params(Emergent::CEmergentCamera *camera,
         const bool focus_ok = set_focus_value_checked(camera, static_cast<int>(camera_params->focus), camera_params, "open_camera_with_params");
         const int configured_iris = static_cast<int>(camera_params->iris);
         const bool iris_ok = set_startup_iris_value_checked(camera, configured_iris, camera_params, "open_camera_with_params");
+        refresh_lens_feedback(camera, camera_params);
         std::cout << camera_params->camera_serial
                   << " [open_camera_with_params] Lens init summary: focus=" << (focus_ok ? "PASS" : "FAIL")
                   << " iris=" << (iris_ok ? "PASS" : "FAIL")
+                  << " feedback=" << (camera_params->lens_feedback_available ? "available" : "unavailable")
+                  << " IrisCurrent=" << camera_params->iris_current
+                  << " FocusCurrent=" << camera_params->focus_current
+                  << " retries=" << camera_params->lens_write_retries
+                  << " failures=" << camera_params->lens_write_failures
                   << std::endl;
     } else {
         std::cout << camera_params->camera_serial
@@ -2005,6 +2137,7 @@ void update_camera_params(Emergent::CEmergentCamera *camera, GigEVisionDeviceInf
               << "," << camera_params->iris_max
               << "] focus_uart_bootstrap=" << (camera_params->focus_uart_bootstrap ? "true" : "false")
               << std::endl;
+    refresh_lens_feedback(camera, camera_params);
 
     check_camera_errors(Emergent::EVT_CameraGetUInt32Param(camera, "OffsetY", &camera_params->offsety), camera_params->camera_serial.c_str());
     EVT_CameraGetUInt32ParamMax(camera, "OffsetY", &camera_params->offsety_max);

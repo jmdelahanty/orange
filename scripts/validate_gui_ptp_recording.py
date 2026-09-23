@@ -4055,6 +4055,54 @@ def fmt_float(value: Any, precision: int = 3) -> str:
     return "n/a" if parsed is None else f"{parsed:.{precision}f}"
 
 
+def check_lens_feedback(
+    reporter: Reporter,
+    snapshot: dict[str, Any],
+    cameras: list[str],
+) -> None:
+    """The EF mount drops Focus/Iris writes issued while LensBusy; the commanded
+    registers cannot show that. Orange records IrisCurrent/FocusCurrent under
+    camera_runtime.<serial>.lens_feedback; require them to match the commanded
+    values whenever the feedback nodes are available."""
+    for serial in cameras:
+        feedback = nested_dict(snapshot, "camera_runtime", serial, "lens_feedback")
+        if not feedback:
+            reporter.warn(f"Cam{serial} recording_snapshot has no lens_feedback block (older binary)")
+            continue
+        if not feedback.get("available"):
+            reporter.warn(f"Cam{serial} lens feedback unavailable (no IrisCurrent/FocusCurrent nodes)")
+            continue
+        reporter.check(
+            feedback.get("iris_current") == feedback.get("iris_commanded"),
+            f"Cam{serial} IrisCurrent={feedback.get('iris_current')} matches commanded iris",
+            f"Cam{serial} IrisCurrent={feedback.get('iris_current')!r} != commanded iris "
+            f"{feedback.get('iris_commanded')!r} (lens dropped the write)",
+        )
+        focus_tol = int(feedback.get("focus_tolerance_counts") or 2)
+        focus_current = feedback.get("focus_current")
+        focus_commanded = feedback.get("focus_commanded")
+        focus_ok = (
+            isinstance(focus_current, int)
+            and isinstance(focus_commanded, int)
+            and abs(focus_current - focus_commanded) <= focus_tol
+        )
+        reporter.check(
+            focus_ok,
+            f"Cam{serial} FocusCurrent={feedback.get('focus_current')} matches commanded focus",
+            f"Cam{serial} FocusCurrent={feedback.get('focus_current')!r} != commanded focus "
+            f"{feedback.get('focus_commanded')!r} (lens dropped the write)",
+        )
+        failures = feedback.get("write_failures") or 0
+        reporter.check(
+            failures == 0,
+            f"Cam{serial} lens write failures=0",
+            f"Cam{serial} lens write failures={failures}",
+        )
+        retries = feedback.get("write_retries") or 0
+        if retries:
+            reporter.warn(f"Cam{serial} lens writes needed {retries} retry(ies); the mount dropped a command once")
+
+
 def check_sync_config(
     reporter: Reporter,
     snapshot: dict[str, Any],
@@ -7081,6 +7129,7 @@ def main() -> int:
             args.expected_sync_mode,
             args.expected_ptp_mode,
         )
+        check_lens_feedback(reporter, snapshot, cameras)
         check_ptp_counters(
             reporter,
             summary,

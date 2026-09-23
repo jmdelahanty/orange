@@ -155,6 +155,17 @@ struct CameraParams{
     bool gpu_direct;
     bool focus_uart_bootstrap = false;
     bool lens_control_enabled = true;
+    // EF-mount feedback (IrisCurrent/FocusCurrent/LensBusy). The mount drops
+    // writes issued while busy; these record what the glass actually reports.
+    bool lens_feedback_available = false;
+    unsigned int iris_current = 0;
+    unsigned int focus_current = 0;
+    bool lens_busy = false;
+    double iris_settle_ms = -1.0;
+    double focus_settle_ms = -1.0;
+    double lens_busy_wait_ms_max = 0.0;
+    int lens_write_retries = 0;
+    int lens_write_failures = 0;
     bool need_reorder;
     std::string config_schema_id;
     int config_schema_version = 0;
@@ -317,6 +328,8 @@ void update_offsetX_value(Emergent::CEmergentCamera* camera, int OFFSET_X_VAL, C
 void update_offsetY_value(Emergent::CEmergentCamera* camera, int OFFSET_Y_VAL, CameraParams* camera_params);
 void update_focus_value(Emergent::CEmergentCamera* camera, int focus_value, CameraParams* camera_params);
 void update_iris_value(Emergent::CEmergentCamera* camera, int iris_value, CameraParams* camera_params);
+// Read IrisCurrent/FocusCurrent/LensBusy into camera_params (no writes).
+bool refresh_lens_feedback(Emergent::CEmergentCamera* camera, CameraParams* camera_params);
 int scan_cameras(int max_cameras, GigEVisionDeviceInfo *device_info);
 void allocate_frame_reorder_buffer(Emergent::CEmergentCamera* camera, Emergent::CEmergentFrame* frame_reorder, CameraParams* camera_params);
 void camera_open_stream(Emergent::CEmergentCamera* camera,

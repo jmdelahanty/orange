@@ -915,6 +915,13 @@ if(BUILD_TESTING)
     target_compile_features(pose_skeleton_sidecar_tests PRIVATE cxx_std_17)
     add_test(NAME pose_skeleton_sidecar_tests COMMAND pose_skeleton_sidecar_tests)
 
+    add_executable(lens_write_verify_tests
+        "tools/lens_write_verify_tests.cpp"
+    )
+    target_include_directories(lens_write_verify_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(lens_write_verify_tests PRIVATE cxx_std_17)
+    add_test(NAME lens_write_verify_tests COMMAND lens_write_verify_tests)
+
     add_executable(gui_pose_overlay_tests
         "tools/gui_pose_overlay_tests.cpp"
         "${SRC_DIR}/gui/pose_overlay.cpp"

@@ -479,7 +479,10 @@ void render_camera_properties_panel(CameraEmergent* ecams,
         if (!cameras_params[selected_camera].lens_control_enabled) {
             ImGui::BeginDisabled();
         }
-        if (ImGui::SliderInt("Focus", &slider_focus, cameras_params[selected_camera].focus_min, cameras_params[selected_camera].focus_max, "%d")) {
+        // Lens writes now wait for the mount and verify FocusCurrent, so commit
+        // once on release instead of on every dragged frame.
+        ImGui::SliderInt("Focus", &slider_focus, cameras_params[selected_camera].focus_min, cameras_params[selected_camera].focus_max, "%d");
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
             update_focus_value(&ecams[selected_camera].camera, slider_focus, &cameras_params[selected_camera]);
         }
         if (!cameras_params[selected_camera].lens_control_enabled) {
@@ -489,7 +492,8 @@ void render_camera_properties_panel(CameraEmergent* ecams,
         if (recording_mutation_locked || !cameras_params[selected_camera].lens_control_enabled) {
             ImGui::BeginDisabled();
         }
-        if (ImGui::SliderInt("Iris", &slider_iris, cameras_params[selected_camera].iris_min, cameras_params[selected_camera].iris_max, "%d")) {
+        ImGui::SliderInt("Iris", &slider_iris, cameras_params[selected_camera].iris_min, cameras_params[selected_camera].iris_max, "%d");
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
             update_iris_value(&ecams[selected_camera].camera, slider_iris, &cameras_params[selected_camera]);
         }
         if (recording_mutation_locked || !cameras_params[selected_camera].lens_control_enabled) {
