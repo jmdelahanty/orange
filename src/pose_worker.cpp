@@ -1493,8 +1493,14 @@ void PoseWorker::publish_pose_result_v2(
         return;
     }
 
-    const uint64_t frame_id =
-        frame.recording_frame_id > 0 ? frame.recording_frame_id : frame.local_frame_id;
+    // The live-state publisher merges base, YOLO and pose updates by
+    // state_frame_id, and the base frame (acquire_frames) and the YOLO update
+    // (yolo_worker) use the absolute per-camera frame id. Using the
+    // recording id here (it restarts at 1 for every recording) made every
+    // pose update stale-suppressed or mis-merged while recording, so readers
+    // saw pose only outside recordings (2026-09-22). recording_frame_id stays
+    // a mirror field on the slot.
+    const uint64_t frame_id = frame.local_frame_id;
     if (frame_id == 0) {
         return;
     }

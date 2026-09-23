@@ -477,6 +477,80 @@ void test_frame_ipc_manager_publishes_v2_pose_update()
     shaman_v2::unlink_queue(v2_name);
 }
 
+// Contract (2026-09-22): base, YOLO and pose updates merge by state_frame_id,
+// which is the absolute per-camera frame id. recording_frame_id is a mirror
+// field only. A pose update keyed by the recording id (which restarts at 1
+// for every recording) is stale-suppressed while recording; this test pins
+// both halves so PoseWorker::publish_pose_result_v2 cannot regress to it.
+void test_frame_ipc_manager_pose_update_keys_on_absolute_frame_id()
+{
+    const std::string serial = "v2poseid" + std::to_string(getpid());
+    const std::string v1_name = "/shm_cam_" + serial;
+    const std::string v2_name = shaman_v2::queue_name_for_camera_serial(serial);
+    shaman_v2::unlink_queue(v1_name);
+    shaman_v2::unlink_queue(v2_name);
+
+    {
+        CameraParams camera = make_test_camera(serial);
+        FrameIPCManager manager(&camera, true /* force_v2_live_state */);
+        require(manager.isV2Enabled(), "v2 frame IPC manager should initialize for pose id test");
+        shaman_v2::SharedLiveStateQueue reader(v2_name, false);
+
+        // Base frame: absolute id 111, recording id 11 (recording started
+        // 100 frames after streaming).
+        FrameIPCFrameIdentity base;
+        base.legacy_frame_id = 11;
+        base.state_frame_id = 111;
+        base.camera_frame_id = 1111;
+        base.recording_frame_id = 11;
+        base.camera_timestamp_ns = 5555;
+        require(manager.sendFrame(base, true), "base frame with differing ids should enqueue");
+        std::vector<shaman_v2::Slot> slots = wait_for_v2_slots(reader, 1);
+        require(slots.size() == 1 && slots[0].state_frame_id == 111,
+                "base state id should be the absolute frame id");
+
+        // Wrong: pose keyed by the recording id is below the base and is
+        // suppressed as stale.
+        shaman_v2::Slot stale;
+        stale.state_frame_id = 11;
+        stale.source_frame_id = 11;
+        stale.recording_frame_id = 11;
+        stale.pose_status = static_cast<uint32_t>(shaman_v2::PoseStatus::kPoses);
+        stale.object_count = 1;
+        stale.objects[0].flags = shaman_v2::kObjectHasBbox | shaman_v2::kObjectHasPose;
+        stale.objects[0].keypoint_count = 1;
+        require(manager.updateFrameWithPoseResult(stale), "recording-id pose update should enqueue");
+        for (int i = 0; i < 200 && manager.getV2Counters().pose_stale_suppressed < 1; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        require(manager.getV2Counters().pose_stale_suppressed == 1,
+                "pose update keyed by the recording id must be stale-suppressed");
+        require(wait_for_v2_slots(reader, 1).empty(), "stale pose must not publish a slot");
+
+        // Right: pose keyed by the absolute id merges and publishes, carrying
+        // the recording id as a mirror.
+        shaman_v2::Slot pose = stale;
+        pose.state_frame_id = 111;
+        pose.source_frame_id = 111;
+        pose.objects[0].keypoints[0].x_px = 321.0f;
+        require(manager.updateFrameWithPoseResult(pose), "absolute-id pose update should enqueue");
+        slots = wait_for_v2_slots(reader, 1);
+        require(slots.size() == 1, "absolute-id pose update should publish one slot");
+        require(slots[0].state_frame_id == 111, "published pose keeps the absolute state id");
+        require(slots[0].recording_frame_id == 11, "published pose mirrors the recording id");
+        require(slots[0].pose_status == static_cast<uint32_t>(shaman_v2::PoseStatus::kPoses),
+                "published pose status should be poses");
+        require(slots[0].object_count == 1 && slots[0].objects[0].keypoint_count == 1 &&
+                    slots[0].objects[0].keypoints[0].x_px == 321.0f,
+                "published pose keypoint should round trip");
+        require(manager.getV2Counters().pose_updates_published >= 1, "pose published counter");
+        manager.stop();
+    }
+
+    shaman_v2::unlink_queue(v1_name);
+    shaman_v2::unlink_queue(v2_name);
+}
+
 void test_frame_ipc_manager_publishes_terminal_zero_detection_state()
 {
     const std::string serial = "v2zero" + std::to_string(getpid());
@@ -530,6 +604,7 @@ int main()
         test_live_state_publisher_applies_pending_same_frame_updates();
         test_frame_ipc_manager_opt_in_v2_base_yolo_and_stale();
         test_frame_ipc_manager_publishes_v2_pose_update();
+        test_frame_ipc_manager_pose_update_keys_on_absolute_frame_id();
         test_frame_ipc_manager_publishes_terminal_zero_detection_state();
     } catch (const std::exception& ex) {
         std::cerr << "shaman_v2_tests failed: " << ex.what() << std::endl;

@@ -3054,6 +3054,21 @@ void acquire_frames(
               << " sdk_dropped_frames=" << ecam->camera.GetDroppedFrameCount()
               << " orange_frame_id_gaps=" << camera_state.dropped_frames
               << " get_frame_errors=" << camera_state.get_frame_errors << std::endl;
+    if (frame_ipc_manager && frame_ipc_manager->isV2Enabled()) {
+        // Shaman v2 live-state counters for this camera's session: readers
+        // only see pose when pose updates are published rather than
+        // stale-suppressed (2026-09-22 frame-id fix).
+        const shaman_v2::LiveStateCounters v2 = frame_ipc_manager->getV2Counters();
+        std::cout << "[FRAME_IPC_V2] Cam " << camera_params->camera_serial
+                  << " frames_published=" << v2.frames_published
+                  << " yolo_published=" << v2.yolo_updates_published
+                  << " pose_published=" << v2.pose_updates_published
+                  << " yolo_stale_suppressed=" << v2.yolo_stale_suppressed
+                  << " pose_stale_suppressed=" << v2.pose_stale_suppressed
+                  << " pending_drops=" << v2.pending_drops
+                  << " queue_drops=" << v2.queue_drops
+                  << " push_failures=" << v2.push_failures << std::endl;
+    }
     for (const auto& pending : pending_requeues) {
         if (pending.copy_ready_event) {
             cudaEventSynchronize(*pending.copy_ready_event);
