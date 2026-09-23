@@ -186,11 +186,27 @@ bool test_sequence_fails()
            require(stats.sequence_errors == 1, "sequence error count");
 }
 
+bool test_crop_metadata_source()
+{
+    TestDir dir("crop_metadata_source");
+    write_meta_csv(dir.path); write_jsonl(dir.path, {make_noop_event(1, 1)});
+    const auto crop = dir.path / "Cam2010095_crop_meta.csv";
+    std::filesystem::rename(dir.path / "Cam2010095_meta.csv", crop);
+    auto stats = pose_event_log::summarize_pose_event_log(dir.path.string(), "2010095", noop_config(), crop);
+    bool ok = require(stats.status == "pass" && stats.metadata_rows > 0, "crop-only pose join required full-frame metadata");
+    write_jsonl(dir.path, {make_noop_event(1, 9000)});
+    stats = pose_event_log::summarize_pose_event_log(dir.path.string(), "2010095", noop_config(), crop);
+    ok &= require(stats.status == "fail" && stats.metadata_join_misses == 1, "crop source pose join ignored missing parent frame");
+    std::filesystem::remove(crop);
+    stats = pose_event_log::summarize_pose_event_log(dir.path.string(), "2010095", noop_config(), crop);
+    return require(stats.status == "fail", "missing explicit source silently skipped pose join") && ok;
+}
 }  // namespace
 
 int main()
 {
     bool ok = true;
+    ok &= test_crop_metadata_source();
     ok &= test_noop_passes();
     ok &= test_missing_log_fails();
     ok &= test_wrong_noop_fails();

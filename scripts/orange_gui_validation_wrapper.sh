@@ -99,6 +99,9 @@ validate_path_under_allowed_roots() {
 resolve_ptp_stack_script_path() {
   local candidate
   case "$ORANGE_BIN" in
+    "$TIMING_ORANGE_BIN")
+      candidate="/tmp/orange-timing-evidence-20260906/scripts/ptp_stack.sh"
+      ;;
     "$DEFAULT_ORANGE_BIN")
       candidate="$DEFAULT_ORANGE_ROOT/scripts/ptp_stack.sh"
       ;;

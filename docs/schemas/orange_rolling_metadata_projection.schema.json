@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:orange:recording:rolling_metadata_projection:1",
+  "title": "Candidate opt-in rolling metadata projection v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_id", "schema_version", "status", "reason"],
+      "properties": {
+        "schema_id": {"const": "orange.recording.rolling_metadata_projection"},
+        "schema_version": {"const": 1},
+        "status": {"const": "unsealed"},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_id", "schema_version", "status", "recording_id", "canonicalization", "policy", "source_order", "camera_streams"],
+      "properties": {
+        "schema_id": {"const": "orange.recording.rolling_metadata_projection"},
+        "schema_version": {"const": 1},
+        "status": {"const": "finalized"},
+        "recording_id": {"type": "string", "minLength": 1},
+        "canonicalization": {"const": "canonical_json_utf8_sort_keys_compact_v1"},
+        "policy": {"const": "dense_parent_ids_preserved_clip_csv_rows_in_order_v1"},
+        "source_order": {"const": "encoded_metadata_row_order_with_declared_packet_parity"},
+        "camera_streams": {
+          "type": "object", "minProperties": 1,
+          "propertyNames": {"type": "string", "minLength": 1},
+          "additionalProperties": {"$ref": "#/$defs/stream"}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "relative_path": {
+      "type": "string", "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+    },
+    "index": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+    "frame_id": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807},
+    "projection": {
+      "type": "object", "additionalProperties": false,
+      "required": ["relative_path", "size_bytes", "sha256"],
+      "properties": {
+        "relative_path": {"$ref": "#/$defs/relative_path"},
+        "size_bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["clip_id", "clip_index", "metadata_relative_path", "metadata_size_bytes", "metadata_sha256", "video_relative_path", "first_recording_frame_id", "last_recording_frame_id", "first_parent_output_index", "first_clip_output_index", "frame_count", "packet_count_source"],
+      "properties": {
+        "clip_id": {"type": "string", "minLength": 1},
+        "clip_index": {"$ref": "#/$defs/index"},
+        "metadata_relative_path": {"$ref": "#/$defs/relative_path"},
+        "metadata_size_bytes": {"type": "integer", "minimum": 1},
+        "metadata_sha256": {"$ref": "#/$defs/sha256"},
+        "video_relative_path": {"$ref": "#/$defs/relative_path"},
+        "first_recording_frame_id": {"$ref": "#/$defs/frame_id"},
+        "last_recording_frame_id": {"$ref": "#/$defs/frame_id"},
+        "first_parent_output_index": {"$ref": "#/$defs/index"},
+        "first_clip_output_index": {"const": 0},
+        "frame_count": {"$ref": "#/$defs/frame_id"},
+        "packet_count_source": {"type": "string", "minLength": 1, "not": {"const": "unavailable"}}
+      }
+    },
+    "stream": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sources", "projection"],
+      "properties": {
+        "sources": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/source"}},
+        "projection": {"$ref": "#/$defs/projection"}
+      }
+    }
+  }
+}

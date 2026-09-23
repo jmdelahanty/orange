@@ -77,6 +77,9 @@ public:
     }
 
     CameraParams* GetCameraParams() const { return associated_camera_params_; }
+    // Snapshot on the owner/control thread before worker teardown. Finalization
+    // may retain the logger, never the YoloWorker or a WORKER_ENTRY.
+    std::shared_ptr<yolo_event_log::YoloEventLogger> EventLogger() const { return event_logger_; }
 
     struct YoloDetectionOutput {
         unsigned long long frame_id;
@@ -123,7 +126,7 @@ private:
     VelocityTracker velocity_tracker_;
     SafeQueue<WORKER_ENTRY*>& m_recycle_queue;
     std::unique_ptr<yolo_perf::YoloPerfLogger> perf_logger_;
-    std::unique_ptr<yolo_event_log::YoloEventLogger> event_logger_;
+    std::shared_ptr<yolo_event_log::YoloEventLogger> event_logger_;
     uint64_t perf_sample_counter_ = 0;
     // ORANGE_ANALYTICS_DEVICE_ROI comparison counters (see detect_roi.h).
     std::atomic<uint64_t> device_roi_frames_{0};

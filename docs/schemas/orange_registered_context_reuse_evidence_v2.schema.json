@@ -1,0 +1,463 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Daily registered context reuse prearm and completion evidence v2",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "required",
+        "profile",
+        "recording_id",
+        "config",
+        "geometry_contract",
+        "cameras",
+        "daily_context",
+        "use_receipt"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 2
+        },
+        "required": {
+          "const": true
+        },
+        "profile": {
+          "const": "daily_registered_context_reuse_v1"
+        },
+        "recording_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "config": {
+          "allOf": [
+            {
+              "$ref": "orange_registered_context_config_v2.schema.json"
+            },
+            {
+              "properties": {
+                "schema_version": {
+                  "const": 2
+                },
+                "enabled": {
+                  "const": true
+                },
+                "source": {
+                  "$ref": "orange_registered_context_config_v2.schema.json#/$defs/daily_source"
+                }
+              }
+            }
+          ]
+        },
+        "geometry_contract": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "relative_path",
+            "size_bytes",
+            "sha256"
+          ],
+          "properties": {
+            "relative_path": {
+              "const": "registered_context_geometry_v1.json"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 67108864
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+            }
+          }
+        },
+        "cameras": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "camera_serial",
+              "camera_id",
+              "producer_instance_id",
+              "stream_generation",
+              "width",
+              "height",
+              "camera_configuration"
+            ],
+            "properties": {
+              "camera_serial": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+              },
+              "camera_id": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              },
+              "producer_instance_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024
+              },
+              "stream_generation": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 18446744073709551615
+              },
+              "width": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 67108864
+              },
+              "height": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 67108864
+              },
+              "camera_configuration": {
+                "$ref": "orange_daily_registered_native_context_v1.schema.json#/properties/cameras/items/properties/camera_configuration"
+              }
+            }
+          }
+        },
+        "daily_context": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "directory",
+            "descriptor"
+          ],
+          "properties": {
+            "directory": {
+              "const": "registered_daily_context"
+            },
+            "descriptor": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "relative_path",
+                "size_bytes",
+                "sha256"
+              ],
+              "properties": {
+                "relative_path": {
+                  "const": "context.json"
+                },
+                "size_bytes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 16777216
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+                }
+              }
+            }
+          }
+        },
+        "use_receipt": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "relative_path",
+            "size_bytes",
+            "sha256"
+          ],
+          "properties": {
+            "relative_path": {
+              "const": "registered_context_use_v1.json"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 67108864
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "required",
+        "profile",
+        "status"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 2
+        },
+        "required": {
+          "const": true
+        },
+        "profile": {
+          "const": "daily_registered_context_reuse_v1"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "captured",
+            "failed"
+          ]
+        },
+        "daily_context": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "directory",
+            "descriptor"
+          ],
+          "properties": {
+            "directory": {
+              "const": "registered_daily_context"
+            },
+            "descriptor": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "relative_path",
+                "size_bytes",
+                "sha256"
+              ],
+              "properties": {
+                "relative_path": {
+                  "const": "context.json"
+                },
+                "size_bytes": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 16777216
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+                }
+              }
+            }
+          }
+        },
+        "use_receipt": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "relative_path",
+            "size_bytes",
+            "sha256"
+          ],
+          "properties": {
+            "relative_path": {
+              "const": "registered_context_use_v1.json"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 67108864
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+            }
+          }
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "captured"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "daily_context",
+              "use_receipt"
+            ],
+            "not": {
+              "required": [
+                "reason"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "failed"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "reason"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "$defs": {
+    "camera": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "camera_serial",
+        "camera_id",
+        "producer_instance_id",
+        "stream_generation",
+        "width",
+        "height",
+        "camera_configuration"
+      ],
+      "properties": {
+        "camera_serial": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+        },
+        "camera_id": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "producer_instance_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "stream_generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864
+        },
+        "camera_configuration": {
+          "$ref": "orange_daily_registered_native_context_v1.schema.json#/properties/cameras/items/properties/camera_configuration"
+        }
+      }
+    },
+    "cameras": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "camera_serial",
+          "camera_id",
+          "producer_instance_id",
+          "stream_generation",
+          "width",
+          "height",
+          "camera_configuration"
+        ],
+        "properties": {
+          "camera_serial": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+          },
+          "camera_id": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615
+          },
+          "producer_instance_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "stream_generation": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 18446744073709551615
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 67108864
+          },
+          "height": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 67108864
+          },
+          "camera_configuration": {
+            "$ref": "orange_daily_registered_native_context_v1.schema.json#/properties/cameras/items/properties/camera_configuration"
+          }
+        }
+      }
+    },
+    "daily_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "directory",
+        "descriptor"
+      ],
+      "properties": {
+        "directory": {
+          "const": "registered_daily_context"
+        },
+        "descriptor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "relative_path",
+            "size_bytes",
+            "sha256"
+          ],
+          "properties": {
+            "relative_path": {
+              "const": "context.json"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16777216
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+            }
+          }
+        }
+      }
+    }
+  }
+}

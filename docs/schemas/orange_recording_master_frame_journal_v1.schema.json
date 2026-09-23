@@ -1,0 +1,409 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orange.invalid/schemas/orange_recording_master_frame_journal_v1.schema.json",
+  "title": "Orange master frame journal v1 (candidate; not an acquisition-index or media proof)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "status",
+    "terminal",
+    "recording_id",
+    "camera_serial",
+    "producer_instance_id",
+    "stream_generation",
+    "observation_boundary",
+    "observation_index_policy",
+    "timestamp_authority",
+    "hardware_exposure_coverage",
+    "producer_finished_normally",
+    "csv",
+    "io",
+    "counters",
+    "source",
+    "rejected_observations",
+    "writer",
+    "incomplete_reasons"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "orange.recording.master_frame_journal"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "enum": [
+        "complete",
+        "incomplete"
+      ]
+    },
+    "terminal": {
+      "const": true
+    },
+    "recording_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "camera_serial": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+    },
+    "producer_instance_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "stream_generation": {
+      "type": "integer",
+      "minimum": 0,
+        "maximum": 18446744073709551615
+    },
+    "observation_boundary": {
+      "const": "caller_submitted_acquisition_facts_v1"
+    },
+    "observation_index_policy": {
+      "const": "zero_based_offer_order_including_rejected_offers"
+    },
+    "timestamp_authority": {
+      "const": "original_scalars_presence_only_not_physical_timing_certification"
+    },
+    "hardware_exposure_coverage": {
+      "const": "not_certified"
+    },
+    "producer_finished_normally": {
+      "type": "boolean"
+    },
+    "csv": {
+      "anyOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "relative_path",
+            "size_bytes",
+            "sha256"
+          ],
+          "properties": {
+            "relative_path": {
+              "type": "string",
+              "pattern": "^Cam[A-Za-z0-9_-]+_master_frames_v1\\.csv(?![\\s\\S])"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 0,
+        "maximum": 18446744073709551615
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "io": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fsync_succeeded",
+        "close_succeeded",
+        "error"
+      ],
+      "properties": {
+        "fsync_succeeded": {
+          "type": "boolean"
+        },
+        "close_succeeded": {
+          "type": "boolean"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "counters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "offered",
+        "accepted",
+        "rejected_queue_full",
+        "rejected_invalid",
+        "rejected_closed",
+        "written",
+        "discarded_after_io_failure",
+        "queue_high_water"
+      ],
+      "properties": {
+        "offered": {
+          "type": "integer",
+          "minimum": 0,
+        "maximum": 18446744073709551615
+        },
+        "accepted": {
+          "type": "integer",
+          "minimum": 0,
+        "maximum": 18446744073709551615
+        },
+        "rejected_queue_full": {
+          "type": "integer",
+          "minimum": 0,
+        "maximum": 18446744073709551615
+        },
+        "rejected_invalid": {
+          "type": "integer",
+          "minimum": 0,
+        "maximum": 18446744073709551615
+        },
+        "rejected_closed": {
+          "type": "integer",
+          "minimum": 0,
+        "maximum": 18446744073709551615
+        },
+        "written": {
+          "type": "integer",
+          "minimum": 0,
+        "maximum": 18446744073709551615
+        },
+        "discarded_after_io_failure": {
+          "type": "integer",
+          "minimum": 0,
+        "maximum": 18446744073709551615
+        },
+        "queue_high_water": {
+          "type": "integer",
+          "minimum": 0,
+        "maximum": 18446744073709551615
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assigned_frame_offers",
+        "received_unassigned_offers",
+        "source_error_offers",
+        "pause_offers",
+        "resume_offers",
+        "last_recording_frame_id",
+        "assigned_id_gap_count",
+        "assigned_id_order_valid",
+        "assigned_ids_dense_from_one"
+      ],
+      "properties": {
+        "assigned_frame_offers": {
+          "type": "integer",
+          "minimum": 0,
+        "maximum": 18446744073709551615
+        },
+        "received_unassigned_offers": {
+          "type": "integer",
+          "minimum": 0,
+        "maximum": 18446744073709551615
+        },
+        "source_error_offers": {
+          "type": "integer",
+          "minimum": 0,
+        "maximum": 18446744073709551615
+        },
+        "pause_offers": {
+          "type": "integer",
+          "minimum": 0,
+        "maximum": 18446744073709551615
+        },
+        "resume_offers": {
+          "type": "integer",
+          "minimum": 0,
+        "maximum": 18446744073709551615
+        },
+        "last_recording_frame_id": {
+          "type": "integer",
+          "minimum": 0,
+        "maximum": 18446744073709551615
+        },
+        "assigned_id_gap_count": {
+          "type": "integer",
+          "minimum": 0,
+        "maximum": 18446744073709551615
+        },
+        "assigned_id_order_valid": {
+          "type": "boolean"
+        },
+        "assigned_ids_dense_from_one": {
+          "type": "boolean"
+        }
+      }
+    },
+    "rejected_observations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "first",
+        "last"
+      ],
+      "properties": {
+        "first": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+        "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "last": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+        "maximum": 18446744073709551615
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "writer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "queue_capacity",
+        "affinity_policy",
+        "requested_cpu_ids",
+        "effective_cpu_ids"
+      ],
+      "properties": {
+        "queue_capacity": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 65536
+        },
+        "affinity_policy": {
+          "enum": [
+            "inherited",
+            "explicit_caller_cpu_role"
+          ]
+        },
+        "requested_cpu_ids": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+        "maximum": 18446744073709551615
+          }
+        },
+        "effective_cpu_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+        "maximum": 18446744073709551615
+          }
+        }
+      }
+    },
+    "incomplete_reasons": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "producer_not_normally_finished",
+          "empty_observation_domain",
+          "queue_overflow",
+          "invalid_source_fact",
+          "submission_after_close",
+          "offered_written_mismatch",
+          "journal_io_failure",
+          "journal_hash_failed",
+          "journal_bytes_changed_or_partial_write"
+        ]
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "complete"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "producer_finished_normally": {
+            "const": true
+          },
+          "csv": {
+            "type": "object"
+          },
+          "io": {
+            "properties": {
+              "fsync_succeeded": {
+                "const": true
+              },
+              "close_succeeded": {
+                "const": true
+              },
+              "error": {
+                "type": "null"
+              }
+            }
+          },
+          "incomplete_reasons": {
+            "maxItems": 0
+          },
+          "counters": {
+            "properties": {
+              "offered": {
+                "minimum": 1
+              },
+              "rejected_queue_full": {
+                "const": 0
+              },
+              "rejected_invalid": {
+                "const": 0
+              },
+              "rejected_closed": {
+                "const": 0
+              },
+              "discarded_after_io_failure": {
+                "const": 0
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "incomplete_reasons": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}

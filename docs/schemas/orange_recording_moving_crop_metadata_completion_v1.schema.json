@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Moving-crop master/detector metadata completion v1; not media finalization",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_id", "schema_version", "status", "authority", "media_finalization_evaluated", "recording_id", "camera_serial", "master_descriptor", "recorder_summary", "session_crop_metadata", "detector_events", "partitions", "detection_coverage", "metadata_correspondence"],
+  "properties": {
+    "schema_id": {"const": "orange.recording.moving_crop_metadata_completion"},
+    "schema_version": {"const": 1},
+    "status": {"const": "matched"},
+    "authority": {"const": "master_crop_and_detector_metadata_only"},
+    "media_finalization_evaluated": {"const": false},
+    "recording_id": {"type": "string", "minLength": 1},
+    "camera_serial": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"},
+    "master_descriptor": {"$ref": "#/$defs/asset"},
+    "recorder_summary": {"$ref": "#/$defs/asset"},
+    "session_crop_metadata": {"$ref": "#/$defs/asset"},
+    "detector_events": {"$ref": "#/$defs/asset"},
+    "partitions": {
+      "type": "array", "minItems": 1, "maxItems": 4096,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["clip_index", "recorder_clip_index", "clip_id", "first_recording_frame_id", "last_recording_frame_id", "frame_count"],
+        "properties": {
+          "clip_index": {"$ref": "#/$defs/uint64"},
+          "recorder_clip_index": {"oneOf": [{"$ref": "#/$defs/uint64"}, {"type": "null"}]},
+          "clip_id": {"type": "string", "minLength": 1},
+          "first_recording_frame_id": {"$ref": "#/$defs/positive"},
+          "last_recording_frame_id": {"$ref": "#/$defs/positive"},
+          "frame_count": {"$ref": "#/$defs/positive"}
+        }
+      }
+    },
+    "detection_coverage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["assigned_frames", "successful_detection_frames", "successful_zero_detection_frames"],
+      "properties": {
+        "assigned_frames": {"$ref": "#/$defs/positive"},
+        "successful_detection_frames": {"$ref": "#/$defs/uint64"},
+        "successful_zero_detection_frames": {"$ref": "#/$defs/uint64"}
+      }
+    },
+    "metadata_correspondence": {"$ref": "orange_recording_moving_crop_metadata_correspondence_v1.schema.json"}
+  },
+  "$defs": {
+    "uint64": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
+    "positive": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615},
+    "asset": {"$ref": "orange_recording_moving_crop_metadata_correspondence_v1.schema.json#/properties/master_csv"}
+  }
+}

@@ -1136,7 +1136,7 @@ YoloWorker::YoloWorker(const char* name,
         std::cout << "YoloWorker for " << name << " initialized successfully." << std::endl;
         // IPC logging disabled: YOLO IPC note.
 
-        event_logger_ = std::make_unique<yolo_event_log::YoloEventLogger>(
+        event_logger_ = std::make_shared<yolo_event_log::YoloEventLogger>(
             associated_camera_params_->camera_serial,
             associated_camera_params_->camera_id,
             threadName

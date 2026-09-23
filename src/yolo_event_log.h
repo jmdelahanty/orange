@@ -5,9 +5,11 @@
 #include "yolo_event_log_config.h"
 
 #include <condition_variable>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <fstream>
+#include <future>
 #include <mutex>
 #include <memory>
 #include <string>
@@ -91,21 +93,31 @@ public:
     void Stop();
     void Close();
     void Enqueue(YoloResultRecord record);
+    // Control/finalization thread only. A FIFO flush alone is insufficient:
+    // the detector may enqueue the last result after finalization requests it.
+    // This waits for that source identity, then flushes on the existing writer.
+    // Success is a visibility barrier, not a completeness proof (the master
+    // correspondence validator still checks every row and rejects gaps).
+    bool FlushThrough(const std::string& folder, uint64_t last_recording_frame_id,
+                      std::chrono::milliseconds timeout);
 
 private:
     enum class EventType {
         kYoloResult,
         kClose,
+        kFlushThrough,
     };
 
     struct Event {
         EventType type = EventType::kYoloResult;
         YoloResultRecord result;
+        std::shared_ptr<std::promise<bool>> completion;
+        std::chrono::steady_clock::time_point deadline;
     };
 
     static constexpr size_t kMaxQueue = 8192;
 
-    void EnqueueEvent(Event&& event);
+    bool EnqueueEvent(Event&& event);
     static std::string RecordingIdFromFolder(const std::string& folder);
     void OpenFile(const std::string& folder);
     void CloseFile();
@@ -121,12 +133,16 @@ private:
     std::condition_variable cv_;
     std::deque<Event> queue_;
     bool running_ = false;
+    bool writer_finished_ = false;
     std::string current_folder_;
     std::string recording_id_;
     std::string file_path_;
     std::ofstream file_;
     std::unordered_set<std::string> opened_folders_;
     std::unordered_map<std::string, uint64_t> next_sequence_by_folder_;
+    // Writer-thread owned; never inspected from detector/acquisition threads.
+    std::unordered_map<std::string, uint64_t> last_written_by_folder_;
+    std::unordered_set<std::string> failed_folders_;
     size_t dropped_ = 0;
 };
 

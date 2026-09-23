@@ -17,6 +17,7 @@
 namespace orange::gui::spatial_layout {
 
 class CommissioningFinalizationWorker;
+class DailyNativeContextCapture;
 
 struct Point2d {
     double x = 0.0;
@@ -675,6 +676,7 @@ struct SpatialLayoutUiState {
         standalone_physical_registration_workflow;
     PhysicalRegistrationSelectionUiState physical_registration_selection;
     DailyRegistrationWorkflowUiState daily_registration_workflow;
+    std::shared_ptr<orange::gui::spatial_layout::DailyNativeContextCapture> daily_native_context_capture;
     bool base_only_runtime_mode_armed = false;
     std::string daily_registration_message;
     std::string daily_registration_error;

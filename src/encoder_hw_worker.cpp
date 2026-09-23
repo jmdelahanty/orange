@@ -1,6 +1,7 @@
 // src/encoder_hw_worker.cpp
 
 #include "encoder_hw_worker.h"
+#include "recording_metadata_csv.h"
 #include "encoder_preprocess_worker.h"
 #include "fsuid_guard.h"
 #include "shared_recording_output.h"
@@ -451,7 +452,7 @@ static inline void initialize_writer_hw(
         throw std::runtime_error(
             "Failed to open recording metadata file " + writer->metadata_file);
     }
-    *writer->metadata << "frame_id,timestamp,timestamp_sys\n";
+    orange::recording_metadata::write_header(*writer->metadata);
     writer->video->create_thread();
 }
 
@@ -459,7 +460,7 @@ static inline void write_metadata_hw(std::ofstream *metadata, unsigned long long
 {
     if (metadata && metadata->is_open())
     {
-        *metadata << frame_id << "," << timestamp << "," << timestamp_sys << '\n';
+        orange::recording_metadata::write_row(*metadata, frame_id, timestamp, timestamp_sys);
     }
 }
 

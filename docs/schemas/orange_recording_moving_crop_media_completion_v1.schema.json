@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Moving crop encoded-media completion v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "status",
+    "recording_id",
+    "camera_serial",
+    "validation_profile",
+    "metadata_completion",
+    "width",
+    "height",
+    "frame_count",
+    "mode",
+    "videos"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "orange.recording.moving_crop_media_completion"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "const": "complete"
+    },
+    "recording_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "camera_serial": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+    },
+    "validation_profile": {
+      "const": "returned_identity_v2_mux_and_full_hevc_decode_v1"
+    },
+    "metadata_completion": {
+      "$ref": "orange_recording_moving_crop_metadata_correspondence_v1.schema.json#/properties/master_csv"
+    },
+    "width": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8192
+    },
+    "height": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8192
+    },
+    "frame_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615
+    },
+    "mode": {
+      "enum": [
+        "single_clip",
+        "rolling_clips"
+      ]
+    },
+    "videos": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "clip_index",
+          "clip_id",
+          "frame_count",
+          "first_recording_frame_id",
+          "last_recording_frame_id",
+          "video",
+          "recorder_metadata",
+          "container_finalization",
+          "crop_metadata"
+        ],
+        "properties": {
+          "clip_index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4095
+          },
+          "clip_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "frame_count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 18446744073709551615
+          },
+          "first_recording_frame_id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 18446744073709551615
+          },
+          "last_recording_frame_id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 18446744073709551615
+          },
+          "video": {
+            "$ref": "orange_recording_moving_crop_metadata_correspondence_v1.schema.json#/properties/master_csv"
+          },
+          "recorder_metadata": {
+            "$ref": "orange_recording_moving_crop_metadata_correspondence_v1.schema.json#/properties/master_csv"
+          },
+          "container_finalization": {
+            "$ref": "orange_recording_moving_crop_metadata_correspondence_v1.schema.json#/properties/master_csv"
+          },
+          "crop_metadata": {
+            "$ref": "orange_recording_moving_crop_metadata_correspondence_v1.schema.json#/properties/master_csv"
+          }
+        }
+      }
+    }
+  }
+}

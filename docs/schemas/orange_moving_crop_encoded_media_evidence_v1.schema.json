@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GUI/headless moving crop encoded-media requirement and parent gate v1",
+  "oneOf": [{"$ref": "#/$defs/start"}, {"$ref": "#/$defs/completion"}],
+  "$defs": {
+    "start": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "required", "profile"],
+      "properties": {
+        "schema_version": {"const": 1}, "required": {"const": true},
+        "profile": {"const": "returned_identity_v2_mux_and_full_hevc_decode_v1"}
+      }
+    },
+    "completion": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "required", "profile", "status", "cameras"],
+      "properties": {
+        "schema_version": {"const": 1}, "required": {"const": true},
+        "profile": {"const": "returned_identity_v2_mux_and_full_hevc_decode_v1"},
+        "status": {"enum": ["pending", "complete", "failed"]},
+        "reason": {"type": "string", "minLength": 1},
+        "cameras": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["camera_serial", "receipt"],
+            "properties": {
+              "camera_serial": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"},
+              "receipt": {"$ref": "orange_recording_moving_crop_metadata_completion_v1.schema.json#/$defs/asset"}
+            }
+          }
+        }
+      },
+      "allOf": [
+        {"if": {"properties": {"status": {"const": "complete"}}}, "then": {"properties": {"cameras": {"minItems": 1}}, "not": {"required": ["reason"]}}},
+        {"if": {"properties": {"status": {"const": "pending"}}}, "then": {"properties": {"cameras": {"maxItems": 0}}, "not": {"required": ["reason"]}}},
+        {"if": {"properties": {"status": {"const": "failed"}}}, "then": {"required": ["reason"]}}
+      ]
+    }
+  }
+}

@@ -818,6 +818,107 @@ void test_abort_pending_start_stops_recorders_and_restores_state()
 
 }  // namespace
 
+void test_gui_context_must_be_ready_before_arm()
+{
+    for (int ready = 0; ready < 4; ++ready) {
+        const auto base = make_temp_base_folder("gui_context_gate");
+        CameraControl control;
+        orange::session::RecordingSessionState state;
+        orange::session::PreparedRecordingRunStart prepared;
+        prepared.valid = true;
+        prepared.recording_folder = base.string();
+        prepared.gui_registered_context_required = ready < 2;
+        if (ready >= 2) state.media_selection.mode = orange::recording::RecordingMediaMode::RegisteredContextAndMovingCrops;
+        prepared.gui_registered_context_ready = ready != 0;
+        orange::session::RecordingRunSupervisorStartOutcome outcome;
+        outcome.ok = true;
+        const auto result = orange::session::complete_recording_run(
+            &state, &control, nullptr, 0, nullptr, prepared, std::move(outcome));
+        require(!result.ok && !control.record_video,
+            "GUI context armed without ready evidence and installed master source");
+        require(result.error_message.find("registered context/master journal") != std::string::npos,
+            "GUI context failure was not actionable");
+        std::filesystem::remove_all(base);
+    }
+    std::cout << "PASS test_gui_context_must_be_ready_before_arm\n";
+}
+
+void test_explicit_media_plan_is_frozen_and_persisted()
+{
+    const auto base = make_temp_base_folder("explicit_media");
+    CameraControl control;
+    CameraParams camera = make_camera_params();
+    CameraEachSelect selected;
+    selected.record = true;
+    PTPParams ptp{};
+    orange::session::RecordingSessionState state;
+    state.media_selection = orange::recording::RecordingMediaSelection::Parse(
+        {{"schema_version", 1}, {"mode", "full_frame"}});
+    state.media_plan = orange::recording::RecordingMediaPlan::Resolve(state.media_selection,
+        {{camera.camera_serial, true, false}});
+    selected.crop_and_encode = true;
+    auto prepared = orange::session::prepare_recording_run(
+        &state, &control, &camera, &selected, 1, base.string(), &ptp, "real", nullptr);
+    require(!prepared.valid && control.recording_folder.empty() && !control.record_video,
+        "changed media selection was allowed to claim a run");
+    selected.crop_and_encode = false;
+    selected.record = false;
+    prepared = orange::session::prepare_recording_run(
+        &state, &control, &camera, &selected, 1, base.string(), &ptp, "real", nullptr);
+    require(!prepared.valid && std::filesystem::is_empty(base), "changed membership created artifacts");
+    selected.record = true;
+    prepared = orange::session::prepare_recording_run(
+        &state, &control, &camera, &selected, 1, base.string(), &ptp, "real", nullptr);
+    require(prepared.valid, "unchanged media plan refused: " + prepared.error_message);
+    nlohmann::json snapshot;
+    { std::ifstream in(std::filesystem::path(prepared.recording_folder) / "recording_snapshot.json"); in >> snapshot; }
+    require(snapshot.at("session").at("recording_media_plan") == state.media_plan.ToJson(),
+        "resolved media plan missing from prearm snapshot");
+    require(!prepared.external_recorder_requested && !prepared.external_crop_recorder_requested,
+        "native full-frame plan requested unexpected supervisors");
+    orange::session::abort_prepared_recording_run(&state, &control, prepared, {}, "test_media_cleanup");
+    std::filesystem::remove_all(base);
+    std::cout << "PASS test_explicit_media_plan_is_frozen_and_persisted\n";
+}
+
+void test_crop_only_prepare_preserves_rolling_without_full_supervisor()
+{
+    for (const std::string sink : {"real", "external_ipc"}) for (const int clip_seconds : {0, 2}) {
+        const auto base = make_temp_base_folder("crop_only_prepare");
+        CameraControl control;
+        CameraParams camera = make_camera_params();
+        CameraEachSelect selected;
+        selected.record = selected.crop_and_encode = true;
+        PTPParams ptp{};
+        orange::session::RecordingSessionState state;
+        state.recording_sink_mode = sink;
+        state.crop_recording_sink_mode = "external_ipc";
+        state.gui_recording_control.record_for_seconds = 5;
+        state.gui_recording_control.clip_seconds = clip_seconds;
+        state.media_selection = orange::recording::RecordingMediaSelection::Parse(
+            {{"schema_version", 1}, {"mode", "registered_context_and_moving_crops"}});
+        state.media_plan = orange::recording::RecordingMediaPlan::Resolve(state.media_selection,
+            {{camera.camera_serial, true, true}});
+        const auto prepared = orange::session::prepare_recording_run(
+            &state, &control, &camera, &selected, 1, base.string(), &ptp, sink, nullptr);
+        require(prepared.valid, "crop-only prepare failed: " + prepared.error_message);
+        require(!control.record_video && !prepared.external_recorder_requested &&
+            prepared.external_crop_recorder_requested, "crop-only prepared the wrong recorder owners");
+        require(prepared.gui_registered_context_required && !prepared.crop_only_arm_evidence_ready &&
+            prepared.crop_only_media_plan == state.media_plan.ToJson(), "crop-only prearm requirements lost");
+        const auto& contract = prepared.external_crop_recorder_lifecycle_options.contract;
+        require(contract.at("recording_control").at("clip_seconds") == clip_seconds &&
+            contract.at("recording_control").at("record_for_seconds") == 5 &&
+            contract.at("streams").at("990001_crop").at("recording_control") == contract.at("recording_control"),
+            "crop-only rolling contract depended on the unselected full-frame backend");
+        require(!std::filesystem::exists(std::filesystem::path(prepared.recording_folder) / "external_recorder_contract.json"),
+            "crop-only wrote a phantom full-frame contract");
+        orange::session::abort_prepared_recording_run(&state, &control, prepared, {}, "test_crop_only_cleanup");
+        std::filesystem::remove_all(base);
+    }
+    std::cout << "PASS test_crop_only_prepare_preserves_rolling_without_full_supervisor\n";
+}
+
 int main(int, char** argv)
 {
     // These tests exercise the phased recorder lifecycle, not the optional
@@ -825,10 +926,15 @@ int main(int, char** argv)
     // leaving a helper alive when a successful-start test intentionally does
     // not run the normal recording finalizer.
     setenv("ORANGE_NIC_THERMAL_MONITOR_ENABLED", "0", 1);
+    setenv("ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_990001", "1", 1);
+    setenv("ORANGE_CROP_EXTERNAL_INTERLEAVE", "0", 1);
     if (argv && argv[0]) {
         g_binary_dir = std::filesystem::absolute(argv[0]).parent_path();
     }
     try {
+        test_crop_only_prepare_preserves_rolling_without_full_supervisor();
+        test_explicit_media_plan_is_frozen_and_persisted();
+        test_gui_context_must_be_ready_before_arm();
         test_prepare_creates_run_scaffolding();
         test_prepare_mints_fresh_folder_over_stale_latch();
         test_prepare_mints_fresh_folder_with_empty_base_and_stale_latch();

@@ -4,6 +4,7 @@
 #include "external_recorder_lifecycle.h"
 #include "nic_thermal_monitor.h"
 #include "json.hpp"
+#include "recording_master_acquisition.h"
 
 #include <atomic>
 #include <chrono>
@@ -17,6 +18,7 @@
 struct CameraControl;
 struct CameraParams;
 struct CameraEachSelect;
+namespace yolo_event_log { class YoloEventLogger; }
 
 namespace orange::session {
 struct RecordingControlConfig;
@@ -159,7 +161,13 @@ struct GuiRecordingFinalizeInputs {
     bool valid = false;
     GuiRecordingRunState run;
     bool external_ipc = false;
+    bool crop_only = false;
+    int crop_clip_seconds = 0;
     bool recording_session_available = false;
+    std::shared_ptr<orange::recording::MasterAcquisitionSet> master_frame_journals;
+    int context_housekeeping_cpu = -1;
+    bool validate_crop_media = false;
+    std::map<std::string, std::shared_ptr<yolo_event_log::YoloEventLogger>> detection_logs;
     bool crop_external_recorder_active = false;
     std::vector<GuiRecordingFinalizeCameraSnapshot> cameras;
     int crop_size_px = 0;

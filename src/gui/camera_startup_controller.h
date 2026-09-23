@@ -1,4 +1,5 @@
 #pragma once
+#include "recording_media_plan.h"
 
 #include "camera.h"
 #include "gui/per_camera_stream_runtime.h"
@@ -191,7 +192,8 @@ RecordingPreflightResult run_gui_recording_preflight(
     const CameraEachSelect* camera_selection,
     int camera_count,
     const std::string& selected_yolo_model,
-    int crop_size_px);
+    int crop_size_px,
+    const orange::recording::RecordingMediaSelection& media = {});
 
 int resolve_gui_crop_size_from_camera_configs(
     const CameraParams* camera_params,

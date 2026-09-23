@@ -314,6 +314,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/incremental_clip_shadow.cpp"
     "${SRC_DIR}/gui/recording_finalizer.cpp"
     "${SRC_DIR}/gui/recording_panel.cpp"
+    "${SRC_DIR}/gui/registered_context_recording.cpp"
     "${SRC_DIR}/gui/recording_snapshots.cpp"
     "${SRC_DIR}/gui/session_status.cpp"
     "${SRC_DIR}/gui/session_status_render.cpp"
@@ -326,8 +327,8 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/spatial_layout/calibration_workflow.cpp"
     "${SRC_DIR}/gui/spatial_layout/daily_registration_preview.cpp"
     "${SRC_DIR}/gui/spatial_layout/daily_physical_registration_preflight.cpp"
-    "${SRC_DIR}/gui/spatial_layout/daily_registration_runtime_selection.cpp"
     "${SRC_DIR}/gui/spatial_layout/daily_registration_workflow.cpp"
+    "${SRC_DIR}/gui/spatial_layout/daily_native_context_capture.cpp"
     "${SRC_DIR}/gui/spatial_layout/geometry.cpp"
     "${SRC_DIR}/gui/spatial_layout/group_capture_controller.cpp"
     "${SRC_DIR}/gui/spatial_layout/hough_panel.cpp"
@@ -396,6 +397,7 @@ set(ORANGE_SOURCES
 
 set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/orange_headless_client.cpp"
+    "${SRC_DIR}/headless_registered_context.cpp"
     "${SRC_DIR}/headless_recording_profile.cpp"
     "${SRC_DIR}/network_base.cpp"
     "${SRC_DIR}/video_container_finalization.cpp"
@@ -536,7 +538,34 @@ target_include_directories(orange_project_warnings SYSTEM INTERFACE
 )
 link_libraries(orange_project_warnings)
 
+add_library(orange_recording_master_journal STATIC
+    "${SRC_DIR}/recording_media_plan.cpp"
+    "${SRC_DIR}/recording_media_decode.cpp"
+    "${SRC_DIR}/recording_master_journal.cpp"
+    "${SRC_DIR}/recording_master_acquisition.cpp"
+    "${SRC_DIR}/gui_recording_evidence.cpp"
+    "${SRC_DIR}/recording_master_crop_coverage.cpp"
+    "${SRC_DIR}/recording_crop_only_manifest.cpp"
+    "${SRC_DIR}/recording_crop_only_result.cpp"
+    "${SRC_DIR}/recording_registered_context.cpp"
+    "${SRC_DIR}/recording_daily_context_reuse.cpp"
+    "${SRC_DIR}/daily_registered_context.cpp"
+    "${SRC_DIR}/gui/spatial_layout/daily_registration_runtime_selection.cpp"
+    "${SRC_DIR}/spatial_roi_session_authority_store.cpp"
+    "${SRC_DIR}/session/registered_scene_context_capture_declaration.cpp")
+target_include_directories(orange_recording_master_journal PUBLIC ${ORANGE_COMMON_INCLUDE_DIRS})
+target_compile_features(orange_recording_master_journal PUBLIC cxx_std_17)
+target_link_libraries(orange_recording_master_journal PUBLIC Threads::Threads)
+target_link_libraries(orange_recording_master_journal PUBLIC ${AVFORMAT_LIBRARY} ${AVCODEC_LIBRARY} ${AVUTIL_LIBRARY})
+
+add_library(orange_daily_registered_context INTERFACE)
+target_link_libraries(orange_daily_registered_context INTERFACE orange_recording_master_journal)
+
+add_executable(verify_crop_only_recording "tools/verify_crop_only_recording.cpp")
+target_link_libraries(verify_crop_only_recording PRIVATE orange_recording_master_journal)
+
 add_executable(orange ${ORANGE_SOURCES})
+target_link_libraries(orange PRIVATE orange_daily_registered_context)
 add_executable(orange_client EXCLUDE_FROM_ALL ${ORANGE_CLIENT_SOURCES})
 add_executable(yolo_offline EXCLUDE_FROM_ALL ${YOLO_OFFLINE_SOURCES})
 add_executable(evt_lens_probe ${EVT_LENS_PROBE_SOURCES})
@@ -558,6 +587,18 @@ add_dependencies(orange nic_thermal_monitor)
 add_dependencies(orange_client nic_thermal_monitor)
 
 if(BUILD_TESTING)
+    add_executable(daily_registered_context_tests "tools/daily_registered_context_tests.cpp")
+    target_link_libraries(daily_registered_context_tests PRIVATE orange_daily_registered_context)
+    add_test(NAME daily_registered_context_tests COMMAND daily_registered_context_tests)
+    set_tests_properties(daily_registered_context_tests PROPERTIES TIMEOUT 30)
+    add_executable(gui_registered_context_recording_tests
+        "tools/gui_registered_context_recording_tests.cpp"
+        "${SRC_DIR}/gui/registered_context_recording.cpp"
+        "${DIR_IMGUI}/imgui.cpp" "${DIR_IMGUI}/imgui_draw.cpp"
+        "${DIR_IMGUI}/imgui_tables.cpp" "${DIR_IMGUI}/imgui_widgets.cpp")
+    target_link_libraries(gui_registered_context_recording_tests PRIVATE orange_daily_registered_context)
+    add_test(NAME gui_registered_context_recording_tests COMMAND gui_registered_context_recording_tests)
+    set_tests_properties(gui_registered_context_recording_tests PROPERTIES TIMEOUT 30)
     add_executable(nic_thermal_monitor_tests
         "tools/nic_thermal_monitor_tests.cpp"
         "${SRC_DIR}/nic_thermal_monitor.cpp"
@@ -610,6 +651,63 @@ if(BUILD_TESTING)
     target_include_directories(recording_output_descriptor_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(recording_output_descriptor_tests PRIVATE cxx_std_17)
     add_test(NAME recording_output_descriptor_tests COMMAND recording_output_descriptor_tests)
+
+    add_executable(recording_packet_telemetry_tests "tools/recording_packet_telemetry_tests.cpp")
+    target_include_directories(recording_packet_telemetry_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(recording_packet_telemetry_tests PRIVATE cxx_std_17)
+    add_test(NAME recording_packet_telemetry_tests COMMAND recording_packet_telemetry_tests)
+
+    add_executable(recording_master_journal_tests "tools/recording_master_journal_tests.cpp")
+    add_executable(recording_registered_context_tests "tools/recording_registered_context_tests.cpp")
+    target_link_libraries(recording_registered_context_tests PRIVATE orange_recording_master_journal)
+    add_test(NAME recording_registered_context_tests COMMAND recording_registered_context_tests)
+    set_tests_properties(recording_registered_context_tests PROPERTIES TIMEOUT 30)
+    add_executable(registered_context_snapshot_tests
+        "tools/registered_context_snapshot_tests.cpp"
+        "${SRC_DIR}/spatial_snapshot_worker.cpp"
+        "${SRC_DIR}/offthreadmachine.cpp")
+    target_include_directories(registered_context_snapshot_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(registered_context_snapshot_tests PRIVATE cxx_std_17)
+    target_link_libraries(registered_context_snapshot_tests PRIVATE Threads::Threads ${CUDA_CUDART_LIBRARY}
+        ${OpenCV_LIBS} ${EVT_CAMERA_LIBRARY} ${EVT_GENICAM_LIBRARY} ${EVT_GIGE_LIBRARY})
+    add_test(NAME registered_context_snapshot_tests COMMAND registered_context_snapshot_tests)
+    set_tests_properties(registered_context_snapshot_tests PROPERTIES TIMEOUT 30 SKIP_RETURN_CODE 77 LABELS "gpu")
+    add_executable(recording_moving_crop_completion_tests "tools/recording_moving_crop_completion_tests.cpp")
+    target_link_libraries(recording_moving_crop_completion_tests PRIVATE orange_recording_master_journal)
+    target_compile_definitions(recording_moving_crop_completion_tests PRIVATE
+        ORANGE_CROP_MEDIA_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures/crop_black_five_256_hevc.mp4.b64")
+    add_test(NAME recording_moving_crop_completion_tests COMMAND recording_moving_crop_completion_tests)
+    set_tests_properties(recording_moving_crop_completion_tests PROPERTIES TIMEOUT 30)
+    add_executable(recording_crop_only_manifest_tests "tools/recording_crop_only_manifest_tests.cpp")
+    target_link_libraries(recording_crop_only_manifest_tests PRIVATE orange_recording_master_journal)
+    target_compile_definitions(recording_crop_only_manifest_tests PRIVATE
+        ORANGE_CROP_MEDIA_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures/crop_black_five_256_hevc.mp4.b64")
+    add_test(NAME recording_crop_only_manifest_tests COMMAND recording_crop_only_manifest_tests)
+    add_dependencies(recording_crop_only_manifest_tests verify_crop_only_recording)
+    add_test(NAME crop_only_evidence_cli_tests COMMAND recording_crop_only_manifest_tests --verify-tool $<TARGET_FILE:verify_crop_only_recording>)
+    set_tests_properties(crop_only_evidence_cli_tests PROPERTIES TIMEOUT 60)
+    add_test(NAME crop_only_runner_tests COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/crop_only_runner_tests.py")
+    set_tests_properties(recording_crop_only_manifest_tests PROPERTIES TIMEOUT 30)
+    add_executable(recording_master_acquisition_tests "tools/recording_master_acquisition_tests.cpp")
+    add_executable(recording_media_plan_tests "tools/recording_media_plan_tests.cpp")
+    target_link_libraries(recording_media_plan_tests PRIVATE orange_recording_master_journal)
+    add_test(NAME recording_media_plan_tests COMMAND recording_media_plan_tests)
+    set_tests_properties(recording_media_plan_tests PROPERTIES TIMEOUT 30)
+    target_link_libraries(recording_master_acquisition_tests PRIVATE orange_recording_master_journal)
+    add_test(NAME recording_master_acquisition_tests COMMAND recording_master_acquisition_tests)
+    set_tests_properties(recording_master_acquisition_tests PROPERTIES TIMEOUT 30)
+    target_link_libraries(recording_master_journal_tests PRIVATE orange_recording_master_journal)
+    add_test(NAME recording_master_journal_tests COMMAND recording_master_journal_tests)
+    set_tests_properties(recording_master_journal_tests PROPERTIES TIMEOUT 30)
+
+    add_executable(recording_timing_evidence_tests "tools/recording_timing_evidence_tests.cpp")
+    target_include_directories(recording_timing_evidence_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(recording_timing_evidence_tests PRIVATE cxx_std_17)
+    add_test(NAME recording_timing_evidence_tests COMMAND recording_timing_evidence_tests)
+    add_executable(rolling_metadata_projection_tests "tools/rolling_metadata_projection_tests.cpp")
+    target_include_directories(rolling_metadata_projection_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(rolling_metadata_projection_tests PRIVATE cxx_std_17)
+    add_test(NAME rolling_metadata_projection_tests COMMAND rolling_metadata_projection_tests)
 
     add_executable(acquisition_index_authority_tests
         "tools/acquisition_index_authority_tests.cpp"
@@ -744,6 +842,8 @@ if(BUILD_TESTING)
     )
     target_include_directories(recording_finalizer_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(recording_finalizer_tests PRIVATE cxx_std_17)
+    target_compile_definitions(recording_finalizer_tests PRIVATE
+        ORANGE_CROP_MEDIA_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures/crop_black_five_256_hevc.mp4.b64")
     add_test(
         NAME recording_finalizer_tests_build
         COMMAND ${CMAKE_COMMAND}
@@ -1005,6 +1105,13 @@ if(BUILD_TESTING)
     target_include_directories(yolo_event_log_validation_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(yolo_event_log_validation_tests PRIVATE cxx_std_17)
     add_test(NAME yolo_event_log_validation_tests COMMAND yolo_event_log_validation_tests)
+
+    add_executable(yolo_event_log_drain_tests
+        "tools/yolo_event_log_drain_tests.cpp" "${SRC_DIR}/yolo_event_log.cpp")
+    target_include_directories(yolo_event_log_drain_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(yolo_event_log_drain_tests PRIVATE cxx_std_17)
+    target_link_libraries(yolo_event_log_drain_tests PRIVATE Threads::Threads)
+    add_test(NAME yolo_event_log_drain_tests COMMAND yolo_event_log_drain_tests)
 
     add_executable(yolo_spatial_mask_tests
         "tools/yolo_spatial_mask_tests.cpp"
@@ -1500,6 +1607,7 @@ if(TARGET session_status_tests)
 endif()
 
 target_link_libraries(orange PRIVATE
+    orange_recording_master_journal
     ${ENET_LIBRARY}
     ${GLEW_LIBRARY}
     OpenGL::GL
@@ -1531,6 +1639,7 @@ if(ORANGE_ENABLE_NVTX)
 endif()
 
 target_link_libraries(orange_client PRIVATE
+    orange_recording_master_journal
     ${EVT_CAMERA_LIBRARY}
     ${EVT_GENICAM_LIBRARY}
     ${EVT_GIGE_LIBRARY}
@@ -1560,6 +1669,7 @@ endif()
 
 if(TARGET recording_session_manifest_tests)
     target_link_libraries(recording_session_manifest_tests PRIVATE
+        orange_recording_master_journal
         ${EVT_CAMERA_LIBRARY}
         ${EVT_GENICAM_LIBRARY}
         ${EVT_GIGE_LIBRARY}
@@ -1590,6 +1700,7 @@ endif()
 
 if(TARGET recording_finalizer_tests)
     target_link_libraries(recording_finalizer_tests PRIVATE
+        orange_recording_master_journal
         ${EVT_CAMERA_LIBRARY}
         ${EVT_GENICAM_LIBRARY}
         ${EVT_GIGE_LIBRARY}
@@ -1620,6 +1731,7 @@ endif()
 
 if(TARGET session_status_tests)
     target_link_libraries(session_status_tests PRIVATE
+        orange_recording_master_journal
         ${EVT_CAMERA_LIBRARY}
         ${EVT_GENICAM_LIBRARY}
         ${EVT_GIGE_LIBRARY}
@@ -1650,6 +1762,7 @@ endif()
 
 if(TARGET recording_session_drain_tests)
     target_link_libraries(recording_session_drain_tests PRIVATE
+        orange_recording_master_journal
         ${EVT_CAMERA_LIBRARY}
         ${EVT_GENICAM_LIBRARY}
         ${EVT_GIGE_LIBRARY}
@@ -1680,6 +1793,7 @@ endif()
 
 if(TARGET recording_session_phased_start_tests)
     target_link_libraries(recording_session_phased_start_tests PRIVATE
+        orange_recording_master_journal
         ${EVT_CAMERA_LIBRARY}
         ${EVT_GENICAM_LIBRARY}
         ${EVT_GIGE_LIBRARY}
@@ -1708,6 +1822,7 @@ if(TARGET recording_session_phased_start_tests)
     endif()
 
     target_link_libraries(recording_folder_reuse_regression_tests PRIVATE
+        orange_recording_master_journal
         ${EVT_CAMERA_LIBRARY}
         ${EVT_GENICAM_LIBRARY}
         ${EVT_GIGE_LIBRARY}

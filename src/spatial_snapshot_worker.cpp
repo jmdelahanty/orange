@@ -1,6 +1,7 @@
 #include "spatial_snapshot_worker.h"
 
 #include "worker_entry_release.h"
+#include "scoped_housekeeping_cpu.h"
 
 #include <cuda_runtime.h>
 #include <opencv2/imgproc.hpp>
@@ -11,6 +12,8 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <pthread.h>
+#include <sched.h>
 
 namespace {
 
@@ -122,15 +125,8 @@ SpatialSnapshotWorker::SpatialSnapshotWorker(
       camera_params_(camera_params),
       recycle_queue_(&recycle_queue)
 {
-    // Preview/diagnostic-only output queue: WorkerFunction returns true after
-    // handling a snapshot frame, pushing the entry pointer onto the
-    // base-class output queue, but results are delivered via
-    // complete_result() and nothing in-tree drains the queue. Dropping is
-    // always acceptable. No ReleaseDroppedQueueOutEntry override is needed:
-    // WorkerFunction's WorkerEntryRefGuard releases the entry's pool
-    // reference BEFORE returning true, so pointers on the output queue own no
-    // pool reference and the base-class no-op release is correct.
-    SetMaxQueueOutSize(8);
+    // Results are delivered only through PopCompletedSnapshot(). Source
+    // WORKER_ENTRY pointers are never forwarded to the base output queue.
 }
 
 bool SpatialSnapshotWorker::RequestSnapshot(
@@ -140,16 +136,55 @@ bool SpatialSnapshotWorker::RequestSnapshot(
     uint32_t frame_count,
     SpatialSnapshotAlignmentPlan alignment_plan)
 {
+    return request_snapshot(
+        operation_id,
+        request_id_out,
+        error_out,
+        frame_count,
+        SpatialSnapshotRepresentation::kRgba8,
+        NativeSnapshotOptions{},
+        alignment_plan);
+}
+
+bool SpatialSnapshotWorker::RequestNativeSnapshot(
+    const std::string& operation_id,
+    uint64_t* request_id_out,
+    std::string* error_out,
+    NativeSnapshotOptions options)
+{
+    return request_snapshot(
+        operation_id,
+        request_id_out,
+        error_out,
+        1,
+        SpatialSnapshotRepresentation::kNativeBytes,
+        options,
+        SpatialSnapshotAlignmentPlan{});
+}
+
+bool SpatialSnapshotWorker::request_snapshot(
+    const std::string& operation_id,
+    uint64_t* request_id_out,
+    std::string* error_out,
+    uint32_t frame_count,
+    const SpatialSnapshotRepresentation representation,
+    NativeSnapshotOptions native_options,
+    SpatialSnapshotAlignmentPlan alignment_plan)
+{
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (pending_ || in_flight_ || average_accumulator_.request_id != 0 ||
-        outstanding_frame_count_.load(std::memory_order_acquire) != 0) {
+        outstanding_frame_count_.load(std::memory_order_acquire) != 0 ||
+        (representation == SpatialSnapshotRepresentation::kNativeBytes && has_completed_result_)) {
         if (error_out) {
             *error_out = "A full-resolution stream snapshot is already pending for this camera.";
         }
         return false;
     }
 
-    pending_ = true;
+    if (native_options.housekeeping_cpu < -1 || native_options.housekeeping_cpu >= CPU_SETSIZE) {
+        if (error_out) *error_out = "Invalid native snapshot housekeeping CPU.";
+        return false;
+    }
     claimed_frame_count_ = 0;
     pending_request_.request_id = ++next_request_id_;
     pending_request_.operation_id =
@@ -157,6 +192,11 @@ bool SpatialSnapshotWorker::RequestSnapshot(
     pending_request_.target_frame_count =
         std::clamp<uint32_t>(frame_count, 1u, kMaxSpatialSnapshotAverageFrames);
     pending_request_.alignment_plan = alignment_plan;
+    pending_request_.expected_frame_timestamp_ns = 0;
+    pending_request_.representation = representation;
+    pending_request_.native_options = native_options;
+    native_source_requested_.store(representation == SpatialSnapshotRepresentation::kNativeBytes, std::memory_order_release);
+    pending_.store(true, std::memory_order_release);
     if (request_id_out) {
         *request_id_out = pending_request_.request_id;
     }
@@ -166,6 +206,11 @@ bool SpatialSnapshotWorker::RequestSnapshot(
 
 bool SpatialSnapshotWorker::HasPendingRequest(uint64_t camera_timestamp_ns) const
 {
+    // Lock-free fast path: once no request is pending, acquisition does not
+    // take this worker's mutex on every recorded frame.
+    if (!pending_.load(std::memory_order_acquire)) {
+        return false;
+    }
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (!pending_ || in_flight_) {
         return false;
@@ -241,6 +286,21 @@ bool SpatialSnapshotWorker::UndoClaimAfterEnqueueFailure()
     return false;
 }
 
+bool SpatialSnapshotWorker::CancelUnclaimedRequest(uint64_t request_id)
+{
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    // Only a request that has never had a frame claimed (and has no frame
+    // still queued to the worker) may be cancelled; a partially claimed
+    // aligned request owns worker-side accumulator state.
+    if (!pending_ || in_flight_ || pending_request_.request_id != request_id ||
+        claimed_frame_count_ != 0 ||
+        outstanding_frame_count_.load(std::memory_order_acquire) != 0) {
+        return false;
+    }
+    reset_active_request_locked();
+    return true;
+}
+
 void SpatialSnapshotWorker::CompleteClaimedRequestWithError(const std::string& error)
 {
     ClaimedRequest request;
@@ -279,6 +339,19 @@ bool SpatialSnapshotWorker::PopCompletedSnapshot(SpatialSnapshotResult* result_o
     if (!has_completed_result_) {
         return false;
     }
+    *result_out = std::move(completed_result_);
+    completed_result_ = SpatialSnapshotResult{};
+    has_completed_result_ = false;
+    return true;
+}
+
+bool SpatialSnapshotWorker::PopCompletedSnapshotForRequest(
+    uint64_t request_id, const std::string& operation_id, SpatialSnapshotResult* result_out)
+{
+    if (!result_out) return false;
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (!has_completed_result_ || completed_result_.request_id != request_id ||
+        completed_result_.operation_id != operation_id) return false;
     *result_out = std::move(completed_result_);
     completed_result_ = SpatialSnapshotResult{};
     has_completed_result_ = false;
@@ -557,6 +630,79 @@ bool SpatialSnapshotWorker::copy_entry_to_rgba(
         error_out);
 }
 
+bool SpatialSnapshotWorker::copy_entry_to_native(
+    const WORKER_ENTRY& entry,
+    const NativeSnapshotOptions& options,
+    SpatialSnapshotResult* result,
+    std::string* error_out)
+{
+    auto fail = [&](const std::string& error) {
+        if (error_out) *error_out = error;
+        return false;
+    };
+    cpu_set_t actual;
+    CPU_ZERO(&actual);
+    const int requested_cpu = options.housekeeping_cpu >= 0 ? options.housekeeping_cpu : native_cpu_;
+    if (requested_cpu < 0 || requested_cpu >= CPU_SETSIZE ||
+        pthread_getaffinity_np(pthread_self(), sizeof(actual), &actual) != 0 ||
+        CPU_COUNT(&actual) != 1 || !CPU_ISSET(requested_cpu, &actual))
+        return fail("Native context worker housekeeping affinity was not applied.");
+    if (!result || entry.width <= 0 || entry.height <= 0 ||
+        entry.pixelFormat != GVSP_PIX_MONO8)
+        return fail("Native context requires a positive packed Mono8 raster.");
+    const uint64_t byte_count = static_cast<uint64_t>(entry.width) * entry.height;
+    const bool analytics_owned = entry.has_analytics_owned_source();
+    const bool ring_owned = options.allow_owned_ring && !entry.gpu_direct_mode && entry.owns_memory &&
+        entry.d_image_pool != nullptr && entry.d_image == entry.d_image_pool &&
+        entry.event_ptr != nullptr && *entry.event_ptr != nullptr;
+    if (byte_count > 64 * 1024 * 1024 || entry.source_buffer_bytes < byte_count ||
+        (!analytics_owned && !ring_owned))
+        return fail("Native context requires a bounded owned source; camera DMA fallback refused.");
+    // Camera DMA may already have been requeued independently of ref_count.
+    // Daily capture may also use the retained pool-owned ring copy, for
+    // detection-off operation. Never infer ownership from ref_count alone.
+    if (analytics_owned && !entry.wait_delayed_consumer_ready())
+        return fail("Native context analytics copy was not issued before readiness timeout.");
+    const int device = entry.image_gpu_id;
+    if (device < 0) return fail("Native context source GPU identity missing.");
+    auto status = cudaSetDevice(device);
+    if (status != cudaSuccess) return fail(cuda_error_string("cudaSetDevice", status));
+    const auto ready = analytics_owned ? entry.analytics_ready_event : *entry.event_ptr;
+    const auto* source = analytics_owned ? entry.d_analytics_image : entry.d_image_pool;
+    status = cudaEventSynchronize(ready);
+    if (status != cudaSuccess) return fail(cuda_error_string("cudaEventSynchronize", status));
+    cudaPointerAttributes attrs{};
+    status = cudaPointerGetAttributes(&attrs, source);
+    if (status != cudaSuccess || attrs.type != cudaMemoryTypeDevice || attrs.device != device)
+        return fail("Native context owned-source CUDA pointer/device mismatch.");
+    result->native_bytes.resize(static_cast<size_t>(byte_count));
+    status = cudaMemcpy(result->native_bytes.data(), source,
+                        static_cast<size_t>(byte_count), cudaMemcpyDeviceToHost);
+    if (status != cudaSuccess) {
+        result->native_bytes.clear();
+        return fail(cuda_error_string("cudaMemcpy native context", status));
+    }
+
+    result->capture_mode = "full_resolution_native_stream_snapshot";
+    result->capture_representation = "native_bytes";
+    result->native_source_storage = analytics_owned ? "analytics_owned_device" : "pool_owned_ring_device";
+    result->width = entry.width;
+    result->height = entry.height;
+    result->pixel_format = entry.pixelFormat;
+    result->local_frame_id = entry.frame_id;
+    result->camera_frame_id = entry.camera_frame_id;
+    result->recording_frame_id = entry.recording_frame_id;
+    result->camera_timestamp_ns = entry.timestamp;
+    result->timestamp_sys_ns = entry.timestamp_sys;
+    result->requested_frame_count = 1;
+    result->completed_frame_count = 1;
+    result->first_local_frame_id = entry.frame_id;
+    result->last_local_frame_id = entry.frame_id;
+    result->first_camera_frame_id = entry.camera_frame_id;
+    result->last_camera_frame_id = entry.camera_frame_id;
+    return true;
+}
+
 bool SpatialSnapshotWorker::WorkerFunction(WORKER_ENTRY* entry)
 {
     if (entry == nullptr) {
@@ -567,31 +713,31 @@ bool SpatialSnapshotWorker::WorkerFunction(WORKER_ENTRY* entry)
         camera_params_ ? camera_params_->camera_serial.c_str() : nullptr,
         "spatial_snapshot"};
     const OutstandingFrameGuard outstanding_guard{&outstanding_frame_count_};
-
     ClaimedRequest request;
-    {
-        std::lock_guard<std::mutex> lock(state_mutex_);
-        request = current_claimed_request_locked();
-    }
-    if (request.request_id == 0) {
-        WorkerEntryRefGuard source_guard(
-            recycle_queue_, entry, release_context, true);
-        return false;  // A queued frame from an already failed request.
-    }
-
     SpatialSnapshotResult frame_result;
-    frame_result.request_id = request.request_id;
-    frame_result.operation_id = request.operation_id;
-    frame_result.camera_serial = camera_params_ ? camera_params_->camera_serial : "";
-    frame_result.requested_frame_count = std::max<uint32_t>(1u, request.target_frame_count);
-
     std::string error;
     {
+        // Own the retained acquisition reference before taking locks or
+        // copying strings. Release it immediately after the source copy so
+        // CPU accumulation/logging cannot hold a camera or ring entry.
         WorkerEntryRefGuard source_guard(
             recycle_queue_,
             entry,
             release_context,
             true);
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            request = current_claimed_request_locked();
+        }
+        if (request.request_id == 0) {
+            return false;  // A queued frame from an already failed request.
+        }
+        frame_result.request_id = request.request_id;
+        frame_result.operation_id = request.operation_id;
+        frame_result.camera_serial =
+            camera_params_ ? camera_params_->camera_serial : "";
+        frame_result.requested_frame_count =
+            std::max<uint32_t>(1u, request.target_frame_count);
         if (request.alignment_plan.enabled() &&
             spatial_snapshot_frame_decision(
                 entry->timestamp,
@@ -605,22 +751,33 @@ bool SpatialSnapshotWorker::WorkerFunction(WORKER_ENTRY* entry)
                     << " tolerance_ns=" << request.alignment_plan.tolerance_ns;
             error = message.str();
             frame_result.ok = false;
+        } else if (request.representation == SpatialSnapshotRepresentation::kNativeBytes) {
+            try {
+                orange::ScopedHousekeepingCpu affinity(request.native_options.housekeeping_cpu);
+                frame_result.ok = copy_entry_to_native(*entry, request.native_options, &frame_result, &error);
+                affinity.Restore();
+            } catch (const std::exception& ex) { frame_result.ok = false; error = ex.what(); }
         } else {
             frame_result.ok = copy_entry_to_rgba(*entry, &frame_result, &error);
         }
         if (!frame_result.ok) {
-            frame_result.error = error.empty() ? "Full-resolution stream snapshot failed." : error;
+            frame_result.error = error.empty()
+                ? "Full-resolution stream snapshot failed."
+                : error;
         }
     }
 
     SpatialSnapshotResult completed_result;
     bool completed = true;
-    if (frame_result.ok) {
+    if (frame_result.ok &&
+        request.representation == SpatialSnapshotRepresentation::kRgba8) {
         completed = accumulate_frame_or_complete(
             request,
             frame_result,
             &completed_result,
             &error);
+    } else if (frame_result.ok) {
+        completed_result = std::move(frame_result);
     } else {
         completed_result = std::move(frame_result);
         {
@@ -630,7 +787,7 @@ bool SpatialSnapshotWorker::WorkerFunction(WORKER_ENTRY* entry)
     }
 
     if (!completed) {
-        return true;
+        return false;
     }
 
     if (completed_result.ok) {
@@ -661,5 +818,5 @@ bool SpatialSnapshotWorker::WorkerFunction(WORKER_ENTRY* entry)
     }
 
     complete_result(std::move(completed_result));
-    return true;
+    return false;
 }

@@ -281,14 +281,7 @@ Status ClassifyTerminalStatus(const Outcome& outcome) {
     const bool container_finalized =
         outcome.header_written && outcome.trailer_written &&
         outcome.output_closed;
-    const bool packet_writes_complete =
-        !outcome.writer_error_latched &&
-        outcome.muxer_flush_attempted &&
-        outcome.muxer_flush_succeeded &&
-        outcome.packet_submissions_rejected == 0 &&
-        outcome.packet_write_failures == 0 &&
-        outcome.packet_submissions_accepted == outcome.packet_write_attempts &&
-        outcome.packet_write_attempts == outcome.packets_written;
+    const bool packet_writes_complete = PacketWritesComplete(outcome);
     if (!container_finalized || !packet_writes_complete) {
         return Status::ContainerFinalizationFailed;
     }
@@ -478,16 +471,18 @@ bool Persist(const fs::path& video_path,
             {"recording_fps", recording_fps},
             {"packet_writes",
              {
-                 {"submissions_accepted", outcome.packet_submissions_accepted},
+                 {"submissions_accepted", outcome.packet_writes.submissions_accepted},
                  {"submission_bytes_accepted",
-                  outcome.packet_submission_bytes_accepted},
-                 {"submissions_rejected", outcome.packet_submissions_rejected},
-                 {"write_attempts", outcome.packet_write_attempts},
-                 {"packets_written", outcome.packets_written},
-                 {"bytes_written", outcome.packet_bytes_written},
-                 {"write_failures", outcome.packet_write_failures},
+                  outcome.packet_writes.submission_bytes_accepted},
+                 {"submissions_rejected", outcome.packet_writes.submissions_rejected},
+                 {"write_attempts", outcome.packet_writes.write_attempts},
+                 {"packets_written", outcome.packet_writes.packets_written},
+                 {"bytes_written", outcome.packet_writes.bytes_written},
+                 {"write_failures", outcome.packet_writes.write_failures},
                  {"first_write_error_code",
-                  NullableErrorCode(outcome.first_packet_write_error_code)},
+                  outcome.packet_writes.first_write_error_code == 0
+                      ? nlohmann::json(nullptr)
+                      : nlohmann::json(outcome.packet_writes.first_write_error_code)},
                  {"writer_error_latched", outcome.writer_error_latched},
                  {"muxer_flush_attempted", outcome.muxer_flush_attempted},
                  {"muxer_flush_succeeded", outcome.muxer_flush_succeeded},
@@ -495,16 +490,7 @@ bool Persist(const fs::path& video_path,
                   NullableErrorCode(outcome.muxer_flush_error_code)},
                  {"muxer_flush_error",
                   NullableError(outcome.muxer_flush_error)},
-                 {"complete",
-                  !outcome.writer_error_latched &&
-                      outcome.muxer_flush_attempted &&
-                      outcome.muxer_flush_succeeded &&
-                      outcome.packet_submissions_rejected == 0 &&
-                      outcome.packet_write_failures == 0 &&
-                      outcome.packet_submissions_accepted ==
-                          outcome.packet_write_attempts &&
-                      outcome.packet_write_attempts ==
-                          outcome.packets_written},
+                 {"complete", PacketWritesComplete(outcome)},
              }},
             {"container",
              {

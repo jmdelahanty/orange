@@ -6,14 +6,17 @@
 #include "project.h"
 #include "recording_config_state.h"
 #include "recording_output_descriptor.h"
+#include "recording_media_plan.h"
 #include "video_capture.h"
 #include "json.hpp"
 
 #include <chrono>
 #include <memory>
+#include <map>
 #include <string>
 #include <vector>
 
+namespace yolo_event_log { class YoloEventLogger; }
 namespace orange::session {
 
 struct RecordingControlConfig {
@@ -26,10 +29,15 @@ struct RecordingControlConfig {
 };
 
 struct RecordingSessionState {
+    orange::recording::RecordingMediaSelection media_selection;
+    orange::recording::RecordingMediaPlan media_plan;
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
     std::vector<ResolvedRecordingConfig> resolved_recording_configs;
     std::string recording_sink_mode = "real";
     RecordingControlConfig gui_recording_control;
+    std::shared_ptr<orange::recording::MasterAcquisitionSet> gui_master_frame_journals;
+    int gui_context_housekeeping_cpu = -1;
+    std::map<std::string, std::shared_ptr<yolo_event_log::YoloEventLogger>> gui_detection_logs;
     std::string external_recorder_config_status;
     std::string external_recorder_contract_source;
     nlohmann::json external_recorder_contract_config = nlohmann::json::object();
@@ -101,6 +109,10 @@ struct PreparedRecordingRunStart {
     // Normalized sink mode used for the latest-recording snapshot refresh.
     std::string normalized_sink_mode;
     bool external_recorder_requested = false;
+    bool gui_registered_context_required = false;
+    nlohmann::json crop_only_media_plan;
+    bool crop_only_arm_evidence_ready = false;
+    bool gui_registered_context_ready = false;
     bool external_crop_recorder_requested = false;
     orange::external_recorder::SupervisedRecorderLifecycleOptions
         external_recorder_lifecycle_options;
@@ -290,7 +302,8 @@ RecordingOutputDescriptor build_crop_recording_output_descriptor(
     const std::string& status);
 bool write_recording_session_manifest(const std::string& path,
                                       const nlohmann::json& manifest,
-                                      std::string* error_out = nullptr);
+                                      std::string* error_out = nullptr,
+                                      nlohmann::json* written_manifest = nullptr);
 bool write_rolling_clip_index_artifacts(const std::string& recording_folder,
                                         const nlohmann::json& manifest,
                                         RecordingSessionIndexArtifacts* artifacts_out = nullptr,

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Opt-in native registered context configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "enabled"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 60000
+    },
+    "worker_cpu_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 1023
+      }
+    },
+    "declaration": {
+      "$ref": "orange_registered_context_capture_declaration_v1.schema.json"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "enabled": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "worker_cpu_ids",
+          "declaration"
+        ],
+        "properties": {
+          "worker_cpu_ids": {
+            "minItems": 1
+          },
+          "declaration": {
+            "properties": {
+              "registration_authority_status": {
+                "const": "accepted_for_experiment"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Explicit fresh or daily registered context configuration v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "enabled",
+    "source"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2,
+      "type": "integer"
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 60000
+    },
+    "worker_cpu_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 1023
+      }
+    },
+    "declaration": {
+      "$ref": "orange_registered_context_capture_declaration_v1.schema.json"
+    },
+    "source": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "fresh_capture"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "descriptor_path",
+            "size_bytes",
+            "sha256",
+            "scene_unchanged_since_capture"
+          ],
+          "properties": {
+            "kind": {
+              "const": "daily_registration"
+            },
+            "descriptor_path": {
+              "type": "string",
+              "pattern": "^/(?:[^\\u0000\\r\\n]+/)?context\\.json(?![\\s\\S])"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 16777216
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+            },
+            "scene_unchanged_since_capture": {
+              "const": true
+            }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "enabled": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "worker_cpu_ids",
+          "declaration"
+        ],
+        "properties": {
+          "worker_cpu_ids": {
+            "minItems": 1
+          },
+          "declaration": {
+            "properties": {
+              "registration_authority_status": {
+                "const": "accepted_for_experiment"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "daily_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "descriptor_path",
+        "size_bytes",
+        "sha256",
+        "scene_unchanged_since_capture"
+      ],
+      "properties": {
+        "kind": {
+          "const": "daily_registration"
+        },
+        "descriptor_path": {
+          "type": "string",
+          "pattern": "^/(?:[^\\u0000\\r\\n]+/)?context\\.json(?![\\s\\S])"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+        },
+        "scene_unchanged_since_capture": {
+          "const": true
+        }
+      }
+    }
+  }
+}

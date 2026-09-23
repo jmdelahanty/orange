@@ -347,10 +347,13 @@ RecordingPreflightResult run_gui_recording_preflight(
     const CameraEachSelect* camera_selection,
     const int camera_count,
     const std::string& selected_yolo_model,
-    const int crop_size_px)
+    const int crop_size_px,
+    const orange::recording::RecordingMediaSelection& media)
 {
+    auto inputs = build_validation_inputs(camera_params, camera_selection, camera_count);
+    for (auto& input : inputs) input.record_enabled = input.record_enabled && media.FullFrame();
     RecordingPreflightResult result = run_recording_preflight(
-        build_validation_inputs(camera_params, camera_selection, camera_count),
+        inputs,
         [](const int source_gpu_id, const int helper_gpu_id) {
             return build_recording_validation_gpu_path_info(
                 source_gpu_id, helper_gpu_id);
@@ -542,7 +545,7 @@ struct GuiCameraStartupController::Impl {
                     bindings.camera_selection,
                     bindings.camera_count,
                     *bindings.yolo_model,
-                    bindings.crop_size_px);
+                    bindings.crop_size_px, bindings.recording_session->media_selection);
             bindings.timing->RecordGlobalInterval(
                 "recording_preflight",
                 preflight_started_ns,

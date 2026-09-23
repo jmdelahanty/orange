@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Explicit registered scene declaration v1 (reused wire contract)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "registration_authority_status",
+    "subject_presence",
+    "dish_setup_complete",
+    "nir_illumination_fixed",
+    "camera_configuration_fixed",
+    "rig_fixed"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "orange.recording.registered_scene_context.capture_declaration"
+    },
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "registration_authority_status": {
+      "enum": [
+        "accepted_for_experiment",
+        "diagnostic_not_physical_acceptance"
+      ]
+    },
+    "subject_presence": {
+      "enum": [
+        "absent",
+        "present",
+        "unknown"
+      ]
+    },
+    "dish_setup_complete": {
+      "const": true
+    },
+    "nir_illumination_fixed": {
+      "const": true
+    },
+    "camera_configuration_fixed": {
+      "const": true
+    },
+    "rig_fixed": {
+      "const": true
+    }
+  }
+}

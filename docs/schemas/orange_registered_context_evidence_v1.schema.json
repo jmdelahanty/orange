@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Candidate registered context prearm or parent completion evidence v1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/start"
+    },
+    {
+      "$ref": "#/$defs/completion"
+    }
+  ],
+  "$defs": {
+    "start": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "required",
+        "profile",
+        "recording_id",
+        "config",
+        "geometry_contract",
+        "cameras"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "required": {
+          "const": true
+        },
+        "profile": {
+          "const": "native_registered_pre_recording_v1"
+        },
+        "recording_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "config": {
+          "allOf": [
+            {
+              "oneOf": [
+                { "$ref": "orange_registered_context_config_v1.schema.json" },
+                {
+                  "allOf": [
+                    { "$ref": "orange_registered_context_config_v2.schema.json" },
+                    { "properties": { "source": { "properties": { "kind": { "const": "fresh_capture" } } } } }
+                  ]
+                }
+              ]
+            },
+            {
+              "properties": {
+                "enabled": {
+                  "const": true
+                }
+              }
+            }
+          ]
+        },
+        "geometry_contract": {
+          "$ref": "orange_registered_scene_context_v2.schema.json#/$defs/geometry"
+        },
+        "cameras": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "$ref": "orange_registered_scene_context_v2.schema.json#/$defs/camera_binding"
+          }
+        }
+      }
+    },
+    "completion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "required",
+        "profile",
+        "status",
+        "cameras"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "required": {
+          "const": true
+        },
+        "profile": {
+          "const": "native_registered_pre_recording_v1"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "captured",
+            "failed"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cameras": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "camera_serial",
+              "descriptor",
+              "image"
+            ],
+            "properties": {
+              "camera_serial": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+              },
+              "descriptor": {
+                "$ref": "orange_registered_scene_context_v2.schema.json#/$defs/descriptor"
+              },
+              "image": {
+                "$ref": "orange_registered_scene_context_v2.schema.json#/$defs/image"
+              }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "captured"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cameras": {
+                "minItems": 1
+              }
+            },
+            "not": {
+              "required": [
+                "reason"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "pending"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "cameras": {
+                "maxItems": 0
+              }
+            },
+            "not": {
+              "required": [
+                "reason"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "failed"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "reason"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

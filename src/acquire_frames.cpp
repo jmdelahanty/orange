@@ -2,6 +2,7 @@
 
 #include "acquire_frames.h"
 #include "recording_startup_audit.h"
+#include "ptp_readback_evidence.h"
 #include "nvtx_profiling.h"
 #include "NvEncoder/NvCodecUtils.h"
 #include "image_processing.h"
@@ -1320,7 +1321,7 @@ void acquire_frames(
     std::string ptp_status_last;
     uint64_t ptp_status_samples = 0;
     uint64_t ptp_status_changes = 0;
-    nlohmann::json ptp_readback_observations = nlohmann::json::array();
+    orange::PtpReadbackEvidence ptp_readback_evidence;
     std::string ptp_summary_recording_folder;
     StopWatch w;
     auto last_fps_update_time = std::chrono::steady_clock::now();
@@ -1427,7 +1428,7 @@ void acquire_frames(
         ptp_status_last.clear();
         ptp_status_samples = 0;
         ptp_status_changes = 0;
-        ptp_readback_observations = nlohmann::json::array();
+        ptp_readback_evidence.reset();
     };
 
     auto sample_ptp_enum_readback = [](Emergent::CEmergentCamera* camera,
@@ -1456,6 +1457,7 @@ void acquire_frames(
     };
 
     auto sample_ptp_readbacks = [&]() {
+        if (ptp_readback_evidence.closed()) return;
         const uint64_t mode_samples_before = ptp_mode_samples;
         const uint64_t status_samples_before = ptp_status_samples;
         sample_ptp_enum_readback(
@@ -1472,46 +1474,20 @@ void acquire_frames(
             &ptp_status_last,
             &ptp_status_samples,
             &ptp_status_changes);
-        if (ptp_mode_samples != mode_samples_before ||
-            ptp_status_samples != status_samples_before) {
-            const nlohmann::json mode = ptp_mode_samples > 0
-                ? nlohmann::json(ptp_mode_last) : nlohmann::json(nullptr);
-            const nlohmann::json status = ptp_status_samples > 0
-                ? nlohmann::json(ptp_status_last) : nlohmann::json(nullptr);
-            const std::string sampled_at_utc = get_current_utc_timestamp();
-            const bool same_state = !ptp_readback_observations.empty() &&
-                ptp_readback_observations.back().value("ptp_mode", nlohmann::json(nullptr)) == mode &&
-                ptp_readback_observations.back().value("ptp_status", nlohmann::json(nullptr)) == status;
-            if (same_state) {
-                nlohmann::json& observation = ptp_readback_observations.back();
-                observation["sampled_at_utc"] = sampled_at_utc;
-                observation["last_sampled_at_utc"] = sampled_at_utc;
-                observation["last_local_frame_id"] = camera_state.frame_count;
-                observation["last_recording_frame_id"] = last_recording_frame_count;
-                observation["samples"] = observation.value("samples", 0ULL) + 1;
-            } else {
-                ptp_readback_observations.push_back({
-                    {"sampled_at_utc", sampled_at_utc},
-                    {"first_sampled_at_utc", sampled_at_utc},
-                    {"last_sampled_at_utc", sampled_at_utc},
-                    {"local_frame_id", camera_state.frame_count},
-                    {"recording_frame_id", last_recording_frame_count},
-                    {"first_local_frame_id", camera_state.frame_count},
-                    {"last_local_frame_id", camera_state.frame_count},
-                    {"first_recording_frame_id", last_recording_frame_count},
-                    {"last_recording_frame_id", last_recording_frame_count},
-                    {"samples", 1},
-                    {"ptp_mode", mode},
-                    {"ptp_status", status}
-                });
-            }
-        }
+        // A failed read is unknown for this observation, not the previous
+        // successful value. No additional SDK calls or per-frame polling.
+        ptp_readback_evidence.observe(
+            ptp_mode_samples != mode_samples_before
+                ? std::optional<std::string>(ptp_mode_last) : std::nullopt,
+            ptp_status_samples != status_samples_before
+                ? std::optional<std::string>(ptp_status_last) : std::nullopt,
+            camera_state.frame_count, get_current_utc_timestamp(), steady_clock_now_ns());
     };
 
     auto build_ptp_camera_summary_json = [&](bool finalized) {
         nlohmann::json summary = nlohmann::json::object();
         const uint64_t acquisition_frames = camera_state.frame_count;
-        const uint64_t recording_frames_assigned = last_recording_frame_count;
+        const uint64_t recording_frames_assigned = ptp_readback_evidence.last_recording_frame_id();
         const RecordingIngressStats recording_stats =
             recording_ingress ? recording_ingress->GetStats() : RecordingIngressStats{};
         summary["camera_serial"] = camera_params->camera_serial;
@@ -1597,7 +1573,8 @@ void acquire_frames(
             {"last", ptp_status_samples > 0 ? nlohmann::json(ptp_status_last) : nlohmann::json(nullptr)},
             {"changes", ptp_status_changes}
         };
-        summary["ptp_readback_observations"] = ptp_readback_observations;
+        summary["ptp_readback_observations"] = ptp_readback_evidence.observations();
+        summary["ptp_readback_coverage"] = ptp_readback_evidence.coverage();
         const uint64_t delta_samples = (camera_state.frame_count > 1) ? (camera_state.frame_count - 1) : 0;
         summary["delta_samples"] = delta_samples;
         summary["latch_delta_samples"] = ptp_state.ptp_time_delta_samples;
@@ -1798,8 +1775,30 @@ void acquire_frames(
     static thread_local int copy_prof_count = 0;
 #endif
 
+    // GUI slot membership is immutable until camera thread join. Headless keeps
+    // its original pre-thread owner; never read the GUI shared_ptr from here.
+    const auto master_slot_it = camera_control->gui_master_sources.find(camera_params->camera_serial);
+    auto* master_slot = master_slot_it == camera_control->gui_master_sources.end()
+        ? nullptr : master_slot_it->second.get();
+    auto* headless_master_journal = !master_slot && camera_control->master_frame_journals
+        ? camera_control->master_frame_journals->Find(camera_params->camera_serial) : nullptr;
     bool startup_first_frame_reported = false;
     while (camera_control->subscribe) {
+        // Read arm before the slot: observing a newly armed GUI run then also
+        // observes its published journal. An iteration begun before arm must
+        // not record an unjournaled frame using a later record_video load.
+        const bool recording_at_iteration_start = camera_control->record_video.load();
+        orange::recording::MasterSourceSlot::Lease master_lease(master_slot);
+        auto* master_journal = master_slot ? master_lease.Get() : headless_master_journal;
+        orange::recording::MasterAcquisitionJournal::Iteration master_iteration(
+            master_journal, recording_at_iteration_start);
+        if (master_iteration.FirstRecordingIteration()) {
+            // GUI streams need not receive an idle frame between experiments.
+            // A fresh parent journal resets numbering even in that case; pause
+            // and clip boundaries within the same parent never reset it.
+            local_recording_frame_count = 0;
+            last_recording_frame_count = 0;
+        }
         NVTX_RANGE_PUSH("Frame_Processing_Loop");
 
 #if PIPELINE_PROFILE
@@ -1913,6 +1912,12 @@ void acquire_frames(
 
         if (!got_entry || !got_event) {
             acquisition_resource_starvations++;
+            orange::recording::MasterFrameFact fact;
+            fact.kind = orange::recording::MasterFactKind::resource_starvation_before_receive;
+            fact.reject_reason = !got_entry
+                ? orange::recording::MasterRejectReason::worker_entry_unavailable
+                : orange::recording::MasterRejectReason::readiness_event_unavailable;
+            master_iteration.Submit(fact);
             if (got_entry) {
                 resources->free_entries_queue->push(current_entry);
                 free_entries_available++;
@@ -1982,7 +1987,7 @@ void acquire_frames(
                     ptp_state.pending_register_latch_frame_index);
                 const uint64_t latch_end_ns = steady_clock_now_ns();
                 ptp_latch_ns = latch_end_ns > latch_start_ns ? latch_end_ns - latch_start_ns : 0;
-                if (!ptp_summary_recording_folder.empty()) {
+                if (!ptp_summary_recording_folder.empty() && !ptp_readback_evidence.closed()) {
                     const int64_t latch_minus_frame_ns =
                         static_cast<int64_t>(ptp_state.ptp_time) -
                         static_cast<int64_t>(ptp_state.frame_ts);
@@ -1993,8 +1998,8 @@ void acquire_frames(
                 }
             };
 
-            struct timespec ts_rt1;
-            clock_gettime(CLOCK_REALTIME, &ts_rt1);
+            struct timespec ts_rt1{};
+            const bool realtime_present = clock_gettime(CLOCK_REALTIME, &ts_rt1) == 0;
             uint64_t real_time = (ts_rt1.tv_sec * 1000000000LL) + ts_rt1.tv_nsec;
             {
                 const uint64_t gap_count = count_camera_frame_id_gaps(
@@ -2020,6 +2025,17 @@ void acquire_frames(
             camera_state.frames_recd++;
             camera_state.frame_count++;
             current_entry->frame_id = camera_state.frame_count; // Assign absolute frame ID
+            orange::recording::MasterFrameFact master_received;
+            master_received.kind = orange::recording::MasterFactKind::received_unassigned;
+            master_received.reject_reason = orange::recording::MasterRejectReason::detector_event_unavailable;
+            master_received.local_frame_id = current_entry->frame_id;
+            master_received.camera_frame_id = received_frame->frame_id;
+            master_received.camera_timestamp_ns = received_frame->timestamp;
+            master_received.host_receive_steady_ns = receive_host_ns;
+            master_received.host_realtime_ns = real_time;
+            master_received.local_frame_id_present = master_received.camera_frame_id_present = true;
+            master_received.camera_timestamp_present = master_received.host_receive_steady_present = true;
+            master_received.host_realtime_present = realtime_present;
             const uint64_t receive_delta_ns =
                 (last_receive_host_ns > 0 && receive_host_ns >= last_receive_host_ns)
                     ? receive_host_ns - last_receive_host_ns
@@ -2102,7 +2118,8 @@ void acquire_frames(
                     display_preview_skipped_frames++;
                 }
             }
-            bool will_record = (camera_control->record_video && recording_ingress);
+            bool will_record = ((master_journal ? master_iteration.Active() :
+                ((!master_slot || recording_at_iteration_start) && camera_control->record_video.load())) && recording_ingress);
             bool yolo_enabled = (camera_select->yolo && yolo_worker);
             if (yolo_enabled && !last_yolo_enabled) {
                 yolo_decimate_counter = 0;
@@ -2118,6 +2135,7 @@ void acquire_frames(
             if (will_yolo) {
                 if (!resources->yolo_events_queue) {
                     acquisition_resource_starvations++;
+                    master_iteration.Submit(master_received);
                     EVT_CameraQueueFrame(&ecam->camera, frame_to_requeue);
                     resources->free_events_queue->push(current_event);
                     resources->free_entries_queue->push(current_entry);
@@ -2130,6 +2148,7 @@ void acquire_frames(
                 const bool got_yolo_event = resources->yolo_events_queue->pop(yolo_event);
                 if (!got_yolo_event) {
                     acquisition_resource_starvations++;
+                    master_iteration.Submit(master_received);
                     EVT_CameraQueueFrame(&ecam->camera, frame_to_requeue);
                     resources->free_events_queue->push(current_event);
                     resources->free_entries_queue->push(current_entry);
@@ -2147,8 +2166,13 @@ void acquire_frames(
             }
 
             // If recording is active, increment and assign the recording-specific frame ID
-            if (camera_control->record_video) {
+            if (master_journal ? master_iteration.Active() :
+                ((!master_slot || recording_at_iteration_start) && camera_control->record_video.load())) {
                 current_entry->recording_frame_id = ++local_recording_frame_count;
+                master_received.kind = orange::recording::MasterFactKind::assigned_frame;
+                master_received.reject_reason = orange::recording::MasterRejectReason::none;
+                master_received.recording_frame_id = current_entry->recording_frame_id;
+                master_iteration.Submit(master_received);
                 last_recording_frame_count = current_entry->recording_frame_id;
                 camera_control->latest_recording_frame_id.store(
                     current_entry->recording_frame_id,
@@ -2188,7 +2212,18 @@ void acquire_frames(
                 ptp_summary_recording_folder = live_recording_folder;
                 reset_ptp_summary_stats();
                 if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera) {
+                    ptp_readback_evidence.recorded_frame(current_entry->recording_frame_id);
                     sample_ptp_readbacks();
+                }
+            }
+            if (!ptp_summary_recording_folder.empty()) {
+                ptp_readback_evidence.recorded_frame(current_entry->recording_frame_id);
+                if (ptp_readback_evidence.finish_if_stopped(camera_control->record_video,
+                        camera_control->preserve_recording_session_state)) {
+                    if (camera_control->sync_camera) {
+                        update_ptp_sync_summary_camera(ptp_summary_recording_folder,
+                            camera_params->camera_serial, build_ptp_camera_summary_json(true));
+                    }
                 }
             }
 
@@ -2218,6 +2253,8 @@ void acquire_frames(
                 will_record &&
                 recording_ingress &&
                 recording_ingress->requires_owned_cuda_source();
+            const bool snapshot_requires_owned_source = will_snapshot &&
+                spatial_snapshot_worker->RequiresOwnedNativeSource();
             // ORANGE_ANALYTICS_EARLY_OWNED_FRAME=0 is a diagnostic for the
             // engine-only specs (it selects the ring-copy or, with
             // ORANGE_ACQ_FORCE_DIRECT_READ, the direct-read path). With a
@@ -2241,7 +2278,7 @@ void acquire_frames(
             const bool use_analytics_hybrid = analytics_owned_frame_enabled;
             bool use_ring_copy =
                 use_direct_pointer &&
-                (dispatch_count > 1 || recording_requires_owned_source) &&
+                (dispatch_count > 1 || recording_requires_owned_source || snapshot_requires_owned_source) &&
                 !use_analytics_hybrid;
             // ORANGE_ACQ_FORCE_DIRECT_READ (diagnostic, default off): skip the
             // ring copy that dispatch_count > 1 would otherwise force, so
@@ -2251,7 +2288,7 @@ void acquire_frames(
             // the image, which is what the engine-only specs use.
             static const bool force_direct_read =
                 orange::yolo_flags::EnvFlag("ORANGE_ACQ_FORCE_DIRECT_READ", false);
-            if (force_direct_read && use_ring_copy && !recording_requires_owned_source) {
+            if (force_direct_read && use_ring_copy && !recording_requires_owned_source && !snapshot_requires_owned_source) {
                 use_ring_copy = false;
             }
             if (force_ring_copy) {
@@ -2422,7 +2459,8 @@ void acquire_frames(
             current_entry->detections_ready.store(false);
             current_entry->ipc_frame_id = 0;
 
-            if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera) {
+            if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera &&
+                !ptp_readback_evidence.closed()) {
                 if (current_entry->recording_frame_id > 0) {
                     recording_camera_minus_realtime_stats.add(
                         static_cast<int64_t>(current_entry->timestamp) -
@@ -2902,7 +2940,7 @@ void acquire_frames(
                             : 0;
                     int32_t current_ptp_offset = 0;
                     EVT_ERROR ptp_offset_ret = EVT_CameraGetInt32Param(&ecam->camera, "PtpOffset", &current_ptp_offset);
-                    if (ptp_offset_ret == EVT_SUCCESS) {
+                    if (ptp_offset_ret == EVT_SUCCESS && !ptp_readback_evidence.closed()) {
                         ptp_offset_stats.add(current_ptp_offset);
                     }
                     sample_ptp_readbacks();
@@ -2910,7 +2948,7 @@ void acquire_frames(
                         update_ptp_sync_summary_camera(
                             ptp_summary_recording_folder,
                             camera_params->camera_serial,
-                            build_ptp_camera_summary_json(false));
+                            build_ptp_camera_summary_json(ptp_readback_evidence.closed()));
                     }
                     if (ptp_offset_ret == EVT_SUCCESS) {
                         std::cout << "[PTP_LIVE] Cam " << camera_params->camera_serial
@@ -3029,6 +3067,10 @@ void acquire_frames(
             }
         } else {
             camera_state.get_frame_errors++;
+            orange::recording::MasterFrameFact fact;
+            fact.kind = orange::recording::MasterFactKind::receive_error;
+            fact.reject_reason = orange::recording::MasterRejectReason::receive_failed;
+            master_iteration.Submit(fact);
             camera_state.last_get_frame_error_code = camera_state.camera_return;
             get_frame_errors_by_code[camera_state.camera_return]++;
             std::cerr << "EVT_CameraGetFrame Error, " << camera_state.camera_return

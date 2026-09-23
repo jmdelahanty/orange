@@ -16,6 +16,7 @@ from typing import Any
 
 import summarize_gui_validation as gui_summary
 import orange_citrus_orchestrator as orange_citrus
+import crop_only_validation
 from recording_output_validation import (
     mp4_key_sample_flag_errors,
     mp4_source_pixel_tag_errors,
@@ -126,6 +127,11 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Comma-separated camera serials to require. Defaults to cameras discovered in the artifact.",
     )
+    parser.add_argument("--media-products", choices=("full_frame_products", crop_only_validation.PRODUCT),
+                        default="full_frame_products", help="Select the media acceptance contract; never skip validation.")
+    parser.add_argument("--crop-evidence-verifier", type=Path,
+                        default=Path("/tmp/orange-timing-build-20260906/verify_crop_only_recording"))
+    parser.add_argument("--crop-validator-cpu", type=int, help="Housekeeping CPU for crop evidence hashing/verification.")
     parser.add_argument("--expected-sync-mode", default="ptp_gate")
     parser.add_argument("--expected-ptp-mode", default="TwoStep")
     parser.add_argument(
@@ -1432,6 +1438,7 @@ def check_recording_session_manifest(
     expected_local_control_stop_terminal_state: str | None = None,
     expected_local_control_stop_reason: str | None = None,
     expected_local_control_stop_ack_state: str | None = None,
+    crop_only: bool = False,
 ) -> None:
     manifest_path = recording_folder / "recording_session.json"
     manifest = read_json(manifest_path)
@@ -1500,6 +1507,13 @@ def check_recording_session_manifest(
         f"recording_snapshot session mode is {mode}",
         f"recording_snapshot recording_mode={snapshot_session.get('recording_mode')!r}",
     )
+
+    if crop_only:
+        reporter.check(manifest.get("media_product_mode") == crop_only_validation.PRODUCT,
+                       "crop-only product selected", "crop-only product mismatch")
+        # The shared C++ verifier validates the collection and its master/context
+        # bindings. Keep the common GUI lifecycle/stop checks above on both paths.
+        return manifest
 
     if mode == "rolling_clips":
         check_rolling_recording_session_manifest(
@@ -4135,6 +4149,7 @@ def check_pipeline(
     summary: dict[str, Any],
     cameras: list[str],
     expected_display_preview_max_fps: int | None = None,
+    crop_only: bool = False,
 ) -> None:
     for serial in cameras:
         pipeline = nested_dict(summary, "pipeline", serial)
@@ -4151,6 +4166,11 @@ def check_pipeline(
             ("external_ipc_failures", "external IPC failures"),
             ("external_ipc_ack_timeouts", "external IPC ACK timeouts"),
         ]
+        if crop_only:
+            checks.extend([("acq_starve", "acquisition starvation"), ("pre_drops", "preprocess drops")])
+            for field in ("camera_dropped_frames", "get_frame_errors", "acq_starve", "pre_drops"):
+                reporter.check(integer(final.get(field)) is not None,
+                    f"Cam{serial} {field} telemetry present", f"Cam{serial} missing {field} telemetry")
         for field, label in checks:
             if field not in final or final.get(field) is None:
                 continue
@@ -6962,6 +6982,19 @@ def print_recording_session_summary(recording_session: dict[str, Any]) -> None:
 
 def main() -> int:
     args = parse_args()
+    crop_only = args.media_products == crop_only_validation.PRODUCT
+    if crop_only and (args.latest or args.latest_complete or not args.recording_folder):
+        raise SystemExit("crop-only validation requires the exact recording folder, not latest discovery")
+    if crop_only and (args.crop_validator_cpu is None or args.crop_validator_cpu < 0):
+        raise SystemExit("crop-only validation requires --crop-validator-cpu")
+    if crop_only and (args.skip_video_content_check or args.allow_main_video_content_failure):
+        raise SystemExit("crop-only uses strict collection verification; full-video bypass flags do not apply")
+    if crop_only and (args.require_external_recorder_status or args.require_external_recorder_storage_preflight or
+                     args.require_external_recorder_protocol_hello or args.require_external_crop_backend_metadata or
+                     args.require_external_crop_recorder_gpu_separate_from_analytics or args.expect_external_crop_recorder_gpu or
+                     args.expect_external_crop_recorder_gpu_id is not None or args.expect_external_crop_encode_queue_depth is not None or
+                     args.max_external_crop_encode_queue_high_water is not None or args.max_external_crop_enqueue_age_p95_ms is not None):
+        raise SystemExit("these recorder-profile options require the full-frame profile; crop-only validates its bound recorder evidence")
     if (
         args.expect_external_crop_recorder_gpu_id is not None
         and args.expect_external_crop_recorder_gpu_id < 0
@@ -6996,6 +7029,8 @@ def main() -> int:
     snapshot = read_json(recording_folder / "recording_snapshot.json")
     ptp_sync_summary = read_json(recording_folder / "ptp_sync_summary.json")
     cameras = artifact_cameras(summary, snapshot, parse_expected_cameras(args.expected_cameras))
+    if crop_only and not args.expected_cameras:
+        cameras = read_json(recording_folder / "recording_session.json").get("cameras", [])
 
     reporter = Reporter(verbose=not args.json)
     if not args.json:
@@ -7058,6 +7093,7 @@ def main() -> int:
             args.expect_local_control_stop_terminal_state,
             args.expect_local_control_stop_reason,
             args.expect_local_control_stop_ack_state,
+            crop_only=crop_only,
         )
         local_control_event_log_check = check_local_control_event_log_expectations(
             reporter,
@@ -7071,7 +7107,7 @@ def main() -> int:
                 args.expect_local_control_citrus_stop_enabled
             ),
         )
-        external_recorder_status_summary = check_external_recorder_status(
+        external_recorder_status_summary = {"status": "not_selected"} if crop_only else check_external_recorder_status(
             reporter,
             recording_folder,
             args.require_external_recorder_status,
@@ -7083,8 +7119,9 @@ def main() -> int:
             summary,
             cameras,
             args.expect_display_preview_max_fps,
+            crop_only=crop_only,
         )
-        video_sanity = check_videos(
+        video_sanity = {} if crop_only else check_videos(
             reporter,
             summary,
             cameras,
@@ -7126,7 +7163,7 @@ def main() -> int:
             args.require_crop_preview_sampling,
             args.require_crop_preview_counters,
         )
-        crop_recording_summary = check_crop_recording_artifacts(
+        crop_recording_summary = {} if crop_only else check_crop_recording_artifacts(
             reporter,
             recording_folder,
             snapshot,
@@ -7144,6 +7181,14 @@ def main() -> int:
             max_external_enqueue_age_p95_ms=args.max_external_crop_enqueue_age_p95_ms,
             require_external_crop_backend_metadata=args.require_external_crop_backend_metadata,
         )
+        if crop_only:
+            try:
+                crop_recording_summary = crop_only_validation.verify_collection(recording_folder,
+                    args.crop_evidence_verifier, args.crop_validator_cpu, cameras)
+                reporter.check(crop_recording_summary["recording_session"] == recording_session_manifest,
+                    "verified master/context/encoded crop collection", "parent changed during crop validation")
+            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+                reporter.fail(str(exc))
         gui_display_frame_rate_summary = check_gui_display_frame_rate(
             reporter,
             snapshot,
@@ -7174,6 +7219,7 @@ def main() -> int:
     )
     result = {
         "schema_version": 1,
+        "media_products": args.media_products,
         "recording_folder": str(recording_folder),
         "producer_version": snapshot.get("producer_version"),
         "allowed_main_video_content_failure_cameras": sorted(

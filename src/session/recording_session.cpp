@@ -1,5 +1,8 @@
 #include "session/recording_session.h"
 #include "recording_startup_audit.h"
+#include "recording_master_crop_coverage.h"
+#include "recording_crop_only_manifest.h"
+#include "recording_registered_context.h"
 
 #include "citrus_recording_geometry.h"
 #include "external_recorder_contract_utils.h"
@@ -28,6 +31,7 @@
 #include <map>
 #include <set>
 #include <sstream>
+#include "session/rolling_metadata_projection.h"
 #include <thread>
 #include <utility>
 
@@ -1466,8 +1470,15 @@ nlohmann::json build_camera_clock_descriptor(
     const bool ptp_readbacks_stable =
         readback_is_stable_and_enabled(ptp_mode_readback, true) &&
         readback_is_stable_and_enabled(ptp_status_readback, false);
+    const nlohmann::json readback_coverage = camera_evidence.value(
+        "ptp_readback_coverage", nlohmann::json::object());
+    const bool sampled_readbacks_complete = readback_coverage.empty() ||
+        (readback_coverage.value("mode_read_failures", 0ULL) == 0 &&
+         readback_coverage.value("status_read_failures", 0ULL) == 0 &&
+         readback_coverage.value("omitted_observations", 0ULL) == 0);
     const bool base_camera_ptp_evidence =
-        session_ptp_enabled && camera_ptp_enabled && camera_evidence_available &&
+        session_ptp_enabled && camera_ptp_enabled && source_summary_finalized &&
+        sampled_readbacks_complete && camera_evidence_available &&
         ptp_offset_bounded && latch_agreement && camera_realtime_offset_matches &&
         ptp_readbacks_stable;
     const bool direct_tai =
@@ -1515,7 +1526,7 @@ nlohmann::json build_camera_clock_descriptor(
             {"timescale", classified_ptp ? semantic_authority : "unspecified"}
         }},
         {"inference", {
-            {"rule_id", "orange_camera_clock_classification_v2"},
+            {"rule_id", "orange_camera_clock_classification_v3"},
             {"result", direct_tai
                 ? "direct_ptp_time_properties_pass"
                 : (inferred_tai
@@ -1533,6 +1544,7 @@ nlohmann::json build_camera_clock_descriptor(
                 {"latch_agreement", latch_agreement},
                 {"camera_minus_realtime_matches", camera_realtime_offset_matches},
                 {"ptp_readbacks_stable", ptp_readbacks_stable},
+                {"sampled_readbacks_complete", sampled_readbacks_complete},
                 {"host_management_evidence_available", host_management_available},
                 {"host_ptp_timescale", host_ptp_timescale},
                 {"host_current_utc_offset_valid", host_utc_offset_valid}
@@ -1553,6 +1565,7 @@ nlohmann::json build_camera_clock_descriptor(
             {"recording_camera_minus_realtime_ns", camera_minus_realtime},
             {"ptp_mode_readback", ptp_mode_readback},
             {"ptp_status_readback", ptp_status_readback},
+            {"ptp_readback_coverage", readback_coverage},
             {"host_ptp_management_evidence", host_ptp_evidence_snapshot},
             {"ptp_readback_observations", camera_evidence.value(
                 "ptp_readback_observations", nlohmann::json::array())}
@@ -1994,6 +2007,13 @@ bool add_acquisition_index_mapping_contract(
         root_reason = "missing_recording_id";
     } else if (!finalized_frame_identity) {
         root_reason = "frame_identity_contract_unavailable";
+    } else if (manifest->value("mode", "") == "rolling_clips" &&
+               manifest->contains("rolling_metadata_projection") &&
+               manifest->at("rolling_metadata_projection").value("status", "") != "finalized") {
+        // A failed projection cannot fall back to an old aggregate CSV that
+        // happens to remain in camera_artifacts. Keep the source evidence, but
+        // explicitly withhold a new acquisition authority seal.
+        root_reason = "rolling_metadata_projection_unsealed";
     } else if (!cameras.is_array() || cameras.empty() || !camera_artifacts.is_object()) {
         root_reason = "missing_camera_streams";
     } else if (has_duplicate_camera_serials(cameras)) {
@@ -2213,7 +2233,7 @@ void add_finalized_timestamp_clock_contract(
                 {"clock_domain", "host_system_realtime"},
                 {"source_field", "clock_gettime(CLOCK_REALTIME)"},
                 {"producer", "orange_acquisition"},
-                {"sample_event", "immediately_after_EVT_CameraGetFrame_returns"},
+                {"sample_event", "after_EVT_CameraGetFrame_and_optional_inline_PTP_check_before_fanout"},
                 {"semantic_authority", "producer_declared"},
                 {"monotonic", false},
                 {"recording_relative", false}
@@ -2723,7 +2743,8 @@ std::vector<RecordingSessionCameraArtifact> build_recording_camera_artifacts(
 
 bool write_recording_session_manifest(const std::string& path,
                                       const nlohmann::json& manifest,
-                                      std::string* error_out)
+                                      std::string* error_out,
+                                      nlohmann::json* written_manifest)
 {
     if (path.empty()) {
         if (error_out) {
@@ -2733,6 +2754,18 @@ bool write_recording_session_manifest(const std::string& path,
     }
     const std::filesystem::path manifest_path(path);
     nlohmann::json finalized_manifest = manifest;
+    const bool crop_only = orange::recording::IsCropOnlyRecordingManifest(manifest);
+    try {
+        if (crop_only)
+            finalized_manifest = orange::recording::BuildCropOnlyRecordingManifest(manifest_path.parent_path(), manifest);
+        orange::recording::ApplyRequiredMasterJournalGate(manifest_path.parent_path(), &finalized_manifest);
+        orange::recording::ApplyRequiredMovingCropMetadataGate(manifest_path.parent_path(), &finalized_manifest);
+        orange::recording::ApplyRequiredMovingCropMediaGate(manifest_path.parent_path(), &finalized_manifest);
+        orange::recording::ApplyRequiredRegisteredContextGate(manifest_path.parent_path(), &finalized_manifest);
+    } catch (const std::exception& ex) {
+        if (error_out) *error_out = std::string("required master journal gate: ") + ex.what();
+        return false;
+    }
     if (!add_shaman_v2_recording_identity_contract(
             &finalized_manifest, error_out)) {
         return false;
@@ -2741,22 +2774,48 @@ bool write_recording_session_manifest(const std::string& path,
             &finalized_manifest, manifest_path, error_out)) {
         return false;
     }
-    if (!add_finalized_frame_identity_contract(
+    if (!crop_only && !add_finalized_frame_identity_contract(
             &finalized_manifest, manifest_path, error_out)) {
         return false;
     }
-    if (!add_acquisition_index_mapping_contract(
+    // Explicit opt-in until the projection profile is reviewed by both v1
+    // consumers. Existing whole mappings and already sealed generations stay
+    // byte-for-byte unchanged; no acquisition hot-path work is introduced.
+    if (!crop_only && env_flag_enabled("ORANGE_ROLLING_ACQUISITION_PROJECTION_V1") &&
+        finalized_manifest.value("mode", "") == "rolling_clips" &&
+        finalized_manifest.value("status", "") == "completed" &&
+        !finalized_manifest.contains("acquisition_index_mapping_sha256")) {
+        try {
+            finalized_manifest = project_dense_rolling_metadata(finalized_manifest, manifest_path);
+        } catch (const std::exception& error) {
+            // Native recording validity is independent of eligibility for the
+            // dense acquisition profile. Retain the original clip evidence.
+            finalized_manifest["rolling_metadata_projection"] = {
+                {"schema_id", "orange.recording.rolling_metadata_projection"},
+                {"schema_version", 1}, {"status", "unsealed"}, {"reason", error.what()}};
+            finalized_manifest.erase("rolling_metadata_projection_sha256");
+        }
+    }
+    if (!crop_only && !add_acquisition_index_mapping_contract(
             &finalized_manifest, manifest_path, error_out)) {
         return false;
     }
-    add_finalized_timestamp_clock_contract(&finalized_manifest, manifest_path);
+    if (!crop_only) add_finalized_timestamp_clock_contract(&finalized_manifest, manifest_path);
     if (!apply_recording_observation_finalization_to_manifest(
             manifest_path.parent_path().string(),
             &finalized_manifest,
             error_out)) {
         return false;
     }
-    return write_json_file(manifest_path, finalized_manifest, error_out);
+    try {
+        if (crop_only) orange::recording::PublishCropOnlyRecordingIndex(manifest_path.parent_path(), &finalized_manifest);
+    } catch (const std::exception& ex) {
+        if (error_out) *error_out = std::string("crop-only index publication: ") + ex.what();
+        return false;
+    }
+    if (!write_json_file(manifest_path, finalized_manifest, error_out)) return false;
+    if (written_manifest) *written_manifest = std::move(finalized_manifest);
+    return true;
 }
 
 bool write_rolling_clip_index_artifacts(const std::string& recording_folder,
@@ -2950,6 +3009,13 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
 
     state->recording_pipelines.clear();
     state->recording_pipelines.resize(num_cameras);
+    std::vector<orange::recording::RecordingMediaCameraInput> media_inputs;
+    for (int i = 0; i < num_cameras; ++i)
+        media_inputs.push_back({cameras_params[i].camera_serial, cameras_select[i].record,
+                               cameras_select[i].crop_and_encode});
+    state->media_plan = state->media_selection.mode
+        ? orange::recording::RecordingMediaPlan::Resolve(state->media_selection, media_inputs)
+        : orange::recording::RecordingMediaPlan{};
     state->resolved_recording_configs.clear();
     state->resolved_recording_configs.resize(num_cameras);
     state->recording_sink_mode =
@@ -2959,6 +3025,9 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
             cameras_select,
             num_cameras);
     state->gui_recording_control = resolve_gui_recording_control(app_storage_config);
+    if (state->media_selection.mode && state->recording_sink_mode != "real" &&
+        state->recording_sink_mode != "external_ipc")
+        throw std::runtime_error("explicit media products require a real or external_ipc recording backend");
     state->crop_recording_sink_mode = resolve_gui_crop_recording_sink_mode();
     state->external_recorder_contract_config =
         resolve_gui_external_recorder_contract_config(
@@ -2971,7 +3040,8 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
     }
 
     for (int i = 0; i < num_cameras; ++i) {
-        if (!cameras_select[i].record) {
+        const auto* media = state->media_plan.Find(cameras_params[i].camera_serial);
+        if (state->media_selection.mode ? (!media || !media->FullFrame()) : !cameras_select[i].record) {
             continue;
         }
 
@@ -3112,6 +3182,24 @@ PreparedRecordingRunStart prepare_recording_run(
         return prepared;
     }
 
+    // A camera's output workers are fixed at stream startup. Reject changed
+    // explicit selections instead of starting a session with stale encoder owners.
+    if (state && state->media_selection.mode) {
+        try {
+            std::vector<orange::recording::RecordingMediaCameraInput> inputs;
+            for (int i = 0; i < num_cameras; ++i) {
+                if (!cameras_select) throw std::runtime_error("media plan requires camera selection");
+                inputs.push_back({cameras_params[i].camera_serial, cameras_select[i].record,
+                                  cameras_select[i].crop_and_encode});
+                if (cameras_select[i].crop_and_encode !=
+                    (cameras_select[i].record && state->media_selection.MovingCrops(false)))
+                    throw std::runtime_error("recording media products changed; stop and restart streaming");
+            }
+            if (orange::recording::RecordingMediaPlan::Resolve(state->media_selection, inputs).ToJson() != state->media_plan.ToJson())
+                throw std::runtime_error("recording camera membership changed; stop and restart streaming");
+        } catch (const std::exception& ex) { prepared.error_message = ex.what(); return prepared; }
+    }
+
     camera_control->recording_draining = false;
     camera_control->stop_record = false;
     camera_control->latest_recording_frame_id.store(0, std::memory_order_relaxed);
@@ -3184,7 +3272,8 @@ PreparedRecordingRunStart prepare_recording_run(
     }
 
     const std::string normalized_sink_mode = normalize_recording_sink_mode(recording_sink_mode);
-    const bool external_recorder_requested = normalized_sink_mode == "external_ipc";
+    const bool external_recorder_requested = normalized_sink_mode == "external_ipc" &&
+        (!state || !state->media_selection.mode || state->media_plan.HasFullFrame());
 
     prepared.recording_folder = recording_folder;
     prepared.recording_id = recording_id;
@@ -3194,6 +3283,8 @@ PreparedRecordingRunStart prepare_recording_run(
     prepared.recording_sink_mode =
         normalized_sink_mode.empty() ? recording_sink_mode : normalized_sink_mode;
     prepared.external_recorder_requested = external_recorder_requested;
+    prepared.gui_registered_context_required = state && state->media_selection.RequiresContext();
+    if (prepared.gui_registered_context_required) prepared.crop_only_media_plan = state->media_plan.ToJson();
 
     write_recording_snapshot(
         recording_folder,
@@ -3217,6 +3308,14 @@ PreparedRecordingRunStart prepare_recording_run(
         num_cameras,
         camera_control->sync_camera,
         ptp_params);
+
+    if (state && state->media_selection.mode &&
+        !update_recording_snapshot_session_artifacts(recording_folder,
+            {{"recording_media_plan", state->media_plan.ToJson()}})) {
+        prepared.error_message = "failed to persist explicit recording media plan";
+        cleanup_failed_recording_run_start(state, camera_control, recording_folder);
+        return prepared;
+    }
 
     if (external_recorder_requested) {
         if (!state) {
@@ -3302,7 +3401,7 @@ PreparedRecordingRunStart prepare_recording_run(
                 cameras_params,
                 cameras_select,
                 num_cameras,
-                state->recording_sink_mode == "external_ipc"
+                (state->recording_sink_mode == "external_ipc" || state->media_selection.RequiresContext())
                     ? state->gui_recording_control
                     : RecordingControlConfig{});
         state->active_external_crop_recorder_contract = crop_contract;
@@ -3534,10 +3633,34 @@ RecordingRunStartResult complete_recording_run(
                 : outcome.error_message);
     }
 
+    if ((prepared.gui_registered_context_required || (state && state->media_selection.RequiresContext())) &&
+        (!prepared.gui_registered_context_required || !prepared.gui_registered_context_ready || !camera_control->master_frame_journals ||
+         !camera_control->master_frame_journals->Enabled() ||
+         !state || state->gui_master_frame_journals != camera_control->master_frame_journals)) {
+        stop_pending_recording_run_lifecycle(&outcome.external_crop_recorder_lifecycle);
+        stop_pending_recording_run_lifecycle(&outcome.external_recorder_lifecycle);
+        cleanup_failed_recording_run_start(state, camera_control, prepared.recording_folder);
+        return failed_recording_run_start_result(prepared, "required GUI registered context/master journal is not ready");
+    }
+
     // All callers must cross this create-once evidence gate before any frame
     // can be recorded. GUI callers seal earlier, before supervisor startup;
     // this idempotent check is the lifecycle-level fail-closed backstop.
     std::string immutable_snapshot_error;
+    if (state && state->media_selection.RequiresContext()) {
+        try {
+            if (!prepared.crop_only_arm_evidence_ready || prepared.crop_only_media_plan != state->media_plan.ToJson())
+                throw std::runtime_error("crop-only prearm evidence was not validated on the housekeeping worker");
+            if (!prepared.external_crop_recorder_requested || !outcome.external_crop_recorder_attempted ||
+                !outcome.external_crop_recorder_lifecycle.started || outcome.external_crop_recorder_lifecycle.plan.streams.size() != state->media_plan.cameras.size())
+                throw std::runtime_error("crop-only moving-crop supervisors are not ready");
+        } catch (const std::exception& ex) {
+            stop_pending_recording_run_lifecycle(&outcome.external_crop_recorder_lifecycle);
+            stop_pending_recording_run_lifecycle(&outcome.external_recorder_lifecycle);
+            cleanup_failed_recording_run_start(state, camera_control, prepared.recording_folder);
+            return failed_recording_run_start_result(prepared, ex.what());
+        }
+    }
     if (!seal_immutable_recording_start_snapshot(
             prepared.recording_folder,
             nullptr,
@@ -3753,6 +3876,10 @@ void request_stop_recording_run(CameraControl* camera_control)
         return;
     }
 
+    // Close source admission before requesting encoder drain or clearing the
+    // recording folder. Already admitted iterations may still submit their tail.
+    const bool master_source_stopped = !camera_control->master_frame_journals ||
+        camera_control->master_frame_journals->WaitForSourceStop(std::chrono::seconds(2));
     camera_control->record_video = false;
     camera_control->recording_draining = true;
     camera_control->stop_record = true;
@@ -3764,7 +3891,7 @@ void request_stop_recording_run(CameraControl* camera_control)
         camera_control->recording_rollover_at_frame_id = 0;
         camera_control->recording_rollover_request_id = 0;
     }
-    if (camera_control->active_recorders.load(std::memory_order_relaxed) == 0) {
+    if (master_source_stopped && camera_control->active_recorders.load(std::memory_order_relaxed) == 0) {
         camera_control->recording_draining = false;
         camera_control->stop_record = false;
         if (!camera_control->preserve_recording_session_state) {
@@ -3841,6 +3968,8 @@ bool recording_run_drained(
     const std::vector<std::unique_ptr<ModernRecordingPipeline>>* recording_pipelines,
     const CameraControl* camera_control)
 {
+    if (camera_control && camera_control->master_frame_journals &&
+        !camera_control->master_frame_journals->SourceQuiescent()) return false;
     if (camera_control &&
         camera_control->active_recorders.load(std::memory_order_relaxed) > 0) {
         return false;

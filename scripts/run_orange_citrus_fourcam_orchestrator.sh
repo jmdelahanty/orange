@@ -40,6 +40,10 @@ Options:
   --warmup-seconds <seconds>     Orange stream warmup before recording.
   --clip-seconds <seconds>       Enable Orange rolling clips with this duration.
   --attach-orange                Do not launch Orange; attach to its socket.
+  --crop-only                    Validate registered context + moving crops. Requires
+                                  --attach-orange after operator scene confirmation.
+  --crop-validator-cpu <cpu>      Explicit housekeeping CPU for crop evidence checks.
+  --crop-evidence-verifier <path> Path to the matching verify_crop_only_recording build.
   --attach-citrus                Do not launch Citrus; attach to its socket.
   --allow-preexisting-sockets    Permit launch mode when default sockets already answer.
   --orange-socket <path>         Override Orange local-control socket.
@@ -233,6 +237,9 @@ ORANGE_RECORD_SECONDS="${ORANGE_CITRUS_ORANGE_RECORD_SECONDS:-}"
 ORANGE_WARMUP_SECONDS="${ORANGE_CITRUS_ORANGE_WARMUP_SECONDS:-}"
 ORANGE_CLIP_SECONDS="${ORANGE_CITRUS_ORANGE_CLIP_SECONDS:-}"
 ORANGE_PROFILE_ENV=()
+CROP_ONLY=0
+CROP_VALIDATOR_CPU=""
+CROP_EVIDENCE_VERIFIER="/tmp/orange-timing-build-20260906/verify_crop_only_recording"
 ORANGE_EXTRA_ENV=()
 CITRUS_EXTRA_ENV=()
 
@@ -240,6 +247,22 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --execute)
       EXECUTE=1
+      shift
+      ;;
+    --crop-only)
+      CROP_ONLY=1
+      shift
+      ;;
+    --crop-validator-cpu)
+      shift
+      [[ $# -gt 0 ]] || { echo "--crop-validator-cpu requires a CPU" >&2; exit 2; }
+      CROP_VALIDATOR_CPU="$1"
+      shift
+      ;;
+    --crop-evidence-verifier)
+      shift
+      [[ $# -gt 0 ]] || { echo "--crop-evidence-verifier requires a path" >&2; exit 2; }
+      CROP_EVIDENCE_VERIFIER="$1"
       shift
       ;;
     --operation-id)
@@ -707,6 +730,19 @@ if [[ -z "${OBSERVATION_BINDING_VALIDATION_JSON}" ]]; then
   OBSERVATION_BINDING_VALIDATION_JSON="/tmp/${OPERATION_ID}_observation_binding_validation.json"
 fi
 ORANGE_VALIDATION_MODE_ARGS=()
+if (( CROP_ONLY )); then
+  [[ "${ORANGE_VALIDATION_ENABLED}" == 1 && -z "${ORANGE_VALIDATION_COMMAND}" ]] || {
+    echo "--crop-only requires its default strict media validator; do not skip or replace it." >&2
+    exit 2
+  }
+  [[ "${ORANGE_COMMAND_MODE}" == "attach" ]] || {
+    echo "--crop-only requires --attach-orange: load the crop-only app configuration and confirm the scene in Orange first." >&2
+    exit 2
+  }
+  is_nonnegative_integer "${CROP_VALIDATOR_CPU}" || { echo "--crop-only requires --crop-validator-cpu" >&2; exit 2; }
+  ORANGE_VALIDATION_MODE_ARGS+=("--media-products" "registered_context_and_moving_crops"
+    "--crop-validator-cpu" "${CROP_VALIDATOR_CPU}" "--crop-evidence-verifier" "${CROP_EVIDENCE_VERIFIER}")
+fi
 if [[ -n "${ORANGE_CLIP_SECONDS}" ]]; then
   ORANGE_VALIDATION_MODE_ARGS+=("--expect-recording-mode" "rolling_clips")
 fi
@@ -753,6 +789,22 @@ if [[ -n "${ORANGE_VALIDATION_STOP_METHOD}" ]]; then
     )
   fi
 fi
+ORANGE_RECORDER_VALIDATION_ARGS=(
+  "--expect-external-crop-encode-queue-depth" "128"
+  "--require-external-crop-backend-metadata"
+  "--require-external-crop-recorder-gpu-separate-from-analytics"
+  "--expect-external-crop-recorder-gpu" "2010093=4"
+  "--expect-external-crop-recorder-gpu" "2010094=2"
+  "--expect-external-crop-recorder-gpu" "2010095=8"
+  "--expect-external-crop-recorder-gpu" "2010096=6"
+  "--require-external-recorder-status" "--require-external-recorder-storage-preflight"
+  "--require-external-recorder-protocol-hello"
+)
+if (( CROP_ONLY )); then
+  # The crop collection binds its recorder-returned identity/mux evidence; no
+  # full-frame supervisor or v2 aggregate crop descriptor exists in this product.
+  ORANGE_RECORDER_VALIDATION_ARGS=()
+fi
 if [[ "${ORANGE_VALIDATION_ENABLED}" == "1" && -z "${ORANGE_VALIDATION_COMMAND}" ]]; then
   ORANGE_VALIDATION_COMMAND="$(join_command \
     "${REPO_ROOT}/scripts/validate_gui_ptp_recording.py" \
@@ -766,16 +818,7 @@ if [[ "${ORANGE_VALIDATION_ENABLED}" == "1" && -z "${ORANGE_VALIDATION_COMMAND}"
     "--expect-crop-preview-disabled" "0" \
     "--expect-crop-preview-display-enabled" "0" \
     "--min-crop-frame-pool-size" "256" \
-    "--expect-external-crop-encode-queue-depth" "128" \
-    "--require-external-crop-backend-metadata" \
-    "--require-external-crop-recorder-gpu-separate-from-analytics" \
-    "--expect-external-crop-recorder-gpu" "2010093=4" \
-    "--expect-external-crop-recorder-gpu" "2010094=2" \
-    "--expect-external-crop-recorder-gpu" "2010095=8" \
-    "--expect-external-crop-recorder-gpu" "2010096=6" \
-    "--require-external-recorder-status" \
-    "--require-external-recorder-storage-preflight" \
-    "--require-external-recorder-protocol-hello" \
+    "${ORANGE_RECORDER_VALIDATION_ARGS[@]}" \
     "--require-source-version" \
     "--expect-source-git-command-user-mode" "sudo_invoking_user" \
     "--expect-source-dirty-tracked" "0" \

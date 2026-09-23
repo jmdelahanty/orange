@@ -75,6 +75,7 @@ fi
 
 HELP_TEXT="$("$TARGET" --help)"
 for required in \
+  "/tmp/orange-timing-build-20260906/orange" \
   "--orange-bin" \
   "--env KEY=VALUE" \
   "--ptp-stack-mode" \

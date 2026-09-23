@@ -50,6 +50,24 @@ the recording root.
 - `schema_id = "orange.app.config"`
 - `schema_version = 1`
 
+### Optional registered context for GUI recordings (2026-09-06)
+
+`recording.registered_context_recording` is the closed opt-in GUI configuration
+defined by `schemas/orange_gui_registered_context_recording_config_v1.schema.json`.
+It stores enabled state, master-journal settings and exact saved-daily-context
+selection/declarations. The GUI loads this through the shared recording-evidence
+configuration module and refuses invalid requested settings at arm, rather than
+silently falling back to recording without the requested evidence.
+
+Daily Registration offers **Use Context for GUI Recording**; the recording panel
+offers an explicit **Save context recording settings** action. That action merges
+only this field into the existing app config and writes it atomically. Selecting
+or capturing an image alone never changes app defaults. A separate scene-unchanged
+confirmation is required for each run and is not restored on application launch.
+Normal manual and Citrus-triggered GUI starts share this configuration and gate.
+This is not a crop-only media selector. See
+`gui_registered_context_recording_2026-09-06.md` for the operator workflow and limits.
+
 ## Proposed File Location
 
 Preferred host-local file:

@@ -5,6 +5,8 @@
 #include <optional>
 #include <string>
 
+#include "recording_packet_telemetry.h"
+
 namespace OrangeVideoContainerFinalization {
 
 enum class Status {
@@ -27,14 +29,7 @@ struct Outcome {
     bool muxer_flush_attempted = false;
     bool muxer_flush_succeeded = false;
 
-    std::uint64_t packet_submissions_accepted = 0;
-    std::uint64_t packet_submission_bytes_accepted = 0;
-    std::uint64_t packet_submissions_rejected = 0;
-    std::uint64_t packet_write_attempts = 0;
-    std::uint64_t packets_written = 0;
-    std::uint64_t packet_bytes_written = 0;
-    std::uint64_t packet_write_failures = 0;
-    std::optional<int> first_packet_write_error_code;
+    orange::recording::PacketWriteStats packet_writes;
     std::optional<int> muxer_flush_error_code;
     std::string muxer_flush_error;
 
@@ -44,6 +39,13 @@ struct Outcome {
     std::string output_close_error;
     std::string playback_intent_patch_error;
 };
+
+inline bool PacketWritesComplete(const Outcome& outcome) noexcept
+{
+    return !outcome.writer_error_latched &&
+        outcome.muxer_flush_attempted && outcome.muxer_flush_succeeded &&
+        orange::recording::packet_writes_balanced(outcome.packet_writes);
+}
 
 inline constexpr char kFullFrameRatePlaybackIntentKey[] =
     "com.apple.quicktime.full-frame-rate-playback-intent";

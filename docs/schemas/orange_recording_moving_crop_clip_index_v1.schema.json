@@ -1,0 +1,581 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Crop-only moving-video clip index v1",
+  "description": "Recording-finalization candidate. All new records are closed; cross-record identity, digest custody and frame-count parity are enforced by the C++ builder.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "recording_id",
+    "mode",
+    "path_base",
+    "clip_index_scope",
+    "inventory",
+    "clips",
+    "csv"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "orange.recording.moving_crop_clip_index"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "recording_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mode": {
+      "enum": [
+        "single_clip",
+        "rolling_clips"
+      ]
+    },
+    "path_base": {
+      "const": "parent_recording_directory"
+    },
+    "clip_index_scope": {
+      "const": "camera_stream"
+    },
+    "inventory": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/inventory"
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "complete"
+            }
+          }
+        }
+      ]
+    },
+    "clips": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 262144,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "camera_serial",
+          "clip_index",
+          "clip_id",
+          "manifest"
+        ],
+        "properties": {
+          "camera_serial": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+          },
+          "clip_index": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4095
+          },
+          "clip_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "manifest": {
+            "$ref": "orange_recording_moving_crop_metadata_correspondence_v1.schema.json#/properties/master_csv"
+          }
+        }
+      }
+    },
+    "csv": {
+      "$ref": "orange_recording_moving_crop_metadata_correspondence_v1.schema.json#/properties/master_csv"
+    }
+  },
+  "$defs": {
+    "context": {
+      "oneOf": [
+        {
+          "$ref": "orange_registered_context_evidence_v1.schema.json#/$defs/completion/properties/cameras/items"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "camera_serial",
+            "profile",
+            "daily_context",
+            "use_receipt"
+          ],
+          "properties": {
+            "camera_serial": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+            },
+            "profile": {
+              "const": "daily_registered_context_reuse_v1"
+            },
+            "daily_context": {
+              "$ref": "orange_registered_context_reuse_evidence_v2.schema.json#/oneOf/0/properties/daily_context"
+            },
+            "use_receipt": {
+              "$ref": "orange_registered_context_reuse_evidence_v2.schema.json#/oneOf/0/properties/use_receipt"
+            }
+          }
+        }
+      ]
+    },
+    "video_output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "camera_serial",
+        "output_kind",
+        "role",
+        "backend",
+        "status",
+        "video",
+        "metadata",
+        "width",
+        "height",
+        "codec",
+        "container",
+        "tuning",
+        "frame_count",
+        "first_recording_frame_id",
+        "last_recording_frame_id",
+        "recording_frame_id_gaps",
+        "packet_count",
+        "packet_count_source",
+        "coordinate_space",
+        "video_pixel_coordinate_space",
+        "source_geometry_coordinate_space"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 2
+        },
+        "camera_serial": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+        },
+        "output_kind": {
+          "const": "crop"
+        },
+        "role": {
+          "const": "runtime_derived_acquisition_input"
+        },
+        "backend": {
+          "const": "external_ipc"
+        },
+        "status": {
+          "const": "completed"
+        },
+        "video": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metadata": {
+          "type": "string",
+          "minLength": 1
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8192
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8192
+        },
+        "codec": {
+          "const": "hevc"
+        },
+        "container": {
+          "const": "mp4"
+        },
+        "tuning": {
+          "const": "lossless"
+        },
+        "frame_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "first_recording_frame_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "last_recording_frame_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "recording_frame_id_gaps": {
+          "const": 0
+        },
+        "packet_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "packet_count_source": {
+          "const": "validated_crop_media_receipt"
+        },
+        "coordinate_space": {
+          "const": "full_frame_pixels"
+        },
+        "video_pixel_coordinate_space": {
+          "const": "crop_frame_pixels"
+        },
+        "source_geometry_coordinate_space": {
+          "const": "full_frame_pixels"
+        }
+      }
+    },
+    "clip": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_id",
+        "schema_version",
+        "recording_id",
+        "camera_serial",
+        "path_base",
+        "clip_index_scope",
+        "clip_index",
+        "clip_id",
+        "frame_count",
+        "first_recording_frame_id",
+        "last_recording_frame_id",
+        "first_video_frame_index",
+        "last_video_frame_index",
+        "video",
+        "recorder_metadata",
+        "container_finalization",
+        "crop_metadata",
+        "master_descriptor",
+        "media_receipt",
+        "registered_context",
+        "recording_outputs"
+      ],
+      "properties": {
+        "schema_id": {
+          "const": "orange.recording.moving_crop_clip"
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "recording_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "camera_serial": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+        },
+        "path_base": {
+          "const": "parent_recording_directory"
+        },
+        "clip_index_scope": {
+          "const": "camera_stream"
+        },
+        "clip_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4095
+        },
+        "clip_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "frame_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "first_recording_frame_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "last_recording_frame_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "first_video_frame_index": {
+          "const": 0
+        },
+        "last_video_frame_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "video": {
+          "$ref": "orange_recording_moving_crop_metadata_correspondence_v1.schema.json#/properties/master_csv"
+        },
+        "recorder_metadata": {
+          "$ref": "orange_recording_moving_crop_metadata_correspondence_v1.schema.json#/properties/master_csv"
+        },
+        "container_finalization": {
+          "$ref": "orange_recording_moving_crop_metadata_correspondence_v1.schema.json#/properties/master_csv"
+        },
+        "crop_metadata": {
+          "$ref": "orange_recording_moving_crop_metadata_correspondence_v1.schema.json#/properties/master_csv"
+        },
+        "master_descriptor": {
+          "$ref": "orange_recording_moving_crop_metadata_correspondence_v1.schema.json#/properties/master_csv"
+        },
+        "media_receipt": {
+          "$ref": "orange_recording_moving_crop_metadata_correspondence_v1.schema.json#/properties/master_csv"
+        },
+        "registered_context": {
+          "$ref": "#/$defs/context"
+        },
+        "recording_outputs": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 1,
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "crop"
+            ],
+            "properties": {
+              "crop": {
+                "$ref": "#/$defs/video_output"
+              }
+            }
+          }
+        }
+      }
+    },
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_id",
+        "schema_version",
+        "recording_id",
+        "mode",
+        "status",
+        "path_base",
+        "clip_index_scope",
+        "cameras"
+      ],
+      "properties": {
+        "schema_id": {
+          "const": "orange.recording.crop_only_inventory"
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "recording_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "enum": [
+            "single_clip",
+            "rolling_clips"
+          ]
+        },
+        "status": {
+          "enum": [
+            "complete",
+            "failed"
+          ]
+        },
+        "path_base": {
+          "const": "parent_recording_directory"
+        },
+        "clip_index_scope": {
+          "const": "camera_stream"
+        },
+        "cameras": {
+          "type": "object",
+          "minProperties": 0,
+          "maxProperties": 64,
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "master",
+              "registered_context",
+              "media_receipt",
+              "assigned_frame_count",
+              "clips"
+            ],
+            "properties": {
+              "master": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "camera_serial",
+                  "descriptor",
+                  "csv"
+                ],
+                "properties": {
+                  "camera_serial": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+                  },
+                  "descriptor": {
+                    "$ref": "orange_recording_moving_crop_metadata_correspondence_v1.schema.json#/properties/master_csv"
+                  },
+                  "csv": {
+                    "$ref": "orange_recording_moving_crop_metadata_correspondence_v1.schema.json#/properties/master_csv"
+                  }
+                }
+              },
+              "registered_context": {
+                "$ref": "#/$defs/context"
+              },
+              "media_receipt": {
+                "$ref": "orange_recording_moving_crop_metadata_correspondence_v1.schema.json#/properties/master_csv"
+              },
+              "assigned_frame_count": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "clips": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 4096,
+                "items": {
+                  "$ref": "#/$defs/clip"
+                }
+              }
+            }
+          }
+        },
+        "start_snapshot": {
+          "$ref": "orange_recording_moving_crop_metadata_correspondence_v1.schema.json#/properties/master_csv"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "complete"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "start_snapshot"
+            ],
+            "not": {
+              "required": [
+                "reason"
+              ]
+            },
+            "properties": {
+              "cameras": {
+                "minProperties": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "failed"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "reason"
+            ],
+            "not": {
+              "required": [
+                "start_snapshot"
+              ]
+            },
+            "properties": {
+              "cameras": {
+                "maxProperties": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    "collection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "camera_serial",
+        "output_kind",
+        "role",
+        "backend",
+        "representation",
+        "status",
+        "frame_count",
+        "clips"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 3
+        },
+        "camera_serial": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+        },
+        "output_kind": {
+          "const": "crop"
+        },
+        "role": {
+          "const": "runtime_derived_acquisition_input"
+        },
+        "backend": {
+          "const": "external_ipc"
+        },
+        "representation": {
+          "const": "clip_collection"
+        },
+        "status": {
+          "const": "completed"
+        },
+        "frame_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "clips": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4096,
+          "items": {
+            "$ref": "#/$defs/clip"
+          }
+        }
+      }
+    }
+  }
+}

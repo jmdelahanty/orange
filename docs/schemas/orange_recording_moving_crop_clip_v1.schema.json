@@ -1,0 +1,5 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Crop-only per-video clip manifest v1",
+  "$ref": "orange_recording_moving_crop_clip_index_v1.schema.json#/$defs/clip"
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.recording.media_plan.v1",
+  "title": "Resolved Orange recording media plan",
+  "description": "Frozen prearm product inventory, not evidence of successful encoding. Runtime validates camera-serial uniqueness. Optional context/journal evidence for full-frame modes is declared separately in the recording snapshot.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_id", "schema_version", "selection", "cameras"],
+  "properties": {
+    "schema_id": {"const": "orange.recording.media_plan"},
+    "schema_version": {"type": "integer", "const": 1},
+    "selection": {
+      "oneOf": [{"type": "null"}, {"$ref": "orange_recording_media_products_v1.schema.json"}]
+    },
+    "cameras": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["camera_serial", "mode", "media_products", "master_frame_record_required"],
+        "properties": {
+          "camera_serial": {"type": "string", "minLength": 1},
+          "mode": {"enum": ["full_frame", "full_frame_and_moving_crops", "registered_context_and_moving_crops"]},
+          "media_products": {"type": "array", "uniqueItems": true},
+          "master_frame_record_required": {"type": "boolean"}
+        },
+        "oneOf": [
+          {"properties": {"mode": {"const": "full_frame"}, "media_products": {"const": ["full_frame_video"]}, "master_frame_record_required": {"const": false}}},
+          {"properties": {"mode": {"const": "full_frame_and_moving_crops"}, "media_products": {"const": ["full_frame_video", "moving_crop_video"]}, "master_frame_record_required": {"const": false}}},
+          {"properties": {"mode": {"const": "registered_context_and_moving_crops"}, "media_products": {"const": ["moving_crop_video", "registered_context_image"]}, "master_frame_record_required": {"const": true}}}
+        ]
+      }
+    }
+  }
+}

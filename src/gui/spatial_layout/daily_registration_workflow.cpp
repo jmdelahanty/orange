@@ -1,4 +1,5 @@
 #include "gui/spatial_layout/daily_registration_workflow.h"
+#include "gui/spatial_layout/daily_native_context_capture.h"
 
 #include "dish_top_rim_observation.h"
 #include "fsuid_guard.h"
@@ -3750,6 +3751,7 @@ void render_daily_registration_workflow_panel(
                 "Abort becomes available after the active grouped capture/save reaches a terminal state.");
         }
     }
+    render_daily_native_context_capture(ui_state, cameras, camera_count, workers, recording_mutation_locked);
 }
 
 }  // namespace orange::gui::spatial_layout

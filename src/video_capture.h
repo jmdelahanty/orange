@@ -13,8 +13,11 @@
 #include <cstdlib>
 #include <limits>
 #include <mutex>
+#include <map>
 #include "network_base.h"
 #include "common.hpp" // For pose::Object
+#include "recording_master_acquisition.h"
+#include "recording_master_source_slot.h"
 #include <cuda_runtime.h>
 #include "NvEncoder/NvCodecUtils.h"
 
@@ -197,7 +200,11 @@ struct CameraControl
     bool open = false;
     bool subscribe = false;
     bool stop_record = false;
-    bool record_video = false;
+    std::atomic<bool> record_video{false};
+    // Serialized control-plane ownership. Headless installs before thread start;
+    // GUI publishes through stable source slots initialized before streaming.
+    std::shared_ptr<orange::recording::MasterAcquisitionSet> master_frame_journals;
+    std::map<std::string, std::unique_ptr<orange::recording::MasterSourceSlot>> gui_master_sources;
     bool recording_draining = false;
     std::atomic<int> active_recorders{0};
     bool sync_camera = false;

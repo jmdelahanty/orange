@@ -18,6 +18,7 @@ extern "C"
 #include <utility>
 #include <vector>
 #include "latency_stats.h"
+#include "recording_packet_telemetry.h"
 #include "thread.h"
 
 struct FFmpegWriterQueueConfig {
@@ -34,16 +35,8 @@ struct FFmpegWriterLatencyStats {
     LatencyAggregateStats gop_release_to_last_write;
 };
 
-struct FFmpegWriterPacketWriteStats {
-    uint64_t submissions_accepted = 0;
-    uint64_t submission_bytes_accepted = 0;
-    uint64_t submissions_rejected = 0;
-    uint64_t write_attempts = 0;
-    uint64_t packets_written = 0;
-    uint64_t bytes_written = 0;
-    uint64_t write_failures = 0;
-    int first_write_error_code = 0;
-};
+// Retain the writer API name; all outputs use the same snapshot/accounting type.
+using FFmpegWriterPacketWriteStats = orange::recording::PacketWriteStats;
 
 class FFmpegWriterTestAccess;
 

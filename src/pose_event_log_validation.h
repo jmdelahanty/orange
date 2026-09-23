@@ -39,6 +39,7 @@ struct PoseEventLogValidationStats {
 PoseEventLogValidationStats summarize_pose_event_log(
     const std::string& recording_folder,
     const std::string& camera_serial,
-    const PoseEventLogValidationConfig& config);
+    const PoseEventLogValidationConfig& config,
+    const std::filesystem::path& source_metadata = {});
 
 }  // namespace pose_event_log

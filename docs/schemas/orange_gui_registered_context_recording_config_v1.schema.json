@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange_gui_registered_context_recording_config_v1.schema.json",
+  "title": "GUI registered-context recording configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "enabled"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "enabled": {"type": "boolean"},
+    "master_frame_journal": {
+      "allOf": [
+        {"$ref": "orange_master_acquisition_config_v1.schema.json"},
+        {"properties": {"enabled": {"const": true}}}
+      ]
+    },
+    "registered_scene_context": {
+      "allOf": [
+        {"$ref": "orange_registered_context_config_v2.schema.json"},
+        {"properties": {"enabled": {"const": true}, "source": {"properties": {"kind": {"const": "daily_registration"}}}}}
+      ]
+    }
+  },
+  "dependentRequired": {
+    "master_frame_journal": ["registered_scene_context"],
+    "registered_scene_context": ["master_frame_journal"]
+  },
+  "if": {"properties": {"enabled": {"const": true}}},
+  "then": {"required": ["master_frame_journal", "registered_scene_context"]}
+}
