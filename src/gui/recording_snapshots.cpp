@@ -248,6 +248,17 @@ nlohmann::json build_gui_pose_model_snapshot(const CameraParams& camera_params,
                 {"ipc_skeleton_id_hash", sidecar.file_sha256_prefix64},
                 {"source_run_id", sidecar.source_run_id},
                 {"source_onnx_sha256", sidecar.source_onnx_sha256}};
+            // Embed the sidecar itself so the recording is self-contained:
+            // sidecar_text is the exact file bytes (sha256(sidecar_text) ==
+            // sidecar_sha256), sidecar_document the same content parsed for
+            // readers that want the heading policy and binding without
+            // re-parsing a string.
+            skeleton["sidecar_text"] = sidecar.raw_text;
+            try {
+                skeleton["sidecar_document"] = nlohmann::json::parse(sidecar.raw_text);
+            } catch (const std::exception&) {
+                skeleton["sidecar_document"] = nullptr;
+            }
             pose_skeleton_id = sidecar.skeleton_id;
         } else {
             skeleton = {{"source", "palette_sidecar_invalid"}, {"error", error}};

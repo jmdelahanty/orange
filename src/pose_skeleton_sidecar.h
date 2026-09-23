@@ -26,6 +26,7 @@ struct PoseSkeletonSidecar {
     int kpt_d = 0;                              // kpt_shape[1] (model shape, 3 = x,y,conf)
     std::string source_run_id;
     std::string source_onnx_sha256;
+    std::string raw_text;                       // the exact file bytes (hash-verifiable)
     std::string file_sha256;                    // lowercase hex of the raw file bytes
     uint64_t file_sha256_prefix64 = 0;          // first 8 bytes, big-endian: the IPC skeleton hash
 };

@@ -140,6 +140,7 @@ bool parse_pose_skeleton_sidecar(const std::string& bytes, const std::string& pa
         s.source_run_id = doc["source"].value("run_id", std::string());
         s.source_onnx_sha256 = doc["source"].value("onnx_sha256", std::string());
     }
+    s.raw_text = bytes;
     s.file_sha256 = orange::gui::spatial_layout::checksum::sha256_hex(bytes);
     s.file_sha256_prefix64 = sha256_prefix64(s.file_sha256);
     *out = std::move(s);
