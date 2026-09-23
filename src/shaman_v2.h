@@ -401,13 +401,24 @@ public:
             normalize_permissions();
         }
 
-        sync_fd_ = open(index_lock_path(queue_name_).c_str(), O_RDWR | O_CREAT,
-                        kIpcMode);
+        // Only the writer creates the index lock. The lock lives in /tmp, a
+        // sticky directory, and fs.protected_regular forbids even root from
+        // O_CREAT-opening a regular file another user created there: a reader
+        // that created the lock first (2026-09-23) blocked the producer with
+        // EACCES. A reader therefore opens an existing lock only and retries
+        // until the producer has created it; a writer that finds a foreign
+        // stale lock unlinks it once and recreates it.
+        const std::string lock_path = index_lock_path(queue_name_);
+        sync_fd_ = open(lock_path.c_str(), writer_ ? (O_RDWR | O_CREAT) : O_RDWR, kIpcMode);
+        if (sync_fd_ == -1 && writer_ && (errno == EACCES || errno == EPERM)) {
+            unlink(lock_path.c_str());
+            sync_fd_ = open(lock_path.c_str(), O_RDWR | O_CREAT, kIpcMode);
+        }
         if (sync_fd_ == -1) {
             close_fd();
             throw std::runtime_error(
                 "shaman v2 index lock open failed for " + queue_name_ + ": " +
-                std::strerror(errno));
+                std::strerror(errno) + (writer_ ? "" : " (no producer has created it yet)"));
         }
         normalize_sync_permissions();
 
