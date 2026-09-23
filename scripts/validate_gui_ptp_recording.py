@@ -678,6 +678,16 @@ def check_host_monitor(reporter: "Reporter", recording_folder: Path, snapshot: d
         reporter.pass_("host monitor: no compilers ran during the run")
     top = ", ".join(f"{k}={v:.0f}s" for k, v in list(foreign.items())[:4])
     reporter.pass_(f"host monitor: loadavg max {loadavg_max}, other busy processes (cpu seconds): {top or 'none'}")
+    tuning_path = summary_path.with_name("host_monitor_kernel_tuning.txt") if summary_path.name == "host_monitor_summary.json" \
+        else Path(str(summary_path)[: -len("_summary.json")] + "_kernel_tuning.txt")
+    if tuning_path.is_file():
+        lines = tuning_path.read_text().splitlines()
+        verdict = next((l for l in reversed(lines) if l.startswith("kernel tuning:")), "")
+        drift = [l for l in lines if l.startswith("[FAIL]")]
+        if verdict.startswith("kernel tuning: PASS"):
+            reporter.pass_("host kernel tuning matched the provisioning record at launch")
+        else:
+            report(f"host kernel tuning drifted at launch: {verdict or 'no verdict'}; {'; '.join(drift[:4])}")
     return {
         "summary_path": str(summary_path),
         "heartbeat_gaps": gaps,

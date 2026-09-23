@@ -592,6 +592,11 @@ if [[ "${ORANGE_HOST_STALL_MONITOR:-1}" == "1" && "$DRY_RUN" != "1" ]]; then
     stall_monitor_dir="/home/jeremy/orange_data/diagnostics/host_stall"
     mkdir -p "$stall_monitor_dir"
     stall_monitor_prefix="$stall_monitor_dir/$(date -u +%Y%m%dT%H%M%SZ)_$$"
+    # Kernel tuning drift record for this run (pancakebatter provisioning check).
+    if [[ -f /home/jeremy/pancakebatter/check_kernel_tuning.py ]]; then
+      python3 /home/jeremy/pancakebatter/check_kernel_tuning.py > "${stall_monitor_prefix}_kernel_tuning.txt" 2>&1 || true
+      echo "[sudo-wrapper] host kernel tuning: $(tail -n 1 "${stall_monitor_prefix}_kernel_tuning.txt")"
+    fi
     python3 "$stall_monitor_script" --prefix "$stall_monitor_prefix" > "${stall_monitor_prefix}.log" 2>&1 &
     stall_monitor_pid=$!
     export ORANGE_HOST_STALL_MONITOR_PREFIX="$stall_monitor_prefix"
@@ -620,7 +625,7 @@ stop_stall_monitor() {
       # so the host contention record travels with the artifact.
       for snapshot in $(grep -ls -- "${stall_monitor_prefix}" /home/jeremy/orange_data/exp/unsorted/*/recording_snapshot.json 2>/dev/null); do
         folder="$(dirname "$snapshot")"
-        for kind in summary.json heartbeat.csv counters.csv irq_top.csv procs.csv; do
+        for kind in summary.json heartbeat.csv counters.csv irq_top.csv procs.csv kernel_tuning.txt; do
           src="${stall_monitor_prefix}_${kind}"
           [[ -f "$src" ]] && cp -f -- "$src" "${folder}/host_monitor_${kind}"
         done

@@ -864,6 +864,25 @@ Then compare visible and hidden runs with:
   scripts/compare_gui_crop_preview_validation.py visible=/tmp/orange_gui_crop_visible_validation.json hidden=/tmp/orange_gui_crop_hidden_validation.json ${COMPARE_VALIDATION_FLAGS}
 EOF
 
+# Host kernel tuning drift check (pancakebatter provisioning record):
+# isolated cores, tsc/iommu, writeback and compaction sysctls, THP, camera
+# port MTU and mlx5 interrupt CPU sets. Drift is a warning unless
+# ORANGE_GUI_REQUIRE_KERNEL_TUNING=1; the wrapper records the same check next
+# to the artifact as host_monitor_kernel_tuning.txt.
+KERNEL_TUNING_CHECK="${ORANGE_KERNEL_TUNING_CHECK:-/home/jeremy/pancakebatter/check_kernel_tuning.py}"
+if [[ -f "${KERNEL_TUNING_CHECK}" ]]; then
+  echo "== host kernel tuning (${KERNEL_TUNING_CHECK})"
+  if ! python3 "${KERNEL_TUNING_CHECK}" | grep -E "^\[(FAIL|WARN)\]|^kernel tuning:"; then
+    if [[ "${ORANGE_GUI_REQUIRE_KERNEL_TUNING:-0}" == "1" ]]; then
+      echo "Host kernel tuning drifted from ${KERNEL_TUNING_CHECK%/*}/pancake0_config.yml; refusing to launch (ORANGE_GUI_REQUIRE_KERNEL_TUNING=1)." >&2
+      exit 2
+    fi
+    echo "WARNING: host kernel tuning drifted; the run's host_monitor record will show it." >&2
+  fi
+else
+  echo "== host kernel tuning check not found at ${KERNEL_TUNING_CHECK}; skipping" >&2
+fi
+
 if [[ "${ORANGE_GUI_VALIDATE_ONLY:-0}" == "1" ]]; then
   exit 0
 fi
