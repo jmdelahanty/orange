@@ -272,6 +272,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/camera_startup_controller.cpp"
     "${SRC_DIR}/gui/per_camera_stream_runtime.cpp"
     "${SRC_DIR}/gui/texture_resources.cpp"
+    "${SRC_DIR}/gui/preview_staging_lock.cpp"
     "${SRC_DIR}/gui/pose_overlay.cpp"
     "${SRC_DIR}/gui/pose_overlay_draw.cpp"
     "${SRC_DIR}/gui/startup_timing.cpp"
@@ -452,6 +453,8 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/crop_producer_worker.cpp"
     "${SRC_DIR}/pose_event_log.cpp"
     "${SRC_DIR}/pose_worker.cpp"
+    "${SRC_DIR}/gui/preview_staging_lock.cpp"
+    "${SRC_DIR}/gui/pose_overlay.cpp"
     ${NVENCODER_SOURCES}
     ${ORANGE_CUDA_SOURCES}
 )
