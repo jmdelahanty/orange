@@ -13,6 +13,20 @@ are byte-identical to Citrus's `src/ipc/shaman/shaman_v2.h`. Revision 3
 queues from older Orange builds fail closed in a revision-4 reader, which
 is the intended behaviour.
 
+## Reader start-up rule (2026-09-23, ABI v4)
+
+The v4 queue keeps an index lock file under `/tmp` (a sticky directory). This
+host runs `fs.protected_regular=2`, which forbids even root an `O_CREAT`
+open of a regular file another user created there. A reader that starts
+before Orange and creates the lock as its own user therefore blocks the root
+producer (`shaman v2 index lock open failed ... Permission denied`). Orange's
+`shaman_v2.h` now opens the lock without `O_CREAT` on the reader side and
+retries until the producer has created it; the producer unlinks a foreign
+stale lock once. Citrus's copy of `shaman_v2.h` still creates the lock on
+the reader side and should take the same change; until then, start Citrus
+after Orange has opened its queues (the normal workflow) and never leave a
+Citrus-owned lock behind.
+
 ## Transport
 
 - One POSIX shared-memory ring per camera: `/shm_cam_<serial>_v2`
@@ -58,7 +72,20 @@ far. Take the newest `sequence_id` per `state_frame_id`.
   kKeypointVisible` marks confidence >= 0.25. `label_id` is the keypoint
   index in the model's training order.
 
-## Measured on 2026-09-23 (four cameras, 60 s recording, reader draining)
+## Measured on the ABI v4 build (2026-09-23 04:33, four cameras, 60 s recording, reader draining)
+
+Artifact `2026_09_23_04_33_47`, strict validator PASS, `ORANGE_SHAMAN_V2_LIVE_STATE=1`:
+per camera 7172-7173 base frames published, ~7088 YOLO and ~7087 pose updates
+published, 81-87 stale-suppressed (all in the first seconds of streaming),
+`push_failures = 0`. The reader attached to all four queues and saw 7173
+distinct state ids, 0 sequence gaps, pose objects on 7088 of 7090 pose slots
+(2 slots per camera carried `pose_status = poses` with no object holding
+keypoints yet: the pending-evidence window between a pose result and its
+frame's YOLO merge; apply the reader rule per object). Sample slot:
+`pose_model_id_hash 17167804398972226780`, `pose_skeleton_id_hash
+13995128734323424025`, three keypoints in full-frame pixels, label ids 0-2.
+
+## Measured on the revision-3 build (2026-09-23 00:17, historical)
 
 Artifact `2026_09_23_00_17_04`, strict validator PASS, `ORANGE_SHAMAN_V2_LIVE_STATE=1`,
 `targets/release/shaman_v2_reader_probe` attached to all four queues:
