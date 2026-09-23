@@ -798,6 +798,17 @@ if(BUILD_TESTING)
     target_compile_features(gui_display_frame_rate_tests PRIVATE cxx_std_17)
     add_test(NAME gui_display_frame_rate_tests COMMAND gui_display_frame_rate_tests)
 
+    # Pose keypoint overlay (pure geometry + mailbox); not yet wired into the
+    # orange target, so this test is its only consumer for now.
+    add_executable(gui_pose_overlay_tests
+        "tools/gui_pose_overlay_tests.cpp"
+        "${SRC_DIR}/gui/pose_overlay.cpp"
+    )
+    target_include_directories(gui_pose_overlay_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(gui_pose_overlay_tests PRIVATE cxx_std_17)
+    target_link_libraries(gui_pose_overlay_tests PRIVATE Threads::Threads)
+    add_test(NAME gui_pose_overlay_tests COMMAND gui_pose_overlay_tests)
+
     add_executable(gui_timing_sidecar_writer_tests
         "tools/gui_timing_sidecar_writer_tests.cpp"
         "${SRC_DIR}/gui/gui_timing_sidecar_writer.cpp"
