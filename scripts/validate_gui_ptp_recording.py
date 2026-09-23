@@ -4101,6 +4101,32 @@ def check_lens_feedback(
         retries = feedback.get("write_retries") or 0
         if retries:
             reporter.warn(f"Cam{serial} lens writes needed {retries} retry(ies); the mount dropped a command once")
+        # Prefer the finalization totals; camera_runtime's copy is from recording start.
+        final_watch = nested_dict(snapshot, "session", "gui_display_frame_rate", "lens_watch", "cameras")
+        watch = final_watch.get(serial) if isinstance(final_watch, dict) and isinstance(final_watch.get(serial), dict) else None
+        if watch is None:
+            watch = feedback.get("watch") if isinstance(feedback.get("watch"), dict) else {}
+        if watch.get("reads"):
+            reporter.check(
+                (watch.get("changes") or 0) == 0,
+                f"Cam{serial} lens watch: {watch.get('reads')} reads, counters never moved mid-stream",
+                f"Cam{serial} lens watch: mount counters changed {watch.get('changes')} time(s) mid-stream "
+                f"(last at {watch.get('last_change_stream_ms')} ms)",
+            )
+    exposure = nested_dict(snapshot, "session", "gui_display_frame_rate", "exposure_watch", "cameras")
+    for serial in cameras:
+        w = exposure.get(serial) if isinstance(exposure, dict) else None
+        if not isinstance(w, dict) or not w.get("samples"):
+            continue
+        if w.get("changes"):
+            reporter.warn(
+                f"Cam{serial} exposure watch: preview brightness jumped {w.get('changes')} time(s) "
+                f"(mean {w.get('min_mean'):.1f}..{w.get('max_mean'):.1f}, last change at {w.get('last_change_stream_s'):.1f} s)"
+            )
+        if (w.get("max_clip_fraction") or 0) > 0.5:
+            reporter.warn(
+                f"Cam{serial} exposure watch: preview clipped fraction reached {w.get('max_clip_fraction'):.2f} (saturated)"
+            )
 
 
 def check_sync_config(

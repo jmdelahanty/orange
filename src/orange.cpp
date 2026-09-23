@@ -5780,6 +5780,50 @@ int main(int /*argc*/, char ** /*args*/) {
                 {"main_preview", stats_json(gui_pose_overlay_main_stats)},
                 {"crop_preview", stats_json(gui_pose_overlay_crop_stats)}};
         }
+        {
+            nlohmann::json watch = nlohmann::json::object();
+            for (int i = 0; i < num_cameras && i < static_cast<int>(openGLDisplayWorkers.size()); ++i) {
+                if (!openGLDisplayWorkers[static_cast<std::size_t>(i)]) {
+                    continue;
+                }
+                const auto w = openGLDisplayWorkers[static_cast<std::size_t>(i)]->exposure_watch();
+                watch[cameras_params[i].camera_serial] = nlohmann::json{
+                    {"samples", w.samples},
+                    {"changes", w.changes},
+                    {"first_mean", w.first_mean},
+                    {"last_mean", w.last_mean},
+                    {"min_mean", w.min_mean},
+                    {"max_mean", w.max_mean},
+                    {"last_clip_fraction", w.last_clip},
+                    {"max_clip_fraction", w.max_clip},
+                    {"last_sample_stream_s", w.last_sample_stream_s},
+                    {"last_change_stream_s", w.last_change_stream_s}};
+            }
+            snapshot["exposure_watch"] = {
+                {"source", "display worker downsampled preview, ~1 Hz, whole frame"},
+                {"change_rule", "mean moved >8% or clipped fraction moved >0.10 between samples"},
+                {"cameras", watch}};
+            // Lens feedback watch totals at finalization (camera_runtime's
+            // lens_feedback.watch is captured at recording start).
+            nlohmann::json lens_watch = nlohmann::json::object();
+            for (int i = 0; i < num_cameras; ++i) {
+                const CameraParams& cp = cameras_params[i];
+                lens_watch[cp.camera_serial] = nlohmann::json{
+                    {"interval_s", cp.lens_watch_interval_s},
+                    {"reads", cp.lens_watch_reads},
+                    {"changes", cp.lens_watch_changes},
+                    {"last_change_stream_ms", cp.lens_watch_last_change_frame},
+                    {"first_iris_current", cp.lens_watch_first_iris_current},
+                    {"first_focus_current", cp.lens_watch_first_focus_current},
+                    {"last_iris_current", cp.iris_current},
+                    {"last_focus_current", cp.focus_current},
+                    {"commanded_iris", cp.iris},
+                    {"commanded_focus", cp.focus}};
+            }
+            snapshot["lens_watch"] = {
+                {"source", "GUI thread, IrisCurrent/FocusCurrent/LensBusy once per interval per camera"},
+                {"cameras", lens_watch}};
+        }
         return snapshot;
     };
     // Orderly stop-streaming teardown, shared by the "Stop streaming"
@@ -8118,6 +8162,18 @@ int main(int /*argc*/, char ** /*args*/) {
             gui_frame_timing.crop_window_draw_ms = gui_elapsed_ms(
                 crop_draw_start,
                 std::chrono::steady_clock::now());
+        }
+
+        // Lens feedback watch (src/camera.cpp lens_watch_poll): once a second
+        // per camera from this thread, like the sensor-temperature poll, so
+        // the acquisition thread's control channel is not touched.
+        if (camera_control->open && camera_control->subscribe) {
+            static const auto lens_watch_epoch = std::chrono::steady_clock::now();
+            const double lens_watch_now_s = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - lens_watch_epoch).count();
+            for (int i = 0; i < num_cameras; i++) {
+                lens_watch_poll(&ecams[i].camera, &cameras_params[i], lens_watch_now_s);
+            }
         }
 
         if (camera_control->open && show_realtime_plot) {

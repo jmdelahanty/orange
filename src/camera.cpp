@@ -1152,6 +1152,60 @@ bool refresh_lens_feedback(Emergent::CEmergentCamera* camera, CameraParams* came
     return camera_params->lens_feedback_available;
 }
 
+void lens_watch_poll(Emergent::CEmergentCamera* camera, CameraParams* camera_params, double now_s)
+{
+    if (camera == nullptr || camera_params == nullptr || !camera_params->lens_control_enabled ||
+        !camera_params->lens_feedback_available) {
+        return;
+    }
+    static const double interval_s = []() {
+        const char* env = std::getenv("ORANGE_LENS_WATCH_INTERVAL_S");
+        if (!env || !*env) return 1.0;
+        const double v = std::atof(env);
+        return v < 0.0 ? 0.0 : v;
+    }();
+    if (interval_s <= 0.0) {
+        return;
+    }
+    if (camera_params->lens_watch_last_poll_s >= 0.0 &&
+        now_s - camera_params->lens_watch_last_poll_s < interval_s) {
+        return;
+    }
+    unsigned int iris_current = 0;
+    unsigned int focus_current = 0;
+    bool busy = false;
+    if (EVT_CameraGetUInt32Param(camera, "IrisCurrent", &iris_current) != EVT_SUCCESS ||
+        EVT_CameraGetUInt32Param(camera, "FocusCurrent", &focus_current) != EVT_SUCCESS) {
+        return;
+    }
+    EVT_CameraGetBoolParam(camera, "LensBusy", &busy);
+    camera_params->lens_watch_interval_s = interval_s;
+    camera_params->lens_watch_last_poll_s = now_s;
+    if (camera_params->lens_watch_reads == 0) {
+        camera_params->lens_watch_first_iris_current = iris_current;
+        camera_params->lens_watch_first_focus_current = focus_current;
+        std::cout << "[LENS_WATCH] Cam" << camera_params->camera_serial
+                  << " t=" << std::fixed << std::setprecision(1) << now_s
+                  << " IrisCurrent=" << iris_current << " FocusCurrent=" << focus_current
+                  << " LensBusy=" << (busy ? 1 : 0)
+                  << " (commanded iris=" << camera_params->iris << " focus=" << camera_params->focus << ")"
+                  << std::endl;
+    } else if (iris_current != camera_params->iris_current || focus_current != camera_params->focus_current) {
+        camera_params->lens_watch_changes++;
+        camera_params->lens_watch_last_change_frame = static_cast<uint64_t>(now_s * 1000.0);  // ms since stream start
+        std::cout << camera_params->camera_serial
+                  << " [LENS_WATCH] CHANGE t=" << std::fixed << std::setprecision(1) << now_s
+                  << " IrisCurrent " << camera_params->iris_current << "->" << iris_current
+                  << " FocusCurrent " << camera_params->focus_current << "->" << focus_current
+                  << " LensBusy=" << (busy ? 1 : 0)
+                  << std::endl;
+    }
+    camera_params->lens_watch_reads++;
+    camera_params->iris_current = iris_current;
+    camera_params->focus_current = focus_current;
+    camera_params->lens_busy = busy;
+}
+
 bool get_camera_string_param(Emergent::CEmergentCamera* camera, const char* name, std::string* out_value)
 {
     if (camera == nullptr || name == nullptr || out_value == nullptr) {

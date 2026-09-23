@@ -166,6 +166,18 @@ struct CameraParams{
     double lens_busy_wait_ms_max = 0.0;
     int lens_write_retries = 0;
     int lens_write_failures = 0;
+    // Periodic IrisCurrent/FocusCurrent/LensBusy reads from the GUI thread
+    // (beside the sensor-temperature poll; ORANGE_LENS_WATCH_INTERVAL_S,
+    // default 1 s, 0 disables), never on the acquisition thread: three
+    // control-channel reads beside the decimated PTP latch cost a frame.
+    // Catches a mount that re-initializes or a counter that moves mid-stream.
+    double lens_watch_interval_s = 0.0;
+    double lens_watch_last_poll_s = -1.0;
+    uint64_t lens_watch_reads = 0;
+    uint64_t lens_watch_changes = 0;
+    uint64_t lens_watch_last_change_frame = 0;
+    unsigned int lens_watch_first_iris_current = 0;
+    unsigned int lens_watch_first_focus_current = 0;
     bool need_reorder;
     std::string config_schema_id;
     int config_schema_version = 0;
@@ -330,6 +342,9 @@ void update_focus_value(Emergent::CEmergentCamera* camera, int focus_value, Came
 void update_iris_value(Emergent::CEmergentCamera* camera, int iris_value, CameraParams* camera_params);
 // Read IrisCurrent/FocusCurrent/LensBusy into camera_params (no writes).
 bool refresh_lens_feedback(Emergent::CEmergentCamera* camera, CameraParams* camera_params);
+// Periodic lens feedback poll for a streaming camera (GUI thread). Logs the
+// first sample and any change; updates iris_current/focus_current/lens_busy.
+void lens_watch_poll(Emergent::CEmergentCamera* camera, CameraParams* camera_params, double now_s);
 int scan_cameras(int max_cameras, GigEVisionDeviceInfo *device_info);
 void allocate_frame_reorder_buffer(Emergent::CEmergentCamera* camera, Emergent::CEmergentFrame* frame_reorder, CameraParams* camera_params);
 void camera_open_stream(Emergent::CEmergentCamera* camera,

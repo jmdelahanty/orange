@@ -1,6 +1,7 @@
 // src/opengldisplay.cpp
 
 #include "opengldisplay.h"
+#include <cmath>
 #include "gui/preview_staging_lock.h"
 #include "enet_thread.h"
 #include "cuda_context_debug.h"
@@ -50,6 +51,66 @@ int display_downsample_factor(const CameraEachSelect* camera_select)
     return std::max(1, camera_select ? camera_select->downsample : 1);
 }
 }  // namespace
+
+// Exposure watch (see opengldisplay.h): once a second, read the reduced
+// preview back to the host and score it. The wait on source_stream_ costs
+// one preview copy (about 1.3 MB) per second per camera.
+void COpenGLDisplay::exposure_watch_sample(CameraParams* camera_params, bool cross_gpu, size_t ds_bytes)
+{
+    const auto now = std::chrono::steady_clock::now();
+    if (exposure_watch_.samples > 0 &&
+        std::chrono::duration<double>(now - exposure_watch_last_sample_time_).count() < 1.0) {
+        return;
+    }
+    if (exposure_watch_.samples == 0) {
+        exposure_watch_start_time_ = now;
+    }
+    if (!h_exposure_sample_) {
+        ck(cudaHostAlloc(&h_exposure_sample_, ds_bytes, cudaHostAllocDefault));
+    }
+    ck(cudaStreamSynchronize(source_stream_));
+    if (cross_gpu) {
+        std::memcpy(h_exposure_sample_, h_p2p_copy_buffer_, ds_bytes);
+    } else {
+        ck(cudaMemcpy(h_exposure_sample_, d_source_downsample_buffer_, ds_bytes, cudaMemcpyDeviceToHost));
+    }
+    uint64_t sum = 0;
+    uint64_t clipped = 0;
+    for (size_t i = 0; i < ds_bytes; ++i) {
+        const unsigned char v = h_exposure_sample_[i];
+        sum += v;
+        clipped += (v >= 250) ? 1 : 0;
+    }
+    const double mean = ds_bytes ? static_cast<double>(sum) / static_cast<double>(ds_bytes) : 0.0;
+    const double clip = ds_bytes ? static_cast<double>(clipped) / static_cast<double>(ds_bytes) : 0.0;
+    const double stream_s = std::chrono::duration<double>(now - exposure_watch_start_time_).count();
+    ExposureWatchStats& w = exposure_watch_;
+    bool changed = false;
+    if (w.samples == 0) {
+        w.first_mean = w.min_mean = w.max_mean = mean;
+        std::cout << "[EXPOSURE_WATCH] Cam" << camera_params->camera_serial
+                  << " first sample mean=" << mean << " clip=" << clip << std::endl;
+    } else {
+        const double ref = std::max(1.0, w.last_mean);
+        changed = std::fabs(mean - w.last_mean) / ref > 0.08 || std::fabs(clip - w.last_clip) > 0.10;
+        w.min_mean = std::min(w.min_mean, mean);
+        w.max_mean = std::max(w.max_mean, mean);
+        if (changed) {
+            w.changes++;
+            w.last_change_stream_s = stream_s;
+            std::cout << "[EXPOSURE_WATCH] Cam" << camera_params->camera_serial
+                      << " CHANGE at stream_s=" << stream_s
+                      << " mean " << w.last_mean << "->" << mean
+                      << " clip " << w.last_clip << "->" << clip << std::endl;
+        }
+    }
+    w.samples++;
+    w.last_mean = mean;
+    w.last_clip = clip;
+    w.max_clip = std::max(w.max_clip, clip);
+    w.last_sample_stream_s = stream_s;
+    exposure_watch_last_sample_time_ = now;
+}
 
 COpenGLDisplay::COpenGLDisplay(const char* name, CameraParams *camera_params, CameraEachSelect *camera_select, unsigned char *display_buffer_cuda_pbo, INDIGOSignalBuilder* indigo_signal_builder, SafeQueue<WORKER_ENTRY*>& recycle_queue)
     : CThreadWorker(name),
@@ -153,6 +214,7 @@ COpenGLDisplay::~COpenGLDisplay()
 
     if (m_stream) cudaStreamDestroy(m_stream);
     if (h_p2p_copy_buffer_) cudaFreeHost(h_p2p_copy_buffer_);
+    if (h_exposure_sample_) cudaFreeHost(h_exposure_sample_);
 
     if (frame_original_gpu_.d_orig) cudaFree(frame_original_gpu_.d_orig);
     if (debayer_gpu_.d_debayer) cudaFree(debayer_gpu_.d_debayer);
@@ -248,6 +310,7 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
             ck(cudaMemcpyAsync(h_p2p_copy_buffer_, d_source_downsample_buffer_, ds_bytes, cudaMemcpyDeviceToHost, source_stream_));
         }
         ck(cudaEventRecord(source_done_event_, source_stream_));
+        exposure_watch_sample(camera_params, cross_gpu, ds_bytes);
 
         ck(cudaSetDevice(display_gpu_id));
         ck(cudaStreamWaitEvent(m_stream, source_done_event_, 0));

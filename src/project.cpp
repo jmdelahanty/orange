@@ -3606,6 +3606,14 @@ nlohmann::json build_camera_runtime_snapshot(const CameraParams& camera_params)
         {"busy_wait_ms_max", camera_params.lens_busy_wait_ms_max},
         {"write_retries", camera_params.lens_write_retries},
         {"write_failures", camera_params.lens_write_failures},
+        {"watch", {
+            {"interval_s", camera_params.lens_watch_interval_s},
+            {"thread", "gui"},
+            {"reads", camera_params.lens_watch_reads},
+            {"changes", camera_params.lens_watch_changes},
+            {"last_change_stream_ms", camera_params.lens_watch_last_change_frame},
+            {"first_iris_current", camera_params.lens_watch_first_iris_current},
+            {"first_focus_current", camera_params.lens_watch_first_focus_current}}},
         {"focus_tolerance_counts", 2},
         {"match", camera_params.lens_feedback_available &&
                       camera_params.iris_current == camera_params.iris &&

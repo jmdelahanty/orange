@@ -58,6 +58,31 @@ private:
     cudaStream_t source_stream_ = nullptr;                 // acquisition GPU
     cudaEvent_t source_done_event_ = nullptr;              // acquisition GPU
     uint64_t display_source_downsample_frames_ = 0;
+
+public:
+    // Exposure watch: about once per second the downsampled preview is read
+    // back and its mean and clipped fraction are recorded; a jump is logged.
+    // This is the only place a physically open or closed iris shows up, since
+    // the EF mount's iris counter is a step count, not a position sensor.
+    struct ExposureWatchStats {
+        uint64_t samples = 0;
+        uint64_t changes = 0;          // mean moved >8% or clipped fraction >0.10 vs the previous sample
+        double first_mean = 0.0;
+        double last_mean = 0.0;
+        double min_mean = 0.0;
+        double max_mean = 0.0;
+        double last_clip = 0.0;        // fraction of preview pixels >= 250
+        double max_clip = 0.0;
+        double last_sample_stream_s = 0.0;
+        double last_change_stream_s = -1.0;
+    };
+    ExposureWatchStats exposure_watch() const { return exposure_watch_; }
+private:
+    void exposure_watch_sample(CameraParams* camera_params, bool cross_gpu, size_t ds_bytes);
+    ExposureWatchStats exposure_watch_;
+    unsigned char* h_exposure_sample_ = nullptr;           // host copy of the preview for the watch
+    std::chrono::steady_clock::time_point exposure_watch_last_sample_time_{};
+    std::chrono::steady_clock::time_point exposure_watch_start_time_{};
     std::atomic<uint64_t> preview_serial_{0};
     std::chrono::steady_clock::time_point last_display_log_time_;
 
