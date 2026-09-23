@@ -178,6 +178,16 @@ struct CameraParams{
     // Plain int: written by the re-home thread, read by the GUI poll; a torn
     // read is impossible on this target and the worst case is one poll late.
     int lens_watch_suppress = 0;
+    // Sensor temperature sampled by the same GUI-thread poll (SensTemp,
+    // Int32, camera units) so brightness drift can be set against sensor
+    // temperature in the snapshot: LED warm-up and sensor response both
+    // scale the whole image, only the temperature separates them.
+    bool sens_temp_watch_valid = false;
+    int sens_temp_watch_first = 0;
+    int sens_temp_watch_last = 0;
+    int sens_temp_watch_min = 0;
+    int sens_temp_watch_max = 0;
+    uint64_t sens_temp_watch_reads = 0;
     uint64_t lens_watch_reads = 0;
     uint64_t lens_watch_changes = 0;
     uint64_t lens_watch_last_change_frame = 0;

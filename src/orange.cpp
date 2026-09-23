@@ -5833,7 +5833,15 @@ int main(int /*argc*/, char ** /*args*/) {
                     {"last_iris_current", cp.iris_current},
                     {"last_focus_current", cp.focus_current},
                     {"commanded_iris", cp.iris},
-                    {"commanded_focus", cp.focus}};
+                    {"commanded_focus", cp.focus},
+                    {"sens_temp", {
+                        {"valid", cp.sens_temp_watch_valid},
+                        {"reads", cp.sens_temp_watch_reads},
+                        {"first", cp.sens_temp_watch_first},
+                        {"last", cp.sens_temp_watch_last},
+                        {"min", cp.sens_temp_watch_min},
+                        {"max", cp.sens_temp_watch_max},
+                        {"node", "SensTemp (Int32, camera units)"}}}};
             }
             snapshot["lens_watch"] = {
                 {"source", "GUI thread, IrisCurrent/FocusCurrent/LensBusy once per interval per camera"},

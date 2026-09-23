@@ -1213,6 +1213,32 @@ void lens_watch_poll(Emergent::CEmergentCamera* camera, CameraParams* camera_par
     camera_params->iris_current = iris_current;
     camera_params->focus_current = focus_current;
     camera_params->lens_busy = busy;
+
+    // Sensor temperature on the same cadence (one more control-channel read).
+    int sens_temp = 0;
+    // The camera reports -40 until its first temperature conversion after
+    // stream start (seen on every camera for the first ~2 s); skip it.
+    if (EVT_CameraGetInt32Param(camera, "SensTemp", &sens_temp) == EVT_SUCCESS && sens_temp > -40) {
+        camera_params->sens_temp = sens_temp;
+        if (!camera_params->sens_temp_watch_valid) {
+            camera_params->sens_temp_watch_valid = true;
+            camera_params->sens_temp_watch_first = sens_temp;
+            camera_params->sens_temp_watch_min = sens_temp;
+            camera_params->sens_temp_watch_max = sens_temp;
+            std::cout << "[SENS_TEMP] Cam" << camera_params->camera_serial
+                      << " t=" << std::fixed << std::setprecision(1) << now_s
+                      << " SensTemp=" << sens_temp << std::endl;
+        } else if (camera_params->sens_temp_watch_reads % 60 == 0 || sens_temp != camera_params->sens_temp_watch_last) {
+            // One line a minute, plus every change, so the log carries a time series.
+            std::cout << "[SENS_TEMP] Cam" << camera_params->camera_serial
+                      << " t=" << std::fixed << std::setprecision(1) << now_s
+                      << " SensTemp=" << sens_temp << std::endl;
+        }
+        camera_params->sens_temp_watch_last = sens_temp;
+        camera_params->sens_temp_watch_min = std::min(camera_params->sens_temp_watch_min, sens_temp);
+        camera_params->sens_temp_watch_max = std::max(camera_params->sens_temp_watch_max, sens_temp);
+        camera_params->sens_temp_watch_reads++;
+    }
 }
 
 bool get_camera_string_param(Emergent::CEmergentCamera* camera, const char* name, std::string* out_value)
