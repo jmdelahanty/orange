@@ -6,6 +6,9 @@
 #include "camera.h"
 #include "imgui.h"
 #include "implot.h"
+#include <deque>
+#include "gui/pose_overlay_draw.h"
+#include "gui/pose_overlay.h"
 #include <ImGuiFileDialog.h>
 #include "project.h"
 #include "gui.h"
@@ -542,7 +545,8 @@ void render_primary_video_texture(GLuint texture,
                                   const float image_height,
                                   orange::ui::ImageCanvasViewState* canvas_view,
                                   const bool canvas_enabled,
-                                  const int camera_index)
+                                  const int camera_index,
+                                  const std::vector<orange::gui::PoseOverlayDrawCommand>* pose_overlay_preview_px = nullptr)
 {
     if (canvas_enabled &&
         canvas_view != nullptr &&
@@ -563,12 +567,30 @@ void render_primary_video_texture(GLuint texture,
                 canvas_view,
                 available_size,
                 image_id.c_str())) {
+            if (pose_overlay_preview_px && !pose_overlay_preview_px->empty()) {
+                // Commands are in preview pixels (the canvas axes); ImPlot maps
+                // them to the screen, including the inverted Y axis.
+                orange::gui::draw_pose_overlay_commands(
+                    ImPlot::GetPlotDrawList(),
+                    *pose_overlay_preview_px,
+                    [](float x, float y) { return ImPlot::PlotToPixels(ImPlotPoint(x, y)); });
+            }
             ImPlot::EndPlot();
         }
         return;
     }
 
     render_texture_image_centered(texture, available_size, image_width, image_height);
+    if (pose_overlay_preview_px && !pose_overlay_preview_px->empty() && image_width > 0.0f && image_height > 0.0f) {
+        const ImVec2 rect_min = ImGui::GetItemRectMin();
+        const ImVec2 rect_max = ImGui::GetItemRectMax();
+        const float sx = (rect_max.x - rect_min.x) / image_width;
+        const float sy = (rect_max.y - rect_min.y) / image_height;
+        orange::gui::draw_pose_overlay_commands(
+            ImGui::GetWindowDrawList(),
+            *pose_overlay_preview_px,
+            [rect_min, sx, sy](float x, float y) { return ImVec2(rect_min.x + x * sx, rect_min.y + y * sy); });
+    }
 }
 
 int sanitize_gui_stream_downsample(const int requested)
@@ -4978,6 +5000,12 @@ int main(int /*argc*/, char ** /*args*/) {
             app_storage_config.gui_external_ipc_native_local_input ? "1" : "0",
             "full-frame external recorder native local input");
     }
+    if (app_storage_config.gui_display_pose_overlay) {
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_GUI_POSE_OVERLAY",
+            "1",
+            "pose keypoint overlay on the previews");
+    }
     if (app_storage_config.gui_display_skip_pushed_gops > 0) {
         set_gui_env_from_app_config_if_absent(
             "ORANGE_DISPLAY_SKIP_PUSHED_GOPS",
@@ -5216,6 +5244,68 @@ int main(int /*argc*/, char ** /*args*/) {
     std::vector<GLuint> live_preview_texture_ids;
     std::vector<orange::ui::ImageCanvasViewState> primary_video_canvas_views;
     std::vector<PoseWorker*> poseWorkers;
+    // Pose keypoint overlay (src/gui/pose_overlay.h): one latest-pose mailbox
+    // per camera, bound to the pose worker once it exists; commands are built
+    // on the GUI thread per frame. Off unless ORANGE_GUI_POSE_OVERLAY=1
+    // (app config gui.display.pose_overlay).
+    const bool gui_pose_overlay_enabled =
+        gui_env_flag_enabled("ORANGE_GUI_POSE_OVERLAY", false);
+    std::deque<orange::gui::PoseOverlayMailbox> gui_pose_overlay_mailboxes;
+    std::vector<bool> gui_pose_overlay_bound;
+    const std::vector<orange::gui::PoseOverlaySkeletonEdge> gui_pose_overlay_edges{{0, 1}, {0, 2}, {1, 2}};
+    orange::gui::PoseOverlayOptions gui_pose_overlay_options;
+    orange::gui::PoseOverlayStats gui_pose_overlay_main_stats;
+    orange::gui::PoseOverlayStats gui_pose_overlay_crop_stats;
+    double gui_pose_overlay_draw_ms_total = 0.0;
+    double gui_pose_overlay_draw_ms_max = 0.0;
+    uint64_t gui_pose_overlay_draw_calls = 0;
+    std::vector<orange::gui::PoseOverlayDrawCommand> gui_pose_overlay_commands;
+    auto gui_pose_overlay_bind = [&](const int camera_index) -> orange::gui::PoseOverlayMailbox* {
+        if (!gui_pose_overlay_enabled || camera_index < 0 ||
+            static_cast<size_t>(camera_index) >= poseWorkers.size() || !poseWorkers[camera_index]) {
+            return nullptr;
+        }
+        while (gui_pose_overlay_mailboxes.size() <= static_cast<size_t>(camera_index)) {
+            gui_pose_overlay_mailboxes.emplace_back();
+            gui_pose_overlay_bound.push_back(false);
+        }
+        if (!gui_pose_overlay_bound[camera_index]) {
+            poseWorkers[camera_index]->SetOverlayMailbox(&gui_pose_overlay_mailboxes[camera_index]);
+            gui_pose_overlay_bound[camera_index] = true;
+            std::cout << "[GUI][pose_overlay] bound camera index " << camera_index << std::endl;
+        }
+        return &gui_pose_overlay_mailboxes[camera_index];
+    };
+    // Builds the overlay commands for one camera in the given image space and
+    // rectangle; returns nullptr when there is nothing to draw.
+    auto gui_pose_overlay_build = [&](const int camera_index,
+                                      const orange::gui::PoseOverlayImageSpace space,
+                                      const orange::gui::PoseOverlayRect& rect,
+                                      orange::gui::PoseOverlayStats* stats)
+        -> const std::vector<orange::gui::PoseOverlayDrawCommand>* {
+        orange::gui::PoseOverlayMailbox* mailbox = gui_pose_overlay_bind(camera_index);
+        if (!mailbox) {
+            return nullptr;
+        }
+        const auto t0 = std::chrono::steady_clock::now();
+        gui_pose_overlay_commands.clear();
+        orange::gui::PoseOverlaySnapshot snapshot;
+        if (mailbox->TryRead(&snapshot)) {
+            const uint64_t now_ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                t0.time_since_epoch()).count());
+            orange::gui::build_pose_overlay_commands(
+                snapshot, space,
+                static_cast<int>(cameras_params[camera_index].width),
+                static_cast<int>(cameras_params[camera_index].height),
+                rect, gui_pose_overlay_edges, gui_pose_overlay_options, now_ns,
+                &gui_pose_overlay_commands, stats);
+        }
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        gui_pose_overlay_draw_ms_total += ms;
+        gui_pose_overlay_draw_ms_max = std::max(gui_pose_overlay_draw_ms_max, ms);
+        ++gui_pose_overlay_draw_calls;
+        return gui_pose_overlay_commands.empty() ? nullptr : &gui_pose_overlay_commands;
+    };
     ImageWriterWorker* image_writer = new ImageWriterWorker("ImageSaverThread");
     image_writer->StartThread();
     std::set<std::string> gui_worker_fatal_errors_logged; // once-per-worker stderr log
@@ -5500,6 +5590,34 @@ int main(int /*argc*/, char ** /*args*/) {
             orange_imgui_glfw_size_cache_stats());
         snapshot["timing_windows"] =
             gui_timing_sidecar_writer.ArtifactJson();
+        {
+            uint64_t publishes = 0;
+            uint64_t torn = 0;
+            for (const auto& mailbox : gui_pose_overlay_mailboxes) {
+                publishes += mailbox.publishes();
+                torn += mailbox.torn_reads();
+            }
+            auto stats_json = [](const orange::gui::PoseOverlayStats& st) {
+                return nlohmann::json{
+                    {"frames_considered", st.frames_considered},
+                    {"frames_drawn", st.frames_drawn},
+                    {"stale_frames", st.stale_frames},
+                    {"empty_frames", st.empty_frames},
+                    {"keypoints_drawn", st.keypoints_drawn},
+                    {"max_keypoints_per_frame", st.max_keypoints_per_frame},
+                    {"edges_drawn", st.edges_drawn},
+                    {"keypoints_outside_image", st.keypoints_outside_image}};
+            };
+            snapshot["pose_overlay"] = nlohmann::json{
+                {"enabled", gui_pose_overlay_enabled},
+                {"mailbox_publishes", publishes},
+                {"mailbox_torn_reads", torn},
+                {"build_calls", gui_pose_overlay_draw_calls},
+                {"build_ms_total", gui_pose_overlay_draw_ms_total},
+                {"build_ms_max", gui_pose_overlay_draw_ms_max},
+                {"main_preview", stats_json(gui_pose_overlay_main_stats)},
+                {"crop_preview", stats_json(gui_pose_overlay_crop_stats)}};
+        }
         return snapshot;
     };
     // Orderly stop-streaming teardown, shared by the "Stop streaming"
@@ -7708,7 +7826,12 @@ int main(int /*argc*/, char ** /*args*/) {
                             display_height,
                             primary_canvas_view,
                             primary_video_canvas_enabled,
-                            i);
+                            i,
+                            gui_pose_overlay_build(
+                                i,
+                                orange::gui::PoseOverlayImageSpace::kFullFrame,
+                                orange::gui::PoseOverlayRect{0.0f, 0.0f, display_width, display_height},
+                                &gui_pose_overlay_main_stats));
 
                         if (show_yolo_speed_graphs && cameras_select[i].yolo && yolo_worker) {
                             const auto speed_graph_start = std::chrono::steady_clock::now();
@@ -7754,7 +7877,12 @@ int main(int /*argc*/, char ** /*args*/) {
                             display_height,
                             primary_canvas_view,
                             primary_video_canvas_enabled,
-                            i);
+                            i,
+                            gui_pose_overlay_build(
+                                i,
+                                orange::gui::PoseOverlayImageSpace::kFullFrame,
+                                orange::gui::PoseOverlayRect{0.0f, 0.0f, display_width, display_height},
+                                &gui_pose_overlay_main_stats));
                         ImGui::End();
                     }
                 }
@@ -7782,6 +7910,20 @@ int main(int /*argc*/, char ** /*args*/) {
                             image_size,
                             ImVec2(0, 0),
                             ImVec2(1, 1));
+                        if (gui_pose_overlay_enabled) {
+                            const ImVec2 rect_min = ImGui::GetItemRectMin();
+                            const ImVec2 rect_max = ImGui::GetItemRectMax();
+                            const auto* commands = gui_pose_overlay_build(
+                                i,
+                                orange::gui::PoseOverlayImageSpace::kCrop,
+                                orange::gui::PoseOverlayRect{rect_min.x, rect_min.y, rect_max.x, rect_max.y},
+                                &gui_pose_overlay_crop_stats);
+                            if (commands) {
+                                orange::gui::draw_pose_overlay_commands(
+                                    ImGui::GetWindowDrawList(), *commands,
+                                    [](float x, float y) { return ImVec2(x, y); });
+                            }
+                        }
                         ImGui::End();
 	                    }
 	                }

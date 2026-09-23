@@ -1257,6 +1257,7 @@ void PoseWorker::process_device_slot(DeviceStageSlot& slot)
         pose_event_logger_.Enqueue(build_pose_event_record(
             frame, pose_start_host_ns, pose_done_host_ns, pose_status, pose_error, poses));
     }
+    publish_pose_overlay(frame, poses);
     publish_pose_result_v2(frame, pose_status, poses);
     // Fused graph: the pool copy trails the pose in the same graph and reads
     // the slot's argument block, so the slot goes back only once the whole
@@ -1406,6 +1407,7 @@ bool PoseWorker::WorkerFunction(CropFrame* crop_frame)
                 pose_error,
                 poses));
         }
+        publish_pose_overlay(crop_frame->frame, poses);
         publish_pose_result_v2(crop_frame->frame, pose_status, poses);
 
         crop_frame_lease.ReleaseAfterStream(stream_);
@@ -1482,6 +1484,50 @@ pose_event_log::PoseResultRecord PoseWorker::build_pose_event_record(
         pose_done_host_ns);
     record.poses = poses;
     return record;
+}
+
+void PoseWorker::publish_pose_overlay(
+    const CropFrameSnapshot& frame,
+    const std::vector<pose_event_log::PoseInstanceRecord>& poses)
+{
+    orange::gui::PoseOverlayMailbox* mailbox = overlay_mailbox_.load(std::memory_order_acquire);
+    if (!mailbox) {
+        return;
+    }
+    orange::gui::PoseOverlaySnapshot snapshot;
+    snapshot.recording_frame_id = frame.recording_frame_id;
+    snapshot.local_frame_id = frame.local_frame_id;
+    snapshot.camera_frame_id = frame.camera_frame_id;
+    snapshot.host_ns = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+    snapshot.crop_x = frame.crop_x;
+    snapshot.crop_y = frame.crop_y;
+    snapshot.crop_w = frame.crop_w;
+    snapshot.crop_h = frame.crop_h;
+    snapshot.bbox_x = frame.detection_x;
+    snapshot.bbox_y = frame.detection_y;
+    snapshot.bbox_w = frame.detection_w;
+    snapshot.bbox_h = frame.detection_h;
+    if (!poses.empty()) {
+        // Same selection as the IPC slot: the single best instance; keypoints
+        // move from crop-local to source pixels (crop_x + x).
+        const auto& best = poses.front();
+        int count = 0;
+        for (const auto& kp : best.keypoints) {
+            if (count >= orange::gui::kPoseOverlayMaxKeypoints) {
+                break;
+            }
+            auto& out = snapshot.keypoints[count];
+            out.x_px = static_cast<float>(frame.crop_x) + static_cast<float>(kp.x_px);
+            out.y_px = static_cast<float>(frame.crop_y) + static_cast<float>(kp.y_px);
+            out.confidence = static_cast<float>(kp.confidence);
+            out.label_id = static_cast<uint16_t>(count);
+            out.visible = kp.visible;
+            ++count;
+        }
+        snapshot.keypoint_count = count;
+    }
+    mailbox->Publish(snapshot);
 }
 
 void PoseWorker::publish_pose_result_v2(

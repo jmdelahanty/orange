@@ -1,6 +1,7 @@
 #ifndef ORANGE_POSE_WORKER_H
 #define ORANGE_POSE_WORKER_H
 
+#include "gui/pose_overlay.h"
 #include "bounded_sample_statistics.h"
 #include "crop_producer.h"
 #include "fused_frame_args.h"
@@ -19,6 +20,13 @@ class FrameIPCManager;
 class PoseWorker : public CThreadWorker<CropFrame>
 {
 public:
+    // On-screen pose overlay feed (src/gui/pose_overlay.h): when set, every
+    // pose result is also written to this per-camera latest-value mailbox
+    // (lock-free for this thread). Null (the default) means no work.
+    void SetOverlayMailbox(orange::gui::PoseOverlayMailbox* mailbox) noexcept
+    {
+        overlay_mailbox_.store(mailbox, std::memory_order_release);
+    }
     PoseWorker(const char* name,
                CameraParams* camera_params,
                CropProducer* crop_producer,
@@ -114,6 +122,10 @@ private:
         const CropFrameSnapshot& frame,
         const std::string& status,
         const std::vector<pose_event_log::PoseInstanceRecord>& poses);
+    void publish_pose_overlay(
+        const CropFrameSnapshot& frame,
+        const std::vector<pose_event_log::PoseInstanceRecord>& poses);
+    std::atomic<orange::gui::PoseOverlayMailbox*> overlay_mailbox_{nullptr};
 
     CameraParams* camera_params_ = nullptr;
     CropProducer* crop_producer_ = nullptr;

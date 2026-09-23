@@ -272,6 +272,8 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/camera_startup_controller.cpp"
     "${SRC_DIR}/gui/per_camera_stream_runtime.cpp"
     "${SRC_DIR}/gui/texture_resources.cpp"
+    "${SRC_DIR}/gui/pose_overlay.cpp"
+    "${SRC_DIR}/gui/pose_overlay_draw.cpp"
     "${SRC_DIR}/gui/startup_timing.cpp"
     "${SRC_DIR}/offthreadmachine.cpp"
     "${SRC_DIR}/opengldisplay.cpp"

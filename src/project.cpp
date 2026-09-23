@@ -1788,6 +1788,14 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                     return false;
                 }
             }
+            if (!read_optional_bool_field(
+                    display,
+                    "pose_overlay",
+                    &config.gui_display_pose_overlay,
+                    error_out,
+                    "gui.display")) {
+                return false;
+            }
             if (!read_optional_bounded_int_field(
                     display,
                     "skip_pushed_gops",

@@ -90,6 +90,8 @@ struct AppStorageConfig {
     // full-frame preview skips frames whose GOP is routed to the peer shard,
     // so the 20 MB display read never overlaps an owner push on the same die.
     int gui_display_skip_pushed_gops = 0;
+    // Pose keypoint overlay on the previews (ORANGE_GUI_POSE_OVERLAY).
+    bool gui_display_pose_overlay = false;
     int gui_swap_interval = -1;
     int gui_frame_max_fps = -1;
     bool gui_show_speed_graphs = false;
