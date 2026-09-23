@@ -60,8 +60,15 @@ Artifact `2026_09_23_00_17_04`, strict validator PASS, `ORANGE_SHAMAN_V2_LIVE_ST
 | reader: pose no_result | 0-64 |
 
 Before the frame-id fix every pose update inside the 6005 recording frames
-was stale-suppressed; now about 0.9 % are, the same rate as YOLO updates
-that arrive after the next base frame.
+was stale-suppressed. The remaining ~60 suppressions per camera per kind
+are all a startup effect: a full trace (run 2026_09_23_00_54_13) puts
+every one of them in the first 3.3 s of streaming (local frames 209-546,
+before the recording started at local frame ~644), in bursts where the
+YOLO and pose threads lag the acquisition by 1-10 frames while the engines
+and graphs warm up. Inside the recording window the stale count is zero.
+A reader should expect no pose or YOLO merges for the first few seconds
+after a stream starts and treat `pose_status = kDisabled` there as
+"not yet", not as an error.
 
 `[FRAME_IPC_V2] ... push_failures` and `queue_drops` are read from the
 shared-memory segment header and therefore accumulate across runs (the
@@ -121,6 +128,8 @@ until the self-describing path below exists.
   keypoints while `pose_status` stays `kPoses`. Apply the reader rule per
   object, not per slot.
 - Pose replaces the whole YOLO object list with the single ROI.
-- About 1 % of YOLO updates arrive after the next base and are
-  stale-suppressed (`yolo_stale_suppressed`), leaving those frames at
-  detection pending.
+- During the first ~3 s of streaming, YOLO and pose updates lag the base
+  frames by up to 10 frames and are stale-suppressed (`yolo_stale_suppressed`,
+  `pose_stale_suppressed`); those frames stay at detection pending. In
+  steady state and inside recordings the stale count is zero (the IPC writer
+  drains base, YOLO and pose events in arrival order since 27c83c7).

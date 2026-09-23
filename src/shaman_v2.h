@@ -205,6 +205,8 @@ inline void unlink_queue(const std::string& queue_name)
 
 class SharedLiveStateQueue {
 public:
+    const std::string& name() const { return queue_name_; }
+
     SharedLiveStateQueue(const std::string& queue_name, bool writer)
         : writer_(writer), queue_name_(queue_name)
     {

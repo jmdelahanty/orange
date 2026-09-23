@@ -1,4 +1,7 @@
 #pragma once
+#include <iostream>
+#include <chrono>
+#include <string>
 
 #include "shaman_v2.h"
 
@@ -22,7 +25,8 @@ struct LiveStateCounters {
 class LiveStatePublisher {
 public:
     explicit LiveStatePublisher(SharedLiveStateQueue& queue, size_t max_pending_updates = 8)
-        : queue_(queue),
+        : queue_name_for_trace_(queue.name()),
+          queue_(queue),
           max_pending_updates_(max_pending_updates)
     {
     }
@@ -75,6 +79,7 @@ public:
         if (is_stale(frame_id)) {
             counters_.yolo_stale_suppressed++;
             queue_.note_stale_suppressed();
+            trace_stale("yolo", frame_id);
             return false;
         }
         if (!is_current(frame_id)) {
@@ -93,6 +98,7 @@ public:
         if (is_stale(frame_id)) {
             counters_.pose_stale_suppressed++;
             queue_.note_stale_suppressed();
+            trace_stale("pose", frame_id);
             return false;
         }
         if (!is_current(frame_id)) {
@@ -111,6 +117,22 @@ public:
     }
 
 private:
+    // Diagnostic (2026-09-23): the first stale suppressions per publisher,
+    // with how many base frames the update was behind, so a run shows which
+    // frames lose their merge and why.
+    void trace_stale(const char* kind, uint64_t frame_id)
+    {
+        if (stale_traces_++ < 200) {
+            std::cerr << "[v2_stale] t_ms=" << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() % 100000000)
+                      << " queue=" << queue_name_for_trace_ << " kind=" << kind
+                      << " source_frame_id=" << frame_id
+                      << " latest_base=" << latest_base_state_frame_id_
+                      << " lag_frames=" << (latest_base_state_frame_id_ - frame_id) << std::endl;
+        }
+    }
+    uint64_t stale_traces_ = 0;
+    std::string queue_name_for_trace_;
+
     bool is_current(uint64_t frame_id) const
     {
         return has_current_ && frame_id != 0 && frame_id == latest_base_state_frame_id_;
