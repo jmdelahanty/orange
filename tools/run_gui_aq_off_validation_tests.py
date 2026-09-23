@@ -1862,9 +1862,10 @@ def test_gui_privilege_wrapper_relays_cleanup_signals_to_orange() -> None:
         "wrapper must remove only its stale Unix socket after Orange exits",
     )
     require(
-        "launcher parent exited; terminating Orange child" in source
-        and 'current_parent_pid="$(awk \'{print $4}\' "/proc/${wrapper_pid}/stat"' in source,
-        "wrapper must terminate Orange if its unprivileged launcher disappears",
+        "launcher parent or grandparent exited; terminating Orange child" in source
+        and 'current_parent_pid="$(awk \'{print $4}\' "/proc/${wrapper_pid}/stat"' in source
+        and 'current_grandparent_pid="$(awk \'{print $4}\' "/proc/${launcher_parent_pid}/stat"' in source,
+        "wrapper must terminate Orange if its unprivileged launcher or the launcher's parent disappears",
     )
 
 
