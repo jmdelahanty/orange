@@ -173,6 +173,11 @@ struct CameraParams{
     // Catches a mount that re-initializes or a counter that moves mid-stream.
     double lens_watch_interval_s = 0.0;
     double lens_watch_last_poll_s = -1.0;
+    // >0 while Orange itself is moving the lens (exposure-check re-home), so
+    // the watch records the new position without counting it as a fault.
+    // Plain int: written by the re-home thread, read by the GUI poll; a torn
+    // read is impossible on this target and the worst case is one poll late.
+    int lens_watch_suppress = 0;
     uint64_t lens_watch_reads = 0;
     uint64_t lens_watch_changes = 0;
     uint64_t lens_watch_last_change_frame = 0;

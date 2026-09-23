@@ -30,6 +30,12 @@ constexpr unsigned int kIrisSettleToleranceCounts = 0;
 // Writing 0 re-initializes the mechanism (iris: wide open, focus: minimum).
 // The mount blocks inside the set call while it runs (measured ~200 ms for
 // iris, ~1.3 s for focus), so the settle timeout after an init is longer.
+// Precautionary dwell after a verified move. The counter settles ~50 ms after
+// the write and single-camera brightness did not depend on extra waiting, but
+// a four-camera session may load the mount supply differently; 100 ms per
+// write at start-up is cheap insurance for the glass to finish where the
+// counter is.
+constexpr int kLensPostSettleMs = 100;
 constexpr unsigned int kLensInitValue = 0;
 constexpr double kLensInitSettleTimeoutMs = 6000.0;
 
@@ -947,6 +953,7 @@ LensWriteOutcome write_lens_node_verified(
         if (settle.settled) {
             out.ok = true;
             out.verified = true;
+            usleep(kLensPostSettleMs * 1000);
             return out;
         }
         camera_params->lens_write_retries += (attempt < kLensWriteAttempts) ? 1 : 0;
@@ -1190,6 +1197,8 @@ void lens_watch_poll(Emergent::CEmergentCamera* camera, CameraParams* camera_par
                   << " LensBusy=" << (busy ? 1 : 0)
                   << " (commanded iris=" << camera_params->iris << " focus=" << camera_params->focus << ")"
                   << std::endl;
+    } else if (camera_params->lens_watch_suppress > 0) {
+        // Orange is moving the lens on purpose (re-home); record, don't count.
     } else if (iris_current != camera_params->iris_current || focus_current != camera_params->focus_current) {
         camera_params->lens_watch_changes++;
         camera_params->lens_watch_last_change_frame = static_cast<uint64_t>(now_s * 1000.0);  // ms since stream start

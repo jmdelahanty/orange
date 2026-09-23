@@ -4113,6 +4113,22 @@ def check_lens_feedback(
                 f"Cam{serial} lens watch: mount counters changed {watch.get('changes')} time(s) mid-stream "
                 f"(last at {watch.get('last_change_stream_ms')} ms)",
             )
+    check = nested_dict(snapshot, "session", "gui_display_frame_rate", "exposure_check")
+    if isinstance(check, dict) and check.get("enabled"):
+        for serial in cameras:
+            st = (check.get("cameras") or {}).get(serial)
+            if not isinstance(st, dict):
+                reporter.fail(f"Cam{serial} exposure check enabled but no result recorded")
+                continue
+            status = st.get("status")
+            reporter.check(
+                status in ("ok", "ok_after_rehome"),
+                f"Cam{serial} exposure check {status}: first mean {st.get('first_mean', 0):.1f} vs expected {st.get('expected_preview_mean', 0):.1f}",
+                f"Cam{serial} exposure check {status}: first mean {st.get('first_mean', 0):.1f}, final {st.get('final_mean', 0):.1f}, "
+                f"expected {st.get('expected_preview_mean', 0):.1f} +/-{100 * (st.get('tolerance_fraction') or 0):.0f}%",
+            )
+            if st.get("rehomed"):
+                reporter.warn(f"Cam{serial} exposure check re-homed the iris at stream start (first mean {st.get('first_mean', 0):.1f})")
     exposure = nested_dict(snapshot, "session", "gui_display_frame_rate", "exposure_watch", "cameras")
     for serial in cameras:
         w = exposure.get(serial) if isinstance(exposure, dict) else None

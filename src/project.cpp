@@ -1265,6 +1265,10 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
     config.gui_crop_external_encode_queue_depth = -1;
     config.gui_crop_external_recorder_gpu_id = -1;
     config.gui_crop_external_recorder_gpu_ids_by_serial.clear();
+    config.gui_exposure_check_enabled = false;
+    config.gui_exposure_check_tolerance_fraction = 0.15;
+    config.gui_exposure_check_rehome_iris = true;
+    config.gui_exposure_check_expected_preview_mean_by_serial.clear();
     config.gui_crop_frame_pool_size = -1;
     config.gui_external_recorder_contract_path.clear();
     config.gui_external_recorder_contract = nlohmann::json::object();
@@ -1845,6 +1849,51 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                     *error_out += " in " + config_path.string();
                 }
                 return false;
+            }
+        }
+        if (gui.contains("exposure_check")) {
+            if (!gui["exposure_check"].is_object()) {
+                if (error_out) {
+                    *error_out = "gui.exposure_check must be an object in " + config_path.string();
+                }
+                return false;
+            }
+            const nlohmann::json& check = gui["exposure_check"];
+            if (!read_optional_bool_field(check, "enabled", &config.gui_exposure_check_enabled, error_out, "gui.exposure_check") ||
+                !read_optional_bool_field(check, "rehome_iris", &config.gui_exposure_check_rehome_iris, error_out, "gui.exposure_check")) {
+                if (error_out && error_out->find(config_path.string()) == std::string::npos) {
+                    *error_out += " in " + config_path.string();
+                }
+                return false;
+            }
+            if (check.contains("tolerance_fraction")) {
+                const nlohmann::json& tol = check["tolerance_fraction"];
+                if (!tol.is_number() || tol.get<double>() < 0.01 || tol.get<double>() > 0.9) {
+                    if (error_out) {
+                        *error_out = "gui.exposure_check.tolerance_fraction must be a number in [0.01, 0.9] in " + config_path.string();
+                    }
+                    return false;
+                }
+                config.gui_exposure_check_tolerance_fraction = tol.get<double>();
+            }
+            if (check.contains("expected_preview_mean_by_serial")) {
+                const nlohmann::json& by_serial = check["expected_preview_mean_by_serial"];
+                if (!by_serial.is_object()) {
+                    if (error_out) {
+                        *error_out = "gui.exposure_check.expected_preview_mean_by_serial must be an object in " + config_path.string();
+                    }
+                    return false;
+                }
+                for (auto it = by_serial.begin(); it != by_serial.end(); ++it) {
+                    if (!it.value().is_number() || it.value().get<double>() < 1.0 || it.value().get<double>() > 254.0) {
+                        if (error_out) {
+                            *error_out = "gui.exposure_check.expected_preview_mean_by_serial." + it.key() +
+                                         " must be a number in [1, 254] in " + config_path.string();
+                        }
+                        return false;
+                    }
+                    config.gui_exposure_check_expected_preview_mean_by_serial[it.key()] = it.value().get<double>();
+                }
             }
         }
         if (gui.contains("telemetry")) {
