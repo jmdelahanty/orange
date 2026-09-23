@@ -234,6 +234,7 @@ public:
     uint64_t frames_acked() const { return frames_acked_.load(std::memory_order_relaxed); }
     uint64_t failures() const { return failures_.load(std::memory_order_relaxed); }
     uint64_t ack_timeouts() const { return ack_timeouts_.load(std::memory_order_relaxed); }
+    uint64_t drain_ack_timeouts() const { return drain_ack_timeouts_.load(std::memory_order_relaxed); }
     bool owner_push_enabled() const { return owner_push_; }
     void SetPoolBuffers(const std::vector<std::pair<unsigned char*, size_t>>& buffers)
     {
@@ -816,7 +817,23 @@ private:
                 }
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     if (blocking) {
-                        ack_timeouts_.fetch_add(1, std::memory_order_relaxed);
+                        // A wait that times out after the drain was requested
+                        // is the recorder finalizing (NVENC flush, MP4
+                        // trailer of an hour-long file takes more than the
+                        // 1 s ACK budget) and the ACK still arrives; count it
+                        // apart from the in-recording ACK timeouts the
+                        // validator gates on (2026-09-23: 1-hour soak, all
+                        // 360005 frames acked, one drain-phase timeout per camera).
+                        bool draining = false;
+                        {
+                            std::lock_guard<std::mutex> lock(drain_request_mutex_);
+                            draining = drain_requested_;
+                        }
+                        if (draining) {
+                            drain_ack_timeouts_.fetch_add(1, std::memory_order_relaxed);
+                        } else {
+                            ack_timeouts_.fetch_add(1, std::memory_order_relaxed);
+                        }
                         if (timed_out) {
                             *timed_out = true;
                         }
@@ -1884,6 +1901,7 @@ private:
     std::atomic<uint64_t> recorder_status_messages_received_{0};
     std::atomic<uint64_t> failures_{0};
     std::atomic<uint64_t> ack_timeouts_{0};
+    std::atomic<uint64_t> drain_ack_timeouts_{0};
     std::atomic<uint64_t> failures_logged_{0};
 };
 
@@ -2273,6 +2291,8 @@ RecordingIngressStats RecordingIngress::GetStats() const
             external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->failures() : 0;
         stats.external_ipc_ack_timeouts =
             external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->ack_timeouts() : 0;
+        stats.external_ipc_drain_ack_timeouts =
+            external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->drain_ack_timeouts() : 0;
         stats.external_ipc_owner_push_enabled =
             external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->owner_push_enabled() : false;
         stats.external_ipc_owner_push_slots =

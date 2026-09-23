@@ -1398,7 +1398,8 @@ GuiRecordingFinalizeInputs gui_prepare_recording_finalize(
                     {"submitted_frames", stats.submitted_frames},
                     {"external_ipc_frames_acked", stats.external_ipc_frames_acked},
                     {"external_ipc_failures", stats.external_ipc_failures},
-                    {"external_ipc_ack_timeouts", stats.external_ipc_ack_timeouts}
+                    {"external_ipc_ack_timeouts", stats.external_ipc_ack_timeouts},
+                    {"external_ipc_drain_ack_timeouts", stats.external_ipc_drain_ack_timeouts}
                 };
             }
         }

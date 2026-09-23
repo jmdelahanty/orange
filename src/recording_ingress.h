@@ -36,6 +36,7 @@ struct RecordingIngressStats {
     uint64_t external_ipc_frames_acked = 0;
     uint64_t external_ipc_failures = 0;
     uint64_t external_ipc_ack_timeouts = 0;
+    uint64_t external_ipc_drain_ack_timeouts = 0;  // timeouts after drain was requested (recorder finalizing); informational
     // Owner-push staging slots imported from the peer shard's STAGE lines
     // (0 until the recorder has prewarmed and exported them; frames routed
     // to the peer shard before that go through the recorder's pull path).
