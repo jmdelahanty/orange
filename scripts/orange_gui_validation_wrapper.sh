@@ -614,7 +614,21 @@ stop_stall_monitor() {
       chown -- "${SUDO_UID}:${SUDO_GID}" "$(dirname "$stall_monitor_prefix")" 2>/dev/null || true
     fi
     if [[ -f "${stall_monitor_prefix}_summary.json" ]]; then
-      echo "[sudo-wrapper] host_stall_monitor summary: $(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));h=d['heartbeat'];print('gaps=%d max_gap_ms=%.1f smi_delta=%s allocstall=%d compact_stall=%d' % (h['gaps'],h['max_gap_ms'],d['smi_delta'],d['deltas']['allocstall_normal'],d['deltas']['compact_stall']))" "${stall_monitor_prefix}_summary.json" 2>/dev/null || echo unreadable)"
+      echo "[sudo-wrapper] host_stall_monitor summary: $(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));h=d['heartbeat'];print('gaps=%d max_gap_ms=%.1f allocstall=%d compact_stall=%d irq_burst_s=%s compilers=%s loadavg_max=%s' % (h['gaps'],h['max_gap_ms'],d['deltas']['allocstall_normal'],d['deltas']['compact_stall'],d.get('isolated_irq_burst_seconds'),d.get('compilers_seen'),d.get('loadavg_1m_max')))" "${stall_monitor_prefix}_summary.json" 2>/dev/null || echo unreadable)"
+      # Copy the monitor outputs next to every recording that references
+      # this monitor (Orange writes the prefix into recording_snapshot.json),
+      # so the host contention record travels with the artifact.
+      for snapshot in $(grep -ls -- "${stall_monitor_prefix}" /home/jeremy/orange_data/exp/unsorted/*/recording_snapshot.json 2>/dev/null); do
+        folder="$(dirname "$snapshot")"
+        for kind in summary.json heartbeat.csv counters.csv irq_top.csv procs.csv; do
+          src="${stall_monitor_prefix}_${kind}"
+          [[ -f "$src" ]] && cp -f -- "$src" "${folder}/host_monitor_${kind}"
+        done
+        if [[ -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" ]]; then
+          chown -- "${SUDO_UID}:${SUDO_GID}" "${folder}"/host_monitor_* 2>/dev/null || true
+        fi
+        echo "[sudo-wrapper] host_stall_monitor outputs copied to ${folder}"
+      done
     fi
     stall_monitor_pid=""
   fi

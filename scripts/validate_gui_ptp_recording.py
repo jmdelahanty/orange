@@ -387,6 +387,35 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--require-host-monitor",
+        action="store_true",
+        help=(
+            "Require host_monitor_summary.json in the recording folder (the "
+            "wrapper-launched host stall monitor: heartbeat gaps, allocation "
+            "stalls, isolated-core interrupt bursts, other busy processes)."
+        ),
+    )
+    parser.add_argument(
+        "--max-host-irq-burst-seconds",
+        type=int,
+        default=5,
+        help=(
+            "Seconds with more than 5000 interrupts/s on the isolated cores "
+            "above which the host monitor check warns (or fails with "
+            "--strict-host-monitor). Startup and teardown normally contribute "
+            "2-6. Default 5."
+        ),
+    )
+    parser.add_argument(
+        "--strict-host-monitor",
+        action="store_true",
+        help=(
+            "Fail instead of warn when the host monitor saw compilers, "
+            "heartbeat gaps, allocation stalls or interrupt bursts above the "
+            "threshold during the run."
+        ),
+    )
+    parser.add_argument(
         "--require-imgui-glfw-size-cache",
         action="store_true",
         help=(
@@ -571,6 +600,88 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--json", action="store_true", help="Print only machine-readable JSON.")
     parser.add_argument("--json-out", type=Path, help="Optional path to write the validation JSON summary.")
     return parser.parse_args()
+
+
+def check_host_monitor(reporter: "Reporter", recording_folder: Path, snapshot: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    """Host contention record for the run: the wrapper copies the stall
+    monitor's outputs into the recording folder as host_monitor_*; older
+    artifacts only carry the diagnostics prefix in the snapshot."""
+    summary_path = recording_folder / "host_monitor_summary.json"
+    if not summary_path.is_file():
+        prefix = nested_dict(snapshot, "session").get("host_stall_monitor_prefix") or ""
+        candidate = Path(str(prefix) + "_summary.json") if prefix else None
+        if candidate and candidate.is_file():
+            summary_path = candidate
+        else:
+            if args.require_host_monitor:
+                reporter.fail("host monitor summary missing (host_monitor_summary.json and no diagnostics prefix)")
+            else:
+                reporter.warn("host monitor summary missing; host contention during the run is unknown")
+            return {}
+    try:
+        summary = read_json(summary_path)
+    except Exception as exc:  # noqa: BLE001
+        reporter.fail(f"host monitor summary unreadable: {summary_path}: {exc}")
+        return {}
+    heartbeat = summary.get("heartbeat", {})
+    deltas = summary.get("deltas", {})
+    gaps = int(heartbeat.get("gaps", 0))
+    allocstall = int(deltas.get("allocstall_normal", 0))
+    compact = int(deltas.get("compact_stall", 0))
+    if "isolated_irq_burst_seconds" not in summary:
+        # Older monitor summaries lack the burst count: derive it from the
+        # per-second counters next to the summary.
+        counters_path = Path(str(summary_path)[: -len("_summary.json")] + "_counters.csv")
+        if summary_path.name == "host_monitor_summary.json":
+            counters_path = summary_path.with_name("host_monitor_counters.csv")
+        bursts_derived = 0
+        try:
+            prev = None
+            with counters_path.open() as f:
+                for row in csv.DictReader(f):
+                    cur = int(row["isolated_core_irqs"])
+                    if prev is not None and cur - prev > 5000:
+                        bursts_derived += 1
+                    prev = cur
+            summary["isolated_irq_burst_seconds"] = bursts_derived
+            summary["isolated_irq_burst_sources"] = {"derived_from_counters": bursts_derived}
+        except (OSError, KeyError, ValueError):
+            pass
+    bursts = int(summary.get("isolated_irq_burst_seconds", 0))
+    sources = summary.get("isolated_irq_burst_sources", {})
+    compilers = summary.get("compilers_seen", {})
+    foreign = summary.get("foreign_cpu_seconds_by_process", {})
+    loadavg_max = summary.get("loadavg_1m_max")
+    report = reporter.fail if args.strict_host_monitor else reporter.warn
+    reporter.pass_(f"host monitor present: {summary_path}")
+    if gaps:
+        report(f"host monitor: {gaps} heartbeat gap(s), max {heartbeat.get('max_gap_ms')} ms (host-wide pauses)")
+    else:
+        reporter.pass_("host monitor: no heartbeat gaps")
+    if allocstall or compact:
+        report(f"host monitor: allocation stalls {allocstall}, compaction stalls {compact} during the run")
+    else:
+        reporter.pass_("host monitor: no allocation or compaction stalls")
+    if bursts > args.max_host_irq_burst_seconds:
+        report(f"host monitor: {bursts} s of isolated-core interrupt bursts (>5000/s), sources {sources}; threshold {args.max_host_irq_burst_seconds}")
+    else:
+        reporter.pass_(f"host monitor: isolated-core interrupt bursts {bursts} s (threshold {args.max_host_irq_burst_seconds})")
+    if compilers:
+        report(f"host monitor: compilers ran during the run: {compilers} (cpu seconds); the run is not a valid gate")
+    else:
+        reporter.pass_("host monitor: no compilers ran during the run")
+    top = ", ".join(f"{k}={v:.0f}s" for k, v in list(foreign.items())[:4])
+    reporter.pass_(f"host monitor: loadavg max {loadavg_max}, other busy processes (cpu seconds): {top or 'none'}")
+    return {
+        "summary_path": str(summary_path),
+        "heartbeat_gaps": gaps,
+        "allocstall": allocstall,
+        "isolated_irq_burst_seconds": bursts,
+        "isolated_irq_burst_sources": sources,
+        "compilers_seen": compilers,
+        "foreign_cpu_seconds_by_process": foreign,
+        "loadavg_1m_max": loadavg_max,
+    }
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -7047,6 +7158,7 @@ def main() -> int:
             args.require_gui_timing_telemetry,
             args.require_imgui_glfw_size_cache,
         )
+    host_monitor_summary = check_host_monitor(reporter, recording_folder, snapshot, args)
     if not cameras:
         video_sanity = {}
         crop_preview_summary = {}

@@ -62,6 +62,39 @@ def cpu_is_amd():
         return False
 
 
+COMPILER_NAMES = ("cc1plus", "cc1", "nvcc", "cicc", "ptxas", "ld", "ld.gold", "ld.lld", "lld", "gmake", "make",
+                  "ninja", "cmake", "rustc", "cargo", "clang", "clang++", "g++", "gcc", "as")
+ORANGE_NAMES = ("orange", "orange_client", "external_record", "external_recorder_ipc_probe", "host_stall_monitor")
+
+
+def read_process_cpu():
+    """Returns {pid: (comm, utime+stime ticks)} for every process, cheaply."""
+    out = {}
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                stat = f.read()
+        except OSError:
+            continue
+        lp = stat.rfind(")")
+        comm = stat[stat.find("(") + 1:lp]
+        fields = stat[lp + 2:].split()
+        try:
+            out[int(pid)] = (comm, int(fields[11]) + int(fields[12]))
+        except (IndexError, ValueError):
+            continue
+    return out
+
+
+def read_loadavg():
+    try:
+        return float(open("/proc/loadavg").read().split()[0])
+    except (OSError, ValueError):
+        return -1.0
+
+
 def read_smi():
     # MSR 0x34 (MSR_SMI_COUNT) exists on Intel only; AMD exposes no SMI
     # counter from Linux, so the column stays -1 there.
@@ -119,6 +152,7 @@ def read_counters(isolated):
     row["isolated_core_irqs"] = iso_irq
     row["_per_irq"] = per_irq  # not written to the counters row; see top-IRQ log
     row["smi_count"] = read_smi()
+    row["loadavg_1m"] = read_loadavg()
     return row
 
 
@@ -189,6 +223,19 @@ def main():
     irq_out = open(a.prefix + "_irq_top.csv", "w", newline="")
     iw = csv.writer(irq_out)
     iw.writerow(["t_ns", "isolated_irq_delta", "top1", "top1_delta", "top2", "top2_delta", "top3", "top3_delta"])
+    # Busy processes other than Orange and its recorders, per sample: who
+    # else used the CPU while the run was going (a concurrent build shows
+    # up here as cc1plus/ld/gmake with large CPU deltas).
+    procs_out = open(a.prefix + "_procs.csv", "w", newline="")
+    pw = csv.writer(procs_out)
+    pw.writerow(["t_ns", "loadavg_1m", "foreign_cpu_pct", "top1", "top1_cpu_pct", "top2", "top2_cpu_pct", "top3", "top3_cpu_pct"])
+    proc_prev = read_process_cpu()
+    proc_prev_t = time.monotonic()
+    ticks_per_s = os.sysconf("SC_CLK_TCK")
+    foreign_totals = {}          # comm -> cpu seconds by non-Orange processes
+    compilers_seen = {}          # comm -> cpu seconds
+    foreign_busy_samples = 0     # samples where foreign processes used >= 50% of one core
+    loadavg_max = 0.0
     stopping = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stopping.set())
     signal.signal(signal.SIGTERM, lambda *_: stopping.set())
@@ -208,11 +255,51 @@ def main():
         irq_out.flush()
         per_irq_prev = per_irq
         prev_iso = last["isolated_core_irqs"]
+        # busy processes
+        proc_now = read_process_cpu()
+        now_t = time.monotonic()
+        span = max(1e-3, now_t - proc_prev_t)
+        by_comm = {}
+        for pid, (comm, ticks) in proc_now.items():
+            prev = proc_prev.get(pid)
+            if not prev or prev[0] != comm:
+                continue
+            d = (ticks - prev[1]) / ticks_per_s / span * 100.0  # percent of one core
+            if d <= 0:
+                continue
+            if any(comm.startswith(n) for n in ORANGE_NAMES):
+                continue
+            by_comm[comm] = by_comm.get(comm, 0.0) + d
+        foreign = sum(by_comm.values())
+        if foreign >= 50.0:
+            foreign_busy_samples += 1
+        for comm, pct in by_comm.items():
+            foreign_totals[comm] = foreign_totals.get(comm, 0.0) + pct * span / 100.0
+            if comm in COMPILER_NAMES:
+                compilers_seen[comm] = compilers_seen.get(comm, 0.0) + pct * span / 100.0
+        top = sorted(by_comm.items(), key=lambda kv: kv[1], reverse=True)[:3]
+        loadavg_max = max(loadavg_max, last["loadavg_1m"])
+        pw.writerow([last["t_ns"], last["loadavg_1m"], round(foreign, 1)] + [x for c, pct in top for x in (c, round(pct, 1))])
+        procs_out.flush()
+        proc_prev, proc_prev_t = proc_now, now_t
     hb.stop.set()
     hb.join(timeout=2)
     hb_out.close()
     counters_out.close()
     irq_out.close()
+    procs_out.close()
+    # interrupt bursts on the isolated cores, with their top sources
+    burst_seconds = 0
+    burst_sources = {}
+    try:
+        with open(a.prefix + "_irq_top.csv") as f:
+            rd = csv.DictReader(f)
+            for r in rd:
+                if int(r["isolated_irq_delta"]) > 5000:
+                    burst_seconds += 1
+                    burst_sources[r["top1"]] = burst_sources.get(r["top1"], 0) + 1
+    except (OSError, ValueError, KeyError):
+        pass
     summary = {
         "started_t_ns": first["t_ns"], "ended_t_ns": last["t_ns"],
         "duration_s": (last["t_ns"] - first["t_ns"]) / 1e9,
@@ -222,6 +309,13 @@ def main():
                                                     "thp_fault_fallback", "pgmajfault", "isolated_core_irqs")},
         "smi_delta": (last["smi_count"] - first["smi_count"]) if first["smi_count"] >= 0 else None,
         "nvme_written_mb": (last["nvme_wr_sectors"] - first["nvme_wr_sectors"]) * 512 / 1e6,
+        "isolated_irq_burst_seconds": burst_seconds,
+        "isolated_irq_burst_sources": burst_sources,
+        "loadavg_1m_start": first["loadavg_1m"],
+        "loadavg_1m_max": loadavg_max,
+        "foreign_busy_samples": foreign_busy_samples,
+        "foreign_cpu_seconds_by_process": dict(sorted(foreign_totals.items(), key=lambda kv: kv[1], reverse=True)[:12]),
+        "compilers_seen": compilers_seen,
     }
     json.dump(summary, open(a.prefix + "_summary.json", "w"), indent=2)
     print(json.dumps(summary, indent=2))
