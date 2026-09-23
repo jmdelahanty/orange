@@ -1,4 +1,4 @@
-# GUI pose keypoint overlay (unwired module, 2026-09-22)
+# GUI pose keypoint overlay (wired 2026-09-23)
 
 `src/gui/pose_overlay.{h,cpp}` holds the pure part of an on-screen pose
 keypoint overlay: a per-camera latest-pose mailbox, keypoint-to-screen
@@ -7,8 +7,18 @@ validation, confidence/staleness filtering, and a draw-command builder.
 It has no ImGui, CUDA or GL dependency and is covered by
 `tools/gui_pose_overlay_tests.cpp` (`ctest -R gui_pose_overlay_tests`).
 
-It is not called by the `orange` target yet. Wiring, planned after the
-current GUI soaks are accepted:
+Wired into the GUI on 2026-09-23 (integration commit 2582715) exactly as
+planned below; `src/gui/pose_overlay_draw.{h,cpp}` is the ImGui glue.
+Enable with app config `gui.display.pose_overlay: true` (bridged to
+`ORANGE_GUI_POSE_OVERLAY=1`, which the sudo wrapper also accepts). Counters
+land in `recording_snapshot.json` under
+`session.gui_display_frame_rate.pose_overlay` (`enabled`,
+`mailbox_publishes`, `mailbox_torn_reads`, `build_calls`, `build_ms_total`,
+`build_ms_max`, `main_preview.*`, `crop_preview.*`). The skeleton edges are
+the K=3 `traditional_v1` set `[0,1] [0,2] [1,2]` until the engine ships a
+skeleton sidecar (see docs/citrus_pose_intake_2026_09_23.md).
+
+The wiring as planned:
 
 1. `PoseWorker` gets `SetOverlayMailbox(PoseOverlayMailbox*)` (null = no
    work) and fills a `PoseOverlaySnapshot` (keypoints converted to source
