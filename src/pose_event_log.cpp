@@ -315,15 +315,16 @@ void PoseEventLogger::ThreadMain()
     std::unique_lock<std::mutex> lock(mutex_);
     while (running_ || !queue_.empty()) {
         if (queue_.empty()) {
+            // Idle: flush on the one-second cadence (not per row: at 100 fps
+            // the queue is empty between rows), and after a full second of
+            // silence flush whatever is pending.
+            const bool timed_out =
+                cv_.wait_for(lock, std::chrono::seconds(1)) == std::cv_status::timeout;
             if (rows_since_flush_ > 0) {
                 lock.unlock();
-                MaybeFlush(true);
+                MaybeFlush(timed_out);
                 lock.lock();
-                if (!queue_.empty()) {
-                    continue;
-                }
             }
-            cv_.wait_for(lock, std::chrono::seconds(1));
             continue;
         }
         Event event = std::move(queue_.front());
