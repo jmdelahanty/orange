@@ -1207,6 +1207,7 @@ if(BUILD_TESTING)
 
     add_executable(recording_snapshots_tests
         "tools/recording_snapshots_tests.cpp"
+        "${SRC_DIR}/pose_skeleton_sidecar.cpp"
         "${SRC_DIR}/citrus_recording_geometry.cpp"
         "${SRC_DIR}/recording_physical_registration.cpp"
         "${SRC_DIR}/gui/spatial_layout/physical_registration_selection.cpp"
