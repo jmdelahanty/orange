@@ -212,3 +212,16 @@ until the self-describing path below exists.
   `pose_stale_suppressed`); those frames stay at detection pending. In
   steady state and inside recordings the stale count is zero (the IPC writer
   drains base, YOLO and pose events in arrival order since 27c83c7).
+
+## Recorded pose rows (Cam<serial>_pose_events.jsonl)
+
+Every pose result during a recording is written by a dedicated writer thread
+(bounded queue of 8192, drops counted and reported at close, flushed on a
+one-second cadence since 000f43e) as one JSON line: keypoints in crop pixels
+with the sidecar labels, the crop origin/size and detection box in source
+pixels, camera/local/recording frame ids, timestamps, latencies, and a `pose`
+block that since e28415c carries `skeleton_sha256`, `engine_sha256`,
+`ipc_skeleton_id_hash` and `ipc_model_id_hash` beside the paths, so the file
+is self-describing. Verified on 2026_09_23_05_02_27: 3006 rows per camera for
+recording frames 1-3006, no gaps, 30 flushes in 30 s, 0 drops, identity
+correct on every row.
