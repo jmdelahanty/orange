@@ -166,7 +166,7 @@ std::vector<std::string> default_pose_keypoint_labels(size_t keypoint_count)
 
 uint64_t fnv1a64(const std::string& value)
 {
-    uint64_t hash = 1469598103934665603ULL;
+    uint64_t hash = 14695981039346656037ULL;  // FNV-1a 64 offset basis (was missing a digit until 2026-09-23)
     for (unsigned char byte : value) {
         hash ^= static_cast<uint64_t>(byte);
         hash *= 1099511628211ULL;
