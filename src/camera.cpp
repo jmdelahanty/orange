@@ -27,6 +27,11 @@ constexpr int kLensPollIntervalMs = 5;
 constexpr int kLensWriteAttempts = 2;
 constexpr unsigned int kFocusSettleToleranceCounts = 2;  // encoder lands +/-1 count off target
 constexpr unsigned int kIrisSettleToleranceCounts = 0;
+// Writing 0 re-initializes the mechanism (iris: wide open, focus: minimum).
+// The mount blocks inside the set call while it runs (measured ~200 ms for
+// iris, ~1.3 s for focus), so the settle timeout after an init is longer.
+constexpr unsigned int kLensInitValue = 0;
+constexpr double kLensInitSettleTimeoutMs = 6000.0;
 
 bool has_param(Emergent::CEmergentCamera* camera, const char* name)
 {
@@ -951,6 +956,27 @@ LensWriteOutcome write_lens_node_verified(
                   << " " << current_node << "=" << settle.current
                   << " busy_seen=" << (settle.busy_seen ? "yes" : "no")
                   << " after " << std::fixed << std::setprecision(1) << settle.settle_ms << " ms" << std::endl;
+
+        // Re-initialize the mechanism before the retry. A mount that has lost
+        // its lens state (FocusCurrent stuck at 0 after a mount reset was
+        // measured on 2010096) refuses every move until it is re-initialized.
+        if (attempt < kLensWriteAttempts && target != kLensInitValue) {
+            const orange::lens::WaitIdleResult init_idle = orange::lens::wait_lens_idle(pollers, kLensIdleTimeoutMs);
+            const double init_t0 = pollers.now_ms();
+            const EVT_ERROR init_err = EVT_CameraSetUInt32Param(camera, node, kLensInitValue);
+            const double init_call_ms = pollers.now_ms() - init_t0;
+            const orange::lens::SettleResult init_settle = init_err == EVT_SUCCESS
+                ? orange::lens::wait_lens_settled(pollers, kLensInitValue, kLensInitSettleTimeoutMs, 0)
+                : orange::lens::SettleResult{};
+            std::cout << serial << " [" << context << "] " << node
+                      << " re-init (" << node << "=0) before retry: "
+                      << (init_err == EVT_SUCCESS ? "sent" : get_evt_error_string(init_err))
+                      << " call_ms=" << std::fixed << std::setprecision(1) << init_call_ms
+                      << " settled=" << (init_settle.settled ? "yes" : "no")
+                      << " " << current_node << "=" << init_settle.current
+                      << " idle_wait_ms=" << init_idle.waited_ms
+                      << std::endl;
+        }
     }
     camera_params->lens_write_failures += 1;
     return out;
