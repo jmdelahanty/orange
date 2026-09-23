@@ -2,6 +2,7 @@
 
 #pragma once
 #include "threadworker.h"
+#include <mutex>
 #include "image_processing.h"
 #include "thread.h" // For SafeQueue
 #include <nppi.h>
@@ -77,7 +78,33 @@ public:
         double last_change_stream_s = -1.0;
     };
     ExposureWatchStats exposure_watch() const { return exposure_watch_; }
+
+    // Intensity histogram of the downsampled preview, averaged over N
+    // displayed frames, on request from the GUI (Intensity Histogram panel).
+    struct IntensityHistogram {
+        uint64_t sequence = 0;         // increments per completed grab
+        int frames_requested = 0;
+        int frames_accumulated = 0;
+        bool complete = false;
+        double fraction[256] = {};     // fraction of pixels per intensity value, averaged over frames
+        double mean = 0.0;
+        double p1 = 0.0;
+        double p50 = 0.0;
+        double p99 = 0.0;
+        double clip_fraction = 0.0;    // pixels >= 250
+        double dark_fraction = 0.0;    // pixels < 8
+    };
+    void RequestIntensityHistogram(int frames);
+    bool GetIntensityHistogram(IntensityHistogram* out);   // copy of the last completed grab
 private:
+    void intensity_histogram_sample(CameraParams* camera_params, bool cross_gpu, size_t ds_bytes);
+    std::mutex histogram_mutex_;
+    IntensityHistogram histogram_;
+    std::atomic<int> histogram_frames_pending_{0};
+    uint64_t histogram_accum_[256] = {};
+    int histogram_accum_frames_ = 0;
+    int histogram_accum_requested_ = 0;
+
     void exposure_watch_sample(CameraParams* camera_params, bool cross_gpu, size_t ds_bytes);
     ExposureWatchStats exposure_watch_;
     unsigned char* h_exposure_sample_ = nullptr;           // host copy of the preview for the watch

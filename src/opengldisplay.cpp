@@ -1,6 +1,7 @@
 // src/opengldisplay.cpp
 
 #include "opengldisplay.h"
+#include "gui/intensity_histogram_stats.h"
 #include <cmath>
 #include "gui/preview_staging_lock.h"
 #include "enet_thread.h"
@@ -110,6 +111,70 @@ void COpenGLDisplay::exposure_watch_sample(CameraParams* camera_params, bool cro
     w.max_clip = std::max(w.max_clip, clip);
     w.last_sample_stream_s = stream_s;
     exposure_watch_last_sample_time_ = now;
+}
+
+void COpenGLDisplay::RequestIntensityHistogram(int frames)
+{
+    if (frames < 1) frames = 1;
+    if (frames > 1000) frames = 1000;
+    std::memset(histogram_accum_, 0, sizeof(histogram_accum_));
+    histogram_accum_frames_ = 0;
+    histogram_accum_requested_ = frames;
+    histogram_frames_pending_.store(frames, std::memory_order_release);
+}
+
+bool COpenGLDisplay::GetIntensityHistogram(IntensityHistogram* out)
+{
+    if (!out) return false;
+    std::lock_guard<std::mutex> lock(histogram_mutex_);
+    *out = histogram_;
+    return histogram_.complete;
+}
+
+// One displayed frame of the downsampled preview into the 256-bin accumulator;
+// on the last requested frame, publish the averaged histogram and its stats.
+void COpenGLDisplay::intensity_histogram_sample(CameraParams* camera_params, bool cross_gpu, size_t ds_bytes)
+{
+    if (!h_exposure_sample_) {
+        ck(cudaHostAlloc(&h_exposure_sample_, ds_bytes, cudaHostAllocDefault));
+    }
+    ck(cudaStreamSynchronize(source_stream_));
+    if (cross_gpu) {
+        std::memcpy(h_exposure_sample_, h_p2p_copy_buffer_, ds_bytes);
+    } else {
+        ck(cudaMemcpy(h_exposure_sample_, d_source_downsample_buffer_, ds_bytes, cudaMemcpyDeviceToHost));
+    }
+    for (size_t i = 0; i < ds_bytes; ++i) {
+        histogram_accum_[h_exposure_sample_[i]]++;
+    }
+    histogram_accum_frames_++;
+    const int remaining = histogram_frames_pending_.fetch_sub(1, std::memory_order_acq_rel) - 1;
+    if (remaining > 0) {
+        return;
+    }
+    IntensityHistogram result;
+    result.frames_requested = histogram_accum_requested_;
+    result.frames_accumulated = histogram_accum_frames_;
+    const double total = static_cast<double>(ds_bytes) * static_cast<double>(std::max(1, histogram_accum_frames_));
+    orange::gui::IntensityHistogramStats stats;
+    orange::gui::compute_intensity_histogram_stats(histogram_accum_, total, &stats);
+    for (int v = 0; v < 256; ++v) result.fraction[v] = stats.fraction[v];
+    result.mean = stats.mean;
+    result.p1 = stats.p1;
+    result.p50 = stats.p50;
+    result.p99 = stats.p99;
+    result.clip_fraction = stats.clip_fraction;
+    result.dark_fraction = stats.dark_fraction;
+    result.complete = true;
+    {
+        std::lock_guard<std::mutex> lock(histogram_mutex_);
+        result.sequence = histogram_.sequence + 1;
+        histogram_ = result;
+    }
+    std::cout << "[INTENSITY_HISTOGRAM] Cam" << camera_params->camera_serial
+              << " frames=" << result.frames_accumulated
+              << " mean=" << result.mean << " p1=" << result.p1 << " p50=" << result.p50 << " p99=" << result.p99
+              << " clip>=250=" << result.clip_fraction << " dark<8=" << result.dark_fraction << std::endl;
 }
 
 COpenGLDisplay::COpenGLDisplay(const char* name, CameraParams *camera_params, CameraEachSelect *camera_select, unsigned char *display_buffer_cuda_pbo, INDIGOSignalBuilder* indigo_signal_builder, SafeQueue<WORKER_ENTRY*>& recycle_queue)
@@ -311,6 +376,9 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
         }
         ck(cudaEventRecord(source_done_event_, source_stream_));
         exposure_watch_sample(camera_params, cross_gpu, ds_bytes);
+        if (histogram_frames_pending_.load(std::memory_order_acquire) > 0) {
+            intensity_histogram_sample(camera_params, cross_gpu, ds_bytes);
+        }
 
         ck(cudaSetDevice(display_gpu_id));
         ck(cudaStreamWaitEvent(m_stream, source_done_event_, 0));

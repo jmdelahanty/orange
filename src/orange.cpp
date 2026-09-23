@@ -5648,6 +5648,12 @@ int main(int /*argc*/, char ** /*args*/) {
 
     ScrollingBuffer *realtime_plot_data = nullptr;
     bool show_realtime_plot = false;
+    // Intensity Histogram panel: averaged histogram of the preview over N
+    // displayed frames, on request (a user asked for it; also the quickest
+    // way to see clipping/headroom per camera). ORANGE_GUI_INTENSITY_HISTOGRAM_AUTOGRAB=1
+    // opens it and grabs once at stream start (used for log verification).
+    bool show_intensity_histogram = gui_env_flag_enabled("ORANGE_GUI_INTENSITY_HISTOGRAM_AUTOGRAB", false);
+    bool intensity_histogram_autograb_pending = show_intensity_histogram;
     bool ptp_stream_sync = false;
 
     flatbuffers::FlatBufferBuilder *fb_builder = new flatbuffers::FlatBufferBuilder(1024);
@@ -6865,6 +6871,7 @@ int main(int /*argc*/, char ** /*args*/) {
                 }
 
                 ImGui::Checkbox("Show camera temperature", &show_realtime_plot);
+                ImGui::Checkbox("Show intensity histogram", &show_intensity_histogram);
                 ImGui::SameLine();
                 if (ImGui::Button("Aperture Characterization")) {
                     aperture_ui_state.show_window = true;
@@ -8309,6 +8316,56 @@ int main(int /*argc*/, char ** /*args*/) {
             for (int i = 0; i < num_cameras; i++) {
                 lens_watch_poll(&ecams[i].camera, &cameras_params[i], lens_watch_now_s);
             }
+        }
+
+        if (camera_control->open && show_intensity_histogram) {
+            ImGui::Begin("Intensity Histogram");
+            static int hist_camera = 0;
+            static int hist_frames = 10;
+            static bool hist_log_y = false;
+            if (hist_camera >= num_cameras) hist_camera = 0;
+            std::vector<const char*> hist_labels;
+            for (int i = 0; i < num_cameras; ++i) hist_labels.push_back(cameras_params[i].camera_serial.c_str());
+            if (!hist_labels.empty()) {
+                ImGui::Combo("Camera", &hist_camera, hist_labels.data(), static_cast<int>(hist_labels.size()));
+            }
+            ImGui::SliderInt("Frames to average", &hist_frames, 1, 100);
+            ImGui::SameLine();
+            ImGui::Checkbox("Log Y", &hist_log_y);
+            const bool streaming = camera_control->subscribe;
+            const bool worker_ok = hist_camera < static_cast<int>(openGLDisplayWorkers.size()) &&
+                                   openGLDisplayWorkers[static_cast<std::size_t>(hist_camera)] != nullptr;
+            const bool grab_now = (ImGui::Button("Grab") || intensity_histogram_autograb_pending) && streaming && worker_ok;
+            if (grab_now) {
+                intensity_histogram_autograb_pending = false;
+                openGLDisplayWorkers[static_cast<std::size_t>(hist_camera)]->RequestIntensityHistogram(hist_frames);
+            }
+            if (!streaming) {
+                ImGui::TextDisabled("Start streaming to grab a histogram.");
+            }
+            COpenGLDisplay::IntensityHistogram hist;
+            if (worker_ok && openGLDisplayWorkers[static_cast<std::size_t>(hist_camera)]->GetIntensityHistogram(&hist)) {
+                ImGui::Text("Cam%s  avg of %d frames  mean %.1f  p1 %.0f  p50 %.0f  p99 %.0f  clipped(>=250) %.2f%%  dark(<8) %.2f%%",
+                            cameras_params[hist_camera].camera_serial.c_str(), hist.frames_accumulated, hist.mean,
+                            hist.p1, hist.p50, hist.p99, 100.0 * hist.clip_fraction, 100.0 * hist.dark_fraction);
+                static double hist_x[256];
+                static bool hist_x_init = false;
+                if (!hist_x_init) { for (int v = 0; v < 256; ++v) hist_x[v] = v; hist_x_init = true; }
+                double hist_y[256];
+                for (int v = 0; v < 256; ++v) {
+                    hist_y[v] = hist_log_y ? std::log10(hist.fraction[v] + 1e-7) : hist.fraction[v] * 100.0;
+                }
+                const ImVec2 avail = ImGui::GetContentRegionAvail();
+                if (ImPlot::BeginPlot("Preview intensity histogram", ImVec2(avail.x, std::max(200.0f, avail.y)))) {
+                    ImPlot::SetupAxes("intensity (8-bit)", hist_log_y ? "log10(fraction)" : "% of pixels");
+                    ImPlot::SetupAxisLimits(ImAxis_X1, 0, 255, ImGuiCond_Always);
+                    ImPlot::PlotBars("pixels", hist_x, hist_y, 256, 1.0);
+                    ImPlot::EndPlot();
+                }
+            } else {
+                ImGui::TextDisabled("No histogram yet. Press Grab while streaming.");
+            }
+            ImGui::End();
         }
 
         if (camera_control->open && show_realtime_plot) {

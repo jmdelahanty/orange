@@ -916,6 +916,13 @@ if(BUILD_TESTING)
     target_compile_features(pose_skeleton_sidecar_tests PRIVATE cxx_std_17)
     add_test(NAME pose_skeleton_sidecar_tests COMMAND pose_skeleton_sidecar_tests)
 
+    add_executable(intensity_histogram_stats_tests
+        "tools/intensity_histogram_stats_tests.cpp"
+    )
+    target_include_directories(intensity_histogram_stats_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(intensity_histogram_stats_tests PRIVATE cxx_std_17)
+    add_test(NAME intensity_histogram_stats_tests COMMAND intensity_histogram_stats_tests)
+
     add_executable(lens_write_verify_tests
         "tools/lens_write_verify_tests.cpp"
     )
