@@ -1434,6 +1434,78 @@ def check_descriptor_detail_matches_int(
     )
 
 
+RECORDING_CONTEXT_FIELDS = ("schema_id", "schema_version", "recording_type", "recording_subtype",
+                            "behavior_mode", "recording_intent", "data_origin")
+RECORDING_CONTEXT_ENUMS = {
+    "behavior_mode": {"free", "embedded", "none"},
+    "recording_intent": {"stimulus_experiment", "recording_only"},
+    "data_origin": {"acquired", "synthetic"},
+}
+
+
+def validate_recording_context_entry(entry: Any) -> str | None:
+    """Return None when `entry` is a valid citrus.parent_recording_context v1, else a reason."""
+    if not isinstance(entry, dict):
+        return "not an object"
+    if set(entry.keys()) != set(RECORDING_CONTEXT_FIELDS):
+        return f"fields {sorted(entry.keys())} != {sorted(RECORDING_CONTEXT_FIELDS)}"
+    if entry.get("schema_id") != "citrus.parent_recording_context":
+        return f"schema_id {entry.get('schema_id')!r}"
+    version = entry.get("schema_version")
+    if isinstance(version, bool) or version != 1:
+        return f"schema_version {version!r}"
+    for key in ("recording_type", "recording_subtype"):
+        value = entry.get(key)
+        if not isinstance(value, str) or not value or len(value) > 1024 or value != value.strip() \
+                or any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
+            return f"{key} {value!r} invalid"
+    for key, allowed in RECORDING_CONTEXT_ENUMS.items():
+        if entry.get(key) not in allowed:
+            return f"{key} {entry.get(key)!r} not in {sorted(allowed)}"
+    return None
+
+
+def check_recording_contexts(
+    reporter: Reporter,
+    manifest: dict[str, Any],
+    snapshot: dict[str, Any],
+    cameras: list[str],
+) -> None:
+    """Citrus transfer-v2 parent recording context: present, closed schema, exact camera
+    membership, and identical to the block frozen in the recording start snapshot."""
+    block = manifest.get("recording_contexts")
+    if block is None:
+        reporter.warn(
+            "recording_session.json has no recording_contexts (app config recording.contexts not configured); "
+            "Citrus transfer-v2 will refuse this recording"
+        )
+        return
+    reporter.check(
+        isinstance(block, dict) and set(block.keys()) == set(cameras),
+        f"recording_contexts declares exactly the recording cameras ({len(cameras)})",
+        f"recording_contexts keys {sorted(block.keys()) if isinstance(block, dict) else block!r} != cameras {sorted(cameras)}",
+    )
+    if isinstance(block, dict):
+        for serial, entry in block.items():
+            reason = validate_recording_context_entry(entry)
+            reporter.check(
+                reason is None,
+                f"Cam{serial} recording context: {entry.get('recording_type') if isinstance(entry, dict) else '?'}/"
+                f"{entry.get('recording_subtype') if isinstance(entry, dict) else '?'} "
+                f"{entry.get('behavior_mode') if isinstance(entry, dict) else '?'} "
+                f"{entry.get('recording_intent') if isinstance(entry, dict) else '?'} "
+                f"{entry.get('data_origin') if isinstance(entry, dict) else '?'}",
+                f"Cam{serial} recording context invalid: {reason}",
+            )
+    frozen = nested_dict(snapshot, "session", "recording_contexts")
+    if frozen:
+        reporter.check(
+            frozen == block,
+            "recording_contexts identical to the frozen start snapshot block",
+            "recording_contexts differ from session.recording_contexts in the start snapshot",
+        )
+
+
 def check_recording_session_manifest(
     reporter: Reporter,
     recording_folder: Path,
@@ -1460,6 +1532,7 @@ def check_recording_session_manifest(
     if not manifest:
         return {}
 
+    check_recording_contexts(reporter, manifest, snapshot, cameras)
     producer = str(manifest.get("producer", ""))
     backend = manifest.get("recording_backend")
     backend = backend if isinstance(backend, dict) else {}

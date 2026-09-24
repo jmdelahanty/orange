@@ -1,5 +1,6 @@
 #include <algorithm>
 #include "recording_master_crop_coverage.h"
+#include "recording_context.h"
 #include "recording_crop_only_manifest.h"
 #include "recording_crop_only_result.h"
 #include "headless_registered_context.h"
@@ -217,6 +218,7 @@ struct HeadlessExternalRecorderContractConfig {
 
 struct HeadlessCliOptions {
     orange::recording::RecordingMediaSelection media_products;
+    orange::recording::RecordingContextsConfig recording_contexts;
     orange::recording::MasterAcquisitionConfig master_frame_journal;
     orange::recording::RegisteredContextConfig registered_scene_context;
     HeadlessMode mode = HeadlessMode::Remote;
@@ -253,6 +255,7 @@ struct HeadlessCliOptions {
 
 struct ExperimentSpec {
     orange::recording::RecordingMediaSelection media_products;
+    orange::recording::RecordingContextsConfig recording_contexts;
     orange::recording::MasterAcquisitionConfig master_frame_journal;
     orange::recording::RegisteredContextConfig registered_scene_context;
     std::string source_path;
@@ -4525,7 +4528,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     const orange::recording::MasterAcquisitionConfig& master_config = {},
     const orange::recording::RegisteredContextConfig& context_config = {},
     orange::recording::HeadlessRegisteredContext* registered_context = nullptr,
-    const orange::recording::RecordingMediaSelection& media_products = {})
+    const orange::recording::RecordingMediaSelection& media_products = {},
+    const orange::recording::RecordingContextsConfig& recording_contexts = {})
 {
     std::cout << "start camera sthread..." << std::endl;
     try {
@@ -5210,6 +5214,16 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                         {{"recording_media_plan", plan.ToJson()}}))
                     throw std::runtime_error("failed to persist headless recording media plan");
             }
+            if (recording_contexts.configured() && enable_recording) {
+                // Freeze the spec's parent recording context for the recording
+                // cameras into the start snapshot (sealed below, before acquisition).
+                std::vector<std::string> recording_serials;
+                for (int idx : selected_indices) recording_serials.push_back(cameras_params[idx].camera_serial);
+                const auto resolved = recording_contexts.Resolve(recording_serials);
+                if (!update_recording_snapshot_session_artifacts(record_folder,
+                        {{"recording_contexts", orange::recording::EmittedRecordingContextsJson(resolved)}}))
+                    throw std::runtime_error("failed to persist headless recording contexts");
+            }
             if (master_config.enabled) {
                 if (media_products.RequiresContext()) for (int idx : selected_indices) {
                     if (!yolo_workers[idx] || !yolo_workers[idx]->EventLogger() || !crop_producer_workers[idx] ||
@@ -5272,9 +5286,13 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
             orange::session::RecordingObservationBindingRequestMaterialization
                 observation_requests;
             std::string observation_binding_mode_error;
-            const std::string observation_binding_mode =
+            std::string observation_binding_mode =
                 orange::session::resolve_recording_observation_binding_mode(
                     &observation_binding_mode_error);
+            if (!observation_binding_mode.empty()) {
+                observation_binding_mode = orange::recording::ApplyRecordingIntentToBindingMode(
+                    record_folder, observation_binding_mode, &observation_binding_mode_error);
+            }
             orange::session::RecordingObservationPreArmResult observation_pre_arm;
             std::string observation_request_error;
             if (observation_binding_mode.empty() ||
@@ -8264,6 +8282,16 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             return false;
         }
     }
+    if (fixed.contains("recording_contexts")) {
+        try {
+            if (fixed.at("recording_contexts").is_null())
+                throw std::runtime_error("recording_contexts must be a versioned object, not null");
+            spec->recording_contexts = orange::recording::RecordingContextsConfig::Parse(fixed.at("recording_contexts"));
+        } catch (const std::exception& ex) {
+            if (error_out) *error_out = std::string("recording_contexts: ") + ex.what();
+            return false;
+        }
+    }
     if (fixed.contains("master_frame_journal")) {
         try {
             spec->master_frame_journal = orange::recording::MasterAcquisitionConfig::Parse(
@@ -9004,6 +9032,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             run.options.pose_worker = spec.pose_worker;
                                                             run.options.crop_recording = spec.crop_recording;
                                                             run.options.media_products = spec.media_products;
+                                                            run.options.recording_contexts = spec.recording_contexts;
                                                             run.options.master_frame_journal = spec.master_frame_journal;
                                                             run.options.registered_scene_context = spec.registered_scene_context;
                                                             run.options.recording_control =
@@ -9927,7 +9956,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         options.pose_worker,
         &options.external_recorder_contract,
         options.crop_recording,
-        options.master_frame_journal, options.registered_scene_context, &registered_context, options.media_products);
+        options.master_frame_journal, options.registered_scene_context, &registered_context, options.media_products,
+        options.recording_contexts);
 
     if (!started) {
         stop_supervised_external_recorder();

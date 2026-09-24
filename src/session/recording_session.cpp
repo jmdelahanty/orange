@@ -1,4 +1,5 @@
 #include "session/recording_session.h"
+#include "recording_context.h"
 #include "recording_startup_audit.h"
 #include "recording_master_crop_coverage.h"
 #include "recording_crop_only_manifest.h"
@@ -2766,6 +2767,15 @@ bool write_recording_session_manifest(const std::string& path,
         if (error_out) *error_out = std::string("required master journal gate: ") + ex.what();
         return false;
     }
+    try {
+        // Parent recording context frozen at record start (Citrus transfer-v2):
+        // copied verbatim from the sealed start snapshot on every write, so
+        // rollover, external-recorder rebuilds and post-hoc refreshes keep it.
+        orange::recording::ApplyRecordingContextsGate(manifest_path.parent_path().string(), &finalized_manifest);
+    } catch (const std::exception& ex) {
+        if (error_out) *error_out = std::string("recording contexts gate: ") + ex.what();
+        return false;
+    }
     if (!add_shaman_v2_recording_identity_contract(
             &finalized_manifest, error_out)) {
         return false;
@@ -3316,6 +3326,26 @@ PreparedRecordingRunStart prepare_recording_run(
         cleanup_failed_recording_run_start(state, camera_control, recording_folder);
         return prepared;
     }
+    if (state && state->recording_contexts.configured()) {
+        // Freeze the operator's parent recording context for exactly the
+        // recording cameras into the start snapshot (sealed below, before
+        // acquisition); the manifest gate copies it from there on every write.
+        try {
+            std::vector<std::string> recording_serials;
+            for (int i = 0; i < num_cameras; ++i) {
+                if (!cameras_select || cameras_select[i].record) recording_serials.push_back(cameras_params[i].camera_serial);
+            }
+            const auto resolved = state->recording_contexts.Resolve(recording_serials);
+            if (!update_recording_snapshot_session_artifacts(recording_folder,
+                    {{"recording_contexts", orange::recording::EmittedRecordingContextsJson(resolved)}})) {
+                throw std::runtime_error("failed to persist recording contexts");
+            }
+        } catch (const std::exception& ex) {
+            prepared.error_message = std::string("recording contexts: ") + ex.what();
+            cleanup_failed_recording_run_start(state, camera_control, recording_folder);
+            return prepared;
+        }
+    }
 
     if (external_recorder_requested) {
         if (!state) {
@@ -3679,9 +3709,13 @@ RecordingRunStartResult complete_recording_run(
     RecordingObservationBindingRequestMaterialization observation_requests;
     RecordingObservationPreArmResult observation_pre_arm;
     std::string observation_binding_mode_error;
-    const std::string observation_binding_mode =
+    std::string observation_binding_mode =
         resolve_recording_observation_binding_mode(
             &observation_binding_mode_error);
+    if (!observation_binding_mode.empty()) {
+        observation_binding_mode = orange::recording::ApplyRecordingIntentToBindingMode(
+            prepared.recording_folder, observation_binding_mode, &observation_binding_mode_error);
+    }
     std::string observation_request_error;
     if (observation_binding_mode.empty() ||
         !prepare_recording_observation_pre_arm(

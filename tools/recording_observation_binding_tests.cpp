@@ -688,6 +688,11 @@ void test_prearm_not_applicable_never_contacts_citrus()
         root / result.decision_relative_path));
     require(decision.at("recording_id") == "2026_08_13_12_00_00",
             "not-applicable evidence must retain the recording identity");
+    // Citrus transfer-v2: a recording without a bindings projection must have
+    // no files under recording_observation_bindings/ at all.
+    require(result.decision_relative_path == "recording_observation_pre_arm_decision.json" &&
+                !std::filesystem::exists(root / "recording_observation_bindings"),
+            "not-applicable decision must not create recording_observation_bindings/");
     std::filesystem::remove_all(root);
 }
 

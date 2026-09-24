@@ -90,6 +90,16 @@ RecordingMediaSelection ReadGuiRecordingMediaSelection(const std::filesystem::pa
     }
     return {};
 }
+RecordingContextsConfig ReadGuiRecordingContexts(const std::filesystem::path& path) {
+    ScopedFsuid filesystem_identity;
+    const auto root = read_app_config(path);
+    if (root.contains("recording") && root.at("recording").contains("contexts")) {
+        if (root.at("recording").at("contexts").is_null())
+            throw std::runtime_error("recording.contexts must be a versioned object, not null");
+        return RecordingContextsConfig::Parse(root.at("recording").at("contexts"));
+    }
+    return {};
+}
 void SaveGuiRecordingMediaSelection(const std::filesystem::path& path, const RecordingMediaSelection& selection) {
     save_recording_field(path, "media_products", RecordingMediaSelection::Parse(selection.ToJson()).ToJson());
 }

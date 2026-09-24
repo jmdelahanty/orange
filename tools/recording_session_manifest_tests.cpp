@@ -1442,6 +1442,85 @@ void test_required_registered_context_prevents_parent_completion()
             "required context failure did not propagate through common parent writer");
 }
 
+void test_recording_contexts_flow_through_parent_writers_and_refresh()
+{
+    // Parent recording context (Citrus transfer-v2): frozen in the sealed start
+    // snapshot, copied by the common writer into single-clip and rolling
+    // manifests, identical across a mutable refresh, refused when a refresh
+    // carries a differing block or the camera membership differs.
+    std::string temp = (std::filesystem::temp_directory_path() / "orange_recording_contexts_XXXXXX").string();
+    require(mkdtemp(temp.data()) != nullptr, "recording contexts fixture failed");
+    const std::filesystem::path folder(temp);
+    struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ec; std::filesystem::remove_all(path, ec); } } cleanup{folder};
+    const nlohmann::json context = {
+        {"schema_id", "citrus.parent_recording_context"}, {"schema_version", 1},
+        {"recording_type", "behavior"}, {"recording_subtype", "dish_freeswim"},
+        {"behavior_mode", "free"}, {"recording_intent", "recording_only"}, {"data_origin", "acquired"}};
+    const nlohmann::json frozen = {{"2010095", context}, {"2010096", context}};
+    // The common writer also requires the sealed Shaman-v2 camera identity.
+    const nlohmann::json camera_identity = {
+        {"schema_id", "orange.shaman_v2.camera_identity"}, {"schema_version", 1},
+        {"recording_id", folder.filename().string()},
+        {"canonicalization", "canonical_json_utf8_sort_keys_compact_v1"},
+        {"camera_bindings", nlohmann::json::array({
+            {{"acquisition_camera_id", "2010095"}, {"camera_serial", "2010095"}, {"shaman_numeric_camera_id", 0}},
+            {{"acquisition_camera_id", "2010096"}, {"camera_serial", "2010096"}, {"shaman_numeric_camera_id", 1}}})}};
+    { std::ofstream out(folder / "recording_snapshot_start.json");
+      out << nlohmann::json{{"shaman_v2_camera_identity", camera_identity},
+          {"shaman_v2_camera_identity_sha256", canonical_semantic_sha256(camera_identity)},
+          {"session", {{"recording_contexts", frozen}}}}.dump(); }
+    { std::ofstream out(folder / "recording_snapshot.json"); out << "{}"; }
+
+    orange::session::SingleClipRecordingSessionManifestOptions options;
+    options.producer = "test"; options.session_id = folder.filename().string();
+    options.recording_folder = folder.string(); options.status = "completed";
+    options.cameras.push_back(make_camera_artifact("2010095", 1));
+    options.cameras.push_back(make_camera_artifact("2010096", 1));
+    const auto manifest = orange::session::build_single_clip_recording_session_manifest(options);
+    std::string error;
+    const auto path = folder / "recording_session.json";
+    require(orange::session::write_recording_session_manifest(path.string(), manifest, &error), error);
+    auto written = read_json(path);
+    require(written.at("recording_contexts") == frozen, "single-clip manifest must carry the frozen recording_contexts");
+
+    // Post-hoc refresh: re-writing the read-back manifest keeps the block identical.
+    require(orange::session::write_recording_session_manifest(path.string(), written, &error), error);
+    require(read_json(path).at("recording_contexts") == frozen, "refresh changed recording_contexts");
+
+    // A refresh that carries a differing block is refused by the common writer.
+    nlohmann::json tampered = written;
+    tampered["recording_contexts"]["2010095"]["recording_intent"] = "stimulus_experiment";
+    require(!orange::session::write_recording_session_manifest(path.string(), tampered, &error),
+            "differing recording_contexts must be refused by the common writer");
+    require(error.find("recording contexts gate") != std::string::npos, "refusal must name the gate: " + error);
+
+    // Rolling parent through the same funnel.
+    orange::session::RollingRecordingSessionManifestOptions rolling;
+    rolling.producer = "test"; rolling.session_id = folder.filename().string();
+    rolling.recording_folder = folder.string(); rolling.status = "completed";
+    rolling.camera_serials.push_back("2010095");
+    rolling.camera_serials.push_back("2010096");
+    orange::session::RollingClipManifestOptions clip;
+    clip.producer = "test"; clip.session_id = rolling.session_id; clip.clip_index = 0; clip.clip_id = "clip_000000";
+    clip.recording_folder = folder.string(); clip.directory = "clips/clip_000000"; clip.status = "completed";
+    clip.first_recording_frame_id = 1; clip.last_recording_frame_id = 1;
+    clip.cameras.push_back(make_camera_artifact("2010095", 1));
+    clip.cameras.push_back(make_camera_artifact("2010096", 1));
+    rolling.clips.push_back(clip);
+    const auto rolling_manifest = orange::session::build_rolling_clip_recording_session_manifest(rolling);
+    const auto rolling_path = folder / "rolling_recording_session.json";
+    require(orange::session::write_recording_session_manifest(rolling_path.string(), rolling_manifest, &error), error);
+    require(read_json(rolling_path).at("recording_contexts") == frozen, "rolling manifest must carry the frozen recording_contexts");
+
+    // Camera membership must equal the frozen set.
+    orange::session::SingleClipRecordingSessionManifestOptions fewer = options;
+    fewer.cameras.clear(); fewer.cameras.push_back(make_camera_artifact("2010095", 1));
+    require(!orange::session::write_recording_session_manifest((folder / "fewer.json").string(),
+            orange::session::build_single_clip_recording_session_manifest(fewer), &error),
+            "camera membership mismatch must be refused");
+    require(error.find("membership") != std::string::npos, "membership refusal reason missing: " + error);
+}
+
 }  // namespace
 
 int main()
@@ -1453,6 +1532,7 @@ int main()
 
     const TestCase tests[] = {
         {"required_registered_context_prevents_parent_completion", test_required_registered_context_prevents_parent_completion},
+        {"recording_contexts_flow_through_parent_writers_and_refresh", test_recording_contexts_flow_through_parent_writers_and_refresh},
         {"native_rolling_projection_opt_in_seals_existing_v1_authority", test_native_rolling_projection_opt_in_seals_existing_v1_authority},
         {"native_metadata_seals_without_changing_v1_contract", test_native_metadata_seals_without_changing_v1_contract},
         {"clock_classification_requires_closed_successful_readbacks", test_clock_classification_requires_closed_successful_readbacks},

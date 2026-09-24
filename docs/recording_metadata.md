@@ -553,7 +553,7 @@ normal Citrus local-control socket and can be overridden with
 
 Exact acceptance/rejection envelopes are stored read-only under
 `recording_observation_bindings/acceptances/`. The create-once
-`recording_observation_bindings/pre_arm_decision.json` records the binding
+`recording_observation_bindings/pre_arm_decision.json` (bound modes) or `recording_observation_pre_arm_decision.json` at the recording root (binding mode `not_applicable`, which `recording_intent = recording_only` forces; keeps `recording_observation_bindings/` absent for Citrus transfer-v2) records the binding
 mode, lifecycle (`accepted_pending_finalization`, `unbound`, or
 `not_applicable`), arm decision, request collection, and acceptance references.
 The mutable recording snapshot contains only digest-bound references to these

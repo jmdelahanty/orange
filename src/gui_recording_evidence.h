@@ -2,6 +2,7 @@
 #include "recording_master_acquisition.h"
 #include "recording_registered_context.h"
 #include "recording_media_plan.h"
+#include "recording_context.h"
 
 namespace orange::recording {
 // GUI v1 binds a saved Daily Registration context. Fresh native capture remains
@@ -17,6 +18,9 @@ GuiRecordingEvidenceConfig ReadGuiRecordingEvidenceConfig(const std::filesystem:
 void SaveGuiRecordingEvidenceConfig(const std::filesystem::path& app_config,
                                     const GuiRecordingEvidenceConfig&);
 RecordingMediaSelection ReadGuiRecordingMediaSelection(const std::filesystem::path& app_config);
+// recording.contexts: parent recording contexts (Citrus transfer-v2); absent ->
+// unconfigured (no block emitted; validators report it).
+RecordingContextsConfig ReadGuiRecordingContexts(const std::filesystem::path& app_config);
 void SaveGuiRecordingMediaSelection(const std::filesystem::path& app_config,
                                    const RecordingMediaSelection&);
 

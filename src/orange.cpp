@@ -9,6 +9,7 @@
 #include <deque>
 #include "gui/pose_overlay_draw.h"
 #include "gui/pose_overlay.h"
+#include "recording_context.h"
 #include <ImGuiFileDialog.h>
 #include "project.h"
 #include "gui.h"
@@ -4187,9 +4188,13 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
             return GuiRecordingStartDispatch::kFailed;
         }
         std::string observation_binding_mode_error;
-        const std::string observation_binding_mode =
+        std::string observation_binding_mode =
             orange::session::resolve_recording_observation_binding_mode(
                 &observation_binding_mode_error);
+        if (!observation_binding_mode.empty()) {
+            observation_binding_mode = orange::recording::ApplyRecordingIntentToBindingMode(
+                prepared.recording_folder, observation_binding_mode, &observation_binding_mode_error);
+        }
         orange::session::RecordingObservationBindingRequestMaterialization
             observation_requests;
         orange::session::RecordingObservationPreArmResult observation_pre_arm;
@@ -7689,6 +7694,7 @@ int main(int /*argc*/, char ** /*args*/) {
                         try {
                             const auto selection = orange::gui::RecordingMediaSelectionForStream();
                             recording_session.media_selection = selection;
+                            recording_session.recording_contexts = orange::gui::RecordingContextsForStream();
                             // This is materialization of an explicit operator product
                             // choice, before any crop/full-frame worker is constructed.
                             if (selection.mode) {

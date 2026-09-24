@@ -8,6 +8,8 @@ json options = {{"schema_version", 1}, {"enabled", false}};
 std::string config_path, error, status;
 recording::RecordingMediaSelection media_selection;
 std::string media_error, media_status;
+recording::RecordingContextsConfig recording_contexts;
+std::string contexts_error;
 bool confirmed = false;
 void save() {
     recording::SaveGuiRecordingEvidenceConfig(config_path,
@@ -25,11 +27,18 @@ void LoadRegisteredContextRecordingSettings(const std::string& path, bool load_m
         media_selection = {}; media_error.clear();
         try { media_selection = recording::ReadGuiRecordingMediaSelection(path); }
         catch (const std::exception& ex) { media_error = ex.what(); }
+        recording_contexts = {}; contexts_error.clear();
+        try { recording_contexts = recording::ReadGuiRecordingContexts(path); }
+        catch (const std::exception& ex) { contexts_error = ex.what(); }
     }
 }
 recording::RecordingMediaSelection RecordingMediaSelectionForStream() {
     if (!media_error.empty()) throw std::runtime_error("GUI media selection: " + media_error);
     return media_selection;
+}
+recording::RecordingContextsConfig RecordingContextsForStream() {
+    if (!contexts_error.empty()) throw std::runtime_error("GUI recording contexts: " + contexts_error);
+    return recording_contexts;
 }
 void RenderRecordingMediaSelection(bool stream_locked) {
     if (!ImGui::CollapsingHeader("Recording media products")) return;

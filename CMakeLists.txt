@@ -384,6 +384,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/session/recording_observation_prearm.cpp"
     "${SRC_DIR}/session/recording_observation_request_artifacts.cpp"
     "${SRC_DIR}/session/recording_session.cpp"
+    "${SRC_DIR}/recording_context.cpp"
     "${SRC_DIR}/shared_recording_output.cpp"
     "${SRC_DIR}/encoder_preprocess_worker.cpp"
     "${SRC_DIR}/encoder_hw_worker.cpp"
@@ -423,6 +424,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/session/recording_observation_prearm.cpp"
     "${SRC_DIR}/session/recording_observation_request_artifacts.cpp"
     "${SRC_DIR}/session/recording_session.cpp"
+    "${SRC_DIR}/recording_context.cpp"
     "${SRC_DIR}/recording_encoding_budget.cpp"
     "${SRC_DIR}/recording_output_descriptor.cpp"
     "${SRC_DIR}/video_encode_profile.cpp"
@@ -545,6 +547,7 @@ link_libraries(orange_project_warnings)
 
 add_library(orange_recording_master_journal STATIC
     "${SRC_DIR}/recording_media_plan.cpp"
+    "${SRC_DIR}/recording_context.cpp"
     "${SRC_DIR}/recording_media_decode.cpp"
     "${SRC_DIR}/recording_master_journal.cpp"
     "${SRC_DIR}/recording_master_acquisition.cpp"
@@ -922,6 +925,14 @@ if(BUILD_TESTING)
     target_include_directories(intensity_histogram_stats_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(intensity_histogram_stats_tests PRIVATE cxx_std_17)
     add_test(NAME intensity_histogram_stats_tests COMMAND intensity_histogram_stats_tests)
+
+    add_executable(recording_context_tests
+        "tools/recording_context_tests.cpp"
+        "${SRC_DIR}/recording_context.cpp"
+    )
+    target_include_directories(recording_context_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(recording_context_tests PRIVATE cxx_std_17)
+    add_test(NAME recording_context_tests COMMAND recording_context_tests)
 
     add_executable(lens_write_verify_tests
         "tools/lens_write_verify_tests.cpp"

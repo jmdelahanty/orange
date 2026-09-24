@@ -32,6 +32,17 @@ constexpr const char* kAcceptanceDirectory =
     "recording_observation_bindings/acceptances";
 constexpr const char* kDecisionRelativePath =
     "recording_observation_bindings/pre_arm_decision.json";
+// An Orange-only (not_applicable) decision must not live under
+// recording_observation_bindings/: Citrus transfer-v2 refuses any file there
+// when the manifest carries no bindings projection, and a recording-only
+// session emits none by design (2026-09-24).
+constexpr const char* kOrangeOnlyDecisionRelativePath =
+    "recording_observation_pre_arm_decision.json";
+
+const char* decision_relative_path_for(const std::string& binding_mode)
+{
+    return binding_mode == "not_applicable" ? kOrangeOnlyDecisionRelativePath : kDecisionRelativePath;
+}
 constexpr const char* kBatchResultSchemaId =
     "citrus.recording_observation_binding_batch_result";
 constexpr std::size_t kMaximumPayloadBytes = 4u * 1024u * 1024u;
@@ -315,7 +326,7 @@ bool parse_existing_decision(
     RecordingObservationPreArmResult* result_out,
     std::string* error_out)
 {
-    const std::filesystem::path path = folder / kDecisionRelativePath;
+    const std::filesystem::path path = folder / decision_relative_path_for(expected_binding_mode);
     if (!std::filesystem::exists(path)) {
         return false;
     }
@@ -351,7 +362,7 @@ bool parse_existing_decision(
     result_out->reason = decision.value("reason", "");
     result_out->arm_allowed = decision.value("arm_allowed", false);
     result_out->transport_attempted = decision.value("transport_attempted", false);
-    result_out->decision_relative_path = kDecisionRelativePath;
+    result_out->decision_relative_path = decision_relative_path_for(expected_binding_mode);
     result_out->decision_sha256 = sha256_bytes(bytes);
     result_out->decision_byte_size = bytes.size();
     std::map<std::string,
@@ -692,19 +703,20 @@ bool execute_recording_observation_pre_arm(
         {"acceptances", std::move(acceptance_references)},
     };
     const std::string decision_bytes = decision.dump(2) + "\n";
+    const char* decision_relative_path = decision_relative_path_for(binding_mode);
     orange::ScopedFsuid fsuid_guard;
     (void)fsuid_guard;
     std::error_code create_error;
     std::filesystem::create_directories(
-        (folder / kDecisionRelativePath).parent_path(), create_error);
+        (folder / decision_relative_path).parent_path(), create_error);
     if (create_error || !create_read_only_file_once(
-            folder / kDecisionRelativePath, decision_bytes, error_out)) {
+            folder / decision_relative_path, decision_bytes, error_out)) {
         return create_error
             ? fail(error_out, "failed to create pre-arm decision directory: " +
                                   create_error.message())
             : false;
     }
-    result_out->decision_relative_path = kDecisionRelativePath;
+    result_out->decision_relative_path = decision_relative_path;
     result_out->decision_sha256 = sha256_bytes(decision_bytes);
     result_out->decision_byte_size = decision_bytes.size();
     return true;

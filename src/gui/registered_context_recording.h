@@ -11,4 +11,6 @@ recording::GuiRecordingEvidenceConfig RegisteredContextRecordingConfigForArm();
 void ConsumeRegisteredContextRecordingConfirmation();
 void RenderRecordingMediaSelection(bool stream_locked);
 recording::RecordingMediaSelection RecordingMediaSelectionForStream();
+// Parent recording contexts from app config recording.contexts (throws on a parse error).
+recording::RecordingContextsConfig RecordingContextsForStream();
 } // namespace orange::gui

@@ -584,6 +584,24 @@ def verify_common_manifest(
     require(bool(recording.get("stop_requested")), "recording.stop_requested is false")
     require(recording.get("stop_reason") == "record_for_seconds_elapsed", f"unexpected stop_reason: {recording.get('stop_reason')!r}")
     require(bool(recording.get("drain_completed")), "recording.drain_completed is false")
+    contexts = manifest.get("recording_contexts")
+    if contexts is not None:
+        cameras = manifest_camera_serials(manifest)
+        require(isinstance(contexts, dict) and sorted(contexts.keys()) == sorted(cameras),
+                f"recording_contexts keys must equal cameras {cameras}")
+        for serial, entry in contexts.items():
+            require(isinstance(entry, dict) and set(entry.keys()) == {
+                "schema_id", "schema_version", "recording_type", "recording_subtype",
+                "behavior_mode", "recording_intent", "data_origin"},
+                f"recording_contexts[{serial}] must be a closed seven-field citrus.parent_recording_context")
+            require(entry.get("schema_id") == "citrus.parent_recording_context" and entry.get("schema_version") == 1,
+                    f"recording_contexts[{serial}] schema mismatch")
+            require(entry.get("behavior_mode") in {"free", "embedded", "none"}
+                    and entry.get("recording_intent") in {"stimulus_experiment", "recording_only"}
+                    and entry.get("data_origin") in {"acquired", "synthetic"},
+                    f"recording_contexts[{serial}] enum value out of range")
+    else:
+        print("[WARN] recording_session.json has no recording_contexts; Citrus transfer-v2 will refuse this recording")
     actual_recording_duration = as_float(
         recording.get("actual_recording_duration_s"),
         "recording.actual_recording_duration_s",
