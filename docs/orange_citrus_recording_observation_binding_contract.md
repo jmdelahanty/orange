@@ -518,3 +518,31 @@ ORANGE_CITRUS_OBSERVATION_BINDING_TIMEOUT_MS=1500
 `optional` persists a controlled unbound reason and permits Orange recording.
 `not_applicable` does not contact Citrus and is reserved for intentionally
 Orange-only recordings.
+
+## Request v2 and acceptance v2: parent recording context (proposed, opt-in)
+
+Agreed with Citrus on 2026-09-24; Orange's side is implemented behind
+`ORANGE_CITRUS_BINDING_REQUEST_VERSION=2` (default `1`, unchanged wire
+behaviour) until Citrus accepts v2.
+
+- Request contract `schema_version = 2` adds exactly one field,
+  `recording_context`: the frozen `citrus.parent_recording_context` v1 for
+  `target.camera_id`, copied from the sealed start snapshot
+  `session.recording_contexts` and covered by `contract_sha256`
+  (`docs/schemas/orange_citrus_recording_observation_binding_request_v2.schema.json`).
+  Materialization refuses v2 when the recording froze no context for that
+  camera (`recording.contexts` not configured).
+- Citrus validates the context before acceptance, retains it, and builds the
+  H5 session metadata from the same values; a change between acceptance and
+  start rejects or requires a new handshake.
+- Acceptance v2 (`schema_version = 2`) keeps the v1 shape; the rejection
+  `reason` enum gains `recording_context_missing`, `recording_context_invalid`,
+  `recording_context_mismatch`, `recording_context_unavailable`. Orange accepts
+  batch and acceptance versions 1 and 2, records every rejected context as
+  `context_rejections[] {observation_context_id, reason}` in
+  `pre_arm_decision.json` (absent when nothing was rejected, so v1 decisions
+  are byte-identical), and the GUI start refusal names each rejected context
+  and reason instead of only `handshake_rejected`.
+- Intent coupling (independent of v2): `recording_intent = recording_only`
+  forces binding mode `not_applicable`; such a session never materializes
+  requests and keeps `recording_observation_bindings/` absent.

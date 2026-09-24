@@ -13,6 +13,19 @@ inline constexpr const char* kObservationBindingAcceptanceSchemaId =
 inline constexpr const char* kObservationBindingFinalizedReceiptSchemaId =
     "citrus.recording_observation_finalized_receipt";
 inline constexpr int kObservationBindingSchemaVersion = 1;
+// Binding request v2 (2026-09-24, joint with Citrus): the request contract
+// carries the frozen parent recording context (contract.recording_context,
+// seven fields, inside the request digest) and Citrus answers with acceptance
+// v2 whose rejection reasons include recording_context_{missing,invalid,
+// mismatch,unavailable}. Opt-in until Citrus lands its side:
+// ORANGE_CITRUS_BINDING_REQUEST_VERSION=2 (default 1).
+inline constexpr int kObservationBindingRequestSchemaVersionV2 = 2;
+int resolve_recording_observation_binding_request_version(std::string* error_out = nullptr);
+inline bool accepted_observation_binding_schema_version(int version)
+{
+    return version == kObservationBindingSchemaVersion ||
+           version == kObservationBindingRequestSchemaVersionV2;
+}
 
 // Normalized lifecycle vocabulary for the future recording-context writer.
 // A binding becomes authoritative only at `bound`; an acceptance alone is

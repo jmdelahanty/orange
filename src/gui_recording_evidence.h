@@ -21,6 +21,7 @@ RecordingMediaSelection ReadGuiRecordingMediaSelection(const std::filesystem::pa
 // recording.contexts: parent recording contexts (Citrus transfer-v2); absent ->
 // unconfigured (no block emitted; validators report it).
 RecordingContextsConfig ReadGuiRecordingContexts(const std::filesystem::path& app_config);
+void SaveGuiRecordingContexts(const std::filesystem::path& app_config, const RecordingContextsConfig&);
 void SaveGuiRecordingMediaSelection(const std::filesystem::path& app_config,
                                    const RecordingMediaSelection&);
 

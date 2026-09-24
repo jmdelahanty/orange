@@ -100,6 +100,9 @@ RecordingContextsConfig ReadGuiRecordingContexts(const std::filesystem::path& pa
     }
     return {};
 }
+void SaveGuiRecordingContexts(const std::filesystem::path& path, const RecordingContextsConfig& config) {
+    save_recording_field(path, "contexts", RecordingContextsConfig::Parse(config.ToJson()).ToJson());
+}
 void SaveGuiRecordingMediaSelection(const std::filesystem::path& path, const RecordingMediaSelection& selection) {
     save_recording_field(path, "media_products", RecordingMediaSelection::Parse(selection.ToJson()).ToJson());
 }

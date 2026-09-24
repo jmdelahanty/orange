@@ -1,4 +1,5 @@
 #include "session/recording_observation_prearm.h"
+#include <iostream>
 
 #include "fsuid_guard.h"
 #include "gui/spatial_layout/sha256.h"
@@ -565,7 +566,7 @@ bool execute_recording_observation_pre_arm(
             }
             const json acceptances = batch.value("acceptances", json::array());
             if (batch.value("schema_id", "") != kBatchResultSchemaId ||
-                batch.value("schema_version", 0) != 1 ||
+                !accepted_observation_binding_schema_version(batch.value("schema_version", 0)) ||
                 !acceptances.is_array() ||
                 acceptances.size() != requests.artifacts.size() ||
                 !batch.contains("acceptance_count") ||
@@ -610,6 +611,13 @@ bool execute_recording_observation_pre_arm(
                 const bool row_accepted =
                     contract.value("status", "") == "accepted";
                 all_accepted = all_accepted && row_accepted;
+                if (!row_accepted) {
+                    result_out->context_rejections.push_back(
+                        {context_id, contract.value("reason", "")});
+                    std::cerr << "[recording][citrus] binding rejected for "
+                              << context_id << ": " << contract.value("reason", "")
+                              << std::endl;
+                }
                 if (!acceptance_ids.insert(
                         acceptance.value("acceptance_id", "")).second) {
                     return fail(error_out,
@@ -688,7 +696,7 @@ bool execute_recording_observation_pre_arm(
         }
     }
 
-    const json decision = {
+    json decision = {
         {"schema_id", kRecordingObservationPreArmDecisionSchemaId},
         {"schema_version", kRecordingObservationPreArmDecisionSchemaVersion},
         {"recording_id", recording_id},
@@ -702,6 +710,14 @@ bool execute_recording_observation_pre_arm(
         {"acceptance_count", acceptance_references.size()},
         {"acceptances", std::move(acceptance_references)},
     };
+    if (!result_out->context_rejections.empty()) {
+        json rejections = json::array();
+        for (const auto& rejection : result_out->context_rejections) {
+            rejections.push_back({{"observation_context_id", rejection.observation_context_id},
+                                  {"reason", rejection.reason}});
+        }
+        decision["context_rejections"] = std::move(rejections);
+    }
     const std::string decision_bytes = decision.dump(2) + "\n";
     const char* decision_relative_path = decision_relative_path_for(binding_mode);
     orange::ScopedFsuid fsuid_guard;

@@ -3,6 +3,7 @@
 #include "fsuid_guard.h"
 #include "gui/spatial_layout/sha256.h"
 #include "session/recording_observation_binding.h"
+#include "recording_context.h"
 #include "session/recording_observation_identity.h"
 
 #include <algorithm>
@@ -537,9 +538,15 @@ bool materialize_recording_observation_binding_requests(
                     "existing observation binding request is not canonical JSON");
             }
         } else {
-            const json contract = {
+            std::string version_error;
+            const int request_version =
+                resolve_recording_observation_binding_request_version(&version_error);
+            if (request_version == 0) {
+                return fail(error_out, version_error);
+            }
+            json contract = {
                 {"schema_id", kObservationBindingRequestSchemaId},
-                {"schema_version", kObservationBindingSchemaVersion},
+                {"schema_version", request_version},
                 {"observation_context_id", context_id},
                 {"observation_identity_sha256",
                  edge.identity.at("identity_sha256")},
@@ -562,6 +569,25 @@ bool materialize_recording_observation_binding_requests(
                     {"sha256", geometry_sha256},
                 }},
             };
+            if (request_version == kObservationBindingRequestSchemaVersionV2) {
+                // The frozen parent recording context for this camera, taken
+                // from the sealed start snapshot and covered by the request
+                // digest; Citrus reconciles it with its H5 session metadata.
+                const std::string camera_id = edge.target.value("camera_id", "");
+                const json contexts = start_snapshot.value("session", json::object())
+                    .value("recording_contexts", json::object());
+                if (!contexts.is_object() || !contexts.contains(camera_id)) {
+                    return fail(error_out,
+                                "binding request v2 requires a frozen recording context for camera " +
+                                    camera_id + " (recording.contexts not configured)");
+                }
+                try {
+                    contract["recording_context"] =
+                        orange::recording::RecordingContext::ParseEmitted(contexts.at(camera_id)).ToEmittedJson();
+                } catch (const std::exception& ex) {
+                    return fail(error_out, std::string("frozen recording context is invalid: ") + ex.what());
+                }
+            }
             if (!seal_recording_observation_binding_request(
                     contract, &request, error_out)) {
                 return false;

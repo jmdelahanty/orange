@@ -1,4 +1,5 @@
 #include "gui/registered_context_recording.h"
+#include <cstdio>
 #include "imgui.h"
 
 namespace orange::gui {
@@ -39,6 +40,103 @@ recording::RecordingMediaSelection RecordingMediaSelectionForStream() {
 recording::RecordingContextsConfig RecordingContextsForStream() {
     if (!contexts_error.empty()) throw std::runtime_error("GUI recording contexts: " + contexts_error);
     return recording_contexts;
+}
+namespace {
+std::string contexts_status;
+bool contexts_dirty = false;
+// Editable copy of the default entry; per-camera overrides are shown, not edited here.
+char ctx_type[256] = "";
+char ctx_subtype[256] = "";
+int ctx_mode = 0;    // free | embedded | none
+int ctx_intent = 1;  // stimulus_experiment | recording_only
+int ctx_origin = 0;  // acquired | synthetic
+bool ctx_fields_loaded = false;
+const char* kModes[] = {"free", "embedded", "none"};
+const char* kIntents[] = {"stimulus_experiment", "recording_only"};
+const char* kOrigins[] = {"acquired", "synthetic"};
+int index_of(const char* const* options, int count, const std::string& value, int fallback) {
+    for (int i = 0; i < count; ++i) if (value == options[i]) return i;
+    return fallback;
+}
+void load_fields_from_config() {
+    ctx_type[0] = ctx_subtype[0] = '\0';
+    if (recording_contexts.default_context) {
+        const auto& d = *recording_contexts.default_context;
+        std::snprintf(ctx_type, sizeof ctx_type, "%s", d.recording_type.c_str());
+        std::snprintf(ctx_subtype, sizeof ctx_subtype, "%s", d.recording_subtype.c_str());
+        ctx_mode = index_of(kModes, 3, d.behavior_mode, 0);
+        ctx_intent = index_of(kIntents, 2, d.recording_intent, 1);
+        ctx_origin = index_of(kOrigins, 2, d.data_origin, 0);
+    }
+    ctx_fields_loaded = true;
+    contexts_dirty = false;
+}
+bool apply_fields_to_config(std::string* error) {
+    try {
+        recording::RecordingContext d;
+        d.recording_type = ctx_type; d.recording_subtype = ctx_subtype;
+        d.behavior_mode = kModes[ctx_mode]; d.recording_intent = kIntents[ctx_intent]; d.data_origin = kOrigins[ctx_origin];
+        recording::RecordingContext::Parse(d.ToJson());  // same rules as the config parser
+        recording_contexts.default_context = d;
+        contexts_error.clear();
+        return true;
+    } catch (const std::exception& ex) { if (error) *error = ex.what(); return false; }
+}
+}  // namespace
+void RenderRecordingContextSelection(bool locked) {
+    if (!ImGui::CollapsingHeader("Recording context (what this recording is)")) return;
+    if (!ctx_fields_loaded) load_fields_from_config();
+    ImGui::BeginDisabled(locked);
+    bool changed = false;
+    changed |= ImGui::InputText("Recording type", ctx_type, sizeof ctx_type);
+    changed |= ImGui::InputText("Recording subtype", ctx_subtype, sizeof ctx_subtype);
+    changed |= ImGui::Combo("Behavior mode", &ctx_mode, kModes, 3);
+    changed |= ImGui::Combo("Recording intent", &ctx_intent, kIntents, 2);
+    changed |= ImGui::Combo("Data origin", &ctx_origin, kOrigins, 2);
+    if (changed) {
+        std::string err;
+        if (apply_fields_to_config(&err)) {
+            contexts_dirty = true;
+            contexts_status = "Applies at the next record start; not saved yet.";
+        } else {
+            contexts_status = "Not applied: " + err;
+        }
+    }
+    if (ImGui::Button("Save recording context")) {
+        std::string err;
+        if (apply_fields_to_config(&err)) {
+            try {
+                recording::SaveGuiRecordingContexts(config_path, recording_contexts);
+                contexts_dirty = false;
+                contexts_status = "Saved recording.contexts in the app config.";
+            } catch (const std::exception& ex) { contexts_status = std::string("Save failed: ") + ex.what(); }
+        } else contexts_status = "Not saved: " + err;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reload from app config")) {
+        recording_contexts = {}; contexts_error.clear();
+        try { recording_contexts = recording::ReadGuiRecordingContexts(config_path); }
+        catch (const std::exception& ex) { contexts_error = ex.what(); }
+        load_fields_from_config();
+        contexts_status = contexts_error.empty() ? "Reloaded recording.contexts." : "Reload failed: " + contexts_error;
+    }
+    ImGui::EndDisabled();
+    if (!recording_contexts.cameras.empty()) {
+        ImGui::TextWrapped("Per-camera overrides in the app config (edit the file to change):");
+        for (const auto& [serial, ctx] : recording_contexts.cameras)
+            ImGui::BulletText("%s: %s / %s, %s, %s, %s", serial.c_str(), ctx.recording_type.c_str(), ctx.recording_subtype.c_str(),
+                              ctx.behavior_mode.c_str(), ctx.recording_intent.c_str(), ctx.data_origin.c_str());
+    }
+    if (!recording_contexts.configured())
+        ImGui::TextWrapped("No recording context configured: recording_session.json will carry none and Citrus transfer-v2 will refuse the recording.");
+    else if (ctx_intent == 1)
+        ImGui::TextWrapped("recording_only: no Citrus observation binding for this recording (binding mode not_applicable).");
+    else
+        ImGui::TextWrapped("stimulus_experiment: Citrus binding mode follows ORANGE_CITRUS_OBSERVATION_BINDING_MODE; the context is frozen in the start snapshot and, once the v2 handshake lands, sent to Citrus before capture.");
+    ImGui::TextWrapped("Frozen into the recording start snapshot for exactly the recording cameras; every manifest write carries it unchanged.");
+    if (contexts_dirty) ImGui::TextWrapped("Unsaved: the next launch reloads the app config.");
+    if (!contexts_error.empty()) ImGui::TextWrapped("Record start blocked: %s", contexts_error.c_str());
+    if (!contexts_status.empty()) ImGui::TextWrapped("%s", contexts_status.c_str());
 }
 void RenderRecordingMediaSelection(bool stream_locked) {
     if (!ImGui::CollapsingHeader("Recording media products")) return;

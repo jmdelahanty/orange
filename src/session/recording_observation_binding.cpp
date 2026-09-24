@@ -1,4 +1,6 @@
 #include "session/recording_observation_binding.h"
+#include "recording_context.h"
+#include <cstdlib>
 
 #include "gui/spatial_layout/sha256.h"
 #include "session/recording_observation_identity.h"
@@ -143,14 +145,30 @@ bool valid_target(const json& target, std::string* error_out)
 
 bool validate_request_contract(const json& contract, std::string* error_out)
 {
-    if (!exact_keys(contract, {
-            "schema_id", "schema_version", "observation_context_id",
-            "observation_identity_sha256", "observation_identity",
-            "binding_mode", "requested_at_utc", "recording", "target",
-            "recording_geometry_contract"}) ||
+    const int version = contract.is_object() ? contract.value("schema_version", 0) : 0;
+    const bool v2 = version == kObservationBindingRequestSchemaVersionV2;
+    const bool keys_ok = v2
+        ? exact_keys(contract, {
+              "schema_id", "schema_version", "observation_context_id",
+              "observation_identity_sha256", "observation_identity",
+              "binding_mode", "requested_at_utc", "recording", "target",
+              "recording_geometry_contract", "recording_context"})
+        : exact_keys(contract, {
+              "schema_id", "schema_version", "observation_context_id",
+              "observation_identity_sha256", "observation_identity",
+              "binding_mode", "requested_at_utc", "recording", "target",
+              "recording_geometry_contract"});
+    if (!keys_ok ||
         contract.value("schema_id", "") != kObservationBindingRequestSchemaId ||
-        contract.value("schema_version", 0) != kObservationBindingSchemaVersion) {
+        !accepted_observation_binding_schema_version(version)) {
         return fail(error_out, "observation binding request contract is invalid");
+    }
+    if (v2) {
+        try {
+            (void)orange::recording::RecordingContext::ParseEmitted(contract.at("recording_context"));
+        } catch (const std::exception& ex) {
+            return fail(error_out, std::string("observation binding request v2 recording_context is invalid: ") + ex.what());
+        }
     }
 
     RecordingObservationEdgeIdentity identity;
@@ -271,7 +289,10 @@ bool validate_acceptance_contract(const json& contract,
             "identity_mismatch", "recording_pointer_mismatch",
             "recording_snapshot_mismatch", "target_mismatch",
             "geometry_mismatch", "output_path_mismatch",
-            "runtime_authority_unavailable", "internal_error"};
+            "runtime_authority_unavailable", "internal_error",
+            // acceptance v2 (recording context reconciliation)
+            "recording_context_missing", "recording_context_invalid",
+            "recording_context_mismatch", "recording_context_unavailable"};
         if (reasons.count(contract.value("reason", "")) == 0) {
             return fail(error_out, "binding rejection reason is invalid");
         }
@@ -281,8 +302,8 @@ bool validate_acceptance_contract(const json& contract,
 
     if (contract.value("schema_id", "") !=
             kObservationBindingAcceptanceSchemaId ||
-        contract.value("schema_version", 0) !=
-            kObservationBindingSchemaVersion ||
+        !accepted_observation_binding_schema_version(
+            contract.value("schema_version", 0)) ||
         !valid_derived_id(contract.value("request_id", ""), "obsbindreq_") ||
         !valid_sha256(contract.value("request_contract_sha256", "")) ||
         !valid_derived_id(
@@ -523,6 +544,18 @@ bool validate_recording_observation_finalized_receipt(
                     "finalized receipt does not match request and acceptance chain");
     }
     return true;
+}
+
+
+int resolve_recording_observation_binding_request_version(std::string* error_out)
+{
+    const char* raw = std::getenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION");
+    if (!raw || raw[0] == '\0') return kObservationBindingSchemaVersion;
+    const std::string value = raw;
+    if (value == "1") return kObservationBindingSchemaVersion;
+    if (value == "2") return kObservationBindingRequestSchemaVersionV2;
+    if (error_out) *error_out = "ORANGE_CITRUS_BINDING_REQUEST_VERSION must be 1 or 2";
+    return 0;
 }
 
 }  // namespace orange::session

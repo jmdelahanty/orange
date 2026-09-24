@@ -213,7 +213,8 @@ json resolved_geometry()
     };
 }
 
-std::filesystem::path make_materialization_fixture(const json& geometry)
+std::filesystem::path make_materialization_fixture(const json& geometry, const json& session_extra = json::object());
+std::filesystem::path make_materialization_fixture(const json& geometry, const json& session_extra)
 {
     const std::filesystem::path root =
         std::filesystem::temp_directory_path() /
@@ -224,7 +225,7 @@ std::filesystem::path make_materialization_fixture(const json& geometry)
     const std::filesystem::path geometry_path =
         root / "recording_geometry_contract.json";
     write_file(geometry_path, geometry.dump(2) + "\n");
-    const json start = {
+    json start = {
         {"schema_version", 2},
         {"recording_id", "2026_08_13_12_00_00"},
         {"camera_runtime", {
@@ -258,6 +259,7 @@ std::filesystem::path make_materialization_fixture(const json& geometry)
             {"sha256", file_sha256(geometry_path)},
         }},
     };
+    if (!session_extra.empty()) start["session"] = session_extra;
     const std::filesystem::path start_path =
         root / "recording_snapshot_start.json";
     write_file(start_path, start.dump(2) + "\n");
@@ -665,6 +667,130 @@ void test_prearm_required_and_optional_transport_failure_policy()
     }
 }
 
+json frozen_recording_contexts(const char* intent)
+{
+    json entry = {{"schema_id", "citrus.parent_recording_context"}, {"schema_version", 1},
+                  {"recording_type", "behavior"}, {"recording_subtype", "dish_stimulus"},
+                  {"behavior_mode", "free"}, {"recording_intent", intent}, {"data_origin", "acquired"}};
+    return {{"recording_contexts", {{"2010095", entry}, {"2010096", entry}}}};
+}
+
+void test_request_v2_carries_frozen_recording_context()
+{
+    // ORANGE_CITRUS_BINDING_REQUEST_VERSION=2: the request contract carries the
+    // camera's frozen context inside the digest; without a frozen context the
+    // materialization refuses; v1 (default) is unchanged.
+    setenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION", "2", 1);
+    {
+        const auto root = make_materialization_fixture(
+            resolved_geometry(), frozen_recording_contexts("stimulus_experiment"));
+        orange::session::RecordingObservationBindingRequestMaterialization requests;
+        std::string error;
+        require(orange::session::materialize_recording_observation_binding_requests(
+                    root.string(), "required", "2026-08-13T16:00:00Z", &requests, &error),
+                "v2 materialization failed: " + error);
+        require(!requests.artifacts.empty(), "v2 produced no requests");
+        for (const auto& artifact : requests.artifacts) {
+            const json& contract = artifact.request.at("contract");
+            require(contract.at("schema_version") == 2, "v2 request must be schema_version 2");
+            require(contract.contains("recording_context") &&
+                        contract.at("recording_context").at("recording_intent") == "stimulus_experiment" &&
+                        contract.at("recording_context").size() == 7,
+                    "v2 request must carry the seven-field frozen context");
+            // The digest covers the context: a re-sealed contract with a changed
+            // context has a different contract_sha256.
+            json changed = contract;
+            changed["recording_context"]["recording_subtype"] = "other";
+            json resealed;
+            require(orange::session::seal_recording_observation_binding_request(changed, &resealed, &error), error);
+            require(resealed.at("contract_sha256") != artifact.request.at("contract_sha256"),
+                    "request digest must cover recording_context");
+        }
+        // Re-materialization verifies the existing v2 artifacts unchanged.
+        orange::session::RecordingObservationBindingRequestMaterialization again;
+        require(orange::session::materialize_recording_observation_binding_requests(
+                    root.string(), "required", "2026-08-13T16:00:00Z", &again, &error),
+                "v2 re-verification failed: " + error);
+        require(again.collection_sha256 == requests.collection_sha256, "v2 collection digest changed on re-verification");
+        std::filesystem::remove_all(root);
+    }
+    {
+        const auto root = make_materialization_fixture(resolved_geometry());
+        orange::session::RecordingObservationBindingRequestMaterialization requests;
+        std::string error;
+        require(!orange::session::materialize_recording_observation_binding_requests(
+                    root.string(), "required", "2026-08-13T16:00:00Z", &requests, &error),
+                "v2 without a frozen context must refuse");
+        require(error.find("frozen recording context") != std::string::npos, "v2 refusal reason: " + error);
+        std::filesystem::remove_all(root);
+    }
+    unsetenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION");
+    {
+        const auto root = make_materialization_fixture(
+            resolved_geometry(), frozen_recording_contexts("stimulus_experiment"));
+        orange::session::RecordingObservationBindingRequestMaterialization requests;
+        std::string error;
+        require(orange::session::materialize_recording_observation_binding_requests(
+                    root.string(), "required", "2026-08-13T16:00:00Z", &requests, &error),
+                "v1 materialization failed: " + error);
+        require(requests.artifacts.front().request.at("contract").at("schema_version") == 1 &&
+                    !requests.artifacts.front().request.at("contract").contains("recording_context"),
+                "default v1 request must be unchanged");
+        std::filesystem::remove_all(root);
+    }
+}
+
+void test_prearm_surfaces_v2_context_rejection_reasons()
+{
+    setenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION", "2", 1);
+    const auto root = make_materialization_fixture(
+        resolved_geometry(), frozen_recording_contexts("stimulus_experiment"));
+    orange::session::RecordingObservationBindingRequestMaterialization requests;
+    orange::session::RecordingObservationPreArmResult result;
+    std::string error;
+    const auto transport = [](const json& local_request, json* response, std::string*) {
+        json acceptances = json::array();
+        for (const auto& request : local_request.at("params").at("binding_requests")) {
+            json contract = {
+                {"schema_id", orange::session::kObservationBindingAcceptanceSchemaId},
+                {"schema_version", orange::session::kObservationBindingRequestSchemaVersionV2},
+                {"status", "rejected"},
+                {"request_id", request.at("request_id")},
+                {"request_contract_sha256", request.at("contract_sha256")},
+                {"observation_context_id", request.at("contract").at("observation_context_id")},
+                {"decided_at_utc", "2026-08-13T16:00:01Z"},
+                {"reason", "recording_context_mismatch"},
+            };
+            json acceptance;
+            std::string seal_error;
+            require(orange::session::seal_recording_observation_binding_acceptance(contract, &acceptance, &seal_error), seal_error);
+            acceptances.push_back(std::move(acceptance));
+        }
+        *response = {{"ok", true}, {"accepted", true},
+            {"effect", {{"recording_observation_binding", {
+                {"schema_id", "citrus.recording_observation_binding_batch_result"},
+                {"schema_version", 2}, {"status", "rejected"},
+                {"citrus_experiment_id", ""},
+                {"acceptance_count", acceptances.size()}, {"acceptances", std::move(acceptances)}}}}}};
+        return true;
+    };
+    require(orange::session::prepare_recording_observation_pre_arm(
+                root.string(), "required", "2026-08-13T16:00:00Z", &requests, &result, &error, transport),
+            "v2 rejected pre-arm should still produce a decision: " + error);
+    require(!result.arm_allowed && result.lifecycle_status == "unbound" && result.reason == "handshake_rejected",
+            "v2 rejection must keep the controlled unbound lifecycle");
+    require(result.context_rejections.size() == requests.artifacts.size() &&
+                result.context_rejections.front().reason == "recording_context_mismatch",
+            "v2 rejection reasons must be surfaced per context");
+    const json decision = json::parse(read_file(root / result.decision_relative_path));
+    require(decision.contains("context_rejections") &&
+                decision.at("context_rejections").size() == requests.artifacts.size() &&
+                decision.at("context_rejections")[0].at("reason") == "recording_context_mismatch",
+            "decision must record the per-context rejection reasons");
+    unsetenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION");
+    std::filesystem::remove_all(root);
+}
+
 void test_prearm_not_applicable_never_contacts_citrus()
 {
     const auto root = make_materialization_fixture(resolved_geometry());
@@ -901,6 +1027,8 @@ int main()
         test_prearm_rejects_non_atomic_or_inconsistent_batch();
         test_prearm_required_and_optional_transport_failure_policy();
         test_prearm_not_applicable_never_contacts_citrus();
+        test_request_v2_carries_frozen_recording_context();
+        test_prearm_surfaces_v2_context_rejection_reasons();
         test_post_close_finalization_is_complete_idempotent_and_manifest_bound();
         test_manifest_never_infers_bound_without_final_receipts();
         test_streaming_sha256_matches_known_vector();

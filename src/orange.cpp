@@ -3982,6 +3982,18 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
         encoder_config && !encoder_config->folder_name.empty()
             ? encoder_config->folder_name
             : input_folder;
+    // The recording context is a per-session choice: take the panel's current
+    // value at every record start (GUI button or local-control start).
+    try {
+        recording_session->recording_contexts = orange::gui::RecordingContextsForStream();
+    } catch (const std::exception& ex) {
+        const std::string error = ex.what();
+        if (recording_preflight_errors) {
+            *recording_preflight_errors = {error};
+        }
+        std::cerr << "[GUI][recording] Start rejected: " << error << std::endl;
+        return GuiRecordingStartDispatch::kFailed;
+    }
     orange::session::PreparedRecordingRunStart prepared =
         orange::session::prepare_recording_run(
             recording_session,
@@ -4236,9 +4248,12 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
             return GuiRecordingStartDispatch::kFailed;
         }
         if (!observation_pre_arm.arm_allowed) {
-            const std::string error =
+            std::string error =
                 "Required Citrus observation binding was not accepted before arm: " +
                 observation_pre_arm.reason;
+            for (const auto& rejection : observation_pre_arm.context_rejections) {
+                error += "; " + rejection.observation_context_id + ": " + rejection.reason;
+            }
             orange::session::abort_prepared_recording_run(
                 recording_session,
                 camera_control,
@@ -6746,6 +6761,11 @@ int main(int /*argc*/, char ** /*args*/) {
             const auto recording_panel_draw_start = std::chrono::steady_clock::now();
             orange::gui::RenderRecordingMediaSelection(
                 camera_control->subscribe || gui_camera_startup.busy() ||
+                camera_control->record_video || camera_control->recording_draining ||
+                gui_async_recording_start.active);
+            // Editable between recordings (also while streaming): the choice is
+            // resolved and frozen at record start, not at stream start.
+            orange::gui::RenderRecordingContextSelection(
                 camera_control->record_video || camera_control->recording_draining ||
                 gui_async_recording_start.active);
             orange::gui::RenderRegisteredContextRecordingSettings(

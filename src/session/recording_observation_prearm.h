@@ -33,6 +33,13 @@ struct RecordingObservationPreArmResult {
     std::string decision_sha256;
     std::uint64_t decision_byte_size = 0;
     std::vector<RecordingObservationAcceptanceArtifact> acceptances;
+    // Per-context rejection reasons from Citrus (acceptance v2 codes such as
+    // recording_context_mismatch), so the operator sees why, not only that.
+    struct ContextRejection {
+        std::string observation_context_id;
+        std::string reason;
+    };
+    std::vector<ContextRejection> context_rejections;
 };
 
 using RecordingObservationBindingTransport = std::function<bool(
