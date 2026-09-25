@@ -118,6 +118,7 @@ Missing-file behavior should remain non-fatal:
       }
     },
     "ptp_register_read_decimate": 1,
+    "citrus_binding_request_version": 1,
     "external_recorder_contract_path": ""
   },
   "gui": {
@@ -619,6 +620,29 @@ Environment precedence:
 - `ORANGE_PTP_REGISTER_READ_DECIMATE` wins when it is already set.
 - Otherwise the GUI applies `recording.ptp_register_read_decimate` before
   starting acquisition threads.
+
+### `recording.citrus_binding_request_version`
+
+Type:
+
+- integer, `1` or `2` (optional; absent means the code default, currently `1`)
+
+Meaning:
+
+- GUI default for `ORANGE_CITRUS_BINDING_REQUEST_VERSION` when the environment
+  variable is not already set. `2` sends the frozen `recording_context` inside
+  the Citrus observation binding request (joint software gate passed on
+  Orange `76331db` / Citrus `9aa6d57`, 2026-09-25). With `2`, a Citrus-bound
+  start refuses when no recording context is configured for a camera
+  (`recording.contexts` or the GUI recording context panel); recording-only
+  sessions are unaffected.
+
+Environment precedence:
+
+- `ORANGE_CITRUS_BINDING_REQUEST_VERSION` wins when it is already set (the GUI
+  validation wrapper forwards it after a reinstall).
+- Otherwise the GUI applies `recording.citrus_binding_request_version` before
+  the first record start.
 
 ### `recording.external_recorder_contract_path`
 

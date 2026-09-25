@@ -323,6 +323,12 @@ validate_env_item() {
         return 2
       }
       ;;
+    ORANGE_CITRUS_BINDING_REQUEST_VERSION)
+      [[ "$value" =~ ^(1|2)$ ]] || {
+        echo "Invalid Citrus binding request version: $value" >&2
+        return 2
+      }
+      ;;
     ORANGE_CITRUS_OBSERVATION_BINDING_TIMEOUT_MS)
       is_positive_integer "$value" && (( value >= 50 && value <= 5000 )) || {
         echo "$key must be an integer from 50 through 5000" >&2

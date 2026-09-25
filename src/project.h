@@ -84,6 +84,9 @@ struct AppStorageConfig {
     std::string gui_external_recorder_contract_path;
     nlohmann::json gui_external_recorder_contract = nlohmann::json::object();
     int gui_ptp_register_read_decimate = 1;
+    // recording.citrus_binding_request_version -> ORANGE_CITRUS_BINDING_REQUEST_VERSION
+    // (1 or 2) when the environment variable is not already set; 0 = not configured.
+    int gui_citrus_binding_request_version = 0;
     int gui_stream_downsample = -1;
     std::string gui_display_profile;
     int gui_display_preview_max_fps = -1;

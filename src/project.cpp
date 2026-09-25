@@ -1273,6 +1273,7 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
     config.gui_external_recorder_contract_path.clear();
     config.gui_external_recorder_contract = nlohmann::json::object();
     config.gui_ptp_register_read_decimate = 1;
+    config.gui_citrus_binding_request_version = 0;
     config.gui_stream_downsample = -1;
     config.gui_display_profile.clear();
     config.gui_display_preview_max_fps = -1;
@@ -1738,6 +1739,19 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                 return false;
             }
             config.gui_ptp_register_read_decimate = decimate;
+        }
+        if (recording.contains("citrus_binding_request_version")) {
+            const auto& version = recording["citrus_binding_request_version"];
+            if (!version.is_number_integer() ||
+                (version.get<int>() != 1 && version.get<int>() != 2)) {
+                if (error_out) {
+                    *error_out =
+                        "recording.citrus_binding_request_version must be 1 or 2 in " +
+                        config_path.string();
+                }
+                return false;
+            }
+            config.gui_citrus_binding_request_version = version.get<int>();
         }
     }
 

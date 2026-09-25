@@ -522,10 +522,14 @@ Orange-only recordings.
 ## Request v2 and acceptance v2: parent recording context (opt-in)
 
 Agreed with Citrus on 2026-09-24; Citrus acceptance v2 landed in Citrus
-9aa6d57 (2026-09-25). Orange's side is behind
-`ORANGE_CITRUS_BINDING_REQUEST_VERSION=2` (default `1`, unchanged wire
-behaviour) until the joint request-v2 / acceptance-v2 / Orange-validation
-test passes.
+9aa6d57 (2026-09-25). The joint software gate (Citrus's native probe plus the
+four coordinated transport cases: accepted two-camera batch, context
+mismatch, unavailable expected context, unreachable socket, each with a
+replay) passed on Orange `76331db` on 2026-09-25. The code default stays `1`
+until the live bound fixture passes; select v2 per run with
+`ORANGE_CITRUS_BINDING_REQUEST_VERSION=2` (forwarded by the GUI validation
+wrapper) or per host with app config
+`recording.citrus_binding_request_version = 2` (env wins).
 
 - Request contract `schema_version = 2` adds exactly one field,
   `recording_context`: the frozen `citrus.parent_recording_context` v1 for

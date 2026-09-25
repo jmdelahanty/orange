@@ -5089,6 +5089,14 @@ int main(int /*argc*/, char ** /*args*/) {
                   << app_storage_config.gui_ptp_register_read_decimate
                   << std::endl;
     }
+    if (app_storage_config.gui_citrus_binding_request_version != 0) {
+        // Citrus binding request version (1 or 2). The environment variable
+        // wins so validation launchers can override per run.
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_CITRUS_BINDING_REQUEST_VERSION",
+            std::to_string(app_storage_config.gui_citrus_binding_request_version).c_str(),
+            "[GUI][Citrus] binding request version from app config");
+    }
     if (app_storage_config.gui_incremental_clip_shadow) {
         set_gui_env_from_app_config_if_absent(
             "ORANGE_GUI_INCREMENTAL_CLIP_SHADOW",
