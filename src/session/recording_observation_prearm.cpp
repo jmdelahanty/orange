@@ -421,7 +421,29 @@ bool parse_existing_decision(
                 "accepted";
         all_accepted = all_accepted && accepted;
         any_accepted = any_accepted || accepted;
+        if (!accepted) {
+            // Replay reconstructs the per-context reasons from the verified
+            // sealed acceptances, not from the decision's own summary block,
+            // so a repeat pre-arm reports exactly what the first one did.
+            result_out->context_rejections.push_back(
+                {artifact.observation_context_id,
+                 artifact.acceptance.at("contract").value("reason", "")});
+        }
         result_out->acceptances.push_back(std::move(artifact));
+    }
+    // The decision's context_rejections summary (present only when something
+    // was rejected) must agree with the sealed acceptances it summarizes.
+    json expected_rejections = json::array();
+    for (const auto& rejection : result_out->context_rejections) {
+        expected_rejections.push_back(
+            {{"observation_context_id", rejection.observation_context_id},
+             {"reason", rejection.reason}});
+    }
+    const json recorded_rejections =
+        decision.value("context_rejections", json::array());
+    if (recorded_rejections != expected_rejections) {
+        return fail(error_out,
+                    "existing pre-arm decision context_rejections do not match the sealed acceptances");
     }
     const bool lifecycle_consistent =
         (result_out->lifecycle_status == "accepted_pending_finalization" &&

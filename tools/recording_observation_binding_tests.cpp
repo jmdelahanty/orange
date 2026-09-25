@@ -826,8 +826,13 @@ void test_prearm_surfaces_v2_context_rejection_reasons()
     orange::session::RecordingObservationBindingRequestMaterialization requests;
     orange::session::RecordingObservationPreArmResult result;
     std::string error;
-    const auto transport = [](const json& local_request, json* response, std::string*) {
+    // Citrus shape: one member fails on its context, the otherwise-valid
+    // sibling is refused with batch_rejected (atomic batch).
+    int transport_calls = 0;
+    const auto transport = [&transport_calls](const json& local_request, json* response, std::string*) {
+        ++transport_calls;
         json acceptances = json::array();
+        bool first = true;
         for (const auto& request : local_request.at("params").at("binding_requests")) {
             json contract = {
                 {"schema_id", orange::session::kObservationBindingAcceptanceSchemaId},
@@ -837,8 +842,9 @@ void test_prearm_surfaces_v2_context_rejection_reasons()
                 {"request_contract_sha256", request.at("contract_sha256")},
                 {"observation_context_id", request.at("contract").at("observation_context_id")},
                 {"decided_at_utc", "2026-08-13T16:00:01Z"},
-                {"reason", "recording_context_mismatch"},
+                {"reason", first ? "recording_context_mismatch" : "batch_rejected"},
             };
+            first = false;
             json acceptance;
             std::string seal_error;
             require(orange::session::seal_recording_observation_binding_acceptance(contract, &acceptance, &seal_error), seal_error);
@@ -857,14 +863,55 @@ void test_prearm_surfaces_v2_context_rejection_reasons()
             "v2 rejected pre-arm should still produce a decision: " + error);
     require(!result.arm_allowed && result.lifecycle_status == "unbound" && result.reason == "handshake_rejected",
             "v2 rejection must keep the controlled unbound lifecycle");
-    require(result.context_rejections.size() == requests.artifacts.size() &&
-                result.context_rejections.front().reason == "recording_context_mismatch",
+    require(requests.artifacts.size() == 2 && result.context_rejections.size() == 2 &&
+                result.context_rejections[0].reason == "recording_context_mismatch" &&
+                result.context_rejections[1].reason == "batch_rejected",
             "v2 rejection reasons must be surfaced per context");
     const json decision = json::parse(read_file(root / result.decision_relative_path));
     require(decision.contains("context_rejections") &&
-                decision.at("context_rejections").size() == requests.artifacts.size() &&
-                decision.at("context_rejections")[0].at("reason") == "recording_context_mismatch",
+                decision.at("context_rejections").size() == 2 &&
+                decision.at("context_rejections")[0].at("reason") == "recording_context_mismatch" &&
+                decision.at("context_rejections")[1].at("reason") == "batch_rejected",
             "decision must record the per-context rejection reasons");
+
+    // Replay (Citrus follow-up on dff8a6f): a repeat pre-arm never contacts
+    // Citrus, keeps the sealed evidence, and reconstructs the same reasons
+    // from the verified acceptances instead of returning an empty list.
+    orange::session::RecordingObservationBindingRequestMaterialization requests_again;
+    orange::session::RecordingObservationPreArmResult replay;
+    require(orange::session::prepare_recording_observation_pre_arm(
+                root.string(), "required", "2026-08-13T16:00:00Z", &requests_again, &replay, &error, transport),
+            "replay of a rejected pre-arm must succeed: " + error);
+    require(transport_calls == 1, "replay must not contact Citrus again");
+    require(!replay.arm_allowed && replay.lifecycle_status == "unbound" && replay.reason == "handshake_rejected",
+            "replay must keep arming blocked");
+    require(replay.decision_sha256 == result.decision_sha256 &&
+                json::parse(read_file(root / replay.decision_relative_path)) == decision,
+            "replay must leave the sealed decision unchanged");
+    require(replay.context_rejections.size() == 2, "replay lost the per-context rejection reasons");
+    for (std::size_t i = 0; i < 2; ++i) {
+        require(replay.context_rejections[i].observation_context_id ==
+                        result.context_rejections[i].observation_context_id &&
+                    replay.context_rejections[i].reason == result.context_rejections[i].reason,
+                "replayed rejection reasons must equal the first decision's");
+    }
+    // A decision whose summary disagrees with its sealed acceptances is refused.
+    {
+        const std::filesystem::path decision_path = root / result.decision_relative_path;
+        json tampered = decision;
+        tampered["context_rejections"][1]["reason"] = "recording_context_mismatch";
+        std::filesystem::permissions(decision_path, std::filesystem::perms::owner_write,
+                                     std::filesystem::perm_options::add);
+        write_file(decision_path, tampered.dump(2) + "\n");
+        std::filesystem::permissions(decision_path, std::filesystem::perms::owner_write,
+                                     std::filesystem::perm_options::remove);
+        orange::session::RecordingObservationBindingRequestMaterialization requests_tampered;
+        orange::session::RecordingObservationPreArmResult tampered_result;
+        require(!orange::session::prepare_recording_observation_pre_arm(
+                    root.string(), "required", "2026-08-13T16:00:00Z", &requests_tampered, &tampered_result, &error, transport) &&
+                    error.find("context_rejections do not match") != std::string::npos,
+                "a decision summary that disagrees with the sealed acceptances must be refused: " + error);
+    }
     unsetenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION");
     std::filesystem::remove_all(root);
 }

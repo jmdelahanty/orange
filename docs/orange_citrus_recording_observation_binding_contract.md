@@ -548,7 +548,10 @@ test passes.
   `context_rejections[] {observation_context_id, reason}` in
   `pre_arm_decision.json` (absent when nothing was rejected, so v1 decisions
   are byte-identical), and the GUI start refusal names each rejected context
-  and reason instead of only `handshake_rejected`.
+  and reason instead of only `handshake_rejected`. A repeat pre-arm against
+  an existing rejected decision never contacts Citrus and reconstructs the
+  same reasons from the verified sealed acceptances; a decision whose
+  `context_rejections` summary disagrees with those acceptances is refused.
 - Envelope versions (Citrus review of 6225166, corrected 2026-09-25): a
   sealed envelope carries the same `schema_version` as its contract. Request
   and acceptance envelopes are v2 with v2 contracts; a v2 request must be
