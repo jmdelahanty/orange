@@ -62,6 +62,24 @@ void test_parse_rejections()
     EXPECT(throws([] { RecordingContext::Parse(entry(" behavior", "x")); }, "surrounding whitespace"));
     EXPECT(throws([] { RecordingContext::Parse(entry("beha\tvior", "x")); }, "control character"));
     EXPECT(throws([] { RecordingContext::Parse(entry(std::string(1025, 'a').c_str(), "x")); }, "1024"));
+    // The budget is 1024 UTF-8 bytes, not characters: 342 three-byte code points = 1026 bytes.
+    {
+        std::string wide; for (int i = 0; i < 342; ++i) wide += "\xE2\x82\xAC";
+        EXPECT(throws([&] { RecordingContext::Parse(entry(wide.c_str(), "x")); }, "1024"));
+        std::string fits; for (int i = 0; i < 341; ++i) fits += "\xE2\x82\xAC";
+        EXPECT(!throws([&] { RecordingContext::Parse(entry(fits.c_str(), "x")); }));
+    }
+    // Unicode boundary whitespace (NBSP, ideographic space, BOM) and C1 controls are rejected;
+    // interior non-ASCII is fine; malformed UTF-8 is rejected rather than passed through.
+    EXPECT(throws([] { RecordingContext::Parse(entry("\xC2\xA0" "behavior", "x")); }, "surrounding whitespace"));
+    EXPECT(throws([] { RecordingContext::Parse(entry("behavior\xE3\x80\x80", "x")); }, "surrounding whitespace"));
+    EXPECT(throws([] { RecordingContext::Parse(entry("\xEF\xBB\xBF" "behavior", "x")); }, "surrounding whitespace"));
+    EXPECT(throws([] { RecordingContext::Parse(entry("beha\xC2\x85vior", "x")); }, "control character"));
+    EXPECT(throws([] { RecordingContext::Parse(entry("beha\x7Fvior", "x")); }, "control character"));
+    EXPECT(throws([] { RecordingContext::Parse(entry("beha\xFFvior", "x")); }, "not valid UTF-8"));
+    EXPECT(throws([] { RecordingContext::Parse(entry("beha\xC0\xAFvior", "x")); }, "not valid UTF-8"));
+    EXPECT(!throws([] { RecordingContext::Parse(entry("caf\xC3\xA9 stimulus", "x")); }));
+    EXPECT(!throws([] { RecordingContext::Parse(entry("stimulus", "dish_stimulus")); }));
     EXPECT(throws([] { RecordingContext::Parse(entry("b", "s", "sideways")); }, "behavior_mode"));
     EXPECT(throws([] { RecordingContext::Parse(entry("b", "s", "free", "maybe")); }, "recording_intent"));
     EXPECT(throws([] { RecordingContext::Parse(entry("b", "s", "free", "recording_only", "real")); }, "data_origin"));

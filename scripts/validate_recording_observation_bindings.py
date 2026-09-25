@@ -124,11 +124,29 @@ def parse_embedded_json(value: Any, label: str) -> dict[str, Any]:
     return parsed
 
 
+def schema_version_int(value: Any) -> int:
+    """schema_version as a JSON integer (bool and float are not accepted)."""
+    raw = value.get("schema_version") if isinstance(value, dict) else None
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) else 0
+
+
 def validate_sealed_record(
-    value: dict[str, Any], schema_id: str, id_field: str
-) -> None:
+    value: dict[str, Any],
+    schema_id: str,
+    id_field: str,
+    allowed_versions: tuple[int, ...] = (1,),
+) -> int:
+    """Check a sealed envelope and return its schema_version.
+
+    Request and acceptance envelopes are v1 or v2 with their contracts (the
+    outer and inner schema_version must match); finalized receipts stay v1.
+    """
     require(value.get("schema_id") == schema_id, f"wrong schema: {schema_id}")
-    require(value.get("schema_version") == 1, f"wrong schema version: {schema_id}")
+    version = schema_version_int(value)
+    require(
+        version in allowed_versions,
+        f"wrong schema version {value.get('schema_version')!r}: {schema_id}",
+    )
     require(
         value.get("canonicalization")
         == "canonical_json_utf8_sort_keys_compact_v1",
@@ -136,6 +154,11 @@ def validate_sealed_record(
     )
     contract = value.get("contract")
     require(isinstance(contract, dict), f"missing contract: {schema_id}")
+    require(
+        contract.get("schema_id") == schema_id
+        and schema_version_int(contract) == version,
+        f"envelope and contract schema versions differ: {schema_id}",
+    )
     expected_sha = canonical_contract_sha256(contract)
     require(
         value.get("contract_sha256") == expected_sha,
@@ -153,6 +176,24 @@ def validate_sealed_record(
         identifier == expected_prefix + expected_sha.removeprefix("sha256:"),
         f"derived identifier mismatch: {schema_id}",
     )
+    return version
+
+
+# Citrus unified H5 (9aa6d57): the sealed chain lives under
+# /evidence/recording_binding and the session attributes under
+# /metadata/session. The earlier development layout kept both at the root.
+H5_LAYOUTS = (
+    ("unified", "evidence/recording_binding", "metadata/session"),
+    ("legacy_root", "recording_observation_binding", None),
+)
+
+
+def h5_binding_layout(h5: Any) -> tuple[str, Any, Any]:
+    for name, group_path, session_path in H5_LAYOUTS:
+        if group_path in h5:
+            session = h5[session_path] if session_path else h5
+            return name, h5[group_path], session
+    raise ValidationError("H5 binding group missing (neither unified nor legacy layout)")
 
 
 def validate(
@@ -195,6 +236,9 @@ def validate(
     require(len(acceptance_refs) == expected_count, f"expected {expected_count} acceptances, found {len(acceptance_refs)}")
 
     requests: dict[str, dict[str, Any]] = {}
+
+    request_versions: dict[str, int] = {}
+    start_contexts: dict[str, Any] | None = None  # loaded on the first v2 request
     request_paths: dict[str, str] = {}
     cameras: set[str] = set()
     arenas: set[str] = set()
@@ -207,7 +251,8 @@ def validate(
         request, raw = load_json(path)
         require(reference.get("sha256") == sha256_bytes(raw), f"request file digest mismatch: {context_id}")
         require(reference.get("byte_size") == len(raw), f"request byte size mismatch: {context_id}")
-        validate_sealed_record(request, REQUEST_SCHEMA, "request_id")
+        request_version = validate_sealed_record(request, REQUEST_SCHEMA, "request_id", (1, 2))
+        request_versions[context_id] = request_version
         contract = request["contract"]
         require(contract.get("observation_context_id") == context_id, f"request context mismatch: {context_id}")
         require(contract.get("binding_mode") == "required", f"request is not required: {context_id}")
@@ -240,7 +285,11 @@ def validate(
         acceptance, raw = load_json(path)
         require(reference.get("sha256") == sha256_bytes(raw), f"acceptance file digest mismatch: {context_id}")
         require(reference.get("byte_size") == len(raw), f"acceptance byte size mismatch: {context_id}")
-        validate_sealed_record(acceptance, ACCEPTANCE_SCHEMA, "acceptance_id")
+        acceptance_version = validate_sealed_record(acceptance, ACCEPTANCE_SCHEMA, "acceptance_id", (1, 2))
+        require(
+            acceptance_version == request_versions[context_id],
+            f"acceptance version {acceptance_version} differs from request version {request_versions[context_id]}: {context_id}",
+        )
         require(reference.get("acceptance_id") == acceptance.get("acceptance_id"), f"acceptance ID mismatch: {context_id}")
         require(reference.get("acceptance_contract_sha256") == acceptance.get("contract_sha256"), f"acceptance contract digest mismatch: {context_id}")
         contract = acceptance["contract"]
@@ -251,6 +300,16 @@ def validate(
         require(contract.get("request_id") == request.get("request_id"), f"acceptance request ID mismatch: {context_id}")
         require(contract.get("request_contract_sha256") == request.get("contract_sha256"), f"acceptance request digest mismatch: {context_id}")
         require(contract.get("target") == request_contract.get("target"), f"acceptance target mismatch: {context_id}")
+        if request_versions[context_id] == 2:
+            if start_contexts is None:
+                start_snapshot, _ = load_json(recording / "recording_snapshot_start.json")
+                start_contexts = (start_snapshot.get("session") or {}).get("recording_contexts") or {}
+            frozen = start_contexts.get(request_contract["target"]["camera_id"])
+            require(
+                frozen is not None
+                and request_contract.get("recording_context") == frozen,
+                f"v2 request context differs from the sealed start snapshot: {context_id}",
+            )
         experiment_id = str(contract.get("citrus_experiment_id", ""))
         session_uuid = str(contract.get("citrus_session_uuid", ""))
         require(experiment_id and session_uuid, f"Citrus identities missing: {context_id}")
@@ -260,10 +319,18 @@ def validate(
         h5_path = resolve_recording_relative(recording, h5_relative)
         require(h5_path.is_file(), f"planned Citrus H5 is missing: {h5_path}")
         with h5py.File(h5_path, "r") as h5:
-            require(decode_h5_string(h5.attrs.get("session_status"), "session_status") == "COMPLETE", f"Citrus H5 is not COMPLETE: {h5_relative}")
-            require(decode_h5_string(h5.attrs.get("session_uuid"), "session_uuid") == session_uuid, f"Citrus session UUID mismatch: {h5_relative}")
-            require("recording_observation_binding" in h5, f"H5 binding group missing: {h5_relative}")
-            group = h5["recording_observation_binding"]
+            h5_layout, group, session = h5_binding_layout(h5)
+            require(decode_h5_string(session.attrs.get("session_status"), "session_status") == "COMPLETE", f"Citrus H5 is not COMPLETE: {h5_relative}")
+            require(decode_h5_string(session.attrs.get("session_uuid"), "session_uuid") == session_uuid, f"Citrus session UUID mismatch: {h5_relative}")
+            if request_versions[context_id] == 2:
+                # Acceptance v2: the H5 session metadata is built from the
+                # accepted context, so it must agree with the sealed request.
+                frozen = request_contract["recording_context"]
+                for key in ("recording_type", "recording_subtype", "behavior_mode"):
+                    require(
+                        decode_h5_string(session.attrs.get(key), key) == frozen[key],
+                        f"H5 session {key} differs from the accepted recording context: {h5_relative}",
+                    )
             require(decode_h5_string(group.attrs.get("schema_id"), "binding schema_id") == H5_BINDING_SCHEMA, f"H5 binding schema mismatch: {h5_relative}")
             require(int(group.attrs.get("schema_version", 0)) == 1, f"H5 binding version mismatch: {h5_relative}")
             require(decode_h5_string(group.attrs.get("status"), "binding status") == "accepted_pending_finalization", f"H5 binding status mismatch: {h5_relative}")
@@ -283,6 +350,8 @@ def validate(
             "request_path": request_paths[context_id],
             "acceptance_path": str(path.relative_to(recording)),
             "h5_path": str(h5_path.relative_to(recording)),
+            "h5_layout": h5_layout,
+            "binding_schema_version": request_versions[context_id],
             "citrus_session_uuid": session_uuid,
         })
 
@@ -363,7 +432,7 @@ def validate(
             receipt_ref.get("sha256") == sha256_bytes(receipt_raw),
             f"receipt file digest mismatch: {context_id}",
         )
-        validate_sealed_record(receipt, RECEIPT_SCHEMA, "receipt_id")
+        validate_sealed_record(receipt, RECEIPT_SCHEMA, "receipt_id", (1,))
         require(
             receipt_ref.get("receipt_id") == receipt.get("receipt_id")
             and receipt_ref.get("contract_sha256") == receipt.get("contract_sha256"),

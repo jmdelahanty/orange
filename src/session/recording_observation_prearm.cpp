@@ -566,7 +566,9 @@ bool execute_recording_observation_pre_arm(
             }
             const json acceptances = batch.value("acceptances", json::array());
             if (batch.value("schema_id", "") != kBatchResultSchemaId ||
-                !accepted_observation_binding_schema_version(batch.value("schema_version", 0)) ||
+                // The batch-result envelope stays v1; acceptance versions are
+                // explicit per member and checked against each request.
+                binding_record_schema_version(batch) != kObservationBindingSchemaVersion ||
                 !acceptances.is_array() ||
                 acceptances.size() != requests.artifacts.size() ||
                 !batch.contains("acceptance_count") ||

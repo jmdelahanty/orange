@@ -145,7 +145,7 @@ bool valid_target(const json& target, std::string* error_out)
 
 bool validate_request_contract(const json& contract, std::string* error_out)
 {
-    const int version = contract.is_object() ? contract.value("schema_version", 0) : 0;
+    const int version = binding_record_schema_version(contract);
     const bool v2 = version == kObservationBindingRequestSchemaVersionV2;
     const bool keys_ok = v2
         ? exact_keys(contract, {
@@ -285,15 +285,23 @@ bool validate_acceptance_contract(const json& contract,
                 "observation_context_id", "decided_at_utc", "reason"})) {
             return fail(error_out, "rejected binding fields are invalid");
         }
-        const std::set<std::string> reasons = {
+        static const std::set<std::string> reasons_v1 = {
             "identity_mismatch", "recording_pointer_mismatch",
             "recording_snapshot_mismatch", "target_mismatch",
             "geometry_mismatch", "output_path_mismatch",
-            "runtime_authority_unavailable", "internal_error",
-            // acceptance v2 (recording context reconciliation)
+            "runtime_authority_unavailable", "internal_error"};
+        // Acceptance v2 adds the recording-context reconciliation reasons and
+        // batch_rejected: an otherwise-valid sibling that Citrus rejected only
+        // because another member made the atomic batch fail.
+        static const std::set<std::string> reasons_v2_only = {
             "recording_context_missing", "recording_context_invalid",
-            "recording_context_mismatch", "recording_context_unavailable"};
-        if (reasons.count(contract.value("reason", "")) == 0) {
+            "recording_context_mismatch", "recording_context_unavailable",
+            "batch_rejected"};
+        const std::string reason = contract.value("reason", "");
+        const bool v2 = binding_record_schema_version(contract) ==
+            kObservationBindingRequestSchemaVersionV2;
+        if (reasons_v1.count(reason) == 0 &&
+            !(v2 && reasons_v2_only.count(reason) != 0)) {
             return fail(error_out, "binding rejection reason is invalid");
         }
     } else {
@@ -303,7 +311,7 @@ bool validate_acceptance_contract(const json& contract,
     if (contract.value("schema_id", "") !=
             kObservationBindingAcceptanceSchemaId ||
         !accepted_observation_binding_schema_version(
-            contract.value("schema_version", 0)) ||
+            binding_record_schema_version(contract)) ||
         !valid_derived_id(contract.value("request_id", ""), "obsbindreq_") ||
         !valid_sha256(contract.value("request_contract_sha256", "")) ||
         !valid_derived_id(
@@ -325,7 +333,7 @@ bool validate_receipt_contract(const json& contract, std::string* error_out)
             "runtime_geometry_contract_sha256", "protocol_semantic"}) ||
         contract.value("schema_id", "") !=
             kObservationBindingFinalizedReceiptSchemaId ||
-        contract.value("schema_version", 0) != kObservationBindingSchemaVersion) {
+        binding_record_schema_version(contract) != kObservationBindingSchemaVersion) {
         return fail(error_out, "finalized binding receipt contract is invalid");
     }
     if (!valid_derived_id(contract.value("request_id", ""), "obsbindreq_") ||
@@ -373,6 +381,10 @@ bool validate_receipt_contract(const json& contract, std::string* error_out)
     return true;
 }
 
+// The envelope carries the same schema_version as the contract it seals:
+// request and acceptance envelopes are v1 or v2 with their contracts, receipt
+// envelopes stay v1. Citrus rejects mixed outer/inner versions and so does
+// Orange (validate_envelope).
 bool seal(const char* schema_id,
           const char* id_prefix,
           const json& contract,
@@ -382,6 +394,10 @@ bool seal(const char* schema_id,
     if (record_out == nullptr) {
         return fail(error_out, "binding record output is null");
     }
+    const int version = binding_record_schema_version(contract);
+    if (!accepted_observation_binding_schema_version(version)) {
+        return fail(error_out, "binding contract schema_version is invalid");
+    }
     const std::string digest = canonical_sha256(contract);
     const std::string id_field =
         std::string(id_prefix) == "obsbindreq_" ? "request_id" :
@@ -389,7 +405,7 @@ bool seal(const char* schema_id,
         "receipt_id";
     *record_out = {
         {"schema_id", schema_id},
-        {"schema_version", kObservationBindingSchemaVersion},
+        {"schema_version", version},
         {"canonicalization", kRecordingObservationIdentityCanonicalization},
         {id_field, std::string(id_prefix) + digest.substr(7)},
         {"contract_sha256", digest},
@@ -402,16 +418,27 @@ bool validate_envelope(const json& record,
                        const char* schema_id,
                        const char* id_field,
                        const char* id_prefix,
+                       bool allow_v2,
                        std::string* error_out)
 {
     if (!exact_keys(record, {
             "schema_id", "schema_version", "canonicalization", id_field,
             "contract_sha256", "contract"}) ||
         record.value("schema_id", "") != schema_id ||
-        record.value("schema_version", 0) != kObservationBindingSchemaVersion ||
         record.value("canonicalization", "") !=
             kRecordingObservationIdentityCanonicalization) {
         return fail(error_out, "binding envelope schema is invalid");
+    }
+    const int outer = binding_record_schema_version(record);
+    const int inner = record.at("contract").is_object()
+        ? binding_record_schema_version(record.at("contract")) : 0;
+    if (outer != kObservationBindingSchemaVersion &&
+        !(allow_v2 && outer == kObservationBindingRequestSchemaVersionV2)) {
+        return fail(error_out, "binding envelope schema is invalid");
+    }
+    if (inner != outer) {
+        return fail(error_out,
+                    "binding envelope schema_version does not match its contract schema_version");
     }
     const std::string digest = canonical_sha256(record.at("contract"));
     if (record.value("contract_sha256", "") != digest ||
@@ -465,7 +492,7 @@ bool validate_recording_observation_binding_request(
 {
     return validate_envelope(
                request, kObservationBindingRequestSchemaId, "request_id",
-               "obsbindreq_", error_out) &&
+               "obsbindreq_", /*allow_v2=*/true, error_out) &&
         validate_request_contract(request.at("contract"), error_out);
 }
 
@@ -477,12 +504,17 @@ bool validate_recording_observation_binding_acceptance(
     if (!validate_recording_observation_binding_request(request, error_out) ||
         !validate_envelope(
             acceptance, kObservationBindingAcceptanceSchemaId, "acceptance_id",
-            "obsbindacc_", error_out) ||
+            "obsbindacc_", /*allow_v2=*/true, error_out) ||
         !validate_acceptance_contract(acceptance.at("contract"), error_out)) {
         return false;
     }
     const json& request_contract = request.at("contract");
     const json& acceptance_contract = acceptance.at("contract");
+    if (binding_record_schema_version(acceptance) !=
+        binding_record_schema_version(request)) {
+        return fail(error_out,
+                    "binding acceptance schema_version does not match the request schema_version");
+    }
     if (acceptance_contract.value("request_id", "") !=
             request.value("request_id", "") ||
         acceptance_contract.value("request_contract_sha256", "") !=
@@ -515,7 +547,7 @@ bool validate_recording_observation_finalized_receipt(
     }
     if (!validate_envelope(
             receipt, kObservationBindingFinalizedReceiptSchemaId, "receipt_id",
-            "obsbindfin_", error_out) ||
+            "obsbindfin_", /*allow_v2=*/false, error_out) ||
         !validate_receipt_contract(receipt.at("contract"), error_out)) {
         return false;
     }

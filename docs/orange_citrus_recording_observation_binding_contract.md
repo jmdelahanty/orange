@@ -519,11 +519,13 @@ ORANGE_CITRUS_OBSERVATION_BINDING_TIMEOUT_MS=1500
 `not_applicable` does not contact Citrus and is reserved for intentionally
 Orange-only recordings.
 
-## Request v2 and acceptance v2: parent recording context (proposed, opt-in)
+## Request v2 and acceptance v2: parent recording context (opt-in)
 
-Agreed with Citrus on 2026-09-24; Orange's side is implemented behind
+Agreed with Citrus on 2026-09-24; Citrus acceptance v2 landed in Citrus
+9aa6d57 (2026-09-25). Orange's side is behind
 `ORANGE_CITRUS_BINDING_REQUEST_VERSION=2` (default `1`, unchanged wire
-behaviour) until Citrus accepts v2.
+behaviour) until the joint request-v2 / acceptance-v2 / Orange-validation
+test passes.
 
 - Request contract `schema_version = 2` adds exactly one field,
   `recording_context`: the frozen `citrus.parent_recording_context` v1 for
@@ -537,12 +539,39 @@ behaviour) until Citrus accepts v2.
   start rejects or requires a new handshake.
 - Acceptance v2 (`schema_version = 2`) keeps the v1 shape; the rejection
   `reason` enum gains `recording_context_missing`, `recording_context_invalid`,
-  `recording_context_mismatch`, `recording_context_unavailable`. Orange accepts
-  batch and acceptance versions 1 and 2, records every rejected context as
+  `recording_context_mismatch`, `recording_context_unavailable` and
+  `batch_rejected` (an otherwise-valid sibling refused only because another
+  member made the atomic batch fail; never reported as a context mismatch).
+  These reasons are v2-only
+  (`docs/schemas/citrus_recording_observation_binding_acceptance_v2.schema.json`).
+  Orange records every rejected context as
   `context_rejections[] {observation_context_id, reason}` in
   `pre_arm_decision.json` (absent when nothing was rejected, so v1 decisions
   are byte-identical), and the GUI start refusal names each rejected context
   and reason instead of only `handshake_rejected`.
+- Envelope versions (Citrus review of 6225166, corrected 2026-09-25): a
+  sealed envelope carries the same `schema_version` as its contract. Request
+  and acceptance envelopes are v2 with v2 contracts; a v2 request must be
+  answered by a v2 acceptance (mixed outer/inner or request/acceptance
+  versions are rejected by both sides); finalized receipts and the
+  batch-result envelope stay v1 with explicit nested versions. `schema_version`
+  fields are JSON integers; `2.0` is rejected.
+- Producer labels (`recording_type`, `recording_subtype`), shared by the
+  Orange parser, the Citrus acceptance parser and the transfer-v2 schema:
+  non-empty, at most 1024 UTF-8 bytes (the JSON Schema `maxLength: 1024`
+  counts characters and is only the looser bound), well-formed UTF-8, no
+  Unicode control character (C0, DEL, C1) anywhere, and no leading or
+  trailing whitespace in the ECMA-262 `\s` sense (which covers everything
+  Python `str.strip()` removes). Labels are preserved byte for byte or
+  rejected, never trimmed or normalized.
+- `scripts/validate_recording_observation_bindings.py` accepts request and
+  acceptance v1 or v2 with matching envelope/contract versions and a
+  matching request/acceptance pair, requires receipts at v1, checks a v2
+  request context against the sealed start snapshot, and reads the Citrus
+  unified H5 layout (`/evidence/recording_binding` for the sealed chain,
+  `/metadata/session` attributes for `session_status`, `session_uuid` and
+  the accepted `recording_type`/`recording_subtype`/`behavior_mode`), with
+  the earlier root-level layout still accepted and reported as `h5_layout`.
 - Intent coupling (independent of v2): `recording_intent = recording_only`
   forces binding mode `not_applicable`; such a session never materializes
   requests and keeps `recording_observation_bindings/` absent.

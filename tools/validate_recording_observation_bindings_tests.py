@@ -51,6 +51,7 @@ def digest(value: dict[str, Any]) -> str:
 
 
 def seal(schema: str, id_field: str, contract: dict[str, Any]) -> dict[str, Any]:
+    """Envelope version follows the contract (request/acceptance 1|2, receipt 1)."""
     sha = digest(contract)
     prefix = {
         "request_id": "obsbindreq_",
@@ -59,7 +60,7 @@ def seal(schema: str, id_field: str, contract: dict[str, Any]) -> dict[str, Any]
     }[id_field]
     return {
         "schema_id": schema,
-        "schema_version": 1,
+        "schema_version": contract.get("schema_version", 1),
         "canonicalization": "canonical_json_utf8_sort_keys_compact_v1",
         id_field: prefix + sha.removeprefix("sha256:"),
         "contract_sha256": sha,
@@ -74,9 +75,29 @@ def write_json(path: Path, value: dict[str, Any]) -> bytes:
     return raw
 
 
-def fixture(root: Path) -> None:
+CONTEXT = {
+    "schema_id": "citrus.parent_recording_context",
+    "schema_version": 1,
+    "recording_type": "behavior",
+    "recording_subtype": "dish_stimulus",
+    "behavior_mode": "embedded",
+    "recording_intent": "stimulus_experiment",
+    "data_origin": "acquired",
+}
+
+
+def fixture(root: Path, version: int = 1, unified_h5: bool = False) -> None:
+    """version 2 carries the frozen context in each request (and a start
+    snapshot that freezes it); unified_h5 writes the Citrus 9aa6d57 layout
+    (/evidence/recording_binding + /metadata/session) instead of the root one."""
     import h5py
 
+    if version == 2:
+        write_json(root / "recording_snapshot_start.json", {
+            "schema_version": 2,
+            "session": {"recording_contexts": {
+                camera: dict(CONTEXT) for camera in ("2010093", "2010094", "2010095", "2010096")}},
+        })
     request_refs = []
     acceptance_refs = []
     finalized_contexts = []
@@ -92,7 +113,7 @@ def fixture(root: Path) -> None:
         }
         request_contract = {
             "schema_id": "orange.citrus.recording_observation_binding_request",
-            "schema_version": 1,
+            "schema_version": version,
             "observation_context_id": context,
             "observation_identity_sha256": "sha256:" + "1" * 64,
             "observation_identity": {"fixture": camera},
@@ -102,6 +123,9 @@ def fixture(root: Path) -> None:
             "target": target,
             "recording_geometry_contract": {"status": "available"},
         }
+        if version == 2:
+            request_contract["recording_context"] = dict(CONTEXT)
+
         request = seal(
             "orange.citrus.recording_observation_binding_request",
             "request_id",
@@ -121,7 +145,7 @@ def fixture(root: Path) -> None:
         h5_relative = Path("citrus") / f"arena_{index}.h5"
         acceptance_contract = {
             "schema_id": "citrus.recording_observation_binding_acceptance",
-            "schema_version": 1,
+            "schema_version": version,
             "status": "accepted",
             "request_id": request["request_id"],
             "request_contract_sha256": request["contract_sha256"],
@@ -151,9 +175,14 @@ def fixture(root: Path) -> None:
         h5_path = root / h5_relative
         h5_path.parent.mkdir(parents=True, exist_ok=True)
         with h5py.File(h5_path, "w") as h5:
-            h5.attrs["session_status"] = "COMPLETE"
-            h5.attrs["session_uuid"] = f"session_{index}"
-            group = h5.create_group("recording_observation_binding")
+            session = h5.create_group("metadata/session") if unified_h5 else h5
+            session.attrs["session_status"] = "COMPLETE"
+            session.attrs["session_uuid"] = f"session_{index}"
+            if version == 2:
+                for key in ("recording_type", "recording_subtype", "behavior_mode"):
+                    session.attrs[key] = CONTEXT[key]
+            group = h5.create_group(
+                "evidence/recording_binding" if unified_h5 else "recording_observation_binding")
             group.attrs["schema_id"] = "citrus.recording_observation_binding_h5"
             group.attrs["schema_version"] = 1
             group.attrs["status"] = "accepted_pending_finalization"
@@ -301,6 +330,45 @@ def main() -> int:
             assert "receipt file digest mismatch" in str(error)
         else:
             raise AssertionError("tampered finalized receipt passed validation")
+    # Binding v2 with the Citrus unified H5 layout: passes, reports the
+    # layout and version, and rejects a v1 acceptance answering a v2 request
+    # or an H5 session built from a different context.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        fixture(root, version=2, unified_h5=True)
+        result = module.validate(root, expected, 4)
+        assert result["status"] == "pass"
+        assert {row["h5_layout"] for row in result["edges"]} == {"unified"}
+        assert {row["binding_schema_version"] for row in result["edges"]} == {2}
+
+        acceptance_path = next(
+            (root / "recording_observation_bindings/acceptances").glob("*.json")
+        )
+        value = json.loads(acceptance_path.read_text())
+        downgraded = dict(value["contract"], schema_version=1)
+        write_json(acceptance_path, seal(
+            "citrus.recording_observation_binding_acceptance", "acceptance_id", downgraded))
+        try:
+            module.validate(root, expected, 4)
+        except module.ValidationError as error:
+            assert "acceptance" in str(error), str(error)
+        else:
+            raise AssertionError("v1 acceptance of a v2 request passed validation")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        fixture(root, version=2, unified_h5=True)
+        import h5py
+
+        with h5py.File(root / "citrus/arena_2.h5", "r+") as h5:
+            h5["metadata/session"].attrs["recording_subtype"] = "dish_freeswim"
+        try:
+            module.validate(root, expected, 4)
+        except module.ValidationError as error:
+            assert "recording_subtype differs" in str(error), str(error)
+        else:
+            raise AssertionError("H5 session context drift passed validation")
+
     print("validate_recording_observation_bindings_tests passed")
     return 0
 

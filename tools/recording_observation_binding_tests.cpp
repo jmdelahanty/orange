@@ -740,6 +740,84 @@ void test_request_v2_carries_frozen_recording_context()
     }
 }
 
+void test_v2_envelopes_carry_matching_versions_and_reject_mixing()
+{
+    // Citrus 9aa6d57 interop: a v2 request is sealed as a v2 envelope, needs
+    // a v2 acceptance, the receipt stays v1, and outer/inner or
+    // request/acceptance version mixing is rejected.
+    const json identity = make_identity();
+    json v2_contract = request_contract(identity);
+    v2_contract["schema_version"] = orange::session::kObservationBindingRequestSchemaVersionV2;
+    v2_contract["recording_context"] = {
+        {"schema_id", "citrus.parent_recording_context"}, {"schema_version", 1},
+        {"recording_type", "behavior"}, {"recording_subtype", "dish_stimulus"},
+        {"behavior_mode", "embedded"}, {"recording_intent", "stimulus_experiment"},
+        {"data_origin", "acquired"}};
+    json request;
+    std::string error;
+    require(orange::session::seal_recording_observation_binding_request(v2_contract, &request, &error),
+            "v2 request seal failed: " + error);
+    require(request.at("schema_version") == 2, "v2 request envelope must be schema_version 2");
+    require(orange::session::validate_recording_observation_binding_request(request, &error),
+            "v2 request must validate: " + error);
+
+    json mixed = request;
+    mixed["schema_version"] = 1;
+    require(!orange::session::validate_recording_observation_binding_request(mixed, &error) &&
+                error.find("does not match its contract") != std::string::npos,
+            "outer-v1/inner-v2 request must be rejected: " + error);
+    json floaty = request;
+    floaty["schema_version"] = 2.0;
+    require(!orange::session::validate_recording_observation_binding_request(floaty, &error),
+            "non-integer schema_version must be rejected");
+
+    json v2_accept = accepted_contract(request);
+    v2_accept["schema_version"] = 2;
+    json acceptance;
+    require(orange::session::seal_recording_observation_binding_acceptance(v2_accept, &acceptance, &error),
+            "v2 acceptance seal failed: " + error);
+    require(acceptance.at("schema_version") == 2, "v2 acceptance envelope must be schema_version 2");
+    require(orange::session::validate_recording_observation_binding_acceptance(acceptance, request, &error),
+            "v2 acceptance must validate against v2 request: " + error);
+
+    json v1_accept = accepted_contract(request);  // schema_version 1 from the fixture
+    json v1_acceptance;
+    require(orange::session::seal_recording_observation_binding_acceptance(v1_accept, &v1_acceptance, &error),
+            "v1 acceptance seal failed: " + error);
+    require(!orange::session::validate_recording_observation_binding_acceptance(v1_acceptance, request, &error) &&
+                error.find("does not match the request schema_version") != std::string::npos,
+            "v1 acceptance against a v2 request must be rejected: " + error);
+
+    json receipt;
+    require(orange::session::seal_recording_observation_finalized_receipt(
+                receipt_contract(request, acceptance), &receipt, &error),
+            "receipt seal failed: " + error);
+    require(receipt.at("schema_version") == 1, "receipt envelope stays v1");
+    require(orange::session::validate_recording_observation_finalized_receipt(receipt, request, acceptance, &error),
+            "v2 chain with v1 receipt must validate: " + error);
+    json v2_receipt_contract = receipt_contract(request, acceptance);
+    v2_receipt_contract["schema_version"] = 2;
+    json v2_receipt;
+    require(!orange::session::seal_recording_observation_finalized_receipt(v2_receipt_contract, &v2_receipt, &error),
+            "a v2 receipt contract must be refused");
+
+    // Rejection reasons: batch_rejected and the context reasons are v2-only.
+    for (const char* reason : {"batch_rejected", "recording_context_unavailable"}) {
+        json rej = rejected_contract(request);
+        rej["schema_version"] = 2;
+        rej["reason"] = reason;
+        json sealed;
+        require(orange::session::seal_recording_observation_binding_acceptance(rej, &sealed, &error),
+                std::string("v2 rejection ") + reason + " must seal: " + error);
+        require(orange::session::validate_recording_observation_binding_acceptance(sealed, request, &error),
+                std::string("v2 rejection ") + reason + " must validate: " + error);
+        json v1rej = rej;
+        v1rej["schema_version"] = 1;
+        require(!orange::session::seal_recording_observation_binding_acceptance(v1rej, &sealed, &error),
+                std::string("v1 rejection must not carry ") + reason);
+    }
+}
+
 void test_prearm_surfaces_v2_context_rejection_reasons()
 {
     setenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION", "2", 1);
@@ -769,7 +847,7 @@ void test_prearm_surfaces_v2_context_rejection_reasons()
         *response = {{"ok", true}, {"accepted", true},
             {"effect", {{"recording_observation_binding", {
                 {"schema_id", "citrus.recording_observation_binding_batch_result"},
-                {"schema_version", 2}, {"status", "rejected"},
+                {"schema_version", 1}, {"status", "rejected"},
                 {"citrus_experiment_id", ""},
                 {"acceptance_count", acceptances.size()}, {"acceptances", std::move(acceptances)}}}}}};
         return true;
@@ -1029,6 +1107,7 @@ int main()
         test_prearm_not_applicable_never_contacts_citrus();
         test_request_v2_carries_frozen_recording_context();
         test_prearm_surfaces_v2_context_rejection_reasons();
+        test_v2_envelopes_carry_matching_versions_and_reject_mixing();
         test_post_close_finalization_is_complete_idempotent_and_manifest_bound();
         test_manifest_never_infers_bound_without_final_receipts();
         test_streaming_sha256_matches_known_vector();

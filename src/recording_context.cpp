@@ -15,16 +15,66 @@ void require(bool ok, const std::string& message)
     if (!ok) throw std::runtime_error(message);
 }
 
+// Decode one UTF-8 code point at `i` (advancing it); false when malformed
+// (truncated, overlong, surrogate, above U+10FFFF, or a stray continuation).
+bool next_code_point(const std::string& s, std::size_t& i, char32_t& cp)
+{
+    const unsigned char c0 = static_cast<unsigned char>(s[i]);
+    std::size_t n = 0;
+    if (c0 < 0x80) { cp = c0; i += 1; return true; }
+    if ((c0 & 0xE0) == 0xC0) { n = 1; cp = c0 & 0x1F; }
+    else if ((c0 & 0xF0) == 0xE0) { n = 2; cp = c0 & 0x0F; }
+    else if ((c0 & 0xF8) == 0xF0) { n = 3; cp = c0 & 0x07; }
+    else return false;
+    if (s.size() - i <= n) return false;  // needs n continuation bytes
+    for (std::size_t k = 1; k <= n; ++k) {
+        const unsigned char c = static_cast<unsigned char>(s[i + k]);
+        if ((c & 0xC0) != 0x80) return false;
+        cp = (cp << 6) | (c & 0x3F);
+    }
+    static const char32_t min_for[4] = {0, 0x80, 0x800, 0x10000};
+    if (cp < min_for[n] || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) return false;
+    i += n + 1;
+    return true;
+}
+
+// Unicode control characters (general category Cc): C0, DEL, C1.
+bool is_control(char32_t cp) { return cp < 0x20 || (cp >= 0x7F && cp <= 0x9F); }
+
+// The ECMA-262 `\s` set, which the JSON Schema label pattern uses at the
+// label boundaries; a superset of Python str.strip()'s non-control set, so a
+// label Orange accepts is never trimmed by the Citrus transfer validator.
+bool is_boundary_whitespace(char32_t cp)
+{
+    return cp == 0x09 || cp == 0x0A || cp == 0x0B || cp == 0x0C || cp == 0x0D ||
+           cp == 0x20 || cp == 0xA0 || cp == 0x1680 ||
+           (cp >= 0x2000 && cp <= 0x200A) || cp == 0x2028 || cp == 0x2029 ||
+           cp == 0x202F || cp == 0x205F || cp == 0x3000 || cp == 0xFEFF;
+}
+
+// Producer label contract (recording_type, recording_subtype), shared with
+// the Citrus acceptance parser and the transfer-v2 schema: non-empty, at most
+// 1024 UTF-8 bytes (the JSON Schema maxLength 1024 counts characters and is
+// the looser bound), well-formed UTF-8, no Unicode control character (C0,
+// DEL, C1) anywhere, and no leading or trailing whitespace. Never trimmed or
+// normalized: the declaration is preserved byte for byte or rejected.
 std::string require_label(const json& j, const char* key, const char* what)
 {
     require(j.contains(key) && j.at(key).is_string(), std::string("recording context ") + key + " must be a string (" + what + ")");
     const std::string value = j.at(key).get<std::string>();
     require(!value.empty(), std::string("recording context ") + key + " must not be empty");
-    require(value.size() <= 1024, std::string("recording context ") + key + " exceeds 1024 characters");
-    for (unsigned char c : value) {
-        require(c >= 0x20 && c != 0x7f, std::string("recording context ") + key + " contains a control character");
+    require(value.size() <= 1024, std::string("recording context ") + key + " exceeds 1024 UTF-8 bytes");
+    char32_t first = 0, last = 0;
+    std::size_t i = 0;
+    bool any = false;
+    while (i < value.size()) {
+        char32_t cp = 0;
+        require(next_code_point(value, i, cp), std::string("recording context ") + key + " is not valid UTF-8");
+        require(!is_control(cp), std::string("recording context ") + key + " contains a control character");
+        if (!any) { first = cp; any = true; }
+        last = cp;
     }
-    require(value.front() != ' ' && value.back() != ' ' && value.front() != '\t' && value.back() != '\t',
+    require(!is_boundary_whitespace(first) && !is_boundary_whitespace(last),
             std::string("recording context ") + key + " has surrounding whitespace");
     return value;
 }

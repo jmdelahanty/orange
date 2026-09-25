@@ -39,8 +39,10 @@ GUI: app config `recording.contexts`. Headless: experiment spec
 
 - Entries carry exactly the five configurable fields; `schema_id` and
   `schema_version` are added by Orange on emission.
-- `recording_type` and `recording_subtype`: non-empty, at most 1024
-  characters, no control characters, no surrounding whitespace.
+- `recording_type` and `recording_subtype`: non-empty, at most 1024 UTF-8
+  bytes, well-formed UTF-8, no Unicode control character (C0, DEL, C1), no
+  leading or trailing whitespace (ECMA-262 `\s`); preserved byte for byte or
+  rejected, never trimmed.
 - `behavior_mode`: `free | embedded | none`; `recording_intent`:
   `stimulus_experiment | recording_only`; `data_origin`: `acquired | synthetic`.
 - A serial takes its own `cameras` entry, else `default`. A recording camera

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "orange.citrus.recording_observation_binding_request_v2.v1",
+  "$id": "orange.citrus.recording_observation_binding_request.v2",
   "title": "Orange to Citrus Recording Observation Binding Request (v2: carries the parent recording context)",
   "type": "object",
   "required": [
@@ -16,6 +16,7 @@
       "const": "orange.citrus.recording_observation_binding_request"
     },
     "schema_version": {
+      "type": "integer",
       "const": 2
     },
     "canonicalization": {
@@ -141,6 +142,7 @@
           "const": "orange.citrus.recording_observation_binding_request"
         },
         "schema_version": {
+          "type": "integer",
           "const": 2
         },
         "observation_context_id": {
@@ -225,18 +227,14 @@
               "const": "citrus.parent_recording_context"
             },
             "schema_version": {
+              "type": "integer",
               "const": 1
             },
             "recording_type": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024,
-              "pattern": "^[^\\\\s\\\\p{Cc}](?:[^\\\\p{Cc}]*[^\\\\s\\\\p{Cc}])?$"
+              "$ref": "#/$defs/recordingLabel"
             },
             "recording_subtype": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 1024
+              "$ref": "#/$defs/recordingLabel"
             },
             "behavior_mode": {
               "enum": [
@@ -263,6 +261,13 @@
         }
       },
       "additionalProperties": false
+    },
+    "recordingLabel": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[^\\s\\u0000-\\u001f\\u007f-\\u009f](?:[^\\u0000-\\u001f\\u007f-\\u009f]*[^\\s\\u0000-\\u001f\\u007f-\\u009f])?$",
+      "description": "Producer label (citrus.parent_recording_context recording_type / recording_subtype): no Unicode control character (C0, DEL, C1) anywhere and no leading or trailing whitespace (ECMA-262 \\s). maxLength counts characters; the producer budget is 1024 UTF-8 bytes and is enforced by the Orange and Citrus parsers, not by this schema. Labels are preserved byte for byte or rejected, never trimmed."
     }
   }
 }
