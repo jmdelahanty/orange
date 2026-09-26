@@ -791,6 +791,33 @@ if(BUILD_TESTING)
     set_tests_properties(recording_session_manifest_tests
         PROPERTIES DEPENDS recording_session_manifest_tests_build)
 
+    # Synthetic recording bundle generator: runs the production snapshot,
+    # geometry-contract/asset, seal, binding-request and manifest writers with
+    # no camera, for clearly labelled cross-repository fixtures
+    # (docs/synthetic_recording_bundle.md). Built on demand like the manifest
+    # tests; the python test builds it, runs it and validates the output.
+    add_executable(synthetic_recording_bundle EXCLUDE_FROM_ALL
+        "tools/synthetic_recording_bundle.cpp"
+        "${SRC_DIR}/session/acquisition_index_authority.cpp"
+        "${SRC_DIR}/gui/recording_snapshots.cpp"
+        "${SRC_DIR}/gui/spatial_layout/commissioning_finalize_request.cpp"
+        "${SRC_DIR}/gui/spatial_layout/projection_snapshot_client.cpp"
+        ${RECORDING_SESSION_MANIFEST_TEST_SOURCES}
+    )
+    target_include_directories(synthetic_recording_bundle PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(synthetic_recording_bundle PRIVATE cxx_std_17)
+    add_test(
+        NAME synthetic_recording_bundle_build
+        COMMAND ${CMAKE_COMMAND}
+                --build "${CMAKE_BINARY_DIR}"
+                --target synthetic_recording_bundle)
+    add_test(
+        NAME synthetic_recording_bundle_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/synthetic_recording_bundle_tests.py"
+                "${CMAKE_BINARY_DIR}/synthetic_recording_bundle")
+    set_tests_properties(synthetic_recording_bundle_tests
+        PROPERTIES DEPENDS synthetic_recording_bundle_build)
+
     add_executable(recording_session_drain_tests EXCLUDE_FROM_ALL
         "tools/recording_session_drain_tests.cpp"
         ${RECORDING_SESSION_MANIFEST_TEST_SOURCES}
@@ -1737,6 +1764,34 @@ if(TARGET recording_session_manifest_tests)
     )
     if(ORANGE_ENABLE_NVTX)
         target_link_libraries(recording_session_manifest_tests PRIVATE ${NVTX_LIBRARY})
+    endif()
+    target_link_libraries(synthetic_recording_bundle PRIVATE
+        orange_recording_master_journal
+        ${EVT_CAMERA_LIBRARY}
+        ${EVT_GENICAM_LIBRARY}
+        ${EVT_GIGE_LIBRARY}
+        ${ENET_LIBRARY}
+        ${CUDA_CUDART_LIBRARY}
+        ${CUDA_DRIVER_LIBRARY}
+        ${CUDA_NPPICC_LIBRARY}
+        ${CUDA_NPPIDEI_LIBRARY}
+        ${CUDA_NPPC_LIBRARY}
+        ${CUDA_NPPIG_LIBRARY}
+        ${CUDA_NPPIAL_LIBRARY}
+        ${NVIDIA_ENCODE_LIBRARY}
+        ${AVFORMAT_LIBRARY}
+        ${SWSCALE_LIBRARY}
+        ${SWRESAMPLE_LIBRARY}
+        ${AVUTIL_LIBRARY}
+        ${AVCODEC_LIBRARY}
+        ${OpenCV_LIBS}
+        ${TENSORRT_LIBRARY}
+        ${TENSORRT_PLUGIN_LIBRARY}
+        m
+        pthread
+    )
+    if(ORANGE_ENABLE_NVTX)
+        target_link_libraries(synthetic_recording_bundle PRIVATE ${NVTX_LIBRARY})
     endif()
 endif()
 
