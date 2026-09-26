@@ -58,12 +58,12 @@ def main() -> int:
         assert code != 0 and "does not match sealed recording evidence" in mismatch.get("error", ""), mismatch
 
         # Pre-arm against a socket nobody listens on: optional mode records an
-        # unbound decision with arming allowed; replay returns the same decision
-        # and still reaches nothing.
+        # unbound decision with arming allowed; the CLI still exits 3 because
+        # nothing was bound. Replay returns the same decision and reaches nothing.
         socket = str(root / "nobody.sock")
         code, first = run([str(cli), "prearm", "--folder", str(out), "--binding-mode", "optional",
                            "--socket", socket, "--timeout-ms", "100", "--request-version", "2"], env)
-        assert code == 0, first
+        assert code == 3 and first["ok"] is True and first["bound"] is False, first
         assert first["lifecycle_status"] == "unbound" and first["arm_allowed"] is True, first
         assert first["transport_attempted"] is True and first["requests"]["count"] == len(CAMERAS), first
         assert first["acceptance_count"] == 0 and first["context_rejections"] == []
@@ -71,25 +71,36 @@ def main() -> int:
         assert decision_path.is_file()
         code, again = run([str(cli), "prearm", "--folder", str(out), "--binding-mode", "optional",
                            "--socket", socket, "--timeout-ms", "100", "--request-version", "2"], env)
-        assert code == 0 and again["decision_sha256"] == first["decision_sha256"], again
+        assert code == 3 and again["decision_sha256"] == first["decision_sha256"], again
 
         # Required mode against the same unreachable socket: the production gate
         # records a controlled unbound decision (handshake_not_completed) with
-        # arming refused; the decision itself is written, so the step succeeds.
+        # arming refused; a decision exists (ok) but nothing is bound: exit 3.
         out_required = make_bundle("bundle_required", "required")
         code, required = run([str(cli), "prearm", "--folder", str(out_required), "--binding-mode",
                               "required", "--socket", socket, "--timeout-ms", "100", "--request-version", "2"], env)
-        assert code == 0 and required["arm_allowed"] is False, required
+        assert code == 3 and required["ok"] is True and required["bound"] is False, required
+        assert required["arm_allowed"] is False, required
         assert required["lifecycle_status"] == "unbound" and required["reason"] == "handshake_not_completed", required
+
+        # A recording-only bundle has nothing to bind: exit 0 with not_applicable.
+        out_na = root / "bundle_not_applicable"
+        code, _ = run([str(bundle_tool), "--out", str(out_na), "--fixture-rig", str(root / "rig_na"),
+                       *(f for c in CAMERAS for f in ("--camera", c)), "--intent", "recording_only",
+                       "--recording-subtype", "dish_freeswim"], env)
+        assert code == 0
+        code, na = run([str(cli), "prearm", "--folder", str(out_na), "--binding-mode", "not_applicable",
+                        "--socket", socket, "--timeout-ms", "100"], env)
+        assert code == 0 and na["bound"] is True and na["lifecycle_status"] == "not_applicable", na
 
         # Finalize without acceptances / with malformed params is refused clearly.
         params = root / "params.json"
         params.write_text(json.dumps({"experiment_id": "citexp_none", "receipts": []}))
         code, fin = run([str(cli), "finalize", "--folder", str(out), "--receipts", str(params)], env)
-        assert code != 0 and fin.get("ok") is False, fin
+        assert code == 1 and fin.get("ok") is False and fin.get("bound") is False, fin
         params.write_text("[]")
         code, fin = run([str(cli), "finalize", "--folder", str(out), "--receipts", str(params)], env)
-        assert code != 0
+        assert code == 1
 
     print("recording_observation_binding_cli_tests passed")
     return 0

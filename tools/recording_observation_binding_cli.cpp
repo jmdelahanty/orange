@@ -11,6 +11,12 @@
 //     to Citrus's local-control socket, persists the acceptances and the
 //     create-once pre-arm decision. Idempotent: a repeat replays the existing
 //     decision and never contacts Citrus again.
+//     Exit codes: 0 = every request accepted (lifecycle
+//     accepted_pending_finalization) or mode not_applicable; 3 = a decision was
+//     written but the session is unbound (rejected, handshake not completed,
+//     transport failure), whether or not Orange would allow arming in optional
+//     mode; 1 = no decision could be produced. The JSON result carries the
+//     details either way.
 //
 //   recording_observation_binding_cli finalize --folder <recording>
 //       --receipts <receipts.json>
@@ -20,6 +26,8 @@
 //     materializes create-once receipt artifacts and finalized_collection.json,
 //     and refreshes recording_session.json's binding projection when a manifest
 //     exists. Safe to retry with byte-identical evidence.
+//     Exit codes: 0 = finalized collection written (or verified) with
+//     binding_status bound and the manifest projection refreshed; 1 otherwise.
 //
 // No camera, recorder or GUI is involved. See docs/synthetic_recording_bundle.md.
 #include "json.hpp"
@@ -46,7 +54,9 @@ using json = nlohmann::json;
         "           [--binding-mode required|optional|not_applicable] [--decided-at <utc>]\n"
         "           [--socket <path>] [--timeout-ms N] [--request-version 1|2]\n"
         "       recording_observation_binding_cli finalize --folder <recording> --receipts <params.json>\n"
-        "Prints a JSON result on stdout; exit 0 only when the step succeeded.\n";
+        "Prints a JSON result on stdout. prearm exits 0 only when every request was accepted\n"
+        "(or the mode is not_applicable), 3 when a decision was written but the session is\n"
+        "unbound, 1 on error. finalize exits 0 only when the collection is bound.\n";
     std::exit(2);
 }
 
@@ -95,8 +105,15 @@ int run_prearm(int argc, char** argv)
     std::string error;
     const bool ok = orange::session::prepare_recording_observation_pre_arm(
         folder, binding_mode, decided_at, &requests, &result, &error);
+    // "bound" means every request has an acceptance and the lifecycle is
+    // accepted_pending_finalization; a not_applicable session has nothing to bind.
+    const bool bound = ok && (
+        (result.lifecycle_status == "accepted_pending_finalization" &&
+         result.acceptances.size() == requests.artifacts.size() && !requests.artifacts.empty()) ||
+        result.lifecycle_status == "not_applicable");
+    const int exit_code = !ok ? 1 : (bound ? 0 : 3);
     json out = {
-        {"step", "prearm"}, {"ok", ok}, {"error", error},
+        {"step", "prearm"}, {"ok", ok}, {"bound", bound}, {"exit_code", exit_code}, {"error", error},
         {"binding_mode", result.binding_mode}, {"lifecycle_status", result.lifecycle_status},
         {"reason", result.reason}, {"arm_allowed", result.arm_allowed},
         {"transport_attempted", result.transport_attempted},
@@ -109,7 +126,7 @@ int run_prearm(int argc, char** argv)
         {"context_rejections", rejections_json(result)},
     };
     std::cout << out.dump(2) << std::endl;
-    return ok ? 0 : 1;
+    return exit_code;
 }
 
 int run_finalize(int argc, char** argv)
@@ -136,15 +153,17 @@ int run_finalize(int argc, char** argv)
     if (result.ok) {
         refreshed = orange::session::refresh_recording_session_observation_bindings(folder, &refresh_error);
     }
+    const bool bound = result.ok && refreshed &&
+        result.collection.value("binding_status", "") == "bound";
     json out = {
-        {"step", "finalize"}, {"ok", result.ok && refreshed}, {"error", result.error},
+        {"step", "finalize"}, {"ok", bound}, {"bound", bound}, {"error", result.error},
         {"collection_reference", result.collection_reference},
         {"collection_status", result.collection.value("status", "")},
         {"binding_status", result.collection.value("binding_status", "")},
         {"manifest_refreshed", refreshed}, {"refresh_error", refresh_error},
     };
     std::cout << out.dump(2) << std::endl;
-    return (result.ok && refreshed) ? 0 : 1;
+    return bound ? 0 : 1;
 }
 
 }  // namespace

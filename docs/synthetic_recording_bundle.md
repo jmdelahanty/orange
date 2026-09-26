@@ -126,9 +126,24 @@ targets/release/recording_observation_binding_cli finalize \
 every receipt against the immutable request/acceptance chain, verifies the
 closed H5 bytes, writes the create-once receipts and
 `recording_observation_bindings/finalized_collection.json`, and refreshes the
-manifest's binding projection. Both print a JSON result and exit non-zero on
-refusal. Test: `tools/recording_observation_binding_cli_tests.py`
-(unreachable-socket optional/required paths, replay, finalize refusals).
+manifest's binding projection. Both print a JSON result (`ok`, `bound`,
+`exit_code`, lifecycle, reasons, per-context rejections).
+
+Exit codes are the contract a runner should rely on, together with the JSON:
+
+- `prearm`: `0` only when every request was accepted (lifecycle
+  `accepted_pending_finalization` with one acceptance per request) or the mode
+  is `not_applicable`; `3` when a decision was written but the session is
+  unbound (rejections, handshake not completed, transport failure), whether
+  or not Orange would allow arming in optional mode; `1` when no decision
+  could be produced (evidence mismatch, malformed folder).
+- `finalize`: `0` only when the finalized collection is written or verified
+  with `binding_status = bound` and the manifest projection refreshed; `1`
+  otherwise.
+
+Test: `tools/recording_observation_binding_cli_tests.py` (evidence-mismatch
+refusal, unreachable-socket optional and required paths both exiting `3`,
+replay identity, `not_applicable` exiting `0`, finalize refusals).
 
 ## Validation
 
