@@ -327,6 +327,14 @@ def validate(
                 # accepted context, so it must agree with the sealed request.
                 frozen = request_contract["recording_context"]
                 for key in ("recording_type", "recording_subtype", "behavior_mode"):
+                    if key not in frozen:
+                        # Context v2 with the subtype omitted: the H5 must
+                        # preserve the omission, not substitute a value.
+                        require(
+                            key not in session.attrs,
+                            f"H5 session {key} present although the accepted context omits it: {h5_relative}",
+                        )
+                        continue
                     require(
                         decode_h5_string(session.attrs.get(key), key) == frozen[key],
                         f"H5 session {key} differs from the accepted recording context: {h5_relative}",

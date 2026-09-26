@@ -37,8 +37,12 @@ GUI: app config `recording.contexts`. Headless: experiment spec
 }
 ```
 
-- Entries carry exactly the five configurable fields; `schema_id` and
-  `schema_version` are added by Orange on emission.
+- Entries carry the configurable fields; `schema_id` and `schema_version` are
+  added by Orange on emission. `recording_subtype` may be omitted (contract
+  revision version 2, 2026-09-26,
+  `docs/parent_recording_context_v2_optional_subtype_2026_09_26.md`): the
+  entry is then emitted as version 2 without the key; `null` and `""` are
+  refused. An entry with a subtype is emitted as version 1, unchanged.
 - `recording_type` and `recording_subtype`: non-empty, at most 1024 UTF-8
   bytes, well-formed UTF-8, no Unicode control character (C0, DEL, C1), no
   leading or trailing whitespace (ECMA-262 `\s`); preserved byte for byte or

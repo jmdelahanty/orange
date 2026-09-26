@@ -90,10 +90,48 @@ void test_parse_rejections()
     // emitted form is closed too
     json e = RecordingContext::Parse(entry()).ToEmittedJson(); e["extra"] = 1;
     EXPECT(throws([&] { RecordingContext::ParseEmitted(e); }, "unknown"));
-    json wrong_version = RecordingContext::Parse(entry()).ToEmittedJson(); wrong_version["schema_version"] = 2;
+    json wrong_version = RecordingContext::Parse(entry()).ToEmittedJson(); wrong_version["schema_version"] = 3;
     EXPECT(throws([&] { RecordingContext::ParseEmitted(wrong_version); }, "schema_version"));
     // config form must not carry schema fields
     EXPECT(throws([] { RecordingContext::Parse(RecordingContext::Parse(entry()).ToEmittedJson()); }, "unknown"));
+}
+
+void test_optional_subtype_contract_revision()
+{
+    // Version 2: recording_subtype may be omitted (not specified). Omission is
+    // explicit: null and "" are refused; nothing is substituted; an entry with
+    // a subtype still emits version 1 byte-identically.
+    json no_subtype = entry(); no_subtype.erase("recording_subtype");
+    const auto c = RecordingContext::Parse(no_subtype);
+    EXPECT(!c.recording_subtype.has_value());
+    EXPECT(c.emitted_schema_version() == 2);
+    const json emitted = c.ToEmittedJson();
+    EXPECT(emitted.size() == 6 && !emitted.contains("recording_subtype") && emitted.at("schema_version") == 2);
+    EXPECT(RecordingContext::ParseEmitted(emitted) == c);
+    EXPECT(!c.ToJson().contains("recording_subtype"));
+    EXPECT(RecordingContext::Parse(c.ToJson()) == c);
+    // with a subtype: unchanged v1 emission
+    const auto with = RecordingContext::Parse(entry());
+    EXPECT(with.emitted_schema_version() == 1 && with.ToEmittedJson().at("schema_version") == 1 &&
+           with.ToEmittedJson().size() == 7);
+    EXPECT(!(with == c));
+    // null / "" are not omission
+    json null_subtype = entry(); null_subtype["recording_subtype"] = nullptr;
+    EXPECT(throws([&] { RecordingContext::Parse(null_subtype); }, "omit the key"));
+    json empty_subtype = entry(); empty_subtype["recording_subtype"] = "";
+    EXPECT(throws([&] { RecordingContext::Parse(empty_subtype); }, "omit the key"));
+    // v1 emitted form still requires the subtype; v2 with a subtype is accepted and preserved
+    json v1_missing = with.ToEmittedJson(); v1_missing.erase("recording_subtype");
+    EXPECT(throws([&] { RecordingContext::ParseEmitted(v1_missing); }, "schema_version 1"));
+    json v2_with = with.ToEmittedJson(); v2_with["schema_version"] = 2;
+    EXPECT(RecordingContext::ParseEmitted(v2_with) == with);
+    json v2_empty = emitted; v2_empty["recording_subtype"] = "";
+    EXPECT(throws([&] { RecordingContext::ParseEmitted(v2_empty); }, "omit the key"));
+    // mixed block round trip: one camera with, one without
+    std::map<std::string, RecordingContext> block = {{"2010093", with}, {"2010094", c}};
+    const json block_json = orange::recording::EmittedRecordingContextsJson(block);
+    EXPECT(block_json.at("2010093").at("schema_version") == 1 && block_json.at("2010094").at("schema_version") == 2);
+    EXPECT(orange::recording::ParseEmittedRecordingContexts(block_json) == block);
 }
 
 void test_config_resolution()
@@ -188,6 +226,7 @@ int main()
 {
     test_parse_and_emit();
     test_parse_rejections();
+    test_optional_subtype_contract_revision();
     test_config_resolution();
     test_gate_copies_frozen_block_and_checks_membership();
     test_gate_without_frozen_block();

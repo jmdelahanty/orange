@@ -91,14 +91,17 @@ std::string require_enum(const json& j, const char* key, std::initializer_list<c
     throw std::runtime_error(std::string("recording context ") + key + " must be one of " + choices + ", got '" + value + "'");
 }
 
-void exact_keys(const json& j, const std::set<std::string>& keys, const char* what)
+// Closed object: no key outside `keys`; every key in `keys` present except
+// those listed in `optional`.
+void exact_keys(const json& j, const std::set<std::string>& keys, const char* what,
+                const std::set<std::string>& optional = {})
 {
     require(j.is_object(), std::string(what) + " must be an object");
     for (auto it = j.begin(); it != j.end(); ++it) {
         require(keys.count(it.key()) != 0, std::string("unknown ") + what + " field: " + it.key());
     }
     for (const auto& key : keys) {
-        require(j.contains(key), std::string(what) + " is missing required field " + key);
+        require(j.contains(key) || optional.count(key) != 0, std::string(what) + " is missing required field " + key);
     }
 }
 
@@ -108,11 +111,19 @@ const std::set<std::string> kEmittedKeys = {
     "schema_id", "schema_version",
     "recording_type", "recording_subtype", "behavior_mode", "recording_intent", "data_origin"};
 
-RecordingContext parse_fields(const json& j)
+RecordingContext parse_fields(const json& j, bool subtype_required)
 {
     RecordingContext c;
     c.recording_type = require_label(j, "recording_type", "producer label");
-    c.recording_subtype = require_label(j, "recording_subtype", "producer label");
+    if (j.contains("recording_subtype")) {
+        require(!j.at("recording_subtype").is_null(),
+                "recording context recording_subtype must not be null; omit the key to leave the subtype unspecified");
+        require(!(j.at("recording_subtype").is_string() && j.at("recording_subtype").get<std::string>().empty()),
+                "recording context recording_subtype must not be empty; omit the key to leave the subtype unspecified");
+        c.recording_subtype = require_label(j, "recording_subtype", "producer label");
+    } else {
+        require(!subtype_required, "recording context is missing required field recording_subtype (schema_version 1)");
+    }
     c.behavior_mode = require_enum(j, "behavior_mode", {"free", "embedded", "none"});
     c.recording_intent = require_enum(j, "recording_intent", {"stimulus_experiment", "recording_only"});
     c.data_origin = require_enum(j, "data_origin", {"acquired", "synthetic"});
@@ -130,32 +141,35 @@ json read_json_file(const std::filesystem::path& path)
 
 RecordingContext RecordingContext::Parse(const json& entry)
 {
-    exact_keys(entry, kConfigKeys, "recording context");
-    return parse_fields(entry);
+    exact_keys(entry, kConfigKeys, "recording context", {"recording_subtype"});
+    return parse_fields(entry, /*subtype_required=*/false);
 }
 
 RecordingContext RecordingContext::ParseEmitted(const json& emitted)
 {
-    exact_keys(emitted, kEmittedKeys, "emitted recording context");
+    exact_keys(emitted, kEmittedKeys, "emitted recording context", {"recording_subtype"});
     require(emitted.at("schema_id").is_string() && emitted.at("schema_id") == kSchemaId,
             std::string("emitted recording context schema_id must be ") + kSchemaId);
-    require(emitted.at("schema_version").is_number_integer() && !emitted.at("schema_version").is_boolean() &&
-            emitted.at("schema_version") == kSchemaVersion,
-            "emitted recording context schema_version must be 1");
-    return parse_fields(emitted);
+    const json& version = emitted.at("schema_version");
+    require(version.is_number_integer() && !version.is_boolean() &&
+            (version == kSchemaVersion || version == kSchemaVersionOptionalSubtype),
+            "emitted recording context schema_version must be 1 or 2");
+    return parse_fields(emitted, /*subtype_required=*/version == kSchemaVersion);
 }
 
 json RecordingContext::ToJson() const
 {
-    return {{"recording_type", recording_type}, {"recording_subtype", recording_subtype},
-            {"behavior_mode", behavior_mode}, {"recording_intent", recording_intent}, {"data_origin", data_origin}};
+    json j = {{"recording_type", recording_type},
+              {"behavior_mode", behavior_mode}, {"recording_intent", recording_intent}, {"data_origin", data_origin}};
+    if (recording_subtype) j["recording_subtype"] = *recording_subtype;
+    return j;
 }
 
 json RecordingContext::ToEmittedJson() const
 {
     json j = ToJson();
     j["schema_id"] = kSchemaId;
-    j["schema_version"] = kSchemaVersion;
+    j["schema_version"] = emitted_schema_version();
     return j;
 }
 

@@ -217,7 +217,6 @@
             "schema_id",
             "schema_version",
             "recording_type",
-            "recording_subtype",
             "behavior_mode",
             "recording_intent",
             "data_origin"
@@ -228,7 +227,10 @@
             },
             "schema_version": {
               "type": "integer",
-              "const": 1
+              "enum": [
+                1,
+                2
+              ]
             },
             "recording_type": {
               "$ref": "#/$defs/recordingLabel"
@@ -257,7 +259,19 @@
             }
           },
           "additionalProperties": false,
-          "description": "The exact frozen citrus.parent_recording_context v1 for target.camera_id, copied from the sealed recording start snapshot session.recording_contexts. Covered by contract_sha256."
+          "description": "The exact frozen citrus.parent_recording_context for target.camera_id, copied from the sealed recording start snapshot session.recording_contexts and covered by contract_sha256. Version 1 requires recording_subtype. Version 2 (proposed 2026-09-26) makes it optional: an omitted key means not specified; null, \"\" or a substituted default are invalid.",
+          "if": {
+            "properties": {
+              "schema_version": {
+                "const": 1
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "recording_subtype"
+            ]
+          }
         }
       },
       "additionalProperties": false

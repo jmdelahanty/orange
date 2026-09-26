@@ -2,7 +2,15 @@
 // what a recording is (type, subtype, behaviour mode, stimulus intent, data
 // origin), emitted per camera parent as `recording_contexts` in
 // recording_session.json for Citrus transfer-v2 intake
-// (citrus.parent_recording_context, version 1).
+// (citrus.parent_recording_context).
+//
+// Contract revision (proposed 2026-09-26, docs/parent_recording_context_v2_
+// optional_subtype_2026_09_26.md): version 2 makes recording_subtype optional.
+// Omission means "not specified": the key is absent, never null, "" or a
+// substituted default. An entry with a subtype is emitted as version 1
+// (byte-identical to before); an entry without one is emitted as version 2.
+// Both versions are accepted on input. type, behaviour mode, intent and
+// origin stay required.
 //
 // Rules (Citrus parent_recording_context_and_synthetic_transfer_2026-09-24):
 // - values are configured, never inferred from files, detectors or Citrus;
@@ -23,20 +31,26 @@ namespace orange::recording {
 
 struct RecordingContext {
     std::string recording_type;
-    std::string recording_subtype;
+    std::optional<std::string> recording_subtype;  // absent = not specified (v2)
     std::string behavior_mode;      // free | embedded | none
     std::string recording_intent;   // stimulus_experiment | recording_only
     std::string data_origin;        // acquired | synthetic
 
     static constexpr const char* kSchemaId = "citrus.parent_recording_context";
-    static constexpr int kSchemaVersion = 1;
+    static constexpr int kSchemaVersion = 1;                 // subtype required
+    static constexpr int kSchemaVersionOptionalSubtype = 2;  // subtype optional
 
-    // Config entry: exactly the five configurable fields.
+    // The version this context is emitted as: 1 with a subtype, 2 without.
+    int emitted_schema_version() const { return recording_subtype ? kSchemaVersion : kSchemaVersionOptionalSubtype; }
+
+    // Config entry: the configurable fields (recording_subtype may be omitted;
+    // null and "" are refused so omission is always explicit).
     static RecordingContext Parse(const nlohmann::json& entry);
-    // Emitted form: the seven-field closed object (schema_id, schema_version + five).
+    // Emitted form: closed object (schema_id, schema_version + fields); v1 requires
+    // the subtype, v2 allows its absence.
     static RecordingContext ParseEmitted(const nlohmann::json& emitted);
-    nlohmann::json ToJson() const;          // five fields
-    nlohmann::json ToEmittedJson() const;   // seven fields
+    nlohmann::json ToJson() const;          // configurable fields only
+    nlohmann::json ToEmittedJson() const;   // + schema_id, schema_version
     bool operator==(const RecordingContext& other) const;
 };
 

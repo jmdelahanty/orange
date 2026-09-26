@@ -1444,17 +1444,23 @@ RECORDING_CONTEXT_ENUMS = {
 
 
 def validate_recording_context_entry(entry: Any) -> str | None:
-    """Return None when `entry` is a valid citrus.parent_recording_context v1, else a reason."""
+    """Return None when `entry` is a valid citrus.parent_recording_context (v1: subtype
+    required; v2: subtype optional, omitted key means not specified), else a reason."""
     if not isinstance(entry, dict):
         return "not an object"
-    if set(entry.keys()) != set(RECORDING_CONTEXT_FIELDS):
-        return f"fields {sorted(entry.keys())} != {sorted(RECORDING_CONTEXT_FIELDS)}"
+    version = entry.get("schema_version")
+    if isinstance(version, bool) or version not in (1, 2):
+        return f"schema_version {version!r}"
+    expected = set(RECORDING_CONTEXT_FIELDS)
+    if version == 2 and "recording_subtype" not in entry:
+        expected.discard("recording_subtype")
+    if set(entry.keys()) != expected:
+        return f"fields {sorted(entry.keys())} != {sorted(expected)}"
     if entry.get("schema_id") != "citrus.parent_recording_context":
         return f"schema_id {entry.get('schema_id')!r}"
-    version = entry.get("schema_version")
-    if isinstance(version, bool) or version != 1:
-        return f"schema_version {version!r}"
     for key in ("recording_type", "recording_subtype"):
+        if key == "recording_subtype" and key not in entry:
+            continue
         value = entry.get(key)
         if not isinstance(value, str) or not value or len(value) > 1024 or value != value.strip() \
                 or any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
@@ -1491,7 +1497,7 @@ def check_recording_contexts(
             reporter.check(
                 reason is None,
                 f"Cam{serial} recording context: {entry.get('recording_type') if isinstance(entry, dict) else '?'}/"
-                f"{entry.get('recording_subtype') if isinstance(entry, dict) else '?'} "
+                f"{entry.get('recording_subtype', '(no subtype)') if isinstance(entry, dict) else '?'} "
                 f"{entry.get('behavior_mode') if isinstance(entry, dict) else '?'} "
                 f"{entry.get('recording_intent') if isinstance(entry, dict) else '?'} "
                 f"{entry.get('data_origin') if isinstance(entry, dict) else '?'}",

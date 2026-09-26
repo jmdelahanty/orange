@@ -63,7 +63,7 @@ void load_fields_from_config() {
     if (recording_contexts.default_context) {
         const auto& d = *recording_contexts.default_context;
         std::snprintf(ctx_type, sizeof ctx_type, "%s", d.recording_type.c_str());
-        std::snprintf(ctx_subtype, sizeof ctx_subtype, "%s", d.recording_subtype.c_str());
+        std::snprintf(ctx_subtype, sizeof ctx_subtype, "%s", d.recording_subtype ? d.recording_subtype->c_str() : "");
         ctx_mode = index_of(kModes, 3, d.behavior_mode, 0);
         ctx_intent = index_of(kIntents, 2, d.recording_intent, 1);
         ctx_origin = index_of(kOrigins, 2, d.data_origin, 0);
@@ -74,7 +74,10 @@ void load_fields_from_config() {
 bool apply_fields_to_config(std::string* error) {
     try {
         recording::RecordingContext d;
-        d.recording_type = ctx_type; d.recording_subtype = ctx_subtype;
+        d.recording_type = ctx_type;
+        // Blank subtype = not specified (context version 2, key omitted); never a placeholder.
+        if (ctx_subtype[0] != '\0') d.recording_subtype = std::string(ctx_subtype);
+        else d.recording_subtype.reset();
         d.behavior_mode = kModes[ctx_mode]; d.recording_intent = kIntents[ctx_intent]; d.data_origin = kOrigins[ctx_origin];
         recording::RecordingContext::Parse(d.ToJson());  // same rules as the config parser
         recording_contexts.default_context = d;
@@ -89,7 +92,7 @@ void RenderRecordingContextSelection(bool locked) {
     ImGui::BeginDisabled(locked);
     bool changed = false;
     changed |= ImGui::InputText("Recording type", ctx_type, sizeof ctx_type);
-    changed |= ImGui::InputText("Recording subtype", ctx_subtype, sizeof ctx_subtype);
+    changed |= ImGui::InputText("Recording subtype (blank = not specified)", ctx_subtype, sizeof ctx_subtype);
     changed |= ImGui::Combo("Behavior mode", &ctx_mode, kModes, 3);
     changed |= ImGui::Combo("Recording intent", &ctx_intent, kIntents, 2);
     changed |= ImGui::Combo("Data origin", &ctx_origin, kOrigins, 2);
@@ -124,7 +127,8 @@ void RenderRecordingContextSelection(bool locked) {
     if (!recording_contexts.cameras.empty()) {
         ImGui::TextWrapped("Per-camera overrides in the app config (edit the file to change):");
         for (const auto& [serial, ctx] : recording_contexts.cameras)
-            ImGui::BulletText("%s: %s / %s, %s, %s, %s", serial.c_str(), ctx.recording_type.c_str(), ctx.recording_subtype.c_str(),
+            ImGui::BulletText("%s: %s / %s, %s, %s, %s", serial.c_str(), ctx.recording_type.c_str(),
+                              ctx.recording_subtype ? ctx.recording_subtype->c_str() : "(no subtype)",
                               ctx.behavior_mode.c_str(), ctx.recording_intent.c_str(), ctx.data_origin.c_str());
     }
     if (!recording_contexts.configured())
@@ -133,6 +137,8 @@ void RenderRecordingContextSelection(bool locked) {
         ImGui::TextWrapped("recording_only: no Citrus observation binding for this recording (binding mode not_applicable).");
     else
         ImGui::TextWrapped("stimulus_experiment: Citrus binding mode follows ORANGE_CITRUS_OBSERVATION_BINDING_MODE; the context is frozen in the start snapshot and, once the v2 handshake lands, sent to Citrus before capture.");
+    if (ctx_subtype[0] == '\0' && recording_contexts.configured())
+        ImGui::TextWrapped("No subtype: emitted as citrus.parent_recording_context version 2 (subtype omitted, no default substituted). Citrus and Palette must accept version 2 before a subtype-free recording is transferred.");
     ImGui::TextWrapped("Frozen into the recording start snapshot for exactly the recording cameras; every manifest write carries it unchanged.");
     if (contexts_dirty) ImGui::TextWrapped("Unsaved: the next launch reloads the app config.");
     if (!contexts_error.empty()) ImGui::TextWrapped("Record start blocked: %s", contexts_error.c_str());

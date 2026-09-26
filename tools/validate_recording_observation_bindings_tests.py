@@ -86,7 +86,12 @@ CONTEXT = {
 }
 
 
-def fixture(root: Path, version: int = 1, unified_h5: bool = False) -> None:
+CONTEXT_NO_SUBTYPE = {k: v for k, v in CONTEXT.items() if k != "recording_subtype"}
+CONTEXT_NO_SUBTYPE["schema_version"] = 2
+
+
+def fixture(root: Path, version: int = 1, unified_h5: bool = False,
+            parent_context: dict[str, Any] = CONTEXT) -> None:
     """version 2 carries the frozen context in each request (and a start
     snapshot that freezes it); unified_h5 writes the Citrus 9aa6d57 layout
     (/evidence/recording_binding + /metadata/session) instead of the root one."""
@@ -96,7 +101,7 @@ def fixture(root: Path, version: int = 1, unified_h5: bool = False) -> None:
         write_json(root / "recording_snapshot_start.json", {
             "schema_version": 2,
             "session": {"recording_contexts": {
-                camera: dict(CONTEXT) for camera in ("2010093", "2010094", "2010095", "2010096")}},
+                camera: dict(parent_context) for camera in ("2010093", "2010094", "2010095", "2010096")}},
         })
     request_refs = []
     acceptance_refs = []
@@ -124,7 +129,7 @@ def fixture(root: Path, version: int = 1, unified_h5: bool = False) -> None:
             "recording_geometry_contract": {"status": "available"},
         }
         if version == 2:
-            request_contract["recording_context"] = dict(CONTEXT)
+            request_contract["recording_context"] = dict(parent_context)
 
         request = seal(
             "orange.citrus.recording_observation_binding_request",
@@ -180,7 +185,8 @@ def fixture(root: Path, version: int = 1, unified_h5: bool = False) -> None:
             session.attrs["session_uuid"] = f"session_{index}"
             if version == 2:
                 for key in ("recording_type", "recording_subtype", "behavior_mode"):
-                    session.attrs[key] = CONTEXT[key]
+                    if key in parent_context:
+                        session.attrs[key] = parent_context[key]
             group = h5.create_group(
                 "evidence/recording_binding" if unified_h5 else "recording_observation_binding")
             group.attrs["schema_id"] = "citrus.recording_observation_binding_h5"
@@ -368,6 +374,23 @@ def main() -> int:
             assert "recording_subtype differs" in str(error), str(error)
         else:
             raise AssertionError("H5 session context drift passed validation")
+
+    # Context v2 without a subtype: the omission passes and must be preserved in
+    # the H5 session metadata; a substituted subtype is refused.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        fixture(root, version=2, unified_h5=True, parent_context=CONTEXT_NO_SUBTYPE)
+        assert module.validate(root, expected, 4)["status"] == "pass"
+        import h5py
+
+        with h5py.File(root / "citrus/arena_3.h5", "r+") as h5:
+            h5["metadata/session"].attrs["recording_subtype"] = "dish_stimulus"
+        try:
+            module.validate(root, expected, 4)
+        except module.ValidationError as error:
+            assert "present although the accepted context omits it" in str(error), str(error)
+        else:
+            raise AssertionError("substituted subtype passed validation")
 
     print("validate_recording_observation_bindings_tests passed")
     return 0

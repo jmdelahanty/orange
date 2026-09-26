@@ -590,12 +590,20 @@ def verify_common_manifest(
         require(isinstance(contexts, dict) and sorted(contexts.keys()) == sorted(cameras),
                 f"recording_contexts keys must equal cameras {cameras}")
         for serial, entry in contexts.items():
-            require(isinstance(entry, dict) and set(entry.keys()) == {
-                "schema_id", "schema_version", "recording_type", "recording_subtype",
-                "behavior_mode", "recording_intent", "data_origin"},
-                f"recording_contexts[{serial}] must be a closed seven-field citrus.parent_recording_context")
-            require(entry.get("schema_id") == "citrus.parent_recording_context" and entry.get("schema_version") == 1,
+            require(isinstance(entry, dict) and entry.get("schema_version") in (1, 2)
+                    and not isinstance(entry.get("schema_version"), bool),
+                    f"recording_contexts[{serial}] schema_version must be 1 or 2")
+            fields = {"schema_id", "schema_version", "recording_type", "recording_subtype",
+                      "behavior_mode", "recording_intent", "data_origin"}
+            if entry["schema_version"] == 2 and "recording_subtype" not in entry:
+                fields.discard("recording_subtype")  # v2: subtype omitted = not specified
+            require(set(entry.keys()) == fields,
+                    f"recording_contexts[{serial}] must be a closed citrus.parent_recording_context")
+            require(entry.get("schema_id") == "citrus.parent_recording_context",
                     f"recording_contexts[{serial}] schema mismatch")
+            require("recording_subtype" not in entry or
+                    (isinstance(entry["recording_subtype"], str) and entry["recording_subtype"] != ""),
+                    f"recording_contexts[{serial}] recording_subtype must be a non-empty string or omitted")
             require(entry.get("behavior_mode") in {"free", "embedded", "none"}
                     and entry.get("recording_intent") in {"stimulus_experiment", "recording_only"}
                     and entry.get("data_origin") in {"acquired", "synthetic"},
