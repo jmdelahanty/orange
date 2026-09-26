@@ -63,7 +63,11 @@ refuses a non-empty output folder: finalized evidence is never patched.
   projected-surface scale (candidate + observation) per camera, one tank
   design, and an accepted daily registration (valid until 2099) with a
   schema-v2 dish top-rim observation and its compact exports per camera. Every
-  file carries `synthetic_input`. With four cameras the resolved bundle has 48
+  file carries `synthetic_input`. The tree also carries what Citrus's own
+  intake of the rig needs (2026-09-26 round trip): runtime scale values
+  (`pixels_per_mm_camera`, `pixels_per_mm_projector`) on each canvas camera
+  calibration, `canvas_checksum_at_acceptance` on every accepted pointer, and
+  `candidate_id` on each commissioning member. With four cameras the resolved bundle has 48
   compact files: 11 per camera, 3 daily-registration files, 1 tank design.
 - `--canvas <citrus_canvas.json>` uses an existing canvas tree instead (for
   example the real `omnifin0/shadow`, whose geometry is real while the frames

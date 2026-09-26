@@ -208,7 +208,38 @@ fs::path write_synthetic_rig(const fs::path& root, const std::vector<std::string
                         {"outer_diameter_mm", 90.0}, {"wall_thickness_mm", 5.0}}},
         {"synthetic_input", synthetic_marker}});
 
+    // Citrus additionally requires, in its own inputs: runtime scale values on
+    // the canvas camera calibrations, the canvas checksum on every accepted
+    // pointer, and the candidate ids on the commissioning members. The canvas
+    // is therefore written first and the pointers reference its checksum.
+    const double camera_pixels_per_mm = 52.75, canvas_pixels_per_mm = 4.22;
     json arenas = json::object();
+    for (std::size_t i = 0; i < cameras.size(); ++i) {
+        const std::string& serial = cameras[i];
+        const std::string arena_id = "arena_" + std::to_string(i + 1);
+        arenas[arena_id] = {
+            {"config_name", arena_id},
+            {"active_camera_id", serial},
+            {"selected_dish_type_name", tank_design_id},
+            {"tank_design_id", tank_design_id},
+            {"experimental_area_shape", "CIRCLE"},
+            {"experimental_area_center_x_px", 480.0 + 320.0 * static_cast<double>(i)},
+            {"experimental_area_center_y_px", 540.0},
+            {"experimental_area_radius_mm", 40.0},
+            {"camera_calibrations", json::array({{
+                {"camera_id", serial},
+                {"native_width_px", width}, {"native_height_px", height},
+                {"arena_center_x_px", width / 2.0}, {"arena_center_y_px", height / 2.0},
+                {"arena_width_px", 2.0 * (std::min(width, height) * 0.45)},
+                {"arena_height_px", 2.0 * (std::min(width, height) * 0.45)},
+                {"pixels_per_mm_camera", camera_pixels_per_mm},
+                {"pixels_per_mm_projector", canvas_pixels_per_mm}}})}};
+    }
+    write_json(canvas_path, {
+        {"canvas_name", canvas_name}, {"canvas_width_px", 1920}, {"canvas_height_px", 1080},
+        {"arenas", arenas}, {"synthetic_input", synthetic_marker}});
+    const std::string canvas_checksum = file_sha256(canvas_path);
+
     json members = json::array();
     json registration_targets = json::array();
     const std::string release_id = "synthetic_release";
@@ -223,20 +254,6 @@ fs::path write_synthetic_rig(const fs::path& root, const std::vector<std::string
         const std::string& serial = cameras[i];
         const std::string arena_id = "arena_" + std::to_string(i + 1);
         const std::string suffix = arena_id + "_" + serial;
-        arenas[arena_id] = {
-            {"config_name", arena_id},
-            {"active_camera_id", serial},
-            {"selected_dish_type_name", tank_design_id},
-            {"tank_design_id", tank_design_id},
-            {"experimental_area_shape", "CIRCLE"},
-            {"experimental_area_center_x_px", 480.0 + 320.0 * static_cast<double>(i)},
-            {"experimental_area_center_y_px", 540.0},
-            {"experimental_area_radius_mm", 40.0},
-            {"camera_calibrations", json::array({{
-                {"camera_id", serial},
-                {"native_width_px", width}, {"native_height_px", height},
-                {"arena_center_x_px", cx}, {"arena_center_y_px", cy},
-                {"arena_width_px", 2.0 * inner_r}, {"arena_height_px", 2.0 * inner_r}}})}};
 
         // Homography: candidate + yaml + accepted active pointer.
         const std::string homography_candidate_id = "homography_" + suffix + "_synthetic";
@@ -267,6 +284,8 @@ fs::path write_synthetic_rig(const fs::path& root, const std::vector<std::string
             {"target_plane", "projected_surface"},
             {"homography_direction", "camera_native_px_to_final_display_canvas_px"},
             {"homography_matrix", matrix},
+            {"canvas_path", canvas_path.string()},
+            {"canvas_checksum_at_acceptance", canvas_checksum},
             {"synthetic_input", synthetic_marker}});
 
         // Projected-surface scale: observation + candidate + accepted active pointer.
@@ -284,7 +303,7 @@ fs::path write_synthetic_rig(const fs::path& root, const std::vector<std::string
             {"schema_id", "citrus.calibration.projected_surface_scale_candidate"}, {"schema_version", 1},
             {"candidate_id", scale_candidate_id}, {"arena_id", arena_id}, {"camera_id", serial},
             {"target_plane", "projected_surface"},
-            {"scale", {{"camera_pixels_per_mm", 52.75}, {"canvas_pixels_per_mm", 4.22}}},
+            {"scale", {{"camera_pixels_per_mm", camera_pixels_per_mm}, {"canvas_pixels_per_mm", canvas_pixels_per_mm}}},
             {"synthetic_input", synthetic_marker}});
         const fs::path s_pointer = artifacts / ("scale_active_" + suffix + "_projected_surface.json");
         write_json(s_pointer, {
@@ -298,15 +317,19 @@ fs::path write_synthetic_rig(const fs::path& root, const std::vector<std::string
             {"direction", "physical_target_mm_to_final_display_canvas_px"},
             {"active_homography", {{"candidate_id", homography_candidate_id},
                                    {"active_pointer_path", h_pointer.string()}}},
-            {"scale", {{"camera_pixels_per_mm", 52.75}, {"canvas_pixels_per_mm", 4.22},
-                       {"canvas_pixels_per_mm_x", 4.21}, {"canvas_pixels_per_mm_y", 4.23}}},
+            {"scale", {{"camera_pixels_per_mm", camera_pixels_per_mm}, {"canvas_pixels_per_mm", canvas_pixels_per_mm},
+                       {"canvas_pixels_per_mm_x", canvas_pixels_per_mm}, {"canvas_pixels_per_mm_y", canvas_pixels_per_mm}}},
             {"source_observation", {{"path", s_observation.string()}, {"sha256", file_sha256(s_observation)}}},
+            {"canvas_path", canvas_path.string()},
+            {"canvas_checksum_at_acceptance", canvas_checksum},
             {"synthetic_input", synthetic_marker}});
 
         members.push_back({
             {"arena_id", arena_id}, {"camera_id", serial}, {"target_plane", "projected_surface"},
-            {"homography", {{"active_pointer_path", h_pointer.string()}, {"active_pointer_sha256", file_sha256(h_pointer)}}},
-            {"projected_surface_scale", {{"active_pointer_path", s_pointer.string()}, {"active_pointer_sha256", file_sha256(s_pointer)}}},
+            {"homography", {{"active_pointer_path", h_pointer.string()}, {"active_pointer_sha256", file_sha256(h_pointer)},
+                            {"candidate_id", homography_candidate_id}}},
+            {"projected_surface_scale", {{"active_pointer_path", s_pointer.string()}, {"active_pointer_sha256", file_sha256(s_pointer)},
+                                         {"candidate_id", scale_candidate_id}}},
             {"requirements", {{"acceptance_receipts_valid", true}, {"active_homography_compatible", true},
                               {"active_scale_compatible", true}, {"scale_bound_to_active_homography", true}}}});
 
@@ -372,9 +395,6 @@ fs::path write_synthetic_rig(const fs::path& root, const std::vector<std::string
                                  {"sha256", file_sha256(observation_path)}}}});
     }
 
-    write_json(canvas_path, {
-        {"canvas_name", canvas_name}, {"canvas_width_px", 1920}, {"canvas_height_px", 1080},
-        {"arenas", arenas}, {"synthetic_input", synthetic_marker}});
     write_json(release_path, {
         {"schema_id", "citrus.calibration.rig_canvas_commissioning_release"}, {"schema_version", 1},
         {"status", "accepted"}, {"release_id", release_id}, {"rig_id", rig_id},
