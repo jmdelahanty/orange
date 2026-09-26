@@ -93,12 +93,31 @@ entry with or without a subtype.
   emission and round trip, mixed block), `validate_recording_observation_bindings_tests`
   (v2 fixture without subtype passes; a substituted H5 subtype is refused).
 
+## Status 2026-09-26 (later): Citrus accepted, Palette pending
+
+Citrus implemented the revision on its review branch (their
+`docs/parent_recording_context_v2_optional_subtype_2026-09-26.md`): v1 keeps
+the subtype required, v2 permits omission, omission stays absent in the H5
+session metadata and in transfer output, mixed context versions across cameras
+are accepted, mixed binding-request versions in one batch stay invalid. No H5
+metadata-version bump was needed (the session attribute was already
+optional-by-policy). Their transfer schema now carries
+`$id = urn:citrus:recording-transfer:parent-context-v2`, which Palette must
+admit and pin explicitly. Joint software gate against Orange `a8a0234`: 8/8
+transport cases (the original four plus four mixed-context cases, with
+replay); Orange's native probe passes their three fresh fixture chains (v1,
+subtype-free v2, explicit-subtype v2).
+
+Orange cross-check on those three chains (this tree at `a8a0234`): sealed
+request/acceptance v2 and receipt v1, context equal to the sealed start
+snapshot, unified H5 layout with the embedded chain identical to the sealed
+files, and the H5 `/metadata/session` attributes equal to the accepted
+context with `recording_subtype` **absent** for the subtype-free chain and
+present for the other two.
+
 ## Open on the other sides
 
-- Citrus: `CitrusRecordingContext::Valid` (7-key/version-1 check) and
-  `MatchesSessionFields`; per-Arena canvas `recording_context` without the
-  key; H5 session attributes; the bound-start comparison. Bump the H5 session
-  metadata contract so a missing `recording_subtype` attribute is by design.
+- Citrus: done on the review branch (see status above); publish that slice.
 - Palette: `recording_transfer_v2.schema.json` `recording_type`/`recording_subtype`
   block and `parent_recording_intake_v2` validation; intake metadata must
   carry "not specified", not a filled value.
