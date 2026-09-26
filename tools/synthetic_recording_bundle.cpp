@@ -8,11 +8,13 @@
 //   2. update_gui_recording_geometry_contract
 //        -> recording_geometry_contract.json + recording_geometry_assets/
 //           (manifest + exact-byte copies of every referenced observation)
-//   3. update_recording_snapshot_session_artifacts (frozen recording_contexts)
-//   4. seal_immutable_recording_start_snapshot -> recording_snapshot_start.json
-//   5. optional: materialize_recording_observation_binding_requests
+//   3. update_gui_detect_model_snapshots / update_gui_pose_model_snapshots
+//        -> models[<serial>].{detect,pose} (both disabled: no analytics ran)
+//   4. update_recording_snapshot_session_artifacts (frozen recording_contexts)
+//   5. seal_immutable_recording_start_snapshot -> recording_snapshot_start.json
+//   6. optional: materialize_recording_observation_binding_requests
 //        -> recording_observation_bindings/{request_collection.json,requests/}
-//   6. optional: build/write the single-clip recording_session.json with
+//   7. optional: build/write the single-clip recording_session.json with
 //      conspicuously labelled placeholder media files.
 //
 // Synthetic geometry inputs come either from --fixture-rig (a self-contained
@@ -513,7 +515,16 @@ int main(int argc, char** argv)
             throw std::runtime_error("recording_geometry_contract.json was not written");
         }
 
-        // 3. Frozen recording contexts (always synthetic) and the bundle label
+        // 3. Per-camera model declarations through the production updaters: the
+        //    synthetic bundle ran no detector and no pose model, so both are
+        //    declared disabled (Citrus's capacity preflight requires the
+        //    declaration, not its absence).
+        update_gui_detect_model_snapshots(o.out.string(), params.data(), select.data(),
+                                          static_cast<int>(params.size()), /*selected_yolo_model=*/"");
+        update_gui_pose_model_snapshots(o.out.string(), params.data(), select.data(),
+                                        static_cast<int>(params.size()));
+
+        // 4. Frozen recording contexts (always synthetic) and the bundle label
         //    inside the snapshot, before sealing.
         orange::recording::RecordingContext context;
         context.recording_type = o.recording_type;
@@ -536,14 +547,14 @@ int main(int argc, char** argv)
             throw std::runtime_error("update_recording_snapshot_session_artifacts failed");
         }
 
-        // 4. Seal the immutable start snapshot (create-once, read-only).
+        // 5. Seal the immutable start snapshot (create-once, read-only).
         json start_reference;
         std::string error;
         if (!seal_immutable_recording_start_snapshot(o.out.string(), &start_reference, &error)) {
             throw std::runtime_error("seal_immutable_recording_start_snapshot failed: " + error);
         }
 
-        // 5. Observation binding requests (Orange's sealed binding inputs for Citrus).
+        // 6. Observation binding requests (Orange's sealed binding inputs for Citrus).
         std::string binding_mode = o.binding_mode.empty() ? "optional" : o.binding_mode;
         binding_mode = orange::recording::ApplyRecordingIntentToBindingMode(o.out.string(), binding_mode, &error);
         if (binding_mode.empty()) throw std::runtime_error("binding mode: " + error);
@@ -574,7 +585,7 @@ int main(int argc, char** argv)
             }
         }
 
-        // 6. Optional single-clip manifest with labelled placeholder media.
+        // 7. Optional single-clip manifest with labelled placeholder media.
         json manifest_summary = {{"written", false}};
         if (o.manifest) {
             orange::session::SingleClipRecordingSessionManifestOptions m;
@@ -654,6 +665,8 @@ int main(int argc, char** argv)
                 {"recording_snapshot_start", start_reference},
                 {"recording_geometry_contract", sha_reference(o.out, "recording_geometry_contract.json")},
                 {"recording_geometry_assets_manifest", sha_reference(o.out, "recording_geometry_assets/manifest.json")}}},
+            {"models", {{"detect", "declared_disabled"}, {"pose", "declared_disabled"},
+                        {"note", "no analytics ran; models[<serial>].{detect,pose}.enabled=false via the production updaters"}}},
             {"geometry_contract_status", contract.value("status", "")},
             {"geometry_assets_status", contract.value("materialized_assets", json::object()).value("status", "")},
             {"geometry_assets_file_count", contract.value("materialized_assets", json::object()).value("file_count", 0)},

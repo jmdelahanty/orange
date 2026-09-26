@@ -29,20 +29,24 @@ Exactly the production functions a recording start runs, in the same order:
    pointer, candidate, tank design and daily-registration file, each with its
    SHA-256 and verified declared checksum); the snapshot receives the
    contract's digest reference and `calibrations[serial].dish_top_rim_observation`.
-3. `update_recording_snapshot_session_artifacts` → frozen
+3. `update_gui_detect_model_snapshots` and `update_gui_pose_model_snapshots`
+   → `models[<serial>].detect` and `.pose`, both `enabled = false` (no
+   analytics ran; Citrus's capacity preflight requires the declaration and
+   rejects its absence with `capacity_pose_declaration_missing`).
+4. `update_recording_snapshot_session_artifacts` → frozen
    `session.recording_contexts` (always `data_origin = synthetic`) and
    `session.synthetic_bundle` (the label).
-4. `seal_immutable_recording_start_snapshot` → create-once, read-only
+5. `seal_immutable_recording_start_snapshot` → create-once, read-only
    `recording_snapshot_start.json`; the mutable snapshot gains
    `immutable_recording_start_snapshot` and keeps being enriched.
-5. For a `stimulus_experiment` intent with binding mode `required|optional`:
+6. For a `stimulus_experiment` intent with binding mode `required|optional`:
    `materialize_recording_observation_binding_requests` →
    `recording_observation_bindings/request_collection.json` and
    `requests/<context>.json` (request v1 or v2 per `--request-version`),
    referenced from the mutable snapshot only. These are Orange's sealed binding
    inputs; Citrus answers them (acceptance batch) before H5 generation. No
    pre-arm transport runs.
-6. `--manifest`: `build_single_clip_recording_session_manifest` +
+7. `--manifest`: `build_single_clip_recording_session_manifest` +
    `write_recording_session_manifest` → `recording_session.json` carrying the
    frozen contexts and the geometry-contract reference, with conspicuously
    labelled plain-text placeholder media (`Cam<serial>.mp4` is text, never

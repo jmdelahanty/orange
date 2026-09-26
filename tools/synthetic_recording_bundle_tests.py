@@ -64,6 +64,12 @@ def check_bundle(out: Path, summary: dict, *, expect_subtype: bool, expect_reque
         assert start["cameras"][serial]["synthetic_input"]["synthetic"] is True
         assert start["camera_runtime"][serial]["source"] if "source" in start["camera_runtime"][serial] else True
     assert start["session"]["synthetic_bundle"]["synthetic"] is True
+    # Model declarations (Citrus capacity preflight needs them present, disabled).
+    assert set(start["models"]) == set(CAMERAS)
+    for serial in CAMERAS:
+        assert start["models"][serial]["pose"]["enabled"] is False, start["models"][serial]
+        assert start["models"][serial]["detect"]["enabled"] is False, start["models"][serial]
+    assert snapshot["models"] == start["models"]
 
     # Frozen recording contexts: synthetic origin, one per camera, the requested
     # context version, identical in both snapshots.
