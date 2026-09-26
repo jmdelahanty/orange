@@ -747,6 +747,27 @@ if(BUILD_TESTING)
     target_compile_features(recording_observation_binding_tests PRIVATE cxx_std_17)
     add_test(NAME recording_observation_binding_tests COMMAND recording_observation_binding_tests)
 
+    # Standalone pre-arm / finalization runner for cross-repository fixture
+    # pipelines (docs/synthetic_recording_bundle.md); same sources as the tests.
+    add_executable(recording_observation_binding_cli
+        "tools/recording_observation_binding_cli.cpp"
+        "${SRC_DIR}/session/recording_observation_binding.cpp"
+        "${SRC_DIR}/recording_context.cpp"
+        "${SRC_DIR}/session/recording_observation_finalization.cpp"
+        "${SRC_DIR}/session/recording_observation_identity.cpp"
+        "${SRC_DIR}/session/recording_observation_prearm.cpp"
+        "${SRC_DIR}/session/recording_observation_request_artifacts.cpp"
+    )
+    target_include_directories(recording_observation_binding_cli PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(recording_observation_binding_cli PRIVATE cxx_std_17)
+    add_test(
+        NAME recording_observation_binding_cli_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/recording_observation_binding_cli_tests.py"
+                "${CMAKE_BINARY_DIR}/recording_observation_binding_cli"
+                "${CMAKE_BINARY_DIR}/synthetic_recording_bundle")
+    set_tests_properties(recording_observation_binding_cli_tests
+        PROPERTIES DEPENDS synthetic_recording_bundle_build)
+
     add_executable(crop_rolling_sidecars_tests
         "tools/crop_rolling_sidecars_tests.cpp"
         "${SRC_DIR}/session/crop_rolling_sidecars.cpp"

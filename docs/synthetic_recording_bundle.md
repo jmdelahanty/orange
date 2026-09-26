@@ -103,6 +103,33 @@ fixture rig). Timestamps and `source_version` differ between runs by design;
 reproducibility means the same inputs produce the same structure, statuses,
 file set and declared-checksum verification, not byte-identical snapshots.
 
+## Completing the Orange side after Citrus answers
+
+`recording_observation_binding_cli` (same sources as the binding tests, built
+by default) runs the two production steps that follow the bundle:
+
+```bash
+# Orange -> Citrus: send the sealed requests to Citrus's local-control socket,
+# persist acceptances + the create-once pre-arm decision (idempotent replay).
+targets/release/recording_observation_binding_cli prearm \
+  --folder <bundle> --binding-mode required --request-version 2 \
+  --socket /tmp/orange_local_control.sock [--timeout-ms 2000]
+
+# Citrus -> Orange: after the H5s are closed and the receipts sealed,
+# {"experiment_id": "...", "receipts": [<sealed receipt v1>, ...]}
+targets/release/recording_observation_binding_cli finalize \
+  --folder <bundle> --receipts <params.json>
+```
+
+`--binding-mode` must equal the mode the bundle's requests were sealed with
+(a different one is refused as an evidence mismatch). `finalize` validates
+every receipt against the immutable request/acceptance chain, verifies the
+closed H5 bytes, writes the create-once receipts and
+`recording_observation_bindings/finalized_collection.json`, and refreshes the
+manifest's binding projection. Both print a JSON result and exit non-zero on
+refusal. Test: `tools/recording_observation_binding_cli_tests.py`
+(unreachable-socket optional/required paths, replay, finalize refusals).
+
 ## Validation
 
 `tools/synthetic_recording_bundle_tests.py` (ctest `synthetic_recording_bundle_tests`)
