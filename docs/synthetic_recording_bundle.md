@@ -119,3 +119,21 @@ carrying contexts and the geometry reference; rerun refused.
 For the cross-repository handoff, Citrus's own admission script
 (`recording_transfer_v2.py --validate-source-only`) and Palette intake are the
 external checks; this tool makes Orange's side complete and honest.
+
+Admission results on 2026-09-26 (Citrus script at cff3687, four-camera fixture
+rig, `/home/jeremy/orange_data/synthetic_fixtures/20260926/`):
+
+- `bound_v1_subtype`: refused with "bound recording lacks finalized
+  observation collection". Expected: the bundle stops at Orange's sealed
+  requests; the acceptance batch, H5 and finalized collection are Citrus's
+  step before transfer.
+- `bound_v2_no_subtype`: refused with "unsupported parent recording context
+  fields" by that pre-revision script; Citrus's review branch accepts context
+  v2.
+- `recording_only_v1`: passes the frame-map checks (production metadata
+  columns, monotonic synthetic timestamps) and is refused at
+  `Cam<serial>.mp4.finalization.json`. That is by design: the tool does not
+  fabricate an `orange.video_container_finalization` claim for a text
+  placeholder. Recording-only single/rolling fixtures come from real
+  recordings with real media; the synthetic bundle is for geometry, snapshots
+  and binding inputs.

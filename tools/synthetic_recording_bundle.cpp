@@ -29,6 +29,7 @@
 #include "json.hpp"
 #include "project.h"
 #include "recording_context.h"
+#include "recording_metadata_csv.h"
 #include "recording_output_descriptor.h"
 #include "session/recording_observation_request_artifacts.h"
 #include "session/recording_session.h"
@@ -603,9 +604,16 @@ int main(int argc, char** argv)
                 const std::string note = "SYNTHETIC PLACEHOLDER (orange synthetic_recording_bundle): not media, not decodable, "
                                          "not an acquired frame stream. Camera " + serial + ".\n";
                 write_text(o.out / artifact.video_path, note);
+                // Per-frame metadata in the production column layout with a
+                // synthetic monotonic clock (10 ms per frame at 100 fps).
                 std::ostringstream csv;
-                csv << "recording_frame_id,camera_frame_id,synthetic_placeholder\n";
-                for (int f = 1; f <= o.placeholder_frames; ++f) csv << f << "," << f << ",1\n";
+                orange::recording_metadata::write_header(csv);
+                const std::uint64_t base_ns = 1'700'000'000'000'000'000ULL;
+                const std::uint64_t period_ns = 1'000'000'000ULL / (o.frame_rate ? o.frame_rate : 100);
+                for (int f = 1; f <= o.placeholder_frames; ++f) {
+                    const std::uint64_t t = base_ns + static_cast<std::uint64_t>(f - 1) * period_ns;
+                    orange::recording_metadata::write_row(csv, static_cast<std::uint64_t>(f), t, t);
+                }
                 write_text(o.out / artifact.metadata_path, csv.str());
                 write_json(o.out / artifact.keyframe_path, {{"synthetic_placeholder", true}, {"camera_serial", serial},
                                                             {"keyframes", json::array()}});
