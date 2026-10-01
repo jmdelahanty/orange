@@ -157,7 +157,7 @@
           "gop_route_offset": 1
         }
       },
-      "recorder_tool_path": "/home/jeremy/orange-device-roi-20260912/targets/native/external_recorder_ipc_probe_native"
+      "recorder_tool_path": "/opt/orange/bin/external_recorder_ipc_probe_native"
     },
     "yolo_worker": {
       "mode": "real",
