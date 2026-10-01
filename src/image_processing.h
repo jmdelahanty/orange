@@ -9,6 +9,7 @@
 #include <vector>         // For std::vector
 #include <atomic>         // For std::atomic
 #include <cuda_runtime.h> // For cudaEvent_t
+#include "npp_utils.h"
 
 
 struct FrameGPU
@@ -76,17 +77,21 @@ static inline void initialize_gpu_debayer(Debayer *debayer, CameraParams *camera
     }
 }
 
-static inline void debayer_frame_gpu(CameraParams *camera_params, FrameGPU *frame_original, Debayer *debayer)
+// `npp_ctx` is the calling worker's stream context (npp_utils.h); the work is
+// enqueued on that stream and nothing process-global is touched.
+static inline void debayer_frame_gpu(CameraParams *camera_params, FrameGPU *frame_original, Debayer *debayer,
+                                     const NppStreamContext& npp_ctx)
 {
-    const NppStatus npp_result = nppiCFAToRGBA_8u_C1AC4R(frame_original->d_orig,
-                                                         camera_params->width * sizeof(unsigned char),
-                                                         debayer->size,
-                                                         debayer->roi,
-                                                         debayer->d_debayer,
-                                                         camera_params->width * sizeof(uchar4),
-                                                         debayer->grid,
-                                                         NPPI_INTER_UNDEFINED,
-                                                         debayer->nAlpha);
+    const NppStatus npp_result = nppiCFAToRGBA_8u_C1AC4R_Ctx(frame_original->d_orig,
+                                                             camera_params->width * sizeof(unsigned char),
+                                                             debayer->size,
+                                                             debayer->roi,
+                                                             debayer->d_debayer,
+                                                             camera_params->width * sizeof(uchar4),
+                                                             debayer->grid,
+                                                             NPPI_INTER_UNDEFINED,
+                                                             debayer->nAlpha,
+                                                             npp_ctx);
     if (npp_result != 0)
     {
         std::cout << "\nNPP error %d \n"
@@ -94,14 +99,16 @@ static inline void debayer_frame_gpu(CameraParams *camera_params, FrameGPU *fram
     }
 }
 
-static inline void duplicate_channel_gpu(CameraParams *camera_params, FrameGPU *frame_original, Debayer *debayer)
+static inline void duplicate_channel_gpu(CameraParams *camera_params, FrameGPU *frame_original, Debayer *debayer,
+                                         const NppStreamContext& npp_ctx)
 {
-    const NppStatus npp_result = nppiDup_8u_C1AC4R(
+    const NppStatus npp_result = nppiDup_8u_C1AC4R_Ctx(
         frame_original->d_orig,
         camera_params->width * sizeof(unsigned char),
         debayer->d_debayer,
         camera_params->width * sizeof(uchar4),
-        debayer->size);
+        debayer->size,
+        npp_ctx);
 
     if (npp_result != 0)
     {

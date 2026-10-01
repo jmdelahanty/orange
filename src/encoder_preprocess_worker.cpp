@@ -968,7 +968,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     }
 
     ck(cudaSetDevice(preprocess_gpu_id_));
-    EnsureNppStream(m_stream);
+    const NppStreamContext& npp_ctx = NppStreamContextFor(m_stream);
 
     if (helper_noop_source_read_enabled_ &&
         entry->image_gpu_id >= 0 &&
@@ -1471,12 +1471,12 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
         frame_original_gpu_.d_orig = input_source;
         
         // 1. Debayer RAW Bayer to RGBA
-        debayer_frame_gpu(camera_params_, &frame_original_gpu_, &debayer_gpu_);
+        debayer_frame_gpu(camera_params_, &frame_original_gpu_, &debayer_gpu_, npp_ctx);
 
         unsigned char* rgba_source = debayer_gpu_.d_debayer;
         if (recording_output_config_.resize_enabled) {
             check_npp_status(
-                nppiResize_8u_C4R(
+                nppiResize_8u_C4R_Ctx(
                     debayer_gpu_.d_debayer,
                     static_cast<int>(camera_params_->width) * 4,
                     resize_source_size_,
@@ -1485,7 +1485,8 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
                     output_width_ * 4,
                     resize_output_size_,
                     resize_output_roi_,
-                    NPPI_INTER_SUPER),
+                    NPPI_INTER_SUPER,
+                    npp_ctx),
                 "nppiResize_8u_C4R");
             rgba_source = d_rgba_resize_;
         }
@@ -1507,7 +1508,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
 
         if (recording_output_config_.resize_enabled) {
             check_npp_status(
-                nppiResize_8u_C1R(
+                nppiResize_8u_C1R_Ctx(
                     input_source,
                     static_cast<int>(camera_params_->width),
                     resize_source_size_,
@@ -1516,7 +1517,8 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
                     static_cast<int>(encoder_entry->surface_pitch),
                     resize_output_size_,
                     resize_output_roi_,
-                    NPPI_INTER_SUPER),
+                    NPPI_INTER_SUPER,
+                    npp_ctx),
                 "nppiResize_8u_C1R");
         } else {
             ck(cudaMemcpy2DAsync(

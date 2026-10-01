@@ -319,7 +319,7 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
     }
 
     ck(cudaSetDevice(display_gpu_id));
-    EnsureNppStream(m_stream);
+    const NppStreamContext& npp_ctx = NppStreamContextFor(m_stream);
 
     // Wait for the data to be ready from the acquisition thread
     cudaEvent_t* source_ready_event = latest_frame->delayed_consumer_event();
@@ -473,7 +473,7 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
         int display_height = static_cast<int>(camera_params->height);
 
         if (downsample > 1) {
-            const NppStatus resize_status = nppiResize_8u_C1R(
+            const NppStatus resize_status = nppiResize_8u_C1R_Ctx(
                 frame_original_gpu_.d_orig,
                 static_cast<int>(camera_params->width),
                 mono_resize_source_size_,
@@ -482,7 +482,7 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
                 mono_resize_output_size_.width,
                 mono_resize_output_size_,
                 mono_resize_output_roi_,
-                NPPI_INTER_SUPER);
+                NPPI_INTER_SUPER, npp_ctx);
             if (resize_status != NPP_SUCCESS) {
                 std::cout << "[OPENGL_DISPLAY] Mono preview resize NPP error "
                           << resize_status << " for " << camera_params->camera_serial
@@ -540,9 +540,9 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
 
     // Debayer or duplicate mono channel to get a 4-channel RGBA image in debayer_gpu_.d_debayer
     if (camera_params->color){
-        debayer_frame_gpu(camera_params, &frame_original_gpu_, &debayer_gpu_);
+        debayer_frame_gpu(camera_params, &frame_original_gpu_, &debayer_gpu_, npp_ctx);
     } else {
-        duplicate_channel_gpu(camera_params, &frame_original_gpu_, &debayer_gpu_);
+        duplicate_channel_gpu(camera_params, &frame_original_gpu_, &debayer_gpu_, npp_ctx);
     }
 
     // --- Draw detections directly on the GPU buffer ---
@@ -580,9 +580,9 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
         NppiRect output_roi = {0, 0, output_display_size_.width, output_display_size_.height};
         
         // Resize the RGBA image
-        nppiResize_8u_C4R(debayer_gpu_.d_debayer, camera_params->width * 4, input_size, input_roi,
+        nppiResize_8u_C4R_Ctx(debayer_gpu_.d_debayer, camera_params->width * 4, input_size, input_roi,
                             d_display_resize_buffer_, output_display_size_.width * 4, output_display_size_,
-                            output_roi, NPPI_INTER_SUPER);
+                            output_roi, NPPI_INTER_SUPER, npp_ctx);
         
         // Update the source and size for the final copy
         final_image_source = d_display_resize_buffer_;

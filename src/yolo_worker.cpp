@@ -1612,7 +1612,6 @@ void YoloWorker::Warmup(int iterations)
     try {
         ck(cudaMemsetAsync(d_warmup_source, 0, source_bytes, yolov8_instance_->stream));
         for (int i = 0; i < iterations; ++i) {
-            EnsureNppStream(yolov8_instance_->stream);
             yolov8_instance_->preprocess_gpu(
                 d_warmup_source,
                 camera_width,
@@ -1962,9 +1961,11 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         const int camera_width = associated_camera_params_->width;
         const int camera_height = associated_camera_params_->height;
 
-        // Set the NPP stream to the one used by the YOLO instance.
+        // Per-call NPP stream context for this worker's stream (replaces the
+        // process-global nppSetStream; the column keeps its name for CSV
+        // compatibility and now measures the cached context lookup).
         const auto cpu_npp_set_start = std::chrono::steady_clock::now();
-        EnsureNppStream(yolov8_instance_->stream);
+        const NppStreamContext& npp_ctx = NppStreamContextFor(yolov8_instance_->stream);
         const auto cpu_npp_set_end = std::chrono::steady_clock::now();
         ms_cpu_npp_set_stream = std::chrono::duration<double, std::milli>(cpu_npp_set_end - cpu_npp_set_start).count();
 
@@ -2154,7 +2155,7 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 associated_camera_params_->gpu_id));
             if (associated_camera_params_->color) {
                 // If color, debayer to RGBA first, then our kernel will handle the rest.
-                debayer_frame_gpu(associated_camera_params_, &frame_original_gpu_, &debayer_gpu_);
+                debayer_frame_gpu(associated_camera_params_, &frame_original_gpu_, &debayer_gpu_, npp_ctx);
                 yolov8_instance_->preprocess_gpu(
                     debayer_gpu_.d_debayer,
                     camera_width,

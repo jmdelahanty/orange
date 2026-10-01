@@ -1642,7 +1642,6 @@ bool CropAndEncodeWorker::crop_recorder_prepared() const
 
 void CropAndEncodeWorker::OnFlushTick() {
     ck(cudaSetDevice(camera_params_->gpu_id));
-    EnsureNppStream(m_stream);
 
     // Startup ordering (2026-09-21): the crop recorder process only exists
     // once a recording start has launched it, so retry the connect (and the
@@ -1693,7 +1692,6 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
 
     // Set the correct CUDA device for this worker's operations.
     ck(cudaSetDevice(camera_params_->gpu_id));
-    EnsureNppStream(m_stream);
 
     if (camera_control_ && !camera_control_->record_video && is_recording_ &&
         external_crop_ipc_) {
