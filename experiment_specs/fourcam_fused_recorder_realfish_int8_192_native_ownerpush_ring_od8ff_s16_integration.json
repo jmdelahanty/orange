@@ -153,7 +153,7 @@
           "vbv_buffer_size": 150000000
         }
       },
-      "recorder_tool_path": "/home/jeremy/orange-integration-20260921/targets/native/external_recorder_ipc_probe_native"
+      "recorder_tool_path": "/opt/orange/bin/external_recorder_ipc_probe_native"
     },
     "yolo_worker": {
       "mode": "real",
