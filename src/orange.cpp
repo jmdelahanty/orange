@@ -10,6 +10,7 @@
 #include "gui/pose_overlay_draw.h"
 #include "gui/pose_overlay.h"
 #include "recording_context.h"
+#include "effective_configuration.h"
 #include <ImGuiFileDialog.h>
 #include "project.h"
 #include "gui.h"
@@ -492,6 +493,7 @@ void set_gui_env_from_app_config_if_absent(const char* name,
         return;
     }
     setenv(name, value.c_str(), 1);
+    orange::recording::NoteEnvExportedFromAppConfig(name);
     if (label && *label) {
         std::cout << "[GUI][app_config] " << label << ": "
                   << value << std::endl;
@@ -5082,11 +5084,15 @@ int main(int /*argc*/, char ** /*args*/) {
         std::cerr << "App storage config warning: " << app_storage_config_error << std::endl;
     }
     orange::gui::LoadRegisteredContextRecordingSettings(build_default_app_config_path(orange_root_dir_str));
+    // Provenance: the start snapshot seals this file (path, sha256, contents)
+    // and every ORANGE_* variable with its source (see effective_configuration.h).
+    orange::recording::SetLoadedAppConfigPath(build_default_app_config_path(orange_root_dir_str));
     if (app_storage_config.gui_ptp_register_read_decimate > 1 &&
         std::getenv("ORANGE_PTP_REGISTER_READ_DECIMATE") == nullptr) {
         const std::string decimate_value =
             std::to_string(app_storage_config.gui_ptp_register_read_decimate);
         setenv("ORANGE_PTP_REGISTER_READ_DECIMATE", decimate_value.c_str(), 1);
+        orange::recording::NoteEnvExportedFromAppConfig("ORANGE_PTP_REGISTER_READ_DECIMATE");
         std::cout << "[GUI][PTP] PTP register-read decimation from app config: 1/"
                   << app_storage_config.gui_ptp_register_read_decimate
                   << std::endl;

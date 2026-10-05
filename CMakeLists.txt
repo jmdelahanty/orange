@@ -383,6 +383,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/session/recording_session.cpp"
     "${SRC_DIR}/recording_context.cpp"
     "${SRC_DIR}/recording_subject_reference.cpp"
+    "${SRC_DIR}/effective_configuration.cpp"
     "${SRC_DIR}/shared_recording_output.cpp"
     "${SRC_DIR}/encoder_preprocess_worker.cpp"
     "${SRC_DIR}/encoder_hw_worker.cpp"
@@ -424,6 +425,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/session/recording_session.cpp"
     "${SRC_DIR}/recording_context.cpp"
     "${SRC_DIR}/recording_subject_reference.cpp"
+    "${SRC_DIR}/effective_configuration.cpp"
     "${SRC_DIR}/recording_encoding_budget.cpp"
     "${SRC_DIR}/recording_output_descriptor.cpp"
     "${SRC_DIR}/video_encode_profile.cpp"
@@ -548,6 +550,7 @@ add_library(orange_recording_master_journal STATIC
     "${SRC_DIR}/recording_media_plan.cpp"
     "${SRC_DIR}/recording_context.cpp"
     "${SRC_DIR}/recording_subject_reference.cpp"
+    "${SRC_DIR}/effective_configuration.cpp"
     "${SRC_DIR}/recording_media_decode.cpp"
     "${SRC_DIR}/recording_master_journal.cpp"
     "${SRC_DIR}/recording_master_acquisition.cpp"
@@ -739,6 +742,7 @@ if(BUILD_TESTING)
         "${SRC_DIR}/session/recording_observation_binding.cpp"
         "${SRC_DIR}/recording_context.cpp"
     "${SRC_DIR}/recording_subject_reference.cpp"
+    "${SRC_DIR}/effective_configuration.cpp"
         "${SRC_DIR}/session/recording_observation_finalization.cpp"
         "${SRC_DIR}/session/recording_observation_identity.cpp"
         "${SRC_DIR}/session/recording_observation_prearm.cpp"
@@ -755,6 +759,7 @@ if(BUILD_TESTING)
         "${SRC_DIR}/session/recording_observation_binding.cpp"
         "${SRC_DIR}/recording_context.cpp"
     "${SRC_DIR}/recording_subject_reference.cpp"
+    "${SRC_DIR}/effective_configuration.cpp"
         "${SRC_DIR}/session/recording_observation_finalization.cpp"
         "${SRC_DIR}/session/recording_observation_identity.cpp"
         "${SRC_DIR}/session/recording_observation_prearm.cpp"
@@ -981,6 +986,7 @@ if(BUILD_TESTING)
         "tools/recording_context_tests.cpp"
         "${SRC_DIR}/recording_context.cpp"
     "${SRC_DIR}/recording_subject_reference.cpp"
+    "${SRC_DIR}/effective_configuration.cpp"
     )
     target_include_directories(recording_context_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(recording_context_tests PRIVATE cxx_std_17)
@@ -989,6 +995,7 @@ if(BUILD_TESTING)
     add_executable(recording_subject_reference_tests
         "tools/recording_subject_reference_tests.cpp"
         "${SRC_DIR}/recording_subject_reference.cpp"
+    "${SRC_DIR}/effective_configuration.cpp"
     )
     target_include_directories(recording_subject_reference_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(recording_subject_reference_tests PRIVATE cxx_std_17)
@@ -996,6 +1003,14 @@ if(BUILD_TESTING)
         NAME recording_subject_reference_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/recording_subject_reference_tests.py"
                 "${CMAKE_BINARY_DIR}/recording_subject_reference_tests")
+
+    add_executable(effective_configuration_tests
+        "tools/effective_configuration_tests.cpp"
+        "${SRC_DIR}/effective_configuration.cpp"
+    )
+    target_include_directories(effective_configuration_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(effective_configuration_tests PRIVATE cxx_std_17)
+    add_test(NAME effective_configuration_tests COMMAND effective_configuration_tests)
 
     add_executable(lens_write_verify_tests
         "tools/lens_write_verify_tests.cpp"

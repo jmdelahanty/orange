@@ -1520,6 +1520,43 @@ def validate_subject_reference_entry(entry: Any) -> str | None:
     return None
 
 
+def check_effective_configuration(reporter: Reporter, snapshot: dict[str, Any]) -> None:
+    """Provenance sealed at record start: the app config file as loaded (path, sha256,
+    contents) and every ORANGE_* variable with its source (environment vs app_config bridge)."""
+    block = nested_dict(snapshot, "session", "effective_configuration")
+    if not isinstance(block, dict) or not block:
+        reporter.warn("recording start snapshot has no session.effective_configuration (build predates the block)")
+        return
+    problems: list[str] = []
+    if block.get("schema_id") != "orange.effective_configuration" or block.get("schema_version") != 1:
+        problems.append("schema_id/schema_version")
+    app = block.get("app_config") if isinstance(block.get("app_config"), dict) else {}
+    status = app.get("status")
+    if status not in ("loaded", "not_configured", "missing", "unreadable", "invalid_json"):
+        problems.append(f"app_config.status {status!r}")
+    if status == "loaded" and not (isinstance(app.get("sha256"), str) and len(app["sha256"]) == 64 and isinstance(app.get("contents"), dict)):
+        problems.append("loaded app_config without sha256/contents")
+    env = block.get("environment")
+    exported = set(block.get("exported_from_app_config") or [])
+    if not isinstance(env, dict):
+        problems.append("environment not an object")
+        env = {}
+    for name, entry in env.items():
+        if not isinstance(entry, dict) or entry.get("source") not in ("environment", "app_config"):
+            problems.append(f"environment[{name}]")
+        elif (entry.get("source") == "app_config") != (name in exported):
+            problems.append(f"environment[{name}] source disagrees with exported_from_app_config")
+    n_env = sum(1 for e in env.values() if isinstance(e, dict) and e.get("source") == "environment")
+    reporter.check(
+        not problems,
+        f"effective_configuration sealed: app_config {status} sha256={str(app.get('sha256') or '')[:12]} "
+        f"env {len(env)} ({n_env} from environment, {len(exported)} bridged from app config)",
+        f"effective_configuration invalid: {problems}",
+    )
+    if status not in ("loaded", "not_configured"):
+        reporter.warn(f"effective_configuration app_config {status}: {app.get('path')} ({app.get('error')})")
+
+
 def check_subject_references(
     reporter: Reporter,
     manifest: dict[str, Any],
@@ -1627,6 +1664,7 @@ def check_recording_session_manifest(
 
     check_recording_contexts(reporter, manifest, snapshot, cameras)
     check_subject_references(reporter, manifest, snapshot, cameras)
+    check_effective_configuration(reporter, snapshot)
     producer = str(manifest.get("producer", ""))
     backend = manifest.get("recording_backend")
     backend = backend if isinstance(backend, dict) else {}

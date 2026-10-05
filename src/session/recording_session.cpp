@@ -1,5 +1,6 @@
 #include "session/recording_session.h"
 #include "recording_context.h"
+#include "effective_configuration.h"
 #include "recording_startup_audit.h"
 #include "recording_master_crop_coverage.h"
 #include "recording_crop_only_manifest.h"
@@ -3371,6 +3372,20 @@ PreparedRecordingRunStart prepare_recording_run(
             prepared.error_message = std::string("subject references: ") + ex.what();
             cleanup_failed_recording_run_start(state, camera_control, recording_folder);
             return prepared;
+        }
+    }
+    {
+        // Effective configuration (app config file as loaded + ORANGE_* environment
+        // with sources), sealed with the start snapshot so the run is reproducible
+        // from its folder. Never blocks a start: a capture failure is logged.
+        try {
+            const auto block = orange::recording::BuildEffectiveConfiguration(get_current_utc_timestamp());
+            orange::recording::ValidateEmittedEffectiveConfiguration(block);
+            if (!update_recording_snapshot_session_artifacts(recording_folder, {{"effective_configuration", block}})) {
+                throw std::runtime_error("failed to persist effective configuration");
+            }
+        } catch (const std::exception& ex) {
+            std::cerr << "[recording_session] effective configuration not captured: " << ex.what() << std::endl;
         }
     }
 
