@@ -162,8 +162,8 @@ cb373326 after `GET /version` joined the slice), repo
   (`/version` digest and `/openapi.json`). Run
   `python3 metazebrobot-consumers/verify_consumers.py --consumer orange`
   before every rig day (Shadow runbook precheck) and in Orange CI once PR 54
-  has merged. On 2026-10-05 the pinned check passed for Orange; the live
-  check fails only on `/version` until the service restart.
+  has merged. On 2026-10-05 the pinned check passed for Orange, and the live
+  check passed after the service restart (below).
 
 Orange's reliance set, every field of which is in the pinned slice:
 `/dishes/{dish_id}/citrus-snapshot` v2 top-level `dish_id`, `dish_uuid`,
@@ -173,8 +173,10 @@ and, for schema v2, `/version` `service_commit`, `service_commit_dirty`,
 `consumer_schema_sha256`. Orange refuses a snapshot whose `schema_version` is
 not 2 (declared `lookup_failed`); v2 only gains fields, and any removal or
 rename ships as a new `schema_version`. MetaZebrobot restarted the service on
-2026-10-05 17:05 EDT on 33c0f8e4; the consumer slice of the live
-`/openapi.json` was byte-identical to that pin, so either may be checked.
-Orange re-verified the live snapshot (`schema_version` 2, `dish_uuid`,
-`revision`) after that restart. The restart onto 509a3eb8 (which adds
-`/version`) is pending.
+2026-10-05 17:05 EDT on 33c0f8e4 and again at 17:18:59 EDT (21:18:59Z) on
+509a3eb8. After the second restart `GET /version` serves
+`service_commit` 509a3eb8…, `service_commit_dirty` false (the running code
+is exactly that commit), `consumer_schema_sha256` f5280e43… (equal to the
+pin), `api_schema_version` 2, `started_at_utc` 2026-10-05T21:18:59Z, and
+Orange's live verifier run passed (every expectation present in the live
+`/openapi.json`, digest equal to the pin).
