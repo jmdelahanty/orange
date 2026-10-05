@@ -610,6 +610,25 @@ def verify_common_manifest(
                     f"recording_contexts[{serial}] enum value out of range")
     else:
         print("[WARN] recording_session.json has no recording_contexts; Citrus transfer-v2 will refuse this recording")
+    subject_references = manifest.get("subject_references")
+    if subject_references is not None:
+        cameras = manifest_camera_serials(manifest)
+        require(isinstance(subject_references, dict) and sorted(subject_references.keys()) == sorted(cameras),
+                f"subject_references keys must equal cameras {cameras}")
+        for serial, entry in subject_references.items():
+            require(isinstance(entry, dict) and entry.get("schema_id") == "orange.recording_subject_reference"
+                    and entry.get("schema_version") == 1 and entry.get("status") in ("collected", "not_collected", "lookup_failed"),
+                    f"subject_references[{serial}] must be an orange.recording_subject_reference v1 entry")
+            if entry["status"] == "collected":
+                dish = entry.get("dish")
+                require(isinstance(dish, dict) and dish.get("dish_id") and dish.get("dish_uuid")
+                        and isinstance(dish.get("revision"), int) and entry.get("reason") == "",
+                        f"subject_references[{serial}] collected entry lacks the dish identity")
+            else:
+                require(entry.get("reason") and entry.get("dish") is None,
+                        f"subject_references[{serial}] {entry['status']} needs a reason and no dish")
+    else:
+        print("[WARN] recording_session.json has no subject_references")
     actual_recording_duration = as_float(
         recording.get("actual_recording_duration_s"),
         "recording.actual_recording_duration_s",

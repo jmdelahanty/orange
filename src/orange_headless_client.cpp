@@ -1,6 +1,7 @@
 #include <algorithm>
 #include "recording_master_crop_coverage.h"
 #include "recording_context.h"
+#include "recording_subject_reference.h"
 #include "recording_crop_only_manifest.h"
 #include "recording_crop_only_result.h"
 #include "headless_registered_context.h"
@@ -219,6 +220,8 @@ struct HeadlessExternalRecorderContractConfig {
 struct HeadlessCliOptions {
     orange::recording::RecordingMediaSelection media_products;
     orange::recording::RecordingContextsConfig recording_contexts;
+    orange::recording::SubjectReferencesConfig subject_references;
+    orange::recording::ZebrobotLookupConfig zebrobot;
     orange::recording::MasterAcquisitionConfig master_frame_journal;
     orange::recording::RegisteredContextConfig registered_scene_context;
     HeadlessMode mode = HeadlessMode::Remote;
@@ -256,6 +259,8 @@ struct HeadlessCliOptions {
 struct ExperimentSpec {
     orange::recording::RecordingMediaSelection media_products;
     orange::recording::RecordingContextsConfig recording_contexts;
+    orange::recording::SubjectReferencesConfig subject_references;
+    orange::recording::ZebrobotLookupConfig zebrobot;
     orange::recording::MasterAcquisitionConfig master_frame_journal;
     orange::recording::RegisteredContextConfig registered_scene_context;
     std::string source_path;
@@ -4529,7 +4534,9 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     const orange::recording::RegisteredContextConfig& context_config = {},
     orange::recording::HeadlessRegisteredContext* registered_context = nullptr,
     const orange::recording::RecordingMediaSelection& media_products = {},
-    const orange::recording::RecordingContextsConfig& recording_contexts = {})
+    const orange::recording::RecordingContextsConfig& recording_contexts = {},
+    const orange::recording::SubjectReferencesConfig& subject_references = {},
+    const orange::recording::ZebrobotLookupConfig& zebrobot = {})
 {
     std::cout << "start camera sthread..." << std::endl;
     try {
@@ -5223,6 +5230,16 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                 if (!update_recording_snapshot_session_artifacts(record_folder,
                         {{"recording_contexts", orange::recording::EmittedRecordingContextsJson(resolved)}}))
                     throw std::runtime_error("failed to persist headless recording contexts");
+            }
+            if (enable_recording) {
+                // Subject references: one entry per recording camera, looked up once
+                // (bounded) and frozen before the seal; lookup failures are declared.
+                std::vector<std::string> recording_serials;
+                for (int idx : selected_indices) recording_serials.push_back(cameras_params[idx].camera_serial);
+                const auto block = orange::recording::BuildSubjectReferences(
+                    subject_references.Resolve(recording_serials), zebrobot, get_current_utc_timestamp());
+                if (!update_recording_snapshot_session_artifacts(record_folder, {{"subject_references", block}}))
+                    throw std::runtime_error("failed to persist headless subject references");
             }
             if (master_config.enabled) {
                 if (media_products.RequiresContext()) for (int idx : selected_indices) {
@@ -8292,6 +8309,25 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             return false;
         }
     }
+    if (fixed.contains("subject_references")) {
+        try {
+            if (fixed.at("subject_references").is_null())
+                throw std::runtime_error("subject_references must be a versioned object, not null");
+            spec->subject_references = orange::recording::SubjectReferencesConfig::Parse(fixed.at("subject_references"));
+        } catch (const std::exception& ex) {
+            if (error_out) *error_out = std::string("subject_references: ") + ex.what();
+            return false;
+        }
+    }
+    if (fixed.contains("zebrobot")) {
+        try {
+            if (fixed.at("zebrobot").is_null()) throw std::runtime_error("zebrobot must be an object, not null");
+            spec->zebrobot = orange::recording::ZebrobotLookupConfig::Parse(fixed.at("zebrobot"));
+        } catch (const std::exception& ex) {
+            if (error_out) *error_out = std::string("zebrobot: ") + ex.what();
+            return false;
+        }
+    }
     if (fixed.contains("master_frame_journal")) {
         try {
             spec->master_frame_journal = orange::recording::MasterAcquisitionConfig::Parse(
@@ -9033,6 +9069,8 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             run.options.crop_recording = spec.crop_recording;
                                                             run.options.media_products = spec.media_products;
                                                             run.options.recording_contexts = spec.recording_contexts;
+                                                            run.options.subject_references = spec.subject_references;
+                                                            run.options.zebrobot = spec.zebrobot;
                                                             run.options.master_frame_journal = spec.master_frame_journal;
                                                             run.options.registered_scene_context = spec.registered_scene_context;
                                                             run.options.recording_control =
@@ -9957,7 +9995,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         &options.external_recorder_contract,
         options.crop_recording,
         options.master_frame_journal, options.registered_scene_context, &registered_context, options.media_products,
-        options.recording_contexts);
+        options.recording_contexts, options.subject_references, options.zebrobot);
 
     if (!started) {
         stop_supervised_external_recorder();

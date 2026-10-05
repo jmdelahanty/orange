@@ -13,6 +13,11 @@ void RenderRecordingMediaSelection(bool stream_locked);
 recording::RecordingMediaSelection RecordingMediaSelectionForStream();
 // Parent recording contexts from app config recording.contexts (throws on a parse error).
 recording::RecordingContextsConfig RecordingContextsForStream();
+// Subject references (MetaZebrobot dish per camera) and the lookup endpoint,
+// taken at every record start like the contexts.
+recording::SubjectReferencesConfig SubjectReferencesForStream();
+recording::ZebrobotLookupConfig ZebrobotLookupForStream();
+void RenderSubjectReferenceSelection(bool locked);
 // "Recording context" panel: the parent recording context (Citrus transfer-v2)
 // chosen per session; applies at the next record start, saved on request.
 void RenderRecordingContextSelection(bool locked);

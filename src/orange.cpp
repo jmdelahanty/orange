@@ -3986,6 +3986,8 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
     // value at every record start (GUI button or local-control start).
     try {
         recording_session->recording_contexts = orange::gui::RecordingContextsForStream();
+        recording_session->subject_references = orange::gui::SubjectReferencesForStream();
+        recording_session->zebrobot = orange::gui::ZebrobotLookupForStream();
     } catch (const std::exception& ex) {
         const std::string error = ex.what();
         if (recording_preflight_errors) {
@@ -6776,6 +6778,9 @@ int main(int /*argc*/, char ** /*args*/) {
             orange::gui::RenderRecordingContextSelection(
                 camera_control->record_video || camera_control->recording_draining ||
                 gui_async_recording_start.active);
+            orange::gui::RenderSubjectReferenceSelection(
+                camera_control->record_video || camera_control->recording_draining ||
+                gui_async_recording_start.active);
             orange::gui::RenderRegisteredContextRecordingSettings(
                 camera_control->record_video || camera_control->recording_draining ||
                 gui_async_recording_start.active ||
@@ -7723,6 +7728,8 @@ int main(int /*argc*/, char ** /*args*/) {
                             const auto selection = orange::gui::RecordingMediaSelectionForStream();
                             recording_session.media_selection = selection;
                             recording_session.recording_contexts = orange::gui::RecordingContextsForStream();
+                            recording_session.subject_references = orange::gui::SubjectReferencesForStream();
+                            recording_session.zebrobot = orange::gui::ZebrobotLookupForStream();
                             // This is materialization of an explicit operator product
                             // choice, before any crop/full-frame worker is constructed.
                             if (selection.mode) {

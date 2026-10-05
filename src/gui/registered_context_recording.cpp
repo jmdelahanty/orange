@@ -10,6 +10,9 @@ std::string config_path, error, status;
 recording::RecordingMediaSelection media_selection;
 std::string media_error, media_status;
 recording::RecordingContextsConfig recording_contexts;
+recording::SubjectReferencesConfig subject_references;
+recording::ZebrobotLookupConfig zebrobot_lookup;
+std::string subject_error;
 std::string contexts_error;
 bool confirmed = false;
 void save() {
@@ -31,6 +34,11 @@ void LoadRegisteredContextRecordingSettings(const std::string& path, bool load_m
         recording_contexts = {}; contexts_error.clear();
         try { recording_contexts = recording::ReadGuiRecordingContexts(path); }
         catch (const std::exception& ex) { contexts_error = ex.what(); }
+        subject_references = {}; zebrobot_lookup = {}; subject_error.clear();
+        try {
+            subject_references = recording::ReadGuiSubjectReferences(path);
+            zebrobot_lookup = recording::ReadGuiZebrobotLookup(path);
+        } catch (const std::exception& ex) { subject_error = ex.what(); }
     }
 }
 recording::RecordingMediaSelection RecordingMediaSelectionForStream() {
@@ -40,6 +48,14 @@ recording::RecordingMediaSelection RecordingMediaSelectionForStream() {
 recording::RecordingContextsConfig RecordingContextsForStream() {
     if (!contexts_error.empty()) throw std::runtime_error("GUI recording contexts: " + contexts_error);
     return recording_contexts;
+}
+recording::SubjectReferencesConfig SubjectReferencesForStream() {
+    if (!subject_error.empty()) throw std::runtime_error("GUI subject references: " + subject_error);
+    return subject_references;
+}
+recording::ZebrobotLookupConfig ZebrobotLookupForStream() {
+    if (!subject_error.empty()) throw std::runtime_error("GUI subject references: " + subject_error);
+    return zebrobot_lookup;
 }
 namespace {
 std::string contexts_status;
@@ -86,6 +102,77 @@ bool apply_fields_to_config(std::string* error) {
     } catch (const std::exception& ex) { if (error) *error = ex.what(); return false; }
 }
 }  // namespace
+namespace {
+std::string subject_status;
+bool subject_dirty = false;
+char subject_dish_id[128] = "";
+bool subject_fields_loaded = false;
+void load_subject_fields_from_config() {
+    subject_dish_id[0] = '\0';
+    if (subject_references.default_dish_id)
+        std::snprintf(subject_dish_id, sizeof subject_dish_id, "%s", subject_references.default_dish_id->c_str());
+    subject_fields_loaded = true;
+    subject_dirty = false;
+}
+bool apply_subject_fields_to_config(std::string* error) {
+    try {
+        recording::SubjectReferencesConfig next = subject_references;
+        if (subject_dish_id[0] == '\0') next.default_dish_id.reset();
+        else next.default_dish_id = std::string(subject_dish_id);
+        recording::SubjectReferencesConfig::Parse(next.ToJson());  // same rules as the config parser
+        subject_references = next;
+        subject_error.clear();
+        return true;
+    } catch (const std::exception& ex) { if (error) *error = ex.what(); return false; }
+}
+}  // namespace
+void RenderSubjectReferenceSelection(bool locked) {
+    if (!ImGui::CollapsingHeader("Subject (MetaZebrobot dish per camera)")) return;
+    if (!subject_fields_loaded) load_subject_fields_from_config();
+    ImGui::BeginDisabled(locked);
+    if (ImGui::InputText("Dish id (blank = no dish declared)", subject_dish_id, sizeof subject_dish_id)) {
+        std::string err;
+        if (apply_subject_fields_to_config(&err)) {
+            subject_dirty = true;
+            subject_status = "Applies at the next record start; not saved yet.";
+        } else subject_status = "Not applied: " + err;
+    }
+    if (ImGui::Button("Save dish id")) {
+        std::string err;
+        if (apply_subject_fields_to_config(&err)) {
+            try {
+                recording::SaveGuiSubjectReferences(config_path, subject_references);
+                subject_dirty = false;
+                subject_status = "Saved recording.subject_references in the app config.";
+            } catch (const std::exception& ex) { subject_status = std::string("Save failed: ") + ex.what(); }
+        } else subject_status = "Not saved: " + err;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Reload dish id from app config")) {
+        subject_references = {}; zebrobot_lookup = {}; subject_error.clear();
+        try {
+            subject_references = recording::ReadGuiSubjectReferences(config_path);
+            zebrobot_lookup = recording::ReadGuiZebrobotLookup(config_path);
+        } catch (const std::exception& ex) { subject_error = ex.what(); }
+        load_subject_fields_from_config();
+        subject_status = subject_error.empty() ? "Reloaded recording.subject_references." : "Reload failed: " + subject_error;
+    }
+    ImGui::EndDisabled();
+    if (!subject_references.cameras.empty()) {
+        ImGui::TextWrapped("Per-camera dish overrides in the app config (edit the file to change):");
+        for (const auto& [serial, dish] : subject_references.cameras) ImGui::BulletText("%s: %s", serial.c_str(), dish.c_str());
+    }
+    if (zebrobot_lookup.configured())
+        ImGui::TextWrapped("Lookup at record start: %s (timeout %d ms); Orange records dish/fish identifiers as served, no biological fields.",
+                           zebrobot_lookup.base_url.c_str(), zebrobot_lookup.timeout_ms);
+    else
+        ImGui::TextWrapped("recording.zebrobot.base_url is not configured: a declared dish will be recorded as lookup_failed (zebrobot_not_configured); recording still starts.");
+    if (!subject_references.configured())
+        ImGui::TextWrapped("No dish declared: every camera is recorded as not_collected (no_dish_declared). Palette admits declared absence.");
+    if (subject_dirty) ImGui::TextWrapped("Unsaved: the next launch reloads the app config.");
+    if (!subject_error.empty()) ImGui::TextWrapped("Record start blocked: %s", subject_error.c_str());
+    if (!subject_status.empty()) ImGui::TextWrapped("%s", subject_status.c_str());
+}
 void RenderRecordingContextSelection(bool locked) {
     if (!ImGui::CollapsingHeader("Recording context (what this recording is)")) return;
     if (!ctx_fields_loaded) load_fields_from_config();

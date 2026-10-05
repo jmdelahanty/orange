@@ -31,6 +31,7 @@
 #include "json.hpp"
 #include "project.h"
 #include "recording_context.h"
+#include "recording_subject_reference.h"
 #include "recording_metadata_csv.h"
 #include "recording_output_descriptor.h"
 #include "session/recording_observation_request_artifacts.h"
@@ -556,6 +557,10 @@ int main(int argc, char** argv)
         std::map<std::string, orange::recording::RecordingContext> contexts;
         for (const auto& serial : o.cameras) contexts.emplace(serial, context);
         const json emitted_contexts = orange::recording::EmittedRecordingContextsJson(contexts);
+        // No subject: a synthetic bundle images nothing, declared explicitly per camera.
+        json subject_references = json::object();
+        for (const auto& serial : o.cameras) subject_references[serial] = orange::recording::NotCollectedSubjectReference("synthetic_bundle");
+        orange::recording::ValidateEmittedSubjectReferences(subject_references);
         const json label = {
             {"schema_id", kBundleSchemaId}, {"schema_version", kBundleSchemaVersion},
             {"synthetic", true}, {"data_origin", "synthetic"}, {"label", kBundleLabel},
@@ -563,7 +568,8 @@ int main(int argc, char** argv)
             {"geometry_source", o.fixture_rig.empty() ? "existing_canvas" : "synthetic_fixture_rig"},
             {"canvas_config_path", canvas.string()}};
         if (!update_recording_snapshot_session_artifacts(
-                o.out.string(), {{"recording_contexts", emitted_contexts}, {"synthetic_bundle", label}})) {
+                o.out.string(), {{"recording_contexts", emitted_contexts}, {"subject_references", subject_references},
+                                 {"synthetic_bundle", label}})) {
             throw std::runtime_error("update_recording_snapshot_session_artifacts failed");
         }
 
@@ -680,6 +686,7 @@ int main(int argc, char** argv)
                         {"calibration_base_dir", calibration_base.string()},
                         {"camera_configs", camera_inputs}}},
             {"recording_contexts", emitted_contexts},
+            {"subject_references", subject_references},
             {"artifacts", {
                 {"recording_snapshot", sha_reference(o.out, "recording_snapshot.json")},
                 {"recording_snapshot_start", start_reference},

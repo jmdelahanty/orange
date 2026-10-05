@@ -3,6 +3,7 @@
 #include "recording_registered_context.h"
 #include "recording_media_plan.h"
 #include "recording_context.h"
+#include "recording_subject_reference.h"
 
 namespace orange::recording {
 // GUI v1 binds a saved Daily Registration context. Fresh native capture remains
@@ -22,6 +23,11 @@ RecordingMediaSelection ReadGuiRecordingMediaSelection(const std::filesystem::pa
 // unconfigured (no block emitted; validators report it).
 RecordingContextsConfig ReadGuiRecordingContexts(const std::filesystem::path& app_config);
 void SaveGuiRecordingContexts(const std::filesystem::path& app_config, const RecordingContextsConfig&);
+// recording.subject_references (dish per camera) and recording.zebrobot
+// (lookup base_url/timeout); both optional, unconfigured when absent.
+SubjectReferencesConfig ReadGuiSubjectReferences(const std::filesystem::path& app_config);
+void SaveGuiSubjectReferences(const std::filesystem::path& app_config, const SubjectReferencesConfig&);
+ZebrobotLookupConfig ReadGuiZebrobotLookup(const std::filesystem::path& app_config);
 void SaveGuiRecordingMediaSelection(const std::filesystem::path& app_config,
                                    const RecordingMediaSelection&);
 

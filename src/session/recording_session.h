@@ -8,6 +8,7 @@
 #include "recording_output_descriptor.h"
 #include "recording_media_plan.h"
 #include "recording_context.h"
+#include "recording_subject_reference.h"
 #include "video_capture.h"
 #include "json.hpp"
 
@@ -35,6 +36,11 @@ struct RecordingSessionState {
     // Operator-configured parent recording contexts (app config
     // recording.contexts); resolved and frozen at record start.
     orange::recording::RecordingContextsConfig recording_contexts;
+    // Operator-declared MetaZebrobot dish per camera (app config
+    // recording.subject_references) and the lookup endpoint
+    // (recording.zebrobot); resolved, looked up once and frozen at record start.
+    orange::recording::SubjectReferencesConfig subject_references;
+    orange::recording::ZebrobotLookupConfig zebrobot;
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
     std::vector<ResolvedRecordingConfig> resolved_recording_configs;
     std::string recording_sink_mode = "real";

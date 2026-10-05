@@ -2776,6 +2776,13 @@ bool write_recording_session_manifest(const std::string& path,
         if (error_out) *error_out = std::string("recording contexts gate: ") + ex.what();
         return false;
     }
+    try {
+        // Subject references frozen at record start: same verbatim-copy gate.
+        orange::recording::ApplySubjectReferencesGate(manifest_path.parent_path().string(), &finalized_manifest);
+    } catch (const std::exception& ex) {
+        if (error_out) *error_out = std::string("subject references gate: ") + ex.what();
+        return false;
+    }
     if (!add_shaman_v2_recording_identity_contract(
             &finalized_manifest, error_out)) {
         return false;
@@ -3342,6 +3349,26 @@ PreparedRecordingRunStart prepare_recording_run(
             }
         } catch (const std::exception& ex) {
             prepared.error_message = std::string("recording contexts: ") + ex.what();
+            cleanup_failed_recording_run_start(state, camera_control, recording_folder);
+            return prepared;
+        }
+    }
+    if (state) {
+        // Subject references (Palette design c): one entry per recording camera,
+        // looked up once from MetaZebrobot with a bounded timeout, frozen into
+        // the start snapshot; never blocks the start (failures are declared).
+        try {
+            std::vector<std::string> recording_serials;
+            for (int i = 0; i < num_cameras; ++i) {
+                if (!cameras_select || cameras_select[i].record) recording_serials.push_back(cameras_params[i].camera_serial);
+            }
+            const auto block = orange::recording::BuildSubjectReferences(
+                state->subject_references.Resolve(recording_serials), state->zebrobot, get_current_utc_timestamp());
+            if (!update_recording_snapshot_session_artifacts(recording_folder, {{"subject_references", block}})) {
+                throw std::runtime_error("failed to persist subject references");
+            }
+        } catch (const std::exception& ex) {
+            prepared.error_message = std::string("subject references: ") + ex.what();
             cleanup_failed_recording_run_start(state, camera_control, recording_folder);
             return prepared;
         }

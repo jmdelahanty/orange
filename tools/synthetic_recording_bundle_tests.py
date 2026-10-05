@@ -80,6 +80,12 @@ def check_bundle(out: Path, summary: dict, *, expect_subtype: bool, expect_reque
         assert ("recording_subtype" in entry) is expect_subtype
         assert entry["schema_version"] == (1 if expect_subtype else 2)
     assert snapshot["session"]["recording_contexts"] == contexts
+    # Subject references: a synthetic bundle images nothing, declared per camera.
+    refs = start["session"]["subject_references"]
+    assert set(refs) == set(CAMERAS)
+    for entry in refs.values():
+        assert entry["status"] == "not_collected" and entry["reason"] == "synthetic_bundle" and entry["dish"] is None
+    assert snapshot["session"]["subject_references"] == refs
 
     # Geometry contract: resolved from the synthetic rig, referenced by exact
     # digest from both snapshots, with a complete recording-local asset bundle.
@@ -180,6 +186,7 @@ def main() -> int:
         check_bundle(out, summary, expect_subtype=False, expect_requests=True, request_version=2)
         manifest = load(out / "recording_session.json")
         assert manifest["recording_contexts"] == load(out / "recording_snapshot_start.json")["session"]["recording_contexts"]
+        assert manifest["subject_references"] == load(out / "recording_snapshot_start.json")["session"]["subject_references"]
         assert manifest["metadata"]["recording_geometry_contract"]["sha256"] == sha256(out / "recording_geometry_contract.json")
         assert manifest["producer"] == "orange_synthetic_recording_bundle"
         for serial in CAMERAS:

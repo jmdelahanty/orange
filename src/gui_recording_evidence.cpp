@@ -103,6 +103,29 @@ RecordingContextsConfig ReadGuiRecordingContexts(const std::filesystem::path& pa
 void SaveGuiRecordingContexts(const std::filesystem::path& path, const RecordingContextsConfig& config) {
     save_recording_field(path, "contexts", RecordingContextsConfig::Parse(config.ToJson()).ToJson());
 }
+SubjectReferencesConfig ReadGuiSubjectReferences(const std::filesystem::path& path) {
+    ScopedFsuid filesystem_identity;
+    const auto root = read_app_config(path);
+    if (root.contains("recording") && root.at("recording").contains("subject_references")) {
+        if (root.at("recording").at("subject_references").is_null())
+            throw std::runtime_error("recording.subject_references must be a versioned object, not null");
+        return SubjectReferencesConfig::Parse(root.at("recording").at("subject_references"));
+    }
+    return {};
+}
+void SaveGuiSubjectReferences(const std::filesystem::path& path, const SubjectReferencesConfig& config) {
+    save_recording_field(path, "subject_references", SubjectReferencesConfig::Parse(config.ToJson()).ToJson());
+}
+ZebrobotLookupConfig ReadGuiZebrobotLookup(const std::filesystem::path& path) {
+    ScopedFsuid filesystem_identity;
+    const auto root = read_app_config(path);
+    if (root.contains("recording") && root.at("recording").contains("zebrobot")) {
+        if (root.at("recording").at("zebrobot").is_null())
+            throw std::runtime_error("recording.zebrobot must be an object, not null");
+        return ZebrobotLookupConfig::Parse(root.at("recording").at("zebrobot"));
+    }
+    return {};
+}
 void SaveGuiRecordingMediaSelection(const std::filesystem::path& path, const RecordingMediaSelection& selection) {
     save_recording_field(path, "media_products", RecordingMediaSelection::Parse(selection.ToJson()).ToJson());
 }

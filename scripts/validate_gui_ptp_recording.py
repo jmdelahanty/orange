@@ -1471,6 +1471,90 @@ def validate_recording_context_entry(entry: Any) -> str | None:
     return None
 
 
+SUBJECT_REFERENCE_FIELDS = ("schema_id", "schema_version", "status", "reason", "zebrobot", "dish",
+                            "dish_fish", "dish_fish_lookup")
+
+
+def validate_subject_reference_entry(entry: Any) -> str | None:
+    """Return None when `entry` is a valid orange.recording_subject_reference v1, else a reason."""
+    if not isinstance(entry, dict):
+        return "not an object"
+    if set(entry.keys()) != set(SUBJECT_REFERENCE_FIELDS):
+        return f"fields {sorted(entry.keys())} != {sorted(SUBJECT_REFERENCE_FIELDS)}"
+    if entry.get("schema_id") != "orange.recording_subject_reference" or entry.get("schema_version") != 1 \
+            or isinstance(entry.get("schema_version"), bool):
+        return f"schema {entry.get('schema_id')!r} v{entry.get('schema_version')!r}"
+    status, reason = entry.get("status"), entry.get("reason")
+    if status not in ("collected", "not_collected", "lookup_failed") or not isinstance(reason, str):
+        return f"status {status!r} / reason {reason!r}"
+    zb, dish, fish, fish_lookup = entry.get("zebrobot"), entry.get("dish"), entry.get("dish_fish"), entry.get("dish_fish_lookup")
+    if not isinstance(fish, list):
+        return "dish_fish is not a list"
+    for row in fish:
+        if not isinstance(row, dict) or set(row) != {"fish_id", "revision", "updated_at"} \
+                or not isinstance(row["fish_id"], str) or not isinstance(row["revision"], int) or isinstance(row["revision"], bool):
+            return f"dish_fish row {row!r} invalid"
+    if status == "not_collected":
+        if not reason or zb is not None or dish is not None or fish or fish_lookup is not None:
+            return "not_collected must declare a reason and carry no zebrobot/dish/fish"
+        return None
+    if not isinstance(zb, dict) or set(zb) != {"base_url", "endpoint", "fish_endpoint", "api_schema_version",
+                                               "queried_at_utc", "http_status", "error"} or zb.get("api_schema_version") != 2:
+        return f"zebrobot block invalid: {zb!r}"
+    if not isinstance(fish_lookup, dict) or set(fish_lookup) != {"status", "http_status", "error"} \
+            or fish_lookup["status"] not in ("complete", "failed", "not_attempted"):
+        return f"dish_fish_lookup invalid: {fish_lookup!r}"
+    if fish and fish_lookup["status"] != "complete":
+        return "dish_fish present although the fish lookup did not complete"
+    if status == "collected":
+        if reason or zb.get("error") is not None or zb.get("http_status") != 200 \
+                or not isinstance(dish, dict) or set(dish) != {"dish_id", "dish_uuid", "revision", "updated_at"} \
+                or not dish["dish_id"] or not dish["dish_uuid"] or not isinstance(dish["revision"], int):
+            return "collected requires http 200, no error, empty reason and a full dish identity"
+        return None
+    if not reason or not isinstance(zb.get("error"), dict) or dish is not None or fish or fish_lookup["status"] != "not_attempted":
+        return "lookup_failed requires a reason and an error, and no dish/fish results"
+    return None
+
+
+def check_subject_references(
+    reporter: Reporter,
+    manifest: dict[str, Any],
+    snapshot: dict[str, Any],
+    cameras: list[str],
+) -> None:
+    """Palette intake design c: per-camera MetaZebrobot identifiers (or a declared absence),
+    frozen in the start snapshot and copied verbatim into the manifest."""
+    block = manifest.get("subject_references")
+    if block is None:
+        reporter.warn(
+            "recording_session.json has no subject_references (build predates the block or the start snapshot froze none)"
+        )
+        return
+    reporter.check(
+        isinstance(block, dict) and set(block.keys()) == set(cameras),
+        f"subject_references declares exactly the recording cameras ({len(cameras)})",
+        f"subject_references keys {sorted(block.keys()) if isinstance(block, dict) else block!r} != cameras {sorted(cameras)}",
+    )
+    if isinstance(block, dict):
+        for serial, entry in block.items():
+            reason = validate_subject_reference_entry(entry)
+            summary = "?"
+            if isinstance(entry, dict):
+                dish = entry.get("dish") or {}
+                summary = f"{entry.get('status')} {dish.get('dish_id', '')} uuid={str(dish.get('dish_uuid', ''))[:8]} rev={dish.get('revision', '')} " \
+                          f"fish={len(entry.get('dish_fish') or [])} reason={entry.get('reason', '')!r}"
+            reporter.check(reason is None, f"Cam{serial} subject reference: {summary}", f"Cam{serial} subject reference invalid: {reason}")
+            if isinstance(entry, dict) and entry.get("status") == "lookup_failed":
+                reporter.warn(f"Cam{serial} subject reference lookup failed: {entry.get('reason')} ({(entry.get('zebrobot') or {}).get('error')})")
+    frozen = nested_dict(snapshot, "session", "subject_references")
+    reporter.check(
+        frozen == block,
+        "subject_references equals the block frozen in the recording start snapshot",
+        "subject_references differs from the recording start snapshot block",
+    )
+
+
 def check_recording_contexts(
     reporter: Reporter,
     manifest: dict[str, Any],
@@ -1539,6 +1623,7 @@ def check_recording_session_manifest(
         return {}
 
     check_recording_contexts(reporter, manifest, snapshot, cameras)
+    check_subject_references(reporter, manifest, snapshot, cameras)
     producer = str(manifest.get("producer", ""))
     backend = manifest.get("recording_backend")
     backend = backend if isinstance(backend, dict) else {}
