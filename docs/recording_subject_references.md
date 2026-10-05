@@ -119,6 +119,7 @@ Orange's reliance set, every field of which is in the pinned slice:
 `fish_id`, `revision`, `updated_at`; 404/503 `ApiErrorResponse` `detail.error`.
 Orange refuses a snapshot whose `schema_version` is not 2 (declared
 `lookup_failed`); v2 only gains fields, and any removal or rename ships as a
-new `schema_version`. Note: that commit changed no payloads, only the schema
-models; check against the committed file at the pin, not the live
-`/openapi.json`, until MetaZebrobot confirms the service restart.
+new `schema_version`. MetaZebrobot restarted the service on 2026-10-05 17:05 EDT on that
+commit; the consumer slice of the live `/openapi.json` is byte-identical to
+the pinned file, so either may be checked. Orange re-verified the live
+snapshot (`schema_version` 2, `dish_uuid`, `revision`) after the restart.
