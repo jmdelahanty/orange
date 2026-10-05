@@ -184,6 +184,10 @@ void RenderSubjectReferenceSelection(bool locked) {
     if (!subject_references.configured())
         ImGui::TextWrapped("No dish declared: every camera is recorded as not_collected (no_dish_declared). Palette admits declared absence.");
     ImGui::TextWrapped("Subject count is the number of animals this camera records, declared by you; it is never derived from the dish registry. Null (0) means Palette publishes subject metadata without an experiment setup.");
+    if (ctx_intent == 1)
+        ImGui::TextWrapped("recording_only: Orange is the only source of the subject record, so declare the dish and count here.");
+    else
+        ImGui::TextWrapped("stimulus_experiment: Citrus supplies the subject record in its H5; declaring the dish here is optional and lets Palette cross-check the two.");
     if (subject_dirty) ImGui::TextWrapped("Unsaved: the next launch reloads the app config.");
     if (!subject_error.empty()) ImGui::TextWrapped("Record start blocked: %s", subject_error.c_str());
     if (!subject_status.empty()) ImGui::TextWrapped("%s", subject_status.c_str());
