@@ -159,10 +159,12 @@ cb373326 after `GET /version` joined the slice), repo
   (PR 54): `consumers.json` holds the producer pin and each consumer's
   `relies_on`; `verify_consumers.py` (stdlib only) checks them against the
   pinned file, or with `--live http://<host>` against the running service
-  (`/version` digest and `/openapi.json`). Run
-  `python3 metazebrobot-consumers/verify_consumers.py --consumer orange`
-  before every rig day (Shadow runbook precheck) and in Orange CI once PR 54
-  has merged. On 2026-10-05 the pinned check passed for Orange, and the live
+  (`/version` digest and `/openapi.json`). PR 54 merged on 2026-10-05
+  (agent-contracts main 5fc735fe, `consumers.json` sha256 8d2b3878…);
+  `scripts/check_metazebrobot_consumer_pin.sh [--live http://host]` fetches
+  both files at that commit, checks the digest and runs the verifier for
+  Orange. It runs in Orange CI (`.github/workflows/ci.yml`) and before every
+  rig day (Shadow runbook precheck). On 2026-10-05 the pinned check passed for Orange, and the live
   check passed after the service restart (below).
 
 Orange's reliance set, every field of which is in the pinned slice:

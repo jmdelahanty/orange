@@ -20,7 +20,7 @@ finalization, dry-run the transfer, confirm Palette admission.
 | Shadow canvas `~/citrus/targets/rigs/omnifin0/shadow/shadow.json` | no `recording_context` on any Arena yet (Citrus sets these) |
 | App config `~/orange_data/config/app/default.json` | no `recording.contexts`, no `recording.citrus_binding_request_version` (set in the panel / env below) |
 | Rig | idle; no builds by anyone during the run |
-| MetaZebrobot consumer expectations | `python3 metazebrobot-consumers/verify_consumers.py --consumer orange --live http://delahantyj-ws1.hhmi.org` from an agent-contracts checkout (PR 54) prints `PASS`; PASS 2026-10-05 21:30Z against the live service (restarted 21:18:59Z on 509a3eb8, `service_commit_dirty` false, digest f5280e43… matches the pin) |
+| MetaZebrobot consumer expectations | `scripts/check_metazebrobot_consumer_pin.sh --live http://delahantyj-ws1.hhmi.org` (fetches the verifier from agent-contracts main at the PR 54 merge 5fc735fe) prints `PASS`; PASS 2026-10-05 21:30Z against the live service (restarted 21:18:59Z on 509a3eb8, `service_commit_dirty` false, digest f5280e43… matches the pin) |
 
 ## 1. Context values (operator decision, both sides identical)
 
