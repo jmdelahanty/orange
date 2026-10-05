@@ -1,8 +1,10 @@
 # Recording subject references (MetaZebrobot identifiers per camera)
 
 Date: 2026-10-05. Code: `src/recording_subject_reference.{h,cpp}`; gate in
-`orange::session::write_recording_session_manifest`; schema
-`docs/schemas/orange_recording_subject_reference_v1.schema.json`.
+`orange::session::write_recording_session_manifest`; schemas
+`docs/schemas/orange_recording_subject_reference_v1.schema.json` (emitted) and
+`..._v2.schema.json` (prepared, see "Schema version 2" below; not emitted
+until Palette's pin of it has merged on Palette main).
 
 ## Why
 
@@ -97,29 +99,82 @@ synthetic_bundle` per camera.
   stand-in server so the real client is exercised for 200 JSON, chunked
   bodies, the structured 404, a stalled response and a refused connection.
 
+## Schema version 2 (prepared 2026-10-05, not emitted yet)
+
+Palette pins the schema by file digest and every object in it is closed
+(`additionalProperties: false`), so new fields need a new schema version, not
+an addition to v1. `orange.recording_subject_reference` **v2**
+(`docs/schemas/orange_recording_subject_reference_v2.schema.json`) differs
+from v1 only in `schema_version: 2` and three new required keys in the
+`zebrobot` block, read once at record start from MetaZebrobot `GET /version`
+(adopted by MetaZebrobot 2026-10-05, commit 509a3eb8; not live until the
+service restarts):
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `service_commit` | string (7..40 hex) or null | git SHA of the code the MetaZebrobot process loaded |
+| `service_commit_dirty` | boolean or null | the process ran with uncommitted changes to tracked files |
+| `consumer_schema_sha256` | string (64 hex) or null | digest of the consumer OpenAPI slice computed from the running app; Palette cross-checks it against its MetaZebrobot pin |
+
+All three are null when MetaZebrobot served null, or when the version read
+failed or was not attempted (a `not_collected` entry still has `zebrobot:
+null`). The version read shares the lookup's timeout and never blocks a
+start. Checked with jsonschema (Draft 2020-12): v1 entries are refused by v2
+and v2 entries (and v1 entries carrying the new fields) are refused by v1, so
+the two files never admit each other's recordings. Digests:
+
+| File | sha256 |
+| --- | --- |
+| `orange_recording_subject_reference_v1.schema.json` | `3c4ba74f0f95f76dbb8b3d65aa8bd39fd409383388ee8debec3845ef26c1a930` (Palette pin) |
+| `orange_recording_subject_reference_v2.schema.json` | `d0f300fdbd71747f44219baf7bb5aea262ebbd275f85f877df9f1a00aa92e935` |
+
+Order of operations (agreed with Palette): v2 published on agent-contracts
+PR 53 for review; Palette pins the v2 digest and accepts both versions; only
+after that pin has **merged on Palette main** (ask for the merge commit)
+does Orange switch `kSubjectReferenceSchemaVersion` to 2, add the `/version`
+read to `BuildSubjectReference`, and extend the emitted-block validator, the
+two Python validators and the tests. Recordings made under v1 keep validating
+against the v1 pin.
+
 ## MetaZebrobot contract (owner-pinned; Orange links, does not copy)
 
-Pinned by MetaZebrobot on 2026-10-05, repo `github.com/jmdelahanty/metazebrobot`,
-commit `33c0f8e442dd8ca6e1a929422ae36831baef86f5` (main):
+Pinned by MetaZebrobot on 2026-10-05 (second pin, superseding 33c0f8e4 /
+cb373326 after `GET /version` joined the slice), repo
+`github.com/jmdelahanty/metazebrobot`, commit
+`509a3eb88d6ff44fe07e7ea20d212be5eafe46b7` (main):
 
 - Response shapes: `docs/api/consumer_openapi.json`, sha256
-  `cb3733267484bf8869826ba35ddfc7eefcfb59dc50435801ac6d0d62daed8495`
-  (verified by Orange against the committed file; paths `/acquisition/dishes`,
-  `/dishes/by-uuid/{dish_uuid}`, `/dishes/{dish_id}`,
+  `f5280e430d4b5f10c3643cb89a6187eacc45fdac7af55b2e81f5e315b7b754dc`
+  (verified by Orange against the committed file at that commit; paths
+  `/acquisition/dishes`, `/dishes/by-uuid/{dish_uuid}`, `/dishes/{dish_id}`,
   `/dishes/{dish_id}/citrus-snapshot`, `/dishes/{dish_id}/fish`,
-  `/fish/{fish_id}`, with the 404/503 `ApiErrorResponse` models).
+  `/fish/{fish_id}`, `/version`, with the 404/503 `ApiErrorResponse` models).
   `pixi run python scripts/export_consumer_openapi.py --check` prints
-  `OK <sha256>`; `tests/test_consumer_contract.py` guards drift.
+  `OK <sha256>`; `tests/test_consumer_contract.py` guards drift; a running
+  service reports the digest as `consumer_schema_sha256` on `GET /version`.
 - Meaning: `docs/zebrobot_snapshot.md`, sections "Identity and change
-  detection", "API errors" and "Contract and stability".
+  detection", "API errors", "Contract and stability" and "Which MetaZebrobot
+  am I talking to?".
+- Consumer expectations: agent-contracts `metazebrobot-consumers/`
+  (PR 54): `consumers.json` holds the producer pin and each consumer's
+  `relies_on`; `verify_consumers.py` (stdlib only) checks them against the
+  pinned file, or with `--live http://<host>` against the running service
+  (`/version` digest and `/openapi.json`). Run
+  `python3 metazebrobot-consumers/verify_consumers.py --consumer orange`
+  before every rig day (Shadow runbook precheck) and in Orange CI once PR 54
+  has merged. On 2026-10-05 the pinned check passed for Orange; the live
+  check fails only on `/version` until the service restart.
 
 Orange's reliance set, every field of which is in the pinned slice:
 `/dishes/{dish_id}/citrus-snapshot` v2 top-level `dish_id`, `dish_uuid`,
 `revision`, `updated_at`, `schema_version`; `/dishes/{dish_id}/fish` items
-`fish_id`, `revision`, `updated_at`; 404/503 `ApiErrorResponse` `detail.error`.
-Orange refuses a snapshot whose `schema_version` is not 2 (declared
-`lookup_failed`); v2 only gains fields, and any removal or rename ships as a
-new `schema_version`. MetaZebrobot restarted the service on 2026-10-05 17:05 EDT on that
-commit; the consumer slice of the live `/openapi.json` is byte-identical to
-the pinned file, so either may be checked. Orange re-verified the live
-snapshot (`schema_version` 2, `dish_uuid`, `revision`) after the restart.
+`fish_id`, `revision`, `updated_at`; 404/503 `ApiErrorResponse` `detail.error`;
+and, for schema v2, `/version` `service_commit`, `service_commit_dirty`,
+`consumer_schema_sha256`. Orange refuses a snapshot whose `schema_version` is
+not 2 (declared `lookup_failed`); v2 only gains fields, and any removal or
+rename ships as a new `schema_version`. MetaZebrobot restarted the service on
+2026-10-05 17:05 EDT on 33c0f8e4; the consumer slice of the live
+`/openapi.json` was byte-identical to that pin, so either may be checked.
+Orange re-verified the live snapshot (`schema_version` 2, `dish_uuid`,
+`revision`) after that restart. The restart onto 509a3eb8 (which adds
+`/version`) is pending.
