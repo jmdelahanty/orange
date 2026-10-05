@@ -1,5 +1,6 @@
 #include "gui/registered_context_recording.h"
 #include <cstdio>
+#include <string>
 #include "imgui.h"
 
 namespace orange::gui {
@@ -106,19 +107,27 @@ namespace {
 std::string subject_status;
 bool subject_dirty = false;
 char subject_dish_id[128] = "";
+int subject_count = 0;  // 0 = not declared
 bool subject_fields_loaded = false;
 void load_subject_fields_from_config() {
     subject_dish_id[0] = '\0';
-    if (subject_references.default_dish_id)
-        std::snprintf(subject_dish_id, sizeof subject_dish_id, "%s", subject_references.default_dish_id->c_str());
+    subject_count = 0;
+    if (subject_references.default_declaration) {
+        const auto& d = *subject_references.default_declaration;
+        if (d.dish_id) std::snprintf(subject_dish_id, sizeof subject_dish_id, "%s", d.dish_id->c_str());
+        if (d.subject_count) subject_count = *d.subject_count;
+    }
     subject_fields_loaded = true;
     subject_dirty = false;
 }
 bool apply_subject_fields_to_config(std::string* error) {
     try {
         recording::SubjectReferencesConfig next = subject_references;
-        if (subject_dish_id[0] == '\0') next.default_dish_id.reset();
-        else next.default_dish_id = std::string(subject_dish_id);
+        recording::SubjectDeclaration d;
+        if (subject_dish_id[0] != '\0') d.dish_id = std::string(subject_dish_id);
+        if (subject_count > 0) d.subject_count = subject_count;
+        if (d.empty()) next.default_declaration.reset();
+        else next.default_declaration = d;
         recording::SubjectReferencesConfig::Parse(next.ToJson());  // same rules as the config parser
         subject_references = next;
         subject_error.clear();
@@ -130,14 +139,17 @@ void RenderSubjectReferenceSelection(bool locked) {
     if (!ImGui::CollapsingHeader("Subject (MetaZebrobot dish per camera)")) return;
     if (!subject_fields_loaded) load_subject_fields_from_config();
     ImGui::BeginDisabled(locked);
-    if (ImGui::InputText("Dish id (blank = no dish declared)", subject_dish_id, sizeof subject_dish_id)) {
+    bool changed = ImGui::InputText("Dish id (blank = no dish declared)", subject_dish_id, sizeof subject_dish_id);
+    changed |= ImGui::InputInt("Subject count in this camera (0 = not declared)", &subject_count);
+    if (subject_count < 0) subject_count = 0;
+    if (changed) {
         std::string err;
         if (apply_subject_fields_to_config(&err)) {
             subject_dirty = true;
             subject_status = "Applies at the next record start; not saved yet.";
         } else subject_status = "Not applied: " + err;
     }
-    if (ImGui::Button("Save dish id")) {
+    if (ImGui::Button("Save subject declaration")) {
         std::string err;
         if (apply_subject_fields_to_config(&err)) {
             try {
@@ -160,7 +172,9 @@ void RenderSubjectReferenceSelection(bool locked) {
     ImGui::EndDisabled();
     if (!subject_references.cameras.empty()) {
         ImGui::TextWrapped("Per-camera dish overrides in the app config (edit the file to change):");
-        for (const auto& [serial, dish] : subject_references.cameras) ImGui::BulletText("%s: %s", serial.c_str(), dish.c_str());
+        for (const auto& [serial, d] : subject_references.cameras)
+            ImGui::BulletText("%s: dish %s, subject_count %s", serial.c_str(), d.dish_id ? d.dish_id->c_str() : "(default)",
+                              d.subject_count ? std::to_string(*d.subject_count).c_str() : "(default)");
     }
     if (zebrobot_lookup.configured())
         ImGui::TextWrapped("Lookup at record start: %s (timeout %d ms); Orange records dish/fish identifiers as served, no biological fields.",
@@ -169,6 +183,7 @@ void RenderSubjectReferenceSelection(bool locked) {
         ImGui::TextWrapped("recording.zebrobot.base_url is not configured: a declared dish will be recorded as lookup_failed (zebrobot_not_configured); recording still starts.");
     if (!subject_references.configured())
         ImGui::TextWrapped("No dish declared: every camera is recorded as not_collected (no_dish_declared). Palette admits declared absence.");
+    ImGui::TextWrapped("Subject count is the number of animals this camera records, declared by you; it is never derived from the dish registry. Null (0) means Palette publishes subject metadata without an experiment setup.");
     if (subject_dirty) ImGui::TextWrapped("Unsaved: the next launch reloads the app config.");
     if (!subject_error.empty()) ImGui::TextWrapped("Record start blocked: %s", subject_error.c_str());
     if (!subject_status.empty()) ImGui::TextWrapped("%s", subject_status.c_str());

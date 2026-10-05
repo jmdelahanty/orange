@@ -22,7 +22,10 @@
 //     "dish": null unless collected: {"dish_id", "dish_uuid", "revision", "updated_at"},
 //     "dish_fish": [ {"fish_id", "revision", "updated_at"} ],   // registered to the dish, not "imaged"
 //     "dish_fish_lookup": null when not_collected, else
-//        {"status": "complete"|"failed"|"not_attempted", "http_status": int|null, "error": ...}
+//        {"status": "complete"|"failed"|"not_attempted", "http_status": int|null, "error": ...},
+//     "subject_count": int >= 1 when the operator declared how many animals this
+//        camera records, else null (independent of status; never derived from the
+//        dish registry or dish_fish; Palette publishes experiment setup only when non-null)
 //   }
 // Rules: collected <=> dish non-null and zebrobot.error null; lookup_failed <=>
 // zebrobot.error non-null; not_collected <=> zebrobot null and dish null and
@@ -60,42 +63,53 @@ struct ZebrobotLookupConfig {
     nlohmann::json ToJson() const;
 };
 
-// Operator declaration of which dish each camera images (app config
-// recording.subject_references / headless fixed.subject_references):
-// {"schema_version":1, "default": {"dish_id": "..."}?, "cameras": {"<serial>": {"dish_id": "..."}}?}
-// Resolved per recording camera: its own entry, else the default, else no dish
-// (which becomes status not_collected / no_dish_declared, never a refusal).
+// Operator declaration per camera (app config recording.subject_references /
+// headless fixed.subject_references): which dish the camera images and how
+// many animals it records.
+// {"schema_version":1, "default": {"dish_id": "..."?, "subject_count": N?}?,
+//  "cameras": {"<serial>": {"dish_id": "..."?, "subject_count": N?}}?}
+// Resolved per recording camera field by field: the camera's own value, else
+// the default, else undeclared (no dish -> status not_collected /
+// no_dish_declared; no count -> subject_count null). Never a refusal.
+struct SubjectDeclaration {
+    std::optional<std::string> dish_id;
+    std::optional<int> subject_count;   // >= 1 when declared
+    bool empty() const { return !dish_id && !subject_count; }
+    bool operator==(const SubjectDeclaration& o) const { return dish_id == o.dish_id && subject_count == o.subject_count; }
+};
 struct SubjectReferencesConfig {
-    std::optional<std::string> default_dish_id;
-    std::map<std::string, std::string> cameras;
-    bool configured() const { return default_dish_id.has_value() || !cameras.empty(); }
+    std::optional<SubjectDeclaration> default_declaration;
+    std::map<std::string, SubjectDeclaration> cameras;
+    bool configured() const { return default_declaration.has_value() || !cameras.empty(); }
     static SubjectReferencesConfig Parse(const nlohmann::json& config);
     nlohmann::json ToJson() const;
-    std::map<std::string, std::optional<std::string>> Resolve(const std::vector<std::string>& recording_serials) const;
+    std::map<std::string, SubjectDeclaration> Resolve(const std::vector<std::string>& recording_serials) const;
 };
 
 inline constexpr const char* kSubjectReferenceSchemaId = "orange.recording_subject_reference";
 inline constexpr int kSubjectReferenceSchemaVersion = 1;
 inline constexpr int kZebrobotApiSchemaVersion = 2;
 
-// One camera's reference. `dish_id` empty -> not_collected / no_dish_declared.
+// One camera's reference. No dish_id -> not_collected / no_dish_declared.
 // With a dish but no base_url -> lookup_failed (transport, zebrobot_not_configured).
 // Performs the dish GET (/dishes/<id>/citrus-snapshot) and, when that
 // succeeded, the fish GET (/dishes/<id>/fish); each bounded by timeout_ms.
-nlohmann::json BuildSubjectReference(const std::optional<std::string>& dish_id,
+// subject_count is carried through from the declaration (null when undeclared).
+nlohmann::json BuildSubjectReference(const SubjectDeclaration& declaration,
                                      const ZebrobotLookupConfig& zebrobot,
                                      const std::string& queried_at_utc,
                                      const HttpGetFn& http_get = HttpGet);
 
 // All recording cameras (one entry each, keyed by serial).
-nlohmann::json BuildSubjectReferences(const std::map<std::string, std::optional<std::string>>& dish_by_serial,
+nlohmann::json BuildSubjectReferences(const std::map<std::string, SubjectDeclaration>& declarations,
                                       const ZebrobotLookupConfig& zebrobot,
                                       const std::string& queried_at_utc,
                                       const HttpGetFn& http_get = HttpGet);
 
 // An entry that declares nothing was collected, with an explicit reason
-// (e.g. "synthetic_bundle", "no_dish_declared").
-nlohmann::json NotCollectedSubjectReference(const std::string& reason);
+// (e.g. "synthetic_bundle", "no_dish_declared") and an optional subject count.
+nlohmann::json NotCollectedSubjectReference(const std::string& reason,
+                                            const std::optional<int>& subject_count = std::nullopt);
 
 // Strict validation of an emitted block (schema, closed keys, the status rules,
 // non-empty serial keys). Throws std::runtime_error.

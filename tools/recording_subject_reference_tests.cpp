@@ -75,14 +75,19 @@ void test_configs()
     EXPECT(throws([] { ZebrobotLookupConfig::Parse({{"base_url", "http://x"}, {"timeout_ms", 50}}); }, "timeout_ms"));
     EXPECT(throws([] { ZebrobotLookupConfig::Parse({{"url", "http://x"}}); }, "unknown"));
 
-    const auto cfg = SubjectReferencesConfig::Parse({{"schema_version", 1}, {"default", {{"dish_id", "19220_1"}}},
-                                                     {"cameras", {{"2010094", {{"dish_id", "19220_2"}}}}}});
+    const auto cfg = SubjectReferencesConfig::Parse({{"schema_version", 1}, {"default", {{"dish_id", "19220_1"}, {"subject_count", 3}}},
+                                                     {"cameras", {{"2010094", {{"dish_id", "19220_2"}}}, {"2010095", {{"subject_count", 1}}}}}});
     EXPECT(cfg.configured());
-    const auto resolved = cfg.Resolve({"2010093", "2010094", "2010095"});
-    EXPECT(resolved.at("2010093") == "19220_1" && resolved.at("2010094") == "19220_2" && resolved.at("2010095") == "19220_1");
+    const auto resolved = cfg.Resolve({"2010093", "2010094", "2010095", "2010096"});
+    EXPECT(resolved.at("2010093").dish_id == "19220_1" && resolved.at("2010093").subject_count == 3);
+    EXPECT(resolved.at("2010094").dish_id == "19220_2" && resolved.at("2010094").subject_count == 3);  // field-wise override
+    EXPECT(resolved.at("2010095").dish_id == "19220_1" && resolved.at("2010095").subject_count == 1);
+    EXPECT(resolved.at("2010096").dish_id == "19220_1" && resolved.at("2010096").subject_count == 3);
     EXPECT(SubjectReferencesConfig::Parse(cfg.ToJson()).ToJson() == cfg.ToJson());
     const auto only_cameras = SubjectReferencesConfig::Parse({{"schema_version", 1}, {"cameras", {{"2010094", {{"dish_id", "x"}}}}}});
-    EXPECT(!only_cameras.Resolve({"2010093"}).at("2010093").has_value());
+    EXPECT(only_cameras.Resolve({"2010093"}).at("2010093").empty());
+    EXPECT(throws([] { SubjectReferencesConfig::Parse({{"schema_version", 1}, {"default", {{"subject_count", 0}}}}); }, "subject_count"));
+    EXPECT(throws([] { SubjectReferencesConfig::Parse({{"schema_version", 1}, {"default", json::object()}}); }, "must declare"));
     EXPECT(!SubjectReferencesConfig::Parse({{"schema_version", 1}}).configured());
     EXPECT(throws([] { SubjectReferencesConfig::Parse({{"schema_version", 1}, {"default", {{"dish_id", ""}}}}); }, "empty"));
     EXPECT(throws([] { SubjectReferencesConfig::Parse({{"schema_version", 1}, {"default", {{"dish_id", "a b"}}}}); }, "whitespace"));
@@ -93,19 +98,28 @@ void test_configs()
 
 void test_builder_outcomes()
 {
+    const SubjectDeclaration none;
+    SubjectDeclaration dish; dish.dish_id = "19220_1";
+    SubjectDeclaration dish_counted = dish; dish_counted.subject_count = 2;
+    SubjectDeclaration count_only; count_only.subject_count = 4;
+    SubjectDeclaration nope; nope.dish_id = "nope";
     // Not declared.
-    const json nd = BuildSubjectReference(std::nullopt, kZb, kNow, fake({}));
+    const json nd = BuildSubjectReference(none, kZb, kNow, fake({}));
     EXPECT(nd.at("status") == "not_collected" && nd.at("reason") == "no_dish_declared" && nd.at("zebrobot").is_null() &&
-           nd.at("dish").is_null() && nd.at("dish_fish").empty() && nd.at("dish_fish_lookup").is_null());
+           nd.at("dish").is_null() && nd.at("dish_fish").empty() && nd.at("dish_fish_lookup").is_null() && nd.at("subject_count").is_null());
+    // A count without a dish is still a declaration (independent of status).
+    const json co = BuildSubjectReference(count_only, kZb, kNow, fake({}));
+    EXPECT(co.at("status") == "not_collected" && co.at("subject_count") == 4);
     // Declared but no base_url: declared failure, never a refusal.
-    const json nc = BuildSubjectReference(std::string("19220_1"), ZebrobotLookupConfig{}, kNow, fake({}));
+    const json nc = BuildSubjectReference(dish, ZebrobotLookupConfig{}, kNow, fake({}));
     EXPECT(nc.at("status") == "lookup_failed" && nc.at("reason") == "zebrobot_not_configured" &&
            nc.at("zebrobot").at("error").at("kind") == "transport" && nc.at("zebrobot").at("http_status").is_null());
     // Collected with two registered fish; biological fields are not copied.
     std::vector<std::string> calls;
-    const json c = BuildSubjectReference(std::string("19220_1"), kZb, kNow,
+    const json c = BuildSubjectReference(dish_counted, kZb, kNow,
                                          fake({{"/dishes/19220_1/citrus-snapshot", ok(served_dish())},
                                                {"/dishes/19220_1/fish", ok(served_fish(2))}}, &calls));
+    EXPECT(c.at("subject_count") == 2);  // declared, never derived from fish_count (12) or dish_fish (2)
     EXPECT(calls.size() == 2 && calls[0] == "http://zb.test/dishes/19220_1/citrus-snapshot" && calls[1] == "http://zb.test/dishes/19220_1/fish");
     EXPECT(c.at("status") == "collected" && c.at("reason") == "" && c.at("zebrobot").at("http_status") == 200 &&
            c.at("zebrobot").at("error").is_null());
@@ -118,41 +132,42 @@ void test_builder_outcomes()
     EXPECT(c.at("dish_fish").size() == 2 && c.at("dish_fish")[0] == json({{"fish_id", "19220_1_f1"}, {"revision", 3}, {"updated_at", "2026-10-03 09:00:00"}}));
     EXPECT(c.at("dish_fish_lookup") == json({{"status", "complete"}, {"http_status", 200}, {"error", nullptr}}));
     // Collected, empty registered-fish list is a completed lookup, not a failure.
-    const json e = BuildSubjectReference(std::string("19220_1"), kZb, kNow,
+    const json e = BuildSubjectReference(dish, kZb, kNow,
                                          fake({{"/citrus-snapshot", ok(served_dish())}, {"/fish", ok(served_fish(0))}}));
     EXPECT(e.at("status") == "collected" && e.at("dish_fish").empty() && e.at("dish_fish_lookup").at("status") == "complete");
     // Collected, fish lookup failed: never read as "no individuals".
-    const json ff = BuildSubjectReference(std::string("19220_1"), kZb, kNow,
+    const json ff = BuildSubjectReference(dish, kZb, kNow,
                                           fake({{"/citrus-snapshot", ok(served_dish())}, {"/fish", http(503, {{"detail", {{"error", "database_error"}}}})}}));
     EXPECT(ff.at("status") == "collected" && ff.at("dish_fish").empty() && ff.at("dish_fish_lookup").at("status") == "failed" &&
            ff.at("dish_fish_lookup").at("http_status") == 503 && ff.at("dish_fish_lookup").at("error").at("detail_error") == "database_error");
-    const json ft = BuildSubjectReference(std::string("19220_1"), kZb, kNow,
+    const json ft = BuildSubjectReference(dish, kZb, kNow,
                                           fake({{"/citrus-snapshot", ok(served_dish())}, {"/fish", down("receive timed out")}}));
     EXPECT(ft.at("status") == "collected" && ft.at("dish_fish_lookup").at("status") == "failed" &&
            ft.at("dish_fish_lookup").at("error").at("kind") == "transport" && ft.at("dish_fish_lookup").at("http_status").is_null());
     // Dish 404 with the structured body; fish never attempted.
-    const json nf = BuildSubjectReference(std::string("nope"), kZb, kNow,
+    const json nf = BuildSubjectReference(nope, kZb, kNow,
                                           fake({{"/dishes/nope/citrus-snapshot", http(404, {{"detail", {{"error", "dish_not_found"}, {"dish_id", "nope"}}}})}}));
     EXPECT(nf.at("status") == "lookup_failed" && nf.at("reason") == "dish_lookup_http_404" && nf.at("zebrobot").at("http_status") == 404 &&
            nf.at("zebrobot").at("error") == json({{"kind", "http"}, {"detail_error", "dish_not_found"}, {"message", "HTTP 404: dish_not_found"}}) &&
            nf.at("dish").is_null() && nf.at("dish_fish_lookup").at("status") == "not_attempted");
     // Transport failure on the dish lookup.
-    const json tf = BuildSubjectReference(std::string("19220_1"), kZb, kNow, fake({{"/citrus-snapshot", down("connect timed out")}}));
+    const json tf = BuildSubjectReference(dish, kZb, kNow, fake({{"/citrus-snapshot", down("connect timed out")}}));
     EXPECT(tf.at("status") == "lookup_failed" && tf.at("reason") == "dish_lookup_transport_failure" &&
            tf.at("zebrobot").at("http_status").is_null() && tf.at("zebrobot").at("error").at("message") == "connect timed out");
     // API schema mismatch, missing field, and identity mismatch are declared failures, never substitutions.
     json v1 = served_dish(); v1["schema_version"] = 1;
-    EXPECT(BuildSubjectReference(std::string("19220_1"), kZb, kNow, fake({{"/citrus-snapshot", ok(v1)}})).at("reason") == "dish_lookup_api_schema_mismatch");
+    EXPECT(BuildSubjectReference(dish, kZb, kNow, fake({{"/citrus-snapshot", ok(v1)}})).at("reason") == "dish_lookup_api_schema_mismatch");
     json nouuid = served_dish(); nouuid.erase("dish_uuid");
-    EXPECT(BuildSubjectReference(std::string("19220_1"), kZb, kNow, fake({{"/citrus-snapshot", ok(nouuid)}})).at("reason") == "dish_lookup_missing_dish_uuid");
-    EXPECT(BuildSubjectReference(std::string("19220_1"), kZb, kNow, fake({{"/citrus-snapshot", ok(served_dish("other"))}})).at("reason") == "dish_lookup_identity_mismatch");
+    EXPECT(BuildSubjectReference(dish, kZb, kNow, fake({{"/citrus-snapshot", ok(nouuid)}})).at("reason") == "dish_lookup_missing_dish_uuid");
+    EXPECT(BuildSubjectReference(dish, kZb, kNow, fake({{"/citrus-snapshot", ok(served_dish("other"))}})).at("reason") == "dish_lookup_identity_mismatch");
     // Every outcome validates under the emitted rules.
-    for (const json& entry : {nd, nc, c, e, ff, ft, nf, tf}) EXPECT(!throws([&] { ValidateEmittedSubjectReferences({{"2010093", entry}}); }));
+    for (const json& entry : {nd, co, nc, c, e, ff, ft, nf, tf}) EXPECT(!throws([&] { ValidateEmittedSubjectReferences({{"2010093", entry}}); }));
 }
 
 void test_block_rules_and_gate()
 {
-    const json block = BuildSubjectReferences({{"2010093", std::string("19220_1")}, {"2010094", std::nullopt}}, kZb, kNow,
+    SubjectDeclaration dish; dish.dish_id = "19220_1";
+    const json block = BuildSubjectReferences({{"2010093", dish}, {"2010094", SubjectDeclaration{}}}, kZb, kNow,
                                               fake({{"/citrus-snapshot", ok(served_dish())}, {"/fish", ok(served_fish(1))}}));
     EXPECT(block.size() == 2 && block.at("2010093").at("status") == "collected" && block.at("2010094").at("status") == "not_collected");
     // Rule violations.
@@ -166,6 +181,10 @@ void test_block_rules_and_gate()
     EXPECT(throws([&] { ValidateEmittedSubjectReferences(bad); }));
     bad = block; bad["2010093"]["dish_fish_lookup"] = {{"status", "not_attempted"}, {"http_status", nullptr}, {"error", nullptr}};
     EXPECT(throws([&] { ValidateEmittedSubjectReferences(bad); }, "dish_fish must be empty"));
+    bad = block; bad["2010093"]["subject_count"] = 0;
+    EXPECT(throws([&] { ValidateEmittedSubjectReferences(bad); }, "subject_count"));
+    bad = block; bad["2010093"].erase("subject_count");
+    EXPECT(throws([&] { ValidateEmittedSubjectReferences(bad); }, "missing subject_count"));
     bad = block; bad[""] = block["2010094"];
     EXPECT(throws([&] { ValidateEmittedSubjectReferences(bad); }, "empty camera serial"));
     EXPECT(throws([] { ValidateEmittedSubjectReferences(json::object()); }, "non-empty"));
@@ -205,10 +224,12 @@ void test_block_rules_and_gate()
 void test_real_http(const std::string& base_url)
 {
     const auto zb = ZebrobotLookupConfig::Parse({{"base_url", base_url}, {"timeout_ms", 1000}});
-    const json c = BuildSubjectReference(std::string("19220_1"), zb, kNow);
+    SubjectDeclaration dish; dish.dish_id = "19220_1";
+    SubjectDeclaration nope; nope.dish_id = "nope";
+    const json c = BuildSubjectReference(dish, zb, kNow);
     EXPECT(c.at("status") == "collected" && c.at("dish").at("dish_uuid") == "28c29cc6-a1ef-4382-9dc5-414fbb445d92" &&
            c.at("dish_fish").size() == 1 && c.at("dish_fish_lookup").at("status") == "complete");
-    const json nf = BuildSubjectReference(std::string("nope"), zb, kNow);
+    const json nf = BuildSubjectReference(nope, zb, kNow);
     EXPECT(nf.at("status") == "lookup_failed" && nf.at("zebrobot").at("http_status") == 404 &&
            nf.at("zebrobot").at("error").at("detail_error") == "dish_not_found");
     const HttpGetResult slow = HttpGet(base_url + "/slow", 300);

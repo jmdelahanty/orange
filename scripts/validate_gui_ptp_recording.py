@@ -1472,7 +1472,7 @@ def validate_recording_context_entry(entry: Any) -> str | None:
 
 
 SUBJECT_REFERENCE_FIELDS = ("schema_id", "schema_version", "status", "reason", "zebrobot", "dish",
-                            "dish_fish", "dish_fish_lookup")
+                            "dish_fish", "dish_fish_lookup", "subject_count")
 
 
 def validate_subject_reference_entry(entry: Any) -> str | None:
@@ -1488,6 +1488,9 @@ def validate_subject_reference_entry(entry: Any) -> str | None:
     if status not in ("collected", "not_collected", "lookup_failed") or not isinstance(reason, str):
         return f"status {status!r} / reason {reason!r}"
     zb, dish, fish, fish_lookup = entry.get("zebrobot"), entry.get("dish"), entry.get("dish_fish"), entry.get("dish_fish_lookup")
+    count = entry.get("subject_count")
+    if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 1):
+        return f"subject_count {count!r} must be null or an integer >= 1"
     if not isinstance(fish, list):
         return "dish_fish is not a list"
     for row in fish:
@@ -1543,7 +1546,7 @@ def check_subject_references(
             if isinstance(entry, dict):
                 dish = entry.get("dish") or {}
                 summary = f"{entry.get('status')} {dish.get('dish_id', '')} uuid={str(dish.get('dish_uuid', ''))[:8]} rev={dish.get('revision', '')} " \
-                          f"fish={len(entry.get('dish_fish') or [])} reason={entry.get('reason', '')!r}"
+                          f"fish={len(entry.get('dish_fish') or [])} subject_count={entry.get('subject_count')} reason={entry.get('reason', '')!r}"
             reporter.check(reason is None, f"Cam{serial} subject reference: {summary}", f"Cam{serial} subject reference invalid: {reason}")
             if isinstance(entry, dict) and entry.get("status") == "lookup_failed":
                 reporter.warn(f"Cam{serial} subject reference lookup failed: {entry.get('reason')} ({(entry.get('zebrobot') or {}).get('error')})")

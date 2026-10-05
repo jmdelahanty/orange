@@ -254,21 +254,39 @@ json ZebrobotLookupConfig::ToJson() const
 }
 
 namespace {
-std::string require_dish_id(const json& entry, const std::string& what)
+SubjectDeclaration parse_declaration(const json& entry, const std::string& what)
 {
     require(entry.is_object(), what + " must be an object");
     for (auto it = entry.begin(); it != entry.end(); ++it) {
-        require(it.key() == "dish_id", "unknown " + what + " field: " + it.key());
+        require(it.key() == "dish_id" || it.key() == "subject_count", "unknown " + what + " field: " + it.key());
     }
-    require(entry.contains("dish_id") && entry.at("dish_id").is_string(), what + " needs a dish_id string");
-    const std::string id = entry.at("dish_id").get<std::string>();
-    require(!id.empty(), what + " dish_id must not be empty (omit the entry instead)");
-    require(id.size() <= 256, what + " dish_id exceeds 256 bytes");
-    for (unsigned char ch : id) {
-        require(ch > 0x20 && ch != 0x7f && ch != '/' && ch != '?' && ch != '#',
-                what + " dish_id contains whitespace, control or URL-delimiter characters");
+    SubjectDeclaration d;
+    if (entry.contains("dish_id")) {
+        require(entry.at("dish_id").is_string(), what + " dish_id must be a string (omit the key for no dish)");
+        const std::string id = entry.at("dish_id").get<std::string>();
+        require(!id.empty(), what + " dish_id must not be empty (omit the key instead)");
+        require(id.size() <= 256, what + " dish_id exceeds 256 bytes");
+        for (unsigned char ch : id) {
+            require(ch > 0x20 && ch != 0x7f && ch != '/' && ch != '?' && ch != '#',
+                    what + " dish_id contains whitespace, control or URL-delimiter characters");
+        }
+        d.dish_id = id;
     }
-    return id;
+    if (entry.contains("subject_count")) {
+        require(entry.at("subject_count").is_number_integer() && !entry.at("subject_count").is_boolean() &&
+                    entry.at("subject_count").get<long long>() >= 1 && entry.at("subject_count").get<long long>() <= 100000,
+                what + " subject_count must be an integer >= 1 (omit the key when not declared)");
+        d.subject_count = entry.at("subject_count").get<int>();
+    }
+    require(!d.empty(), what + " must declare a dish_id and/or a subject_count (omit the entry instead)");
+    return d;
+}
+json declaration_json(const SubjectDeclaration& d)
+{
+    json j = json::object();
+    if (d.dish_id) j["dish_id"] = *d.dish_id;
+    if (d.subject_count) j["subject_count"] = *d.subject_count;
+    return j;
 }
 }  // namespace
 
@@ -285,13 +303,13 @@ SubjectReferencesConfig SubjectReferencesConfig::Parse(const json& config)
             "subject_references config schema_version must be 1");
     if (config.contains("default")) {
         require(!config.at("default").is_null(), "subject_references default must be an object or absent, not null");
-        c.default_dish_id = require_dish_id(config.at("default"), "subject_references default");
+        c.default_declaration = parse_declaration(config.at("default"), "subject_references default");
     }
     if (config.contains("cameras")) {
         require(config.at("cameras").is_object(), "subject_references cameras must be an object keyed by serial");
         for (auto it = config.at("cameras").begin(); it != config.at("cameras").end(); ++it) {
             require(!it.key().empty(), "subject_references cameras has an empty serial key");
-            c.cameras[it.key()] = require_dish_id(it.value(), "subject_references camera " + it.key());
+            c.cameras[it.key()] = parse_declaration(it.value(), "subject_references camera " + it.key());
         }
     }
     return c;
@@ -300,24 +318,28 @@ SubjectReferencesConfig SubjectReferencesConfig::Parse(const json& config)
 json SubjectReferencesConfig::ToJson() const
 {
     json j = {{"schema_version", 1}};
-    if (default_dish_id) j["default"] = {{"dish_id", *default_dish_id}};
+    if (default_declaration) j["default"] = declaration_json(*default_declaration);
     if (!cameras.empty()) {
         json cams = json::object();
-        for (const auto& [serial, id] : cameras) cams[serial] = {{"dish_id", id}};
+        for (const auto& [serial, d] : cameras) cams[serial] = declaration_json(d);
         j["cameras"] = cams;
     }
     return j;
 }
 
-std::map<std::string, std::optional<std::string>> SubjectReferencesConfig::Resolve(
+std::map<std::string, SubjectDeclaration> SubjectReferencesConfig::Resolve(
     const std::vector<std::string>& recording_serials) const
 {
-    std::map<std::string, std::optional<std::string>> out;
+    std::map<std::string, SubjectDeclaration> out;
     for (const auto& serial : recording_serials) {
+        SubjectDeclaration d;
+        if (default_declaration) d = *default_declaration;
         const auto it = cameras.find(serial);
-        if (it != cameras.end()) out[serial] = it->second;
-        else if (default_dish_id) out[serial] = *default_dish_id;
-        else out[serial] = std::nullopt;
+        if (it != cameras.end()) {  // field-wise override
+            if (it->second.dish_id) d.dish_id = it->second.dish_id;
+            if (it->second.subject_count) d.subject_count = it->second.subject_count;
+        }
+        out[serial] = d;
     }
     return out;
 }
@@ -360,24 +382,30 @@ bool copy_int(const json& src, const char* key, json* dst, std::string* missing)
 
 }  // namespace
 
-json NotCollectedSubjectReference(const std::string& reason)
+json NotCollectedSubjectReference(const std::string& reason, const std::optional<int>& subject_count)
 {
     require(!reason.empty(), "not_collected needs a reason");
+    require(!subject_count || *subject_count >= 1, "subject_count must be >= 1 when declared");
     return {{"schema_id", kSubjectReferenceSchemaId}, {"schema_version", kSubjectReferenceSchemaVersion},
             {"status", "not_collected"}, {"reason", reason}, {"zebrobot", nullptr}, {"dish", nullptr},
-            {"dish_fish", json::array()}, {"dish_fish_lookup", nullptr}};
+            {"dish_fish", json::array()}, {"dish_fish_lookup", nullptr},
+            {"subject_count", subject_count ? json(*subject_count) : json(nullptr)}};
 }
 
-json BuildSubjectReference(const std::optional<std::string>& dish_id,
+json BuildSubjectReference(const SubjectDeclaration& declaration,
                            const ZebrobotLookupConfig& zebrobot,
                            const std::string& queried_at_utc,
                            const HttpGetFn& http_get)
 {
-    if (!dish_id) return NotCollectedSubjectReference("no_dish_declared");
+    require(!declaration.subject_count || *declaration.subject_count >= 1, "subject_count must be >= 1 when declared");
+    const json subject_count = declaration.subject_count ? json(*declaration.subject_count) : json(nullptr);
+    if (!declaration.dish_id) return NotCollectedSubjectReference("no_dish_declared", declaration.subject_count);
+    const std::string& dish_id_value = *declaration.dish_id;
+    const std::optional<std::string> dish_id = dish_id_value;
     const std::string endpoint = "/dishes/" + *dish_id + "/citrus-snapshot";
     const std::string fish_endpoint = "/dishes/" + *dish_id + "/fish";
     json entry = {{"schema_id", kSubjectReferenceSchemaId}, {"schema_version", kSubjectReferenceSchemaVersion},
-                  {"status", "lookup_failed"}, {"reason", ""},
+                  {"status", "lookup_failed"}, {"reason", ""}, {"subject_count", subject_count},
                   {"zebrobot", {{"base_url", zebrobot.base_url}, {"endpoint", endpoint}, {"fish_endpoint", fish_endpoint},
                                 {"api_schema_version", kZebrobotApiSchemaVersion}, {"queried_at_utc", queried_at_utc},
                                 {"http_status", nullptr}, {"error", nullptr}}},
@@ -454,15 +482,15 @@ json BuildSubjectReference(const std::optional<std::string>& dish_id,
     return entry;
 }
 
-json BuildSubjectReferences(const std::map<std::string, std::optional<std::string>>& dish_by_serial,
+json BuildSubjectReferences(const std::map<std::string, SubjectDeclaration>& declarations,
                             const ZebrobotLookupConfig& zebrobot,
                             const std::string& queried_at_utc,
                             const HttpGetFn& http_get)
 {
     json block = json::object();
-    for (const auto& [serial, dish_id] : dish_by_serial) {
+    for (const auto& [serial, declaration] : declarations) {
         require(!serial.empty(), "subject references: empty camera serial");
-        block[serial] = BuildSubjectReference(dish_id, zebrobot, queried_at_utc, http_get);
+        block[serial] = BuildSubjectReference(declaration, zebrobot, queried_at_utc, http_get);
     }
     ValidateEmittedSubjectReferences(block);
     return block;
@@ -490,7 +518,12 @@ void validate_error(const json& e, const std::string& what)
 void validate_entry(const std::string& serial, const json& e)
 {
     const std::string what = "subject_references[" + serial + "]";
-    require_keys(e, {"schema_id", "schema_version", "status", "reason", "zebrobot", "dish", "dish_fish", "dish_fish_lookup"}, what);
+    require_keys(e, {"schema_id", "schema_version", "status", "reason", "zebrobot", "dish", "dish_fish", "dish_fish_lookup",
+                     "subject_count"}, what);
+    require(e.at("subject_count").is_null() ||
+                (e.at("subject_count").is_number_integer() && !e.at("subject_count").is_boolean() &&
+                 e.at("subject_count").get<long long>() >= 1),
+            what + " subject_count must be null or an integer >= 1");
     require(e.at("schema_id") == kSubjectReferenceSchemaId, what + " schema_id");
     require(e.at("schema_version").is_number_integer() && e.at("schema_version") == kSubjectReferenceSchemaVersion,
             what + " schema_version must be 1");

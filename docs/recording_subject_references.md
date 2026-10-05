@@ -24,17 +24,24 @@ App config (GUI) / experiment spec `fixed` (headless):
 "zebrobot": { "base_url": "http://delahantyj-ws1.hhmi.org", "timeout_ms": 2000 },
 "subject_references": {
   "schema_version": 1,
-  "default": { "dish_id": "19220_1" },
-  "cameras": { "2010094": { "dish_id": "19220_2" } }
+  "default": { "dish_id": "19220_1", "subject_count": 3 },
+  "cameras": { "2010094": { "dish_id": "19220_2" }, "2010095": { "subject_count": 1 } }
 }
 ```
 
 - `zebrobot.base_url` is `http://` only (Orange's client is a minimal socket
   GET; no TLS); `timeout_ms` bounds connect + send + receive, 100..10000.
-- A camera takes its own `cameras` entry, else `default`, else no dish. No
-  dish is a declaration (`not_collected`, `no_dish_declared`), never a refusal.
+- Each field resolves per camera: the camera's own value, else `default`,
+  else undeclared. No dish is a declaration (`not_collected`,
+  `no_dish_declared`), never a refusal.
+- `subject_count` (Palette request 2026-10-05) is the number of animals this
+  camera records, declared by the operator; it is independent of `status`
+  (a camera with no dish can still declare it) and is **never derived** from
+  the dish `fish_count` or `dish_fish`. Emitted as an integer ≥ 1 or `null`;
+  Palette publishes an experiment setup only when it is non-null.
 - GUI: "Subject (MetaZebrobot dish per camera)" under the media products
-  selection; "Save dish id" writes `recording.subject_references`.
+  selection: dish id and subject count (0 = not declared); "Save subject
+  declaration" writes `recording.subject_references`.
 
 ## What Orange records, at record start
 

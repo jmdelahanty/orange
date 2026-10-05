@@ -85,6 +85,7 @@ def check_bundle(out: Path, summary: dict, *, expect_subtype: bool, expect_reque
     assert set(refs) == set(CAMERAS)
     for entry in refs.values():
         assert entry["status"] == "not_collected" and entry["reason"] == "synthetic_bundle" and entry["dish"] is None
+        assert entry["subject_count"] is None
     assert snapshot["session"]["subject_references"] == refs
 
     # Geometry contract: resolved from the synthetic rig, referenced by exact

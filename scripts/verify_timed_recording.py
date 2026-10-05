@@ -619,6 +619,9 @@ def verify_common_manifest(
             require(isinstance(entry, dict) and entry.get("schema_id") == "orange.recording_subject_reference"
                     and entry.get("schema_version") == 1 and entry.get("status") in ("collected", "not_collected", "lookup_failed"),
                     f"subject_references[{serial}] must be an orange.recording_subject_reference v1 entry")
+            count = entry.get("subject_count", "missing")
+            require(count is None or (isinstance(count, int) and not isinstance(count, bool) and count >= 1),
+                    f"subject_references[{serial}] subject_count must be null or an integer >= 1")
             if entry["status"] == "collected":
                 dish = entry.get("dish")
                 require(isinstance(dish, dict) and dish.get("dish_id") and dish.get("dish_uuid")
