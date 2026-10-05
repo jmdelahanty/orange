@@ -97,26 +97,28 @@ synthetic_bundle` per camera.
   stand-in server so the real client is exercised for 200 JSON, chunked
   bodies, the structured 404, a stalled response and a refused connection.
 
-## MetaZebrobot facts the implementation relies on (live, 2026-10-05)
+## MetaZebrobot contract (owner-pinned; Orange links, does not copy)
 
-- `/dishes/{dish_id}/citrus-snapshot` v2 is flat: `dish_id`, `dish_uuid`,
-  `revision`, `updated_at` at the top level (plus biology, not copied).
-- `/dishes/{dish_id}/fish` returns `{"items": [...]}` from `fish_subjects`;
-  items carry `fish_id`, `dish_id`, `dish_uuid`, `subject_label`,
-  `current_unit_id`, `revision`, `updated_at`.
-- Errors: 404 `{"detail": {"error": "dish_not_found", "dish_id": ...}}`,
-  503 `database_error`.
-- `revision` bumps only when a column's value changes (no-op saves and
-  service restarts never bump it): the same `(dish_uuid, revision)` means the
-  row is unchanged; `revision` means changed-or-unchanged, never a count.
-  There is no as-of-time read, so Palette compares the recorded revision with
-  the one it fetches.
-- Ownership (MetaZebrobot, 2026-10-05): response shapes are owned by
-  MetaZebrobot's generated `docs/api/consumer_openapi.json` (six consumer
-  endpoints incl. the 404/503 error models; `tests/test_consumer_contract.py`
-  asserts the identity fields; `scripts/export_consumer_openapi.py --check`
-  prints its sha256); the semantics above are owned by MetaZebrobot's
-  `docs/zebrobot_snapshot.md`. This section is a consumer's reading and will
-  become links to those two files at a pinned commit + digest once they are
-  committed; v2 only gains fields, and any removal or rename ships as a new
-  `schema_version`.
+Pinned by MetaZebrobot on 2026-10-05, repo `github.com/jmdelahanty/metazebrobot`,
+commit `33c0f8e442dd8ca6e1a929422ae36831baef86f5` (main):
+
+- Response shapes: `docs/api/consumer_openapi.json`, sha256
+  `cb3733267484bf8869826ba35ddfc7eefcfb59dc50435801ac6d0d62daed8495`
+  (verified by Orange against the committed file; paths `/acquisition/dishes`,
+  `/dishes/by-uuid/{dish_uuid}`, `/dishes/{dish_id}`,
+  `/dishes/{dish_id}/citrus-snapshot`, `/dishes/{dish_id}/fish`,
+  `/fish/{fish_id}`, with the 404/503 `ApiErrorResponse` models).
+  `pixi run python scripts/export_consumer_openapi.py --check` prints
+  `OK <sha256>`; `tests/test_consumer_contract.py` guards drift.
+- Meaning: `docs/zebrobot_snapshot.md`, sections "Identity and change
+  detection", "API errors" and "Contract and stability".
+
+Orange's reliance set, every field of which is in the pinned slice:
+`/dishes/{dish_id}/citrus-snapshot` v2 top-level `dish_id`, `dish_uuid`,
+`revision`, `updated_at`, `schema_version`; `/dishes/{dish_id}/fish` items
+`fish_id`, `revision`, `updated_at`; 404/503 `ApiErrorResponse` `detail.error`.
+Orange refuses a snapshot whose `schema_version` is not 2 (declared
+`lookup_failed`); v2 only gains fields, and any removal or rename ships as a
+new `schema_version`. Note: that commit changed no payloads, only the schema
+models; check against the committed file at the pin, not the live
+`/openapi.json`, until MetaZebrobot confirms the service restart.
