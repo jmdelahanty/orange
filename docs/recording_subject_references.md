@@ -106,5 +106,17 @@ synthetic_bundle` per camera.
   `current_unit_id`, `revision`, `updated_at`.
 - Errors: 404 `{"detail": {"error": "dish_not_found", "dish_id": ...}}`,
   503 `database_error`.
-- Revisions are trigger-bumped on every row write; there is no as-of-time
-  read, so Palette compares the recorded revision with the one it fetches.
+- `revision` bumps only when a column's value changes (no-op saves and
+  service restarts never bump it): the same `(dish_uuid, revision)` means the
+  row is unchanged; `revision` means changed-or-unchanged, never a count.
+  There is no as-of-time read, so Palette compares the recorded revision with
+  the one it fetches.
+- Ownership (MetaZebrobot, 2026-10-05): response shapes are owned by
+  MetaZebrobot's generated `docs/api/consumer_openapi.json` (six consumer
+  endpoints incl. the 404/503 error models; `tests/test_consumer_contract.py`
+  asserts the identity fields; `scripts/export_consumer_openapi.py --check`
+  prints its sha256); the semantics above are owned by MetaZebrobot's
+  `docs/zebrobot_snapshot.md`. This section is a consumer's reading and will
+  become links to those two files at a pinned commit + digest once they are
+  committed; v2 only gains fields, and any removal or rename ships as a new
+  `schema_version`.
