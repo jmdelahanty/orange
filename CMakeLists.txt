@@ -147,12 +147,9 @@ find_library(CUDA_NPPIG_LIBRARY nppig PATHS "${ORANGE_CUDA_ROOT}/lib64" REQUIRED
 find_library(CUDA_NPPIAL_LIBRARY nppial PATHS "${ORANGE_CUDA_ROOT}/lib64" REQUIRED)
 find_library(NVIDIA_ENCODE_LIBRARY nvidia-encode PATHS "${ORANGE_CUDA_ROOT}/lib64" /usr/lib /usr/lib/x86_64-linux-gnu REQUIRED)
 
-if(ORANGE_ENABLE_NVTX)
-    find_library(NVTX_LIBRARY nvToolsExt PATHS "${ORANGE_CUDA_ROOT}/lib64" /usr/lib /usr/lib/x86_64-linux-gnu)
-    if(NOT NVTX_LIBRARY)
-        message(FATAL_ERROR "ORANGE_ENABLE_NVTX=ON but nvToolsExt was not found. Install Nsight/CUDA NVTX libraries or disable ORANGE_ENABLE_NVTX.")
-    endif()
-endif()
+# NVTX markers (ORANGE_ENABLE_NVTX) use the header-only NVTX3 API
+# (<nvtx3/nvToolsExt.h>, src/nvtx_profiling.h) on CUDA 12.x and 13; no
+# libnvToolsExt link is needed and CUDA 13 no longer ships it.
 
 find_path(FFMPEG_INCLUDE_DIR libavformat/avformat.h
     PATHS
@@ -1724,9 +1721,6 @@ target_link_libraries(orange PRIVATE
     m
     pthread
 )
-if(ORANGE_ENABLE_NVTX)
-    target_link_libraries(orange PRIVATE ${NVTX_LIBRARY})
-endif()
 
 target_link_libraries(orange_client PRIVATE
     orange_recording_master_journal
@@ -1753,9 +1747,6 @@ target_link_libraries(orange_client PRIVATE
     m
     pthread
 )
-if(ORANGE_ENABLE_NVTX)
-    target_link_libraries(orange_client PRIVATE ${NVTX_LIBRARY})
-endif()
 
 if(TARGET recording_session_manifest_tests)
     target_link_libraries(recording_session_manifest_tests PRIVATE
@@ -1783,9 +1774,6 @@ if(TARGET recording_session_manifest_tests)
         m
         pthread
     )
-    if(ORANGE_ENABLE_NVTX)
-        target_link_libraries(recording_session_manifest_tests PRIVATE ${NVTX_LIBRARY})
-    endif()
     target_link_libraries(synthetic_recording_bundle PRIVATE
         orange_recording_master_journal
         ${EVT_CAMERA_LIBRARY}
@@ -1811,9 +1799,6 @@ if(TARGET recording_session_manifest_tests)
         m
         pthread
     )
-    if(ORANGE_ENABLE_NVTX)
-        target_link_libraries(synthetic_recording_bundle PRIVATE ${NVTX_LIBRARY})
-    endif()
 endif()
 
 if(TARGET recording_finalizer_tests)
@@ -1842,9 +1827,6 @@ if(TARGET recording_finalizer_tests)
         m
         pthread
     )
-    if(ORANGE_ENABLE_NVTX)
-        target_link_libraries(recording_finalizer_tests PRIVATE ${NVTX_LIBRARY})
-    endif()
 endif()
 
 if(TARGET session_status_tests)
@@ -1873,9 +1855,6 @@ if(TARGET session_status_tests)
         m
         pthread
     )
-    if(ORANGE_ENABLE_NVTX)
-        target_link_libraries(session_status_tests PRIVATE ${NVTX_LIBRARY})
-    endif()
 endif()
 
 if(TARGET recording_session_drain_tests)
@@ -1904,9 +1883,6 @@ if(TARGET recording_session_drain_tests)
         m
         pthread
     )
-    if(ORANGE_ENABLE_NVTX)
-        target_link_libraries(recording_session_drain_tests PRIVATE ${NVTX_LIBRARY})
-    endif()
 endif()
 
 if(TARGET recording_session_phased_start_tests)
@@ -1935,9 +1911,6 @@ if(TARGET recording_session_phased_start_tests)
         m
         pthread
     )
-    if(ORANGE_ENABLE_NVTX)
-        target_link_libraries(recording_session_phased_start_tests PRIVATE ${NVTX_LIBRARY})
-    endif()
 
     target_link_libraries(recording_folder_reuse_regression_tests PRIVATE
         orange_recording_master_journal
@@ -1964,9 +1937,6 @@ if(TARGET recording_session_phased_start_tests)
         m
         pthread
     )
-    if(ORANGE_ENABLE_NVTX)
-        target_link_libraries(recording_folder_reuse_regression_tests PRIVATE ${NVTX_LIBRARY})
-    endif()
 endif()
 
 target_link_libraries(yolo_offline PRIVATE
@@ -1982,9 +1952,6 @@ target_link_libraries(yolo_offline PRIVATE
     ${TENSORRT_LIBRARY}
     ${TENSORRT_PLUGIN_LIBRARY}
 )
-if(ORANGE_ENABLE_NVTX)
-    target_link_libraries(yolo_offline PRIVATE ${NVTX_LIBRARY})
-endif()
 
 target_link_libraries(evt_lens_probe PRIVATE
     ${EVT_CAMERA_LIBRARY}
