@@ -5186,6 +5186,19 @@ int main(int /*argc*/, char ** /*args*/) {
             app_storage_config.gui_external_ipc_native_local_input ? "1" : "0",
             "full-frame external recorder native local input");
     }
+    if (app_storage_config.gui_external_ipc_owner_push_chunk_bytes > 0) {
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_CHUNK_BYTES",
+            std::to_string(app_storage_config.gui_external_ipc_owner_push_chunk_bytes),
+            "external recorder owner push chunk bytes");
+    }
+    if (app_storage_config.gui_external_ipc_mp4_writeback_pace_bytes >= 0) {
+        // Inherited by the recorder children (their FFmpegWriter reads it too).
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_MP4_WRITEBACK_PACE_BYTES",
+            std::to_string(app_storage_config.gui_external_ipc_mp4_writeback_pace_bytes),
+            "MP4 writeback pacing (sync_file_range cadence, bytes)");
+    }
     if (app_storage_config.gui_display_pose_overlay) {
         set_gui_env_from_app_config_if_absent(
             "ORANGE_GUI_POSE_OVERLAY",

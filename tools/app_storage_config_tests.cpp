@@ -139,6 +139,8 @@ void test_missing_config_uses_defaults()
             !config.gui_external_ipc_owner_push_configured &&
             config.gui_external_ipc_owner_push_slots == -1 &&
             config.gui_external_ipc_full_frame_extra_output_delay == -1 &&
+            config.gui_external_ipc_owner_push_chunk_bytes == -1 &&
+            config.gui_external_ipc_mp4_writeback_pace_bytes == -1 &&
             !config.gui_external_ipc_native_local_input_configured &&
             config.gui_external_ipc_recorder_tool_path.empty() &&
             config.gui_analytics_device_roi == -1 && config.gui_analytics_early_owned_frame == -1 &&
@@ -206,8 +208,10 @@ void test_loads_gui_and_crop_defaults()
     "external_ipc": {
       "owner_push": true,
       "owner_push_slots": 16,
+      "owner_push_chunk_bytes": 2097152,
       "full_frame_extra_output_delay": 8,
       "native_local_input": true,
+      "mp4_writeback_pace_bytes": 33554432,
       "native_kernel_ptx": "",
       "recorder_tool_path": "/opt/orange/bin/external_recorder_ipc_probe_native"
     }
@@ -269,6 +273,8 @@ void test_loads_gui_and_crop_defaults()
     require(config.gui_external_ipc_native_local_input &&
                 config.gui_external_ipc_native_local_input_configured,
             "native_local_input should load");
+    require(config.gui_external_ipc_owner_push_chunk_bytes == 2097152, "owner_push_chunk_bytes should load");
+    require(config.gui_external_ipc_mp4_writeback_pace_bytes == 33554432, "mp4_writeback_pace_bytes should load");
     require(config.gui_external_ipc_native_kernel_ptx.empty(), "empty native_kernel_ptx stays empty");
     require(config.gui_external_ipc_recorder_tool_path ==
                 "/opt/orange/bin/external_recorder_ipc_probe_native",

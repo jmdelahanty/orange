@@ -98,15 +98,18 @@ and 4-39 on 2010094 (mlnx1 `rx_discards_phy` +10k per run, PCIe write
 back-pressure into card A; headless is clean with the same graph). With
 `fused_frame = false` and device ROI, device crop and the pose device stage
 still on, the GUI loses 8/2/0/1 with the same a2d p95 (1.87 ms) and
-capture-to-pose-done p95 (2.44 ms). The host app config therefore keeps
-`analytics.fused_frame = false` for GUI use; headless specs may keep it on.
+capture-to-pose-done p95 (2.44 ms). The host app config therefore kept
+`analytics.fused_frame = false` for GUI use at the time (it is `true` again
+since 2026-09-23, see below).
 Root cause found later the same evening: the preview PBOs stayed CUDA-mapped
 while OpenGL read them (undefined behaviour per the CUDA interop contract);
 fixed in `src/gui/texture_resources.cpp` + `gui/preview_staging_lock.h`
 (map, copy, unmap, sync, then upload; exclusive staging ownership). With the
 fix, fused on with live previews lost 0/0 steady-state frames on
-2010093/2010094 (mlnx1 +843/+0). Re-enable `fused_frame` in the app config
-only after a repeat 60 s gate and a longer GUI soak with the fix.
+2010093/2010094 (mlnx1 +843/+0). `fused_frame` was re-enabled in the app
+config after the fix: every GUI recording since 2026-09-23 (ten 10-minute
+soaks on 09-22/23, the 60-minute recording `2026_09_23_13_58_31`, the
+2026-10-01 fish run) ran with the fused graph on.
 Startup loss (a few frames on 2010093 in the first seconds of every
 recording) was the recorders' first-use CUDA IPC imports: fixed by the
 PREPARE/PREPARED handshake (33189a2; both recorder builds), crop recorders
@@ -198,4 +201,8 @@ Orange/Citrus commissioning) are in git history of this file and in
   editing it.
 - Card-B camera traffic arrives on `mlnx2_p3_25g`/`mlnx2_p4_25g`; `p1`/`p2`
   are down. Card A uses `mlnx1_p1_25g`/`mlnx1_p2_25g`.
-- Open: the `analytics.fused_frame` decision (app config keeps `false`).
+- `analytics.fused_frame` is `true` in the app config (resolved 2026-09-23;
+  the 2026-10-05 review of every production knob against the app config,
+  the code defaults and the headless gate spec is
+  `docs/production_configuration.md`; the sealed
+  `session.effective_configuration` in each recording shows what a run used).

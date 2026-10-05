@@ -1672,6 +1672,16 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                 }
                 config.gui_external_ipc_native_local_input_configured = true;
             }
+            if (!read_optional_bounded_int_field(external_ipc, "owner_push_chunk_bytes",
+                                                 &config.gui_external_ipc_owner_push_chunk_bytes,
+                                                 65536, 1 << 30, error_out, ctx)) {
+                return false;
+            }
+            if (!read_optional_bounded_int_field(external_ipc, "mp4_writeback_pace_bytes",
+                                                 &config.gui_external_ipc_mp4_writeback_pace_bytes,
+                                                 0, 1 << 30, error_out, ctx)) {
+                return false;
+            }
             if (external_ipc.contains("prepare_fault_inject") && !external_ipc["prepare_fault_inject"].is_null()) {
                 if (!read_optional_bool_field(external_ipc, "prepare_fault_inject",
                                               &config.gui_external_ipc_prepare_fault_inject, error_out, ctx)) {

@@ -47,6 +47,13 @@ struct AppStorageConfig {
     int gui_external_ipc_full_frame_extra_output_delay = -1;
     bool gui_external_ipc_native_local_input = false;
     bool gui_external_ipc_native_local_input_configured = false;
+    // recording.external_ipc.owner_push_chunk_bytes -> ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_CHUNK_BYTES
+    // (analytics-side push chunk; client default 2 MiB, the value every GUI soak used).
+    int gui_external_ipc_owner_push_chunk_bytes = -1;
+    // recording.external_ipc.mp4_writeback_pace_bytes -> ORANGE_MP4_WRITEBACK_PACE_BYTES
+    // (sync_file_range cadence of every MP4 writer, recorder children included;
+    // FFmpegWriter default 32 MiB, 0 disables).
+    int gui_external_ipc_mp4_writeback_pace_bytes = -1;
     // TEST ONLY: corrupt one PREPARE handle so the recorder reports a failed
     // import and the strict GUI readiness gate must refuse the start.
     bool gui_external_ipc_prepare_fault_inject = false;
