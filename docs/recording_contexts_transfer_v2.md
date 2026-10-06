@@ -78,6 +78,22 @@ GUI: app config `recording.contexts`. Headless: experiment spec
 
 ## Validation
 
+Palette's intake (matrix on agent-contracts PR 53, 2026-10-06) requires the
+Citrus transfer envelope for every kind of recording, recording-only included,
+and reads `recording_contexts` and `subject_references` from
+`recording_session.json`. Before the operator's transfer, run
+`scripts/check_recording_transfer_source.sh <recording_folder>`: it runs the
+pinned Citrus sealer in validate-only mode (read-only, hashes all media) and
+prints the exact refusal when the folder would not seal. Known refusals:
+`recording_contexts must declare exactly every camera parent` (contexts not
+configured, e.g. a headless spec without `fixed.recording_contexts`) and
+`observation binding exists without finalized manifest projection` (a
+`stimulus_experiment` session recorded without Citrus; a recording-only
+session must declare intent `recording_only`, which maps the binding mode to
+`not_applicable` and emits no binding artifacts). A session must carry one
+`recording_intent` across all cameras; Orange refuses a mixed declaration at
+record start.
+
 - `scripts/validate_gui_ptp_recording.py`: presence (warn when absent),
   closed schema, exact membership, identity with the frozen snapshot block.
 - `scripts/verify_timed_recording.py`: same checks when the block is present.

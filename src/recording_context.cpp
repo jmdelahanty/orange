@@ -232,6 +232,15 @@ std::map<std::string, RecordingContext> RecordingContextsConfig::Resolve(const s
             throw std::runtime_error("recording contexts: camera " + serial + " has no context entry and no default is configured");
         }
     }
+    // One transfer carries one recording_intent (Palette intake refuses a
+    // mixed session, ctpw:72; Orange's binding mode is also decided per
+    // session), so a declaration that mixes intents is refused at record start.
+    const std::string& first_intent = resolved.begin()->second.recording_intent;
+    for (const auto& [serial, ctx] : resolved) {
+        require(ctx.recording_intent == first_intent,
+                "recording contexts: mixed recording_intent across cameras (" + resolved.begin()->first + " " +
+                    first_intent + ", " + serial + " " + ctx.recording_intent + "); one session carries one intent");
+    }
     return resolved;
 }
 

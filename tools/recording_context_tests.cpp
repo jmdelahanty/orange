@@ -96,6 +96,21 @@ void test_parse_rejections()
     EXPECT(throws([] { RecordingContext::Parse(RecordingContext::Parse(entry()).ToEmittedJson()); }, "unknown"));
 }
 
+void test_resolve_single_intent()
+{
+    // Per-camera overrides may change type or mode, never the intent: a mixed
+    // declaration is refused at resolve time (Palette refuses a mixed session).
+    RecordingContextsConfig cfg = RecordingContextsConfig::Parse(
+        {{"schema_version", 1}, {"default", entry("b", "s", "free", "stimulus_experiment")},
+         {"cameras", {{"2010094", entry("b", "s", "free", "recording_only")}}}});
+    EXPECT(throws([&] { cfg.Resolve({"2010093", "2010094"}); }, "mixed recording_intent"));
+    EXPECT(!throws([&] { cfg.Resolve({"2010094"}); }));   // a single camera cannot mix
+    RecordingContextsConfig same = RecordingContextsConfig::Parse(
+        {{"schema_version", 1}, {"default", entry("b", "s", "free", "recording_only")},
+         {"cameras", {{"2010094", entry("other", "s", "free", "recording_only")}}}});
+    EXPECT(!throws([&] { same.Resolve({"2010093", "2010094"}); }));
+}
+
 void test_optional_subtype_contract_revision()
 {
     // Version 2: recording_subtype may be omitted (not specified). Omission is
@@ -137,13 +152,13 @@ void test_optional_subtype_contract_revision()
 void test_config_resolution()
 {
     const json cfg = {{"schema_version", 1}, {"default", entry()},
-                      {"cameras", {{"2010094", entry("behavior", "dish_stimulus", "free", "stimulus_experiment")}}}};
+                      {"cameras", {{"2010094", entry("behavior", "dish_stimulus", "free", "recording_only")}}}};
     const auto c = RecordingContextsConfig::Parse(cfg);
     EXPECT(RecordingContextsConfig::Parse(c.ToJson()).ToJson() == c.ToJson());
     const auto resolved = c.Resolve({"2010093", "2010094"});
     EXPECT(resolved.size() == 2);
-    EXPECT(resolved.at("2010093").recording_intent == "recording_only");
-    EXPECT(resolved.at("2010094").recording_intent == "stimulus_experiment");
+    EXPECT(resolved.at("2010093").recording_subtype == "dish_freeswim");
+    EXPECT(resolved.at("2010094").recording_subtype == "dish_stimulus");   // per-camera override, same intent
     // configured but not recording serials are ignored; unknown serial without default refuses
     const auto only_cameras = RecordingContextsConfig::Parse({{"schema_version", 1}, {"cameras", {{"2010094", entry()}}}});
     EXPECT(throws([&] { only_cameras.Resolve({"2010093"}); }, "no context entry"));
@@ -224,6 +239,7 @@ void test_intent_binding_mode_coupling()
 
 int main()
 {
+    test_resolve_single_intent();
     test_parse_and_emit();
     test_parse_rejections();
     test_optional_subtype_contract_revision();

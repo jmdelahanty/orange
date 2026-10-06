@@ -65,6 +65,8 @@ struct RecordingContextsConfig {
 
     static RecordingContextsConfig Parse(const nlohmann::json& config);
     nlohmann::json ToJson() const;
+    // Throws when a camera has no entry and no default, or when the resolved
+    // entries mix recording_intent (one session carries one intent).
     std::map<std::string, RecordingContext> Resolve(const std::vector<std::string>& recording_serials) const;
 };
 
