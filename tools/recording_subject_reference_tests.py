@@ -49,6 +49,10 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/dishes/") and self.path.endswith("/citrus-snapshot"):
             dish_id = self.path.split("/")[2]
             self._json(404, {"detail": {"error": "dish_not_found", "dish_id": dish_id}})
+        elif self.path == "/version":
+            self._json(200, {"service_commit": "509a3eb88d6ff44fe07e7ea20d212be5eafe46b7", "service_commit_dirty": False,
+                             "consumer_schema_sha256": "f5280e430d4b5f10c3643cb89a6187eacc45fdac7af55b2e81f5e315b7b754dc",
+                             "api_schema_version": 2, "started_at_utc": "2026-10-05T21:18:59Z"})
         elif self.path == "/slow":
             time.sleep(2.0)  # longer than the client's timeout
             try:

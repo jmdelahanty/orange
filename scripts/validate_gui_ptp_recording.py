@@ -1475,15 +1475,36 @@ SUBJECT_REFERENCE_FIELDS = ("schema_id", "schema_version", "status", "reason", "
                             "dish_fish", "dish_fish_lookup", "subject_count")
 
 
+SUBJECT_REFERENCE_ZEBROBOT_FIELDS_V1 = {"base_url", "endpoint", "fish_endpoint", "api_schema_version",
+                                        "queried_at_utc", "http_status", "error"}
+# v2 (2026-10-05, Palette pin a625279): which MetaZebrobot served the identifiers (GET /version).
+SUBJECT_REFERENCE_ZEBROBOT_FIELDS_V2 = SUBJECT_REFERENCE_ZEBROBOT_FIELDS_V1 | {"service_commit", "service_commit_dirty",
+                                                                             "consumer_schema_sha256"}
+HEX_RE = re.compile(r"^[0-9a-f]+$")
+
+
+def validate_subject_reference_zebrobot_version(zb: dict[str, Any]) -> str | None:
+    commit, dirty, digest = zb.get("service_commit"), zb.get("service_commit_dirty"), zb.get("consumer_schema_sha256")
+    if commit is not None and not (isinstance(commit, str) and 7 <= len(commit) <= 40 and HEX_RE.match(commit)):
+        return f"service_commit {commit!r} must be null or 7..40 hex"
+    if dirty is not None and not isinstance(dirty, bool):
+        return f"service_commit_dirty {dirty!r} must be null or a boolean"
+    if digest is not None and not (isinstance(digest, str) and len(digest) == 64 and HEX_RE.match(digest)):
+        return f"consumer_schema_sha256 {digest!r} must be null or 64 hex"
+    return None
+
+
 def validate_subject_reference_entry(entry: Any) -> str | None:
-    """Return None when `entry` is a valid orange.recording_subject_reference v1, else a reason."""
+    """Return None when `entry` is a valid orange.recording_subject_reference v1 or v2, else a reason.
+    v2 adds service_commit, service_commit_dirty and consumer_schema_sha256 to the zebrobot block."""
     if not isinstance(entry, dict):
         return "not an object"
     if set(entry.keys()) != set(SUBJECT_REFERENCE_FIELDS):
         return f"fields {sorted(entry.keys())} != {sorted(SUBJECT_REFERENCE_FIELDS)}"
-    if entry.get("schema_id") != "orange.recording_subject_reference" or entry.get("schema_version") != 1 \
-            or isinstance(entry.get("schema_version"), bool):
-        return f"schema {entry.get('schema_id')!r} v{entry.get('schema_version')!r}"
+    version = entry.get("schema_version")
+    if entry.get("schema_id") != "orange.recording_subject_reference" or version not in (1, 2) or isinstance(version, bool):
+        return f"schema {entry.get('schema_id')!r} v{version!r}"
+    zebrobot_fields = SUBJECT_REFERENCE_ZEBROBOT_FIELDS_V2 if version == 2 else SUBJECT_REFERENCE_ZEBROBOT_FIELDS_V1
     status, reason = entry.get("status"), entry.get("reason")
     if status not in ("collected", "not_collected", "lookup_failed") or not isinstance(reason, str):
         return f"status {status!r} / reason {reason!r}"
@@ -1501,9 +1522,12 @@ def validate_subject_reference_entry(entry: Any) -> str | None:
         if not reason or zb is not None or dish is not None or fish or fish_lookup is not None:
             return "not_collected must declare a reason and carry no zebrobot/dish/fish"
         return None
-    if not isinstance(zb, dict) or set(zb) != {"base_url", "endpoint", "fish_endpoint", "api_schema_version",
-                                               "queried_at_utc", "http_status", "error"} or zb.get("api_schema_version") != 2:
+    if not isinstance(zb, dict) or set(zb) != zebrobot_fields or zb.get("api_schema_version") != 2:
         return f"zebrobot block invalid: {zb!r}"
+    if version == 2:
+        version_problem = validate_subject_reference_zebrobot_version(zb)
+        if version_problem:
+            return f"zebrobot {version_problem}"
     if not isinstance(fish_lookup, dict) or set(fish_lookup) != {"status", "http_status", "error"} \
             or fish_lookup["status"] not in ("complete", "failed", "not_attempted"):
         return f"dish_fish_lookup invalid: {fish_lookup!r}"
@@ -1577,13 +1601,22 @@ def check_subject_references(
         f"subject_references keys {sorted(block.keys()) if isinstance(block, dict) else block!r} != cameras {sorted(cameras)}",
     )
     if isinstance(block, dict):
+        versions = sorted({e.get("schema_version") for e in block.values() if isinstance(e, dict)}, key=str)
+        reporter.check(
+            len(versions) <= 1,
+            f"subject_references schema_version {versions[0] if versions else '?'} on every camera",
+            f"subject_references mixes schema versions {versions} (Palette refuses a mixed session)",
+        )
         for serial, entry in block.items():
             reason = validate_subject_reference_entry(entry)
             summary = "?"
             if isinstance(entry, dict):
                 dish = entry.get("dish") or {}
-                summary = f"{entry.get('status')} {dish.get('dish_id', '')} uuid={str(dish.get('dish_uuid', ''))[:8]} rev={dish.get('revision', '')} " \
-                          f"fish={len(entry.get('dish_fish') or [])} subject_count={entry.get('subject_count')} reason={entry.get('reason', '')!r}"
+                zb_v = entry.get("zebrobot") if isinstance(entry.get("zebrobot"), dict) else {}
+                served = f" mzb={str(zb_v.get('service_commit') or '')[:8]}{'+dirty' if zb_v.get('service_commit_dirty') else ''}" \
+                    if entry.get("schema_version") == 2 and zb_v else ""
+                summary = f"v{entry.get('schema_version')} {entry.get('status')} {dish.get('dish_id', '')} uuid={str(dish.get('dish_uuid', ''))[:8]} rev={dish.get('revision', '')} " \
+                          f"fish={len(entry.get('dish_fish') or [])} subject_count={entry.get('subject_count')} reason={entry.get('reason', '')!r}{served}"
             reporter.check(reason is None, f"Cam{serial} subject reference: {summary}", f"Cam{serial} subject reference invalid: {reason}")
             if isinstance(entry, dict) and entry.get("status") == "lookup_failed":
                 reporter.warn(f"Cam{serial} subject reference lookup failed: {entry.get('reason')} ({(entry.get('zebrobot') or {}).get('error')})")

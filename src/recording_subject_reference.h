@@ -12,13 +12,15 @@
 // Emitted block (recording_snapshot_start.json session.subject_references and
 // recording_session.json subject_references), keyed by exact camera serial:
 //   {
-//     "schema_id": "orange.recording_subject_reference", "schema_version": 1,
+//     "schema_id": "orange.recording_subject_reference", "schema_version": 2,
 //     "status": "collected" | "not_collected" | "lookup_failed",
 //     "reason": "" when collected, otherwise non-empty,
 //     "zebrobot": null when not_collected, else {
 //        "base_url", "endpoint", "fish_endpoint", "api_schema_version": 2,
 //        "queried_at_utc", "http_status": int|null,
-//        "error": null | {"kind": "transport"|"http", "detail_error": str|null, "message"} },
+//        "error": null | {"kind": "transport"|"http", "detail_error": str|null, "message"},
+//        "service_commit": hex|null, "service_commit_dirty": bool|null,      // v2: MetaZebrobot
+//        "consumer_schema_sha256": hex64|null },                             //     GET /version, read once per start
 //     "dish": null unless collected: {"dish_id", "dish_uuid", "revision", "updated_at"},
 //     "dish_fish": [ {"fish_id", "revision", "updated_at"} ],   // registered to the dish, not "imaged"
 //     "dish_fish_lookup": null when not_collected, else
@@ -87,20 +89,38 @@ struct SubjectReferencesConfig {
 };
 
 inline constexpr const char* kSubjectReferenceSchemaId = "orange.recording_subject_reference";
-inline constexpr int kSubjectReferenceSchemaVersion = 1;
+inline constexpr int kSubjectReferenceSchemaVersion = 2;   // v2 since 2026-10-05 (Palette pin a625279)
 inline constexpr int kZebrobotApiSchemaVersion = 2;
+
+// Which MetaZebrobot served the identifiers (schema v2): GET {base_url}/version
+// once per record start. Values are kept only when they match the schema
+// patterns (commit 7..40 hex, digest 64 hex); anything else, a failed read or
+// an unconfigured base_url leaves them null. Never blocks a start.
+struct ZebrobotVersion {
+    bool attempted = false;   // false when base_url is not configured
+    bool ok = false;          // 200 with a JSON object body
+    std::optional<std::string> service_commit;
+    std::optional<bool> service_commit_dirty;
+    std::optional<std::string> consumer_schema_sha256;
+    nlohmann::json ToJson() const;   // the three keys, null when absent
+};
+ZebrobotVersion ReadZebrobotVersion(const ZebrobotLookupConfig& zebrobot, const HttpGetFn& http_get = HttpGet);
 
 // One camera's reference. No dish_id -> not_collected / no_dish_declared.
 // With a dish but no base_url -> lookup_failed (transport, zebrobot_not_configured).
 // Performs the dish GET (/dishes/<id>/citrus-snapshot) and, when that
 // succeeded, the fish GET (/dishes/<id>/fish); each bounded by timeout_ms.
 // subject_count is carried through from the declaration (null when undeclared).
+// version: the /version read shared by all cameras of one start; nullptr reads
+// it here (one extra GET) when a dish lookup is attempted.
 nlohmann::json BuildSubjectReference(const SubjectDeclaration& declaration,
                                      const ZebrobotLookupConfig& zebrobot,
                                      const std::string& queried_at_utc,
-                                     const HttpGetFn& http_get = HttpGet);
+                                     const HttpGetFn& http_get = HttpGet,
+                                     const ZebrobotVersion* version = nullptr);
 
-// All recording cameras (one entry each, keyed by serial).
+// All recording cameras (one entry each, keyed by serial); /version is read
+// once when any camera declares a dish.
 nlohmann::json BuildSubjectReferences(const std::map<std::string, SubjectDeclaration>& declarations,
                                       const ZebrobotLookupConfig& zebrobot,
                                       const std::string& queried_at_utc,

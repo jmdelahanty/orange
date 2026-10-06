@@ -615,10 +615,16 @@ def verify_common_manifest(
         cameras = manifest_camera_serials(manifest)
         require(isinstance(subject_references, dict) and sorted(subject_references.keys()) == sorted(cameras),
                 f"subject_references keys must equal cameras {cameras}")
+        versions = {e.get("schema_version") for e in subject_references.values() if isinstance(e, dict)}
+        require(len(versions) <= 1, f"subject_references mixes schema versions {sorted(versions, key=str)}")
         for serial, entry in subject_references.items():
             require(isinstance(entry, dict) and entry.get("schema_id") == "orange.recording_subject_reference"
-                    and entry.get("schema_version") == 1 and entry.get("status") in ("collected", "not_collected", "lookup_failed"),
-                    f"subject_references[{serial}] must be an orange.recording_subject_reference v1 entry")
+                    and entry.get("schema_version") in (1, 2) and entry.get("status") in ("collected", "not_collected", "lookup_failed"),
+                    f"subject_references[{serial}] must be an orange.recording_subject_reference v1 or v2 entry")
+            if entry.get("schema_version") == 2 and isinstance(entry.get("zebrobot"), dict):
+                zb = entry["zebrobot"]
+                require(all(k in zb for k in ("service_commit", "service_commit_dirty", "consumer_schema_sha256")),
+                        f"subject_references[{serial}] v2 zebrobot block lacks the /version fields")
             count = entry.get("subject_count", "missing")
             require(count is None or (isinstance(count, int) and not isinstance(count, bool) and count >= 1),
                     f"subject_references[{serial}] subject_count must be null or an integer >= 1")

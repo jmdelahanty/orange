@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <algorithm>
 #include <functional>
 #include <string>
 #include <unistd.h>
@@ -52,6 +53,13 @@ json served_fish(int n)
                          {"dish_uuid", "28c29cc6-a1ef-4382-9dc5-414fbb445d92"}, {"subject_label", "f" + std::to_string(i + 1)},
                          {"current_unit_id", nullptr}, {"revision", 3}, {"updated_at", "2026-10-03 09:00:00"}});
     return {{"items", items}};
+}
+
+json served_version()
+{
+    return {{"service_commit", "509a3eb88d6ff44fe07e7ea20d212be5eafe46b7"}, {"service_commit_dirty", false},
+            {"consumer_schema_sha256", "f5280e430d4b5f10c3643cb89a6187eacc45fdac7af55b2e81f5e315b7b754dc"},
+            {"api_schema_version", 2}, {"started_at_utc", "2026-10-05T21:18:59Z"}};
 }
 
 // A fake endpoint map: url suffix -> result.
@@ -114,13 +122,21 @@ void test_builder_outcomes()
     const json nc = BuildSubjectReference(dish, ZebrobotLookupConfig{}, kNow, fake({}));
     EXPECT(nc.at("status") == "lookup_failed" && nc.at("reason") == "zebrobot_not_configured" &&
            nc.at("zebrobot").at("error").at("kind") == "transport" && nc.at("zebrobot").at("http_status").is_null());
+    EXPECT(nc.at("zebrobot").at("service_commit").is_null() && nc.at("zebrobot").at("service_commit_dirty").is_null() &&
+           nc.at("zebrobot").at("consumer_schema_sha256").is_null());
     // Collected with two registered fish; biological fields are not copied.
     std::vector<std::string> calls;
     const json c = BuildSubjectReference(dish_counted, kZb, kNow,
-                                         fake({{"/dishes/19220_1/citrus-snapshot", ok(served_dish())},
+                                         fake({{"/version", ok(served_version())},
+                                               {"/dishes/19220_1/citrus-snapshot", ok(served_dish())},
                                                {"/dishes/19220_1/fish", ok(served_fish(2))}}, &calls));
     EXPECT(c.at("subject_count") == 2);  // declared, never derived from fish_count (12) or dish_fish (2)
-    EXPECT(calls.size() == 2 && calls[0] == "http://zb.test/dishes/19220_1/citrus-snapshot" && calls[1] == "http://zb.test/dishes/19220_1/fish");
+    EXPECT(calls.size() == 3 && calls[0] == "http://zb.test/version" && calls[1] == "http://zb.test/dishes/19220_1/citrus-snapshot" &&
+           calls[2] == "http://zb.test/dishes/19220_1/fish");
+    // v2: which MetaZebrobot served the identifiers, as served by GET /version.
+    EXPECT(c.at("schema_version") == 2 && c.at("zebrobot").at("service_commit") == "509a3eb88d6ff44fe07e7ea20d212be5eafe46b7" &&
+           c.at("zebrobot").at("service_commit_dirty") == false &&
+           c.at("zebrobot").at("consumer_schema_sha256") == "f5280e430d4b5f10c3643cb89a6187eacc45fdac7af55b2e81f5e315b7b754dc");
     EXPECT(c.at("status") == "collected" && c.at("reason") == "" && c.at("zebrobot").at("http_status") == 200 &&
            c.at("zebrobot").at("error").is_null());
     EXPECT(c.at("zebrobot").at("base_url") == "http://zb.test" && c.at("zebrobot").at("endpoint") == "/dishes/19220_1/citrus-snapshot" &&
@@ -160,16 +176,60 @@ void test_builder_outcomes()
     json nouuid = served_dish(); nouuid.erase("dish_uuid");
     EXPECT(BuildSubjectReference(dish, kZb, kNow, fake({{"/citrus-snapshot", ok(nouuid)}})).at("reason") == "dish_lookup_missing_dish_uuid");
     EXPECT(BuildSubjectReference(dish, kZb, kNow, fake({{"/citrus-snapshot", ok(served_dish("other"))}})).at("reason") == "dish_lookup_identity_mismatch");
+    // /version unreachable, 404, or serving values outside the schema patterns: nulls, never a refusal
+    // (the fake routes without /version answer it with a transport failure, so e/ff/ft/nf/tf above carry nulls).
+    EXPECT(e.at("status") == "collected" && e.at("zebrobot").at("service_commit").is_null() &&
+           e.at("zebrobot").at("consumer_schema_sha256").is_null());
+    const json v404 = BuildSubjectReference(dish, kZb, kNow,
+                                            fake({{"/version", http(404, {{"detail", "Not Found"}})}, {"/citrus-snapshot", ok(served_dish())},
+                                                  {"/fish", ok(served_fish(0))}}));
+    EXPECT(v404.at("status") == "collected" && v404.at("zebrobot").at("service_commit").is_null());
+    json odd = served_version(); odd["service_commit"] = "HEAD"; odd["service_commit_dirty"] = "no"; odd["consumer_schema_sha256"] = "F528";
+    const json vodd = BuildSubjectReference(dish, kZb, kNow,
+                                            fake({{"/version", ok(odd)}, {"/citrus-snapshot", ok(served_dish())}, {"/fish", ok(served_fish(0))}}));
+    EXPECT(vodd.at("status") == "collected" && vodd.at("zebrobot").at("service_commit").is_null() &&
+           vodd.at("zebrobot").at("service_commit_dirty").is_null() && vodd.at("zebrobot").at("consumer_schema_sha256").is_null());
+    json nulls = served_version(); nulls["service_commit"] = nullptr; nulls["service_commit_dirty"] = nullptr;  // process cannot run git
+    const json vnull = BuildSubjectReference(dish, kZb, kNow,
+                                             fake({{"/version", ok(nulls)}, {"/citrus-snapshot", ok(served_dish())}, {"/fish", ok(served_fish(0))}}));
+    EXPECT(vnull.at("zebrobot").at("service_commit").is_null() && vnull.at("zebrobot").at("service_commit_dirty").is_null() &&
+           vnull.at("zebrobot").at("consumer_schema_sha256") == served_version().at("consumer_schema_sha256"));
+    // ReadZebrobotVersion directly.
+    const ZebrobotVersion unconfigured = ReadZebrobotVersion(ZebrobotLookupConfig{}, fake({}));
+    EXPECT(!unconfigured.attempted && !unconfigured.ok && !unconfigured.service_commit);
+    const ZebrobotVersion downv = ReadZebrobotVersion(kZb, fake({{"/version", down("refused")}}));
+    EXPECT(downv.attempted && !downv.ok);
+    const ZebrobotVersion okv = ReadZebrobotVersion(kZb, fake({{"/version", ok(served_version())}}));
+    EXPECT(okv.attempted && okv.ok && okv.service_commit_dirty == false && *okv.service_commit == "509a3eb88d6ff44fe07e7ea20d212be5eafe46b7");
     // Every outcome validates under the emitted rules.
-    for (const json& entry : {nd, co, nc, c, e, ff, ft, nf, tf}) EXPECT(!throws([&] { ValidateEmittedSubjectReferences({{"2010093", entry}}); }));
+    for (const json& entry : {nd, co, nc, c, e, ff, ft, nf, tf, v404, vodd, vnull}) EXPECT(!throws([&] { ValidateEmittedSubjectReferences({{"2010093", entry}}); }));
+    // v1 entries and v2 entries with bad version fields are refused by the emitted-block validator.
+    json v1e = c; v1e["schema_version"] = 1;
+    EXPECT(throws([&] { ValidateEmittedSubjectReferences({{"2010093", v1e}}); }, "schema_version must be 2"));
+    json bad_commit = c; bad_commit["zebrobot"]["service_commit"] = "HEAD";
+    EXPECT(throws([&] { ValidateEmittedSubjectReferences({{"2010093", bad_commit}}); }, "service_commit"));
+    json missing = c; missing["zebrobot"].erase("consumer_schema_sha256");
+    EXPECT(throws([&] { ValidateEmittedSubjectReferences({{"2010093", missing}}); }, "missing consumer_schema_sha256"));
 }
 
 void test_block_rules_and_gate()
 {
     SubjectDeclaration dish; dish.dish_id = "19220_1";
+    std::vector<std::string> calls;
     const json block = BuildSubjectReferences({{"2010093", dish}, {"2010094", SubjectDeclaration{}}}, kZb, kNow,
-                                              fake({{"/citrus-snapshot", ok(served_dish())}, {"/fish", ok(served_fish(1))}}));
+                                              fake({{"/version", ok(served_version())}, {"/citrus-snapshot", ok(served_dish())},
+                                                    {"/fish", ok(served_fish(1))}}, &calls));
     EXPECT(block.size() == 2 && block.at("2010093").at("status") == "collected" && block.at("2010094").at("status") == "not_collected");
+    // /version is read once per start, not per camera (two dishes: 1 version + 2 dish + 2 fish GETs).
+    calls.clear();
+    const json three = BuildSubjectReferences({{"2010093", dish}, {"2010094", SubjectDeclaration{}}, {"2010095", dish}}, kZb, kNow,
+                                              fake({{"/version", ok(served_version())}, {"/citrus-snapshot", ok(served_dish())},
+                                                    {"/fish", ok(served_fish(1))}}, &calls));
+    EXPECT(std::count_if(calls.begin(), calls.end(), [](const std::string& u) { return u == "http://zb.test/version"; }) == 1 && calls.size() == 5);
+    EXPECT(three.at("2010095").at("zebrobot").at("service_commit") == "509a3eb88d6ff44fe07e7ea20d212be5eafe46b7");
+    calls.clear();
+    const json no_dish_block = BuildSubjectReferences({{"2010094", SubjectDeclaration{}}}, kZb, kNow, fake({}, &calls));
+    EXPECT(calls.empty() && no_dish_block.at("2010094").at("status") == "not_collected");  // nothing declared: no GET at all
     // Rule violations.
     json bad = block; bad["2010094"]["dish"] = block["2010093"]["dish"];
     EXPECT(throws([&] { ValidateEmittedSubjectReferences(bad); }, "not_collected must carry no"));
@@ -229,6 +289,9 @@ void test_real_http(const std::string& base_url)
     const json c = BuildSubjectReference(dish, zb, kNow);
     EXPECT(c.at("status") == "collected" && c.at("dish").at("dish_uuid") == "28c29cc6-a1ef-4382-9dc5-414fbb445d92" &&
            c.at("dish_fish").size() == 1 && c.at("dish_fish_lookup").at("status") == "complete");
+    EXPECT(c.at("zebrobot").at("service_commit") == "509a3eb88d6ff44fe07e7ea20d212be5eafe46b7" &&
+           c.at("zebrobot").at("service_commit_dirty") == false &&
+           c.at("zebrobot").at("consumer_schema_sha256") == "f5280e430d4b5f10c3643cb89a6187eacc45fdac7af55b2e81f5e315b7b754dc");
     const json nf = BuildSubjectReference(nope, zb, kNow);
     EXPECT(nf.at("status") == "lookup_failed" && nf.at("zebrobot").at("http_status") == 404 &&
            nf.at("zebrobot").at("error").at("detail_error") == "dish_not_found");

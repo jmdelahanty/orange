@@ -382,6 +382,60 @@ bool copy_int(const json& src, const char* key, json* dst, std::string* missing)
 
 }  // namespace
 
+bool is_hex(const std::string& s, size_t min_len, size_t max_len)
+{
+    if (s.size() < min_len || s.size() > max_len) return false;
+    for (char c : s) if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    return true;
+}
+
+
+json ZebrobotVersion::ToJson() const
+{
+    return {{"service_commit", service_commit ? json(*service_commit) : json(nullptr)},
+            {"service_commit_dirty", service_commit_dirty ? json(*service_commit_dirty) : json(nullptr)},
+            {"consumer_schema_sha256", consumer_schema_sha256 ? json(*consumer_schema_sha256) : json(nullptr)}};
+}
+
+ZebrobotVersion ReadZebrobotVersion(const ZebrobotLookupConfig& zebrobot, const HttpGetFn& http_get)
+{
+    ZebrobotVersion v;
+    if (!zebrobot.configured()) return v;
+    v.attempted = true;
+    const HttpGetResult r = http_get(zebrobot.base_url + "/version", zebrobot.timeout_ms);
+    if (!r.transport_ok || r.status != 200) return v;
+    const json body = json::parse(r.body, nullptr, false);
+    if (!body.is_object()) return v;
+    v.ok = true;
+    if (body.contains("service_commit") && body.at("service_commit").is_string() &&
+        is_hex(body.at("service_commit").get<std::string>(), 7, 40)) {
+        v.service_commit = body.at("service_commit").get<std::string>();
+    }
+    if (body.contains("service_commit_dirty") && body.at("service_commit_dirty").is_boolean()) {
+        v.service_commit_dirty = body.at("service_commit_dirty").get<bool>();
+    }
+    if (body.contains("consumer_schema_sha256") && body.at("consumer_schema_sha256").is_string() &&
+        is_hex(body.at("consumer_schema_sha256").get<std::string>(), 64, 64)) {
+        v.consumer_schema_sha256 = body.at("consumer_schema_sha256").get<std::string>();
+    }
+    return v;
+}
+
+namespace {
+
+json zebrobot_block(const ZebrobotLookupConfig& zebrobot, const std::string& endpoint, const std::string& fish_endpoint,
+                    const std::string& queried_at_utc, const ZebrobotVersion& version)
+{
+    json z = {{"base_url", zebrobot.base_url}, {"endpoint", endpoint}, {"fish_endpoint", fish_endpoint},
+              {"api_schema_version", kZebrobotApiSchemaVersion}, {"queried_at_utc", queried_at_utc},
+              {"http_status", nullptr}, {"error", nullptr}};
+    const json v = version.ToJson();  // named: a temporary's items() would dangle inside the loop
+    for (const auto& [k, val] : v.items()) z[k] = val;
+    return z;
+}
+
+}  // namespace
+
 json NotCollectedSubjectReference(const std::string& reason, const std::optional<int>& subject_count)
 {
     require(!reason.empty(), "not_collected needs a reason");
@@ -395,7 +449,8 @@ json NotCollectedSubjectReference(const std::string& reason, const std::optional
 json BuildSubjectReference(const SubjectDeclaration& declaration,
                            const ZebrobotLookupConfig& zebrobot,
                            const std::string& queried_at_utc,
-                           const HttpGetFn& http_get)
+                           const HttpGetFn& http_get,
+                           const ZebrobotVersion* version)
 {
     require(!declaration.subject_count || *declaration.subject_count >= 1, "subject_count must be >= 1 when declared");
     const json subject_count = declaration.subject_count ? json(*declaration.subject_count) : json(nullptr);
@@ -404,11 +459,10 @@ json BuildSubjectReference(const SubjectDeclaration& declaration,
     const std::optional<std::string> dish_id = dish_id_value;
     const std::string endpoint = "/dishes/" + *dish_id + "/citrus-snapshot";
     const std::string fish_endpoint = "/dishes/" + *dish_id + "/fish";
+    const ZebrobotVersion version_read = version ? *version : ReadZebrobotVersion(zebrobot, http_get);
     json entry = {{"schema_id", kSubjectReferenceSchemaId}, {"schema_version", kSubjectReferenceSchemaVersion},
                   {"status", "lookup_failed"}, {"reason", ""}, {"subject_count", subject_count},
-                  {"zebrobot", {{"base_url", zebrobot.base_url}, {"endpoint", endpoint}, {"fish_endpoint", fish_endpoint},
-                                {"api_schema_version", kZebrobotApiSchemaVersion}, {"queried_at_utc", queried_at_utc},
-                                {"http_status", nullptr}, {"error", nullptr}}},
+                  {"zebrobot", zebrobot_block(zebrobot, endpoint, fish_endpoint, queried_at_utc, version_read)},
                   {"dish", nullptr}, {"dish_fish", json::array()},
                   {"dish_fish_lookup", {{"status", "not_attempted"}, {"http_status", nullptr}, {"error", nullptr}}}};
     auto fail = [&](const json& error, const std::string& reason) {
@@ -488,9 +542,12 @@ json BuildSubjectReferences(const std::map<std::string, SubjectDeclaration>& dec
                             const HttpGetFn& http_get)
 {
     json block = json::object();
+    bool any_dish = false;
+    for (const auto& [serial, declaration] : declarations) any_dish = any_dish || declaration.dish_id.has_value();
+    const ZebrobotVersion version = any_dish ? ReadZebrobotVersion(zebrobot, http_get) : ZebrobotVersion{};
     for (const auto& [serial, declaration] : declarations) {
         require(!serial.empty(), "subject references: empty camera serial");
-        block[serial] = BuildSubjectReference(declaration, zebrobot, queried_at_utc, http_get);
+        block[serial] = BuildSubjectReference(declaration, zebrobot, queried_at_utc, http_get, &version);
     }
     ValidateEmittedSubjectReferences(block);
     return block;
@@ -526,7 +583,7 @@ void validate_entry(const std::string& serial, const json& e)
             what + " subject_count must be null or an integer >= 1");
     require(e.at("schema_id") == kSubjectReferenceSchemaId, what + " schema_id");
     require(e.at("schema_version").is_number_integer() && e.at("schema_version") == kSubjectReferenceSchemaVersion,
-            what + " schema_version must be 1");
+            what + " schema_version must be " + std::to_string(kSubjectReferenceSchemaVersion));
     const std::string status = e.at("status").is_string() ? e.at("status").get<std::string>() : "";
     require(status == "collected" || status == "not_collected" || status == "lookup_failed", what + " status is invalid");
     require(e.at("reason").is_string(), what + " reason must be a string");
@@ -544,8 +601,17 @@ void validate_entry(const std::string& serial, const json& e)
         return;
     }
     const json& z = e.at("zebrobot");
-    require_keys(z, {"base_url", "endpoint", "fish_endpoint", "api_schema_version", "queried_at_utc", "http_status", "error"},
+    require_keys(z, {"base_url", "endpoint", "fish_endpoint", "api_schema_version", "queried_at_utc", "http_status", "error",
+                     "service_commit", "service_commit_dirty", "consumer_schema_sha256"},
                  what + " zebrobot");
+    require(z.at("service_commit").is_null() ||
+                (z.at("service_commit").is_string() && is_hex(z.at("service_commit").get<std::string>(), 7, 40)),
+            what + " zebrobot service_commit must be null or 7..40 hex");
+    require(z.at("service_commit_dirty").is_null() || z.at("service_commit_dirty").is_boolean(),
+            what + " zebrobot service_commit_dirty must be null or a boolean");
+    require(z.at("consumer_schema_sha256").is_null() ||
+                (z.at("consumer_schema_sha256").is_string() && is_hex(z.at("consumer_schema_sha256").get<std::string>(), 64, 64)),
+            what + " zebrobot consumer_schema_sha256 must be null or 64 hex");
     require(z.at("base_url").is_string() && z.at("endpoint").is_string() && z.at("fish_endpoint").is_string() &&
                 z.at("queried_at_utc").is_string(),
             what + " zebrobot string fields");

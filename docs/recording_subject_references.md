@@ -2,9 +2,10 @@
 
 Date: 2026-10-05. Code: `src/recording_subject_reference.{h,cpp}`; gate in
 `orange::session::write_recording_session_manifest`; schemas
-`docs/schemas/orange_recording_subject_reference_v1.schema.json` (emitted) and
-`..._v2.schema.json` (prepared, see "Schema version 2" below; not emitted
-until Palette's pin of it has merged on Palette main).
+`docs/schemas/orange_recording_subject_reference_v1.schema.json` (recordings
+before 2026-10-05) and `..._v2.schema.json` (**emitted since 2026-10-05**, see
+"Schema version 2" below; Palette's pin merged on Palette main as
+a625279c, PR #258).
 
 ## Why
 
@@ -47,8 +48,13 @@ App config (GUI) / experiment spec `fixed` (headless):
 
 ## What Orange records, at record start
 
-Per recording camera, one `orange.recording_subject_reference` v1 entry:
+Per recording camera, one `orange.recording_subject_reference` v2 entry:
 
+0. Once per start, when any camera declares a dish: `GET {base_url}/version`;
+   `service_commit`, `service_commit_dirty` and `consumer_schema_sha256` are
+   copied into every entry's `zebrobot` block when they match the schema
+   patterns (7..40 hex, boolean, 64 hex), else left null. A failed read is
+   null, never a failure of the entry.
 1. `GET {base_url}/dishes/{dish_id}/citrus-snapshot` (API `schema_version` 2):
    `dish = {dish_id, dish_uuid, revision, updated_at}` copied **as served**.
    The declared id must equal the served `dish_id`.
@@ -99,7 +105,7 @@ synthetic_bundle` per camera.
   stand-in server so the real client is exercised for 200 JSON, chunked
   bodies, the structured 404, a stalled response and a refused connection.
 
-## Schema version 2 (prepared 2026-10-05, not emitted yet)
+## Schema version 2 (emitted since 2026-10-05)
 
 Palette pins the schema by file digest and every object in it is closed
 (`additionalProperties: false`), so new fields need a new schema version, not
@@ -128,13 +134,17 @@ the two files never admit each other's recordings. Digests:
 | `orange_recording_subject_reference_v1.schema.json` | `3c4ba74f0f95f76dbb8b3d65aa8bd39fd409383388ee8debec3845ef26c1a930` (Palette pin) |
 | `orange_recording_subject_reference_v2.schema.json` | `d0f300fdbd71747f44219baf7bb5aea262ebbd275f85f877df9f1a00aa92e935` |
 
-Order of operations (agreed with Palette): v2 published on agent-contracts
-PR 53 for review; Palette pins the v2 digest and accepts both versions; only
-after that pin has **merged on Palette main** (ask for the merge commit)
-does Orange switch `kSubjectReferenceSchemaVersion` to 2, add the `/version`
-read to `BuildSubjectReference`, and extend the emitted-block validator, the
-two Python validators and the tests. Recordings made under v1 keep validating
-against the v1 pin.
+Order of operations (as agreed with Palette, completed 2026-10-05): v2 was
+published on agent-contracts PR 53 (879ae3f), Palette pinned the digest and
+accepts both versions (palette PR #258, merged on main as a625279c, CI run
+37394130991), and only then did Orange switch `kSubjectReferenceSchemaVersion`
+to 2, add `ReadZebrobotVersion` (one GET per start) to `BuildSubjectReferences`,
+and extend the emitted-block validator, both Python validators (v1 or v2 per
+entry; a block mixing versions is refused, as Palette refuses it) and the
+tests (fake routes, the stand-in server's `/version`). Recordings made under
+v1 keep validating against the v1 pin. Palette records the served build and
+whether `consumer_schema_sha256` matches its MetaZebrobot pin (f5280e43…); a
+mismatch is recorded, not refused.
 
 ## MetaZebrobot contract (owner-pinned; Orange links, does not copy)
 
