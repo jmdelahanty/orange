@@ -742,6 +742,8 @@ bool gui_write_external_rolling_recording_session_manifest(
             output.packet_count_source =
                 "external_recorder_summary.packets_written";
             output.frame_rate = fps;
+            // Encoded frame size (orange.recording_output.v1 requires it on completed outputs).
+            orange::session::summary_encoded_dimensions(summary, &output.width, &output.height);
             output.codec = stream.codec;
             output.container = "mp4";
             output.tuning = stream.tuning;
@@ -1747,6 +1749,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                         "external_ipc",
                         stream_output_complete ? "completed" : "incomplete");
                 full_output.summary_path = stream.summary_json;
+                orange::session::summary_encoded_dimensions(summary, &full_output.width, &full_output.height);
                 full_output.frame_rate = stream.encode_fps;
                 full_output.codec = stream.codec;
                 full_output.container = "mp4";

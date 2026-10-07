@@ -226,6 +226,20 @@ nlohmann::json build_gui_pose_model_snapshot(const CameraParams& camera_params,
     if (const char* env_pose_skeleton_path = std::getenv("ORANGE_POSE_SKELETON_PATH")) {
         pose_skeleton_path = env_pose_skeleton_path;
     }
+    // The pose worker's mode and inference crop size come from the same
+    // environment the worker reads (app config models.pose_mode /
+    // models.pose_crop_size_px, or the headless spec pose_worker.*): "real"
+    // runs the TensorRT engine, "noop" the stand-in. Earlier builds hard-coded
+    // noop here while the worker ran the engine.
+    std::string pose_mode = "real";
+    if (const char* env_pose_mode = std::getenv("ORANGE_POSE_MODE"); env_pose_mode && *env_pose_mode) {
+        pose_mode = env_pose_mode;
+    }
+    const std::string pose_backend = pose_mode == "real" ? "tensorrt" : pose_mode;
+    int pose_crop_size_px = 0;
+    if (const char* env_crop = std::getenv("ORANGE_POSE_CROP_SIZE_PX"); env_crop && *env_crop) {
+        pose_crop_size_px = std::atoi(env_crop);
+    }
     // Skeleton identity for downstream joins (Palette deployment contract):
     // the sidecar's exact labels/edges and file SHA-256, and the engine SHA-256.
     nlohmann::json skeleton = nlohmann::json{{"source", "none"}};
@@ -284,8 +298,12 @@ nlohmann::json build_gui_pose_model_snapshot(const CameraParams& camera_params,
         }},
         {"runtime", {
             {"worker", "PoseWorker"},
-            {"backend", enabled ? "noop" : "none"},
-            {"mode", enabled ? "noop" : "disabled"},
+            {"backend", enabled ? pose_backend : "none"},
+            {"mode", enabled ? pose_mode : "disabled"},
+            // Inference crop fed to the pose network (ORANGE_POSE_CROP_SIZE_PX; 0 =
+            // the video crop size). Distinct from the encoded crop video size in
+            // recording_outputs.<camera>.crop.width/height.
+            {"pose_crop_size_px", enabled ? pose_crop_size_px : 0},
             {"engine_path", enabled ? pose_engine_path : ""},
             {"model_id", enabled && !pose_engine_path.empty() ? build_model_id_from_path(pose_engine_path) : "none"},
             {"skeleton_id", enabled ? pose_skeleton_id : "none"},

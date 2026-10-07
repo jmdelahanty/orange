@@ -6788,6 +6788,7 @@ bool write_supervised_external_recorder_single_clip_manifest(
                 "external_ipc",
                 manifest_status);
         output.summary_path = summary_path;
+        orange::session::summary_encoded_dimensions(summary, &output.width, &output.height);
         output.frame_rate = summary.value(
             "fps", stream.value("encode_fps", 0));
         output.codec = summary.value(
@@ -7147,6 +7148,8 @@ bool write_supervised_external_recorder_recording_session_manifest(
             output.packet_count_source =
                 "external_recorder_summary.packets_written";
             output.frame_rate = fps;
+            // Encoded frame size (orange.recording_output.v1 requires it on completed outputs).
+            orange::session::summary_encoded_dimensions(summary, &output.width, &output.height);
             output.codec = summary.value(
                 "codec", stream.value("codec", std::string("hevc")));
             output.container = "mp4";

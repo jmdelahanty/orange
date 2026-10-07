@@ -1,6 +1,6 @@
 {
   "experiment_id": "fourcam_palette_recording_only_rolling_crops_shadow",
-  "notes": "Palette-ready headless recording (2026-10-06): the validated production shape (od8ff_s16: owner push, 16 slots, full-frame extra_output_delay 8, native local input, INT8 min-max detect, 192 px pose, moving crops) as a recording-only rolling session: parent recording contexts (recording_only, context v2 without subtype), subject references v2 with a MetaZebrobot lookup, recorder media under the recording folder (relative artifact_root), 4 x 30 s rolling clips. Before the run: set the dish id per camera in fixed.subject_references (and subject_count), and export ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH or set fixed.citrus_recording_canvas_config_path to the Shadow canvas. After the run: scripts/check_recording_transfer_source.sh <folder>, then the operator's transfer (transfer_as_domain_user.sh -> rsync_move.sh, profile parent-recording-v2) seals the envelope; send Palette the staging path. Palette intake matrix: agent-contracts PR 53.",
+  "notes": "Palette-ready headless recording (2026-10-06): the validated production shape (od8ff_s16: owner push, 16 slots, full-frame extra_output_delay 8, native local input, INT8 min-max detect, 192 px pose, moving crops) as a recording-only rolling session: parent recording contexts (recording_only, context v2 without subtype), subject references v2 with a MetaZebrobot lookup, recorder media under the recording folder (relative artifact_root), 4 x 30 s rolling clips. Before a REAL run: add fixed.subject_references with the dish id and subject_count per camera that actually holds fish (the template declares none, so every camera is sealed not_collected / no_dish_declared with subject_count null; never declare a count for an empty dish), and export ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH or set fixed.citrus_recording_canvas_config_path to the Shadow canvas. After the run: scripts/check_recording_transfer_source.sh <folder>, then the operator's transfer (transfer_as_domain_user.sh -> rsync_move.sh, profile parent-recording-v2) seals the envelope; send Palette the staging path. Palette intake matrix: agent-contracts PR 53.",
   "selection": {
     "camera_serials": [
       "2010093",
@@ -223,17 +223,6 @@
     "zebrobot": {
       "base_url": "http://delahantyj-ws1.hhmi.org",
       "timeout_ms": 2000
-    },
-    "subject_references": {
-      "schema_version": 1,
-      "default": {
-        "subject_count": 1
-      },
-      "cameras": {
-        "2010093": {
-          "dish_id": "19220_1"
-        }
-      }
     },
     "require_external_ipc": true,
     "unique_run_id": true

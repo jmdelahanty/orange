@@ -47,6 +47,12 @@ void append_unique_error_message(std::string& target, const std::string& message
 // "clip_000012" style identifier used by the external recorders.
 std::string external_recorder_clip_id(int clip_index);
 
+// Encoded frame dimensions an external recorder summary reports
+// (video_metadata.encoder.output_width/height, else
+// encoding_budget.geometry.width_px/height_px). Returns false and leaves the
+// outputs untouched when the summary carries neither.
+bool summary_encoded_dimensions(const nlohmann::json& summary, int* width_out, int* height_out);
+
 // recording_backend.crop_recording.rollover (and the per-stream copy).
 nlohmann::json build_crop_rollover_json(
     const RecordingControlConfig& recording_control,

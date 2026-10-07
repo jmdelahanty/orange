@@ -145,6 +145,25 @@ int summary_crop_size_px(const nlohmann::json& summary)
 
 }  // namespace
 
+bool summary_encoded_dimensions(const nlohmann::json& summary, int* width_out, int* height_out)
+{
+    if (!summary.is_object()) return false;
+    const nlohmann::json encoder =
+        summary.value("video_metadata", nlohmann::json::object()).value("encoder", nlohmann::json::object());
+    int w = json_int_or(encoder, "output_width", 0);
+    int h = json_int_or(encoder, "output_height", 0);
+    if (w <= 0 || h <= 0) {
+        const nlohmann::json geometry =
+            summary.value("encoding_budget", nlohmann::json::object()).value("geometry", nlohmann::json::object());
+        w = json_int_or(geometry, "width_px", 0);
+        h = json_int_or(geometry, "height_px", 0);
+    }
+    if (w <= 0 || h <= 0) return false;
+    if (width_out) *width_out = w;
+    if (height_out) *height_out = h;
+    return true;
+}
+
 void append_unique_error_message(std::string& target, const std::string& message)
 {
     if (message.empty()) {
