@@ -51,6 +51,8 @@
 #include "recording_ingress.h"
 #include "session/recording_session.h"
 #include "session/recording_observation_prearm.h"
+#include "gui/recording_snapshots.h"
+#include "effective_configuration.h"
 #include "session/recording_observation_request_artifacts.h"
 #include "external_recorder_contract_utils.h"
 #include "external_recorder_lifecycle.h"
@@ -217,6 +219,31 @@ struct HeadlessExternalRecorderContractConfig {
     }
 };
 
+// A relative external_recorder_contract.artifact_root (e.g. "external_recorder")
+// is resolved under the run's recording folder, and relative stream artifact
+// paths under that root, so the recorder media sit inside the recording folder
+// (the GUI layout; Palette's intake refuses media outside the declared
+// recording_folder). Absolute values are left untouched.
+inline void resolve_headless_recorder_contract_paths(HeadlessExternalRecorderContractConfig* config,
+                                                     const std::string& recording_folder)
+{
+    if (!config || config->artifact_root.empty() || recording_folder.empty()) return;
+    const std::filesystem::path root_in(config->artifact_root);
+    if (root_in.is_absolute()) return;
+    const std::filesystem::path root = std::filesystem::path(recording_folder) / root_in;
+    config->artifact_root = root.lexically_normal().string();
+    if (!config->streams.is_object()) return;
+    for (auto& [stream_id, stream] : config->streams.items()) {
+        if (!stream.is_object()) continue;
+        for (const char* key : {"summary_json", "video_sanity_json", "mp4", "gop_routing_csv"}) {
+            if (!stream.contains(key) || !stream[key].is_string()) continue;
+            const std::filesystem::path value(stream[key].get<std::string>());
+            if (value.is_absolute()) continue;
+            stream[key] = (root / value).lexically_normal().string();
+        }
+    }
+}
+
 struct HeadlessCliOptions {
     orange::recording::RecordingMediaSelection media_products;
     orange::recording::RecordingContextsConfig recording_contexts;
@@ -258,6 +285,10 @@ struct HeadlessCliOptions {
 
 struct ExperimentSpec {
     orange::recording::RecordingMediaSelection media_products;
+    // fixed.citrus_recording_canvas_config_path: the Citrus canvas the recording
+    // geometry contract selects (exported as ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH
+    // when that variable is absent; the environment wins).
+    std::string citrus_recording_canvas_config_path;
     orange::recording::RecordingContextsConfig recording_contexts;
     orange::recording::SubjectReferencesConfig subject_references;
     orange::recording::ZebrobotLookupConfig zebrobot;
@@ -5241,6 +5272,27 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                 if (!update_recording_snapshot_session_artifacts(record_folder, {{"subject_references", block}}))
                     throw std::runtime_error("failed to persist headless subject references");
             }
+            if (enable_recording) {
+                // Same per-camera model, crop-output and pose declarations the GUI
+                // seals (Citrus's capacity preflight requires the models block;
+                // Palette copies it). The GUI writers read the camera config and the
+                // ORANGE_POSE_* environment the headless client already exported.
+                update_gui_detect_model_snapshots(record_folder, cameras_params, cameras_select, num_cameras,
+                                                  yolo_worker_config.engine_path);
+                update_gui_crop_output_snapshots(record_folder, cameras_params, cameras_select, num_cameras,
+                                                 crop_recording_config.crop_size_px);
+                update_gui_pose_model_snapshots(record_folder, cameras_params, cameras_select, num_cameras);
+                // Effective configuration (environment with sources; no app config in
+                // headless runs, the spec is the configuration). Never blocks a start.
+                try {
+                    const auto effective = orange::recording::BuildEffectiveConfiguration(get_current_utc_timestamp());
+                    orange::recording::ValidateEmittedEffectiveConfiguration(effective);
+                    if (!update_recording_snapshot_session_artifacts(record_folder, {{"effective_configuration", effective}}))
+                        throw std::runtime_error("failed to persist effective configuration");
+                } catch (const std::exception& ex) {
+                    std::cerr << "[headless] effective configuration not captured: " << ex.what() << std::endl;
+                }
+            }
             if (master_config.enabled) {
                 if (media_products.RequiresContext()) for (int idx : selected_indices) {
                     if (!yolo_workers[idx] || !yolo_workers[idx]->EventLogger() || !crop_producer_workers[idx] ||
@@ -8299,6 +8351,14 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             return false;
         }
     }
+    if (fixed.contains("citrus_recording_canvas_config_path")) {
+        const auto& node = fixed.at("citrus_recording_canvas_config_path");
+        if (!node.is_string() || node.get<std::string>().empty()) {
+            if (error_out) *error_out = "citrus_recording_canvas_config_path must be a non-empty string";
+            return false;
+        }
+        spec->citrus_recording_canvas_config_path = node.get<std::string>();
+    }
     if (fixed.contains("recording_contexts")) {
         try {
             if (fixed.at("recording_contexts").is_null())
@@ -9077,6 +9137,9 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                 spec.recording_control;
                                                             run.options.external_recorder_contract =
                                                                 spec.external_recorder_contract;
+                                                            resolve_headless_recorder_contract_paths(
+                                                                &run.options.external_recorder_contract,
+                                                                run.recording_folder);
                                                             run.options.has_recording_override =
                                                                 spec.has_recording_override;
                                                             run.options.recording_override =
@@ -9274,6 +9337,9 @@ int validate_local_experiment_spec_plan(const HeadlessCliOptions& options)
                   << run.options.encoder_settings.control_overrides.max_bitrate_bps
                   << " vbv_buffer_size="
                   << run.options.encoder_settings.control_overrides.vbv_buffer_size
+                  << (run.options.external_recorder_contract.enabled()
+                          ? " external_recorder_artifact_root=" + run.options.external_recorder_contract.artifact_root
+                          : std::string())
                   << std::endl;
     }
     return 0;
@@ -11958,6 +12024,13 @@ int run_local_experiment(const HeadlessCliOptions& options)
            spec.external_recorder_owner_push ? "1" : "0", 1);
     setenv("ORANGE_ACQ_RING_RELEASE_LOG", spec.acq_ring_release_log ? "1" : "0", 1);
     setenv("ORANGE_ACQ_CADENCE_PROBE_ALL", spec.acq_cadence_probe_all ? "1" : "0", 1);
+    if (!spec.citrus_recording_canvas_config_path.empty()) {
+        const char* existing = std::getenv("ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH");
+        if (!existing || !*existing) {
+            setenv("ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH", spec.citrus_recording_canvas_config_path.c_str(), 1);
+            std::cout << "[headless] Citrus recording canvas from spec: " << spec.citrus_recording_canvas_config_path << std::endl;
+        }
+    }
     if (spec.external_recorder_owner_push_chunk_bytes > 0) {
         setenv("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_CHUNK_BYTES",
                std::to_string(spec.external_recorder_owner_push_chunk_bytes).c_str(), 1);

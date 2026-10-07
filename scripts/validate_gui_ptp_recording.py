@@ -1701,9 +1701,9 @@ def check_recording_session_manifest(
     producer = str(manifest.get("producer", ""))
     backend = manifest.get("recording_backend")
     backend = backend if isinstance(backend, dict) else {}
-    external_ipc = producer == "orange_gui_external_ipc" or backend.get("mode") == "external_ipc"
+    external_ipc = producer in {"orange_gui_external_ipc", "orange_headless_external_ipc"} or backend.get("mode") == "external_ipc"
     reporter.check(
-        producer in {"orange_gui", "orange_gui_external_ipc"},
+        producer in {"orange_gui", "orange_gui_external_ipc", "orange_headless_external_ipc"},
         f"recording_session producer is {producer}",
         f"recording_session producer={manifest.get('producer')!r}",
     )

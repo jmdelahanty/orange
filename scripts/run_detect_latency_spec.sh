@@ -51,11 +51,21 @@ s['experiment_id'] = name
 c = s['fixed'].get('external_recorder_contract')
 new = ''
 if c:  # stream-only specs have no recorder contract
-    old = c['artifact_root']; new = old + '_' + stamp
-    c['artifact_root'] = new; c['session_id'] = name
-    for st in c['streams'].values():
-        for k in ('summary_json', 'video_sanity_json', 'mp4', 'gop_routing_csv'):
-            st[k] = st[k].replace(old, new)
+    old = c['artifact_root']
+    c['session_id'] = name
+    if old.startswith('/'):
+        # Absolute root outside the recording folder: stamp it so a rerun never
+        # reuses it (the client refuses a reused artifact_root).
+        new = old + '_' + stamp
+        c['artifact_root'] = new
+        for st in c['streams'].values():
+            for k in ('summary_json', 'video_sanity_json', 'mp4', 'gop_routing_csv'):
+                st[k] = st[k].replace(old, new)
+    else:
+        # Relative root (e.g. "external_recorder"): resolved by the client under
+        # the per-run recording folder, which is unique already; stream paths
+        # stay relative to it (Palette-transferable layout).
+        new = old
 json.dump(s, open(out, 'w'), indent=2)
 print(f"experiment_id={name}")
 print(f"artifact_root={new}")

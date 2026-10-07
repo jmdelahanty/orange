@@ -462,6 +462,9 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/pose_skeleton_sidecar.cpp"
     ${NVENCODER_SOURCES}
     ${ORANGE_CUDA_SOURCES}
+    "${SRC_DIR}/gui/recording_snapshots.cpp"
+    "${SRC_DIR}/gui/spatial_layout/projection_snapshot_client.cpp"
+    "${SRC_DIR}/gui/spatial_layout/commissioning_finalize_request.cpp"
 )
 
 set(YOLO_OFFLINE_SOURCES
