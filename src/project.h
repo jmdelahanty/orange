@@ -31,6 +31,11 @@ struct AppStorageConfig {
     std::string default_recording_root;
     std::string gui_recording_sink_mode = "real";
     bool gui_recording_sink_mode_configured = false;
+    // recording.require_external_ipc: refuse any record start whose resolved
+    // full-frame or crop sink would be the in-process recorder (latency; the
+    // validated production shape is the external recorder). Exported as
+    // ORANGE_REQUIRE_EXTERNAL_IPC=1.
+    bool gui_require_external_ipc = false;
     int gui_recording_record_for_seconds = 0;
     int gui_recording_clip_seconds = 0;
     std::string gui_crop_recording_sink_mode = "in_process";

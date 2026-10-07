@@ -1484,6 +1484,14 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
         }
         if (!read_optional_bool_field(
                 recording,
+                "require_external_ipc",
+                &config.gui_require_external_ipc,
+                error_out,
+                "recording")) {
+            return false;
+        }
+        if (!read_optional_bool_field(
+                recording,
                 "incremental_clip_shadow",
                 &config.gui_incremental_clip_shadow,
                 error_out,

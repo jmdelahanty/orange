@@ -5111,6 +5111,12 @@ int main(int /*argc*/, char ** /*args*/) {
             "1",
             "incremental clip shadow mode");
     }
+    if (app_storage_config.gui_require_external_ipc) {
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_REQUIRE_EXTERNAL_IPC",
+            "1",
+            "policy: only the external recorder may record (in-process refused)");
+    }
     set_gui_env_from_app_config_if_absent(
         "ORANGE_CROP_RECORDING_SINK_MODE",
         app_storage_config.gui_crop_recording_sink_mode,

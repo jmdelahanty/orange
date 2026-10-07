@@ -234,7 +234,8 @@
           "dish_id": "19220_1"
         }
       }
-    }
+    },
+    "require_external_ipc": true
   },
   "matrix": {
     "codec": [

@@ -34,6 +34,7 @@ difference between the headless gate and the GUI remains, flagged below
 | Parameter | Validated | App config key (value) | Code default | Headless gate spec |
 | --- | --- | --- | --- | --- |
 | External recorder sink | external_ipc | `recording.sink_mode` = `external_ipc` | app config, else camera preference, else real | spec contract |
+| In-process recorder refused | policy on | `recording.require_external_ipc` = true (GUI; exported as `ORANGE_REQUIRE_EXTERNAL_IPC=1`); spec `require_external_ipc` true | off (a bad sink-mode string silently fell back to the in-process writer) | spec key |
 | Owner push (per-card serialization + deadline gate) | on | `recording.external_ipc.owner_push` = true | off | `external_recorder_owner_push` true |
 | Owner-push slots | 16 | `owner_push_slots` = 16 | 8 | 16 |
 | Owner-push chunk bytes | GUI 2 MiB; headless gate 64 MiB | `owner_push_chunk_bytes` = 2097152 (new) | 2 MiB | `external_recorder_owner_push_chunk_bytes` 67108864 |

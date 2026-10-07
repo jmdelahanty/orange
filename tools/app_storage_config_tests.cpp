@@ -137,6 +137,7 @@ void test_missing_config_uses_defaults()
     require(
         config.gui_crop_external_recorder_gpu_ids_by_serial.empty() &&
             !config.gui_external_ipc_owner_push_configured &&
+            !config.gui_require_external_ipc &&
             config.gui_external_ipc_owner_push_slots == -1 &&
             config.gui_external_ipc_full_frame_extra_output_delay == -1 &&
             config.gui_external_ipc_owner_push_chunk_bytes == -1 &&
@@ -204,6 +205,7 @@ void test_loads_gui_and_crop_defaults()
       }
     },
     "ptp_register_read_decimate": 100,
+    "require_external_ipc": true,
     "citrus_binding_request_version": 2,
     "external_ipc": {
       "owner_push": true,
@@ -274,6 +276,7 @@ void test_loads_gui_and_crop_defaults()
                 config.gui_external_ipc_native_local_input_configured,
             "native_local_input should load");
     require(config.gui_external_ipc_owner_push_chunk_bytes == 2097152, "owner_push_chunk_bytes should load");
+    require(config.gui_require_external_ipc, "recording.require_external_ipc should load");
     require(config.gui_external_ipc_mp4_writeback_pace_bytes == 33554432, "mp4_writeback_pace_bytes should load");
     require(config.gui_external_ipc_native_kernel_ptx.empty(), "empty native_kernel_ptx stays empty");
     require(config.gui_external_ipc_recorder_tool_path ==

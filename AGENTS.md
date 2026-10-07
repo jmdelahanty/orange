@@ -162,6 +162,10 @@ the non-native path.
 
 - Never skip the CPU results path (postprocess, tracking, IPC) in production
   or in a gate.
+- Never record through the in-process recorder (latency): the app config
+  sets `recording.require_external_ipc` and production specs
+  `require_external_ipc`, which refuse a start whose full-frame or crop sink
+  is not `external_ipc`.
 - No synchronous file I/O on the acquisition, YOLO, pose or handoff threads;
   per-frame diagnostics go through `src/async_line_sink.h`.
 - Keep owner push serialized per card; the GOP routing offset stays 0.

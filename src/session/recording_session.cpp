@@ -3314,6 +3314,28 @@ PreparedRecordingRunStart prepare_recording_run(
     const bool external_recorder_requested = normalized_sink_mode == "external_ipc" &&
         (!state || !state->media_selection.mode || state->media_plan.HasFullFrame());
 
+    if (env_flag_enabled("ORANGE_REQUIRE_EXTERNAL_IPC")) {
+        // Policy (app config recording.require_external_ipc): the in-process
+        // recorder is never used for a recording. Refuse before any folder or
+        // artifact is written.
+        const bool full_frame_planned = !state || !state->media_selection.mode || state->media_plan.HasFullFrame();
+        if (full_frame_planned && !external_recorder_requested) {
+            prepared.error_message =
+                "ORANGE_REQUIRE_EXTERNAL_IPC: full-frame recording sink resolved to '" +
+                (normalized_sink_mode.empty() ? recording_sink_mode : normalized_sink_mode) +
+                "' (in-process); only external_ipc may record";
+            return prepared;
+        }
+        const bool crops_planned = state && state->media_selection.mode && state->media_plan.HasMovingCrops();
+        const std::string crop_sink = normalize_crop_recording_sink_mode(resolve_gui_crop_recording_sink_mode());
+        if (crops_planned && crop_sink != "external_ipc") {
+            prepared.error_message =
+                "ORANGE_REQUIRE_EXTERNAL_IPC: crop recording sink resolved to '" + crop_sink +
+                "' (in-process); only external_ipc may record crops";
+            return prepared;
+        }
+    }
+
     prepared.recording_folder = recording_folder;
     prepared.recording_id = recording_id;
     orange::RecordingStartupAudit::Instance().BeginSession(recording_id, recording_folder);

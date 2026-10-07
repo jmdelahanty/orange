@@ -290,6 +290,10 @@ struct ExperimentSpec {
     // geometry contract selects (exported as ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH
     // when that variable is absent; the environment wins).
     std::string citrus_recording_canvas_config_path;
+    // fixed.require_external_ipc: the spec may only record through the external
+    // recorder (full frame and crops); validation refuses otherwise and the run
+    // exports ORANGE_REQUIRE_EXTERNAL_IPC=1.
+    bool require_external_ipc = false;
     orange::recording::RecordingContextsConfig recording_contexts;
     orange::recording::SubjectReferencesConfig subject_references;
     orange::recording::ZebrobotLookupConfig zebrobot;
@@ -8602,6 +8606,14 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->external_recorder_max_deferred =
         fixed.value("external_recorder_max_deferred", -1);
     spec->recording_sink_mode = fixed.value("recording_sink_mode", "real");
+    spec->require_external_ipc = fixed.value("require_external_ipc", false);
+    if (spec->require_external_ipc && !spec->stream_only) {
+        if (spec->recording_sink_mode != "external_ipc") {
+            if (error_out) *error_out = "require_external_ipc: recording_sink_mode must be external_ipc (got '" +
+                                        spec->recording_sink_mode + "'; the in-process recorder is refused)";
+            return false;
+        }
+    }
     spec->helper_noop_source_read = fixed.value("helper_noop_source_read", false);
     spec->helper_copy_bytes = fixed.value("helper_copy_bytes", static_cast<int64_t>(-1));
     spec->helper_copy_delay_ns = fixed.value("helper_copy_delay_ns", static_cast<int64_t>(0));
@@ -8694,6 +8706,11 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             if (error_out) *error_out = "Experiment spec fixed.crop_recording.mode must be off|in_process|external_ipc";
             return false;
         }
+    }
+    if (spec->require_external_ipc && !spec->stream_only &&
+        spec->crop_recording.enabled() && !spec->crop_recording.external()) {
+        if (error_out) *error_out = "require_external_ipc: crop_recording.mode must be external_ipc (in-process crops refused)";
+        return false;
     }
     if (fixed.contains("recording_control")) {
         if (!parse_headless_recording_control_json(
@@ -12148,6 +12165,9 @@ int run_local_experiment(const HeadlessCliOptions& options)
            spec.external_recorder_owner_push ? "1" : "0", 1);
     setenv("ORANGE_ACQ_RING_RELEASE_LOG", spec.acq_ring_release_log ? "1" : "0", 1);
     setenv("ORANGE_ACQ_CADENCE_PROBE_ALL", spec.acq_cadence_probe_all ? "1" : "0", 1);
+    if (spec.require_external_ipc) {
+        setenv("ORANGE_REQUIRE_EXTERNAL_IPC", "1", 1);
+    }
     if (!spec.citrus_recording_canvas_config_path.empty()) {
         const char* existing = std::getenv("ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH");
         if (!existing || !*existing) {
