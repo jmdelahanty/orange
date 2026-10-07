@@ -7075,8 +7075,9 @@ bool write_supervised_external_recorder_recording_session_manifest(
                 manifest_clip.clip_index = clip_index;
                 manifest_clip.clip_id =
                     clip.value("clip_id", format_external_recorder_clip_id(clip_index));
-                manifest_clip.directory = clip.value("directory", std::string());
-                manifest_clip.recording_folder = manifest_clip.directory;
+                manifest_clip.recording_folder = clip.value("directory", std::string());
+                manifest_clip.directory = orange::session::rolling_clip_directory_for_manifest(
+                    manifest_clip.recording_folder, run.recording_folder);
                 manifest_clip.status = "completed";
                 manifest_clip.drain_completed = true;
             }

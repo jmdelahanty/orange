@@ -39,6 +39,20 @@
 
 namespace orange::session {
 
+std::string rolling_clip_directory_for_manifest(const std::string& clip_folder,
+                                                const std::string& session_recording_folder)
+{
+    if (clip_folder.empty() || session_recording_folder.empty()) return clip_folder;
+    const std::filesystem::path clip = std::filesystem::path(clip_folder).lexically_normal();
+    const std::filesystem::path session = std::filesystem::path(session_recording_folder).lexically_normal();
+    if (!clip.is_absolute() || !session.is_absolute()) return clip_folder;
+    std::error_code ec;
+    const std::filesystem::path relative = clip.lexically_relative(session);
+    if (relative.empty() || relative.native().rfind("..", 0) == 0) return clip_folder;
+    const std::string out = relative.generic_string();
+    return out == "." ? clip_folder : out;
+}
+
 namespace {
 
 bool is_valid_pipeline_index(const RecordingSessionState& state, const int camera_index)

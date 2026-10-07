@@ -212,6 +212,14 @@ struct SingleClipRecordingSessionManifestOptions {
     std::vector<RecordingOutputDescriptor> recording_outputs;
 };
 
+// The clip `directory` a rolling manifest declares, as the transfer sealer
+// and Palette's intake require it: a normalized path relative to the session
+// recording folder (e.g. "external_recorder/clips/clip_000000"). An absolute
+// clip folder inside the session folder is relativized; anything else is
+// returned as given.
+std::string rolling_clip_directory_for_manifest(const std::string& clip_folder,
+                                                const std::string& session_recording_folder);
+
 struct RollingClipManifestOptions {
     std::string producer = "orange";
     std::string output_backend = "in_process";
