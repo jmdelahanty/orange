@@ -54,12 +54,19 @@ scripts/verify_timed_recording.py <folder>
 scripts/check_recording_transfer_source.sh <folder>
 # 4. the operator's transfer seals the envelope and moves the folder to the
 #    group's staging (as the domain user; dry run first):
-~/citrus/scripts/transfer_as_domain_user.sh 'delahantyj@hhmi.org' <folder> johnsonlab-staging - --dry-run
-~/citrus/scripts/transfer_as_domain_user.sh 'delahantyj@hhmi.org' <folder> johnsonlab-staging - --verify quick
-#    -> /groups/johnson/johnsonlab/jeremy/staging/<folder name>, with
-#       _citrus_transfer_complete.json and _citrus_transfer/snapshot.json
-# 5. send Palette the staging path; Palette runs organize -> import --apply on
-#    an isolated registry and returns the per-camera result.
+#    Use an explicit, unique destination name (the default dest-parent would
+#    reuse the generic run_0001__codec... name; unique_run_id specs make the
+#    source folder unique too):
+~/citrus/scripts/transfer_as_domain_user.sh --no-dest-parent 'delahantyj@hhmi.org' <folder> \
+    johnsonlab-staging /groups/johnson/johnsonlab/jeremy/staging/<experiment folder name> --dry-run
+~/citrus/scripts/transfer_as_domain_user.sh --no-dest-parent 'delahantyj@hhmi.org' <folder> \
+    johnsonlab-staging /groups/johnson/johnsonlab/jeremy/staging/<experiment folder name> --verify quick
+#    -> the folder with _citrus_transfer_complete.json and _citrus_transfer/snapshot.json
+# 5. since 2026-10-07 (Palette main eb0285b1): live staging is watched by the v2
+#    poller every 5 min; a sealed delivery is imported (LSF) and registered (on
+#    delahantyj-ws1) automatically. Tell Palette the path so they can watch it
+#    through; the first bundle (2026-10-06 run 5) went through a manual trial
+#    import on an isolated registry first.
 ```
 
 Palette's own read-only checkers (need the sealed transfer):
