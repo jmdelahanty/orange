@@ -17,6 +17,7 @@
 #include "external_recorder_duration_limit.h"
 #include "project.h"
 #include "recording_ingress.h"
+#include "session/crop_rolling_outputs.h"
 #include "session/crop_rolling_sidecars.h"
 #include "session/recording_session.h"
 #include "video_capture.h"
@@ -469,31 +470,7 @@ nlohmann::json gui_crop_rollover_json(
     const orange::session::RecordingControlConfig& recording_control,
     const std::string& status)
 {
-    if (recording_control.clip_seconds > 0) {
-        return {
-            {"requested", true},
-            {"status", status.empty() ? "completed" : status},
-            {"implementation",
-             orange::external_recorder::kExternalRecorderRollingImplementation},
-            {"seamless_writer_switch", true},
-            {"records_during_rollover", true},
-            {"boundary", "recording_frame_id"},
-            {"output_kind", "crop"},
-            {"supported_mode", "rolling_clips"},
-            {"rolling_supported", true},
-            {"next_writer_preopened", false}
-        };
-    }
-    return {
-        {"requested", false},
-        {"status", "not_requested"},
-        {"implementation", "none"},
-        {"seamless_writer_switch", false},
-        {"records_during_rollover", false},
-        {"output_kind", "crop"},
-        {"supported_mode", "single_clip"},
-        {"rolling_supported", true}
-    };
+    return orange::session::build_crop_rollover_json(recording_control, status);
 }
 
 bool gui_attach_crop_rolling_outputs_to_clips(
@@ -501,96 +478,11 @@ bool gui_attach_crop_rolling_outputs_to_clips(
     std::map<int, orange::session::RollingClipManifestOptions>* clips_by_index,
     std::string* error_out)
 {
-    if (!clips_by_index) {
-        return true;
-    }
-    const nlohmann::json crop_recording =
-        recording_backend.value("crop_recording", nlohmann::json::object());
-    if (!crop_recording.is_object()) {
-        return true;
-    }
-    const nlohmann::json rolling_clips =
-        crop_recording.value("rolling_clips", nlohmann::json::object());
-    if (!rolling_clips.is_object() || rolling_clips.empty()) {
-        return true;
-    }
-
-    bool all_attached = true;
-    for (auto it = rolling_clips.begin(); it != rolling_clips.end(); ++it) {
-        const std::string serial = it.key();
-        if (serial.empty() || !it.value().is_array()) {
-            continue;
-        }
-        for (const nlohmann::json& clip : it.value()) {
-            if (!clip.is_object()) {
-                continue;
-            }
-            const int clip_index = clip.value("clip_index", -1);
-            if (clip_index < 0) {
-                continue;
-            }
-            auto clip_it = clips_by_index->find(clip_index);
-            if (clip_it == clips_by_index->end()) {
-                all_attached = false;
-                if (error_out) {
-                    gui_append_error_message(
-                        *error_out,
-                        "external crop rolling clip " +
-                            std::to_string(clip_index) +
-                            " for camera " + serial +
-                            " does not match a full-frame rolling clip");
-                }
-                continue;
-            }
-
-            orange::session::RecordingOutputDescriptor output;
-            output.camera_serial = serial;
-            orange::session::apply_crop_recording_output_media_contract(&output);
-            output.backend = "external_ipc";
-            output.status = clip.value("status", std::string("completed"));
-            output.video_path = clip.value("video", std::string());
-            output.metadata_path = clip.value("metadata", std::string());
-            output.keyframe_path = clip.value("keyframes", std::string());
-            output.perf_path = clip.value("perf", std::string());
-            output.summary_path = clip.value("summary", std::string());
-            output.frame_count = gui_json_u64_or(clip, "frame_count", 0ULL);
-            output.first_recording_frame_id =
-                gui_json_u64_or(clip, "first_recording_frame_id", 0ULL);
-            output.last_recording_frame_id =
-                gui_json_u64_or(clip, "last_recording_frame_id", 0ULL);
-            output.recording_frame_id_gaps =
-                gui_json_u64_or(clip, "recording_frame_id_gaps", 0ULL);
-            output.packet_count = gui_json_u64_or(clip, "packet_count", 0ULL);
-            output.packet_count_source =
-                clip.value("packet_count_source", std::string());
-            output.width = clip.value("width", 0);
-            output.height = clip.value("height", 0);
-            output.frame_rate = clip.value("frame_rate", 0);
-            output.codec = clip.value("codec", std::string("hevc"));
-            output.container = clip.value("container", std::string("mp4"));
-            output.tuning = clip.value("tuning", std::string("lossless"));
-            output.pixel_source_format = "mono8";
-            output.encoded_format = "nv12";
-            output.encoding_budget = clip.value(
-                "encoding_budget", nlohmann::json::object());
-            output.details = {
-                {"clip_index", clip_index},
-                {"clip_id", clip.value("clip_id", std::string())},
-                {"stream_id", clip.value("stream_id", std::string())},
-                {"video_backend", "external_ipc"},
-                {"metadata_backend", "orange_gui_split_crop_csv"},
-                {"summary_json", clip.value("summary", std::string())},
-                {"selection_policy", "largest_detection_by_confidence"},
-                {"blank_frame_policy", "encode_black_frame_when_no_detection"},
-                {"recording_control",
-                 crop_recording.value("recording_control", nlohmann::json::object())},
-                {"rollover",
-                 crop_recording.value("rollover", nlohmann::json::object())}
-            };
-            clip_it->second.recording_outputs.push_back(std::move(output));
-        }
-    }
-    return all_attached;
+    return orange::session::attach_crop_rolling_outputs_to_clips(
+        recording_backend,
+        clips_by_index,
+        error_out,
+        orange::session::kGuiSplitCropCsvMetadataBackend);
 }
 
 nlohmann::json gui_build_rolling_recording_session_snapshot_update(
@@ -2232,184 +2124,49 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                         "external crop recorder rolling output has no clips for camera " + serial;
                     append_error_message(crop_external_recorder_error, stream_error);
                 } else {
-                    std::vector<orange::session::RecordingFrameCsvRange> metadata_ranges;
-                    std::vector<orange::session::RecordingFrameCsvRange> perf_ranges;
-                    std::vector<nlohmann::json> clip_records;
-                    metadata_ranges.reserve(summary_clips.size());
-                    perf_ranges.reserve(summary_clips.size());
-                    clip_records.reserve(summary_clips.size());
-                    const int resolved_crop_size =
+                    orange::session::CropRollingClipStream crop_clip_stream;
+                    crop_clip_stream.camera_serial = serial;
+                    crop_clip_stream.stream_id = stream.stream_id;
+                    crop_clip_stream.summary_json = stream.summary_json;
+                    crop_clip_stream.crop_size_px =
                         CropAndEncodeWorker::SanitizeCropSize(crop_size_px);
-                    for (const nlohmann::json& clip : summary_clips) {
-                        if (!clip.is_object()) {
-                            continue;
-                        }
-                        const int clip_index = clip.value("clip_index", -1);
-                        const uint64_t frame_count =
-                            json_u64_or(clip, "frame_count", 0ULL);
-                        const uint64_t first_frame =
-                            json_u64_or(clip, "first_recording_frame_id", 0ULL);
-                        const uint64_t last_frame =
-                            json_u64_or(clip, "last_recording_frame_id", 0ULL);
-                        const uint64_t packets =
-                            json_u64_or(clip, "packets_written", 0ULL);
-                        const std::string clip_mp4 =
-                            json_string_or(clip, "mp4", std::string());
-                        const std::string clip_keyframes =
-                            json_string_or(clip, "keyframes", std::string());
-                        std::filesystem::path clip_dir =
-                            clip.value("directory", std::string());
-                        if (clip_dir.empty() && !clip_mp4.empty()) {
-                            clip_dir = std::filesystem::path(clip_mp4).parent_path();
-                        }
-                        const std::string clip_metadata =
-                            (clip_dir / ("Cam" + serial + "_crop_meta.csv")).string();
-                        const std::string clip_perf =
-                            (clip_dir / ("Cam" + serial + "_crop_perf.csv")).string();
-                        if (clip_index < 0 || frame_count == 0 ||
-                            first_frame == 0 || last_frame < first_frame ||
-                            clip_mp4.empty() || clip_keyframes.empty() ||
-                            clip_dir.empty()) {
-                            stream_ok = false;
-                            crop_external_recorder_ok = false;
-                            stream_error =
-                                "external crop recorder rolling clip incomplete for camera " +
-                                serial;
-                            append_error_message(crop_external_recorder_error, stream_error);
-                            continue;
-                        }
-
-                        metadata_ranges.push_back({
-                            first_frame,
-                            last_frame,
-                            clip_metadata,
-                            0,
-                        });
-                        perf_ranges.push_back({
-                            first_frame,
-                            last_frame,
-                            clip_perf,
-                            0,
-                        });
-                        clip_records.push_back({
-                            {"clip_index", clip_index},
-                            {"clip_id",
-                             clip.value("clip_id", gui_external_recorder_clip_id(clip_index))},
-                            {"status", clip.value("failed", false) ? "incomplete" : "completed"},
-                            {"stream_id", stream.stream_id},
-                            {"video", clip_mp4},
-                            {"metadata", clip_metadata},
-                            {"perf", clip_perf},
-                            {"keyframes", clip_keyframes},
-                            {"summary", stream.summary_json},
-                            {"frame_count", frame_count},
-                            {"first_recording_frame_id", first_frame},
-                            {"last_recording_frame_id", last_frame},
-                            {"recording_frame_id_gaps", 0},
-                            {"packet_count", packets},
-                            {"packet_count_source",
-                             "external_crop_recorder_summary.packets_written"},
-                            {"width", resolved_crop_size},
-                            {"height", resolved_crop_size},
-                            {"frame_rate", stream.encode_fps},
-                            {"codec", stream.codec},
-                            {"container", "mp4"},
-                            {"tuning", stream.tuning},
-                            {"encoding_budget",
-                             clip.value(
-                                 "encoding_budget", nlohmann::json::object())}
-                        });
+                    crop_clip_stream.frame_rate = stream.encode_fps;
+                    crop_clip_stream.codec = stream.codec;
+                    crop_clip_stream.tuning = stream.tuning;
+                    const orange::session::CropRollingClipRecordsResult clip_records =
+                        orange::session::build_crop_rolling_clip_records(
+                            summary_clips,
+                            crop_clip_stream,
+                            run.recording_folder,
+                            [&](const std::string& message) {
+                                append_error_message(crop_external_recorder_error, message);
+                            });
+                    if (!clip_records.ok) {
+                        stream_ok = false;
+                        crop_external_recorder_ok = false;
                     }
-
-                    if (!metadata_ranges.empty()) {
-                        std::string split_error;
-                        const std::string root_metadata =
-                            (std::filesystem::path(run.recording_folder) /
-                             ("Cam" + serial + "_crop_meta.csv")).string();
-                        // Crop metadata rows exist only for frames accepted
-                        // for encoding, so a row outside every clip range is
-                        // a hole in the recorded data: fail loudly.
-                        if (!orange::session::split_recording_frame_csv_by_ranges(
-                                root_metadata,
-                                &metadata_ranges,
-                                &split_error,
-                                orange::session::RecordingFrameCsvOrphanRowPolicy::kFail)) {
-                            stream_ok = false;
-                            crop_external_recorder_ok = false;
-                            append_error_message(
-                                crop_external_recorder_error,
-                                "failed to split crop metadata for camera " +
-                                    serial + ": " + split_error);
-                        } else {
-                            for (const auto& range : metadata_ranges) {
-                                shadow_cross_check_csv_paths.push_back(
-                                    range.output_path);
-                            }
-                        }
-                        split_error.clear();
-                        const std::string root_perf =
-                            (std::filesystem::path(run.recording_folder) /
-                             ("Cam" + serial + "_crop_perf.csv")).string();
-                        // Crop perf rows are also written for frames dropped
-                        // before external submission (drop_reason set), so
-                        // head/tail rows can legitimately match no clip
-                        // range: count and report them without failing.
-                        orange::session::RecordingFrameCsvSplitStats perf_split_stats;
-                        if (!orange::session::split_recording_frame_csv_by_ranges(
-                                root_perf,
-                                &perf_ranges,
-                                &split_error,
-                                orange::session::RecordingFrameCsvOrphanRowPolicy::kCountAndSkip,
-                                &perf_split_stats)) {
-                            stream_ok = false;
-                            crop_external_recorder_ok = false;
-                            append_error_message(
-                                crop_external_recorder_error,
-                                "failed to split crop perf for camera " +
-                                    serial + ": " + split_error);
-                        } else {
-                            for (const auto& range : perf_ranges) {
-                                shadow_cross_check_csv_paths.push_back(
-                                    range.output_path);
-                            }
-                            if (perf_split_stats.orphan_rows > 0) {
-                                std::cerr
-                                    << "[GUI][recording] WARNING: "
-                                    << perf_split_stats.orphan_rows
-                                    << " crop perf row(s) for camera " << serial
-                                    << " matched no rolling clip range (first orphaned"
-                                       " recording_frame_id "
-                                    << perf_split_stats.first_orphan_recording_frame_id
-                                    << "); these rows describe frames dropped before"
-                                       " external submission and were left out of the"
-                                       " per-clip crop perf sidecars."
-                                    << std::endl;
-                            }
-                        }
-                        nlohmann::json stream_clips = nlohmann::json::array();
-                        for (size_t i = 0; i < clip_records.size(); ++i) {
-                            const uint64_t frame_count =
-                                clip_records[i].value("frame_count", 0ULL);
-                            clip_records[i]["metadata_rows"] =
-                                i < metadata_ranges.size()
-                                    ? metadata_ranges[i].rows_written
-                                    : 0ULL;
-                            clip_records[i]["perf_rows"] =
-                                i < perf_ranges.size()
-                                    ? perf_ranges[i].rows_written
-                                    : 0ULL;
-                            if (clip_records[i].value("metadata_rows", 0ULL) != frame_count ||
-                                clip_records[i].value("perf_rows", 0ULL) != frame_count) {
-                                stream_ok = false;
-                                crop_external_recorder_ok = false;
-                                append_error_message(
-                                    crop_external_recorder_error,
-                                    "external crop rolling sidecar row mismatch for camera " +
-                                        serial);
-                            }
-                            stream_clips.push_back(clip_records[i]);
-                        }
-                        crop_rolling_clips[serial] = std::move(stream_clips);
+                    if (!clip_records.incomplete_clip_error.empty()) {
+                        stream_error = clip_records.incomplete_clip_error;
+                    }
+                    shadow_cross_check_csv_paths.insert(
+                        shadow_cross_check_csv_paths.end(),
+                        clip_records.split_csv_paths.begin(),
+                        clip_records.split_csv_paths.end());
+                    if (clip_records.perf_split_stats.orphan_rows > 0) {
+                        std::cerr
+                            << "[GUI][recording] WARNING: "
+                            << clip_records.perf_split_stats.orphan_rows
+                            << " crop perf row(s) for camera " << serial
+                            << " matched no rolling clip range (first orphaned"
+                               " recording_frame_id "
+                            << clip_records.perf_split_stats.first_orphan_recording_frame_id
+                            << "); these rows describe frames dropped before"
+                               " external submission and were left out of the"
+                               " per-clip crop perf sidecars."
+                            << std::endl;
+                    }
+                    if (!clip_records.clip_records.empty()) {
+                        crop_rolling_clips[serial] = clip_records.clip_records;
                     }
                 }
             }

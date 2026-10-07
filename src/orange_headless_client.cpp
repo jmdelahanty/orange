@@ -50,6 +50,7 @@
 #include "modern_recording_pipeline.h"
 #include "recording_ingress.h"
 #include "session/recording_session.h"
+#include "session/crop_rolling_outputs.h"
 #include "session/recording_observation_prearm.h"
 #include "gui/recording_snapshots.h"
 #include "effective_configuration.h"
@@ -6597,6 +6598,47 @@ std::string format_external_recorder_clip_id(const int clip_index)
     return out.str();
 }
 
+// fixed.crop_recording mode=external_ipc: the external crop recorder's
+// outputs for the recording_session manifest (recording_backend.crop_recording
+// plus the session-level crop output per camera). The supervisor lifecycle is
+// gone by the time the manifest bridge runs, so this reads the materialized
+// external_crop_recorder_contract.json and the recorder summaries under
+// <recording_folder>/external_crop_recorder/. In a rolling session the crop
+// clips are also split out of the session crop sidecars and declared per clip
+// by orange::session::attach_crop_rolling_outputs_to_clips.
+orange::session::ExternalCropRecordingBackendResult
+collect_headless_external_crop_recording(
+    const ExperimentRunPlan& run,
+    const bool rolling_expected)
+{
+    orange::session::ExternalCropRecordingBackendInputs inputs;
+    inputs.recording_folder = run.recording_folder;
+    inputs.contract_path =
+        (std::filesystem::path(run.recording_folder) /
+         "external_crop_recorder_contract.json").string();
+    inputs.recording_control.record_for_seconds =
+        run.options.recording_control.record_for_seconds;
+    inputs.recording_control.clip_seconds = run.options.recording_control.clip_seconds;
+    // 0 keeps the camera configuration's crop size; the recorder summary then
+    // reports the raster it actually encoded.
+    inputs.crop_size_px =
+        run.options.crop_recording.crop_size_px > 0
+            ? CropProducerWorker::SanitizeCropSize(run.options.crop_recording.crop_size_px)
+            : 0;
+    inputs.rolling_expected = rolling_expected;
+    inputs.session_metadata_backend = "orange_headless";
+    inputs.clip_metadata_backend = orange::session::kHeadlessSplitCropCsvMetadataBackend;
+    orange::session::ExternalCropRecordingBackendResult result =
+        orange::session::build_external_crop_recording_backend(inputs);
+    for (const std::string& warning : result.warnings) {
+        std::cerr << "[headless][recording] WARNING: " << warning << std::endl;
+    }
+    if (!result.error.empty()) {
+        std::cerr << "External crop recorder manifest bridge: " << result.error << std::endl;
+    }
+    return result;
+}
+
 bool write_supervised_external_recorder_single_clip_manifest(
     const ExperimentRunPlan& run,
     const std::string& manifest_status,
@@ -6768,6 +6810,24 @@ bool write_supervised_external_recorder_single_clip_manifest(
         return false;
     }
 
+    // External crop recorder: declare the crop output beside the full-frame
+    // one and carry its recorder accounting in recording_backend.crop_recording.
+    const bool crop_recorder_configured = run.options.crop_recording.external();
+    bool crop_recording_ok = true;
+    nlohmann::json crop_recording_json = nlohmann::json::object();
+    if (crop_recorder_configured) {
+        orange::session::ExternalCropRecordingBackendResult crop =
+            collect_headless_external_crop_recording(run, false);
+        crop_recording_ok = crop.ok;
+        crop_recording_json = std::move(crop.crop_recording);
+        recording_outputs.insert(
+            recording_outputs.end(),
+            crop.session_outputs.begin(),
+            crop.session_outputs.end());
+    }
+    const std::string effective_status =
+        crop_recording_ok ? manifest_status : "incomplete";
+
     orange::session::SingleClipRecordingSessionManifestOptions manifest_options;
     manifest_options.producer = "orange_headless_external_ipc";
     manifest_options.session_id = run.run_id;
@@ -6775,7 +6835,7 @@ bool write_supervised_external_recorder_single_clip_manifest(
         local_manifest.value("created_at_utc", std::string());
     manifest_options.updated_at_utc = get_current_utc_timestamp();
     manifest_options.recording_folder = run.recording_folder;
-    manifest_options.status = manifest_status;
+    manifest_options.status = effective_status;
     manifest_options.requested_stream_duration_seconds = run.options.duration_seconds;
     manifest_options.stream_start_delay_seconds =
         local_stream.value(
@@ -6818,7 +6878,7 @@ bool write_supervised_external_recorder_single_clip_manifest(
         manifest_options.recording_stop_reason == "record_for_seconds_elapsed";
     manifest_options.recording_backend = {
         {"mode", "external_ipc"},
-        {"status", manifest_status},
+        {"status", effective_status},
         {"artifact_root", config.artifact_root},
         {"source", "external_recorder_summary"},
         {"summary_json", summary_paths},
@@ -6841,6 +6901,9 @@ bool write_supervised_external_recorder_single_clip_manifest(
     manifest_options.recording_backend["system_monitoring"] =
         recording_snapshot.value(
             "system_monitoring", nlohmann::json::object());
+    if (crop_recorder_configured) {
+        manifest_options.recording_backend["crop_recording"] = crop_recording_json;
+    }
     manifest_options.cameras = std::move(camera_artifacts);
     manifest_options.recording_outputs = std::move(recording_outputs);
 
@@ -6869,15 +6932,27 @@ bool write_supervised_external_recorder_single_clip_manifest(
     }
     if (bridge_out) {
         *bridge_out = {
-            {"pass", manifest_status == "completed"},
-            {"status", manifest_status},
+            {"pass", effective_status == "completed"},
+            {"status", effective_status},
             {"path", manifest_path.string()},
             {"mode", "single_clip"},
             {"producer", "orange_headless_external_ipc"},
             {"camera_count", manifest_options.cameras.size()},
             {"summary_json", summary_paths},
-            {"frame_metadata_csv", metadata_paths}
+            {"frame_metadata_csv", metadata_paths},
+            {"crop_recording_status",
+             crop_recorder_configured
+                 ? crop_recording_json.value("status", std::string("incomplete"))
+                 : std::string("not_configured")}
         };
+    }
+    if (!crop_recording_ok) {
+        if (error_out) {
+            *error_out = crop_recording_json.value(
+                "error",
+                std::string("external crop recorder outputs are incomplete"));
+        }
+        return false;
     }
     return true;
 }
@@ -7092,6 +7167,39 @@ bool write_supervised_external_recorder_recording_session_manifest(
         std::unique(camera_serials.begin(), camera_serials.end()),
         camera_serials.end());
 
+    // External crop recorder: one crop clip per full-frame clip. The crop
+    // clip records (with the session crop sidecars split per clip) go into
+    // recording_backend.crop_recording.rolling_clips and are attached to the
+    // matching clip as its `crop` output before the clip manifests are
+    // written, so Palette sees every crop MP4 declared.
+    const bool crop_recorder_configured = run.options.crop_recording.external();
+    bool crop_recording_ok = true;
+    nlohmann::json crop_recording_json = nlohmann::json::object();
+    std::vector<orange::session::RecordingOutputDescriptor> session_recording_outputs;
+    if (crop_recorder_configured) {
+        orange::session::ExternalCropRecordingBackendResult crop =
+            collect_headless_external_crop_recording(run, true);
+        crop_recording_ok = crop.ok;
+        crop_recording_json = std::move(crop.crop_recording);
+        session_recording_outputs = std::move(crop.session_outputs);
+        std::string attachment_error;
+        if (!orange::session::attach_crop_rolling_outputs_to_clips(
+                nlohmann::json{{"crop_recording", crop_recording_json}},
+                &clips_by_index,
+                &attachment_error,
+                orange::session::kHeadlessSplitCropCsvMetadataBackend)) {
+            crop_recording_ok = false;
+            crop_recording_json["status"] = "incomplete";
+            std::string combined_error =
+                crop_recording_json.value("error", std::string());
+            orange::session::append_unique_error_message(combined_error, attachment_error);
+            crop_recording_json["error"] = combined_error;
+            std::cerr << "External crop recorder manifest bridge: " << attachment_error
+                      << std::endl;
+        }
+        all_clips_ok = all_clips_ok && crop_recording_ok;
+    }
+
     std::vector<orange::session::RollingClipManifestOptions> clip_options;
     clip_options.reserve(clips_by_index.size());
     double sum_clip_actual_duration_s = 0.0;
@@ -7206,6 +7314,12 @@ bool write_supervised_external_recorder_recording_session_manifest(
     manifest_options.recording_backend["system_monitoring"] =
         recording_snapshot.value(
             "system_monitoring", nlohmann::json::object());
+    if (crop_recorder_configured) {
+        manifest_options.recording_backend["crop_recording"] = crop_recording_json;
+        // Session-aggregate crop output per camera; the per-clip crop outputs
+        // are already on the clips.
+        manifest_options.recording_outputs = std::move(session_recording_outputs);
+    }
     manifest_options.camera_serials = std::move(camera_serials);
     manifest_options.clips = std::move(clip_options);
 
@@ -7266,8 +7380,17 @@ bool write_supervised_external_recorder_recording_session_manifest(
                  {"clip_index_json", index_artifacts.clip_index_json_path},
                  {"clip_index_csv", index_artifacts.clip_index_csv_path}
              }},
-            {"summary_json", summary_paths}
+            {"summary_json", summary_paths},
+            {"crop_recording_status",
+             crop_recorder_configured
+                 ? crop_recording_json.value("status", std::string("incomplete"))
+                 : std::string("not_configured")}
         };
+    }
+    if (!crop_recording_ok && error_out && error_out->empty()) {
+        *error_out = crop_recording_json.value(
+            "error",
+            std::string("external crop recorder rolling outputs are incomplete"));
     }
     return all_clips_ok;
 }
