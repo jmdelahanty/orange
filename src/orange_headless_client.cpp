@@ -6929,6 +6929,26 @@ bool write_supervised_external_recorder_single_clip_manifest(
         }
         return false;
     }
+    // Record the session mode, the manifest path and the recorder backend in
+    // recording_snapshot.json as the rolling path does (the strict validator
+    // checks both; 2026-10-07 single-video fixture).
+    {
+        nlohmann::json snapshot_update = {
+            {"recording_mode", manifest.value("mode", std::string("single_clip"))},
+            {"recording_session_manifest_path", manifest_path.string()},
+            {"rolling_clip_count", manifest.value("clips", nlohmann::json::array()).size()}
+        };
+        if (manifest.contains("recording_backend")) {
+            snapshot_update["recording_backend"] = manifest["recording_backend"];
+        }
+        if (!update_recording_snapshot_session_artifacts(run.recording_folder, snapshot_update)) {
+            if (error_out) {
+                *error_out =
+                    "failed to update recording_snapshot.json with the external IPC session mode";
+            }
+            return false;
+        }
+    }
     if (manifest.contains("recording_outputs") &&
         manifest["recording_outputs"].is_object() &&
         !update_recording_snapshot_recording_outputs(
