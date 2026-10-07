@@ -66,9 +66,13 @@ p95 2.43 ms. Old two-camera in-process baseline: 11-12 ms detect p95.
 
 Pre-flight: `sudo -n /usr/local/bin/orange-evt-stream-smoke --config-dir
 /home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam --all --frames 5`
-(a camera answering "GVCP ACK error" needs `evt_force_reboot`). Config folders
-under `/tmp` regenerate after a reboot from
-`~/orange_data/config/local/100_cam4_ptp_fourcam`.
+(a camera answering "GVCP ACK error" needs `evt_force_reboot`). The spec config folders under `/tmp` vanish on
+reboot and must be recreated by hand (symptom: "Config folder does not
+exist" then "Failed to open cameras", exit in 2 s):
+`SRC=~/orange_data/config/local/100_cam4_ptp_fourcam; cp -r $SRC
+/tmp/orange_recorder_config_a16` (crop 384 as the GUI saved it) and
+`cp -r $SRC /tmp/orange_device_crop_config_a16` with
+`crop_pipeline.crop_size_px` set to 256 in its four JSONs.
 
 ```bash
 scripts/run_detect_latency_spec.sh --orange-client <tree>/targets/release/orange_client <spec name>

@@ -1854,15 +1854,29 @@ def verify_summary(
         merged_for_budget = (
             merged_for_budget if isinstance(merged_for_budget, dict) else {}
         )
-        encoded_payload_bytes = as_int(
-            merged_for_budget.get("bytes_written", 0),
-            "merged_output.bytes_written",
-        )
-        if encoded_payload_bytes <= 0:
+        # The budget names the quantity it accounted for
+        # (encoded_payload_bytes_source). A single merged MP4 reports its
+        # payload as merged_output.bytes_written; a rolling session's
+        # merged_output.bytes_written is the sum of the clip files (container
+        # bytes included) while the session budget counts the encoder's
+        # returned bytes, so compare against the declared source.
+        budget_achieved = (summary.get("encoding_budget") or {}).get("achieved") or {}
+        budget_source = str(budget_achieved.get("encoded_payload_bytes_source", ""))
+        if budget_source.endswith("returned_bytes"):
             encoded_payload_bytes = as_int(
                 external_encode.get("returned_bytes"),
                 "external_encode.returned_bytes",
             )
+        else:
+            encoded_payload_bytes = as_int(
+                merged_for_budget.get("bytes_written", 0),
+                "merged_output.bytes_written",
+            )
+            if encoded_payload_bytes <= 0:
+                encoded_payload_bytes = as_int(
+                    external_encode.get("returned_bytes"),
+                    "external_encode.returned_bytes",
+                )
         verify_encoding_budget(
             summary.get("encoding_budget"),
             expected_frame_count=frames_encoded,

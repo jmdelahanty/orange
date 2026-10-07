@@ -1554,6 +1554,11 @@ def summarize_videos(recording_folder: Path, ffprobe: str) -> dict[str, Any]:
             "duration_s": duration_s,
             "size_bytes": size_bytes,
             "bitrate_bps": bitrate_bps,
+            # Container tags of the first clip; every rolling clip carries the
+            # same encode tags (title, comment, producer, ...) plus its clip_id,
+            # and the validator's tag contract reads them from here.
+            "tags": dict(first.get("tags") or {}),
+            "clip_tags_present": [bool(item.get("tags")) for item in probed],
         }
     return out
 

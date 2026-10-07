@@ -36,7 +36,7 @@
       "session_id": "fourcam_palette_recording_only_rolling_crops_shadow",
       "require_summary": true,
       "require_video_sanity": false,
-      "require_merged_mp4": true,
+      "require_merged_mp4": false,
       "require_gop_routing": true,
       "preserve_shard_mp4s": false,
       "streams": {

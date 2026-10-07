@@ -43,7 +43,8 @@ PTP gate) with:
 ## Run and hand over
 
 ```bash
-# 1. pre-flight (cameras, PTP stack, NIC counters) as in AGENTS.md
+# 1. pre-flight (cameras, PTP stack, NIC counters) as in AGENTS.md; after a reboot
+#    recreate /tmp/orange_recorder_config_a16 from ~/orange_data/config/local/100_cam4_ptp_fourcam
 scripts/run_detect_latency_spec.sh --orange-client <tree>/targets/release/orange_client \
     fourcam_palette_recording_only_rolling_crops_shadow
 # 2. Orange checks
