@@ -1096,6 +1096,11 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
                                &stream_plan.routing_policy,
                                error_out,
                                context) ||
+            !read_string_field(stream,
+                               "rolling_clip_root",
+                               &stream_plan.rolling_clip_root,
+                               error_out,
+                               context) ||
             !read_int_field(stream,
                             "gop_route_offset",
                             &stream_plan.gop_route_offset,
@@ -1606,6 +1611,10 @@ std::vector<std::string> BuildRecorderCommand(const SupervisorPlan& plan,
         "--importance-map-mode",
         orange::encoding::normalize_qp_map_mode(stream.importance_map.mode),
     };
+    if (!stream.rolling_clip_root.empty()) {
+        argv.push_back("--rolling-clip-root");
+        argv.push_back(stream.rolling_clip_root);
+    }
     if (stream.importance_map.enabled()) {
         argv.push_back("--importance-map-center-x-px");
         argv.push_back(std::to_string(stream.importance_map.circle.center_x_px));

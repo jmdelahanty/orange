@@ -139,6 +139,10 @@ struct Options {
     bool monochrome = true;
     std::string bitstream_out_path;
     std::string mp4_out_path;
+    // Rolling clips go under <rolling_clip_root>/clips/clip_N/ instead of next
+    // to the mp4 (so a crop recorder's clips can sit beside the full-frame
+    // clips, as the transfer envelope requires). Empty: the mp4's directory.
+    std::string rolling_clip_root;
     std::string mp4_keyframe_path;
     std::string metadata_csv_path;
     bool write_frame_metadata = true;
@@ -589,6 +593,8 @@ Options parse_options(int argc, char** argv)
         } else if (arg == "--mp4-out") {
             options.mp4_out_path = consume(arg.c_str());
             options.encode = true;
+        } else if (arg == "--rolling-clip-root") {
+            options.rolling_clip_root = consume(arg.c_str());
         } else if (arg == "--mp4-keyframe" || arg == "--mp4-keyframe-path") {
             options.mp4_keyframe_path = consume(arg.c_str());
         } else if (arg == "--metadata-csv") {
@@ -3247,8 +3253,9 @@ private:
 
     std::filesystem::path clip_directory_path(int clip_index) const
     {
-        const std::filesystem::path root =
-            std::filesystem::path(mp4_path_).parent_path();
+        const std::filesystem::path root = options_.rolling_clip_root.empty()
+            ? std::filesystem::path(mp4_path_).parent_path()
+            : std::filesystem::path(options_.rolling_clip_root);
         return root / "clips" / format_clip_id(clip_index);
     }
 

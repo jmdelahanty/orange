@@ -881,6 +881,13 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
             {"same_gpu_as_analytics", same_gpu_as_analytics},
             {"expected_shard_gpu_ids", crop_shard_gpu_ids},
             {"routing_policy", crop_routing_policy},
+            // Rolling crop clips are written beside the full-frame clips
+            // (<folder>/external_recorder/clips/clip_N/), the layout the
+            // transfer sealer and Palette's intake require (every output of a
+            // clip inside that clip's directory).
+            {"rolling_clip_root", recording_control.clip_seconds > 0
+                 ? (std::filesystem::path(recording_folder) / "external_recorder").string()
+                 : std::string()},
             {"summary_json", prefix + "_summary.json"},
             {"status_json", prefix + "_status.json"},
             {"video_sanity_json", prefix + "_video_sanity.json"},

@@ -16,7 +16,7 @@
     ]
   },
   "fixed": {
-    "duration_s": 120,
+    "duration_s": 135,
     "warmup_s": 2,
     "display": false,
     "yolo": false,
