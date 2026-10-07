@@ -235,7 +235,8 @@
         }
       }
     },
-    "require_external_ipc": true
+    "require_external_ipc": true,
+    "unique_run_id": true
   },
   "matrix": {
     "codec": [

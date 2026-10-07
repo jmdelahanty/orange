@@ -294,6 +294,11 @@ struct ExperimentSpec {
     // recorder (full frame and crops); validation refuses otherwise and the run
     // exports ORANGE_REQUIRE_EXTERNAL_IPC=1.
     bool require_external_ipc = false;
+    // fixed.unique_run_id: name each run <experiment_id>__<matrix cell> so the
+    // recording session id (and folder) is unique per run; the run script stamps
+    // experiment_id with a timestamp. Default: the bare matrix cell (run_0001__...),
+    // which repeats across runs of one spec and must not be delivered to Palette.
+    bool unique_run_id = false;
     orange::recording::RecordingContextsConfig recording_contexts;
     orange::recording::SubjectReferencesConfig subject_references;
     orange::recording::ZebrobotLookupConfig zebrobot;
@@ -8607,6 +8612,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         fixed.value("external_recorder_max_deferred", -1);
     spec->recording_sink_mode = fixed.value("recording_sink_mode", "real");
     spec->require_external_ipc = fixed.value("require_external_ipc", false);
+    spec->unique_run_id = fixed.value("unique_run_id", false);
     if (spec->require_external_ipc && !spec->stream_only) {
         if (spec->recording_sink_mode != "external_ipc") {
             if (error_out) *error_out = "require_external_ipc: recording_sink_mode must be external_ipc (got '" +
@@ -9239,7 +9245,9 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             if (include_importance_map_roi_size_in_run_id) {
                                                                 run_id << "__imappx_" << importance_map_roi_size_px;
                                                             }
-                                                            run.run_id = run_id.str();
+                                                            run.run_id = spec.unique_run_id && !spec.experiment_id.empty()
+                                                                ? spec.experiment_id + "__" + run_id.str()
+                                                                : run_id.str();
                                                             run.recording_folder = (experiment_root / run.run_id).string();
                                                             run.duration_s = spec.duration_s;
                                                             run.warmup_s = spec.warmup_s;
