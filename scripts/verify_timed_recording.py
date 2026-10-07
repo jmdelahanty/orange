@@ -774,7 +774,10 @@ def verify_rolling_clips(
     rollover_contract = manifest.get("rollover")
     require(isinstance(rollover_contract, dict), "rolling manifest missing rollover object")
     require(
-        rollover_contract.get("implementation") == "headless_gop_boundary_writer_switch",
+        rollover_contract.get("implementation") in (
+            "headless_gop_boundary_writer_switch",            # in-process rolling writer
+            "external_recorder_gop_boundary_writer_rotation",  # external recorder clips (GUI and headless)
+        ),
         f"unexpected rollover implementation: {rollover_contract.get('implementation')!r}",
     )
     require(bool(rollover_contract.get("seamless_writer_switch")), "rollover.seamless_writer_switch is false")
