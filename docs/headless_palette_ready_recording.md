@@ -30,10 +30,15 @@ PTP gate) with:
   acquired, no subtype (context v2). `recording_only` maps the Citrus binding
   mode to `not_applicable`, so no `recording_observation_bindings/` is written
   and the sealer accepts the folder.
-- `zebrobot.base_url` and `subject_references`: `subject_count 1` for every
-  camera, a dish only on 2010093 (`19220_1`). **Edit the dish ids and counts
-  per camera before every run**; a camera without a dish is declared
-  `not_collected / no_dish_declared` and Palette admits it.
+- `zebrobot.base_url` and `subject_references`: the template declares no
+  subjects (every camera sealed `not_collected / no_dish_declared`, count
+  null, which Palette admits). A run with fish uses a copy that adds
+  `fixed.subject_references` (`schema_version 1`, `default` and per-serial
+  `cameras` with `dish_id` = the MetaZebrobot dish the fish came from and
+  `subject_count` = animals under that camera, never derived from the dish):
+  `fourcam_palette_fish_19220_1_rolling_crops_shadow.json` declares one fish
+  from `19220_1` under every camera. **Edit the dish ids and counts per
+  camera before every run**; never declare a count for an empty dish.
 - `citrus_recording_canvas_config_path`: the Shadow canvas
   `~/citrus/targets/rigs/omnifin0/shadow/shadow.json` (geometry contract).
 - `external_recorder_contract.artifact_root = "external_recorder"` with
