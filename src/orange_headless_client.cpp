@@ -12304,6 +12304,9 @@ int run_local_experiment(const HeadlessCliOptions& options)
         const std::string started_at_utc = get_current_utc_timestamp();
         const int rc = run_local_recording_session(run.options, false);
         bool run_failed = (rc != 0);
+        // Set once the run reached its results stage (snapshot read, camera
+        // results built); the diagnostic pass/fail verdict does not clear it.
+        bool recorder_finalize_eligible = false;
         nlohmann::json run_entry = {
             {"run_id", run.run_id},
             {"run_index", run.run_index},
@@ -12377,6 +12380,16 @@ int run_local_experiment(const HeadlessCliOptions& options)
                 }
                 run_entry["pass_fail"] = any_fail ? "fail" : (any_marginal ? "marginal" : "pass");
                 run_failed = run_failed || any_fail;
+                // The recording completed and produced camera results: the
+                // supervised recorders' media exist whatever the per-camera
+                // diagnostic verdict says (a camera frame-id gap, a marginal
+                // latency). Their finalize (video sanity, verifier, the
+                // recording_session manifest with the external_ipc outputs)
+                // must still run, or the folder keeps the start-time
+                // placeholder manifest (in-process names, Cam<serial>.mp4)
+                // that misdescribes what was produced and the transfer
+                // sealer refuses it (2026-10-07, one lost frame on 2010093).
+                recorder_finalize_eligible = (rc == 0);
             }
         }
 
@@ -12420,7 +12433,7 @@ int run_local_experiment(const HeadlessCliOptions& options)
             return 1;
         }
 
-        if (!run_failed && run.options.media_products.FullFrame() &&
+        if (recorder_finalize_eligible && run.options.media_products.FullFrame() &&
             run.options.external_recorder_contract.enabled() &&
             run.options.external_recorder_contract.supervise_processes) {
             std::string finalization_error;
