@@ -42,7 +42,7 @@ cmake --build "$ROOT/targets/native" --target external_recorder_ipc_probe_native
 BIN="$ROOT/targets/native/external_recorder_ipc_probe_native"
 [ -x "$BIN" ] || { echo "native recorder not built: $BIN" >&2; exit 1; }
 echo "[native] built $BIN"
-"$BIN" --help 2>&1 | grep -q -- "--rolling-clip-root" && echo "[native] --rolling-clip-root supported" || echo "[native] WARNING: --rolling-clip-root not in --help"
+if "$BIN" --rolling-clip-root /nonexistent --help 2>&1 | grep -q "Unknown argument"; then echo "[native] WARNING: --rolling-clip-root not accepted"; else echo "[native] --rolling-clip-root accepted"; fi
 if [ "$INSTALL" = 1 ]; then
     "$ROOT/scripts/install_orange_native_recorder.sh"
 else

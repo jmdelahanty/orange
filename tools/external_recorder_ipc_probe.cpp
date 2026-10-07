@@ -308,6 +308,7 @@ void signal_handler(int)
         << "  --output-kind <kind>  Output kind label: full or crop. Default full.\n"
         << "  --record-for-seconds <int> Session recording duration intent. Default 0.\n"
         << "  --clip-seconds <int>  Enable GOP-aligned rolling clip MP4 outputs. Default 0.\n"
+        << "  --rolling-clip-root <dir>  Write rolling clips under <dir>/clips/clip_N/ instead of beside the mp4 (crop recorders use the full-frame recorder's root so every output of a clip shares its directory).\n"
         << "  --terminal-tail-coalesce-frames <int> Coalesce this many overrun frames into the final requested clip. Default GOP length.\n"
         << "  --min-free-bytes <int> Require this much available storage before listening. Default 0.\n"
         << "  --low-space-warning-bytes <int> Mark storage_preflight.low_space below this available-byte threshold. Default 0.\n"
