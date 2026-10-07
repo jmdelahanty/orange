@@ -57,6 +57,15 @@ Per recording camera, one `orange.recording_subject_reference` v2 entry:
    null, never a failure of the entry.
 1. `GET {base_url}/dishes/{dish_id}/citrus-snapshot` (API `schema_version` 2):
    `dish = {dish_id, dish_uuid, revision, updated_at}` copied **as served**.
+   Time semantics (MetaZebrobot `docs/zebrobot_snapshot.md` "Dates and
+   times", commit 49cc930): `updated_at` (and `created_at`,
+   `cache_updated_at`) are **UTC without an offset** ("2026-10-02 16:28:20"
+   is 12:28 EDT); calendar days such as `dof` are lab-local America/New_York
+   days; `*_utc` fields carry an explicit `Z`. Orange copies these strings
+   verbatim and derives no dates or ages from them; a lab calendar day from a
+   UTC instant (e.g. `queried_at_utc`) is obtained by converting to
+   America/New_York first. The pinned schema files are unchanged (their
+   digests are Palette's pins).
    The declared id must equal the served `dish_id`.
 2. When that succeeded, `GET {base_url}/dishes/{dish_id}/fish`:
    `dish_fish = [{fish_id, revision, updated_at}]` for every served item, with
