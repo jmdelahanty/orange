@@ -149,6 +149,15 @@ private:
 };
 
 class RecordingIngress::ExternalIpcHandoffWorker : public CThreadWorker<WORKER_ENTRY> {
+    // An imported owner-push staging slot on the peer die (declared ahead of
+    // the member functions that take it by reference).
+    struct OwnerSlot {
+        int gpu = -1;
+        size_t index = 0;
+        void* ptr = nullptr;
+        size_t bytes = 0;
+    };
+
 public:
     ExternalIpcHandoffWorker(SafeQueue<WORKER_ENTRY*>* recycle_queue,
                              std::string camera_serial,
@@ -218,6 +227,14 @@ public:
     {
         release_all_pending("worker shutdown");
         close_socket();
+        if (owner_warm_src_) {
+            if (source_gpu_id_ >= 0) {
+                cudaSetDevice(source_gpu_id_);
+            }
+            (void)cudaFree(owner_warm_src_);
+            owner_warm_src_ = nullptr;
+            (void)cudaGetLastError();
+        }
     }
 
     double fps() const { return current_fps_.load(std::memory_order_relaxed); }
@@ -926,12 +943,25 @@ private:
         if (!(in >> gop_route_offset)) {
             gop_route_offset = 0;  // older recorder: no offset token
         }
+        // Warm the push path into this slot now, while no frame is flowing
+        // (STAGE lines arrive during preparation, before the readiness gate
+        // lets recording start). Without this the session's first pushed GOP
+        // performs the first-touch writes into freshly imported peer memory,
+        // creates the push stream and event, and on card A that first push
+        // coincided with NIC packet loss on camera frame 28 in 2 of 5 runs on
+        // 2026-10-07 (one lost frame per run, always at the first push).
+        // The warm copy runs under the same per-card lock and chunking as a
+        // real push; a failure leaves the slot usable and only logs.
+        const OwnerSlot imported{gpu, index, ptr, bytes};
+        if (owner_push_warm_) {
+            warm_owner_push_slot(imported, shard_id);
+        }
         std::lock_guard<std::mutex> lock(owner_mutex_);
         owner_gop_route_offset_ = gop_route_offset;
         if (owner_slots_.size() <= index) {
             owner_slots_.resize(index + 1);
         }
-        owner_slots_[index] = OwnerSlot{gpu, index, ptr, bytes};
+        owner_slots_[index] = imported;
         owner_free_.push_back(index);
         owner_slots_imported_.fetch_add(1, std::memory_order_relaxed);
         orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "staging_slot_imported",
@@ -999,6 +1029,106 @@ private:
     // frame is not routed to the peer shard, no slot is free, or pushing is
     // off. The source buffer is ready (the caller synchronized its ready
     // event) and stays owned by this process until the push has completed.
+    // The push stream and completion event, created once on the source GPU
+    // (the caller has set the device). Audited with the frame that triggered
+    // the creation (0 during preparation).
+    bool ensure_owner_push_stream(uint64_t recording_frame_id)
+    {
+        if (owner_push_stream_) {
+            return true;
+        }
+        orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "owner_push_stream_create_start", "", recording_frame_id);
+        int lowest = 0, highest = 0;
+        cudaDeviceGetStreamPriorityRange(&lowest, &highest);
+        const bool stream_ok =
+            cudaStreamCreateWithPriority(&owner_push_stream_, cudaStreamNonBlocking, lowest) == cudaSuccess &&
+            cudaEventCreateWithFlags(&owner_push_done_, cudaEventDisableTiming | cudaEventBlockingSync) == cudaSuccess;
+        orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "owner_push_stream_create_done", stream_ok ? "ok" : "failed", recording_frame_id);
+        if (!stream_ok) {
+            (void)cudaGetLastError();
+            owner_push_stream_ = nullptr;
+            owner_push_done_ = nullptr;
+        }
+        return stream_ok;
+    }
+
+    // One full-size, chunked peer copy from a scratch buffer on the source
+    // GPU into a freshly imported slot, serialized per card like a real push
+    // and waited on with the push event. Runs on the handoff thread during
+    // preparation (same thread that pushes), so no stream races.
+    void warm_owner_push_slot(const OwnerSlot& slot, int shard_id)
+    {
+        if (source_gpu_id_ < 0 || !slot.ptr || slot.bytes == 0) {
+            return;
+        }
+        const auto warm_start = std::chrono::steady_clock::now();
+        cudaSetDevice(source_gpu_id_);
+        if (!ensure_owner_push_stream(0)) {
+            log_limited("owner push warm-up: stream/event creation failed; slot " +
+                        std::to_string(slot.index) + " left cold");
+            return;
+        }
+        if (!owner_warm_src_ || owner_warm_src_bytes_ < slot.bytes) {
+            if (owner_warm_src_) {
+                (void)cudaFree(owner_warm_src_);
+                owner_warm_src_ = nullptr;
+                owner_warm_src_bytes_ = 0;
+            }
+            void* scratch = nullptr;
+            if (cudaMalloc(&scratch, slot.bytes) != cudaSuccess ||
+                cudaMemset(scratch, 0, slot.bytes) != cudaSuccess) {
+                (void)cudaGetLastError();
+                if (scratch) {
+                    (void)cudaFree(scratch);
+                }
+                log_limited("owner push warm-up: scratch allocation failed; slots left cold");
+                return;
+            }
+            owner_warm_src_ = scratch;
+            owner_warm_src_bytes_ = slot.bytes;
+        }
+        std::mutex* card_mutex = card_push_mutex_for(source_gpu_id_);
+        std::unique_lock<std::mutex> card_lock;
+        if (card_mutex) {
+            card_lock = std::unique_lock<std::mutex>(*card_mutex);
+        }
+        cudaError_t copy_status = cudaSuccess;
+        const size_t total = slot.bytes;
+        const size_t chunk = owner_push_chunk_bytes_ > 0 ? owner_push_chunk_bytes_ : total;
+        for (size_t offset = 0; offset < total && copy_status == cudaSuccess; offset += chunk) {
+            const size_t n = std::min(chunk, total - offset);
+            copy_status = cudaMemcpyPeerAsync(
+                static_cast<unsigned char*>(slot.ptr) + offset, slot.gpu,
+                static_cast<unsigned char*>(owner_warm_src_) + offset, source_gpu_id_, n, owner_push_stream_);
+        }
+        cudaError_t sync_status = copy_status;
+        if (copy_status == cudaSuccess) {
+            sync_status = cudaEventRecord(owner_push_done_, owner_push_stream_);
+            if (sync_status == cudaSuccess) {
+                sync_status = cudaEventSynchronize(owner_push_done_);
+            }
+        }
+        if (sync_status != cudaSuccess) {
+            (void)cudaStreamSynchronize(owner_push_stream_);
+            (void)cudaGetLastError();
+            log_limited(std::string("owner push warm-up: copy into slot ") + std::to_string(slot.index) +
+                        " failed: " + cudaGetErrorString(sync_status) + " (slot left cold)");
+            return;
+        }
+        const double warm_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - warm_start).count();
+        const uint64_t warmed = owner_slots_warmed_.fetch_add(1, std::memory_order_relaxed) + 1;
+        orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "staging_slot_warmed",
+            "slot=" + std::to_string(slot.index) + " gpu=" + std::to_string(slot.gpu) + " shard=" + std::to_string(shard_id) +
+            " bytes=" + std::to_string(slot.bytes) + " warm_ms=" + std::to_string(warm_ms) +
+            " warmed=" + std::to_string(warmed));
+        if (warmed == 1) {
+            std::cout << "[ExternalIpcRecorder] camera=" << camera_serial_
+                      << " owner push: first staging slot warmed (slot " << slot.index
+                      << ", gpu " << slot.gpu << ", " << slot.bytes << " bytes, "
+                      << warm_ms << " ms incl. stream creation)" << std::endl;
+        }
+    }
+
     int owner_push_frame(WORKER_ENTRY* entry, unsigned char* source_ptr, uint64_t gop_index)
     {
         if (!owner_push_ || !entry->pool_nv12_layout || source_gpu_id_ < 0) {
@@ -1041,20 +1171,11 @@ private:
             return -1;
         }
         cudaSetDevice(source_gpu_id_);
-        if (!owner_push_stream_) {
-            orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "owner_push_stream_create_start", "", entry->recording_frame_id);
-            int lowest = 0, highest = 0;
-            cudaDeviceGetStreamPriorityRange(&lowest, &highest);
-            const bool stream_ok =
-                cudaStreamCreateWithPriority(&owner_push_stream_, cudaStreamNonBlocking, lowest) == cudaSuccess &&
-                cudaEventCreateWithFlags(&owner_push_done_, cudaEventDisableTiming | cudaEventBlockingSync) == cudaSuccess;
-            orange::RecordingStartupAudit::Instance().Mark(camera_serial_, "owner_push_stream_create_done", stream_ok ? "ok" : "failed", entry->recording_frame_id);
-            if (!stream_ok) {
-                log_limited("owner push: stream/event creation failed; falling back");
-                std::lock_guard<std::mutex> lock(owner_mutex_);
-                owner_free_.push_back(slot.index);
-                return -1;
-            }
+        if (!ensure_owner_push_stream(entry->recording_frame_id)) {
+            log_limited("owner push: stream/event creation failed; falling back");
+            std::lock_guard<std::mutex> lock(owner_mutex_);
+            owner_free_.push_back(slot.index);
+            return -1;
         }
         // One push at a time per card; re-check freshness after the wait.
         const auto card_wait_start = std::chrono::steady_clock::now();
@@ -1798,12 +1919,6 @@ private:
     double audit_phase_send_ms_ = 0.0;         // descriptor transmission
     double audit_phase_ack_ms_ = 0.0;          // recorder-side import/registration + encode enqueue until ACK
     bool audit_phase_export_new_handle_ = false;
-    struct OwnerSlot {
-        int gpu = -1;
-        size_t index = 0;
-        void* ptr = nullptr;
-        size_t bytes = 0;
-    };
     std::mutex owner_mutex_;
     std::atomic<uint64_t> owner_slots_imported_{0};  // STAGE lines applied (readable without owner_mutex_)
     std::vector<OwnerSlot> owner_slots_;
@@ -1813,6 +1928,12 @@ private:
     uint64_t owner_gop_route_offset_ = 0;  // from the STAGE line; mirrors the recorder's routing
     cudaStream_t owner_push_stream_ = nullptr;
     cudaEvent_t owner_push_done_ = nullptr;
+    // Warm each imported slot with one full-size push during preparation
+    // (ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_WARM, default on; 2026-10-08).
+    const bool owner_push_warm_ = recording_ingress_env_flag_enabled("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_WARM", true);
+    void* owner_warm_src_ = nullptr;           // scratch source on the source GPU, slot-sized
+    size_t owner_warm_src_bytes_ = 0;
+    std::atomic<uint64_t> owner_slots_warmed_{0};
     // The push is issued as a sequence of chunk copies so that this process's
     // other copy-engine work (the copies that free camera ring slots) waits
     // behind at most one chunk instead of a whole 5 ms frame transfer. A
