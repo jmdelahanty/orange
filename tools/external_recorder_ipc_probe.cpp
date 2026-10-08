@@ -3938,6 +3938,10 @@ public:
         if (desc.pool_bytes == 0) {
             desc.pool_bytes = desc.bytes;
         }
+        if (options_.split_submit || harvest_thread_.joinable()) {
+            std::cout << "external_recorder_ipc_probe prewarm first picture skipped: split harvest active" << std::endl;
+            return;
+        }
         const auto started = std::chrono::steady_clock::now();
         int intake_device = -1;
         check_cuda(cudaGetDevice(&intake_device), "cudaGetDevice(external prewarm first picture)");
@@ -3946,20 +3950,46 @@ public:
             ~RestoreDevice() { if (device >= 0) { cudaSetDevice(device); } }
         } restore_device{intake_device};
         check_cuda(cudaSetDevice(options_.gpu_id), "cudaSetDevice(external prewarm first picture)");
-        const size_t index = acquire_staging_buffer_locked(desc, /*allow_unregistered=*/true);
-        if (index == SIZE_MAX) {
-            std::cout << "external_recorder_ipc_probe prewarm first picture: no staging buffer available" << std::endl;
-            return;
+        // Two input paths exist: shards with external slots (registered
+        // staging buffers: the pushed and pulled full-frame shards) and shards
+        // that copy into the encoder's own input frames (the crop recorders,
+        // no slots exported). Warm whichever this shard uses.
+        const bool via_slots = external_slots_enabled_;
+        size_t index = SIZE_MAX;
+        void* scratch = nullptr;
+        auto cleanup = [&]() {
+            if (index != SIZE_MAX) { release_staging_buffer(index); index = SIZE_MAX; }
+            if (scratch) { (void)cudaFree(scratch); scratch = nullptr; }
+        };
+        if (via_slots) {
+            index = acquire_staging_buffer_locked(desc, /*allow_unregistered=*/true);
+            if (index == SIZE_MAX) {
+                std::cout << "external_recorder_ipc_probe prewarm first picture: no staging buffer available" << std::endl;
+                return;
+            }
         }
         try {
             while (!encoder_->WaitForNextInputFrameAvailable(100)) {
                 if (stopping_requested() || failed()) {
-                    release_staging_buffer(index);
+                    cleanup();
                     return;
                 }
             }
-            ensure_staging_registered(index, desc);
-            encoder_->SetNextInputRegisteredResource(staging_registered_[index]);
+            if (via_slots) {
+                ensure_staging_registered(index, desc);
+                encoder_->SetNextInputRegisteredResource(staging_registered_[index]);
+            } else {
+                check_cuda(cudaMalloc(&scratch, static_cast<size_t>(desc.bytes)), "cudaMalloc(external prewarm first picture scratch)");
+                check_cuda(cudaMemset(scratch, 0, static_cast<size_t>(desc.bytes)), "cudaMemset(external prewarm first picture scratch)");
+                FrameDescriptor local = desc;
+                local.source_gpu_id = options_.gpu_id;  // the scratch lives on this shard's die
+                const NvEncInputFrame* input_frame = encoder_->GetNextInputFrame();
+                if (!input_frame || !input_frame->inputPtr) {
+                    throw std::runtime_error("NvEncoder returned no input frame for the warm-up");
+                }
+                prepare_input_frame_from_source(local, scratch, *input_frame);
+                check_cuda(cudaStreamSynchronize(stream_), "cudaStreamSynchronize(external prewarm first picture input)");
+            }
             NV_ENC_PIC_PARAMS pic_params = {NV_ENC_PIC_PARAMS_VER};
             pic_params.frameIdx = 0;
             pic_params.inputTimeStamp = 0;
@@ -3978,16 +4008,17 @@ public:
             for (const auto& packet : packets) {
                 discarded_bytes += packet.size();
             }
-            release_staging_buffer(index);
+            const std::string input_path = via_slots ? ("slot=" + std::to_string(index)) : "encoder_input";
+            cleanup();
             first_picture_prewarmed_ = true;
             force_idr_next_.store(true, std::memory_order_release);
             std::cout << "external_recorder_ipc_probe prewarmed first picture gpu_id=" << options_.gpu_id
-                      << " slot=" << index << " encode_ms=" << encode_ms << " drain_ms=" << drain_ms
+                      << " " << input_path << " encode_ms=" << encode_ms << " drain_ms=" << drain_ms
                       << " discarded_bytes=" << discarded_bytes
                       << " total_ms=" << ns_to_ms(elapsed_ns(started))
                       << " (next real picture forced IDR)" << std::endl;
         } catch (const std::exception& e) {
-            release_staging_buffer(index);
+            cleanup();
             std::cerr << "external_recorder_ipc_probe prewarm first picture failed: " << e.what()
                       << " (first real picture stays cold)" << std::endl;
         }
