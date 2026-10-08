@@ -91,6 +91,7 @@ struct Options {
     // posted PCIe writes) instead of the shard GPU pulling (PCIe reads).
     // Only meaningful with early_peer_stage.
     bool early_stage_push = false;
+    bool prewarm_first_picture = true;
     // Phase-locked encode submission (2026-09-18): on the same-GPU (local)
     // full-frame shard, hold each frame and submit it to NVENC no earlier
     // than capture + encode_phase_ms (system clock, from the descriptor's
@@ -466,6 +467,11 @@ Options parse_options(int argc, char** argv)
         env_flag_enabled("ORANGE_EXTERNAL_RECORDER_PEER_ACCESS", false);
     options.early_stage_push =
         env_flag_enabled("ORANGE_EXTERNAL_RECORDER_EARLY_STAGE_PUSH", false);
+    // One real picture through NVENC per non-native shard during preparation
+    // (output discarded, next real picture forced IDR); see
+    // prewarm_first_picture(). ORANGE_EXTERNAL_RECORDER_PREWARM_FIRST_PICTURE=0 disables it.
+    options.prewarm_first_picture =
+        env_flag_enabled("ORANGE_EXTERNAL_RECORDER_PREWARM_FIRST_PICTURE", true);
     if (const char* phase_env = std::getenv("ORANGE_EXTERNAL_RECORDER_ENCODE_PHASE_MS"); phase_env && *phase_env) {
         options.encode_phase_ms = std::atof(phase_env);
     }
@@ -3909,6 +3915,88 @@ public:
                   << " ms=" << ns_to_ms(elapsed_ns(started)) << std::endl;
     }
 
+    // One real picture through NVENC on this shard during preparation, then
+    // EOS; the output is discarded (it never reaches the writer, the frame
+    // index or the identity proof). This pays the engine's first-picture
+    // work (hardware context, reference and bitstream buffers, the staging
+    // slot's registration and first map) before any camera frame: on every
+    // run since 10-06 the peer shard's first real picture cost 2.7-6.4 ms at
+    // recording frame 26 against 0.1 ms afterwards, coincident with the
+    // camera frame 28 loss on 2010093 (2026-10-08). Native-input shards skip
+    // it (their first picture already costs 0.1 ms). The next real picture
+    // is forced IDR with SPS/PPS so the GOP phase restarts there.
+    void prewarm_first_picture(const FrameDescriptor& desc)
+    {
+        if (!options_.prewarm_first_picture || first_picture_prewarmed_ || native_local_enabled_ ||
+            !encoder_ || desc.bytes == 0 || desc.width == 0 || desc.height == 0) {
+            return;
+        }
+        const auto started = std::chrono::steady_clock::now();
+        int intake_device = -1;
+        check_cuda(cudaGetDevice(&intake_device), "cudaGetDevice(external prewarm first picture)");
+        struct RestoreDevice {
+            int device;
+            ~RestoreDevice() { if (device >= 0) { cudaSetDevice(device); } }
+        } restore_device{intake_device};
+        check_cuda(cudaSetDevice(options_.gpu_id), "cudaSetDevice(external prewarm first picture)");
+        const size_t index = acquire_staging_buffer_locked(desc, /*allow_unregistered=*/true);
+        if (index == SIZE_MAX) {
+            std::cout << "external_recorder_ipc_probe prewarm first picture: no staging buffer available" << std::endl;
+            return;
+        }
+        try {
+            while (!encoder_->WaitForNextInputFrameAvailable(100)) {
+                if (stopping_requested() || failed()) {
+                    release_staging_buffer(index);
+                    return;
+                }
+            }
+            ensure_staging_registered(index, desc);
+            encoder_->SetNextInputRegisteredResource(staging_registered_[index]);
+            NV_ENC_PIC_PARAMS pic_params = {NV_ENC_PIC_PARAMS_VER};
+            pic_params.frameIdx = 0;
+            pic_params.inputTimeStamp = 0;
+            pic_params.inputDuration = 1;
+            std::vector<std::vector<uint8_t>> packets;
+            std::vector<uint64_t> output_timestamps;
+            NvEncoderEncodeFrameTiming timing;
+            uint64_t fetch_ns = 0;
+            const auto encode_start = std::chrono::steady_clock::now();
+            encoder_->EncodeFrame(packets, &pic_params, nullptr, &output_timestamps, &fetch_ns, &timing);
+            const double encode_ms = ns_to_ms(elapsed_ns(encode_start));
+            const auto drain_start = std::chrono::steady_clock::now();
+            encoder_->EndEncode(packets, nullptr, &output_timestamps, &fetch_ns, &timing);
+            const double drain_ms = ns_to_ms(elapsed_ns(drain_start));
+            size_t discarded_bytes = 0;
+            for (const auto& packet : packets) {
+                discarded_bytes += packet.size();
+            }
+            release_staging_buffer(index);
+            first_picture_prewarmed_ = true;
+            force_idr_next_.store(true, std::memory_order_release);
+            std::cout << "external_recorder_ipc_probe prewarmed first picture gpu_id=" << options_.gpu_id
+                      << " slot=" << index << " encode_ms=" << encode_ms << " drain_ms=" << drain_ms
+                      << " discarded_bytes=" << discarded_bytes
+                      << " total_ms=" << ns_to_ms(elapsed_ns(started))
+                      << " (next real picture forced IDR)" << std::endl;
+        } catch (const std::exception& e) {
+            release_staging_buffer(index);
+            std::cerr << "external_recorder_ipc_probe prewarm first picture failed: " << e.what()
+                      << " (first real picture stays cold)" << std::endl;
+        }
+    }
+
+    // After the first-picture warm-up the next real picture must open a
+    // fresh GOP: force IDR and repeat the parameter sets.
+    void apply_forced_idr_after_prewarm(NV_ENC_PIC_PARAMS* pic_params)
+    {
+        if (pic_params && force_idr_next_.exchange(false, std::memory_order_acq_rel)) {
+            pic_params->encodePicFlags |= NV_ENC_PIC_FLAG_FORCEIDR | NV_ENC_PIC_FLAG_OUTPUT_SPSPPS;
+            std::cout << "external_recorder_ipc_probe forced IDR on the first real picture after the warm-up"
+                      << " gpu_id=" << options_.gpu_id << std::endl;
+        }
+    }
+
     void finish_prepared_reply(const std::shared_ptr<PreparedReply>& reply)
     {
         if (!reply) {
@@ -5061,6 +5149,7 @@ private:
         pic_params.frameIdx = static_cast<uint32_t>(encode_sample.encode_index & 0xffffffffu);
         pic_params.inputTimeStamp = desc.recording_frame_id;
         pic_params.inputDuration = 1;
+        apply_forced_idr_after_prewarm(&pic_params);
         apply_importance_map(&pic_params);
 
         NvEncoderEncodeFrameTiming timing;
@@ -5492,6 +5581,7 @@ private:
         pic_params.frameIdx = static_cast<uint32_t>(sample.encode_index & 0xffffffffu);
         pic_params.inputTimeStamp = item.desc.recording_frame_id;
         pic_params.inputDuration = 1;
+        apply_forced_idr_after_prewarm(&pic_params);
         if (native_local_enabled_) { pic_params.inputPitch = 4608; }
         apply_importance_map(&pic_params);
 
@@ -5989,6 +6079,7 @@ private:
         pic_params.frameIdx = static_cast<uint32_t>(sample.encode_index & 0xffffffffu);
         pic_params.inputTimeStamp = item.desc.recording_frame_id;
         pic_params.inputDuration = 1;
+        apply_forced_idr_after_prewarm(&pic_params);
         apply_importance_map(&pic_params);
 
         // The merger's pending-GOP budget covers work submitted to NVENC,
@@ -6202,6 +6293,11 @@ private:
                     } catch (const std::exception& e) {
                         std::cerr << "external_recorder_ipc_probe prewarm peer stage failed: " << e.what() << std::endl;
                     }
+                    try {
+                        prewarm_first_picture(item.desc);
+                    } catch (const std::exception& e) {
+                        std::cerr << "external_recorder_ipc_probe prewarm first picture failed: " << e.what() << std::endl;
+                    }
                     finish_prepared_reply(item.prepared_reply);
                     continue;
                 }
@@ -6394,6 +6490,8 @@ private:
 #endif
     bool early_stage_enabled_ = false;
     bool early_peer_prewarmed_ = false;
+    bool first_picture_prewarmed_ = false;
+    std::atomic<bool> force_idr_next_{false};
     bool external_slots_enabled_ = false;
     // Staging buffers (see acquire_staging_buffer_locked); shared between
     // the intake thread (early peer staging) and the encode thread.
