@@ -1,0 +1,60 @@
+{
+  "experiment_id": "fourcam_stream_only_frame28_probe",
+  "notes": "Frame-28 probe (2026-10-08): four cameras streaming only, no recorders, no analytics (stream_only forbids yolo/pose workers). Tests whether the camera-frame-28 loss on 2010093 (first pushed GOP of a recording, 3 of 7 runs on 10-07/08) is a first-ring-wrap effect of the SDK/NIC that happens without any recorder. acq_ring_release_log on so Cam*_ring_release.csv shows every camera frame id; judge by runs.json camera_frame_id_gaps and the mlnx1 rx_discards_phy delta.",
+  "selection": {
+    "camera_serials": [
+      "2010093",
+      "2010094",
+      "2010095",
+      "2010096"
+    ],
+    "gpu_ids": [
+      3,
+      1,
+      7,
+      5
+    ]
+  },
+  "fixed": {
+    "duration_s": 40,
+    "warmup_s": 2,
+    "display": false,
+    "yolo": false,
+    "stream_only": true,
+    "sync_mode": "ptp_gate",
+    "recording_sink_mode": "real",
+    "config_folder": "/tmp/orange_recorder_config_a16",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "nvenc_direct_input": false,
+    "acq_ring_release_log": true,
+    "acq_cadence_probe_all": true,
+    "unique_run_id": true
+  },
+  "matrix": {
+    "codec": [
+      "hevc"
+    ],
+    "preset": [
+      "p1"
+    ],
+    "tuning": [
+      "ll"
+    ],
+    "rate_control_mode": [
+      "vbr"
+    ],
+    "quality_value": [
+      20
+    ],
+    "gop_length": [
+      25
+    ]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 2.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true,
+    "require_zero_camera_drops": true
+  }
+}
