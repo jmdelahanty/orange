@@ -176,8 +176,7 @@
     "crop_recording": {
       "mode": "external_ipc",
       "crop_size_px": 384,
-      "interleave": true,
-      "recorder_tool_path": "/home/jeremy/orange-gop-split-a16/targets/release/external_recorder_ipc_probe"
+      "interleave": true
     },
     "pose_worker": {
       "mode": "real",

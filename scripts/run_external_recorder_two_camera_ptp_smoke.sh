@@ -17,7 +17,7 @@ Defaults match the local A16 PTP pairing:
 Options:
   --spec <path>                    Base experiment spec.
   --orange-client <path>           orange_client binary.
-  --recorder-tool <path>           external_recorder_ipc_probe binary.
+  --recorder-tool <path>           external_recorder_ipc_probe_native binary (CUDA 13 native recorder).
   --camera-serials <csv>           Camera serials. Default 2010095,2010096.
   --analytics-gpu-ids <csv>        Analytics GPU ids. Default 5,7.
   --shard-gpu-ids-per-camera <;>   Shard groups. Default '5,6;7,8'.
@@ -49,7 +49,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 SPEC="$REPO_ROOT/experiment_specs/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp.json"
 ORANGE_CLIENT="$REPO_ROOT/targets/release/orange_client"
-RECORDER_TOOL="$REPO_ROOT/targets/release/external_recorder_ipc_probe"
+RECORDER_TOOL="/opt/orange/bin/external_recorder_ipc_probe_native"
 CAMERA_SERIALS="2010095,2010096"
 ANALYTICS_GPU_IDS="5,7"
 SHARD_GPU_IDS_PER_CAMERA="5,6;7,8"

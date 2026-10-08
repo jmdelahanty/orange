@@ -56,7 +56,8 @@ Crop recorders: `recording.crop.sink_mode` = external_ipc, `frame_pool_size`
 256, `external_ipc.encode_queue_depth` 128, `recorder_gpu_ids_by_serial`
 2010093→4, 2010094→2, 2010095→8, 2010096→6 (the paired die),
 `interleave` true (GOP-parity two shards). Crop recorders keep the default
-extra output delay and use the CUDA 12 binary.
+extra output delay and run on the same CUDA 13 native binary as the
+full-frame recorders (since 2026-10-08; the CUDA 12 recorder build is retired).
 
 **Owner-push chunk size.** The 30-minute headless endurance pushed each
 20 MB frame as one 64 MiB-bounded chunk; every GUI soak pushed 2 MiB chunks

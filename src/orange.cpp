@@ -5275,13 +5275,20 @@ int main(int /*argc*/, char ** /*args*/) {
         set_gui_env_from_app_config_if_absent("ORANGE_POSE_CROP_SIZE_PX", std::to_string(app_storage_config.pose_crop_size_px), "pose crop size");
     }
     if (!app_storage_config.gui_external_ipc_recorder_tool_path.empty()) {
-        // Full-frame recorders only: the generic ORANGE_EXTERNAL_RECORDER_TOOL
-        // would also send the CUDA 13 native binary to the crop recorders
-        // (2026-09-21 GUI gate: crop recorder exited before socket readiness).
+        // One recorder binary for every stream kind. The full-frame name is
+        // kept for the full-frame lifecycle's native-input options; the
+        // generic name now also sends the crop recorders to the same CUDA 13
+        // native binary (it disables native input by itself for anything but
+        // 4512x4512, which was the 2026-09-21 objection; validated 2026-10-08,
+        // CUDA 12 recorder build retired).
         set_gui_env_from_app_config_if_absent(
             "ORANGE_EXTERNAL_RECORDER_FULL_FRAME_TOOL",
             app_storage_config.gui_external_ipc_recorder_tool_path,
             "full-frame external recorder tool path");
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_EXTERNAL_RECORDER_TOOL",
+            app_storage_config.gui_external_ipc_recorder_tool_path,
+            "external recorder tool path (crop recorders)");
     }
 
     const u32 gui_swap_interval_default =

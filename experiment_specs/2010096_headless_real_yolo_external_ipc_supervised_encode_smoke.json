@@ -24,7 +24,7 @@
       "schema_id": "orange.external_recorder.contract",
       "schema_version": 1,
       "mode": "diagnostic_ipc_v1",
-      "recorder_tool_path": "/home/jeremy/orange-gop-split-a16/targets/release/external_recorder_ipc_probe",
+      "recorder_tool_path": "/opt/orange/bin/external_recorder_ipc_probe_native",
       "supervise_processes": true,
       "artifact_root": "/home/jeremy/orange_data/external_recorder/supervised_2010096",
       "session_id": "2010096_headless_real_yolo_external_ipc_supervised_encode_smoke",

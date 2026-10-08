@@ -11,7 +11,9 @@
 namespace orange::external_recorder {
 
 struct SupervisorPlanOptions {
-    std::string recorder_tool_path = "external_recorder_ipc_probe";
+    // The CUDA 13 native recorder serves every stream kind (crops included)
+    // since 2026-10-08; the CUDA 12 build of the same source is retired.
+    std::string recorder_tool_path = "/opt/orange/bin/external_recorder_ipc_probe_native";
     bool native_local_input = false;         // --native-local-input on full_frame streams
     std::string native_local_kernel_ptx;     // --native-local-kernel-ptx <path> (optional)
     int full_frame_extra_output_delay = -1;  // --extra-output-delay <n> on full_frame streams only (-1: recorder default/env)

@@ -154,7 +154,7 @@ SupervisorPlan make_storage_plan(const std::filesystem::path& root,
 void test_single_shard_plan_builds_command()
 {
     SupervisorPlanOptions options;
-    options.recorder_tool_path = "/repo/targets/release/external_recorder_ipc_probe";
+    options.recorder_tool_path = "/opt/orange/bin/external_recorder_ipc_probe_native";
 
     SupervisorPlan plan;
     std::string error;

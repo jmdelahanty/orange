@@ -13,7 +13,7 @@ Runs a one-camera headless real-YOLO external-recorder smoke:
 Options:
   --spec <path>              Base experiment spec.
   --orange-client <path>     orange_client binary.
-  --recorder-tool <path>     external_recorder_ipc_probe binary.
+  --recorder-tool <path>     external_recorder_ipc_probe_native binary (CUDA 13 native recorder).
   --camera-serial <serial>   Camera serial. Default 2010096.
   --analytics-gpu-id <int>   GPU id selected for camera/YOLO. Default 5.
   --recorder-gpu-id <int>    GPU id used by external recorder. Default: analytics GPU.
@@ -51,7 +51,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 SPEC="$REPO_ROOT/experiment_specs/2010096_headless_real_yolo_external_ipc_supervised_encode_smoke.json"
 ORANGE_CLIENT="$REPO_ROOT/targets/release/orange_client"
-RECORDER_TOOL="$REPO_ROOT/targets/release/external_recorder_ipc_probe"
+RECORDER_TOOL="/opt/orange/bin/external_recorder_ipc_probe_native"
 CAMERA_SERIAL=2010096
 ANALYTICS_GPU_ID=5
 RECORDER_GPU_ID=""

@@ -513,15 +513,11 @@ set(NV12_PREFILL_VALIDATION_SOURCES
     ${NVENCODER_SOURCES}
 )
 
-set(EXTERNAL_RECORDER_IPC_PROBE_SOURCES
-    "tools/external_recorder_ipc_probe.cpp"
-    "${SRC_DIR}/external_recorder_frame_metadata.cpp"
-    "${SRC_DIR}/video_container_finalization.cpp"
-    "${SRC_DIR}/FFmpegWriter.cpp"
-    "${SRC_DIR}/encoder_qp_map.cpp"
-    "${SRC_DIR}/video_encode_profile.cpp"
-    ${NVENCODER_SOURCES}
-)
+# The external recorder tool (tools/external_recorder_ipc_probe.cpp) is built
+# only as the CUDA 13 native recorder by tools/nvenc_native_probe
+# (scripts/build_orange_native_recorder.sh, installed at /opt/orange/bin);
+# its CUDA 12 build was retired on 2026-10-08 once the crop recorders ran on
+# the native binary too.
 
 set(EXTERNAL_RECORDER_SUPERVISOR_PLAN_SOURCES
     "tools/external_recorder_supervisor_plan.cpp"
@@ -591,7 +587,6 @@ add_executable(evt_aperture_characterize ${EVT_APERTURE_CHARACTERIZE_SOURCES})
 add_executable(evt_stream_smoke EXCLUDE_FROM_ALL ${EVT_STREAM_SMOKE_SOURCES})
 add_executable(nvenc_stress_load EXCLUDE_FROM_ALL ${NVENC_STRESS_LOAD_SOURCES})
 add_executable(nv12_prefill_validation EXCLUDE_FROM_ALL ${NV12_PREFILL_VALIDATION_SOURCES})
-add_executable(external_recorder_ipc_probe EXCLUDE_FROM_ALL ${EXTERNAL_RECORDER_IPC_PROBE_SOURCES})
 add_executable(external_recorder_supervisor_plan EXCLUDE_FROM_ALL ${EXTERNAL_RECORDER_SUPERVISOR_PLAN_SOURCES})
 add_executable(nic_thermal_monitor
     "tools/nic_thermal_monitor.cpp"
@@ -1718,7 +1713,6 @@ orange_configure_target(evt_aperture_characterize)
 orange_configure_target(evt_stream_smoke)
 orange_configure_target(nvenc_stress_load)
 orange_configure_target(nv12_prefill_validation)
-orange_configure_target(external_recorder_ipc_probe)
 orange_configure_target(external_recorder_supervisor_plan)
 if(TARGET recording_session_manifest_tests)
     orange_configure_target(recording_session_manifest_tests)
@@ -2048,19 +2042,6 @@ target_link_libraries(nv12_prefill_validation PRIVATE
     ${CUDA_CUDART_LIBRARY}
     ${CUDA_DRIVER_LIBRARY}
     ${NVIDIA_ENCODE_LIBRARY}
-    m
-    pthread
-)
-
-target_link_libraries(external_recorder_ipc_probe PRIVATE
-    ${CUDA_CUDART_LIBRARY}
-    ${CUDA_DRIVER_LIBRARY}
-    ${NVIDIA_ENCODE_LIBRARY}
-    ${AVFORMAT_LIBRARY}
-    ${SWSCALE_LIBRARY}
-    ${SWRESAMPLE_LIBRARY}
-    ${AVUTIL_LIBRARY}
-    ${AVCODEC_LIBRARY}
     m
     pthread
 )

@@ -146,17 +146,17 @@ CUDA 13.1 toolkit at `~/.local/opt/cuda-13.1.1-nvenc`, Video Codec SDK 13.1
 interface at `~/.local/opt/nvenc-interface-13.1.15`, driver 610.57.04:
 
 ```bash
-cmake -S tools/nvenc_native_probe -B targets/native -DORANGE_SOURCE_ROOT=$PWD \
-  -DCUDA_13_ROOT=$HOME/.local/opt/cuda-13.1.1-nvenc \
-  -DNVENC_13_INTERFACE_DIR=$HOME/.local/opt/nvenc-interface-13.1.15/Video_Codec_Interface_13.1.15/Interface \
-  -DBUILD_NATIVE_RECORDER=ON -DBUILD_NATIVE_KERNEL=ON
-cmake --build targets/native --target external_recorder_ipc_probe_native -j 16
-scripts/install_orange_native_recorder.sh   # -> /opt/orange/bin (sudo)
+scripts/build_orange_native_recorder.sh            # -> targets/native (untracked)
+scripts/build_orange_native_recorder.sh --install  # -> /opt/orange/bin (sudo)
 ```
 
-Specs and the app config point `recorder_tool_path` at it. The regular
-`external_recorder_ipc_probe` (CUDA 12) still serves the crop recorders and
-the non-native path.
+`/opt/orange/bin/external_recorder_ipc_probe_native` is the only recorder
+binary since 2026-10-08: the app config, the specs, the supervisor default
+and the smoke scripts all point at it, and it serves the crop recorders too
+(native array input turns itself off for anything but 4512x4512). The CUDA
+12 build of the same source (`external_recorder_ipc_probe` in the main
+CMake) is retired. Every recorder change needs a rebuild and an install of
+the native binary before the next run.
 
 ## Standing rules
 
