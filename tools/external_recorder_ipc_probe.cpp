@@ -3925,11 +3925,18 @@ public:
     // camera frame 28 loss on 2010093 (2026-10-08). Native-input shards skip
     // it (their first picture already costs 0.1 ms). The next real picture
     // is forced IDR with SPS/PPS so the GOP phase restarts there.
-    void prewarm_first_picture(const FrameDescriptor& desc)
+    void prewarm_first_picture(const FrameDescriptor& desc_in)
     {
         if (!options_.prewarm_first_picture || first_picture_prewarmed_ || native_local_enabled_ ||
-            !encoder_ || desc.bytes == 0 || desc.width == 0 || desc.height == 0) {
+            !encoder_ || desc_in.width == 0 || desc_in.height == 0) {
             return;
+        }
+        FrameDescriptor desc = desc_in;
+        if (desc.bytes == 0) {
+            desc.bytes = static_cast<uint64_t>(desc.width) * static_cast<uint64_t>(desc.height) * 3ull / 2ull;  // NV12
+        }
+        if (desc.pool_bytes == 0) {
+            desc.pool_bytes = desc.bytes;
         }
         const auto started = std::chrono::steady_clock::now();
         int intake_device = -1;
@@ -6284,6 +6291,15 @@ private:
                     std::cout << "external_recorder_ipc_probe encoder prewarmed at hello in "
                               << ns_to_ms(elapsed_ns(prewarm_start)) << " ms ("
                               << item.desc.width << "x" << item.desc.height << ")" << std::endl;
+                    // The hello descriptor is the only preparation-time item every
+                    // shard of every recorder runs with width/height (the
+                    // peer-stage item carries bytes only, and crop recorders have
+                    // no peer-stage item), so the first-picture warm-up lives here.
+                    try {
+                        prewarm_first_picture(item.desc);
+                    } catch (const std::exception& e) {
+                        std::cerr << "external_recorder_ipc_probe prewarm first picture failed: " << e.what() << std::endl;
+                    }
                     continue;
                 }
                 if (item.prewarm_peer_stage) {

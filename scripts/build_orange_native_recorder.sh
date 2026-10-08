@@ -28,10 +28,22 @@ NVENC_13_INTERFACE_DIR="${NVENC_13_INTERFACE_DIR:-$HOME/.local/opt/nvenc-interfa
 for d in "$CUDA_13_ROOT" "$NVENC_13_INTERFACE_DIR"; do
     [ -d "$d" ] || { echo "missing directory: $d" >&2; exit 2; }
 done
-if pgrep -f "targets/release/orange_client|targets/release/orange( |$)|external_recorder_ipc_probe" >/dev/null 2>&1; then
-    echo "an Orange recording process is running; build later (builds on the rig cost camera frames)" >&2
+# Refuse while a recording process runs (builds on the rig cost camera
+# frames). Ignore this script's own ancestry: an invoking shell whose
+# command text mentions the binaries (e.g. a chained cmake target) is not a
+# recording.
+ancestors=""
+pid=$$
+while [ "$pid" -gt 1 ]; do
+    ancestors="$ancestors $pid"
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    [ -n "$pid" ] || break
+done
+for match in $(pgrep -f "targets/release/orange_client|targets/release/orange( |$)|external_recorder_ipc_probe" 2>/dev/null); do
+    case " $ancestors " in *" $match "*) continue ;; esac
+    echo "an Orange recording process is running (pid $match); build later (builds on the rig cost camera frames)" >&2
     exit 3
-fi
+done
 echo "[native] source $ROOT ($(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown))"
 cmake -S "$ROOT/tools/nvenc_native_probe" -B "$ROOT/targets/native" \
     -DORANGE_SOURCE_ROOT="$ROOT" \
