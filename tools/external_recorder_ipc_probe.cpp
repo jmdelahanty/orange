@@ -8290,6 +8290,41 @@ int main(int argc, char** argv)
         const bool had_encode_workers = !encode_workers.empty();
         const uint64_t final_frames_encoded = encode_summary.frames_encoded;
         const uint64_t final_frames_dropped = encode_summary.frames_dropped;
+        const int exit_code = (any_worker_failed || intake_failed) ? 1 : 0;
+        // Everything the client and the session need is on disk now (status
+        // "completed", summary, MP4s and sidecars, CSVs). Close the IPC
+        // sockets FIRST so the client sees an orderly end of stream and its
+        // drain completes; a teardown crash after this point can no longer
+        // turn a complete recording into a forced finalize (2026-10-10: three
+        // full-frame recorders died with SIGSEGV in a libnvcuvid-internal
+        // thread while the encoder workers were destroyed, after every byte
+        // was written; the GUI's 60 s drain then timed out and forced
+        // finalize with the frame mapping unsealed).
+        if (client_fd >= 0) {
+            close(client_fd);
+            client_fd = -1;
+        }
+        if (listen_fd >= 0) {
+            close(listen_fd);
+            listen_fd = -1;
+            unlink(options.socket_path.c_str());
+        }
+        std::cout << "external_recorder_ipc_probe complete frames=" << frame_count;
+        if (had_encode_workers) {
+            std::cout << " encoded=" << final_frames_encoded
+                      << " encode_dropped=" << final_frames_dropped
+                      << " worker_failed=" << (any_worker_failed ? "true" : "false");
+        }
+        std::cout << std::endl;
+        // Default: exit here without the encoder / CUDA teardown. The driver
+        // reclaims the NVENC sessions, contexts and IPC mappings at process
+        // exit, and the orderly path is where the libnvcuvid thread faults.
+        // ORANGE_EXTERNAL_RECORDER_ORDERLY_TEARDOWN=1 restores it for debugging.
+        if (!env_flag_enabled("ORANGE_EXTERNAL_RECORDER_ORDERLY_TEARDOWN", false)) {
+            std::cout.flush();
+            std::cerr.flush();
+            std::_Exit(exit_code);
+        }
         // Worker destruction unregisters every imported-pointer resource.
         // Keep the CUDA IPC mappings alive until those registrations are gone.
         encode_workers.clear();
@@ -8303,21 +8338,7 @@ int main(int argc, char** argv)
         if (owned_device_buffer) {
             cudaFree(owned_device_buffer);
         }
-        if (client_fd >= 0) {
-            close(client_fd);
-        }
-        if (listen_fd >= 0) {
-            close(listen_fd);
-            unlink(options.socket_path.c_str());
-        }
-        std::cout << "external_recorder_ipc_probe complete frames=" << frame_count;
-        if (had_encode_workers) {
-            std::cout << " encoded=" << final_frames_encoded
-                      << " encode_dropped=" << final_frames_dropped
-                      << " worker_failed=" << (any_worker_failed ? "true" : "false");
-        }
-        std::cout << std::endl;
-        return (any_worker_failed || intake_failed) ? 1 : 0;
+        return exit_code;
     } catch (const std::exception& ex) {
         (void)write_recorder_status_json(
             options,
