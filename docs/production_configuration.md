@@ -125,3 +125,33 @@ encoder; PTP latch after fan-out; spatial mask mode; YOLO stream priority,
 affinity and RT priority; Citrus binding mode, socket and timeout; prepare
 strictness; owner-push ready timeout. Each has its validated value as the code
 default, and the sealed effective configuration shows when one was overridden.
+
+
+## Recording root, clip length and full-frame bitrate (2026-10-09)
+
+- Recording root: `/mnt/Data1/orange_data/exp/unsorted` (app config
+  `storage.default_recording_root`, spec `fixed.output_root`). Data1 is the
+  NVMe with controller serial ending 297 (6.7 TB free), on its own x4 root
+  port of host bridge 20; the OS drive (`/`, where `~/orange_data` lives)
+  stays for configs, engines and tools. Identify drives by serial or
+  filesystem UUID, never by `nvmeN` (the numbering changed at the
+  2026-10-06 reboot).
+- Clip length (Jeremy): 15 min at 100 fps, 30 min at 60 fps or below. The
+  Palette-ready specs carry `recording_control.clip_seconds 900`. The GUI
+  couples rolling clips to a timed recording (`recording.recording_control.
+  clip_seconds` requires `record_for_seconds > 0`; the panel's default when
+  the checkbox is ticked is 1800 s), so an open-ended GUI recording is still
+  one file per camera.
+- Full-frame bitrate A/B (spec `..._rolling_crops_shadow_ff45`, 45 Mbit/s
+  average / 60 Mbit/s max, crops unchanged and lossless): measured 53.9
+  Mbit/s against 150.2; PSNR / SSIM of the 384 px fish window cut from the
+  full frame against the lossless crop of the same frame (first 1000
+  frames, every 25th, `scripts/compare_full_frame_vs_lossless_crop.py`):
+  33.3 to 35.0 dB and 0.947 to 0.991 at 150 Mbit/s, 33.3 to 34.8 dB and
+  0.947 to 0.983 at 45/60; the montage of the windows is indistinguishable
+  by eye. Capacity: four cameras at 45/60 plus lossless crops is about
+  5.5 TB per day (fits Data1), against about 9.4 TB at 150. A clean 45/60
+  run passed every gate with NIC counters unchanged
+  (`..._ff45_20261009_013649`); an earlier 45/60 run lost frames on card A
+  while an ffmpeg decode of the previous run was running on the host, which
+  is the same rule as for builds: nothing heavy on the host during a run.

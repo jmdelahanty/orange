@@ -1,6 +1,6 @@
 {
-  "experiment_id": "fourcam_palette_fish_19220_1_rolling_crops_shadow",
-  "notes": "Palette-ready headless recording WITH FISH (2026-10-07): the fourcam_palette_recording_only_rolling_crops_shadow template (production shape, recording_only context v2, 4 x 30 s rolling clips, Shadow canvas, media under the recording folder) plus fixed.subject_references: one fish from MetaZebrobot dish 19220_1 under every camera (default dish_id 19220_1, subject_count 1, no per-camera override). Edit the dish id and counts before reusing this spec for another dish. After the run: scripts/check_recording_transfer_source.sh <folder>, then transfer_as_domain_user.sh --no-dest-parent to /groups/johnson/johnsonlab/jeremy/staging/<experiment folder name> and tell Palette the path. Palette intake matrix: agent-contracts PR 53.",
+  "experiment_id": "fourcam_palette_fish_19220_1_rolling_crops_shadow_ff45",
+  "notes": "Bitrate A/B (2026-10-09): the fish rolling spec with the FULL-FRAME stream at 45 Mbit/s average / 60 Mbit/s max (vmsr_run2-style cap at 100 fps) instead of 150/150; crops unchanged (lossless). Compare against a 150 Mbit/s run of the same spec with scripts/compare_full_frame_vs_lossless_crop.py (PSNR/SSIM of the fish window decoded from the full frame against the lossless crop).",
   "selection": {
     "camera_serials": [
       "2010093",
@@ -64,8 +64,8 @@
           "preset": "p1",
           "tuning": "ll",
           "gop": 25,
-          "bitrate_bps": 150000000,
-          "max_bitrate_bps": 150000000,
+          "bitrate_bps": 45000000,
+          "max_bitrate_bps": 60000000,
           "vbv_buffer_size": 150000000
         },
         "2010094": {
@@ -92,8 +92,8 @@
           "preset": "p1",
           "tuning": "ll",
           "gop": 25,
-          "bitrate_bps": 150000000,
-          "max_bitrate_bps": 150000000,
+          "bitrate_bps": 45000000,
+          "max_bitrate_bps": 60000000,
           "vbv_buffer_size": 150000000
         },
         "2010095": {
@@ -120,8 +120,8 @@
           "preset": "p1",
           "tuning": "ll",
           "gop": 25,
-          "bitrate_bps": 150000000,
-          "max_bitrate_bps": 150000000,
+          "bitrate_bps": 45000000,
+          "max_bitrate_bps": 60000000,
           "vbv_buffer_size": 150000000
         },
         "2010096": {
@@ -148,8 +148,8 @@
           "preset": "p1",
           "tuning": "ll",
           "gop": 25,
-          "bitrate_bps": 150000000,
-          "max_bitrate_bps": 150000000,
+          "bitrate_bps": 45000000,
+          "max_bitrate_bps": 60000000,
           "vbv_buffer_size": 150000000
         }
       },

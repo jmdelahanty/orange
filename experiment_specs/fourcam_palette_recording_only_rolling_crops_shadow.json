@@ -24,7 +24,7 @@
     "sync_mode": "ptp_gate",
     "recording_sink_mode": "external_ipc",
     "config_folder": "/tmp/orange_recorder_config_a16",
-    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "output_root": "/mnt/Data1/orange_data/exp/unsorted",
     "ptp_register_read_decimate": 100,
     "nvenc_direct_input": false,
     "external_recorder_contract": {
@@ -170,7 +170,7 @@
     "external_recorder_direct_input": false,
     "recording_control": {
       "record_for_seconds": 120,
-      "clip_seconds": 30
+      "clip_seconds": 900
     },
     "external_recorder_detect_priority": true,
     "external_recorder_registered_source": true,
