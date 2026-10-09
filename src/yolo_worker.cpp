@@ -2873,6 +2873,8 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             record.event_epoch_us = get_epoch_time_us();
             record.event_monotonic_us = get_steady_time_us();
             record.gpu_id = associated_camera_params_->gpu_id;
+            record.source_width = associated_camera_params_->width;
+            record.source_height = associated_camera_params_->height;
             record.engine_path = associated_camera_select_->yolo_model
                 ? associated_camera_select_->yolo_model
                 : "";

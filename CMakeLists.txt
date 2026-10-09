@@ -1245,7 +1245,8 @@ if(BUILD_TESTING)
     add_test(NAME yolo_event_log_validation_tests COMMAND yolo_event_log_validation_tests)
 
     add_executable(yolo_event_log_drain_tests
-        "tools/yolo_event_log_drain_tests.cpp" "${SRC_DIR}/yolo_event_log.cpp")
+        "tools/yolo_event_log_drain_tests.cpp" "${SRC_DIR}/yolo_event_log.cpp"
+        "${SRC_DIR}/model_identity.cpp" "${SRC_DIR}/pose_skeleton_sidecar.cpp")
     target_include_directories(yolo_event_log_drain_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(yolo_event_log_drain_tests PRIVATE cxx_std_17)
     target_link_libraries(yolo_event_log_drain_tests PRIVATE Threads::Threads)
@@ -1623,6 +1624,8 @@ if(BUILD_TESTING)
     add_executable(pose_event_log_tests
         "tools/pose_event_log_tests.cpp"
         "${SRC_DIR}/pose_event_log.cpp"
+        "${SRC_DIR}/model_identity.cpp"
+        "${SRC_DIR}/pose_skeleton_sidecar.cpp"
     )
     target_include_directories(pose_event_log_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(pose_event_log_tests PRIVATE cxx_std_17)

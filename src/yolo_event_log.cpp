@@ -1,4 +1,6 @@
 #include "yolo_event_log.h"
+#include "event_log_format.h"
+#include "model_identity.h"
 
 #include "fsuid_guard.h"
 #include "json.hpp"
@@ -162,57 +164,10 @@ void YoloEventLogger::RotateIfNeeded(const std::string& folder) {
     OpenFile(folder);
 }
 
-void YoloEventLogger::WriteResult(const YoloResultRecord& record) {
-    if (record.recording_folder.empty()) {
-        return;
-    }
-    RotateIfNeeded(record.recording_folder);
-    if (!file_.is_open()) {
-        return;
-    }
+namespace {
 
-    uint64_t& next_sequence = next_sequence_by_folder_[record.recording_folder];
-    if (next_sequence == 0) {
-        next_sequence = 1;
-    }
-
-    nlohmann::json detections = nlohmann::json::array();
-    for (size_t i = 0; i < record.detections.size(); ++i) {
-        const pose::Object& detection = record.detections[i];
-        nlohmann::json keypoints = nlohmann::json::array();
-        const size_t keypoint_count = std::min<size_t>(
-            detection.num_kps,
-            static_cast<size_t>(pose::MAX_KEYPOINTS));
-        for (size_t k = 0; k < keypoint_count; ++k) {
-            keypoints.push_back(detection.kps[k]);
-        }
-        detections.push_back({
-            {"index", static_cast<int>(i)},
-            {"x_px", detection.rect.x},
-            {"y_px", detection.rect.y},
-            {"width_px", detection.rect.width},
-            {"height_px", detection.rect.height},
-            {"label", detection.label},
-            {"confidence", detection.prob},
-            {"keypoints", std::move(keypoints)}
-        });
-    }
-
-    nlohmann::json yolo = {
-        {"status", record.status},
-        {"detection_count", static_cast<int>(record.detections.size())},
-        {"coordinate_space", "source_frame_pixels"},
-        {"model_id", record.model_id},
-        {"engine_path", record.engine_path},
-        {"gpu_id", record.gpu_id},
-        {"detection_source", record.detection_source},
-        {"synthetic_runtime_detection", record.synthetic_runtime_detection},
-        {"production_detection_valid", !record.synthetic_runtime_detection}
-    };
-    if (!record.error.empty()) {
-        yolo["error"] = record.error;
-    }
-
+nlohmann::json spatial_mask_policy_json(const YoloResultRecord& record)
+{
     nlohmann::json spatial_mask = record.spatial_mask.policy
         ? *record.spatial_mask.policy
         : nlohmann::json{
@@ -233,11 +188,148 @@ void YoloEventLogger::WriteResult(const YoloResultRecord& record) {
             {"source", nlohmann::json::object()},
         };
     spatial_mask["policy_generation"] = record.spatial_mask.policy_generation;
-    spatial_mask["result"] = {
-        {"raw_detection_count", record.spatial_mask.raw_detection_count},
-        {"inside_detection_count", record.spatial_mask.inside_detection_count},
-        {"outside_detection_count", record.spatial_mask.outside_detection_count},
-        {"downstream_detection_count", record.spatial_mask.downstream_detection_count},
+    return spatial_mask;
+}
+
+}  // namespace
+
+void YoloEventLogger::WriteSessionHeaderIfNeeded(const YoloResultRecord& record)
+{
+    if (!header_written_folders_.insert(record.recording_folder).second) {
+        return;
+    }
+    // Model identity: the engine bytes hashed once per path (cached by
+    // model_identity, already resolved by the recording snapshot) plus the
+    // weights -> onnx chain from the engine manifest. Writer thread only.
+    const bool real_engine = !record.engine_path.empty() && record.engine_path != "synthetic";
+    const orange::model_identity::ModelIdentity identity =
+        orange::model_identity::resolve_model_identity(real_engine ? record.engine_path : std::string());
+    const nlohmann::json root = {
+        {"schema_id", event_log_format::kYoloEventSchemaId},
+        {"schema_version", event_log_format::kYoloEventSchemaVersion},
+        {"event_kind", "session_header"},
+        {"recording_id", recording_id_},
+        {"camera_serial", camera_serial_},
+        {"camera_id", camera_id_},
+        {"worker", worker_name_},
+        {"frame_identity_key", "frame.recording_frame_id"},
+        {"source_frame", {
+            {"width_px", record.source_width},
+            {"height_px", record.source_height}
+        }},
+        {"yolo", {
+            {"worker", "YoloWorker"},
+            {"model_id", record.model_id},
+            {"engine_path", record.engine_path},
+            {"engine_sha256", identity.engine_sha256},
+            {"engine_bytes", identity.engine_bytes},
+            {"weights_sha256", identity.weights_sha256},
+            {"onnx_sha256", identity.onnx_sha256},
+            {"engine_manifest_run_id", identity.run_id},
+            {"gpu_id", record.gpu_id},
+            {"coordinate_space", "source_frame_pixels"},
+            {"detection_source", record.detection_source},
+            {"synthetic_runtime_detection", record.synthetic_runtime_detection}
+        }},
+        {"spatial_mask", spatial_mask_policy_json(record)},
+        {"citrus_live_ipc", {
+            {"queue_name", record.queue_name},
+            {"enabled", record.ipc_enabled}
+        }},
+        {"line_format", event_log_format::line_format_json()}
+    };
+    last_policy_generation_by_folder_[record.recording_folder] = record.spatial_mask.policy_generation;
+    file_ << root.dump() << '\n';
+}
+
+void YoloEventLogger::WriteSpatialMaskPolicyIfChanged(const YoloResultRecord& record)
+{
+    uint64_t& last = last_policy_generation_by_folder_[record.recording_folder];
+    if (last == record.spatial_mask.policy_generation) {
+        return;
+    }
+    last = record.spatial_mask.policy_generation;
+    const nlohmann::json root = {
+        {"schema_id", event_log_format::kYoloEventSchemaId},
+        {"schema_version", event_log_format::kYoloEventSchemaVersion},
+        {"event_kind", "spatial_mask_policy"},
+        {"camera_serial", camera_serial_},
+        {"frame", {
+            {"recording_frame_id", record.recording_frame_id}
+        }},
+        {"spatial_mask", spatial_mask_policy_json(record)}
+    };
+    file_ << root.dump() << '\n';
+}
+
+void YoloEventLogger::WriteResult(const YoloResultRecord& record) {
+    if (record.recording_folder.empty()) {
+        return;
+    }
+    RotateIfNeeded(record.recording_folder);
+    if (!file_.is_open()) {
+        return;
+    }
+
+    uint64_t& next_sequence = next_sequence_by_folder_[record.recording_folder];
+    if (next_sequence == 0) {
+        next_sequence = 1;
+    }
+    // Header and policy lines carry no event_sequence: the counter numbers
+    // frame lines only (1..N), so readers that pair frame line i with crop
+    // row i keep working once they skip the non-frame kinds.
+    WriteSessionHeaderIfNeeded(record);
+    WriteSpatialMaskPolicyIfChanged(record);
+
+    using event_log_format::round_confidence;
+    using event_log_format::round_px;
+
+    nlohmann::json detections = nlohmann::json::array();
+    for (size_t i = 0; i < record.detections.size(); ++i) {
+        const pose::Object& detection = record.detections[i];
+        nlohmann::json item = {
+            {"index", static_cast<int>(i)},
+            {"x_px", round_px(detection.rect.x)},
+            {"y_px", round_px(detection.rect.y)},
+            {"width_px", round_px(detection.rect.width)},
+            {"height_px", round_px(detection.rect.height)},
+            {"label", detection.label},
+            {"confidence", round_confidence(detection.prob)}
+        };
+        // Detect-only engines emit no keypoints; the array is present only
+        // when a keypoint model wrote some.
+        const size_t keypoint_count = std::min<size_t>(
+            detection.num_kps,
+            static_cast<size_t>(pose::MAX_KEYPOINTS));
+        if (keypoint_count > 0) {
+            nlohmann::json keypoints = nlohmann::json::array();
+            for (size_t k = 0; k < keypoint_count; ++k) {
+                keypoints.push_back(round_px(detection.kps[k]));
+            }
+            item["keypoints"] = std::move(keypoints);
+        }
+        detections.push_back(std::move(item));
+    }
+
+    nlohmann::json yolo = {
+        {"status", record.status},
+        {"detection_count", static_cast<int>(record.detections.size())},
+        {"detection_source", record.detection_source},
+        {"synthetic_runtime_detection", record.synthetic_runtime_detection},
+        {"production_detection_valid", !record.synthetic_runtime_detection}
+    };
+    if (!record.error.empty()) {
+        yolo["error"] = record.error;
+    }
+
+    nlohmann::json spatial_mask = {
+        {"policy_generation", record.spatial_mask.policy_generation},
+        {"result", {
+            {"raw_detection_count", record.spatial_mask.raw_detection_count},
+            {"inside_detection_count", record.spatial_mask.inside_detection_count},
+            {"outside_detection_count", record.spatial_mask.outside_detection_count},
+            {"downstream_detection_count", record.spatial_mask.downstream_detection_count},
+        }}
     };
     nlohmann::json outside_detections = nlohmann::json::array();
     for (const SpatialMaskOutsideDetection& outside :
@@ -245,18 +337,18 @@ void YoloEventLogger::WriteResult(const YoloResultRecord& record) {
         outside_detections.push_back({
             {"raw_index", outside.raw_index},
             {"box", {
-                {"x_px", outside.x_px},
-                {"y_px", outside.y_px},
-                {"width_px", outside.width_px},
-                {"height_px", outside.height_px},
+                {"x_px", round_px(outside.x_px)},
+                {"y_px", round_px(outside.y_px)},
+                {"width_px", round_px(outside.width_px)},
+                {"height_px", round_px(outside.height_px)},
                 {"label", outside.label},
-                {"confidence", outside.confidence},
+                {"confidence", round_confidence(outside.confidence)},
             }},
             {"centroid_px", {
-                {"x", outside.centroid_x_px},
-                {"y", outside.centroid_y_px},
+                {"x", round_px(outside.centroid_x_px)},
+                {"y", round_px(outside.centroid_y_px)},
             }},
-            {"signed_boundary_distance_px", outside.signed_boundary_distance_px},
+            {"signed_boundary_distance_px", round_px(outside.signed_boundary_distance_px)},
             {"decision", outside.rejected ? "rejected" : "would_reject"},
             {"rejected_reason", "outside_valid_detection_region"},
         });
@@ -264,13 +356,11 @@ void YoloEventLogger::WriteResult(const YoloResultRecord& record) {
     spatial_mask["outside_detections"] = std::move(outside_detections);
 
     nlohmann::json root = {
-        {"schema_id", "orange.yolo_event"},
-        {"schema_version", 1},
+        {"schema_id", event_log_format::kYoloEventSchemaId},
+        {"schema_version", event_log_format::kYoloEventSchemaVersion},
         {"event_sequence", next_sequence++},
         {"event_kind", "yolo_result"},
-        {"recording_id", recording_id_},
         {"camera_serial", camera_serial_},
-        {"camera_id", camera_id_},
         {"frame", {
             {"local_frame_id", record.local_frame_id},
             {"camera_frame_id", record.camera_frame_id},
@@ -288,7 +378,6 @@ void YoloEventLogger::WriteResult(const YoloResultRecord& record) {
         {"spatial_mask", std::move(spatial_mask)},
         {"detections", std::move(detections)},
         {"citrus_live_ipc", {
-            {"queue_name", record.queue_name},
             {"enabled", record.ipc_enabled},
             {"requested", record.ipc_requested},
             {"request_status", record.ipc_request_status}
@@ -416,6 +505,8 @@ void SyntheticYoloEventEmitter::EmitFrame(const SyntheticYoloFrameInput& frame)
     record.event_epoch_us = epoch_time_us();
     record.event_monotonic_us = steady_time_us();
     record.gpu_id = gpu_id_;
+    record.source_width = frame.width;
+    record.source_height = frame.height;
     record.model_id = "synthetic_headless_v1";
     record.engine_path = "synthetic";
     record.queue_name = queue_name_;

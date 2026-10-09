@@ -171,9 +171,23 @@ void custody_and_gate() {
     }
 }
 }
+void detector_v2_format() {
+    { Fixture f; f.ToV2(); f.Save(); f.Finish(); }
+    for (int mutation = 0; mutation < 5; ++mutation) {
+        Fixture f; f.ToV2();
+        switch (mutation) {
+        case 0: f.events[0]["recording_id"] = "other"; break;              // header identity
+        case 1: f.events[0]["yolo"]["model_id"] = ""; break;               // header model block
+        case 2: f.events.erase(f.events.begin()); break;                   // v2 lines without a header
+        case 3: f.events[3]["yolo"]["synthetic_runtime_detection"] = true; break;
+        case 4: f.events[3]["event_sequence"] = 9; break;
+        }
+        f.Save(); refuses([&] { f.Finish(); });
+    }
+}
 int main() {
     try {
-        success(); detector_failures(); metadata_failures(); recorder_failures(); custody_and_gate(); encoded_media(); encoded_media_gate();
-        std::cout << "7 moving crop metadata/media completion groups passed\n"; return 0;
+        success(); detector_failures(); detector_v2_format(); metadata_failures(); recorder_failures(); custody_and_gate(); encoded_media(); encoded_media_gate();
+        std::cout << "8 moving crop metadata/media completion groups passed\n"; return 0;
     } catch (const std::exception& ex) { std::cerr << ex.what() << '\n'; return 1; }
 }

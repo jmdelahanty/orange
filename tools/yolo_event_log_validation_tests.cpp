@@ -341,6 +341,83 @@ void test_crop_metadata_source()
 }
 }  // namespace
 
+// v2 line format (2026-10-09): a session_header line first, slim frame lines
+// whose spatial_mask names the policy generation; the validator views them
+// through the header.
+nlohmann::json make_v2_header()
+{
+    return {
+        {"schema_id", "orange.yolo_event"},
+        {"schema_version", 2},
+        {"event_kind", "session_header"},
+        {"recording_id", "rec"},
+        {"camera_serial", kCameraSerial},
+        {"camera_id", 0},
+        {"yolo", {{"model_id", "m"}, {"engine_path", "/e"}, {"gpu_id", 0},
+                  {"coordinate_space", "source_frame_pixels"}, {"detection_source", "model"},
+                  {"synthetic_runtime_detection", false}}},
+        {"spatial_mask", {{"schema_id", "orange.analytics.spatial_mask_runtime"}, {"schema_version", 1},
+                          {"mode", "off"}, {"policy_generation", 1},
+                          {"input_mask", {{"enabled", false}}},
+                          {"centroid_gate", {{"evaluated", false}, {"enforced", false}}},
+                          {"source", nlohmann::json::object()}}}
+    };
+}
+
+nlohmann::json make_v2_event(const uint64_t sequence,
+                             const uint64_t recording_frame_id,
+                             const yolo_event_log::SyntheticYoloEventConfig& config)
+{
+    nlohmann::json event = make_event(sequence, recording_frame_id, config);
+    event["schema_version"] = 2;
+    const int count = event["yolo"]["detection_count"].get<int>();
+    event["yolo"]["detection_source"] = "model";
+    event["yolo"]["synthetic_runtime_detection"] = false;
+    event["yolo"]["production_detection_valid"] = true;
+    event["spatial_mask"] = {{"policy_generation", 1},
+        {"result", {{"raw_detection_count", count}, {"inside_detection_count", 0},
+                    {"outside_detection_count", 0}, {"downstream_detection_count", count}}},
+        {"outside_detections", nlohmann::json::array()}};
+    return event;
+}
+
+void write_v2_event_log(const std::filesystem::path& recording_folder,
+                        const yolo_event_log::SyntheticYoloEventConfig& config,
+                        const uint64_t frame_count,
+                        const bool with_header)
+{
+    std::ofstream file(recording_folder / ("Cam" + std::string(kCameraSerial) + "_yolo_events.jsonl"));
+    require(static_cast<bool>(file), "failed to create v2 yolo event log fixture");
+    if (with_header) file << make_v2_header().dump() << "\n";
+    for (uint64_t line = 1; line <= frame_count; ++line) {
+        file << make_v2_event(line, line, config).dump() << "\n";
+    }
+}
+
+void test_v2_header_log_passes()
+{
+    TestDir dir("v2_pass");
+    const auto config = make_config();
+    write_metadata(dir.path, 20);
+    write_v2_event_log(dir.path, config, 20, true);
+    const auto stats = yolo_event_log::summarize_yolo_event_log(
+        dir.path.string(), kCameraSerial, config, {});
+    require(stats.status == "pass", "v2 log with a session header should pass: " + stats.error);
+    require(stats.rows == 20 && stats.header_rows == 1, "v2 header is not a frame row");
+    require(stats.detection_rows == 2 && stats.zero_rows == 18, "v2 rows classified");
+}
+
+void test_v2_log_without_header_fails()
+{
+    TestDir dir("v2_no_header");
+    const auto config = make_config();
+    write_metadata(dir.path, 20);
+    write_v2_event_log(dir.path, config, 20, false);
+    const auto stats = yolo_event_log::summarize_yolo_event_log(
+        dir.path.string(), kCameraSerial, config, {});
+    require(stats.status == "fail" && stats.schema_errors > 0, "v2 frame lines without a header must fail");
+}
+
 int main()
 {
     struct TestCase {
@@ -351,6 +428,8 @@ int main()
     const TestCase tests[] = {
         {"crop_metadata_source", &test_crop_metadata_source},
         {"valid_synthetic_log_passes", &test_valid_synthetic_log_passes},
+        {"v2_header_log_passes", &test_v2_header_log_passes},
+        {"v2_log_without_header_fails", &test_v2_log_without_header_fails},
         {"missing_log_reports_missing", &test_missing_log_reports_missing},
         {"sequence_error_fails", &test_sequence_error_fails},
         {"cadence_error_fails", &test_cadence_error_fails},

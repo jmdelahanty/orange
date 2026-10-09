@@ -67,9 +67,19 @@ Production engines at the time of writing (both manifests present,
   weights `2edf67ad1fd97b5ac3835c2423a8d54775402c7d97a17c2a99a45e9e11d7b191`,
   run `pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915`.
 
+## Item 3: v2 line formats (2026-10-09)
+
+The detector and pose JSONL logs now lead with a `session_header` line and
+carry slim, rounded frame lines; `realtime_products.<serial>.<product>.line_schema`
+says version 2 and `header_rows` counts the header (and any
+`spatial_mask_policy`) lines. The full description is in
+`docs/yolo_event_log_jsonl_contract.md` ("Version 2"); schemas
+`docs/schemas/orange_yolo_event_v2.schema.json` and
+`docs/schemas/orange_pose_event_v2.schema.json`. The header's model block
+carries the same digests as the snapshot (item 2), so a log file is
+bindable to its model without the snapshot.
+
 ## Next items
 
-3. v2 line formats for the detection and pose JSONL (session header,
-   slimming, rounding), schemas published first; `line_schema` then says 2.
 7-8. A rig session with Citrus (Shadow run, unified H5, pose on, one fish
    per dish).

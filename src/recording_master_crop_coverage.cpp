@@ -1,4 +1,5 @@
 #include "recording_master_crop_coverage.h"
+#include "event_log_reader.h"
 #include "recording_master_journal.h"
 #include "recording_media_decode.h"
 #include "fsuid_guard.h"
@@ -153,14 +154,31 @@ json detection_coverage(const fs::path& root, const json& master,
     const auto camera = column("camera_frame_id"), timestamp = column("timestamp"), host = column("timestamp_sys");
     const auto detected = column("has_detection"), blank = column("blank_frame"), state = column("crop_state");
     uint64_t count = 0, blanks = 0, last_sequence = 0;
+    // v2 logs lead with a session_header line (and may carry
+    // spatial_mask_policy lines); those are folded into `ctx` and only frame
+    // lines are paired with crop rows.
+    event_log_reader::SessionContext ctx;
+    auto next_frame_event = [&](json* out) {
+        while (line(events, &event_row)) {
+            json event = json::parse(event_row);
+            require(event.is_object() && event.at("schema_id") == "orange.yolo_event", "detector event identity mismatch");
+            if (event_log_reader::absorb_non_frame_line(event, &ctx)) continue;
+            *out = std::move(event);
+            return true;
+        }
+        return false;
+    };
     while (line(crops, &row)) {
         const auto crop = fields(row);
         require(crop.size() == header.size(), "malformed crop detection row");
-        require(line(events, &event_row), "missing detector terminal event for crop");
-        const auto event = json::parse(event_row);
-        require(event.at("schema_id") == "orange.yolo_event" && number(event.at("schema_version")) == 1 &&
-                event.at("event_kind") == "yolo_result" && event.at("recording_id") == master.at("recording_id") &&
-                event.at("camera_serial") == master.at("camera_serial"), "detector event identity mismatch");
+        json event;
+        require(next_frame_event(&event), "missing detector terminal event for crop");
+        const auto version = number(event.at("schema_version"));
+        require((version == 1 || version == 2) && (version == 1 || ctx.has_header) &&
+                event.at("event_kind") == "yolo_result" &&
+                event_log_reader::effective_string(event, ctx, "recording_id") == master.at("recording_id") &&
+                event_log_reader::effective_string(event, ctx, "camera_serial") == master.at("camera_serial"),
+                "detector event identity mismatch");
         const auto sequence = number(event.at("event_sequence"));
         require(sequence == last_sequence + 1, "detector event sequence gap/duplicate");
         last_sequence = sequence;
@@ -172,7 +190,7 @@ json detection_coverage(const fs::path& root, const json& master,
                 number(frame.at("camera_frame_id")) == integer(crop[camera]) &&
                 number(times.at("camera_timestamp")) == integer(crop[timestamp]) &&
                 number(times.at("timestamp_sys_ns")) == integer(crop[host]), "detector/crop source correspondence mismatch");
-        const auto& yolo = event.at("yolo");
+        const json yolo = event_log_reader::effective_block(event, ctx, "yolo");
         require(yolo.at("synthetic_runtime_detection") == false && yolo.at("production_detection_valid") == true &&
                 yolo.at("detection_source") == "model" &&
                 yolo.at("coordinate_space") == "source_frame_pixels" &&
@@ -188,7 +206,10 @@ json detection_coverage(const fs::path& root, const json& master,
         ++count;
         blanks += empty;
     }
-    require(!line(events, &event_row), "extra detector terminal event");
+    {
+        json extra;
+        require(!next_frame_event(&extra), "extra detector terminal event");
+    }
     require(count > 0 && count == number(master.at("source").at("assigned_frame_offers")), "detector/master frame count mismatch");
     require(crop_ref == artifact(root, crop_path) && event_ref == artifact(root, event_path), "detector/crop evidence changed");
     return {{"assigned_frames", count}, {"successful_detection_frames", count - blanks},

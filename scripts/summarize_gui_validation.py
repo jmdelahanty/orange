@@ -950,6 +950,8 @@ def summarize_yolo_event_log(path: Path) -> dict[str, Any]:
                 except json.JSONDecodeError:
                     summary["parse_errors"] += 1
                     continue
+                if event.get("event_kind", "yolo_result") != "yolo_result":
+                    continue  # v2 session_header / spatial_mask_policy lines
                 summary["rows"] += 1
                 yolo = event.get("yolo")
                 yolo = yolo if isinstance(yolo, dict) else {}
@@ -1422,12 +1424,15 @@ def summarize_pose_events(recording_folder: Path) -> dict[str, Any]:
                     stripped = line.strip()
                     if not stripped:
                         continue
-                    rows += 1
                     try:
                         event = json.loads(stripped)
                     except json.JSONDecodeError:
+                        rows += 1
                         parse_errors += 1
                         continue
+                    if event.get("event_kind", "pose_result") != "pose_result":
+                        continue  # v2 session_header line
+                    rows += 1
                     pose = event.get("pose")
                     if isinstance(pose, dict):
                         status = str(pose.get("status", "missing"))

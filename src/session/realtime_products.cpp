@@ -85,7 +85,9 @@ ScannedLog scan_event_log(const fs::path& path, const std::string& product)
                     log.schema_version = event.value("schema_version", 0);
                 }
                 const std::string event_kind = event.value("event_kind", std::string());
-                if (event_kind == "session_header") {
+                // v2: session_header and spatial_mask_policy lines (any
+                // non-result kind) are header rows, never frame rows.
+                if (event_kind != "yolo_result" && event_kind != "pose_result") {
                     log.header_rows++;
                 } else {
                     log.row_count++;

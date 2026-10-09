@@ -62,6 +62,9 @@ struct YoloResultRecord {
     std::string engine_path;
     std::string detection_source = "model";
     bool synthetic_runtime_detection = false;
+    // Source raster the detections are expressed in (v2 session header).
+    int source_width = 0;
+    int source_height = 0;
     std::vector<pose::Object> detections;
     SpatialMaskResult spatial_mask;
     std::string queue_name;
@@ -122,6 +125,13 @@ private:
     void OpenFile(const std::string& folder);
     void CloseFile();
     void RotateIfNeeded(const std::string& folder);
+    // v2 line format (2026-10-09): the first line of a file is a
+    // session_header carrying the session-constant blocks (recording, camera,
+    // model identity, spatial-mask policy, IPC queue); a spatial_mask_policy
+    // line is written whenever the policy generation changes; frame lines
+    // carry only identity, timestamps, results and per-frame mask results.
+    void WriteSessionHeaderIfNeeded(const YoloResultRecord& record);
+    void WriteSpatialMaskPolicyIfChanged(const YoloResultRecord& record);
     void WriteResult(const YoloResultRecord& record);
     void ThreadMain();
 
@@ -143,6 +153,8 @@ private:
     // Writer-thread owned; never inspected from detector/acquisition threads.
     std::unordered_map<std::string, uint64_t> last_written_by_folder_;
     std::unordered_set<std::string> failed_folders_;
+    std::unordered_set<std::string> header_written_folders_;
+    std::unordered_map<std::string, uint64_t> last_policy_generation_by_folder_;
     size_t dropped_ = 0;
 };
 

@@ -538,6 +538,10 @@ def read_yolo_events(path: Path) -> list[dict[str, Any]]:
                     ) from exc
                 if not isinstance(payload, dict):
                     raise ValidationError(f"expected object JSONL row {line_number} in {path}")
+                # v2 logs (2026-10-09) lead with a session_header line and may
+                # carry spatial_mask_policy lines; only yolo_result lines are frames.
+                if payload.get("event_kind", "yolo_result") != "yolo_result":
+                    continue
                 events.append(payload)
     except FileNotFoundError as exc:
         raise ValidationError(f"missing YOLO event JSONL file: {path}") from exc

@@ -58,6 +58,9 @@ struct PoseResultRecord {
     uint64_t ipc_skeleton_id_hash = 0;
     uint64_t ipc_model_id_hash = 0;
     int gpu_id = -1;
+    // Ordered keypoint labels of the skeleton (v2 session header; frame
+    // lines list keypoints in this order without repeating the labels).
+    std::vector<std::string> keypoint_labels;
 
     uint64_t local_frame_id = 0;
     uint64_t camera_frame_id = 0;
@@ -115,6 +118,9 @@ private:
     void OpenFile(const std::string& folder);
     void CloseFile();
     void RotateIfNeeded(const std::string& folder);
+    // v2 line format (2026-10-09): one session_header line per file with the
+    // session-constant blocks, slim frame lines, rounded numbers.
+    void WriteSessionHeaderIfNeeded(const PoseResultRecord& record);
     void WriteResult(PoseResultRecord record);
     void ThreadMain();
 
@@ -132,6 +138,7 @@ private:
     std::ofstream file_;
     std::unordered_set<std::string> opened_folders_;
     std::unordered_map<std::string, uint64_t> next_sequence_by_folder_;
+    std::unordered_set<std::string> header_written_folders_;
     size_t dropped_ = 0;
     size_t rows_written_ = 0;
     size_t rows_since_flush_ = 0;

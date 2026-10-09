@@ -35,6 +35,7 @@ struct Fixture {
     bool owns_root = true;
     json master, summary;
     std::vector<json> events;
+    std::string options_recording_id;
     std::vector<std::string> rows;
     Fixture(uint64_t frame_count = 5, std::string camera_serial = "02010093", fs::path shared_root = {}, std::string file_tag = {})
         : serial(std::move(camera_serial)), prefix("Cam" + serial), tag(std::move(file_tag)) {
@@ -59,6 +60,7 @@ struct Fixture {
                 std::to_string(frame.camera_frame_id) + "," + std::to_string(frame.camera_timestamp_ns) + "," +
                 std::to_string(frame.host_realtime_ns) + "," + (blank ? "0,1,blank_no_detection," : "1,0,detected_crop,") +
                 std::to_string(i - 1) + "," + std::to_string(i - 1));
+            options_recording_id = options.recording_id;
             events.push_back({{"schema_id", "orange.yolo_event"}, {"schema_version", 1}, {"event_sequence", i},
                 {"event_kind", "yolo_result"}, {"recording_id", options.recording_id}, {"camera_serial", serial},
                 {"frame", {{"recording_frame_id", i}, {"local_frame_id", frame.local_frame_id},
@@ -91,6 +93,26 @@ struct Fixture {
         put(root / (tag + "summary.json"), summary.dump());
     }
     json Finish(bool normal = true) { return FinalizeMovingCropMetadata(root, serial, tag + "summary.json", normal); }
+    // Rewrite the detector log in the v2 line format (2026-10-09): a
+    // session_header line carries recording_id, camera_serial and the model
+    // block; frame lines keep identity, status, counts and per-frame markers.
+    void ToV2() {
+        json header = {{"schema_id", "orange.yolo_event"}, {"schema_version", 2}, {"event_kind", "session_header"},
+            {"recording_id", options_recording_id}, {"camera_serial", serial}, {"camera_id", 0},
+            {"yolo", {{"model_id", "fixture-model"}, {"engine_path", "/fixture.engine"}, {"gpu_id", 0},
+                      {"coordinate_space", "source_frame_pixels"}, {"detection_source", "model"},
+                      {"synthetic_runtime_detection", false}}}};
+        std::vector<json> v2;
+        v2.push_back(header);
+        for (json event : events) {
+            event["schema_version"] = 2;
+            event.erase("recording_id");
+            event["yolo"].erase("coordinate_space");
+            event["yolo"].erase("model_id");
+            v2.push_back(event);
+        }
+        events = v2;
+    }
     void Media(bool rolling) {
         const uint64_t count = rows.size();
         summary["frames_received"] = summary["frames_encoded"] = count;

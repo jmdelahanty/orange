@@ -13,7 +13,8 @@ struct YoloEventLogValidationStats {
     std::string path;
     std::string status = "disabled";
     bool present = false;
-    uint64_t rows = 0;
+    uint64_t rows = 0;             // frame lines
+    uint64_t header_rows = 0;      // v2 session_header / policy lines
     uint64_t detection_rows = 0;
     uint64_t zero_rows = 0;
     uint64_t timeout_rows = 0;

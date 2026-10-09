@@ -203,11 +203,51 @@ bool test_crop_metadata_source()
 }
 }  // namespace
 
+// v2 (2026-10-09): the model block moves to a session_header line; frame
+// lines carry status / instance_count only.
+nlohmann::json make_v2_noop_header()
+{
+    return {
+        {"schema_id", "orange.pose_event"}, {"schema_version", 2}, {"event_kind", "session_header"},
+        {"recording_id", "test"}, {"camera_serial", "2010095"}, {"camera_id", 2010095},
+        {"pose", {{"backend", "noop"}, {"mode", "noop"}, {"model_id", "none"}, {"keypoint_labels", nlohmann::json::array()}}}
+    };
+}
+
+nlohmann::json make_v2_noop_event(uint64_t sequence, uint64_t recording_frame_id)
+{
+    nlohmann::json event = make_noop_event(sequence, recording_frame_id);
+    event["schema_version"] = 2;
+    event.erase("recording_id"); event.erase("camera_id");
+    event["pose"] = {{"status", "no_result"}, {"instance_count", 0}};
+    return event;
+}
+
+bool test_v2_noop_passes()
+{
+    TestDir dir("v2_pass");
+    write_meta_csv(dir.path);
+    write_jsonl(dir.path, {make_v2_noop_header(), make_v2_noop_event(1, 1), make_v2_noop_event(2, 2)});
+    const auto stats = pose_event_log::summarize_pose_event_log(dir.path.string(), "2010095", noop_config());
+    bool ok = true;
+    ok &= require(stats.status == "pass", "v2 noop log passes");
+    ok &= require(stats.rows == 2 && stats.header_rows == 1, "v2 header is not a frame row");
+    ok &= require(stats.no_result_rows == 2, "v2 rows classified");
+
+    TestDir no_header("v2_no_header");
+    write_meta_csv(no_header.path);
+    write_jsonl(no_header.path, {make_v2_noop_event(1, 1)});
+    const auto bad = pose_event_log::summarize_pose_event_log(no_header.path.string(), "2010095", noop_config());
+    ok &= require(bad.status == "fail" && bad.schema_errors > 0, "v2 frame line without a header fails");
+    return ok;
+}
+
 int main()
 {
     bool ok = true;
     ok &= test_crop_metadata_source();
     ok &= test_noop_passes();
+    ok &= test_v2_noop_passes();
     ok &= test_missing_log_fails();
     ok &= test_wrong_noop_fails();
     ok &= test_sequence_fails();

@@ -1,8 +1,66 @@
 # YOLO Event Log JSONL Contract
 
-Date: 2026-04-21
-Status: v1 contract. Current GUI YOLO runtime emits `yolo_result` rows.
+Date: 2026-04-21 (v1); 2026-10-09 (v2, see "Version 2" below)
+Status: v2 is what the writers emit since 2026-10-09; v1 recordings before
+that date remain valid and every Orange reader accepts both.
 `citrus_live_ipc_decision` and `yolo_frame_decision` rows are planned.
+
+## Version 2 (2026-10-09)
+
+Schemas: `docs/schemas/orange_yolo_event_v2.schema.json` and, for the pose
+log that follows the same conventions, `docs/schemas/orange_pose_event_v2.schema.json`.
+Writers: `src/yolo_event_log.cpp`, `src/pose_event_log.cpp`; conventions in
+`src/event_log_format.h`; readers go through `src/event_log_reader.h`.
+
+Why: a v1 line was ~2.2 KB because the session-constant blocks (spatial-mask
+policy ~875 B, model block ~460 B, recording id ~180 B, IPC queue) repeated
+on every frame line, 70 % of a 27 MB per-2-minute file.
+
+What changed:
+
+- The first line of each file is a `session_header` (no `event_sequence`)
+  carrying `recording_id`, `camera_serial`, `camera_id`, `worker`,
+  `frame_identity_key` (`frame.recording_frame_id`), `source_frame`, the
+  model block (`yolo` / `pose`: model_id, engine_path, **engine_sha256 over
+  the bytes that ran, weights_sha256 and onnx_sha256 from the engine
+  manifest**, gpu_id, coordinate_space; pose adds the SHAMAN v2
+  `ipc_model_id_hash`, skeleton id / sidecar sha256 / `keypoint_labels`),
+  the spatial-mask policy with its `policy_generation`, the Citrus live-IPC
+  queue name, and `line_format` (rounding).
+- The detector log writes a `spatial_mask_policy` line (no `event_sequence`,
+  `frame.recording_frame_id` of the first frame under it) whenever the
+  policy generation changes; frame lines name the generation they were
+  evaluated under (`spatial_mask.policy_generation`) and carry only the
+  per-frame `result` counts and `outside_detections`.
+- Frame lines (`yolo_result`, `pose_result`) keep `schema_id`,
+  `schema_version` 2, `event_kind`, `event_sequence` (frame lines only, from
+  1, so frame line i still pairs with crop ledger row i), `camera_serial`,
+  `frame`, `timestamps`, status blocks and results. Dropped from frame
+  lines: `recording_id`, `camera_id`, model identity, `coordinate_space`,
+  the spatial-mask policy, `citrus_live_ipc.queue_name` (all in the header).
+  Kept per line because they vary or readers filter on them:
+  `yolo.{status, detection_count, detection_source,
+  synthetic_runtime_detection, production_detection_valid, error}`,
+  `citrus_live_ipc.{enabled, requested, request_status}`.
+- Pose frame lines drop the detection box (`detection` keeps
+  `has_detection` and `confidence`; the box is on the same frame's
+  `yolo_result` line and in the crop ledger) and the per-keypoint `label`
+  (order follows the header's `keypoint_labels`); the crop window stays per
+  line since keypoints are crop pixels relative to its origin.
+- Rounding: pixel coordinates 0.001 px, confidences 1e-4, latencies 1 us.
+  `detections[].keypoints` appears only when the engine emitted keypoints.
+
+Readers updated for both versions: `src/yolo_event_log_validation.cpp`,
+`src/pose_event_log_validation.cpp` (header must lead a v2 file; header
+lines counted in `header_rows`, not `rows`), `src/recording_master_crop_coverage.cpp`
+(pairs frame lines with crop rows, identity and model block through the
+header), `src/session/realtime_products.cpp`, `scripts/validate_recording_artifacts.py`,
+`scripts/summarize_gui_validation.py`, `scripts/overlay_pose_clips.py`.
+Citrus's `scripts/compare_orange_citrus_bboxes.py` keeps working unchanged
+(it skips non-`yolo_result` kinds and filters on the per-line fields that
+v2 kept).
+
+The v1 contract below is kept for recordings before 2026-10-09.
 
 Purpose: define the Orange-owned recording/audit artifact for YOLO semantic
 history. This file is separate from the Citrus live-control shared-memory queue.

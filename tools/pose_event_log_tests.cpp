@@ -93,20 +93,29 @@ int main()
     const std::vector<nlohmann::json> rows = read_jsonl(jsonl_path);
 
     bool ok = true;
-    ok &= expect(rows.size() == 2, "pose event logger writes two rows");
-    if (rows.size() >= 2) {
+    // v2: a session_header line leads, then one pose_result line per frame.
+    ok &= expect(rows.size() == 3, "pose event logger writes a header and two rows");
+    if (rows.size() >= 3) {
         ok &= expect(rows[0]["schema_id"] == "orange.pose_event", "schema id is orange.pose_event");
-        ok &= expect(rows[0]["event_kind"] == "pose_result", "event kind is pose_result");
-        ok &= expect(rows[0]["event_sequence"] == 1, "first event sequence is 1");
-        ok &= expect(rows[1]["event_sequence"] == 2, "second event sequence is 2");
-        ok &= expect(rows[0]["frame"]["recording_frame_id"] == 1, "recording frame id is preserved");
-        ok &= expect(rows[0]["pose"]["backend"] == "noop", "backend is recorded");
-        ok &= expect(rows[0]["pose"]["status"] == "no_result", "status is recorded");
-        ok &= expect(rows[0]["pose"]["instance_count"] == 0, "empty pose list is explicit");
-        ok &= expect(rows[0]["crop"]["width_px"] == 328, "crop width is recorded");
-        ok &= expect(rows[0]["detection"]["has_detection"] == true, "detection state is recorded");
-        ok &= expect(rows[0]["latency_ms"]["capture_to_pose_done"] == 5.4, "pose latency is recorded");
-        ok &= expect(rows[0]["timestamps"]["event_epoch_us"].get<uint64_t>() > 0, "event epoch is filled");
+        ok &= expect(rows[0]["schema_version"] == 2, "schema version is 2");
+        ok &= expect(rows[0]["event_kind"] == "session_header", "first line is the session header");
+        ok &= expect(!rows[0].contains("event_sequence"), "header carries no event sequence");
+        ok &= expect(rows[0]["pose"]["backend"] == "noop", "backend is in the header");
+        ok &= expect(rows[0]["pose"]["mode"] == "noop", "mode is in the header");
+        ok &= expect(rows[0]["pose"]["keypoint_labels"].is_array(), "keypoint labels are in the header");
+        ok &= expect(rows[0]["line_format"]["coordinate_decimals"] == 3, "line format declares rounding");
+        ok &= expect(rows[1]["event_kind"] == "pose_result", "second line is a pose_result");
+        ok &= expect(rows[1]["event_sequence"] == 1, "first frame event sequence is 1");
+        ok &= expect(rows[2]["event_sequence"] == 2, "second frame event sequence is 2");
+        ok &= expect(rows[1]["frame"]["recording_frame_id"] == 1, "recording frame id is preserved");
+        ok &= expect(!rows[1]["pose"].contains("backend"), "frame lines do not repeat the model block");
+        ok &= expect(rows[1]["pose"]["status"] == "no_result", "status is recorded");
+        ok &= expect(rows[1]["pose"]["instance_count"] == 0, "empty pose list is explicit");
+        ok &= expect(rows[1]["crop"]["width_px"] == 328, "crop width is recorded");
+        ok &= expect(rows[1]["detection"]["has_detection"] == true, "detection state is recorded");
+        ok &= expect(!rows[1]["detection"].contains("x_px"), "frame lines drop the detection box");
+        ok &= expect(rows[1]["latency_ms"]["capture_to_pose_done"] == 5.4, "pose latency is recorded");
+        ok &= expect(rows[1]["timestamps"]["event_epoch_us"].get<uint64_t>() > 0, "event epoch is filled");
     }
 
     std::filesystem::remove_all(temp_dir);

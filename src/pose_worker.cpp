@@ -1456,6 +1456,7 @@ pose_event_log::PoseResultRecord PoseWorker::build_pose_event_record(
     record.ipc_skeleton_id_hash = pose_skeleton_hash64_ ? pose_skeleton_hash64_ : fnv1a64(pose_skeleton_id_);
     record.ipc_model_id_hash = pose_model_hash64_ ? pose_model_hash64_ : fnv1a64(pose_model_id_);
     record.gpu_id = camera_params_ ? camera_params_->gpu_id : -1;
+    record.keypoint_labels = skeleton_labels_;
 
     record.local_frame_id = frame.local_frame_id;
     record.camera_frame_id = frame.camera_frame_id;
@@ -1514,6 +1515,14 @@ void PoseWorker::adopt_pose_skeleton_sidecar()
     }
     const size_t keypoint_count = static_cast<size_t>(tensorrt_backend_->keypoint_count());
     skeleton_labels_ = tensorrt_backend_->keypoint_labels();
+    // The engine's content identity does not depend on a sidecar being
+    // configured: without it (headless specs) the event lines carried an
+    // empty engine_sha256 and the live-state slots an fnv1a64(model_id)
+    // while the recording snapshot named the sha256 prefix (2026-10-09).
+    if (!pose_engine_path_.empty() && pose_model_sha256_.empty()) {
+        pose_model_sha256_ = orange::pose::file_sha256_hex(pose_engine_path_);
+        pose_model_hash64_ = orange::pose::sha256_prefix64(pose_model_sha256_);
+    }
     if (pose_skeleton_path_.empty()) {
         std::cout << "[PoseWorker] " << threadName << " no skeleton sidecar configured (ORANGE_POSE_SKELETON_PATH);"
                   << " using default labels for K=" << keypoint_count << " and fnv1a64('" << pose_skeleton_id_
@@ -1540,10 +1549,6 @@ void PoseWorker::adopt_pose_skeleton_sidecar()
     pose_skeleton_id_ = sidecar.skeleton_id;
     pose_skeleton_sha256_ = sidecar.file_sha256;
     pose_skeleton_hash64_ = sidecar.file_sha256_prefix64;
-    if (!pose_engine_path_.empty()) {
-        pose_model_sha256_ = orange::pose::file_sha256_hex(pose_engine_path_);
-        pose_model_hash64_ = orange::pose::sha256_prefix64(pose_model_sha256_);
-    }
     std::cout << "[PoseWorker] " << threadName << " skeleton sidecar adopted: id=" << pose_skeleton_id_
               << " K=" << keypoint_count << " labels=";
     for (size_t i = 0; i < skeleton_labels_.size(); ++i) {

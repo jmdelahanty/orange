@@ -25,9 +25,14 @@ yolo_event_log::YoloResultRecord record(const std::string& folder, uint64_t id) 
     row.record_active = true; row.status = "zero_detections";
     return row;
 }
+// Frame rows only: v2 logs lead with a session_header line.
 std::size_t rows(const std::string& path) {
     std::ifstream input(path); std::string line; std::size_t n = 0;
-    while (std::getline(input, line)) { check(nlohmann::json::parse(line).is_object(), "invalid log row"); ++n; }
+    while (std::getline(input, line)) {
+        const auto row = nlohmann::json::parse(line);
+        check(row.is_object(), "invalid log row");
+        if (row.value("event_kind", "") == "yolo_result") ++n;
+    }
     return n;
 }
 }

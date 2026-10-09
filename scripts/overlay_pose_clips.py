@@ -107,11 +107,19 @@ def find_ffmpeg() -> tuple[str, list[str]] | None:
 
 def load_pose_events(path: Path) -> pd.DataFrame:
     rows = []
+    header_model_id = ""
+    header_labels: list[str] = []
     with path.open() as fh:
         for line in fh:
             if not line.strip():
                 continue
             e = json.loads(line)
+            if e.get("event_kind") == "session_header":
+                # v2 (2026-10-09): the model block and the keypoint labels
+                # live in the header; frame lines carry keypoints in label order.
+                header_model_id = (e.get("pose") or {}).get("model_id", "") or ""
+                header_labels = list((e.get("pose") or {}).get("keypoint_labels") or [])
+                continue
             if e.get("event_kind") != "pose_result":
                 continue
             crop = e.get("crop") or {}
@@ -121,7 +129,7 @@ def load_pose_events(path: Path) -> pd.DataFrame:
             row = {
                 "recording_frame_id": e["frame"]["recording_frame_id"],
                 "pose_status": e.get("pose", {}).get("status"),
-                "model_id": e.get("pose", {}).get("model_id", ""),
+                "model_id": e.get("pose", {}).get("model_id", "") or header_model_id,
                 "pose_crop_x": crop.get("x_px"),
                 "pose_crop_y": crop.get("y_px"),
                 "pose_crop_w": crop.get("width_px"),
@@ -133,8 +141,9 @@ def load_pose_events(path: Path) -> pd.DataFrame:
                 "pose_conf": best.get("confidence") if best else None,
                 "capture_to_pose_done_ms": e.get("latency_ms", {}).get("capture_to_pose_done"),
                 "keypoints": [
-                    (k.get("label", ""), float(k["x_px"]), float(k["y_px"]), float(k.get("confidence", 0.0)))
-                    for k in (best.get("keypoints") if best else [])
+                    (k.get("label", header_labels[i] if i < len(header_labels) else ""),
+                     float(k["x_px"]), float(k["y_px"]), float(k.get("confidence", 0.0)))
+                    for i, k in enumerate(best.get("keypoints") if best else [])
                 ],
             }
             rows.append(row)

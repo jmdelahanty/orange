@@ -1,4 +1,5 @@
 #include "pose_event_log_validation.h"
+#include "event_log_reader.h"
 
 #include "json.hpp"
 #include "yolo_event_log_validation.h"
@@ -91,22 +92,40 @@ PoseEventLogValidationStats summarize_pose_event_log(
     }
 
     std::string line;
+    event_log_reader::SessionContext ctx;
     while (std::getline(file, line)) {
         if (line.empty()) {
             continue;
         }
-        stats.rows++;
-        const nlohmann::json event = nlohmann::json::parse(line, nullptr, false);
-        if (event.is_discarded() || !event.is_object()) {
+        const nlohmann::json parsed = nlohmann::json::parse(line, nullptr, false);
+        if (parsed.is_discarded() || !parsed.is_object()) {
+            stats.rows++;
             stats.parse_errors++;
             continue;
         }
-
-        if (json_string_or_default(event, "schema_id", "") != "orange.pose_event" ||
-            json_u64_or_default(event.value("schema_version", nlohmann::json()), 0) != 1 ||
-            json_string_or_default(event, "event_kind", "") != "pose_result") {
+        const uint64_t schema_version =
+            json_u64_or_default(parsed.value("schema_version", nlohmann::json()), 0);
+        if (json_string_or_default(parsed, "schema_id", "") != "orange.pose_event" ||
+            (schema_version != 1 && schema_version != 2)) {
+            stats.rows++;
+            stats.schema_errors++;
+            continue;
+        }
+        if (event_log_reader::absorb_non_frame_line(parsed, &ctx)) {
+            if (json_string_or_default(parsed, "event_kind", "") == "session_header") {
+                stats.header_rows++;
+                if (stats.rows != 0) stats.schema_errors++;  // header must lead
+            } else {
+                stats.schema_errors++;
+            }
+            continue;
+        }
+        stats.rows++;
+        if (schema_version == 2 && !ctx.has_header) {
             stats.schema_errors++;
         }
+        nlohmann::json event = parsed;
+        event["pose"] = event_log_reader::effective_block(parsed, ctx, "pose");
 
         const uint64_t sequence =
             json_u64_or_default(event.value("event_sequence", nlohmann::json()), 0);
