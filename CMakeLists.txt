@@ -272,6 +272,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/preview_staging_lock.cpp"
     "${SRC_DIR}/gui/pose_overlay.cpp"
     "${SRC_DIR}/pose_skeleton_sidecar.cpp"
+    "${SRC_DIR}/model_identity.cpp"
     "${SRC_DIR}/gui/pose_overlay_draw.cpp"
     "${SRC_DIR}/gui/startup_timing.cpp"
     "${SRC_DIR}/offthreadmachine.cpp"
@@ -464,6 +465,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/gui/preview_staging_lock.cpp"
     "${SRC_DIR}/gui/pose_overlay.cpp"
     "${SRC_DIR}/pose_skeleton_sidecar.cpp"
+    "${SRC_DIR}/model_identity.cpp"
     ${NVENCODER_SOURCES}
     ${ORANGE_CUDA_SOURCES}
     "${SRC_DIR}/gui/recording_snapshots.cpp"
@@ -1002,6 +1004,15 @@ if(BUILD_TESTING)
     target_compile_features(realtime_products_tests PRIVATE cxx_std_17)
     add_test(NAME realtime_products_tests COMMAND realtime_products_tests)
 
+    add_executable(model_identity_tests
+        "tools/model_identity_tests.cpp"
+        "${SRC_DIR}/model_identity.cpp"
+        "${SRC_DIR}/pose_skeleton_sidecar.cpp"
+    )
+    target_include_directories(model_identity_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(model_identity_tests PRIVATE cxx_std_17)
+    add_test(NAME model_identity_tests COMMAND model_identity_tests)
+
     add_executable(recording_subject_reference_tests
         "tools/recording_subject_reference_tests.cpp"
         "${SRC_DIR}/recording_subject_reference.cpp"
@@ -1307,6 +1318,7 @@ if(BUILD_TESTING)
     add_executable(recording_snapshots_tests
         "tools/recording_snapshots_tests.cpp"
         "${SRC_DIR}/pose_skeleton_sidecar.cpp"
+        "${SRC_DIR}/model_identity.cpp"
         "${SRC_DIR}/citrus_recording_geometry.cpp"
         "${SRC_DIR}/recording_physical_registration.cpp"
         "${SRC_DIR}/gui/spatial_layout/physical_registration_selection.cpp"

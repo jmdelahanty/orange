@@ -1,5 +1,5 @@
 #include "pose_skeleton_sidecar.h"
-#include <map>
+#include "model_identity.h"
 #include "gui/recording_snapshots.h"
 #include "citrus_recording_geometry.h"
 #include "gui/spatial_layout/projection_snapshot_client.h"
@@ -78,6 +78,11 @@ nlohmann::json build_gui_detect_model_snapshot(const CameraParams& camera_params
         selected_engine_path = camera_select.yolo_model;
     }
     const std::string engine_path = enabled ? selected_engine_path : "";
+    // Model identity (realtime-products item 2): the SHA-256 of the engine
+    // bytes that ran plus the weights -> onnx -> engine chain from the
+    // engine's Palette manifest. Cached per path; record-start path only.
+    const orange::model_identity::ModelIdentity identity =
+        orange::model_identity::resolve_model_identity(engine_path);
     return {
         {"enabled", enabled},
         {"source", {
@@ -89,6 +94,11 @@ nlohmann::json build_gui_detect_model_snapshot(const CameraParams& camera_params
             {"backend", enabled ? "tensorrt" : "none"},
             {"engine_path", engine_path},
             {"model_id", enabled ? build_model_id_from_path(engine_path) : "none"},
+            {"engine_sha256", identity.engine_sha256},
+            {"engine_bytes", identity.engine_bytes},
+            {"weights_sha256", identity.weights_sha256},
+            {"onnx_sha256", identity.onnx_sha256},
+            {"engine_manifest", orange::model_identity::engine_manifest_json(identity)},
             {"gpu_id", camera_params.gpu_id}
         }}
     };
@@ -278,14 +288,20 @@ nlohmann::json build_gui_pose_model_snapshot(const CameraParams& camera_params,
             skeleton = {{"source", "palette_sidecar_invalid"}, {"error", error}};
         }
     }
-    static std::map<std::string, std::string> engine_sha_cache;
-    std::string engine_sha256;
-    if (enabled && !pose_engine_path.empty()) {
-        auto it = engine_sha_cache.find(pose_engine_path);
-        if (it == engine_sha_cache.end()) {
-            it = engine_sha_cache.emplace(pose_engine_path, orange::pose::file_sha256_hex(pose_engine_path)).first;
-        }
-        engine_sha256 = it->second;
+    // Model identity (realtime-products item 2): engine bytes hashed once per
+    // path, plus the weights -> onnx -> engine chain from the engine's Palette
+    // manifest (`<engine>.manifest.json`).
+    const orange::model_identity::ModelIdentity identity =
+        orange::model_identity::resolve_model_identity(enabled ? pose_engine_path : std::string());
+    const std::string& engine_sha256 = identity.engine_sha256;
+    // The skeleton sidecar names the ONNX export it was cut from; when both
+    // it and the engine manifest carry one, say whether they agree.
+    nlohmann::json onnx_matches_skeleton = nullptr;
+    if (skeleton.is_object() && skeleton.contains("source_onnx_sha256") &&
+        skeleton["source_onnx_sha256"].is_string() &&
+        !skeleton["source_onnx_sha256"].get<std::string>().empty() &&
+        !identity.onnx_sha256.empty()) {
+        onnx_matches_skeleton = skeleton["source_onnx_sha256"].get<std::string>() == identity.onnx_sha256;
     }
 
     return {
@@ -310,6 +326,11 @@ nlohmann::json build_gui_pose_model_snapshot(const CameraParams& camera_params,
             {"skeleton_path", enabled ? pose_skeleton_path : ""},
             {"skeleton", skeleton},
             {"engine_sha256", engine_sha256},
+            {"engine_bytes", identity.engine_bytes},
+            {"weights_sha256", identity.weights_sha256},
+            {"onnx_sha256", identity.onnx_sha256},
+            {"onnx_sha256_matches_skeleton_sidecar", onnx_matches_skeleton},
+            {"engine_manifest", orange::model_identity::engine_manifest_json(identity)},
             {"ipc_model_id_hash", engine_sha256.empty() ? 0ULL : orange::pose::sha256_prefix64(engine_sha256)},
             {"gpu_id", camera_params.gpu_id},
             {"queue_size", enabled ? 32 : 0},
