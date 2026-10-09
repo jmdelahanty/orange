@@ -5,7 +5,7 @@
 # seal and that Palette's intake will accept its layout. Read-only; it hashes
 # every media file, so a long recording takes minutes.
 #
-# Pin: Citrus package citrus-recording-transfer 2.0.0 (tag recording-transfer-v2.0.0,
+# Pin: Citrus package citrus-recording-transfer 2.0.1 (tag recording-transfer-v2.0.1,
 # citrus commit 7597cf2d; wheel sha256 75a20b83d189988b60416db40bb27834eba47da22452dd845087cb2ce099d171;
 # writes completion marker v3 with sealer provenance; refuses control characters
 # in source/destination paths).
