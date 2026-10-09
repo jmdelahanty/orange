@@ -127,6 +127,7 @@ if(BUILD_NATIVE_RECORDER)
         "${ORANGE_SOURCE_ROOT}/src/external_recorder_frame_metadata.cpp"
         "${ORANGE_SOURCE_ROOT}/src/video_container_finalization.cpp"
         "${ORANGE_SOURCE_ROOT}/src/FFmpegWriter.cpp"
+        "${ORANGE_SOURCE_ROOT}/src/media_content_digest.cpp"
         "${ORANGE_SOURCE_ROOT}/src/encoder_qp_map.cpp"
         "${CMAKE_CURRENT_BINARY_DIR}/video_encode_profile13.cpp"
         "${CMAKE_CURRENT_BINARY_DIR}/NvEncoder13.cpp"

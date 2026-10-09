@@ -1004,6 +1004,15 @@ if(BUILD_TESTING)
     target_compile_features(realtime_products_tests PRIVATE cxx_std_17)
     add_test(NAME realtime_products_tests COMMAND realtime_products_tests)
 
+    add_executable(media_content_digest_tests
+        "tools/media_content_digest_tests.cpp"
+        "${SRC_DIR}/media_content_digest.cpp"
+    )
+    target_include_directories(media_content_digest_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(media_content_digest_tests PRIVATE cxx_std_17)
+    target_link_libraries(media_content_digest_tests PRIVATE Threads::Threads)
+    add_test(NAME media_content_digest_tests COMMAND media_content_digest_tests)
+
     add_executable(model_identity_tests
         "tools/model_identity_tests.cpp"
         "${SRC_DIR}/model_identity.cpp"

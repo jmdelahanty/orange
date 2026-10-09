@@ -1680,6 +1680,13 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                 }
                 config.gui_external_ipc_native_local_input_configured = true;
             }
+            if (external_ipc.contains("content_digest_receipts") && !external_ipc["content_digest_receipts"].is_null()) {
+                if (!read_optional_bool_field(external_ipc, "content_digest_receipts",
+                                              &config.gui_external_ipc_content_digest_receipts, error_out, ctx)) {
+                    return false;
+                }
+                config.gui_external_ipc_content_digest_receipts_configured = true;
+            }
             if (!read_optional_bounded_int_field(external_ipc, "owner_push_chunk_bytes",
                                                  &config.gui_external_ipc_owner_push_chunk_bytes,
                                                  65536, 1 << 30, error_out, ctx)) {

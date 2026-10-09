@@ -52,6 +52,8 @@ struct AppStorageConfig {
     int gui_external_ipc_full_frame_extra_output_delay = -1;
     bool gui_external_ipc_native_local_input = false;
     bool gui_external_ipc_native_local_input_configured = false;
+    bool gui_external_ipc_content_digest_receipts = false;
+    bool gui_external_ipc_content_digest_receipts_configured = false;
     // recording.external_ipc.owner_push_chunk_bytes -> ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_CHUNK_BYTES
     // (analytics-side push chunk; client default 2 MiB, the value every GUI soak used).
     int gui_external_ipc_owner_push_chunk_bytes = -1;

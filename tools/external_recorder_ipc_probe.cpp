@@ -1,5 +1,6 @@
 #include "NvEncoder/NvEncoderCuda.h"
 #include "FFmpegWriter.h"
+#include "media_content_digest.h"
 #include "external_recorder_ipc_protocol.h"
 #include "external_recorder_frame_metadata.h"
 #include "external_recorder_duration_limit.h"
@@ -151,6 +152,20 @@ struct Options {
     std::string summary_json_path;
     std::string status_json_path;
     std::string gop_routing_csv_path;
+    // Producer-side media content digests (receipt-backed sealer, 2026-10-09):
+    // after each video finalizes, its path is handed to one SCHED_IDLE hasher
+    // thread (never blocking the writer) that writes
+    // <video>.content_digest.json. ORANGE_EXTERNAL_RECORDER_CONTENT_DIGEST_RECEIPTS=1
+    // enables it (default off until the receipt-aware sealer is released);
+    // ORANGE_EXTERNAL_RECORDER_RECORDING_ROOT names the run folder that holds
+    // recording_session.json (default: the parent of the summary JSON's
+    // directory); receipts name video_path relative to it and session_id =
+    // its basename. See src/media_content_digest.h.
+    bool content_digest_receipts = false;
+    std::string content_digest_recording_root;
+    uint32_t content_digest_queue_capacity = 64;
+    uint32_t content_digest_finish_wait_ms = 10000;
+    orange::media_digest::ContentDigestHasher* content_digest_hasher = nullptr;
     std::string session_id;
     std::string stream_id;
     std::string stream_kind = "full_frame";
@@ -442,6 +457,24 @@ uint64_t env_u64(const char* name, const uint64_t default_value)
     return parse_u64(value, name);
 }
 
+// Hand a finalized video to the receipt hasher. Never blocks; a refused or
+// disabled request is a normal, counted outcome. Call only after the writer
+// has been destroyed (trailer, playback patch and finalization sidecar done).
+void request_content_digest_receipt(const Options& options, const std::string& video_path)
+{
+    if (!options.content_digest_receipts || !options.content_digest_hasher || video_path.empty()) {
+        return;
+    }
+    const std::filesystem::path root = options.content_digest_recording_root.empty()
+        ? std::filesystem::path(options.summary_json_path).parent_path().parent_path()
+        : std::filesystem::path(options.content_digest_recording_root);
+    orange::media_digest::ReceiptRequest request;
+    request.video_path = video_path;
+    request.recording_root = root.string();
+    request.session_id = root.filename().string();
+    (void)options.content_digest_hasher->try_enqueue(std::move(request));
+}
+
 Options parse_options(int argc, char** argv)
 {
     Options options;
@@ -472,6 +505,17 @@ Options parse_options(int argc, char** argv)
     // prewarm_first_picture(). ORANGE_EXTERNAL_RECORDER_PREWARM_FIRST_PICTURE=0 disables it.
     options.prewarm_first_picture =
         env_flag_enabled("ORANGE_EXTERNAL_RECORDER_PREWARM_FIRST_PICTURE", true);
+    options.content_digest_receipts =
+        env_flag_enabled("ORANGE_EXTERNAL_RECORDER_CONTENT_DIGEST_RECEIPTS", false);
+    if (const char* root_env = std::getenv("ORANGE_EXTERNAL_RECORDER_RECORDING_ROOT"); root_env && *root_env) {
+        options.content_digest_recording_root = root_env;
+    }
+    if (const char* cap_env = std::getenv("ORANGE_EXTERNAL_RECORDER_CONTENT_DIGEST_QUEUE"); cap_env && *cap_env) {
+        options.content_digest_queue_capacity = parse_u32(cap_env, "ORANGE_EXTERNAL_RECORDER_CONTENT_DIGEST_QUEUE");
+    }
+    if (const char* wait_env = std::getenv("ORANGE_EXTERNAL_RECORDER_CONTENT_DIGEST_FINISH_WAIT_MS"); wait_env && *wait_env) {
+        options.content_digest_finish_wait_ms = parse_u32(wait_env, "ORANGE_EXTERNAL_RECORDER_CONTENT_DIGEST_FINISH_WAIT_MS");
+    }
     if (const char* phase_env = std::getenv("ORANGE_EXTERNAL_RECORDER_ENCODE_PHASE_MS"); phase_env && *phase_env) {
         options.encode_phase_ms = std::atof(phase_env);
     }
@@ -3289,6 +3333,12 @@ private:
 
     void finish_clip_writer_locked()
     {
+        // The receipt is requested only once everything for this clip is
+        // final: the MP4 (trailer, playback patch, finalization sidecar,
+        // keyframe sidecar) and the clip's frame-metadata CSV. Its
+        // appearance is therefore a safe "this video is final" signal.
+        const std::string finished_clip_mp4_path =
+            clip_writer_ ? current_clip_summary_.mp4_path : std::string();
         if (clip_writer_) {
             clip_writer_->quit_thread();
             clip_writer_->join_thread();
@@ -3362,6 +3412,7 @@ private:
         current_clip_summary_ = RollingClipOutputSummary{};
         current_clip_index_ = -1;
         current_clip_pts_counter_ = 0;
+        request_content_digest_receipt(options_, finished_clip_mp4_path);
     }
 
     void ensure_clip_writer_locked(const FrameDescriptor& desc, int clip_index)
@@ -3651,6 +3702,7 @@ private:
                        : "merged MP4 writer thread failed");
         }
         writer_.reset();
+        request_content_digest_receipt(options_, mp4_path_);
     }
 
     void note_first_descriptor_locked(const FrameDescriptor& desc)
@@ -5350,6 +5402,7 @@ private:
             failed_.store(true, std::memory_order_release);
         }
         mp4_writer_.reset();
+        request_content_digest_receipt(options_, options_.mp4_out_path);
     }
 
     void encode_one_direct_source(DirectSourceWorkItem& item)
@@ -6825,6 +6878,20 @@ void write_summary_json(const Options& options,
     out << "  \"fps\": " << options.fps << ",\n";
     out << "  \"resolved_gop_length\": " << encoder_resolved_gop_length(options) << ",\n";
     out << "  \"routing_gop_period\": " << options.gop << ",\n";
+    {
+        const orange::media_digest::ReceiptCounters receipts = options.content_digest_hasher
+            ? options.content_digest_hasher->counters()
+            : orange::media_digest::ReceiptCounters{};
+        out << "  \"content_digest_receipts\": {"
+            << "\"enabled\": " << (options.content_digest_receipts ? "true" : "false")
+            << ", \"requested\": " << receipts.requested
+            << ", \"written\": " << receipts.written
+            << ", \"abandoned\": " << receipts.abandoned
+            << ", \"failed\": " << receipts.failed
+            << ", \"queue_capacity\": " << options.content_digest_queue_capacity
+            << ", \"finish_wait_ms\": " << options.content_digest_finish_wait_ms
+            << "},\n";
+    }
     out << "  \"recording_config_fingerprint_scope\": \""
         << orange::external_recorder::ipc::kRecordingConfigFingerprintScope
         << "\",\n";
@@ -7254,10 +7321,17 @@ int main(int argc, char** argv)
     int listen_fd = -1;
     int client_fd = -1;
     Options options;
+    std::unique_ptr<orange::media_digest::ContentDigestHasher> content_digest_hasher;
     IpcProtocolState protocol_state;
     uint64_t status_heartbeat_sequence = 0;
     try {
         options = parse_options(argc, argv);
+        if (options.content_digest_receipts) {
+            content_digest_hasher = std::make_unique<orange::media_digest::ContentDigestHasher>(
+                options.content_digest_queue_capacity);
+            content_digest_hasher->start();
+            options.content_digest_hasher = content_digest_hasher.get();
+        }
         const orange::external_recorder::DurationSafetyLimit duration_limit =
             duration_safety_limit(options);
         std::signal(SIGINT, signal_handler);
@@ -8136,6 +8210,12 @@ int main(int argc, char** argv)
             protocol_state.descriptor_intake_completed_cleanly,
             &shard_summaries);
         encode_summary = aggregate_encode_summaries(shard_summaries);
+        if (content_digest_hasher) {
+            // After the recorder's own finalization: bounded wait, then the
+            // rest is abandoned (the sealer hashes those files itself).
+            content_digest_hasher->finish(
+                std::chrono::milliseconds(options.content_digest_finish_wait_ms));
+        }
         write_summary_json(
             options,
             observed_session_id,

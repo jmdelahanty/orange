@@ -5192,6 +5192,14 @@ int main(int /*argc*/, char ** /*args*/) {
             app_storage_config.gui_external_ipc_native_local_input ? "1" : "0",
             "full-frame external recorder native local input");
     }
+    if (app_storage_config.gui_external_ipc_content_digest_receipts_configured) {
+        // Recorder-side media content digests (receipt-backed sealer); the
+        // supervised recorders inherit the variable.
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_EXTERNAL_RECORDER_CONTENT_DIGEST_RECEIPTS",
+            app_storage_config.gui_external_ipc_content_digest_receipts ? "1" : "0",
+            "external recorder content digest receipts");
+    }
     if (app_storage_config.gui_external_ipc_owner_push_chunk_bytes > 0) {
         set_gui_env_from_app_config_if_absent(
             "ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_CHUNK_BYTES",

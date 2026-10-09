@@ -344,6 +344,7 @@ struct ExperimentSpec {
     bool acq_ring_release_log = false;   // ORANGE_ACQ_RING_RELEASE_LOG (per-frame ring release timeline)
     bool acq_cadence_probe_all = false;  // ORANGE_ACQ_CADENCE_PROBE_ALL (cadence probe on every frame)  // ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_CHUNK_BYTES (0: client default 2 MB)
     bool external_recorder_native_local_input = false;  // full-frame recorders get --native-local-input (CUDA 13 recorder build; contract recorder_tool_path must point at it)
+    bool external_recorder_content_digest_receipts = false;  // recorders write <video>.content_digest.json after each finalize (receipt-backed sealer); env ORANGE_EXTERNAL_RECORDER_CONTENT_DIGEST_RECEIPTS
     std::string external_recorder_native_kernel_ptx;    // optional --native-local-kernel-ptx path
     int external_recorder_extra_output_delay = -1;    // ORANGE_EXTERNAL_RECORDER_EXTRA_OUTPUT_DELAY (-1: probe default 3); reaches crop recorders too
     int external_recorder_full_frame_extra_output_delay = -1;  // --extra-output-delay argv on full_frame recorders only (-1: off)
@@ -8484,6 +8485,8 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->acq_cadence_probe_all = fixed.value("acq_cadence_probe_all", false);
     spec->external_recorder_native_local_input =
         fixed.value("external_recorder_native_local_input", false);
+    spec->external_recorder_content_digest_receipts =
+        fixed.value("external_recorder_content_digest_receipts", false);
     spec->external_recorder_native_kernel_ptx =
         fixed.value("external_recorder_native_kernel_ptx", std::string());
     spec->external_recorder_extra_output_delay =
@@ -9260,6 +9263,8 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                  spec.external_recorder_owner_push},
                                                                 {"external_recorder_native_local_input",
                                                                  spec.external_recorder_native_local_input},
+                                                                {"external_recorder_content_digest_receipts",
+                                                                 spec.external_recorder_content_digest_receipts},
                                                                 {"external_recorder_native_kernel_ptx",
                                                                  spec.external_recorder_native_kernel_ptx},
                                                                 {"external_recorder_full_frame_extra_output_delay",
@@ -12065,6 +12070,11 @@ int run_local_experiment(const HeadlessCliOptions& options)
     }
     setenv("ORANGE_HEADLESS_NATIVE_LOCAL_INPUT",
            spec.external_recorder_native_local_input ? "1" : "0", 1);
+    // The recorder processes inherit this environment; the recorder itself
+    // reads the flag (default off) and derives the recording root from its
+    // summary path.
+    setenv("ORANGE_EXTERNAL_RECORDER_CONTENT_DIGEST_RECEIPTS",
+           spec.external_recorder_content_digest_receipts ? "1" : "0", 1);
     setenv("ORANGE_HEADLESS_NATIVE_KERNEL_PTX",
            spec.external_recorder_native_kernel_ptx.c_str(), 1);
     setenv("ORANGE_HEADLESS_FULL_FRAME_EXTRA_OUTPUT_DELAY",
