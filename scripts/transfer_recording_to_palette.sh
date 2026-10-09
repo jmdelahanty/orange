@@ -18,6 +18,14 @@
 set -euo pipefail
 
 # Edited per delivery by the Orange session; --latest/explicit folder override it.
+#
+# Sealer 2.1.0 (2026-10-09) is single pass: it copies and hashes itself (no
+# rsync), verifies every delivered file from storage (fsync + O_DIRECT) and
+# journals progress. An interrupted transfer resumes when re-run (Ctrl-C
+# prints how) and recopies only unfinished files; it refuses if the SOURCE
+# changed between attempts (bound by _citrus_transfer/reservation.json), so a
+# changed source needs a new destination name; a destination half-written by
+# a 2.0.x sealer must be finished with that version or re-sent to a new name.
 DEFAULT_RUN="/home/jeremy/orange_data/exp/unsorted/fourcam_palette_fish_19220_1_rolling_crops_shadow_20261009_004349/fourcam_palette_fish_19220_1_rolling_crops_shadow_20261009_004349__run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25__aq_off__tempaq_off__lookahead_off"
 
 DOMAIN_USER="${ORANGE_TRANSFER_DOMAIN_USER:-delahantyj@hhmi.org}"
