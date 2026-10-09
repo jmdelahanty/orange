@@ -183,6 +183,7 @@
       "mode": "real",
       "engine_path": "/home/jeremy/orange_data/pose/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915/engines/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915_a16_gpu5_trt100_fp16_bo5_avg32.engine",
       "skeleton_id": "fish_v1",
+      "skeleton_path": "/home/jeremy/orange_data/pose/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915/engines/pose_model_skeleton.json",
       "input_width": 192,
       "input_height": 192,
       "input_layout": "nchw",
