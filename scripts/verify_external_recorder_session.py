@@ -1492,7 +1492,10 @@ def verify_status_sidecar(
                 "summary recording_control.record_for_seconds",
             ),
             fps=as_int(summary.get("fps"), "summary fps"),
-            gop=as_int(summary.get("resolved_gop_length"), "summary resolved_gop_length"),
+            # The duration/stop granularity follows the shards' routing period
+            # (routing_gop_period since the 2026-10-08 recorder; older summaries
+            # reported it as resolved_gop_length).
+            gop=as_int(summary.get("routing_gop_period", summary.get("resolved_gop_length")), "summary routing_gop_period"),
             frames_received=as_int(status.get("frames_received"), "status frames_received"),
             require_present=True,
         )
@@ -1959,8 +1962,8 @@ def verify_summary(
             ),
             fps=as_int(summary.get("fps"), "summary fps"),
             gop=as_int(
-                summary.get("resolved_gop_length"),
-                "summary resolved_gop_length",
+                summary.get("routing_gop_period", summary.get("resolved_gop_length")),
+                "summary routing_gop_period",
             ),
             frames_received=frames_received,
             require_present=True,
