@@ -376,6 +376,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/session/external_crop_recorder_config.cpp"
     "${SRC_DIR}/session/crop_rolling_sidecars.cpp"
     "${SRC_DIR}/session/crop_rolling_outputs.cpp"
+    "${SRC_DIR}/session/realtime_products.cpp"
     "${SRC_DIR}/session/recording_observation_binding.cpp"
     "${SRC_DIR}/session/recording_observation_finalization.cpp"
     "${SRC_DIR}/session/recording_observation_identity.cpp"
@@ -419,6 +420,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/session/external_crop_recorder_config.cpp"
     "${SRC_DIR}/session/crop_rolling_sidecars.cpp"
     "${SRC_DIR}/session/crop_rolling_outputs.cpp"
+    "${SRC_DIR}/session/realtime_products.cpp"
     "${SRC_DIR}/session/recording_observation_binding.cpp"
     "${SRC_DIR}/session/recording_observation_finalization.cpp"
     "${SRC_DIR}/session/recording_observation_identity.cpp"
@@ -991,6 +993,14 @@ if(BUILD_TESTING)
     target_include_directories(recording_context_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(recording_context_tests PRIVATE cxx_std_17)
     add_test(NAME recording_context_tests COMMAND recording_context_tests)
+
+    add_executable(realtime_products_tests
+        "tools/realtime_products_tests.cpp"
+        "${SRC_DIR}/session/realtime_products.cpp"
+    )
+    target_include_directories(realtime_products_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(realtime_products_tests PRIVATE cxx_std_17)
+    add_test(NAME realtime_products_tests COMMAND realtime_products_tests)
 
     add_executable(recording_subject_reference_tests
         "tools/recording_subject_reference_tests.cpp"

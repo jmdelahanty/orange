@@ -1,5 +1,7 @@
 #include "session/crop_rolling_outputs.h"
 
+#include <algorithm>
+
 #include "external_recorder_contract_utils.h"
 
 #include <cstdint>
@@ -438,6 +440,12 @@ bool attach_crop_rolling_outputs_to_clips(
                 {"clip_id", clip.value("clip_id", std::string())},
                 {"stream_id", clip.value("stream_id", std::string())},
                 {"video_backend", "external_ipc"},
+                // Crop encoder: all-intra lossless HEVC (NVENC gopLength 1, every
+                // frame an IDR, so the MP4 carries no stss: every sample is a sync
+                // sample). The two crop shards alternate GOP-parity routing periods
+                // of routing_gop_period frames; that period is not the encoder GOP.
+                {"encoder", {{"gop_length", 1}, {"all_intra", true}, {"sync_samples", "all"}}},
+                {"routing_gop_period", json_int_or(crop_recording, "routing_gop_period", 0)},
                 {"metadata_backend", metadata_backend},
                 {"summary_json", clip.value("summary", std::string())},
                 {"selection_policy", "largest_detection_by_confidence"},
@@ -563,6 +571,12 @@ ExternalCropRecordingBackendResult build_external_crop_recording_backend(
                 {"env_key", stream.value("env_key", std::string())},
                 {"scope", result.rolling_requested ? "session_aggregate" : "single_clip"},
                 {"video_backend", "external_ipc"},
+                // Crop encoder: all-intra lossless HEVC (NVENC gopLength 1, every
+                // frame an IDR, so the MP4 carries no stss: every sample is a sync
+                // sample). The two crop shards alternate GOP-parity routing periods
+                // of routing_gop_period frames; that period is not the encoder GOP.
+                {"encoder", {{"gop_length", 1}, {"all_intra", true}, {"sync_samples", "all"}}},
+                {"routing_gop_period", json_int_or(stream, "gop", 0)},
                 {"metadata_backend", inputs.session_metadata_backend},
                 {"analytics_gpu_id", json_int_or(stream, "analytics_gpu_id", -1)},
                 {"recorder_gpu_id", json_int_or(stream, "recorder_gpu_id", -1)},
@@ -598,7 +612,15 @@ ExternalCropRecordingBackendResult build_external_crop_recording_backend(
                 {"status_json", stream.value("status_json", std::string())},
                 {"encode_fps", encode_fps},
                 {"encode_max_fps", json_int_or(stream, "encode_max_fps", 0)},
-                {"gop", json_int_or(stream, "gop", 0)},
+                // The crop encoder is all-intra by design (NVENC gopLength 1,
+                // every frame an IDR; the MP4 therefore carries no stss, which
+                // declares every sample a sync sample). The contract's "gop" is
+                // the GOP-parity ROUTING period of the two crop shards, not the
+                // encoder GOP; a 2026-10-08 Palette sync-sample check read it as
+                // the encoder GOP and refused a correct file.
+                {"gop", 1},
+                {"all_intra", true},
+                {"routing_gop_period", json_int_or(stream, "gop", 0)},
                 {"terminal_tail_coalesce_frames",
                  json_u64_or(stream, "terminal_tail_coalesce_frames", 0ULL)},
                 {"codec", codec},
@@ -824,9 +846,14 @@ ExternalCropRecordingBackendResult build_external_crop_recording_backend(
         fail("external crop recorder contract declares no crop streams");
     }
 
+    int routing_gop_period = 0;
+    for (const auto& stream_item : streams.items()) {
+        routing_gop_period = std::max(routing_gop_period, json_int_or(stream_item.value(), "gop", 0));
+    }
     result.crop_recording = {
         {"mode", "external_ipc"},
         {"status", result.ok ? "completed" : "incomplete"},
+        {"routing_gop_period", routing_gop_period},
         {"artifact_root", artifact_root},
         {"source", "external_crop_recorder_summary"},
         {"summary_json", summary_paths},

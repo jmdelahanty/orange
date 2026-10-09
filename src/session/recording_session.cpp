@@ -1,4 +1,5 @@
 #include "session/recording_session.h"
+#include "session/realtime_products.h"
 #include "recording_context.h"
 #include "effective_configuration.h"
 #include "recording_startup_audit.h"
@@ -2606,6 +2607,11 @@ nlohmann::json build_single_clip_recording_session_manifest(
     }
     add_recording_geometry_contract_reference(
         &manifest, options.recording_folder);
+    // Per-camera realtime products (detection and pose event logs, perf and
+    // diagnostic CSVs) declared with digests and row counts (2026-10-08).
+    manifest["realtime_products"] = build_realtime_products_json(
+        options.recording_folder,
+        manifest.value("cameras", nlohmann::json::array()).get<std::vector<std::string>>());
     return manifest;
 }
 
@@ -2703,6 +2709,11 @@ nlohmann::json build_rolling_clip_recording_session_manifest(
     }
     add_recording_geometry_contract_reference(
         &manifest, options.recording_folder);
+    // Per-camera realtime products (detection and pose event logs, perf and
+    // diagnostic CSVs) declared with digests and row counts (2026-10-08).
+    manifest["realtime_products"] = build_realtime_products_json(
+        options.recording_folder,
+        manifest.value("cameras", nlohmann::json::array()).get<std::vector<std::string>>());
     return manifest;
 }
 
