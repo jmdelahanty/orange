@@ -286,7 +286,7 @@ def main() -> int:
     record = {
         "schema_id": "orange.tensorrt_int8_calibration",
         "schema_version": 1,  # additive: frames_used_sha256 / frames_used_bytes since 2026-10-09
-        "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%Z", time.gmtime()).replace("GMT", "Z").replace("UTC", "Z"),
+        "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "onnx": {"path": str(onnx_path.resolve()), "sha256": sha256(onnx_path)},
         "tensorrt_version": trt.__version__,
         "device": args.device,
