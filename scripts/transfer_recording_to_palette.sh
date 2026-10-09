@@ -60,7 +60,7 @@ dest="$STAGING_ROOT/$exp_name"
 
 echo "[transfer] run:  $run"
 echo "[transfer] dest: $dest"
-echo "[transfer] 1/3 sealer pre-check (validate only; hashes all media)"
+echo "[transfer] 1/3 sealer pre-check (structure only; no video bytes read)"
 "$REPO_ROOT/scripts/check_recording_transfer_source.sh" "$run"
 echo "[transfer] 2/3 dry run"
 "$TRANSFER_SCRIPT" --no-dest-parent "$DOMAIN_USER" "$run" johnsonlab-staging "$dest" --dry-run

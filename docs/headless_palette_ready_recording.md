@@ -55,7 +55,7 @@ scripts/run_detect_latency_spec.sh --orange-client <tree>/targets/release/orange
 # 2. Orange checks
 scripts/validate_gui_ptp_recording.py --latest-complete        # strict validator (now accepts headless)
 scripts/verify_timed_recording.py <folder>
-# 3. will it seal? (read-only, hashes all media)
+# 3. will it seal? (read-only structure check; video bytes are hashed by the transfer itself)
 scripts/check_recording_transfer_source.sh <folder>
 # 4. the operator's transfer seals the envelope and moves the folder to the
 #    group's staging (as the domain user; dry run first):
