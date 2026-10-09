@@ -1,0 +1,130 @@
+{
+  "2010093": {
+    "dish": {
+      "dish_id": "19234_3",
+      "dish_uuid": "a48e2b86-d1c6-458f-aba1-ecd50b37425a",
+      "revision": 3,
+      "updated_at": "2026-10-09 15:45:02"
+    },
+    "dish_fish": [
+      {
+        "fish_id": "55f673e1-6e2c-4852-b7f0-fa447ebe292e",
+        "revision": 3,
+        "updated_at": "2026-10-09 15:45:22",
+        "subject_label": "Z1"
+      },
+      {
+        "fish_id": "a58c175e-4de5-4513-b8d6-b34317e3d9c7",
+        "revision": 3,
+        "updated_at": "2026-10-09 15:45:22",
+        "subject_label": "Z?"
+      },
+      {
+        "fish_id": "d440390c-96e5-4e31-a537-2649ebe1d602",
+        "revision": 3,
+        "updated_at": "2026-10-09 15:45:22",
+        "subject_label": "Z?"
+      },
+      {
+        "fish_id": "5f6d167d-d893-4565-b7bb-1810563ef4f8",
+        "revision": 3,
+        "updated_at": "2026-10-09 15:45:22",
+        "subject_label": "Z?"
+      },
+      {
+        "fish_id": "63c2f4e8-b310-4aa6-a7dc-8b4f329e8772",
+        "revision": 3,
+        "updated_at": "2026-10-09 15:45:22",
+        "subject_label": "Z?"
+      },
+      {
+        "fish_id": "6a28ab97-32f9-4035-b49c-abce72dd8d98",
+        "revision": 3,
+        "updated_at": "2026-10-09 15:45:22",
+        "subject_label": "Z?"
+      },
+      {
+        "fish_id": "57be4639-9b2c-494a-816a-7c75590c7002",
+        "revision": 3,
+        "updated_at": "2026-10-09 15:45:22",
+        "subject_label": "Z?"
+      },
+      {
+        "fish_id": "8f76b755-ee28-43cd-8281-4a4726a5a284",
+        "revision": 3,
+        "updated_at": "2026-10-09 15:45:22",
+        "subject_label": "Z?"
+      },
+      {
+        "fish_id": "4ca82151-79db-4c48-9e7c-3eba7213941c",
+        "revision": 3,
+        "updated_at": "2026-10-09 15:45:22",
+        "subject_label": "Z?"
+      },
+      {
+        "fish_id": "f2bc961c-8ad4-4380-a836-d1b1ccb10647",
+        "revision": 3,
+        "updated_at": "2026-10-09 15:45:22",
+        "subject_label": "Z?"
+      }
+    ],
+    "dish_fish_lookup": {
+      "error": null,
+      "http_status": 200,
+      "status": "complete"
+    },
+    "reason": "",
+    "schema_id": "orange.recording_subject_reference",
+    "schema_version": 3,
+    "status": "collected",
+    "subject_count": 1,
+    "zebrobot": {
+      "api_schema_version": 2,
+      "base_url": "http://delahantyj-ws1.hhmi.org",
+      "consumer_schema_sha256": "f5280e430d4b5f10c3643cb89a6187eacc45fdac7af55b2e81f5e315b7b754dc",
+      "endpoint": "/dishes/19234_3/citrus-snapshot",
+      "error": null,
+      "fish_endpoint": "/dishes/19234_3/fish",
+      "http_status": 200,
+      "queried_at_utc": "2026-10-10T00:00:00Z",
+      "service_commit": "a56e219194d6dd9e0bfecf2f4a880c8778098bc2",
+      "service_commit_dirty": false
+    },
+    "subject": {
+      "fish_id": "55f673e1-6e2c-4852-b7f0-fa447ebe292e",
+      "source": "citrus_binding",
+      "revision": 3,
+      "updated_at": "2026-10-09 15:45:22",
+      "subject_label": "Z1",
+      "housing_unit": "19234_3:A1",
+      "dish_id": "19234_3",
+      "lookup": {
+        "status": "complete",
+        "http_status": 200,
+        "error": null,
+        "endpoint": "/fish/55f673e1-6e2c-4852-b7f0-fa447ebe292e"
+      }
+    },
+    "binding_subject": {
+      "source": "citrus_binding",
+      "citrus_subject_id": "2f1c9c3e-8d2a-4b7e-9d0a-5c1b7e3a9f21",
+      "subject_type": "fish",
+      "subject_count": 1,
+      "dish_id": "19234_3",
+      "dish_uuid": "a48e2b86-d1c6-458f-aba1-ecd50b37425a",
+      "dish_revision": 3,
+      "dish_updated_at": "2026-10-09 15:45:02",
+      "mzb_fish_id": "55f673e1-6e2c-4852-b7f0-fa447ebe292e",
+      "fish_revision": 3,
+      "fish_updated_at": "2026-10-09 15:45:22",
+      "subject_label": "Z1",
+      "acceptance_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "observation_context_id": "ctx-2010093"
+    },
+    "operator_subject_alias": {
+      "value": "Z1 (Jeremy's tank 2)",
+      "source": "gui",
+      "entered_at_utc": "2026-10-10T14:00:00Z"
+    }
+  }
+}
