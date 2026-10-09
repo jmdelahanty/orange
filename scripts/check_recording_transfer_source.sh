@@ -5,8 +5,8 @@
 # seal and that Palette's intake will accept its layout. Read-only; it hashes
 # every media file, so a long recording takes minutes.
 #
-# Pin: Citrus package citrus-recording-transfer 2.2.0 (tag recording-transfer-v2.2.0,
-# citrus commit befd8a8d; wheel sha256 44b659d95e3c277aef70158044012383f5cc2868db2067ade668b94c09de4515;
+# Pin: Citrus package citrus-recording-transfer 3.0.0 (tag recording-transfer-v3.0.0,
+# citrus commit 334f53a8; wheel sha256 eb12e5df5435eb5ca11907cd5a0ceba9092b17bcc9d17f28a757539fadbdf1c9;
 # writes completion marker v3 with sealer provenance; refuses control characters
 # in source/destination paths).
 # The package files are verified in a Citrus checkout by sha256 (agreed with
@@ -20,13 +20,13 @@ set -euo pipefail
 [ $# -eq 1 ] || { sed -n 2,14p "$0"; exit 2; }
 FOLDER="$1"
 CITRUS_ROOT="${CITRUS_ROOT:-/home/jeremy/citrus}"
-PIN_COMMIT="befd8a8da8109fcebfe4d8d40ef2784430e36b4a"   # tag recording-transfer-v2.2.0 (2026-10-09: --check-structure-only pre-check; same refusals as the old validate mode without reading video bytes; video bytes are hashed once during the transfer and verified from storage)
+PIN_COMMIT="334f53a8f61183b9bdf61270bf0e98d0cd3b9557"   # tag recording-transfer-v3.0.0 (2026-10-09: --validate-source-only removed; --check-structure-only as in 2.2.0; transfers, --verify-only and formats unchanged)
 PKG="python/citrus_recording_transfer/src/citrus_recording_transfer"
 declare -A PIN=(
-  ["$PKG/sealer.py"]="540541bddaafc523a27dd61526ea2089f5f6e969ec6e8b264bbfb3277506c365"
-  ["$PKG/snapshot.py"]="62950e3e8db64d2d57608a6c5fe59049545079158cefaf5d7f48f5b20ffe6c0c"
+  ["$PKG/sealer.py"]="e659e07154eadf6a5d2edfb84c7a630ad434f4073a502c293c3c3b530ea806fc"
+  ["$PKG/snapshot.py"]="d3fd3f6e74e902cc9088f6788762e64059fbf4e2bcbbcc0af60be00ba4c6d313"
   ["$PKG/completion_marker.py"]="7fc5ff68c52ef489790373a4f76cac82483f15ecb77b50c2dd587ca72f0e684d"
-  ["$PKG/__init__.py"]="910889f4c9239d2b77e7b2e3b0531dfd3566d168aad3cb27e7d2a6d4b29233be"
+  ["$PKG/__init__.py"]="fe7d43e463779c508c7aee4182a076df042d2d5664c7083462c6a0b7bb0ae4c0"
   ["$PKG/schemas/recording_transfer_v2.schema.json"]="c12832b35657f21514392215d838f401be670e76ac22ae6dab28bf304391503c"
   ["scripts/recording_transfer_v2.py"]="c7d8c67890949859330f8aa8d704e5cf36e29dfbdd3d238f31a2d2d6a99de2ff"
 )
@@ -38,7 +38,7 @@ for rel in "${!PIN[@]}"; do
     [ "$got" = "${PIN[$rel]}" ] || { echo "sealer file $rel sha256 $got differs from the pin ${PIN[$rel]}; ask Citrus before re-pinning" >&2; exit 2; }
 done
 head_commit="$(git -C "$CITRUS_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
-echo "sealer: citrus-recording-transfer 2.2.0 from $CITRUS_ROOT at $head_commit (pin $PIN_COMMIT; the six pinned files match)"
+echo "sealer: citrus-recording-transfer 3.0.0 from $CITRUS_ROOT at $head_commit (pin $PIN_COMMIT; the six pinned files match)"
 echo "checking source structure $FOLDER (no video bytes read; no transfer, no writes)"
 # --check-structure-only (2.2.0, Jeremy 2026-10-09): the same checks and refusals as the
 # old --validate-source-only without reading video bytes (every other artifact is
