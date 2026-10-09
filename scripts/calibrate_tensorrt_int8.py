@@ -285,8 +285,8 @@ def main() -> int:
 
     record = {
         "schema_id": "orange.tensorrt_int8_calibration",
-        "schema_version": 1,
-        "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "schema_version": 1,  # additive: frames_used_sha256 / frames_used_bytes since 2026-10-09
+        "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%Z", time.gmtime()).replace("GMT", "Z").replace("UTC", "Z"),
         "onnx": {"path": str(onnx_path.resolve()), "sha256": sha256(onnx_path)},
         "tensorrt_version": trt.__version__,
         "device": args.device,
@@ -298,6 +298,12 @@ def main() -> int:
         "frames_dir": str(Path(args.frames).resolve()),
         "frames_used": calibrator.used,
         "frame_count": len(calibrator.used),
+        # Per-frame content digests (2026-10-09): Palette archives calibration
+        # sets by content, and min-max calibration depends on the exact bytes.
+        "frames_used_sha256": {
+            name: sha256(Path(args.frames) / name) for name in calibrator.used
+        },
+        "frames_used_bytes": sum((Path(args.frames) / name).stat().st_size for name in calibrator.used),
         "cache": {"path": str(cache_path.resolve()), "sha256": sha256(cache_path), "bytes": cache_path.stat().st_size},
         "calibration_seconds": round(elapsed, 1),
     }
