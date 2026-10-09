@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.recording_model_artifacts.v1",
+  "title": "Orange recording model artifacts (version 1)",
+  "description": "recording_session.json model_artifacts: for every distinct engine that ran (keyed by engine sha256, the same value as models.<serial>.<detect|pose>.runtime.engine_sha256 in the snapshot) the engine manifest and, for INT8 engines, the calibration record and the trtexec calibration cache copied into <recording folder>/models/<engine_sha256>/ and declared with path (relative to the recording folder), size and sha256. models_keys lists the cameras and tasks that used the engine. status present = every file copied; partial = some missing; absent = the engine manifest was not present on the rig (nothing copied). Written by materialize_model_artifacts (src/session/model_artifacts.cpp) at finalization; closed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "root",
+    "engines"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "orange.recording_model_artifacts"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "root": {
+      "const": "models"
+    },
+    "engines": {
+      "type": "object",
+      "additionalProperties": false,
+      "propertyNames": {
+        "pattern": "^[0-9a-f]{64}$"
+      },
+      "patternProperties": {
+        "^[0-9a-f]{64}$": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "engine_sha256",
+            "task",
+            "model_id",
+            "engine_path",
+            "engine_bytes",
+            "precision",
+            "build_id",
+            "run_id",
+            "models_keys",
+            "files",
+            "status"
+          ],
+          "properties": {
+            "engine_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "task": {
+              "enum": [
+                "detect",
+                "pose"
+              ]
+            },
+            "model_id": {
+              "type": "string"
+            },
+            "engine_path": {
+              "type": "string"
+            },
+            "engine_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "precision": {
+              "type": "string"
+            },
+            "build_id": {
+              "type": "string"
+            },
+            "run_id": {
+              "type": "string"
+            },
+            "models_keys": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "pattern": "^models\\.[0-9]+\\.(detect|pose)$"
+              }
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "role",
+                  "source_path",
+                  "path",
+                  "size_bytes",
+                  "sha256",
+                  "status"
+                ],
+                "properties": {
+                  "role": {
+                    "enum": [
+                      "engine_manifest",
+                      "int8_calibration_record",
+                      "int8_calibration_cache"
+                    ]
+                  },
+                  "source_path": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string",
+                    "pattern": "^models/[0-9a-f]{64}/[^/]+$"
+                  },
+                  "size_bytes": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "sha256": {
+                    "type": "string",
+                    "pattern": "^([0-9a-f]{64})?$"
+                  },
+                  "status": {
+                    "enum": [
+                      "present",
+                      "absent",
+                      "copy_failed"
+                    ]
+                  }
+                }
+              }
+            },
+            "status": {
+              "enum": [
+                "present",
+                "partial",
+                "absent"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

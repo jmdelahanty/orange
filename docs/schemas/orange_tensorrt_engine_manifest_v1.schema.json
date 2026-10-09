@@ -1,0 +1,708 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.tensorrt_engine_manifest.v1",
+  "title": "Orange TensorRT engine manifest (version 1)",
+  "description": "`<stem>.manifest.json` written beside every TensorRT engine Orange runs (detect: scripts/write_tensorrt_engine_manifest.py; pose: scripts/write_pose_tensorrt_engine_manifest.py). Identifies the engine by content (engine.sha256), its sources (ONNX, weights, manifests), the build (trtexec, TensorRT version, builder GPU, options, and since 2026-10-09 build.environment with host / driver / CUDA toolkit) and, for INT8 engines, the calibration (calibrator, cache and record digests, frames). The recording snapshot's models.<serial>.<detect|pose>.runtime.engine_manifest names this file by path and sha256. Published 2026-10-09 for Palette to pin; closed at the top level and in the engine, source, build, build.selected_gpu, build.environment and build.int8_calibration blocks; the task-specific blocks are optional and left open.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "created_at_utc",
+    "status",
+    "deployment_runtime",
+    "target_hardware_class",
+    "palette_run_id",
+    "source",
+    "engine",
+    "precision",
+    "build"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "orange.tensorrt_engine_manifest"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "task": {
+      "enum": [
+        "detect",
+        "pose"
+      ]
+    },
+    "created_at_utc": {
+      "type": "string"
+    },
+    "updated_at_utc": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string"
+    },
+    "deployment_runtime": {
+      "type": "string"
+    },
+    "target_hardware_class": {
+      "type": "string"
+    },
+    "palette_run_id": {
+      "type": "string"
+    },
+    "palette_target": {
+      "type": "object"
+    },
+    "set_id": {
+      "type": "string"
+    },
+    "build_id": {
+      "type": "string",
+      "description": "recommended; absent from manifests written before 2026-09"
+    },
+    "build_stamp": {
+      "type": "string"
+    },
+    "selector_activation": {
+      "type": "boolean"
+    },
+    "precision": {
+      "enum": [
+        "fp32",
+        "fp16",
+        "int8",
+        "best"
+      ]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "onnx",
+        "weights"
+      ],
+      "properties": {
+        "onnx": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "bytes": {
+              "type": "integer"
+            },
+            "relative_path": {
+              "type": "string"
+            },
+            "source_path": {
+              "type": "string"
+            },
+            "palette_manifest_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "present": {
+              "type": "boolean"
+            },
+            "expected_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "note": {
+              "type": "string"
+            },
+            "payload_digest": {
+              "type": "string"
+            },
+            "manifest_path": {
+              "type": "string"
+            },
+            "manifest_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "manifest_dataset_ids": {
+              "type": "array"
+            }
+          },
+          "additionalProperties": true
+        },
+        "onnx_manifest": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "bytes": {
+              "type": "integer"
+            },
+            "relative_path": {
+              "type": "string"
+            },
+            "source_path": {
+              "type": "string"
+            },
+            "palette_manifest_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "present": {
+              "type": "boolean"
+            },
+            "expected_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "note": {
+              "type": "string"
+            },
+            "payload_digest": {
+              "type": "string"
+            },
+            "manifest_path": {
+              "type": "string"
+            },
+            "manifest_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "manifest_dataset_ids": {
+              "type": "array"
+            }
+          },
+          "additionalProperties": true
+        },
+        "weights": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "bytes": {
+              "type": "integer"
+            },
+            "relative_path": {
+              "type": "string"
+            },
+            "source_path": {
+              "type": "string"
+            },
+            "palette_manifest_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "present": {
+              "type": "boolean"
+            },
+            "expected_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "note": {
+              "type": "string"
+            },
+            "payload_digest": {
+              "type": "string"
+            },
+            "manifest_path": {
+              "type": "string"
+            },
+            "manifest_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "manifest_dataset_ids": {
+              "type": "array"
+            }
+          },
+          "additionalProperties": true
+        },
+        "training_manifest": {
+          "type": "object"
+        },
+        "canonical_manifest": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "bytes": {
+              "type": "integer"
+            },
+            "relative_path": {
+              "type": "string"
+            },
+            "source_path": {
+              "type": "string"
+            },
+            "palette_manifest_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "present": {
+              "type": "boolean"
+            },
+            "expected_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "note": {
+              "type": "string"
+            },
+            "payload_digest": {
+              "type": "string"
+            },
+            "manifest_path": {
+              "type": "string"
+            },
+            "manifest_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "manifest_dataset_ids": {
+              "type": "array"
+            }
+          },
+          "additionalProperties": true
+        },
+        "input_contract": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "bytes": {
+              "type": "integer"
+            },
+            "relative_path": {
+              "type": "string"
+            },
+            "source_path": {
+              "type": "string"
+            },
+            "palette_manifest_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "present": {
+              "type": "boolean"
+            },
+            "expected_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "note": {
+              "type": "string"
+            },
+            "payload_digest": {
+              "type": "string"
+            },
+            "manifest_path": {
+              "type": "string"
+            },
+            "manifest_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "manifest_dataset_ids": {
+              "type": "array"
+            }
+          },
+          "additionalProperties": true
+        },
+        "source_export_manifest": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "bytes": {
+              "type": "integer"
+            },
+            "relative_path": {
+              "type": "string"
+            },
+            "source_path": {
+              "type": "string"
+            },
+            "palette_manifest_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "present": {
+              "type": "boolean"
+            },
+            "expected_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "note": {
+              "type": "string"
+            },
+            "payload_digest": {
+              "type": "string"
+            },
+            "manifest_path": {
+              "type": "string"
+            },
+            "manifest_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "manifest_dataset_ids": {
+              "type": "array"
+            }
+          },
+          "additionalProperties": true
+        }
+      }
+    },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "bytes",
+        "format",
+        "portable"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "bytes": {
+          "type": "integer"
+        },
+        "format": {
+          "type": "string"
+        },
+        "portable": {
+          "type": "boolean"
+        }
+      }
+    },
+    "input_contract": {
+      "type": "object"
+    },
+    "outputs": {
+      "type": "array"
+    },
+    "nms": {
+      "type": "object"
+    },
+    "plugins": {
+      "type": "object"
+    },
+    "bindings": {
+      "type": "array"
+    },
+    "keypoints": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool",
+        "tensorrt_version"
+      ],
+      "properties": {
+        "tool": {
+          "type": "string"
+        },
+        "trtexec_path": {
+          "type": "string"
+        },
+        "tensorrt_version": {
+          "type": "string"
+        },
+        "tensorrt_log_version": {
+          "type": "string"
+        },
+        "cuda_compiler_version": {
+          "type": "string"
+        },
+        "driver_version": {
+          "type": "string"
+        },
+        "cuda_toolkit": {
+          "type": "string"
+        },
+        "selected_gpu": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "device_id": {
+              "type": "integer"
+            },
+            "name": {
+              "type": "string"
+            },
+            "uuid": {
+              "type": "string"
+            },
+            "pci_bus_id": {
+              "type": "string"
+            },
+            "compute_capability": {
+              "type": "string"
+            },
+            "sm_count": {
+              "type": "integer"
+            },
+            "memory_total_mib_nvidia_smi": {
+              "type": "number"
+            },
+            "device_global_memory_mib_trtexec": {
+              "type": "number"
+            }
+          }
+        },
+        "selected_device": {
+          "type": "string"
+        },
+        "selected_device_id": {
+          "type": "integer"
+        },
+        "selected_device_uuid": {
+          "type": "string"
+        },
+        "compute_capability": {
+          "type": "string"
+        },
+        "environment": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "builder host (since 2026-10-09)",
+          "properties": {
+            "hostname": {
+              "type": "string"
+            },
+            "kernel": {
+              "type": "string"
+            },
+            "python": {
+              "type": "string"
+            },
+            "nvidia_driver_version": {
+              "type": [
+                "string",
+                "array"
+              ]
+            },
+            "cuda_toolkit_version": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "cuda_toolkit_root": {
+              "type": "string"
+            }
+          }
+        },
+        "fp16": {
+          "type": "boolean"
+        },
+        "precision": {
+          "type": "string"
+        },
+        "int8_calibration": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "cache_path",
+            "cache_sha256",
+            "cache_bytes"
+          ],
+          "properties": {
+            "cache_path": {
+              "type": "string"
+            },
+            "cache_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "cache_bytes": {
+              "type": "integer"
+            },
+            "record_path": {
+              "type": "string"
+            },
+            "record_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "record_bytes": {
+              "type": "integer"
+            },
+            "frames_used_count": {
+              "type": "integer"
+            },
+            "calibrator": {
+              "type": "string"
+            },
+            "frame_count": {
+              "type": "integer"
+            },
+            "frames_dir": {
+              "type": "string"
+            },
+            "preprocessing": {
+              "type": "array"
+            },
+            "created_at_utc": {
+              "type": "string"
+            },
+            "onnx": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "bytes": {
+                  "type": "integer"
+                },
+                "relative_path": {
+                  "type": "string"
+                },
+                "source_path": {
+                  "type": "string"
+                },
+                "palette_manifest_sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "present": {
+                  "type": "boolean"
+                },
+                "expected_sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "note": {
+                  "type": "string"
+                },
+                "payload_digest": {
+                  "type": "string"
+                },
+                "manifest_path": {
+                  "type": "string"
+                },
+                "manifest_sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "manifest_dataset_ids": {
+                  "type": "array"
+                }
+              },
+              "additionalProperties": true
+            }
+          }
+        },
+        "builder_optimization_level": {
+          "type": "integer"
+        },
+        "avg_timing": {
+          "type": "integer"
+        },
+        "profiling_verbosity": {
+          "type": "string"
+        },
+        "build_duration_s": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "created_engine_size_mib": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "command": {
+          "type": [
+            "array",
+            "string"
+          ]
+        },
+        "log_path": {
+          "type": "string"
+        },
+        "parser_warnings": {
+          "type": "array"
+        },
+        "warnings": {
+          "type": "array"
+        },
+        "timing_cache": {
+          "type": "string"
+        }
+      }
+    },
+    "build_staging": {
+      "type": "object"
+    },
+    "source_stage": {
+      "type": "object"
+    },
+    "artifacts": {
+      "type": "array"
+    },
+    "standalone_benchmark": {
+      "type": "object"
+    },
+    "parity": {
+      "type": "object"
+    },
+    "orange_repo": {
+      "type": "object"
+    },
+    "orange_app_validation": {
+      "type": "object"
+    },
+    "palette_registration": {
+      "type": "object"
+    }
+  }
+}

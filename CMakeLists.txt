@@ -378,6 +378,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/session/crop_rolling_sidecars.cpp"
     "${SRC_DIR}/session/crop_rolling_outputs.cpp"
     "${SRC_DIR}/session/realtime_products.cpp"
+    "${SRC_DIR}/session/model_artifacts.cpp"
     "${SRC_DIR}/session/recording_observation_binding.cpp"
     "${SRC_DIR}/session/recording_observation_finalization.cpp"
     "${SRC_DIR}/session/recording_observation_identity.cpp"
@@ -422,6 +423,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/session/crop_rolling_sidecars.cpp"
     "${SRC_DIR}/session/crop_rolling_outputs.cpp"
     "${SRC_DIR}/session/realtime_products.cpp"
+    "${SRC_DIR}/session/model_artifacts.cpp"
     "${SRC_DIR}/session/recording_observation_binding.cpp"
     "${SRC_DIR}/session/recording_observation_finalization.cpp"
     "${SRC_DIR}/session/recording_observation_identity.cpp"
@@ -999,6 +1001,7 @@ if(BUILD_TESTING)
     add_executable(realtime_products_tests
         "tools/realtime_products_tests.cpp"
         "${SRC_DIR}/session/realtime_products.cpp"
+    "${SRC_DIR}/session/model_artifacts.cpp"
     )
     target_include_directories(realtime_products_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(realtime_products_tests PRIVATE cxx_std_17)
@@ -1012,6 +1015,14 @@ if(BUILD_TESTING)
     target_compile_features(media_content_digest_tests PRIVATE cxx_std_17)
     target_link_libraries(media_content_digest_tests PRIVATE Threads::Threads)
     add_test(NAME media_content_digest_tests COMMAND media_content_digest_tests)
+
+    add_executable(model_artifacts_tests
+        "tools/model_artifacts_tests.cpp"
+        "${SRC_DIR}/session/model_artifacts.cpp"
+    )
+    target_include_directories(model_artifacts_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(model_artifacts_tests PRIVATE cxx_std_17)
+    add_test(NAME model_artifacts_tests COMMAND model_artifacts_tests)
 
     add_executable(model_identity_tests
         "tools/model_identity_tests.cpp"

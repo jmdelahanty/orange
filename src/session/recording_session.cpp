@@ -1,11 +1,26 @@
 #include "session/recording_session.h"
 #include "session/realtime_products.h"
+#include "session/model_artifacts.h"
 #include "recording_context.h"
 #include "effective_configuration.h"
 #include "recording_startup_audit.h"
 #include "recording_master_crop_coverage.h"
 #include "recording_crop_only_manifest.h"
 #include "recording_registered_context.h"
+
+namespace {
+// The snapshot's models block (models.<serial>.<detect|pose>) as sealed at
+// record start, for the model artifacts declaration.
+nlohmann::json load_snapshot_models_block(const std::string& recording_folder)
+{
+    const std::filesystem::path path = std::filesystem::path(recording_folder) / "recording_snapshot_start.json";
+    std::ifstream in(path);
+    if (!in) return nlohmann::json::object();
+    const nlohmann::json snapshot = nlohmann::json::parse(in, nullptr, false);
+    if (snapshot.is_discarded() || !snapshot.is_object()) return nlohmann::json::object();
+    return snapshot.value("models", nlohmann::json::object());
+}
+}  // namespace
 
 #include "citrus_recording_geometry.h"
 #include "external_recorder_contract_utils.h"
@@ -2613,6 +2628,11 @@ nlohmann::json build_single_clip_recording_session_manifest(
     manifest["realtime_products"] = build_realtime_products_json(
         options.recording_folder,
         manifest.value("cameras", nlohmann::json::array()).get<std::vector<std::string>>());
+    // Engine manifests (and INT8 calibration record + cache) of every engine
+    // that ran, copied to models/<engine_sha256>/ and declared (2026-10-09).
+    manifest["model_artifacts"] = materialize_model_artifacts(
+        options.recording_folder,
+        load_snapshot_models_block(options.recording_folder));
     return manifest;
 }
 
@@ -2715,6 +2735,11 @@ nlohmann::json build_rolling_clip_recording_session_manifest(
     manifest["realtime_products"] = build_realtime_products_json(
         options.recording_folder,
         manifest.value("cameras", nlohmann::json::array()).get<std::vector<std::string>>());
+    // Engine manifests (and INT8 calibration record + cache) of every engine
+    // that ran, copied to models/<engine_sha256>/ and declared (2026-10-09).
+    manifest["model_artifacts"] = materialize_model_artifacts(
+        options.recording_folder,
+        load_snapshot_models_block(options.recording_folder));
     return manifest;
 }
 
