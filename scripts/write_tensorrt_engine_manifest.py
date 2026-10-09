@@ -110,10 +110,49 @@ def int8_calibration_record(cache: Path | None) -> dict | None:
             side = None
         if isinstance(side, dict):
             record["record_path"] = str(sidecar)
+            # Palette (2026-10-09) pins the calibration record by content,
+            # not only by path.
+            record["record_sha256"] = sha256(sidecar)
+            record["record_bytes"] = sidecar.stat().st_size
             for key in ("calibrator", "frame_count", "frames_dir", "preprocessing", "created_at_utc", "onnx"):
                 if key in side:
                     record[key] = side[key]
+            frames_used = side.get("frames_used")
+            if isinstance(frames_used, list):
+                record["frames_used_count"] = len(frames_used)
     return record
+
+
+def build_environment() -> dict[str, Any]:
+    """Builder host, driver and CUDA toolkit for the manifest (provenance that
+    the engine manifest lacked before 2026-10-09; Palette registers it)."""
+    import platform
+    import subprocess
+
+    env: dict[str, Any] = {
+        "hostname": platform.node(),
+        "kernel": platform.release(),
+        "python": platform.python_version(),
+    }
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+        drivers = sorted({line.strip() for line in out.stdout.splitlines() if line.strip()})
+        if drivers:
+            env["nvidia_driver_version"] = drivers[0] if len(drivers) == 1 else drivers
+    except (OSError, subprocess.SubprocessError):
+        pass
+    for cuda_root in (Path("/usr/local/cuda"),):
+        version_file = cuda_root / "version.json"
+        if version_file.exists():
+            try:
+                env["cuda_toolkit_version"] = json.loads(version_file.read_text()).get("cuda", {}).get("version")
+                env["cuda_toolkit_root"] = str(cuda_root.resolve())
+            except (OSError, json.JSONDecodeError):
+                pass
+    return env
 
 
 def build_command(args: argparse.Namespace, staged_engine: Path) -> list[str]:
@@ -335,6 +374,7 @@ def main() -> int:
             "tensorrt_version": first_match(build_text, r"TensorRT version:\s+(.+)"),
             "tensorrt_log_version": first_match(build_text, r"TensorRT\.trtexec \[TensorRT ([^\]]+)\]"),
             "selected_gpu": selected_gpu,
+            "environment": build_environment(),
             "precision": args.precision,
             "int8_calibration": int8_calibration_record(args.calib_cache),
             "builder_optimization_level": args.builder_optimization_level,
