@@ -217,7 +217,7 @@ Target:
 - `fixed.yolo_event_log.mode = "synthetic"`
 - `every_n_frames = 10`
 - `emit_zero_detections = true`
-- `fixed.frame_ipc.mode = "verify_drain"` to continue validating base-frame
+- `fixed.frame_ipc.mode = "verify_drain_v2"` to continue validating base-frame
   serial-named SHM queue emission while synthetic detection updates stay
   audit-only.
 

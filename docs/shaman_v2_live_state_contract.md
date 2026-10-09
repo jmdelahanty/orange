@@ -4,7 +4,7 @@ Date: 2026-08-30
 Status: Orange producer and Citrus opt-in authoritative consumer implemented;
 grouped-live observation metadata is ABI revision 4;
 production default remains v1 pending a four-camera live validation. Orange
-creates the v2 queue behind `ORANGE_SHAMAN_V2_LIVE_STATE=1`. Citrus can select
+creates the v2 queue whenever frame IPC is enabled (since 2026-10-08 the v1 queue no longer exists and no environment flag is needed). Citrus can select
 it per arena or, for an autorun validation without editing the canonical
 canvas, through `CITRUS_GUI_AUTORUN_SHAMAN_V2_AUTHORITATIVE=1`.
 
@@ -540,7 +540,7 @@ First headless pose-to-v2 verifier smoke:
 3. [x] Add an Orange-side `LiveStatePublisher` that enforces monotonic
    same-frame publish, bounded pending updates, and stale YOLO/pose suppression.
 4. [x] Add Orange runtime v2 queue creation behind an opt-in switch:
-   `ORANGE_SHAMAN_V2_LIVE_STATE=1`.
+   nothing: the v2 queue is created whenever frame IPC is enabled (2026-10-08).
 5. [x] Wire base-frame and YOLO-detection v2 latest-state publishing through
    `FrameIPCManager` while leaving the current queue unchanged.
 6. [x] Add runtime stale-suppression tests around `FrameIPCManager` or the

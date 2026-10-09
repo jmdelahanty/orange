@@ -2719,7 +2719,7 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             frame_ipc_enabled && frame_ipc->isV2Enabled();
         const std::string frame_ipc_queue_name = frame_ipc
             ? frame_ipc->getQueueName()
-            : ("/shm_cam_" + associated_camera_params_->camera_serial);
+            : shaman_v2::queue_name_for_camera_serial(associated_camera_params_->camera_serial);
         bool frame_ipc_update_requested = false;
         std::string frame_ipc_request_status = frame_ipc_enabled
             ? "not_requested_zero_detections"

@@ -1,11 +1,13 @@
 # IPC Shared Memory Permissions
 
 This project uses POSIX shared memory in `/dev/shm` for inter-process
-communication. The shared memory ring buffer is defined in `src/shaman.h`.
+communication. The live-state queue is the SHAMAN v2 queue defined in
+`src/shaman_v2.h` (`/shm_cam_<serial>_v2`); the v1 `SharedBoxQueue` of
+`src/shaman.h` was retired on 2026-10-08.
 
 ## Why group permissions matter
 
-Readers call `SharedBoxQueue::pop(...)`, which advances the `tail` index in
+Readers pop slots from the v2 queue, which advances the reader index in
 shared memory. That means readers open the shared memory object with `O_RDWR`,
 not read-only. If the writer (running as root) creates the object with a
 restrictive mode, non-root readers will get `Permission denied` on `shm_open`.
@@ -172,12 +174,12 @@ Experiment specs use `fixed.frame_ipc`.
 
 - `producer_only` creates the same serial-named writers as the GUI and expects an
   external consumer to drain `/shm_cam_<camera_serial>`.
-- `verify_drain` creates those writers plus one built-in reader per selected
+- `verify_drain_v2` creates those writers plus one built-in reader per selected
   camera and writes `frame_ipc_summary.json` into the run folder.
 - `verify_drain_v2` forces the Shaman v2 live-state writer, drains
   `/shm_cam_<camera_serial>_v2`, and records v2 reader/publisher counters in
   the same `frame_ipc_summary.json` contract.
-- `verify_drain` consumes the queue contents. Do not use it for a Citrus
+- `verify_drain_v2` consumes the queue contents. Do not use it for a Citrus
   integration run where Citrus must see every IPC message.
 - `verify_drain_v2` is also a single-consumer test mode. Do not run it while a
   Citrus v2 reader is expected to consume the same queue.
@@ -188,7 +190,7 @@ Experiment specs use `fixed.frame_ipc`.
 
 Validated 2026-04-21 smoke:
 
-- `verify_drain` on camera `2010096`
+- `verify_drain_v2` on camera `2010096`
 - queue: `/shm_cam_2010096`
 - frames published: `901`
 - frames drained by verifier: `901`

@@ -36,30 +36,38 @@ struct FrameIPCFrameIdentity {
 
 class FrameIPCManager {
 public:
-    explicit FrameIPCManager(CameraParams* camera_params,
-                             bool force_v2_live_state = false)
+    explicit FrameIPCManager(CameraParams* camera_params)
         : camera_params_(camera_params),
           frame_queue_(kQueueDepth),
           update_queue_(kQueueDepth) {
-        queue_name_ = "/shm_cam_" + camera_params_->camera_serial;
-
+        // One queue per camera: the SHAMAN v2 live-state queue. The v1
+        // SharedBoxQueue (/shm_cam_<serial>) was retired on 2026-10-08; Citrus
+        // reads only v2, so frame IPC enabled means v2 enabled.
         try {
-            ipc_queue_ = std::make_unique<shaman::SharedBoxQueue>(
-                queue_name_.c_str(), true /* is_writer */);
+            queue_name_ =
+                shaman_v2::queue_name_for_camera_serial(camera_params_->camera_serial);
+            v2_queue_ = std::make_unique<shaman_v2::SharedLiveStateQueue>(
+                queue_name_,
+                true /* writer */);
+            v2_publisher_ = std::make_unique<shaman_v2::LiveStatePublisher>(*v2_queue_);
             enabled_ = true;
+            std::cout << "[FrameIPC] Shaman v2 live-state queue enabled: "
+                      << queue_name_ << std::endl;
         } catch (const std::exception& e) {
             init_error_ = e.what();
             enabled_ = false;
-            std::cerr << "[FrameIPC] Failed to initialize " << queue_name_
-                      << ": " << init_error_ << std::endl;
+            v2_queue_.reset();
+            v2_publisher_.reset();
+            std::cerr << "[FrameIPC] Failed to initialize Shaman v2 queue "
+                      << queue_name_ << ": " << init_error_ << std::endl;
         } catch (...) {
             init_error_ = "unknown exception";
             enabled_ = false;
-            std::cerr << "[FrameIPC] Failed to initialize " << queue_name_
-                      << ": " << init_error_ << std::endl;
+            v2_queue_.reset();
+            v2_publisher_.reset();
+            std::cerr << "[FrameIPC] Failed to initialize Shaman v2 queue "
+                      << queue_name_ << ": " << init_error_ << std::endl;
         }
-
-        init_v2_if_requested(force_v2_live_state);
 
         if (enabled_) {
             running_ = true;
@@ -89,10 +97,8 @@ public:
         cv_.notify_one();
     }
 
-    // `timestamp` is the original camera/acquisition timestamp from Orange
-    // (`camera_timestamp_ns` terminology). The current `/shm_cam_<serial>`
-    // queue does not expose that value; SharedBoxQueue stamps publish-time SHM
-    // timestamps when the writer thread pushes the slot.
+    // `identity` carries the camera/acquisition identity and timestamps that
+    // the v2 base-frame slot publishes.
     bool sendFrame(const FrameIPCFrameIdentity& identity,
                    bool yolo_processing) {
         return sendFrame(identity, yolo_processing, yolo_processing);
@@ -169,14 +175,11 @@ public:
             retained_detection_count,
             detection_model_id_hash,
             detection_reason,
-            true,
             synthetic_objects);
     }
 
-    // Synthetic runtime detections are a v2 test seam. They must never alter
-    // the legacy v1 stream, but when v2 is enabled they still terminate the
-    // pending base state. The final flag is kept private to this explicit API
-    // so normal detection updates cannot accidentally suppress v1 output.
+    // Synthetic runtime detections are a test seam: they terminate the
+    // pending base state like a real result and mark their objects synthetic.
     bool publishSyntheticYoloResult(
         uint64_t legacy_frame_id,
         uint64_t state_frame_id,
@@ -198,7 +201,6 @@ public:
             retained_detection_count,
             detection_model_id_hash,
             detection_reason,
-            false,
             true);
     }
 
@@ -217,13 +219,11 @@ public:
             count,
             count,
             0,
-            shaman_v2::DetectionResultReason::kNone,
-            true);
+            shaman_v2::DetectionResultReason::kNone);
     }
 
     // A scheduled YOLO frame whose worker enqueue was rejected still receives
-    // a terminal v2 state. It is deliberately v2-only so the legacy v1 queue
-    // retains its historical absence-of-update behavior on this failure path.
+    // a terminal state.
     bool publishYoloWorkerEnqueueRejected(
         uint64_t legacy_frame_id,
         uint64_t state_frame_id,
@@ -236,8 +236,7 @@ public:
             0,
             0,
             detection_model_id_hash,
-            shaman_v2::DetectionResultReason::kYoloWorkerEnqueueRejected,
-            false);
+            shaman_v2::DetectionResultReason::kYoloWorkerEnqueueRejected);
     }
 
 private:
@@ -250,7 +249,6 @@ private:
         uint32_t retained_detection_count,
         uint64_t detection_model_id_hash,
         shaman_v2::DetectionResultReason detection_reason,
-        bool emit_legacy,
         bool synthetic_objects = false) {
         if (!enabled_) {
             return false;
@@ -285,7 +283,6 @@ private:
         event.retained_detection_count = retained_detection_count;
         event.detection_model_id_hash = detection_model_id_hash;
         event.detection_reason = detection_reason;
-        event.emit_legacy = emit_legacy;
         event.synthetic_objects = synthetic_objects;
 
         bool dropped = false;
@@ -389,16 +386,13 @@ public:
     bool isEnabled() const { return enabled_; }
     const std::string& getQueueName() const { return queue_name_; }
     const std::string& getInitError() const { return init_error_; }
-    bool isV2Enabled() const { return v2_enabled_; }
-    const std::string& getV2QueueName() const { return v2_queue_name_; }
-    const std::string& getV2InitError() const { return v2_init_error_; }
-    uint64_t getFramesSent() const { return frames_sent_; }
-    uint64_t getUpdatesSent() const { return updates_sent_; }
+    // Kept for callers written while v1 and v2 coexisted: v2 is the only queue.
+    bool isV2Enabled() const { return enabled_; }
+    const std::string& getV2QueueName() const { return queue_name_; }
+    const std::string& getV2InitError() const { return init_error_; }
     uint64_t getBaseQueueDrops() const { return base_queue_drops_; }
     uint64_t getUpdateQueueDrops() const { return update_queue_drops_; }
     uint64_t getPoseUpdateQueueDrops() const { return pose_update_queue_drops_; }
-    uint64_t getUpdateStaleDrops() const { return update_stale_drops_; }
-    uint64_t getIpcPushFailures() const { return ipc_push_failures_; }
     shaman_v2::LiveStateCounters getV2Counters() const
     {
         return v2_publisher_ ? v2_publisher_->counters_snapshot() : shaman_v2::LiveStateCounters{};
@@ -422,7 +416,6 @@ private:
         uint64_t detection_model_id_hash = 0;
         shaman_v2::DetectionResultReason detection_reason =
             shaman_v2::DetectionResultReason::kNone;
-        bool emit_legacy = true;
         bool synthetic_objects = false;
     };
 
@@ -478,38 +471,6 @@ private:
         std::deque<Entry> queue_;
     };
 
-    static bool env_enabled(const char* name) {
-        const char* raw = std::getenv(name);
-        return raw && *raw && std::string(raw) != "0";
-    }
-
-    void init_v2_if_requested(bool force_v2_live_state) {
-        if (!enabled_) {
-            return;
-        }
-        if (!force_v2_live_state && !env_enabled("ORANGE_SHAMAN_V2_LIVE_STATE")) {
-            return;
-        }
-        try {
-            v2_queue_name_ =
-                shaman_v2::queue_name_for_camera_serial(camera_params_->camera_serial);
-            v2_queue_ = std::make_unique<shaman_v2::SharedLiveStateQueue>(
-                v2_queue_name_,
-                true /* writer */);
-            v2_publisher_ = std::make_unique<shaman_v2::LiveStatePublisher>(*v2_queue_);
-            v2_enabled_ = true;
-            std::cout << "[FrameIPC] Shaman v2 live-state queue enabled: "
-                      << v2_queue_name_ << std::endl;
-        } catch (const std::exception& e) {
-            v2_init_error_ = e.what();
-            v2_enabled_ = false;
-            v2_queue_.reset();
-            v2_publisher_.reset();
-            std::cerr << "[FrameIPC] Failed to initialize Shaman v2 queue for "
-                      << queue_name_ << ": " << v2_init_error_ << std::endl;
-        }
-    }
-
     void StopThread() {
         if (!running_) {
             return;
@@ -550,7 +511,7 @@ private:
     // publisher then dropped as stale (about 0.9 % of frames at 100 fps
     // even though inference finishes in about 3 ms).
     void DrainQueues() {
-        if (!enabled_ || !ipc_queue_) {
+        if (!enabled_ || !v2_publisher_) {
             return;
         }
         while (true) {
@@ -591,80 +552,13 @@ private:
     }
 
     void ProcessBaseEvent(const FrameEvent& frame) {
-        bool sent = EmitBase(frame);
-        if (!sent && !v2_publisher_) {
-            return;
-        }
-        last_base_frame_id_ = frame.identity.legacy_frame_id;
-
-        if (pending_update_valid_ &&
-            pending_update_.legacy_frame_id == last_base_frame_id_) {
-            EmitLegacyUpdate(pending_update_);
-            pending_update_valid_ = false;
-        }
-    }
-
-    void ProcessUpdateEvent(UpdateEvent update) {
-        // V2 owns a separate monotonic identity and performs its own
-        // bounded pending/stale decision. Do not couple it to the legacy
-        // recording/local identifier switch below.
-        EmitV2Yolo(update);
-        if (!update.emit_legacy) {
-            return;
-        }
-        if (update.legacy_frame_id == last_base_frame_id_) {
-            EmitLegacyUpdate(update);
-            return;
-        }
-        if (update.legacy_frame_id > last_base_frame_id_) {
-            if (!pending_update_valid_ ||
-                update.legacy_frame_id >= pending_update_.legacy_frame_id) {
-                pending_update_ = std::move(update);
-                pending_update_valid_ = true;
-            } else {
-                // Preserve Citrus latest-state semantics by suppressing
-                // older delayed detections from the live queue.
-                update_stale_drops_++;
-            }
-        } else {
-            // Preserve Citrus latest-state semantics by suppressing
-            // older delayed detections from the live queue.
-            update_stale_drops_++;
-        }
-    }
-
-    bool EmitBase(const FrameEvent& frame) {
-        static const std::vector<shaman::Object> empty_detections;
-        // Current SHM ABI only carries publish-time timestamps stamped inside
-        // SharedBoxQueue::push(...). `frame.timestamp` is intentionally not
-        // written into `/shm_cam_<serial>`.
-        bool success = ipc_queue_->push(
-            empty_detections,
-            frame.identity.legacy_frame_id,
-            camera_params_->camera_id,
-            frame.yolo_processing
-        );
         EmitV2Base(frame);
-        if (success) {
-            frames_sent_++;
-            return true;
-        }
-        ipc_push_failures_++;
-        return false;
     }
 
-    void EmitLegacyUpdate(const UpdateEvent& update) {
-        bool success = ipc_queue_->push(
-            update.detections,
-            update.legacy_frame_id,
-            camera_params_->camera_id,
-            true
-        );
-        if (success) {
-            updates_sent_++;
-        } else {
-            ipc_push_failures_++;
-        }
+    void ProcessUpdateEvent(const UpdateEvent& update) {
+        // The v2 publisher owns the pending/stale decision for detection
+        // results against its own monotonic state identity.
+        EmitV2Yolo(update);
     }
 
     static shaman_v2::Object ConvertObjectV2(const shaman::Object& object) {
@@ -784,16 +678,12 @@ private:
         v2_publisher_->publish_pose_result(slot);
     }
 
-    static constexpr size_t kQueueDepth = shaman::QUEUE_SIZE;
+    static constexpr size_t kQueueDepth = 8;
 
     CameraParams* camera_params_;
     bool enabled_ = false;
-    std::unique_ptr<shaman::SharedBoxQueue> ipc_queue_;
     std::string queue_name_;
     std::string init_error_;
-    bool v2_enabled_ = false;
-    std::string v2_queue_name_;
-    std::string v2_init_error_;
     std::unique_ptr<shaman_v2::SharedLiveStateQueue> v2_queue_;
     std::unique_ptr<shaman_v2::LiveStatePublisher> v2_publisher_;
 
@@ -807,15 +697,7 @@ private:
     std::thread writer_thread_;
     bool running_ = false;
 
-    uint64_t last_base_frame_id_ = 0;
-    bool pending_update_valid_ = false;
-    UpdateEvent pending_update_;
-
-    std::atomic<uint64_t> frames_sent_{0};
-    std::atomic<uint64_t> updates_sent_{0};
     std::atomic<uint64_t> base_queue_drops_{0};
     std::atomic<uint64_t> update_queue_drops_{0};
     std::atomic<uint64_t> pose_update_queue_drops_{0};
-    std::atomic<uint64_t> update_stale_drops_{0};  // Delayed older-frame detections suppressed from Citrus live IPC.
-    std::atomic<uint64_t> ipc_push_failures_{0};
 };

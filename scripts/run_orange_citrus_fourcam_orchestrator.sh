@@ -398,7 +398,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --shaman-v2-authoritative)
-      ORANGE_EXTRA_ENV+=("ORANGE_SHAMAN_V2_LIVE_STATE=1")
+      # SHAMAN v2 is the only live-state queue since 2026-10-08; no env needed.
       CITRUS_EXTRA_ENV+=("CITRUS_GUI_AUTORUN_SHAMAN_V2_AUTHORITATIVE=1")
       shift
       ;;

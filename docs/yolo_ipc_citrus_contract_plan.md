@@ -1,3 +1,5 @@
+> Historical (2026-10-08): the v1 `/shm_cam_<serial>` queue described below was retired; Citrus reads only the SHAMAN v2 queue (`docs/shaman_v2_live_state_contract.md`).
+
 # YOLO IPC and Citrus Contract Plan
 
 Date: 2026-04-21

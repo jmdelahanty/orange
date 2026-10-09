@@ -1,4 +1,5 @@
 #include "gui/frame_ipc_panel.h"
+#include "shaman_v2.h"
 
 #include "imgui.h"
 
@@ -59,40 +60,24 @@ void render_frame_ipc_status_panel(
             "  %s: %s",
             cameras_params[i].camera_serial.c_str(),
             ipc_manager->getQueueName().c_str());
+        const auto v2 = ipc_manager->getV2Counters();
         ImGui::TextDisabled(
-            "    base=%llu updates=%llu push_fail=%llu base_drop=%llu update_drop=%llu stale_live_suppress=%llu",
-            static_cast<unsigned long long>(ipc_manager->getFramesSent()),
-            static_cast<unsigned long long>(ipc_manager->getUpdatesSent()),
-            static_cast<unsigned long long>(ipc_manager->getIpcPushFailures()),
+            "    base=%llu yolo=%llu pose=%llu stale_yolo=%llu stale_pose=%llu push_fail=%llu queue_drop=%llu",
+            static_cast<unsigned long long>(v2.frames_published),
+            static_cast<unsigned long long>(v2.yolo_updates_published),
+            static_cast<unsigned long long>(v2.pose_updates_published),
+            static_cast<unsigned long long>(v2.yolo_stale_suppressed),
+            static_cast<unsigned long long>(v2.pose_stale_suppressed),
+            static_cast<unsigned long long>(v2.push_failures),
+            static_cast<unsigned long long>(v2.queue_drops));
+        ImGui::TextDisabled(
+            "    handoff drops: base=%llu update=%llu pose=%llu",
             static_cast<unsigned long long>(ipc_manager->getBaseQueueDrops()),
             static_cast<unsigned long long>(ipc_manager->getUpdateQueueDrops()),
-            static_cast<unsigned long long>(ipc_manager->getUpdateStaleDrops()));
-        if (ipc_manager->isV2Enabled()) {
-            const auto v2 = ipc_manager->getV2Counters();
-            ImGui::TextColored(
-                ImVec4(0.35f, 0.9f, 0.55f, 1.0f),
-                "    v2 authoritative candidate: %s",
-                ipc_manager->getV2QueueName().c_str());
-            ImGui::TextDisabled(
-                "      base=%llu yolo=%llu pose=%llu stale_yolo=%llu stale_pose=%llu queue_drop=%llu",
-                static_cast<unsigned long long>(v2.frames_published),
-                static_cast<unsigned long long>(v2.yolo_updates_published),
-                static_cast<unsigned long long>(v2.pose_updates_published),
-                static_cast<unsigned long long>(v2.yolo_stale_suppressed),
-                static_cast<unsigned long long>(v2.pose_stale_suppressed),
-                static_cast<unsigned long long>(v2.queue_drops));
-        } else if (!ipc_manager->getV2InitError().empty()) {
-            ImGui::TextColored(
-                ImVec4(1.0f, 0.45f, 0.25f, 1.0f),
-                "    v2 initialization failed: %s",
-                ipc_manager->getV2InitError().c_str());
-        } else {
-            ImGui::TextDisabled(
-                "    v2 disabled (set ORANGE_SHAMAN_V2_LIVE_STATE=1 for validation)");
-        }
+            static_cast<unsigned long long>(ipc_manager->getPoseUpdateQueueDrops()));
     }
     ImGui::TextDisabled(
-        "  SHM slot timestamps are Orange publish-time us, not camera_timestamp_ns");
+        "  SHAMAN v2 live-state queues (/shm_cam_<serial>_v2); the v1 queue was retired 2026-10-08");
     ImGui::TextDisabled("  Run './dummy_reader' to monitor");
 }
 

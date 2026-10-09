@@ -39,7 +39,7 @@ Citrus-owned lock behind.
   reader per camera.
 - Orange enables v2 only with `ORANGE_SHAMAN_V2_LIVE_STATE=1` (the Citrus
   orchestrator sets it via `--shaman-v2-authoritative`; the four-camera GUI
-  launcher does not). The legacy `/shm_cam_<serial>` v1 queue never carries
+  launcher does not). The legacy `/shm_cam_<serial>` v1 queue (retired 2026-10-08) never carried
   pose.
 - Reference reader: `targets/release/shaman_v2_reader_probe --serials
   2010093,2010094 --seconds 30` prints a per-camera summary and one sample

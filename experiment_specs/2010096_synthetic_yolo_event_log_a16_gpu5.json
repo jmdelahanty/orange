@@ -22,7 +22,7 @@
     "nvenc_direct_input": false,
     "frame_ipc": {
       "enabled": true,
-      "mode": "verify_drain",
+      "mode": "verify_drain_v2",
       "unlink_existing_queues": true,
       "require_base_frames": true,
       "allow_push_failures": false

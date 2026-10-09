@@ -102,8 +102,7 @@ struct HeadlessEncoderSettings {
 enum class HeadlessFrameIpcMode {
     Off,
     ProducerOnly,
-    VerifyDrain,
-    VerifyDrainV2,
+    VerifyDrainV2,   // the only verifier: the SHAMAN v2 queue (v1 retired 2026-10-08)
 };
 
 struct HeadlessFrameIpcConfig {
@@ -138,7 +137,6 @@ struct HeadlessYoloWorkerConfig {
 // with the latency specs (docs/detect_latency_review_2026_09_03.md).
 struct HeadlessCropRecordingConfig {
     std::string mode = "off";   // off | in_process | external_ipc
-    std::string recorder_tool_path; // external crop supervisor; independent of full-frame recording
     int crop_size_px = 0;       // 0: the camera config's crop_pipeline.crop_size_px
     int recorder_gpu = -1;      // external_ipc: explicit GPU, otherwise existing contract/env defaults
     std::map<std::string, int> recorder_gpus;  // external_ipc: per-camera-serial override, wins over recorder_gpu
@@ -148,7 +146,6 @@ struct HeadlessCropRecordingConfig {
     nlohmann::json ToJson() const {
         nlohmann::json result = {{"mode", mode}, {"crop_size_px", crop_size_px}, {"recorder_gpu", recorder_gpu},
             {"recorder_gpus", recorder_gpus}, {"interleave", interleave}};
-        if (!recorder_tool_path.empty()) result["recorder_tool_path"] = recorder_tool_path;
         return result;
     }
 };
@@ -830,8 +827,6 @@ std::string headless_frame_ipc_mode_to_string(HeadlessFrameIpcMode mode)
             return "off";
         case HeadlessFrameIpcMode::ProducerOnly:
             return "producer_only";
-        case HeadlessFrameIpcMode::VerifyDrain:
-            return "verify_drain";
         case HeadlessFrameIpcMode::VerifyDrainV2:
             return "verify_drain_v2";
     }
@@ -840,14 +835,9 @@ std::string headless_frame_ipc_mode_to_string(HeadlessFrameIpcMode mode)
 
 bool headless_frame_ipc_mode_is_verify_drain(HeadlessFrameIpcMode mode)
 {
-    return mode == HeadlessFrameIpcMode::VerifyDrain ||
-           mode == HeadlessFrameIpcMode::VerifyDrainV2;
-}
-
-bool headless_frame_ipc_mode_uses_v2(HeadlessFrameIpcMode mode)
-{
     return mode == HeadlessFrameIpcMode::VerifyDrainV2;
 }
+
 
 bool parse_headless_frame_ipc_mode(const std::string& value, HeadlessFrameIpcMode* out)
 {
@@ -867,11 +857,9 @@ bool parse_headless_frame_ipc_mode(const std::string& value, HeadlessFrameIpcMod
         *out = HeadlessFrameIpcMode::ProducerOnly;
         return true;
     }
-    if (normalized == "verify_drain" || normalized == "verify" || normalized == "drain") {
-        *out = HeadlessFrameIpcMode::VerifyDrain;
-        return true;
-    }
-    if (normalized == "verify_drain_v2" || normalized == "verify_v2" ||
+    // "verify_drain" (the retired v1 verifier) means the v2 verifier now.
+    if (normalized == "verify_drain" || normalized == "verify" || normalized == "drain" ||
+        normalized == "verify_drain_v2" || normalized == "verify_v2" ||
         normalized == "drain_v2" || normalized == "v2") {
         *out = HeadlessFrameIpcMode::VerifyDrainV2;
         return true;
@@ -879,10 +867,6 @@ bool parse_headless_frame_ipc_mode(const std::string& value, HeadlessFrameIpcMod
     return false;
 }
 
-std::string build_frame_ipc_queue_name_for_serial(const std::string& camera_serial)
-{
-    return "/shm_cam_" + camera_serial;
-}
 
 std::string build_frame_ipc_v2_queue_name_for_serial(const std::string& camera_serial)
 {
@@ -2833,7 +2817,7 @@ bool parse_headless_frame_ipc_json(const nlohmann::json& node,
     if (!parse_headless_frame_ipc_mode(mode_string, &config.mode)) {
         if (error_out) {
             *error_out =
-                context + ": frame_ipc.mode must be off|producer_only|verify_drain|verify_drain_v2";
+                context + ": frame_ipc.mode must be off|producer_only|verify_drain_v2";
         }
         return false;
     }
@@ -2845,7 +2829,7 @@ bool parse_headless_frame_ipc_json(const nlohmann::json& node,
         if (enabled) {
             if (error_out) {
                 *error_out =
-                    context + ": frame_ipc.enabled=true requires mode producer_only, verify_drain, or verify_drain_v2";
+                    context + ": frame_ipc.enabled=true requires mode producer_only or verify_drain_v2";
             }
             return false;
         }
@@ -4298,20 +4282,17 @@ bool start_headless_frame_ipc_runtime(HeadlessFrameIpcRuntime* runtime,
         return true;
     }
 
-    const bool use_v2 = headless_frame_ipc_mode_uses_v2(config.mode);
     runtime->reader_stats.resize(selected_indices.size());
     for (std::size_t stats_index = 0; stats_index < selected_indices.size(); ++stats_index) {
         const int camera_index = selected_indices[stats_index];
         HeadlessFrameIpcReaderStats& stats = runtime->reader_stats[stats_index];
         stats.camera_serial = cameras_params[camera_index].camera_serial;
         stats.camera_id = static_cast<uint32_t>(cameras_params[camera_index].camera_id);
-        stats.v2 = use_v2;
-        stats.queue_name = use_v2
-            ? build_frame_ipc_v2_queue_name_for_serial(stats.camera_serial)
-            : build_frame_ipc_queue_name_for_serial(stats.camera_serial);
+        stats.v2 = true;
+        stats.queue_name = build_frame_ipc_v2_queue_name_for_serial(stats.camera_serial);
         HeadlessFrameIpcReaderStats* stats_ptr = &stats;
 
-        if (use_v2) {
+        {
             runtime->reader_threads.emplace_back([runtime, stats_ptr]() {
                 HeadlessFrameIpcReaderStats& stats = *stats_ptr;
                 try {
@@ -4415,71 +4396,7 @@ bool start_headless_frame_ipc_runtime(HeadlessFrameIpcRuntime* runtime,
                     stats.reader_error = "unknown Shaman v2 frame IPC reader exception";
                 }
             });
-            continue;
         }
-
-        runtime->reader_threads.emplace_back([runtime, stats_ptr]() {
-            HeadlessFrameIpcReaderStats& stats = *stats_ptr;
-            try {
-                shaman::SharedBoxQueue reader(stats.queue_name.c_str(), false /* is_writer */);
-                stats.reader_started = true;
-                while (true) {
-                    bool popped_any = false;
-                    std::vector<shaman::Object> objects;
-                    uint64_t timestamp_epoch = 0;
-                    uint64_t timestamp_monotonic = 0;
-                    uint64_t frame_id = 0;
-                    uint32_t camera_id = 0;
-                    bool yolo_enabled = false;
-                    while (reader.pop(objects,
-                                      timestamp_epoch,
-                                      timestamp_monotonic,
-                                      frame_id,
-                                      camera_id,
-                                      yolo_enabled)) {
-                        (void)timestamp_epoch;
-                        (void)timestamp_monotonic;
-                        popped_any = true;
-                        stats.messages_popped++;
-                        if (objects.empty()) {
-                            stats.base_messages++;
-                        } else {
-                            stats.detection_update_messages++;
-                        }
-                        if (yolo_enabled) {
-                            stats.yolo_enabled_messages++;
-                        }
-                        if (camera_id != stats.camera_id) {
-                            stats.camera_id_mismatches++;
-                        }
-                        if (stats.messages_popped == 1) {
-                            stats.first_frame_id = frame_id;
-                        } else if (frame_id == stats.last_frame_id) {
-                            // Base and update messages may legitimately share a frame id.
-                        } else if (frame_id == stats.last_frame_id + 1) {
-                            // Expected next base frame.
-                        } else if (frame_id > stats.last_frame_id + 1) {
-                            stats.frame_id_gaps += frame_id - stats.last_frame_id - 1;
-                        } else if (frame_id < stats.last_frame_id) {
-                            stats.non_monotonic_frame_ids++;
-                        }
-                        stats.last_frame_id = frame_id;
-                    }
-
-                    if (runtime->stop_requested.load(std::memory_order_acquire)) {
-                        if (!popped_any) {
-                            break;
-                        }
-                        continue;
-                    }
-                    usleep(1000);
-                }
-            } catch (const std::exception& ex) {
-                stats.reader_error = ex.what();
-            } catch (...) {
-                stats.reader_error = "unknown frame IPC reader exception";
-            }
-        });
     }
 
     if (runtime->reader_threads.size() != selected_indices.size()) {
@@ -4685,22 +4602,14 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
         frame_ipc_managers.clear();
         frame_ipc_managers.resize(num_cameras);
         if (frame_ipc_config.enabled()) {
-            const bool force_v2_live_state =
-                headless_frame_ipc_mode_uses_v2(frame_ipc_config.mode);
             for (int idx : selected_indices) {
                 const std::string queue_name =
-                    build_frame_ipc_queue_name_for_serial(cameras_params[idx].camera_serial);
-                const std::string v2_queue_name =
                     build_frame_ipc_v2_queue_name_for_serial(cameras_params[idx].camera_serial);
                 if (frame_ipc_config.unlink_existing_queues) {
-                    shaman::unlinkQueue(queue_name.c_str());
-                    if (force_v2_live_state) {
-                        shaman_v2::unlink_queue(v2_queue_name);
-                    }
+                    shaman_v2::unlink_queue(queue_name);
                 }
                 frame_ipc_managers[idx] =
-                    std::make_unique<FrameIPCManager>(&cameras_params[idx],
-                                                      force_v2_live_state);
+                    std::make_unique<FrameIPCManager>(&cameras_params[idx]);
                 if (!frame_ipc_managers[idx]->isEnabled()) {
                     std::cerr << "Headless frame IPC initialization failed for camera "
                               << cameras_params[idx].camera_serial
@@ -4711,33 +4620,11 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
                     return false;
                 }
-                if (force_v2_live_state &&
-                    !frame_ipc_managers[idx]->isV2Enabled()) {
-                    std::cerr << "Headless Shaman v2 frame IPC initialization failed for camera "
-                              << cameras_params[idx].camera_serial
-                              << " queue=" << v2_queue_name
-                              << ": " << frame_ipc_managers[idx]->getV2InitError()
-                              << std::endl;
-                    clear_headless_frame_ipc_managers(frame_ipc_managers);
-                    cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
-                    return false;
-                }
                 if (frame_ipc_managers[idx]->getQueueName() != queue_name) {
                     std::cerr << "Headless frame IPC queue-name mismatch for camera "
                               << cameras_params[idx].camera_serial
                               << " expected=" << queue_name
                               << " actual=" << frame_ipc_managers[idx]->getQueueName()
-                              << std::endl;
-                    clear_headless_frame_ipc_managers(frame_ipc_managers);
-                    cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
-                    return false;
-                }
-                if (force_v2_live_state &&
-                    frame_ipc_managers[idx]->getV2QueueName() != v2_queue_name) {
-                    std::cerr << "Headless Shaman v2 frame IPC queue-name mismatch for camera "
-                              << cameras_params[idx].camera_serial
-                              << " expected=" << v2_queue_name
-                              << " actual=" << frame_ipc_managers[idx]->getV2QueueName()
                               << std::endl;
                     clear_headless_frame_ipc_managers(frame_ipc_managers);
                     cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
@@ -4858,7 +4745,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     cameras_params[idx].camera_serial,
                     cameras_params[idx].camera_id,
                     cameras_params[idx].gpu_id,
-                    build_frame_ipc_queue_name_for_serial(cameras_params[idx].camera_serial),
+                    build_frame_ipc_v2_queue_name_for_serial(cameras_params[idx].camera_serial),
                     frame_ipc_config.enabled(),
                     yolo_event_log_config);
         }
@@ -5970,14 +5857,13 @@ bool write_headless_frame_ipc_summary(
     }
 
     bool overall_ok = true;
-    const bool use_v2 = headless_frame_ipc_mode_uses_v2(config.mode);
     nlohmann::json summary = {
         {"schema_id", "orange.headless.frame_ipc_summary"},
-        {"schema_version", 1},
+        {"schema_version", 2},   // v1 queue fields removed 2026-10-08
         {"created_at_utc", get_current_utc_timestamp()},
         {"enabled", config.enabled()},
         {"mode", headless_frame_ipc_mode_to_string(config.mode)},
-        {"queue_version", use_v2 ? 2 : 1},
+        {"queue_version", 2},
         {"queue_naming", "serial"},
         {"unlink_existing_queues", config.unlink_existing_queues},
         {"require_base_frames", config.require_base_frames},
@@ -5989,29 +5875,19 @@ bool write_headless_frame_ipc_summary(
     for (int idx : selected_indices) {
         const CameraParams& camera_params = cameras_params[idx];
         const std::string camera_serial = camera_params.camera_serial;
-        const std::string v1_queue_name = build_frame_ipc_queue_name_for_serial(camera_serial);
-        const std::string v2_queue_name = build_frame_ipc_v2_queue_name_for_serial(camera_serial);
-        const std::string queue_name = use_v2 ? v2_queue_name : v1_queue_name;
+        const std::string queue_name = build_frame_ipc_v2_queue_name_for_serial(camera_serial);
         nlohmann::json camera_json = {
             {"camera_serial", camera_serial},
             {"camera_id", camera_params.camera_id},
             {"queue_name", queue_name},
-            {"v1_queue_name", v1_queue_name},
-            {"v2_queue_name", v2_queue_name},
             {"manager_enabled", false},
             {"manager_init_error", ""},
-            {"v2_manager_enabled", false},
-            {"v2_manager_init_error", ""},
             {"frames_sent", 0ULL},
             {"updates_sent", 0ULL},
-            {"v1_frames_sent", 0ULL},
-            {"v1_updates_sent", 0ULL},
             {"base_queue_drops", 0ULL},
             {"update_queue_drops", 0ULL},
             {"pose_update_queue_drops", 0ULL},
-            {"update_stale_drops", 0ULL},
             {"ipc_push_failures", 0ULL},
-            {"v1_ipc_push_failures", 0ULL},
             {"v2_ipc_push_failures", 0ULL},
             {"v2_frames_published", 0ULL},
             {"v2_yolo_updates_published", 0ULL},
@@ -6057,15 +5933,9 @@ bool write_headless_frame_ipc_summary(
             const FrameIPCManager& manager = *frame_ipc_managers[idx];
             camera_json["manager_enabled"] = manager.isEnabled();
             camera_json["manager_init_error"] = manager.getInitError();
-            camera_json["v2_manager_enabled"] = manager.isV2Enabled();
-            camera_json["v2_manager_init_error"] = manager.getV2InitError();
-            camera_json["v1_frames_sent"] = manager.getFramesSent();
-            camera_json["v1_updates_sent"] = manager.getUpdatesSent();
             camera_json["base_queue_drops"] = manager.getBaseQueueDrops();
             camera_json["update_queue_drops"] = manager.getUpdateQueueDrops();
             camera_json["pose_update_queue_drops"] = manager.getPoseUpdateQueueDrops();
-            camera_json["update_stale_drops"] = manager.getUpdateStaleDrops();
-            camera_json["v1_ipc_push_failures"] = manager.getIpcPushFailures();
             const shaman_v2::LiveStateCounters v2_counters = manager.getV2Counters();
             camera_json["v2_ipc_push_failures"] = v2_counters.push_failures;
             camera_json["v2_frames_published"] = v2_counters.frames_published;
@@ -6075,21 +5945,12 @@ bool write_headless_frame_ipc_summary(
             camera_json["v2_pose_stale_suppressed"] = v2_counters.pose_stale_suppressed;
             camera_json["v2_pending_drops"] = v2_counters.pending_drops;
             camera_json["v2_queue_drops"] = v2_counters.queue_drops;
-            camera_json["frames_sent"] = use_v2
-                ? v2_counters.frames_published
-                : manager.getFramesSent();
-            camera_json["updates_sent"] = use_v2
-                ? (v2_counters.yolo_updates_published +
-                   v2_counters.pose_updates_published)
-                : manager.getUpdatesSent();
-            camera_json["ipc_push_failures"] = use_v2
-                ? v2_counters.push_failures
-                : manager.getIpcPushFailures();
+            camera_json["frames_sent"] = v2_counters.frames_published;
+            camera_json["updates_sent"] =
+                v2_counters.yolo_updates_published + v2_counters.pose_updates_published;
+            camera_json["ipc_push_failures"] = v2_counters.push_failures;
             if (!manager.isEnabled()) {
                 add_failure("manager_not_enabled");
-            }
-            if (use_v2 && !manager.isV2Enabled()) {
-                add_failure("v2_manager_not_enabled");
             }
             if (!config.allow_push_failures &&
                 camera_json.value("ipc_push_failures", 0ULL) > 0) {
@@ -6137,7 +5998,7 @@ bool write_headless_frame_ipc_summary(
                     add_failure("reader_error");
                 }
                 const uint64_t base_read_count =
-                    use_v2 ? stats.v2_latest_state_messages : stats.base_messages;
+                    stats.v2_latest_state_messages;
                 if (config.require_base_frames && base_read_count == 0) {
                     add_failure("no_base_messages_read");
                 }
@@ -6150,13 +6011,13 @@ bool write_headless_frame_ipc_summary(
                 if (stats.non_monotonic_frame_ids > 0) {
                     add_failure("reader_non_monotonic_frame_ids");
                 }
-                if (use_v2 && stats.sequence_id_gaps > 0) {
+                if (stats.sequence_id_gaps > 0) {
                     add_failure("reader_sequence_id_gaps");
                 }
-                if (use_v2 && stats.non_monotonic_sequence_ids > 0) {
+                if (stats.non_monotonic_sequence_ids > 0) {
                     add_failure("reader_non_monotonic_sequence_ids");
                 }
-                if (use_v2 && require_v2_pose_results &&
+                if (require_v2_pose_results &&
                     stats.v2_pose_result_messages == 0) {
                     add_failure("no_v2_pose_result_messages_read");
                 }
@@ -8712,14 +8573,6 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             return false;
         }
         spec->crop_recording.mode = node.value("mode", std::string("off"));
-        if (node.contains("recorder_tool_path")) {
-            if (!node.at("recorder_tool_path").is_string() || node.at("recorder_tool_path").get<std::string>().empty() ||
-                !std::filesystem::path(node.at("recorder_tool_path").get<std::string>()).is_absolute()) {
-                if (error_out) *error_out = "crop_recording.recorder_tool_path must be a nonempty absolute path";
-                return false;
-            }
-            spec->crop_recording.recorder_tool_path = node.at("recorder_tool_path").get<std::string>();
-        }
         spec->crop_recording.crop_size_px = node.value("crop_size_px", 0);
         spec->crop_recording.recorder_gpu = node.value("recorder_gpu", -1);
         spec->crop_recording.interleave = node.value("interleave", true);
@@ -10086,10 +9939,10 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         }
         orange::external_recorder::SupervisedRecorderLifecycleOptions crop_lifecycle_options;
         crop_lifecycle_options.contract = crop_contract;
+        // One recorder binary for every stream kind (the CUDA 13 native
+        // recorder; 2026-10-08): crop recorders use the configured tool.
         crop_lifecycle_options.recorder_tool_path =
-            !options.crop_recording.recorder_tool_path.empty()
-                ? options.crop_recording.recorder_tool_path
-                : options.external_recorder_contract.recorder_tool_path;
+            options.external_recorder_contract.recorder_tool_path;
         crop_lifecycle_options.default_session_id =
             std::filesystem::path(active_record_folder).filename().string();
         crop_lifecycle_options.analytics_root =

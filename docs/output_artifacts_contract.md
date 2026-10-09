@@ -1739,7 +1739,7 @@ Top-level fields:
 - `schema_id = "orange.headless.frame_ipc_summary"`
 - `schema_version = 1`
 - `mode = "producer_only" | "verify_drain" | "verify_drain_v2"`
-- `queue_version = 1 | 2`
+- `queue_version = 2` (the v1 queue was retired on 2026-10-08; summary `schema_version` 2 dropped the `v1_*` fields)
 - `queue_naming = "serial"`
 - `require_v2_pose_results`: true when the headless run had pose enabled and
   the v2 verifier should fail if no pose-result states are drained

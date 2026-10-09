@@ -118,7 +118,7 @@ Experiment specs now support two useful fixed-mode toggles:
 - `fixed.helper_copy_bytes = -1 | 0 | <positive byte count>`
 - `fixed.helper_copy_delay_ns = 0 | <positive nanoseconds>`
 - `fixed.frame_ipc.enabled = true | false`
-- `fixed.frame_ipc.mode = "producer_only" | "verify_drain"`
+- `fixed.frame_ipc.mode = "producer_only" | "verify_drain_v2"` (`verify_drain` is accepted as an alias of `verify_drain_v2`; the v1 queue was retired on 2026-10-08)
 - `fixed.pose_worker.mode = "off" | "noop" | "real"`
 - `fixed.pose_worker.roi_source = "yolo_top_detection" | "synthetic_center_box"`
 - `fixed.recording_control.record_for_seconds = 0 | <positive seconds>`
@@ -316,13 +316,13 @@ frame IPC path used by the GUI:
 - queue names are always serial-based: `/shm_cam_<camera_serial>`
 - `producer_only` creates Orange `FrameIPCManager` writers and expects an
   external consumer, such as Citrus, to drain the queues
-- `verify_drain` also starts a built-in headless reader per selected camera and
+- `verify_drain_v2` also starts a built-in headless reader per selected camera and
   writes `frame_ipc_summary.json`
 - `verify_drain_v2` forces the Shaman v2 live-state writer and drains
   `/shm_cam_<camera_serial>_v2` with the same summary artifact
 - `verify_drain` and `verify_drain_v2` are single-consumer test modes; do not
   run either while Citrus is expected to consume the same queues
-- `unlink_existing_queues=true` removes stale `/dev/shm/shm_cam_<serial>`
+- `unlink_existing_queues=true` removes stale `/dev/shm/shm_cam_<serial>_v2`
   objects before creating writers; in v2 mode it also removes the matching
   `/dev/shm/shm_cam_<serial>_v2` objects
 
@@ -332,7 +332,7 @@ Example:
 "fixed": {
   "frame_ipc": {
     "enabled": true,
-    "mode": "verify_drain",
+    "mode": "verify_drain_v2",
     "unlink_existing_queues": true,
     "require_base_frames": true,
     "allow_push_failures": false

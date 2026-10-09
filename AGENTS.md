@@ -162,6 +162,9 @@ the native binary before the next run.
 
 - Never skip the CPU results path (postprocess, tracking, IPC) in production
   or in a gate.
+- Live detections and pose reach Citrus only through the SHAMAN v2 queue
+  (`/shm_cam_<serial>_v2`, `src/shaman_v2.h`); frame IPC enabled means v2,
+  no environment flag. The v1 `SharedBoxQueue` was deleted on 2026-10-08.
 - Never record through the in-process recorder (latency): the app config
   sets `recording.require_external_ipc` and production specs
   `require_external_ipc`, which refuse a start whose full-frame or crop sink

@@ -8,7 +8,7 @@
 #include "camera.h"           // For CameraParams
 #include "video_capture.h"    // For CameraEachSelect, WORKER_ENTRY
 #include "network_base.h"     // For EnetContext, ENetPeer
-#include "shaman.h"           // For shaman::SharedBoxQueue
+#include "shaman.h"           // shaman::Object
 #include "velocity_tracker.h" // For VelocityTracker
 #include "yolo_spatial_mask.h"
 #include "fused_frame_args.h"
@@ -119,7 +119,6 @@ private:
     int frame_counter_;
     std::atomic<double> current_fps_;
 
-    shaman::SharedBoxQueue* shaman_ipc_queue_;
     COpenGLDisplay* m_display_worker = nullptr;
     CropProducerWorker* m_crop_worker = nullptr;
     PoseWorker* m_pose_worker = nullptr;

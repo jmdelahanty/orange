@@ -598,14 +598,12 @@ void wait_for_v2_stale_counter(FrameIPCManager& manager, uint64_t expected_count
 void test_frame_ipc_manager_opt_in_v2_base_yolo_and_stale()
 {
     const std::string serial = "v2t" + std::to_string(getpid());
-    const std::string v1_name = "/shm_cam_" + serial;
     const std::string v2_name = shaman_v2::queue_name_for_camera_serial(serial);
-    shaman_v2::unlink_queue(v1_name);
     shaman_v2::unlink_queue(v2_name);
 
     {
         CameraParams camera = make_test_camera(serial);
-        FrameIPCManager manager(&camera, true /* force_v2_live_state */);
+        FrameIPCManager manager(&camera);
         require(manager.isEnabled(), "v1 frame IPC manager should initialize");
         require(manager.isV2Enabled(), "v2 frame IPC manager should initialize when forced");
         require(manager.getV2QueueName() == v2_name, "v2 queue name should use camera serial");
@@ -692,21 +690,18 @@ void test_frame_ipc_manager_opt_in_v2_base_yolo_and_stale()
         manager.stop();
     }
 
-    shaman_v2::unlink_queue(v1_name);
     shaman_v2::unlink_queue(v2_name);
 }
 
 void test_frame_ipc_manager_publishes_v2_pose_update()
 {
     const std::string serial = "v2pose" + std::to_string(getpid());
-    const std::string v1_name = "/shm_cam_" + serial;
     const std::string v2_name = shaman_v2::queue_name_for_camera_serial(serial);
-    shaman_v2::unlink_queue(v1_name);
     shaman_v2::unlink_queue(v2_name);
 
     {
         CameraParams camera = make_test_camera(serial);
-        FrameIPCManager manager(&camera, true /* force_v2_live_state */);
+        FrameIPCManager manager(&camera);
         require(manager.isEnabled(), "v1 frame IPC manager should initialize for pose test");
         require(manager.isV2Enabled(), "v2 frame IPC manager should initialize for pose test");
 
@@ -808,21 +803,18 @@ void test_frame_ipc_manager_publishes_v2_pose_update()
         manager.stop();
     }
 
-    shaman_v2::unlink_queue(v1_name);
     shaman_v2::unlink_queue(v2_name);
 }
 
 void test_frame_ipc_manager_fails_closed_on_object_overflow()
 {
     const std::string serial = "v2overflow" + std::to_string(getpid());
-    const std::string v1_name = "/shm_cam_" + serial;
     const std::string v2_name = shaman_v2::queue_name_for_camera_serial(serial);
-    shaman_v2::unlink_queue(v1_name);
     shaman_v2::unlink_queue(v2_name);
 
     {
         CameraParams camera = make_test_camera(serial);
-        FrameIPCManager manager(&camera, true /* force_v2_live_state */);
+        FrameIPCManager manager(&camera);
         shaman_v2::SharedLiveStateQueue reader(v2_name, false);
         require(manager.sendFrame(31, 3131, true),
                 "overflow base frame should enqueue");
@@ -865,21 +857,18 @@ void test_frame_ipc_manager_fails_closed_on_object_overflow()
         manager.stop();
     }
 
-    shaman_v2::unlink_queue(v1_name);
     shaman_v2::unlink_queue(v2_name);
 }
 
 void test_frame_ipc_manager_publishes_enqueue_rejection_failure()
 {
     const std::string serial = "v2enqueuefail" + std::to_string(getpid());
-    const std::string v1_name = "/shm_cam_" + serial;
     const std::string v2_name = shaman_v2::queue_name_for_camera_serial(serial);
-    shaman_v2::unlink_queue(v1_name);
     shaman_v2::unlink_queue(v2_name);
 
     {
         CameraParams camera = make_test_camera(serial);
-        FrameIPCManager manager(&camera, true /* force_v2_live_state */);
+        FrameIPCManager manager(&camera);
         shaman_v2::SharedLiveStateQueue reader(v2_name, false);
         const uint64_t model_hash = shaman_v2::fnv1a64("enqueue-failure-model");
         require(manager.sendFrame(41, 4141, true),
@@ -900,7 +889,6 @@ void test_frame_ipc_manager_publishes_enqueue_rejection_failure()
         manager.stop();
     }
 
-    shaman_v2::unlink_queue(v1_name);
     shaman_v2::unlink_queue(v2_name);
 }
 
@@ -912,14 +900,12 @@ void test_frame_ipc_manager_publishes_enqueue_rejection_failure()
 void test_frame_ipc_manager_pose_update_keys_on_absolute_frame_id()
 {
     const std::string serial = "v2poseid" + std::to_string(getpid());
-    const std::string v1_name = "/shm_cam_" + serial;
     const std::string v2_name = shaman_v2::queue_name_for_camera_serial(serial);
-    shaman_v2::unlink_queue(v1_name);
     shaman_v2::unlink_queue(v2_name);
 
     {
         CameraParams camera = make_test_camera(serial);
-        FrameIPCManager manager(&camera, true /* force_v2_live_state */);
+        FrameIPCManager manager(&camera);
         require(manager.isV2Enabled(), "v2 frame IPC manager should initialize for pose id test");
         shaman_v2::SharedLiveStateQueue reader(v2_name, false);
 
@@ -993,7 +979,6 @@ void test_frame_ipc_manager_pose_update_keys_on_absolute_frame_id()
         manager.stop();
     }
 
-    shaman_v2::unlink_queue(v1_name);
     shaman_v2::unlink_queue(v2_name);
 }
 
@@ -1004,14 +989,12 @@ void test_frame_ipc_manager_pose_update_keys_on_absolute_frame_id()
 void test_frame_ipc_manager_drains_in_arrival_order()
 {
     const std::string serial = "v2order" + std::to_string(getpid());
-    const std::string v1_name = "/shm_cam_" + serial;
     const std::string v2_name = shaman_v2::queue_name_for_camera_serial(serial);
-    shaman_v2::unlink_queue(v1_name);
     shaman_v2::unlink_queue(v2_name);
 
     {
         CameraParams camera = make_test_camera(serial);
-        FrameIPCManager manager(&camera, true /* force_v2_live_state */);
+        FrameIPCManager manager(&camera);
         require(manager.isV2Enabled(), "v2 frame IPC manager should initialize for order test");
         shaman_v2::SharedLiveStateQueue reader(v2_name, false);
 
@@ -1067,21 +1050,18 @@ void test_frame_ipc_manager_drains_in_arrival_order()
         manager.stop();
     }
 
-    shaman_v2::unlink_queue(v1_name);
     shaman_v2::unlink_queue(v2_name);
 }
 
 void test_frame_ipc_manager_publishes_terminal_zero_detection_state()
 {
     const std::string serial = "v2zero" + std::to_string(getpid());
-    const std::string v1_name = "/shm_cam_" + serial;
     const std::string v2_name = shaman_v2::queue_name_for_camera_serial(serial);
-    shaman_v2::unlink_queue(v1_name);
     shaman_v2::unlink_queue(v2_name);
 
     {
         CameraParams camera = make_test_camera(serial);
-        FrameIPCManager manager(&camera, true /* force_v2_live_state */);
+        FrameIPCManager manager(&camera);
         shaman_v2::SharedLiveStateQueue reader(v2_name, false);
         require(manager.sendFrame(21, 1234, true),
                 "zero-detection base frame should enqueue");
@@ -1129,23 +1109,20 @@ void test_frame_ipc_manager_publishes_terminal_zero_detection_state()
         manager.stop();
     }
 
-    shaman_v2::unlink_queue(v1_name);
     shaman_v2::unlink_queue(v2_name);
 }
 
 void test_frame_ipc_manager_pending_requires_live_terminal_capability()
 {
     const std::string serial = "v2pending" + std::to_string(getpid());
-    const std::string v1_name = "/shm_cam_" + serial;
     const std::string v2_name = shaman_v2::queue_name_for_camera_serial(serial);
-    shaman_v2::unlink_queue(v1_name);
     shaman_v2::unlink_queue(v2_name);
 
     {
         CameraParams camera = make_test_camera(serial);
-        FrameIPCManager manager(&camera, true /* force_v2_live_state */);
+        FrameIPCManager manager(&camera);
         require(manager.isEnabled() && manager.isV2Enabled(),
-                "pending-capability test requires v1 and v2 IPC");
+                "pending-capability test requires the v2 IPC queue");
         shaman_v2::SharedLiveStateQueue reader(v2_name, false);
 
         FrameIPCFrameIdentity identity;
@@ -1191,12 +1168,11 @@ void test_frame_ipc_manager_pending_requires_live_terminal_capability()
                 "synthetic live result must terminate its pending base");
         require((slots[1].objects[0].flags & shaman_v2::kObjectSynthetic) != 0,
                 "synthetic live object must be explicitly marked synthetic");
-        require(manager.getUpdatesSent() == 0,
-                "synthetic v2 terminal result must not alter the legacy stream");
+        require(manager.getV2Counters().yolo_updates_published >= 1,
+                "synthetic result must publish through the v2 queue");
         manager.stop();
     }
 
-    shaman_v2::unlink_queue(v1_name);
     shaman_v2::unlink_queue(v2_name);
 }
 
