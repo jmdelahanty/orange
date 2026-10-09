@@ -19,6 +19,8 @@
 #include <fstream>
 #include <iostream>
 #include <system_error>
+#include <thread>
+#include <chrono>
 #include <vector>
 
 namespace orange::media_digest {
@@ -51,10 +53,31 @@ std::string relative_video_path(const std::string& video_path, const std::string
     return rel.generic_string();
 }
 
+// Per-process read-back rate cap (bytes per second; 0 = uncapped), applied
+// as a sleep after each 4 MB chunk so the hasher never bursts against the
+// recorder's own writes when the file has left the page cache.
+// ORANGE_EXTERNAL_RECORDER_CONTENT_DIGEST_RATE_MBPS sets it (default 16 MB/s
+// per recorder process: eight processes = 128 MB/s worst case, about the
+// four-camera recording rate).
+uint64_t rate_cap_bytes_per_second()
+{
+    static const uint64_t cap = [] {
+        const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_CONTENT_DIGEST_RATE_MBPS");
+        if (env && *env) {
+            const double mbps = std::atof(env);
+            return mbps <= 0.0 ? uint64_t{0} : static_cast<uint64_t>(mbps * 1024.0 * 1024.0);
+        }
+        return uint64_t{16} * 1024u * 1024u;
+    }();
+    return cap;
+}
+
 // Plain read() in 4 MB chunks into a streaming SHA-256; the file is never
 // mapped and the page cache is left as it is.
 bool hash_file_readback(const std::string& path, std::string* hex, uint64_t* size, std::string* error)
 {
+    const uint64_t cap = rate_cap_bytes_per_second();
+    const auto started = std::chrono::steady_clock::now();
     const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
         *error = "open failed: " + std::string(std::strerror(errno));
@@ -74,6 +97,13 @@ bool hash_file_readback(const std::string& path, std::string* hex, uint64_t* siz
         if (n == 0) break;
         hasher.update(buffer.data(), static_cast<size_t>(n));
         total += static_cast<uint64_t>(n);
+        if (cap > 0) {
+            // Sleep until `total` bytes would have been allowed at the cap.
+            const auto allowed_at = started + std::chrono::nanoseconds(
+                static_cast<int64_t>((static_cast<long double>(total) / cap) * 1e9L));
+            const auto now = std::chrono::steady_clock::now();
+            if (allowed_at > now) std::this_thread::sleep_for(allowed_at - now);
+        }
     }
     ::close(fd);
     *hex = hasher.final_hex();
@@ -84,13 +114,19 @@ bool hash_file_readback(const std::string& path, std::string* hex, uint64_t* siz
 void lower_thread_priority()
 {
     // SCHED_IDLE needs no privilege; it only runs when a core is otherwise
-    // idle. nice 19 is the fallback if the policy change is refused.
+    // idle. nice 19 is the fallback if the policy change is refused. The IO
+    // priority goes to the idle class too (ionice -c 3 for this thread), so
+    // a read-back that misses the page cache yields to the recorder's own
+    // writes on the NVMe drives.
     sched_param param{};
     param.sched_priority = 0;
     if (pthread_setschedparam(pthread_self(), SCHED_IDLE, &param) != 0) {
         const pid_t tid = static_cast<pid_t>(::syscall(SYS_gettid));
         (void)::setpriority(PRIO_PROCESS, static_cast<id_t>(tid), 19);
     }
+    const pid_t tid = static_cast<pid_t>(::syscall(SYS_gettid));
+    (void)::syscall(SYS_ioprio_set, 1 /* IOPRIO_WHO_PROCESS */, tid,
+                    (3 << 13) /* IOPRIO_CLASS_IDLE << IOPRIO_CLASS_SHIFT */);
 }
 
 }  // namespace
@@ -241,7 +277,10 @@ void ContentDigestHasher::run()
             busy_ = true;
         }
         std::string sha, error;
+        const auto hash_started = std::chrono::steady_clock::now();
         const bool ok = write_content_digest_receipt(request, &sha, &error);
+        const double hash_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - hash_started).count();
         {
             std::lock_guard<std::mutex> lock(mutex_);
             busy_ = false;
@@ -252,6 +291,9 @@ void ContentDigestHasher::run()
         if (!ok) {
             std::cerr << "[content_digest] receipt failed for " << request.video_path
                       << ": " << error << std::endl;
+        } else {
+            std::cout << "[content_digest] receipt " << request.video_path
+                      << " sha256=" << sha.substr(0, 12) << " hash_ms=" << hash_ms << std::endl;
         }
     }
 }

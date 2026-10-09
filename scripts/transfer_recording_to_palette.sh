@@ -18,7 +18,7 @@
 set -euo pipefail
 
 # Edited per delivery by the Orange session; --latest/explicit folder override it.
-DEFAULT_RUN="/home/jeremy/orange_data/exp/unsorted/fourcam_palette_fish_19220_1_single_video_crops_shadow_20261008_215812/fourcam_palette_fish_19220_1_single_video_crops_shadow_20261008_215812__run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25__aq_off__tempaq_off__lookahead_off"
+DEFAULT_RUN="/home/jeremy/orange_data/exp/unsorted/fourcam_palette_fish_19220_1_rolling_crops_shadow_20261009_004349/fourcam_palette_fish_19220_1_rolling_crops_shadow_20261009_004349__run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25__aq_off__tempaq_off__lookahead_off"
 
 DOMAIN_USER="${ORANGE_TRANSFER_DOMAIN_USER:-delahantyj@hhmi.org}"
 STAGING_ROOT="${ORANGE_PALETTE_STAGING_ROOT:-/groups/johnson/johnsonlab/jeremy/staging}"

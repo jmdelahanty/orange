@@ -33,8 +33,15 @@ acceptance.
   abandons that file's receipt (counted). Three sites: each rolling clip,
   the merged full-frame video, the direct single-output video.
 - The hasher reads the closed file back with plain `read()` in 4 MB chunks
-  (no mmap, no fadvise) into a streaming SHA-256. The file was just written,
-  so the pages are in the page cache and no NVMe read occurs.
+  (no mmap, no fadvise) into a streaming SHA-256, at IO priority idle
+  (`ionice -c 3` for that thread) and under a per-process rate cap (default
+  16 MB/s, so eight recorder processes read at most about the four-camera
+  recording rate). A 30 s clip was just written and is read from the page
+  cache; a production-length clip (15 to 30 min, 17 to 34 GB per full-frame
+  file) has partly left the cache by its finalize, so the read-back then
+  hits the NVMe drives on bridge 20 at that capped rate while the next clip
+  records. That case still needs its own no-impact proof (requested by
+  Jeremy 2026-10-09; see "Production clip lengths" below).
 - The receipt `<video>.content_digest.json` is written beside the video by
   temp + rename, never partial. Closed schema `orange.media_content_digest`
   version 1 (Citrus's exact field set): `schema_id`, `schema_version`,
@@ -59,6 +66,7 @@ acceptance.
 | recorder env | `ORANGE_EXTERNAL_RECORDER_RECORDING_ROOT` (run folder; default: parent of the summary JSON's directory) | derived |
 | recorder env | `ORANGE_EXTERNAL_RECORDER_CONTENT_DIGEST_QUEUE` | 64 |
 | recorder env | `ORANGE_EXTERNAL_RECORDER_CONTENT_DIGEST_FINISH_WAIT_MS` | 10000 |
+| recorder env | `ORANGE_EXTERNAL_RECORDER_CONTENT_DIGEST_RATE_MBPS` (per-process read-back cap; 0 = uncapped) | 16 |
 
 Tests: `media_content_digest_tests` (format, digest equals the streaming
 file hash, bounded queue, bounded finish, no partial files).
