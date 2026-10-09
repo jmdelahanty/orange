@@ -6,7 +6,7 @@
 # every media file, so a long recording takes minutes.
 #
 # Pin: Citrus package citrus-recording-transfer 2.0.1 (tag recording-transfer-v2.0.1,
-# citrus commit 7597cf2d; wheel sha256 75a20b83d189988b60416db40bb27834eba47da22452dd845087cb2ce099d171;
+# citrus commit 2a3b7217; wheel sha256 8df9d3f862887e0759e9089df631b743abed8b7c6d953d147c69882e6902b2b9;
 # writes completion marker v3 with sealer provenance; refuses control characters
 # in source/destination paths).
 # The package files are verified in a Citrus checkout by sha256 (agreed with
