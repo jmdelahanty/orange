@@ -981,6 +981,14 @@ bool file_exists(const std::string& path)
     return std::filesystem::exists(path, ec) && !ec;
 }
 
+// The GOP the NVENC session actually runs: lossless (crop) streams are
+// all-intra (1), everything else uses the contract's gop. Mirrors
+// build_external_video_encode_profile().
+static uint32_t encoder_resolved_gop_length(const Options& options)
+{
+    return video_encode_tuning_is_lossless(options.tuning) ? 1u : std::max<uint32_t>(1u, options.gop);
+}
+
 VideoEncodeProfile build_external_video_encode_profile(
     const Options& options,
     const std::string& camera_serial,
@@ -1628,7 +1636,13 @@ bool write_recorder_status_json(const Options& options,
             out << "  \"rate_control_quality_value\": "
                 << options.quality_value << ",\n";
             out << "  \"frame_rate\": " << options.fps << ",\n";
-            out << "  \"resolved_gop_length\": " << options.gop << ",\n";
+            // resolved_gop_length is the ENCODER GOP (1 for the all-intra
+            // lossless crop streams); the contract's gop is the GOP-parity
+            // routing period of the shards, reported as routing_gop_period
+            // (2026-10-08: a consumer read the routing period as the encoder
+            // GOP and refused a correct all-intra file).
+            out << "  \"resolved_gop_length\": " << encoder_resolved_gop_length(options) << ",\n";
+            out << "  \"routing_gop_period\": " << options.gop << ",\n";
             out << "  \"recording_config_fingerprint_scope\": \""
                 << orange::external_recorder::ipc::kRecordingConfigFingerprintScope
                 << "\",\n";
@@ -6809,7 +6823,8 @@ void write_summary_json(const Options& options,
         << json_dump_for_inline_value(rate_control_summary_json(options), "  ")
         << ",\n";
     out << "  \"fps\": " << options.fps << ",\n";
-    out << "  \"resolved_gop_length\": " << options.gop << ",\n";
+    out << "  \"resolved_gop_length\": " << encoder_resolved_gop_length(options) << ",\n";
+    out << "  \"routing_gop_period\": " << options.gop << ",\n";
     out << "  \"recording_config_fingerprint_scope\": \""
         << orange::external_recorder::ipc::kRecordingConfigFingerprintScope
         << "\",\n";
