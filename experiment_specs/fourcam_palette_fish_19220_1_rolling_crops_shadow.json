@@ -64,8 +64,8 @@
           "preset": "p1",
           "tuning": "ll",
           "gop": 25,
-          "bitrate_bps": 150000000,
-          "max_bitrate_bps": 150000000,
+          "bitrate_bps": 45000000,
+          "max_bitrate_bps": 60000000,
           "vbv_buffer_size": 150000000
         },
         "2010094": {
@@ -92,8 +92,8 @@
           "preset": "p1",
           "tuning": "ll",
           "gop": 25,
-          "bitrate_bps": 150000000,
-          "max_bitrate_bps": 150000000,
+          "bitrate_bps": 45000000,
+          "max_bitrate_bps": 60000000,
           "vbv_buffer_size": 150000000
         },
         "2010095": {
@@ -120,8 +120,8 @@
           "preset": "p1",
           "tuning": "ll",
           "gop": 25,
-          "bitrate_bps": 150000000,
-          "max_bitrate_bps": 150000000,
+          "bitrate_bps": 45000000,
+          "max_bitrate_bps": 60000000,
           "vbv_buffer_size": 150000000
         },
         "2010096": {
@@ -148,8 +148,8 @@
           "preset": "p1",
           "tuning": "ll",
           "gop": 25,
-          "bitrate_bps": 150000000,
-          "max_bitrate_bps": 150000000,
+          "bitrate_bps": 45000000,
+          "max_bitrate_bps": 60000000,
           "vbv_buffer_size": 150000000
         }
       },

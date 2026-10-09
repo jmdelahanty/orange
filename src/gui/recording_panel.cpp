@@ -227,18 +227,14 @@ void render_gui_external_rolling_controls(AppStorageConfig* app_storage_config,
 
     ImGui::BeginDisabled(streaming_active || !external_ipc || clip_env);
     if (ImGui::Checkbox("Enable full-frame rolling clips", &rolling_enabled)) {
+        // Rolling clips no longer need a timed recording (2026-10-09): an
+        // open-ended recording rolls every clip_seconds until it is stopped.
+        // Default 15 min (Jeremy's production clip length at 100 fps).
         if (rolling_enabled) {
             if (app_storage_config->gui_recording_clip_seconds <= 0) {
-                app_storage_config->gui_recording_clip_seconds = 1800;
-            }
-            if (!record_for_env && app_storage_config->gui_recording_record_for_seconds <= 0) {
-                app_storage_config->gui_recording_record_for_seconds =
-                    std::max(3600, app_storage_config->gui_recording_clip_seconds);
+                app_storage_config->gui_recording_clip_seconds = 900;
             }
         } else {
-            if (!record_for_env) {
-                app_storage_config->gui_recording_record_for_seconds = 0;
-            }
             app_storage_config->gui_recording_clip_seconds = 0;
         }
         record_for_seconds = effective_recording_control_value(
@@ -252,9 +248,9 @@ void render_gui_external_rolling_controls(AppStorageConfig* app_storage_config,
     }
     ImGui::EndDisabled();
 
-    ImGui::BeginDisabled(streaming_active || !external_ipc || !rolling_enabled || record_for_env);
-    if (ImGui::InputInt("record duration seconds", &record_for_seconds)) {
-        app_storage_config->gui_recording_record_for_seconds = std::max(1, record_for_seconds);
+    ImGui::BeginDisabled(streaming_active || !external_ipc || record_for_env);
+    if (ImGui::InputInt("record duration seconds (0 = until stopped)", &record_for_seconds)) {
+        app_storage_config->gui_recording_record_for_seconds = std::max(0, record_for_seconds);
         record_for_seconds = app_storage_config->gui_recording_record_for_seconds;
     }
     ImGui::EndDisabled();
@@ -273,13 +269,19 @@ void render_gui_external_rolling_controls(AppStorageConfig* app_storage_config,
         ImGui::TextDisabled("Rolling settings are locked while streaming is active.");
     }
 
-    if (rolling_enabled) {
+    if (rolling_enabled && record_for_seconds > 0) {
         ImGui::TextDisabled(
             "Effective full-frame clips: %d seconds per clip for %d recording seconds.",
             clip_seconds,
             record_for_seconds);
+    } else if (rolling_enabled) {
+        ImGui::TextDisabled(
+            "Effective full-frame clips: %d seconds per clip until the recording is stopped.",
+            clip_seconds);
+    } else if (record_for_seconds > 0) {
+        ImGui::TextDisabled("Effective full-frame clips: single clip for %d recording seconds.", record_for_seconds);
     } else {
-        ImGui::TextDisabled("Effective full-frame clips: single clip.");
+        ImGui::TextDisabled("Effective full-frame clips: single clip until the recording is stopped.");
     }
 }
 

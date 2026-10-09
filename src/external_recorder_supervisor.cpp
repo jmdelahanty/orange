@@ -1373,11 +1373,8 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
                              context +
                                  ".routing_policy=gop_modulo requires at least two shard GPUs");
         }
-        if (stream_plan.clip_seconds > 0 && stream_plan.record_for_seconds <= 0) {
-            return set_error(error_out,
-                             context +
-                                 ".recording_control.clip_seconds requires record_for_seconds > 0");
-        }
+        // clip_seconds without record_for_seconds is an open-ended rolling
+        // recording (2026-10-09): clips roll until the client finalizes.
         DurationSafetyLimit duration_limit;
         std::string duration_limit_error;
         if (!ResolveDurationSafetyLimit(

@@ -1532,16 +1532,9 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                 }
                 return false;
             }
-            if (config.gui_recording_clip_seconds > 0 &&
-                config.gui_recording_record_for_seconds <= 0) {
-                if (error_out) {
-                    *error_out =
-                        "recording.recording_control.clip_seconds requires "
-                        "record_for_seconds > 0 in " +
-                        config_path.string();
-                }
-                return false;
-            }
+            // clip_seconds alone is valid (2026-10-09): an open-ended GUI
+            // recording rolls clips every clip_seconds until it is stopped;
+            // record_for_seconds remains the optional timed-recording limit.
         }
         if (recording.contains("crop")) {
             if (!recording["crop"].is_object()) {

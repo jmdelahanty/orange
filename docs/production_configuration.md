@@ -137,11 +137,19 @@ default, and the sealed effective configuration shows when one was overridden.
   filesystem UUID, never by `nvmeN` (the numbering changed at the
   2026-10-06 reboot).
 - Clip length (Jeremy): 15 min at 100 fps, 30 min at 60 fps or below. The
-  Palette-ready specs carry `recording_control.clip_seconds 900`. The GUI
-  couples rolling clips to a timed recording (`recording.recording_control.
-  clip_seconds` requires `record_for_seconds > 0`; the panel's default when
-  the checkbox is ticked is 1800 s), so an open-ended GUI recording is still
-  one file per camera.
+  Palette-ready specs carry `recording_control.clip_seconds 900` and the app
+  config `recording.recording_control.clip_seconds 900`. Since 2026-10-09
+  rolling clips no longer need a timed recording: an open-ended GUI
+  recording rolls every `clip_seconds` until it is stopped (the panel's
+  checkbox default is 900 s; `record_for_seconds` stays the optional timed
+  limit). Proven by the GUI validation `2026_10_09_02_28_15` (60 s clips,
+  autorun stop at 150 s: 3 clips, final stop reason autorun_stop, status
+  completed, 0 gaps, NIC unchanged, strict validator PASS).
+- Full-frame bitrate default is 45 Mbit/s average / 60 Mbit/s max since
+  2026-10-09 (Jeremy, after the A/B below): the Palette-ready specs, the
+  supervisor and plan defaults and the contract fallback for camera configs
+  that say "auto" (`src/external_recorder_contract_utils.cpp`). The latency
+  gate specs (`..._od8ff_s16*`) keep 150/150 as the historical baseline.
 - Full-frame bitrate A/B (spec `..._rolling_crops_shadow_ff45`, 45 Mbit/s
   average / 60 Mbit/s max, crops unchanged and lossless): measured 53.9
   Mbit/s against 150.2; PSNR / SSIM of the 384 px fish window cut from the

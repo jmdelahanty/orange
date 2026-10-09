@@ -422,13 +422,8 @@ bool gui_external_recorder_recording_control_from_plan(
         if (stream.record_for_seconds <= 0 && stream.clip_seconds <= 0) {
             continue;
         }
-        if (stream.clip_seconds > 0 && stream.record_for_seconds <= 0) {
-            if (error_out) {
-                *error_out =
-                    "GUI external rolling requires record_for_seconds when clip_seconds is set";
-            }
-            return false;
-        }
+        // clip_seconds without record_for_seconds is an open-ended rolling
+        // recording (2026-10-09); the final clip's stop reason is the run's.
         if (!found) {
             resolved.record_for_seconds = stream.record_for_seconds;
             resolved.clip_seconds = stream.clip_seconds;

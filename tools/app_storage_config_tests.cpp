@@ -172,6 +172,26 @@ void test_missing_config_uses_defaults()
     std::filesystem::remove_all(root);
 }
 
+void test_clip_seconds_without_record_for_loads()
+{
+    const std::filesystem::path root = make_temp_dir();
+    const std::filesystem::path config_path = root / "default.json";
+    write_text(
+        config_path,
+        R"json({
+  "schema_id": "orange.app.config",
+  "schema_version": 1,
+  "recording": {
+    "sink_mode": "external_ipc",
+    "recording_control": { "clip_seconds": 900 }
+  }
+})json");
+    const AppStorageConfig config = load_from_path(config_path);
+    require(config.gui_recording_clip_seconds == 900, "clip_seconds should load without record_for_seconds");
+    require(config.gui_recording_record_for_seconds == 0, "record_for_seconds stays 0 (open-ended)");
+    std::filesystem::remove_all(root);
+}
+
 void test_loads_gui_and_crop_defaults()
 {
     const std::filesystem::path root = make_temp_dir();
@@ -1030,6 +1050,7 @@ int main()
     const TestCase tests[] = {
         {"missing_config_uses_defaults", &test_missing_config_uses_defaults},
         {"loads_gui_and_crop_defaults", &test_loads_gui_and_crop_defaults},
+        {"clip_seconds_without_record_for_loads", &test_clip_seconds_without_record_for_loads},
         {"loads_manual_gui_citrus_completion_profile",
          &test_loads_manual_gui_citrus_completion_profile},
         {"real_crop_sink_aliases_in_process", &test_real_crop_sink_aliases_in_process},

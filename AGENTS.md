@@ -58,7 +58,10 @@ paired die) and an external crop recorder. Recorder knobs the gate used:
 owner push with per-card serialization and the deadline gate, 16 push
 slots, full-frame `extra_output_delay 8` (crop recorders keep the default),
 native local input from the CUDA 13 recorder build, MP4 writeback pacing
-(`sync_file_range` every 32 MB, default on).
+(`sync_file_range` every 32 MB, default on). Since 2026-10-09: full-frame
+45/60 Mbit/s VBR (was 150/150; `docs/production_configuration.md`),
+15-minute rolling clips at 100 fps that no longer need a timed recording,
+recordings on `/mnt/Data1`.
 
 Headless spec: `experiment_specs/..._native_ownerpush_ring_od8ff_s16*.json`
 (60 s round and `_endurance30`, 30 minutes). GUI: the same shape comes from

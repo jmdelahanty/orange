@@ -545,14 +545,21 @@ RecordingControlConfig resolve_gui_recording_control(
     }
 
     int env_value = 0;
-    if (resolve_nonnegative_int_env("ORANGE_GUI_RECORD_FOR_SECONDS", &env_value)) {
+    const bool record_for_explicit =
+        resolve_nonnegative_int_env("ORANGE_GUI_RECORD_FOR_SECONDS", &env_value);
+    if (record_for_explicit) {
         config.record_for_seconds = env_value;
     }
     if (resolve_nonnegative_int_env("ORANGE_GUI_CLIP_SECONDS", &env_value)) {
         config.clip_seconds = env_value;
     }
+    // Autorun used to borrow its record length as the recorder duration so
+    // rolling clips had a timed end; rolling is open-ended since 2026-10-09,
+    // so the borrow only happens when nothing set record_for explicitly
+    // (ORANGE_GUI_RECORD_FOR_SECONDS=0 keeps the recording open-ended).
     if (config.clip_seconds > 0 &&
         config.record_for_seconds <= 0 &&
+        !record_for_explicit &&
         env_flag_enabled("ORANGE_GUI_AUTORUN") &&
         resolve_nonnegative_int_env("ORANGE_GUI_AUTORUN_RECORD_SECONDS", &env_value) &&
         env_value > 0) {
@@ -1229,13 +1236,7 @@ bool validate_recording_control_config(const RecordingControlConfig& config,
         }
         return false;
     }
-    if (config.clip_seconds > 0 && config.record_for_seconds <= 0) {
-        if (error_out) {
-            *error_out = prefix +
-                "recording_control.clip_seconds requires record_for_seconds > 0";
-        }
-        return false;
-    }
+    // clip_seconds alone is valid (2026-10-09): open-ended rolling clips.
     return true;
 }
 

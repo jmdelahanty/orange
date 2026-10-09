@@ -2065,11 +2065,15 @@ def check_recording_control_expectations(
     record_for_seconds = integer(control.get("record_for_seconds"))
     clip_seconds = integer(control.get("clip_seconds"))
     if mode == "rolling_clips":
+        # Open-ended rolling (2026-10-09): record_for_seconds 0 means the
+        # clips roll until the recording is stopped; a positive value is the
+        # optional timed limit.
         reporter.check(
-            record_for_seconds is not None and record_for_seconds > 0,
-            f"recording_session record_for_seconds={record_for_seconds}",
+            record_for_seconds is not None and record_for_seconds >= 0,
+            f"recording_session record_for_seconds={record_for_seconds}"
+            + (" (open-ended rolling)" if record_for_seconds == 0 else ""),
             (
-                "recording_session rolling_clips requires positive "
+                "recording_session rolling_clips requires nonnegative "
                 f"record_for_seconds, got {record_for_seconds}"
             ),
         )

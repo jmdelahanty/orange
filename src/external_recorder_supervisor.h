@@ -35,9 +35,12 @@ struct SupervisorPlanOptions {
     uint64_t default_max_pending_frontier_age_ms = 2000;
     uint64_t default_max_writer_queue_packets = 512;
     uint64_t default_max_writer_queue_bytes = 134217728;
-    uint64_t default_bitrate_bps = 150000000;
-    uint64_t default_max_bitrate_bps = 150000000;
-    uint64_t default_vbv_buffer_size = 150000000;
+    // Full-frame default (2026-10-09, Jeremy): 45 Mbit/s average / 60 max VBR
+    // at 100 fps; the fish window is indistinguishable from 150/150 against
+    // the lossless crops and a day of four cameras is ~5.5 TB instead of 9.4.
+    uint64_t default_bitrate_bps = 45000000;
+    uint64_t default_max_bitrate_bps = 60000000;
+    uint64_t default_vbv_buffer_size = 60000000;
     uint64_t default_min_free_bytes = 0;
     uint64_t default_low_space_warning_bytes = 0;
 };
@@ -92,9 +95,9 @@ struct RecorderStreamPlan {
     uint64_t max_writer_queue_packets = 512;
     uint64_t max_writer_queue_bytes = 134217728;
     uint64_t terminal_tail_coalesce_frames = 0;
-    uint64_t bitrate_bps = 150000000;
-    uint64_t max_bitrate_bps = 150000000;
-    uint64_t vbv_buffer_size = 150000000;
+    uint64_t bitrate_bps = 45000000;
+    uint64_t max_bitrate_bps = 60000000;
+    uint64_t vbv_buffer_size = 60000000;
     uint64_t min_free_bytes = 0;
     uint64_t low_space_warning_bytes = 0;
     int shard_id = 0;

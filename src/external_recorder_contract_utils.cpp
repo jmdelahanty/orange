@@ -434,24 +434,27 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
             configured_rate.vbv_buffer_size =
                 camera.recording.encode.vbv_buffer_size;
         }
+        // Full-frame fallback when the camera config says "auto"
+        // (2026-10-09, Jeremy): 45 Mbit/s average / 60 max VBR, VBV one
+        // second at the max; see docs/production_configuration.md.
         set_json_default(
             &stream,
             "bitrate_bps",
             configured_rate.target_bitrate_bps > 0
                 ? configured_rate.target_bitrate_bps
-                : 150000000);
+                : 45000000);
         set_json_default(
             &stream,
             "max_bitrate_bps",
             configured_rate.max_bitrate_bps > 0
                 ? configured_rate.max_bitrate_bps
-                : 150000000);
+                : 60000000);
         set_json_default(
             &stream,
             "vbv_buffer_size",
             configured_rate.vbv_buffer_size > 0
                 ? configured_rate.vbv_buffer_size
-                : 150000000);
+                : 60000000);
         set_json_default(&stream, "importance_map", default_importance_map);
 
         for (const char* key : {

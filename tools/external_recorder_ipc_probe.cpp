@@ -10,6 +10,7 @@
 #include "video_encode_profile.h"
 
 #include <cuda.h>
+#include <execinfo.h>
 #include <cuda_runtime.h>
 
 #include <algorithm>
@@ -264,6 +265,24 @@ struct IpcProtocolState {
 void signal_handler(int)
 {
     g_stop_requested.store(true, std::memory_order_release);
+}
+
+// A crash leaves the recorder's status "stopped by signal" and the session
+// incomplete even when every frame and the summary were already written
+// (first seen 2026-10-09: one GUI crop recorder, SIGSEGV in libnvcuvid at
+// teardown). Print a raw backtrace to stderr (the recorder log) so the next
+// occurrence names the frame, then re-raise with the default action.
+void crash_handler(int sig)
+{
+    void* frames[64];
+    const int count = backtrace(frames, 64);
+    const char* name = sig == SIGSEGV ? "SIGSEGV" : sig == SIGABRT ? "SIGABRT" : sig == SIGBUS ? "SIGBUS" : "signal";
+    char line[128];
+    const int n = std::snprintf(line, sizeof(line), "external_recorder_ipc_probe fatal %s (%d); backtrace (%d frames):\n", name, sig, count);
+    if (n > 0) (void)!write(STDERR_FILENO, line, static_cast<size_t>(n));
+    backtrace_symbols_fd(frames, count, STDERR_FILENO);
+    std::signal(sig, SIG_DFL);
+    raise(sig);
 }
 
 [[noreturn]] void usage(const char* argv0, int exit_code)
@@ -7336,6 +7355,9 @@ int main(int argc, char** argv)
             duration_safety_limit(options);
         std::signal(SIGINT, signal_handler);
         std::signal(SIGTERM, signal_handler);
+        std::signal(SIGSEGV, crash_handler);
+        std::signal(SIGBUS, crash_handler);
+        std::signal(SIGABRT, crash_handler);
 
         const StoragePreflightSnapshot initial_storage =
             collect_storage_preflight(options);
