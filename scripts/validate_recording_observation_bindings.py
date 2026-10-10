@@ -193,8 +193,7 @@ def validate_citrus_artifacts(
         require(digest == item.get("sha256") and actual_size == size,
                 f"declared Citrus artifact size or SHA-256 mismatch: {path}")
         rows.append({"role": role, "relative_path": path, "size_bytes": size, "sha256": digest})
-    require(counts.get("update_timing", 0) == 1, f"update_timing must appear exactly once: {context_id}")
-    for role in ("stimulus_video", "stimulus_video_container_finalization", "legacy_recording_diagnostic"):
+    for role in CITRUS_ROLE_ORDER:
         require(counts.get(role, 0) <= 1, f"{role} appears more than once: {context_id}")
     require(("stimulus_video" in by_role) == ("stimulus_video_container_finalization" in by_role),
             f"stimulus video and its finalization must be declared together: {context_id}")
@@ -531,6 +530,7 @@ def validate(
     finalized_ids: set[str] = set()
     declared_paths: set[str] = set()
     legacy_contexts: list[str] = []
+    receipt_versions: set[int] = set()
     for context_row in finalized_contexts:
         require(isinstance(context_row, dict), "finalized context is not an object")
         context_id = context_row.get("observation_context_id")
@@ -638,9 +638,13 @@ def validate(
                 f"H5 path declared twice in the collection: {context_id}")
         declared_paths.add(h5_artifact.get("relative_path"))
         citrus_rows: list[dict[str, Any]] = []
+        receipt_versions.add(receipt_version)
         if receipt_version == 2:
             require(set(receipt_contract) >= {"citrus_artifacts"},
                     f"receipt v2 lacks citrus_artifacts: {context_id}")
+            require(receipt_contract.get("citrus_session_uuid")
+                    == "citsess_" + context_id.removeprefix("obsctx_"),
+                    f"receipt v2 citrus_session_uuid is not citsess_ + the context hex: {context_id}")
             citrus_rows = validate_citrus_artifacts(
                 recording, receipt_contract.get("citrus_artifacts"),
                 h5_artifact.get("relative_path"), context_id)
@@ -664,6 +668,7 @@ def validate(
         })
 
     require(finalized_ids == set(requests), "finalized collection does not cover every request")
+    require(len(receipt_versions) == 1, "the head collection mixes receipt versions")
     if legacy_contexts:
         require(head_revision >= 2,
                 "legacy_recording_diagnostic is valid only in an upgraded collection")

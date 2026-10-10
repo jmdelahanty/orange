@@ -1261,6 +1261,17 @@ void test_receipt_v2_live_finalize_and_legacy_gate()
     }
     {
         auto fixture = make_v2_fixture(false);
+        json mixed = fixture.v2_receipts;
+        mixed[0] = fixture.v1_receipts[0];
+        const auto refused = orange::session::finalize_recording_observation_bindings(
+            fixture.root.string(),
+            {{"experiment_id", "citexp_transaction_test"}, {"receipts", mixed}});
+        require(!refused.ok && refused.error.find("mixes") != std::string::npos,
+                "a receipt set mixing v1 and v2 was accepted: " + refused.error);
+        std::filesystem::remove_all(fixture.root);
+    }
+    {
+        auto fixture = make_v2_fixture(false);
         const std::string video = fixture.v2_receipts.front().at("contract")
             .at("citrus_artifacts").at(0).at("relative_path");
         write_file(fixture.root / video, "stimulus-video-tampered");
@@ -1292,6 +1303,18 @@ void test_receipt_v2_live_finalize_and_legacy_gate()
         extra["citrus_artifacts"][0]["note"] = "x";
         require(!orange::session::seal_recording_observation_finalized_receipt(
                     extra, &sealed, &error), "an artifact with an extra key was accepted");
+        json no_timing = contract;
+        no_timing["citrus_artifacts"].erase(2);
+        require(orange::session::seal_recording_observation_finalized_receipt(
+                    no_timing, &sealed, &error), "a v2 receipt without update_timing was refused: " + error);
+        json empty = contract;
+        empty["citrus_artifacts"] = json::array();
+        require(orange::session::seal_recording_observation_finalized_receipt(
+                    empty, &sealed, &error), "a v2 receipt with no Citrus artifacts was refused: " + error);
+        json wrong_uuid = contract;
+        wrong_uuid["citrus_session_uuid"] = "citsess_" + std::string(64, 'a');
+        require(!orange::session::seal_recording_observation_finalized_receipt(
+                    wrong_uuid, &sealed, &error), "a v2 receipt with a foreign session uuid was accepted");
         json v1_with_artifacts = contract;
         v1_with_artifacts["schema_version"] = 1;
         require(!orange::session::seal_recording_observation_finalized_receipt(

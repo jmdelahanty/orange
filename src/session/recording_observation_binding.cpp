@@ -330,8 +330,10 @@ bool validate_acceptance_contract(const json& contract,
 // table order then path; each role at its exact name derived from the H5 stem
 // (citrus/<stem>.mp4, .mp4.finalization.json, _update_timing.csv); video and
 // finalization paired, the finalization complete and of the video's size;
-// update_timing exactly once; at most one legacy diagnostic matching its
-// pattern. File proof and the cross-receipt rules belong to finalization.
+// every role at most once; the legacy diagnostic matching its
+// pattern. update_timing is optional (Citrus writes it only with
+// ORANGE_UPDATE_TIMING_LOG), so an empty list is valid. File proof and the
+// cross-receipt rules belong to finalization.
 bool validate_citrus_artifacts(const json& artifacts,
                                const std::string& h5_relative,
                                std::string* error_out)
@@ -399,9 +401,8 @@ bool validate_citrus_artifacts(const json& artifacts,
     if (role_count[kCitrusArtifactRoleStimulusVideo] > 1 ||
         role_count[kCitrusArtifactRoleStimulusVideoFinalization] > 1 ||
         role_count[kCitrusArtifactRoleLegacyRecordingDiagnostic] > 1 ||
-        role_count[kCitrusArtifactRoleUpdateTiming] != 1) {
-        return fail(error_out,
-                    "receipt citrus_artifacts role counts are invalid (update_timing exactly once, others at most once)");
+        role_count[kCitrusArtifactRoleUpdateTiming] > 1) {
+        return fail(error_out, "receipt citrus_artifacts repeat a role");
     }
     if ((video == nullptr) != (finalization == nullptr)) {
         return fail(error_out,
@@ -472,10 +473,17 @@ bool validate_receipt_contract(const json& contract, std::string* error_out)
         !valid_sha256(artifact.value("sha256", ""))) {
         return fail(error_out, "finalized H5 artifact is invalid");
     }
-    if (version == kObservationBindingFinalizedReceiptSchemaVersionV2 &&
-        !validate_citrus_artifacts(contract.at("citrus_artifacts"),
-                                   artifact.value("relative_path", ""), error_out)) {
-        return false;
+    if (version == kObservationBindingFinalizedReceiptSchemaVersionV2) {
+        // v2: the session uuid is citsess_ + the context's 64 hex.
+        const std::string context = contract.value("observation_context_id", "");
+        if (contract.value("citrus_session_uuid", "") != "citsess_" + context.substr(7)) {
+            return fail(error_out,
+                        "receipt v2 citrus_session_uuid is not citsess_ + the context hex");
+        }
+        if (!validate_citrus_artifacts(contract.at("citrus_artifacts"),
+                                       artifact.value("relative_path", ""), error_out)) {
+            return false;
+        }
     }
 
     const json& semantic = contract.at("protocol_semantic");

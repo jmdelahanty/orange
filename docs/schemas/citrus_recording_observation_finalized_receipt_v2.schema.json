@@ -167,7 +167,8 @@
           "$ref": "#/$defs/identifier"
         },
         "citrus_session_uuid": {
-          "$ref": "#/$defs/identifier"
+          "type": "string",
+          "pattern": "^citsess_[0-9a-f]{64}$"
         },
         "target": {
           "$ref": "#/$defs/target"

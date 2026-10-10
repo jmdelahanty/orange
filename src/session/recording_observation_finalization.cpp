@@ -396,6 +396,17 @@ finalize_into(const std::string& recording_folder,
         return result;
     }
 
+    // One collection holds receipts of one version (the 3.1.0 sealer refuses a
+    // head that mixes v1 and v2).
+    std::set<int> receipt_versions;
+    for (const auto& receipt : receipts) {
+        receipt_versions.insert(binding_record_schema_version(receipt));
+    }
+    if (receipt_versions.size() > 1) {
+        result.error = "a receipt set mixes receipt versions";
+        return result;
+    }
+
     json request_collection;
     json pre_arm;
     if (!read_json(root / kRequestCollectionRelativePath,
