@@ -19,10 +19,12 @@ samples, the sample-size table (stsz) and the chunk offsets (co64/stco) change.
 
 The original is never modified; `repair` writes <name>.chroma_repaired.mp4 next
 to it plus a JSON record. Swapping the files is a separate, explicit step
-(`apply`), which keeps the original under the backup root. Recording-time
-records (recorder summary, finalization sidecar, encoding budgets) are left as
-written: they describe the original encode, and the frame-identity contract
-pins the recorder summary by digest.
+(`apply`), which keeps the original under the backup root. The recorder summary
+and the encoding budgets are left as written (they describe the original
+encode; the frame-identity contract pins the summary by digest). The
+finalization sidecar's container.file_size_bytes is set to the repaired file's
+size, because the transfer sealer and Palette require it to match the MP4; the
+recorder's copy is kept under the backup root and the change is declared.
 """
 
 import argparse
@@ -585,6 +587,32 @@ def cmd_apply(args):
     os.rename(original, backup)
     os.rename(repaired, original)
 
+    # The container-finalization sidecar must state the delivered file's size
+    # (the transfer sealer and Palette compare container.file_size_bytes with
+    # the MP4). Keep the recorder's copy under the backup root and change only
+    # that field; packet_writes stays as the recorder wrote it.
+    sidecar = Path(str(original) + ".finalization.json")
+    sidecar_change = None
+    if sidecar.exists():
+        sidecar_backup = backup_dir / sidecar.name
+        if not sidecar_backup.exists():
+            sidecar_backup.write_bytes(sidecar.read_bytes())
+        fin = json.loads(sidecar.read_text())
+        before = fin["container"]["file_size_bytes"]
+        fin["container"]["file_size_bytes"] = original.stat().st_size
+        tmp = sidecar.with_suffix(".json.partial")
+        tmp.write_text(json.dumps(fin, indent=2) + "\n")
+        os.replace(tmp, sidecar)
+        sidecar_change = {
+            "relative_path": str(sidecar.relative_to(session)),
+            "field": "container.file_size_bytes",
+            "recorded_value": before,
+            "repaired_value": fin["container"]["file_size_bytes"],
+            "recorder_copy_retained_at": str(sidecar_backup),
+            "unchanged_note": "all other fields as written by the recorder, including "
+                              "packet_writes.bytes_written (original encode)",
+        }
+
     rel = str(original.relative_to(session))
     entry = {
         "schema_id": "orange.recording.media_repair",
@@ -607,8 +635,10 @@ def cmd_apply(args):
                      "retained_at": str(backup)},
         "repaired": {"bytes": original.stat().st_size, "sha256": digests["repaired"]},
         "verification": {k: verify[k] for k in verify if k not in ("repaired",)},
-        "recording_time_records": "recorder summary, .finalization.json and encoding_budget "
-                                  "blocks describe the original encode and are left unchanged",
+        "finalization_sidecar_update": sidecar_change,
+        "recording_time_records": "recorder summary and encoding_budget blocks describe the "
+                                  "original encode and are left unchanged; the finalization "
+                                  "sidecar's container.file_size_bytes states the repaired file",
     }
     Path(str(original) + ".chroma_repair.json").write_text(json.dumps(entry, indent=2) + "\n")
     record_path.unlink()
@@ -621,7 +651,8 @@ def cmd_apply(args):
     repairs = [r for r in m.get("media_repairs", []) if r.get("relative_path") != rel]
     repairs.append({k: entry[k] for k in ("schema_id", "schema_version", "kind", "relative_path",
                                            "applied_at_utc", "defect", "replaced_gops",
-                                           "replaced_frames", "original", "repaired")}
+                                           "replaced_frames", "original", "repaired",
+                                           "finalization_sidecar_update")}
                    | {"record": rel + ".chroma_repair.json"})
     m["media_repairs"] = sorted(repairs, key=lambda r: r["relative_path"])
     tmp = manifest.with_suffix(".json.partial")
