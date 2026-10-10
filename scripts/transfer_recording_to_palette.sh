@@ -5,16 +5,19 @@
 # Usage (run as yourself; the domain-user transfer prompts for Kerberos):
 #   scripts/transfer_recording_to_palette.sh                      # the DEFAULT_RUN below
 #   scripts/transfer_recording_to_palette.sh --latest <spec name>  # newest experiment of that spec
-#   scripts/transfer_recording_to_palette.sh <run folder>          # explicit run_0001 folder
+#   scripts/transfer_recording_to_palette.sh <run folder>          # explicit run_0001 folder,
+#                                                                  # or a GUI session folder
 #   add --dry-run-only to stop after the sealer pre-check and the rsync dry run
 #
 # What it does: resolves the run folder (the experiment folder's single
 # run_0001 folder), runs scripts/check_recording_transfer_source.sh (the
 # sealer in validate-only mode), the transfer dry run, then the real transfer
 # with --verify quick (profile parent-recording-v2 seals the envelope), to
-#   /groups/johnson/johnsonlab/jeremy/staging/<experiment folder name>
-# with --no-dest-parent, as agreed with Palette (unique_run_id specs make the
-# experiment folder name unique). Prints the sealed digest line at the end.
+#   /groups/johnson/johnsonlab/jeremy/staging/<name>
+# with --no-dest-parent, as agreed with Palette. <name> is the experiment
+# folder name for a headless run_0001 folder (unique_run_id specs make it
+# unique) and the session folder's own name for a GUI recording
+# (<root>/<YYYY_MM_DD_HH_MM_SS>). Prints the sealed digest line at the end.
 set -euo pipefail
 
 # Edited per delivery by the Orange session; --latest/explicit folder override it.
@@ -55,7 +58,10 @@ run="${run%/}"
 [ -f "$run/recording_session.json" ] || { echo "not a finalized run folder (no recording_session.json): $run" >&2; exit 2; }
 [ -x "$TRANSFER_SCRIPT" ] || { echo "transfer script missing: $TRANSFER_SCRIPT" >&2; exit 2; }
 
-exp_name="$(basename "$(dirname "$run")")"
+case "$(basename "$run")" in
+  *run_0001*) exp_name="$(basename "$(dirname "$run")")" ;;  # headless experiment/run_0001
+  *) exp_name="$(basename "$run")" ;;                         # GUI session folder
+esac
 dest="$STAGING_ROOT/$exp_name"
 
 echo "[transfer] run:  $run"
