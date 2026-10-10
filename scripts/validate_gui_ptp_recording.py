@@ -273,8 +273,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--min-main-video-bitrate-mbps",
         type=float,
-        default=50.0,
-        help="Fail if a main camera MP4 bitrate is below this value. Default: 50 Mbps.",
+        default=None,
+        help=(
+            "Fail if a main camera MP4 bitrate is below this value. Default: half of the "
+            "target bitrate the MP4 declares (target_bps tag), or 50 Mbps when it declares none."
+        ),
     )
     parser.add_argument(
         "--allow-main-video-content-failure",
@@ -4681,13 +4684,31 @@ def video_content_sanity(
     }
 
 
+def declared_target_bps(tags: Any) -> int | None:
+    """target_bps from the recorder's MP4 comment tag (key=value; pairs), if any."""
+    if not isinstance(tags, dict):
+        return None
+    for key, value in tags.items():
+        if str(key).lower() != "comment":
+            continue
+        for part in str(value).split(";"):
+            name, _, raw = part.strip().partition("=")
+            if name == "target_bps":
+                try:
+                    target = int(raw)
+                except ValueError:
+                    return None
+                return target if target > 0 else None
+    return None
+
+
 def check_videos(
     reporter: Reporter,
     summary: dict[str, Any],
     cameras: list[str],
     ffprobe: str,
     ffmpeg: str,
-    min_bitrate_mbps: float,
+    min_bitrate_mbps: float | None,
     skip_content_check: bool,
     allowed_content_failure_serials: set[str],
     max_black_fraction: float,
@@ -4725,21 +4746,28 @@ def check_videos(
             reporter.fail(error)
         bitrate_bps = number(video.get("bitrate_bps"))
         bitrate_mbps = None if bitrate_bps is None else bitrate_bps / 1_000_000.0
-        bitrate_ok = bitrate_mbps is not None and bitrate_mbps >= min_bitrate_mbps
+        floor_mbps = min_bitrate_mbps
+        if floor_mbps is None:
+            # A content sanity floor (catches a near-empty encode), scaled to the
+            # declared VBR target: a fixed 50 Mbps dated from the 150 Mbps default
+            # and failed ordinary 45 Mbps recordings of quiet scenes.
+            target_bps = declared_target_bps(video.get("tags", {}))
+            floor_mbps = 50.0 if target_bps is None else 0.5 * target_bps / 1_000_000.0
+        bitrate_ok = bitrate_mbps is not None and bitrate_mbps >= floor_mbps
         if bitrate_ok:
             reporter.pass_(
                 f"Cam{serial} {video_label} bitrate "
-                f"{fmt_float(bitrate_mbps, 1)} Mbps >= {min_bitrate_mbps:.1f} Mbps"
+                f"{fmt_float(bitrate_mbps, 1)} Mbps >= {floor_mbps:.1f} Mbps"
             )
         elif serial in allowed_content_failure_serials:
             reporter.warn(
                 f"Cam{serial} {video_label} bitrate {bitrate_mbps} Mbps below "
-                f"{min_bitrate_mbps:.1f} Mbps (allowed main-video content failure)"
+                f"{floor_mbps:.1f} Mbps (allowed main-video content failure)"
             )
         else:
             reporter.fail(
                 f"Cam{serial} {video_label} bitrate {bitrate_mbps} Mbps below "
-                f"{min_bitrate_mbps:.1f} Mbps"
+                f"{floor_mbps:.1f} Mbps"
             )
         if skip_content_check:
             reporter.warn(f"Cam{serial} decoded video-content check skipped")
