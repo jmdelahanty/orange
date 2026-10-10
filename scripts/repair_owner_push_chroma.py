@@ -510,11 +510,15 @@ def cmd_verify(args):
         if len(ma) != len(mb):
             problems.append("moov size differs")
         else:
+            # Blank the stsz entries and chunk offsets in place (same length in
+            # both files); deleting them would shift the later table.
             for m, mp in ((ma, orig), (mb, new)):
+                moov_off = mp.top[[t for t, *_ in mp.top].index(b"moov")][1]
                 for typ in (b"stsz", mp.offset_box):
                     off, size, hl = mp.boxes[typ]
-                    base = off - mp.top[[t for t, *_ in mp.top].index(b"moov")][1]
-                    m[base + hl + 12 if typ == b"stsz" else base + hl + 8: base + size] = b""
+                    start = off - moov_off + hl + (12 if typ == b"stsz" else 8)
+                    end = off - moov_off + size
+                    m[start:end] = bytes(end - start)
             if ma != mb:
                 problems.append("moov differs outside stsz/co64")
         # native-shard samples bit-identical; replaced samples keep the frame's NAL shape
