@@ -137,9 +137,9 @@ CITRUS_ROLE_ORDER = (
     "stimulus_video",
     "stimulus_video_container_finalization",
     "update_timing",
-    "legacy_recording_diagnostic",
+    "process_diagnostic",
 )
-LEGACY_DIAGNOSTIC_PATH = re.compile(
+PRE310_DIAGNOSTIC_PATH = re.compile(
     r"^citrus/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z_threading_startup_\d+\.json$"
 )
 REVISION_REASON = "citrus_receipt_v2_upgrade"
@@ -158,6 +158,7 @@ def validate_citrus_artifacts(
         "stimulus_video": stem + ".mp4",
         "stimulus_video_container_finalization": stem + ".mp4.finalization.json",
         "update_timing": stem + "_update_timing.csv",
+        "process_diagnostic": stem + "_threading_startup.json",
     }
     keys = {"role", "relative_path", "size_bytes", "sha256"}
     rows: list[dict[str, Any]] = []
@@ -171,11 +172,10 @@ def validate_citrus_artifacts(
         want = keys | ({"finalization"} if role == "stimulus_video_container_finalization" else set())
         require(set(item) == want, f"citrus artifact keys are not exact ({role}): {context_id}")
         path = item.get("relative_path")
-        if role == "legacy_recording_diagnostic":
-            require(isinstance(path, str) and LEGACY_DIAGNOSTIC_PATH.match(path) is not None,
-                    f"legacy diagnostic path is invalid: {path!r}")
-        else:
-            require(path == expected[role], f"{role} is not named for its H5 stem: {path!r}")
+        require(path == expected[role]
+                or (role == "process_diagnostic" and isinstance(path, str)
+                    and PRE310_DIAGNOSTIC_PATH.match(path) is not None),
+                f"{role} is not at its required name: {path!r}")
         size = item.get("size_bytes")
         require(isinstance(size, int) and not isinstance(size, bool) and size > 0,
                 f"citrus artifact size is invalid: {path}")
@@ -529,7 +529,7 @@ def validate(
     receipt_rows: list[dict[str, Any]] = []
     finalized_ids: set[str] = set()
     declared_paths: set[str] = set()
-    legacy_contexts: list[str] = []
+    pre310_contexts: list[str] = []
     receipt_versions: set[int] = set()
     for context_row in finalized_contexts:
         require(isinstance(context_row, dict), "finalized context is not an object")
@@ -652,8 +652,9 @@ def validate(
                 require(row["relative_path"] not in declared_paths,
                         f"Citrus artifact declared twice in the collection: {row['relative_path']}")
                 declared_paths.add(row["relative_path"])
-                if row["role"] == "legacy_recording_diagnostic":
-                    legacy_contexts.append(context_id)
+                if (row["role"] == "process_diagnostic"
+                        and PRE310_DIAGNOSTIC_PATH.match(row["relative_path"])):
+                    pre310_contexts.append(context_id)
         else:
             require("citrus_artifacts" not in receipt_contract,
                     f"receipt v1 carries citrus_artifacts: {context_id}")
@@ -669,11 +670,9 @@ def validate(
 
     require(finalized_ids == set(requests), "finalized collection does not cover every request")
     require(len(receipt_versions) == 1, "the head collection mixes receipt versions")
-    if legacy_contexts:
-        require(head_revision >= 2,
-                "legacy_recording_diagnostic is valid only in an upgraded collection")
-        require(len(legacy_contexts) == 1 and legacy_contexts[0] == min(finalized_ids),
-                "the legacy diagnostic must appear once, in the lowest observation_context_id")
+    if pre310_contexts:
+        require(len(pre310_contexts) == 1 and pre310_contexts[0] == min(finalized_ids),
+                "a pre-3.1.0 process diagnostic must appear once, in the lowest observation_context_id")
 
     projection = dict(finalized)
     if len(chain) > 1:

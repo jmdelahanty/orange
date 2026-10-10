@@ -585,7 +585,7 @@ wrapper) or per host with app config
 
 ## Receipt v2 and the collection revision chain (sealer 3.1.0, 2026-10-10)
 
-Contracts: agent-contracts `citrus-recording-transfer-3.1/` (PR 70). Pinned here:
+Contracts: agent-contracts `citrus-recording-transfer-3.1/` (PRs 70, 71). Pinned here:
 `docs/schemas/citrus_recording_observation_finalized_receipt_v2.schema.json`
 (Citrus) and `docs/schemas/orange_recording_observation_binding_finalization.schema.json`
 (Orange, revision chain).
@@ -600,9 +600,12 @@ Contracts: agent-contracts `citrus-recording-transfer-3.1/` (PR 70). Pinned here
   pairing, update timing exactly once, no path declared twice in a collection)
   are enforced in `validate_recording_observation_finalized_receipt` and
   `scripts/validate_recording_observation_bindings.py`.
-- **`legacy_recording_diagnostic`** (the pre-3.1.0 `threading_startup` JSON) is
-  accepted only by an upgrade, once per recording, in the lowest
-  `observation_context_id`'s receipt; a live finalize refuses it.
+- **`process_diagnostic`** (the Citrus threading-startup summary, agent-contracts
+  PR 71) is a regular declared file: `citrus/<stem>_threading_startup.json` per
+  arena session, at most one per receipt. Recordings made before 3.1.0 carry one
+  `citrus/<utc>_threading_startup_<pid>.json` per recording, declared under the
+  same role once per collection, in the lowest `observation_context_id`'s
+  receipt (Jeremy, 2026-10-10: no legacy role, no upgrade-only gate).
 - **Revision chain.** `finalized_collection.json` is revision 1 and is never
   rewritten. `recording_observation_binding_cli upgrade-receipts` (or
   `upgrade_recording_observation_receipts`) re-mints the receipts of a bound

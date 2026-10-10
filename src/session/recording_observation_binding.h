@@ -32,10 +32,12 @@ inline constexpr const char* kCitrusArtifactRoleStimulusVideo = "stimulus_video"
 inline constexpr const char* kCitrusArtifactRoleStimulusVideoFinalization =
     "stimulus_video_container_finalization";
 inline constexpr const char* kCitrusArtifactRoleUpdateTiming = "update_timing";
-// Valid only in an upgraded collection (receipts re-minted for sessions
-// recorded before 3.1.0); a live finalize refuses it.
-inline constexpr const char* kCitrusArtifactRoleLegacyRecordingDiagnostic =
-    "legacy_recording_diagnostic";
+// The Citrus threading-startup summary: citrus/<stem>_threading_startup.json
+// per arena session; recordings made before 3.1.0 carry one
+// citrus/<utc>_threading_startup_<pid>.json per recording, declared once per
+// collection in the lowest observation_context_id's receipt (PR 71 rule 8).
+inline constexpr const char* kCitrusArtifactRoleProcessDiagnostic =
+    "process_diagnostic";
 inline constexpr const char* kCitrusStimulusVideoFinalizationSchemaId =
     "citrus.stimulus_video_container_finalization";
 int resolve_recording_observation_binding_request_version(std::string* error_out = nullptr);

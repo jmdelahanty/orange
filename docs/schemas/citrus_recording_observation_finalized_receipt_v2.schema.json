@@ -344,11 +344,19 @@
           ],
           "properties": {
             "role": {
-              "const": "legacy_recording_diagnostic"
+              "const": "process_diagnostic"
             },
             "relative_path": {
-              "type": "string",
-              "pattern": "^citrus/\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}Z_threading_startup_\\d+\\.json$"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^citrus/citsess_[0-9a-f]{64}_[^/\\u0000-\\u001f]+_threading_startup\\.json$"
+                },
+                {
+                  "type": "string",
+                  "pattern": "^citrus/\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}Z_threading_startup_\\d+\\.json$"
+                }
+              ]
             },
             "size_bytes": {
               "type": "integer",

@@ -1143,9 +1143,12 @@ struct V2Fixture {
     json v2_receipts = json::array();
 };
 
+enum class Diagnostic { None, Pre310InLowest, Pre310InOther, PerSession };
+
 json citrus_artifacts_for(const std::filesystem::path& root,
                           const std::string& h5_relative,
-                          bool with_legacy)
+                          bool with_pre310,
+                          bool with_per_session)
 {
     const std::string stem = h5_relative.substr(0, h5_relative.size() - 3);
     const std::string video = stem + ".mp4";
@@ -1177,17 +1180,19 @@ json citrus_artifacts_for(const std::filesystem::path& root,
          {"size_bytes", std::filesystem::file_size(root / timing)},
          {"sha256", file_sha256(root / timing)}},
     });
-    if (with_legacy) {
-        const std::string legacy = "citrus/2026-10-09T19-38-03Z_threading_startup_989893.json";
-        write_file(root / legacy, "{\"threads\": 4}\n");
-        artifacts.push_back({{"role", "legacy_recording_diagnostic"}, {"relative_path", legacy},
-                             {"size_bytes", std::filesystem::file_size(root / legacy)},
-                             {"sha256", file_sha256(root / legacy)}});
+    if (with_pre310 || with_per_session) {
+        const std::string diagnostic = with_pre310
+            ? "citrus/2026-10-09T19-38-03Z_threading_startup_989893.json"
+            : stem + "_threading_startup.json";
+        write_file(root / diagnostic, "{\"threads\": 4}\n");
+        artifacts.push_back({{"role", "process_diagnostic"}, {"relative_path", diagnostic},
+                             {"size_bytes", std::filesystem::file_size(root / diagnostic)},
+                             {"sha256", file_sha256(root / diagnostic)}});
     }
     return artifacts;
 }
 
-V2Fixture make_v2_fixture(bool legacy_in_lowest)
+V2Fixture make_v2_fixture(Diagnostic diagnostic)
 {
     V2Fixture fixture;
     fixture.root = make_materialization_fixture(resolved_geometry());
@@ -1226,10 +1231,12 @@ V2Fixture make_v2_fixture(bool legacy_in_lowest)
         require(orange::session::seal_recording_observation_finalized_receipt(
                     contract, &v1, &error), "v1 receipt seal failed: " + error);
         fixture.v1_receipts.push_back(v1);
-        const bool legacy = legacy_in_lowest &&
-            request.at("contract").at("observation_context_id") == lowest;
+        const bool is_lowest = request.at("contract").at("observation_context_id") == lowest;
+        const bool pre310 = (diagnostic == Diagnostic::Pre310InLowest && is_lowest) ||
+                            (diagnostic == Diagnostic::Pre310InOther && !is_lowest);
         contract["schema_version"] = 2;
-        contract["citrus_artifacts"] = citrus_artifacts_for(fixture.root, h5_relative, legacy);
+        contract["citrus_artifacts"] = citrus_artifacts_for(
+            fixture.root, h5_relative, pre310, diagnostic == Diagnostic::PerSession);
         json v2;
         require(orange::session::seal_recording_observation_finalized_receipt(
                     contract, &v2, &error), "v2 receipt seal failed: " + error);
@@ -1239,10 +1246,10 @@ V2Fixture make_v2_fixture(bool legacy_in_lowest)
     return fixture;
 }
 
-void test_receipt_v2_live_finalize_and_legacy_gate()
+void test_receipt_v2_live_finalize_and_process_diagnostic_rules()
 {
-    {
-        auto fixture = make_v2_fixture(/*legacy_in_lowest=*/false);
+    for (const auto diagnostic : {Diagnostic::None, Diagnostic::PerSession, Diagnostic::Pre310InLowest}) {
+        auto fixture = make_v2_fixture(diagnostic);
         const auto bound = orange::session::finalize_recording_observation_bindings(
             fixture.root.string(),
             {{"experiment_id", "citexp_transaction_test"}, {"receipts", fixture.v2_receipts}});
@@ -1251,16 +1258,16 @@ void test_receipt_v2_live_finalize_and_legacy_gate()
         std::filesystem::remove_all(fixture.root);
     }
     {
-        auto fixture = make_v2_fixture(/*legacy_in_lowest=*/true);
+        auto fixture = make_v2_fixture(Diagnostic::Pre310InOther);
         const auto refused = orange::session::finalize_recording_observation_bindings(
             fixture.root.string(),
             {{"experiment_id", "citexp_transaction_test"}, {"receipts", fixture.v2_receipts}});
-        require(!refused.ok && refused.error.find("legacy_recording_diagnostic") != std::string::npos,
-                "live finalize accepted the legacy diagnostic role: " + refused.error);
+        require(!refused.ok && refused.error.find("lowest observation_context_id") != std::string::npos,
+                "a pre-3.1.0 diagnostic outside the lowest context was accepted: " + refused.error);
         std::filesystem::remove_all(fixture.root);
     }
     {
-        auto fixture = make_v2_fixture(false);
+        auto fixture = make_v2_fixture(Diagnostic::None);
         json mixed = fixture.v2_receipts;
         mixed[0] = fixture.v1_receipts[0];
         const auto refused = orange::session::finalize_recording_observation_bindings(
@@ -1271,7 +1278,7 @@ void test_receipt_v2_live_finalize_and_legacy_gate()
         std::filesystem::remove_all(fixture.root);
     }
     {
-        auto fixture = make_v2_fixture(false);
+        auto fixture = make_v2_fixture(Diagnostic::None);
         const std::string video = fixture.v2_receipts.front().at("contract")
             .at("citrus_artifacts").at(0).at("relative_path");
         write_file(fixture.root / video, "stimulus-video-tampered");
@@ -1283,7 +1290,7 @@ void test_receipt_v2_live_finalize_and_legacy_gate()
     }
     // Contract rules refuse before any file is read.
     {
-        auto fixture = make_v2_fixture(false);
+        auto fixture = make_v2_fixture(Diagnostic::None);
         std::string error;
         json contract = fixture.v2_receipts.front().at("contract");
         json reordered = contract;
@@ -1325,7 +1332,7 @@ void test_receipt_v2_live_finalize_and_legacy_gate()
 
 void test_receipt_upgrade_writes_a_verified_revision_chain()
 {
-    auto fixture = make_v2_fixture(/*legacy_in_lowest=*/true);
+    auto fixture = make_v2_fixture(Diagnostic::Pre310InLowest);
     const auto& root = fixture.root;
     std::string error;
     const auto r1 = orange::session::finalize_recording_observation_bindings(
@@ -1446,7 +1453,7 @@ int main()
         test_prearm_surfaces_v2_context_rejection_reasons();
         test_v2_envelopes_carry_matching_versions_and_reject_mixing();
         test_post_close_finalization_is_complete_idempotent_and_manifest_bound();
-    test_receipt_v2_live_finalize_and_legacy_gate();
+    test_receipt_v2_live_finalize_and_process_diagnostic_rules();
     test_receipt_upgrade_writes_a_verified_revision_chain();
     test_citrus_example_receipt_v2_digest_agrees();
         test_manifest_never_infers_bound_without_final_receipts();

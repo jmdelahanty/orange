@@ -313,7 +313,6 @@ json unbound_summary(const json& request_collection,
 struct FinalizeTarget {
     std::string receipt_directory = kReceiptDirectory;
     std::string collection_relative = kObservationBindingFinalizationRelativePath;
-    bool allow_legacy_roles = false;
     json extra_collection_fields = json::object();
     std::function<bool(const json& collection, std::string* error_out)> check;
 };
@@ -323,16 +322,11 @@ struct FinalizeTarget {
 // finalization also the declared container facts against the file.
 bool verify_citrus_artifact_files(const fs::path& root,
                                   const json& artifacts,
-                                  bool allow_legacy_roles,
                                   std::string* error_out)
 {
     for (const auto& artifact : artifacts) {
         const std::string role = artifact.value("role", "");
         const std::string relative = artifact.value("relative_path", "");
-        if (role == kCitrusArtifactRoleLegacyRecordingDiagnostic && !allow_legacy_roles) {
-            return fail(error_out,
-                        "legacy_recording_diagnostic is valid only in an upgraded collection");
-        }
         const fs::path path = root / relative;
         std::error_code ec;
         const auto status = fs::symlink_status(path, ec);
@@ -460,7 +454,7 @@ finalize_into(const std::string& recording_folder,
 
     std::set<std::string> seen_contexts;
     std::set<std::string> declared_paths;  // H5s and Citrus artifacts, collection-wide
-    std::vector<std::string> legacy_contexts;
+    std::vector<std::string> pre310_diagnostic_contexts;
     std::vector<std::pair<fs::path, std::string>> receipt_writes;
     json contexts = json::array();
     std::string collection_finalized_at;
@@ -518,8 +512,7 @@ finalize_into(const std::string& recording_folder,
         }
         if (receipt_contract.contains("citrus_artifacts")) {
             const json& artifacts = receipt_contract.at("citrus_artifacts");
-            if (!verify_citrus_artifact_files(root, artifacts, target.allow_legacy_roles,
-                                              &result.error)) {
+            if (!verify_citrus_artifact_files(root, artifacts, &result.error)) {
                 return result;
             }
             for (const auto& artifact : artifacts) {
@@ -528,8 +521,11 @@ finalize_into(const std::string& recording_folder,
                         artifact.value("relative_path", "");
                     return result;
                 }
-                if (artifact.value("role", "") == kCitrusArtifactRoleLegacyRecordingDiagnostic) {
-                    legacy_contexts.push_back(context);
+                // The pre-3.1.0 per-recording name (not the session's stem).
+                if (artifact.value("role", "") == kCitrusArtifactRoleProcessDiagnostic &&
+                    artifact.value("relative_path", "").rfind(
+                        h5_relative.substr(0, h5_relative.size() - 3), 0) != 0) {
+                    pre310_diagnostic_contexts.push_back(context);
                 }
             }
         }
@@ -580,10 +576,11 @@ finalize_into(const std::string& recording_folder,
         result.error = "receipt set does not cover every requested context";
         return result;
     }
-    if (legacy_contexts.size() > 1 ||
-        (legacy_contexts.size() == 1 && legacy_contexts.front() != *seen_contexts.begin())) {
-        result.error = "the legacy recording diagnostic must appear once, in the receipt of "
-                       "the lowest observation_context_id";
+    if (pre310_diagnostic_contexts.size() > 1 ||
+        (pre310_diagnostic_contexts.size() == 1 &&
+         pre310_diagnostic_contexts.front() != *seen_contexts.begin())) {
+        result.error = "a pre-3.1.0 process diagnostic must appear once per collection, in "
+                       "the receipt of the lowest observation_context_id";
         return result;
     }
     std::sort(contexts.begin(), contexts.end(), [](const json& left,
@@ -813,7 +810,6 @@ upgrade_recording_observation_receipts(
     FinalizeTarget target;
     target.receipt_directory = revision_receipt_directory(revision);
     target.collection_relative = revision_collection_relative(revision);
-    target.allow_legacy_roles = true;
     target.extra_collection_fields = {
         {"schema_version", 2},
         {"revision", revision},

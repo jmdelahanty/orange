@@ -2,8 +2,8 @@
   "schema_id": "citrus.recording_observation_finalized_receipt",
   "schema_version": 2,
   "canonicalization": "canonical_json_utf8_sort_keys_compact_v1",
-  "receipt_id": "obsbindfin_21cb9d7a80333708ff6a0870021542ecd0aa5242b371c073f65533082cdcec66",
-  "contract_sha256": "sha256:21cb9d7a80333708ff6a0870021542ecd0aa5242b371c073f65533082cdcec66",
+  "receipt_id": "obsbindfin_0abe12ffebaa773f62ea366977db3e37815c802a477a87ba5800c72917c40c5e",
+  "contract_sha256": "sha256:0abe12ffebaa773f62ea366977db3e37815c802a477a87ba5800c72917c40c5e",
   "contract": {
     "acceptance_contract_sha256": "sha256:4c34a01c4fe704e00b558d42a8c6122c6b066d574f9cf637043e25139f17d3fe",
     "acceptance_id": "obsbindacc_4c34a01c4fe704e00b558d42a8c6122c6b066d574f9cf637043e25139f17d3fe",
@@ -62,7 +62,7 @@
         "sha256": "sha256:3633f87bffebd2be8f97483a0a27c13c7b10969db9ac0b15221b38268d255c2a"
       },
       {
-        "role": "legacy_recording_diagnostic",
+        "role": "process_diagnostic",
         "relative_path": "citrus/2026-10-09T19-38-03Z_threading_startup_989893.json",
         "size_bytes": 9463,
         "sha256": "sha256:e6cf0cbc90704906d421ea302d21ea281b67c8609c6c978d249f5d2e1e27ef0c"

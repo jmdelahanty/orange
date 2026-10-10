@@ -330,8 +330,8 @@ bool validate_acceptance_contract(const json& contract,
 // table order then path; each role at its exact name derived from the H5 stem
 // (citrus/<stem>.mp4, .mp4.finalization.json, _update_timing.csv); video and
 // finalization paired, the finalization complete and of the video's size;
-// every role at most once; the legacy diagnostic matching its
-// pattern. update_timing is optional (Citrus writes it only with
+// every role at most once; the process diagnostic at its per-session name or
+// the pre-3.1.0 name pattern. update_timing is optional (Citrus writes it only with
 // ORANGE_UPDATE_TIMING_LOG), so an empty list is valid. File proof and the
 // cross-receipt rules belong to finalization.
 bool validate_citrus_artifacts(const json& artifacts,
@@ -342,9 +342,9 @@ bool validate_citrus_artifacts(const json& artifacts,
         kCitrusArtifactRoleStimulusVideo,
         kCitrusArtifactRoleStimulusVideoFinalization,
         kCitrusArtifactRoleUpdateTiming,
-        kCitrusArtifactRoleLegacyRecordingDiagnostic,
+        kCitrusArtifactRoleProcessDiagnostic,
     };
-    static const std::regex kLegacyPath(
+    static const std::regex kPre310DiagnosticPath(
         R"(^citrus/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z_threading_startup_\d+\.json$)");
     if (!artifacts.is_array()) {
         return fail(error_out, "receipt citrus_artifacts must be an array");
@@ -376,9 +376,10 @@ bool validate_citrus_artifacts(const json& artifacts,
         if (role == kCitrusArtifactRoleStimulusVideo) expected = stem + ".mp4";
         if (role == kCitrusArtifactRoleStimulusVideoFinalization) expected = stem + ".mp4.finalization.json";
         if (role == kCitrusArtifactRoleUpdateTiming) expected = stem + "_update_timing.csv";
-        const bool name_ok = role == kCitrusArtifactRoleLegacyRecordingDiagnostic
-            ? std::regex_match(path, kLegacyPath)
-            : path == expected;
+        if (role == kCitrusArtifactRoleProcessDiagnostic) expected = stem + "_threading_startup.json";
+        const bool name_ok = path == expected ||
+            (role == kCitrusArtifactRoleProcessDiagnostic &&
+             std::regex_match(path, kPre310DiagnosticPath));
         if (!exact_keys(artifact, keys) || !safe_relative_path(path) || !name_ok ||
             path == h5_relative ||
             !artifact.at("size_bytes").is_number_integer() ||
@@ -400,7 +401,7 @@ bool validate_citrus_artifacts(const json& artifacts,
     }
     if (role_count[kCitrusArtifactRoleStimulusVideo] > 1 ||
         role_count[kCitrusArtifactRoleStimulusVideoFinalization] > 1 ||
-        role_count[kCitrusArtifactRoleLegacyRecordingDiagnostic] > 1 ||
+        role_count[kCitrusArtifactRoleProcessDiagnostic] > 1 ||
         role_count[kCitrusArtifactRoleUpdateTiming] > 1) {
         return fail(error_out, "receipt citrus_artifacts repeat a role");
     }
