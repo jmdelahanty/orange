@@ -10,6 +10,13 @@ inline constexpr const char* kObservationBindingFinalizationSchemaId =
     "orange.recording.observation_binding_finalization";
 inline constexpr const char* kObservationBindingFinalizationRelativePath =
     "recording_observation_bindings/finalized_collection.json";
+// Revision N >= 2 of the finalized collection (schema_version 2) lives at
+// <prefix><N>.json and supersedes revision N-1 by path and digest; its
+// receipts live in receipts/r<N>/. Revision 1 is never rewritten.
+inline constexpr const char* kObservationBindingRevisionPrefix =
+    "recording_observation_bindings/finalized_collection.r";
+inline constexpr const char* kObservationBindingRevisionReasonReceiptV2Upgrade =
+    "citrus_receipt_v2_upgrade";
 
 struct RecordingObservationFinalizationResult {
     bool ok = false;
@@ -27,7 +34,19 @@ finalize_recording_observation_bindings(
     const std::string& recording_folder,
     const nlohmann::json& params);
 
+// Re-mint the receipts of an already bound recording (sealer 3.1.0: Citrus
+// receipt v2 for sessions recorded before it). Writes revision N+1 of the
+// collection beside the head, create-once; receipts, experiment, contexts,
+// requests, acceptances and H5 bytes must match the head except the receipts
+// themselves. params: {experiment_id, receipts[v2], reason, revised_at_utc}.
+// A retry with the head's exact receipts returns the head unchanged.
+RecordingObservationFinalizationResult
+upgrade_recording_observation_receipts(
+    const std::string& recording_folder,
+    const nlohmann::json& params);
+
 // Add the finalized producer-native collection to recording_session.json.
+// With an upgraded chain, the head is projected plus `revision_chain`.
 // Missing or invalid finalization evidence is represented as explicit
 // `unbound` state; it is never upgraded to `bound` by inference.
 bool apply_recording_observation_finalization_to_manifest(

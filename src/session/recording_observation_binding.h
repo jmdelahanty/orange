@@ -22,6 +22,22 @@ inline constexpr int kObservationBindingSchemaVersion = 1;
 // 9aa6d57). Opt-in until the joint test passes:
 // ORANGE_CITRUS_BINDING_REQUEST_VERSION=2 (default 1).
 inline constexpr int kObservationBindingRequestSchemaVersionV2 = 2;
+// Finalized receipt v2 (2026-10-10, sealer 3.1.0, joint with Citrus/Palette):
+// the v1 contract plus `citrus_artifacts`, every per-session file Citrus
+// writes besides the H5, each declared by role, path, size and SHA-256. The
+// stimulus-video finalization entry also carries the container facts Orange
+// checks against the file. v1 receipts keep their meaning.
+inline constexpr int kObservationBindingFinalizedReceiptSchemaVersionV2 = 2;
+inline constexpr const char* kCitrusArtifactRoleStimulusVideo = "stimulus_video";
+inline constexpr const char* kCitrusArtifactRoleStimulusVideoFinalization =
+    "stimulus_video_container_finalization";
+inline constexpr const char* kCitrusArtifactRoleUpdateTiming = "update_timing";
+// Valid only in an upgraded collection (receipts re-minted for sessions
+// recorded before 3.1.0); a live finalize refuses it.
+inline constexpr const char* kCitrusArtifactRoleLegacyRecordingDiagnostic =
+    "legacy_recording_diagnostic";
+inline constexpr const char* kCitrusStimulusVideoFinalizationSchemaId =
+    "citrus.stimulus_video_container_finalization";
 int resolve_recording_observation_binding_request_version(std::string* error_out = nullptr);
 inline bool accepted_observation_binding_schema_version(int version)
 {

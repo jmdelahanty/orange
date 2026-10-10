@@ -9,6 +9,9 @@
 #include <cctype>
 #include <filesystem>
 #include <set>
+#include <vector>
+#include <map>
+#include <regex>
 #include <string>
 
 namespace orange::session {
@@ -322,18 +325,128 @@ bool validate_acceptance_contract(const json& contract,
     return true;
 }
 
+// Receipt v2 `citrus_artifacts` (agent-contracts citrus-recording-transfer-3.1,
+// receipt v2 schema + README rules 1-5, 8). Per receipt: closed role list in
+// table order then path; each role at its exact name derived from the H5 stem
+// (citrus/<stem>.mp4, .mp4.finalization.json, _update_timing.csv); video and
+// finalization paired, the finalization complete and of the video's size;
+// update_timing exactly once; at most one legacy diagnostic matching its
+// pattern. File proof and the cross-receipt rules belong to finalization.
+bool validate_citrus_artifacts(const json& artifacts,
+                               const std::string& h5_relative,
+                               std::string* error_out)
+{
+    static const std::vector<std::string> kRoleOrder = {
+        kCitrusArtifactRoleStimulusVideo,
+        kCitrusArtifactRoleStimulusVideoFinalization,
+        kCitrusArtifactRoleUpdateTiming,
+        kCitrusArtifactRoleLegacyRecordingDiagnostic,
+    };
+    static const std::regex kLegacyPath(
+        R"(^citrus/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z_threading_startup_\d+\.json$)");
+    if (!artifacts.is_array()) {
+        return fail(error_out, "receipt citrus_artifacts must be an array");
+    }
+    if (h5_relative.size() <= 3 || h5_relative.compare(h5_relative.size() - 3, 3, ".h5") != 0) {
+        return fail(error_out, "receipt H5 path does not end in .h5");
+    }
+    const std::string stem = h5_relative.substr(0, h5_relative.size() - 3);
+    std::map<std::string, int> role_count;
+    std::pair<std::size_t, std::string> previous{0, ""};
+    bool first = true;
+    const json* video = nullptr;
+    const json* finalization = nullptr;
+    for (const auto& artifact : artifacts) {
+        if (!artifact.is_object()) {
+            return fail(error_out, "receipt citrus_artifacts entry is not an object");
+        }
+        const std::string role = artifact.value("role", "");
+        const auto order = std::find(kRoleOrder.begin(), kRoleOrder.end(), role);
+        if (order == kRoleOrder.end()) {
+            return fail(error_out, "receipt citrus_artifacts role is not recognised: " + role);
+        }
+        std::set<std::string> keys = {"role", "relative_path", "size_bytes", "sha256"};
+        if (role == kCitrusArtifactRoleStimulusVideoFinalization) {
+            keys.insert("finalization");
+        }
+        const std::string path = artifact.value("relative_path", "");
+        std::string expected;
+        if (role == kCitrusArtifactRoleStimulusVideo) expected = stem + ".mp4";
+        if (role == kCitrusArtifactRoleStimulusVideoFinalization) expected = stem + ".mp4.finalization.json";
+        if (role == kCitrusArtifactRoleUpdateTiming) expected = stem + "_update_timing.csv";
+        const bool name_ok = role == kCitrusArtifactRoleLegacyRecordingDiagnostic
+            ? std::regex_match(path, kLegacyPath)
+            : path == expected;
+        if (!exact_keys(artifact, keys) || !safe_relative_path(path) || !name_ok ||
+            path == h5_relative ||
+            !artifact.at("size_bytes").is_number_integer() ||
+            artifact.value("size_bytes", 0LL) <= 0 ||
+            !valid_sha256(artifact.value("sha256", ""))) {
+            return fail(error_out, "receipt citrus_artifacts entry is invalid: " + path);
+        }
+        const std::pair<std::size_t, std::string> key{
+            static_cast<std::size_t>(order - kRoleOrder.begin()), path};
+        if (!first && !(previous < key)) {
+            return fail(error_out,
+                        "receipt citrus_artifacts are not in role-then-path order or repeat a path");
+        }
+        previous = key;
+        first = false;
+        ++role_count[role];
+        if (role == kCitrusArtifactRoleStimulusVideo) video = &artifact;
+        if (role == kCitrusArtifactRoleStimulusVideoFinalization) finalization = &artifact;
+    }
+    if (role_count[kCitrusArtifactRoleStimulusVideo] > 1 ||
+        role_count[kCitrusArtifactRoleStimulusVideoFinalization] > 1 ||
+        role_count[kCitrusArtifactRoleLegacyRecordingDiagnostic] > 1 ||
+        role_count[kCitrusArtifactRoleUpdateTiming] != 1) {
+        return fail(error_out,
+                    "receipt citrus_artifacts role counts are invalid (update_timing exactly once, others at most once)");
+    }
+    if ((video == nullptr) != (finalization == nullptr)) {
+        return fail(error_out,
+                    "a stimulus video and its container finalization must be declared together");
+    }
+    if (video != nullptr) {
+        const json& f = finalization->at("finalization");
+        if (!f.is_object() ||
+            !exact_keys(f, {"schema_id", "schema_version", "status", "terminal",
+                            "trailer_written", "output_closed",
+                            "container_file_size_bytes"}) ||
+            f.value("schema_id", "") != kCitrusStimulusVideoFinalizationSchemaId ||
+            !f.at("schema_version").is_number_integer() ||
+            f.value("schema_version", 0) != 1 ||
+            f.value("status", "") != "complete" ||
+            !f.at("terminal").is_boolean() || f.value("terminal", false) != true ||
+            !f.at("trailer_written").is_boolean() || f.value("trailer_written", false) != true ||
+            !f.at("output_closed").is_boolean() || f.value("output_closed", false) != true ||
+            !f.at("container_file_size_bytes").is_number_integer() ||
+            f.value("container_file_size_bytes", 0LL) != video->value("size_bytes", -1LL)) {
+            return fail(error_out,
+                        "stimulus video container finalization is not complete or does not match the video");
+        }
+    }
+    return true;
+}
+
 bool validate_receipt_contract(const json& contract, std::string* error_out)
 {
-    if (!exact_keys(contract, {
-            "schema_id", "schema_version", "request_id",
-            "request_contract_sha256", "acceptance_id",
-            "acceptance_contract_sha256", "observation_context_id",
-            "finalized_at_utc", "citrus_experiment_id",
-            "citrus_session_uuid", "target", "h5_artifact", "session_status",
-            "runtime_geometry_contract_sha256", "protocol_semantic"}) ||
+    const int version = binding_record_schema_version(contract);
+    std::set<std::string> keys = {
+        "schema_id", "schema_version", "request_id",
+        "request_contract_sha256", "acceptance_id",
+        "acceptance_contract_sha256", "observation_context_id",
+        "finalized_at_utc", "citrus_experiment_id",
+        "citrus_session_uuid", "target", "h5_artifact", "session_status",
+        "runtime_geometry_contract_sha256", "protocol_semantic"};
+    if (version == kObservationBindingFinalizedReceiptSchemaVersionV2) {
+        keys.insert("citrus_artifacts");
+    }
+    if (!exact_keys(contract, keys) ||
         contract.value("schema_id", "") !=
             kObservationBindingFinalizedReceiptSchemaId ||
-        binding_record_schema_version(contract) != kObservationBindingSchemaVersion) {
+        (version != kObservationBindingSchemaVersion &&
+         version != kObservationBindingFinalizedReceiptSchemaVersionV2)) {
         return fail(error_out, "finalized binding receipt contract is invalid");
     }
     if (!valid_derived_id(contract.value("request_id", ""), "obsbindreq_") ||
@@ -358,6 +471,11 @@ bool validate_receipt_contract(const json& contract, std::string* error_out)
         artifact.value("size_bytes", 0LL) <= 0 ||
         !valid_sha256(artifact.value("sha256", ""))) {
         return fail(error_out, "finalized H5 artifact is invalid");
+    }
+    if (version == kObservationBindingFinalizedReceiptSchemaVersionV2 &&
+        !validate_citrus_artifacts(contract.at("citrus_artifacts"),
+                                   artifact.value("relative_path", ""), error_out)) {
+        return false;
     }
 
     const json& semantic = contract.at("protocol_semantic");
@@ -547,7 +665,7 @@ bool validate_recording_observation_finalized_receipt(
     }
     if (!validate_envelope(
             receipt, kObservationBindingFinalizedReceiptSchemaId, "receipt_id",
-            "obsbindfin_", /*allow_v2=*/false, error_out) ||
+            "obsbindfin_", /*allow_v2=*/true, error_out) ||
         !validate_receipt_contract(receipt.at("contract"), error_out)) {
         return false;
     }

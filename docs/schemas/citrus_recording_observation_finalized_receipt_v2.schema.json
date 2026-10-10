@@ -1,0 +1,364 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "citrus.recording_observation_finalized_receipt.v2",
+  "title": "Citrus Finalized Recording Observation Receipt v2 (H5 plus declared Citrus artifacts)",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "schema_version",
+    "canonicalization",
+    "receipt_id",
+    "contract_sha256",
+    "contract"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "citrus.recording_observation_finalized_receipt"
+    },
+    "schema_version": {
+      "const": 2
+    },
+    "canonicalization": {
+      "const": "canonical_json_utf8_sort_keys_compact_v1"
+    },
+    "receipt_id": {
+      "type": "string",
+      "pattern": "^obsbindfin_[0-9a-f]{64}$"
+    },
+    "contract_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "contract": {
+      "$ref": "#/$defs/contract"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!\\s)[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f]$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*(?:^|/)\\.(?:/|$)).+$"
+    },
+    "target": {
+      "type": "object",
+      "required": [
+        "rig_id",
+        "canvas_name",
+        "arena_id",
+        "camera_id",
+        "source_camera_stream_id"
+      ],
+      "properties": {
+        "rig_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "canvas_name": {
+          "$ref": "#/$defs/identifier"
+        },
+        "arena_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "camera_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "source_camera_stream_id": {
+          "$ref": "#/$defs/identifier"
+        }
+      },
+      "additionalProperties": false
+    },
+    "protocolSemantic": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "status",
+            "semantic_sha256"
+          ],
+          "properties": {
+            "status": {
+              "const": "available"
+            },
+            "semantic_sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "status",
+            "semantic_status_sha256"
+          ],
+          "properties": {
+            "status": {
+              "const": "unsupported"
+            },
+            "semantic_status_sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "contract": {
+      "type": "object",
+      "required": [
+        "schema_id",
+        "schema_version",
+        "request_id",
+        "request_contract_sha256",
+        "acceptance_id",
+        "acceptance_contract_sha256",
+        "observation_context_id",
+        "finalized_at_utc",
+        "citrus_experiment_id",
+        "citrus_session_uuid",
+        "target",
+        "h5_artifact",
+        "session_status",
+        "runtime_geometry_contract_sha256",
+        "protocol_semantic",
+        "citrus_artifacts"
+      ],
+      "properties": {
+        "schema_id": {
+          "const": "citrus.recording_observation_finalized_receipt"
+        },
+        "schema_version": {
+          "const": 2
+        },
+        "request_id": {
+          "type": "string",
+          "pattern": "^obsbindreq_[0-9a-f]{64}$"
+        },
+        "request_contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "acceptance_id": {
+          "type": "string",
+          "pattern": "^obsbindacc_[0-9a-f]{64}$"
+        },
+        "acceptance_contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "observation_context_id": {
+          "type": "string",
+          "pattern": "^obsctx_[0-9a-f]{64}$"
+        },
+        "finalized_at_utc": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "Z$"
+        },
+        "citrus_experiment_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "citrus_session_uuid": {
+          "$ref": "#/$defs/identifier"
+        },
+        "target": {
+          "$ref": "#/$defs/target"
+        },
+        "h5_artifact": {
+          "type": "object",
+          "required": [
+            "relative_path",
+            "size_bytes",
+            "sha256"
+          ],
+          "properties": {
+            "relative_path": {
+              "$ref": "#/$defs/relativePath"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          },
+          "additionalProperties": false
+        },
+        "session_status": {
+          "const": "COMPLETE"
+        },
+        "runtime_geometry_contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "protocol_semantic": {
+          "$ref": "#/$defs/protocolSemantic"
+        },
+        "citrus_artifacts": {
+          "type": "array",
+          "uniqueItems": true,
+          "description": "Every per-session file Citrus wrote besides the H5. Cross-item rules are normative in README.md.",
+          "items": {
+            "$ref": "#/$defs/citrusArtifact"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "citrusRelativePath": {
+      "type": "string",
+      "pattern": "^citrus/[^/\\u0000-\\u001f]+$"
+    },
+    "citrusArtifact": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "role",
+            "relative_path",
+            "size_bytes",
+            "sha256"
+          ],
+          "properties": {
+            "role": {
+              "const": "stimulus_video"
+            },
+            "relative_path": {
+              "$ref": "#/$defs/citrusRelativePath"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "role",
+            "relative_path",
+            "size_bytes",
+            "sha256",
+            "finalization"
+          ],
+          "properties": {
+            "role": {
+              "const": "stimulus_video_container_finalization"
+            },
+            "relative_path": {
+              "$ref": "#/$defs/citrusRelativePath"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "finalization": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "schema_id",
+                "schema_version",
+                "status",
+                "terminal",
+                "trailer_written",
+                "output_closed",
+                "container_file_size_bytes"
+              ],
+              "properties": {
+                "schema_id": {
+                  "const": "citrus.stimulus_video_container_finalization"
+                },
+                "schema_version": {
+                  "const": 1
+                },
+                "status": {
+                  "const": "complete"
+                },
+                "terminal": {
+                  "const": true
+                },
+                "trailer_written": {
+                  "const": true
+                },
+                "output_closed": {
+                  "const": true
+                },
+                "container_file_size_bytes": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "role",
+            "relative_path",
+            "size_bytes",
+            "sha256"
+          ],
+          "properties": {
+            "role": {
+              "const": "update_timing"
+            },
+            "relative_path": {
+              "$ref": "#/$defs/citrusRelativePath"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "role",
+            "relative_path",
+            "size_bytes",
+            "sha256"
+          ],
+          "properties": {
+            "role": {
+              "const": "legacy_recording_diagnostic"
+            },
+            "relative_path": {
+              "type": "string",
+              "pattern": "^citrus/\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}Z_threading_startup_\\d+\\.json$"
+            },
+            "size_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

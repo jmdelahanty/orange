@@ -29,6 +29,17 @@
 //     Exit codes: 0 = finalized collection written (or verified) with
 //     binding_status bound and the manifest projection refreshed; 1 otherwise.
 //
+//   recording_observation_binding_cli upgrade-receipts --folder <recording>
+//       --receipts <params.json>
+//     <params.json> is {"experiment_id", "receipts": [<sealed receipt v2>, ...],
+//     "reason": "citrus_receipt_v2_upgrade"}. Re-mints the receipts of a bound
+//     recording (sealer 3.1.0): writes revision N+1 of the finalized collection
+//     (finalized_collection.r<N+1>.json, receipts/r<N+1>/) superseding the head
+//     by path and digest, never rewriting earlier revisions. Refused unless the
+//     head is bound and every context, request, acceptance and H5 is unchanged.
+//     A retry with the head's exact receipts is a no-op. Refreshes the manifest
+//     projection (head + revision_chain). Exit 0 only when bound.
+//
 // No camera, recorder or GUI is involved. See docs/synthetic_recording_bundle.md.
 #include "json.hpp"
 #include "session/recording_observation_finalization.h"
@@ -54,6 +65,7 @@ using json = nlohmann::json;
         "           [--binding-mode required|optional|not_applicable] [--decided-at <utc>]\n"
         "           [--socket <path>] [--timeout-ms N] [--request-version 1|2]\n"
         "       recording_observation_binding_cli finalize --folder <recording> --receipts <params.json>\n"
+        "       recording_observation_binding_cli upgrade-receipts --folder <recording> --receipts <params.json>\n"
         "Prints a JSON result on stdout. prearm exits 0 only when every request was accepted\n"
         "(or the mode is not_applicable), 3 when a decision was written but the session is\n"
         "unbound, 1 on error. finalize exits 0 only when the collection is bound.\n";
@@ -129,25 +141,41 @@ int run_prearm(int argc, char** argv)
     return exit_code;
 }
 
+std::string utc_now()
+{
+    const std::time_t now = std::time(nullptr);
+    std::tm tm{};
+    gmtime_r(&now, &tm);
+    char buffer[32];
+    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return buffer;
+}
+
 int run_finalize(int argc, char** argv)
 {
+    const bool upgrade = std::string(argv[1]) == "upgrade-receipts";
     std::string folder, receipts_path;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         auto need = [&]() -> std::string { if (i + 1 >= argc) usage(a + " needs a value"); return argv[++i]; };
         if (a == "--folder") folder = need();
         else if (a == "--receipts") receipts_path = need();
-        else usage("unknown finalize argument " + a);
+        else usage("unknown " + std::string(argv[1]) + " argument " + a);
     }
     if (folder.empty() || receipts_path.empty()) usage("--folder and --receipts are required");
     std::ifstream input(receipts_path);
     if (!input) { std::cerr << "cannot read " << receipts_path << std::endl; return 1; }
-    const json params = json::parse(input, nullptr, false);
+    json params = json::parse(input, nullptr, false);
     if (params.is_discarded() || !params.is_object() || !params.contains("receipts")) {
         std::cerr << "receipts file must be a JSON object with an experiment_id and a receipts array" << std::endl;
         return 1;
     }
-    const auto result = orange::session::finalize_recording_observation_bindings(folder, params);
+    if (upgrade && !params.contains("revised_at_utc")) {
+        params["revised_at_utc"] = utc_now();
+    }
+    const auto result = upgrade
+        ? orange::session::upgrade_recording_observation_receipts(folder, params)
+        : orange::session::finalize_recording_observation_bindings(folder, params);
     std::string refresh_error;
     bool refreshed = false;
     if (result.ok) {
@@ -156,7 +184,7 @@ int run_finalize(int argc, char** argv)
     const bool bound = result.ok && refreshed &&
         result.collection.value("binding_status", "") == "bound";
     json out = {
-        {"step", "finalize"}, {"ok", bound}, {"bound", bound}, {"error", result.error},
+        {"step", upgrade ? "upgrade-receipts" : "finalize"}, {"ok", bound}, {"bound", bound}, {"error", result.error},
         {"collection_reference", result.collection_reference},
         {"collection_status", result.collection.value("status", "")},
         {"binding_status", result.collection.value("binding_status", "")},
@@ -174,7 +202,7 @@ int main(int argc, char** argv)
     const std::string command = argv[1];
     try {
         if (command == "prearm") return run_prearm(argc, argv);
-        if (command == "finalize") return run_finalize(argc, argv);
+        if (command == "finalize" || command == "upgrade-receipts") return run_finalize(argc, argv);
         if (command == "-h" || command == "--help") usage();
         usage("unknown command " + command);
     } catch (const std::exception& ex) {

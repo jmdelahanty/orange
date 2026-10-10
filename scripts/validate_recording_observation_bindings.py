@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import os
 import sys
 from pathlib import Path
@@ -128,6 +129,143 @@ def schema_version_int(value: Any) -> int:
     """schema_version as a JSON integer (bool and float are not accepted)."""
     raw = value.get("schema_version") if isinstance(value, dict) else None
     return raw if isinstance(raw, int) and not isinstance(raw, bool) else 0
+
+
+# Receipt v2 (agent-contracts citrus-recording-transfer-3.1): Citrus declares
+# every per-session file besides the H5. Rules 1-5 and 8 of that README.
+CITRUS_ROLE_ORDER = (
+    "stimulus_video",
+    "stimulus_video_container_finalization",
+    "update_timing",
+    "legacy_recording_diagnostic",
+)
+LEGACY_DIAGNOSTIC_PATH = re.compile(
+    r"^citrus/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z_threading_startup_\d+\.json$"
+)
+REVISION_REASON = "citrus_receipt_v2_upgrade"
+
+
+def validate_citrus_artifacts(
+    recording: Path,
+    artifacts: Any,
+    h5_relative: str,
+    context_id: str,
+) -> list[dict[str, Any]]:
+    require(isinstance(artifacts, list), f"citrus_artifacts is not a list: {context_id}")
+    require(h5_relative.endswith(".h5"), f"receipt H5 path does not end in .h5: {context_id}")
+    stem = h5_relative[: -len(".h5")]
+    expected = {
+        "stimulus_video": stem + ".mp4",
+        "stimulus_video_container_finalization": stem + ".mp4.finalization.json",
+        "update_timing": stem + "_update_timing.csv",
+    }
+    keys = {"role", "relative_path", "size_bytes", "sha256"}
+    rows: list[dict[str, Any]] = []
+    previous: tuple[int, str] | None = None
+    counts: dict[str, int] = {}
+    by_role: dict[str, dict[str, Any]] = {}
+    for item in artifacts:
+        require(isinstance(item, dict), f"citrus artifact is not an object: {context_id}")
+        role = item.get("role")
+        require(role in CITRUS_ROLE_ORDER, f"unknown citrus artifact role {role!r}: {context_id}")
+        want = keys | ({"finalization"} if role == "stimulus_video_container_finalization" else set())
+        require(set(item) == want, f"citrus artifact keys are not exact ({role}): {context_id}")
+        path = item.get("relative_path")
+        if role == "legacy_recording_diagnostic":
+            require(isinstance(path, str) and LEGACY_DIAGNOSTIC_PATH.match(path) is not None,
+                    f"legacy diagnostic path is invalid: {path!r}")
+        else:
+            require(path == expected[role], f"{role} is not named for its H5 stem: {path!r}")
+        size = item.get("size_bytes")
+        require(isinstance(size, int) and not isinstance(size, bool) and size > 0,
+                f"citrus artifact size is invalid: {path}")
+        key = (CITRUS_ROLE_ORDER.index(role), path)
+        require(previous is None or previous < key,
+                f"citrus_artifacts are not in role-then-path order: {context_id}")
+        previous = key
+        counts[role] = counts.get(role, 0) + 1
+        by_role[role] = item
+        # Proof: safe, regular, non-symlink, re-hash equal.
+        file_path = resolve_recording_relative(recording, path)
+        require(file_path.is_file() and not file_path.is_symlink(),
+                f"declared Citrus artifact is missing or not a regular file: {path}")
+        digest, actual_size = sha256_file(file_path)
+        require(digest == item.get("sha256") and actual_size == size,
+                f"declared Citrus artifact size or SHA-256 mismatch: {path}")
+        rows.append({"role": role, "relative_path": path, "size_bytes": size, "sha256": digest})
+    require(counts.get("update_timing", 0) == 1, f"update_timing must appear exactly once: {context_id}")
+    for role in ("stimulus_video", "stimulus_video_container_finalization", "legacy_recording_diagnostic"):
+        require(counts.get(role, 0) <= 1, f"{role} appears more than once: {context_id}")
+    require(("stimulus_video" in by_role) == ("stimulus_video_container_finalization" in by_role),
+            f"stimulus video and its finalization must be declared together: {context_id}")
+    if "stimulus_video" in by_role:
+        declared = by_role["stimulus_video_container_finalization"]["finalization"]
+        require(isinstance(declared, dict) and set(declared) == {
+            "schema_id", "schema_version", "status", "terminal", "trailer_written",
+            "output_closed", "container_file_size_bytes"},
+            f"finalization facts are not exact: {context_id}")
+        require(declared.get("schema_id") == "citrus.stimulus_video_container_finalization"
+                and declared.get("schema_version") == 1
+                and declared.get("status") == "complete"
+                and declared.get("terminal") is True
+                and declared.get("trailer_written") is True
+                and declared.get("output_closed") is True
+                and declared.get("container_file_size_bytes")
+                == by_role["stimulus_video"]["size_bytes"],
+                f"stimulus video finalization is not complete or not the video's size: {context_id}")
+        on_disk, _ = load_json(resolve_recording_relative(
+            recording, by_role["stimulus_video_container_finalization"]["relative_path"]))
+        container = on_disk.get("container") or {}
+        require(on_disk.get("schema_id") == declared["schema_id"]
+                and on_disk.get("schema_version") == declared["schema_version"]
+                and on_disk.get("status") == declared["status"]
+                and on_disk.get("terminal") == declared["terminal"]
+                and container.get("trailer_written") == declared["trailer_written"]
+                and container.get("output_closed") == declared["output_closed"]
+                and container.get("file_size_bytes") == declared["container_file_size_bytes"],
+                f"stimulus video finalization file disagrees with the receipt: {context_id}")
+    return rows
+
+
+def load_collection_chain(recording: Path) -> list[tuple[int, str, dict[str, Any], bytes]]:
+    """Revision 1 plus every finalized_collection.r<N>.json, linear and gap-free."""
+    directory = recording / "recording_observation_bindings"
+    revisions: set[int] = set()
+    for entry in directory.glob("finalized_collection.r*.json"):
+        match = re.fullmatch(r"finalized_collection\.r([1-9]\d{0,5})\.json", entry.name)
+        require(match is not None, f"unexpected collection revision file: {entry.name}")
+        revisions.add(int(match.group(1)))
+    last = max(revisions, default=1)
+    chain: list[tuple[int, str, dict[str, Any], bytes]] = []
+    for revision in range(1, last + 1):
+        relative = str(FINALIZED_COLLECTION) if revision == 1 else (
+            f"recording_observation_bindings/finalized_collection.r{revision}.json")
+        require(revision == 1 or revision in revisions, f"collection revision chain gap at r{revision}")
+        collection, raw = load_json(recording / relative)
+        if revision == 1:
+            require(collection.get("schema_version") == 1 and "revision" not in collection,
+                    "revision 1 must be the schema_version 1 collection")
+        else:
+            previous_relative, previous_raw = chain[-1][1], chain[-1][3]
+            supersedes = collection.get("supersedes") or {}
+            require(collection.get("schema_version") == 2
+                    and collection.get("revision") == revision
+                    and collection.get("revision_reason") == REVISION_REASON
+                    and supersedes.get("relative_path") == previous_relative
+                    and supersedes.get("sha256") == sha256_bytes(previous_raw),
+                    f"collection r{revision} does not supersede r{revision - 1} exactly")
+            before = chain[-1][2]
+            for field in ("citrus_experiment_id", "recording_id", "binding_mode", "context_count"):
+                require(collection.get(field) == before.get(field),
+                        f"collection r{revision} changes {field}")
+            for old, new in zip(before.get("observation_contexts") or [],
+                                collection.get("observation_contexts") or []):
+                for field in ("observation_context_id", "observation_identity_sha256",
+                              "observation_identity", "request", "acceptance", "citrus_h5", "status"):
+                    require(old.get(field) == new.get(field),
+                            f"collection r{revision} changes {field} of {new.get('observation_context_id')}")
+        chain.append((revision, relative, collection, raw))
+    return chain
 
 
 def validate_sealed_record(
@@ -366,12 +504,12 @@ def validate(
     require(len(experiment_ids) == 1, "acceptances do not share one Citrus experiment ID")
     experiment_id = next(iter(experiment_ids))
 
-    finalized, finalized_raw = load_json(recording / FINALIZED_COLLECTION)
+    chain = load_collection_chain(recording)
+    head_revision, _head_relative, finalized, finalized_raw = chain[-1]
     require(
         finalized.get("schema_id") == FINALIZATION_SCHEMA,
         "finalized collection schema is invalid",
     )
-    require(finalized.get("schema_version") == 1, "finalized collection version is invalid")
     require(finalized.get("status") == "finalized", "collection is not finalized")
     require(finalized.get("binding_status") == "bound", "collection is not bound")
     require(
@@ -391,6 +529,8 @@ def validate(
 
     receipt_rows: list[dict[str, Any]] = []
     finalized_ids: set[str] = set()
+    declared_paths: set[str] = set()
+    legacy_contexts: list[str] = []
     for context_row in finalized_contexts:
         require(isinstance(context_row, dict), "finalized context is not an object")
         context_id = context_row.get("observation_context_id")
@@ -440,7 +580,7 @@ def validate(
             receipt_ref.get("sha256") == sha256_bytes(receipt_raw),
             f"receipt file digest mismatch: {context_id}",
         )
-        validate_sealed_record(receipt, RECEIPT_SCHEMA, "receipt_id", (1,))
+        receipt_version = validate_sealed_record(receipt, RECEIPT_SCHEMA, "receipt_id", (1, 2))
         require(
             receipt_ref.get("receipt_id") == receipt.get("receipt_id")
             and receipt_ref.get("contract_sha256") == receipt.get("contract_sha256"),
@@ -494,7 +634,28 @@ def validate(
             and h5_artifact.get("size_bytes") == h5_size,
             f"closed H5 size or SHA-256 mismatch: {context_id}",
         )
+        require(h5_artifact.get("relative_path") not in declared_paths,
+                f"H5 path declared twice in the collection: {context_id}")
+        declared_paths.add(h5_artifact.get("relative_path"))
+        citrus_rows: list[dict[str, Any]] = []
+        if receipt_version == 2:
+            require(set(receipt_contract) >= {"citrus_artifacts"},
+                    f"receipt v2 lacks citrus_artifacts: {context_id}")
+            citrus_rows = validate_citrus_artifacts(
+                recording, receipt_contract.get("citrus_artifacts"),
+                h5_artifact.get("relative_path"), context_id)
+            for row in citrus_rows:
+                require(row["relative_path"] not in declared_paths,
+                        f"Citrus artifact declared twice in the collection: {row['relative_path']}")
+                declared_paths.add(row["relative_path"])
+                if row["role"] == "legacy_recording_diagnostic":
+                    legacy_contexts.append(context_id)
+        else:
+            require("citrus_artifacts" not in receipt_contract,
+                    f"receipt v1 carries citrus_artifacts: {context_id}")
         receipt_rows.append({
+            "receipt_schema_version": receipt_version,
+            "citrus_artifacts": citrus_rows,
             "observation_context_id": context_id,
             "receipt_path": str(receipt_path.relative_to(recording)),
             "receipt_id": receipt["receipt_id"],
@@ -503,11 +664,22 @@ def validate(
         })
 
     require(finalized_ids == set(requests), "finalized collection does not cover every request")
+    if legacy_contexts:
+        require(head_revision >= 2,
+                "legacy_recording_diagnostic is valid only in an upgraded collection")
+        require(len(legacy_contexts) == 1 and legacy_contexts[0] == min(finalized_ids),
+                "the legacy diagnostic must appear once, in the lowest observation_context_id")
 
+    projection = dict(finalized)
+    if len(chain) > 1:
+        projection["revision_chain"] = [
+            {"revision": revision, "relative_path": relative, "sha256": sha256_bytes(raw)}
+            for revision, relative, _collection, raw in chain
+        ]
     session, _ = load_json(recording / RECORDING_SESSION)
     require(
-        session.get("recording_observation_bindings") == finalized,
-        "recording_session binding projection differs from finalized collection",
+        session.get("recording_observation_bindings") == projection,
+        "recording_session binding projection differs from the finalized collection head",
     )
     require(
         session.get("observation_contexts") == finalized_contexts,
@@ -527,6 +699,11 @@ def validate(
         "h5_embedding_count": len(h5_rows),
         "finalized_receipt_count": len(receipt_rows),
         "finalized_collection_sha256": sha256_bytes(finalized_raw),
+        "collection_revision": head_revision,
+        "collection_revision_chain": [
+            {"revision": revision, "relative_path": relative, "sha256": sha256_bytes(raw)}
+            for revision, relative, _collection, raw in chain
+        ],
         "recording_session_binding_status": "bound",
         "citrus_experiment_id": experiment_id,
         "cameras": sorted(cameras),

@@ -1135,6 +1135,273 @@ void test_streaming_sha256_matches_known_vector()
 
 }  // namespace
 
+// Receipt v2 (sealer 3.1.0): Citrus declares its per-session files; Orange
+// proves them at finalize; an upgrade re-mints receipts as revision N+1.
+struct V2Fixture {
+    std::filesystem::path root;
+    json v1_receipts = json::array();
+    json v2_receipts = json::array();
+};
+
+json citrus_artifacts_for(const std::filesystem::path& root,
+                          const std::string& h5_relative,
+                          bool with_legacy)
+{
+    const std::string stem = h5_relative.substr(0, h5_relative.size() - 3);
+    const std::string video = stem + ".mp4";
+    const std::string finalization = video + ".finalization.json";
+    const std::string timing = stem + "_update_timing.csv";
+    write_file(root / video, "stimulus-video-bytes-" + stem);
+    const auto video_size = std::filesystem::file_size(root / video);
+    write_file(root / finalization, json{
+        {"schema_id", "citrus.stimulus_video_container_finalization"},
+        {"schema_version", 1},
+        {"status", "complete"},
+        {"terminal", true},
+        {"container", {{"file_size_bytes", video_size}, {"trailer_written", true},
+                       {"output_closed", true}, {"finalized", true}}},
+    }.dump(2) + "\n");
+    write_file(root / timing, "frame,update_ms\n0,1.0\n");
+    json artifacts = json::array({
+        {{"role", "stimulus_video"}, {"relative_path", video},
+         {"size_bytes", video_size}, {"sha256", file_sha256(root / video)}},
+        {{"role", "stimulus_video_container_finalization"}, {"relative_path", finalization},
+         {"size_bytes", std::filesystem::file_size(root / finalization)},
+         {"sha256", file_sha256(root / finalization)},
+         {"finalization", {{"schema_id", "citrus.stimulus_video_container_finalization"},
+                           {"schema_version", 1}, {"status", "complete"},
+                           {"terminal", true}, {"trailer_written", true},
+                           {"output_closed", true},
+                           {"container_file_size_bytes", video_size}}}},
+        {{"role", "update_timing"}, {"relative_path", timing},
+         {"size_bytes", std::filesystem::file_size(root / timing)},
+         {"sha256", file_sha256(root / timing)}},
+    });
+    if (with_legacy) {
+        const std::string legacy = "citrus/2026-10-09T19-38-03Z_threading_startup_989893.json";
+        write_file(root / legacy, "{\"threads\": 4}\n");
+        artifacts.push_back({{"role", "legacy_recording_diagnostic"}, {"relative_path", legacy},
+                             {"size_bytes", std::filesystem::file_size(root / legacy)},
+                             {"sha256", file_sha256(root / legacy)}});
+    }
+    return artifacts;
+}
+
+V2Fixture make_v2_fixture(bool legacy_in_lowest)
+{
+    V2Fixture fixture;
+    fixture.root = make_materialization_fixture(resolved_geometry());
+    orange::session::RecordingObservationBindingRequestMaterialization requests;
+    orange::session::RecordingObservationPreArmResult pre_arm;
+    std::string error;
+    require(orange::session::prepare_recording_observation_pre_arm(
+                fixture.root.string(), "required", "2026-08-13T16:00:00Z",
+                &requests, &pre_arm, &error,
+                [](const json& request, json* response, std::string*) {
+                    *response = accepted_batch_response(request);
+                    return true;
+                }),
+            "v2 fixture pre-arm failed: " + error);
+    std::string lowest;
+    for (const auto& artifact : requests.artifacts) {
+        const std::string id = artifact.request.at("contract").at("observation_context_id");
+        if (lowest.empty() || id < lowest) lowest = id;
+    }
+    for (std::size_t index = 0; index < requests.artifacts.size(); ++index) {
+        const json& request = requests.artifacts[index].request;
+        const json& acceptance = pre_arm.acceptances[index].acceptance;
+        const std::string h5_relative =
+            acceptance.at("contract").at("planned_h5_relative_path");
+        write_file(fixture.root / h5_relative, "closed-h5-" + std::to_string(index));
+        json contract = receipt_contract(request, acceptance);
+        contract["citrus_experiment_id"] = "citexp_transaction_test";
+        contract["citrus_session_uuid"] = acceptance.at("contract").at("citrus_session_uuid");
+        contract["target"] = acceptance.at("contract").at("target");
+        contract["h5_artifact"] = {
+            {"relative_path", h5_relative},
+            {"size_bytes", std::filesystem::file_size(fixture.root / h5_relative)},
+            {"sha256", file_sha256(fixture.root / h5_relative)},
+        };
+        json v1;
+        require(orange::session::seal_recording_observation_finalized_receipt(
+                    contract, &v1, &error), "v1 receipt seal failed: " + error);
+        fixture.v1_receipts.push_back(v1);
+        const bool legacy = legacy_in_lowest &&
+            request.at("contract").at("observation_context_id") == lowest;
+        contract["schema_version"] = 2;
+        contract["citrus_artifacts"] = citrus_artifacts_for(fixture.root, h5_relative, legacy);
+        json v2;
+        require(orange::session::seal_recording_observation_finalized_receipt(
+                    contract, &v2, &error), "v2 receipt seal failed: " + error);
+        require(v2.at("schema_version") == 2, "v2 receipt envelope is not version 2");
+        fixture.v2_receipts.push_back(v2);
+    }
+    return fixture;
+}
+
+void test_receipt_v2_live_finalize_and_legacy_gate()
+{
+    {
+        auto fixture = make_v2_fixture(/*legacy_in_lowest=*/false);
+        const auto bound = orange::session::finalize_recording_observation_bindings(
+            fixture.root.string(),
+            {{"experiment_id", "citexp_transaction_test"}, {"receipts", fixture.v2_receipts}});
+        require(bound.ok && bound.collection.at("binding_status") == "bound",
+                "live finalize with v2 receipts did not bind: " + bound.error);
+        std::filesystem::remove_all(fixture.root);
+    }
+    {
+        auto fixture = make_v2_fixture(/*legacy_in_lowest=*/true);
+        const auto refused = orange::session::finalize_recording_observation_bindings(
+            fixture.root.string(),
+            {{"experiment_id", "citexp_transaction_test"}, {"receipts", fixture.v2_receipts}});
+        require(!refused.ok && refused.error.find("legacy_recording_diagnostic") != std::string::npos,
+                "live finalize accepted the legacy diagnostic role: " + refused.error);
+        std::filesystem::remove_all(fixture.root);
+    }
+    {
+        auto fixture = make_v2_fixture(false);
+        const std::string video = fixture.v2_receipts.front().at("contract")
+            .at("citrus_artifacts").at(0).at("relative_path");
+        write_file(fixture.root / video, "stimulus-video-tampered");
+        const auto tampered = orange::session::finalize_recording_observation_bindings(
+            fixture.root.string(),
+            {{"experiment_id", "citexp_transaction_test"}, {"receipts", fixture.v2_receipts}});
+        require(!tampered.ok, "live finalize accepted a stimulus video that no longer matches");
+        std::filesystem::remove_all(fixture.root);
+    }
+    // Contract rules refuse before any file is read.
+    {
+        auto fixture = make_v2_fixture(false);
+        std::string error;
+        json contract = fixture.v2_receipts.front().at("contract");
+        json reordered = contract;
+        std::swap(reordered["citrus_artifacts"][0], reordered["citrus_artifacts"][2]);
+        json sealed;
+        require(!orange::session::seal_recording_observation_finalized_receipt(
+                    reordered, &sealed, &error), "out-of-order citrus_artifacts were accepted");
+        json unpaired = contract;
+        unpaired["citrus_artifacts"].erase(1);
+        require(!orange::session::seal_recording_observation_finalized_receipt(
+                    unpaired, &sealed, &error), "a stimulus video without finalization was accepted");
+        json renamed = contract;
+        renamed["citrus_artifacts"][2]["relative_path"] = "citrus/other_update_timing.csv";
+        require(!orange::session::seal_recording_observation_finalized_receipt(
+                    renamed, &sealed, &error), "a misnamed update_timing was accepted");
+        json extra = contract;
+        extra["citrus_artifacts"][0]["note"] = "x";
+        require(!orange::session::seal_recording_observation_finalized_receipt(
+                    extra, &sealed, &error), "an artifact with an extra key was accepted");
+        json v1_with_artifacts = contract;
+        v1_with_artifacts["schema_version"] = 1;
+        require(!orange::session::seal_recording_observation_finalized_receipt(
+                    v1_with_artifacts, &sealed, &error), "a v1 receipt with citrus_artifacts was accepted");
+        std::filesystem::remove_all(fixture.root);
+    }
+}
+
+void test_receipt_upgrade_writes_a_verified_revision_chain()
+{
+    auto fixture = make_v2_fixture(/*legacy_in_lowest=*/true);
+    const auto& root = fixture.root;
+    std::string error;
+    const auto r1 = orange::session::finalize_recording_observation_bindings(
+        root.string(), {{"experiment_id", "citexp_transaction_test"}, {"receipts", fixture.v1_receipts}});
+    require(r1.ok, "v1 finalize failed: " + r1.error);
+    const std::string r1_bytes = read_file(root / orange::session::kObservationBindingFinalizationRelativePath);
+
+    json upgrade = {{"experiment_id", "citexp_transaction_test"}, {"receipts", fixture.v1_receipts},
+                    {"reason", "citrus_receipt_v2_upgrade"},
+                    {"revised_at_utc", "2026-10-10T03:00:00Z"}};
+    require(!orange::session::upgrade_recording_observation_receipts(root.string(), upgrade).ok,
+            "upgrade accepted v1 receipts");
+    upgrade["receipts"] = fixture.v2_receipts;
+    upgrade["reason"] = "other";
+    require(!orange::session::upgrade_recording_observation_receipts(root.string(), upgrade).ok,
+            "upgrade accepted an unknown reason");
+    upgrade["reason"] = "citrus_receipt_v2_upgrade";
+
+    // An upgrade must never change H5 bytes.
+    {
+        json changed = fixture.v2_receipts;
+        const std::string h5 = changed[0]["contract"]["h5_artifact"]["relative_path"];
+        const std::string original = read_file(root / h5);
+        write_file(root / h5, "re-finalized-h5");
+        changed[0]["contract"]["h5_artifact"]["size_bytes"] = std::filesystem::file_size(root / h5);
+        changed[0]["contract"]["h5_artifact"]["sha256"] = file_sha256(root / h5);
+        json resealed;
+        require(orange::session::seal_recording_observation_finalized_receipt(
+                    changed[0]["contract"], &resealed, &error), "reseal failed: " + error);
+        changed[0] = resealed;
+        json params = upgrade;
+        params["receipts"] = changed;
+        const auto refused = orange::session::upgrade_recording_observation_receipts(root.string(), params);
+        require(!refused.ok && refused.error.find("citrus_h5") != std::string::npos,
+                "upgrade accepted changed H5 bytes: " + refused.error);
+        write_file(root / h5, original);
+    }
+
+    const auto r2 = orange::session::upgrade_recording_observation_receipts(root.string(), upgrade);
+    require(r2.ok, "receipt v2 upgrade failed: " + r2.error);
+    const auto r2_path = root / "recording_observation_bindings/finalized_collection.r2.json";
+    const json r2_collection = json::parse(read_file(r2_path));
+    require(r2_collection.at("schema_version") == 2 && r2_collection.at("revision") == 2 &&
+                r2_collection.at("supersedes").at("relative_path") ==
+                    orange::session::kObservationBindingFinalizationRelativePath &&
+                r2_collection.at("supersedes").at("sha256") ==
+                    r1.collection_reference.at("sha256") &&
+                r2_collection.at("revision_reason") == "citrus_receipt_v2_upgrade",
+            "revision 2 does not supersede revision 1 exactly");
+    require(read_file(root / orange::session::kObservationBindingFinalizationRelativePath) == r1_bytes,
+            "revision 1 was rewritten by the upgrade");
+    for (const auto& context : r2_collection.at("observation_contexts")) {
+        const std::string receipt = context.at("finalized_receipt").at("relative_path");
+        require(receipt.rfind("recording_observation_bindings/receipts/r2/", 0) == 0 &&
+                    std::filesystem::exists(root / receipt),
+                "upgraded receipt is not in receipts/r2/");
+    }
+
+    const std::string r2_bytes = read_file(r2_path);
+    const auto retry = orange::session::upgrade_recording_observation_receipts(root.string(), upgrade);
+    require(retry.ok && read_file(r2_path) == r2_bytes &&
+                !std::filesystem::exists(root / "recording_observation_bindings/finalized_collection.r3.json"),
+            "an identical upgrade retry was not idempotent: " + retry.error);
+
+    json manifest = {{"schema_id", "orange.recording_session"}};
+    require(orange::session::apply_recording_observation_finalization_to_manifest(
+                root.string(), &manifest, &error), "manifest projection failed: " + error);
+    const json& projected = manifest.at("recording_observation_bindings");
+    require(projected.at("binding_status") == "bound" && projected.at("revision") == 2 &&
+                projected.at("revision_chain").size() == 2 &&
+                projected.at("revision_chain").at(1).at("sha256") ==
+                    r2.collection_reference.at("sha256"),
+            "manifest does not project the head and its chain");
+
+    write_file(root / "recording_observation_bindings/finalized_collection.r4.json", "{}\n");
+    json broken = {{"schema_id", "orange.recording_session"}};
+    require(orange::session::apply_recording_observation_finalization_to_manifest(
+                root.string(), &broken, &error) &&
+                broken.at("recording_observation_bindings").at("status") == "unbound" &&
+                broken.at("recording_observation_bindings").at("reason") ==
+                    "finalized_collection_chain_invalid",
+            "a revision gap was not reported as an invalid chain");
+    std::filesystem::remove(root / "recording_observation_bindings/finalized_collection.r4.json");
+
+    std::filesystem::remove_all(root);
+}
+
+void test_citrus_example_receipt_v2_digest_agrees()
+{
+    const json example = json::parse(read_file(ORANGE_RECEIPT_V2_EXAMPLE));
+    json resealed;
+    std::string error;
+    require(orange::session::seal_recording_observation_finalized_receipt(
+                example.at("contract"), &resealed, &error),
+            "Citrus example receipt v2 contract was refused: " + error);
+    require(resealed == example,
+            "Orange's seal of the Citrus example receipt v2 differs (digest, id or envelope)");
+}
+
 int main()
 {
     try {
@@ -1156,6 +1423,9 @@ int main()
         test_prearm_surfaces_v2_context_rejection_reasons();
         test_v2_envelopes_carry_matching_versions_and_reject_mixing();
         test_post_close_finalization_is_complete_idempotent_and_manifest_bound();
+    test_receipt_v2_live_finalize_and_legacy_gate();
+    test_receipt_upgrade_writes_a_verified_revision_chain();
+    test_citrus_example_receipt_v2_digest_agrees();
         test_manifest_never_infers_bound_without_final_receipts();
         test_streaming_sha256_matches_known_vector();
         std::cout << "recording_observation_binding_tests: PASS\n";

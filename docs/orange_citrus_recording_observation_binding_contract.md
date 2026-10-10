@@ -582,3 +582,36 @@ wrapper) or per host with app config
 - Intent coupling (independent of v2): `recording_intent = recording_only`
   forces binding mode `not_applicable`; such a session never materializes
   requests and keeps `recording_observation_bindings/` absent.
+
+## Receipt v2 and the collection revision chain (sealer 3.1.0, 2026-10-10)
+
+Contracts: agent-contracts `citrus-recording-transfer-3.1/` (PR 70). Pinned here:
+`docs/schemas/citrus_recording_observation_finalized_receipt_v2.schema.json`
+(Citrus) and `docs/schemas/orange_recording_observation_binding_finalization.schema.json`
+(Orange, revision chain).
+
+- **Receipt v2** is receipt v1 plus a required `contract.citrus_artifacts`: every
+  per-session file Citrus writes into `citrus/` besides the H5 (stimulus video,
+  its container finalization with the declared facts, update timing), by role,
+  path, size and SHA-256. Orange accepts v1 and v2 side by side. At finalize it
+  applies the H5 proof to every declared file (safe path, regular non-symlink
+  file, re-hash) and checks the finalization facts against the file; the
+  contract rules (role order, names derived from the H5 stem, video/finalization
+  pairing, update timing exactly once, no path declared twice in a collection)
+  are enforced in `validate_recording_observation_finalized_receipt` and
+  `scripts/validate_recording_observation_bindings.py`.
+- **`legacy_recording_diagnostic`** (the pre-3.1.0 `threading_startup` JSON) is
+  accepted only by an upgrade, once per recording, in the lowest
+  `observation_context_id`'s receipt; a live finalize refuses it.
+- **Revision chain.** `finalized_collection.json` is revision 1 and is never
+  rewritten. `recording_observation_binding_cli upgrade-receipts` (or
+  `upgrade_recording_observation_receipts`) re-mints the receipts of a bound
+  recording: it writes `finalized_collection.r<N>.json` (schema_version 2,
+  `revision`, `supersedes {relative_path, sha256}` of revision N-1,
+  `revision_reason: citrus_receipt_v2_upgrade`, `revised_at_utc`) with receipts in
+  `receipts/r<N>/`, create-once. It refuses unless the head is bound and the
+  experiment, contexts, identities, requests, acceptances and H5 bytes are
+  unchanged; a retry with the head's exact receipts is a no-op.
+  `recording_session.json` projects the head plus `revision_chain` (all
+  revisions, oldest first). A gap or an unchained revision file projects
+  `unbound` with reason `finalized_collection_chain_invalid`.
