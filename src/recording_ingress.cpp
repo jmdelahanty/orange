@@ -1074,9 +1074,12 @@ private:
                 owner_warm_src_ = nullptr;
                 owner_warm_src_bytes_ = 0;
             }
+            // The warm-up copy covers the whole NV12 slot, chroma included,
+            // and per-frame pushes only rewrite luma: fill with 128 so the
+            // slot's chroma stays neutral grey (0 encodes as green).
             void* scratch = nullptr;
             if (cudaMalloc(&scratch, slot.bytes) != cudaSuccess ||
-                cudaMemset(scratch, 0, slot.bytes) != cudaSuccess) {
+                cudaMemset(scratch, 128, slot.bytes) != cudaSuccess) {
                 (void)cudaGetLastError();
                 if (scratch) {
                     (void)cudaFree(scratch);
