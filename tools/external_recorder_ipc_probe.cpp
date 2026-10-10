@@ -119,6 +119,18 @@ struct Options {
     // The shard returns slots with STAGEFREE <index>. Full-frame shards only.
     bool owner_push = false;
     uint32_t owner_push_slots = 8;
+    // Offline re-encode (2026-10-09, chroma repair of owner-push GOPs): read
+    // raw 8-bit luma frames (width*height bytes each) from a file or stdin,
+    // encode them with this recorder's NVENC configuration (the same flags as
+    // the recording) and neutral chroma, and write Annex B packets. No IPC.
+    std::string offline_reencode_input;
+    std::string offline_reencode_output;
+    uint32_t offline_width = 4512;
+    uint32_t offline_height = 4512;
+    // "gray" = width*height bytes per frame; "yuv420p" = planar 4:2:0 frames
+    // as a decoder emits them (only the luma plane is used), which spares the
+    // decoder side a per-frame pixel-format conversion.
+    std::string offline_input_format = "gray";
     size_t shard_count = 1;  // set by make_shard_options; the STAGE line tells the client the routing modulus
     // Added to gop_index before the shard modulus (env ORANGE_EXTERNAL_RECORDER_GOP_ROUTE_OFFSET,
     // --gop-route-offset): lets the two cameras of one card alternate their peer windows.
@@ -305,6 +317,10 @@ void crash_handler(int sig)
         << "  --direct-input-source Copy IPC source directly into NVENC input before ACK. Experimental.\n"
         << "  --deferred-source-release Send RELEASE after source consumption; ACK only accepts work. Experimental.\n"
         << "  --split-submit        Submit on the encode thread, lock bitstreams on a harvest thread (env ORANGE_EXTERNAL_RECORDER_SPLIT_SUBMIT=1). Default off.\n"
+        << "  --offline-reencode-input <path|->  Offline mode: raw 8-bit luma frames to encode with neutral chroma (no IPC)\n"
+        << "  --offline-reencode-output <path>   Offline mode: Annex B output; <path>.frames.csv lists bytes per frame\n"
+        << "  --offline-width/--offline-height    Offline frame size (default 4512x4512)\n"
+        << "  --offline-input-format gray|yuv420p Offline input layout (default gray; yuv420p uses the luma plane only)\n"
         << "  --owner-push          Peer-GPU shards export staging slots; the analytics process pushes frames into them (env ORANGE_EXTERNAL_RECORDER_OWNER_PUSH=1, slots ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_SLOTS). Default off.\n"
         << "  --native-local-input  Native NV12 arrays for same-GPU full-frame shards (isolated API13 build only).\n"
         << "  --native-local-kernel-ptx <path> Use PTX surface-write Y updates for native local input (env ORANGE_EXTERNAL_RECORDER_NATIVE_KERNEL_PTX).\n"
@@ -663,6 +679,16 @@ Options parse_options(int argc, char** argv)
         } else if (arg == "--mp4-out") {
             options.mp4_out_path = consume(arg.c_str());
             options.encode = true;
+        } else if (arg == "--offline-reencode-input") {
+            options.offline_reencode_input = consume(arg.c_str());
+        } else if (arg == "--offline-reencode-output") {
+            options.offline_reencode_output = consume(arg.c_str());
+        } else if (arg == "--offline-width") {
+            options.offline_width = parse_u32(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--offline-height") {
+            options.offline_height = parse_u32(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--offline-input-format") {
+            options.offline_input_format = consume(arg.c_str());
         } else if (arg == "--rolling-clip-root") {
             options.rolling_clip_root = consume(arg.c_str());
         } else if (arg == "--mp4-keyframe" || arg == "--mp4-keyframe-path") {
@@ -746,7 +772,7 @@ Options parse_options(int argc, char** argv)
         }
     }
 
-    if (options.socket_path.empty()) {
+    if (options.socket_path.empty() && options.offline_reencode_output.empty()) {
         throw std::runtime_error("--socket is required");
     }
     if (options.socket_path.size() >= sizeof(sockaddr_un{}.sun_path)) {
@@ -7335,6 +7361,101 @@ void write_summary_json(const Options& options,
 
 }  // namespace
 
+// Offline re-encode: the encoder is configured by configure_encoder_params()
+// from the same Options as a live shard, so VPS/SPS/PPS match the recording
+// and the packets can replace samples of the recorded MP4 GOP for GOP. Every
+// GOP starts with a forced IDR plus parameter sets, as in the live recorder.
+int run_offline_reencode(const Options& options)
+{
+    const uint32_t width = options.offline_width;
+    const uint32_t height = options.offline_height;
+    if (width == 0 || height == 0 || (width % 2) != 0 || (height % 2) != 0) {
+        throw std::runtime_error("offline re-encode needs an even, non-zero frame size");
+    }
+    check_cuda(cudaSetDevice(options.gpu_id), "cudaSetDevice(offline)");
+    check_cuda(cudaFree(nullptr), "cudaFree(0)");
+    CUcontext context = nullptr;
+    check_cu(cuCtxGetCurrent(&context), "cuCtxGetCurrent(offline)");
+
+    NvEncoderCuda encoder(context, width, height, NV_ENC_BUFFER_FORMAT_NV12, options.extra_output_delay);
+    NV_ENC_INITIALIZE_PARAMS initialize_params = {NV_ENC_INITIALIZE_PARAMS_VER};
+    NV_ENC_CONFIG encode_config = {NV_ENC_CONFIG_VER};
+    configure_encoder_params(options, width, height, &initialize_params, &encode_config, &encoder);
+    encoder.CreateEncoder(&initialize_params);
+    encoder.FillInputFrameChromaPlanes(128);
+    const uint32_t gop = std::max<uint32_t>(1, encode_config.gopLength);
+
+    FILE* input = options.offline_reencode_input == "-"
+        ? stdin
+        : std::fopen(options.offline_reencode_input.c_str(), "rb");
+    if (!input) {
+        throw std::runtime_error("cannot open offline input " + options.offline_reencode_input);
+    }
+    std::ofstream output(options.offline_reencode_output, std::ios::binary | std::ios::trunc);
+    std::ofstream frames_csv(options.offline_reencode_output + ".frames.csv", std::ios::trunc);
+    if (!output || !frames_csv) {
+        throw std::runtime_error("cannot open offline output " + options.offline_reencode_output);
+    }
+    frames_csv << "frame_index,bytes\n";
+
+    const size_t luma_bytes = static_cast<size_t>(width) * height;
+    size_t frame_bytes = luma_bytes;
+    if (options.offline_input_format == "yuv420p") {
+        frame_bytes = luma_bytes + luma_bytes / 2;
+    } else if (options.offline_input_format != "gray") {
+        throw std::runtime_error("--offline-input-format must be gray or yuv420p");
+    }
+    std::vector<uint8_t> luma(frame_bytes);
+    uint64_t submitted = 0;
+    uint64_t written = 0;
+    auto write_packets = [&](const std::vector<std::vector<uint8_t>>& packets) {
+        // No B-frames: one packet per frame, in order (the output delay only
+        // pipelines submission; EndEncode drains the rest).
+        for (const auto& packet : packets) {
+            output.write(reinterpret_cast<const char*>(packet.data()),
+                         static_cast<std::streamsize>(packet.size()));
+            frames_csv << written++ << ',' << packet.size() << '\n';
+        }
+        if (!output) {
+            throw std::runtime_error("offline output write failed");
+        }
+    };
+    while (std::fread(luma.data(), 1, frame_bytes, input) == frame_bytes) {
+        const NvEncInputFrame* frame = encoder.GetNextInputFrame();
+        if (!frame || !frame->inputPtr) {
+            throw std::runtime_error("NvEncoder returned no input frame");
+        }
+        check_cuda(cudaMemcpy2D(frame->inputPtr, frame->pitch, luma.data(), width,
+                                width, height, cudaMemcpyHostToDevice),
+                   "cudaMemcpy2D(offline luma)");
+        NV_ENC_PIC_PARAMS pic_params = {NV_ENC_PIC_PARAMS_VER};
+        pic_params.frameIdx = static_cast<uint32_t>(submitted & 0xffffffffu);
+        pic_params.inputTimeStamp = submitted;
+        pic_params.inputDuration = 1;
+        if ((submitted % gop) == 0) {
+            pic_params.encodePicFlags |= NV_ENC_PIC_FLAG_FORCEIDR | NV_ENC_PIC_FLAG_OUTPUT_SPSPPS;
+        }
+        std::vector<std::vector<uint8_t>> packets;
+        encoder.EncodeFrame(packets, &pic_params);
+        write_packets(packets);
+        ++submitted;
+    }
+    std::vector<std::vector<uint8_t>> packets;
+    encoder.EndEncode(packets);
+    write_packets(packets);
+    encoder.DestroyEncoder();
+    if (input != stdin) {
+        std::fclose(input);
+    }
+    output.flush();
+    frames_csv.flush();
+    std::cout << "external_recorder_ipc_probe offline re-encode complete frames_in=" << submitted
+              << " packets_out=" << written << " gop=" << gop << " preset=" << options.preset
+              << " bitrate=" << options.bitrate_bps << " max_bitrate=" << options.max_bitrate_bps
+              << std::endl;
+    return (written == submitted && output) ? 0 : 1;
+}
+
 int main(int argc, char** argv)
 {
     int listen_fd = -1;
@@ -7345,6 +7466,9 @@ int main(int argc, char** argv)
     uint64_t status_heartbeat_sequence = 0;
     try {
         options = parse_options(argc, argv);
+        if (!options.offline_reencode_output.empty()) {
+            return run_offline_reencode(options);
+        }
         if (options.content_digest_receipts) {
             content_digest_hasher = std::make_unique<orange::media_digest::ContentDigestHasher>(
                 options.content_digest_queue_capacity);
