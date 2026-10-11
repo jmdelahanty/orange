@@ -587,7 +587,8 @@ std::vector<unsigned int> build_requested_iris_values(const Options& options, co
 {
     auto now = std::chrono::system_clock::now();
     auto time_t_now = std::chrono::system_clock::to_time_t(now);
-    std::tm utc_time = *std::gmtime(&time_t_now);
+    std::tm utc_time{};
+    gmtime_r(&time_t_now, &utc_time);
     std::ostringstream oss;
     oss << std::put_time(&utc_time, "%Y-%m-%dT%H:%M:%SZ");
     return oss.str();
@@ -597,7 +598,8 @@ std::vector<unsigned int> build_requested_iris_values(const Options& options, co
 {
     auto now = std::chrono::system_clock::now();
     auto time_t_now = std::chrono::system_clock::to_time_t(now);
-    std::tm local_time = *std::localtime(&time_t_now);
+    std::tm local_time{};
+    localtime_r(&time_t_now, &local_time);
     std::ostringstream oss;
     oss << std::put_time(&local_time, "%Y_%m_%d_%H_%M_%S");
     return oss.str();

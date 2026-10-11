@@ -21,7 +21,7 @@
 #include <numeric>       // For std::iota (if used, though it's in camera.cpp sort_indexes)
 #include <iomanip>       // For std::put_time, std::setfill, std::setw
 #include <sstream>       // For std::ostringstream
-#include <ctime>         // For std::gmtime
+#include <ctime>         // For gmtime_r / localtime_r
 #include <cctype>
 #include <array>
 #include <cerrno>
@@ -4200,7 +4200,8 @@ ResolvedRecordingConfig build_resolved_recording_config(
 std::string get_current_utc_timestamp() {
     auto now = std::chrono::system_clock::now();
     auto time_t_now = std::chrono::system_clock::to_time_t(now);
-    std::tm utc_time = *std::gmtime(&time_t_now);
+    std::tm utc_time{};
+    gmtime_r(&time_t_now, &utc_time);  // thread-safe; acquisition threads call this concurrently
     std::ostringstream oss;
     oss << std::put_time(&utc_time, "%Y-%m-%dT%H:%M:%SZ");
     return oss.str();
@@ -5924,7 +5925,8 @@ std::string get_current_time_milliseconds() {
     auto now = std::chrono::system_clock::now();
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
     auto time = std::chrono::system_clock::to_time_t(now);
-    auto tm = *std::localtime(&time);
+    std::tm tm{};
+    localtime_r(&time, &tm);
 
     std::ostringstream oss;
     oss << std::put_time(&tm, "%H_%M_%S_") << std::setfill('0') << std::setw(3) << ms.count();
@@ -5936,7 +5938,8 @@ std::string get_current_date() {
     // ... (implementation from project.h)
     auto now = std::chrono::system_clock::now();
     auto time_t_now = std::chrono::system_clock::to_time_t(now);
-    std::tm local_time = *std::localtime(&time_t_now);
+    std::tm local_time{};
+    localtime_r(&time_t_now, &local_time);
     std::ostringstream oss;
     oss << std::put_time(&local_time, "%Y_%m_%d");
     return oss.str();
@@ -5946,7 +5949,8 @@ std::string get_current_date_time() {
     // ... (implementation from project.h)
     auto now = std::chrono::system_clock::now();
     auto time_t_now = std::chrono::system_clock::to_time_t(now);
-    std::tm local_time = *std::localtime(&time_t_now);
+    std::tm local_time{};
+    localtime_r(&time_t_now, &local_time);
     std::ostringstream oss;
     oss << std::put_time(&local_time, "%Y_%m_%d_%H_%M_%S");
     return oss.str();
