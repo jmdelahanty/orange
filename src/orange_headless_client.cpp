@@ -1,4 +1,5 @@
 #include <algorithm>
+#include "timing/log_writer.h"
 #include "recording_master_crop_coverage.h"
 #include "recording_context.h"
 #include "recording_subject_reference.h"
@@ -12203,6 +12204,10 @@ int run_local_experiment(const HeadlessCliOptions& options)
             run_entry["reason"] = "recording session returned nonzero exit code";
         }
 
+        // pipeline_metrics (recording_snapshot.json) and ptp_sync_summary.json
+        // are written by the log writer thread; read them only after every
+        // queued update is applied.
+        (void)orange::timing::LogWriter::Instance().FlushAll();
         nlohmann::json snapshot;
         std::string snapshot_error;
         const std::filesystem::path snapshot_path =

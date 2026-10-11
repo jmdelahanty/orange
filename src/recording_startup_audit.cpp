@@ -1,6 +1,7 @@
 #include "recording_startup_audit.h"
 #include "timing/clock.h"
 #include "fsuid_guard.h"
+#include "timing/log_writer.h"
 
 #include <atomic>
 #include <chrono>
@@ -154,6 +155,53 @@ uint64_t RecordingStartupAudit::overflow() const
     return const_cast<RecordingStartupAudit*>(this)->impl()->overflow.load(std::memory_order_relaxed);
 }
 
+// Writes recording_startup_audit.jsonl and _summary.json (log writer thread).
+template <typename RecordT>
+void WriteStartupAuditFiles(const std::vector<RecordT>& records, const std::string& folder,
+                            const std::string& session_id, uint64_t session_steady,
+                            uint64_t session_realtime, uint64_t enabled, uint64_t overflow)
+{
+    ScopedFsuid fsuid_guard;  // both files belong to the sudo invoker
+    const std::string path = folder + "/recording_startup_audit.jsonl";
+    std::ofstream out(path);
+    if (!out) {
+        std::cerr << "[startup_audit] cannot write " << path << std::endl;
+        return;
+    }
+    out << "{\"record\":\"session\",\"session_id\":\"" << json_escape(session_id)
+        << "\",\"session_steady_ns\":" << session_steady
+        << ",\"session_realtime_ns\":" << session_realtime
+        << ",\"recording_enabled_steady_ns\":" << enabled
+        << ",\"window_s\":" << RecordingStartupAudit::WindowSeconds()
+        << ",\"records\":" << records.size() << ",\"overflow\":" << overflow << "}\n";
+    std::map<std::string, int> counts;
+    for (const auto& r : records) {
+        const double rel_ms = enabled ? (static_cast<double>(r.t_steady_ns) - static_cast<double>(enabled)) / 1e6
+                                      : (static_cast<double>(r.t_steady_ns) - static_cast<double>(session_steady)) / 1e6;
+        out << "{\"t_steady_ns\":" << r.t_steady_ns
+            << ",\"t_rel_enabled_ms\":" << rel_ms
+            << ",\"camera\":\"" << json_escape(r.camera)
+            << "\",\"milestone\":\"" << r.milestone
+            << "\",\"frame_id\":" << r.frame_id
+            << ",\"detail\":\"" << json_escape(r.detail) << "\"}\n";
+        counts[r.milestone]++;
+    }
+    out.close();
+    std::ofstream summary(folder + "/recording_startup_audit_summary.json");
+    summary << "{\n  \"schema_id\": \"orange.recording_startup_audit\",\n  \"schema_version\": 1,\n"
+            << "  \"session_id\": \"" << json_escape(session_id) << "\",\n"
+            << "  \"records\": " << records.size() << ",\n  \"overflow\": " << overflow << ",\n"
+            << "  \"window_s\": " << RecordingStartupAudit::WindowSeconds() << ",\n  \"milestone_counts\": {";
+    bool first = true;
+    for (const auto& [k, v] : counts) {
+        summary << (first ? "" : ",") << "\n    \"" << k << "\": " << v;
+        first = false;
+    }
+    summary << "\n  },\n  \"jsonl\": \"" << json_escape(path) << "\"\n}\n";
+    std::cout << "[startup_audit] wrote " << records.size() << " records (overflow " << overflow
+              << ") to " << path << std::endl;
+}
+
 void RecordingStartupAudit::EndSession()
 {
     Impl* p = impl();
@@ -178,45 +226,15 @@ void RecordingStartupAudit::EndSession()
     if (folder.empty()) {
         return;
     }
-    ScopedFsuid fsuid_guard;  // both files belong to the sudo invoker
-    const std::string path = folder + "/recording_startup_audit.jsonl";
-    std::ofstream out(path);
-    if (!out) {
-        std::cerr << "[startup_audit] cannot write " << path << std::endl;
-        return;
-    }
-    out << "{\"record\":\"session\",\"session_id\":\"" << json_escape(session_id)
-        << "\",\"session_steady_ns\":" << session_steady
-        << ",\"session_realtime_ns\":" << session_realtime
-        << ",\"recording_enabled_steady_ns\":" << enabled
-        << ",\"window_s\":" << WindowSeconds()
-        << ",\"records\":" << records.size() << ",\"overflow\":" << overflow << "}\n";
-    std::map<std::string, int> counts;
-    for (const auto& r : records) {
-        const double rel_ms = enabled ? (static_cast<double>(r.t_steady_ns) - static_cast<double>(enabled)) / 1e6
-                                      : (static_cast<double>(r.t_steady_ns) - static_cast<double>(session_steady)) / 1e6;
-        out << "{\"t_steady_ns\":" << r.t_steady_ns
-            << ",\"t_rel_enabled_ms\":" << rel_ms
-            << ",\"camera\":\"" << json_escape(r.camera)
-            << "\",\"milestone\":\"" << r.milestone
-            << "\",\"frame_id\":" << r.frame_id
-            << ",\"detail\":\"" << json_escape(r.detail) << "\"}\n";
-        counts[r.milestone]++;
-    }
-    out.close();
-    std::ofstream summary(folder + "/recording_startup_audit_summary.json");
-    summary << "{\n  \"schema_id\": \"orange.recording_startup_audit\",\n  \"schema_version\": 1,\n"
-            << "  \"session_id\": \"" << json_escape(session_id) << "\",\n"
-            << "  \"records\": " << records.size() << ",\n  \"overflow\": " << overflow << ",\n"
-            << "  \"window_s\": " << WindowSeconds() << ",\n  \"milestone_counts\": {";
-    bool first = true;
-    for (const auto& [k, v] : counts) {
-        summary << (first ? "" : ",") << "\n    \"" << k << "\": " << v;
-        first = false;
-    }
-    summary << "\n  },\n  \"jsonl\": \"" << json_escape(path) << "\"\n}\n";
-    std::cout << "[startup_audit] wrote " << records.size() << " records (overflow " << overflow
-              << ") to " << path << std::endl;
+    // Written by the process log writer thread (the caller may be the GUI or
+    // a session thread); finalize's LogWriter::FlushAll waits for it.
+    static const auto jobs = orange::timing::LogChannel<uint8_t>::Create(
+        {"recording_startup_audit", 2}, [](const uint8_t&, std::string&) {});
+    jobs->Post([records = std::move(records), folder, session_id, session_steady, session_realtime,
+                enabled, overflow]() {
+        WriteStartupAuditFiles(records, folder, session_id, session_steady, session_realtime,
+                               enabled, overflow);
+    });
 }
 
 }  // namespace orange

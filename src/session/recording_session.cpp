@@ -1,4 +1,5 @@
 #include "session/recording_session.h"
+#include "timing/log_writer.h"
 #include "session/realtime_products.h"
 #include "session/model_artifacts.h"
 #include "recording_context.h"
@@ -2222,6 +2223,9 @@ void add_finalized_timestamp_clock_contract(
     nlohmann::json* manifest,
     const std::filesystem::path& manifest_path)
 {
+    // ptp_sync_summary.json is updated by the log writer thread; read it only
+    // after every queued update is applied.
+    (void)orange::timing::LogWriter::Instance().FlushAll();
     if (!manifest || !manifest->is_object()) {
         return;
     }

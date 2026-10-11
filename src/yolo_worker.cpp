@@ -1,6 +1,7 @@
 // src/yolo_worker.cpp
 #include "yolo_worker.h"
 #include "timing/clock.h"
+#include "timing/log_writer.h"
 #include "pose_worker.h"
 #include "yolo_runtime_flags.h"
 #include "late_owned_copy.h"
@@ -816,25 +817,19 @@ struct YoloPerfRecord {
     double cpu_timing_reads_ms = -1.0;  // CPU cost of the GPU timing event reads (after the wait)
 };
 
-enum class YoloPerfEventType {
-    kSample,
-    kRotate,
-    kClose,
-};
-
-struct YoloPerfEvent {
-    YoloPerfEventType type = YoloPerfEventType::kSample;
-    YoloPerfRecord record;
-    std::string folder;
-};
-
+// Cam<serial>_yolo_perf.csv. The YOLO thread copies a record into the
+// channel's ring (src/timing/log_writer.h); the process log writer thread
+// formats and writes it. Ring slots keep their string buffers, so the
+// affinity and sync_mode strings stop allocating after the first lap.
 class YoloPerfLogger {
 public:
     YoloPerfLogger(const std::string& camera_serial, const std::string& worker_name)
         : camera_serial_(camera_serial),
-          worker_name_(worker_name),
-          running_(true) {
-        thread_ = std::thread(&YoloPerfLogger::ThreadMain, this);
+          worker_name_(worker_name) {
+        orange::timing::LogChannelOptions options;
+        options.name = "yolo_perf";
+        options.capacity = 8192;
+        channel_ = orange::timing::LogChannel<YoloPerfRecord>::Create(options, &FormatRow);
     }
 
     ~YoloPerfLogger() {
@@ -842,71 +837,50 @@ public:
     }
 
     void Stop() {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (!running_) {
-                return;
-            }
-            running_ = false;
+        if (!channel_) {
+            return;
         }
-        cv_.notify_one();
-        if (thread_.joinable()) {
-            thread_.join();
+        current_folder_.clear();
+        channel_->Retire();
+        const uint64_t dropped = channel_->counters().dropped_queue_full;
+        if (dropped > 0) {
+            std::cerr << "[YOLO_PERF] " << worker_name_
+                      << " dropped " << dropped << " samples" << std::endl;
         }
+        channel_.reset();
     }
 
     void Rotate(const std::string& folder) {
-        YoloPerfEvent event;
-        event.type = YoloPerfEventType::kRotate;
-        event.folder = folder;
-        EnqueueEvent(std::move(event));
+        if (!channel_ || folder == current_folder_) {
+            return;
+        }
+        current_folder_ = folder;
+        if (folder.empty()) {
+            channel_->Close();
+            return;
+        }
+        const std::string path = folder + "/Cam" + camera_serial_ + "_yolo_perf.csv";
+        channel_->Open(path, kHeader);
+        std::cout << "[YOLO_PERF] " << worker_name_ << " logging to " << path << std::endl;
     }
 
     void Close() {
-        YoloPerfEvent event;
-        event.type = YoloPerfEventType::kClose;
-        EnqueueEvent(std::move(event));
+        if (!channel_) {
+            return;
+        }
+        current_folder_.clear();
+        channel_->Close();
     }
 
     void Enqueue(const YoloPerfRecord& record) {
-        YoloPerfEvent event;
-        event.type = YoloPerfEventType::kSample;
-        event.record = record;
-        EnqueueEvent(std::move(event));
+        if (channel_ && !current_folder_.empty()) {
+            channel_->Emit(record);
+        }
     }
 
 private:
-    static constexpr size_t kMaxQueue = 8192;
-
-    void EnqueueEvent(YoloPerfEvent&& event) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (!running_) {
-            return;
-        }
-        if (queue_.size() >= kMaxQueue) {
-            dropped_++;
-            return;
-        }
-        queue_.push_back(std::move(event));
-        cv_.notify_one();
-    }
-
-    void OpenFile(const std::string& folder) {
-        if (folder.empty()) {
-            return;
-        }
-        orange::ScopedFsuid fsuid_guard;
-        (void)fsuid_guard;
-        make_folder(folder);
-        current_folder_ = folder;
-        file_path_ = current_folder_ + "/Cam" + camera_serial_ + "_yolo_perf.csv";
-        file_.open(file_path_, std::ios::out | std::ios::trunc);
-        if (!file_) {
-            std::cerr << "[YOLO_PERF] " << worker_name_
-                      << " failed to open " << file_path_ << std::endl;
-            return;
-        }
-        file_ << "frame_id,recording_frame_id,timestamp,timestamp_sys,queue_depth,queue_depth_at_enqueue,queue_depth_after_enqueue,queue_depth_after_dequeue,queue_depth_at_worker_start,fps,ok,"
+    static constexpr const char* kHeader =
+        "frame_id,recording_frame_id,timestamp,timestamp_sys,queue_depth,queue_depth_at_enqueue,queue_depth_after_enqueue,queue_depth_after_dequeue,queue_depth_at_worker_start,fps,ok,"
                  "yolo_affinity_configured,yolo_affinity_applied,yolo_affinity_env_key,yolo_affinity_requested_cpus,yolo_affinity_effective_cpus,"
                  "acquisition_to_worker_start_ms,acquisition_to_ptp_done_ms,ptp_done_to_yolo_resource_ready_ms,yolo_resource_ready_to_pointer_attrs_done_ms,pointer_attrs_done_to_ingress_event_record_ms,ingress_event_record_to_yolo_dispatch_ready_ms,yolo_dispatch_ready_to_yolo_enqueue_ms,recording_submit_call_ms,recording_submit_to_yolo_enqueue_ms,"
                  "acquisition_to_yolo_enqueue_ms,yolo_enqueue_push_ms,yolo_enqueue_to_dequeue_ms,yolo_dequeue_to_worker_start_ms,yolo_queue_wait_ms,oldest_frame_age_at_worker_start_ms,oldest_queued_frame_age_at_worker_start_ms,"
@@ -915,22 +889,12 @@ private:
                  "ingress_event_ready_before_wait,wait_ms,pre_ms,gap_ms,enqueue_ms,infer_ms,sync_ms,completion_event_ready_before_sync,"
                  "cpu_wait_event_ms,cpu_ingress_event_query_ms,cpu_stream_wait_event_ms,cpu_npp_set_stream_ms,cpu_preprocess_ms,cpu_input_ready_event_record_ms,cpu_dump_ms,cpu_infer_call_ms,cpu_event_record_ms,cpu_pre_sync_ms,cpu_pre_sync_other_ms,cpu_post_sync_ms,"
                  "queue_ms,post_ms,track_ms,ipc_ms,enet_ms,total_ms,sync_mode,early_copy_ms,gpu_timing,device_roi_valid,device_roi_match,device_crop,cpu_pose_enqueue_ms,cpu_late_copy_ms,cpu_timing_reads_ms\n";
+
+    // Writer thread: the row exactly as the logger's own thread wrote it
+    // before 2026-10-11 (std::fixed, 6 decimals).
+    static void FormatRow(const YoloPerfRecord& record, std::string& out) {
+        std::ostringstream file_;
         file_ << std::fixed << std::setprecision(6);
-        std::cout << "[YOLO_PERF] " << worker_name_ << " logging to " << file_path_ << std::endl;
-    }
-
-    void CloseFile() {
-        if (file_.is_open()) {
-            file_.close();
-        }
-        current_folder_.clear();
-        file_path_.clear();
-    }
-
-    void WriteRecord(const YoloPerfRecord& record) {
-        if (!file_.is_open()) {
-            return;
-        }
         file_ << record.frame_id << ","
               << record.recording_frame_id << ","
               << record.timestamp << ","
@@ -1011,54 +975,13 @@ private:
               << record.cpu_pose_enqueue_ms << ","
               << record.cpu_late_copy_ms << ","
               << record.cpu_timing_reads_ms << "\n";
-    }
-
-    void ThreadMain() {
-        std::unique_lock<std::mutex> lock(mutex_);
-        while (running_ || !queue_.empty()) {
-            if (queue_.empty()) {
-                cv_.wait(lock);
-                continue;
-            }
-            YoloPerfEvent event = std::move(queue_.front());
-            queue_.pop_front();
-            lock.unlock();
-
-            switch (event.type) {
-                case YoloPerfEventType::kRotate:
-                    if (event.folder != current_folder_) {
-                        CloseFile();
-                        OpenFile(event.folder);
-                    }
-                    break;
-                case YoloPerfEventType::kClose:
-                    CloseFile();
-                    break;
-                case YoloPerfEventType::kSample:
-                    WriteRecord(event.record);
-                    break;
-            }
-
-            lock.lock();
-        }
-        CloseFile();
-        if (dropped_ > 0) {
-            std::cerr << "[YOLO_PERF] " << worker_name_
-                      << " dropped " << dropped_ << " samples" << std::endl;
-        }
+        out += file_.str();
     }
 
     std::string camera_serial_;
     std::string worker_name_;
-    std::thread thread_;
-    std::mutex mutex_;
-    std::condition_variable cv_;
-    std::deque<YoloPerfEvent> queue_;
-    bool running_;
     std::string current_folder_;
-    std::string file_path_;
-    std::ofstream file_;
-    size_t dropped_ = 0;
+    std::shared_ptr<orange::timing::LogChannel<YoloPerfRecord>> channel_;
 };
 
 struct YoloPerfConfig {

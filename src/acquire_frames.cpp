@@ -1425,6 +1425,18 @@ void acquire_frames(
     uint64_t yolo_decimate_counter = 0;
     bool last_yolo_enabled = false;
     PipelinePerfRecorder pipeline_perf_recorder(camera_params);
+    // ptp_sync_summary.json is a read-modify-write shared by all cameras
+    // under a global mutex; it runs on the process log writer thread, in
+    // order per camera, never on this thread. The summary JSON is built here.
+    std::shared_ptr<orange::timing::LogChannel<uint8_t>> ptp_summary_jobs =
+        orange::timing::LogChannel<uint8_t>::Create(
+            {"ptp_sync_summary", 2}, [](const uint8_t&, std::string&) {});
+    auto post_ptp_sync_summary = [&](const std::string& folder, nlohmann::json summary) {
+        ptp_summary_jobs->Post([folder, serial = camera_params->camera_serial,
+                                summary = std::move(summary)]() {
+            update_ptp_sync_summary_camera(folder, serial, summary);
+        });
+    };
     AcquisitionCadenceProbeRecorder acquisition_cadence_probe_recorder(camera_params);
     RingReleaseRecorder ring_release_recorder(camera_params);
     std::deque<PtpReceiveHistoryEntry> ptp_receive_history;
@@ -2239,10 +2251,7 @@ void acquire_frames(
             ring_release_recorder.Rotate(live_recording_folder);
             if (live_recording_folder != ptp_summary_recording_folder) {
                 if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera) {
-                    update_ptp_sync_summary_camera(
-                        ptp_summary_recording_folder,
-                        camera_params->camera_serial,
-                        build_ptp_camera_summary_json(true));
+                    post_ptp_sync_summary(ptp_summary_recording_folder, build_ptp_camera_summary_json(true));
                 }
                 ptp_summary_recording_folder = live_recording_folder;
                 reset_ptp_summary_stats();
@@ -2256,8 +2265,7 @@ void acquire_frames(
                 if (ptp_readback_evidence.finish_if_stopped(camera_control->record_video,
                         camera_control->preserve_recording_session_state)) {
                     if (camera_control->sync_camera) {
-                        update_ptp_sync_summary_camera(ptp_summary_recording_folder,
-                            camera_params->camera_serial, build_ptp_camera_summary_json(true));
+                        post_ptp_sync_summary(ptp_summary_recording_folder, build_ptp_camera_summary_json(true));
                     }
                 }
             }
@@ -3007,10 +3015,7 @@ void acquire_frames(
                     }
                     sample_ptp_readbacks();
                     if (!ptp_summary_recording_folder.empty()) {
-                        update_ptp_sync_summary_camera(
-                            ptp_summary_recording_folder,
-                            camera_params->camera_serial,
-                            build_ptp_camera_summary_json(ptp_readback_evidence.closed()));
+                        post_ptp_sync_summary(ptp_summary_recording_folder, build_ptp_camera_summary_json(ptp_readback_evidence.closed()));
                     }
                     if (ptp_offset_ret == EVT_SUCCESS) {
                         std::cout << "[PTP_LIVE] Cam " << camera_params->camera_serial
@@ -3185,11 +3190,11 @@ void acquire_frames(
     pending_requeues.clear();
 
     if (camera_control->sync_camera && !ptp_summary_recording_folder.empty()) {
-        update_ptp_sync_summary_camera(
-            ptp_summary_recording_folder,
-            camera_params->camera_serial,
-            build_ptp_camera_summary_json(true));
+        post_ptp_sync_summary(ptp_summary_recording_folder, build_ptp_camera_summary_json(true));
     }
+    // The acquisition thread is ending: wait for the final summary update
+    // (finalize reads ptp_sync_summary.json).
+    ptp_summary_jobs->Retire();
     // Cleanup
     {
         NVTX_RANGE("Cleanup_and_Shutdown");
