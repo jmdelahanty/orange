@@ -301,13 +301,18 @@ frame-id gaps, zero recorder drops and unchanged NIC counters before it goes fur
 Fix 4.1 (3), the pose event-time stamp, needs Jeremy's choice (document versus move) and a
 note to Citrus and Palette before it changes.
 
-## 7. Questions for Jeremy
+## 7. Decisions (Jeremy, 2026-10-11)
 
-1. Pose `event_epoch_us`/`event_monotonic_us`: move the stamp to pose-result time (matches
-   YOLO and the field name) or document it as write time?
-2. Should `diagnostics_index.json` go to Palette with the recording (it is small and makes
-   every diagnostic file self-describing), or stay Orange-internal at first?
-3. Step 6 (renaming columns to say their clock): worth doing at all, or is the declaration
-   enough?
-4. One writer thread per process, or one per camera? Per process is simpler; per camera
-   isolates a slow disk from the other cameras' logs.
+1. Pose `event_epoch_us`/`event_monotonic_us` move to pose-result time, matching YOLO
+   (done, 9e36a2e). Citrus and Palette are told when it reaches production.
+2. `diagnostics_index.json` stays Orange-internal for now.
+3. Versioned column names that state their clock are wanted eventually, as step 6, after
+   the writer core is in place and each rename is agreed with the readers.
+4. Writer threads: one per process with a bounded queue per file (recommended; Jeremy
+   unsure). A slow file then fills only its own queue; per-camera threads would not isolate
+   anything because every camera writes to the same disk. Revisit if the drop counters ever
+   show the single writer falling behind.
+
+Step 0 (bug fixes) is done: 94831f7 (thread-safe UTC/local time strings), b31bec1
+(`tick()` as double), 903415c (GOP-phase script reads the routing CSV), 9e36a2e (pose event
+time). Build and all 130 tests pass. Not on the production line yet.
