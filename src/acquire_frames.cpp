@@ -428,6 +428,7 @@ public:
             return;
         }
         current_folder_ = folder;
+        max_local_frame_id_logged_ = 0;
         const std::string serial = camera_params_ ? camera_params_->camera_serial : "unknown";
         const std::string path = (std::filesystem::path(folder) / ("Cam" + serial + "_ring_release.csv")).string();
         channel_->Open(path,
@@ -445,6 +446,12 @@ public:
         }
         channel_->Emit(Row{local_frame_id, camera_frame_id, receive_ns, copy_seen_ns, consumer_seen_ns,
                            requeue_ns, pending_after, dropped_total, forced});
+        max_local_frame_id_logged_ = std::max(max_local_frame_id_logged_, local_frame_id);
+    }
+    // A frame's slot is requeued after the frame (deferred release), so the
+    // last recorded frame's row arrives after recording stops.
+    bool LoggedThrough(uint64_t local_frame_id) const {
+        return !enabled_ || max_local_frame_id_logged_ >= local_frame_id;
     }
     void Close() {
         if (!current_folder_.empty()) {
@@ -475,6 +482,7 @@ private:
     const CameraParams* camera_params_ = nullptr;
     bool enabled_ = false;
     std::string current_folder_;
+    uint64_t max_local_frame_id_logged_ = 0;
     uint64_t reported_dropped_ = 0;
     std::shared_ptr<orange::timing::LogChannel<Row>> channel_;
 };
@@ -1733,6 +1741,7 @@ void acquire_frames(
     // drain, ptp_sync_summary.json is final when the evidence closes. Headless
     // and GUI then write the same files.
     bool pipeline_perf_saw_recorded_frame = false;
+    uint64_t last_recorded_local_frame_id = 0;
     std::string recording_logs_finished_folder;
     bool ptp_summary_final_posted = false;
 
@@ -2261,6 +2270,7 @@ void acquire_frames(
                     }
                 } else if (current_entry->recording_frame_id != 0) {
                     pipeline_perf_saw_recorded_frame = true;
+                    last_recorded_local_frame_id = camera_state.frame_count;
                 } else if (pipeline_perf_saw_recorded_frame &&
                            !camera_control->record_video.load() &&
                            !camera_control->preserve_recording_session_state &&
@@ -2270,10 +2280,13 @@ void acquire_frames(
             } else {
                 (void)finalize_pipeline_perf_recorder_if_drained();
             }
-            const std::string recording_log_folder =
-                live_recording_folder == recording_logs_finished_folder ? std::string() : live_recording_folder;
-            acquisition_cadence_probe_recorder.Rotate(recording_log_folder);
-            ring_release_recorder.Rotate(recording_log_folder);
+            const bool recording_logs_finished = live_recording_folder == recording_logs_finished_folder;
+            acquisition_cadence_probe_recorder.Rotate(
+                recording_logs_finished ? std::string() : live_recording_folder);
+            // Ring release also waits for the last recorded frame's slot.
+            ring_release_recorder.Rotate(
+                recording_logs_finished && ring_release_recorder.LoggedThrough(last_recorded_local_frame_id)
+                    ? std::string() : live_recording_folder);
             if (live_recording_folder != ptp_summary_recording_folder) {
                 if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera &&
                     !ptp_summary_final_posted) {
