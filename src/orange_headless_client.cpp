@@ -12375,8 +12375,8 @@ int run_remote_mode()
         printf("Network Initialized!\n");
     }
 
-    f32 last_time = tick();
-    f32 current_time = tick();
+    double last_time = tick();
+    double current_time = tick();
 
     int cam_count;
     GigEVisionDeviceInfo unsorted_device_info[max_cameras];
@@ -12397,7 +12397,7 @@ int run_remote_mode()
     {
         current_time = tick();
         // Handle All Incoming Packets and Send any enqued packets, does this need to be on another thread?
-        service_network(&client, current_time - last_time, [&](const ENetEvent &evnt)
+        service_network(&client, static_cast<float>(current_time - last_time), [&](const ENetEvent &evnt)
         {
             switch (evnt.type) 
             {

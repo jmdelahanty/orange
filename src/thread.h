@@ -7,7 +7,9 @@
 #include <queue> // Required for std::queue
 #include "genericmutex.h" 
 
-inline float tick()
+// CLOCK_MONOTONIC in seconds. double, not float: after days of uptime a float
+// only resolves tens of milliseconds.
+inline double tick()
 {
     struct timespec ts;
     int res = clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -15,7 +17,7 @@ inline float tick()
     {
         return 0;
     }
-    return ((float)((ts.tv_sec * 1e9) + ts.tv_nsec)) / (float)1.0e9;
+    return static_cast<double>(ts.tv_sec) + static_cast<double>(ts.tv_nsec) / 1.0e9;
 }
 
 inline uint64_t sync_fetch_and_add(volatile uint64_t *x, uint64_t by)
