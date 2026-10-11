@@ -1,4 +1,5 @@
 #include <algorithm>
+#include "timing/diagnostics_index.h"
 #include "timing/log_writer.h"
 #include "recording_master_crop_coverage.h"
 #include "recording_context.h"
@@ -12208,6 +12209,12 @@ int run_local_experiment(const HeadlessCliOptions& options)
         // are written by the log writer thread; read them only after every
         // queued update is applied.
         (void)orange::timing::LogWriter::Instance().FlushAll();
+        {
+            std::string index_error;
+            if (!orange::timing::write_diagnostics_index(run.recording_folder, &index_error)) {
+                std::cerr << "[headless] diagnostics_index.json not written: " << index_error << std::endl;
+            }
+        }
         nlohmann::json snapshot;
         std::string snapshot_error;
         const std::filesystem::path snapshot_path =

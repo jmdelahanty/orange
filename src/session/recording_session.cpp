@@ -1,4 +1,5 @@
 #include "session/recording_session.h"
+#include "timing/diagnostics_index.h"
 #include "timing/log_writer.h"
 #include "session/realtime_products.h"
 #include "session/model_artifacts.h"
@@ -2632,6 +2633,15 @@ nlohmann::json build_single_clip_recording_session_manifest(
     manifest["realtime_products"] = build_realtime_products_json(
         options.recording_folder,
         manifest.value("cameras", nlohmann::json::array()).get<std::vector<std::string>>());
+    // Orange-internal index of every timing/diagnostic file and the clock of
+    // each time column (not declared in this manifest; Jeremy 2026-10-11).
+    {
+        std::string index_error;
+        if (!orange::timing::write_diagnostics_index(options.recording_folder, &index_error)) {
+            std::cerr << "[recording_session] diagnostics_index.json not written: " << index_error
+                      << std::endl;
+        }
+    }
     // Engine manifests (and INT8 calibration record + cache) of every engine
     // that ran, copied to models/<engine_sha256>/ and declared (2026-10-09).
     manifest["model_artifacts"] = materialize_model_artifacts(
@@ -2739,6 +2749,15 @@ nlohmann::json build_rolling_clip_recording_session_manifest(
     manifest["realtime_products"] = build_realtime_products_json(
         options.recording_folder,
         manifest.value("cameras", nlohmann::json::array()).get<std::vector<std::string>>());
+    // Orange-internal index of every timing/diagnostic file and the clock of
+    // each time column (not declared in this manifest; Jeremy 2026-10-11).
+    {
+        std::string index_error;
+        if (!orange::timing::write_diagnostics_index(options.recording_folder, &index_error)) {
+            std::cerr << "[recording_session] diagnostics_index.json not written: " << index_error
+                      << std::endl;
+        }
+    }
     // Engine manifests (and INT8 calibration record + cache) of every engine
     // that ran, copied to models/<engine_sha256>/ and declared (2026-10-09).
     manifest["model_artifacts"] = materialize_model_artifacts(

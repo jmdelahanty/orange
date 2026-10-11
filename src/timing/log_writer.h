@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -41,6 +42,7 @@
 #include <vector>
 
 #include "fsuid_guard.h"
+#include "timing/clock.h"
 
 namespace orange::timing {
 
@@ -55,9 +57,27 @@ struct LogChannelCounters {
     uint64_t write_failures = 0;
 };
 
+// One file a channel wrote (or failed to open), kept for the recording's
+// diagnostics_index.json. Row counts are those of this file only; a drop is
+// attributed to the file that was current when the writer saw it.
+struct LogFileRecord {
+    std::string path;
+    std::string channel;
+    std::string header_line;        // first line of the header (the CSV columns)
+    uint64_t rows_written = 0;
+    uint64_t rows_dropped_queue_full = 0;
+    uint64_t rows_discarded_no_file = 0;
+    uint64_t write_failures = 0;
+    bool open_failed = false;
+    uint64_t opened_realtime_ns = 0;
+    uint64_t closed_realtime_ns = 0;
+};
+
 class LogChannelBase {
 public:
     virtual ~LogChannelBase() = default;
+    // Writer thread only: the file currently open ("" when none).
+    virtual const std::string& OpenPath() const = 0;
     // Any thread: queue a flush barrier / wait for it (not on a hot thread).
     virtual uint64_t Flush() = 0;
     virtual bool WaitApplied(uint64_t ticket, std::chrono::milliseconds timeout) = 0;
@@ -117,6 +137,76 @@ public:
         }
         return ok;
     }
+
+    // Files written by every channel, kept per recording folder for the
+    // diagnostics index (any thread).
+    void RecordFile(LogFileRecord record)
+    {
+        std::lock_guard<std::mutex> lock(records_mutex_);
+        files_.push_back(std::move(record));
+    }
+    std::vector<LogFileRecord> FilesUnder(const std::string& folder) const
+    {
+        std::vector<LogFileRecord> out;
+        const std::string prefix = folder.empty() || folder.back() == '/' ? folder : folder + "/";
+        std::lock_guard<std::mutex> lock(records_mutex_);
+        for (const auto& file : files_) {
+            if (file.path.compare(0, prefix.size(), prefix) == 0) {
+                out.push_back(file);
+            }
+        }
+        return out;
+    }
+
+    // Monotonic/realtime pairs per recording folder: at recording start and
+    // stop (callers), and once a minute for every folder a channel is
+    // writing into (the writer thread).
+    struct LabelledAnchor {
+        std::string label;
+        ClockAnchor anchor;
+    };
+    void AddAnchor(const std::string& folder, const std::string& label)
+    {
+        if (folder.empty()) {
+            return;
+        }
+        const ClockAnchor anchor = anchor_now();
+        std::lock_guard<std::mutex> lock(records_mutex_);
+        anchors_[folder].push_back({label, anchor});
+    }
+    // Adds an anchor only when the folder has none yet (its first log file).
+    void AddFirstAnchor(const std::string& folder, const std::string& label)
+    {
+        if (folder.empty()) {
+            return;
+        }
+        const ClockAnchor anchor = anchor_now();
+        std::lock_guard<std::mutex> lock(records_mutex_);
+        auto& list = anchors_[folder];
+        if (list.empty()) {
+            list.push_back({label, anchor});
+        }
+    }
+    std::vector<LabelledAnchor> AnchorsFor(const std::string& folder) const
+    {
+        std::lock_guard<std::mutex> lock(records_mutex_);
+        const auto it = anchors_.find(folder);
+        return it == anchors_.end() ? std::vector<LabelledAnchor>{} : it->second;
+    }
+    // Drops what was kept for a folder once its index is written.
+    void ForgetFolder(const std::string& folder)
+    {
+        const std::string prefix = folder.empty() || folder.back() == '/' ? folder : folder + "/";
+        std::lock_guard<std::mutex> lock(records_mutex_);
+        anchors_.erase(folder);
+        files_.erase(std::remove_if(files_.begin(), files_.end(),
+                                    [&](const LogFileRecord& f) {
+                                        return f.path.compare(0, prefix.size(), prefix) == 0;
+                                    }),
+                     files_.end());
+    }
+
+    static constexpr std::chrono::seconds kAnchorInterval{60};
 
     // Wakes the writer now instead of at its next poll (control entries).
     void Wake() { wake_.store(true, std::memory_order_release); }
@@ -186,6 +276,23 @@ private:
             for (const auto& channel : channels) {
                 worked = channel->Service(now) || worked;
             }
+            if (now - last_anchor_ >= kAnchorInterval) {
+                last_anchor_ = now;
+                std::vector<std::string> folders;
+                for (const auto& channel : channels) {
+                    const std::string& path = channel->OpenPath();
+                    if (path.empty()) {
+                        continue;
+                    }
+                    const std::string folder = std::filesystem::path(path).parent_path().string();
+                    if (std::find(folders.begin(), folders.end(), folder) == folders.end()) {
+                        folders.push_back(folder);
+                    }
+                }
+                for (const auto& folder : folders) {
+                    AddAnchor(folder, "periodic");
+                }
+            }
             if (!worked && !wake_.exchange(false, std::memory_order_acq_rel)) {
                 std::this_thread::sleep_for(kPollInterval);
             }
@@ -202,6 +309,10 @@ private:
 
     std::mutex mutex_;
     std::vector<std::shared_ptr<LogChannelBase>> channels_;
+    mutable std::mutex records_mutex_;
+    std::vector<LogFileRecord> files_;
+    std::map<std::string, std::vector<LabelledAnchor>> anchors_;
+    std::chrono::steady_clock::time_point last_anchor_ = std::chrono::steady_clock::now();
     std::thread thread_;
     std::atomic<bool> running_{false};
     std::atomic<bool> wake_{false};
@@ -311,6 +422,7 @@ public:
         return c;
     }
     const std::string& name() const { return options_.name; }
+    const std::string& OpenPath() const override { return file_path_; }
 
     // Writer thread.
     bool Service(std::chrono::steady_clock::time_point now) override
@@ -445,8 +557,23 @@ private:
         file_.open(path, std::ios::out | std::ios::trunc | std::ios::binary);
         if (!file_.is_open()) {
             open_failures_.fetch_add(1, std::memory_order_relaxed);
+            LogFileRecord failed;
+            failed.path = path;
+            failed.channel = options_.name;
+            failed.header_line = header.substr(0, header.find('\n'));
+            failed.open_failed = true;
+            failed.opened_realtime_ns = realtime_now_ns();
+            LogWriter::Instance().RecordFile(std::move(failed));
             return;
         }
+        file_path_ = path;
+        LogWriter::Instance().AddFirstAnchor(parent.string(), "first_log_file_opened");
+        file_header_line_ = header.substr(0, header.find('\n'));
+        file_opened_realtime_ns_ = realtime_now_ns();
+        at_open_written_ = written_.load(std::memory_order_relaxed) + pending_rows_;
+        at_open_dropped_ = dropped_.load(std::memory_order_relaxed);
+        at_open_discarded_ = discarded_.load(std::memory_order_relaxed);
+        at_open_write_failures_ = write_failures_.load(std::memory_order_relaxed);
         files_opened_.fetch_add(1, std::memory_order_relaxed);
         buffer_ += header;
         WriteBuffer();
@@ -476,7 +603,20 @@ private:
         if (file_.is_open()) {
             file_.flush();
             file_.close();
+            LogFileRecord record;
+            record.path = file_path_;
+            record.channel = options_.name;
+            record.header_line = file_header_line_;
+            record.rows_written = written_.load(std::memory_order_relaxed) - at_open_written_;
+            record.rows_dropped_queue_full = dropped_.load(std::memory_order_relaxed) - at_open_dropped_;
+            record.rows_discarded_no_file =
+                discarded_.load(std::memory_order_relaxed) - at_open_discarded_;
+            record.write_failures = write_failures_.load(std::memory_order_relaxed) - at_open_write_failures_;
+            record.opened_realtime_ns = file_opened_realtime_ns_;
+            record.closed_realtime_ns = realtime_now_ns();
+            LogWriter::Instance().RecordFile(std::move(record));
         }
+        file_path_.clear();
     }
 
     const LogChannelOptions options_;
@@ -501,6 +641,13 @@ private:
 
     // Writer thread only.
     std::ofstream file_;
+    std::string file_path_;
+    std::string file_header_line_;
+    uint64_t file_opened_realtime_ns_ = 0;
+    uint64_t at_open_written_ = 0;
+    uint64_t at_open_dropped_ = 0;
+    uint64_t at_open_discarded_ = 0;
+    uint64_t at_open_write_failures_ = 0;
     std::string buffer_;
     uint64_t pending_rows_ = 0;
     std::chrono::steady_clock::time_point last_flush_{};
