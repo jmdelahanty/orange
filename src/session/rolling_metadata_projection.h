@@ -1,6 +1,7 @@
 #pragma once
 
 #include "json.hpp"
+#include "fsuid_guard.h"
 #include "gui/spatial_layout/sha256.h"
 #include <charconv>
 #include <filesystem>
@@ -83,6 +84,7 @@ inline nlohmann::json project_dense_rolling_metadata(
         {"source_order", "encoded_metadata_row_order_with_declared_packet_parity"},
         {"camera_streams", json::object()}};
 
+    orange::ScopedFsuid fsuid_guard;  // projections belong to the sudo invoker
     for (const auto& serial_json : cameras) {
         const auto serial = serial_json.get<std::string>();
         if (serial.empty() || !camera_ids.insert(serial).second)

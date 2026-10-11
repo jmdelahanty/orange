@@ -7,6 +7,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -1547,6 +1548,31 @@ def validate_subject_reference_entry(entry: Any) -> str | None:
     return None
 
 
+def check_recording_folder_ownership(reporter: Reporter, recording_folder: Path) -> None:
+    """Nothing in a finished recording stays root-owned: Orange runs as root under sudo and
+    hands every file to the invoking user (ScopedFsuid per writer, plus the finalize sweep).
+    Files under citrus/ are Citrus's own and only warn."""
+    if not hasattr(os, "geteuid"):
+        return
+    root_owned: list[str] = []
+    citrus_root_owned: list[str] = []
+    for path in [recording_folder, *recording_folder.rglob("*")]:
+        try:
+            if path.lstat().st_uid != 0:
+                continue
+        except OSError:
+            continue
+        rel = path.relative_to(recording_folder).as_posix() if path != recording_folder else "."
+        (citrus_root_owned if rel == "citrus" or rel.startswith("citrus/") else root_owned).append(rel)
+    if citrus_root_owned:
+        reporter.warn(f"{len(citrus_root_owned)} root-owned entries under citrus/: {citrus_root_owned[:5]}")
+    reporter.check(
+        not root_owned,
+        "no root-owned files in the recording folder",
+        f"{len(root_owned)} root-owned entries in the recording folder: {root_owned[:8]}",
+    )
+
+
 def check_effective_configuration(reporter: Reporter, snapshot: dict[str, Any]) -> None:
     """Provenance sealed at record start: the app config file as loaded (path, sha256,
     contents) and every ORANGE_* variable with its source (environment vs app_config bridge)."""
@@ -1701,6 +1727,7 @@ def check_recording_session_manifest(
     check_recording_contexts(reporter, manifest, snapshot, cameras)
     check_subject_references(reporter, manifest, snapshot, cameras)
     check_effective_configuration(reporter, snapshot)
+    check_recording_folder_ownership(reporter, recording_folder)
     producer = str(manifest.get("producer", ""))
     backend = manifest.get("recording_backend")
     backend = backend if isinstance(backend, dict) else {}

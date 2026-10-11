@@ -4,6 +4,7 @@
 // called from this translation unit stay in an anonymous namespace here.
 
 #include "gui/recording_finalizer.h"
+#include "fsuid_guard.h"
 #include "scoped_housekeeping_cpu.h"
 #include "recording_master_crop_coverage.h"
 #include "recording_crop_only_manifest.h"
@@ -2739,6 +2740,14 @@ bool gui_complete_recording_finalize(
     }
     std::cout << "[GUI][recording] Wrote recording session manifest: "
               << manifest_path.string() << std::endl;
+    // Backstop for writers that ran without a ScopedFsuid: nothing in a
+    // finished recording folder stays root-owned.
+    if (const std::size_t reowned =
+            orange::normalize_recording_ownership(run->recording_folder)) {
+        std::cout << "[GUI][recording] Handed " << reowned
+                  << " root-owned entries in the recording folder to the sudo invoker"
+                  << std::endl;
+    }
     if (inputs->external_ipc && recording_session) {
         recording_session->active_external_recorder_contract = nlohmann::json::object();
         recording_session->external_recorder_contract_path.clear();

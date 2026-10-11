@@ -1,5 +1,7 @@
 #include "session/crop_rolling_sidecars.h"
 
+#include "fsuid_guard.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
@@ -205,6 +207,7 @@ bool split_recording_frame_csv_by_ranges(
     const bool rewrite_crop_video_frame_index =
         crop_video_frame_index_column != std::numeric_limits<size_t>::max();
 
+    orange::ScopedFsuid fsuid_guard;  // split CSVs belong to the sudo invoker
     std::vector<std::ofstream> outputs;
     outputs.reserve(ranges->size());
     for (auto& range : *ranges) {
@@ -407,6 +410,7 @@ RecordingFrameCsvSplitResult append_clip_rows_from_root_csv(
         if (output.is_open()) {
             return true;
         }
+        orange::ScopedFsuid fsuid_guard;  // clip CSVs belong to the sudo invoker
         if (!cursor->active_clip_output_created) {
             const std::filesystem::path output_path(output_csv_path);
             const std::filesystem::path parent = output_path.parent_path();

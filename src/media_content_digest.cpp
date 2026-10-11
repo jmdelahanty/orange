@@ -1,4 +1,5 @@
 #include "media_content_digest.h"
+#include "fsuid_guard.h"
 
 #include "gui/spatial_layout/sha256.h"
 #include "json.hpp"
@@ -159,6 +160,7 @@ bool write_content_digest_receipt(const ReceiptRequest& request,
         {"session_id", request.session_id},
         {"producer_pid", static_cast<int>(::getpid())}
     };
+    orange::ScopedFsuid fsuid_guard;  // the receipt belongs to the sudo invoker
     const std::string final_path = receipt_path_for(request.video_path);
     const std::string temp_path = final_path + ".tmp." + std::to_string(::getpid());
     {

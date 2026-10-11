@@ -1,5 +1,6 @@
 #include "session/model_artifacts.h"
 
+#include "fsuid_guard.h"
 #include "gui/spatial_layout/sha256.h"
 
 #include <filesystem>
@@ -33,6 +34,7 @@ nlohmann::json copy_declared(const fs::path& folder, const std::string& role,
         return file;
     }
     const fs::path destination = folder / relative;
+    orange::ScopedFsuid fsuid_guard;  // models/ belongs to the sudo invoker
     std::error_code ec;
     fs::create_directories(destination.parent_path(), ec);
     const fs::path temp = destination.string() + ".tmp";

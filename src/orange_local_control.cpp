@@ -1,4 +1,5 @@
 #include "orange_local_control.h"
+#include "fsuid_guard.h"
 #include "projected_center_preflight.h"
 
 #include <fcntl.h>
@@ -372,6 +373,7 @@ bool InitializeLocalControlEventLog(const std::string& event_log_path,
         return true;
     }
     const std::lock_guard<std::mutex> lock(g_event_log_mutex);
+    orange::ScopedFsuid fsuid_guard;  // the event log belongs to the sudo invoker
     const std::filesystem::path log_path(event_log_path);
     if (!prepare_event_log_directory(log_path, error_out)) {
         return false;
@@ -512,6 +514,7 @@ bool AppendLocalControlEventLog(const std::string& event_log_path,
         return true;
     }
     const std::lock_guard<std::mutex> lock(g_event_log_mutex);
+    orange::ScopedFsuid fsuid_guard;  // the event log belongs to the sudo invoker
     const std::filesystem::path log_path(event_log_path);
     if (!prepare_event_log_directory(log_path, error_out)) {
         return false;

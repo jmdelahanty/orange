@@ -25,6 +25,8 @@
 #include <thread>
 #include <utility>
 
+#include "fsuid_guard.h"
+
 namespace orange {
 
 class AsyncLineSink {
@@ -38,6 +40,7 @@ public:
     // Truncates path, writes header (may be empty), starts the writer thread.
     bool Open(const std::string& path, const std::string& header) {
         Close();
+        ScopedFsuid fsuid_guard;  // the file belongs to the sudo invoker
         std::ofstream file(path, std::ios::out | std::ios::trunc);
         if (!file) {
             return false;

@@ -1,4 +1,5 @@
 #include "recording_startup_audit.h"
+#include "fsuid_guard.h"
 
 #include <atomic>
 #include <chrono>
@@ -179,6 +180,7 @@ void RecordingStartupAudit::EndSession()
     if (folder.empty()) {
         return;
     }
+    ScopedFsuid fsuid_guard;  // both files belong to the sudo invoker
     const std::string path = folder + "/recording_startup_audit.jsonl";
     std::ofstream out(path);
     if (!out) {

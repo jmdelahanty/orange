@@ -3,6 +3,8 @@
 
 #include "gui/incremental_clip_shadow.h"
 
+#include "fsuid_guard.h"
+
 #include "gui/env_util.h"
 
 #include "external_recorder_lifecycle.h"
@@ -532,6 +534,7 @@ bool gui_shadow_append_index_line(const std::string& index_path,
         }
         return false;
     }
+    orange::ScopedFsuid fsuid_guard;  // the index belongs to the sudo invoker
     std::ofstream output(index_path, std::ios::out | std::ios::app);
     if (!output) {
         if (error_out) {
