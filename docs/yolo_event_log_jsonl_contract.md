@@ -150,10 +150,17 @@ Field semantics:
   `timestamp_us_epoch` and `timestamp_us_monotonic`.
 - `timestamps.timestamp_sys_ns`: Orange realtime/system timestamp captured for
   the frame.
-- `timestamps.event_epoch_us`: wall-clock microseconds when this JSONL event was
-  emitted.
-- `timestamps.event_monotonic_us`: Orange monotonic microseconds when this JSONL
-  event was emitted.
+- `timestamps.event_epoch_us`: host wall-clock (`CLOCK_REALTIME`) microseconds
+  when the result was produced, stamped on the YOLO thread as the record is
+  built (not when the writer thread writes the line).
+- `timestamps.event_monotonic_us`: host monotonic (`CLOCK_MONOTONIC`, the
+  `std::chrono::steady_clock` Orange uses for every latency) microseconds,
+  stamped at the same moment.
+- `Cam<serial>_pose_events.jsonl` uses the same two fields with the same
+  meaning, stamped on the pose thread when the pose result is built. Before
+  2026-10-11 (Orange commit after ec816c1) pose stamped them on the writer
+  thread when the line was written, after the record had waited in the
+  writer queue.
 
 Consumer rule:
 

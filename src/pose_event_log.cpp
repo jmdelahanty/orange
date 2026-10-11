@@ -254,6 +254,8 @@ void PoseEventLogger::WriteResult(PoseResultRecord record)
         return;
     }
 
+    // Producers stamp event time at result time; this fallback only covers
+    // records built without one (tests, synthetic emitters).
     if (record.event_epoch_us == 0) {
         record.event_epoch_us = epoch_time_us();
     }
