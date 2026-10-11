@@ -38,6 +38,10 @@ constexpr const char* kDecisionRelativePath =
 // inventory the Citrus transfer sealer checks): an undeclared root file is
 // carried as session context.
 constexpr const char* kSubjectCrossCheckRelativePath = "subject_cross_check.json";
+// Every context accepted, but the cross-check found a dish/count mismatch
+// (orange::recording::kSubjectCrossCheckPolicy).
+constexpr const char* kSubjectMismatchLifecycle = "refused_subject_mismatch";
+constexpr const char* kSubjectMismatchReason = "subject_declaration_mismatch";
 // An Orange-only (not_applicable) decision must not live under
 // recording_observation_bindings/: Citrus transfer-v2 refuses any file there
 // when the manifest carries no bindings projection, and a recording-only
@@ -450,8 +454,30 @@ bool parse_existing_decision(
         return fail(error_out,
                     "existing pre-arm decision context_rejections do not match the sealed acceptances");
     }
+    // The cross-check file is written before the decision; replay reports it
+    // exactly as the first pre-arm did.
+    const std::filesystem::path cross_check_path = folder / kSubjectCrossCheckRelativePath;
+    std::error_code exists_error;
+    if (std::filesystem::exists(cross_check_path, exists_error)) {
+        std::string cross_check_bytes;
+        if (!read_regular_file(cross_check_path, &cross_check_bytes, error_out) || !read_only(cross_check_path)) {
+            return fail(error_out, "existing subject cross-check is invalid or writable");
+        }
+        result_out->subject_cross_check = json::parse(cross_check_bytes, nullptr, false);
+        if (result_out->subject_cross_check.is_discarded() || !result_out->subject_cross_check.is_object()) {
+            return fail(error_out, "existing subject cross-check is not a JSON object");
+        }
+        result_out->subject_mismatches =
+            orange::recording::SubjectCrossCheckMismatchLines(result_out->subject_cross_check);
+    }
     const bool lifecycle_consistent =
+        (result_out->lifecycle_status == kSubjectMismatchLifecycle &&
+         result_out->reason == kSubjectMismatchReason &&
+         all_accepted && seen_contexts.size() == requests.artifacts.size() &&
+         !result_out->arm_allowed && result_out->transport_attempted &&
+         !result_out->subject_mismatches.empty()) ||
         (result_out->lifecycle_status == "accepted_pending_finalization" &&
+         result_out->subject_mismatches.empty() &&
          all_accepted && seen_contexts.size() == requests.artifacts.size() &&
          result_out->arm_allowed &&
          result_out->transport_attempted) ||
@@ -717,8 +743,9 @@ bool execute_recording_observation_pre_arm(
                 });
                 result_out->acceptances.push_back(std::move(artifact));
             }
-            // Hop 1 of the subject declaration contract: cross-check, warn
-            // and record; the sealed start snapshot is never changed.
+            // Hop 1 of the subject declaration contract: cross-check and
+            // record; under the interim policy a mismatch refuses the arm
+            // (below). The sealed start snapshot is never changed.
             std::map<std::string, json> citrus_subjects;
             for (const auto& acceptance : acceptances) {
                 const json& contract = acceptance.at("contract");
@@ -735,17 +762,11 @@ bool execute_recording_observation_pre_arm(
                 if (!frozen_error.empty()) {
                     result_out->subject_cross_check["operator_entries_error"] = frozen_error;
                 }
-                for (const auto& [serial, camera] : result_out->subject_cross_check.at("cameras").items()) {
-                    if (camera.value("status", "") != "mismatch") continue;
-                    const json& op = camera.at("operator");
-                    const json& citrus = camera.at("citrus_subject_declaration");
-                    const auto text = [](const json& v) { return v.is_null() ? std::string("none") : v.dump(); };
-                    result_out->subject_mismatches.push_back(
-                        "camera " + serial + ": Orange dish " + text(op.at("dish_id")) + " count " +
-                        text(op.at("subject_count")) + ", Citrus dish " + text(citrus.value("dish_id", json())) +
-                        " count " + text(citrus.value("subject_count", json())));
-                    std::cerr << "[recording][citrus] subject declaration differs from the operator entry, "
-                              << result_out->subject_mismatches.back() << std::endl;
+                result_out->subject_mismatches =
+                    orange::recording::SubjectCrossCheckMismatchLines(result_out->subject_cross_check);
+                for (const auto& line : result_out->subject_mismatches) {
+                    std::cerr << "[recording][citrus] subject declaration differs from the operator entry ("
+                              << orange::recording::kSubjectCrossCheckPolicy << "), " << line << std::endl;
                 }
                 if (!create_read_only_file_once(
                         folder / kSubjectCrossCheckRelativePath,
@@ -758,6 +779,14 @@ bool execute_recording_observation_pre_arm(
                 : "unbound";
             result_out->reason = all_accepted ? "" : "handshake_rejected";
             result_out->arm_allowed = all_accepted || binding_mode == "optional";
+            if (all_accepted && !result_out->subject_mismatches.empty()) {
+                // Interim policy: refused in every binding mode, since
+                // Palette refuses the import of a recording whose operator
+                // dish disagrees with Citrus's.
+                result_out->lifecycle_status = kSubjectMismatchLifecycle;
+                result_out->reason = kSubjectMismatchReason;
+                result_out->arm_allowed = false;
+            }
         }
     }
 

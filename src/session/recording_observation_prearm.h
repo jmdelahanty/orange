@@ -44,7 +44,9 @@ struct RecordingObservationPreArmResult {
     // the operator's frozen entry (orange.recording_subject_cross_check v1,
     // written to <recording>/subject_cross_check.json);
     // null when no acceptance carried a declaration. One line per mismatch
-    // for the operator. Never blocks the arm.
+    // for the operator. Interim policy (refuse_arm_on_mismatch_interim_v1):
+    // any mismatch refuses the arm in every binding mode, lifecycle
+    // refused_subject_mismatch, reason subject_declaration_mismatch.
     nlohmann::json subject_cross_check;
     std::vector<std::string> subject_mismatches;
 };

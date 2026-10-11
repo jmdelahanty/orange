@@ -3911,10 +3911,13 @@ RecordingRunStartResult complete_recording_run(
             &outcome.external_recorder_lifecycle);
         cleanup_failed_recording_run_start(
             state, camera_control, prepared.recording_folder);
-        return failed_recording_run_start_result(
-            prepared,
+        std::string error =
             "required Citrus observation binding was not accepted before arm: " +
-                observation_pre_arm.reason);
+            observation_pre_arm.reason;
+        for (const auto& line : observation_pre_arm.subject_mismatches) {
+            error += "; " + line;
+        }
+        return failed_recording_run_start_result(prepared, error);
     }
 
     result.external_recorder_contract_path = prepared.external_recorder_contract_path;

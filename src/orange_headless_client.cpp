@@ -5290,9 +5290,13 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                          : observation_binding_mode_error));
             }
             if (!observation_pre_arm.arm_allowed) {
-                throw std::runtime_error(
+                std::string error =
                     "required Citrus observation binding was not accepted before arm: " +
-                    observation_pre_arm.reason);
+                    observation_pre_arm.reason;
+                for (const auto& line : observation_pre_arm.subject_mismatches) {
+                    error += "; " + line;
+                }
+                throw std::runtime_error(error);
             }
             std::cout << "Headless observation binding request status="
                       << observation_requests.status

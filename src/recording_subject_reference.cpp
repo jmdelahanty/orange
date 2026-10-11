@@ -748,9 +748,27 @@ json BuildSubjectCrossCheck(const json& frozen_block, const std::map<std::string
     return {{"schema_id", kSubjectCrossCheckSchemaId},
             {"schema_version", kSubjectCrossCheckSchemaVersion},
             {"checked_at_utc", checked_at_utc},
-            {"policy", "warn_and_record; the start snapshot is never changed"},
+            {"policy", kSubjectCrossCheckPolicy},
+            {"policy_ends_when", kSubjectCrossCheckPolicyEndsWhen},
+            {"arm_refused", mismatches > 0},
             {"mismatch_count", mismatches},
             {"cameras", std::move(cameras)}};
+}
+
+std::vector<std::string> SubjectCrossCheckMismatchLines(const json& cross_check)
+{
+    std::vector<std::string> lines;
+    if (!cross_check.is_object() || !cross_check.contains("cameras")) return lines;
+    const auto text = [](const json& v) { return v.is_null() ? std::string("none") : v.dump(); };
+    for (const auto& [serial, camera] : cross_check.at("cameras").items()) {
+        if (camera.value("status", "") != "mismatch") continue;
+        const json& op = camera.at("operator");
+        const json& citrus = camera.at("citrus_subject_declaration");
+        lines.push_back("camera " + serial + ": Orange dish " + text(op.at("dish_id")) + " count " +
+                        text(op.at("subject_count")) + ", Citrus dish " + text(citrus.value("dish_id", json())) +
+                        " count " + text(citrus.value("subject_count", json())));
+    }
+    return lines;
 }
 
 void ApplySubjectReferencesGate(const std::string& recording_folder, json* manifest)

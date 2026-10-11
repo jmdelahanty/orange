@@ -980,20 +980,21 @@ void test_v3_subject_declaration_and_reference()
 // answered with acceptance v3 is cross-checked against the operator's
 // frozen start entry, recorded in subject_cross_check.json at the recording
 // root, and never changes the start snapshot or blocks the arm.
-void test_prearm_subject_cross_check()
+std::filesystem::path run_prearm_subject_cross_check(const std::string& operator96_dish, const std::string& mode,
+                                                     orange::session::RecordingObservationPreArmResult* result_out,
+                                                     std::string* start_before_out)
 {
     setenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION", "2", 1);
     json session = frozen_recording_contexts("stimulus_experiment");
     orange::recording::SubjectDeclaration operator95, operator96;
     operator95.dish_id = "19234_2"; operator95.subject_count = 1;
-    operator96.dish_id = "19234_3"; operator96.subject_count = 1;
+    operator96.dish_id = operator96_dish; operator96.subject_count = 1;
     session["subject_references"] = orange::recording::BuildSubjectReferences(
         {{"2010095", operator95}, {"2010096", operator96}}, orange::recording::ZebrobotLookupConfig{},
         "2026-08-13T16:00:00Z");
     const auto root = make_materialization_fixture(resolved_geometry(), session);
-    const std::string start_before = read_file(root / "recording_snapshot_start.json");
+    *start_before_out = read_file(root / "recording_snapshot_start.json");
     orange::session::RecordingObservationBindingRequestMaterialization requests;
-    orange::session::RecordingObservationPreArmResult result;
     std::string error;
     const auto transport = [](const json& local_request, json* response, std::string*) {
         json acceptances = json::array();
@@ -1029,17 +1030,65 @@ void test_prearm_subject_cross_check()
         return true;
     };
     require(orange::session::prepare_recording_observation_pre_arm(
-                root.string(), "required", "2026-08-13T16:00:00Z", &requests, &result, &error, transport),
+                root.string(), mode, "2026-08-13T16:00:00Z", &requests, result_out, &error, transport),
             "v3 pre-arm failed: " + error);
+    // Replay of the create-once decision reports exactly what the first call did.
+    orange::session::RecordingObservationPreArmResult replay;
+    require(orange::session::prepare_recording_observation_pre_arm(
+                root.string(), mode, "2026-08-13T16:00:05Z", &requests, &replay, &error, transport),
+            "v3 pre-arm replay failed: " + error);
     unsetenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION");
-    require(result.arm_allowed && result.lifecycle_status == "accepted_pending_finalization",
-            "a subject mismatch must not block the arm");
+    require(replay.arm_allowed == result_out->arm_allowed &&
+                replay.lifecycle_status == result_out->lifecycle_status && replay.reason == result_out->reason &&
+                replay.subject_mismatches == result_out->subject_mismatches &&
+                replay.subject_cross_check == result_out->subject_cross_check,
+            "pre-arm replay must reproduce the subject verdict");
+    return root;
+}
+
+void test_prearm_subject_cross_check()
+{
+    orange::session::RecordingObservationPreArmResult result;
+    std::string start_before;
+    // All cameras match: the arm is allowed and the agreement is recorded.
+    {
+        const auto root = run_prearm_subject_cross_check("19234_2", "required", &result, &start_before);
+        require(result.arm_allowed && result.lifecycle_status == "accepted_pending_finalization" &&
+                    result.subject_mismatches.empty(),
+                "matching dishes must arm");
+        const json check = json::parse(read_file(root / "subject_cross_check.json"));
+        if (const char* dump = std::getenv("ORANGE_BINDING_TEST_DUMP_DIR")) {
+            write_file(std::filesystem::path(dump) / "subject_cross_check_match.json", check.dump(2));
+        }
+        require(check.at("mismatch_count") == 0 && check.at("arm_refused") == false &&
+                    check.at("policy") == "refuse_arm_on_mismatch_interim_v1",
+                "a matching cross-check records the interim policy and no refusal");
+    }
+    // Interim policy: a mismatch refuses the arm even in optional mode.
+    {
+        orange::session::RecordingObservationPreArmResult optional_result;
+        run_prearm_subject_cross_check("19234_3", "optional", &optional_result, &start_before);
+        require(!optional_result.arm_allowed && optional_result.lifecycle_status == "refused_subject_mismatch" &&
+                    optional_result.reason == "subject_declaration_mismatch",
+                "a subject mismatch must refuse the arm in optional mode");
+    }
+    const auto root = run_prearm_subject_cross_check("19234_3", "required", &result, &start_before);
+    require(!result.arm_allowed && result.lifecycle_status == "refused_subject_mismatch" &&
+                result.reason == "subject_declaration_mismatch",
+            "a subject mismatch must refuse the arm");
+    const json decision = json::parse(read_file(root / "recording_observation_bindings/pre_arm_decision.json"));
+    require(decision.at("arm_allowed") == false && decision.at("lifecycle_status") == "refused_subject_mismatch",
+            "the sealed decision must record the refusal");
     require(result.subject_mismatches.size() == 1 &&
                 result.subject_mismatches[0].find("camera 2010096") != std::string::npos,
             "exactly camera 2010096 (operator 19234_3, Citrus 19234_2) must be reported");
     const json check = json::parse(read_file(root / "subject_cross_check.json"));
+    if (const char* dump = std::getenv("ORANGE_BINDING_TEST_DUMP_DIR")) {
+        write_file(std::filesystem::path(dump) / "subject_cross_check_refused.json", check.dump(2));
+    }
     require(check == result.subject_cross_check, "the file must hold the reported cross-check");
-    require(check.at("schema_id") == "orange.recording_subject_cross_check" && check.at("mismatch_count") == 1,
+    require(check.at("schema_id") == "orange.recording_subject_cross_check" && check.at("mismatch_count") == 1 &&
+                check.at("arm_refused") == true && check.at("policy") == "refuse_arm_on_mismatch_interim_v1",
             "cross-check header");
     const json& cams = check.at("cameras");
     require(cams.at("2010095").at("status") == "match" &&

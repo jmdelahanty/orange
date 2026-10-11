@@ -4252,12 +4252,20 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
             std::cerr << "[GUI][recording] Start rejected: " << error << std::endl;
             return GuiRecordingStartDispatch::kFailed;
         }
+        orange::gui::SetSubjectCrossCheckResult(observation_pre_arm.subject_mismatches,
+                                                !observation_pre_arm.subject_cross_check.is_null());
         if (!observation_pre_arm.arm_allowed) {
             std::string error =
-                "Required Citrus observation binding was not accepted before arm: " +
-                observation_pre_arm.reason;
+                observation_pre_arm.subject_mismatches.empty()
+                    ? "Required Citrus observation binding was not accepted before arm: " +
+                          observation_pre_arm.reason
+                    : "Start refused: the dish entered in the Subject panel differs from Citrus's "
+                      "(correct the dish and confirm again)";
             for (const auto& rejection : observation_pre_arm.context_rejections) {
                 error += "; " + rejection.observation_context_id + ": " + rejection.reason;
+            }
+            for (const auto& line : observation_pre_arm.subject_mismatches) {
+                error += "; " + line;
             }
             orange::session::abort_prepared_recording_run(
                 recording_session,
@@ -4271,8 +4279,6 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
             std::cerr << "[GUI][recording] Start rejected: " << error << std::endl;
             return GuiRecordingStartDispatch::kFailed;
         }
-        orange::gui::SetSubjectCrossCheckResult(observation_pre_arm.subject_mismatches,
-                                                !observation_pre_arm.subject_cross_check.is_null());
         std::cout << "[GUI][recording] Observation binding request status="
                   << observation_requests.status
                   << " count=" << observation_requests.artifacts.size()

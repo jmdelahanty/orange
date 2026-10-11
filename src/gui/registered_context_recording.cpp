@@ -254,10 +254,11 @@ void RenderSubjectReferenceSelection(bool locked, const std::vector<std::string>
     }
     if (!subject_cross_check_mismatches.empty()) {
         ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.1f, 1.0f),
-                           "Current recording: Citrus declared a different subject than you confirmed:");
+                           "Last start REFUSED: Citrus declared a different subject than you confirmed:");
         for (const auto& line : subject_cross_check_mismatches) ImGui::BulletText("%s", line.c_str());
-        ImGui::TextWrapped("Recorded in subject_cross_check.json; Citrus's confirmed value is authoritative for "
-                           "Citrus-bound cameras. Fix the table here or in Citrus before the next recording.");
+        ImGui::TextWrapped("Recorded in subject_cross_check.json of the refused recording. Until Citrus's confirmed "
+                           "dish can reach the manifest, a mismatch refuses the start (Palette would refuse the "
+                           "import). Fix the table here or in Citrus, confirm, and start again.");
     } else if (subject_cross_check_ran) {
         ImGui::TextWrapped("Current recording: Citrus's dish declarations match your confirmed entries.");
     }

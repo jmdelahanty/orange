@@ -155,15 +155,27 @@ std::map<std::string, SubjectDeclaration> DeclaredSubjectsFromEmitted(const nloh
 
 inline constexpr const char* kSubjectCrossCheckSchemaId = "orange.recording_subject_cross_check";
 inline constexpr int kSubjectCrossCheckSchemaVersion = 1;
+// Interim policy (Jeremy 2026-10-11, agent-contracts citrus-orange
+// subject_declaration_v1 pre-arm amendment): any camera whose Citrus
+// declaration differs from the operator's entry refuses the arm, in every
+// binding mode, because Palette refuses the import of such a recording. Ends
+// when the receipt v3 overlay (operator_entry + Citrus's confirmed value in
+// the manifest) is live; the policy then returns to warn and record.
+inline constexpr const char* kSubjectCrossCheckPolicy = "refuse_arm_on_mismatch_interim_v1";
+inline constexpr const char* kSubjectCrossCheckPolicyEndsWhen =
+    "receipt v3 subject_reference overlay is live in the recording manifest";
 // Pre-arm cross-check (agent-contracts citrus-orange/subject_declaration_v1,
 // amendment PR 75, hop 1): each Citrus-bound camera's acceptance v3
 // declaration (citrus.subject_declaration, by target.camera_id) against the
-// operator's entry frozen in the start snapshot. Warn and record only; the
-// start snapshot never changes. Per camera: status match | mismatch |
+// operator's entry frozen in the start snapshot. Recorded under
+// kSubjectCrossCheckPolicy (arm_refused = any mismatch); the start snapshot
+// never changes. Per camera: status match | mismatch |
 // no_citrus_declaration, differences (dish_id, subject_count), the operator's
 // declared values and the Citrus declaration verbatim.
 nlohmann::json BuildSubjectCrossCheck(const nlohmann::json& frozen_block,
                                       const std::map<std::string, nlohmann::json>& citrus_by_camera,
                                       const std::string& checked_at_utc);
+// One operator-facing line per mismatching camera of a cross-check.
+std::vector<std::string> SubjectCrossCheckMismatchLines(const nlohmann::json& cross_check);
 
 }  // namespace orange::recording
