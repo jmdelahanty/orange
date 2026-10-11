@@ -3988,8 +3988,9 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
     // value at every record start (GUI button or local-control start).
     try {
         recording_session->recording_contexts = orange::gui::RecordingContextsForStream();
-        recording_session->subject_references = orange::gui::SubjectReferencesForStream();
         recording_session->zebrobot = orange::gui::ZebrobotLookupForStream();
+        recording_session->subject_references =
+            orange::gui::SubjectReferencesForRecordStart(&recording_session->subject_confirmation);
     } catch (const std::exception& ex) {
         const std::string error = ex.what();
         if (recording_preflight_errors) {

@@ -19,6 +19,11 @@ recording::RecordingContextsConfig RecordingContextsForStream();
 // Subject references (MetaZebrobot dish per camera) and the lookup endpoint,
 // taken at every record start like the contexts.
 recording::SubjectReferencesConfig SubjectReferencesForStream();
+// Record start (GUI button or local-control start): the subject references the
+// operator confirmed for this recording; throws when not confirmed or edited
+// since. Fills `confirmation_out` (orange.recording_subject_confirmation v1) and
+// consumes the confirmation.
+recording::SubjectReferencesConfig SubjectReferencesForRecordStart(nlohmann::json* confirmation_out);
 recording::ZebrobotLookupConfig ZebrobotLookupForStream();
 // Default dish/count plus one editable row per camera serial (overrides).
 void RenderSubjectReferenceSelection(bool locked, const std::vector<std::string>& camera_serials);

@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include "imgui.h"
+#include "timing/clock.h"
 
 namespace orange::gui {
 namespace {
@@ -19,6 +20,17 @@ recording::ZebrobotLookupConfig zebrobot_lookup;
 std::string subject_error;
 std::string contexts_error;
 bool confirmed = false;
+// Per-start confirmation (Jeremy 2026-10-11): the dish table is app-scoped and
+// a saved value silently carried into later sessions (the 2026-10-09 snow
+// sessions declared one dish for four arenas). Each GUI record start needs the
+// operator to confirm the table as it stands; any edit or reload clears it,
+// and a start consumes it.
+bool subject_confirmed = false;
+json subject_confirmation;  // orange.recording_subject_confirmation v1
+void clear_subject_confirmation() {
+    subject_confirmed = false;
+    subject_confirmation = nullptr;
+}
 void save() {
     recording::SaveGuiRecordingEvidenceConfig(config_path,
         recording::GuiRecordingEvidenceConfig::Parse(options));
@@ -39,6 +51,7 @@ void LoadRegisteredContextRecordingSettings(const std::string& path, bool load_m
         try { recording_contexts = recording::ReadGuiRecordingContexts(path); }
         catch (const std::exception& ex) { contexts_error = ex.what(); }
         subject_references = {}; zebrobot_lookup = {}; subject_error.clear();
+        clear_subject_confirmation();
         try {
             subject_references = recording::ReadGuiSubjectReferences(path);
             zebrobot_lookup = recording::ReadGuiZebrobotLookup(path);
@@ -55,6 +68,15 @@ recording::RecordingContextsConfig RecordingContextsForStream() {
 }
 recording::SubjectReferencesConfig SubjectReferencesForStream() {
     if (!subject_error.empty()) throw std::runtime_error("GUI subject references: " + subject_error);
+    return subject_references;
+}
+recording::SubjectReferencesConfig SubjectReferencesForRecordStart(json* confirmation_out) {
+    if (!subject_error.empty()) throw std::runtime_error("GUI subject references: " + subject_error);
+    if (!subject_confirmed || subject_confirmation.value("config", json()) != subject_references.ToJson())
+        throw std::runtime_error("Confirm each camera's dish in the Subject panel before starting this recording "
+                                 "(the dish table is confirmed per recording)");
+    if (confirmation_out) *confirmation_out = subject_confirmation;
+    clear_subject_confirmation();
     return subject_references;
 }
 recording::ZebrobotLookupConfig ZebrobotLookupForStream() {
@@ -197,12 +219,39 @@ void RenderSubjectReferenceSelection(bool locked, const std::vector<std::string>
         ImGui::EndTable();
     }
     if (changed) {
+        clear_subject_confirmation();
         std::string err;
         if (apply_subject_fields_to_config(&err)) {
             subject_dirty = true;
             subject_status = "Applies at the next record start; not saved yet.";
         } else subject_status = "Not applied: " + err;
     }
+    {
+        std::string err;
+        if (ImGui::Button("Confirm dishes for the next recording") && apply_subject_fields_to_config(&err)) {
+            json cameras = json::object();
+            for (const auto& [serial, d] : subject_references.Resolve(camera_serials)) {
+                cameras[serial] = {{"dish_id", d.dish_id ? json(*d.dish_id) : json(nullptr)},
+                                   {"subject_count", d.subject_count ? json(*d.subject_count) : json(nullptr)}};
+            }
+            subject_confirmation = {
+                {"schema_id", "orange.recording_subject_confirmation"},
+                {"schema_version", 1},
+                {"confirmed_by", "gui_operator"},
+                {"confirmed_at_utc", orange::timing::utc_iso8601_now()},
+                {"cameras", cameras},
+                {"config", subject_references.ToJson()}};
+            subject_confirmed = true;
+        } else if (!err.empty()) {
+            subject_status = "Not confirmed: " + err;
+        }
+    }
+    if (subject_confirmed)
+        ImGui::TextWrapped("Confirmed at %s for the next recording.",
+                           subject_confirmation.value("confirmed_at_utc", "").c_str());
+    else
+        ImGui::TextWrapped("Not confirmed: the next GUI or Citrus-triggered record start is refused until you confirm "
+                           "the dish of every camera above.");
     if (ImGui::Button("Save subject declaration")) {
         std::string err;
         if (apply_subject_fields_to_config(&err)) {
@@ -216,6 +265,7 @@ void RenderSubjectReferenceSelection(bool locked, const std::vector<std::string>
     ImGui::SameLine();
     if (ImGui::Button("Reload dish id from app config")) {
         subject_references = {}; zebrobot_lookup = {}; subject_error.clear();
+        clear_subject_confirmation();
         try {
             subject_references = recording::ReadGuiSubjectReferences(config_path);
             zebrobot_lookup = recording::ReadGuiZebrobotLookup(config_path);

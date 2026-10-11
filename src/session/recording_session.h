@@ -41,6 +41,10 @@ struct RecordingSessionState {
     // (recording.zebrobot); resolved, looked up once and frozen at record start.
     orange::recording::SubjectReferencesConfig subject_references;
     orange::recording::ZebrobotLookupConfig zebrobot;
+    // GUI starts: the operator's confirmation of those dishes for this
+    // recording (orange.recording_subject_confirmation), written next to the
+    // start snapshot; null when the start did not require one (headless).
+    nlohmann::json subject_confirmation;
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
     std::vector<ResolvedRecordingConfig> resolved_recording_configs;
     std::string recording_sink_mode = "real";

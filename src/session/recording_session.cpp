@@ -3471,6 +3471,17 @@ PreparedRecordingRunStart prepare_recording_run(
             if (!update_recording_snapshot_session_artifacts(recording_folder, {{"subject_references", block}})) {
                 throw std::runtime_error("failed to persist subject references");
             }
+            if (state->subject_confirmation.is_object()) {
+                orange::ScopedFsuid fsuid_guard;
+                const std::filesystem::path path =
+                    std::filesystem::path(recording_folder) / "subject_confirmation.json";
+                std::ofstream out(path, std::ios::out | std::ios::trunc);
+                out << state->subject_confirmation.dump(2) << "\n";
+                out.close();
+                if (!out) {
+                    throw std::runtime_error("failed to write " + path.string());
+                }
+            }
         } catch (const std::exception& ex) {
             prepared.error_message = std::string("subject references: ") + ex.what();
             cleanup_failed_recording_run_start(state, camera_control, recording_folder);
