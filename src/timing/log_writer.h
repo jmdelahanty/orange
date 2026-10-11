@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <deque>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <memory>
@@ -57,6 +58,9 @@ struct LogChannelCounters {
 class LogChannelBase {
 public:
     virtual ~LogChannelBase() = default;
+    // Any thread: queue a flush barrier / wait for it (not on a hot thread).
+    virtual uint64_t Flush() = 0;
+    virtual bool WaitApplied(uint64_t ticket, std::chrono::milliseconds timeout) = 0;
     // Writer thread only. Returns true if it did any work.
     virtual bool Service(std::chrono::steady_clock::time_point now) = 0;
     // Writer thread only, at shutdown: drain, flush and close.
@@ -90,6 +94,28 @@ public:
                                            return c.get() == channel;
                                        }),
                         channels_.end());
+    }
+
+    // Not for hot threads: every record emitted, every Open/Close/Post queued
+    // before this call is applied, written and flushed when it returns true.
+    // Finalize calls it before hashing or reading the per-frame logs.
+    bool FlushAll(std::chrono::milliseconds timeout = std::chrono::milliseconds(10000))
+    {
+        std::vector<std::shared_ptr<LogChannelBase>> channels;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            channels = channels_;
+        }
+        std::vector<uint64_t> tickets;
+        tickets.reserve(channels.size());
+        for (const auto& channel : channels) {
+            tickets.push_back(channel->Flush());
+        }
+        bool ok = true;
+        for (size_t i = 0; i < channels.size(); ++i) {
+            ok = channels[i]->WaitApplied(tickets[i], timeout) && ok;
+        }
+        return ok;
     }
 
     // Wakes the writer now instead of at its next poll (control entries).
@@ -239,10 +265,18 @@ public:
 
     // Flush barrier: every record emitted before this call is written and
     // flushed once the ticket is applied.
-    uint64_t Flush() { return PushControl(Control::kFlush, {}, {}); }
+    uint64_t Flush() override { return PushControl(Control::kFlush, {}, {}); }
+
+    // Runs `job` on the writer thread, in order with the records and the other
+    // control entries (for example a summary written after Close). For work
+    // that must not run on a hot thread; never for per-record work.
+    uint64_t Post(std::function<void()> job)
+    {
+        return PushControl(Control::kRun, {}, {}, std::move(job));
+    }
 
     // Not for hot threads: waits until the writer applied `ticket`.
-    bool WaitApplied(uint64_t ticket, std::chrono::milliseconds timeout)
+    bool WaitApplied(uint64_t ticket, std::chrono::milliseconds timeout) override
     {
         const auto deadline = std::chrono::steady_clock::now() + timeout;
         while (applied_.load(std::memory_order_acquire) < ticket) {
@@ -322,13 +356,14 @@ public:
     }
 
 private:
-    enum class Control { kOpen, kClose, kFlush };
+    enum class Control { kOpen, kClose, kFlush, kRun };
     struct ControlEntry {
         uint64_t position;  // apply before the record at this ring index
         uint64_t ticket;
         Control kind;
         std::string path;
         std::string header;
+        std::function<void()> job;
     };
     static constexpr size_t kWriteChunk = 64 * 1024;
 
@@ -344,7 +379,8 @@ private:
         buffer_.reserve(kWriteChunk * 2);
     }
 
-    uint64_t PushControl(Control kind, std::string path, std::string header)
+    uint64_t PushControl(Control kind, std::string path, std::string header,
+                         std::function<void()> job = {})
     {
         std::unique_lock<std::mutex> emit_lock(emit_mutex_, std::defer_lock);
         if (options_.multi_producer) {
@@ -355,7 +391,7 @@ private:
             std::lock_guard<std::mutex> lock(control_mutex_);
             ticket = ++issued_;
             controls_.push_back(ControlEntry{head_.load(std::memory_order_relaxed), ticket, kind,
-                                             std::move(path), std::move(header)});
+                                             std::move(path), std::move(header), std::move(job)});
         }
         LogWriter::Instance().Wake();
         return ticket;
@@ -388,6 +424,11 @@ private:
                     file_.flush();
                 }
                 break;
+            case Control::kRun:
+                if (entry.job) {
+                    entry.job();
+                }
+                break;
             }
             applied_.store(entry.ticket, std::memory_order_release);
         }
@@ -396,6 +437,11 @@ private:
     void OpenFile(const std::string& path, const std::string& header)
     {
         orange::ScopedFsuid fsuid_guard;  // the file belongs to the sudo invoker
+        const std::filesystem::path parent = std::filesystem::path(path).parent_path();
+        if (!parent.empty()) {
+            std::error_code ec;
+            std::filesystem::create_directories(parent, ec);
+        }
         file_.open(path, std::ios::out | std::ios::trunc | std::ios::binary);
         if (!file_.is_open()) {
             open_failures_.fetch_add(1, std::memory_order_relaxed);

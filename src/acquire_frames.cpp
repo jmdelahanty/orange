@@ -38,7 +38,8 @@
 #include <filesystem>
 #include <iomanip>
 #include <sstream>
-#include "async_line_sink.h"
+#include "timing/clock.h"
+#include "timing/log_writer.h"
 #include <limits>
 #include <map>
 
@@ -216,7 +217,9 @@ struct RunningDoubleStats {
 };
 
 struct PipelinePerfSample {
-    std::string timestamp_utc;
+    // Host realtime at the sample (CLOCK_REALTIME ns); written as the
+    // one-second timestamp_utc column by the log writer thread.
+    uint64_t timestamp_realtime_ns = 0;
     uint64_t frame_id = 0;
     uint64_t recording_frame_id = 0;
     double acquisition_fps = 0.0;
@@ -322,7 +325,9 @@ struct RecordingSubmitHistoryEntry {
 };
 
 struct AcquisitionCadenceProbeSample {
-    std::string timestamp_utc;
+    // Host realtime at the sample (CLOCK_REALTIME ns); written as the
+    // one-second timestamp_utc column by the log writer thread.
+    uint64_t timestamp_realtime_ns = 0;
     uint64_t local_frame_id = 0;
     uint64_t recording_frame_id = 0;
     uint64_t camera_frame_id = 0;
@@ -385,10 +390,35 @@ struct AcquisitionCadenceProbeSample {
 // external handoff worker via local_frame_id (2026-09-19).
 class RingReleaseRecorder {
 public:
+    struct Row {
+        uint64_t local_frame_id = 0;
+        uint64_t camera_frame_id = 0;
+        uint64_t receive_ns = 0;
+        uint64_t copy_seen_ns = 0;
+        uint64_t consumer_seen_ns = 0;
+        uint64_t requeue_ns = 0;
+        size_t pending_after = 0;
+        uint64_t dropped_total = 0;
+        bool forced = false;
+    };
+
     explicit RingReleaseRecorder(const CameraParams* camera_params)
         : camera_params_(camera_params),
-          enabled_(orange::yolo_flags::EnvFlag("ORANGE_ACQ_RING_RELEASE_LOG", false)) {}
-    ~RingReleaseRecorder() { Close(); }
+          enabled_(orange::yolo_flags::EnvFlag("ORANGE_ACQ_RING_RELEASE_LOG", false)) {
+        if (enabled_) {
+            orange::timing::LogChannelOptions options;
+            options.name = "ring_release";
+            options.capacity = 1 << 16;
+            channel_ = orange::timing::LogChannel<Row>::Create(options, &FormatRow);
+        }
+    }
+    ~RingReleaseRecorder() {
+        Close();
+        if (channel_) {
+            channel_->Retire();
+        }
+    }
+    // Hot thread: queues the file switch; the writer thread opens the file.
     void Rotate(const std::string& folder) {
         if (!enabled_ || folder == current_folder_) {
             return;
@@ -397,53 +427,56 @@ public:
         if (folder.empty()) {
             return;
         }
-        orange::ScopedFsuid fsuid_guard;
-        (void)fsuid_guard;
-        make_folder(folder);
         current_folder_ = folder;
         const std::string serial = camera_params_ ? camera_params_->camera_serial : "unknown";
         const std::string path = (std::filesystem::path(folder) / ("Cam" + serial + "_ring_release.csv")).string();
-        if (!sink_.Open(path,
-                        "local_frame_id,camera_frame_id,receive_host_ns,copy_ready_seen_ns,consumer_done_seen_ns,"
-                        "requeue_host_ns,hold_ns,pending_after,camera_dropped_frames_total,forced\n")) {
-            std::cerr << "[ACQ_RING] Cam " << serial << " failed to open " << path << std::endl;
-            current_folder_.clear();
-            return;
-        }
+        channel_->Open(path,
+                       "local_frame_id,camera_frame_id,receive_host_ns,copy_ready_seen_ns,consumer_done_seen_ns,"
+                       "requeue_host_ns,hold_ns,pending_after,camera_dropped_frames_total,forced\n");
         std::cout << "[ACQ_RING] Cam " << serial << " logging ring releases to " << path << std::endl;
     }
+    // Hot thread: copies the values into the channel's ring (no formatting,
+    // no I/O, no allocation); the writer thread formats and writes them.
     void Record(uint64_t local_frame_id, uint64_t camera_frame_id, uint64_t receive_ns,
                 uint64_t copy_seen_ns, uint64_t consumer_seen_ns, uint64_t requeue_ns,
                 size_t pending_after, uint64_t dropped_total, bool forced) {
-        if (!sink_.IsOpen()) {
+        if (current_folder_.empty()) {
             return;
         }
-        // Formatted here, written by the sink's thread: the acquisition
-        // thread never calls write() (2026-09-21).
-        char buf[256];
-        const int n = std::snprintf(
-            buf, sizeof(buf), "%llu,%llu,%llu,%llu,%llu,%llu,%llu,%zu,%llu,%d\n",
-            static_cast<unsigned long long>(local_frame_id), static_cast<unsigned long long>(camera_frame_id),
-            static_cast<unsigned long long>(receive_ns), static_cast<unsigned long long>(copy_seen_ns),
-            static_cast<unsigned long long>(consumer_seen_ns), static_cast<unsigned long long>(requeue_ns),
-            static_cast<unsigned long long>(requeue_ns > receive_ns ? requeue_ns - receive_ns : 0),
-            pending_after, static_cast<unsigned long long>(dropped_total), forced ? 1 : 0);
-        if (n > 0) {
-            sink_.Append(std::string(buf, static_cast<size_t>(n)));
-        }
+        channel_->Emit(Row{local_frame_id, camera_frame_id, receive_ns, copy_seen_ns, consumer_seen_ns,
+                           requeue_ns, pending_after, dropped_total, forced});
     }
     void Close() {
-        if (sink_.IsOpen() && sink_.dropped() > 0) {
-            std::cerr << "[ACQ_RING] " << sink_.path() << " dropped " << sink_.dropped() << " rows" << std::endl;
+        if (!current_folder_.empty()) {
+            channel_->Close();
+            const uint64_t dropped = channel_->counters().dropped_queue_full;
+            if (dropped > reported_dropped_) {
+                std::cerr << "[ACQ_RING] Cam " << (camera_params_ ? camera_params_->camera_serial : "unknown")
+                          << " ring release log dropped " << (dropped - reported_dropped_) << " rows" << std::endl;
+                reported_dropped_ = dropped;
+            }
         }
-        sink_.Close();
         current_folder_.clear();
     }
 private:
+    static void FormatRow(const Row& r, std::string& out) {
+        char buf[256];
+        const int n = std::snprintf(
+            buf, sizeof(buf), "%llu,%llu,%llu,%llu,%llu,%llu,%llu,%zu,%llu,%d\n",
+            static_cast<unsigned long long>(r.local_frame_id), static_cast<unsigned long long>(r.camera_frame_id),
+            static_cast<unsigned long long>(r.receive_ns), static_cast<unsigned long long>(r.copy_seen_ns),
+            static_cast<unsigned long long>(r.consumer_seen_ns), static_cast<unsigned long long>(r.requeue_ns),
+            static_cast<unsigned long long>(r.requeue_ns > r.receive_ns ? r.requeue_ns - r.receive_ns : 0),
+            r.pending_after, static_cast<unsigned long long>(r.dropped_total), r.forced ? 1 : 0);
+        if (n > 0) {
+            out.append(buf, static_cast<size_t>(n));
+        }
+    }
     const CameraParams* camera_params_ = nullptr;
     bool enabled_ = false;
     std::string current_folder_;
-    orange::AsyncLineSink sink_;
+    uint64_t reported_dropped_ = 0;
+    std::shared_ptr<orange::timing::LogChannel<Row>> channel_;
 };
 
 static const char kAcquisitionCadenceProbeHeader[] =
@@ -472,10 +505,16 @@ class AcquisitionCadenceProbeRecorder {
 public:
     explicit AcquisitionCadenceProbeRecorder(const CameraParams* camera_params)
         : camera_params_(camera_params),
-          record_all_(orange::yolo_flags::EnvFlag("ORANGE_ACQ_CADENCE_PROBE_ALL", false)) {}
+          record_all_(orange::yolo_flags::EnvFlag("ORANGE_ACQ_CADENCE_PROBE_ALL", false)) {
+        orange::timing::LogChannelOptions options;
+        options.name = "acquisition_cadence_probe";
+        options.capacity = record_all_ ? 8192 : 256;
+        channel_ = orange::timing::LogChannel<AcquisitionCadenceProbeSample>::Create(options, &FormatRow);
+    }
 
     ~AcquisitionCadenceProbeRecorder() {
         Close();
+        channel_->Retire();
     }
 
     void Rotate(const std::string& folder) {
@@ -488,13 +527,18 @@ public:
         }
     }
 
+    // Hot thread: the sample is copied into the channel's ring; the writer
+    // thread formats and writes it.
     void Record(const AcquisitionCadenceProbeSample& sample) {
-        if (!sink_.IsOpen() || !ShouldRecord(sample)) {
+        if (current_folder_.empty() || !ShouldRecord(sample)) {
             return;
         }
+        channel_->Emit(sample);
+    }
 
+    static void FormatRow(const AcquisitionCadenceProbeSample& sample, std::string& out) {
         std::ostringstream line;
-        line << sample.timestamp_utc << ","
+        line << orange::timing::utc_iso8601(orange::timing::RealtimeNs{sample.timestamp_realtime_ns}) << ","
               << sample.local_frame_id << ","
               << sample.recording_frame_id << ","
               << sample.camera_frame_id << ","
@@ -560,14 +604,19 @@ public:
               << sample.ingress_stats.encode_slow_frames << ","
               << (sample.ptp_latch_deferred ? 1 : 0) << ","
               << sample.ptp_latch_ns << "\n";
-        sink_.Append(line.str());
+        out += line.str();
     }
 
     void Close() {
-        if (sink_.IsOpen() && sink_.dropped() > 0) {
-            std::cerr << "[ACQ_CADENCE] " << sink_.path() << " dropped " << sink_.dropped() << " rows" << std::endl;
+        if (!current_folder_.empty()) {
+            channel_->Close();
+            const uint64_t dropped = channel_->counters().dropped_queue_full;
+            if (dropped > reported_dropped_) {
+                std::cerr << "[ACQ_CADENCE] " << file_path_ << " dropped " << (dropped - reported_dropped_)
+                          << " rows" << std::endl;
+                reported_dropped_ = dropped;
+            }
         }
-        sink_.Close();
         current_folder_.clear();
         file_path_.clear();
     }
@@ -589,22 +638,13 @@ private:
                probe_frame <= kAcquisitionCadenceProbeFrameMax;
     }
 
+    // Hot thread: queues the file switch; the writer thread opens the file.
     void OpenFile(const std::string& folder) {
-        orange::ScopedFsuid fsuid_guard;
-        (void)fsuid_guard;
-        make_folder(folder);
-
         current_folder_ = folder;
         const std::string serial = camera_params_ ? camera_params_->camera_serial : "unknown";
         file_path_ = (std::filesystem::path(current_folder_) /
                       ("Cam" + serial + "_acquisition_cadence_probe.csv")).string();
-        if (!sink_.Open(file_path_, kAcquisitionCadenceProbeHeader)) {
-            std::cerr << "[ACQ_CADENCE] Cam " << serial
-                      << " failed to open " << file_path_ << std::endl;
-            current_folder_.clear();
-            file_path_.clear();
-            return;
-        }
+        channel_->Open(file_path_, kAcquisitionCadenceProbeHeader);
         if (record_all_) {
             std::cout << "[ACQ_CADENCE] Cam " << serial << " logging EVERY frame to " << file_path_ << std::endl;
         } else {
@@ -620,7 +660,8 @@ private:
     bool record_all_ = false;
     std::string current_folder_;
     std::string file_path_;
-    orange::AsyncLineSink sink_;
+    uint64_t reported_dropped_ = 0;
+    std::shared_ptr<orange::timing::LogChannel<AcquisitionCadenceProbeSample>> channel_;
 };
 
 void append_ptp_receive_history(std::deque<PtpReceiveHistoryEntry>* history,
@@ -756,11 +797,45 @@ int resolve_display_preview_max_fps(const CameraEachSelect* camera_select)
 
 class PipelinePerfRecorder {
 public:
+    // Running statistics for the end-of-recording summary in
+    // recording_snapshot.json (pipeline_metrics).
+    struct Stats {
+    uint64_t samples_ = 0;
+    bool have_last_sample_ = false;
+    PipelinePerfSample last_sample_;
+    RunningDoubleStats acquisition_fps_{};
+    RunningDoubleStats preprocess_fps_{};
+    RunningDoubleStats preprocess_fps_primary_{};
+    RunningDoubleStats preprocess_fps_helpers_{};
+    RunningDoubleStats encode_fps_{};
+    RunningDoubleStats encode_fps_primary_{};
+    RunningDoubleStats encode_fps_helpers_{};
+    RunningInt64Stats display_queue_depth_{};
+    RunningInt64Stats yolo_queue_depth_{};
+    RunningInt64Stats preprocess_queue_depth_{};
+    RunningInt64Stats encode_queue_depth_{};
+    RunningInt64Stats free_entries_available_{};
+    RunningInt64Stats free_entries_low_watermark_{};
+    RunningInt64Stats free_events_available_{};
+    RunningInt64Stats free_events_low_watermark_{};
+    RunningInt64Stats yolo_events_available_{};
+    RunningInt64Stats yolo_events_low_watermark_{};
+    RunningInt64Stats pending_requeues_{};
+    RunningInt64Stats preprocess_buffers_available_{};
+    RunningInt64Stats preprocess_events_available_{};
+    };
+
     explicit PipelinePerfRecorder(const CameraParams* camera_params)
-        : camera_params_(camera_params) {}
+        : camera_params_(camera_params) {
+        orange::timing::LogChannelOptions options;
+        options.name = "pipeline_perf";
+        options.capacity = 1024;  // 1 Hz rows
+        channel_ = orange::timing::LogChannel<PipelinePerfSample>::Create(options, &FormatRow);
+    }
 
     ~PipelinePerfRecorder() {
         Close();
+        channel_->Retire();
     }
 
     const std::string& current_folder() const {
@@ -777,12 +852,51 @@ public:
         }
     }
 
+    // Acquisition thread, 1 Hz: the sample goes to the log writer's queue;
+    // the running statistics stay here (cheap) for the end-of-recording
+    // summary, which the writer thread persists.
     void Record(const PipelinePerfSample& sample) {
-        if (!file_.is_open()) {
+        if (current_folder_.empty()) {
             return;
         }
+        channel_->Emit(sample);
 
-        file_ << sample.timestamp_utc << ","
+        stats.acquisition_fps_.add(sample.acquisition_fps);
+        stats.preprocess_fps_.add(sample.preprocess_fps);
+        stats.preprocess_fps_primary_.add(sample.preprocess_fps_primary);
+        stats.preprocess_fps_helpers_.add(sample.preprocess_fps_helpers);
+        stats.encode_fps_.add(sample.encode_fps);
+        stats.encode_fps_primary_.add(sample.encode_fps_primary);
+        stats.encode_fps_helpers_.add(sample.encode_fps_helpers);
+        stats.display_queue_depth_.add(sample.display_queue_depth);
+        stats.yolo_queue_depth_.add(sample.yolo_queue_depth);
+        stats.preprocess_queue_depth_.add(sample.preprocess_queue_depth);
+        stats.encode_queue_depth_.add(sample.encode_queue_depth);
+        stats.free_entries_available_.add(sample.free_entries_available);
+        stats.free_entries_low_watermark_.add(sample.free_entries_low_watermark);
+        stats.free_events_available_.add(sample.free_events_available);
+        stats.free_events_low_watermark_.add(sample.free_events_low_watermark);
+        stats.yolo_events_available_.add(sample.yolo_events_available);
+        stats.yolo_events_low_watermark_.add(sample.yolo_events_low_watermark);
+        stats.pending_requeues_.add(sample.pending_requeues);
+        stats.preprocess_buffers_available_.add(sample.preprocess_buffers_available);
+        stats.preprocess_events_available_.add(sample.preprocess_events_available);
+        stats.last_sample_ = sample;
+        stats.have_last_sample_ = true;
+        ++stats.samples_;
+    }
+
+    void Close() {
+        CloseCurrent();
+    }
+
+private:
+    // Writer thread: the row exactly as it was written on the acquisition
+    // thread before 2026-10-11 (std::fixed, 6 decimals, set after the header).
+    static void FormatRow(const PipelinePerfSample& sample, std::string& out) {
+        std::ostringstream file_;
+        file_ << std::fixed << std::setprecision(6);
+        file_ << orange::timing::utc_iso8601(orange::timing::RealtimeNs{sample.timestamp_realtime_ns}) << ","
               << sample.frame_id << ","
               << sample.recording_frame_id << ","
               << sample.acquisition_fps << ","
@@ -850,57 +964,18 @@ public:
               << sample.deferred_release_cap_skips << ","
               << sample.deferred_release_copy_fallbacks << ","
               << sample.deferred_release_pending_max << "\n";
-        file_.flush();
-
-        acquisition_fps_.add(sample.acquisition_fps);
-        preprocess_fps_.add(sample.preprocess_fps);
-        preprocess_fps_primary_.add(sample.preprocess_fps_primary);
-        preprocess_fps_helpers_.add(sample.preprocess_fps_helpers);
-        encode_fps_.add(sample.encode_fps);
-        encode_fps_primary_.add(sample.encode_fps_primary);
-        encode_fps_helpers_.add(sample.encode_fps_helpers);
-        display_queue_depth_.add(sample.display_queue_depth);
-        yolo_queue_depth_.add(sample.yolo_queue_depth);
-        preprocess_queue_depth_.add(sample.preprocess_queue_depth);
-        encode_queue_depth_.add(sample.encode_queue_depth);
-        free_entries_available_.add(sample.free_entries_available);
-        free_entries_low_watermark_.add(sample.free_entries_low_watermark);
-        free_events_available_.add(sample.free_events_available);
-        free_events_low_watermark_.add(sample.free_events_low_watermark);
-        yolo_events_available_.add(sample.yolo_events_available);
-        yolo_events_low_watermark_.add(sample.yolo_events_low_watermark);
-        pending_requeues_.add(sample.pending_requeues);
-        preprocess_buffers_available_.add(sample.preprocess_buffers_available);
-        preprocess_events_available_.add(sample.preprocess_events_available);
-        last_sample_ = sample;
-        have_last_sample_ = true;
-        ++samples_;
+        out += file_.str();
     }
 
-    void Close() {
-        CloseCurrent();
-    }
-
-private:
+    // Acquisition thread: queues the file switch; the writer thread opens it.
     void OpenFile(const std::string& folder) {
-        orange::ScopedFsuid fsuid_guard;
-        (void)fsuid_guard;
-        make_folder(folder);
-
         current_folder_ = folder;
         const std::string serial = camera_params_ ? camera_params_->camera_serial : "unknown";
         file_path_ = (std::filesystem::path(current_folder_) /
                       ("Cam" + serial + "_pipeline_perf.csv")).string();
-        file_.open(file_path_, std::ios::out | std::ios::trunc);
-        if (!file_) {
-            std::cerr << "[PIPELINE] Cam " << serial
-                      << " failed to open " << file_path_ << std::endl;
-            current_folder_.clear();
-            file_path_.clear();
-            return;
-        }
-        ResetStats();
-        file_ << "timestamp_utc,frame_id,recording_frame_id,acq_fps,pre_fps,pre_fps_primary,pre_fps_helpers,enc_fps,enc_fps_primary,enc_fps_helpers,"
+        stats = Stats{};
+        static const char kHeader[] =
+            "timestamp_utc,frame_id,recording_frame_id,acq_fps,pre_fps,pre_fps_primary,pre_fps_helpers,enc_fps,enc_fps_primary,enc_fps_helpers,"
                  "display_q,display_preview_max_fps,display_preview_eligible,display_preview_selected,display_preview_skipped,"
                  "yolo_q,pre_q,enc_q,"
                  "acq_free_entries,acq_free_entries_low,acq_free_events,acq_free_events_low,"
@@ -918,50 +993,31 @@ private:
                  "camera_dropped_frames,get_frame_errors,last_get_frame_error_code,"
                  "gpu_direct,gpu_ring,gpu_copy,"
                  "deferred_release_pending,deferred_release_cap_skips,deferred_release_copy_fallbacks,deferred_release_pending_max\n";
-        file_ << std::fixed << std::setprecision(6);
+        channel_->Open(file_path_, kHeader);
         std::cout << "[PIPELINE] Cam " << serial
                   << " logging to " << file_path_ << std::endl;
     }
 
+    // Acquisition thread: closes the file and hands the summary (a copy of
+    // the statistics) to the writer thread, which updates recording_snapshot.json
+    // after the file is closed. No file I/O here.
     void CloseCurrent() {
         if (!current_folder_.empty()) {
-            PersistSummary();
-        }
-        if (file_.is_open()) {
-            file_.close();
+            channel_->Close();
+            channel_->Post([camera_params = camera_params_, folder = current_folder_,
+                            path = file_path_, snapshot = stats]() {
+                PersistSummary(camera_params, folder, path, snapshot);
+            });
         }
         current_folder_.clear();
         file_path_.clear();
-        ResetStats();
+        stats = Stats{};
     }
 
-    void ResetStats() {
-        samples_ = 0;
-        have_last_sample_ = false;
-        last_sample_ = PipelinePerfSample{};
-        acquisition_fps_.reset();
-        preprocess_fps_.reset();
-        preprocess_fps_primary_.reset();
-        preprocess_fps_helpers_.reset();
-        encode_fps_.reset();
-        encode_fps_primary_.reset();
-        encode_fps_helpers_.reset();
-        display_queue_depth_.reset();
-        yolo_queue_depth_.reset();
-        preprocess_queue_depth_.reset();
-        encode_queue_depth_.reset();
-        free_entries_available_.reset();
-        free_entries_low_watermark_.reset();
-        free_events_available_.reset();
-        free_events_low_watermark_.reset();
-        yolo_events_available_.reset();
-        yolo_events_low_watermark_.reset();
-        pending_requeues_.reset();
-        preprocess_buffers_available_.reset();
-        preprocess_events_available_.reset();
-    }
-
-    void PersistSummary() {
+    static void PersistSummary(const CameraParams* camera_params_,
+                               const std::string& current_folder_,
+                               const std::string& file_path_,
+                               const Stats& stats) {
         if (current_folder_.empty()) {
             return;
         }
@@ -975,112 +1031,113 @@ private:
         summary["updated_at_utc"] = get_current_utc_timestamp();
         summary["artifact_path"] = file_path_;
         summary["period_seconds"] = 1;
-        summary["samples"] = samples_;
+        summary["samples"] = stats.samples_;
         summary["finalized"] = true;
 
-        if (have_last_sample_) {
-            summary["last_sample_at_utc"] = last_sample_.timestamp_utc;
-            summary["last_frame_id"] = last_sample_.frame_id;
-            summary["last_recording_frame_id"] = last_sample_.recording_frame_id;
+        if (stats.have_last_sample_) {
+            summary["last_sample_at_utc"] = orange::timing::utc_iso8601(
+                orange::timing::RealtimeNs{stats.last_sample_.timestamp_realtime_ns});
+            summary["last_frame_id"] = stats.last_sample_.frame_id;
+            summary["last_recording_frame_id"] = stats.last_sample_.recording_frame_id;
         }
 
         summary["fps"] = {
-            {"acquisition", acquisition_fps_.to_json()},
-            {"preprocess", preprocess_fps_.to_json()},
-            {"preprocess_primary", preprocess_fps_primary_.to_json()},
-            {"preprocess_helpers", preprocess_fps_helpers_.to_json()},
-            {"encode", encode_fps_.to_json()},
-            {"encode_primary", encode_fps_primary_.to_json()},
-            {"encode_helpers", encode_fps_helpers_.to_json()},
+            {"acquisition", stats.acquisition_fps_.to_json()},
+            {"preprocess", stats.preprocess_fps_.to_json()},
+            {"preprocess_primary", stats.preprocess_fps_primary_.to_json()},
+            {"preprocess_helpers", stats.preprocess_fps_helpers_.to_json()},
+            {"encode", stats.encode_fps_.to_json()},
+            {"encode_primary", stats.encode_fps_primary_.to_json()},
+            {"encode_helpers", stats.encode_fps_helpers_.to_json()},
         };
         summary["queue_depth"] = {
-            {"display", display_queue_depth_.to_json()},
-            {"yolo", yolo_queue_depth_.to_json()},
-            {"preprocess", preprocess_queue_depth_.to_json()},
-            {"encode", encode_queue_depth_.to_json()},
-            {"pending_requeues", pending_requeues_.to_json()},
+            {"display", stats.display_queue_depth_.to_json()},
+            {"yolo", stats.yolo_queue_depth_.to_json()},
+            {"preprocess", stats.preprocess_queue_depth_.to_json()},
+            {"encode", stats.encode_queue_depth_.to_json()},
+            {"pending_requeues", stats.pending_requeues_.to_json()},
         };
         summary["resource_availability"] = {
-            {"acquire_entries", free_entries_available_.to_json()},
-            {"acquire_entries_low_watermark", free_entries_low_watermark_.to_json()},
-            {"acquire_events", free_events_available_.to_json()},
-            {"acquire_events_low_watermark", free_events_low_watermark_.to_json()},
-            {"yolo_events", yolo_events_available_.to_json()},
-            {"yolo_events_low_watermark", yolo_events_low_watermark_.to_json()},
-            {"preprocess_buffers", preprocess_buffers_available_.to_json()},
-            {"preprocess_events", preprocess_events_available_.to_json()},
+            {"acquire_entries", stats.free_entries_available_.to_json()},
+            {"acquire_entries_low_watermark", stats.free_entries_low_watermark_.to_json()},
+            {"acquire_events", stats.free_events_available_.to_json()},
+            {"acquire_events_low_watermark", stats.free_events_low_watermark_.to_json()},
+            {"yolo_events", stats.yolo_events_available_.to_json()},
+            {"yolo_events_low_watermark", stats.yolo_events_low_watermark_.to_json()},
+            {"preprocess_buffers", stats.preprocess_buffers_available_.to_json()},
+            {"preprocess_events", stats.preprocess_events_available_.to_json()},
         };
 
         nlohmann::json totals = nlohmann::json::object();
-        if (have_last_sample_) {
-            totals["acquisition_resource_starvations"] = last_sample_.acquisition_resource_starvations;
-            totals["preprocess_resource_waits"] = last_sample_.preprocess_resource_waits;
-            totals["preprocess_frames_dropped"] = last_sample_.preprocess_frames_dropped;
-            totals["detect_priority_gated_frames"] = last_sample_.detect_priority_gated_frames;
-            totals["detect_priority_waited_frames"] = last_sample_.detect_priority_waited_frames;
-            totals["detect_priority_wait_timeouts"] = last_sample_.detect_priority_wait_timeouts;
-            totals["detect_priority_wait_total_ns"] = last_sample_.detect_priority_wait_total_ns;
-            totals["detect_priority_wait_max_ns"] = last_sample_.detect_priority_wait_max_ns;
-            totals["encode_failures"] = last_sample_.encode_failures;
-            totals["encode_slow_frames"] = last_sample_.encode_slow_frames;
-            totals["external_ipc_frames_acked"] = last_sample_.external_ipc_frames_acked;
-            totals["external_ipc_failures"] = last_sample_.external_ipc_failures;
-            totals["external_ipc_ack_timeouts"] = last_sample_.external_ipc_ack_timeouts;
-            totals["worker_enqueue_rejections"] = last_sample_.worker_enqueue_rejections;
+        if (stats.have_last_sample_) {
+            totals["acquisition_resource_starvations"] = stats.last_sample_.acquisition_resource_starvations;
+            totals["preprocess_resource_waits"] = stats.last_sample_.preprocess_resource_waits;
+            totals["preprocess_frames_dropped"] = stats.last_sample_.preprocess_frames_dropped;
+            totals["detect_priority_gated_frames"] = stats.last_sample_.detect_priority_gated_frames;
+            totals["detect_priority_waited_frames"] = stats.last_sample_.detect_priority_waited_frames;
+            totals["detect_priority_wait_timeouts"] = stats.last_sample_.detect_priority_wait_timeouts;
+            totals["detect_priority_wait_total_ns"] = stats.last_sample_.detect_priority_wait_total_ns;
+            totals["detect_priority_wait_max_ns"] = stats.last_sample_.detect_priority_wait_max_ns;
+            totals["encode_failures"] = stats.last_sample_.encode_failures;
+            totals["encode_slow_frames"] = stats.last_sample_.encode_slow_frames;
+            totals["external_ipc_frames_acked"] = stats.last_sample_.external_ipc_frames_acked;
+            totals["external_ipc_failures"] = stats.last_sample_.external_ipc_failures;
+            totals["external_ipc_ack_timeouts"] = stats.last_sample_.external_ipc_ack_timeouts;
+            totals["worker_enqueue_rejections"] = stats.last_sample_.worker_enqueue_rejections;
             totals["worker_entry_release_underflows"] =
-                last_sample_.worker_entry_release_underflows;
+                stats.last_sample_.worker_entry_release_underflows;
             totals["worker_entry_double_releases"] =
-                last_sample_.worker_entry_double_releases;
+                stats.last_sample_.worker_entry_double_releases;
             totals["worker_entry_retain_after_release_count"] =
-                last_sample_.worker_entry_retain_after_release_count;
+                stats.last_sample_.worker_entry_retain_after_release_count;
             totals["worker_entry_release_underflows_global"] =
-                last_sample_.worker_entry_release_underflows_global;
+                stats.last_sample_.worker_entry_release_underflows_global;
             totals["worker_entry_double_releases_global"] =
-                last_sample_.worker_entry_double_releases_global;
+                stats.last_sample_.worker_entry_double_releases_global;
             totals["worker_entry_retain_after_release_global"] =
-                last_sample_.worker_entry_retain_after_release_global;
+                stats.last_sample_.worker_entry_retain_after_release_global;
             totals["worker_entry_release_underflows_camera"] =
-                last_sample_.worker_entry_release_underflows_camera;
+                stats.last_sample_.worker_entry_release_underflows_camera;
             totals["worker_entry_double_releases_camera"] =
-                last_sample_.worker_entry_double_releases_camera;
+                stats.last_sample_.worker_entry_double_releases_camera;
             totals["worker_entry_retain_after_release_camera"] =
-                last_sample_.worker_entry_retain_after_release_camera;
-            totals["submitted_frames"] = last_sample_.submitted_frames;
-            totals["enqueue_rejected_frames"] = last_sample_.enqueue_rejected_frames;
-            totals["primary_routed_frames"] = last_sample_.primary_routed_frames;
-            totals["helper_requested_frames"] = last_sample_.helper_requested_frames;
-            totals["helper_fallback_frames"] = last_sample_.helper_fallback_frames;
-            totals["helper_dispatched_frames"] = last_sample_.helper_dispatched_frames;
-            totals["last_target_gpu_id"] = last_sample_.last_target_gpu_id;
-            totals["last_route_mode"] = last_sample_.last_route_mode;
-            totals["camera_dropped_frames"] = last_sample_.camera_dropped_frames;
-            totals["camera_frame_id_gaps"] = last_sample_.camera_dropped_frames;
-            totals["get_frame_errors"] = last_sample_.get_frame_errors;
-            totals["last_get_frame_error_code"] = last_sample_.last_get_frame_error_code;
+                stats.last_sample_.worker_entry_retain_after_release_camera;
+            totals["submitted_frames"] = stats.last_sample_.submitted_frames;
+            totals["enqueue_rejected_frames"] = stats.last_sample_.enqueue_rejected_frames;
+            totals["primary_routed_frames"] = stats.last_sample_.primary_routed_frames;
+            totals["helper_requested_frames"] = stats.last_sample_.helper_requested_frames;
+            totals["helper_fallback_frames"] = stats.last_sample_.helper_fallback_frames;
+            totals["helper_dispatched_frames"] = stats.last_sample_.helper_dispatched_frames;
+            totals["last_target_gpu_id"] = stats.last_sample_.last_target_gpu_id;
+            totals["last_route_mode"] = stats.last_sample_.last_route_mode;
+            totals["camera_dropped_frames"] = stats.last_sample_.camera_dropped_frames;
+            totals["camera_frame_id_gaps"] = stats.last_sample_.camera_dropped_frames;
+            totals["get_frame_errors"] = stats.last_sample_.get_frame_errors;
+            totals["last_get_frame_error_code"] = stats.last_sample_.last_get_frame_error_code;
             nlohmann::json get_frame_errors_by_code = nlohmann::json::object();
-            for (const auto& [code, count] : last_sample_.get_frame_errors_by_code) {
+            for (const auto& [code, count] : stats.last_sample_.get_frame_errors_by_code) {
                 get_frame_errors_by_code[std::to_string(code)] = count;
             }
             totals["get_frame_errors_by_code"] = get_frame_errors_by_code;
-            totals["display_preview_max_fps"] = last_sample_.display_preview_max_fps;
-            totals["display_preview_eligible_frames"] = last_sample_.display_preview_eligible_frames;
-            totals["display_preview_selected_frames"] = last_sample_.display_preview_selected_frames;
-            totals["display_preview_skipped_frames"] = last_sample_.display_preview_skipped_frames;
-            totals["gpu_direct_frames"] = last_sample_.gpu_direct_frames;
-            totals["gpu_ring_copy_frames"] = last_sample_.gpu_ring_copy_frames;
-            totals["gpu_copy_frames"] = last_sample_.gpu_copy_frames;
+            totals["display_preview_max_fps"] = stats.last_sample_.display_preview_max_fps;
+            totals["display_preview_eligible_frames"] = stats.last_sample_.display_preview_eligible_frames;
+            totals["display_preview_selected_frames"] = stats.last_sample_.display_preview_selected_frames;
+            totals["display_preview_skipped_frames"] = stats.last_sample_.display_preview_skipped_frames;
+            totals["gpu_direct_frames"] = stats.last_sample_.gpu_direct_frames;
+            totals["gpu_ring_copy_frames"] = stats.last_sample_.gpu_ring_copy_frames;
+            totals["gpu_copy_frames"] = stats.last_sample_.gpu_copy_frames;
         }
         summary["totals"] = totals;
-        if (have_last_sample_) {
+        if (stats.have_last_sample_) {
             summary["routing"] = {
-                {"submitted_frames", last_sample_.submitted_frames},
-                {"enqueue_rejected_frames", last_sample_.enqueue_rejected_frames},
-                {"primary_routed_frames", last_sample_.primary_routed_frames},
-                {"helper_requested_frames", last_sample_.helper_requested_frames},
-                {"helper_fallback_frames", last_sample_.helper_fallback_frames},
-                {"helper_dispatched_frames", last_sample_.helper_dispatched_frames},
-                {"last_target_gpu_id", last_sample_.last_target_gpu_id},
-                {"last_route_mode", last_sample_.last_route_mode}
+                {"submitted_frames", stats.last_sample_.submitted_frames},
+                {"enqueue_rejected_frames", stats.last_sample_.enqueue_rejected_frames},
+                {"primary_routed_frames", stats.last_sample_.primary_routed_frames},
+                {"helper_requested_frames", stats.last_sample_.helper_requested_frames},
+                {"helper_fallback_frames", stats.last_sample_.helper_fallback_frames},
+                {"helper_dispatched_frames", stats.last_sample_.helper_dispatched_frames},
+                {"last_target_gpu_id", stats.last_sample_.last_target_gpu_id},
+                {"last_route_mode", stats.last_sample_.last_route_mode}
             };
         }
 
@@ -1098,30 +1155,8 @@ private:
     const CameraParams* camera_params_ = nullptr;
     std::string current_folder_;
     std::string file_path_;
-    std::ofstream file_;
-    uint64_t samples_ = 0;
-    bool have_last_sample_ = false;
-    PipelinePerfSample last_sample_;
-    RunningDoubleStats acquisition_fps_{};
-    RunningDoubleStats preprocess_fps_{};
-    RunningDoubleStats preprocess_fps_primary_{};
-    RunningDoubleStats preprocess_fps_helpers_{};
-    RunningDoubleStats encode_fps_{};
-    RunningDoubleStats encode_fps_primary_{};
-    RunningDoubleStats encode_fps_helpers_{};
-    RunningInt64Stats display_queue_depth_{};
-    RunningInt64Stats yolo_queue_depth_{};
-    RunningInt64Stats preprocess_queue_depth_{};
-    RunningInt64Stats encode_queue_depth_{};
-    RunningInt64Stats free_entries_available_{};
-    RunningInt64Stats free_entries_low_watermark_{};
-    RunningInt64Stats free_events_available_{};
-    RunningInt64Stats free_events_low_watermark_{};
-    RunningInt64Stats yolo_events_available_{};
-    RunningInt64Stats yolo_events_low_watermark_{};
-    RunningInt64Stats pending_requeues_{};
-    RunningInt64Stats preprocess_buffers_available_{};
-    RunningInt64Stats preprocess_events_available_{};
+    Stats stats;
+    std::shared_ptr<orange::timing::LogChannel<PipelinePerfSample>> channel_;
 };
 
 std::string current_recording_folder(CameraControl* camera_control) {
@@ -1592,7 +1627,7 @@ void acquire_frames(
         const RecordingIngressStats recording_stats =
             recording_ingress ? recording_ingress->GetStats() : RecordingIngressStats{};
         PipelinePerfSample sample;
-        sample.timestamp_utc = get_current_utc_timestamp();
+        sample.timestamp_realtime_ns = orange::timing::realtime_now_ns();
         sample.frame_id = camera_state.frame_count;
         sample.recording_frame_id = last_recording_frame_count;
         sample.acquisition_fps = current_acquisition_fps;
@@ -2836,7 +2871,7 @@ void acquire_frames(
                      (probe_frame_id >= kAcquisitionCadenceProbeFrameMin &&
                       probe_frame_id <= kAcquisitionCadenceProbeFrameMax))) {
                     AcquisitionCadenceProbeSample cadence_sample;
-                    cadence_sample.timestamp_utc = get_current_utc_timestamp();
+                    cadence_sample.timestamp_realtime_ns = orange::timing::realtime_now_ns();
                     cadence_sample.local_frame_id = current_entry->frame_id;
                     cadence_sample.recording_frame_id = current_entry->recording_frame_id;
                     cadence_sample.camera_frame_id = received_frame->frame_id;

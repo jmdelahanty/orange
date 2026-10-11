@@ -153,6 +153,26 @@ int main()
         expect(c.dropped_queue_full == 0, "multi no drops with a large ring");
     }
 
+    // 7. Post runs on the writer, after the Close queued before it; FlushAll
+    //    covers every channel; Open creates missing parent folders.
+    {
+        auto channel = LogChannel<Row>::Create({"post", 64}, format_row);
+        const fs::path nested = dir / "new_folder" / "g.csv";
+        channel->Open(nested.string(), "h\n");
+        channel->Emit({1, 2});
+        channel->Close();
+        std::string seen;
+        std::thread::id job_thread;
+        channel->Post([&] {
+            seen = slurp(nested);
+            job_thread = std::this_thread::get_id();
+        });
+        expect(LogWriter::Instance().FlushAll(wait), "FlushAll applied");
+        expect(seen == "h\n1,2\n", "Post ran after the file was closed and complete");
+        expect(job_thread != std::this_thread::get_id(), "Post ran on the writer thread");
+        expect(channel->Retire(wait), "post retire");
+    }
+
     fs::remove_all(dir);
     if (failures) {
         std::cerr << failures << " log writer test(s) failed" << std::endl;

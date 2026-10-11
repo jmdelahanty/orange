@@ -182,7 +182,7 @@ the native binary before the next run.
   `require_external_ipc`, which refuse a start whose full-frame or crop sink
   is not `external_ipc`.
 - No synchronous file I/O on the acquisition, YOLO, pose or handoff threads;
-  per-frame diagnostics go through `src/async_line_sink.h`.
+  per-frame diagnostics go through a `LogChannel` (`src/timing/log_writer.h`).
 - Keep owner push serialized per card; the GOP routing offset stays 0.
 - Read `encode_dropped`, `early_stage_exhausted` and the NIC counters before
   calling a run clean.

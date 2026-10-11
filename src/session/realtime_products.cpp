@@ -1,7 +1,9 @@
 #include "session/realtime_products.h"
+#include "timing/log_writer.h"
 
 #include <cstdint>
 #include <filesystem>
+#include <iostream>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -185,6 +187,12 @@ nlohmann::json product_json(const fs::path& folder, const std::string& serial, c
 nlohmann::json build_realtime_products_json(const std::string& recording_folder,
                                             const std::vector<std::string>& camera_serials)
 {
+    // The per-frame logs below are written by the process log writer thread;
+    // every row queued before finalize must be on disk before they are hashed.
+    if (!orange::timing::LogWriter::Instance().FlushAll()) {
+        std::cerr << "[realtime_products] log writer did not flush within its timeout; "
+                     "per-frame log digests may describe partial files" << std::endl;
+    }
     const fs::path folder(recording_folder);
     nlohmann::json models = nlohmann::json::object();
     {

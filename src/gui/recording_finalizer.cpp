@@ -4,6 +4,7 @@
 // called from this translation unit stay in an anonymous namespace here.
 
 #include "gui/recording_finalizer.h"
+#include "timing/log_writer.h"
 #include "fsuid_guard.h"
 #include "scoped_housekeeping_cpu.h"
 #include "recording_master_crop_coverage.h"
@@ -1337,6 +1338,10 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
         outcome.error_message = "internal error: finalize inputs are unavailable";
         return outcome;
     }
+    // Per-frame logs and their end-of-recording summaries (for example
+    // pipeline_metrics in recording_snapshot.json) are written by the log
+    // writer thread; let it catch up before finalize reads them.
+    (void)orange::timing::LogWriter::Instance().FlushAll();
     auto publish_stage = [&](const GuiRecordingFinalizeStage stage) {
         if (progress) {
             progress->stage.store(

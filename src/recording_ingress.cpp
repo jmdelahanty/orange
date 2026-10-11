@@ -28,7 +28,7 @@
 #include <utility>
 
 #include "encoder_preprocess_worker.h"
-#include "async_line_sink.h"
+#include "timing/log_writer.h"
 #include "external_recorder_ipc_protocol.h"
 #include "threadworker.h"
 #include "worker_entry_release.h"
@@ -374,11 +374,16 @@ protected:
             }
             usleep(1000);
         }
-        if (owner_push_csv_.IsOpen() && owner_push_csv_.dropped() > 0) {
-            std::cerr << "[ExternalIpcRecorder] camera=" << camera_serial_ << " owner push csv dropped "
-                      << owner_push_csv_.dropped() << " rows" << std::endl;
+        if (owner_push_csv_) {
+            const uint64_t dropped = owner_push_csv_->counters().dropped_queue_full;
+            if (dropped > 0) {
+                std::cerr << "[ExternalIpcRecorder] camera=" << camera_serial_ << " owner push csv dropped "
+                          << dropped << " rows" << std::endl;
+            }
+            owner_push_csv_->Retire();
+            owner_push_csv_.reset();
+            owner_push_csv_folder_.clear();
         }
-        owner_push_csv_.Close();
         if (owner_push_) {
             std::cout << "[ExternalIpcRecorder] camera=" << camera_serial_
                       << " owner push summary: pushes=" << owner_pushes()
@@ -1954,7 +1959,32 @@ private:
     double owner_push_deadline_ms_ = 10.0;
     double owner_push_transfer_allowance_ms_ = 3.6;
     std::atomic<uint64_t> owner_push_age_fallbacks_{0};
-    orange::AsyncLineSink owner_push_csv_;  // Cam<serial>_owner_push.csv in the recording folder (diagnostic; sink thread writes)
+    // Cam<serial>_owner_push.csv in the recording folder (diagnostic). The
+    // handoff thread copies a row into the channel's ring; the process log
+    // writer formats and writes it.
+    struct OwnerPushRow {
+        const char* kind = "";  // string literal
+        uint64_t recording_frame_id = 0;
+        uint64_t local_frame_id = 0;
+        uint64_t capture_sys_ns = 0;
+        uint64_t start_ns = 0;
+        uint64_t done_ns = 0;
+        double age_ms = 0.0;
+        size_t queue_in = 0;
+        size_t pending_release = 0;
+        int slot = -1;
+        int gpu = -1;
+    };
+    static void format_owner_push_row(const OwnerPushRow& r, std::string& out)
+    {
+        std::ostringstream line;
+        line << r.kind << "," << r.recording_frame_id << "," << r.local_frame_id << ","
+             << r.capture_sys_ns << "," << r.start_ns << "," << r.done_ns << ","
+             << (r.done_ns > r.start_ns ? (r.done_ns - r.start_ns) / 1e6 : 0.0) << "," << r.age_ms << ","
+             << r.queue_in << "," << r.pending_release << "," << r.slot << "," << r.gpu << "\n";
+        out += line.str();
+    }
+    std::shared_ptr<orange::timing::LogChannel<OwnerPushRow>> owner_push_csv_;
     std::string owner_push_csv_folder_;
     void owner_push_csv_row(const char* kind, WORKER_ENTRY* entry, uint64_t start_ns, uint64_t done_ns,
                             double age_ms, int slot, int gpu)
@@ -1962,10 +1992,15 @@ private:
         if (!entry || entry->recording_folder.empty()) {
             return;
         }
+        if (!owner_push_csv_) {
+            orange::timing::LogChannelOptions options;
+            options.name = "owner_push";
+            options.capacity = 8192;
+            owner_push_csv_ = orange::timing::LogChannel<OwnerPushRow>::Create(options, &format_owner_push_row);
+        }
         if (owner_push_csv_folder_ != entry->recording_folder) {
-            owner_push_csv_.Close();
             owner_push_csv_folder_ = entry->recording_folder;
-            (void)owner_push_csv_.Open(
+            owner_push_csv_->Open(
                 entry->recording_folder + "/Cam" + camera_serial_ + "_owner_push.csv",
                 "kind,recording_frame_id,local_frame_id,capture_sys_ns,push_start_steady_ns,"
                 "push_done_steady_ns,wait_ms,age_at_push_ms,queue_in,pending_release,slot,gpu\n");
@@ -1977,15 +2012,10 @@ private:
                 " slot=" + std::to_string(slot) + " gpu=" + std::to_string(gpu),
                 entry->recording_frame_id);
         }
-        if (!owner_push_csv_.IsOpen()) {
-            return;
-        }
-        std::ostringstream line;
-        line << kind << "," << entry->recording_frame_id << "," << entry->frame_id << ","
-             << entry->timestamp_sys << "," << start_ns << "," << done_ns << ","
-             << (done_ns > start_ns ? (done_ns - start_ns) / 1e6 : 0.0) << "," << age_ms << ","
-             << GetCountQueueIn() << "," << pending_release_count() << "," << slot << "," << gpu << "\n";
-        owner_push_csv_.Append(line.str());
+        owner_push_csv_->Emit(OwnerPushRow{kind, entry->recording_frame_id, entry->frame_id,
+                                           entry->timestamp_sys, start_ns, done_ns, age_ms,
+                                           static_cast<size_t>(GetCountQueueIn()),
+                                           static_cast<size_t>(pending_release_count()), slot, gpu});
     }
     size_t owner_push_chunk_bytes_ = 2u * 1024u * 1024u;
     std::atomic<uint64_t> owner_pushes_{0};
