@@ -1,4 +1,5 @@
 #include "session/recording_observation_binding.h"
+#include "recording_subject_reference.h"
 #include "session/recording_observation_finalization.h"
 #include "session/recording_observation_identity.h"
 #include "session/recording_observation_prearm.h"
@@ -975,6 +976,83 @@ void test_v3_subject_declaration_and_reference()
             "a 404 not_collected subject reference must seal: " + error);
 }
 
+// Hop 1 of the subject declaration contract (amendment PR 75): a v2 request
+// answered with acceptance v3 is cross-checked against the operator's
+// frozen start entry, recorded in subject_cross_check.json at the recording
+// root, and never changes the start snapshot or blocks the arm.
+void test_prearm_subject_cross_check()
+{
+    setenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION", "2", 1);
+    json session = frozen_recording_contexts("stimulus_experiment");
+    orange::recording::SubjectDeclaration operator95, operator96;
+    operator95.dish_id = "19234_2"; operator95.subject_count = 1;
+    operator96.dish_id = "19234_3"; operator96.subject_count = 1;
+    session["subject_references"] = orange::recording::BuildSubjectReferences(
+        {{"2010095", operator95}, {"2010096", operator96}}, orange::recording::ZebrobotLookupConfig{},
+        "2026-08-13T16:00:00Z");
+    const auto root = make_materialization_fixture(resolved_geometry(), session);
+    const std::string start_before = read_file(root / "recording_snapshot_start.json");
+    orange::session::RecordingObservationBindingRequestMaterialization requests;
+    orange::session::RecordingObservationPreArmResult result;
+    std::string error;
+    const auto transport = [](const json& local_request, json* response, std::string*) {
+        json acceptances = json::array();
+        for (const auto& request : local_request.at("params").at("binding_requests")) {
+            const std::string context = request.at("contract").at("observation_context_id");
+            json subject = subject_declaration_fixture();  // Citrus: dish 19234_2, count 1, both arenas
+            json contract = {
+                {"schema_id", orange::session::kObservationBindingAcceptanceSchemaId},
+                {"schema_version", orange::session::kObservationBindingAcceptanceSchemaVersionV3},
+                {"status", "accepted"},
+                {"request_id", request.at("request_id")},
+                {"request_contract_sha256", request.at("contract_sha256")},
+                {"observation_context_id", context},
+                {"decided_at_utc", "2026-08-13T16:00:01Z"},
+                {"citrus_experiment_id", "citexp_transaction_test"},
+                {"citrus_session_uuid", "citsess_" + context.substr(7)},
+                {"target", request.at("contract").at("target")},
+                {"planned_h5_relative_path", "citrus/citsess_" + context.substr(7) + "_protocol.h5"},
+                {"subject", subject},
+            };
+            json acceptance;
+            std::string seal_error;
+            require(orange::session::seal_recording_observation_binding_acceptance(contract, &acceptance, &seal_error),
+                    "v3 test acceptance seal failed: " + seal_error);
+            acceptances.push_back(std::move(acceptance));
+        }
+        *response = {{"ok", true}, {"accepted", true},
+            {"effect", {{"recording_observation_binding", {
+                {"schema_id", "citrus.recording_observation_binding_batch_result"},
+                {"schema_version", 1}, {"status", "accepted"},
+                {"citrus_experiment_id", "citexp_transaction_test"},
+                {"acceptance_count", acceptances.size()}, {"acceptances", std::move(acceptances)}}}}}};
+        return true;
+    };
+    require(orange::session::prepare_recording_observation_pre_arm(
+                root.string(), "required", "2026-08-13T16:00:00Z", &requests, &result, &error, transport),
+            "v3 pre-arm failed: " + error);
+    unsetenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION");
+    require(result.arm_allowed && result.lifecycle_status == "accepted_pending_finalization",
+            "a subject mismatch must not block the arm");
+    require(result.subject_mismatches.size() == 1 &&
+                result.subject_mismatches[0].find("camera 2010096") != std::string::npos,
+            "exactly camera 2010096 (operator 19234_3, Citrus 19234_2) must be reported");
+    const json check = json::parse(read_file(root / "subject_cross_check.json"));
+    require(check == result.subject_cross_check, "the file must hold the reported cross-check");
+    require(check.at("schema_id") == "orange.recording_subject_cross_check" && check.at("mismatch_count") == 1,
+            "cross-check header");
+    const json& cams = check.at("cameras");
+    require(cams.at("2010095").at("status") == "match" &&
+                cams.at("2010095").at("operator").at("dish_id") == "19234_2",
+            "2010095 must match; the operator dish comes from the frozen lookup_failed endpoint");
+    require(cams.at("2010096").at("status") == "mismatch" &&
+                cams.at("2010096").at("differences") == json::array({"dish_id"}) &&
+                cams.at("2010096").at("citrus_subject_declaration") == subject_declaration_fixture(),
+            "2010096 must record the dish difference and the Citrus declaration verbatim");
+    require(read_file(root / "recording_snapshot_start.json") == start_before,
+            "the sealed start snapshot must never change");
+}
+
 void test_prearm_surfaces_v2_context_rejection_reasons()
 {
     setenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION", "2", 1);
@@ -1610,6 +1688,7 @@ int main()
         test_prearm_surfaces_v2_context_rejection_reasons();
         test_v2_envelopes_carry_matching_versions_and_reject_mixing();
         test_v3_subject_declaration_and_reference();
+        test_prearm_subject_cross_check();
         test_post_close_finalization_is_complete_idempotent_and_manifest_bound();
     test_receipt_v2_live_finalize_and_process_diagnostic_rules();
     test_receipt_upgrade_writes_a_verified_revision_chain();

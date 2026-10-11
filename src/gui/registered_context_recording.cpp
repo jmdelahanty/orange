@@ -27,6 +27,8 @@ bool confirmed = false;
 // and a start consumes it.
 bool subject_confirmed = false;
 json subject_confirmation;  // orange.recording_subject_confirmation v1
+std::vector<std::string> subject_cross_check_mismatches;
+bool subject_cross_check_ran = false;
 void clear_subject_confirmation() {
     subject_confirmed = false;
     subject_confirmation = nullptr;
@@ -69,6 +71,10 @@ recording::RecordingContextsConfig RecordingContextsForStream() {
 recording::SubjectReferencesConfig SubjectReferencesForStream() {
     if (!subject_error.empty()) throw std::runtime_error("GUI subject references: " + subject_error);
     return subject_references;
+}
+void SetSubjectCrossCheckResult(const std::vector<std::string>& mismatches, bool citrus_declared) {
+    subject_cross_check_mismatches = mismatches;
+    subject_cross_check_ran = citrus_declared;
 }
 recording::SubjectReferencesConfig SubjectReferencesForRecordStart(json* confirmation_out) {
     if (!subject_error.empty()) throw std::runtime_error("GUI subject references: " + subject_error);
@@ -245,6 +251,15 @@ void RenderSubjectReferenceSelection(bool locked, const std::vector<std::string>
         } else if (!err.empty()) {
             subject_status = "Not confirmed: " + err;
         }
+    }
+    if (!subject_cross_check_mismatches.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.1f, 1.0f),
+                           "Current recording: Citrus declared a different subject than you confirmed:");
+        for (const auto& line : subject_cross_check_mismatches) ImGui::BulletText("%s", line.c_str());
+        ImGui::TextWrapped("Recorded in subject_cross_check.json; Citrus's confirmed value is authoritative for "
+                           "Citrus-bound cameras. Fix the table here or in Citrus before the next recording.");
+    } else if (subject_cross_check_ran) {
+        ImGui::TextWrapped("Current recording: Citrus's dish declarations match your confirmed entries.");
     }
     if (subject_confirmed)
         ImGui::TextWrapped("Confirmed at %s for the next recording.",

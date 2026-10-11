@@ -4271,6 +4271,8 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
             std::cerr << "[GUI][recording] Start rejected: " << error << std::endl;
             return GuiRecordingStartDispatch::kFailed;
         }
+        orange::gui::SetSubjectCrossCheckResult(observation_pre_arm.subject_mismatches,
+                                                !observation_pre_arm.subject_cross_check.is_null());
         std::cout << "[GUI][recording] Observation binding request status="
                   << observation_requests.status
                   << " count=" << observation_requests.artifacts.size()

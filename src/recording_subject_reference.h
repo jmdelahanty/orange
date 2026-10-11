@@ -147,4 +147,23 @@ std::optional<nlohmann::json> ReadFrozenSubjectReferences(const std::string& rec
 // different block. No frozen block: the manifest is left without one.
 void ApplySubjectReferencesGate(const std::string& recording_folder, nlohmann::json* manifest);
 
+// What the operator declared per camera, recovered from an emitted block:
+// collected -> dish.dish_id; lookup_failed -> the dish id in zebrobot.endpoint
+// (/dishes/<id>/citrus-snapshot); not_collected -> no dish. subject_count as
+// emitted. Used to compare the frozen start entry with Citrus's declaration.
+std::map<std::string, SubjectDeclaration> DeclaredSubjectsFromEmitted(const nlohmann::json& block);
+
+inline constexpr const char* kSubjectCrossCheckSchemaId = "orange.recording_subject_cross_check";
+inline constexpr int kSubjectCrossCheckSchemaVersion = 1;
+// Pre-arm cross-check (agent-contracts citrus-orange/subject_declaration_v1,
+// amendment PR 75, hop 1): each Citrus-bound camera's acceptance v3
+// declaration (citrus.subject_declaration, by target.camera_id) against the
+// operator's entry frozen in the start snapshot. Warn and record only; the
+// start snapshot never changes. Per camera: status match | mismatch |
+// no_citrus_declaration, differences (dish_id, subject_count), the operator's
+// declared values and the Citrus declaration verbatim.
+nlohmann::json BuildSubjectCrossCheck(const nlohmann::json& frozen_block,
+                                      const std::map<std::string, nlohmann::json>& citrus_by_camera,
+                                      const std::string& checked_at_utc);
+
 }  // namespace orange::recording

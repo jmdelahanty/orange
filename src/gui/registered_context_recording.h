@@ -24,6 +24,10 @@ recording::SubjectReferencesConfig SubjectReferencesForStream();
 // since. Fills `confirmation_out` (orange.recording_subject_confirmation v1) and
 // consumes the confirmation.
 recording::SubjectReferencesConfig SubjectReferencesForRecordStart(nlohmann::json* confirmation_out);
+// After pre-arm: Citrus's per-camera dish declarations that differ from the
+// confirmed entries (one line each; empty = all matched or none declared).
+// Shown in the Subject panel until the next start.
+void SetSubjectCrossCheckResult(const std::vector<std::string>& mismatches, bool citrus_declared);
 recording::ZebrobotLookupConfig ZebrobotLookupForStream();
 // Default dish/count plus one editable row per camera serial (overrides).
 void RenderSubjectReferenceSelection(bool locked, const std::vector<std::string>& camera_serials);

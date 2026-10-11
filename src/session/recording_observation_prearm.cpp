@@ -1,4 +1,5 @@
 #include "session/recording_observation_prearm.h"
+#include "recording_subject_reference.h"
 #include <iostream>
 
 #include "fsuid_guard.h"
@@ -33,6 +34,10 @@ constexpr const char* kAcceptanceDirectory =
     "recording_observation_bindings/acceptances";
 constexpr const char* kDecisionRelativePath =
     "recording_observation_bindings/pre_arm_decision.json";
+// At the recording root, not under recording_observation_bindings/ (whose
+// inventory the Citrus transfer sealer checks): an undeclared root file is
+// carried as session context.
+constexpr const char* kSubjectCrossCheckRelativePath = "subject_cross_check.json";
 // An Orange-only (not_applicable) decision must not live under
 // recording_observation_bindings/: Citrus transfer-v2 refuses any file there
 // when the manifest carries no bindings projection, and a recording-only
@@ -711,6 +716,42 @@ bool execute_recording_observation_pre_arm(
                     {"byte_size", artifact.byte_size},
                 });
                 result_out->acceptances.push_back(std::move(artifact));
+            }
+            // Hop 1 of the subject declaration contract: cross-check, warn
+            // and record; the sealed start snapshot is never changed.
+            std::map<std::string, json> citrus_subjects;
+            for (const auto& acceptance : acceptances) {
+                const json& contract = acceptance.at("contract");
+                if (contract.value("status", "") == "accepted" && contract.contains("subject")) {
+                    citrus_subjects[contract.at("target").value("camera_id", "")] = contract.at("subject");
+                }
+            }
+            if (!citrus_subjects.empty()) {
+                std::string frozen_error;
+                const auto frozen =
+                    orange::recording::ReadFrozenSubjectReferences(folder.string(), &frozen_error);
+                result_out->subject_cross_check = orange::recording::BuildSubjectCrossCheck(
+                    frozen.value_or(json::object()), citrus_subjects, decided_at_utc);
+                if (!frozen_error.empty()) {
+                    result_out->subject_cross_check["operator_entries_error"] = frozen_error;
+                }
+                for (const auto& [serial, camera] : result_out->subject_cross_check.at("cameras").items()) {
+                    if (camera.value("status", "") != "mismatch") continue;
+                    const json& op = camera.at("operator");
+                    const json& citrus = camera.at("citrus_subject_declaration");
+                    const auto text = [](const json& v) { return v.is_null() ? std::string("none") : v.dump(); };
+                    result_out->subject_mismatches.push_back(
+                        "camera " + serial + ": Orange dish " + text(op.at("dish_id")) + " count " +
+                        text(op.at("subject_count")) + ", Citrus dish " + text(citrus.value("dish_id", json())) +
+                        " count " + text(citrus.value("subject_count", json())));
+                    std::cerr << "[recording][citrus] subject declaration differs from the operator entry, "
+                              << result_out->subject_mismatches.back() << std::endl;
+                }
+                if (!create_read_only_file_once(
+                        folder / kSubjectCrossCheckRelativePath,
+                        result_out->subject_cross_check.dump(2) + "\n", error_out)) {
+                    return false;
+                }
             }
             result_out->lifecycle_status = all_accepted
                 ? "accepted_pending_finalization"

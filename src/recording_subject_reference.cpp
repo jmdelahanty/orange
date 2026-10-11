@@ -685,6 +685,74 @@ std::optional<json> ReadFrozenSubjectReferences(const std::string& recording_fol
     }
 }
 
+std::map<std::string, SubjectDeclaration> DeclaredSubjectsFromEmitted(const json& block)
+{
+    std::map<std::string, SubjectDeclaration> out;
+    if (!block.is_object()) return out;
+    for (auto it = block.begin(); it != block.end(); ++it) {
+        const json& e = it.value();
+        SubjectDeclaration d;
+        if (!e.is_object()) { out[it.key()] = d; continue; }
+        const std::string status = e.value("status", "");
+        if (status == "collected" && e.contains("dish") && e.at("dish").is_object()) {
+            d.dish_id = e.at("dish").value("dish_id", "");
+        } else if (status == "lookup_failed" && e.contains("zebrobot") && e.at("zebrobot").is_object()) {
+            const std::string endpoint = e.at("zebrobot").value("endpoint", "");
+            const std::string prefix = "/dishes/", suffix = "/citrus-snapshot";
+            if (endpoint.size() > prefix.size() + suffix.size() && endpoint.rfind(prefix, 0) == 0 &&
+                endpoint.compare(endpoint.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                d.dish_id = endpoint.substr(prefix.size(), endpoint.size() - prefix.size() - suffix.size());
+            }
+        }
+        if (e.contains("subject_count") && e.at("subject_count").is_number_integer())
+            d.subject_count = e.at("subject_count").get<int>();
+        out[it.key()] = d;
+    }
+    return out;
+}
+
+json BuildSubjectCrossCheck(const json& frozen_block, const std::map<std::string, json>& citrus_by_camera,
+                            const std::string& checked_at_utc)
+{
+    const auto declared = DeclaredSubjectsFromEmitted(frozen_block);
+    std::set<std::string> serials;
+    for (const auto& [serial, d] : declared) serials.insert(serial);
+    for (const auto& [serial, c] : citrus_by_camera) serials.insert(serial);
+    json cameras = json::object();
+    std::size_t mismatches = 0;
+    for (const std::string& serial : serials) {
+        const auto op = declared.find(serial);
+        const SubjectDeclaration operator_entry = op == declared.end() ? SubjectDeclaration{} : op->second;
+        json camera = {
+            {"operator", {{"dish_id", operator_entry.dish_id ? json(*operator_entry.dish_id) : json(nullptr)},
+                          {"subject_count", operator_entry.subject_count ? json(*operator_entry.subject_count)
+                                                                         : json(nullptr)},
+                          {"in_start_snapshot", op != declared.end()}}},
+            {"citrus_subject_declaration", nullptr},
+            {"differences", json::array()},
+        };
+        const auto c = citrus_by_camera.find(serial);
+        if (c == citrus_by_camera.end()) {
+            camera["status"] = "no_citrus_declaration";
+        } else {
+            camera["citrus_subject_declaration"] = c->second;
+            const json citrus_dish = c->second.value("dish_id", json(nullptr));
+            const json citrus_count = c->second.value("subject_count", json(nullptr));
+            if (citrus_dish != camera["operator"]["dish_id"]) camera["differences"].push_back("dish_id");
+            if (citrus_count != camera["operator"]["subject_count"]) camera["differences"].push_back("subject_count");
+            camera["status"] = camera["differences"].empty() ? "match" : "mismatch";
+            if (!camera["differences"].empty()) ++mismatches;
+        }
+        cameras[serial] = std::move(camera);
+    }
+    return {{"schema_id", kSubjectCrossCheckSchemaId},
+            {"schema_version", kSubjectCrossCheckSchemaVersion},
+            {"checked_at_utc", checked_at_utc},
+            {"policy", "warn_and_record; the start snapshot is never changed"},
+            {"mismatch_count", mismatches},
+            {"cameras", std::move(cameras)}};
+}
+
 void ApplySubjectReferencesGate(const std::string& recording_folder, json* manifest)
 {
     require(manifest != nullptr && manifest->is_object(), "subject references gate needs a manifest object");

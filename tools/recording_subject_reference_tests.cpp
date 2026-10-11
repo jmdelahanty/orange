@@ -304,11 +304,46 @@ void test_real_http(const std::string& base_url)
 }
 }  // namespace
 
+void test_cross_check()
+{
+    // Operator entries as emitted: collected, lookup_failed (dish only in the
+    // endpoint), not_collected.
+    const json frozen = {
+        {"2010093", {{"status", "collected"}, {"dish", {{"dish_id", "19234_3"}}}, {"subject_count", 1}}},
+        {"2010094", {{"status", "lookup_failed"}, {"dish", nullptr},
+                     {"zebrobot", {{"endpoint", "/dishes/19234_1/citrus-snapshot"}}}, {"subject_count", 1}}},
+        {"2010095", {{"status", "not_collected"}, {"dish", nullptr}, {"subject_count", nullptr}}},
+    };
+    const auto declared = DeclaredSubjectsFromEmitted(frozen);
+    EXPECT(declared.at("2010093").dish_id == "19234_3" && declared.at("2010093").subject_count == 1);
+    EXPECT(declared.at("2010094").dish_id == "19234_1");
+    EXPECT(!declared.at("2010095").dish_id && !declared.at("2010095").subject_count);
+    const auto citrus = [](const json& dish, const json& count) {
+        return json{{"schema_id", "citrus.subject_declaration"}, {"dish_id", dish}, {"subject_count", count}};
+    };
+    const json check = BuildSubjectCrossCheck(frozen,
+        {{"2010093", citrus("19234_3", 1)}, {"2010094", citrus("19234_1", 2)},
+         {"2010095", citrus(nullptr, nullptr)}, {"2010096", citrus("19234_2", 1)}},
+        "2026-10-11T20:00:00Z");
+    const json& c = check.at("cameras");
+    EXPECT(c.at("2010093").at("status") == "match");
+    EXPECT(c.at("2010094").at("status") == "mismatch" && c.at("2010094").at("differences") == json::array({"subject_count"}));
+    EXPECT(c.at("2010095").at("status") == "match");  // both declared no dish
+    EXPECT(c.at("2010096").at("status") == "mismatch" &&
+           c.at("2010096").at("operator").at("in_start_snapshot") == false &&
+           c.at("2010096").at("differences") == json::array({"dish_id", "subject_count"}));
+    EXPECT(check.at("mismatch_count") == 2);
+    const json unbound = BuildSubjectCrossCheck(frozen, {}, "2026-10-11T20:00:00Z");
+    EXPECT(unbound.at("cameras").at("2010093").at("status") == "no_citrus_declaration" &&
+           unbound.at("mismatch_count") == 0);
+}
+
 int main(int argc, char** argv)
 {
     test_configs();
     test_builder_outcomes();
     test_block_rules_and_gate();
+    test_cross_check();
     if (argc > 1) test_real_http(argv[1]);
     if (g_failures) { std::fprintf(stderr, "%d failure(s)\n", g_failures); return 1; }
     std::puts(argc > 1 ? "recording_subject_reference_tests: all passed (incl. real HTTP)" : "recording_subject_reference_tests: all passed");

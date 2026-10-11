@@ -40,6 +40,13 @@ struct RecordingObservationPreArmResult {
         std::string reason;
     };
     std::vector<ContextRejection> context_rejections;
+    // Acceptance v3 only: Citrus's per-camera dish declaration compared with
+    // the operator's frozen entry (orange.recording_subject_cross_check v1,
+    // written to <recording>/subject_cross_check.json);
+    // null when no acceptance carried a declaration. One line per mismatch
+    // for the operator. Never blocks the arm.
+    nlohmann::json subject_cross_check;
+    std::vector<std::string> subject_mismatches;
 };
 
 using RecordingObservationBindingTransport = std::function<bool(
