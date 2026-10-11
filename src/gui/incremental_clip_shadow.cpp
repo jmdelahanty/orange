@@ -2,6 +2,7 @@
 // gui/incremental_clip_shadow.h for the design and threading model.
 
 #include "gui/incremental_clip_shadow.h"
+#include "timing/clock.h"
 
 #include "fsuid_guard.h"
 
@@ -41,15 +42,7 @@ std::chrono::milliseconds gui_shadow_retry_backoff(const int retry_count)
 
 std::string gui_shadow_utc_now()
 {
-    const std::time_t seconds =
-        std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    std::tm tm_utc{};
-    gmtime_r(&seconds, &tm_utc);
-    char buffer[32];
-    if (std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &tm_utc) == 0) {
-        return {};
-    }
-    return buffer;
+    return orange::timing::utc_iso8601_now();
 }
 
 std::string gui_shadow_clip_id(const int clip_index)

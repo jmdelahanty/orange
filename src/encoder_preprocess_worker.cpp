@@ -1,6 +1,7 @@
 // src/encoder_preprocess_worker.cpp
 
 #include "encoder_preprocess_worker.h"
+#include "timing/clock.h"
 #include "encoder_hw_worker.h"
 #include "kernel.cuh"
 #include "npp_utils.h"
@@ -103,9 +104,7 @@ int resolve_encoder_entry_pool_size(bool direct_input_enabled,
 
 uint64_t helper_host_now_ns()
 {
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count());
+    return orange::timing::monotonic_now_ns();
 }
 
 bool env_flag_enabled_by_default(const char* name)

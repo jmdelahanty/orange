@@ -1,4 +1,5 @@
 #include "crop_producer.h"
+#include "timing/clock.h"
 #include "worker_entry_release.h"
 
 #include "kernel.cuh"
@@ -18,9 +19,7 @@ namespace {
 constexpr int kCropSourceReleaseEventPoolSize = 256;
 uint64_t steady_now_ns()
 {
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count());
+    return orange::timing::monotonic_now_ns();
 }
 
 double elapsed_ms(uint64_t start_ns, uint64_t end_ns)

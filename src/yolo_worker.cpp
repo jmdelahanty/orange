@@ -1,5 +1,6 @@
 // src/yolo_worker.cpp
 #include "yolo_worker.h"
+#include "timing/clock.h"
 #include "pose_worker.h"
 #include "yolo_runtime_flags.h"
 #include "late_owned_copy.h"
@@ -332,9 +333,7 @@ std::string BuildYoloNvtxLabel(const char* stage,
 
 uint64_t steady_time_now_ns()
 {
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count());
+    return orange::timing::monotonic_now_ns();
 }
 
 bool ParseCpuList(const char* env, cpu_set_t* out_set, std::string* out_str)

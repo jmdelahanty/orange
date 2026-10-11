@@ -727,6 +727,11 @@ if(BUILD_TESTING)
     target_compile_features(rolling_metadata_projection_tests PRIVATE cxx_std_17)
     add_test(NAME rolling_metadata_projection_tests COMMAND rolling_metadata_projection_tests)
 
+    add_executable(timing_clock_tests "tools/timing_clock_tests.cpp")
+    target_include_directories(timing_clock_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(timing_clock_tests PRIVATE cxx_std_17)
+    add_test(NAME timing_clock_tests COMMAND timing_clock_tests)
+
     add_executable(acquisition_index_authority_tests
         "tools/acquisition_index_authority_tests.cpp"
         "${SRC_DIR}/session/acquisition_index_authority.cpp"

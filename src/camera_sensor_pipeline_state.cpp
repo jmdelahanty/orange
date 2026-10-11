@@ -1,4 +1,5 @@
 #include "camera_sensor_pipeline_state.h"
+#include "timing/clock.h"
 
 #include "gui/spatial_layout/sha256.h"
 
@@ -29,13 +30,7 @@ std::string trim_copy(const std::string& value)
 
 std::string utc_now()
 {
-    const auto now = std::chrono::system_clock::now();
-    const std::time_t raw = std::chrono::system_clock::to_time_t(now);
-    std::tm utc{};
-    gmtime_r(&raw, &utc);
-    std::ostringstream output;
-    output << std::put_time(&utc, "%Y-%m-%dT%H:%M:%SZ");
-    return output.str();
+    return orange::timing::utc_iso8601_now();
 }
 
 nlohmann::json error_json(EVT_ERROR error)

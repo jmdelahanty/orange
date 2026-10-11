@@ -1,4 +1,5 @@
 #include "orange_local_control.h"
+#include "timing/clock.h"
 #include "fsuid_guard.h"
 #include "projected_center_preflight.h"
 
@@ -31,14 +32,7 @@ std::mutex g_event_log_mutex;
 
 std::string utc_now()
 {
-    const auto now = std::chrono::system_clock::now();
-    const std::time_t now_time = std::chrono::system_clock::to_time_t(now);
-    std::tm tm{};
-    gmtime_r(&now_time, &tm);
-
-    std::ostringstream out;
-    out << std::put_time(&tm, "%Y-%m-%dT%H:%M:%SZ");
-    return out.str();
+    return orange::timing::utc_iso8601_now();
 }
 
 nlohmann::json recorder_readiness_to_json(const RecorderReadinessSnapshot& snapshot)

@@ -2,6 +2,7 @@
 #define ORANGE_LATENCY_STATS_H
 
 #include <algorithm>
+#include "timing/clock.h"
 #include <chrono>
 #include <cstdint>
 
@@ -40,8 +41,7 @@ inline void observe_latency_ns(LatencyAggregateStats* stats, uint64_t duration_n
 
 inline uint64_t steady_clock_now_ns()
 {
-    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count());
+    return orange::timing::monotonic_now_ns();
 }
 
 #endif // ORANGE_LATENCY_STATS_H

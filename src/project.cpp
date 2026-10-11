@@ -1,5 +1,6 @@
 // src/project.cpp
 #include "project.h"
+#include "timing/clock.h"
 #include "camera_config_schema.h"
 #include "yolo_runtime_flags.h"
 #include "citrus_recording_geometry.h"
@@ -4198,13 +4199,7 @@ ResolvedRecordingConfig build_resolved_recording_config(
 }
 
 std::string get_current_utc_timestamp() {
-    auto now = std::chrono::system_clock::now();
-    auto time_t_now = std::chrono::system_clock::to_time_t(now);
-    std::tm utc_time{};
-    gmtime_r(&time_t_now, &utc_time);  // thread-safe; acquisition threads call this concurrently
-    std::ostringstream oss;
-    oss << std::put_time(&utc_time, "%Y-%m-%dT%H:%M:%SZ");
-    return oss.str();
+    return orange::timing::utc_iso8601_now();
 }
 
 namespace {
@@ -5935,25 +5930,11 @@ std::string get_current_time_milliseconds() {
 }
 
 std::string get_current_date() {
-    // ... (implementation from project.h)
-    auto now = std::chrono::system_clock::now();
-    auto time_t_now = std::chrono::system_clock::to_time_t(now);
-    std::tm local_time{};
-    localtime_r(&time_t_now, &local_time);
-    std::ostringstream oss;
-    oss << std::put_time(&local_time, "%Y_%m_%d");
-    return oss.str();
+    return orange::timing::local_time_string(orange::timing::realtime_now(), "%Y_%m_%d");
 }
 
 std::string get_current_date_time() {
-    // ... (implementation from project.h)
-    auto now = std::chrono::system_clock::now();
-    auto time_t_now = std::chrono::system_clock::to_time_t(now);
-    std::tm local_time{};
-    localtime_r(&time_t_now, &local_time);
-    std::ostringstream oss;
-    oss << std::put_time(&local_time, "%Y_%m_%d_%H_%M_%S");
-    return oss.str();
+    return orange::timing::local_time_string(orange::timing::realtime_now(), "%Y_%m_%d_%H_%M_%S");
 }
 
 std::string format_elapsed_time(std::chrono::seconds elapsed_seconds) {

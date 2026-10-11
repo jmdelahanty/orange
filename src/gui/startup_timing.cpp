@@ -1,4 +1,5 @@
 #include "gui/startup_timing.h"
+#include "timing/clock.h"
 
 #include "fsuid_guard.h"
 
@@ -147,14 +148,7 @@ nlohmann::json slowest_stage(const nlohmann::json& stages)
 
 uint64_t GuiStartupTimingRecorder::NowNs() noexcept
 {
-    try {
-        return static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::steady_clock::now().time_since_epoch())
-                .count());
-    } catch (...) {
-        return 0;
-    }
+    return orange::timing::monotonic_now_ns();
 }
 
 void GuiStartupTimingRecorder::Begin(

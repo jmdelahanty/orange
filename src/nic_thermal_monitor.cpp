@@ -1,4 +1,5 @@
 #include "nic_thermal_monitor.h"
+#include "timing/clock.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -98,21 +99,12 @@ bool read_i64_file(const std::filesystem::path& path,
 
 uint64_t realtime_ns()
 {
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::system_clock::now().time_since_epoch())
-            .count());
+    return orange::timing::realtime_now_ns();
 }
 
 std::string utc_now()
 {
-    const auto now = std::chrono::system_clock::now();
-    const std::time_t time = std::chrono::system_clock::to_time_t(now);
-    std::tm utc{};
-    gmtime_r(&time, &utc);
-    char buffer[32]{};
-    std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &utc);
-    return buffer;
+    return orange::timing::utc_iso8601_now();
 }
 
 bool env_enabled(const char* name, const bool fallback)

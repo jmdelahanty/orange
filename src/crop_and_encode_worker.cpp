@@ -1,6 +1,7 @@
 // src/crop_and_encode_worker.cpp
 
 #include "crop_and_encode_worker.h"
+#include "timing/clock.h"
 #include "recording_startup_audit.h"
 #include "crop_preview_worker.h"
 #include "crop_producer_worker.h"
@@ -80,9 +81,7 @@ std::string resolve_crop_recording_sink_mode(const char* worker_name)
 
 uint64_t steady_now_ns()
 {
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count());
+    return orange::timing::monotonic_now_ns();
 }
 
 double elapsed_ms(uint64_t start_ns, uint64_t end_ns)
@@ -1603,8 +1602,7 @@ void CropAndEncodeWorker::SetCropProducer(CropProducer* crop_producer)
 
 static uint64_t steady_now_ns_diag()
 {
-    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count());
+    return orange::timing::monotonic_now_ns();
 }
 
 bool CropAndEncodeWorker::crop_recorder_expected() const

@@ -1,4 +1,5 @@
 #include "crop_preview_worker.h"
+#include "timing/clock.h"
 #include "gui/preview_staging_lock.h"
 
 #include "crop_producer_worker.h"
@@ -21,9 +22,7 @@ constexpr const char* kCropPreviewMaxFpsEnv = "ORANGE_CROP_PREVIEW_MAX_FPS";
 
 uint64_t steady_now_ns()
 {
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count());
+    return orange::timing::monotonic_now_ns();
 }
 
 bool env_flag_enabled(const char* name)

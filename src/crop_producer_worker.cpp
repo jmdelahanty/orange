@@ -1,4 +1,5 @@
 #include "crop_producer_worker.h"
+#include "timing/clock.h"
 
 #include "crop_and_encode_worker.h"
 #include "crop_preview_worker.h"
@@ -15,9 +16,7 @@ namespace {
 
 uint64_t steady_now_ns()
 {
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count());
+    return orange::timing::monotonic_now_ns();
 }
 
 double elapsed_ms(uint64_t start_ns, uint64_t end_ns)

@@ -1,4 +1,5 @@
 #include "pose_event_log.h"
+#include "timing/clock.h"
 #include "event_log_format.h"
 #include "model_identity.h"
 
@@ -15,16 +16,12 @@ namespace {
 
 uint64_t epoch_time_us()
 {
-    return std::chrono::duration_cast<std::chrono::microseconds>(
-               std::chrono::system_clock::now().time_since_epoch())
-        .count();
+    return orange::timing::realtime_now_us();
 }
 
 uint64_t steady_time_us()
 {
-    return std::chrono::duration_cast<std::chrono::microseconds>(
-               std::chrono::steady_clock::now().time_since_epoch())
-        .count();
+    return orange::timing::monotonic_now_us();
 }
 
 nlohmann::json keypoint_to_json(const PoseKeypointRecord& keypoint)

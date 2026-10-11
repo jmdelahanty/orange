@@ -1,4 +1,5 @@
 #include "recording_ingress.h"
+#include "timing/clock.h"
 #include "recording_startup_audit.h"
 
 #include <algorithm>
@@ -38,9 +39,7 @@ constexpr uint8_t kRouteModeHelper = 1;
 
 uint64_t recording_ingress_now_ns()
 {
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count());
+    return orange::timing::monotonic_now_ns();
 }
 
 void append_unique_gpu_id(std::vector<int>* gpu_ids, int gpu_id)

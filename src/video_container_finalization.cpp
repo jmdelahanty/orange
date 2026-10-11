@@ -1,4 +1,5 @@
 #include "video_container_finalization.h"
+#include "timing/clock.h"
 
 #include "fsuid_guard.h"
 #include "json.hpp"
@@ -174,13 +175,7 @@ bool FindMetadataKeyIndex(std::fstream& file,
 }
 
 std::string CurrentUtcTimestamp() {
-    const auto now = std::chrono::system_clock::now();
-    const std::time_t time = std::chrono::system_clock::to_time_t(now);
-    std::tm utc{};
-    gmtime_r(&time, &utc);
-    std::ostringstream out;
-    out << std::put_time(&utc, "%Y-%m-%dT%H:%M:%SZ");
-    return out.str();
+    return orange::timing::utc_iso8601_now();
 }
 
 bool WriteAll(int fd, const std::string& bytes, std::string* error) {

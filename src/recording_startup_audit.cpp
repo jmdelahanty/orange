@@ -1,4 +1,5 @@
 #include "recording_startup_audit.h"
+#include "timing/clock.h"
 #include "fsuid_guard.h"
 
 #include <atomic>
@@ -17,15 +18,12 @@ namespace {
 
 uint64_t steady_ns()
 {
-    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count());
+    return orange::timing::monotonic_now_ns();
 }
 
 uint64_t realtime_ns()
 {
-    timespec ts{};
-    clock_gettime(CLOCK_REALTIME, &ts);
-    return static_cast<uint64_t>(ts.tv_sec) * 1000000000ull + static_cast<uint64_t>(ts.tv_nsec);
+    return orange::timing::realtime_now_ns();
 }
 
 std::string json_escape(const std::string& in)

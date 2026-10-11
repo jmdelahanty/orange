@@ -1,4 +1,5 @@
 #include "pose_worker.h"
+#include "timing/clock.h"
 
 #include "common.hpp"
 #include "frame_ipc_manager.h"
@@ -26,9 +27,7 @@ namespace {
 
 uint64_t steady_now_ns()
 {
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count());
+    return orange::timing::monotonic_now_ns();
 }
 
 double elapsed_ms(uint64_t start_ns, uint64_t end_ns)
@@ -1467,12 +1466,8 @@ pose_event_log::PoseResultRecord PoseWorker::build_pose_event_record(
     // Event time = when the pose result exists (this thread, right after pose
     // done), as the YOLO log stamps it; not when the writer thread writes the
     // line (the pre-2026-10-11 behaviour).
-    record.event_epoch_us = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count());
-    record.event_monotonic_us = static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(
-            std::chrono::steady_clock::now().time_since_epoch()).count());
+    record.event_epoch_us = orange::timing::realtime_now_us();
+    record.event_monotonic_us = orange::timing::monotonic_now_us();
     record.source_width = frame.source_width;
     record.source_height = frame.source_height;
     record.blank_frame = frame.blank_frame;
