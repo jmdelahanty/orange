@@ -187,9 +187,12 @@ nlohmann::json product_json(const fs::path& folder, const std::string& serial, c
 nlohmann::json build_realtime_products_json(const std::string& recording_folder,
                                             const std::vector<std::string>& camera_serials)
 {
-    // The per-frame logs below are written by the process log writer thread;
-    // every row queued before finalize must be on disk before they are hashed.
-    if (!orange::timing::LogWriter::Instance().FlushAll()) {
+    // The per-frame logs below are written by the process log writer thread
+    // (and the YOLO/pose event loggers' own threads). Seal the folder: every
+    // row queued before finalize is on disk, and no writer appends after the
+    // hash (the acquisition thread samples pipeline perf until the finalizer
+    // releases the folder, which is after this manifest is written).
+    if (!orange::timing::LogWriter::Instance().SealFolder(recording_folder)) {
         std::cerr << "[realtime_products] log writer did not flush within its timeout; "
                      "per-frame log digests may describe partial files" << std::endl;
     }

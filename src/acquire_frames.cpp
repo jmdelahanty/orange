@@ -1722,6 +1722,15 @@ void acquire_frames(
         return sample;
     };
 
+    // The pipeline perf file ends with the recording, not when the finalizer
+    // releases the folder (after it has digested the file for
+    // recording_session.json): samples taken in between appended rows after
+    // the digest (Palette refused the 2026-10-09 snow sessions). Same rule as
+    // the PTP readback evidence: finished once a frame was recorded, recording
+    // is off and the session is not a preserved (rolling-clip) one.
+    bool pipeline_perf_saw_recorded_frame = false;
+    std::string pipeline_perf_finished_folder;
+
     auto finalize_pipeline_perf_recorder_if_drained = [&]() -> bool {
         if (pipeline_perf_recorder.current_folder().empty()) {
             return true;
@@ -2240,9 +2249,18 @@ void acquire_frames(
                     if (!pipeline_perf_recorder.current_folder().empty()) {
                         (void)finalize_pipeline_perf_recorder_if_drained();
                     }
-                    if (pipeline_perf_recorder.current_folder().empty()) {
+                    if (pipeline_perf_recorder.current_folder().empty() &&
+                        live_recording_folder != pipeline_perf_finished_folder) {
                         pipeline_perf_recorder.Rotate(live_recording_folder);
+                        pipeline_perf_saw_recorded_frame = false;
                     }
+                } else if (current_entry->recording_frame_id != 0) {
+                    pipeline_perf_saw_recorded_frame = true;
+                } else if (pipeline_perf_saw_recorded_frame &&
+                           !camera_control->record_video.load() &&
+                           !camera_control->preserve_recording_session_state &&
+                           finalize_pipeline_perf_recorder_if_drained()) {
+                    pipeline_perf_finished_folder = live_recording_folder;
                 }
             } else {
                 (void)finalize_pipeline_perf_recorder_if_drained();

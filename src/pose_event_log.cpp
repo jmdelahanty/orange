@@ -67,7 +67,9 @@ PoseEventLogger::PoseEventLogger(const std::string& camera_serial,
 {
     thread_ = std::thread(&PoseEventLogger::ThreadMain, this);
     orange::timing::LogWriter::Instance().RegisterFlusher(
-        this, [this](std::chrono::milliseconds timeout) { return Flush(timeout); });
+        this, [this](std::chrono::milliseconds timeout, const std::string& seal_folder) {
+            return Flush(timeout, seal_folder);
+        });
 }
 
 PoseEventLogger::~PoseEventLogger()
@@ -109,10 +111,11 @@ void PoseEventLogger::Enqueue(PoseResultRecord record)
     EnqueueEvent(std::move(event));
 }
 
-bool PoseEventLogger::Flush(std::chrono::milliseconds timeout)
+bool PoseEventLogger::Flush(std::chrono::milliseconds timeout, const std::string& seal_folder)
 {
     Event event;
     event.type = EventType::kFlush;
+    event.seal_folder = seal_folder;
     event.completion = std::make_shared<std::promise<bool>>();
     auto result = event.completion->get_future();
     {
@@ -171,6 +174,20 @@ void PoseEventLogger::OpenFile(const std::string& folder)
     current_folder_ = folder;
     recording_id_ = RecordingIdFromFolder(folder);
     file_path_ = current_folder_ + "/Cam" + camera_serial_ + "_pose_events.jsonl";
+    bool sealed = false;
+    for (const std::string& sealed_folder : sealed_folders_) {
+        sealed = sealed || orange::timing::LogWriter::PathUnder(file_path_, sealed_folder);
+    }
+    if (sealed) {
+        // Finalize already digested this folder: a late row must not change
+        // the sealed file.
+        std::cerr << "[POSE_EVENT_LOG] " << worker_name_ << " not reopening " << file_path_
+                  << " (folder sealed by finalize)" << std::endl;
+        current_folder_.clear();
+        recording_id_.clear();
+        file_path_.clear();
+        return;
+    }
 
     const bool first_open = opened_folders_.insert(current_folder_).second;
     const auto mode = std::ios::out | (first_open ? std::ios::trunc : std::ios::app);
@@ -398,7 +415,13 @@ void PoseEventLogger::ThreadMain()
                 break;
             case EventType::kFlush: {
                 MaybeFlush(true);
-                event.completion->set_value(!file_.is_open() || static_cast<bool>(file_));
+                const bool ok = !file_.is_open() || static_cast<bool>(file_);
+                if (file_.is_open() && !event.seal_folder.empty() &&
+                    orange::timing::LogWriter::PathUnder(file_path_, event.seal_folder)) {
+                    CloseFile();  // finalize is about to digest it
+                }
+                if (!event.seal_folder.empty()) sealed_folders_.push_back(event.seal_folder);
+                event.completion->set_value(ok);
                 break;
             }
         }

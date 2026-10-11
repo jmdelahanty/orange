@@ -103,7 +103,9 @@ public:
     // Not for hot threads: returns once every result enqueued before this
     // call is written and the file flushed (FIFO barrier). Registered with
     // orange::timing::LogWriter so finalize's FlushAll covers this log.
-    bool Flush(std::chrono::milliseconds timeout);
+    // With `seal_folder` (LogWriter::SealFolder at finalize) the barrier also
+    // closes a file under that folder and refuses to open one there again.
+    bool Flush(std::chrono::milliseconds timeout, const std::string& seal_folder = {});
     void Enqueue(PoseResultRecord record);
 
 private:
@@ -117,6 +119,7 @@ private:
         EventType type = EventType::kPoseResult;
         PoseResultRecord result;
         std::shared_ptr<std::promise<bool>> completion;
+        std::string seal_folder;  // kFlush only: LogWriter::FolderKey, or empty
     };
 
     static constexpr size_t kMaxQueue = 8192;
@@ -145,6 +148,7 @@ private:
     std::string file_path_;
     std::ofstream file_;
     std::unordered_set<std::string> opened_folders_;
+    std::vector<std::string> sealed_folders_;  // writer thread
     std::unordered_map<std::string, uint64_t> next_sequence_by_folder_;
     std::unordered_set<std::string> header_written_folders_;
     size_t dropped_ = 0;

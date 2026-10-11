@@ -56,6 +56,21 @@ int main() {
             check(std::filesystem::file_size(plain + "/Cam02010094_yolo_events.jsonl") == size,
                   "bytes appeared after the flush barrier");
         }
+        // A sealed folder (finalize digested it) is closed at the seal and a
+        // late row neither reopens nor appends to it.
+        {
+            const auto sealed = f.root + "/sealed";
+            const auto path = sealed + "/Cam02010095_yolo_events.jsonl";
+            yolo_event_log::YoloEventLogger sealer("02010095", 2, "seal-test");
+            for (uint64_t id = 1; id <= 10; ++id) sealer.Enqueue(record(sealed, id));
+            check(orange::timing::LogWriter::Instance().SealFolder(sealed, timeout), "SealFolder covered the event log");
+            check(rows(path) == 10, "sealed log incomplete at the seal");
+            const auto size = std::filesystem::file_size(path);
+            sealer.Enqueue(record(sealed, 11));
+            check(sealer.Flush(timeout), "flush after the seal");
+            sealer.Stop();
+            check(std::filesystem::file_size(path) == size && rows(path) == 10, "a late row changed the sealed log");
+        }
         logger.Enqueue(record(f.root, 1));
         check(logger.FlushThrough(f.root, 1, timeout), "first-frame flush");
         check(rows(f.root + "/Cam02010093_yolo_events.jsonl") == 1, "buffer not visible");

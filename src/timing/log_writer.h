@@ -33,6 +33,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iostream>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -54,6 +55,7 @@ struct LogChannelCounters {
     uint64_t queue_high_water = 0;
     uint64_t files_opened = 0;
     uint64_t open_failures = 0;
+    uint64_t opens_refused_sealed = 0;
     uint64_t write_failures = 0;
 };
 
@@ -81,6 +83,9 @@ public:
     // Any thread: queue a flush barrier / wait for it (not on a hot thread).
     virtual uint64_t Flush() = 0;
     virtual bool WaitApplied(uint64_t ticket, std::chrono::milliseconds timeout) = 0;
+    // Any thread: queue a seal of `folder` (see LogWriter::SealFolder),
+    // ordered after everything queued before it.
+    virtual uint64_t Seal(const std::string& folder) = 0;
     // Writer thread only. Returns true if it did any work.
     virtual bool Service(std::chrono::steady_clock::time_point now) = 0;
     // Writer thread only, at shutdown: drain, flush and close.
@@ -121,35 +126,51 @@ public:
     // Finalize calls it before hashing or reading the per-frame logs.
     bool FlushAll(std::chrono::milliseconds timeout = std::chrono::milliseconds(10000))
     {
-        std::vector<std::shared_ptr<LogChannelBase>> channels;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            channels = channels_;
+        return Barrier(timeout, {});
+    }
+
+    // Finalize, before it hashes the per-frame logs of a recording: no
+    // writer touches a file under `folder` again. Ordered like a flush
+    // barrier: everything queued before this call (records, an Open) is
+    // applied and written first; then a file under the folder is closed, and
+    // from then on that channel refuses to open one there (records emitted
+    // for it are discarded and counted). So the bytes hashed are the bytes
+    // sealed, even for writers acquisition keeps alive past the last recorded
+    // frame (the pipeline perf sampler until the folder is released).
+    // Not for hot threads.
+    bool SealFolder(const std::string& folder,
+                    std::chrono::milliseconds timeout = std::chrono::milliseconds(10000))
+    {
+        const std::string key = FolderKey(folder);
+        if (key.empty()) {
+            return FlushAll(timeout);
         }
-        std::vector<uint64_t> tickets;
-        tickets.reserve(channels.size());
-        for (const auto& channel : channels) {
-            tickets.push_back(channel->Flush());
+        return Barrier(timeout, key);
+    }
+
+    // "folder" without trailing separators, lexically normal.
+    static std::string FolderKey(const std::string& path)
+    {
+        std::string key = std::filesystem::path(path).lexically_normal().string();
+        while (key.size() > 1 && key.back() == '/') {
+            key.pop_back();
         }
-        bool ok = true;
-        for (size_t i = 0; i < channels.size(); ++i) {
-            ok = channels[i]->WaitApplied(tickets[i], timeout) && ok;
-        }
-        // Writers with their own thread (the YOLO and pose event logs): each
-        // flusher returns once everything queued before it is on disk.
-        std::lock_guard<std::mutex> lock(flushers_mutex_);
-        for (const auto& [key, flusher] : flushers_) {
-            (void)key;
-            ok = flusher(timeout) && ok;
-        }
-        return ok;
+        return key;
+    }
+    // True if `path` lies strictly under the folder `key` (a FolderKey).
+    static bool PathUnder(const std::string& path, const std::string& key)
+    {
+        const std::string candidate = FolderKey(path);
+        return !key.empty() && candidate.size() > key.size() &&
+               candidate.compare(0, key.size(), key) == 0 && candidate[key.size()] == '/';
     }
 
     // A writer that keeps its own thread registers a flush barrier here so
-    // FlushAll (run before finalize digests the logs) covers it too.
-    // Unregister waits for a FlushAll in progress, so call it before the
+    // FlushAll and SealFolder (run before finalize digests the logs) cover it
+    // too. The flusher gets the folder to seal ("" for a plain flush).
+    // Unregister waits for a barrier in progress, so call it before the
     // writer stops.
-    using Flusher = std::function<bool(std::chrono::milliseconds)>;
+    using Flusher = std::function<bool(std::chrono::milliseconds, const std::string& seal_folder)>;
     void RegisterFlusher(const void* key, Flusher flusher)
     {
         std::lock_guard<std::mutex> lock(flushers_mutex_);
@@ -334,6 +355,32 @@ private:
     std::vector<std::shared_ptr<LogChannelBase>> channels_;
     std::mutex flushers_mutex_;
     std::map<const void*, Flusher> flushers_;
+    // Flush (seal_folder empty) or seal every channel and registered writer.
+    bool Barrier(std::chrono::milliseconds timeout, const std::string& seal_folder)
+    {
+        std::vector<std::shared_ptr<LogChannelBase>> channels;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            channels = channels_;
+        }
+        std::vector<uint64_t> tickets;
+        tickets.reserve(channels.size());
+        for (const auto& channel : channels) {
+            tickets.push_back(seal_folder.empty() ? channel->Flush() : channel->Seal(seal_folder));
+        }
+        bool ok = true;
+        for (size_t i = 0; i < channels.size(); ++i) {
+            ok = channels[i]->WaitApplied(tickets[i], timeout) && ok;
+        }
+        // Writers with their own thread (the YOLO and pose event logs): each
+        // flusher returns once everything queued before it is on disk.
+        std::lock_guard<std::mutex> lock(flushers_mutex_);
+        for (const auto& [key, flusher] : flushers_) {
+            (void)key;
+            ok = flusher(timeout, seal_folder) && ok;
+        }
+        return ok;
+    }
     mutable std::mutex records_mutex_;
     std::vector<LogFileRecord> files_;
     std::map<std::string, std::vector<LabelledAnchor>> anchors_;
@@ -403,6 +450,13 @@ public:
     // flushed once the ticket is applied.
     uint64_t Flush() override { return PushControl(Control::kFlush, {}, {}); }
 
+    // Seal barrier (LogWriter::SealFolder): flushes, closes a file under
+    // `folder` and refuses to open one there from then on.
+    uint64_t Seal(const std::string& folder) override
+    {
+        return PushControl(Control::kSeal, LogWriter::FolderKey(folder), {});
+    }
+
     // Runs `job` on the writer thread, in order with the records and the other
     // control entries (for example a summary written after Close). For work
     // that must not run on a hot thread; never for per-record work.
@@ -443,6 +497,7 @@ public:
         c.queue_high_water = high_water_.load(std::memory_order_relaxed);
         c.files_opened = files_opened_.load(std::memory_order_relaxed);
         c.open_failures = open_failures_.load(std::memory_order_relaxed);
+        c.opens_refused_sealed = refused_sealed_.load(std::memory_order_relaxed);
         c.write_failures = write_failures_.load(std::memory_order_relaxed);
         return c;
     }
@@ -493,7 +548,7 @@ public:
     }
 
 private:
-    enum class Control { kOpen, kClose, kFlush, kRun };
+    enum class Control { kOpen, kClose, kFlush, kSeal, kRun };
     struct ControlEntry {
         uint64_t position;  // apply before the record at this ring index
         uint64_t ticket;
@@ -550,6 +605,14 @@ private:
             switch (entry.kind) {
             case Control::kOpen:
                 CloseFile();
+                if (UnderSealedFolder(entry.path)) {
+                    // Finalize already hashed this folder: never truncate or
+                    // append to a sealed file.
+                    refused_sealed_.fetch_add(1, std::memory_order_relaxed);
+                    std::cerr << "[log_writer] " << options_.name << ": not reopening " << entry.path
+                              << " (folder sealed by finalize)" << std::endl;
+                    break;
+                }
                 OpenFile(entry.path, entry.header);
                 break;
             case Control::kClose:
@@ -561,6 +624,15 @@ private:
                     file_.flush();
                 }
                 break;
+            case Control::kSeal:
+                WriteBuffer();
+                if (file_.is_open() && LogWriter::PathUnder(file_path_, entry.path)) {
+                    CloseFile();
+                } else if (file_.is_open()) {
+                    file_.flush();
+                }
+                sealed_folders_.push_back(entry.path);
+                break;
             case Control::kRun:
                 if (entry.job) {
                     entry.job();
@@ -569,6 +641,16 @@ private:
             }
             applied_.store(entry.ticket, std::memory_order_release);
         }
+    }
+
+    bool UnderSealedFolder(const std::string& path) const
+    {
+        for (const std::string& folder : sealed_folders_) {
+            if (LogWriter::PathUnder(path, folder)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     void OpenFile(const std::string& path, const std::string& header)
@@ -658,6 +740,7 @@ private:
     std::atomic<uint64_t> files_opened_{0};
     std::atomic<uint64_t> open_failures_{0};
     std::atomic<uint64_t> write_failures_{0};
+    std::atomic<uint64_t> refused_sealed_{0};
 
     std::mutex control_mutex_;
     std::deque<ControlEntry> controls_;
@@ -675,6 +758,7 @@ private:
     uint64_t at_open_write_failures_ = 0;
     std::string buffer_;
     uint64_t pending_rows_ = 0;
+    std::vector<std::string> sealed_folders_;  // FolderKeys, in seal order
     std::chrono::steady_clock::time_point last_flush_{};
 };
 

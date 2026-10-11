@@ -1,6 +1,7 @@
 // Tests src/timing/log_writer.h: ordering across rotation, drop counting on a
 // full ring, flush barriers, multi-producer channels, and that a stalled
-// channel never blocks another channel's producer.
+// channel never blocks another channel's producer, and a sealed folder is
+// never written again.
 #include "timing/log_writer.h"
 
 #include <cstdio>
@@ -171,6 +172,37 @@ int main()
         expect(seen == "h\n1,2\n", "Post ran after the file was closed and complete");
         expect(job_thread != std::this_thread::get_id(), "Post ran on the writer thread");
         expect(channel->Retire(wait), "post retire");
+    }
+
+    // 8. SealFolder (finalize, before hashing): the open file under the folder
+    //    is flushed and closed, later records are discarded, a later Open
+    //    there is refused without truncating, other folders are untouched.
+    {
+        const fs::path sealed = dir / "sealed_recording";
+        auto inside = LogChannel<Row>::Create({"sealed_inside", 64}, format_row);
+        auto outside = LogChannel<Row>::Create({"sealed_outside", 64}, format_row);
+        inside->Open((sealed / "perf.csv").string(), "h\n");  // queued before the seal: honoured
+        outside->Open((dir / "sealed_recording_next" / "perf.csv").string(), "h\n");
+        inside->Emit({1, 1});
+        outside->Emit({1, 1});
+        expect(LogWriter::Instance().SealFolder(sealed.string() + "/", wait), "SealFolder applied");
+        expect(slurp(sealed / "perf.csv") == "h\n1,1\n", "sealed file complete at the seal");
+        inside->Emit({2, 2});  // after the digest: must not reach the file
+        inside->Open((sealed / "perf.csv").string(), "h\n");  // must not truncate
+        inside->Emit({3, 3});
+        outside->Emit({2, 2});
+        expect(LogWriter::Instance().FlushAll(wait), "FlushAll after the seal");
+        expect(slurp(sealed / "perf.csv") == "h\n1,1\n", "sealed file unchanged after the seal");
+        const auto c = inside->counters();
+        expect(c.discarded_no_file == 2 && c.opens_refused_sealed == 1, "sealed rows discarded, reopen refused");
+        expect(slurp(dir / "sealed_recording_next" / "perf.csv") == "h\n1,1\n2,2\n",
+               "a sibling folder with the same name prefix is not sealed");
+        const std::string key = LogWriter::FolderKey(sealed.string() + "/");
+        expect(LogWriter::PathUnder((sealed / "x" / "y.csv").string(), key) &&
+               !LogWriter::PathUnder(sealed.string(), key) &&
+               !LogWriter::PathUnder((dir / "sealed_recording_next" / "perf.csv").string(), key),
+               "PathUnder covers paths under the folder only");
+        expect(inside->Retire(wait) && outside->Retire(wait), "sealed retire");
     }
 
     fs::remove_all(dir);

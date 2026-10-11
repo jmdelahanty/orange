@@ -39,7 +39,9 @@ YoloEventLogger::YoloEventLogger(const std::string& camera_serial,
       running_(true) {
     thread_ = std::thread(&YoloEventLogger::ThreadMain, this);
     orange::timing::LogWriter::Instance().RegisterFlusher(
-        this, [this](std::chrono::milliseconds timeout) { return Flush(timeout); });
+        this, [this](std::chrono::milliseconds timeout, const std::string& seal_folder) {
+            return Flush(timeout, seal_folder);
+        });
 }
 
 YoloEventLogger::~YoloEventLogger() {
@@ -97,9 +99,10 @@ bool YoloEventLogger::FlushThrough(const std::string& folder, uint64_t last_id,
     return result.wait_until(deadline) == std::future_status::ready && result.get();
 }
 
-bool YoloEventLogger::Flush(std::chrono::milliseconds timeout) {
+bool YoloEventLogger::Flush(std::chrono::milliseconds timeout, const std::string& seal_folder) {
     Event event;
     event.type = EventType::kFlush;
+    event.seal_folder = seal_folder;
     event.completion = std::make_shared<std::promise<bool>>();
     auto result = event.completion->get_future();
     {
@@ -147,6 +150,20 @@ void YoloEventLogger::OpenFile(const std::string& folder) {
     current_folder_ = folder;
     recording_id_ = RecordingIdFromFolder(folder);
     file_path_ = current_folder_ + "/Cam" + camera_serial_ + "_yolo_events.jsonl";
+    bool sealed = false;
+    for (const std::string& sealed_folder : sealed_folders_) {
+        sealed = sealed || orange::timing::LogWriter::PathUnder(file_path_, sealed_folder);
+    }
+    if (sealed) {
+        // Finalize already digested this folder: a late row must not change
+        // the sealed file.
+        std::cerr << "[YOLO_EVENT_LOG] " << worker_name_ << " not reopening " << file_path_
+                  << " (folder sealed by finalize)" << std::endl;
+        current_folder_.clear();
+        recording_id_.clear();
+        file_path_.clear();
+        return;
+    }
 
     const bool first_open = opened_folders_.insert(current_folder_).second;
     const auto mode = std::ios::out | (first_open ? std::ios::trunc : std::ios::app);
@@ -436,7 +453,12 @@ void YoloEventLogger::ThreadMain() {
                 if (file_.is_open()) {
                     file_.flush();
                     ok = static_cast<bool>(file_);
+                    if (!event.seal_folder.empty() &&
+                        orange::timing::LogWriter::PathUnder(file_path_, event.seal_folder)) {
+                        CloseFile();  // finalize is about to digest it
+                    }
                 }
+                if (!event.seal_folder.empty()) sealed_folders_.push_back(event.seal_folder);
                 event.completion->set_value(ok);
                 break;
             }
