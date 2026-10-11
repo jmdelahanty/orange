@@ -1,4 +1,5 @@
 #include "pose_event_log.h"
+#include "timing/log_writer.h"
 #include "timing/clock.h"
 #include "event_log_format.h"
 #include "model_identity.h"
@@ -65,6 +66,8 @@ PoseEventLogger::PoseEventLogger(const std::string& camera_serial,
       running_(true)
 {
     thread_ = std::thread(&PoseEventLogger::ThreadMain, this);
+    orange::timing::LogWriter::Instance().RegisterFlusher(
+        this, [this](std::chrono::milliseconds timeout) { return Flush(timeout); });
 }
 
 PoseEventLogger::~PoseEventLogger()
@@ -74,6 +77,7 @@ PoseEventLogger::~PoseEventLogger()
 
 void PoseEventLogger::Stop()
 {
+    orange::timing::LogWriter::Instance().UnregisterFlusher(this);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!running_) {
@@ -103,6 +107,24 @@ void PoseEventLogger::Enqueue(PoseResultRecord record)
     event.type = EventType::kPoseResult;
     event.result = std::move(record);
     EnqueueEvent(std::move(event));
+}
+
+bool PoseEventLogger::Flush(std::chrono::milliseconds timeout)
+{
+    Event event;
+    event.type = EventType::kFlush;
+    event.completion = std::make_shared<std::promise<bool>>();
+    auto result = event.completion->get_future();
+    {
+        // A barrier is never dropped for a full queue.
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!running_) {
+            return true;  // the writer has stopped: its file is closed
+        }
+        queue_.push_back(std::move(event));
+    }
+    cv_.notify_one();
+    return result.wait_for(timeout) == std::future_status::ready && result.get();
 }
 
 void PoseEventLogger::EnqueueEvent(Event&& event)
@@ -374,6 +396,11 @@ void PoseEventLogger::ThreadMain()
             case EventType::kPoseResult:
                 WriteResult(std::move(event.result));
                 break;
+            case EventType::kFlush: {
+                MaybeFlush(true);
+                event.completion->set_value(!file_.is_open() || static_cast<bool>(file_));
+                break;
+            }
         }
 
         lock.lock();

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import os
@@ -1548,6 +1549,49 @@ def validate_subject_reference_entry(entry: Any) -> str | None:
     return None
 
 
+def check_realtime_products_digests(reporter: Reporter, recording_folder: Path, manifest: dict[str, Any]) -> None:
+    """Every file realtime_products declares must be exactly the file on disk (size and SHA-256):
+    Palette refuses a declaration that describes only a prefix (2026-10-11, the YOLO logs were
+    digested before their writers had flushed)."""
+    block = manifest.get("realtime_products")
+    if not isinstance(block, dict):
+        return
+    entries: list[dict[str, Any]] = []
+
+    def collect(node: Any) -> None:
+        if isinstance(node, dict):
+            if isinstance(node.get("path"), str) and "sha256" in node and "size_bytes" in node:
+                entries.append(node)
+            for value in node.values():
+                collect(value)
+        elif isinstance(node, list):
+            for value in node:
+                collect(value)
+
+    collect(block)
+    mismatched: list[str] = []
+    for entry in entries:
+        path = recording_folder / entry["path"]
+        if not path.is_file():
+            if entry.get("size_bytes"):
+                mismatched.append(f"{entry['path']} (missing)")
+            continue
+        data = path.read_bytes()
+        size = len(data)
+        digest = hashlib.sha256(data).hexdigest()
+        declared = str(entry.get("sha256", "")).removeprefix("sha256:")
+        if size != entry.get("size_bytes") or digest != declared:
+            mismatched.append(f"{entry['path']} (declared {entry.get('size_bytes')} B, on disk {size} B)")
+        elif path.suffix in (".csv", ".jsonl") and size and not data.endswith(b"\n"):
+            # Palette also refuses a declaration that ends inside a row.
+            mismatched.append(f"{entry['path']} (does not end on a complete line)")
+    reporter.check(
+        not mismatched,
+        f"realtime_products: {len(entries)} declared files match the files on disk",
+        f"realtime_products declares {len(mismatched)} file(s) that differ from disk: {mismatched[:6]}",
+    )
+
+
 def check_recording_folder_ownership(reporter: Reporter, recording_folder: Path) -> None:
     """Nothing in a finished recording stays root-owned: Orange runs as root under sudo and
     hands every file to the invoking user (ScopedFsuid per writer, plus the finalize sweep).
@@ -1728,6 +1772,7 @@ def check_recording_session_manifest(
     check_subject_references(reporter, manifest, snapshot, cameras)
     check_effective_configuration(reporter, snapshot)
     check_recording_folder_ownership(reporter, recording_folder)
+    check_realtime_products_digests(reporter, recording_folder, manifest)
     producer = str(manifest.get("producer", ""))
     backend = manifest.get("recording_backend")
     backend = backend if isinstance(backend, dict) else {}

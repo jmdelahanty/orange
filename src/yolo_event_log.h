@@ -103,12 +103,18 @@ public:
     // correspondence validator still checks every row and rejects gaps).
     bool FlushThrough(const std::string& folder, uint64_t last_recording_frame_id,
                       std::chrono::milliseconds timeout);
+    // Not for hot threads: returns once every result enqueued before this
+    // call is written and the file flushed (FIFO barrier). Registered with
+    // orange::timing::LogWriter so finalize's FlushAll covers this log
+    // before realtime_products digests it.
+    bool Flush(std::chrono::milliseconds timeout);
 
 private:
     enum class EventType {
         kYoloResult,
         kClose,
         kFlushThrough,
+        kFlush,
     };
 
     struct Event {

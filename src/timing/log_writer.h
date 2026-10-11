@@ -135,7 +135,30 @@ public:
         for (size_t i = 0; i < channels.size(); ++i) {
             ok = channels[i]->WaitApplied(tickets[i], timeout) && ok;
         }
+        // Writers with their own thread (the YOLO and pose event logs): each
+        // flusher returns once everything queued before it is on disk.
+        std::lock_guard<std::mutex> lock(flushers_mutex_);
+        for (const auto& [key, flusher] : flushers_) {
+            (void)key;
+            ok = flusher(timeout) && ok;
+        }
         return ok;
+    }
+
+    // A writer that keeps its own thread registers a flush barrier here so
+    // FlushAll (run before finalize digests the logs) covers it too.
+    // Unregister waits for a FlushAll in progress, so call it before the
+    // writer stops.
+    using Flusher = std::function<bool(std::chrono::milliseconds)>;
+    void RegisterFlusher(const void* key, Flusher flusher)
+    {
+        std::lock_guard<std::mutex> lock(flushers_mutex_);
+        flushers_[key] = std::move(flusher);
+    }
+    void UnregisterFlusher(const void* key)
+    {
+        std::lock_guard<std::mutex> lock(flushers_mutex_);
+        flushers_.erase(key);
     }
 
     // Files written by every channel, kept per recording folder for the
@@ -309,6 +332,8 @@ private:
 
     std::mutex mutex_;
     std::vector<std::shared_ptr<LogChannelBase>> channels_;
+    std::mutex flushers_mutex_;
+    std::map<const void*, Flusher> flushers_;
     mutable std::mutex records_mutex_;
     std::vector<LogFileRecord> files_;
     std::map<std::string, std::vector<LabelledAnchor>> anchors_;

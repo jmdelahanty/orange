@@ -1,4 +1,5 @@
 #include "yolo_event_log.h"
+#include "timing/log_writer.h"
 #include "timing/clock.h"
 #include "event_log_format.h"
 #include "model_identity.h"
@@ -37,6 +38,8 @@ YoloEventLogger::YoloEventLogger(const std::string& camera_serial,
       worker_name_(worker_name),
       running_(true) {
     thread_ = std::thread(&YoloEventLogger::ThreadMain, this);
+    orange::timing::LogWriter::Instance().RegisterFlusher(
+        this, [this](std::chrono::milliseconds timeout) { return Flush(timeout); });
 }
 
 YoloEventLogger::~YoloEventLogger() {
@@ -44,6 +47,7 @@ YoloEventLogger::~YoloEventLogger() {
 }
 
 void YoloEventLogger::Stop() {
+    orange::timing::LogWriter::Instance().UnregisterFlusher(this);
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!running_) {
@@ -91,6 +95,23 @@ bool YoloEventLogger::FlushThrough(const std::string& folder, uint64_t last_id,
         return found != last_written_by_folder_.end() && found->second >= last_id && !failed_folders_.count(folder);
     }
     return result.wait_until(deadline) == std::future_status::ready && result.get();
+}
+
+bool YoloEventLogger::Flush(std::chrono::milliseconds timeout) {
+    Event event;
+    event.type = EventType::kFlush;
+    event.completion = std::make_shared<std::promise<bool>>();
+    auto result = event.completion->get_future();
+    {
+        // A barrier is never dropped for a full queue.
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!running_) {
+            return true;  // the writer has stopped: its file is closed
+        }
+        queue_.push_back(std::move(event));
+    }
+    cv_.notify_all();
+    return result.wait_for(timeout) == std::future_status::ready && result.get();
 }
 
 bool YoloEventLogger::EnqueueEvent(Event&& event) {
@@ -410,6 +431,15 @@ void YoloEventLogger::ThreadMain() {
                 if (pending.size() >= 8) event.completion->set_value(false);
                 else pending.push_back(std::move(event));
                 break;
+            case EventType::kFlush: {
+                bool ok = true;
+                if (file_.is_open()) {
+                    file_.flush();
+                    ok = static_cast<bool>(file_);
+                }
+                event.completion->set_value(ok);
+                break;
+            }
         }
         for (auto it = pending.begin(); it != pending.end();) {
             const auto& folder = it->result.recording_folder;

@@ -1,4 +1,5 @@
 #include "yolo_event_log.h"
+#include "timing/log_writer.h"
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -41,6 +42,20 @@ int main() {
         Fixture f;
         yolo_event_log::YoloEventLogger logger("02010093", 0, "drain-test");
         const auto timeout = std::chrono::seconds(2);
+        // FIFO barrier through the process log writer (2026-10-11: finalize
+        // digested a buffered prefix of this file): after FlushAll every row
+        // enqueued before it is on disk, with no FlushThrough and no close.
+        {
+            const auto plain = f.root + "/plain";
+            yolo_event_log::YoloEventLogger flushed("02010094", 1, "flush-test");
+            for (uint64_t id = 1; id <= 50; ++id) flushed.Enqueue(record(plain, id));
+            check(orange::timing::LogWriter::Instance().FlushAll(timeout), "LogWriter FlushAll covered the event log");
+            check(rows(plain + "/Cam02010094_yolo_events.jsonl") == 50, "FlushAll left rows in the buffer");
+            const auto size = std::filesystem::file_size(plain + "/Cam02010094_yolo_events.jsonl");
+            flushed.Stop();
+            check(std::filesystem::file_size(plain + "/Cam02010094_yolo_events.jsonl") == size,
+                  "bytes appeared after the flush barrier");
+        }
         logger.Enqueue(record(f.root, 1));
         check(logger.FlushThrough(f.root, 1, timeout), "first-frame flush");
         check(rows(f.root + "/Cam02010093_yolo_events.jsonl") == 1, "buffer not visible");

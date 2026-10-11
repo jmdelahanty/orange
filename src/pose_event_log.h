@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <deque>
 #include <fstream>
+#include <future>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <chrono>
@@ -98,17 +100,23 @@ public:
 
     void Stop();
     void Close();
+    // Not for hot threads: returns once every result enqueued before this
+    // call is written and the file flushed (FIFO barrier). Registered with
+    // orange::timing::LogWriter so finalize's FlushAll covers this log.
+    bool Flush(std::chrono::milliseconds timeout);
     void Enqueue(PoseResultRecord record);
 
 private:
     enum class EventType {
         kPoseResult,
         kClose,
+        kFlush,
     };
 
     struct Event {
         EventType type = EventType::kPoseResult;
         PoseResultRecord result;
+        std::shared_ptr<std::promise<bool>> completion;
     };
 
     static constexpr size_t kMaxQueue = 8192;
