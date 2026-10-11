@@ -6818,9 +6818,14 @@ int main(int /*argc*/, char ** /*args*/) {
             orange::gui::RenderRecordingContextSelection(
                 camera_control->record_video || camera_control->recording_draining ||
                 gui_async_recording_start.active);
-            orange::gui::RenderSubjectReferenceSelection(
-                camera_control->record_video || camera_control->recording_draining ||
-                gui_async_recording_start.active);
+            {
+                std::vector<std::string> subject_camera_serials;
+                for (int i = 0; i < num_cameras; ++i) subject_camera_serials.push_back(cameras_params[i].camera_serial);
+                orange::gui::RenderSubjectReferenceSelection(
+                    camera_control->record_video || camera_control->recording_draining ||
+                    gui_async_recording_start.active,
+                    subject_camera_serials);
+            }
             orange::gui::RenderRegisteredContextRecordingSettings(
                 camera_control->record_video || camera_control->recording_draining ||
                 gui_async_recording_start.active ||

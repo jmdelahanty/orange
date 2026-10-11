@@ -1,6 +1,9 @@
 #pragma once
 #include "gui_recording_evidence.h"
 
+#include <string>
+#include <vector>
+
 namespace orange::gui {
 // GUI-thread only. Shared by Daily Registration, recording panel and local-control
 // starts. Persisted options are separate from the per-arm human confirmation.
@@ -17,7 +20,8 @@ recording::RecordingContextsConfig RecordingContextsForStream();
 // taken at every record start like the contexts.
 recording::SubjectReferencesConfig SubjectReferencesForStream();
 recording::ZebrobotLookupConfig ZebrobotLookupForStream();
-void RenderSubjectReferenceSelection(bool locked);
+// Default dish/count plus one editable row per camera serial (overrides).
+void RenderSubjectReferenceSelection(bool locked, const std::vector<std::string>& camera_serials);
 // "Recording context" panel: the parent recording context (Citrus transfer-v2)
 // chosen per session; applies at the next record start, saved on request.
 void RenderRecordingContextSelection(bool locked);

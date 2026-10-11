@@ -1,6 +1,9 @@
 #include "gui/registered_context_recording.h"
+#include <algorithm>
 #include <cstdio>
+#include <map>
 #include <string>
+#include <vector>
 #include "imgui.h"
 
 namespace orange::gui {
@@ -106,28 +109,47 @@ bool apply_fields_to_config(std::string* error) {
 namespace {
 std::string subject_status;
 bool subject_dirty = false;
-char subject_dish_id[128] = "";
-int subject_count = 0;  // 0 = not declared
+// One editable row: the default (all cameras) or one camera's override.
+struct SubjectRow {
+    char dish_id[128] = "";
+    int subject_count = 0;  // 0 = not declared (camera rows: use the default)
+};
+SubjectRow subject_default_row;
+std::map<std::string, SubjectRow> subject_camera_rows;  // by camera serial
 bool subject_fields_loaded = false;
+void load_row(SubjectRow* row, const recording::SubjectDeclaration* d) {
+    *row = SubjectRow{};
+    if (!d) return;
+    if (d->dish_id) std::snprintf(row->dish_id, sizeof row->dish_id, "%s", d->dish_id->c_str());
+    if (d->subject_count) row->subject_count = *d->subject_count;
+}
+recording::SubjectDeclaration row_declaration(const SubjectRow& row) {
+    recording::SubjectDeclaration d;
+    if (row.dish_id[0] != '\0') d.dish_id = std::string(row.dish_id);
+    if (row.subject_count > 0) d.subject_count = row.subject_count;
+    return d;
+}
 void load_subject_fields_from_config() {
-    subject_dish_id[0] = '\0';
-    subject_count = 0;
-    if (subject_references.default_declaration) {
-        const auto& d = *subject_references.default_declaration;
-        if (d.dish_id) std::snprintf(subject_dish_id, sizeof subject_dish_id, "%s", d.dish_id->c_str());
-        if (d.subject_count) subject_count = *d.subject_count;
-    }
+    load_row(&subject_default_row,
+             subject_references.default_declaration ? &*subject_references.default_declaration : nullptr);
+    subject_camera_rows.clear();
+    for (const auto& [serial, d] : subject_references.cameras) load_row(&subject_camera_rows[serial], &d);
     subject_fields_loaded = true;
     subject_dirty = false;
 }
 bool apply_subject_fields_to_config(std::string* error) {
     try {
         recording::SubjectReferencesConfig next = subject_references;
-        recording::SubjectDeclaration d;
-        if (subject_dish_id[0] != '\0') d.dish_id = std::string(subject_dish_id);
-        if (subject_count > 0) d.subject_count = subject_count;
+        const recording::SubjectDeclaration d = row_declaration(subject_default_row);
         if (d.empty()) next.default_declaration.reset();
         else next.default_declaration = d;
+        // Camera rows replace the camera entries; an empty row removes the
+        // override (that camera follows the default).
+        for (const auto& [serial, row] : subject_camera_rows) {
+            const recording::SubjectDeclaration c = row_declaration(row);
+            if (c.empty()) next.cameras.erase(serial);
+            else next.cameras[serial] = c;
+        }
         recording::SubjectReferencesConfig::Parse(next.ToJson());  // same rules as the config parser
         subject_references = next;
         subject_error.clear();
@@ -135,13 +157,45 @@ bool apply_subject_fields_to_config(std::string* error) {
     } catch (const std::exception& ex) { if (error) *error = ex.what(); return false; }
 }
 }  // namespace
-void RenderSubjectReferenceSelection(bool locked) {
+void RenderSubjectReferenceSelection(bool locked, const std::vector<std::string>& camera_serials) {
     if (!ImGui::CollapsingHeader("Subject (MetaZebrobot dish per camera)")) return;
     if (!subject_fields_loaded) load_subject_fields_from_config();
     ImGui::BeginDisabled(locked);
-    bool changed = ImGui::InputText("Dish id (blank = no dish declared)", subject_dish_id, sizeof subject_dish_id);
-    changed |= ImGui::InputInt("Subject count in this camera (0 = not declared)", &subject_count);
-    if (subject_count < 0) subject_count = 0;
+    ImGui::TextUnformatted("All cameras (default):");
+    bool changed = ImGui::InputText("Dish id (blank = no dish declared)", subject_default_row.dish_id,
+                                    sizeof subject_default_row.dish_id);
+    changed |= ImGui::InputInt("Subject count per camera (0 = not declared)", &subject_default_row.subject_count);
+    if (subject_default_row.subject_count < 0) subject_default_row.subject_count = 0;
+    // Each camera images its own dish: a camera row overrides the default
+    // field by field (blank dish / count 0 = use the default).
+    if (!camera_serials.empty() && ImGui::BeginTable("subject_cameras", 4, ImGuiTableFlags_BordersInnerH)) {
+        ImGui::TableSetupColumn("Camera");
+        ImGui::TableSetupColumn("Dish id (blank = default)");
+        ImGui::TableSetupColumn("Subject count (0 = default)");
+        ImGui::TableSetupColumn("Recorded as");
+        ImGui::TableHeadersRow();
+        for (const std::string& serial : camera_serials) {
+            SubjectRow& row = subject_camera_rows[serial];
+            ImGui::PushID(serial.c_str());
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(serial.c_str());
+            ImGui::TableSetColumnIndex(1);
+            ImGui::SetNextItemWidth(-1);
+            changed |= ImGui::InputText("##dish", row.dish_id, sizeof row.dish_id);
+            ImGui::TableSetColumnIndex(2);
+            ImGui::SetNextItemWidth(-1);
+            changed |= ImGui::InputInt("##count", &row.subject_count);
+            if (row.subject_count < 0) row.subject_count = 0;
+            ImGui::TableSetColumnIndex(3);
+            const char* dish = row.dish_id[0] ? row.dish_id
+                : subject_default_row.dish_id[0] ? subject_default_row.dish_id : "(none)";
+            const int count = row.subject_count > 0 ? row.subject_count : subject_default_row.subject_count;
+            ImGui::Text("%s, count %s", dish, count > 0 ? std::to_string(count).c_str() : "(none)");
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
     if (changed) {
         std::string err;
         if (apply_subject_fields_to_config(&err)) {
@@ -170,11 +224,11 @@ void RenderSubjectReferenceSelection(bool locked) {
         subject_status = subject_error.empty() ? "Reloaded recording.subject_references." : "Reload failed: " + subject_error;
     }
     ImGui::EndDisabled();
-    if (!subject_references.cameras.empty()) {
-        ImGui::TextWrapped("Per-camera dish overrides in the app config (edit the file to change):");
-        for (const auto& [serial, d] : subject_references.cameras)
-            ImGui::BulletText("%s: dish %s, subject_count %s", serial.c_str(), d.dish_id ? d.dish_id->c_str() : "(default)",
-                              d.subject_count ? std::to_string(*d.subject_count).c_str() : "(default)");
+    for (const auto& [serial, d] : subject_references.cameras) {
+        if (std::find(camera_serials.begin(), camera_serials.end(), serial) != camera_serials.end()) continue;
+        ImGui::BulletText("Camera %s (not in this rig's camera list): dish %s, subject_count %s", serial.c_str(),
+                          d.dish_id ? d.dish_id->c_str() : "(default)",
+                          d.subject_count ? std::to_string(*d.subject_count).c_str() : "(default)");
     }
     if (zebrobot_lookup.configured())
         ImGui::TextWrapped("Lookup at record start: %s (timeout %d ms); Orange records dish/fish identifiers as served, no biological fields.",
