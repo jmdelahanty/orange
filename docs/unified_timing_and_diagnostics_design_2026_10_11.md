@@ -308,11 +308,15 @@ note to Citrus and Palette before it changes.
 2. `diagnostics_index.json` stays Orange-internal for now.
 3. Versioned column names that state their clock are wanted eventually, as step 6, after
    the writer core is in place and each rename is agreed with the readers.
-4. Writer threads: one per process with a bounded queue per file (recommended; Jeremy
-   unsure). A slow file then fills only its own queue; per-camera threads would not isolate
-   anything because every camera writes to the same disk. Revisit if the drop counters ever
-   show the single writer falling behind.
+4. Writer threads: one per process with a bounded queue per file (Jeremy: "Lets do this").
+   What the separate queues guarantee: no hot thread ever waits on a log, and each file's
+   drops are counted on its own. What they do not: if a write() stalls (disk), the single
+   writer stalls for every file, and each queue absorbs rows until it is full. Per-camera
+   threads would not help with that, because every camera writes to the same disk. Size
+   each queue for the longest stall worth riding out (8192 rows = 82 s of a 100 fps
+   per-frame log), and revisit if the drop counters ever show the writer falling behind.
 
-Step 0 (bug fixes) is done: 94831f7 (thread-safe UTC/local time strings), b31bec1
+Progress: step 1 (clock header, ee08dee) and the writer core (1cb3cfd) are done; no
+producer uses the core yet. Step 0 (bug fixes) is done: 94831f7 (thread-safe UTC/local time strings), b31bec1
 (`tick()` as double), 903415c (GOP-phase script reads the routing CSV), 9e36a2e (pose event
 time). Build and all 130 tests pass. Not on the production line yet.

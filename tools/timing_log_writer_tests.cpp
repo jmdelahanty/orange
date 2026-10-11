@@ -1,6 +1,6 @@
 // Tests src/timing/log_writer.h: ordering across rotation, drop counting on a
-// full ring, flush barriers, multi-producer channels, and that a slow channel
-// does not hold up another.
+// full ring, flush barriers, multi-producer channels, and that a stalled
+// channel never blocks another channel's producer.
 #include "timing/log_writer.h"
 
 #include <cstdio>
@@ -101,7 +101,9 @@ int main()
         expect(c.queue_high_water <= 8, "high water within capacity");
     }
 
-    // 4. A stalled channel does not hold up another channel.
+    // 4. While one channel stalls the (single) writer, another channel's
+    //    producer never blocks and its rows queue in its own ring until the
+    //    writer resumes; nothing is dropped while the ring has room.
     {
         std::atomic<bool> release{false};
         auto slow = LogChannel<Row>::Create(
