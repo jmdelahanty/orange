@@ -1722,14 +1722,19 @@ void acquire_frames(
         return sample;
     };
 
-    // The pipeline perf file ends with the recording, not when the finalizer
-    // releases the folder (after it has digested the file for
-    // recording_session.json): samples taken in between appended rows after
-    // the digest (Palette refused the 2026-10-09 snow sessions). Same rule as
-    // the PTP readback evidence: finished once a frame was recorded, recording
-    // is off and the session is not a preserved (rolling-clip) one.
+    // Every per-recording log of this thread (pipeline perf, cadence probe,
+    // ring release, ptp_sync_summary.json) ends with the recording, not when
+    // the finalizer releases the folder: the GUI releases it only after
+    // recording_session.json has digested these files, and samples taken in
+    // between changed them after the digest (Palette refused the 2026-10-09
+    // snow sessions). Same rule as the PTP readback evidence: finished once a
+    // frame was recorded, recording is off and the session is not a preserved
+    // (rolling-clip) one; the CSVs also wait for the recording ingress to
+    // drain, ptp_sync_summary.json is final when the evidence closes. Headless
+    // and GUI then write the same files.
     bool pipeline_perf_saw_recorded_frame = false;
-    std::string pipeline_perf_finished_folder;
+    std::string recording_logs_finished_folder;
+    bool ptp_summary_final_posted = false;
 
     auto finalize_pipeline_perf_recorder_if_drained = [&]() -> bool {
         if (pipeline_perf_recorder.current_folder().empty()) {
@@ -2250,7 +2255,7 @@ void acquire_frames(
                         (void)finalize_pipeline_perf_recorder_if_drained();
                     }
                     if (pipeline_perf_recorder.current_folder().empty() &&
-                        live_recording_folder != pipeline_perf_finished_folder) {
+                        live_recording_folder != recording_logs_finished_folder) {
                         pipeline_perf_recorder.Rotate(live_recording_folder);
                         pipeline_perf_saw_recorded_frame = false;
                     }
@@ -2260,18 +2265,22 @@ void acquire_frames(
                            !camera_control->record_video.load() &&
                            !camera_control->preserve_recording_session_state &&
                            finalize_pipeline_perf_recorder_if_drained()) {
-                    pipeline_perf_finished_folder = live_recording_folder;
+                    recording_logs_finished_folder = live_recording_folder;
                 }
             } else {
                 (void)finalize_pipeline_perf_recorder_if_drained();
             }
-            acquisition_cadence_probe_recorder.Rotate(live_recording_folder);
-            ring_release_recorder.Rotate(live_recording_folder);
+            const std::string recording_log_folder =
+                live_recording_folder == recording_logs_finished_folder ? std::string() : live_recording_folder;
+            acquisition_cadence_probe_recorder.Rotate(recording_log_folder);
+            ring_release_recorder.Rotate(recording_log_folder);
             if (live_recording_folder != ptp_summary_recording_folder) {
-                if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera) {
+                if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera &&
+                    !ptp_summary_final_posted) {
                     post_ptp_sync_summary(ptp_summary_recording_folder, build_ptp_camera_summary_json(true));
                 }
                 ptp_summary_recording_folder = live_recording_folder;
+                ptp_summary_final_posted = false;
                 reset_ptp_summary_stats();
                 if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera) {
                     ptp_readback_evidence.recorded_frame(current_entry->recording_frame_id);
@@ -2280,11 +2289,14 @@ void acquire_frames(
             }
             if (!ptp_summary_recording_folder.empty()) {
                 ptp_readback_evidence.recorded_frame(current_entry->recording_frame_id);
+                // The final summary when the recording stops (the evidence
+                // closes); nothing rewrites the file after it.
                 if (ptp_readback_evidence.finish_if_stopped(camera_control->record_video,
                         camera_control->preserve_recording_session_state)) {
                     if (camera_control->sync_camera) {
                         post_ptp_sync_summary(ptp_summary_recording_folder, build_ptp_camera_summary_json(true));
                     }
+                    ptp_summary_final_posted = true;
                 }
             }
 
@@ -3032,7 +3044,7 @@ void acquire_frames(
                         ptp_offset_stats.add(current_ptp_offset);
                     }
                     sample_ptp_readbacks();
-                    if (!ptp_summary_recording_folder.empty()) {
+                    if (!ptp_summary_recording_folder.empty() && !ptp_summary_final_posted) {
                         post_ptp_sync_summary(ptp_summary_recording_folder, build_ptp_camera_summary_json(ptp_readback_evidence.closed()));
                     }
                     if (ptp_offset_ret == EVT_SUCCESS) {
@@ -3207,7 +3219,7 @@ void acquire_frames(
     }
     pending_requeues.clear();
 
-    if (camera_control->sync_camera && !ptp_summary_recording_folder.empty()) {
+    if (camera_control->sync_camera && !ptp_summary_recording_folder.empty() && !ptp_summary_final_posted) {
         post_ptp_sync_summary(ptp_summary_recording_folder, build_ptp_camera_summary_json(true));
     }
     // The acquisition thread is ending: wait for the final summary update
