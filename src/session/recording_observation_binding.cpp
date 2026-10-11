@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <climits>
+#include <cstdint>
 #include <set>
 #include <vector>
 #include <map>
@@ -259,21 +261,165 @@ bool validate_request_contract(const json& contract, std::string* error_out)
     return true;
 }
 
+bool null_or_string(const json& v, size_t min_len = 1, size_t max_len = 0)
+{
+    if (v.is_null()) return true;
+    if (!v.is_string()) return false;
+    const size_t n = v.get_ref<const std::string&>().size();
+    return n >= min_len && (max_len == 0 || n <= max_len);
+}
+bool null_or_int(const json& v, int64_t min, int64_t max = INT64_MAX)
+{
+    if (v.is_null()) return true;
+    if (!v.is_number_integer()) return false;
+    const int64_t n = v.get<int64_t>();
+    return n >= min && n <= max;
+}
+bool int_at_least(const json& v, int64_t min)
+{
+    return v.is_number_integer() && v.get<int64_t>() >= min;
+}
+bool lower_hex(const std::string& value, size_t length)
+{
+    return value.size() == length &&
+        std::all_of(value.begin(), value.end(), [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        });
+}
+bool valid_uuid(const json& v)
+{
+    if (!v.is_string()) return false;
+    const std::string& s = v.get_ref<const std::string&>();
+    if (s.size() != 36 || s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-') return false;
+    return lower_hex(s.substr(0, 8), 8) && lower_hex(s.substr(9, 4), 4) &&
+        lower_hex(s.substr(14, 4), 4) && lower_hex(s.substr(19, 4), 4) && lower_hex(s.substr(24), 12);
+}
+bool valid_subject_type(const json& v)
+{
+    return v.is_null() || v == "individual" || v == "dish_group";
+}
+bool schema_version_is(const json& value, int version)
+{
+    return value.contains("schema_version") && value.at("schema_version").is_number_integer() &&
+        value.at("schema_version") == version;
+}
+
+// citrus.subject_declaration v1 (acceptance v3 contract.subject): exactly
+// citrus_subject_declaration_v1.schema.json.
+bool validate_subject_declaration(const json& s, std::string* error_out)
+{
+    if (!exact_keys(s, {"schema_id", "schema_version", "dish_id", "fish_id", "subject_count",
+                        "subject_type", "declared_at_utc", "source"}) ||
+        s.value("schema_id", "") != kCitrusSubjectDeclarationSchemaId || !schema_version_is(s, 1) ||
+        !null_or_string(s.at("dish_id"), 1, 128) ||
+        !(s.at("fish_id").is_null() || valid_uuid(s.at("fish_id"))) ||
+        !null_or_int(s.at("subject_count"), 1) || !valid_subject_type(s.at("subject_type")) ||
+        !s.at("declared_at_utc").is_string() ||
+        !valid_utc_timestamp(s.at("declared_at_utc").get<std::string>()) ||
+        s.value("source", "") != "citrus_operator_declaration") {
+        return fail(error_out, "acceptance subject declaration is invalid");
+    }
+    const bool no_dish = s.at("dish_id").is_null();
+    if (no_dish ? !(s.at("fish_id").is_null() && s.at("subject_count").is_null() && s.at("subject_type").is_null())
+                : !(s.at("subject_count").is_number_integer() && s.at("subject_type").is_string())) {
+        return fail(error_out, "acceptance subject declaration nullability is invalid");
+    }
+    return true;
+}
+
+// citrus.subject_reference v1 (receipt v3 contract.subject_reference):
+// exactly citrus_subject_reference_v1.schema.json, including its
+// null-iff rules.
+bool validate_subject_reference(const json& s, std::string* error_out)
+{
+    if (!exact_keys(s, {"schema_id", "schema_version", "dish_id", "lookup_status", "lookup_reason",
+                        "lookup_http_status", "queried_at_utc", "dish", "fish_status", "fish_reason",
+                        "fish", "subject_id", "subject_type", "subject_count", "zebrobot_version",
+                        "source"}) ||
+        s.value("schema_id", "") != kCitrusSubjectReferenceSchemaId || !schema_version_is(s, 1) ||
+        !null_or_string(s.at("dish_id"), 1, 128) ||
+        !(s.at("lookup_status") == "collected" || s.at("lookup_status") == "not_collected") ||
+        !null_or_string(s.at("lookup_reason")) || !null_or_int(s.at("lookup_http_status"), 100, 599) ||
+        !s.at("queried_at_utc").is_string() ||
+        !valid_utc_timestamp(s.at("queried_at_utc").get<std::string>()) ||
+        !(s.at("fish_status") == "collected" || s.at("fish_status") == "not_collected") ||
+        !null_or_string(s.at("fish_reason")) || !null_or_string(s.at("subject_id")) ||
+        !valid_subject_type(s.at("subject_type")) || !null_or_int(s.at("subject_count"), 1) ||
+        s.value("source", "") != "citrus_mzb_lookup") {
+        return fail(error_out, "receipt subject reference is invalid");
+    }
+    const json& dish = s.at("dish");
+    if (!dish.is_null() &&
+        (!exact_keys(dish, {"dish_id", "dish_uuid", "dish_revision", "dish_updated_at", "fish_count",
+                            "cross_id"}) ||
+         !null_or_string(dish.at("dish_id")) || dish.at("dish_id").is_null() ||
+         !valid_uuid(dish.at("dish_uuid")) || !int_at_least(dish.at("dish_revision"), 0) ||
+         !null_or_string(dish.at("dish_updated_at")) || dish.at("dish_updated_at").is_null() ||
+         !int_at_least(dish.at("fish_count"), 0) ||
+         !(dish.at("cross_id").is_null() || dish.at("cross_id").is_string()))) {
+        return fail(error_out, "receipt subject reference dish is invalid");
+    }
+    const json& fish = s.at("fish");
+    if (!fish.is_null() &&
+        (!exact_keys(fish, {"fish_id", "revision", "updated_at"}) || !valid_uuid(fish.at("fish_id")) ||
+         !int_at_least(fish.at("revision"), 0) || !null_or_string(fish.at("updated_at")) ||
+         fish.at("updated_at").is_null())) {
+        return fail(error_out, "receipt subject reference fish is invalid");
+    }
+    const json& version = s.at("zebrobot_version");
+    if (!version.is_null() &&
+        (!exact_keys(version, {"base_url", "api_schema_version", "service_commit", "service_commit_dirty",
+                               "consumer_schema_sha256", "http_status", "error"}) ||
+         !null_or_string(version.at("base_url")) || !null_or_int(version.at("api_schema_version"), 1) ||
+         !(version.at("service_commit").is_null() ||
+           (version.at("service_commit").is_string() &&
+            lower_hex(version.at("service_commit").get<std::string>(), 40))) ||
+         !(version.at("service_commit_dirty").is_null() || version.at("service_commit_dirty").is_boolean()) ||
+         !(version.at("consumer_schema_sha256").is_null() ||
+           (version.at("consumer_schema_sha256").is_string() &&
+            lower_hex(version.at("consumer_schema_sha256").get<std::string>(), 64))) ||
+         !null_or_int(version.at("http_status"), 100, 599) ||
+         !(version.at("error").is_null() || version.at("error").is_string()))) {
+        return fail(error_out, "receipt subject reference zebrobot_version is invalid");
+    }
+    const bool collected = s.at("lookup_status") == "collected";
+    const bool fish_collected = s.at("fish_status") == "collected";
+    const bool no_dish = s.at("dish_id").is_null();
+    if ((collected ? !(dish.is_object() && s.at("lookup_reason").is_null() && s.at("lookup_http_status").is_null())
+                   : !(dish.is_null() && s.at("lookup_reason").is_string())) ||
+        (fish_collected ? !(fish.is_object() && s.at("fish_reason").is_null())
+                        : !(fish.is_null() && s.at("fish_reason").is_string())) ||
+        (no_dish ? !(s.at("subject_id").is_null() && s.at("subject_type").is_null() &&
+                     s.at("subject_count").is_null())
+                 : !(s.at("subject_id").is_string() && s.at("subject_type").is_string() &&
+                     s.at("subject_count").is_number_integer()))) {
+        return fail(error_out, "receipt subject reference nullability is invalid");
+    }
+    return true;
+}
+
 bool validate_acceptance_contract(const json& contract,
                                   std::string* error_out)
 {
+    const int version = binding_record_schema_version(contract);
+    const bool v3 = version == kObservationBindingAcceptanceSchemaVersionV3;
     if (!contract.is_object()) {
         return fail(error_out, "binding acceptance contract must be an object");
     }
     const std::string status = contract.value("status", "");
     if (status == "accepted") {
-        if (!exact_keys(contract, {
+        std::set<std::string> keys = {
                 "schema_id", "schema_version", "status", "request_id",
                 "request_contract_sha256",
                 "observation_context_id", "decided_at_utc",
                 "citrus_experiment_id", "citrus_session_uuid", "target",
-                "planned_h5_relative_path"})) {
+                "planned_h5_relative_path"};
+        if (v3) keys.insert("subject");
+        if (!exact_keys(contract, keys)) {
             return fail(error_out, "accepted binding fields are invalid");
+        }
+        if (v3 && !validate_subject_declaration(contract.at("subject"), error_out)) {
+            return false;
         }
         if (!valid_identifier(contract.value("citrus_experiment_id", "")) ||
             !valid_identifier(contract.value("citrus_session_uuid", "")) ||
@@ -301,8 +447,8 @@ bool validate_acceptance_contract(const json& contract,
             "recording_context_mismatch", "recording_context_unavailable",
             "batch_rejected"};
         const std::string reason = contract.value("reason", "");
-        const bool v2 = binding_record_schema_version(contract) ==
-            kObservationBindingRequestSchemaVersionV2;
+        // Acceptance v3 keeps v2's rejection shape and reasons.
+        const bool v2 = version == kObservationBindingRequestSchemaVersionV2 || v3;
         if (reasons_v1.count(reason) == 0 &&
             !(v2 && reasons_v2_only.count(reason) != 0)) {
             return fail(error_out, "binding rejection reason is invalid");
@@ -313,8 +459,7 @@ bool validate_acceptance_contract(const json& contract,
 
     if (contract.value("schema_id", "") !=
             kObservationBindingAcceptanceSchemaId ||
-        !accepted_observation_binding_schema_version(
-            binding_record_schema_version(contract)) ||
+        !(accepted_observation_binding_schema_version(version) || v3) ||
         !valid_derived_id(contract.value("request_id", ""), "obsbindreq_") ||
         !valid_sha256(contract.value("request_contract_sha256", "")) ||
         !valid_derived_id(
@@ -441,15 +586,23 @@ bool validate_receipt_contract(const json& contract, std::string* error_out)
         "finalized_at_utc", "citrus_experiment_id",
         "citrus_session_uuid", "target", "h5_artifact", "session_status",
         "runtime_geometry_contract_sha256", "protocol_semantic"};
-    if (version == kObservationBindingFinalizedReceiptSchemaVersionV2) {
+    // v3 = v2 plus subject_reference; everything v2 checks applies to v3.
+    const bool v3 = version == kObservationBindingFinalizedReceiptSchemaVersionV3;
+    const bool v2_or_later = version == kObservationBindingFinalizedReceiptSchemaVersionV2 || v3;
+    if (v2_or_later) {
         keys.insert("citrus_artifacts");
+    }
+    if (v3) {
+        keys.insert("subject_reference");
     }
     if (!exact_keys(contract, keys) ||
         contract.value("schema_id", "") !=
             kObservationBindingFinalizedReceiptSchemaId ||
-        (version != kObservationBindingSchemaVersion &&
-         version != kObservationBindingFinalizedReceiptSchemaVersionV2)) {
+        (version != kObservationBindingSchemaVersion && !v2_or_later)) {
         return fail(error_out, "finalized binding receipt contract is invalid");
+    }
+    if (v3 && !validate_subject_reference(contract.at("subject_reference"), error_out)) {
+        return false;
     }
     if (!valid_derived_id(contract.value("request_id", ""), "obsbindreq_") ||
         !valid_sha256(contract.value("request_contract_sha256", "")) ||
@@ -474,7 +627,7 @@ bool validate_receipt_contract(const json& contract, std::string* error_out)
         !valid_sha256(artifact.value("sha256", ""))) {
         return fail(error_out, "finalized H5 artifact is invalid");
     }
-    if (version == kObservationBindingFinalizedReceiptSchemaVersionV2) {
+    if (v2_or_later) {
         // v2: the session uuid is citsess_ + the context's 64 hex.
         const std::string context = contract.value("observation_context_id", "");
         if (contract.value("citrus_session_uuid", "") != "citsess_" + context.substr(7)) {
@@ -522,7 +675,10 @@ bool seal(const char* schema_id,
         return fail(error_out, "binding record output is null");
     }
     const int version = binding_record_schema_version(contract);
-    if (!accepted_observation_binding_schema_version(version)) {
+    // Requests stay 1 or 2; acceptances and receipts may be 3.
+    const bool request = std::string(id_prefix) == "obsbindreq_";
+    if (!accepted_observation_binding_schema_version(version) &&
+        !(!request && version == kObservationBindingAcceptanceSchemaVersionV3)) {
         return fail(error_out, "binding contract schema_version is invalid");
     }
     const std::string digest = canonical_sha256(contract);
@@ -545,7 +701,7 @@ bool validate_envelope(const json& record,
                        const char* schema_id,
                        const char* id_field,
                        const char* id_prefix,
-                       bool allow_v2,
+                       int max_version,
                        std::string* error_out)
 {
     if (!exact_keys(record, {
@@ -559,8 +715,7 @@ bool validate_envelope(const json& record,
     const int outer = binding_record_schema_version(record);
     const int inner = record.at("contract").is_object()
         ? binding_record_schema_version(record.at("contract")) : 0;
-    if (outer != kObservationBindingSchemaVersion &&
-        !(allow_v2 && outer == kObservationBindingRequestSchemaVersionV2)) {
+    if (outer < kObservationBindingSchemaVersion || outer > max_version) {
         return fail(error_out, "binding envelope schema is invalid");
     }
     if (inner != outer) {
@@ -619,7 +774,7 @@ bool validate_recording_observation_binding_request(
 {
     return validate_envelope(
                request, kObservationBindingRequestSchemaId, "request_id",
-               "obsbindreq_", /*allow_v2=*/true, error_out) &&
+               "obsbindreq_", /*max_version=*/kObservationBindingRequestSchemaVersionV2, error_out) &&
         validate_request_contract(request.at("contract"), error_out);
 }
 
@@ -631,14 +786,18 @@ bool validate_recording_observation_binding_acceptance(
     if (!validate_recording_observation_binding_request(request, error_out) ||
         !validate_envelope(
             acceptance, kObservationBindingAcceptanceSchemaId, "acceptance_id",
-            "obsbindacc_", /*allow_v2=*/true, error_out) ||
+            "obsbindacc_", /*max_version=*/kObservationBindingAcceptanceSchemaVersionV3, error_out) ||
         !validate_acceptance_contract(acceptance.at("contract"), error_out)) {
         return false;
     }
     const json& request_contract = request.at("contract");
     const json& acceptance_contract = acceptance.at("contract");
-    if (binding_record_schema_version(acceptance) !=
-        binding_record_schema_version(request)) {
+    // A v2 request is answered by acceptance v2 or v3 (v3 adds the subject).
+    const int acceptance_version = binding_record_schema_version(acceptance);
+    const int request_version = binding_record_schema_version(request);
+    if (acceptance_version != request_version &&
+        !(request_version == kObservationBindingRequestSchemaVersionV2 &&
+          acceptance_version == kObservationBindingAcceptanceSchemaVersionV3)) {
         return fail(error_out,
                     "binding acceptance schema_version does not match the request schema_version");
     }
@@ -674,7 +833,7 @@ bool validate_recording_observation_finalized_receipt(
     }
     if (!validate_envelope(
             receipt, kObservationBindingFinalizedReceiptSchemaId, "receipt_id",
-            "obsbindfin_", /*allow_v2=*/true, error_out) ||
+            "obsbindfin_", /*max_version=*/kObservationBindingFinalizedReceiptSchemaVersionV3, error_out) ||
         !validate_receipt_contract(receipt.at("contract"), error_out)) {
         return false;
     }

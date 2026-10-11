@@ -5,6 +5,7 @@
 #include "session/recording_observation_request_artifacts.h"
 #include "gui/spatial_layout/sha256.h"
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -818,6 +819,162 @@ void test_v2_envelopes_carry_matching_versions_and_reject_mixing()
     }
 }
 
+// agent-contracts citrus-orange/subject_declaration_v1 (PR 74 + 75): a v2
+// request answered by acceptance v3 (contract.subject) and finalized by
+// receipt v3 (contract.subject_reference); fixtures are the contract's own
+// (2026_10_09_17_20_28 arena 3).
+json subject_declaration_fixture()
+{
+    return json::parse(R"({"schema_id": "citrus.subject_declaration", "schema_version": 1,
+        "dish_id": "19234_2", "fish_id": null, "subject_count": 1, "subject_type": "individual",
+        "declared_at_utc": "2026-10-09T21:20:29Z", "source": "citrus_operator_declaration"})");
+}
+json subject_reference_fixture()
+{
+    return json::parse(R"({"schema_id": "citrus.subject_reference", "schema_version": 1,
+        "dish_id": "19234_2", "lookup_status": "collected", "lookup_reason": null,
+        "lookup_http_status": null, "queried_at_utc": "2026-10-09T21:20:42Z",
+        "dish": {"dish_id": "19234_2", "dish_uuid": "b01892a2-c7a8-4d4e-9131-16676f295209",
+                 "dish_revision": 4, "dish_updated_at": "2026-10-09 15:45:02", "fish_count": 6,
+                 "cross_id": "19234"},
+        "fish_status": "not_collected", "fish_reason": "operator_did_not_select", "fish": null,
+        "subject_id": "061346be-666a-49f3-8b95-9f0eb352bf3a", "subject_type": "individual",
+        "subject_count": 1,
+        "zebrobot_version": {"base_url": "http://delahantyj-ws1.hhmi.org", "api_schema_version": 2,
+            "service_commit": "a56e219194d6dd9e0bfecf2f4a880c8778098bc2", "service_commit_dirty": false,
+            "consumer_schema_sha256": "f5280e430d4b5f10c3643cb89a6187eacc45fdac7af55b2e81f5e315b7b754dc",
+            "http_status": 200, "error": null},
+        "source": "citrus_mzb_lookup"})");
+}
+
+void test_v3_subject_declaration_and_reference()
+{
+    const json identity = make_identity();
+    json v2_contract = request_contract(identity);
+    v2_contract["schema_version"] = orange::session::kObservationBindingRequestSchemaVersionV2;
+    v2_contract["recording_context"] = {
+        {"schema_id", "citrus.parent_recording_context"}, {"schema_version", 1},
+        {"recording_type", "behavior"}, {"recording_subtype", "dish_stimulus"},
+        {"behavior_mode", "embedded"}, {"recording_intent", "stimulus_experiment"},
+        {"data_origin", "acquired"}};
+    json request;
+    std::string error;
+    require(orange::session::seal_recording_observation_binding_request(v2_contract, &request, &error),
+            "v2 request seal failed: " + error);
+    const std::string context = request.at("contract").at("observation_context_id");
+    const std::string session_uuid = "citsess_" + context.substr(7);
+
+    json v3_accept = accepted_contract(request);
+    v3_accept["schema_version"] = 3;
+    v3_accept["citrus_session_uuid"] = session_uuid;
+    v3_accept["subject"] = subject_declaration_fixture();
+    json acceptance;
+    require(orange::session::seal_recording_observation_binding_acceptance(v3_accept, &acceptance, &error),
+            "acceptance v3 seal failed: " + error);
+    require(acceptance.at("schema_version") == 3, "acceptance v3 envelope must be schema_version 3");
+    require(orange::session::validate_recording_observation_binding_acceptance(acceptance, request, &error),
+            "acceptance v3 must answer a v2 request: " + error);
+
+    // Shape gates on the declaration.
+    const auto refuses_acceptance = [&](json contract, const std::string& what) {
+        json sealed;
+        std::string e;
+        require(!orange::session::seal_recording_observation_binding_acceptance(contract, &sealed, &e),
+                "acceptance must be refused: " + what);
+    };
+    json no_subject = v3_accept; no_subject.erase("subject");
+    refuses_acceptance(no_subject, "v3 without subject");
+    json v2_with_subject = v3_accept; v2_with_subject["schema_version"] = 2;
+    refuses_acceptance(v2_with_subject, "v2 with subject");
+    json count_without_dish = v3_accept;
+    count_without_dish["subject"]["dish_id"] = nullptr;
+    refuses_acceptance(count_without_dish, "subject_count without dish_id");
+    json extra = v3_accept; extra["subject"]["note"] = "x";
+    refuses_acceptance(extra, "extra declaration key");
+    json bad_fish = v3_accept; bad_fish["subject"]["fish_id"] = "not-a-uuid";
+    refuses_acceptance(bad_fish, "fish_id not a UUID");
+    json no_dish = v3_accept;
+    no_dish["subject"]["dish_id"] = nullptr;
+    no_dish["subject"]["subject_count"] = nullptr;
+    no_dish["subject"]["subject_type"] = nullptr;
+    json no_dish_sealed;
+    require(orange::session::seal_recording_observation_binding_acceptance(no_dish, &no_dish_sealed, &error),
+            "a declaration of no dish must seal: " + error);
+
+    // A v1 request is never answered by v3.
+    json v1_request;
+    require(orange::session::seal_recording_observation_binding_request(request_contract(identity), &v1_request, &error),
+            "v1 request seal failed: " + error);
+    json v3_for_v1 = accepted_contract(v1_request);
+    v3_for_v1["schema_version"] = 3;
+    v3_for_v1["subject"] = subject_declaration_fixture();
+    json v3_for_v1_sealed;
+    require(orange::session::seal_recording_observation_binding_acceptance(v3_for_v1, &v3_for_v1_sealed, &error),
+            "v3 acceptance contract must seal: " + error);
+    require(!orange::session::validate_recording_observation_binding_acceptance(v3_for_v1_sealed, v1_request, &error),
+            "acceptance v3 must not answer a v1 request");
+
+    // v3 rejections keep v2's reasons.
+    json rej = rejected_contract(request);
+    rej["schema_version"] = 3;
+    rej["reason"] = "batch_rejected";
+    json rej_sealed;
+    require(orange::session::seal_recording_observation_binding_acceptance(rej, &rej_sealed, &error) &&
+                orange::session::validate_recording_observation_binding_acceptance(rej_sealed, request, &error),
+            "v3 batch_rejected must validate: " + error);
+
+    // Receipt v3 = receipt v2 + subject_reference.
+    json v3_receipt = receipt_contract(request, acceptance);
+    v3_receipt["schema_version"] = 3;
+    v3_receipt["citrus_session_uuid"] = session_uuid;
+    v3_receipt["citrus_artifacts"] = json::array();
+    v3_receipt["subject_reference"] = subject_reference_fixture();
+    json receipt;
+    require(orange::session::seal_recording_observation_finalized_receipt(v3_receipt, &receipt, &error),
+            "receipt v3 seal failed: " + error);
+    require(receipt.at("schema_version") == 3, "receipt v3 envelope must be schema_version 3");
+    require(orange::session::validate_recording_observation_finalized_receipt(receipt, request, acceptance, &error),
+            "receipt v3 chain must validate: " + error);
+    // Cross-check against Citrus's own JSON schemas (docs/schemas/*_v3):
+    // ORANGE_BINDING_TEST_DUMP_DIR=<dir> writes the sealed v3 documents.
+    if (const char* dump = std::getenv("ORANGE_BINDING_TEST_DUMP_DIR")) {
+        write_file(std::filesystem::path(dump) / "acceptance_v3.json", acceptance.dump(2));
+        write_file(std::filesystem::path(dump) / "receipt_v3.json", receipt.dump(2));
+    }
+    const auto refuses_receipt = [&](json contract, const std::string& what) {
+        json sealed;
+        std::string e;
+        require(!orange::session::seal_recording_observation_finalized_receipt(contract, &sealed, &e),
+                "receipt must be refused: " + what);
+    };
+    json v2_with_reference = v3_receipt; v2_with_reference["schema_version"] = 2;
+    refuses_receipt(v2_with_reference, "v2 with subject_reference");
+    json no_reference = v3_receipt; no_reference.erase("subject_reference");
+    refuses_receipt(no_reference, "v3 without subject_reference");
+    json reason_when_collected = v3_receipt;
+    reason_when_collected["subject_reference"]["lookup_reason"] = "x";
+    refuses_receipt(reason_when_collected, "lookup_reason on a collected lookup");
+    json short_commit = v3_receipt;
+    short_commit["subject_reference"]["zebrobot_version"]["service_commit"] = "a56e219";
+    refuses_receipt(short_commit, "service_commit not 40 hex");
+    json http_when_collected = v3_receipt;
+    http_when_collected["subject_reference"]["lookup_http_status"] = 200;
+    refuses_receipt(http_when_collected, "lookup_http_status on a collected lookup");
+
+    // A 404 dish lookup (the contract's not_collected case) and a null
+    // zebrobot_version are valid.
+    json not_found = v3_receipt;
+    json& ref = not_found["subject_reference"];
+    ref["lookup_status"] = "not_collected";
+    ref["lookup_reason"] = "dish_not_found";
+    ref["lookup_http_status"] = 404;
+    ref["dish"] = nullptr;
+    ref["zebrobot_version"] = nullptr;
+    json not_found_sealed;
+    require(orange::session::seal_recording_observation_finalized_receipt(not_found, &not_found_sealed, &error),
+            "a 404 not_collected subject reference must seal: " + error);
+}
+
 void test_prearm_surfaces_v2_context_rejection_reasons()
 {
     setenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION", "2", 1);
@@ -1452,6 +1609,7 @@ int main()
         test_request_v2_carries_frozen_recording_context();
         test_prearm_surfaces_v2_context_rejection_reasons();
         test_v2_envelopes_carry_matching_versions_and_reject_mixing();
+        test_v3_subject_declaration_and_reference();
         test_post_close_finalization_is_complete_idempotent_and_manifest_bound();
     test_receipt_v2_live_finalize_and_process_diagnostic_rules();
     test_receipt_upgrade_writes_a_verified_revision_chain();

@@ -28,6 +28,16 @@ inline constexpr int kObservationBindingRequestSchemaVersionV2 = 2;
 // stimulus-video finalization entry also carries the container facts Orange
 // checks against the file. v1 receipts keep their meaning.
 inline constexpr int kObservationBindingFinalizedReceiptSchemaVersionV2 = 2;
+// Subject declaration (agent-contracts citrus-orange/subject_declaration_v1,
+// PR 74 + amendment PR 75, 2026-10-11): acceptance v3 = acceptance v2 plus
+// contract.subject (citrus.subject_declaration v1, the operator's per-arena
+// dish at pre-arm), answering a v2 request; receipt v3 = receipt v2 plus
+// contract.subject_reference (citrus.subject_reference v1, the MZB-confirmed
+// record Citrus wrote to its H5). Orange accepts v2 and v3 side by side.
+inline constexpr int kObservationBindingAcceptanceSchemaVersionV3 = 3;
+inline constexpr int kObservationBindingFinalizedReceiptSchemaVersionV3 = 3;
+inline constexpr const char* kCitrusSubjectDeclarationSchemaId = "citrus.subject_declaration";
+inline constexpr const char* kCitrusSubjectReferenceSchemaId = "citrus.subject_reference";
 inline constexpr const char* kCitrusArtifactRoleStimulusVideo = "stimulus_video";
 inline constexpr const char* kCitrusArtifactRoleStimulusVideoFinalization =
     "stimulus_video_container_finalization";
@@ -47,7 +57,8 @@ inline bool accepted_observation_binding_schema_version(int version)
            version == kObservationBindingRequestSchemaVersionV2;
 }
 // The schema_version of a sealed envelope or of a contract payload as a
-// JSON integer (1 or 2); 0 for anything else (missing, float, out of range).
+// JSON integer (1, 2 or 3); 0 for anything else (missing, float, out of range).
+// Which versions a document admits is checked per document.
 inline int binding_record_schema_version(const nlohmann::json& record)
 {
     if (!record.is_object() || !record.contains("schema_version") ||
@@ -55,6 +66,7 @@ inline int binding_record_schema_version(const nlohmann::json& record)
     const auto& v = record.at("schema_version");
     if (v == kObservationBindingSchemaVersion) return kObservationBindingSchemaVersion;
     if (v == kObservationBindingRequestSchemaVersionV2) return kObservationBindingRequestSchemaVersionV2;
+    if (v == kObservationBindingAcceptanceSchemaVersionV3) return kObservationBindingAcceptanceSchemaVersionV3;
     return 0;
 }
 
