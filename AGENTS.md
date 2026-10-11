@@ -87,8 +87,12 @@ exist" then "Failed to open cameras", exit in 2 s):
 `crop_pipeline.crop_size_px` set to 256 in its four JSONs.
 
 ```bash
+make -C <tree>/targets/release orange_client   # EXCLUDE_FROM_ALL: plain make skips it
 scripts/run_detect_latency_spec.sh --orange-client <tree>/targets/release/orange_client <spec name>
 ```
+
+Check the `orange_client` mtime before every gate: on 2026-10-11 two gates ran
+a two-day-old client because `make` alone never rebuilds it.
 
 Check, in this order: `runs.json` camera_frame_id_gaps; NIC
 `rx_discards_phy`/`tx_global_pause` before and after (the run script's pass
@@ -183,6 +187,13 @@ the native binary before the next run.
   is not `external_ipc`.
 - No synchronous file I/O on the acquisition, YOLO, pose or handoff threads;
   per-frame diagnostics go through a `LogChannel` (`src/timing/log_writer.h`).
+- Anything that hashes recording files (realtime_products, manifests) calls
+  `LogWriter::SealFolder(folder)` first; after the seal, writers refuse new
+  opens under that folder. Acquisition logs end with the recording (last
+  recorded frame), in the GUI as in headless.
+- Never add files under `recording_observation_bindings/`: the Citrus transfer
+  sealer checks that directory's inventory. New per-recording evidence goes at
+  the recording root (carried as session context), and Palette is told first.
 - Keep owner push serialized per card; the GOP routing offset stays 0.
 - Read `encode_dropped`, `early_stage_exhausted` and the NIC counters before
   calling a run clean.
@@ -229,3 +240,31 @@ Orange/Citrus commissioning) are in git history of this file and in
   the code defaults and the headless gate spec is
   `docs/production_configuration.md`; the sealed
   `session.effective_configuration` in each recording shows what a run used).
+
+## Subject, Citrus and intake status, 2026-10-11
+
+- Production d0922ee. Dish per camera: the Subject panel edits dish and
+  subject count per camera (app config `recording.subject_references`), and
+  every GUI record start needs a fresh per-recording confirmation
+  (`subject_confirmation.json` at the root). Fish IDs wait for subject
+  identity v4.
+- Citrus acceptance v3 (`contract.subject`) is live (Citrus switch 3).
+  Pre-arm compares it with the operator's entry frozen in the start
+  snapshot and writes `subject_cross_check.json`. Interim policy
+  `refuse_arm_on_mismatch_interim_v1` (agent-contracts
+  `citrus-orange/subject_declaration_v1_2026-10-11.md` section 3a): any dish
+  or count difference refuses the arm in every binding mode, because Palette
+  (PR #356) refuses the import of such a recording. Ending it needs Jeremy
+  and a new policy name, once the receipt v3 overlay is live.
+- The start snapshot is sealed before the binding requests (they carry its
+  digest), so Citrus data never changes it: pre-arm can only cross-check,
+  and receipt v3 can only overlay (operator entry kept as `operator_entry`).
+  Receipt v3 stays off (Citrus switch 2) until Palette ports sealer 3.2.0.
+- Transfer pre-check: `scripts/check_recording_transfer_source.sh` pins sealer
+  3.2.0 (3.1.0 and 3.0.0 as rollback via `SEALER_VERSION`).
+- Crop-only (`media_products.mode = registered_context_and_moving_crops`):
+  in the code since 2026-09-23, never run on the rig. It needs an accepted
+  per-camera registration (Orange physical or selected daily; the rig has
+  none, recordings use the commissioned base geometry) and the operator's
+  scene declarations. Citrus and Palette are told it will become an intake
+  method; neither accepts its layout yet.
