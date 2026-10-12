@@ -1,4 +1,5 @@
 #include "nic_thermal_monitor.h"
+#include "outputs/common/atomic_file.h"
 #include "timing/clock.h"
 
 #include <algorithm>
@@ -239,31 +240,12 @@ bool write_json_atomic_owned(const std::filesystem::path& path,
                              const gid_t gid,
                              std::string* error_out)
 {
-    const std::filesystem::path temporary =
-        path.string() + ".tmp." + std::to_string(getpid());
-    std::error_code remove_error;
-    std::filesystem::remove(temporary, remove_error);
-    const int fd = open_owned_file(
-        temporary, O_CREAT | O_EXCL | O_WRONLY, uid, gid, error_out);
-    if (fd < 0) {
-        return false;
-    }
-    const std::string contents = value.dump(2) + "\n";
-    const bool wrote = write_all(fd, contents);
-    const int sync_result = wrote ? ::fsync(fd) : -1;
-    const int close_result = ::close(fd);
-    if (!wrote || sync_result != 0 || close_result != 0) {
-        std::filesystem::remove(temporary, remove_error);
-        return set_error(error_out,
-                         "failed to write thermal summary " + path.string());
-    }
-    std::error_code rename_error;
-    std::filesystem::rename(temporary, path, rename_error);
-    if (rename_error) {
-        std::filesystem::remove(temporary, remove_error);
-        return set_error(error_out,
-                         "failed to publish thermal summary " + path.string() +
-                             ": " + rename_error.message());
+    orange::outputs::AtomicWriteOptions options = orange::outputs::AtomicWriteOptions::durable();
+    options.owner = std::make_pair(uid, gid);
+    options.create_parent_directories = false;
+    std::string error;
+    if (!orange::outputs::write_json_atomic(path, value, options, &error)) {
+        return set_error(error_out, "failed to write thermal summary " + path.string() + ": " + error);
     }
     return true;
 }

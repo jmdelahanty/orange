@@ -1,4 +1,5 @@
 #include "gui/guided_capture_autorun.h"
+#include "outputs/common/atomic_file.h"
 
 #include "gui/env_util.h"
 #include "gui/spatial_layout/calibration_workflow.h"
@@ -605,53 +606,10 @@ bool write_json_atomically(const std::string& path,
     orange::ScopedFsuid fsuid_guard;
     (void)fsuid_guard;
     if (path.empty()) {
-        if (error_out) {
-            *error_out = "guided capture result JSON path is empty";
-        }
+        if (error_out) *error_out = "result path is empty";
         return false;
     }
-    const std::filesystem::path destination(path);
-    std::error_code ec;
-    if (!destination.parent_path().empty()) {
-        std::filesystem::create_directories(destination.parent_path(), ec);
-        if (ec) {
-            if (error_out) {
-                *error_out = "could not create result directory: " + ec.message();
-            }
-            return false;
-        }
-    }
-    const std::filesystem::path temporary = destination.string() + ".tmp";
-    {
-        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-        if (!output) {
-            if (error_out) {
-                *error_out = "could not open temporary result JSON: " + temporary.string();
-            }
-            return false;
-        }
-        output << payload.dump(2) << '\n';
-        output.flush();
-        if (!output) {
-            if (error_out) {
-                *error_out = "could not write temporary result JSON: " + temporary.string();
-            }
-            return false;
-        }
-    }
-    std::filesystem::rename(temporary, destination, ec);
-    if (ec) {
-        std::filesystem::remove(destination, ec);
-        ec.clear();
-        std::filesystem::rename(temporary, destination, ec);
-    }
-    if (ec) {
-        if (error_out) {
-            *error_out = "could not publish result JSON: " + ec.message();
-        }
-        return false;
-    }
-    return true;
+    return orange::outputs::write_json_atomic(path, payload, {}, error_out);
 }
 
 void finish_result(GuidedCaptureAutorunState* state,

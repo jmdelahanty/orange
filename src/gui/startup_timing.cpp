@@ -1,4 +1,5 @@
 #include "gui/startup_timing.h"
+#include "outputs/common/atomic_file.h"
 #include "timing/clock.h"
 
 #include "fsuid_guard.h"
@@ -57,68 +58,8 @@ bool write_json_atomic(
     const nlohmann::json& payload,
     std::string* error_out)
 {
-    try {
-        orange::ScopedFsuid user_files;
-        std::error_code ec;
-        std::filesystem::create_directories(destination.parent_path(), ec);
-        if (ec) {
-            if (error_out) {
-                *error_out = "create_directories failed: " + ec.message();
-            }
-            return false;
-        }
-
-        const std::filesystem::path temporary =
-            destination.string() + ".tmp." + std::to_string(getpid()) + "." +
-            std::to_string(thread_id_hash());
-        {
-            std::ofstream output(temporary, std::ios::out | std::ios::trunc);
-            if (!output.is_open()) {
-                if (error_out) {
-                    *error_out = "could not open temporary file " + temporary.string();
-                }
-                return false;
-            }
-            output << payload.dump(2) << '\n';
-            output.flush();
-            if (!output.good()) {
-                if (error_out) {
-                    *error_out = "could not write temporary file " + temporary.string();
-                }
-                output.close();
-                std::filesystem::remove(temporary, ec);
-                return false;
-            }
-        }
-
-        std::filesystem::rename(temporary, destination, ec);
-        if (ec) {
-            // POSIX rename replaces an existing file, but retain a portable
-            // fallback for filesystems with stricter replacement behavior.
-            std::error_code remove_error;
-            std::filesystem::remove(destination, remove_error);
-            ec.clear();
-            std::filesystem::rename(temporary, destination, ec);
-        }
-        if (ec) {
-            if (error_out) {
-                *error_out = "rename failed: " + ec.message();
-            }
-            std::filesystem::remove(temporary, ec);
-            return false;
-        }
-        return true;
-    } catch (const std::exception& error) {
-        if (error_out) {
-            *error_out = error.what();
-        }
-        return false;
-    } catch (...) {
-        if (error_out) {
-            *error_out = "unknown write failure";
-        }
-        return false;
-    }
+    orange::ScopedFsuid user_files;
+    return orange::outputs::write_json_atomic(destination, payload, {}, error_out);
 }
 
 nlohmann::json slowest_stage(const nlohmann::json& stages)

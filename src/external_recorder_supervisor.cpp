@@ -1,4 +1,5 @@
 #include "external_recorder_supervisor.h"
+#include "outputs/common/atomic_file.h"
 
 #include "external_recorder_duration_limit.h"
 #include "fsuid_guard.h"
@@ -1847,51 +1848,13 @@ bool write_json_atomic(const std::string& path,
     if (path.empty()) {
         return set_error(error_out, "storage preflight artifact path is empty");
     }
-    try {
-        orange::ScopedFsuid fsuid_guard;
-        (void)fsuid_guard;
-        const std::filesystem::path output(path);
-        if (!output.parent_path().empty()) {
-            std::error_code create_error;
-            std::filesystem::create_directories(output.parent_path(), create_error);
-            if (create_error) {
-                return set_error(
-                    error_out,
-                    "failed to create storage preflight artifact directory: " +
-                        create_error.message());
-            }
-        }
-        const std::filesystem::path temporary = output.string() + ".tmp";
-        {
-            std::ofstream stream(temporary, std::ios::trunc);
-            if (!stream) {
-                return set_error(
-                    error_out,
-                    "failed to open storage preflight artifact " + temporary.string());
-            }
-            stream << payload.dump(2) << '\n';
-            if (!stream) {
-                return set_error(
-                    error_out,
-                    "failed to write storage preflight artifact " + temporary.string());
-            }
-        }
-        std::error_code rename_error;
-        std::filesystem::rename(temporary, output, rename_error);
-        if (rename_error) {
-            std::error_code ignored;
-            std::filesystem::remove(temporary, ignored);
-            return set_error(
-                error_out,
-                "failed to publish storage preflight artifact " + output.string() +
-                    ": " + rename_error.message());
-        }
-        return true;
-    } catch (const std::exception& ex) {
-        return set_error(
-            error_out,
-            std::string("failed to write storage preflight artifact: ") + ex.what());
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    std::string error;
+    if (!orange::outputs::write_json_atomic(path, payload, {}, &error)) {
+        return set_error(error_out, "failed to write storage preflight artifact " + path + ": " + error);
     }
+    return true;
 }
 
 }  // namespace

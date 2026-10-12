@@ -1,5 +1,6 @@
 // src/project.cpp
 #include "project.h"
+#include "outputs/common/atomic_file.h"
 #include "timing/clock.h"
 #include "camera_config_schema.h"
 #include "yolo_runtime_flags.h"
@@ -4526,47 +4527,23 @@ bool write_json_atomic(const std::filesystem::path& path,
                        bool set_perms,
                        const char* label,
                        std::string* error_out = nullptr) {
+    // Rename-atomic, no fsync: these files are rewritten while recording (see
+    // outputs/common/atomic_file.h on why fsync is avoided there).
+    orange::outputs::AtomicWriteOptions options;
+    if (set_perms) {
+        options.perms = perms;
+    }
+    std::string error;
+    if (!orange::outputs::write_json_atomic(path, data, options, &error)) {
+        std::cerr << "Failed to write " << label << " " << path.string() << " (" << error << ")" << std::endl;
+        if (error_out) {
+            *error_out = error;
+        }
+        return false;
+    }
     if (error_out) {
         error_out->clear();
     }
-    std::filesystem::path tmp = path;
-    tmp += ".tmp";
-
-    std::ofstream out(tmp.string(), std::ios::trunc);
-    if (!out.is_open()) {
-        if (error_out) {
-            *error_out = std::string("failed to open temp file: ") + tmp.string();
-        }
-        std::cerr << "Failed to write " << label << " temp file: " << tmp.string() << std::endl;
-        return false;
-    }
-    out << data.dump(2) << std::endl;
-    out.close();
-
-    if (set_perms) {
-        std::error_code ec;
-        std::filesystem::permissions(tmp, perms, std::filesystem::perm_options::replace, ec);
-        if (ec) {
-            if (error_out && error_out->empty()) {
-                *error_out = std::string("failed to set permissions on temp file: ") + ec.message();
-            }
-            std::cerr << "Failed to set permissions on " << tmp.string() << " ("
-                      << ec.message() << ")" << std::endl;
-        }
-    }
-
-    std::error_code ec;
-    std::filesystem::rename(tmp, path, ec);
-    if (ec) {
-        if (error_out) {
-            *error_out = std::string("failed to rename temp file: ") + ec.message();
-        }
-        std::cerr << "Failed to rename " << label << " temp file: " << tmp.string()
-                  << " -> " << path.string() << " (" << ec.message() << ")" << std::endl;
-        std::filesystem::remove(tmp);
-        return false;
-    }
-
     return true;
 }
 

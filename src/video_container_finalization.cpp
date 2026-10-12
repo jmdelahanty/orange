@@ -1,4 +1,5 @@
 #include "video_container_finalization.h"
+#include "outputs/common/atomic_file.h"
 #include "timing/clock.h"
 
 #include "fsuid_guard.h"
@@ -178,88 +179,14 @@ std::string CurrentUtcTimestamp() {
     return orange::timing::utc_iso8601_now();
 }
 
-bool WriteAll(int fd, const std::string& bytes, std::string* error) {
-    std::size_t offset = 0;
-    while (offset < bytes.size()) {
-        const ssize_t count =
-            ::write(fd, bytes.data() + offset, bytes.size() - offset);
-        if (count < 0 && errno == EINTR) {
-            continue;
-        }
-        if (count <= 0) {
-            if (error) {
-                *error = "temporary_write_failed:" + std::to_string(errno);
-            }
-            return false;
-        }
-        offset += static_cast<std::size_t>(count);
-    }
-    return true;
-}
 
 bool WriteJsonAtomically(const fs::path& path,
                          const nlohmann::json& value,
                          std::string* error) {
+    // Finalization records are written once the container is closed: fsync file and directory.
     orange::ScopedFsuid fsuid_guard;
     (void)fsuid_guard;
-
-    fs::path parent = path.parent_path();
-    if (parent.empty()) {
-        parent = ".";
-    }
-    std::error_code ec;
-    fs::create_directories(parent, ec);
-    if (ec) {
-        if (error) {
-            *error = "create_parent_failed:" + ec.message();
-        }
-        return false;
-    }
-
-    static std::atomic<std::uint64_t> sequence{0};
-    const fs::path temporary =
-        parent /
-        ("." + path.filename().string() + "." +
-         std::to_string(static_cast<unsigned long long>(::getpid())) + "." +
-         std::to_string(sequence.fetch_add(1)) + ".tmp");
-    const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
-    if (fd < 0) {
-        if (error) {
-            *error = "temporary_open_failed:" + std::to_string(errno);
-        }
-        return false;
-    }
-    const std::string bytes = value.dump(2) + "\n";
-    bool ok = WriteAll(fd, bytes, error);
-    if (ok && ::fsync(fd) != 0) {
-        ok = false;
-        if (error) {
-            *error = "temporary_fsync_failed:" + std::to_string(errno);
-        }
-    }
-    if (::close(fd) != 0 && ok) {
-        ok = false;
-        if (error) {
-            *error = "temporary_close_failed:" + std::to_string(errno);
-        }
-    }
-    if (!ok) {
-        fs::remove(temporary, ec);
-        return false;
-    }
-    if (::rename(temporary.c_str(), path.c_str()) != 0) {
-        if (error) {
-            *error = "atomic_rename_failed:" + std::to_string(errno);
-        }
-        fs::remove(temporary, ec);
-        return false;
-    }
-    const int parent_fd = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY);
-    if (parent_fd >= 0) {
-        ::fsync(parent_fd);
-        ::close(parent_fd);
-    }
-    return true;
+    return orange::outputs::write_json_atomic(path, value, orange::outputs::AtomicWriteOptions::durable(), error);
 }
 
 nlohmann::json NullableErrorCode(const std::optional<int>& value) {

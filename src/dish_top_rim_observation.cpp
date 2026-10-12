@@ -1,4 +1,5 @@
 #include "dish_top_rim_observation.h"
+#include "outputs/common/atomic_file.h"
 
 #include "fnv1a64_fingerprint.h"
 #include "fsuid_guard.h"
@@ -126,15 +127,11 @@ bool write_json_file(const std::filesystem::path& path,
                      const nlohmann::json& value,
                      std::string* error_out)
 {
+    // Rename-atomic (outputs/common/atomic_file.h): no reader ever sees a partial file. No
+    // fsync: some of these files are rewritten while recording.
     orange::ScopedFsuid fsuid_guard;
     (void)fsuid_guard;
-    std::filesystem::create_directories(path.parent_path());
-    std::ofstream out(path, std::ios::out | std::ios::trunc);
-    if (!out.is_open()) {
-        return set_error(error_out, "failed to open JSON file for writing: " + path.string());
-    }
-    out << value.dump(2) << '\n';
-    return true;
+    return orange::outputs::write_json_atomic(path, value, {}, error_out);
 }
 
 bool read_json_file(const std::filesystem::path& path,

@@ -1,4 +1,5 @@
 #include "gui/spatial_layout/physical_registration_selection.h"
+#include "outputs/common/atomic_file.h"
 
 #include "dish_top_rim_observation.h"
 #include "fnv1a64_fingerprint.h"
@@ -59,47 +60,9 @@ bool write_json_atomically(
     const nlohmann::json& value,
     std::string* error)
 {
-    try {
-        orange::ScopedFsuid fsuid_guard;
-        (void)fsuid_guard;
-        fs::create_directories(path.parent_path());
-        const fs::path temporary = path.string() + ".tmp." +
-            std::to_string(static_cast<long long>(::getpid()));
-        {
-            std::ofstream stream(temporary, std::ios::trunc);
-            if (!stream) {
-                if (error) {
-                    *error = "Cannot create temporary active pointer: " +
-                        temporary.string();
-                }
-                return false;
-            }
-            stream << std::setw(2) << value << '\n';
-            stream.flush();
-            if (!stream) {
-                if (error) {
-                    *error = "Failed writing temporary active pointer: " +
-                        temporary.string();
-                }
-                return false;
-            }
-        }
-        std::error_code rename_error;
-        fs::rename(temporary, path, rename_error);
-        if (rename_error) {
-            std::error_code ignored;
-            fs::remove(temporary, ignored);
-            if (error) {
-                *error = "Failed to publish active pointer " + path.string() +
-                    ": " + rename_error.message();
-            }
-            return false;
-        }
-    } catch (const std::exception& exception) {
-        if (error) *error = exception.what();
-        return false;
-    }
-    return true;
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    return orange::outputs::write_json_atomic(path, value, {}, error);
 }
 
 bool path_is_within(const fs::path& child, const fs::path& parent)

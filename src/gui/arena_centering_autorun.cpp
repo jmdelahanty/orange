@@ -1,4 +1,5 @@
 #include "gui/arena_centering_autorun.h"
+#include "outputs/common/atomic_file.h"
 
 #include "fsuid_guard.h"
 #include "gui/spatial_layout/calibration_workflow.h"
@@ -1230,40 +1231,13 @@ bool write_json_atomically(const std::string& path,
                            const nlohmann::json& payload,
                            std::string* error_out)
 {
-    orange::ScopedFsuid guard;
-    (void)guard;
-    const std::filesystem::path destination(path);
-    std::error_code ec;
-    std::filesystem::create_directories(destination.parent_path(), ec);
-    if (ec) {
-        if (error_out) *error_out = "could not create result directory: " + ec.message();
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    if (path.empty()) {
+        if (error_out) *error_out = "result path is empty";
         return false;
     }
-    const std::filesystem::path temporary = destination.string() + ".tmp";
-    {
-        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-        if (!output) {
-            if (error_out) *error_out = "could not open result temporary file";
-            return false;
-        }
-        output << payload.dump(2) << '\n';
-        output.flush();
-        if (!output) {
-            if (error_out) *error_out = "could not write result temporary file";
-            return false;
-        }
-    }
-    std::filesystem::rename(temporary, destination, ec);
-    if (ec) {
-        std::filesystem::remove(destination, ec);
-        ec.clear();
-        std::filesystem::rename(temporary, destination, ec);
-    }
-    if (ec) {
-        if (error_out) *error_out = "could not publish result: " + ec.message();
-        return false;
-    }
-    return true;
+    return orange::outputs::write_json_atomic(path, payload, {}, error_out);
 }
 
 }  // namespace

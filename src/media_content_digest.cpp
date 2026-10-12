@@ -1,4 +1,5 @@
 #include "media_content_digest.h"
+#include "outputs/common/atomic_file.h"
 #include "fsuid_guard.h"
 
 #include "gui/spatial_layout/sha256.h"
@@ -162,27 +163,9 @@ bool write_content_digest_receipt(const ReceiptRequest& request,
     };
     orange::ScopedFsuid fsuid_guard;  // the receipt belongs to the sudo invoker
     const std::string final_path = receipt_path_for(request.video_path);
-    const std::string temp_path = final_path + ".tmp." + std::to_string(::getpid());
-    {
-        std::ofstream out(temp_path, std::ios::out | std::ios::trunc | std::ios::binary);
-        if (!out) {
-            if (error_out) *error_out = "could not open " + temp_path;
-            return false;
-        }
-        out << receipt.dump(2) << '\n';
-        out.flush();
-        if (!out) {
-            if (error_out) *error_out = "could not write " + temp_path;
-            out.close();
-            std::error_code ec;
-            std::filesystem::remove(temp_path, ec);
-            return false;
-        }
-    }
-    if (::rename(temp_path.c_str(), final_path.c_str()) != 0) {
-        if (error_out) *error_out = "rename failed: " + std::string(std::strerror(errno));
-        std::error_code ec;
-        std::filesystem::remove(temp_path, ec);
+    std::string write_error;
+    if (!orange::outputs::write_json_atomic(final_path, receipt, {}, &write_error)) {
+        if (error_out) *error_out = write_error;
         return false;
     }
     if (sha256_out) *sha256_out = hex;

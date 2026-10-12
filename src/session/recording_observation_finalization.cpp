@@ -1,4 +1,5 @@
 #include "session/recording_observation_finalization.h"
+#include "outputs/common/atomic_file.h"
 
 #include "gui/spatial_layout/sha256.h"
 #include "fsuid_guard.h"
@@ -189,50 +190,11 @@ bool write_atomic_replace(const fs::path& path,
                           const std::string& bytes,
                           std::string* error_out)
 {
-    const fs::path temporary = path.string() + ".observation-finalization.tmp." +
-        std::to_string(static_cast<long long>(::getpid()));
-    const int fd = ::open(
-        temporary.c_str(),
-        O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
-        0644);
-    if (fd < 0) {
-        return fail(error_out,
-                    "could not create manifest staging file: " +
-                        std::string(std::strerror(errno)));
-    }
-    bool ok = write_all(fd, bytes, error_out);
-    if (ok && ::fsync(fd) != 0) {
-        ok = fail(error_out,
-                  "manifest staging fsync failed: " +
-                      std::string(std::strerror(errno)));
-    }
-    if (::close(fd) != 0 && ok) {
-        ok = fail(error_out,
-                  "manifest staging close failed: " +
-                      std::string(std::strerror(errno)));
-    }
-    if (ok && ::rename(temporary.c_str(), path.c_str()) != 0) {
-        ok = fail(error_out,
-                  "manifest atomic replace failed: " +
-                      std::string(std::strerror(errno)));
-    }
-    if (!ok) {
-        std::error_code remove_error;
-        fs::remove(temporary, remove_error);
-        return false;
-    }
-    const int directory_fd = ::open(
-        path.parent_path().c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (directory_fd < 0) {
-        return fail(error_out, "could not open recording directory for fsync");
-    }
-    const bool directory_ok = ::fsync(directory_fd) == 0;
-    const int saved_errno = errno;
-    ::close(directory_fd);
-    return directory_ok ||
-        fail(error_out,
-             "recording directory fsync failed: " +
-                 std::string(std::strerror(saved_errno)));
+    orange::outputs::AtomicWriteOptions options = orange::outputs::AtomicWriteOptions::durable();
+    options.create_parent_directories = false;
+    std::string error;
+    return orange::outputs::write_file_atomic(path, bytes, options, &error) ||
+        fail(error_out, "manifest atomic replace failed: " + error);
 }
 
 json artifact_reference(const std::string& relative_path,

@@ -12,6 +12,7 @@
 #pragma once
 
 #include <algorithm>
+#include "outputs/common/atomic_file.h"
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -286,24 +287,10 @@ inline bool write_diagnostics_index(const std::string& folder, std::string* erro
     LogWriter::Instance().AddAnchor(folder, "index_written");
     const nlohmann::json index = build_diagnostics_index(folder);
     orange::ScopedFsuid fsuid_guard;
-    const std::filesystem::path final_path = std::filesystem::path(folder) / "diagnostics_index.json";
-    const std::filesystem::path temp_path = final_path.string() + ".tmp";
-    {
-        std::ofstream out(temp_path, std::ios::out | std::ios::trunc);
-        if (!out) {
-            if (error) *error = "cannot write " + temp_path.string();
-            return false;
-        }
-        out << index.dump(2) << '\n';
-        if (!out) {
-            if (error) *error = "write failed: " + temp_path.string();
-            return false;
-        }
-    }
-    std::error_code ec;
-    std::filesystem::rename(temp_path, final_path, ec);
-    if (ec) {
-        if (error) *error = "rename failed: " + ec.message();
+    orange::outputs::AtomicWriteOptions options;
+    options.create_parent_directories = false;
+    if (!orange::outputs::write_json_atomic(std::filesystem::path(folder) / "diagnostics_index.json",
+                                            index, options, error)) {
         return false;
     }
     return true;

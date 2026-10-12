@@ -204,23 +204,8 @@ bool write_json_atomically(
     if (!ensure_directory_for_spatial_session(path.parent_path(), error_out)) {
         return false;
     }
-    const fs::path temporary = path.string() + ".tmp." +
-        std::to_string(static_cast<long long>(::getpid()));
-    if (!write_json_file(temporary, value, error_out)) return false;
-    orange::ScopedFsuid fsuid_guard;
-    (void)fsuid_guard;
-    std::error_code rename_error;
-    fs::rename(temporary, path, rename_error);
-    if (rename_error) {
-        std::error_code ignored;
-        fs::remove(temporary, ignored);
-        if (error_out) {
-            *error_out = "Failed to atomically publish " + path.string() +
-                ": " + rename_error.message();
-        }
-        return false;
-    }
-    return true;
+    // write_json_file (session_io) replaces atomically.
+    return write_json_file(path, value, error_out);
 }
 
 bool all_rims_confirmed(

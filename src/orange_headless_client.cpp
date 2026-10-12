@@ -1,4 +1,5 @@
 #include <algorithm>
+#include "outputs/common/atomic_file.h"
 #include "timing/diagnostics_index.h"
 #include "timing/log_writer.h"
 #include "recording_master_crop_coverage.h"
@@ -5822,26 +5823,11 @@ bool read_json_file(const std::filesystem::path& path, nlohmann::json* json_out,
 
 bool write_json_file(const std::filesystem::path& path, const nlohmann::json& value, std::string* error_out)
 {
+    // Rename-atomic (outputs/common/atomic_file.h): no reader ever sees a partial file. No
+    // fsync: some of these files are rewritten while recording.
     orange::ScopedFsuid fsuid_guard;
     (void)fsuid_guard;
-    std::error_code create_error;
-    std::filesystem::create_directories(path.parent_path(), create_error);
-    if (create_error && !std::filesystem::exists(path.parent_path())) {
-        if (error_out) {
-            *error_out = "Failed to create parent directory for " + path.string() + ": " + create_error.message();
-        }
-        return false;
-    }
-
-    std::ofstream output(path);
-    if (!output) {
-        if (error_out) {
-            *error_out = "Failed to open " + path.string() + " for writing";
-        }
-        return false;
-    }
-    output << value.dump(2) << "\n";
-    return true;
+    return orange::outputs::write_json_atomic(path, value, {}, error_out);
 }
 
 bool write_headless_frame_ipc_summary(

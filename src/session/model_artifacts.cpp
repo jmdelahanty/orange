@@ -1,4 +1,5 @@
 #include "session/model_artifacts.h"
+#include "outputs/common/atomic_file.h"
 
 #include "fsuid_guard.h"
 #include "gui/spatial_layout/sha256.h"
@@ -35,17 +36,10 @@ nlohmann::json copy_declared(const fs::path& folder, const std::string& role,
     }
     const fs::path destination = folder / relative;
     orange::ScopedFsuid fsuid_guard;  // models/ belongs to the sudo invoker
-    std::error_code ec;
-    fs::create_directories(destination.parent_path(), ec);
-    const fs::path temp = destination.string() + ".tmp";
-    {
-        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
-        if (!out) { file["status"] = "copy_failed"; return file; }
-        out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-        if (!out) { file["status"] = "copy_failed"; fs::remove(temp, ec); return file; }
+    if (!orange::outputs::write_file_atomic(destination, bytes)) {
+        file["status"] = "copy_failed";
+        return file;
     }
-    fs::rename(temp, destination, ec);
-    if (ec) { file["status"] = "copy_failed"; fs::remove(temp, ec); return file; }
     file["size_bytes"] = bytes.size();
     file["sha256"] = sha256_hex(bytes);
     file["status"] = "present";

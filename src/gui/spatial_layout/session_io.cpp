@@ -1,4 +1,5 @@
 #include "gui/spatial_layout/session_io.h"
+#include "outputs/common/atomic_file.h"
 
 #include "dish_top_rim_observation.h"
 #include "fnv1a64_fingerprint.h"
@@ -138,23 +139,12 @@ bool write_json_file(const std::filesystem::path& path,
                      const nlohmann::json& value,
                      std::string* error_out)
 {
+    // Atomic replace: a reader never sees a partially written session file.
     orange::ScopedFsuid fsuid_guard;
     (void)fsuid_guard;
-    std::ofstream out(path, std::ios::out | std::ios::binary | std::ios::trunc);
-    if (!out.is_open()) {
-        if (error_out) {
-            *error_out = "Failed to open JSON output path: " + path.string();
-        }
-        return false;
-    }
-    out << value.dump(2) << '\n';
-    if (!out.good()) {
-        if (error_out) {
-            *error_out = "Failed to write JSON output path: " + path.string();
-        }
-        return false;
-    }
-    return true;
+    orange::outputs::AtomicWriteOptions options;
+    options.create_parent_directories = false;
+    return orange::outputs::write_json_atomic(path, value, options, error_out);
 }
 
 bool read_json_file(const std::filesystem::path& path,

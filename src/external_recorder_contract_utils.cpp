@@ -1,4 +1,5 @@
 #include "external_recorder_contract_utils.h"
+#include "outputs/common/atomic_file.h"
 #include "external_recorder_ipc_protocol.h"
 
 #include "external_recorder_supervisor.h"
@@ -22,32 +23,11 @@ bool write_json_file(const std::filesystem::path& path,
                      const nlohmann::json& payload,
                      std::string* error_out)
 {
+    // Rename-atomic (outputs/common/atomic_file.h): no reader ever sees a partial file. No
+    // fsync: some of these files are rewritten while recording.
     orange::ScopedFsuid fsuid_guard;
     (void)fsuid_guard;
-    std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
-    if (ec) {
-        if (error_out) {
-            *error_out = "failed to create directory for " + path.string() + ": " + ec.message();
-        }
-        return false;
-    }
-
-    std::ofstream output(path);
-    if (!output.is_open()) {
-        if (error_out) {
-            *error_out = "failed to open " + path.string() + " for writing";
-        }
-        return false;
-    }
-    output << payload.dump(2) << "\n";
-    if (!output.good()) {
-        if (error_out) {
-            *error_out = "failed to write " + path.string();
-        }
-        return false;
-    }
-    return true;
+    return orange::outputs::write_json_atomic(path, payload, {}, error_out);
 }
 
 bool read_json_file(const std::filesystem::path& path,
