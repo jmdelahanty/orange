@@ -104,6 +104,7 @@ set(DIR_IMPLOT "${THIRD_PARTY_DIR}/implot")
 set(DIR_FILEBROWSER "${THIRD_PARTY_DIR}/ImGuiFileDialog")
 set(DIR_ICONFONT "${THIRD_PARTY_DIR}/IconFontCppHeaders")
 set(DIR_FLATBUFFERS "${THIRD_PARTY_DIR}/flatbuffers")
+set(DIR_SHAMAN_IPC "${THIRD_PARTY_DIR}/shaman-ipc")
 set(DIR_NVENCODER "${SRC_DIR}/NvEncoder")
 set(DIR_NVENC_API "${CMAKE_SOURCE_DIR}/nvenc_api")
 
@@ -111,6 +112,13 @@ if(NOT EXISTS "${DIR_FLATBUFFERS}/include/flatbuffers/flatbuffers.h")
     message(FATAL_ERROR
         "Missing third_party/flatbuffers. Run `git submodule update --init --recursive` "
         "from the repo root, or use ./build.sh so the dependency is bootstrapped automatically.")
+endif()
+
+# SHAMAN v2 wire format shared with Citrus, pinned to a tagged release (jmdelahanty/shaman-ipc).
+if(NOT EXISTS "${DIR_SHAMAN_IPC}/include/shaman_ipc/shaman_v2_wire.h")
+    message(FATAL_ERROR
+        "Missing third_party/shaman-ipc. Run `git submodule update --init third_party/shaman-ipc` "
+        "from the repo root.")
 endif()
 
 set(OPENGL_GL_PREFERENCE GLVND)
@@ -196,6 +204,7 @@ set(ORANGE_THIRD_PARTY_INCLUDE_DIRS
 
 set(ORANGE_COMMON_INCLUDE_DIRS
     "${SRC_DIR}"
+    "${DIR_SHAMAN_IPC}/include"
 )
 
 file(GLOB NVENCODER_SOURCES "${DIR_NVENCODER}/*.cpp")
