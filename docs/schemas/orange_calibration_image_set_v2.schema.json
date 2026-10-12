@@ -1,0 +1,1458 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orange.local/schemas/orange_calibration_image_set_v2.schema.json",
+  "title": "orange.calibration.image_set v2",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "artifact_id",
+    "created_utc",
+    "purpose",
+    "target_plane",
+    "coordinate_space",
+    "camera",
+    "capture",
+    "images"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "orange.calibration.image_set"
+    },
+    "schema_version": {
+      "const": 2
+    },
+    "artifact_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "artifact_hash": {
+      "type": "string"
+    },
+    "created_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "purpose": {
+      "type": "string",
+      "enum": [
+        "camera_arena_calibration_set",
+        "arena_projection",
+        "homography_grid",
+        "verification_dots",
+        "validation_pattern",
+        "dry_physical_target_height_parallax_diagnostic",
+        "camera_only_physical_target_calibration",
+        "projected_surface_scale_calibration",
+        "scale_image",
+        "dish_top_rim",
+        "crosshair_alignment"
+      ]
+    },
+    "target_plane": {
+      "type": "string",
+      "enum": [
+        "multiple",
+        "projected_surface",
+        "tank_bottom_outer_surface",
+        "tank_bottom_inner_surface",
+        "estimated_fish_plane",
+        "dish_top_rim",
+        "unknown"
+      ]
+    },
+    "coordinate_space": {
+      "type": "string",
+      "enum": [
+        "camera_native_pixels",
+        "camera_view_px"
+      ]
+    },
+    "artifact_schema_id": {
+      "const": "orange.calibration.image_set"
+    },
+    "artifact_schema_version": {
+      "const": 2
+    },
+    "capture_stage": {
+      "$ref": "#/$defs/capture_stage"
+    },
+    "workflow_profile_id": {
+      "$ref": "#/$defs/workflow_profile_id"
+    },
+    "fixture_state": {
+      "$ref": "#/$defs/fixture_state"
+    },
+    "homography_role": {
+      "$ref": "#/$defs/homography_role"
+    },
+    "visibility_domain": {
+      "$ref": "#/$defs/visibility_domain"
+    },
+    "plane_z_mm_nominal": {
+      "type": "number"
+    },
+    "plane_z_mm_uncertainty": {
+      "type": "number",
+      "minimum": 0
+    },
+    "wet_or_dry": {
+      "$ref": "#/$defs/wet_or_dry"
+    },
+    "imaging_shelf_installed": {
+      "type": "boolean"
+    },
+    "dish_installed": {
+      "type": "boolean"
+    },
+    "dish_id": {
+      "type": "string"
+    },
+    "water_fill_mm": {
+      "type": "number",
+      "minimum": 0
+    },
+    "fill_state": {
+      "type": "string"
+    },
+    "open_water_surface_present": {
+      "type": "boolean"
+    },
+    "water_settled_status": {
+      "type": "string",
+      "enum": [
+        "settled",
+        "not_settled",
+        "unknown",
+        "not_applicable"
+      ]
+    },
+    "target_method": {
+      "$ref": "#/$defs/target_method"
+    },
+    "pattern_type": {
+      "$ref": "#/$defs/pattern_type"
+    },
+    "pattern_domain": {
+      "$ref": "#/$defs/pattern_domain"
+    },
+    "matched_parity_group_id": {
+      "type": "string"
+    },
+    "parity_group_id": {
+      "type": "string",
+      "description": "Shared group for matched calibration captures. For camera-only physical C-plane captures, this ties C_0/C_base/C_fish images together."
+    },
+    "parity_group_role": {
+      "$ref": "#/$defs/parity_group_role"
+    },
+    "reference_only": {
+      "type": "boolean"
+    },
+    "physical_target_used": {
+      "type": "boolean"
+    },
+    "projected_pattern_used_as_coordinate_target": {
+      "type": "boolean"
+    },
+    "plane_id": {
+      "$ref": "#/$defs/plane_id"
+    },
+    "z_mm_relative_to_projection_surface": {
+      "type": "number"
+    },
+    "target_id": {
+      "type": "string"
+    },
+    "target_design": {
+      "type": "string"
+    },
+    "physical_target_grid_spacing_mm": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "physical_target_origin_definition": {
+      "type": "string"
+    },
+    "physical_target_x_orientation_marker_definition": {
+      "type": "string"
+    },
+    "camera": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "serial",
+        "image_shape"
+      ],
+      "properties": {
+        "serial": {
+          "type": "string",
+          "minLength": 1
+        },
+        "name": {
+          "type": "string"
+        },
+        "image_shape": {
+          "$ref": "#/$defs/image_shape"
+        },
+        "pixel_format": {
+          "type": "string"
+        },
+        "configured_width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "configured_height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "camera_config_ref": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "gpu_direct": {
+          "type": "boolean"
+        }
+      }
+    },
+    "rig_context": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "rig_id": {
+          "type": "string"
+        },
+        "canvas_id": {
+          "type": "string"
+        },
+        "canvas_name": {
+          "type": "string"
+        },
+        "arena_id": {
+          "type": "string"
+        },
+        "camera_id": {
+          "type": "string"
+        },
+        "citrus_config_ref": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "citrus_homography_ref": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "tank_design_ref": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "plane_stack_ref": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "arena_context": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Optional Orange/Citrus association context for the camera/arena aggregate or linked specialized observation.",
+          "properties": {
+            "rig_id": {
+              "type": "string"
+            },
+            "canvas_id": {
+              "type": "string"
+            },
+            "arena_id": {
+              "type": "string"
+            },
+            "camera_serial": {
+              "type": "string"
+            },
+            "citrus_camera_id": {
+              "type": "string"
+            },
+            "associated_image_set_artifact_id": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "timestamp_utc"
+      ],
+      "properties": {
+        "operation_id": {
+          "type": "string"
+        },
+        "capture_group_id": {
+          "type": "string",
+          "description": "Shared identifier for one operator-requested grouped capture across multiple cameras."
+        },
+        "timestamp_utc": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "recording_frame_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_frame_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "temporal_compositing_method": {
+          "type": "string",
+          "examples": [
+            "temporal_mean_stream_frames_v1"
+          ]
+        },
+        "first_stream_frame_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "last_stream_frame_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "first_camera_frame_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "last_camera_frame_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "camera_timestamp_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Embedded camera timestamp for the saved frame, in the declared camera clock domain."
+        },
+        "camera_timestamp_clock_domain": {
+          "type": "string",
+          "enum": [
+            "camera_ptp"
+          ]
+        },
+        "timestamp_sys_ns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Host system timestamp associated with acquisition; not a substitute for the camera PTP timestamp."
+        },
+        "capture_mode": {
+          "type": "string"
+        },
+        "exposure_us": {
+          "type": "number",
+          "minimum": 0
+        },
+        "frame_rate_hz": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "gain": {
+          "type": "number"
+        },
+        "filter_state": {
+          "type": "string"
+        },
+        "runtime_filter_state": {
+          "type": "string"
+        },
+        "light_handling": {
+          "type": "string",
+          "examples": [
+            "leave_current",
+            "suppress_mapped_strobe",
+            "keep_or_restore_mapped_pulse",
+            "force_manual_active",
+            "operator_manual"
+          ]
+        },
+        "light_state": {
+          "type": "string"
+        },
+        "illumination": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "spectrum": {
+              "type": "string",
+              "examples": [
+                "narrowband_nir",
+                "broadband_visible",
+                "unknown_ir_nir",
+                "none"
+              ]
+            },
+            "source": {
+              "type": "string",
+              "examples": [
+                "custom_ttl_nir_strobe",
+                "visible_projector",
+                "ambient_room_light"
+              ]
+            },
+            "center_wavelength_nm": {
+              "type": "number",
+              "minimum": 0
+            },
+            "min_wavelength_nm": {
+              "type": "number",
+              "minimum": 0
+            },
+            "max_wavelength_nm": {
+              "type": "number",
+              "minimum": 0
+            },
+            "bandwidth_fwhm_nm": {
+              "type": "number",
+              "minimum": 0
+            },
+            "wavelength_confidence": {
+              "type": "string",
+              "examples": [
+                "nominal",
+                "measured",
+                "approximate_range",
+                "unknown"
+              ]
+            }
+          }
+        },
+        "projector_state": {
+          "type": "string"
+        },
+        "projector_visible_to_camera": {
+          "type": "boolean"
+        },
+        "requires_camera_mount_unchanged": {
+          "type": "boolean"
+        },
+        "requires_filter_reinstalled_repeatably": {
+          "type": "boolean"
+        }
+      }
+    },
+    "capture_timestamp_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "images": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/image_ref"
+      }
+    },
+    "projected_pattern": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "pattern_id": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "rows": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cols": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "spacing_canvas_px": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "dot_radius_canvas_px": {
+          "type": "number",
+          "minimum": 0
+        },
+        "canvas_coordinate_space": {
+          "type": "string"
+        },
+        "expected_center_canvas_px": {
+          "$ref": "#/$defs/point"
+        },
+        "expected_points": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "canvas_px": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "type": "number"
+                }
+              },
+              "arena_relative_canvas_px": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "scale_target": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "known_spacing_mm": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "known_distance_mm": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "units": {
+          "type": "string"
+        },
+        "target_plane": {
+          "type": "string"
+        },
+        "target_plane_material": {
+          "type": "string"
+        }
+      }
+    },
+    "physical_target": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Known physical XY target metadata for camera-only physical plane calibration. Projected/canvas coordinates are not valid coordinate targets here.",
+      "properties": {
+        "target_id": {
+          "type": "string"
+        },
+        "target_design": {
+          "type": "string"
+        },
+        "grid_spacing_mm": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "origin_definition": {
+          "type": "string"
+        },
+        "x_orientation_marker_definition": {
+          "type": "string"
+        },
+        "known_points_mm": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "id",
+              "x_mm",
+              "y_mm"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "x_mm": {
+                "type": "number"
+              },
+              "y_mm": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      }
+    },
+    "runtime_role": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Optional hint describing how Citrus may use this physical target plane at runtime.",
+      "properties": {
+        "role": {
+          "type": "string",
+          "examples": [
+            "behavior_plane_proxy"
+          ]
+        },
+        "behavior_plane_id": {
+          "type": "string",
+          "examples": [
+            "estimated_fish_plane"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "examples": [
+            "fallback_to_tank_bottom_inner_surface"
+          ]
+        },
+        "authority": {
+          "type": "string",
+          "examples": [
+            "citrus_decides_runtime_application"
+          ]
+        }
+      }
+    },
+    "observations": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "observed_domain": {
+          "$ref": "#/$defs/calibration_domain"
+        },
+        "calibration_domain": {
+          "$ref": "#/$defs/calibration_domain"
+        },
+        "authored_domain": {
+          "$ref": "#/$defs/calibration_domain"
+        },
+        "dish_top_rim": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Generic envelope for accepted dish top-rim evidence. The accepted_boundary should mirror the specialized top-rim artifact's accepted_inner_rim_boundary (or the schema-v1 compatibility alias), not an offset detection mask.",
+          "properties": {
+            "accepted_boundary": {
+              "type": "object",
+              "additionalProperties": true,
+              "description": "Operator-confirmed water-side inner-rim boundary in camera-native pixels, with optional physical-mm geometry and a same-plane camera scale. This is evidence proposed to Citrus, not proof of Citrus acceptance."
+            },
+            "observed_boundary": {
+              "type": "object",
+              "additionalProperties": true,
+              "description": "Detected or observed physical top-rim boundary in camera-native pixels."
+            },
+            "boundary_interpretation": {
+              "type": "object",
+              "additionalProperties": true,
+              "description": "Runtime semantics such as citrus_experimental_area_boundary and overcoverage policy."
+            },
+            "valid_detection_region": {
+              "type": "object",
+              "additionalProperties": true,
+              "description": "Optional offset detection-centroid region. New saves may use an outward centroid-gate outset; legacy saves may use inward erosion. This is not the physical inner-rim boundary."
+            },
+            "accepted_mask": {
+              "type": "object",
+              "additionalProperties": true,
+              "description": "Optional Palette-compatible offset mask view."
+            }
+          }
+        },
+        "homography_fit_intent": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "review_artifacts": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "linked_observations": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Links from an aggregate camera/arena image set to specialized accepted observation artifacts.",
+      "properties": {
+        "accepted_top_rim_observation": {
+          "$ref": "#/$defs/artifact_link"
+        }
+      }
+    },
+    "derived_artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/artifact_ref"
+      }
+    },
+    "citrus_preview": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "available": {
+          "type": "boolean"
+        },
+        "diagnostic_only": {
+          "const": true
+        },
+        "authority": {
+          "type": "string"
+        }
+      }
+    },
+    "citrus_projection_snapshot_pre_capture": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "citrus_projection_snapshot_post_capture": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "citrus_projection_epoch_consistency": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "citrus_calibration_scene_pre_capture": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Citrus scene status after the common presentation fence and before grouped camera acquisition."
+    },
+    "citrus_calibration_scene_post_capture": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Citrus scene status after grouped camera acquisition and before restoration."
+    },
+    "citrus_calibration_scene_consistency": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "citrus_calibration_scene_restore_status": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Citrus scene status after the prior projection scene crossed its restore presentation fence."
+    },
+    "citrus_arena_centering_pre_capture": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Arena-centering transaction status before the grouped camera capture."
+    },
+    "citrus_arena_centering_post_capture": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Arena-centering transaction status after the grouped camera capture."
+    },
+    "citrus_arena_centering_consistency": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Required identity comparison proving the same staged center and embedded scene bracketed acquisition."
+    },
+    "citrus_daily_registration_pre_capture": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Daily-registration candidate-preview status before grouped acquisition."
+    },
+    "citrus_daily_registration_post_capture": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Daily-registration candidate-preview status after grouped acquisition."
+    },
+    "citrus_daily_registration_consistency": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Identity comparison proving that one unchanged candidate preview bracketed acquisition."
+    },
+    "capture_group_membership": {
+      "$ref": "#/$defs/capture_group_membership"
+    },
+    "operator_notes": {
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "capture_stage": {
+      "type": "string",
+      "description": "Current operator workflow stage for new Orange calibration image-set writes. Deprecated projected-pattern tank-bottom/fish stages are intentionally not schema-valid for current payloads.",
+      "enum": [
+        "projected_surface_dry_reference",
+        "projected_surface_holder_installed",
+        "projected_surface_wet_runtime_stack",
+        "camera_physical_projected_surface",
+        "camera_physical_dish_base_inner_surface",
+        "camera_physical_fish_height",
+        "projected_surface_physical_scale_commissioning",
+        "projector_surface_validation",
+        "dish_top_observation",
+        "daily_registration_rim",
+        "daily_registration_base_center",
+        "daily_registration_candidate_validation",
+        "unknown"
+      ]
+    },
+    "workflow_profile_id": {
+      "type": "string",
+      "enum": [
+        "camera_physical_planes",
+        "unobstructed_canvas_commissioning",
+        "holder_installed_projected_surface",
+        "wet_tank_projected_surface",
+        "installed_tank_registration",
+        "custom"
+      ]
+    },
+    "fixture_state": {
+      "type": "string",
+      "enum": [
+        "holder_removed",
+        "holder_installed_dish_absent",
+        "holder_installed_dish_installed",
+        "unknown"
+      ]
+    },
+    "homography_role": {
+      "type": "string",
+      "enum": [
+        "commissioning_reference",
+        "operational_candidate",
+        "validation_only",
+        "not_applicable",
+        "unknown"
+      ]
+    },
+    "visibility_domain": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "domain_id",
+        "shape",
+        "coordinate_space",
+        "geometry_status",
+        "authority"
+      ],
+      "properties": {
+        "domain_id": {
+          "type": "string",
+          "enum": [
+            "unobstructed_arena_rectangle",
+            "imaging_shelf_aperture",
+            "unknown"
+          ]
+        },
+        "shape": {
+          "type": "string",
+          "enum": [
+            "rectangle",
+            "circle",
+            "rounded_rectangle",
+            "polygon",
+            "unknown"
+          ]
+        },
+        "coordinate_space": {
+          "type": "string",
+          "enum": [
+            "final_display_canvas_px",
+            "arena_local_canvas_px",
+            "unknown"
+          ]
+        },
+        "geometry_status": {
+          "type": "string",
+          "enum": [
+            "not_embedded",
+            "unmeasured",
+            "configured",
+            "observed",
+            "unknown"
+          ]
+        },
+        "authority": {
+          "type": "string",
+          "minLength": 1
+        },
+        "distinct_from_experimental_area": {
+          "const": true
+        }
+      }
+    },
+    "wet_or_dry": {
+      "type": "string",
+      "enum": [
+        "wet",
+        "dry",
+        "unknown",
+        "not_applicable"
+      ]
+    },
+    "target_method": {
+      "type": "string",
+      "enum": [
+        "projected_pattern_on_diffuser",
+        "physical_target_known_xy",
+        "physical_target",
+        "ruler_only",
+        "inferred",
+        "other",
+        "unknown",
+        "not_applicable"
+      ]
+    },
+    "pattern_type": {
+      "type": "string",
+      "enum": [
+        "rectangular_grid",
+        "circular_rings",
+        "ruler",
+        "crosshair",
+        "validation_pattern",
+        "physical_grid",
+        "physical_point_set",
+        "none",
+        "other",
+        "unknown",
+        "not_applicable"
+      ]
+    },
+    "pattern_domain": {
+      "type": "string",
+      "enum": [
+        "full_projected_surface",
+        "circular_experimental_domain",
+        "other",
+        "unknown",
+        "not_applicable"
+      ]
+    },
+    "parity_group_role": {
+      "type": "string",
+      "enum": [
+        "dry_reference",
+        "holder_installed_projected_surface",
+        "wet_projected_surface",
+        "physical_projected_surface",
+        "physical_dish_base",
+        "physical_fish_height",
+        "projected_surface_scale",
+        "projector_surface_validation"
+      ]
+    },
+    "plane_id": {
+      "type": "string",
+      "enum": [
+        "projected_surface_physical",
+        "dish_base_inner_surface_physical",
+        "fish_height_physical_assumed",
+        "projector_surface",
+        "unknown"
+      ]
+    },
+    "image_shape": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "height",
+        "width"
+      ],
+      "properties": {
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "x",
+        "y"
+      ],
+      "properties": {
+        "x": {
+          "type": "number"
+        },
+        "y": {
+          "type": "number"
+        }
+      }
+    },
+    "calibration_domain": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "shape",
+        "coordinate_space"
+      ],
+      "properties": {
+        "shape": {
+          "type": "string",
+          "examples": [
+            "circle",
+            "oriented_rectangle"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "target_plane": {
+          "type": "string"
+        },
+        "coordinate_space": {
+          "type": "string",
+          "examples": [
+            "camera_native_pixels",
+            "final_display_canvas_px"
+          ]
+        },
+        "center_px": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "number"
+          }
+        },
+        "radius_px": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "width_px": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "height_px": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "rotation_deg_clockwise": {
+          "type": "number"
+        },
+        "outer_geometry": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "valid_geometry": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "geometry_available": {
+          "type": "boolean"
+        },
+        "authority": {
+          "type": "string"
+        },
+        "edge_margin_px": {
+          "type": "number",
+          "minimum": 0
+        },
+        "centroid_gate_outset_px": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Outward detection-centroid forgiveness. Mutually exclusive with a positive legacy inward edge_margin_px."
+        }
+      }
+    },
+    "image_ref": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "role",
+        "path",
+        "checksum_algorithm",
+        "checksum",
+        "coordinate_space",
+        "image_shape"
+      ],
+      "properties": {
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "checksum_algorithm": {
+          "type": "string",
+          "minLength": 1
+        },
+        "checksum": {
+          "type": "string",
+          "minLength": 1
+        },
+        "coordinate_space": {
+          "type": "string",
+          "enum": [
+            "camera_native_pixels",
+            "camera_view_px"
+          ]
+        },
+        "image_shape": {
+          "$ref": "#/$defs/image_shape"
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "target_plane": {
+          "type": "string"
+        },
+        "artifact_schema_id": {
+          "const": "orange.calibration.image_set"
+        },
+        "artifact_schema_version": {
+          "const": 2
+        },
+        "capture_stage": {
+          "$ref": "#/$defs/capture_stage"
+        },
+        "plane_z_mm_nominal": {
+          "type": "number"
+        },
+        "plane_z_mm_uncertainty": {
+          "type": "number",
+          "minimum": 0
+        },
+        "wet_or_dry": {
+          "$ref": "#/$defs/wet_or_dry"
+        },
+        "imaging_shelf_installed": {
+          "type": "boolean"
+        },
+        "dish_installed": {
+          "type": "boolean"
+        },
+        "dish_id": {
+          "type": "string"
+        },
+        "water_fill_mm": {
+          "type": "number",
+          "minimum": 0
+        },
+        "fill_state": {
+          "type": "string"
+        },
+        "open_water_surface_present": {
+          "type": "boolean"
+        },
+        "water_settled_status": {
+          "type": "string",
+          "enum": [
+            "settled",
+            "not_settled",
+            "unknown",
+            "not_applicable"
+          ]
+        },
+        "target_method": {
+          "$ref": "#/$defs/target_method"
+        },
+        "pattern_type": {
+          "$ref": "#/$defs/pattern_type"
+        },
+        "pattern_domain": {
+          "$ref": "#/$defs/pattern_domain"
+        },
+        "matched_parity_group_id": {
+          "type": "string"
+        },
+        "parity_group_id": {
+          "type": "string"
+        },
+        "parity_group_role": {
+          "$ref": "#/$defs/parity_group_role"
+        },
+        "reference_only": {
+          "type": "boolean"
+        },
+        "physical_target_used": {
+          "type": "boolean"
+        },
+        "projected_pattern_used_as_coordinate_target": {
+          "type": "boolean"
+        },
+        "plane_id": {
+          "$ref": "#/$defs/plane_id"
+        },
+        "z_mm_relative_to_projection_surface": {
+          "type": "number"
+        },
+        "target_id": {
+          "type": "string"
+        },
+        "target_design": {
+          "type": "string"
+        },
+        "physical_target_grid_spacing_mm": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "physical_target_origin_definition": {
+          "type": "string"
+        },
+        "physical_target_x_orientation_marker_definition": {
+          "type": "string"
+        },
+        "capture_timestamp_utc": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "capture": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "projected_pattern": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "scale_target": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "physical_target": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "citrus_projection_snapshot_pre_capture": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Optional Citrus effect.active_projection_snapshot queried immediately before this Orange image capture."
+        },
+        "citrus_projection_snapshot_post_capture": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Optional Citrus effect.active_projection_snapshot queried immediately after this Orange image capture."
+        },
+        "citrus_projection_epoch_consistency": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "same_epoch",
+                "changed_epoch",
+                "unavailable",
+                "metadata_mismatch"
+              ]
+            },
+            "blocking_or_warning_reason": {
+              "type": "string"
+            },
+            "policy": {
+              "type": "string"
+            },
+            "projection_epoch_id": {
+              "type": "string"
+            },
+            "pre_projection_epoch_id": {
+              "type": "string"
+            },
+            "post_projection_epoch_id": {
+              "type": "string"
+            }
+          },
+          "description": "Warn-only V0 consistency result comparing Citrus projection snapshots before and after this image capture."
+        },
+        "citrus_calibration_scene_pre_capture": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "citrus_calibration_scene_post_capture": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "citrus_calibration_scene_consistency": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "citrus_calibration_scene_restore_status": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "citrus_arena_centering_pre_capture": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "citrus_arena_centering_post_capture": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "citrus_arena_centering_consistency": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "citrus_daily_registration_pre_capture": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "citrus_daily_registration_post_capture": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "citrus_daily_registration_consistency": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "capture_group_membership": {
+          "$ref": "#/$defs/capture_group_membership"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "capture_group_membership": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "schema_id",
+        "schema_version",
+        "capture_group_id",
+        "expected_camera_serials",
+        "completed_camera_serials",
+        "status"
+      ],
+      "properties": {
+        "schema_id": {
+          "const": "orange.calibration.capture_group_membership"
+        },
+        "schema_version": {
+          "const": 1
+        },
+        "capture_group_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_camera_serials": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "completed_camera_serials": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "failed_cameras": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "camera_serial": {
+                "type": "string"
+              },
+              "error": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "complete",
+            "partial",
+            "failed",
+            "invalid_scene"
+          ]
+        },
+        "intentional_camera_scope": {
+          "const": true
+        }
+      }
+    },
+    "artifact_ref": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "artifact_id",
+        "artifact_schema_id",
+        "artifact_schema_version"
+      ],
+      "properties": {
+        "artifact_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_schema_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_schema_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fingerprint": {
+          "type": "string"
+        }
+      }
+    },
+    "artifact_link": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "artifact_id",
+        "artifact_schema_id",
+        "artifact_schema_version"
+      ],
+      "properties": {
+        "artifact_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_schema_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_schema_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "relative_manifest_path": {
+          "type": "string"
+        },
+        "relative_observation_path": {
+          "type": "string"
+        },
+        "selection_policy": {
+          "type": "string"
+        },
+        "target_plane": {
+          "type": "string"
+        },
+        "coordinate_space": {
+          "type": "string"
+        },
+        "camera_serial": {
+          "type": "string"
+        },
+        "arena_id": {
+          "type": "string"
+        },
+        "canvas_id": {
+          "type": "string"
+        },
+        "arena_context": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    }
+  }
+}

@@ -56,7 +56,7 @@ struct CropOnlyFixture {
         start = {{"shaman_v2_camera_identity", identity},
             {"shaman_v2_camera_identity_sha256", "sha256:" + orange::gui::spatial_layout::checksum::sha256_hex(identity.dump())},
             {"session", {{"recording_media_plan", RecordingMediaPlan::Resolve(selection, planned).ToJson()},
-                {"master_frame_journal", {{"schema_version", 1}, {"required", true}, {"profile", "headless_acquisition_loop_v1"}, {"cameras", masters}}},
+                {"master_frame_journal", {{"schema_version", 2}, {"required", true}, {"profile", "headless_acquisition_loop_v1"}, {"cameras", masters}}},
                 {"moving_crop_master_coverage", {{"schema_version", 1}, {"required", true}, {"profile", "external_moving_crop_full_rate_v1"}}},
                 {"moving_crop_encoded_media", {{"schema_version", 1}, {"required", true}, {"profile", "returned_identity_v2_mux_and_full_hevc_decode_v1"}}},
                 {"registered_scene_context", daily ? json::object() : contexts.StartEvidence()}}}};

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.recorder.keyframes.v2",
+  "title": "Orange recorder keyframe sidecar (orange.recorder.keyframes, version 2)",
+  "description": "Cam<serial>_external_keyframe.json next to each encoded video (one per clip for rolling recordings). keyframe_video_frame_indices are 0-based positions in that video file of its keyframes (rule 2.4 of agent-contracts citrus-orange/frame_identity_v1). Version 1 had no schema_id and named the list keyframe_frames.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_id", "schema_version", "codec", "fps", "total_frames", "keyframe_video_frame_indices"],
+  "properties": {
+    "schema_id": {"const": "orange.recorder.keyframes"},
+    "schema_version": {"const": 2},
+    "codec": {"enum": ["h264", "hevc", "unknown"]},
+    "fps": {"type": "integer", "minimum": 0},
+    "total_frames": {"type": "integer", "minimum": 0, "description": "Frames written to this video file."},
+    "keyframe_video_frame_indices": {
+      "type": "array",
+      "items": {"type": "integer", "minimum": 0},
+      "description": "Strictly increasing 0-based video frame indices of keyframes in this file."
+    }
+  }
+}

@@ -95,7 +95,7 @@ json PrepareDailyContextReuse(const RegisteredContextConfig& config, const fs::p
     calibration::ReadDailyRegisteredContext(root / kDirectory, descriptor_ref);
     authority::SpatialRoiSessionAuthorityReceipt geometry_ref, use_ref;
     require(store->PublishJson("registered_context_geometry_v1.json", geometry, &geometry_ref, &error), error);
-    json start = {{"schema_version", 2}, {"required", true}, {"profile", kProfile}, {"recording_id", root.filename().string()},
+    json start = {{"schema_version", 3}, {"required", true}, {"profile", kProfile}, {"recording_id", root.filename().string()},
         {"config", config.ToJson()}, {"geometry_contract", geometry_ref.ToJson()}, {"cameras", bindings},
         {"daily_context", {{"directory", kDirectory}, {"descriptor", descriptor_ref.ToJson()}}}};
     require(store->PublishJson("registered_context_use_v1.json", use_record(start, bundle), &use_ref, &error), error);
@@ -104,13 +104,13 @@ json PrepareDailyContextReuse(const RegisteredContextConfig& config, const fs::p
 }
 
 void ApplyDailyContextReuseGate(const fs::path& root, const json& snapshot, json* parent) {
-    json result = {{"schema_version", 2}, {"required", true}, {"profile", kProfile}, {"status", "pending"}};
+    json result = {{"schema_version", 3}, {"required", true}, {"profile", kProfile}, {"status", "pending"}};
     const auto state = parent->value("status", "");
     if (state == "completed" || state == "incomplete" || state == "failed" || state == "interrupted") {
         try {
             const auto& start = snapshot.at("session").at("registered_scene_context");
             exact(start, {"schema_version", "required", "profile", "recording_id", "config", "geometry_contract", "cameras", "daily_context", "use_receipt"});
-            require(number(start.at("schema_version")) == 2 && start.at("required") == true && start.at("profile") == kProfile &&
+            require(number(start.at("schema_version")) == 3 && start.at("required") == true && start.at("profile") == kProfile &&
                 start.at("recording_id") == parent->at("session_id") && start.at("recording_id") == root.filename().string(), "prearm recording identity mismatch");
             const auto config = RegisteredContextConfig::Parse(start.at("config"));
             require(config.schema_version == 2 && config.enabled && config.ReusesDailyContext(), "required reuse configuration missing");

@@ -164,7 +164,7 @@ void RegisteredContextSet::Prepare(const RegisteredContextConfig& config, const 
 json RegisteredContextSet::StartEvidence() const {
     if (reused_evidence_.is_object()) return reused_evidence_;
     require(store_ != nullptr, "registered context not prepared");
-    return {{"schema_version", 1}, {"required", true}, {"profile", "native_registered_pre_recording_v1"},
+    return {{"schema_version", 2}, {"required", true}, {"profile", "native_registered_pre_recording_v1"},
         {"recording_id", recording_id_}, {"config", config_.ToJson()}, {"geometry_contract", geometry_.ToJson()}, {"cameras", bindings_}};
 }
 bool RegisteredContextSet::Complete() const {
@@ -211,13 +211,13 @@ void ApplyRequiredRegisteredContextGate(const fs::path& root, json* parent) {
         ApplyDailyContextReuseGate(root, snapshot, parent);
         return;
     }
-    json result = {{"schema_version", 1}, {"required", true}, {"profile", "native_registered_pre_recording_v1"},
+    json result = {{"schema_version", 2}, {"required", true}, {"profile", "native_registered_pre_recording_v1"},
         {"status", "pending"}, {"cameras", json::array()}};
     const auto state = parent->value("status", std::string());
     if (state == "completed" || state == "incomplete" || state == "failed" || state == "interrupted") {
         try {
             exact(start, {"schema_version", "required", "profile", "recording_id", "config", "geometry_contract", "cameras"});
-            require(number(start.at("schema_version")) == 1 && start.at("required") == true &&
+            require(number(start.at("schema_version")) == 2 && start.at("required") == true &&
                     start.at("profile") == "native_registered_pre_recording_v1" && start.at("recording_id") == parent->at("session_id"),
                     "registered context prearm identity mismatch");
             const auto config = RegisteredContextConfig::Parse(start.at("config"));

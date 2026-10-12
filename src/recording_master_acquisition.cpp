@@ -181,7 +181,7 @@ json MasterAcquisitionSet::StartEvidence(const std::string& profile) const {
         {"camera_serial", entry->CameraSerial()}, {"recording_id", entry->RecordingId()},
         {"producer_instance_id", entry->ProducerInstanceId()}, {"stream_generation", entry->StreamGeneration()},
         {"descriptor_relative_path", entry->ManifestPath().filename().string()}});
-    return {{"schema_version", 1}, {"required", Enabled()},
+    return {{"schema_version", 2}, {"required", Enabled()},
             {"profile", profile},
             {"config", config_.ToJson()}, {"cameras", cameras}};
 }
@@ -197,13 +197,13 @@ void ApplyRequiredMasterJournalGate(const fs::path& root, json* manifest) {
     if (!snapshot.contains("session") || !snapshot.at("session").contains("master_frame_journal")) return;
     const auto& start = snapshot.at("session").at("master_frame_journal");
     if (!start.at("required").get<bool>()) return;
-    json result = {{"schema_version", 1}, {"required", true},
+    json result = {{"schema_version", 2}, {"required", true},
                    {"profile", start.value("profile", std::string())},
                    {"status", "pending"}, {"cameras", json::array()}};
     const auto status = manifest->value("status", std::string());
     if (status == "completed" || status == "failed" || status == "interrupted") {
         try {
-            require(start.at("schema_version") == 1 &&
+            require(start.at("schema_version") == 2 &&
                     (start.at("profile") == "headless_acquisition_loop_v1" ||
                      start.at("profile") == "gui_acquisition_loop_v1"),
                     "unsupported required master journal profile");

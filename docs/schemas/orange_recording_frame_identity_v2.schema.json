@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.recording.frame_identity.v2",
+  "title": "Orange recording frame identity contract (orange.recording.frame_identity, version 2)",
+  "description": "recording_session.json frame_identity_contract. recording_frame_id is the only frame key of Orange's videos and metadata (agent-contracts citrus-orange/frame_identity_v1). Version 2 removes legacy_aliases: the recorder metadata CSV has no frame_id column.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id", "schema_version", "status", "canonical_field", "scope", "assignment_event",
+    "timestamp_fields", "continuity_policy", "recording_frame_id_gaps_allowed", "camera_streams",
+    "verification"
+  ],
+  "properties": {
+    "schema_id": {"const": "orange.recording.frame_identity"},
+    "schema_version": {"const": 2},
+    "status": {"enum": ["pending", "finalized"]},
+    "canonical_field": {"const": "recording_frame_id"},
+    "scope": {"const": "recording_session_and_camera_stream"},
+    "assignment_event": {"const": "orange_acquisition_recording_frame_sequence"},
+    "timestamp_fields": {"const": ["timestamp", "timestamp_sys"]},
+    "continuity_policy": {"const": "encoded_subset"},
+    "recording_frame_id_gaps_allowed": {"const": true},
+    "camera_streams": {
+      "type": "object",
+      "description": "Keyed by camera serial.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["camera_serial", "backend", "verification_status"],
+        "properties": {
+          "camera_serial": {"type": "string", "minLength": 1},
+          "backend": {"type": "string"},
+          "verification_status": {"type": "string"},
+          "proof": {"$ref": "orange_external_recorder_frame_identity_proof_v3.schema.json"},
+          "summary": {
+            "type": "object",
+            "required": ["path", "sha256"],
+            "properties": {
+              "path": {"type": "string"},
+              "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+            }
+          }
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "required": ["required", "result"],
+      "properties": {
+        "required": {"type": "boolean"},
+        "result": {"type": "string"}
+      }
+    }
+  }
+}
