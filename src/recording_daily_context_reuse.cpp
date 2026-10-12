@@ -1,4 +1,5 @@
 #include "recording_daily_context_reuse.h"
+#include "citrus_recording_geometry.h"
 #include "daily_registered_context.h"
 #include "fsuid_guard.h"
 #include <set>
@@ -32,7 +33,7 @@ json read_json(authority::SpatialRoiSessionAuthorityStore& store, const json& re
     return json::parse(bytes);
 }
 void verify_binding(const calibration::DailyContextBundle& bundle, const json& cameras, const json& geometry) {
-    require(geometry.at("schema_id") == "orange.recording.geometry_contract" && number(geometry.at("schema_version")) == 1,
+    require(geometry.at("schema_id") == "orange.recording.geometry_contract" && number(geometry.at("schema_version")) == orange::recording_geometry::kRecordingGeometryContractSchemaVersion,
         "unsupported current geometry");
     require(cameras.is_array() && cameras.size() == bundle.descriptor.at("cameras").size(), "camera membership changed");
     std::map<std::string, json> captured;

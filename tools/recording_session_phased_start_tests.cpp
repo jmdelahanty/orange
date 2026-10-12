@@ -27,6 +27,7 @@
 //   the prepared lifecycle options carry no explicit tool path, and a
 //   failure through that resolution performs the same cleanup.
 
+#include "citrus_recording_geometry.h"
 #include "session/recording_session.h"
 
 #include "external_recorder_lifecycle.h"
@@ -646,7 +647,7 @@ void test_successful_start_flips_record_video_at_completion()
         "recording_geometry_contract.json";
     const std::string geometry_bytes = nlohmann::json{
         {"schema_id", "orange.recording.geometry_contract"},
-        {"schema_version", 1},
+        {"schema_version", orange::recording_geometry::kRecordingGeometryContractSchemaVersion},
         {"status", "not_configured"},
         {"selection", {{"configured", false}}},
         {"cameras", nlohmann::json::object()},

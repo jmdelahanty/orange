@@ -4718,7 +4718,7 @@ bool validate_immutable_recording_start_snapshot_reference(
 
 constexpr const char* kRecordingGeometryAssetsSchemaId =
     "orange.recording.geometry_assets";
-constexpr int kRecordingGeometryAssetsSchemaVersion = 1;
+constexpr int kRecordingGeometryAssetsSchemaVersion = 2;  // v2: references geometry_contract v2
 constexpr std::uintmax_t kRecordingGeometryCompactAssetMaxBytes =
     32ull * 1024ull * 1024ull;
 constexpr std::uintmax_t kRecordingGeometryImageAssetMaxBytes =

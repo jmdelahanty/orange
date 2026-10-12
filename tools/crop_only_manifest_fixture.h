@@ -1,4 +1,5 @@
 #pragma once
+#include "citrus_recording_geometry.h"
 #include "moving_crop_completion_fixture.h"
 #include "recording_crop_only_manifest.h"
 #include "recording_media_plan.h"
@@ -22,7 +23,7 @@ struct CropOnlyFixture {
         std::vector<RegisteredContextCamera> cameras;
         std::vector<RecordingMediaCameraInput> planned;
         json serials = json::array(), masters = json::array(), bindings = json::array();
-        json geometry = {{"schema_id", "orange.recording.geometry_contract"}, {"schema_version", 1}, {"cameras", json::object()}};
+        json geometry = {{"schema_id", "orange.recording.geometry_contract"}, {"schema_version", orange::recording_geometry::kRecordingGeometryContractSchemaVersion}, {"cameras", json::object()}};
         for (Fixture* f : {&first, second.get()}) if (f) {
             const uint64_t id = cameras.size();
             cameras.push_back({f->serial, f->master.at("producer_instance_id"), id,

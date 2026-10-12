@@ -463,7 +463,7 @@ nlohmann::json build_gui_recording_geometry_contract(
     if (!cameras_params || !cameras_select || num_cameras <= 0) {
         return {
             {"schema_id", "orange.recording.geometry_contract"},
-            {"schema_version", 1},
+            {"schema_version", orange::recording_geometry::kRecordingGeometryContractSchemaVersion},
             {"status", "invalid_request"},
             {"cameras", nlohmann::json::object()},
             {"warnings", nlohmann::json::array({

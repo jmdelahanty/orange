@@ -1,4 +1,5 @@
 #pragma once
+#include "citrus_recording_geometry.h"
 #include "daily_registered_context.h"
 #include "gui_recording_evidence.h"
 #include <sched.h>
@@ -41,7 +42,7 @@ struct Fixture {
             {"dish_setup_complete", true}, {"nir_illumination_fixed", true}, {"camera_configuration_fixed", true}, {"rig_fixed", true}};
         registration = {{"schema_id", "citrus.calibration.daily_registration"}, {"schema_version", 1}, {"status", "accepted"},
             {"registration_id", "daily-reg-1"}, {"targets", json::array()}};
-        plan.geometry = {{"schema_id", "orange.recording.geometry_contract"}, {"schema_version", 1}, {"cameras", json::object()}};
+        plan.geometry = {{"schema_id", "orange.recording.geometry_contract"}, {"schema_version", orange::recording_geometry::kRecordingGeometryContractSchemaVersion}, {"cameras", json::object()}};
         json targets = json::array();
         for (int i = 0; i < 2; ++i) {
             const auto serial = i == 0 ? "02010093" : "02010094";

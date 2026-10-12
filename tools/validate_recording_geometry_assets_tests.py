@@ -43,7 +43,7 @@ def build_fixture(root: Path) -> tuple[dict, Path]:
     request_sha = "sha256:" + "a" * 64
     manifest = {
         "schema_id": "orange.recording.geometry_assets",
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "complete",
         "request_sha256": request_sha,
         "scope": {
@@ -75,7 +75,7 @@ def build_fixture(root: Path) -> tuple[dict, Path]:
     (bundle / "manifest.json").write_bytes(manifest_bytes)
     assets_reference = {
         "schema_id": "orange.recording.geometry_assets",
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "complete",
         "relative_path": "recording_geometry_assets/manifest.json",
         "sha256": sha256(manifest_bytes),
@@ -86,7 +86,7 @@ def build_fixture(root: Path) -> tuple[dict, Path]:
     }
     contract = {
         "schema_id": "orange.recording.geometry_contract",
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "resolved",
         "materialized_assets": assets_reference,
     }
@@ -95,7 +95,7 @@ def build_fixture(root: Path) -> tuple[dict, Path]:
     snapshot = {
         "recording_geometry_contract": {
             "schema_id": "orange.recording.geometry_contract",
-            "schema_version": 1,
+            "schema_version": 2,
             "status": "resolved",
             "relative_path": "recording_geometry_contract.json",
             "sha256": sha256(contract_bytes),

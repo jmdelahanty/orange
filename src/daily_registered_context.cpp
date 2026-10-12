@@ -1,4 +1,5 @@
 #include "daily_registered_context.h"
+#include "citrus_recording_geometry.h"
 #include "fsuid_guard.h"
 #include "gui/spatial_layout/daily_registration_runtime_selection.h"
 #include <set>
@@ -64,7 +65,7 @@ static void ValidatePayload(const DailyContextPlan& plan, const std::vector<Dail
     for (const auto& target : registration.at("targets"))
         require(registered.insert(target.at("camera_id").get<std::string>()).second, "duplicate registration camera");
     require(registered == expected, "accepted registration camera membership differs");
-    require(plan.geometry.at("schema_id") == "orange.recording.geometry_contract" && number(plan.geometry.at("schema_version")) == 1,
+    require(plan.geometry.at("schema_id") == "orange.recording.geometry_contract" && number(plan.geometry.at("schema_version")) == orange::recording_geometry::kRecordingGeometryContractSchemaVersion,
         "unsupported frozen geometry");
     require(frames.size() == expected.size(), "incomplete source camera set");
     std::set<std::string> seen;

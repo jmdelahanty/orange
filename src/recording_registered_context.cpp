@@ -1,4 +1,5 @@
 #include "recording_registered_context.h"
+#include "citrus_recording_geometry.h"
 #include "recording_daily_context_reuse.h"
 #include "fsuid_guard.h"
 #include "gui/spatial_layout/sha256.h"
@@ -47,7 +48,7 @@ json verify_json(authority::SpatialRoiSessionAuthorityStore& store, const json& 
     return json::parse(bytes);
 }
 std::string registration_kind(const json& geometry, const RegisteredContextCamera& camera) {
-    require(geometry.at("schema_id") == "orange.recording.geometry_contract" && number(geometry.at("schema_version")) == 1,
+    require(geometry.at("schema_id") == "orange.recording.geometry_contract" && number(geometry.at("schema_version")) == orange::recording_geometry::kRecordingGeometryContractSchemaVersion,
             "registered context: unsupported geometry contract");
     const auto& binding = geometry.at("cameras").at(camera.serial);
     const json* selected = nullptr;

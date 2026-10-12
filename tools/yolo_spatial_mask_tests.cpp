@@ -1,3 +1,4 @@
+#include "citrus_recording_geometry.h"
 #include "yolo_spatial_mask.h"
 
 #include <cmath>
@@ -18,12 +19,12 @@ nlohmann::json valid_contract()
 {
     return {
         {"schema_id", "orange.recording.geometry_contract"},
-        {"schema_version", 1},
+        {"schema_version", orange::recording_geometry::kRecordingGeometryContractSchemaVersion},
         {"cameras", {
             {"2010095", {
                 {"daily_registration_geometry", {
                     {"schema_id", "orange.recording.daily_registration_camera_geometry"},
-                    {"schema_version", 1},
+                    {"schema_version", 2},
                     {"status", "resolved"},
                     {"mode", "selected_daily_registration"},
                     {"registration_id", "dailyreg_fixture"},

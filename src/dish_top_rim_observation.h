@@ -1,6 +1,7 @@
 #ifndef ORANGE_DISH_TOP_RIM_OBSERVATION_H
 #define ORANGE_DISH_TOP_RIM_OBSERVATION_H
 
+#include "dish_top_rim_observation_schema.h"
 #include "calibration_image_set.h"
 #include "json.hpp"
 
@@ -15,10 +16,6 @@ inline constexpr const char* kCalibrationManifestSchemaId = "orange.calibration.
 inline constexpr int kCalibrationManifestSchemaVersion = 1;
 inline constexpr const char* kCalibrationRegistrySchemaId = "orange.calibration.registry";
 inline constexpr int kCalibrationRegistrySchemaVersion = 1;
-inline constexpr const char* kDishTopRimObservationSchemaId =
-    "orange.calibration.dish_top_rim_observation";
-inline constexpr int kDishTopRimObservationSchemaVersionV1 = 1;
-inline constexpr int kDishTopRimObservationSchemaVersion = 3;  // v3: *_stream_frame_id, source_image_index
 inline constexpr const char* kDishTopRimObservationMethod =
     "orange_acquisition_circle_hough_operator_confirmed_inner_rim_v2";
 inline constexpr const char* kDishTopRimTargetPlane = "dish_top_rim";

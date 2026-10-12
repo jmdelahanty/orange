@@ -1,3 +1,5 @@
+#include "calibration_image_set.h"
+#include "dish_top_rim_observation_schema.h"
 #include "citrus_recording_geometry.h"
 #include "gui/spatial_layout/sha256.h"
 
@@ -185,7 +187,7 @@ Fixture make_inherited_fixture()
         {"type", "circle"}, {"center_px", center}, {"radius_px", 2117.0}};
     write_json(fixture.daily_observation, {
         {"schema_id", "orange.calibration.dish_top_rim_observation"},
-        {"schema_version", 2},
+        {"schema_version", orange::calibration::kDishTopRimObservationSchemaVersion},
         {"artifact_id", "dishrim_fixture_cam1"},
         {"physical_target", "dish_top_rim"},
         {"camera", {
@@ -218,7 +220,7 @@ Fixture make_inherited_fixture()
              "derived_by_outward_offset_for_bounding_box_centroid_forgiveness"}}}});
     write_json(observation_dir / "image_set.json", {
         {"schema_id", "orange.calibration.image_set"},
-        {"schema_version", 1},
+        {"schema_version", orange::calibration::kCalibrationImageSetSchemaVersion},
         {"artifact_id", "dishrim_fixture_cam1"},
         {"purpose", "dish_top_rim"},
         {"coordinate_space", "camera_native_pixels"},
@@ -240,13 +242,13 @@ Fixture make_inherited_fixture()
         {"source_observation", {
             {"artifact_id", "dishrim_fixture_cam1"},
             {"artifact_schema_id", "orange.calibration.dish_top_rim_observation"},
-            {"artifact_schema_version", 2}}}});
+            {"artifact_schema_version", orange::calibration::kDishTopRimObservationSchemaVersion}}}});
     write_json(observation_dir / "exports" / "palette_dish_mask_v2.json", {
         {"version", "2.0"}, {"shape", "circle"},
         {"orange_artifact_id", "dishrim_fixture_cam1"},
         {"orange_artifact_schema_id",
          "orange.calibration.dish_top_rim_observation"},
-        {"orange_artifact_schema_version", 2},
+        {"orange_artifact_schema_version", orange::calibration::kDishTopRimObservationSchemaVersion},
         {"detected_circle", {
             {"center", {2251, 2261}}, {"radius", 2117}}}});
     write_json(observation_dir / "manifest.json", {

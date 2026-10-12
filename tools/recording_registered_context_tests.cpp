@@ -1,3 +1,4 @@
+#include "citrus_recording_geometry.h"
 #include "recording_registered_context.h"
 #include <fstream>
 #include <functional>
@@ -32,7 +33,7 @@ struct Fixture {
     Fixture() {
         std::string name = (fs::temp_directory_path() / "registered_context_test_XXXXXX").string();
         check(mkdtemp(name.data()) != nullptr, "fixture mkdtemp failed"); root = name;
-        geometry = {{"schema_id", "orange.recording.geometry_contract"}, {"schema_version", 1}, {"cameras", json::object()}};
+        geometry = {{"schema_id", "orange.recording.geometry_contract"}, {"schema_version", orange::recording_geometry::kRecordingGeometryContractSchemaVersion}, {"cameras", json::object()}};
         for (const auto& c : cameras) geometry["cameras"][c.serial] = {
             {"physical_registration", {{"status", "selected_resolved"}, {"mode", "selected_physical_registration"},
                 {"recording_snapshot_entry", {{"artifact_id", "accepted-rim"}, {"camera_serial", c.serial},

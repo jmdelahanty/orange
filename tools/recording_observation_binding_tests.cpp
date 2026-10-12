@@ -1,3 +1,4 @@
+#include "citrus_recording_geometry.h"
 #include "session/recording_observation_binding.h"
 #include "recording_subject_reference.h"
 #include "session/recording_observation_finalization.h"
@@ -191,7 +192,7 @@ json resolved_geometry()
 {
     return {
         {"schema_id", "orange.recording.geometry_contract"},
-        {"schema_version", 1},
+        {"schema_version", orange::recording_geometry::kRecordingGeometryContractSchemaVersion},
         {"status", "resolved"},
         {"selection", {
             {"configured", true},

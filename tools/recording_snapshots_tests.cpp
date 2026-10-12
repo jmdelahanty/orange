@@ -1,3 +1,5 @@
+#include "dish_top_rim_observation_schema.h"
+#include "citrus_recording_geometry.h"
 #include "gui/recording_snapshots.h"
 
 #include "camera.h"
@@ -535,7 +537,7 @@ void test_recording_geometry_assets_materialize_exact_scoped_sources()
             {"radius_px", 2117.0}}}};
     write_exact_fixture(rim_observation, nlohmann::json{
         {"schema_id", "orange.calibration.dish_top_rim_observation"},
-        {"schema_version", 2},
+        {"schema_version", orange::calibration::kDishTopRimObservationSchemaVersion},
         {"artifact_id", "dishrim_cam1"},
         {"camera", {{"serial", "cam1"}, {"width", 4512}, {"height", 4512}}},
         {"accepted_inner_rim_boundary", accepted_inner_rim},
@@ -614,7 +616,7 @@ void test_recording_geometry_assets_materialize_exact_scoped_sources()
              "bounding_box_centroid_inside_valid_detection_region"}}}};
     const nlohmann::json daily_geometry_contract = {
         {"schema_id", "orange.recording.daily_registration_geometry"},
-        {"schema_version", 1},
+        {"schema_version", 2},
         {"status", "selected_resolved"},
         {"mode", "selected_daily_registration"},
         {"registration_id", "dailyreg1"},
@@ -631,7 +633,7 @@ void test_recording_geometry_assets_materialize_exact_scoped_sources()
 
     const nlohmann::json contract = {
         {"schema_id", "orange.recording.geometry_contract"},
-        {"schema_version", 1},
+        {"schema_version", orange::recording_geometry::kRecordingGeometryContractSchemaVersion},
         {"captured_at_utc", "2026-07-21T12:00:00Z"},
         {"status", "resolved"},
         {"recording_policy", {{"recording_blocked", false}}},
@@ -821,7 +823,7 @@ void test_recording_geometry_asset_failure_is_nonblocking()
     write_exact_fixture(tank, "{\"tank_design_id\":\"palm1\"}\n");
     const nlohmann::json contract = {
         {"schema_id", "orange.recording.geometry_contract"},
-        {"schema_version", 1},
+        {"schema_version", orange::recording_geometry::kRecordingGeometryContractSchemaVersion},
         {"status", "resolved"},
         {"recording_policy", {{"recording_blocked", false}}},
         {"cameras", nlohmann::json::object()},
@@ -973,7 +975,7 @@ void test_standalone_physical_registration_recording_materialization()
     };
     nlohmann::json contract = {
         {"schema_id", "orange.recording.geometry_contract"},
-        {"schema_version", 1},
+        {"schema_version", orange::recording_geometry::kRecordingGeometryContractSchemaVersion},
         {"status", "orange_only"},
         {"recording_policy", {{"recording_blocked", false}}},
         {"cameras", {{"cam1", {

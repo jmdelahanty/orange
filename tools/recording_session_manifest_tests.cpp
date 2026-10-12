@@ -1,3 +1,4 @@
+#include "citrus_recording_geometry.h"
 #include "session/recording_session.h"
 #include "session/acquisition_index_authority.h"
 #include "session/crop_rolling_outputs.h"
@@ -666,11 +667,11 @@ void test_manifest_references_recording_geometry_contract()
         std::ofstream output(folder / "recording_geometry_contract.json");
         output << nlohmann::json{
             {"schema_id", "orange.recording.geometry_contract"},
-            {"schema_version", 1},
+            {"schema_version", orange::recording_geometry::kRecordingGeometryContractSchemaVersion},
             {"status", "resolved"},
             {"materialized_assets", {
                 {"schema_id", "orange.recording.geometry_assets"},
-                {"schema_version", 1},
+                {"schema_version", 2},
                 {"status", "complete"},
                 {"relative_path", "recording_geometry_assets/manifest.json"},
                 {"sha256", "sha256:" + std::string(64, 'a')},

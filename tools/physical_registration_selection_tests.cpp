@@ -1,3 +1,5 @@
+#include "dish_top_rim_observation_schema.h"
+#include "citrus_recording_geometry.h"
 #include "dish_top_rim_observation.h"
 #include "fnv1a64_fingerprint.h"
 #include "gui/spatial_layout/physical_registration_selection.h"
@@ -398,7 +400,7 @@ void test_recording_prearm_snapshot_and_runtime_marking()
 
     nlohmann::json contract = {
         {"schema_id", "orange.recording.geometry_contract"},
-        {"schema_version", 1},
+        {"schema_version", orange::recording_geometry::kRecordingGeometryContractSchemaVersion},
         {"cameras", {{"2010095", {{"camera_serial", "2010095"}}}}},
     };
     orange::recording_geometry::append_recording_physical_registrations(
@@ -428,7 +430,7 @@ void test_recording_prearm_snapshot_and_runtime_marking()
 
     nlohmann::json no_selection_contract = {
         {"schema_id", "orange.recording.geometry_contract"},
-        {"schema_version", 1},
+        {"schema_version", orange::recording_geometry::kRecordingGeometryContractSchemaVersion},
         {"cameras", {{"2010096", {{"camera_serial", "2010096"}}}}},
     };
     orange::recording_geometry::append_recording_physical_registrations(
@@ -446,7 +448,7 @@ void test_recording_prearm_snapshot_and_runtime_marking()
     write_json(observation_path, changed);
     nlohmann::json invalid_contract = {
         {"schema_id", "orange.recording.geometry_contract"},
-        {"schema_version", 1},
+        {"schema_version", orange::recording_geometry::kRecordingGeometryContractSchemaVersion},
         {"cameras", {{"2010095", {{"camera_serial", "2010095"}}}}},
     };
     orange::recording_geometry::append_recording_physical_registrations(

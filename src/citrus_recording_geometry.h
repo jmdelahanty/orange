@@ -9,7 +9,10 @@ namespace orange::recording_geometry {
 
 inline constexpr const char* kRecordingGeometryContractSchemaId =
     "orange.recording.geometry_contract";
-inline constexpr int kRecordingGeometryContractSchemaVersion = 1;
+// v2 (2026-10-12): embeds dish_top_rim_observation v3 and geometry_assets v2.
+inline constexpr int kRecordingGeometryContractSchemaVersion = 2;
+inline constexpr int kDailyRegistrationGeometrySchemaVersion = 2;
+inline constexpr int kDailyRegistrationCameraGeometrySchemaVersion = 2;
 
 struct CitrusGeometryResolveRequest {
     std::string selected_canvas_config_path;

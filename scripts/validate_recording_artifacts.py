@@ -313,7 +313,7 @@ def validate_recording_geometry_artifacts(
     )
     reporter.check(
         contract.get("schema_id") == "orange.recording.geometry_contract"
-        and contract.get("schema_version") == 1,
+        and contract.get("schema_version") == 2,
         "recording geometry contract schema identity is valid",
         "recording geometry contract schema identity is invalid",
     )
@@ -361,7 +361,7 @@ def validate_recording_geometry_artifacts(
     )
     reporter.check(
         manifest.get("schema_id") == "orange.recording.geometry_assets"
-        and manifest.get("schema_version") == 1,
+        and manifest.get("schema_version") == 2,
         "recording geometry asset manifest schema identity is valid",
         "recording geometry asset manifest schema identity is invalid",
     )

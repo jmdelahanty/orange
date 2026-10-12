@@ -1,6 +1,7 @@
 #pragma once
 
 #include "json.hpp"
+#include "citrus_recording_geometry.h"
 
 #include <algorithm>
 #include <cctype>
@@ -388,7 +389,7 @@ inline ResolveResult resolve_policy_from_recording_geometry_contract(
             "orange.recording.geometry_contract" ||
         contract_version == contract.end() ||
         !contract_version->is_number_integer() ||
-        contract_version->get<int>() != 1) {
+        contract_version->get<int>() != orange::recording_geometry::kRecordingGeometryContractSchemaVersion) {
         return fail("recording geometry contract schema identity is invalid",
                     "invalid_contract");
     }

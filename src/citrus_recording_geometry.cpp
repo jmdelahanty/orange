@@ -1,5 +1,8 @@
 #include "citrus_recording_geometry.h"
 
+#include "calibration_image_set.h"
+#include "dish_top_rim_observation_schema.h"
+
 #include "gui/spatial_layout/sha256.h"
 
 #include <algorithm>
@@ -544,7 +547,8 @@ bool validate_daily_rim_observation(
 
     if (value.value("schema_id", "") !=
             "orange.calibration.dish_top_rim_observation" ||
-        value.value("schema_version", 0) != 2 ||
+        value.value("schema_version", 0) !=
+            orange::calibration::kDishTopRimObservationSchemaVersion ||
         value.value("artifact_id", "") !=
             target.value("rim_observation", nlohmann::json::object()).value(
                 "artifact_id", "") ||
@@ -633,7 +637,7 @@ void resolve_daily_registration_geometry(
     }
     nlohmann::json daily = {
         {"schema_id", "orange.recording.daily_registration_geometry"},
-        {"schema_version", 1},
+        {"schema_version", kDailyRegistrationGeometrySchemaVersion},
         {"status", "not_configured"},
         {"mode", "base_only"},
         {"recording_blocked", false},
@@ -941,7 +945,8 @@ void resolve_daily_registration_geometry(
             const bool compact_identity_valid =
                 image_set.value("schema_id", "") ==
                     "orange.calibration.image_set" &&
-                image_set.value("schema_version", 0) == 1 &&
+                image_set.value("schema_version", 0) ==
+                    orange::calibration::kCalibrationImageSetSchemaVersion &&
                 image_set.value("artifact_id", "") ==
                     observation.value.value("artifact_id", "") &&
                 image_set.value("purpose", "") == "dish_top_rim" &&
@@ -961,7 +966,8 @@ void resolve_daily_registration_geometry(
                     observation.value.value("artifact_id", "") &&
                 spatial_source.value("artifact_schema_id", "") ==
                     "orange.calibration.dish_top_rim_observation" &&
-                spatial_source.value("artifact_schema_version", 0) == 2 &&
+                spatial_source.value("artifact_schema_version", 0) ==
+                    orange::calibration::kDishTopRimObservationSchemaVersion &&
                 outer_geometry.value("type", "") == "circle" &&
                 exported_number_matches(
                     outer_geometry, "cx", inner_center.value("x", -1.0)) &&
@@ -985,11 +991,12 @@ void resolve_daily_registration_geometry(
                     observation.value.value("artifact_id", "") &&
                 palette_export.value("orange_artifact_schema_id", "") ==
                     "orange.calibration.dish_top_rim_observation" &&
-                palette_export.value("orange_artifact_schema_version", 0) == 2;
+                palette_export.value("orange_artifact_schema_version", 0) ==
+                    orange::calibration::kDishTopRimObservationSchemaVersion;
             if (!compact_identity_valid) {
                 compact_valid = false;
                 camera_daily["errors"].push_back(
-                    "Daily rim manifest members disagree with the accepted schema-v2 observation or native raster.");
+                    "Daily rim manifest members disagree with the accepted observation or native raster.");
             }
         }
         if (!compact_valid) {
@@ -1043,7 +1050,7 @@ void resolve_daily_registration_geometry(
         });
         (*contract)["cameras"][camera_id]["daily_registration_geometry"] = {
             {"schema_id", "orange.recording.daily_registration_camera_geometry"},
-            {"schema_version", 1},
+            {"schema_version", kDailyRegistrationCameraGeometrySchemaVersion},
             {"status", "resolved"},
             {"mode", "selected_daily_registration"},
             {"registration_id", registration_id},

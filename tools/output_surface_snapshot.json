@@ -669,15 +669,15 @@
   "schemas": [
    [
     "orange.recording.daily_registration_camera_geometry",
-    "1"
+    "2"
    ],
    [
     "orange.recording.daily_registration_geometry",
-    "1"
+    "2"
    ],
    [
     "orange.recording.geometry_contract",
-    "1"
+    "2"
    ]
   ]
  },
@@ -2526,7 +2526,7 @@
    ],
    [
     "orange.recording.geometry_contract",
-    "1"
+    "2"
    ]
   ]
  },
@@ -5074,7 +5074,7 @@
    ],
    [
     "orange.recording.geometry_assets",
-    "1"
+    "2"
    ],
    [
     "orange.recording.immutable_start_snapshot_reference",

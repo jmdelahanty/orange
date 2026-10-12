@@ -1,4 +1,5 @@
 #include "session/recording_observation_request_artifacts.h"
+#include "citrus_recording_geometry.h"
 
 #include "fsuid_guard.h"
 #include "gui/spatial_layout/sha256.h"
@@ -368,7 +369,7 @@ bool materialize_recording_observation_binding_requests(
     }
     if (geometry.value("schema_id", "") !=
             "orange.recording.geometry_contract" ||
-        geometry.value("schema_version", 0) != 1) {
+        geometry.value("schema_version", 0) != orange::recording_geometry::kRecordingGeometryContractSchemaVersion) {
         return fail(error_out, "recording geometry contract schema is invalid");
     }
 
