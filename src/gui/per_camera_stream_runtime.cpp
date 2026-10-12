@@ -353,7 +353,7 @@ void PerCameraStreamRuntime::ReleaseStreamAndIpc() noexcept
                 log_cleanup_error(
                     camera_serial_,
                     "frame-buffer release",
-                    "frame_index=" + std::to_string(frame_index) + " " +
+                    "buffer_index=" + std::to_string(frame_index) + " " +
                         get_evt_error_string(error));
             }
         }

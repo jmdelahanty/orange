@@ -665,7 +665,7 @@ void validate_frame_progression(
 
     if (frame.frame_id <= tracker->last_frame_id) {
         std::ostringstream oss;
-        oss << "Non-monotonic frame_id during " << phase
+        oss << "Non-monotonic camera_frame_id during " << phase
             << " at iris " << iris_value
             << " step " << step_index << "/" << total_steps
             << ": current=" << frame.frame_id
@@ -1251,7 +1251,7 @@ ApertureCharacterizationResult characterize_aperture(
             oss << "Completed iris=" << iris_value
                 << " readback_after_set=" << step.iris_readback_after_set
                 << " readback_after_capture=" << step.iris_readback_after_capture
-                << " frame_ids=[" << first_frame_id << "," << last_frame_id << "]"
+                << " camera_frame_ids=[" << first_frame_id << "," << last_frame_id << "]"
                 << " mean=" << step.summary.mean
                 << " p99=" << step.summary.p99
                 << " classification=" << aperture_classification_to_string(step.classification);

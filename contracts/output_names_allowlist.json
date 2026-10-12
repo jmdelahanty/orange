@@ -1,0 +1,7 @@
+{
+  "$comment": "Names scripts/check_output_names.py accepts although they look like unsuffixed frame references. Each needs a reason; an entry that is no longer used fails the check.",
+  "allowed": {
+    "source_acquisition_frame_index": "Defined by the Citrus/Palette schema citrus.stimulus_source_acquisition_mapping (= recording_frame_id - 1); renaming it is a contract change owned by Citrus and Palette.",
+    "acquisition_frame_index": "Part of citrus.stimulus_source_acquisition_mapping (see source_acquisition_frame_index)."
+  }
+}

@@ -1,0 +1,27 @@
+name: Output ratchet
+
+# Runs on GitHub-hosted runners: plain Python over the sources, no CUDA, no rig.
+# Fails when an output name breaks agent-contracts frame_identity_v1, when the
+# output surface differs from tools/output_surface_snapshot.json, or when output
+# names changed against the base without a schema version change.
+on:
+  push:
+  pull_request:
+
+jobs:
+  ratchet:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Frame identity names
+        run: python3 scripts/check_output_names.py
+      - name: Ratchet self-tests
+        run: python3 tools/output_ratchet_tests.py
+      - name: Output surface (version bump rule against the previous commit or PR base)
+        run: |
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$base" ] || ! git cat-file -e "$base^{commit}" 2>/dev/null; then base="HEAD~1"; fi
+          python3 scripts/check_output_surface.py --base "$base"

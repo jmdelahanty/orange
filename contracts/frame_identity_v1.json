@@ -1,0 +1,94 @@
+{
+  "$comment": "Machine-readable names for citrus-orange/frame_identity_v1_2026-10-12.md. A frame-reference field name must end with one of counter_suffixes and hold that counter; a table uses one counter by table_kinds.",
+  "contract_id": "frame_identity",
+  "version": 1,
+  "counters": {
+    "recording_frame_id": {
+      "counts": "frames Orange received while recording, per camera",
+      "first_value": 1,
+      "zero_means": "frame received outside recording",
+      "resets": "new recording only (not clip boundaries, not pauses)",
+      "wraps": false,
+      "dtype": "uint64",
+      "video_join_key": true,
+      "owner": "orange"
+    },
+    "stream_frame_id": {
+      "counts": "frames Orange received since this camera's stream opened, preview included",
+      "first_value": 1,
+      "resets": "stream reopen only",
+      "wraps": false,
+      "dtype": "uint64",
+      "video_join_key": false,
+      "owner": "orange",
+      "video_join_via": "Orange recording metadata (stream_frame_id and recording_frame_id on every row)"
+    },
+    "camera_frame_id": {
+      "counts": "camera's own frame counter (Emergent CEmergentFrame::frame_id)",
+      "first_value": 1,
+      "resets": "camera stream start",
+      "wraps": {
+        "after": 65535,
+        "to": 1
+      },
+      "dtype": "uint16",
+      "video_join_key": false,
+      "owner": "camera"
+    },
+    "stimulus_frame_num": {
+      "owner": "citrus",
+      "counts": "stimulus frames Citrus computed and displayed, per H5 file",
+      "resets": "per H5 file",
+      "wraps": false,
+      "dtype": "uint64",
+      "video_join_key": false,
+      "video_join_via": "/correspondence/acquisition/live_frame_identities"
+    }
+  },
+  "counter_suffixes": [
+    "recording_frame_id",
+    "stream_frame_id",
+    "camera_frame_id",
+    "stimulus_frame_num"
+  ],
+  "video_position_suffix": "video_frame_index",
+  "forbidden_bare_names": [
+    "frame_id",
+    "local_frame_id",
+    "observation_frame_id",
+    "payload_frame_id"
+  ],
+  "shaman_v2_slot_fields": {
+    "state_stream_frame_id": {
+      "counter": "stream_frame_id",
+      "renamed_from": "state_frame_id"
+    },
+    "source_stream_frame_id": {
+      "counter": "stream_frame_id",
+      "renamed_from": "source_frame_id"
+    },
+    "camera_frame_id": {
+      "counter": "camera_frame_id"
+    },
+    "recording_frame_id": {
+      "counter": "recording_frame_id"
+    }
+  },
+  "table_kinds": {
+    "citrus_stimulus_frame_rows": "stimulus_frame_num",
+    "camera_frame_rows": "recording_frame_id",
+    "live_diagnostics": "stream_frame_id",
+    "mapping": "the counters it maps",
+    "shaman_slot_provenance": "the four shaman_v2_slot_fields"
+  },
+  "camera_binding": {
+    "orange": "per-camera files Cam<serial>_*",
+    "shaman_v2": "one queue per camera; slot camera_id and camera_serial",
+    "citrus_h5": "one camera per file: /correspondence/acquisition/binding_json camera_serial, acquisition_camera_id, shaman_numeric_camera_id",
+    "citrus_chaser_target": "per row target_source_camera_id + target_source_camera_id_valid"
+  },
+  "position_names": {
+    "video_frame_index": "0-based position in one video file, with its clip",
+    "display_frame_index": "Citrus process-wide display frame count; not a frame reference"
+  }
+}
