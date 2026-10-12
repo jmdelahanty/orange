@@ -1,4 +1,5 @@
 #include "session/recording_observation_binding.h"
+#include "outputs/common/safe_path.h"
 #include "outputs/common/digest.h"
 #include "recording_context.h"
 #include <cstdlib>
@@ -85,19 +86,7 @@ bool valid_utc_timestamp(const std::string& value)
 
 bool safe_relative_path(const std::string& value)
 {
-    if (value.empty()) {
-        return false;
-    }
-    const std::filesystem::path path(value);
-    if (path.is_absolute()) {
-        return false;
-    }
-    for (const auto& component : path) {
-        if (component == "." || component == ".." || component.empty()) {
-            return false;
-        }
-    }
-    return true;
+    return orange::outputs::is_safe_relative_path(value);
 }
 
 bool safe_absolute_path(const std::string& value)

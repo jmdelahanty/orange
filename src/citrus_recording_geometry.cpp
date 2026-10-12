@@ -1,4 +1,5 @@
 #include "citrus_recording_geometry.h"
+#include "outputs/common/safe_path.h"
 
 #include "calibration_image_set.h"
 #include "dish_top_rim_observation_schema.h"
@@ -34,28 +35,13 @@ struct ArenaBinding {
 
 std::filesystem::path normalized_path(const std::filesystem::path& path)
 {
-    std::error_code error;
-    std::filesystem::path normalized = std::filesystem::weakly_canonical(path, error);
-    if (!error) {
-        return normalized;
-    }
-    normalized = std::filesystem::absolute(path, error);
-    return error ? path.lexically_normal() : normalized.lexically_normal();
+    return orange::outputs::resolved_path(path);
 }
 
 bool path_is_inside(const std::filesystem::path& child,
                     const std::filesystem::path& parent)
 {
-    const std::filesystem::path normalized_child = normalized_path(child);
-    const std::filesystem::path normalized_parent = normalized_path(parent);
-    auto child_it = normalized_child.begin();
-    for (auto parent_it = normalized_parent.begin();
-         parent_it != normalized_parent.end(); ++parent_it, ++child_it) {
-        if (child_it == normalized_child.end() || *child_it != *parent_it) {
-            return false;
-        }
-    }
-    return true;
+    return orange::outputs::is_inside(child, parent);
 }
 
 void append_message(nlohmann::json* messages, const std::string& message)

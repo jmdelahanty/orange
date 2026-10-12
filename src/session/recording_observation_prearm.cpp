@@ -1,4 +1,5 @@
 #include "session/recording_observation_prearm.h"
+#include "outputs/common/safe_path.h"
 #include "outputs/common/digest.h"
 #include "outputs/common/atomic_file.h"
 #include "recording_subject_reference.h"
@@ -105,19 +106,7 @@ bool read_only(const std::filesystem::path& path)
 
 bool safe_relative_path(const std::string& value)
 {
-    if (value.empty()) {
-        return false;
-    }
-    const std::filesystem::path path(value);
-    if (path.is_absolute()) {
-        return false;
-    }
-    for (const auto& component : path) {
-        if (component == "..") {
-            return false;
-        }
-    }
-    return path.lexically_normal().generic_string() == value;
+    return orange::outputs::is_safe_relative_path(value);
 }
 
 bool read_recording_id(const std::filesystem::path& folder,

@@ -1,4 +1,5 @@
 #include "session/recording_observation_request_artifacts.h"
+#include "outputs/common/safe_path.h"
 #include "outputs/common/digest.h"
 #include "outputs/common/atomic_file.h"
 #include "citrus_recording_geometry.h"
@@ -45,45 +46,18 @@ bool fail(std::string* error_out, const std::string& message)
 
 std::filesystem::path normalized_absolute(const std::filesystem::path& path)
 {
-    std::error_code error;
-    std::filesystem::path value = std::filesystem::weakly_canonical(path, error);
-    if (!error) {
-        return value;
-    }
-    value = std::filesystem::absolute(path, error);
-    return error ? path.lexically_normal() : value.lexically_normal();
+    return orange::outputs::resolved_path(path);
 }
 
 bool path_is_inside(const std::filesystem::path& child,
                     const std::filesystem::path& parent)
 {
-    const auto normalized_child = normalized_absolute(child);
-    const auto normalized_parent = normalized_absolute(parent);
-    auto child_it = normalized_child.begin();
-    for (auto parent_it = normalized_parent.begin();
-         parent_it != normalized_parent.end(); ++parent_it, ++child_it) {
-        if (child_it == normalized_child.end() || *child_it != *parent_it) {
-            return false;
-        }
-    }
-    return true;
+    return orange::outputs::is_inside(child, parent);
 }
 
 bool safe_relative_path(const std::string& value)
 {
-    if (value.empty()) {
-        return false;
-    }
-    const std::filesystem::path path(value);
-    if (path.is_absolute()) {
-        return false;
-    }
-    for (const auto& component : path) {
-        if (component.empty() || component == "." || component == "..") {
-            return false;
-        }
-    }
-    return true;
+    return orange::outputs::is_safe_relative_path(value);
 }
 
 bool read_regular_file(const std::filesystem::path& path,

@@ -1,4 +1,5 @@
 #include "session/recording_observation_finalization.h"
+#include "outputs/common/safe_path.h"
 #include "outputs/common/digest.h"
 #include "outputs/common/atomic_file.h"
 
@@ -45,34 +46,12 @@ bool fail(std::string* error_out, const std::string& message)
 
 bool safe_relative_path(const std::string& value)
 {
-    if (value.empty()) {
-        return false;
-    }
-    const fs::path path(value);
-    if (path.is_absolute() || path.lexically_normal() != path) {
-        return false;
-    }
-    for (const auto& component : path) {
-        if (component.empty() || component == "." || component == "..") {
-            return false;
-        }
-    }
-    return true;
+    return orange::outputs::is_safe_relative_path(value);
 }
 
 bool path_inside(const fs::path& candidate, const fs::path& root)
 {
-    const fs::path normalized_candidate = candidate.lexically_normal();
-    const fs::path normalized_root = root.lexically_normal();
-    auto candidate_it = normalized_candidate.begin();
-    for (auto root_it = normalized_root.begin(); root_it != normalized_root.end();
-         ++root_it, ++candidate_it) {
-        if (candidate_it == normalized_candidate.end() ||
-            *candidate_it != *root_it) {
-            return false;
-        }
-    }
-    return true;
+    return orange::outputs::is_inside(candidate, root);
 }
 
 bool read_bytes(const fs::path& path,

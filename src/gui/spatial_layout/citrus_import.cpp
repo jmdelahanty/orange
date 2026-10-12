@@ -1,4 +1,5 @@
 #include "gui/spatial_layout/citrus_import.h"
+#include "outputs/common/safe_path.h"
 #include "outputs/common/digest.h"
 #include "gui/spatial_layout/canvas_projection_geometry_identity.h"
 #include "gui/spatial_layout/sha256.h"
@@ -103,19 +104,7 @@ bool read_json_file(const std::filesystem::path& path,
 bool path_is_inside(const std::filesystem::path& child,
                     const std::filesystem::path& parent)
 {
-    std::error_code error;
-    const auto canonical_child = std::filesystem::weakly_canonical(child, error);
-    if (error) return false;
-    const auto canonical_parent = std::filesystem::weakly_canonical(parent, error);
-    if (error) return false;
-    auto child_it = canonical_child.begin();
-    for (auto parent_it = canonical_parent.begin();
-         parent_it != canonical_parent.end(); ++parent_it, ++child_it) {
-        if (child_it == canonical_child.end() || *child_it != *parent_it) {
-            return false;
-        }
-    }
-    return true;
+    return orange::outputs::is_inside(child, parent);
 }
 
 bool sha256_matches(const std::string& bytes, const std::string& expected)

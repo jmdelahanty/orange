@@ -1,5 +1,6 @@
 // src/project.cpp
 #include "project.h"
+#include "outputs/common/safe_path.h"
 #include "outputs/common/digest.h"
 #include "outputs/common/atomic_file.h"
 #include "timing/clock.h"
@@ -4649,29 +4650,13 @@ std::string recording_geometry_safe_component(const std::string& value) {
 
 std::filesystem::path recording_geometry_normalized_path(
     const std::filesystem::path& path) {
-    std::error_code error;
-    std::filesystem::path normalized =
-        std::filesystem::weakly_canonical(path, error);
-    if (!error) {
-        return normalized;
-    }
-    normalized = std::filesystem::absolute(path, error);
-    return error ? path.lexically_normal() : normalized.lexically_normal();
+    return orange::outputs::resolved_path(path);
 }
 
 bool recording_geometry_path_is_inside(
     const std::filesystem::path& child,
     const std::filesystem::path& parent) {
-    const auto normalized_child = recording_geometry_normalized_path(child);
-    const auto normalized_parent = recording_geometry_normalized_path(parent);
-    auto child_it = normalized_child.begin();
-    for (auto parent_it = normalized_parent.begin();
-         parent_it != normalized_parent.end(); ++parent_it, ++child_it) {
-        if (child_it == normalized_child.end() || *child_it != *parent_it) {
-            return false;
-        }
-    }
-    return true;
+    return orange::outputs::is_inside(child, parent);
 }
 
 bool recording_geometry_sync_path(const std::filesystem::path& path,

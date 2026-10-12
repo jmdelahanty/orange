@@ -1,6 +1,7 @@
 // Tests for src/outputs/common.
 #include "outputs/common/atomic_file.h"
 #include "outputs/common/digest.h"
+#include "outputs/common/safe_path.h"
 
 #include <filesystem>
 #include <fstream>
@@ -134,6 +135,26 @@ int main() {
           "is_sha256_hex");
     check(is_sha256_token("sha256:" + abc_hex) && !is_sha256_token(abc_hex), "is_sha256_token");
     check(canonical_json_text({{"b", 1}, {"a", "x"}}) == "{\"a\":\"x\",\"b\":1}", "canonical JSON is compact, sorted");
+
+    // Safe relative paths: exactly one spelling, never escaping.
+    for (const char* good : {"a", "a/b.json", "external_recorder/clips/clip_000001/Cam1_meta.csv"}) {
+        check(is_safe_relative_path(good), std::string("safe: ") + good);
+    }
+    for (const char* bad : {"", ".", "..", "./a", "a/./b", "a//b", "a/", "../a", "a/../b", "/abs", "a/.."}) {
+        check(!is_safe_relative_path(bad), std::string("refused: '") + bad + "'");
+    }
+
+    // Inside a root: component-wise, symlinks resolved.
+    const fs::path rec = root / "rec1";
+    fs::create_directories(rec / "sub");
+    fs::create_directories(root / "rec10");
+    fs::create_directories(root / "outside");
+    check(is_inside(rec / "sub" / "x.json", rec), "child file is inside");
+    check(is_inside(rec, rec), "root is inside itself");
+    check(!is_inside(root / "rec10" / "x", rec), "sibling with a shared prefix is not inside");
+    check(!is_inside(rec / ".." / "outside", rec), "dot-dot escape is not inside");
+    fs::create_symlink(root / "outside", rec / "link");
+    check(!is_inside(rec / "link" / "x.json", rec), "symlink escape is not inside");
 
     fs::remove_all(root);
     std::cout << (failures ? "outputs_common_tests FAILED\n" : "outputs_common_tests passed\n");
