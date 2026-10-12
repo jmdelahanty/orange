@@ -2460,6 +2460,16 @@ bool validate_headless_pose_worker_config(const HeadlessPoseWorkerConfig& config
         }
         return false;
     }
+    if (config.mode == "real" && config.skeleton_path.empty()) {
+        // The snapshot embeds the skeleton sidecar (models.<serial>.pose.runtime.skeleton) as the
+        // GUI does from models.pose_skeleton_path; a gate recording without it differs from
+        // production and its pose keypoints have no labels.
+        if (error_out) {
+            *error_out = prefix + "pose_worker.skeleton_path is required when mode=real "
+                "(the pose_model_skeleton.json sidecar of the engine)";
+        }
+        return false;
+    }
     if (config.mode == "noop" && !config.engine_path.empty()) {
         if (error_out) {
             *error_out = prefix + "pose_worker.engine_path requires mode=real";
