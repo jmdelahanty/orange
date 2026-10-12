@@ -808,7 +808,7 @@ void write_csv(const Options& options, const std::vector<FrameRecord>& records)
     if (!out) {
         throw std::runtime_error("cannot open CSV output: " + options.csv_path);
     }
-    out << "recording_frame_id,local_frame_id,slot_index,slot_generation,source_index,"
+    out << "recording_frame_id,stream_frame_id,slot_index,slot_generation,source_index,"
            "raw_file,raw_offset,raw_pitch,raw_frame_bytes,width,height,target_steady_ns,"
            "sent_steady_ns,ack_steady_ns,release_steady_ns,send_to_ack_ns,ack_to_release_ns,"
            "expected_gpu_id,expected_shard_id,ack_gpu_id,ack_shard_id,release_gpu_id,"

@@ -213,7 +213,7 @@ nlohmann::json BuildExternalRecorderRolloverJson(
             {"implementation", kExternalRecorderRollingImplementation},
             {"seamless_writer_switch", true},
             {"records_during_rollover", true},
-            {"boundary", "gop_first_frame_id"},
+            {"boundary", "gop_first_recording_frame_id"},
             {"clip_directory_template", "clips/clip_%06d"},
             {"next_writer_preopened", false}
         };

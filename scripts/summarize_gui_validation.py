@@ -913,7 +913,7 @@ def summarize_metric(rows: list[dict[str, str]], field: str, steady_after_frame:
         if value is None:
             continue
         all_values.append(value)
-        frame_id = int_field(row, "frame_id")
+        frame_id = int_field(row, "stream_frame_id")
         if frame_id is not None and frame_id >= steady_after_frame:
             steady_values.append(value)
     return {

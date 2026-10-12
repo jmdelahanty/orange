@@ -1566,7 +1566,7 @@ nlohmann::json aperture_characterization_to_json(
         for (const ApertureFrameSample& sample : step.samples) {
             samples.push_back({
                 {"capture_index", sample.capture_index},
-                {"frame_id", sample.frame_id},
+                {"camera_frame_id", sample.frame_id},
                 {"timestamp", sample.timestamp},
                 {"mean", sample.stats.mean},
                 {"median", sample.stats.median},
@@ -1859,7 +1859,7 @@ bool write_aperture_characterization_frame_csv(
         return false;
     }
 
-    out << "iris,capture_index,frame_id,timestamp,mean,median,p05,p95,p99,stddev,min,max,black_fraction,white_fraction\n";
+    out << "iris,capture_index,camera_frame_id,timestamp,mean,median,p05,p95,p99,stddev,min,max,black_fraction,white_fraction\n";
     for (const ApertureStepResult& step : result.steps) {
         for (const ApertureFrameSample& sample : step.samples) {
             out << step.iris << ","

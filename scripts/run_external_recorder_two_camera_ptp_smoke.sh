@@ -803,7 +803,7 @@ def summarize_rows(rows, field_names):
             "p95": percentile(values, 95.0),
             "p99": percentile(values, 99.0),
             "max": values[-1] if values else None,
-            "max_frame_id": max_row.get("frame_id") if max_row else max_row,
+            "max_recording_frame_id": max_row.get("recording_frame_id") if max_row else max_row,
             "max_recording_frame_id": max_row.get("recording_frame_id") if max_row else max_row,
         }
     return out
@@ -836,7 +836,7 @@ for serial in cameras:
 
     def frame_id(row):
         try:
-            return int(row.get("frame_id") or row.get("recording_frame_id") or 0)
+            return int(row.get("recording_frame_id") or 0)
         except ValueError:
             return 0
 

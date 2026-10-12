@@ -166,7 +166,7 @@ void daily_reader_closed_schema() {
         if (i == 0) d["extra"] = true;
         if (i == 1) d["schema_version"] = 4294967297ULL;
         if (i == 2) d["cameras"][0]["source_frame"]["recording_frame_id"] = 4;
-        if (i == 3) d["cameras"][0]["source_frame"]["local_frame_id"] = 1.5;
+        if (i == 3) d["cameras"][0]["source_frame"]["stream_frame_id"] = 1.5;
         if (i == 4) d["cameras"][0]["image"]["relative_path"] = "../outside.raw";
         if (i == 5) d["cameras"][0]["camera_configuration"]["typo"] = true;
         if (i == 6) d["cameras"][0]["stride_bytes"] = 9;

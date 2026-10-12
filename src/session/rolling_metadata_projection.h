@@ -154,7 +154,7 @@ inline nlohmann::json project_dense_rolling_metadata(
                 fail("rolling_projection_missing_identity_or_clock_column");
                 return size_t{0};
             };
-            const auto alias = column("frame_id"), id = column("recording_frame_id");
+            const auto id = column("recording_frame_id");
             const auto camera_time = column("timestamp"), host_time = column("timestamp_sys");
             if (expected_header.empty()) { expected_header = header; emit(header); }
             else if (header != expected_header) fail("rolling_projection_header_mismatch");
@@ -166,8 +166,8 @@ inline nlohmann::json project_dense_rolling_metadata(
                 if (values.size() != columns.size()) fail("rolling_projection_malformed_row");
                 const auto frame = integer(values[id]);
                 if (total >= static_cast<uint64_t>(std::numeric_limits<int64_t>::max()) ||
-                    frame != total + 1 || integer(values[alias]) != frame)
-                    fail("rolling_projection_nondense_or_mispaired_identity");
+                    frame != total + 1)
+                    fail("rolling_projection_nondense_identity");
                 (void)integer(values[camera_time]);
                 (void)integer(values[host_time]);
                 emit(line);

@@ -150,7 +150,7 @@ void custody() {
 void finalized_evidence_refusal() {
     for (int test = 0; test < 9; ++test) {
         Fixture f; f.Prepare(); f.contexts.Accept(f.frame(0)); f.contexts.Accept(f.frame(1));
-        const auto descriptor_path = f.root / "Cam02010093_registered_context_v2.json";
+        const auto descriptor_path = f.root / "Cam02010093_registered_context_v3.json";
         json descriptor; { std::ifstream in(descriptor_path); in >> descriptor; }
         if (test < 6) {
             if (test == 0) descriptor["source_frame"]["recording_frame_id"] = 1;

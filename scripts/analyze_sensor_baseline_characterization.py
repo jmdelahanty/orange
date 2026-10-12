@@ -66,7 +66,7 @@ def read_index(path: Path) -> list[dict[str, int]]:
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         required = {
-            "reference_frame_index",
+            "reference_video_frame_index",
             "recording_frame_id",
             "timestamp",
             "timestamp_sys",
@@ -78,8 +78,8 @@ def read_index(path: Path) -> list[dict[str, int]]:
         for raw in reader:
             rows.append({key: int(raw[key]) for key in required})
     for index, row in enumerate(rows):
-        if row["reference_frame_index"] != index:
-            raise ValueError(f"non-contiguous reference_frame_index in {path}")
+        if row["reference_video_frame_index"] != index:
+            raise ValueError(f"non-contiguous reference_video_frame_index in {path}")
     return rows
 
 

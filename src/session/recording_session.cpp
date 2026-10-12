@@ -322,12 +322,10 @@ struct MetadataFrameStats {
     uint64_t frame_count = 0;
     uint64_t metadata_row_count = 0;
     uint64_t malformed_metadata_row_count = 0;
-    uint64_t frame_identity_alias_mismatches = 0;
     uint64_t first_recording_frame_id = 0;
     uint64_t last_recording_frame_id = 0;
     uint64_t recording_frame_id_gaps = 0;
     bool metadata_header_valid = false;
-    bool frame_id_column_present = false;
     bool recording_frame_id_column_present = false;
 };
 
@@ -362,24 +360,18 @@ MetadataFrameStats read_metadata_frame_stats_from_bytes(const std::string& metad
     const std::vector<std::string> header_fields = split_simple_csv_row(header);
     std::set<std::string> unique_header_fields;
     stats.metadata_header_valid = !header_fields.empty();
-    std::size_t frame_id_column = header_fields.size();
     std::size_t recording_frame_id_column = header_fields.size();
     for (std::size_t index = 0; index < header_fields.size(); ++index) {
         if (header_fields[index].empty() ||
             !unique_header_fields.insert(header_fields[index]).second) {
             stats.metadata_header_valid = false;
         }
-        if (header_fields[index] == "frame_id") {
-            frame_id_column = index;
-            stats.frame_id_column_present = true;
-        } else if (header_fields[index] == "recording_frame_id") {
+        if (header_fields[index] == "recording_frame_id") {
             recording_frame_id_column = index;
             stats.recording_frame_id_column_present = true;
         }
     }
-    const std::size_t canonical_column = stats.recording_frame_id_column_present
-        ? recording_frame_id_column
-        : (stats.frame_id_column_present ? frame_id_column : 0);
+    const std::size_t canonical_column = recording_frame_id_column;
 
     std::string line;
     uint64_t previous_frame_id = 0;
@@ -399,15 +391,6 @@ MetadataFrameStats read_metadata_frame_stats_from_bytes(const std::string& metad
         const std::string& frame_text = fields[canonical_column];
         uint64_t frame_id = 0;
         if (parse_strict_positive_recording_frame_id(frame_text, &frame_id)) {
-            if (stats.frame_id_column_present &&
-                stats.recording_frame_id_column_present) {
-                uint64_t legacy_frame_id = 0;
-                if (!parse_strict_positive_recording_frame_id(
-                        fields[frame_id_column], &legacy_frame_id) ||
-                    legacy_frame_id != frame_id) {
-                    ++stats.frame_identity_alias_mismatches;
-                }
-            }
             if (stats.frame_count == 0) {
                 stats.first_recording_frame_id = frame_id;
             } else if (frame_id > previous_frame_id + 1) {
@@ -1639,7 +1622,7 @@ bool add_finalized_frame_identity_contract(
     if (existing != manifest->end() && existing->is_object() &&
         existing->value("schema_id", std::string()) ==
             "orange.recording.frame_identity" &&
-        existing->value("schema_version", 0) == 1 &&
+        existing->value("schema_version", 0) == 2 &&
         existing->value("status", std::string()) == "finalized") {
         return true;
     }
@@ -1670,12 +1653,11 @@ bool add_finalized_frame_identity_contract(
 
     nlohmann::json contract = {
         {"schema_id", "orange.recording.frame_identity"},
-        {"schema_version", 1},
+        {"schema_version", 2},
         {"status", recording_finalized ? "finalized" : "pending"},
         {"canonical_field", "recording_frame_id"},
         {"scope", "recording_session_and_camera_stream"},
         {"assignment_event", "orange_acquisition_recording_frame_sequence"},
-        {"legacy_aliases", {{"frame_id", "recording_frame_id"}}},
         {"timestamp_fields", {"timestamp", "timestamp_sys"}},
         {"continuity_policy", "encoded_subset"},
         {"recording_frame_id_gaps_allowed", true},
@@ -1736,9 +1718,8 @@ bool add_finalized_frame_identity_contract(
                     // also require that every accepted submission was
                     // attempted and written, with no rejections or failures.
                     const bool proof_version_ok =
-                        proof_version == 1 || proof_version == 2;
+                        proof_version == 3 && !proof.contains("legacy_aliases");
                     const bool schema2_accounting_ok =
-                        proof_version != 2 ||
                         (binding.is_object() &&
                          binding.value("packet_submissions_accepted", 0ULL) == frames_encoded &&
                          binding.value("packet_write_attempts", 0ULL) == frames_encoded &&
@@ -2018,7 +1999,7 @@ bool add_acquisition_index_mapping_contract(
         frame_identity.is_object() &&
         frame_identity.value("schema_id", std::string()) ==
             "orange.recording.frame_identity" &&
-        frame_identity.value("schema_version", 0) == 1 &&
+        frame_identity.value("schema_version", 0) == 2 &&
         frame_identity.value("status", std::string()) == "finalized" &&
         frame_identity.value("canonical_field", std::string()) ==
             "recording_frame_id" &&
@@ -2026,8 +2007,7 @@ bool add_acquisition_index_mapping_contract(
             "recording_session_and_camera_stream" &&
         frame_identity.value("assignment_event", std::string()) ==
             "orange_acquisition_recording_frame_sequence" &&
-        frame_identity.value("legacy_aliases", nlohmann::json::object()) ==
-            nlohmann::json{{"frame_id", "recording_frame_id"}};
+        !frame_identity.contains("legacy_aliases");
 
     nlohmann::json mapping = {
         {"schema_id", "orange.recording.acquisition_index_mapping"},
@@ -2140,12 +2120,8 @@ bool add_acquisition_index_mapping_contract(
                     !stats.metadata_header_valid) {
                     stream_reason = "metadata_header_invalid";
                 } else if (stream_reason.empty() &&
-                    (!stats.frame_id_column_present ||
-                     !stats.recording_frame_id_column_present)) {
-                    stream_reason = "metadata_identity_alias_unavailable";
-                } else if (stream_reason.empty() &&
-                           stats.frame_identity_alias_mismatches != 0) {
-                    stream_reason = "metadata_identity_alias_mismatch";
+                    !stats.recording_frame_id_column_present) {
+                    stream_reason = "metadata_recording_frame_id_column_missing";
                 } else if (stream_reason.empty() &&
                     (stats.frame_count == 0 ||
                     stats.malformed_metadata_row_count != 0 ||
@@ -2721,7 +2697,7 @@ nlohmann::json build_rolling_clip_recording_session_manifest(
              {"implementation", options.rollover_implementation},
              {"seamless_writer_switch", true},
              {"records_during_rollover", true},
-             {"boundary", "gop_first_frame_id"},
+             {"boundary", "gop_first_recording_frame_id"},
              {"next_writer_preopened", options.rollover_next_writer_preopened}
          }},
         {"indexes", default_rolling_index_manifest_json(options.clips.size(), index_row_count)},

@@ -44,7 +44,7 @@ DETACH_SUFFIX = "_external_detach.csv"
 
 # Columns pulled from Cam*_yolo_perf.csv. Missing columns are tolerated.
 PERF_COLUMNS = [
-    "frame_id",
+    "stream_frame_id",
     "recording_frame_id",
     "timestamp_sys",
     "ok",
@@ -278,11 +278,11 @@ def analyze_camera(
 ) -> dict[str, Any]:
     perf_path = os.path.join(run_dir, f"Cam{serial}{YOLO_PERF_SUFFIX}")
     perf = read_columns(perf_path, PERF_COLUMNS)
-    n_total = int(perf["frame_id"].size) if "frame_id" in perf else 0
+    n_total = int(perf["stream_frame_id"].size) if "stream_frame_id" in perf else 0
     steady = np.arange(n_total) >= args.steady_after
     for key in list(perf.keys()):
         perf[key] = perf[key][steady]
-    n = int(perf["frame_id"].size)
+    n = int(perf["stream_frame_id"].size)
 
     total = perf["total_ms"]
     a2d = perf["acquisition_to_detect_done_ms"]
@@ -367,7 +367,7 @@ def analyze_camera(
 
     # PTP latch: acquisition-to-worker-start by frame_id mod decimation.
     dec = max(1, args.ptp_decimate)
-    ptp_phase = perf["frame_id"] % dec
+    ptp_phase = perf["stream_frame_id"] % dec
     a2ws = perf["acquisition_to_worker_start_ms"]
     latch = ptp_phase == 0
     result["ptp_latch"] = {
@@ -401,7 +401,7 @@ def analyze_camera(
     }
 
     # Preview cadence: total_ms by frame_id mod 10.
-    result["preview_cadence_mod10"] = group_stats(total, perf["frame_id"] % 10, 10)
+    result["preview_cadence_mod10"] = group_stats(total, perf["stream_frame_id"] % 10, 10)
 
     return result
 

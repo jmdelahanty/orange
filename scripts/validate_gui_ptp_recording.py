@@ -724,7 +724,7 @@ def json_file_parses_as_object(path: Path) -> bool:
 
 
 def keyframe_frame_values(payload: dict[str, Any]) -> list[int] | None:
-    frames = payload.get("keyframe_frames")
+    frames = payload.get("keyframe_video_frame_indices")
     if not isinstance(frames, list):
         return None
     out: list[int] = []
@@ -746,7 +746,7 @@ def check_keyframe_sidecar_starts_at_zero(
     reporter.check(
         frames is not None and bool(frames),
         f"{label} keyframe frames present",
-        f"{label} keyframe sidecar missing keyframe_frames or has no keyframes: {path}",
+        f"{label} keyframe sidecar missing keyframe_video_frame_indices or has no keyframes: {path}",
     )
     if frames:
         reporter.check(

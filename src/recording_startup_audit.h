@@ -25,9 +25,13 @@ public:
     // Arms a new session (flushes any unwritten previous session first).
     void BeginSession(const std::string& session_id, const std::string& recording_folder);
     // Milestone from any thread. `camera` may be empty for session-wide
-    // events; `frame_id` is the recording frame id when known.
+    // events; `recording_frame_id` is 0 when no recording frame applies.
     void Mark(const std::string& camera, const char* milestone,
-              const std::string& detail = std::string(), uint64_t frame_id = 0);
+              const std::string& detail = std::string(), uint64_t recording_frame_id = 0);
+    // Milestone about a frame identified only by the stream counter (a frame
+    // received outside or before its recording assignment, e.g. a camera gap).
+    void MarkStreamFrame(const std::string& camera, const char* milestone,
+                         const std::string& detail, uint64_t stream_frame_id);
     // Marks "recording_enabled" and opens the per-frame window.
     void MarkRecordingEnabled(const std::string& detail);
     // True while per-frame records should be taken (before recording was

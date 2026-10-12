@@ -19,7 +19,7 @@ constexpr const char* kMappingSchemaId =
 constexpr int kMappingSchemaVersion = 1;
 constexpr const char* kFrameIdentitySchemaId =
     "orange.recording.frame_identity";
-constexpr int kFrameIdentitySchemaVersion = 1;
+constexpr int kFrameIdentitySchemaVersion = 2;
 constexpr const char* kCanonicalization =
     "canonical_json_utf8_sort_keys_compact_v1";
 
@@ -203,24 +203,20 @@ bool validate_metadata_identity_rows(
         header_text.pop_back();
     }
     const std::vector<std::string> header = split_csv_row(header_text);
-    std::size_t frame_id_column = header.size();
     std::size_t recording_frame_id_column = header.size();
     std::set<std::string> unique_fields;
     for (std::size_t index = 0; index < header.size(); ++index) {
         if (header[index].empty() || !unique_fields.insert(header[index]).second) {
             return fail(error_out, "acquisition metadata CSV header is invalid");
         }
-        if (header[index] == "frame_id") {
-            frame_id_column = index;
-        } else if (header[index] == "recording_frame_id") {
+        if (header[index] == "recording_frame_id") {
             recording_frame_id_column = index;
         }
     }
-    if (frame_id_column == header.size() ||
-        recording_frame_id_column == header.size()) {
+    if (recording_frame_id_column == header.size()) {
         return fail(
             error_out,
-            "acquisition metadata CSV lacks frame_id or recording_frame_id");
+            "acquisition metadata CSV lacks recording_frame_id");
     }
 
     std::uint64_t row_count = 0;
@@ -236,18 +232,16 @@ bool validate_metadata_identity_rows(
         if (fields.size() != header.size()) {
             return fail(error_out, "acquisition metadata CSV row width is invalid");
         }
-        std::uint64_t frame_id = 0;
         std::uint64_t recording_frame_id = 0;
-        if (!parse_strict_positive_uint64(fields[frame_id_column], &frame_id) ||
-            !parse_strict_positive_uint64(
+        if (!parse_strict_positive_uint64(
                 fields[recording_frame_id_column], &recording_frame_id)) {
             return fail(error_out, "acquisition metadata CSV frame identity is invalid");
         }
         ++row_count;
-        if (frame_id != recording_frame_id || recording_frame_id != row_count) {
+        if (recording_frame_id != row_count) {
             return fail(
                 error_out,
-                "acquisition metadata CSV frame aliases are not identical and dense");
+                "acquisition metadata CSV recording_frame_id is not dense from 1");
         }
     }
     if (row_count != expected_rows) {
@@ -324,8 +318,7 @@ bool resolve_acquisition_index_authority(
             "recording_session_and_camera_stream" ||
         frame_identity.value("assignment_event", std::string()) !=
             "orange_acquisition_recording_frame_sequence" ||
-        frame_identity.value("legacy_aliases", json::object()) !=
-            json{{"frame_id", "recording_frame_id"}}) {
+        frame_identity.contains("legacy_aliases")) {
         return fail(error_out, "recording frame identity contract is not finalized");
     }
     const json identity_streams = frame_identity.value("camera_streams", json::object());

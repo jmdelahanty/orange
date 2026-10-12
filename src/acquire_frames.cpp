@@ -432,7 +432,7 @@ public:
         const std::string serial = camera_params_ ? camera_params_->camera_serial : "unknown";
         const std::string path = (std::filesystem::path(folder) / ("Cam" + serial + "_ring_release.csv")).string();
         channel_->Open(path,
-                       "local_frame_id,camera_frame_id,receive_host_ns,copy_ready_seen_ns,consumer_done_seen_ns,"
+                       "stream_frame_id,camera_frame_id,receive_host_ns,copy_ready_seen_ns,consumer_done_seen_ns,"
                        "requeue_host_ns,hold_ns,pending_after,camera_dropped_frames_total,forced\n");
         std::cout << "[ACQ_RING] Cam " << serial << " logging ring releases to " << path << std::endl;
     }
@@ -488,7 +488,7 @@ private:
 };
 
 static const char kAcquisitionCadenceProbeHeader[] =
-    "timestamp_utc,local_frame_id,recording_frame_id,camera_frame_id,"
+    "timestamp_utc,stream_frame_id,recording_frame_id,camera_frame_id,"
                  "camera_timestamp_ns,camera_timestamp_delta_ns,"
                  "receive_host_ns,receive_delta_ns,get_frame_wait_ns,"
                  "ptp_active,ptp_register_read,ptp_register_read_decimate,ptp_register_read_age_frames,latched_ptp_time_ns,latch_minus_frame_ns,latch_delta_ns,"
@@ -983,7 +983,7 @@ private:
                       ("Cam" + serial + "_pipeline_perf.csv")).string();
         stats = Stats{};
         static const char kHeader[] =
-            "timestamp_utc,frame_id,recording_frame_id,acq_fps,pre_fps,pre_fps_primary,pre_fps_helpers,enc_fps,enc_fps_primary,enc_fps_helpers,"
+            "timestamp_utc,stream_frame_id,recording_frame_id,acq_fps,pre_fps,pre_fps_primary,pre_fps_helpers,enc_fps,enc_fps_primary,enc_fps_helpers,"
                  "display_q,display_preview_max_fps,display_preview_eligible,display_preview_selected,display_preview_skipped,"
                  "yolo_q,pre_q,enc_q,"
                  "acq_free_entries,acq_free_entries_low,acq_free_events,acq_free_events_low,"
@@ -1045,7 +1045,7 @@ private:
         if (stats.have_last_sample_) {
             summary["last_sample_at_utc"] = orange::timing::utc_iso8601(
                 orange::timing::RealtimeNs{stats.last_sample_.timestamp_realtime_ns});
-            summary["last_frame_id"] = stats.last_sample_.frame_id;
+            summary["last_stream_frame_id"] = stats.last_sample_.frame_id;
             summary["last_recording_frame_id"] = stats.last_sample_.recording_frame_id;
         }
 
@@ -1551,8 +1551,6 @@ void acquire_frames(
         summary["sync_camera_enabled"] = camera_control->sync_camera;
         summary["finalized"] = finalized;
         summary["updated_at_utc"] = get_current_utc_timestamp();
-        summary["frame_count"] = acquisition_frames;
-        summary["frame_count_semantics"] = "legacy_alias_for_acquisition_frames_received_total";
         summary["acquisition_frames_received_total"] = acquisition_frames;
         summary["sync_observed_frames_total"] =
             camera_control->sync_camera ? acquisition_frames : 0ULL;
@@ -2082,7 +2080,7 @@ void acquire_frames(
                     // are declared inline and not exported by the SDK library).
                     // A gap without an SDK dropped-frame increment means the
                     // SDK never saw that frame at all (2026-09-21).
-                    orange::RecordingStartupAudit::Instance().Mark(
+                    orange::RecordingStartupAudit::Instance().MarkStreamFrame(
                         camera_params->camera_serial, "camera_frame_gap",
                         "missing=" + std::to_string(gap_count) + " next_camera_frame_id=" +
                             std::to_string(received_frame->frame_id) + " receive_realtime_ns=" +

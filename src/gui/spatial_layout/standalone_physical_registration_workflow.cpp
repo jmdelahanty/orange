@@ -533,7 +533,7 @@ nlohmann::json target_manifest_json(
             {"camera_timestamp_ns", target.rim_capture.camera_timestamp_ns},
             {"timestamp_sys_ns", target.rim_capture.timestamp_sys_ns},
             {"last_camera_frame_id", target.rim_capture.last_camera_frame_id},
-            {"last_local_frame_id", target.rim_capture.last_local_frame_id},
+            {"last_stream_frame_id", target.rim_capture.last_local_frame_id},
         }},
     };
 }

@@ -38,7 +38,7 @@ void encoded_media() {
         case 0: f.summary["frame_identity_proof"]["video_binding"]["returned_identity_matches"] = 4; break;
         case 1: f.summary["frame_identity_proof"]["video_binding"]["packet_write_failures"] = 1; break;
         case 2: f.summary["frame_identity_proof"]["schema_version"] = 1; break;
-        case 3: put(f.root / "recorder-0.csv", "frame_id,timestamp,timestamp_sys,recording_frame_id,local_frame_id\n"); break;
+        case 3: put(f.root / "recorder-0.csv", "recording_frame_id,timestamp,timestamp_sys,stream_frame_id\n"); break;
         case 4: { auto video = read(f.root / "crop-0.mp4"); video.resize(100); put(f.root / "crop-0.mp4", video); break; }
         case 5: std::filesystem::remove(f.root / "crop-0.mp4.finalization.json"); break;
         case 6: f.summary["merged_output"]["mp4"] = "../escape.mp4"; break;
@@ -88,7 +88,7 @@ void detector_failures() {
         switch (mutation) {
         case 0: f.events.pop_back(); break;
         case 1: f.events.push_back(f.events.back()); break;
-        case 2: f.events[1]["frame"]["local_frame_id"] = 2; break;
+        case 2: f.events[1]["frame"]["stream_frame_id"] = 2; break;
         case 3: f.events[1]["timestamps"]["camera_timestamp"] = 1700000000000000000ULL; break;
         case 4: f.events[2]["yolo"]["synthetic_runtime_detection"] = true; break;
         case 5: f.events[2]["yolo"]["detection_count"] = 1; break;
@@ -109,7 +109,7 @@ void metadata_failures() {
         case 1: f.rows.erase(f.rows.begin() + 1); break;
         case 2: f.rows[1] = f.rows[0]; break;
         case 3: f.rows.push_back(f.rows.back()); break;
-        case 4: f.rows[0].replace(f.rows[0].find("7001"), 4, "7002"); f.events[0]["frame"]["local_frame_id"] = 7002; break;
+        case 4: f.rows[0].replace(f.rows[0].find("7001"), 4, "7002"); f.events[0]["frame"]["stream_frame_id"] = 7002; break;
         case 5: f.rows[0].replace(f.rows[0].find("14001"), 5, "14002"); f.events[0]["frame"]["camera_frame_id"] = 14002; break;
         case 6: f.rows[0] += ",extra"; break;
         }
@@ -149,7 +149,7 @@ void custody_and_gate() {
     put(f.root / (f.prefix + "_crop_clip_1_meta_v1.csv"), "mutated");
     p = parent(); ApplyRequiredMovingCropMetadataGate(f.root, &p);
     check(p["status"] == "failed", "tampered clip accepted by parent");
-    for (const auto* asset : {"_master_frames_v1.json", "_master_frames_v1.csv", "_crop_meta.csv", "_yolo_events.jsonl"}) {
+    for (const auto* asset : {"_master_frames_v2.json", "_master_frames_v2.csv", "_crop_meta.csv", "_yolo_events.jsonl"}) {
         Fixture g; g.Finish(); put(g.root / (g.prefix + asset), "changed");
         refuses([&] { RequireMovingCropMetadataReceipt(g.root, g.master); });
     }

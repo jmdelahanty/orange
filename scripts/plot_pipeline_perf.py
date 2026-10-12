@@ -67,7 +67,7 @@ def parse_args():
     parser.add_argument(
         "--x",
         default="elapsed_s",
-        choices=["index", "elapsed_s", "frame_id", "recording_frame_id"],
+        choices=["index", "elapsed_s", "stream_frame_id", "recording_frame_id"],
         help="X-axis field (default: %(default)s).",
     )
     parser.add_argument(
@@ -212,7 +212,7 @@ def parse_timestamp_utc(value):
 def make_x_axis(columns, x_field):
     if x_field == "index":
         return list(range(len(next(iter(columns.values()), []))))
-    if x_field in ("frame_id", "recording_frame_id"):
+    if x_field in ("stream_frame_id", "recording_frame_id"):
         return to_int_list(columns.get(x_field, []))
 
     timestamps = [parse_timestamp_utc(value) for value in columns.get("timestamp_utc", [])]

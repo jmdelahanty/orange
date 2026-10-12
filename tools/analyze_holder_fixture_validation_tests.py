@@ -248,7 +248,7 @@ def main() -> int:
                 "checksum": f"fnv1a64:{index:016x}",
                 "capture_group_id": f"group_{index}",
                 "camera_frame_id": index + 1,
-                "local_frame_id": index + 1,
+                "stream_frame_id": index + 1,
                 "camera_timestamp_ns": 1000 + index,
                 "camera_timestamp_clock_domain": "camera_ptp",
             }

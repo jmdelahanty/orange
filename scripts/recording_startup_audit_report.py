@@ -37,7 +37,7 @@ for r in sorted(milestones, key=rel):
         flag = '  <-- first-use work after recording enabled'
     if r['milestone'] == 'camera_frame_gap':
         flag = '  <== GAP'
-    print(f"{rel(r):10.1f}  {r['camera'] or '-':8s} {r['milestone']:32s} frame={r['frame_id']:<6d} {r['detail'][:110]}{flag}")
+    print(f"{rel(r):10.1f}  {r['camera'] or '-':8s} {r['milestone']:32s} rec={r['recording_frame_id']:<6d} stream={r['stream_frame_id']:<8d} {r['detail'][:110]}{flag}")
 
 print('\n== first-use durations ==')
 by_cam = defaultdict(dict)
@@ -67,7 +67,7 @@ for r in events:
         dec[r['camera']][kv(r['detail']).get('kind', '?')] += 1
     elif r['milestone'] == 'ingress_frame':
         d = kv(r['detail'])
-        waits[r['camera']].append((float(d.get('detect_priority_wait_ms', d.get('source_ready_wait_ms', 0))), float(d.get('detach_ms', 0)), int(d.get('queue_in', 0)), r['frame_id'], rel(r),
+        waits[r['camera']].append((float(d.get('detect_priority_wait_ms', d.get('source_ready_wait_ms', 0))), float(d.get('detach_ms', 0)), int(d.get('queue_in', 0)), r['recording_frame_id'], rel(r),
                                    {k: float(d[k]) for k in ('ready_sync_ms', 'export_ms', 'push_ms', 'send_ms', 'ack_wait_ms') if k in d}, d.get('new_handle', '0')))
 for cam in sorted(set(list(dec) + list(waits))):
     w = waits.get(cam, [])

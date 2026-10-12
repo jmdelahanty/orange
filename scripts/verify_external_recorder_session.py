@@ -150,10 +150,10 @@ def read_json(path: Path) -> dict[str, Any]:
     return payload
 
 
-def keyframe_frames(path: Path) -> list[int]:
+def keyframe_video_frame_indices(path: Path) -> list[int]:
     payload = read_json(path)
-    frames = payload.get("keyframe_frames")
-    require(isinstance(frames, list), f"keyframe sidecar missing keyframe_frames: {path}")
+    frames = payload.get("keyframe_video_frame_indices")
+    require(isinstance(frames, list), f"keyframe sidecar missing keyframe_video_frame_indices: {path}")
     out = [as_int(frame, f"keyframe frame in {path}") for frame in frames]
     require(bool(out), f"keyframe sidecar has no keyframes: {path}")
     return out
@@ -697,13 +697,14 @@ def verify_frame_metadata_csv(path: Path, expected_rows: int) -> dict[str, int]:
         reader = csv.DictReader(handle)
         fieldnames = list(reader.fieldnames or [])
         require(
-            fieldnames[:3] == ["frame_id", "timestamp", "timestamp_sys"],
+            fieldnames[:3] == ["recording_frame_id", "timestamp", "timestamp_sys"],
             (
-                "frame metadata CSV does not preserve legacy leading columns "
-                f"frame_id,timestamp,timestamp_sys: {path}"
+                "frame metadata CSV does not start with "
+                f"recording_frame_id,timestamp,timestamp_sys: {path}"
             ),
         )
-        required = {"frame_id", "recording_frame_id", "timestamp", "timestamp_sys"}
+        require("frame_id" not in fieldnames, f"frame metadata CSV has a frame_id column: {path}")
+        required = {"recording_frame_id", "timestamp", "timestamp_sys"}
         columns = set(fieldnames)
         require(
             required <= columns,
@@ -714,17 +715,12 @@ def verify_frame_metadata_csv(path: Path, expected_rows: int) -> dict[str, int]:
         last_frame = 0
         gaps = 0
         for row_index, row in enumerate(reader, start=2):
-            legacy_frame_id = csv_int(row, "frame_id", path, row_index)
             frame_id = csv_int(row, "recording_frame_id", path, row_index)
             timestamp = csv_int(row, "timestamp", path, row_index)
             timestamp_sys = csv_int(row, "timestamp_sys", path, row_index)
             require(
                 frame_id is not None and frame_id > 0,
                 f"invalid recording_frame_id row {row_index} in {path}",
-            )
-            require(
-                legacy_frame_id == frame_id,
-                f"frame_id != recording_frame_id row {row_index} in {path}",
             )
             require(
                 timestamp is not None and timestamp > 0,
@@ -775,7 +771,7 @@ def verify_frame_identity_proof(
     proof_version = as_int(
         proof.get("schema_version"), "frame_identity_proof.schema_version"
     )
-    require(proof_version in {1, 2}, "unexpected frame_identity_proof schema_version")
+    require(proof_version == 3, "unexpected frame_identity_proof schema_version")
     require(proof.get("status") == "passed", "frame_identity_proof did not pass")
     require(proof.get("canonical_field") == "recording_frame_id", "unexpected canonical frame field")
     require(
@@ -786,11 +782,7 @@ def verify_frame_identity_proof(
         proof.get("row_granularity") == "one_encoded_video_frame",
         "unexpected frame identity row granularity",
     )
-    aliases = proof.get("legacy_aliases")
-    require(
-        isinstance(aliases, dict) and aliases.get("frame_id") == "recording_frame_id",
-        "frame_identity_proof lacks the legacy frame_id alias",
-    )
+    require("legacy_aliases" not in proof, "frame_identity_proof declares aliases")
     require(proof.get("continuity_policy") == "encoded_subset", "unexpected continuity policy")
 
     binding = proof.get("video_binding")
@@ -815,7 +807,7 @@ def verify_frame_identity_proof(
         == packets_written,
         "frame identity proof packet count mismatch",
     )
-    if proof_version == 2:
+    if proof_version >= 2:
         for field in ("packet_submissions_accepted", "packet_write_attempts"):
             require(
                 as_int(binding.get(field), f"frame_identity_proof.video_binding.{field}")
@@ -1104,14 +1096,9 @@ def require_ipc_protocol_hello(payload: dict[str, Any], label: str) -> None:
 def read_metadata_frame_rows(path: Path) -> list[dict[str, int | None]]:
     fieldnames, rows = read_csv_rows(path)
     field_set = set(fieldnames)
-    if "recording_frame_id" in field_set:
-        frame_id_column = "recording_frame_id"
-    elif "frame_id" in field_set:
-        frame_id_column = "frame_id"
-    else:
-        raise VerificationError(
-            f"metadata CSV missing recording_frame_id/frame_id column: {path}"
-        )
+    if "recording_frame_id" not in field_set:
+        raise VerificationError(f"metadata CSV missing recording_frame_id column: {path}")
+    frame_id_column = "recording_frame_id"
 
     for required_column in ("timestamp", "timestamp_sys"):
         require(
@@ -1256,7 +1243,7 @@ def verify_rolling_output(
             label=f"rolling clip {expected_index} for {serial}",
         ):
             raise VerificationError(error)
-        keyframes = keyframe_frames(keyframe_path)
+        keyframes = keyframe_video_frame_indices(keyframe_path)
         require(
             keyframes[0] == 0,
             f"rolling clip {expected_index} for {serial} does not start on keyframe 0: {keyframes[:3]}",

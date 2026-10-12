@@ -10,7 +10,7 @@
 namespace orange::calibration {
 
 inline constexpr const char* kCalibrationImageSetSchemaId = "orange.calibration.image_set";
-inline constexpr int kCalibrationImageSetSchemaVersion = 1;
+inline constexpr int kCalibrationImageSetSchemaVersion = 2;  // v2: *_stream_frame_id
 
 struct CalibrationImageSetShape {
     int height = 0;
@@ -33,8 +33,6 @@ struct CalibrationImageSetCaptureContext {
     std::string operation_id;
     std::string capture_group_id;
     std::string timestamp_utc;
-    uint64_t frame_id = 0;
-    bool has_frame_id = false;
     uint64_t recording_frame_id = 0;
     bool has_recording_frame_id = false;
     uint32_t source_frame_count = 1;

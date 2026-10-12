@@ -84,7 +84,7 @@ void MasterJournalIo::Sync(int fd) { system_check(::fsync(fd) == 0, "sync master
 void MasterJournalIo::Close(int fd) { system_check(::close(fd) == 0, "close master journal"); }
 
 const char* MasterFrameJournal::CsvHeader() noexcept {
-    return "observation_index,kind,reject_reason,recording_frame_id,local_frame_id_present,local_frame_id,"
+    return "observation_index,kind,reject_reason,recording_frame_id,stream_frame_id_present,stream_frame_id,"
            "camera_frame_id_present,camera_frame_id,camera_timestamp_present,camera_timestamp_ns,"
            "host_receive_steady_present,host_receive_steady_ns,host_realtime_present,host_realtime_ns\n";
 }
@@ -105,7 +105,7 @@ MasterFrameJournal::MasterFrameJournal(MasterJournalOptions options, std::shared
           "master journal cannot use filesystem root");
     for (const int cpu : options_.writer_cpu_ids)
         check(cpu >= 0 && cpu < CPU_SETSIZE, "invalid journal writer CPU");
-    const std::string stem = "Cam" + options_.camera_serial + "_master_frames_v1";
+    const std::string stem = "Cam" + options_.camera_serial + "_master_frames_v2";
     csv_path_ = options_.recording_directory / (stem + ".csv");
     manifest_path_ = options_.recording_directory / (stem + ".json");
     check(!fs::exists(manifest_path_) && !fs::is_symlink(manifest_path_),
@@ -290,7 +290,7 @@ const json& MasterFrameJournal::Finalize(bool normal) {
     if (!hashed) reasons.push_back("journal_hash_failed");
     else if (!bytes_match) reasons.push_back("journal_bytes_changed_or_partial_write");
     final_record_ = {
-        {"schema_id", "orange.recording.master_frame_journal"}, {"schema_version", 1},
+        {"schema_id", "orange.recording.master_frame_journal"}, {"schema_version", 2},
         {"status", complete ? "complete" : "incomplete"}, {"terminal", true},
         {"recording_id", options_.recording_id}, {"camera_serial", options_.camera_serial},
         {"producer_instance_id", options_.producer_instance_id}, {"stream_generation", options_.stream_generation},

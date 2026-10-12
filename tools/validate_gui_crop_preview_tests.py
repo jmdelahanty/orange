@@ -82,7 +82,7 @@ HEADER = [
 
 CROP_META_HEADER = [
     "recording_frame_id",
-    "local_frame_id",
+    "stream_frame_id",
     "camera_frame_id",
     "timestamp",
     "timestamp_sys",
@@ -114,7 +114,7 @@ CROP_META_HEADER = [
 
 CROP_PERF_HEADER = [
     "recording_frame_id",
-    "local_frame_id",
+    "stream_frame_id",
     "camera_frame_id",
     "dropped",
     "drop_reason",
@@ -555,7 +555,7 @@ def write_crop_recording_artifacts(
     (recording_folder / f"Cam{serial}_crop_keyframe.json").write_text(
         json.dumps({
             "total_frames": rows if keyframe_total_frames is None else keyframe_total_frames,
-            "keyframe_frames": [0],
+            "keyframe_video_frame_indices": [0],
         }) + "\n",
         encoding="utf-8",
     )
@@ -571,7 +571,7 @@ def write_crop_recording_artifacts(
             writer.writerow(
                 {
                     "recording_frame_id": frame_id,
-                    "local_frame_id": frame_id,
+                    "stream_frame_id": frame_id,
                     "camera_frame_id": 1000 + frame_id,
                     "timestamp": frame_id * 10,
                     "timestamp_sys": frame_id * 20,
@@ -600,7 +600,7 @@ def write_crop_recording_artifacts(
             writer.writerow(
                 {
                     "recording_frame_id": frame_id,
-                    "local_frame_id": frame_id,
+                    "stream_frame_id": frame_id,
                     "camera_frame_id": 1000 + frame_id,
                     "dropped": 1 if dropped_row == frame_id else 0,
                     "drop_reason": "test_drop" if dropped_row == frame_id else "",
@@ -625,7 +625,7 @@ def write_crop_clip_artifacts(
     perf = clip_dir / f"Cam{serial}_crop_perf.csv"
     video.write_bytes(b"external-crop-clip-mp4")
     keyframes.write_text(
-        json.dumps({"total_frames": frame_count, "keyframe_frames": [0]}) + "\n",
+        json.dumps({"total_frames": frame_count, "keyframe_video_frame_indices": [0]}) + "\n",
         encoding="utf-8",
     )
 
@@ -641,7 +641,7 @@ def write_crop_clip_artifacts(
             writer.writerow(
                 {
                     "recording_frame_id": frame_id,
-                    "local_frame_id": frame_id,
+                    "stream_frame_id": frame_id,
                     "camera_frame_id": 1000 + frame_id,
                     "timestamp": frame_id * 10,
                     "timestamp_sys": frame_id * 20,
@@ -670,7 +670,7 @@ def write_crop_clip_artifacts(
             writer.writerow(
                 {
                     "recording_frame_id": frame_id,
-                    "local_frame_id": frame_id,
+                    "stream_frame_id": frame_id,
                     "camera_frame_id": 1000 + frame_id,
                     "dropped": 0,
                     "drop_reason": "",
@@ -731,7 +731,7 @@ def write_rolling_full_frame_manifest(
         keyframes = clip_dir / f"Cam{serial}_keyframe.json"
         video.write_bytes(b"fake mp4 payload\n")
         keyframes.write_text(
-            json.dumps({"total_frames": frame_count, "keyframe_frames": [0]}) + "\n",
+            json.dumps({"total_frames": frame_count, "keyframe_video_frame_indices": [0]}) + "\n",
             encoding="utf-8",
         )
         with metadata.open("w", encoding="utf-8") as handle:
@@ -3501,14 +3501,14 @@ def test_recording_session_manifest_reads_external_summary_separately_from_metad
         summary = root / f"Cam{serial}_external_summary.json"
         video.write_bytes(b"fake mp4 payload\n")
         metadata.write_text(
-            "frame_id,timestamp,timestamp_sys,recording_frame_id\n"
-            "1,100,200,1\n"
-            "2,101,201,2\n"
-            "3,102,202,3\n",
+            "recording_frame_id,timestamp,timestamp_sys\n"
+            "1,100,200\n"
+            "2,101,201\n"
+            "3,102,202\n",
             encoding="utf-8",
         )
         keyframes.write_text(
-            json.dumps({"total_frames": 3, "keyframe_frames": [0]}) + "\n",
+            json.dumps({"total_frames": 3, "keyframe_video_frame_indices": [0]}) + "\n",
             encoding="utf-8",
         )
         summary.write_text(
@@ -3930,7 +3930,7 @@ def test_recording_session_manifest_fails_on_rolling_keyframe_not_zero() -> None
         snapshot = write_rolling_full_frame_manifest(root, serial)
         keyframes = root / "clips" / "clip_000000" / f"Cam{serial}_keyframe.json"
         keyframes.write_text(
-            json.dumps({"total_frames": 2, "keyframe_frames": [1]}) + "\n",
+            json.dumps({"total_frames": 2, "keyframe_video_frame_indices": [1]}) + "\n",
             encoding="utf-8",
         )
 
@@ -3980,7 +3980,7 @@ def test_recording_session_manifest_fails_on_rolling_crop_keyframe_not_zero() ->
         )
         keyframes = Path(crop_clip["keyframes"])
         keyframes.write_text(
-            json.dumps({"total_frames": 2, "keyframe_frames": [1]}) + "\n",
+            json.dumps({"total_frames": 2, "keyframe_video_frame_indices": [1]}) + "\n",
             encoding="utf-8",
         )
 

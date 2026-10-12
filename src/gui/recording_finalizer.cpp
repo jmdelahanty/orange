@@ -313,12 +313,12 @@ bool gui_validate_frame_metadata_csv(const std::string& path,
         return false;
     }
     const std::vector<std::string> header = gui_split_csv_row(header_line);
-    if (header.size() < 3 || header[0] != "frame_id" ||
+    if (header.size() < 3 || header[0] != "recording_frame_id" ||
         header[1] != "timestamp" || header[2] != "timestamp_sys") {
         if (error_out) {
             *error_out =
-                "frame metadata CSV does not preserve legacy leading columns "
-                "frame_id,timestamp,timestamp_sys: " + path;
+                "frame metadata CSV does not start with "
+                "recording_frame_id,timestamp,timestamp_sys: " + path;
         }
         return false;
     }
@@ -328,17 +328,15 @@ bool gui_validate_frame_metadata_csv(const std::string& path,
             ? std::numeric_limits<size_t>::max()
             : static_cast<size_t>(std::distance(header.begin(), it));
     };
-    const size_t legacy_frame_column = column_index("frame_id");
     const size_t frame_column = column_index("recording_frame_id");
     const size_t timestamp_column = column_index("timestamp");
     const size_t timestamp_sys_column = column_index("timestamp_sys");
     const size_t missing = std::numeric_limits<size_t>::max();
-    if (legacy_frame_column == missing || frame_column == missing ||
-        timestamp_column == missing ||
+    if (frame_column == missing || timestamp_column == missing ||
         timestamp_sys_column == missing) {
         if (error_out) {
             *error_out =
-                "frame metadata CSV lacks frame_id/recording_frame_id/timestamp/timestamp_sys: " +
+                "frame metadata CSV lacks recording_frame_id/timestamp/timestamp_sys: " +
                 path;
         }
         return false;
@@ -352,21 +350,15 @@ bool gui_validate_frame_metadata_csv(const std::string& path,
         }
         const std::vector<std::string> cells = gui_split_csv_row(line);
         const size_t required_column =
-            std::max(
-                {legacy_frame_column,
-                 frame_column,
-                 timestamp_column,
-                 timestamp_sys_column});
-        uint64_t legacy_frame_id = 0;
+            std::max({frame_column, timestamp_column, timestamp_sys_column});
         uint64_t frame_id = 0;
         uint64_t timestamp = 0;
         uint64_t timestamp_sys = 0;
         if (cells.size() <= required_column ||
-            !gui_parse_u64_cell(cells[legacy_frame_column], &legacy_frame_id) ||
             !gui_parse_u64_cell(cells[frame_column], &frame_id) ||
             !gui_parse_u64_cell(cells[timestamp_column], &timestamp) ||
             !gui_parse_u64_cell(cells[timestamp_sys_column], &timestamp_sys) ||
-            frame_id == 0 || legacy_frame_id != frame_id || timestamp == 0 ||
+            frame_id == 0 || timestamp == 0 ||
             timestamp_sys == 0) {
             if (error_out) {
                 *error_out = "invalid frame metadata row in " + path;
@@ -765,7 +757,7 @@ bool gui_write_external_rolling_recording_session_manifest(
                       orange::external_recorder::kExternalRecorderRollingImplementation},
                      {"seamless_writer_switch", true},
                      {"records_during_rollover", true},
-                     {"boundary", "gop_first_frame_id"}
+                     {"boundary", "gop_first_recording_frame_id"}
                  }}
             };
             manifest_clip.recording_outputs.push_back(std::move(output));
@@ -906,7 +898,7 @@ bool gui_write_external_rolling_recording_session_manifest(
          orange::external_recorder::kExternalRecorderRollingImplementation},
         {"seamless_writer_switch", true},
         {"records_during_rollover", true},
-        {"boundary", "gop_first_frame_id"},
+        {"boundary", "gop_first_recording_frame_id"},
         {"next_writer_preopened", false}
     };
     rolling_recording_backend["summary_json"] = summary_paths;
@@ -2181,7 +2173,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                     const auto root = std::filesystem::canonical(run.recording_folder);
                     nlohmann::json master;
                     std::string error;
-                    if (!gui_read_json_file((root / ("Cam" + serial + "_master_frames_v1.json")).string(), &master, &error))
+                    if (!gui_read_json_file((root / ("Cam" + serial + "_master_frames_v2.json")).string(), &master, &error))
                         throw std::runtime_error("master source record unavailable: " + error);
                     const auto found = inputs->detection_logs.find(serial);
                     if (found == inputs->detection_logs.end() || !found->second ||

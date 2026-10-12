@@ -150,7 +150,7 @@ json detection_coverage(const fs::path& root, const json& master,
         require(it != header.end(), "crop detection evidence column missing");
         return static_cast<std::size_t>(it - header.begin());
     };
-    const auto rid = column("recording_frame_id"), local = column("local_frame_id");
+    const auto rid = column("recording_frame_id"), local = column("stream_frame_id");
     const auto camera = column("camera_frame_id"), timestamp = column("timestamp"), host = column("timestamp_sys");
     const auto detected = column("has_detection"), blank = column("blank_frame"), state = column("crop_state");
     uint64_t count = 0, blanks = 0, last_sequence = 0;
@@ -186,7 +186,7 @@ json detection_coverage(const fs::path& root, const json& master,
         const auto& times = event.at("timestamps");
         require(frame.at("record_active") == true &&
                 number(frame.at("recording_frame_id")) == integer(crop[rid]) &&
-                number(frame.at("local_frame_id")) == integer(crop[local]) &&
+                number(frame.at("stream_frame_id")) == integer(crop[local]) &&
                 number(frame.at("camera_frame_id")) == integer(crop[camera]) &&
                 number(times.at("camera_timestamp")) == integer(crop[timestamp]) &&
                 number(times.at("timestamp_sys_ns")) == integer(crop[host]), "detector/crop source correspondence mismatch");
@@ -221,7 +221,7 @@ json CheckMovingCropMetadataCoverage(const fs::path& recording_root, const json&
                                      const std::vector<MovingCropClipMetadata>& clips) {
     const auto root = fs::canonical(recording_root);
     require(master.at("schema_id") == "orange.recording.master_frame_journal" &&
-            master.at("schema_version") == 1 && master.at("status") == "complete" &&
+            master.at("schema_version") == 2 && master.at("status") == "complete" &&
             master.at("terminal") == true && master.at("producer_finished_normally") == true &&
             master.at("observation_boundary") == "caller_submitted_acquisition_facts_v1",
             "master journal is not a complete supported recording");
@@ -277,8 +277,8 @@ json CheckMovingCropMetadataCoverage(const fs::path& recording_root, const json&
         const auto rid = column("recording_frame_id"), local = column("crop_video_frame_index");
         const auto session = column("session_crop_video_frame_index"), camera_time = column("timestamp");
         const auto real_time = column("timestamp_sys");
-        const bool original_ids = column_names.count("local_frame_id") && column_names.count("camera_frame_id");
-        const auto source_local = original_ids ? column("local_frame_id") : 0;
+        const bool original_ids = column_names.count("stream_frame_id") && column_names.count("camera_frame_id");
+        const auto source_local = original_ids ? column("stream_frame_id") : 0;
         const auto source_camera = original_ids ? column("camera_frame_id") : 0;
         const uint64_t first = outputs;
         uint64_t local_count = 0;
@@ -326,7 +326,7 @@ json FinalizeMovingCropMetadata(const fs::path& recording_root, const std::strin
     require(stopped_normally, "moving crop source/recorder shutdown incomplete");
     const auto root = fs::canonical(recording_root);
     const auto prefix = stem(serial);
-    const fs::path master_path = prefix + "_master_frames_v1.json";
+    const fs::path master_path = prefix + "_master_frames_v2.json";
     const fs::path crop_path = prefix + "_crop_meta.csv", events_path = prefix + "_yolo_events.jsonl";
     const auto master_ref = artifact(root, master_path), summary_ref = artifact(root, summary_path);
     const auto crop_ref = artifact(root, crop_path), events_ref = artifact(root, events_path);
@@ -443,7 +443,7 @@ json RequireMovingCropMetadataReceipt(const fs::path& recording_root, const json
         const auto& bound = receipt.at(key);
         require(bound == artifact(root, bound.at("relative_path").get<std::string>()), "moving crop receipt artifact changed");
     }
-    require(receipt.at("master_descriptor") == artifact(root, prefix + "_master_frames_v1.json"),
+    require(receipt.at("master_descriptor") == artifact(root, prefix + "_master_frames_v2.json"),
             "moving crop receipt binds different master");
     const auto& coverage = receipt.at("metadata_correspondence");
     require(coverage.at("master_csv") == artifact(root, coverage.at("master_csv").at("relative_path").get<std::string>()),
@@ -504,7 +504,8 @@ fs::path media_relative(const fs::path& root, const json& path) {
 void returned_crop_proof(const json& summary, uint64_t count) {
     const auto& proof = summary.at("frame_identity_proof");
     require(proof.at("schema_id") == "orange.external_recorder.frame_identity_proof" &&
-        number(proof.at("schema_version")) == 2 && proof.at("status") == "passed" &&
+        number(proof.at("schema_version")) == 3 && !proof.contains("legacy_aliases") &&
+        proof.at("status") == "passed" &&
         proof.at("canonical_field") == "recording_frame_id" &&
         proof.at("scope") == "recording_session_and_camera_stream" &&
         proof.at("row_granularity") == "one_encoded_video_frame" &&
@@ -551,7 +552,7 @@ json FinalizeMovingCropMedia(const fs::path& recording_root, const std::string& 
     ScopedFsuid fsuid_guard;
     const auto root = fs::canonical(recording_root);
     const auto prefix = stem(serial);
-    const auto master = document(root, prefix + "_master_frames_v1.json");
+    const auto master = document(root, prefix + "_master_frames_v2.json");
     const auto metadata_ref = RequireMovingCropMetadataReceipt(root, master);
     const auto metadata = document(root, metadata_ref.at("relative_path").get<std::string>());
     const auto summary_ref = metadata.at("recorder_summary");
@@ -594,7 +595,7 @@ json FinalizeMovingCropMedia(const fs::path& recording_root, const std::string& 
             const auto expected = fields(row);
             require(actual.size() == header.size() && expected.size() == crop_header.size(), "malformed crop/recorder metadata row");
             for (const auto& names : {std::pair{"recording_frame_id", "recording_frame_id"},
-                    std::pair{"frame_id", "recording_frame_id"}, std::pair{"local_frame_id", "local_frame_id"},
+                    std::pair{"stream_frame_id", "stream_frame_id"},
                     std::pair{"timestamp", "timestamp"}, std::pair{"timestamp_sys", "timestamp_sys"}})
                 require(integer(actual.at(column(header, names.first))) == integer(expected.at(column(crop_header, names.second))),
                         "encoded crop identity/timestamp differs from master-bound metadata");
@@ -686,7 +687,7 @@ void ApplyRequiredMovingCropMediaGate(const fs::path& recording_root, json* pare
             for (const auto& camera : cameras) {
                 const auto serial = camera.at("camera_serial").get<std::string>();
                 require(serials.insert(serial).second, "duplicate encoded crop camera");
-                const auto master = document(root, stem(serial) + "_master_frames_v1.json");
+                const auto master = document(root, stem(serial) + "_master_frames_v2.json");
                 require(master.at("status") == "complete" && master.at("recording_id") == parent->at("session_id") &&
                     master.at("recording_id") == camera.at("recording_id") &&
                     master.at("producer_instance_id") == camera.at("producer_instance_id") &&
@@ -726,7 +727,7 @@ void ApplyRequiredMovingCropMetadataGate(const fs::path& recording_root, json* p
             for (const auto& camera : cameras) {
                 const auto serial = camera.at("camera_serial").get<std::string>();
                 require(seen.insert(serial).second, "duplicate moving crop camera");
-                const auto master = document(root, stem(serial) + "_master_frames_v1.json");
+                const auto master = document(root, stem(serial) + "_master_frames_v2.json");
                 require(master.at("status") == "complete" && master.at("recording_id") == parent->at("session_id") &&
                         master.at("recording_id") == camera.at("recording_id") &&
                         master.at("producer_instance_id") == camera.at("producer_instance_id") &&

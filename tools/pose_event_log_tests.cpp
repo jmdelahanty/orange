@@ -97,7 +97,7 @@ int main()
     ok &= expect(rows.size() == 3, "pose event logger writes a header and two rows");
     if (rows.size() >= 3) {
         ok &= expect(rows[0]["schema_id"] == "orange.pose_event", "schema id is orange.pose_event");
-        ok &= expect(rows[0]["schema_version"] == 2, "schema version is 2");
+        ok &= expect(rows[0]["schema_version"] == 3, "schema version is 3");
         ok &= expect(rows[0]["event_kind"] == "session_header", "first line is the session header");
         ok &= expect(!rows[0].contains("event_sequence"), "header carries no event sequence");
         ok &= expect(rows[0]["pose"]["backend"] == "noop", "backend is in the header");

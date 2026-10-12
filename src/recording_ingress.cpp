@@ -2002,7 +2002,7 @@ private:
             owner_push_csv_folder_ = entry->recording_folder;
             owner_push_csv_->Open(
                 entry->recording_folder + "/Cam" + camera_serial_ + "_owner_push.csv",
-                "kind,recording_frame_id,local_frame_id,capture_sys_ns,push_start_steady_ns,"
+                "kind,recording_frame_id,stream_frame_id,capture_sys_ns,push_start_steady_ns,"
                 "push_done_steady_ns,wait_ms,age_at_push_ms,queue_in,pending_release,slot,gpu\n");
         }
         if (orange::RecordingStartupAudit::Instance().InWindow()) {

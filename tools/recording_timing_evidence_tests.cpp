@@ -14,8 +14,8 @@ int main() {
         orange::recording_metadata::write_header(out);
         orange::recording_metadata::write_row(out, 201, 1787695084226944090ULL,
                                               1787695047236290646ULL);
-        require(out.str() == "frame_id,timestamp,timestamp_sys,recording_frame_id\n"
-                "201,1787695084226944090,1787695047236290646,201\n",
+        require(out.str() == "recording_frame_id,timestamp,timestamp_sys\n"
+                "201,1787695084226944090,1787695047236290646\n",
                 "native metadata must preserve parent IDs and exact integer timestamps");
 
         orange::PtpReadbackEvidence e;

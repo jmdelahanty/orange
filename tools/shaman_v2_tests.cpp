@@ -777,7 +777,7 @@ void test_frame_ipc_manager_publishes_v2_pose_update()
                 "YOLO pose test should establish the complete four-box vector");
         require(slots[2].state_stream_frame_id == 11, "pose update frame id should be 11");
         require(slots[2].source_stream_frame_id == 11,
-                "pose source frame should use stream-local local_frame_id");
+                "pose source frame should use stream-local stream_frame_id");
         require(slots[2].recording_frame_id == 211,
                 "pose recording identity should remain metadata only");
         require(slots[2].pose_status ==

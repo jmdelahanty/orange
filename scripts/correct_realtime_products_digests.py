@@ -174,10 +174,10 @@ def check_perf_tail(data: bytes, declared_size: int, declared_sha: str,
     if session_last_frame_id is None:
         raise ValueError("no session last frame id (pass --last-frame-id)")
     header = data[: data.index(b"\n")].decode().split(",")
-    for column in ("frame_id", "recording_frame_id"):
+    for column in ("stream_frame_id", "recording_frame_id"):
         if column not in header:
             raise ValueError(f"csv has no {column} column")
-    fid_col, rid_col = header.index("frame_id"), header.index("recording_frame_id")
+    fid_col, rid_col = header.index("stream_frame_id"), header.index("recording_frame_id")
 
     def parse(line: bytes) -> tuple[int, int]:
         fields = line.decode().split(",")

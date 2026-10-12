@@ -397,10 +397,9 @@ void YoloEventLogger::WriteResult(const YoloResultRecord& record) {
         {"event_kind", "yolo_result"},
         {"camera_serial", camera_serial_},
         {"frame", {
-            {"local_frame_id", record.local_frame_id},
+            {"stream_frame_id", record.local_frame_id},
             {"camera_frame_id", record.camera_frame_id},
             {"recording_frame_id", record.recording_frame_id},
-            {"ipc_frame_id", record.ipc_frame_id},
             {"record_active", record.record_active}
         }},
         {"timestamps", {

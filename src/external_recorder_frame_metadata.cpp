@@ -42,8 +42,8 @@ bool FrameMetadataCsvWriter::Open(const std::string& path, std::string* error)
     }
     summary_.path = path;
     stream_
-        << "frame_id,timestamp,timestamp_sys,recording_frame_id,local_frame_id,"
-           "gop_index,frame_index_within_gop,source_gpu_id,assigned_gpu_id,"
+        << "recording_frame_id,timestamp,timestamp_sys,stream_frame_id,"
+           "gop_index,position_in_gop,source_gpu_id,assigned_gpu_id,"
            "assigned_shard_id,bytes\n";
     if (!stream_) {
         set_error(error, "failed to write frame metadata CSV header: " + path);
@@ -78,7 +78,6 @@ bool FrameMetadataCsvWriter::Write(const FrameMetadataRecord& record,
         << record.recording_frame_id << ','
         << record.timestamp << ','
         << record.timestamp_sys << ','
-        << record.recording_frame_id << ','
         << record.local_frame_id << ','
         << record.gop_index << ','
         << record.frame_index_within_gop << ','

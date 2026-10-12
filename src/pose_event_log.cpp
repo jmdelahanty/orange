@@ -328,7 +328,7 @@ void PoseEventLogger::WriteResult(PoseResultRecord record)
         {"event_kind", "pose_result"},
         {"camera_serial", camera_serial_},
         {"frame", {
-            {"local_frame_id", record.local_frame_id},
+            {"stream_frame_id", record.local_frame_id},
             {"camera_frame_id", record.camera_frame_id},
             {"recording_frame_id", record.recording_frame_id},
             {"record_active", record.record_active}

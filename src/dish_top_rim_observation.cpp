@@ -681,8 +681,8 @@ nlohmann::json dish_top_rim_observation_to_json(
             request.capture.temporal_compositing_method;
     }
     if (request.capture.has_local_frame_range) {
-        capture["first_local_frame_id"] = request.capture.first_local_frame_id;
-        capture["last_local_frame_id"] = request.capture.last_local_frame_id;
+        capture["first_stream_frame_id"] = request.capture.first_local_frame_id;
+        capture["last_stream_frame_id"] = request.capture.last_local_frame_id;
     }
     if (request.capture.has_camera_frame_range) {
         capture["first_camera_frame_id"] = request.capture.first_camera_frame_id;
@@ -740,7 +740,7 @@ nlohmann::json dish_top_rim_observation_to_json(
         {"circle_detection", {
             {"method", kDishTopRimObservationMethod},
             {"source_array_role", request.source_array_role},
-            {"source_frame_index", request.source_frame_index},
+            {"source_image_index", request.source_frame_index},
             {"detected_circle_source",
              request.has_detected_circle
                  ? (request.detected_circle_source.empty()
@@ -795,7 +795,7 @@ nlohmann::json dish_top_rim_observation_to_json(
             {"derived_from", "accepted_inner_rim_boundary"},
             {"coordinate_space", "camera_native_pixels"},
             {"source_array_role", request.source_array_role},
-            {"source_frame_index", request.source_frame_index},
+            {"source_image_index", request.source_frame_index},
             {"image_shape_px", image_shape_json(request.camera.height, request.camera.width)},
             {"center_px", point_to_json(valid_circle.center)},
             {"radius_px", valid_circle.radius_px},
@@ -1165,7 +1165,7 @@ nlohmann::json dish_top_rim_palette_export_to_json(
     const double y = mask.at("center_px").at("y").get<double>();
     const double area = 3.14159265358979323846 * radius * radius;
     const std::string source_array_role = mask.value("source_array_role", "images_full");
-    const int frame_index = mask.value("source_frame_index", 0);
+    const int frame_index = mask.value("source_image_index", 0);
 
     nlohmann::json out = {
         {"shape", "circle"},

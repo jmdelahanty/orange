@@ -147,7 +147,7 @@ def validate_replay_csv(
     for index, row in enumerate(rows):
         frame_id = int(row["recording_frame_id"])
         require(frame_id == index + 1, f"producer frame sequence mismatch at row {index}")
-        require(int(row["local_frame_id"]) == frame_id, f"local frame mismatch at {frame_id}")
+        require(int(row["stream_frame_id"]) == frame_id, f"local frame mismatch at {frame_id}")
         require(int(row["source_index"]) == index % source_frames, f"source map mismatch at {frame_id}")
         slot = int(row["slot_index"])
         generation = int(row["slot_generation"])
@@ -406,7 +406,7 @@ def validate_summary(
 
     keyframes = read_json(case_dir / "output_keyframes.json")
     require(keyframes.get("total_frames") == frames, "keyframe sidecar frame count mismatch")
-    require(keyframes.get("keyframe_frames") == list(range(0, frames, args.gop)), "keyframe GOP boundaries mismatch")
+    require(keyframes.get("keyframe_video_frame_indices") == list(range(0, frames, args.gop)), "keyframe GOP boundaries mismatch")
 
     metadata_rows = validate_sequential_csv(case_dir / "output_meta.csv", frames, "metadata CSV")
     intake_rows = validate_sequential_csv(case_dir / "intake.csv", frames, "intake CSV")

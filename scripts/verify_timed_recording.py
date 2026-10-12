@@ -413,10 +413,10 @@ def metadata_frame_ids(path: Path) -> list[int]:
     return frame_ids
 
 
-def keyframe_frames(path: Path) -> list[int]:
+def keyframe_video_frame_indices(path: Path) -> list[int]:
     payload = read_json(path)
-    frames = payload.get("keyframe_frames")
-    require(isinstance(frames, list), f"keyframe sidecar missing keyframe_frames: {path}")
+    frames = payload.get("keyframe_video_frame_indices")
+    require(isinstance(frames, list), f"keyframe sidecar missing keyframe_video_frame_indices: {path}")
     return [as_int(frame, f"keyframe frame in {path}") for frame in frames]
 
 
@@ -832,7 +832,7 @@ def verify_rolling_clips(
             duration = ffprobe_duration(video_path, args.ffprobe)
             require(duration > 0, f"ffprobe duration is zero for camera {camera}: {video_path}")
             ffprobe_totals[camera] += duration
-            keyframes = keyframe_frames(keyframe_path)
+            keyframes = keyframe_video_frame_indices(keyframe_path)
             require(bool(keyframes), f"keyframe sidecar has no keyframes for camera {camera}: {keyframe_path}")
             require(
                 keyframes[0] == 0,

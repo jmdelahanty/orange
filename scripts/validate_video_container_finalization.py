@@ -225,7 +225,7 @@ def actual_keyframe_prefix(mp4: Path, sample_count: int) -> tuple[int, list[int]
                 chunk = file.read(256 * 1024)
                 text += chunk
                 total_match = re.search(r'"total_frames"\s*:\s*(\d+)', text)
-                keyframes_match = re.search(r'"keyframe_frames"\s*:\s*\[', text)
+                keyframes_match = re.search(r'"keyframe_video_frame_indices"\s*:\s*\[', text)
                 if total_match and keyframes_match:
                     suffix = text[keyframes_match.end() :]
                     values = [int(value) for value in re.findall(r"\d+", suffix)]

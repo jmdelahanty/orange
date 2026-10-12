@@ -873,7 +873,7 @@ def persist_holder_fixture_evidence(
                 "sha256": sha256_file(source_path),
                 "capture_group_id": source.get("capture_group_id"),
                 "camera_frame_id": source.get("camera_frame_id"),
-                "local_frame_id": source.get("local_frame_id"),
+                "stream_frame_id": source.get("stream_frame_id"),
                 "camera_timestamp_ns": source.get("camera_timestamp_ns"),
                 "camera_timestamp_clock_domain": source.get(
                     "camera_timestamp_clock_domain"
@@ -1357,8 +1357,8 @@ def main() -> int:
                     "camera_frame_id": image_metadata[recipe].get("capture", {}).get(
                         "last_camera_frame_id"
                     ),
-                    "local_frame_id": image_metadata[recipe].get("capture", {}).get(
-                        "last_local_frame_id"
+                    "stream_frame_id": image_metadata[recipe].get("capture", {}).get(
+                        "last_stream_frame_id"
                     ),
                     "camera_timestamp_ns": image_metadata[recipe].get(
                         "capture", {}

@@ -751,9 +751,6 @@ nlohmann::json capture_to_json(const CalibrationImageSetCaptureContext& capture)
     if (!capture.capture_group_id.empty()) {
         out["capture_group_id"] = capture.capture_group_id;
     }
-    if (capture.has_frame_id) {
-        out["frame_id"] = capture.frame_id;
-    }
     if (capture.has_recording_frame_id) {
         out["recording_frame_id"] = capture.recording_frame_id;
     }
@@ -764,8 +761,8 @@ nlohmann::json capture_to_json(const CalibrationImageSetCaptureContext& capture)
         out["temporal_compositing_method"] = capture.temporal_compositing_method;
     }
     if (capture.has_local_frame_range) {
-        out["first_local_frame_id"] = capture.first_local_frame_id;
-        out["last_local_frame_id"] = capture.last_local_frame_id;
+        out["first_stream_frame_id"] = capture.first_local_frame_id;
+        out["last_stream_frame_id"] = capture.last_local_frame_id;
     }
     if (capture.has_camera_frame_range) {
         out["first_camera_frame_id"] = capture.first_camera_frame_id;

@@ -5866,7 +5866,7 @@ bool write_headless_frame_ipc_summary(
     bool overall_ok = true;
     nlohmann::json summary = {
         {"schema_id", "orange.headless.frame_ipc_summary"},
-        {"schema_version", 2},   // v1 queue fields removed 2026-10-08
+        {"schema_version", 3},   // v3: reader_*_stream_frame_id names (2026-10-12)
         {"created_at_utc", get_current_utc_timestamp()},
         {"enabled", config.enabled()},
         {"mode", headless_frame_ipc_mode_to_string(config.mode)},
@@ -5914,12 +5914,12 @@ bool write_headless_frame_ipc_summary(
             {"reader_v2_detection_result_messages", 0ULL},
             {"reader_v2_pose_result_messages", 0ULL},
             {"reader_camera_id_mismatches", 0ULL},
-            {"reader_frame_id_gaps", 0ULL},
-            {"reader_non_monotonic_frame_ids", 0ULL},
+            {"reader_stream_frame_id_gaps", 0ULL},
+            {"reader_non_monotonic_stream_frame_ids", 0ULL},
             {"reader_sequence_id_gaps", 0ULL},
             {"reader_non_monotonic_sequence_ids", 0ULL},
-            {"reader_first_frame_id", 0ULL},
-            {"reader_last_frame_id", 0ULL},
+            {"reader_first_stream_frame_id", 0ULL},
+            {"reader_last_stream_frame_id", 0ULL},
             {"reader_first_sequence_id", 0ULL},
             {"reader_last_sequence_id", 0ULL},
             {"reader_producer_generation_changes", 0ULL},
@@ -5983,13 +5983,13 @@ bool write_headless_frame_ipc_summary(
                 stats.v2_detection_result_messages;
             camera_json["reader_v2_pose_result_messages"] = stats.v2_pose_result_messages;
             camera_json["reader_camera_id_mismatches"] = stats.camera_id_mismatches;
-            camera_json["reader_frame_id_gaps"] = stats.frame_id_gaps;
-            camera_json["reader_non_monotonic_frame_ids"] = stats.non_monotonic_frame_ids;
+            camera_json["reader_stream_frame_id_gaps"] = stats.frame_id_gaps;
+            camera_json["reader_non_monotonic_stream_frame_ids"] = stats.non_monotonic_frame_ids;
             camera_json["reader_sequence_id_gaps"] = stats.sequence_id_gaps;
             camera_json["reader_non_monotonic_sequence_ids"] =
                 stats.non_monotonic_sequence_ids;
-            camera_json["reader_first_frame_id"] = stats.first_frame_id;
-            camera_json["reader_last_frame_id"] = stats.last_frame_id;
+            camera_json["reader_first_stream_frame_id"] = stats.first_frame_id;
+            camera_json["reader_last_stream_frame_id"] = stats.last_frame_id;
             camera_json["reader_first_sequence_id"] = stats.first_sequence_id;
             camera_json["reader_last_sequence_id"] = stats.last_sequence_id;
             camera_json["reader_producer_generation_changes"] =
@@ -6013,10 +6013,10 @@ bool write_headless_frame_ipc_summary(
                     add_failure("reader_camera_id_mismatches");
                 }
                 if (stats.frame_id_gaps > 0) {
-                    add_failure("reader_frame_id_gaps");
+                    add_failure("reader_stream_frame_id_gaps");
                 }
                 if (stats.non_monotonic_frame_ids > 0) {
-                    add_failure("reader_non_monotonic_frame_ids");
+                    add_failure("reader_non_monotonic_stream_frame_ids");
                 }
                 if (stats.sequence_id_gaps > 0) {
                     add_failure("reader_sequence_id_gaps");
@@ -11328,7 +11328,7 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
                 row["frame_ipc_reader_popped"] =
                     frame_ipc_camera.value("reader_messages_popped", 0ULL);
                 row["frame_ipc_reader_gaps"] =
-                    frame_ipc_camera.value("reader_frame_id_gaps", 0ULL);
+                    frame_ipc_camera.value("reader_stream_frame_id_gaps", 0ULL);
                 row["frame_ipc_push_failures"] =
                     frame_ipc_camera.value("ipc_push_failures", 0ULL);
             }

@@ -137,10 +137,10 @@ json WriteDailyRegisteredContext(const DailyContextPlan& plan, const std::vector
             std::string(source.mono8.begin(), source.mono8.end()), &image, &error), error);
         images.push_back({{"camera_serial", source.camera_serial}, {"camera_configuration", plan.cameras.at(source.camera_serial)},
             {"source_storage", frame.source_storage}, {"stride_bytes", source.width}, {"image", image.ToJson()},
-            {"source_frame", {{"local_frame_id", source.local_frame_id}, {"camera_frame_id", source.camera_frame_id},
+            {"source_frame", {{"stream_frame_id", source.local_frame_id}, {"camera_frame_id", source.camera_frame_id},
                 {"recording_frame_id", 0}, {"camera_timestamp_ns", source.camera_timestamp_ns}, {"timestamp_sys_ns", source.timestamp_sys_ns}}}});
     }
-    const json descriptor = {{"schema_id", "orange.calibration.registered_native_context"}, {"schema_version", 1},
+    const json descriptor = {{"schema_id", "orange.calibration.registered_native_context"}, {"schema_version", 2},
         {"capture_id", plan.capture_id}, {"requested_at_utc", plan.requested_at_utc}, {"status", "captured"},
         {"scope", "daily_registration"}, {"recording_binding", "unbound"}, {"coordinate_space", "camera_native_pixels"},
         {"camera_configuration_authority", "orange_runtime_configuration"}, {"housekeeping_cpu", plan.housekeeping_cpu},
@@ -166,7 +166,7 @@ DailyContextBundle ReadDailyRegisteredContext(const fs::path& directory,
     exact(d, {"schema_id", "schema_version", "capture_id", "requested_at_utc", "status", "scope", "recording_binding",
         "coordinate_space", "camera_configuration_authority", "housekeeping_cpu", "scene_declaration", "registration_id",
         "source_registration_path", "registration", "geometry", "runtime_before", "runtime_after", "cameras"});
-    require(d.at("schema_id") == "orange.calibration.registered_native_context" && number(d.at("schema_version")) == 1 &&
+    require(d.at("schema_id") == "orange.calibration.registered_native_context" && number(d.at("schema_version")) == 2 &&
         d.at("status") == "captured" && d.at("scope") == "daily_registration" && d.at("recording_binding") == "unbound" &&
         d.at("coordinate_space") == "camera_native_pixels" && d.at("camera_configuration_authority") == "orange_runtime_configuration",
         "unsupported daily context descriptor");
@@ -215,8 +215,8 @@ DailyContextBundle ReadDailyRegisteredContext(const fs::path& directory,
             number(camera.at("stride_bytes")) == w && number(camera.at("image").at("size_bytes")) == w * h, "invalid stored raster");
         source.width = static_cast<int>(w); source.height = static_cast<int>(h);
         const auto& f = camera.at("source_frame");
-        exact(f, {"local_frame_id", "camera_frame_id", "recording_frame_id", "camera_timestamp_ns", "timestamp_sys_ns"});
-        source.local_frame_id = number(f.at("local_frame_id")); source.camera_frame_id = number(f.at("camera_frame_id"));
+        exact(f, {"stream_frame_id", "camera_frame_id", "recording_frame_id", "camera_timestamp_ns", "timestamp_sys_ns"});
+        source.local_frame_id = number(f.at("stream_frame_id")); source.camera_frame_id = number(f.at("camera_frame_id"));
         source.recording_frame_id = number(f.at("recording_frame_id")); source.camera_timestamp_ns = number(f.at("camera_timestamp_ns"));
         source.timestamp_sys_ns = number(f.at("timestamp_sys_ns"));
         frame.source_storage = camera.at("source_storage").get<std::string>();

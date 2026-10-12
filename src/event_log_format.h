@@ -20,9 +20,9 @@
 namespace event_log_format {
 
 inline constexpr const char* kYoloEventSchemaId = "orange.yolo_event";
-inline constexpr int kYoloEventSchemaVersion = 2;
+inline constexpr int kYoloEventSchemaVersion = 3;  // v3: frame.stream_frame_id, no ipc_frame_id
 inline constexpr const char* kPoseEventSchemaId = "orange.pose_event";
-inline constexpr int kPoseEventSchemaVersion = 2;
+inline constexpr int kPoseEventSchemaVersion = 3;  // v3: frame.stream_frame_id
 
 inline constexpr int kCoordinateDecimals = 3;
 inline constexpr int kConfidenceDecimals = 4;

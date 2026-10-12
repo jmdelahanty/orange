@@ -636,10 +636,12 @@ void FFmpegWriter::write_keyframe_sidecar()
     }
 
     out << "{\n";
+    out << "  \"schema_id\": \"orange.recorder.keyframes\",\n";
+    out << "  \"schema_version\": 2,\n";
     out << "  \"codec\": \"" << codec_name << "\",\n";
     out << "  \"fps\": " << nFps << ",\n";
     out << "  \"total_frames\": " << static_cast<int64_t>(sequential_frame_counter_) << ",\n";
-    out << "  \"keyframe_frames\": [";
+    out << "  \"keyframe_video_frame_indices\": [";
     for (size_t i = 0; i < keyframe_frames_.size(); ++i) {
         if (i) {
             out << ", ";

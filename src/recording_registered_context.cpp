@@ -149,12 +149,12 @@ void RegisteredContextSet::Prepare(const RegisteredContextConfig& config, const 
                 !camera.producer_instance_id.empty() && camera.producer_instance_id.size() <= 1024, "registered context invalid raster/producer identity");
         require(captured_.emplace(camera.serial, false).second, "duplicate registered context camera");
         const auto kind = registration_kind(geometry, camera);
-        allowed.push_back(name + ".raw"); allowed.push_back(name + "_v2.json");
-        require(!fs::exists(root / (name + ".raw")) && !fs::exists(root / (name + "_v2.json")), "registered context exists before prearm");
+        allowed.push_back(name + ".raw"); allowed.push_back(name + "_v3.json");
+        require(!fs::exists(root / (name + ".raw")) && !fs::exists(root / (name + "_v3.json")), "registered context exists before prearm");
         bindings_.push_back({{"camera_serial", camera.serial}, {"camera_id", camera.camera_id},
             {"producer_instance_id", camera.producer_instance_id}, {"stream_generation", camera.stream_generation},
             {"width", camera.width}, {"height", camera.height}, {"registration_kind", kind},
-            {"descriptor_relative_path", name + "_v2.json"}});
+            {"descriptor_relative_path", name + "_v3.json"}});
     }
     ScopedFsuid guard;
     std::string error;
@@ -187,16 +187,16 @@ void RegisteredContextSet::Accept(const RegisteredContextFrame& frame) {
     authority::SpatialRoiSessionAuthorityReceipt image_ref, descriptor_ref;
     const std::string bytes(reinterpret_cast<const char*>(frame.mono8.data()), frame.mono8.size());
     require(store_->PublishBytes(prefix(frame.camera_serial) + ".raw", bytes, &image_ref, &error), error);
-    const json descriptor = {{"schema_id", "orange.recording.registered_scene_context"}, {"schema_version", 2},
+    const json descriptor = {{"schema_id", "orange.recording.registered_scene_context"}, {"schema_version", 3},
         {"profile", "camera_native_mono8_pre_recording_v1"}, {"status", "captured"}, {"recording_id", recording_id_},
         {"camera_binding", *binding}, {"geometry_contract", geometry_.ToJson()},
         {"scene_declaration", authority::registered_scene_context_capture_declaration_to_json(config_.declaration)},
         {"native_raster", {{"width", frame.width}, {"height", frame.height}, {"stride_bytes", frame.width},
             {"pixel_format", "Mono8"}, {"coordinate_space", "camera_native_pixels"}}},
-        {"source_frame", {{"local_frame_id", frame.local_frame_id}, {"camera_frame_id", frame.camera_frame_id},
+        {"source_frame", {{"stream_frame_id", frame.local_frame_id}, {"camera_frame_id", frame.camera_frame_id},
             {"recording_frame_id", frame.recording_frame_id}, {"camera_timestamp_ns", frame.camera_timestamp_ns}, {"timestamp_sys_ns", frame.timestamp_sys_ns}}},
         {"image", image_ref.ToJson()}};
-    require(store_->PublishJson(prefix(frame.camera_serial) + "_v2.json", descriptor, &descriptor_ref, &error), error);
+    require(store_->PublishJson(prefix(frame.camera_serial) + "_v3.json", descriptor, &descriptor_ref, &error), error);
     require(verify_json(*store_, descriptor_ref.ToJson()) == descriptor, "registered context descriptor readback mismatch");
     captured_.at(frame.camera_serial) = true;
 }
@@ -229,7 +229,7 @@ void ApplyRequiredRegisteredContextGate(const fs::path& root, json* parent) {
                 const auto serial = camera.at("camera_serial").get<std::string>();
                 require(camera_serials.insert(serial).second, "duplicate required context camera");
                 const auto name = prefix(serial);
-                allowed.push_back(name + ".raw"); allowed.push_back(name + "_v2.json");
+                allowed.push_back(name + ".raw"); allowed.push_back(name + "_v3.json");
             }
             std::string error;
             std::unique_ptr<authority::SpatialRoiSessionAuthorityStore> store;
@@ -240,11 +240,11 @@ void ApplyRequiredRegisteredContextGate(const fs::path& root, json* parent) {
                 exact(camera, {"camera_serial", "camera_id", "producer_instance_id", "stream_generation", "width", "height", "registration_kind", "descriptor_relative_path"});
                 const auto serial = camera.at("camera_serial").get<std::string>();
                 const auto name = prefix(serial);
-                require(camera.at("descriptor_relative_path") == name + "_v2.json", "unexpected context descriptor path");
-                const auto ref = file_ref(root, name + "_v2.json");
+                require(camera.at("descriptor_relative_path") == name + "_v3.json", "unexpected context descriptor path");
+                const auto ref = file_ref(root, name + "_v3.json");
                 const auto descriptor = verify_json(*store, ref);
                 exact(descriptor, {"schema_id", "schema_version", "profile", "status", "recording_id", "camera_binding", "geometry_contract", "scene_declaration", "native_raster", "source_frame", "image"});
-                require(descriptor.at("schema_id") == "orange.recording.registered_scene_context" && number(descriptor.at("schema_version")) == 2 &&
+                require(descriptor.at("schema_id") == "orange.recording.registered_scene_context" && number(descriptor.at("schema_version")) == 3 &&
                         descriptor.at("profile") == "camera_native_mono8_pre_recording_v1" && descriptor.at("status") == "captured" &&
                         descriptor.at("recording_id") == start.at("recording_id") && descriptor.at("camera_binding") == camera &&
                         descriptor.at("geometry_contract") == start.at("geometry_contract") &&
@@ -254,8 +254,8 @@ void ApplyRequiredRegisteredContextGate(const fs::path& root, json* parent) {
                 require(descriptor.at("native_raster") == json({{"width", w}, {"height", h}, {"stride_bytes", w},
                     {"pixel_format", "Mono8"}, {"coordinate_space", "camera_native_pixels"}}), "registered context raster mismatch");
                 const auto& frame = descriptor.at("source_frame");
-                exact(frame, {"local_frame_id", "camera_frame_id", "recording_frame_id", "camera_timestamp_ns", "timestamp_sys_ns"});
-                require(number(frame.at("recording_frame_id")) == 0 && number(frame.at("local_frame_id")) > 0 &&
+                exact(frame, {"stream_frame_id", "camera_frame_id", "recording_frame_id", "camera_timestamp_ns", "timestamp_sys_ns"});
+                require(number(frame.at("recording_frame_id")) == 0 && number(frame.at("stream_frame_id")) > 0 &&
                         number(frame.at("camera_timestamp_ns")) > 0 && number(frame.at("timestamp_sys_ns")) > 0,
                         "registered context was not captured before recording");
                 number(frame.at("camera_frame_id"));

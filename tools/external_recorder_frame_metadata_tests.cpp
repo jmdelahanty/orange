@@ -53,10 +53,10 @@ void test_writer_tracks_rows_and_gaps()
     std::ifstream input(path);
     std::string header;
     std::getline(input, header);
-    expect(header.rfind("frame_id,timestamp,timestamp_sys", 0) == 0,
-           "CSV preserves the legacy Cam*_meta.csv columns first");
-    expect(header.find("recording_frame_id") != std::string::npos,
-           "CSV exposes recording frame identity");
+    expect(header ==
+               "recording_frame_id,timestamp,timestamp_sys,stream_frame_id,gop_index,"
+               "position_in_gop,source_gpu_id,assigned_gpu_id,assigned_shard_id,bytes",
+           "CSV header follows frame_identity_v1 (no frame_id alias): " + header);
     expect(header.find("timestamp,timestamp_sys") != std::string::npos,
            "CSV exposes both timestamp clocks");
 

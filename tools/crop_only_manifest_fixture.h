@@ -30,7 +30,7 @@ struct CropOnlyFixture {
             planned.push_back({f->serial, true, true}); serials.push_back(f->serial);
             masters.push_back({{"camera_serial", f->serial}, {"recording_id", f->master.at("recording_id")},
                 {"producer_instance_id", f->master.at("producer_instance_id")}, {"stream_generation", f->master.at("stream_generation")},
-                {"descriptor_relative_path", f->prefix + "_master_frames_v1.json"}});
+                {"descriptor_relative_path", f->prefix + "_master_frames_v2.json"}});
             bindings.push_back({{"acquisition_camera_id", f->serial}, {"camera_serial", f->serial}, {"shaman_numeric_camera_id", id}});
             geometry["cameras"][f->serial]["physical_registration"] = {{"status", "selected_resolved"}, {"mode", "selected_physical_registration"},
                 {"recording_snapshot_entry", {{"artifact_id", "accepted-rim"}, {"camera_serial", f->serial},

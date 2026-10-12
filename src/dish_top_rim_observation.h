@@ -18,7 +18,7 @@ inline constexpr int kCalibrationRegistrySchemaVersion = 1;
 inline constexpr const char* kDishTopRimObservationSchemaId =
     "orange.calibration.dish_top_rim_observation";
 inline constexpr int kDishTopRimObservationSchemaVersionV1 = 1;
-inline constexpr int kDishTopRimObservationSchemaVersion = 2;
+inline constexpr int kDishTopRimObservationSchemaVersion = 3;  // v3: *_stream_frame_id, source_image_index
 inline constexpr const char* kDishTopRimObservationMethod =
     "orange_acquisition_circle_hough_operator_confirmed_inner_rim_v2";
 inline constexpr const char* kDishTopRimTargetPlane = "dish_top_rim";

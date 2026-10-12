@@ -165,7 +165,7 @@ YoloEventLogValidationStats summarize_yolo_event_log(
         const uint64_t schema_version =
             json_u64_or_default(parsed.value("schema_version", nlohmann::json()), 0);
         if (json_string_or_default(parsed, "schema_id", "") != "orange.yolo_event" ||
-            (schema_version != 1 && schema_version != 2)) {
+            (schema_version < 1 || schema_version > 3)) {
             stats.rows++;
             stats.schema_errors++;
             continue;
@@ -184,7 +184,7 @@ YoloEventLogValidationStats summarize_yolo_event_log(
             continue;
         }
         stats.rows++;
-        if (schema_version == 2 && !ctx.has_header) {
+        if (schema_version >= 2 && !ctx.has_header) {
             stats.schema_errors++;
         }
         // v1 lines carry every block; v2 frame lines are viewed through the

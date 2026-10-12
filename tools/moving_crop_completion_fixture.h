@@ -63,7 +63,7 @@ struct Fixture {
             options_recording_id = options.recording_id;
             events.push_back({{"schema_id", "orange.yolo_event"}, {"schema_version", 1}, {"event_sequence", i},
                 {"event_kind", "yolo_result"}, {"recording_id", options.recording_id}, {"camera_serial", serial},
-                {"frame", {{"recording_frame_id", i}, {"local_frame_id", frame.local_frame_id},
+                {"frame", {{"recording_frame_id", i}, {"stream_frame_id", frame.local_frame_id},
                            {"camera_frame_id", frame.camera_frame_id}, {"record_active", true}}},
                 {"timestamps", {{"camera_timestamp", frame.camera_timestamp_ns}, {"timestamp_sys_ns", frame.host_realtime_ns}}},
                 {"yolo", {{"status", blank ? "zero_detections" : "detections"}, {"detection_count", blank ? 0 : 1},
@@ -84,7 +84,7 @@ struct Fixture {
     }
     ~Fixture() { if (owns_root) { std::error_code ec; fs::remove_all(root, ec); } }
     void Save() {
-        std::string csv = "recording_frame_id,local_frame_id,camera_frame_id,timestamp,timestamp_sys,has_detection,blank_frame,crop_state,crop_video_frame_index,session_crop_video_frame_index\n";
+        std::string csv = "recording_frame_id,stream_frame_id,camera_frame_id,timestamp,timestamp_sys,has_detection,blank_frame,crop_state,crop_video_frame_index,session_crop_video_frame_index\n";
         for (const auto& row : rows) csv += row + "\n";
         put(root / (prefix + "_crop_meta.csv"), csv);
         std::string jsonl;
@@ -126,7 +126,7 @@ struct Fixture {
         for (const auto* key : {"submitted_frame_identities", "returned_identity_matches", "encoded_video_frames",
                 "metadata_rows", "packet_submissions_accepted", "packet_write_attempts", "packets_written"}) binding[key] = count;
         for (const auto* key : {"identity_mismatches", "outstanding_submitted_identities", "packet_submissions_rejected", "packet_write_failures"}) binding[key] = 0;
-        summary["frame_identity_proof"] = {{"schema_id", "orange.external_recorder.frame_identity_proof"}, {"schema_version", 2},
+        summary["frame_identity_proof"] = {{"schema_id", "orange.external_recorder.frame_identity_proof"}, {"schema_version", 3},
             {"status", "passed"}, {"canonical_field", "recording_frame_id"}, {"scope", "recording_session_and_camera_stream"},
             {"row_granularity", "one_encoded_video_frame"}, {"continuity_policy", "encoded_subset"},
             {"source_frames_skipped_by_policy", 0}, {"source_frames_dropped", 0}, {"video_binding", binding}};
@@ -142,10 +142,10 @@ struct Fixture {
             check(size > 0, "invalid encoded fixture"); video.resize(size);
             const auto mp4 = tag + "crop-" + std::to_string(clip) + ".mp4", csv = tag + "recorder-" + std::to_string(clip) + ".csv";
             put(root / mp4, video);
-            std::string metadata = "frame_id,timestamp,timestamp_sys,recording_frame_id,local_frame_id\n";
+            std::string metadata = "recording_frame_id,timestamp,timestamp_sys,stream_frame_id\n";
             for (uint64_t i = clip * 5 + 1; i <= clip * 5 + n; ++i)
                 metadata += std::to_string(i) + "," + std::to_string(1700000000000000000ULL + i) + "," +
-                    std::to_string(1700000000000000100ULL + i) + "," + std::to_string(i) + "," + std::to_string(i + 7000) + "\n";
+                    std::to_string(1700000000000000100ULL + i) + "," + std::to_string(i + 7000) + "\n";
             put(root / csv, metadata);
             json packets = {{"submissions_accepted", n}, {"write_attempts", n}, {"packets_written", n},
                 {"submissions_rejected", 0}, {"write_failures", 0}, {"complete", true}, {"writer_error_latched", false},

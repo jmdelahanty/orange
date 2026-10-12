@@ -23,7 +23,7 @@ def main(run_dir):
         serial = os.path.basename(rr)[3:10]
         rel = load(rr)
         pushes = [r for r in load(os.path.join(run_dir, f"Cam{serial}_owner_push.csv")) if r["kind"] == "push"]
-        rel.sort(key=lambda r: int(r["local_frame_id"]))
+        rel.sort(key=lambda r: int(r["stream_frame_id"]))
         holds = np.array([int(r["hold_ns"]) for r in rel]) / 1e6
         pend = np.array([int(r["pending_after"]) for r in rel])
         recv = np.array([int(r["receive_host_ns"]) for r in rel])
@@ -55,7 +55,7 @@ def main(run_dir):
                 t = recv[i]
                 k = np.searchsorted(ps, t) - 1
                 inflight = " push in flight at arrival" if k >= 0 and pe[k] > t else " no push at arrival"
-            print(f"   gap before local {rel[i]['local_frame_id']} (cam id {camid[i-1]}->{camid[i]}): holds of prior frames [{ctx}] ms, pending {pend[lo:i+1].tolist()}{inflight}")
+            print(f"   gap before local {rel[i]['stream_frame_id']} (cam id {camid[i-1]}->{camid[i]}): holds of prior frames [{ctx}] ms, pending {pend[lo:i+1].tolist()}{inflight}")
 
 if __name__ == "__main__":
     main(sys.argv[1])

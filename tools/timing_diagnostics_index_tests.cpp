@@ -43,7 +43,7 @@ int main()
 
     auto channel = LogChannel<Row>::Create({"ring_release", 64},
                                            [](const Row& r, std::string& out) { out += std::to_string(r.a) + "\n"; });
-    channel->Open((dir / "Cam7_ring_release.csv").string(), "local_frame_id,receive_host_ns\n");
+    channel->Open((dir / "Cam7_ring_release.csv").string(), "stream_frame_id,receive_host_ns\n");
     for (uint64_t i = 0; i < 5; ++i) channel->Emit({i});
     expect(channel->Retire(std::chrono::milliseconds(5000)), "retire");
     touch(dir / "Cam7_yolo_events.jsonl");

@@ -474,7 +474,7 @@ void GuiStartupTimingRecorder::MarkFirstFrame(
         camera["first_frame_received"] = true;
         camera["first_frame"] = {
             {"offset_ms", OffsetMsLocked(receive_host_ns)},
-            {"local_frame_id", local_frame_id},
+            {"stream_frame_id", local_frame_id},
             {"camera_frame_id", camera_frame_id},
             {"camera_timestamp_ns", camera_timestamp_ns},
             {"receive_host_ns", receive_host_ns},

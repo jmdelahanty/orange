@@ -158,13 +158,12 @@ def video_metadata_payload(serial: str, *, output_kind: str = "full") -> dict:
 def frame_identity_proof_payload(frames: int = 3) -> dict:
     return {
         "schema_id": "orange.external_recorder.frame_identity_proof",
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "passed",
         "canonical_field": "recording_frame_id",
         "scope": "recording_session_and_camera_stream",
         "assignment_event": "orange_acquisition_recording_frame_sequence",
         "row_granularity": "one_encoded_video_frame",
-        "legacy_aliases": {"frame_id": "recording_frame_id"},
         "continuity_policy": "encoded_subset",
         "recording_frame_id_gaps_allowed": True,
         "source_frames_skipped_by_policy": 0,
@@ -265,24 +264,24 @@ def write_summary(
         first_clip_mp4.write_bytes(b"rolling-clip-0")
         second_clip_mp4.write_bytes(b"rolling-clip-1")
         first_clip_metadata.write_text(
-            "frame_id,timestamp,timestamp_sys,recording_frame_id,local_frame_id,"
-            "gop_index,frame_index_within_gop,source_gpu_id,assigned_gpu_id,assigned_shard_id,bytes\n"
-            "1,100,1000,1,1,0,0,5,5,0,256\n"
-            "2,200,2000,2,2,0,1,5,5,0,256\n",
+            "recording_frame_id,timestamp,timestamp_sys,stream_frame_id,"
+            "gop_index,position_in_gop,source_gpu_id,assigned_gpu_id,assigned_shard_id,bytes\n"
+            "1,100,1000,1,0,0,5,5,0,256\n"
+            "2,200,2000,2,0,1,5,5,0,256\n",
             encoding="utf-8",
         )
         second_clip_metadata.write_text(
-            "frame_id,timestamp,timestamp_sys,recording_frame_id,local_frame_id,"
-            "gop_index,frame_index_within_gop,source_gpu_id,assigned_gpu_id,assigned_shard_id,bytes\n"
-            "3,300,3000,3,3,1,0,5,5,0,256\n",
+            "recording_frame_id,timestamp,timestamp_sys,stream_frame_id,"
+            "gop_index,position_in_gop,source_gpu_id,assigned_gpu_id,assigned_shard_id,bytes\n"
+            "3,300,3000,3,1,0,5,5,0,256\n",
             encoding="utf-8",
         )
         first_clip_keyframes.write_text(
-            '{"total_frames":2,"keyframe_frames":[0]}\n',
+            '{"total_frames":2,"keyframe_video_frame_indices":[0]}\n',
             encoding="utf-8",
         )
         second_clip_keyframes.write_text(
-            '{"total_frames":1,"keyframe_frames":[0]}\n',
+            '{"total_frames":1,"keyframe_video_frame_indices":[0]}\n',
             encoding="utf-8",
         )
         summary["recording_control"] = {
@@ -348,11 +347,11 @@ def write_summary(
     else:
         metadata_path = root / f"Cam{serial}_external_meta.csv"
         metadata_path.write_text(
-            "frame_id,timestamp,timestamp_sys,recording_frame_id,local_frame_id,"
-            "gop_index,frame_index_within_gop,source_gpu_id,assigned_gpu_id,assigned_shard_id,bytes\n"
-            "1,1770000000000000037,1770000000000000000,1,1,0,0,5,5,0,256\n"
-            "2,1770000000033333370,1770000000033333333,2,2,0,1,5,5,0,256\n"
-            "3,1770000000066666703,1770000000066666666,3,3,0,2,5,5,0,256\n",
+            "recording_frame_id,timestamp,timestamp_sys,stream_frame_id,"
+            "gop_index,position_in_gop,source_gpu_id,assigned_gpu_id,assigned_shard_id,bytes\n"
+            "1,1770000000000000037,1770000000000000000,1,0,0,5,5,0,256\n"
+            "2,1770000000033333370,1770000000033333333,2,0,1,5,5,0,256\n"
+            "3,1770000000066666703,1770000000066666666,3,0,2,5,5,0,256\n",
             encoding="utf-8",
         )
         summary["frame_metadata"] = {
@@ -600,9 +599,9 @@ def test_single_clip_frame_metadata_is_required_and_complete() -> None:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         metadata_path = Path(summary["frame_metadata"]["path"])
         metadata_path.write_text(
-            "frame_id,timestamp,timestamp_sys,recording_frame_id\n"
-            "1,1770000000000000037,1770000000000000000,1\n"
-            "2,1770000000033333370,1770000000033333333,2\n",
+            "recording_frame_id,timestamp,timestamp_sys\n"
+            "1,1770000000000000037,1770000000000000000\n"
+            "2,1770000000033333370,1770000000033333333\n",
             encoding="utf-8",
         )
         try:
@@ -626,8 +625,8 @@ def test_single_clip_frame_metadata_identity_contract() -> None:
 
         metadata_path.write_text(
             original.replace(
-                "frame_id,timestamp,timestamp_sys",
                 "recording_frame_id,timestamp,timestamp_sys",
+                "frame_id,timestamp,timestamp_sys",
                 1,
             ),
             encoding="utf-8",
@@ -636,29 +635,25 @@ def test_single_clip_frame_metadata_identity_contract() -> None:
             verify_one(root, summary_path, mp4_path)
         except verifier.VerificationError as exc:
             require(
-                "legacy leading columns" in str(exc),
-                f"unexpected legacy-column failure: {exc}",
+                "does not start with recording_frame_id" in str(exc),
+                f"unexpected leading-column failure: {exc}",
             )
         else:
-            raise AssertionError("expected legacy-column order mismatch to fail")
+            raise AssertionError("expected a bare frame_id leading column to fail")
 
         metadata_path.write_text(
-            original.replace(
-                "2,1770000000033333370,1770000000033333333,2,",
-                "9,1770000000033333370,1770000000033333333,2,",
-                1,
-            ),
+            original.replace(",bytes\n", ",bytes,frame_id\n", 1).replace("256\n", "256,1\n"),
             encoding="utf-8",
         )
         try:
             verify_one(root, summary_path, mp4_path)
         except verifier.VerificationError as exc:
             require(
-                "frame_id != recording_frame_id" in str(exc),
-                f"unexpected frame-identity failure: {exc}",
+                "has a frame_id column" in str(exc),
+                f"unexpected alias-column failure: {exc}",
             )
         else:
-            raise AssertionError("expected frame identity mismatch to fail")
+            raise AssertionError("expected a frame_id alias column to fail")
 
 
 def test_returned_nvenc_frame_identity_proof_is_required_and_verified() -> None:
@@ -708,12 +703,20 @@ def test_returned_nvenc_frame_identity_proof_is_required_and_verified() -> None:
                 },
             }),
         )
-        verify_one(
-            root,
-            summary_path,
-            mp4_path,
-            contract_fields={"require_frame_identity_proof": True},
-        )
+        try:
+            verify_one(
+                root,
+                summary_path,
+                mp4_path,
+                contract_fields={"require_frame_identity_proof": True},
+            )
+        except verifier.VerificationError as exc:
+            require(
+                "unexpected frame_identity_proof schema_version" in str(exc),
+                f"unexpected legacy proof failure: {exc}",
+            )
+        else:
+            raise AssertionError("expected a pre-v3 frame_identity_proof to be refused")
 
         rewrite_summary(
             summary_path,
@@ -796,11 +799,11 @@ def test_single_clip_frame_metadata_permits_intentional_rate_cap_gaps() -> None:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         metadata_path = Path(summary["frame_metadata"]["path"])
         metadata_path.write_text(
-            "frame_id,timestamp,timestamp_sys,recording_frame_id,local_frame_id,"
-            "gop_index,frame_index_within_gop,source_gpu_id,assigned_gpu_id,assigned_shard_id,bytes\n"
-            "1,100,1000,1,1,0,0,5,5,0,256\n"
-            "3,300,3000,3,3,0,2,5,5,0,256\n"
-            "5,500,5000,5,5,0,4,5,5,0,256\n",
+            "recording_frame_id,timestamp,timestamp_sys,stream_frame_id,"
+            "gop_index,position_in_gop,source_gpu_id,assigned_gpu_id,assigned_shard_id,bytes\n"
+            "1,100,1000,1,0,0,5,5,0,256\n"
+            "3,300,3000,3,0,2,5,5,0,256\n"
+            "5,500,5000,5,0,4,5,5,0,256\n",
             encoding="utf-8",
         )
         summary.update(
@@ -1095,7 +1098,7 @@ def test_rolling_output_requires_keyframe_zero() -> None:
         summary_path, mp4_path = write_summary(root, "2010096", rolling=True)
         keyframes = root / "clips" / "clip_000000" / "Cam2010096_external_keyframe.json"
         keyframes.write_text(
-            '{"total_frames":2,"keyframe_frames":[1]}\n',
+            '{"total_frames":2,"keyframe_video_frame_indices":[1]}\n',
             encoding="utf-8",
         )
         try:
@@ -1115,7 +1118,7 @@ def test_rolling_full_frame_metadata_requires_canonical_leading_columns() -> Non
         summary_path, mp4_path = write_summary(root, "2010096", rolling=True)
         metadata = root / "clips" / "clip_000000" / "Cam2010096_external_meta.csv"
         metadata.write_text(
-            "recording_frame_id,timestamp,timestamp_sys\n"
+            "frame_id,timestamp,timestamp_sys\n"
             "1,100,1000\n"
             "2,200,2000\n",
             encoding="utf-8",
@@ -1124,7 +1127,8 @@ def test_rolling_full_frame_metadata_requires_canonical_leading_columns() -> Non
             verify_one(root, summary_path, mp4_path)
         except verifier.VerificationError as exc:
             require(
-                "does not preserve legacy leading columns" in str(exc),
+                "missing recording_frame_id column" in str(exc)
+                or "does not start with recording_frame_id" in str(exc),
                 f"unexpected rolling metadata schema failure: {exc}",
             )
         else:

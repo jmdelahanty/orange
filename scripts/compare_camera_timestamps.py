@@ -42,8 +42,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--join-field",
-        default="frame_id",
-        help="Field used to align rows across cameras (default: frame_id).",
+        default="recording_frame_id",
+        help="Field used to align rows across cameras (default: recording_frame_id).",
     )
     parser.add_argument(
         "--timestamp-field",

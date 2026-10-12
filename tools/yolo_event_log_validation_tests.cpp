@@ -83,7 +83,7 @@ void write_metadata(const std::filesystem::path& recording_folder,
 {
     std::ofstream file(recording_folder / ("Cam" + std::string(kCameraSerial) + "_meta.csv"));
     require(static_cast<bool>(file), "failed to create metadata fixture");
-    file << "recording_frame_id,local_frame_id\n";
+    file << "recording_frame_id,stream_frame_id\n";
     for (uint64_t frame_id = 1; frame_id <= max_frame_id; ++frame_id) {
         file << frame_id << "," << frame_id << "\n";
     }

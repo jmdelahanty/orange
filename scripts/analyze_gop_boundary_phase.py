@@ -17,9 +17,9 @@ for root in sys.argv[1:]:
         rid = d.recording_frame_id.astype(int)
         routing_path = os.path.join(run, 'external_recorder', 'Cam%s_external_gop_routing.csv' % cam)
         if os.path.exists(routing_path):
-            r = pd.read_csv(routing_path, usecols=['recording_frame_id', 'gop_index', 'frame_index_within_gop'])
-            gop_len = int(r.frame_index_within_gop.max()) + 1
-            r['pos'] = r.frame_index_within_gop + gop_len * (r.gop_index % 2)
+            r = pd.read_csv(routing_path, usecols=['recording_frame_id', 'gop_index', 'position_in_gop'])
+            gop_len = int(r.position_in_gop.max()) + 1
+            r['pos'] = r.position_in_gop + gop_len * (r.gop_index % 2)
             pos_by_rid = r.drop_duplicates('recording_frame_id').set_index('recording_frame_id')['pos']
             mapped = rid.map(pos_by_rid)
             missing = int(mapped.isna().sum())

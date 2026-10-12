@@ -54,7 +54,7 @@ nlohmann::json make_noop_event(uint64_t sequence, uint64_t recording_frame_id)
         {"camera_serial", "2010095"},
         {"camera_id", 2010095},
         {"frame", {
-            {"local_frame_id", recording_frame_id + 100},
+            {"stream_frame_id", recording_frame_id + 100},
             {"camera_frame_id", recording_frame_id + 1000},
             {"recording_frame_id", recording_frame_id},
             {"record_active", true}
@@ -114,7 +114,7 @@ nlohmann::json make_noop_event(uint64_t sequence, uint64_t recording_frame_id)
 void write_meta_csv(const std::filesystem::path& folder)
 {
     std::ofstream meta(folder / "Cam2010095_meta.csv");
-    meta << "frame_id,timestamp,timestamp_sys\n";
+    meta << "recording_frame_id,timestamp,timestamp_sys\n";
     meta << "1,1235,5679\n";
     meta << "2,1236,5680\n";
 }

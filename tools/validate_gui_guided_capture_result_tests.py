@@ -34,7 +34,7 @@ def valid_payload() -> dict:
                 "valid": True,
                 "width": 4512,
                 "height": 4512,
-                "last_local_frame_id": 10,
+                "last_stream_frame_id": 10,
                 "last_camera_frame_id": 20,
             }
             for serial in ("2010093", "2010094")

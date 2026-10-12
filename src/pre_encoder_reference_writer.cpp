@@ -95,7 +95,7 @@ bool PreEncoderReferenceWriter::Open(const OpenParams& params, std::string* erro
         }
     }
 
-    index_ << "reference_frame_index,recording_frame_id,timestamp,timestamp_sys,byte_offset,byte_size\n";
+    index_ << "reference_video_frame_index,recording_frame_id,timestamp,timestamp_sys,byte_offset,byte_size\n";
     if (!index_) {
         const std::string message = "Failed to write header to " + index_path_;
         if (error_out) {

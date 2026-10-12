@@ -61,7 +61,8 @@ struct RecordingStartupAudit::Impl {
         std::string camera;
         const char* milestone;
         std::string detail;
-        uint64_t frame_id;
+        uint64_t recording_frame_id;
+        uint64_t stream_frame_id;
     };
     std::mutex mutex;
     bool armed = false;
@@ -113,11 +114,11 @@ void RecordingStartupAudit::BeginSession(const std::string& session_id, const st
     p->records.reserve(4096);
     p->overflow.store(0, std::memory_order_relaxed);
     p->records.push_back(Impl::Record{p->session_steady_ns, std::string(), "session_begin",
-                                      "folder=" + recording_folder, 0});
+                                      "folder=" + recording_folder, 0, 0});
 }
 
 void RecordingStartupAudit::Mark(const std::string& camera, const char* milestone,
-                                 const std::string& detail, uint64_t frame_id)
+                                 const std::string& detail, uint64_t recording_frame_id)
 {
     Impl* p = impl();
     const uint64_t now = steady_ns();
@@ -129,7 +130,23 @@ void RecordingStartupAudit::Mark(const std::string& camera, const char* mileston
         p->overflow.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    p->records.push_back(Impl::Record{now, camera, milestone, detail, frame_id});
+    p->records.push_back(Impl::Record{now, camera, milestone, detail, recording_frame_id, 0});
+}
+
+void RecordingStartupAudit::MarkStreamFrame(const std::string& camera, const char* milestone,
+                                            const std::string& detail, uint64_t stream_frame_id)
+{
+    Impl* p = impl();
+    const uint64_t now = steady_ns();
+    std::lock_guard<std::mutex> lock(p->mutex);
+    if (!p->armed) {
+        return;
+    }
+    if (p->records.size() >= kMaxRecords) {
+        p->overflow.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    p->records.push_back(Impl::Record{now, camera, milestone, detail, 0, stream_frame_id});
 }
 
 void RecordingStartupAudit::MarkRecordingEnabled(const std::string& detail)
@@ -182,13 +199,14 @@ void WriteStartupAuditFiles(const std::vector<RecordT>& records, const std::stri
             << ",\"t_rel_enabled_ms\":" << rel_ms
             << ",\"camera\":\"" << json_escape(r.camera)
             << "\",\"milestone\":\"" << r.milestone
-            << "\",\"frame_id\":" << r.frame_id
+            << "\",\"recording_frame_id\":" << r.recording_frame_id
+            << ",\"stream_frame_id\":" << r.stream_frame_id
             << ",\"detail\":\"" << json_escape(r.detail) << "\"}\n";
         counts[r.milestone]++;
     }
     out.close();
     std::ofstream summary(folder + "/recording_startup_audit_summary.json");
-    summary << "{\n  \"schema_id\": \"orange.recording_startup_audit\",\n  \"schema_version\": 1,\n"
+    summary << "{\n  \"schema_id\": \"orange.recording_startup_audit\",\n  \"schema_version\": 2,\n"
             << "  \"session_id\": \"" << json_escape(session_id) << "\",\n"
             << "  \"records\": " << records.size() << ",\n  \"overflow\": " << overflow << ",\n"
             << "  \"window_s\": " << RecordingStartupAudit::WindowSeconds() << ",\n  \"milestone_counts\": {";

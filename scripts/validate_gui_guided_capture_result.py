@@ -176,8 +176,8 @@ def validate_result(
                 f"capture {serial or index} width is invalid")
         require(isinstance(capture.get("height"), int) and capture["height"] > 0,
                 f"capture {serial or index} height is invalid")
-        require(isinstance(capture.get("last_local_frame_id"), int) and
-                capture["last_local_frame_id"] > 0,
+        require(isinstance(capture.get("last_stream_frame_id"), int) and
+                capture["last_stream_frame_id"] > 0,
                 f"capture {serial or index} local frame id is invalid")
         require(isinstance(capture.get("last_camera_frame_id"), int) and
                 capture["last_camera_frame_id"] > 0,

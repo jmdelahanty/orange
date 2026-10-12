@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import analyze_yolo_latency_phases as analysis  # noqa: E402
 
 PERF_HEADER = [
-    "frame_id",
+    "stream_frame_id",
     "recording_frame_id",
     "timestamp_sys",
     "ok",
@@ -51,9 +51,9 @@ def write_synthetic_camera(run_dir: Path, serial: str, detect_gpu: int, other_gp
         pw, rw, dw = csv.writer(perf), csv.writer(routing), csv.writer(detach)
         pw.writerow(PERF_HEADER)
         rw.writerow(
-            ["frame_index", "recording_frame_id", "gop_index", "source_gpu_id", "assigned_gpu_id", "assigned_shard_id"]
+            ["recorder_receive_sequence", "recording_frame_id", "gop_index", "source_gpu_id", "assigned_gpu_id", "assigned_shard_id"]
         )
-        dw.writerow(["frame_index", "recording_frame_id", "assigned_gpu_id", "copy_ms"])
+        dw.writerow(["recorder_receive_sequence", "recording_frame_id", "assigned_gpu_id", "copy_ms"])
         t0 = 1_700_000_000_000_000_000
         for i in range(frames):
             fid = i + 1  # local frame id, 1-based like the acquisition loop

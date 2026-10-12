@@ -194,7 +194,7 @@ void failure_matrix() {
     }
     Fixture f;
     refuses([&] { MasterFrameJournal j(f.options(), std::make_shared<FailingIo>(FailingIo::At::header)); });
-    require(!fs::exists(f.root / "Cam02010093_master_frames_v1.json"), "failed startup sealed");
+    require(!fs::exists(f.root / "Cam02010093_master_frames_v2.json"), "failed startup sealed");
 }
 
 void incomplete_and_sparse_domains() {
@@ -214,7 +214,7 @@ void incomplete_and_sparse_domains() {
     require(no_frames.Finalize(true).at("status") == "incomplete", "empty journal sealed");
     Fixture abandoned;
     { MasterFrameJournal forgotten(abandoned.options()); require(forgotten.TrySubmit(frame(1)), "offer failed"); }
-    require(read_json(abandoned.root / "Cam02010093_master_frames_v1.json").at("status") == "incomplete",
+    require(read_json(abandoned.root / "Cam02010093_master_frames_v2.json").at("status") == "incomplete",
             "destructor promoted unfinished recording");
 }
 

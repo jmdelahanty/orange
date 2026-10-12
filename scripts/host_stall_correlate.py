@@ -69,8 +69,8 @@ def main():
             ev.append((int(r.capture_sys_ns), cam, "push:" + str(r.kind) + (" %.1fms" % r.dur if r.kind == "push" else " age %.1fms" % r.age_at_push_ms)))
     for f in sorted(glob.glob(run + "/Cam*_yolo_perf.csv")):
         cam = f.split("Cam")[-1][:7]
-        yp = pd.read_csv(f, usecols=lambda c: c in ("frame_id", "timestamp_sys", "acquisition_to_detect_done_ms"))
-        yp = yp[yp.frame_id > yp.frame_id.min() + 100]
+        yp = pd.read_csv(f, usecols=lambda c: c in ("stream_frame_id", "timestamp_sys", "acquisition_to_detect_done_ms"))
+        yp = yp[yp.stream_frame_id > yp.stream_frame_id.min() + 100]
         for _, r in yp[yp.acquisition_to_detect_done_ms > 5].iterrows():
             ev.append((int(r.timestamp_sys), cam, "detect %.1fms" % r.acquisition_to_detect_done_ms))
     ev.sort()

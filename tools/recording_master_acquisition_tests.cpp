@@ -186,7 +186,7 @@ void required_parent_gate() {
     require(gui.at("status") == "completed" && gui.at("master_frame_journal").at("profile") == "gui_acquisition_loop_v1",
         "GUI profile rejected or mislabeled");
     refuses([&] { set.StartEvidence("unknown-profile"); });
-    const auto descriptor_path = fixture.root / "Cam2010094_master_frames_v1.json";
+    const auto descriptor_path = fixture.root / "Cam2010094_master_frames_v2.json";
     json original_descriptor;
     { std::ifstream in(descriptor_path); in >> original_descriptor; }
     std::vector<json> contradictory;
@@ -212,7 +212,7 @@ void required_parent_gate() {
     require(symlink.at("status") == "failed", "symlinked descriptor accepted");
     fs::remove(descriptor_path);
     fs::rename(moved_descriptor, descriptor_path);
-    { std::ofstream out(fixture.root / "Cam2010094_master_frames_v1.csv", std::ios::app); out << "changed\n"; }
+    { std::ofstream out(fixture.root / "Cam2010094_master_frames_v2.csv", std::ios::app); out << "changed\n"; }
     auto corrupt = parent;
     ApplyRequiredMasterJournalGate(fixture.root, &corrupt);
     require(corrupt.at("status") == "failed", "changed journal CSV accepted");

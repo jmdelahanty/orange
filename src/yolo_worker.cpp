@@ -880,7 +880,7 @@ public:
 
 private:
     static constexpr const char* kHeader =
-        "frame_id,recording_frame_id,timestamp,timestamp_sys,queue_depth,queue_depth_at_enqueue,queue_depth_after_enqueue,queue_depth_after_dequeue,queue_depth_at_worker_start,fps,ok,"
+        "stream_frame_id,recording_frame_id,timestamp,timestamp_sys,queue_depth,queue_depth_at_enqueue,queue_depth_after_enqueue,queue_depth_after_dequeue,queue_depth_at_worker_start,fps,ok,"
                  "yolo_affinity_configured,yolo_affinity_applied,yolo_affinity_env_key,yolo_affinity_requested_cpus,yolo_affinity_effective_cpus,"
                  "acquisition_to_worker_start_ms,acquisition_to_ptp_done_ms,ptp_done_to_yolo_resource_ready_ms,yolo_resource_ready_to_pointer_attrs_done_ms,pointer_attrs_done_to_ingress_event_record_ms,ingress_event_record_to_yolo_dispatch_ready_ms,yolo_dispatch_ready_to_yolo_enqueue_ms,recording_submit_call_ms,recording_submit_to_yolo_enqueue_ms,"
                  "acquisition_to_yolo_enqueue_ms,yolo_enqueue_push_ms,yolo_enqueue_to_dequeue_ms,yolo_dequeue_to_worker_start_ms,yolo_queue_wait_ms,oldest_frame_age_at_worker_start_ms,oldest_queued_frame_age_at_worker_start_ms,"

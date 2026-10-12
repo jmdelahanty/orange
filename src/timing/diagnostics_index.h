@@ -122,7 +122,7 @@ inline const std::vector<FileDeclaration>& diagnostics_catalog()
          {{"timestamp", "camera", "ns", "timestamp", ""},
           {"timestamp_sys", "host_realtime", "ns", "timestamp", ""}},
          ""},
-        {"_master_frames_v1.csv", "csv", "contract", "", "",
+        {"_master_frames_v2.csv", "csv", "contract", "", "",
          {{"camera_timestamp_ns", "camera", "ns", "timestamp", ""},
           {"host_receive_steady_ns", "host_monotonic", "ns", "timestamp", ""},
           {"host_realtime_ns", "host_realtime", "ns", "timestamp", "same value as timestamp_sys"}},

@@ -47,7 +47,7 @@ public:
             row["sampled_at_utc"] = utc;
             row["last_sampled_at_utc"] = utc;
             row["last_sampled_steady_ns"] = steady_ns;
-            row["last_local_frame_id"] = local_frame;
+            row["last_stream_frame_id"] = local_frame;
             row["last_recording_frame_id"] = last_recording_frame_id_;
             row["samples"] = row.at("samples").get<uint64_t>() + 1;
         } else if (observations_.size() < kMaxStateRuns) {
@@ -55,8 +55,8 @@ public:
                 {"sampled_at_utc", utc}, {"first_sampled_at_utc", utc},
                 {"last_sampled_at_utc", utc},
                 {"first_sampled_steady_ns", steady_ns}, {"last_sampled_steady_ns", steady_ns},
-                {"local_frame_id", local_frame}, {"first_local_frame_id", local_frame},
-                {"last_local_frame_id", local_frame},
+                {"stream_frame_id", local_frame}, {"first_stream_frame_id", local_frame},
+                {"last_stream_frame_id", local_frame},
                 {"recording_frame_id", last_recording_frame_id_},
                 {"first_recording_frame_id", last_recording_frame_id_},
                 {"last_recording_frame_id", last_recording_frame_id_},
@@ -68,7 +68,7 @@ public:
 
     const nlohmann::json& observations() const { return observations_; }
     nlohmann::json coverage() const {
-        return {{"schema_id", "orange.ptp.sampled_readback_coverage"}, {"schema_version", 1},
+        return {{"schema_id", "orange.ptp.sampled_readback_coverage"}, {"schema_version", 2},
             {"semantics", "sampled_states_not_continuous_lock"},
             {"steady_clock", "std_chrono_steady_clock_implementation_epoch"},
             {"recording_frame_semantics", "last_assigned_in_this_recording_zero_before_first"},

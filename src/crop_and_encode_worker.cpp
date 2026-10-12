@@ -1286,7 +1286,7 @@ bool CropAndEncodeWorker::ensure_recording_started(const std::string& recording_
             std::cout << "[CropAndEncodeWorker] Warning: Could not open metadata file!" << std::endl;
         } else {
             *writer_.metadata
-                << "recording_frame_id,local_frame_id,camera_frame_id,timestamp,timestamp_sys,"
+                << "recording_frame_id,stream_frame_id,camera_frame_id,timestamp,timestamp_sys,"
                 << "has_detection,blank_frame,detection_confidence,"
                 << "crop_x,crop_y,crop_w,crop_h,"
                 << "detection_x,detection_y,detection_w,detection_h,"
@@ -1302,7 +1302,7 @@ bool CropAndEncodeWorker::ensure_recording_started(const std::string& recording_
             std::cout << "[CropAndEncodeWorker] Warning: Could not open crop perf file!" << std::endl;
         } else {
             crop_perf_
-                << "recording_frame_id,local_frame_id,camera_frame_id,"
+                << "recording_frame_id,stream_frame_id,camera_frame_id,"
                 << "worker_start_steady_ns,queue_depth_start,encode_active,"
                 << "has_detection,blank_frame,dropped,drop_reason,"
                 << "crop_x,crop_y,crop_w,crop_h,"

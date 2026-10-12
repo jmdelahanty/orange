@@ -72,7 +72,7 @@ void test_splits_crop_metadata_by_recording_frame_range()
     const std::filesystem::path input = dir / "Cam2010096_crop_meta.csv";
     write_text(
         input,
-        "recording_frame_id,local_frame_id,crop_x,crop_y\n"
+        "recording_frame_id,stream_frame_id,crop_x,crop_y\n"
         "1,101,10,20\n"
         "2,102,11,21\n"
         "3,103,12,22\n"
@@ -97,7 +97,7 @@ void test_splits_crop_metadata_by_recording_frame_range()
     const auto second_lines = read_lines(ranges[1].output_path);
     require(first_lines.size() == 3, "first output line count");
     require(second_lines.size() == 4, "second output line count");
-    require(first_lines[0] == "recording_frame_id,local_frame_id,crop_x,crop_y", "header preserved");
+    require(first_lines[0] == "recording_frame_id,stream_frame_id,crop_x,crop_y", "header preserved");
     require(first_lines[1] == "1,101,10,20", "first clip first data row");
     require(first_lines[2] == "2,102,11,21", "first clip second data row");
     require(second_lines[1] == "3,103,12,22", "second clip first data row");
@@ -111,7 +111,7 @@ void test_rewrites_crop_video_frame_index_per_split_output()
     const std::filesystem::path input = dir / "Cam2010096_crop_meta.csv";
     write_text(
         input,
-        "recording_frame_id,local_frame_id,crop_video_frame_index,crop_state\n"
+        "recording_frame_id,stream_frame_id,crop_video_frame_index,crop_state\n"
         "1,101,0,detected_crop\n"
         "2,102,1,detected_crop\n"
         "3,103,2,detected_crop\n"
@@ -181,7 +181,7 @@ void test_fails_on_orphan_rows_by_default()
     const std::filesystem::path input = dir / "Cam2010096_crop_meta.csv";
     write_text(
         input,
-        "recording_frame_id,local_frame_id\n"
+        "recording_frame_id,stream_frame_id\n"
         "1,101\n"
         "2,102\n"
         "3,103\n"
@@ -246,7 +246,7 @@ void test_preserves_session_crop_video_frame_index_verbatim()
     const std::filesystem::path input = dir / "Cam2010096_crop_meta.csv";
     write_text(
         input,
-        "recording_frame_id,local_frame_id,crop_video_frame_index,"
+        "recording_frame_id,stream_frame_id,crop_video_frame_index,"
         "selection_policy,session_crop_video_frame_index\n"
         "1,101,0,largest_detection_by_confidence,0\n"
         "2,102,1,largest_detection_by_confidence,1\n"
@@ -270,7 +270,7 @@ void test_preserves_session_crop_video_frame_index_verbatim()
     const auto second_lines = read_lines(ranges[1].output_path);
     require(
         first_lines[0] ==
-            "recording_frame_id,local_frame_id,crop_video_frame_index,"
+            "recording_frame_id,stream_frame_id,crop_video_frame_index,"
             "selection_policy,session_crop_video_frame_index",
         "session index header preserved");
     require(first_lines[1] == "1,101,0,largest_detection_by_confidence,0",
@@ -353,7 +353,7 @@ void test_incremental_split_matches_whole_file_split()
     // 3 clips of 3 frames each, with both crop_video_frame_index (rewritten
     // per clip) and session_crop_video_frame_index (verbatim) columns.
     const std::string header =
-        "recording_frame_id,local_frame_id,crop_video_frame_index,"
+        "recording_frame_id,stream_frame_id,crop_video_frame_index,"
         "selection_policy,session_crop_video_frame_index\n";
     std::vector<std::string> rows;
     for (uint64_t id = 1; id <= 9; ++id) {
@@ -481,7 +481,7 @@ void test_incremental_split_passes_old_schema_rows_through()
     const std::filesystem::path input = dir / "root.csv";
     write_text(
         input,
-        "recording_frame_id,local_frame_id,crop_x\n"
+        "recording_frame_id,stream_frame_id,crop_x\n"
         "1,101,10\n"
         "2,102,11\n");
     IncrementalClipSplitCursor cursor;
@@ -492,7 +492,7 @@ void test_incremental_split_passes_old_schema_rows_through()
             "old schema clip should complete: " + result.error);
     const auto lines = read_lines(out);
     require(lines.size() == 3, "old schema output line count");
-    require(lines[0] == "recording_frame_id,local_frame_id,crop_x",
+    require(lines[0] == "recording_frame_id,stream_frame_id,crop_x",
             "old schema header preserved");
     require(lines[1] == "1,101,10", "old schema row 1 verbatim");
     require(lines[2] == "2,102,11", "old schema row 2 verbatim");

@@ -2144,8 +2144,8 @@ void apply_descriptor_defaults(const Options& options, FrameDescriptor* desc)
 
 void write_csv_header(std::ofstream& csv)
 {
-    csv << "frame_index,camera_serial,session_id,stream_id,recording_frame_id,"
-           "local_frame_id,gop_index,frame_index_within_gop,source_gpu_id,"
+    csv << "recorder_receive_sequence,camera_serial,session_id,stream_id,recording_frame_id,"
+           "stream_frame_id,gop_index,position_in_gop,source_gpu_id,"
            "assigned_gpu_id,assigned_shard_id,routing_policy,bytes,"
            "total_ms,open_handle_ms,copy_ms,opened_handle,detach_copied,"
            "encode_enqueued,encode_skipped,encode_dropped,encode_queue_depth\n";
@@ -2180,8 +2180,8 @@ void write_csv_row(std::ofstream& csv, const Sample& sample)
 
 void write_gop_routing_csv_header(std::ofstream& csv)
 {
-    csv << "frame_index,camera_serial,session_id,stream_id,recording_frame_id,"
-           "local_frame_id,gop_index,frame_index_within_gop,source_gpu_id,"
+    csv << "recorder_receive_sequence,camera_serial,session_id,stream_id,recording_frame_id,"
+           "stream_frame_id,gop_index,position_in_gop,source_gpu_id,"
            "assigned_gpu_id,assigned_shard_id,routing_policy,detach_copied,"
            "encode_enqueued,encode_skipped,encode_dropped,encode_queue_depth\n";
 }
@@ -2524,13 +2524,12 @@ nlohmann::json frame_identity_proof_json(
         metadata_rows == encoded.frames_encoded;
     return {
         {"schema_id", "orange.external_recorder.frame_identity_proof"},
-        {"schema_version", 2},
+        {"schema_version", 3},
         {"status", verified ? "passed" : "failed"},
         {"canonical_field", "recording_frame_id"},
         {"scope", "recording_session_and_camera_stream"},
         {"assignment_event", "orange_acquisition_recording_frame_sequence"},
         {"row_granularity", "one_encoded_video_frame"},
-        {"legacy_aliases", {{"frame_id", "recording_frame_id"}}},
         {"continuity_policy", "encoded_subset"},
         {"recording_frame_id_gaps_allowed", true},
         {"source_frames_skipped_by_policy", encode_skipped},
@@ -2751,8 +2750,8 @@ void apply_shard_mp4_retention(const Options& options,
 
 void write_encode_csv_header(std::ofstream& csv)
 {
-    csv << "encode_index,source_frame_index,camera_serial,session_id,stream_id,"
-           "recording_frame_id,local_frame_id,gop_index,frame_index_within_gop,"
+    csv << "recorder_encode_sequence,recorder_source_sequence,camera_serial,session_id,stream_id,"
+           "recording_frame_id,stream_frame_id,gop_index,frame_index_within_gop,"
            "source_gpu_id,assigned_gpu_id,assigned_shard_id,routing_policy,bytes,"
            "enqueue_age_ms,prepare_ms,slot_reuse_wait_ms,stage_wait_ms,stage_copy_ms,phase_wait_ms,encode_total_ms,"
            "encode_picture_ms,completion_wait_ms,lock_bitstream_ms,"
@@ -6983,7 +6982,7 @@ void write_summary_json(const Options& options,
         << (options.clip_seconds > 0 ? "true" : "false") << ",\n";
     out << "    \"records_during_rollover\": "
         << (options.clip_seconds > 0 ? "true" : "false") << ",\n";
-    out << "    \"boundary\": \"gop_first_frame_id\"\n";
+    out << "    \"boundary\": \"gop_first_recording_frame_id\"\n";
     out << "  },\n";
     out << "  \"frames_received\": " << frames_received << ",\n";
     out << "  \"acks_sent\": " << acks_sent << ",\n";
@@ -7396,7 +7395,7 @@ int run_offline_reencode(const Options& options)
     if (!output || !frames_csv) {
         throw std::runtime_error("cannot open offline output " + options.offline_reencode_output);
     }
-    frames_csv << "frame_index,bytes\n";
+    frames_csv << "video_frame_index,bytes\n";
 
     const size_t luma_bytes = static_cast<size_t>(width) * height;
     size_t frame_bytes = luma_bytes;

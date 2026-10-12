@@ -112,7 +112,7 @@ def write_capture(
 
     with index_path.open("w", encoding="utf-8") as handle:
         handle.write(
-            "reference_frame_index,recording_frame_id,timestamp,timestamp_sys,byte_offset,byte_size\n"
+            "reference_video_frame_index,recording_frame_id,timestamp,timestamp_sys,byte_offset,byte_size\n"
         )
         for index in range(frame_count):
             timestamp = timestamp_offset + index * 10_000_000

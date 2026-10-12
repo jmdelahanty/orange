@@ -422,15 +422,14 @@ void test_write_external_rolling_manifest_success()
         write_text_file(mp4, "mp4");
         std::ostringstream metadata_csv;
         metadata_csv
-            << "frame_id,timestamp,timestamp_sys,recording_frame_id,local_frame_id,"
-               "gop_index,frame_index_within_gop,source_gpu_id,assigned_gpu_id,"
+            << "recording_frame_id,timestamp,timestamp_sys,stream_frame_id,"
+               "gop_index,position_in_gop,source_gpu_id,assigned_gpu_id,"
                "assigned_shard_id,bytes\n";
         for (uint64_t frame_id = first_frame; frame_id <= last_frame; ++frame_id) {
             metadata_csv
                 << frame_id << ','
                 << (1000000 + frame_id) << ','
                 << (2000000 + frame_id) << ','
-                << frame_id << ','
                 << frame_id << ",0,0,5,6,0,256\n";
         }
         write_text_file(metadata, metadata_csv.str());

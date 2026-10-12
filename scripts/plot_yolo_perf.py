@@ -37,7 +37,7 @@ def parse_args():
     parser.add_argument(
         "--x",
         default="timestamp_sys",
-        choices=["index", "frame_id", "recording_frame_id", "timestamp", "timestamp_sys"],
+        choices=["index", "stream_frame_id", "recording_frame_id", "timestamp", "timestamp_sys"],
         help="X-axis field (default: %(default)s).",
     )
     parser.add_argument(
@@ -146,7 +146,7 @@ def make_x_axis(columns, x_field):
     if x_field == "index":
         return list(range(len(next(iter(columns.values()), []))))
     values = columns.get(x_field, [])
-    if x_field in ("frame_id", "recording_frame_id"):
+    if x_field in ("stream_frame_id", "recording_frame_id"):
         return to_int_list(values)
     x = to_float_list(values)
     if x:

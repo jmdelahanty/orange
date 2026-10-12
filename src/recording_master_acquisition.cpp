@@ -214,19 +214,19 @@ void ApplyRequiredMasterJournalGate(const fs::path& root, json* manifest) {
                 require(!serial.empty() && serial.find_first_not_of("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_-") == std::string::npos,
                         "invalid master journal camera serial");
                 require(serials.insert(serial).second, "duplicate required master journal camera");
-                const std::string filename = "Cam" + serial + "_master_frames_v1.json";
+                const std::string filename = "Cam" + serial + "_master_frames_v2.json";
                 require(camera.at("descriptor_relative_path") == filename, "unexpected master journal descriptor path");
                 const auto descriptor_ref = reference(root / filename);
                 const auto descriptor = read_json(root / filename);
                 require(descriptor.at("schema_id") == "orange.recording.master_frame_journal" &&
-                        descriptor.at("schema_version") == 1 && descriptor.at("status") == "complete" &&
+                        descriptor.at("schema_version") == 2 && descriptor.at("status") == "complete" &&
                         descriptor.at("terminal") == true && descriptor.at("producer_finished_normally") == true,
                         "required master journal is not complete");
                 require(descriptor.at("camera_serial") == serial && descriptor.at("recording_id") == camera.at("recording_id") &&
                         descriptor.at("recording_id") == manifest->at("session_id"), "master journal parent/camera mismatch");
                 require(descriptor.at("producer_instance_id") == camera.at("producer_instance_id") &&
                         descriptor.at("stream_generation") == camera.at("stream_generation"), "master journal producer/generation mismatch");
-                const auto csv_ref = reference(root / ("Cam" + serial + "_master_frames_v1.csv"));
+                const auto csv_ref = reference(root / ("Cam" + serial + "_master_frames_v2.csv"));
                 require(csv_ref == descriptor.at("csv"), "master journal CSV digest mismatch");
                 require(descriptor.at("incomplete_reasons").is_array() && descriptor.at("incomplete_reasons").empty() &&
                         descriptor.at("io").at("fsync_succeeded") == true &&

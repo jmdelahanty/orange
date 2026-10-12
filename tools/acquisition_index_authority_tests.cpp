@@ -48,20 +48,19 @@ struct Fixture {
         manifest_path = root / "recording_session.json";
         metadata_path = root / "external_recorder" / "Cam2010096_external_meta.csv";
         metadata_bytes =
-            "frame_id,timestamp,timestamp_sys,recording_frame_id,local_frame_id\n"
-            "1,1001,2001,1,91\n"
-            "2,1002,2002,2,92\n"
-            "3,1003,2003,3,93\n";
+            "recording_frame_id,timestamp,timestamp_sys,stream_frame_id\n"
+            "1,1001,2001,91\n"
+            "2,1002,2002,92\n"
+            "3,1003,2003,93\n";
         write_metadata(metadata_bytes);
 
         json frame_identity = {
             {"schema_id", "orange.recording.frame_identity"},
-            {"schema_version", 1},
+            {"schema_version", 2},
             {"status", "finalized"},
             {"canonical_field", "recording_frame_id"},
             {"scope", "recording_session_and_camera_stream"},
             {"assignment_event", "orange_acquisition_recording_frame_sequence"},
-            {"legacy_aliases", {{"frame_id", "recording_frame_id"}}},
             {"timestamp_fields", {"timestamp", "timestamp_sys"}},
             {"continuity_policy", "encoded_subset"},
             {"recording_frame_id_gaps_allowed", true},
@@ -211,14 +210,14 @@ void test_rejects_stale_semantic_and_artifact_digests()
         "post-seal metadata mutation must fail");
 }
 
-void test_rejects_alias_mismatch_even_when_resealed()
+void test_rejects_nondense_identity_even_when_resealed()
 {
     Fixture fixture;
     const std::string mismatched =
-        "frame_id,timestamp,timestamp_sys,recording_frame_id,local_frame_id\n"
-        "1,1001,2001,1,91\n"
-        "2,1002,2002,3,92\n"
-        "3,1003,2003,3,93\n";
+        "recording_frame_id,timestamp,timestamp_sys,stream_frame_id\n"
+        "1,1001,2001,91\n"
+        "3,1002,2002,92\n"
+        "4,1003,2003,93\n";
     fixture.write_metadata(mismatched);
     fixture.manifest["acquisition_index_mapping"]["camera_streams"]["2010096"]
         ["source_metadata_artifact"]["sha256"] = artifact_sha256(mismatched);
@@ -229,8 +228,8 @@ void test_rejects_alias_mismatch_even_when_resealed()
     require(
         !orange::session::resolve_acquisition_index_authority(
             fixture.manifest, fixture.manifest_path, "2010096", &authority, &error) &&
-            error.find("aliases") != std::string::npos,
-        "a checksum-valid frame_id/recording_frame_id contradiction must fail");
+            error.find("not dense") != std::string::npos,
+        "a checksum-valid non-dense recording_frame_id sequence must fail");
 }
 
 void test_rejects_unlisted_camera_and_open_records()
@@ -384,8 +383,8 @@ int main()
          test_resolves_dense_authority_and_converts_ids},
         {"rejects_stale_semantic_and_artifact_digests",
          test_rejects_stale_semantic_and_artifact_digests},
-        {"rejects_alias_mismatch_even_when_resealed",
-         test_rejects_alias_mismatch_even_when_resealed},
+        {"rejects_nondense_identity_even_when_resealed",
+         test_rejects_nondense_identity_even_when_resealed},
         {"rejects_unlisted_camera_and_open_records",
          test_rejects_unlisted_camera_and_open_records},
         {"rejects_unverified_external_frame_authority",
