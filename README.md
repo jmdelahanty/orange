@@ -86,6 +86,11 @@ The legacy [`build.sh`](build.sh) script is now a thin compatibility wrapper aro
 ./build.sh --debug --nvtx
 ```
 
+`build.sh` builds only the GUI (`orange`). The headless client `orange_client` is excluded from the default build target, so build it explicitly before any headless run or gate, and check that the binary's timestamp is new:
+```
+cmake --build targets/release --target orange_client
+```
+
 The application binary is written under `targets/<variant>/orange`. The run script will look for a compatible binary automatically:
 ```
 ./run.sh
