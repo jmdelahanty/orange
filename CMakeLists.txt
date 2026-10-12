@@ -1734,6 +1734,14 @@ if(BUILD_TESTING)
     target_compile_features(pose_event_log_tests PRIVATE cxx_std_17)
     add_test(NAME pose_event_log_tests COMMAND pose_event_log_tests)
 
+    add_executable(pose_event_log_golden_tests
+        "tools/pose_event_log_golden_tests.cpp" "${SRC_DIR}/pose_event_log.cpp"
+        "${SRC_DIR}/model_identity.cpp" "${SRC_DIR}/pose_skeleton_sidecar.cpp")
+    target_include_directories(pose_event_log_golden_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(pose_event_log_golden_tests PRIVATE cxx_std_17)
+    add_test(NAME pose_event_log_golden_tests COMMAND pose_event_log_golden_tests
+        "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/golden/Cam2010093_pose_events.jsonl")
+
     add_executable(pose_event_log_validation_tests
         "tools/pose_event_log_validation_tests.cpp"
         "${SRC_DIR}/pose_event_log_validation.cpp"

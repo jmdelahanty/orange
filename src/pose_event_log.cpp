@@ -1,4 +1,5 @@
 #include "pose_event_log.h"
+#include "orange_outputs/orange_pose_event_v3.h"
 #include "timing/log_writer.h"
 #include "timing/clock.h"
 #include "event_log_format.h"
@@ -25,32 +26,25 @@ uint64_t steady_time_us()
     return orange::timing::monotonic_now_us();
 }
 
-nlohmann::json keypoint_to_json(const PoseKeypointRecord& keypoint)
-{
-    // v2: labels live in the session header (pose.keypoint_labels), in
-    // keypoint order; coordinates are crop pixels rounded to 0.001 px.
-    return {
-        {"x_px", event_log_format::round_px(keypoint.x_px)},
-        {"y_px", event_log_format::round_px(keypoint.y_px)},
-        {"confidence", event_log_format::round_confidence(keypoint.confidence)},
-        {"visible", keypoint.visible}
-    };
-}
+namespace ev = orange::outputs::gen::pose_event_v3;
 
-nlohmann::json pose_instance_to_json(const PoseInstanceRecord& pose)
+ev::OrangePoseEventV3PoseResultPosesItem pose_instance(const PoseInstanceRecord& pose)
 {
-    nlohmann::json keypoints = nlohmann::json::array();
-    for (const PoseKeypointRecord& keypoint : pose.keypoints) {
-        keypoints.push_back(keypoint_to_json(keypoint));
-    }
-
-    nlohmann::json out = {
-        {"index", pose.index},
-        {"confidence", event_log_format::round_confidence(pose.confidence)},
-        {"keypoints", std::move(keypoints)}
-    };
+    // v2: labels live in the session header (pose.keypoint_labels), in keypoint
+    // order; coordinates are crop pixels rounded to 0.001 px.
+    ev::OrangePoseEventV3PoseResultPosesItem out;
+    out.index = pose.index;
+    out.confidence = event_log_format::round_confidence(pose.confidence);
     if (!pose.label.empty()) {
-        out["label"] = pose.label;
+        out.label = pose.label;
+    }
+    for (const PoseKeypointRecord& keypoint : pose.keypoints) {
+        ev::OrangePoseEventV3PoseResultPosesItemKeypointsItem kp;
+        kp.x_px = event_log_format::round_px(keypoint.x_px);
+        kp.y_px = event_log_format::round_px(keypoint.y_px);
+        kp.confidence = event_log_format::round_confidence(keypoint.confidence);
+        kp.visible = keypoint.visible;
+        out.keypoints.push_back(kp);
     }
     return out;
 }
@@ -233,51 +227,34 @@ void PoseEventLogger::WriteSessionHeaderIfNeeded(const PoseResultRecord& record)
     // The worker's own digest is reported beside it so a disagreement shows.
     const orange::model_identity::ModelIdentity identity =
         orange::model_identity::resolve_model_identity(record.engine_path);
-    const nlohmann::json root = {
-        {"schema_id", event_log_format::kPoseEventSchemaId},
-        {"schema_version", event_log_format::kPoseEventSchemaVersion},
-        {"event_kind", "session_header"},
-        {"recording_id", recording_id_},
-        {"camera_serial", camera_serial_},
-        {"camera_id", camera_id_},
-        {"worker", worker_name_},
-        {"frame_identity_key", "frame.recording_frame_id"},
-        {"source_frame", {
-            {"width_px", record.source_width},
-            {"height_px", record.source_height}
-        }},
-        {"pose", {
-            {"worker", "PoseWorker"},
-            {"backend", record.backend},
-            {"mode", record.mode},
-            {"model_id", record.model_id},
-            {"engine_path", record.engine_path},
-            {"engine_sha256", identity.engine_sha256.empty() ? record.engine_sha256 : identity.engine_sha256},
-            {"engine_bytes", identity.engine_bytes},
-            {"worker_engine_sha256", record.engine_sha256},
-            {"weights_sha256", identity.weights_sha256},
-            {"onnx_sha256", identity.onnx_sha256},
-            {"engine_manifest_run_id", identity.run_id},
-            {"ipc_model_id_hash", record.ipc_model_id_hash},
-            {"skeleton_id", record.skeleton_id},
-            {"skeleton_path", record.skeleton_path},
-            {"skeleton_sha256", record.skeleton_sha256},
-            {"ipc_skeleton_id_hash", record.ipc_skeleton_id_hash},
-            {"keypoint_labels", record.keypoint_labels},
-            {"gpu_id", record.gpu_id},
-            {"coordinate_space", "crop_pixels"}
-        }},
-        {"crop", {
-            {"coordinate_space", "source_frame_pixels"},
-            {"note", "crop x_px/y_px/width_px/height_px on each frame line; keypoints are crop pixels relative to that origin"}
-        }},
-        {"detection", {
-            {"coordinate_space", "source_frame_pixels"},
-            {"note", "frame lines carry has_detection and confidence only; the box is on the same frame's yolo_result line and in the crop ledger"}
-        }},
-        {"line_format", event_log_format::line_format_json()}
-    };
-    file_ << root.dump() << '\n';
+    ev::OrangePoseEventV3SessionHeader header;
+    header.recording_id = recording_id_;
+    header.camera_serial = camera_serial_;
+    header.camera_id = camera_id_;
+    header.worker = worker_name_;
+    header.source_frame.width_px = static_cast<std::uint64_t>(record.source_width);
+    header.source_frame.height_px = static_cast<std::uint64_t>(record.source_height);
+    ev::OrangePoseEventV3SessionHeaderPose& pose = header.pose;
+    pose.backend = record.backend;
+    pose.mode = record.mode;
+    pose.model_id = record.model_id;
+    pose.engine_path = record.engine_path;
+    pose.engine_sha256 = identity.engine_sha256.empty() ? record.engine_sha256 : identity.engine_sha256;
+    pose.engine_bytes = identity.engine_bytes;
+    pose.worker_engine_sha256 = record.engine_sha256;
+    pose.weights_sha256 = identity.weights_sha256;
+    pose.onnx_sha256 = identity.onnx_sha256;
+    pose.engine_manifest_run_id = identity.run_id;
+    pose.ipc_model_id_hash = record.ipc_model_id_hash;
+    pose.skeleton_id = record.skeleton_id;
+    pose.skeleton_path = record.skeleton_path;
+    pose.skeleton_sha256 = record.skeleton_sha256;
+    pose.ipc_skeleton_id_hash = record.ipc_skeleton_id_hash;
+    pose.keypoint_labels = record.keypoint_labels;
+    pose.gpu_id = record.gpu_id;
+    header.crop.note = "crop x_px/y_px/width_px/height_px on each frame line; keypoints are crop pixels relative to that origin";
+    header.detection.note = "frame lines carry has_detection and confidence only; the box is on the same frame's yolo_result line and in the crop ledger";
+    file_ << ev::to_json(header).dump() << '\n';
 }
 
 void PoseEventLogger::WriteResult(PoseResultRecord record)
@@ -308,62 +285,42 @@ void PoseEventLogger::WriteResult(PoseResultRecord record)
     using event_log_format::round_confidence;
     using event_log_format::round_ms;
 
-    nlohmann::json poses = nlohmann::json::array();
-    for (const PoseInstanceRecord& pose : record.poses) {
-        poses.push_back(pose_instance_to_json(pose));
-    }
-
-    nlohmann::json pose = {
-        {"status", record.status},
-        {"instance_count", static_cast<int>(record.poses.size())}
-    };
+    ev::OrangePoseEventV3PoseResult line;
+    line.event_sequence = next_sequence++;
+    line.camera_serial = camera_serial_;
+    line.frame.stream_frame_id = record.local_frame_id;
+    line.frame.camera_frame_id = record.camera_frame_id;
+    line.frame.recording_frame_id = record.recording_frame_id;
+    line.frame.record_active = record.record_active;
+    line.timestamps.camera_timestamp = record.camera_timestamp;
+    line.timestamps.timestamp_sys_ns = record.timestamp_sys_ns;
+    line.timestamps.event_epoch_us = record.event_epoch_us;
+    line.timestamps.event_monotonic_us = record.event_monotonic_us;
+    line.crop.x_px = record.crop_x_px;
+    line.crop.y_px = record.crop_y_px;
+    line.crop.width_px = record.crop_width_px;
+    line.crop.height_px = record.crop_height_px;
+    line.crop.blank_frame = record.blank_frame;
+    line.detection.has_detection = record.has_detection;
+    line.detection.confidence = round_confidence(record.detection_confidence);
+    line.pose.status = record.status;
+    line.pose.instance_count = record.poses.size();
     if (!record.error.empty()) {
-        pose["error"] = record.error;
+        line.pose.error = record.error;
     }
+    for (const PoseInstanceRecord& pose : record.poses) {
+        line.poses.push_back(pose_instance(pose));
+    }
+    const PoseTimingRecord& t = record.timing;
+    line.latency_ms.capture_to_detect_done = round_ms(t.capture_to_detect_done_ms);
+    line.latency_ms.detect_to_crop_worker_start = round_ms(t.detect_to_crop_worker_start_ms);
+    line.latency_ms.crop_worker_start_to_crop_ready = round_ms(t.crop_worker_start_to_crop_ready_ms);
+    line.latency_ms.detect_to_crop_ready = round_ms(t.detect_to_crop_ready_ms);
+    line.latency_ms.crop_ready_to_pose_start = round_ms(t.crop_ready_to_pose_start_ms);
+    line.latency_ms.pose_start_to_pose_done = round_ms(t.pose_start_to_pose_done_ms);
+    line.latency_ms.capture_to_pose_done = round_ms(t.capture_to_pose_done_ms);
 
-    const nlohmann::json root = {
-        {"schema_id", event_log_format::kPoseEventSchemaId},
-        {"schema_version", event_log_format::kPoseEventSchemaVersion},
-        {"event_sequence", next_sequence++},
-        {"event_kind", "pose_result"},
-        {"camera_serial", camera_serial_},
-        {"frame", {
-            {"stream_frame_id", record.local_frame_id},
-            {"camera_frame_id", record.camera_frame_id},
-            {"recording_frame_id", record.recording_frame_id},
-            {"record_active", record.record_active}
-        }},
-        {"timestamps", {
-            {"camera_timestamp", record.camera_timestamp},
-            {"timestamp_sys_ns", record.timestamp_sys_ns},
-            {"event_epoch_us", record.event_epoch_us},
-            {"event_monotonic_us", record.event_monotonic_us}
-        }},
-        {"crop", {
-            {"x_px", record.crop_x_px},
-            {"y_px", record.crop_y_px},
-            {"width_px", record.crop_width_px},
-            {"height_px", record.crop_height_px},
-            {"blank_frame", record.blank_frame}
-        }},
-        {"detection", {
-            {"has_detection", record.has_detection},
-            {"confidence", round_confidence(record.detection_confidence)}
-        }},
-        {"pose", std::move(pose)},
-        {"poses", std::move(poses)},
-        {"latency_ms", {
-            {"capture_to_detect_done", round_ms(record.timing.capture_to_detect_done_ms)},
-            {"detect_to_crop_worker_start", round_ms(record.timing.detect_to_crop_worker_start_ms)},
-            {"crop_worker_start_to_crop_ready", round_ms(record.timing.crop_worker_start_to_crop_ready_ms)},
-            {"detect_to_crop_ready", round_ms(record.timing.detect_to_crop_ready_ms)},
-            {"crop_ready_to_pose_start", round_ms(record.timing.crop_ready_to_pose_start_ms)},
-            {"pose_start_to_pose_done", round_ms(record.timing.pose_start_to_pose_done_ms)},
-            {"capture_to_pose_done", round_ms(record.timing.capture_to_pose_done_ms)}
-        }}
-    };
-
-    file_ << root.dump() << '\n';
+    file_ << ev::to_json(line).dump() << '\n';
     ++rows_written_;
     ++rows_since_flush_;
     MaybeFlush(false);
