@@ -4283,29 +4283,82 @@ bool ptp_evidence_bool(const std::string& value, bool* value_out) {
     return false;
 }
 
+namespace {
+
+constexpr const char* kHostPtpSocket = "/var/run/ptp4l";
+
+// Asks ptp4l for its time properties now, as root (the socket is root:root 0660), in the same
+// text format scripts/ptp_stack.sh writes to /tmp/ptp-stack/management_evidence.txt. Not
+// run_command_capture_stdout: that drops to the sudo user, who cannot open the socket.
+std::string capture_host_ptp_management_text_now(int* pmc_exit_status_out) {
+    const char* configured_pmc = std::getenv("ORANGE_PTP_PMC_PATH");   // tests only
+    const std::string pmc = configured_pmc && *configured_pmc ? configured_pmc : "/usr/sbin/pmc";
+    const std::string command = "timeout 3s " + shell_single_quote(pmc) +
+        " -u -b 0 -s " + kHostPtpSocket +
+        " 'GET TIME_PROPERTIES_DATA_SET' 'GET PARENT_DATA_SET' 'GET DEFAULT_DATA_SET' 2>&1";
+    const std::string captured_at_utc = get_current_utc_timestamp();
+    std::string output;
+    int exit_status = -1;
+    if (FILE* pipe = popen(command.c_str(), "r")) {
+        std::array<char, 256> buffer{};
+        while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+            if (output.size() < 16384) {
+                output += buffer.data();
+            }
+        }
+        const int status = pclose(pipe);
+        exit_status = (status != -1 && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
+    }
+    if (pmc_exit_status_out) {
+        *pmc_exit_status_out = exit_status;
+    }
+    std::ostringstream text;
+    text << "captured_at_utc=" << captured_at_utc << "\n"
+         << "socket=" << kHostPtpSocket << "\n"
+         << "pmc_exit_status=" << exit_status << "\n"
+         << output;
+    return text.str();
+}
+
+}  // namespace
+
 nlohmann::json build_host_ptp_management_evidence() {
+    // ORANGE_PTP_MANAGEMENT_EVIDENCE_PATH (tests, offline replays) reads a saved capture.
+    // Otherwise ptp4l is asked now, at record start: the file scripts/ptp_stack.sh leaves in
+    // /tmp is refreshed only when someone runs it, so it can predate a ptp4l restart. A failed
+    // live capture is recorded as unavailable (cameras then classify by fallback inference),
+    // never replaced by that file.
     const char* configured_path = std::getenv("ORANGE_PTP_MANAGEMENT_EVIDENCE_PATH");
-    const std::filesystem::path evidence_path =
-        configured_path && *configured_path
-            ? std::filesystem::path(configured_path)
-            : std::filesystem::path("/tmp/ptp-stack/management_evidence.txt");
+    const bool from_file = configured_path && *configured_path;
     nlohmann::json evidence = {
         {"schema_id", "orange.host_ptp.management_evidence"},
         {"schema_version", 1},
         {"available", false},
-        {"source_path", evidence_path.string()},
         {"capture_method", "linuxptp_pmc_management_socket"},
+        {"capture_trigger", from_file ? "saved_capture_file" : "recording_start"},
         {"time_properties", nlohmann::json::object()},
         {"parent", nlohmann::json::object()},
         {"default", nlohmann::json::object()},
     };
 
-    std::string read_error;
-    const std::string bytes = read_file_to_string(evidence_path.string(), &read_error);
-    if (bytes.empty()) {
-        evidence["unavailable_reason"] = read_error.empty()
-            ? "empty_evidence_file" : read_error;
-        return evidence;
+    std::string bytes;
+    if (from_file) {
+        evidence["source_path"] = configured_path;
+        std::string read_error;
+        bytes = read_file_to_string(configured_path, &read_error);
+        if (bytes.empty()) {
+            evidence["unavailable_reason"] = read_error.empty()
+                ? "empty_evidence_file" : read_error;
+            return evidence;
+        }
+    } else {
+        evidence["source_path"] = nullptr;
+        int pmc_exit_status = -1;
+        bytes = capture_host_ptp_management_text_now(&pmc_exit_status);
+        if (pmc_exit_status != 0) {
+            evidence["unavailable_reason"] =
+                "pmc_exit_status_" + std::to_string(pmc_exit_status);
+        }
     }
 
     evidence["raw_sha256"] = "sha256:" +
@@ -4397,7 +4450,11 @@ nlohmann::json build_host_ptp_management_evidence() {
         (*destination)[key] = value;
     }
 
-    evidence["available"] = saw_time_properties && saw_parent && saw_default;
+    evidence["available"] = saw_time_properties && saw_parent && saw_default &&
+        evidence.value("pmc_exit_status", nlohmann::json(-1)) == 0;
+    if (!evidence["available"].get<bool>() && !evidence.contains("unavailable_reason")) {
+        evidence["unavailable_reason"] = "incomplete_pmc_response";
+    }
     evidence["datasets_received"] = {
         {"time_properties", saw_time_properties},
         {"parent", saw_parent},
@@ -4425,7 +4482,8 @@ nlohmann::json build_ptp_sync_summary_base(const std::string& recording_folder,
                                           const std::string& recording_id,
                                           int num_cameras,
                                           bool sync_camera_enabled,
-                                          const PTPParams* ptp_params) {
+                                          const PTPParams* ptp_params,
+                                          bool capture_host_evidence = true) {
     nlohmann::json summary = nlohmann::json::object();
     summary["schema_version"] = 1;
     summary["recording_id"] =
@@ -4434,7 +4492,17 @@ nlohmann::json build_ptp_sync_summary_base(const std::string& recording_folder,
     summary["created_at_utc"] = get_current_utc_timestamp();
     summary["updated_at_utc"] = summary["created_at_utc"];
     summary["sync"] = build_recording_sync_snapshot(sync_camera_enabled, ptp_params, num_cameras);
-    summary["host_ptp_management_evidence"] = build_host_ptp_management_evidence();
+    if (capture_host_evidence) {
+        summary["host_ptp_management_evidence"] = build_host_ptp_management_evidence();
+    } else {
+        // Rebuilt after the start: evidence captured now would not describe the start.
+        summary["host_ptp_management_evidence"] = {
+            {"schema_id", "orange.host_ptp.management_evidence"},
+            {"schema_version", 1},
+            {"available", false},
+            {"unavailable_reason", "summary_rebuilt_after_recording_start"},
+        };
+    }
     summary["cameras"] = nlohmann::json::object();
     return summary;
 }
@@ -6906,7 +6974,7 @@ bool update_ptp_sync_summary_camera(const std::string& recording_folder,
             std::cerr << "Failed to read ptp sync summary: " << summary_path.string()
                       << " (" << error << ")" << std::endl;
         }
-        summary = build_ptp_sync_summary_base(recording_folder, "", 0, false, nullptr);
+        summary = build_ptp_sync_summary_base(recording_folder, "", 0, false, nullptr, false);
     }
 
     if (!summary.is_object()) {

@@ -928,6 +928,72 @@ void test_manifest_preserves_untraceable_ptp_timescale_evidence()
     std::filesystem::remove_all(folder);
 }
 
+// Writes an executable fake pmc that prints `body` and exits with `exit_code`.
+std::filesystem::path write_fake_pmc(const std::filesystem::path& folder,
+                                     const std::string& body,
+                                     int exit_code)
+{
+    const std::filesystem::path pmc = folder / "fake_pmc";
+    {
+        std::ofstream output(pmc);
+        output << "#!/bin/sh\ncat <<'PMC_EOF'\n" << body << "PMC_EOF\nexit "
+               << exit_code << "\n";
+    }
+    std::filesystem::permissions(pmc, std::filesystem::perms::owner_all);
+    return pmc;
+}
+
+void test_ptp_summary_captures_host_evidence_live_at_start()
+{
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_session_ptp_live_" + std::to_string(static_cast<long long>(::getpid())));
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder);
+    const std::filesystem::path pmc = write_fake_pmc(
+        folder,
+        "sending: GET TIME_PROPERTIES_DATA_SET\n"
+        "\ta088c2.fffe.69119e-0 seq 0 RESPONSE MANAGEMENT TIME_PROPERTIES_DATA_SET \n"
+        "\t\tcurrentUtcOffset      37\n"
+        "\t\tcurrentUtcOffsetValid 1\n"
+        "\t\tptpTimescale          1\n"
+        "\ta088c2.fffe.69119e-0 seq 1 RESPONSE MANAGEMENT PARENT_DATA_SET \n"
+        "\t\tgrandmasterIdentity   a088c2.fffe.69119e\n"
+        "\ta088c2.fffe.69119e-0 seq 2 RESPONSE MANAGEMENT DEFAULT_DATA_SET \n"
+        "\t\ttwoStepFlag           1\n",
+        0);
+    ::unsetenv("ORANGE_PTP_MANAGEMENT_EVIDENCE_PATH");
+    require(::setenv("ORANGE_PTP_PMC_PATH", pmc.c_str(), 1) == 0, "failed to set fake pmc");
+    require(initialize_ptp_sync_summary(folder.string(), "ptp_live", 1, true, nullptr),
+            "PTP summary initialization should capture live evidence");
+    const nlohmann::json host =
+        read_json(folder / "ptp_sync_summary.json").at("host_ptp_management_evidence");
+    require(host.at("available") == true, "a complete live pmc reply should be available");
+    require(host.at("capture_trigger") == "recording_start",
+            "live evidence should say it was captured at the recording start");
+    require(host.at("source_path").is_null(), "live evidence has no source file");
+    require(host.at("pmc_exit_status") == 0, "pmc exit status should be recorded");
+    require(host.at("captured_at_utc").is_string(), "capture time should be recorded");
+    require(host.at("time_properties").at("currentUtcOffset") == 37 &&
+                host.at("time_properties").at("currentUtcOffsetValid") == true,
+            "live time properties should parse");
+
+    // A failed live capture is unavailable; the stale /tmp capture is never used instead.
+    write_fake_pmc(folder, "", 1);
+    std::filesystem::remove(folder / "ptp_sync_summary.json");
+    require(initialize_ptp_sync_summary(folder.string(), "ptp_live", 1, true, nullptr),
+            "PTP summary initialization should succeed without host evidence");
+    const nlohmann::json failed =
+        read_json(folder / "ptp_sync_summary.json").at("host_ptp_management_evidence");
+    require(failed.at("available") == false, "a failed pmc must leave evidence unavailable");
+    require(failed.at("unavailable_reason") == "pmc_exit_status_1",
+            "the pmc failure should be named");
+    require(failed.at("time_properties").empty(), "no time properties without a reply");
+
+    ::setenv("ORANGE_PTP_PMC_PATH", "/bin/false", 1);
+    std::filesystem::remove_all(folder);
+}
+
 void test_manifest_freezes_external_returned_identity_proof()
 {
     const std::filesystem::path folder =
@@ -1814,6 +1880,8 @@ void test_recording_contexts_flow_through_parent_writers_and_refresh()
 
 int main()
 {
+    // Never ask the rig's ptp4l from a test; tests that want a reply install a fake pmc.
+    ::setenv("ORANGE_PTP_PMC_PATH", "/bin/false", 1);
     struct TestCase {
         const char* name;
         void (*fn)();
@@ -1841,6 +1909,8 @@ int main()
          test_manifest_keeps_camera_epoch_unspecified_without_ptp_evidence},
         {"manifest_preserves_untraceable_ptp_timescale_evidence",
          test_manifest_preserves_untraceable_ptp_timescale_evidence},
+        {"ptp_summary_captures_host_evidence_live_at_start",
+         test_ptp_summary_captures_host_evidence_live_at_start},
         {"manifest_freezes_external_returned_identity_proof",
          test_manifest_freezes_external_returned_identity_proof},
         {"manifest_seals_dense_acquisition_index_mapping_and_exact_metadata_checksum",
