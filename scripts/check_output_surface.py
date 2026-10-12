@@ -30,6 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from check_output_names import producer_files, strip_comments  # noqa: E402
+from published_schemas import published  # noqa: E402
 
 # ORANGE_RATCHET_ROOT points the checks at another tree (used by their tests).
 REPO = Path(os.environ.get("ORANGE_RATCHET_ROOT") or Path(__file__).resolve().parents[1])
@@ -109,18 +110,11 @@ def describe(old: dict, new: dict) -> list[str]:
 
 
 def published_versions() -> dict[str, set[str]]:
-    """schema_id -> versions that have a file in docs/schemas (top-level schema_id/version consts)."""
-    published: dict[str, set[str]] = {}
-    for path in sorted((REPO / "docs" / "schemas").glob("*.schema.json")):
-        try:
-            props = json.loads(path.read_text(encoding="utf-8")).get("properties", {})
-        except (json.JSONDecodeError, AttributeError):
-            continue
-        sid = props.get("schema_id", {}).get("const") if isinstance(props, dict) else None
-        ver = props.get("schema_version", {}).get("const") if isinstance(props, dict) else None
-        if isinstance(sid, str) and isinstance(ver, int):
-            published.setdefault(sid, set()).add(str(ver))
-    return published
+    """schema_id -> versions that have a schema in docs/schemas (see published_schemas.py)."""
+    versions: dict[str, set[str]] = {}
+    for sid, ver in published(REPO / "docs" / "schemas"):
+        versions.setdefault(sid, set()).add(str(ver))
+    return versions
 
 
 def unpublished(surface: dict) -> list[str]:

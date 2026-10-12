@@ -864,6 +864,7 @@ if(BUILD_TESTING)
     # tests; the python test builds it, runs it and validates the output.
     add_executable(synthetic_recording_bundle EXCLUDE_FROM_ALL
         "tools/synthetic_recording_bundle.cpp"
+        "${SRC_DIR}/calibration_image_set.cpp"
         "${SRC_DIR}/session/acquisition_index_authority.cpp"
         "${SRC_DIR}/gui/recording_snapshots.cpp"
         "${SRC_DIR}/gui/spatial_layout/commissioning_finalize_request.cpp"
@@ -882,6 +883,12 @@ if(BUILD_TESTING)
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/synthetic_recording_bundle_tests.py"
                 "${CMAKE_BINARY_DIR}/synthetic_recording_bundle")
     set_tests_properties(synthetic_recording_bundle_tests
+        PROPERTIES DEPENDS synthetic_recording_bundle_build)
+    add_test(
+        NAME output_schema_validation_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/output_schema_validation_tests.py"
+                "${CMAKE_BINARY_DIR}/synthetic_recording_bundle")
+    set_tests_properties(output_schema_validation_tests
         PROPERTIES DEPENDS synthetic_recording_bundle_build)
 
     add_executable(recording_session_drain_tests EXCLUDE_FROM_ALL
