@@ -124,66 +124,14 @@ bool file_sha256(const fs::path& path,
         path, value_out, error_out);
 }
 
-bool write_all(const int fd, const std::string& bytes, std::string* error_out)
-{
-    std::size_t offset = 0;
-    while (offset < bytes.size()) {
-        const ssize_t written = ::write(
-            fd, bytes.data() + offset, bytes.size() - offset);
-        if (written < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return fail(error_out,
-                        "write failed: " + std::string(std::strerror(errno)));
-        }
-        offset += static_cast<std::size_t>(written);
-    }
-    return true;
-}
-
 bool write_create_once_exact(const fs::path& path,
                              const std::string& bytes,
                              std::string* error_out)
 {
-    std::error_code ec;
-    fs::create_directories(path.parent_path(), ec);
-    if (ec) {
-        return fail(error_out,
-                    "could not create directory for " + path.string() +
-                        ": " + ec.message());
-    }
-    const int fd = ::open(
-        path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
-        0444);
-    if (fd >= 0) {
-        bool ok = write_all(fd, bytes, error_out);
-        if (ok && ::fsync(fd) != 0) {
-            ok = fail(error_out,
-                      "fsync failed for " + path.string() + ": " +
-                          std::strerror(errno));
-        }
-        if (::close(fd) != 0 && ok) {
-            ok = fail(error_out,
-                      "close failed for " + path.string() + ": " +
-                          std::strerror(errno));
-        }
-        if (!ok) {
-            fs::remove(path, ec);
-        }
-        return ok;
-    }
-    if (errno != EEXIST) {
-        return fail(error_out,
-                    "could not create " + path.string() + ": " +
-                        std::strerror(errno));
-    }
-    std::string existing;
-    return read_bytes(path, &existing, error_out) &&
-        (existing == bytes ||
-         fail(error_out,
-              "immutable artifact already exists with different bytes: " +
-                  path.string()));
+    // Published only when complete (temporary + link), never written in place.
+    std::string error;
+    return orange::outputs::create_file_once(path, bytes, {}, &error) ||
+        fail(error_out, "immutable artifact " + path.string() + ": " + error);
 }
 
 bool write_atomic_replace(const fs::path& path,

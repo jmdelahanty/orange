@@ -6,6 +6,7 @@
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <atomic>
 #include <thread>
 #include <vector>
 
@@ -82,6 +83,42 @@ int main() {
     check(!final_doc.is_discarded() && final_doc.at("payload").get<std::string>().size() == 4096,
           "concurrent writers never leave a torn file");
     check(temporaries(root) == 0, "concurrent writers leave no temporaries");
+
+    // create_file_once: publish once, identical retry succeeds, different bytes refused.
+    const fs::path once = root / "once" / "evidence.json";
+    bool existed = true;
+    check(create_file_once(once, "v1\n", {}, &error, &existed) && !existed, "create-once publishes: " + error);
+    struct stat once_stat{};
+    ::stat(once.c_str(), &once_stat);
+    check((once_stat.st_mode & 0777) == 0444, "create-once file is read-only");
+    check(create_file_once(once, "v1\n", {}, &error, &existed) && existed, "identical retry succeeds");
+    check(!create_file_once(once, "v2\n", {}, &error) && error.find("different bytes") != std::string::npos,
+          "different bytes are refused");
+    check(read(once) == "v1\n", "refused create leaves the original");
+    check(temporaries(once.parent_path()) == 0, "create-once leaves no temporaries");
+    CreateOnceOptions writable;
+    writable.read_only = false;
+    writable.durability = Durability::kRenameOnly;
+    const fs::path loose = root / "once" / "loose.bin";
+    check(create_file_once(loose, "x", writable, &error), "create-once without read-only");
+    ::chmod(once.c_str(), 0644);
+    check(!create_file_once(once, "v1\n", {}, &error) && error.find("writable") != std::string::npos,
+          "existing writable file fails a read-only create-once");
+
+    // Racing creators: exactly one publishes, the rest see identical bytes.
+    const fs::path raced = root / "once" / "raced.json";
+    std::atomic<int> created{0}, matched{0};
+    std::vector<std::thread> racers;
+    for (int t = 0; t < 8; ++t) {
+        racers.emplace_back([&] {
+            bool was = false;
+            if (create_file_once(raced, "same\n", {}, nullptr, &was)) {
+                (was ? matched : created)++;
+            }
+        });
+    }
+    for (auto& t : racers) t.join();
+    check(created == 1 && matched == 7, "exactly one racer creates, seven see it identical");
 
     fs::remove_all(root);
     std::cout << (failures ? "outputs_common_tests FAILED\n" : "outputs_common_tests passed\n");

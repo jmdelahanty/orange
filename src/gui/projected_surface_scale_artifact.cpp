@@ -1,4 +1,5 @@
 #include "gui/projected_surface_scale_artifact.h"
+#include "outputs/common/atomic_file.h"
 
 #include "fsuid_guard.h"
 #include "gui/projected_surface_scale_analysis.h"
@@ -44,36 +45,13 @@ bool write_bytes_exclusive(const fs::path& path,
 {
     orange::ScopedFsuid fsuid_guard;
     (void)fsuid_guard;
-    std::error_code ec;
-    fs::create_directories(path.parent_path(), ec);
-    if (ec) {
-        if (error) *error = "could not create scale artifact directory: " + ec.message();
-        return false;
-    }
-    if (fs::exists(path)) {
-        if (error) *error = "refusing to overwrite immutable scale artifact: " + path.string();
-        return false;
-    }
-    const fs::path temporary = path.string() + ".tmp";
-    {
-        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
-        if (!output) {
-            if (error) *error = "could not create temporary scale artifact: " + temporary.string();
-            return false;
-        }
-        output.write(reinterpret_cast<const char*>(bytes.data()),
-                     static_cast<std::streamsize>(bytes.size()));
-        output.flush();
-        if (!output) {
-            if (error) *error = "could not write temporary scale artifact: " + temporary.string();
-            fs::remove(temporary, ec);
-            return false;
-        }
-    }
-    fs::rename(temporary, path, ec);
-    if (ec) {
-        fs::remove(temporary, ec);
-        if (error) *error = "could not publish scale artifact: " + ec.message();
+    orange::outputs::CreateOnceOptions options;
+    options.read_only = false;
+    options.durability = orange::outputs::Durability::kRenameOnly;
+    std::string create_error;
+    if (!orange::outputs::create_file_once(
+            path, std::string(bytes.begin(), bytes.end()), options, &create_error)) {
+        if (error) *error = "refusing to overwrite immutable scale artifact: " + create_error;
         return false;
     }
     return true;

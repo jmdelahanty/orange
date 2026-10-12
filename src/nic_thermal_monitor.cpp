@@ -217,23 +217,6 @@ int open_owned_file(const std::filesystem::path& path,
     return fd;
 }
 
-bool write_all(const int fd, const std::string& contents)
-{
-    size_t offset = 0;
-    while (offset < contents.size()) {
-        const ssize_t written =
-            ::write(fd, contents.data() + offset, contents.size() - offset);
-        if (written < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return false;
-        }
-        offset += static_cast<size_t>(written);
-    }
-    return true;
-}
-
 bool write_json_atomic_owned(const std::filesystem::path& path,
                              const nlohmann::json& value,
                              const uid_t uid,

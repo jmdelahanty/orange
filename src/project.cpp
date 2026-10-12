@@ -4592,73 +4592,15 @@ bool create_immutable_file_once(const std::filesystem::path& destination,
                                 const std::string& bytes,
                                 std::string* error_out)
 {
-    const std::filesystem::path temporary =
-        destination.string() + ".tmp." + std::to_string(
-            static_cast<long long>(::getpid())) + "." +
-        std::to_string(static_cast<long long>(
-            std::chrono::steady_clock::now().time_since_epoch().count()));
-    const int descriptor = ::open(
-        temporary.c_str(),
-        O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
-        S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-    if (descriptor < 0) {
+    orange::outputs::CreateOnceOptions options;
+    options.create_parent_directories = false;
+    std::string error;
+    if (!orange::outputs::create_file_once(destination, bytes, options, &error)) {
         if (error_out) {
-            *error_out = std::string("failed to create immutable snapshot temporary file: ") +
-                std::strerror(errno);
+            *error_out = "immutable recording-start snapshot: " + error;
         }
         return false;
     }
-
-    bool ok = write_all_bytes(descriptor, bytes, error_out);
-    if (ok && ::fsync(descriptor) != 0) {
-        ok = false;
-        if (error_out) {
-            *error_out = std::string("failed to fsync immutable recording-start snapshot: ") +
-                std::strerror(errno);
-        }
-    }
-    if (ok && ::fchmod(descriptor, S_IRUSR | S_IRGRP | S_IROTH) != 0) {
-        ok = false;
-        if (error_out) {
-            *error_out = std::string("failed to make recording-start snapshot read-only: ") +
-                std::strerror(errno);
-        }
-    }
-    if (::close(descriptor) != 0 && ok) {
-        ok = false;
-        if (error_out) {
-            *error_out = std::string("failed to close immutable recording-start snapshot: ") +
-                std::strerror(errno);
-        }
-    }
-    if (!ok) {
-        (void)::unlink(temporary.c_str());
-        return false;
-    }
-
-    if (::link(temporary.c_str(), destination.c_str()) != 0) {
-        const int link_error = errno;
-        (void)::unlink(temporary.c_str());
-        if (link_error == EEXIST) {
-            std::string read_error;
-            const std::string existing =
-                read_file_to_string(destination.string(), &read_error);
-            if (existing == bytes) {
-                return true;
-            }
-            if (error_out) {
-                *error_out =
-                    "immutable recording-start snapshot already exists with different bytes";
-            }
-            return false;
-        }
-        if (error_out) {
-            *error_out = std::string("failed to publish immutable recording-start snapshot: ") +
-                std::strerror(link_error);
-        }
-        return false;
-    }
-    (void)::unlink(temporary.c_str());
     return true;
 }
 

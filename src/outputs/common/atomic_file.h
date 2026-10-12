@@ -148,6 +148,111 @@ inline bool write_file_atomic(const std::filesystem::path& path, const std::stri
     return true;
 }
 
+struct CreateOnceOptions {
+    Durability durability = Durability::kFsync;
+    // Publish the file 0444 and, when it already exists, require it to be read-only too.
+    bool read_only = true;
+    bool create_parent_directories = true;
+};
+
+// Creates `path` with `bytes` exactly once: the bytes go to a unique temporary, then link()
+// publishes it, which never replaces an existing file. If `path` already exists with exactly
+// these bytes (and is read-only when options.read_only), that counts as success, so a retried
+// write is idempotent; any other existing content is an error. `*already_existed` says which.
+inline bool create_file_once(const std::filesystem::path& path, const std::string& bytes,
+                             const CreateOnceOptions& options = {}, std::string* error = nullptr,
+                             bool* already_existed = nullptr) {
+    namespace fs = std::filesystem;
+    if (error) {
+        error->clear();
+    }
+    if (already_existed) {
+        *already_existed = false;
+    }
+    if (path.empty() || path.filename().empty()) {
+        return detail::set_error(error, "create-once needs a file path");
+    }
+    fs::path parent = path.parent_path();
+    if (parent.empty()) {
+        parent = ".";
+    }
+    std::error_code ec;
+    if (options.create_parent_directories) {
+        fs::create_directories(parent, ec);
+        if (ec) {
+            return detail::set_error(error, "cannot create " + parent.string() + ": " + ec.message());
+        }
+    }
+    const fs::path temporary = detail::unique_temporary(parent / path.filename());
+    const int fd = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0644);
+    if (fd < 0) {
+        return detail::set_error(error, "cannot create " + temporary.string() + ": " + std::strerror(errno));
+    }
+    bool ok = detail::write_all(fd, bytes, error);
+    if (ok && options.durability == Durability::kFsync && ::fsync(fd) != 0) {
+        ok = detail::set_error(error, std::string("fsync failed: ") + std::strerror(errno));
+    }
+    if (ok && options.read_only && ::fchmod(fd, S_IRUSR | S_IRGRP | S_IROTH) != 0) {
+        ok = detail::set_error(error, std::string("cannot make read-only: ") + std::strerror(errno));
+    }
+    if (::close(fd) != 0 && ok) {
+        ok = detail::set_error(error, std::string("close failed: ") + std::strerror(errno));
+    }
+    if (!ok) {
+        ::unlink(temporary.c_str());
+        return false;
+    }
+    const bool linked = ::link(temporary.c_str(), path.c_str()) == 0;
+    const int link_errno = errno;
+    ::unlink(temporary.c_str());
+    if (!linked) {
+        if (link_errno != EEXIST) {
+            return detail::set_error(error, "cannot publish " + path.string() + ": " + std::strerror(link_errno));
+        }
+        struct stat existing_stat{};
+        if (::lstat(path.c_str(), &existing_stat) != 0 || !S_ISREG(existing_stat.st_mode)) {
+            return detail::set_error(error, path.string() + " exists and is not a regular file");
+        }
+        std::string existing;
+        {
+            const int existing_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+            if (existing_fd < 0) {
+                return detail::set_error(error, "cannot read existing " + path.string());
+            }
+            char buffer[65536];
+            for (;;) {
+                const ssize_t n = ::read(existing_fd, buffer, sizeof(buffer));
+                if (n < 0 && errno == EINTR) continue;
+                if (n <= 0) break;
+                existing.append(buffer, static_cast<std::size_t>(n));
+            }
+            ::close(existing_fd);
+        }
+        if (existing != bytes) {
+            return detail::set_error(error, path.string() + " already exists with different bytes");
+        }
+        if (options.read_only && (existing_stat.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) != 0) {
+            return detail::set_error(error, path.string() + " already exists but is writable");
+        }
+        if (already_existed) {
+            *already_existed = true;
+        }
+        return true;
+    }
+    if (options.durability == Durability::kFsync) {
+        const int dir = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+        if (dir < 0) {
+            return detail::set_error(error, "created, but cannot open " + parent.string() + " to fsync");
+        }
+        const bool synced = ::fsync(dir) == 0;
+        ::close(dir);
+        if (!synced) {
+            return detail::set_error(error, "created, but directory fsync failed");
+        }
+    }
+    return true;
+}
+
 // The JSON text form every Orange JSON output uses: 2-space indent and a trailing newline.
 inline std::string json_file_text(const nlohmann::json& value) {
     return value.dump(2) + "\n";

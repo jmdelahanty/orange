@@ -1,4 +1,5 @@
 #include "session/recording_observation_prearm.h"
+#include "outputs/common/atomic_file.h"
 #include "recording_subject_reference.h"
 #include <iostream>
 
@@ -144,73 +145,15 @@ bool read_recording_id(const std::filesystem::path& folder,
              "immutable recording-start snapshot has no recording_id");
 }
 
-bool write_all(const int descriptor,
-               const std::string& bytes,
-               std::string* error_out)
-{
-    std::size_t offset = 0;
-    while (offset < bytes.size()) {
-        const ssize_t count = ::write(
-            descriptor, bytes.data() + offset, bytes.size() - offset);
-        if (count < 0 && errno == EINTR) {
-            continue;
-        }
-        if (count <= 0) {
-            return fail(error_out, std::string("pre-arm artifact write failed: ") +
-                                       std::strerror(errno));
-        }
-        offset += static_cast<std::size_t>(count);
-    }
-    return true;
-}
-
 bool create_read_only_file_once(const std::filesystem::path& destination,
                                 const std::string& bytes,
                                 std::string* error_out)
 {
-    const std::filesystem::path temporary =
-        destination.string() + ".tmp." + std::to_string(::getpid()) + "." +
-        std::to_string(static_cast<long long>(
-            std::chrono::steady_clock::now().time_since_epoch().count()));
-    const int descriptor = ::open(
-        temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
-        S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-    if (descriptor < 0) {
-        return fail(error_out, std::string("failed to create pre-arm artifact: ") +
-                                   std::strerror(errno));
-    }
-    bool ok = write_all(descriptor, bytes, error_out);
-    if (ok && ::fsync(descriptor) != 0) {
-        ok = fail(error_out, std::string("failed to fsync pre-arm artifact: ") +
-                                 std::strerror(errno));
-    }
-    if (ok && ::fchmod(descriptor, S_IRUSR | S_IRGRP | S_IROTH) != 0) {
-        ok = fail(error_out, "failed to make pre-arm artifact read-only");
-    }
-    if (::close(descriptor) != 0 && ok) {
-        ok = fail(error_out, "failed to close pre-arm artifact");
-    }
-    if (!ok) {
-        (void)::unlink(temporary.c_str());
-        return false;
-    }
-    if (::link(temporary.c_str(), destination.c_str()) != 0) {
-        const int link_error = errno;
-        (void)::unlink(temporary.c_str());
-        if (link_error != EEXIST) {
-            return fail(error_out, std::string("failed to publish pre-arm artifact: ") +
-                                       std::strerror(link_error));
-        }
-        std::string existing;
-        if (!read_regular_file(destination, &existing, error_out) ||
-            existing != bytes || !read_only(destination)) {
-            return fail(error_out,
-                        "create-once pre-arm artifact differs or is writable");
-        }
-        return true;
-    }
-    (void)::unlink(temporary.c_str());
-    return true;
+    orange::outputs::CreateOnceOptions options;
+    options.create_parent_directories = false;
+    std::string error;
+    return orange::outputs::create_file_once(destination, bytes, options, &error) ||
+        fail(error_out, "create-once pre-arm artifact: " + error);
 }
 
 std::string socket_path()
