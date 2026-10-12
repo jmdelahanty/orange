@@ -269,7 +269,17 @@ Orange/Citrus commissioning) are in git history of this file and in
   never use it for stimulus timing. Since 2026-10-11 21:50 ptp4l declares
   the 37 s offset valid (pancakebatter c6231c9/b0d73c9, set on every ptp4l
   start), so recordings classify cameras as `TAI` / `ieee1588_tai`; earlier
-  recordings say `device_defined`. Restarting ptp4l drops camera PTP lock:
+  recordings say `device_defined`. Since 2026-10-12 13:05 (pancakebatter
+  2ccb21f) the offset comes from tzdata's IERS table
+  `/usr/share/zoneinfo/leap-seconds.list` (SHA-1, expiry 2027-06-28, must
+  equal ptp4l's `utc_offset`), not a constant; if the table fails, the flag
+  stays unset and cameras classify `ieee1588_ptp_timescale_untraceable`.
+  Sources and the leap-second procedure: pancakebatter
+  `docs/ptp_services.md` "Where 37 comes from"; contract agent-contracts
+  `orange-palette/camera_exposure_host_clock_v1_2026-10-12.md`. Orange copies
+  the host evidence from `/tmp/ptp-stack/management_evidence.txt`, refreshed
+  only by `scripts/ptp_stack.sh` status/start (the run scripts call it), not
+  at every record start. Restarting ptp4l drops camera PTP lock:
   only with no `orange` or `orange_client` running
   (`sudo ~/pancakebatter/install_ptp_units.sh --restart`, which checks).
 - Crop-only (`media_products.mode = registered_context_and_moving_crops`):
