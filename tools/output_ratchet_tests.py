@@ -145,9 +145,16 @@ def test_digest_form() -> None:
             require(result.returncode == 1 and expected in result.stdout,
                     f"{bad} must fail with {expected!r}: {result.stdout}")
         (folder / "bad.json").unlink()
-        (folder / "engine.manifest.json").write_text(json.dumps({"sha256": "a" * 64}))
+        # Family A is allowlisted by schema_id: engine manifests are named <engine stem>.manifest.json.
+        (folder / "detect_a16_int8.manifest.json").write_text(
+            json.dumps({"schema_id": "orange.tensorrt_engine_manifest", "engine": {"sha256": "a" * 64}}))
         result = subprocess.run([sys.executable, str(VALIDATE), str(folder)], capture_output=True, text=True)
         require(result.returncode == 0, f"allowlisted family passes: {result.stdout}")
+        (folder / "other.manifest.json").write_text(
+            json.dumps({"schema_id": "palette.other_manifest", "engine": {"sha256": "a" * 64}}))
+        result = subprocess.run([sys.executable, str(VALIDATE), str(folder)], capture_output=True, text=True)
+        require(result.returncode == 1 and "other.manifest.json" in result.stdout,
+                f"the schema_id entry must not cover another schema in a like-named file: {result.stdout}")
     print("[PASS] digest form")
 
 

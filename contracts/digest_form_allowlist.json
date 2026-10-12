@@ -2,7 +2,7 @@
   "$comment": "Digest fields scripts/validate_output_schemas.py accepts although they break agent-contracts orange-palette/digest_form_v1 (bare hex, or a digest under a non-digest name). Each entry: a file name glob, a JSON path regex (paths look like /a/b[]/c; serials become <serial>, 64-hex path segments <hex>), and the reason. The list only shrinks: remove entries when their family converts.",
   "allowed": [
     {
-      "file": "engine.manifest.json",
+      "schema_id": "orange.tensorrt_engine_manifest",
       "path": ".*",
       "reason": "Model identity family: orange.tensorrt_engine_manifest v1 (digest_form_v1 section 2, family A)."
     },

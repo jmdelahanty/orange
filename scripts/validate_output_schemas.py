@@ -77,21 +77,29 @@ def load_digest_rule():
     for entry in allowed:
         if not entry.get("reason", "").strip():
             raise SystemExit(f"{DIGEST_ALLOWLIST}: entry {entry} has no reason")
+    for entry in allowed:
+        if ("file" in entry) == ("schema_id" in entry):
+            raise SystemExit(f"{DIGEST_ALLOWLIST}: entry {entry} needs exactly one of file / schema_id")
     return (re.compile(rule["token_pattern"]), set(rule["digest_field_names"]["exact"]),
             rule["digest_field_names"]["suffix"],
-            [(e["file"], re.compile(e["path"])) for e in allowed])
+            [(e.get("file"), e.get("schema_id"), re.compile(e["path"])) for e in allowed])
 
 
-def digest_violations(value, file_name: str, rule, path: str = ""):
-    """Yield 'path: problem' for digest_form_v1 violations not covered by the allowlist."""
+def digest_violations(value, file_name: str, rule, path: str = "", schema_id: str | None = None):
+    """Yield 'path: problem' for digest_form_v1 violations not covered by the allowlist.
+
+    An allowlist entry matches by file name pattern, or by the root document's schema_id (for
+    outputs whose file names vary, such as <engine stem>.manifest.json)."""
     token, exact, suffix, allowed = rule
+    if path == "" and isinstance(value, dict) and isinstance(value.get("schema_id"), str):
+        schema_id = value["schema_id"]
     if isinstance(value, dict):
         for key, child in value.items():
-            yield from digest_violations(child, file_name, rule, f"{path}/{key}")
+            yield from digest_violations(child, file_name, rule, f"{path}/{key}", schema_id)
         return
     if isinstance(value, list):
         for child in value:
-            yield from digest_violations(child, file_name, rule, f"{path}[]")
+            yield from digest_violations(child, file_name, rule, f"{path}[]", schema_id)
         return
     if not isinstance(value, str):
         return
@@ -106,8 +114,10 @@ def digest_violations(value, file_name: str, rule, path: str = ""):
     if problem is None:
         return
     normalized = HEX_SEGMENT.sub("/<hex>", SERIAL_SEGMENT.sub("/<serial>", path))
-    for pattern, path_re in allowed:
-        if fnmatch.fnmatch(file_name, pattern) and path_re.search(normalized):
+    for pattern, allowed_schema_id, path_re in allowed:
+        matches = (fnmatch.fnmatch(file_name, pattern) if pattern is not None
+                   else schema_id == allowed_schema_id)
+        if matches and path_re.search(normalized):
             return
     yield f"{normalized}: {problem}"
 

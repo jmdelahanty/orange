@@ -87,8 +87,8 @@ class MapT:
 
 
 @dataclass
-class OpaqueT:                    # an object with no declared shape: kept as JSON
-    pass
+class OpaqueT:                    # a value whose shape the schema leaves open: kept as JSON
+    types: tuple = ("object",)    # the JSON types the schema allows; () allows any
 
 
 @dataclass
@@ -140,8 +140,13 @@ class Builder:
         types = node.get("type")
         if isinstance(types, list):
             non_null = [t for t in types if t != "null"]
-            if len(non_null) != 1 or len(types) > 2:
-                raise SchemaError(f"{where}: only [T, \"null\"] unions are supported, got {types}")
+            if len(non_null) != 1:
+                # A union of several types: the value stays JSON, checked against those types.
+                if any(k in node for k in ("properties", "items", "enum", "const")):
+                    raise SchemaError(f"{where}: a {types} union with a nested shape is not supported")
+                return OpaqueT(tuple(types))
+            if len(types) > 2:
+                raise SchemaError(f"{where}: duplicate types {types}")
             types = non_null[0]
         if "oneOf" in node:
             raise SchemaError(f"{where}: oneOf is supported only at the schema root")
@@ -157,7 +162,7 @@ class Builder:
             return self.object(node, node.get("x-orange-cpp-name", name), where)
         if types == "array":
             if "items" not in node:
-                raise SchemaError(f"{where}: arrays need items")
+                return OpaqueT(("array",))   # items left open by the schema
             return ArrayT(self.type_of(node["items"], name + "Item", where + "[]"))
         if types in ("string", "integer", "number", "boolean"):
             kind = {"string": "string", "number": "double", "boolean": "bool"}.get(types)
@@ -170,6 +175,8 @@ class Builder:
                           decimals=node.get("x-orange-decimals"))
         if types is None and "enum" in node and all(isinstance(v, str) for v in node["enum"]):
             return Scalar(kind="string", enum=node["enum"])
+        if types is None and not any(k in node for k in ("properties", "items", "enum", "const")):
+            return OpaqueT(())             # any JSON value
         raise SchemaError(f"{where}: cannot map type {types!r}")
 
     def object(self, node: dict, name: str, where: str) -> ObjectT:
@@ -178,7 +185,8 @@ class Builder:
         for json_name, sub in node["properties"].items():
             sub_r = self.resolve(sub)
             self.check_keywords(sub_r, f"{where}/{json_name}")
-            nullable = isinstance(sub_r.get("type"), list) and "null" in sub_r["type"]
+            nullable = (isinstance(sub_r.get("type"), list) and "null" in sub_r["type"] and
+                        len(sub_r["type"]) == 2)
             if "const" in sub_r:
                 obj.fields.append(Field(json_name, cpp_identifier(json_name), None,
                                         json_name in required, const=sub_r["const"], is_const=True))
@@ -308,7 +316,12 @@ class Emitter:
         elif isinstance(t, ObjectT):
             out.append(f"if (!parse({src}, &{dst}, error, {path})) return false;")
         elif isinstance(t, OpaqueT):
-            out.append(f"if (!{src}.is_object()) {fail('expected an object')}")
+            if t.types:
+                checks = {"object": "is_object", "array": "is_array", "string": "is_string",
+                          "number": "is_number", "integer": "is_number_integer",
+                          "boolean": "is_boolean", "null": "is_null"}
+                condition = " || ".join(f"{src}.{checks[k]}()" for k in t.types)
+                out.append(f"if (!({condition})) {fail('expected ' + ' or '.join(t.types))}")
             out.append(f"{dst} = {src};")
         elif isinstance(t, ArrayT):
             out.append(f"if (!{src}.is_array()) {fail('expected an array')}")
