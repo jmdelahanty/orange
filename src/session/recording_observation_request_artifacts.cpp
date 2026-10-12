@@ -1,4 +1,5 @@
 #include "session/recording_observation_request_artifacts.h"
+#include "outputs/common/digest.h"
 #include "outputs/common/atomic_file.h"
 #include "citrus_recording_geometry.h"
 
@@ -129,15 +130,12 @@ bool parse_json_object(const std::string& bytes,
 
 std::string sha256_bytes(const std::string& bytes)
 {
-    return "sha256:" + checksum::sha256_hex(bytes);
+    return orange::outputs::sha256_token(bytes);
 }
 
 bool valid_sha256(const std::string& value)
 {
-    return value.size() == 71 && value.rfind("sha256:", 0) == 0 &&
-        std::all_of(value.begin() + 7, value.end(), [](const unsigned char ch) {
-            return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
-        });
+    return orange::outputs::is_sha256_token(value);
 }
 
 bool valid_read_only_permissions(const std::filesystem::path& path)

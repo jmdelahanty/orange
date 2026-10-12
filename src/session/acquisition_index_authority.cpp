@@ -1,4 +1,5 @@
 #include "session/acquisition_index_authority.h"
+#include "outputs/common/digest.h"
 
 #include "gui/spatial_layout/sha256.h"
 
@@ -33,8 +34,7 @@ bool fail(std::string* error_out, const std::string& message)
 
 std::string canonical_json_sha256(const json& value)
 {
-    return "sha256:" + orange::gui::spatial_layout::checksum::sha256_hex(
-        value.dump(-1, ' ', false, json::error_handler_t::strict));
+    return orange::outputs::canonical_json_sha256_token(value);
 }
 
 bool has_exact_fields(const json& value, const std::set<std::string>& expected)
@@ -72,29 +72,12 @@ bool get_uint64(const json& value, const char* field, std::uint64_t* out)
 
 bool is_sha256(const std::string& value)
 {
-    if (value.size() != 71 || value.rfind("sha256:", 0) != 0) {
-        return false;
-    }
-    for (std::size_t index = 7; index < value.size(); ++index) {
-        const char ch = value[index];
-        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
-            return false;
-        }
-    }
-    return true;
+    return orange::outputs::is_sha256_token(value);
 }
 
 bool is_bare_sha256(const std::string& value)
 {
-    if (value.size() != 64) {
-        return false;
-    }
-    for (const char ch : value) {
-        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
-            return false;
-        }
-    }
-    return true;
+    return orange::outputs::is_sha256_hex(value);
 }
 
 void append_little_endian_int64(std::string* bytes, const std::int64_t value)

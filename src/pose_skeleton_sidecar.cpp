@@ -1,5 +1,6 @@
 // src/pose_skeleton_sidecar.cpp — see pose_skeleton_sidecar.h.
 #include "pose_skeleton_sidecar.h"
+#include "outputs/common/digest.h"
 
 #include <fstream>
 #include <sstream>
@@ -26,11 +27,8 @@ bool read_file(const std::string& path, std::string* out)
 
 std::string file_sha256_hex(const std::string& path)
 {
-    std::string bytes;
-    if (!read_file(path, &bytes)) {
-        return {};
-    }
-    return orange::gui::spatial_layout::checksum::sha256_hex(bytes);
+    std::string hex;
+    return orange::outputs::file_sha256_hex(path, &hex) ? hex : std::string();
 }
 
 uint64_t sha256_prefix64(const std::string& hex)

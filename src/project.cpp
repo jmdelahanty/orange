@@ -1,5 +1,6 @@
 // src/project.cpp
 #include "project.h"
+#include "outputs/common/digest.h"
 #include "outputs/common/atomic_file.h"
 #include "timing/clock.h"
 #include "camera_config_schema.h"
@@ -4557,36 +4558,6 @@ constexpr const char* kImmutableRecordingStartSnapshotReferenceSchemaId =
     "orange.recording.immutable_start_snapshot_reference";
 constexpr int kImmutableRecordingStartSnapshotReferenceSchemaVersion = 1;
 
-bool write_all_bytes(const int descriptor,
-                     const std::string& bytes,
-                     std::string* error_out)
-{
-    std::size_t written = 0;
-    while (written < bytes.size()) {
-        const ssize_t result = ::write(
-            descriptor,
-            bytes.data() + written,
-            bytes.size() - written);
-        if (result < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            if (error_out) {
-                *error_out = std::string("failed to write immutable recording-start snapshot: ") +
-                    std::strerror(errno);
-            }
-            return false;
-        }
-        if (result == 0) {
-            if (error_out) {
-                *error_out = "short write while creating immutable recording-start snapshot";
-            }
-            return false;
-        }
-        written += static_cast<std::size_t>(result);
-    }
-    return true;
-}
 
 bool create_immutable_file_once(const std::filesystem::path& destination,
                                 const std::string& bytes,
@@ -4644,8 +4615,7 @@ constexpr std::uintmax_t kRecordingGeometryImageAssetMaxBytes =
     256ull * 1024ull * 1024ull;
 
 std::string recording_geometry_sha256(const std::string& bytes) {
-    return "sha256:" +
-        orange::gui::spatial_layout::checksum::sha256_hex(bytes);
+    return orange::outputs::sha256_token(bytes);
 }
 
 std::string recording_geometry_fnv1a64(const std::string& bytes) {

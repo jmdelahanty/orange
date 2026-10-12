@@ -1,4 +1,5 @@
 #include "spatial_roi_session_authority_store.h"
+#include "outputs/common/digest.h"
 
 #include "gui/spatial_layout/sha256.h"
 
@@ -65,17 +66,7 @@ std::string errno_message(const std::string& operation)
 
 bool canonical_sha256(const std::string& value)
 {
-    if (value.size() != 71 || value.compare(0, 7, "sha256:") != 0) {
-        return false;
-    }
-    for (std::size_t index = 7; index < value.size(); ++index) {
-        const unsigned char byte = static_cast<unsigned char>(value[index]);
-        if (!((byte >= '0' && byte <= '9') ||
-              (byte >= 'a' && byte <= 'f'))) {
-            return false;
-        }
-    }
-    return true;
+    return orange::outputs::is_sha256_token(value);
 }
 
 bool identity_from_stat(
@@ -365,8 +356,7 @@ bool read_fd_exact(
 
 std::string bytes_sha256(const std::string& bytes)
 {
-    return "sha256:" +
-        orange::gui::spatial_layout::checksum::sha256_hex(bytes);
+    return orange::outputs::sha256_token(bytes);
 }
 
 bool write_all(

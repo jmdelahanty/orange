@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gui/spatial_layout/sha256.h"
+#include "outputs/common/digest.h"
 #include "json.hpp"
 
 #include <cmath>
@@ -41,7 +42,7 @@ struct Result {
 
 inline std::string sha256(const std::string& bytes)
 {
-    return "sha256:" + checksum::sha256_hex(bytes);
+    return orange::outputs::sha256_token(bytes);
 }
 
 inline bool read_file(const fs::path& path,

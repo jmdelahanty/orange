@@ -1,5 +1,6 @@
 // Tests for src/outputs/common.
 #include "outputs/common/atomic_file.h"
+#include "outputs/common/digest.h"
 
 #include <filesystem>
 #include <fstream>
@@ -119,6 +120,20 @@ int main() {
     }
     for (auto& t : racers) t.join();
     check(created == 1 && matched == 7, "exactly one racer creates, seven see it identical");
+
+    // Digests: hex is bare, token is prefixed, for bytes and files alike.
+    const std::string abc_hex = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    check(sha256_hex("abc") == abc_hex, "sha256_hex of abc");
+    check(sha256_token("abc") == "sha256:" + abc_hex, "sha256_token of abc");
+    write_file_atomic(root / "abc.txt", "abc");
+    std::string file_hex, file_token;
+    check(file_sha256_hex(root / "abc.txt", &file_hex) && file_hex == abc_hex, "file_sha256_hex is bare hex");
+    check(file_sha256_token(root / "abc.txt", &file_token) && file_token == "sha256:" + abc_hex,
+          "file_sha256_token is prefixed");
+    check(is_sha256_hex(abc_hex) && !is_sha256_hex("sha256:" + abc_hex) && !is_sha256_hex("ABC"),
+          "is_sha256_hex");
+    check(is_sha256_token("sha256:" + abc_hex) && !is_sha256_token(abc_hex), "is_sha256_token");
+    check(canonical_json_text({{"b", 1}, {"a", "x"}}) == "{\"a\":\"x\",\"b\":1}", "canonical JSON is compact, sorted");
 
     fs::remove_all(root);
     std::cout << (failures ? "outputs_common_tests FAILED\n" : "outputs_common_tests passed\n");

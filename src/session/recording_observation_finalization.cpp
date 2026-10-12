@@ -1,4 +1,5 @@
 #include "session/recording_observation_finalization.h"
+#include "outputs/common/digest.h"
 #include "outputs/common/atomic_file.h"
 
 #include "gui/spatial_layout/sha256.h"
@@ -110,18 +111,14 @@ bool read_json(const fs::path& path, json* value_out, std::string* error_out)
 
 std::string byte_sha256(const std::string& bytes)
 {
-    return "sha256:" +
-        orange::gui::spatial_layout::checksum::sha256_hex(bytes);
+    return orange::outputs::sha256_token(bytes);
 }
 
 bool file_sha256(const fs::path& path,
                  std::string* value_out,
                  std::string* error_out)
 {
-    // The shared helper hashes in bounded chunks. This finalization call also
-    // stays outside acquisition and GUI rendering.
-    return orange::gui::spatial_layout::checksum::file_sha256(
-        path, value_out, error_out);
+    return orange::outputs::file_sha256_token(path, value_out, error_out);
 }
 
 bool write_create_once_exact(const fs::path& path,

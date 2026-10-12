@@ -1,4 +1,5 @@
 #include "session/recording_observation_binding.h"
+#include "outputs/common/digest.h"
 #include "recording_context.h"
 #include <cstdlib>
 
@@ -56,12 +57,7 @@ bool valid_identifier(const std::string& value)
 
 bool valid_sha256(const std::string& value)
 {
-    if (value.size() != 71 || value.rfind("sha256:", 0) != 0) {
-        return false;
-    }
-    return std::all_of(value.begin() + 7, value.end(), [](const unsigned char ch) {
-        return std::isdigit(ch) != 0 || (ch >= 'a' && ch <= 'f');
-    });
+    return orange::outputs::is_sha256_token(value);
 }
 
 bool valid_derived_id(const std::string& value, const char* prefix)
@@ -123,10 +119,7 @@ bool safe_absolute_path(const std::string& value)
 
 std::string canonical_sha256(const json& value)
 {
-    const std::string bytes = value.dump(
-        -1, ' ', false, json::error_handler_t::strict);
-    return "sha256:" +
-        orange::gui::spatial_layout::checksum::sha256_hex(bytes);
+    return orange::outputs::canonical_json_sha256_token(value);
 }
 
 bool valid_target(const json& target, std::string* error_out)

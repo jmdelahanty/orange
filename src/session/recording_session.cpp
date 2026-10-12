@@ -1,4 +1,5 @@
 #include "session/recording_session.h"
+#include "outputs/common/digest.h"
 #include "outputs/common/atomic_file.h"
 #include "timing/diagnostics_index.h"
 #include "timing/log_writer.h"
@@ -1777,11 +1778,7 @@ bool add_finalized_frame_identity_contract(
 // zero-based source_acquisition_frame_index.
 std::string canonical_json_sha256(const nlohmann::json& value)
 {
-    // nlohmann::json objects use ordered keys.  This is therefore compact,
-    // sorted-key UTF-8 JSON with no trailing newline.  Do not hash pretty
-    // printed manifest bytes here: this is a semantic-record digest.
-    return "sha256:" + orange::gui::spatial_layout::checksum::sha256_hex(
-        value.dump(-1, ' ', false, nlohmann::json::error_handler_t::strict));
+    return orange::outputs::canonical_json_sha256_token(value);
 }
 
 bool add_shaman_v2_recording_identity_contract(

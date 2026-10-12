@@ -1,4 +1,5 @@
 #include "session/recording_observation_identity.h"
+#include "outputs/common/digest.h"
 
 #include "gui/spatial_layout/sha256.h"
 
@@ -93,10 +94,7 @@ json identity_payload(const RecordingObservationEdgeIdentity& identity)
 
 std::string canonical_sha256(const json& value)
 {
-    const std::string bytes = value.dump(
-        -1, ' ', false, json::error_handler_t::strict);
-    return "sha256:" +
-        orange::gui::spatial_layout::checksum::sha256_hex(bytes);
+    return orange::outputs::canonical_json_sha256_token(value);
 }
 
 bool exact_keys(const json& value,

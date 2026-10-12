@@ -1,4 +1,5 @@
 #include "session/recording_observation_prearm.h"
+#include "outputs/common/digest.h"
 #include "outputs/common/atomic_file.h"
 #include "recording_subject_reference.h"
 #include <iostream>
@@ -68,7 +69,7 @@ bool fail(std::string* error_out, const std::string& message)
 
 std::string sha256_bytes(const std::string& bytes)
 {
-    return "sha256:" + checksum::sha256_hex(bytes);
+    return orange::outputs::sha256_token(bytes);
 }
 
 bool read_regular_file(const std::filesystem::path& path,

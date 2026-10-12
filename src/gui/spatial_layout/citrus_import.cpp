@@ -1,4 +1,5 @@
 #include "gui/spatial_layout/citrus_import.h"
+#include "outputs/common/digest.h"
 #include "gui/spatial_layout/canvas_projection_geometry_identity.h"
 #include "gui/spatial_layout/sha256.h"
 
@@ -119,8 +120,8 @@ bool path_is_inside(const std::filesystem::path& child,
 
 bool sha256_matches(const std::string& bytes, const std::string& expected)
 {
-    const std::string digest = checksum::sha256_hex(bytes);
-    return expected == digest || expected == "sha256:" + digest;
+    const std::string digest = orange::outputs::sha256_hex(bytes);
+    return expected == digest || expected == orange::outputs::kSha256TokenPrefix + digest;
 }
 
 std::string expected_homography_configuration_fingerprint(
