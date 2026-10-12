@@ -1,4 +1,5 @@
 #include "yolo_event_log.h"
+#include "orange_outputs/orange_yolo_event_v3.h"
 #include "timing/log_writer.h"
 #include "timing/clock.h"
 #include "event_log_format.h"
@@ -228,6 +229,29 @@ nlohmann::json spatial_mask_policy_json(const YoloResultRecord& record)
 
 }  // namespace
 
+namespace ev = orange::outputs::gen::yolo_event_v3;
+
+// The spatial-mask policy block, checked against the schema (its runtime-policy keys are open in
+// v3 and kept verbatim). A policy the schema refuses is reported and its line not written.
+template <class Block>
+bool spatial_mask_block(const YoloResultRecord& record, Block* block, std::string* error)
+{
+    return ev::parse(spatial_mask_policy_json(record), block, error, "/spatial_mask");
+}
+
+void YoloEventLogger::WriteLine(const nlohmann::json& line, const YoloResultRecord& record)
+{
+    file_ << line.dump() << '\n';
+    if (!file_) failed_folders_.insert(record.recording_folder);
+}
+
+void YoloEventLogger::RefuseLine(const char* kind, const std::string& error, const YoloResultRecord& record)
+{
+    std::cerr << "[YoloEventLog] " << camera_serial_ << " " << kind
+              << " line not written, it does not match orange.yolo_event v3: " << error << std::endl;
+    failed_folders_.insert(record.recording_folder);
+}
+
 void YoloEventLogger::WriteSessionHeaderIfNeeded(const YoloResultRecord& record)
 {
     if (!header_written_folders_.insert(record.recording_folder).second) {
@@ -239,42 +263,32 @@ void YoloEventLogger::WriteSessionHeaderIfNeeded(const YoloResultRecord& record)
     const bool real_engine = !record.engine_path.empty() && record.engine_path != "synthetic";
     const orange::model_identity::ModelIdentity identity =
         orange::model_identity::resolve_model_identity(real_engine ? record.engine_path : std::string());
-    const nlohmann::json root = {
-        {"schema_id", event_log_format::kYoloEventSchemaId},
-        {"schema_version", event_log_format::kYoloEventSchemaVersion},
-        {"event_kind", "session_header"},
-        {"recording_id", recording_id_},
-        {"camera_serial", camera_serial_},
-        {"camera_id", camera_id_},
-        {"worker", worker_name_},
-        {"frame_identity_key", "frame.recording_frame_id"},
-        {"source_frame", {
-            {"width_px", record.source_width},
-            {"height_px", record.source_height}
-        }},
-        {"yolo", {
-            {"worker", "YoloWorker"},
-            {"model_id", record.model_id},
-            {"engine_path", record.engine_path},
-            {"engine_sha256", identity.engine_sha256},
-            {"engine_bytes", identity.engine_bytes},
-            {"weights_sha256", identity.weights_sha256},
-            {"onnx_sha256", identity.onnx_sha256},
-            {"engine_manifest_run_id", identity.run_id},
-            {"gpu_id", record.gpu_id},
-            {"coordinate_space", "source_frame_pixels"},
-            {"detection_source", record.detection_source},
-            {"synthetic_runtime_detection", record.synthetic_runtime_detection}
-        }},
-        {"spatial_mask", spatial_mask_policy_json(record)},
-        {"citrus_live_ipc", {
-            {"queue_name", record.queue_name},
-            {"enabled", record.ipc_enabled}
-        }},
-        {"line_format", event_log_format::line_format_json()}
-    };
+    ev::OrangeYoloEventV3SessionHeader header;
+    header.recording_id = recording_id_;
+    header.camera_serial = camera_serial_;
+    header.camera_id = camera_id_;
+    header.worker = worker_name_;
+    header.source_frame.width_px = static_cast<std::uint64_t>(record.source_width);
+    header.source_frame.height_px = static_cast<std::uint64_t>(record.source_height);
+    header.yolo.model_id = record.model_id;
+    header.yolo.engine_path = record.engine_path;
+    header.yolo.engine_sha256 = identity.engine_sha256;
+    header.yolo.engine_bytes = identity.engine_bytes;
+    header.yolo.weights_sha256 = identity.weights_sha256;
+    header.yolo.onnx_sha256 = identity.onnx_sha256;
+    header.yolo.engine_manifest_run_id = identity.run_id;
+    header.yolo.gpu_id = record.gpu_id;
+    header.yolo.detection_source = record.detection_source;
+    header.yolo.synthetic_runtime_detection = record.synthetic_runtime_detection;
+    header.citrus_live_ipc.queue_name = record.queue_name;
+    header.citrus_live_ipc.enabled = record.ipc_enabled;
     last_policy_generation_by_folder_[record.recording_folder] = record.spatial_mask.policy_generation;
-    file_ << root.dump() << '\n';
+    std::string error;
+    if (!spatial_mask_block(record, &header.spatial_mask, &error)) {
+        RefuseLine("session_header", error, record);
+        return;
+    }
+    WriteLine(ev::to_json(header), record);
 }
 
 void YoloEventLogger::WriteSpatialMaskPolicyIfChanged(const YoloResultRecord& record)
@@ -284,17 +298,15 @@ void YoloEventLogger::WriteSpatialMaskPolicyIfChanged(const YoloResultRecord& re
         return;
     }
     last = record.spatial_mask.policy_generation;
-    const nlohmann::json root = {
-        {"schema_id", event_log_format::kYoloEventSchemaId},
-        {"schema_version", event_log_format::kYoloEventSchemaVersion},
-        {"event_kind", "spatial_mask_policy"},
-        {"camera_serial", camera_serial_},
-        {"frame", {
-            {"recording_frame_id", record.recording_frame_id}
-        }},
-        {"spatial_mask", spatial_mask_policy_json(record)}
-    };
-    file_ << root.dump() << '\n';
+    ev::OrangeYoloEventV3SpatialMaskPolicy policy;
+    policy.camera_serial = camera_serial_;
+    policy.frame.recording_frame_id = record.recording_frame_id;
+    std::string error;
+    if (!spatial_mask_block(record, &policy.spatial_mask, &error)) {
+        RefuseLine("spatial_mask_policy", error, record);
+        return;
+    }
+    WriteLine(ev::to_json(policy), record);
 }
 
 void YoloEventLogger::WriteResult(const YoloResultRecord& record) {
@@ -319,108 +331,75 @@ void YoloEventLogger::WriteResult(const YoloResultRecord& record) {
     using event_log_format::round_confidence;
     using event_log_format::round_px;
 
-    nlohmann::json detections = nlohmann::json::array();
+    ev::OrangeYoloEventV3YoloResult line;
+    line.event_sequence = next_sequence++;
+    line.camera_serial = camera_serial_;
+    line.frame.stream_frame_id = record.local_frame_id;
+    line.frame.camera_frame_id = record.camera_frame_id;
+    line.frame.recording_frame_id = record.recording_frame_id;
+    line.frame.record_active = record.record_active;
+    line.timestamps.camera_timestamp = record.camera_timestamp;
+    line.timestamps.timestamp_sys_ns = record.timestamp_sys_ns;
+    line.timestamps.event_epoch_us = record.event_epoch_us;
+    line.timestamps.event_monotonic_us = record.event_monotonic_us;
+    line.yolo.status = record.status;
+    line.yolo.detection_count = record.detections.size();
+    line.yolo.detection_source = record.detection_source;
+    line.yolo.synthetic_runtime_detection = record.synthetic_runtime_detection;
+    line.yolo.production_detection_valid = !record.synthetic_runtime_detection;
+    if (!record.error.empty()) {
+        line.yolo.error = record.error;
+    }
     for (size_t i = 0; i < record.detections.size(); ++i) {
         const pose::Object& detection = record.detections[i];
-        nlohmann::json item = {
-            {"index", static_cast<int>(i)},
-            {"x_px", round_px(detection.rect.x)},
-            {"y_px", round_px(detection.rect.y)},
-            {"width_px", round_px(detection.rect.width)},
-            {"height_px", round_px(detection.rect.height)},
-            {"label", detection.label},
-            {"confidence", round_confidence(detection.prob)}
-        };
+        ev::OrangeYoloEventV3YoloResultDetectionsItem item;
+        item.index = i;
+        item.x_px = round_px(detection.rect.x);
+        item.y_px = round_px(detection.rect.y);
+        item.width_px = round_px(detection.rect.width);
+        item.height_px = round_px(detection.rect.height);
+        item.label = detection.label;
+        item.confidence = round_confidence(detection.prob);
         // Detect-only engines emit no keypoints; the array is present only
         // when a keypoint model wrote some.
         const size_t keypoint_count = std::min<size_t>(
             detection.num_kps,
             static_cast<size_t>(pose::MAX_KEYPOINTS));
         if (keypoint_count > 0) {
-            nlohmann::json keypoints = nlohmann::json::array();
+            std::vector<double> keypoints;
             for (size_t k = 0; k < keypoint_count; ++k) {
                 keypoints.push_back(round_px(detection.kps[k]));
             }
-            item["keypoints"] = std::move(keypoints);
+            item.keypoints = std::move(keypoints);
         }
-        detections.push_back(std::move(item));
+        line.detections.push_back(std::move(item));
     }
-
-    nlohmann::json yolo = {
-        {"status", record.status},
-        {"detection_count", static_cast<int>(record.detections.size())},
-        {"detection_source", record.detection_source},
-        {"synthetic_runtime_detection", record.synthetic_runtime_detection},
-        {"production_detection_valid", !record.synthetic_runtime_detection}
-    };
-    if (!record.error.empty()) {
-        yolo["error"] = record.error;
+    line.spatial_mask.policy_generation = record.spatial_mask.policy_generation;
+    line.spatial_mask.result.raw_detection_count = record.spatial_mask.raw_detection_count;
+    line.spatial_mask.result.inside_detection_count = record.spatial_mask.inside_detection_count;
+    line.spatial_mask.result.outside_detection_count = record.spatial_mask.outside_detection_count;
+    line.spatial_mask.result.downstream_detection_count = record.spatial_mask.downstream_detection_count;
+    for (const SpatialMaskOutsideDetection& outside : record.spatial_mask.outside_detections) {
+        ev::OrangeYoloEventV3YoloResultSpatialMaskOutsideDetectionsItem item;
+        item.raw_index = static_cast<std::int64_t>(outside.raw_index);
+        item.box.x_px = round_px(outside.x_px);
+        item.box.y_px = round_px(outside.y_px);
+        item.box.width_px = round_px(outside.width_px);
+        item.box.height_px = round_px(outside.height_px);
+        item.box.label = outside.label;
+        item.box.confidence = round_confidence(outside.confidence);
+        item.centroid_px.x = round_px(outside.centroid_x_px);
+        item.centroid_px.y = round_px(outside.centroid_y_px);
+        item.signed_boundary_distance_px = round_px(outside.signed_boundary_distance_px);
+        item.decision = outside.rejected ? "rejected" : "would_reject";
+        line.spatial_mask.outside_detections.push_back(std::move(item));
     }
+    line.citrus_live_ipc.enabled = record.ipc_enabled;
+    line.citrus_live_ipc.requested = record.ipc_requested;
+    line.citrus_live_ipc.request_status = record.ipc_request_status;
 
-    nlohmann::json spatial_mask = {
-        {"policy_generation", record.spatial_mask.policy_generation},
-        {"result", {
-            {"raw_detection_count", record.spatial_mask.raw_detection_count},
-            {"inside_detection_count", record.spatial_mask.inside_detection_count},
-            {"outside_detection_count", record.spatial_mask.outside_detection_count},
-            {"downstream_detection_count", record.spatial_mask.downstream_detection_count},
-        }}
-    };
-    nlohmann::json outside_detections = nlohmann::json::array();
-    for (const SpatialMaskOutsideDetection& outside :
-         record.spatial_mask.outside_detections) {
-        outside_detections.push_back({
-            {"raw_index", outside.raw_index},
-            {"box", {
-                {"x_px", round_px(outside.x_px)},
-                {"y_px", round_px(outside.y_px)},
-                {"width_px", round_px(outside.width_px)},
-                {"height_px", round_px(outside.height_px)},
-                {"label", outside.label},
-                {"confidence", round_confidence(outside.confidence)},
-            }},
-            {"centroid_px", {
-                {"x", round_px(outside.centroid_x_px)},
-                {"y", round_px(outside.centroid_y_px)},
-            }},
-            {"signed_boundary_distance_px", round_px(outside.signed_boundary_distance_px)},
-            {"decision", outside.rejected ? "rejected" : "would_reject"},
-            {"rejected_reason", "outside_valid_detection_region"},
-        });
-    }
-    spatial_mask["outside_detections"] = std::move(outside_detections);
-
-    nlohmann::json root = {
-        {"schema_id", event_log_format::kYoloEventSchemaId},
-        {"schema_version", event_log_format::kYoloEventSchemaVersion},
-        {"event_sequence", next_sequence++},
-        {"event_kind", "yolo_result"},
-        {"camera_serial", camera_serial_},
-        {"frame", {
-            {"stream_frame_id", record.local_frame_id},
-            {"camera_frame_id", record.camera_frame_id},
-            {"recording_frame_id", record.recording_frame_id},
-            {"record_active", record.record_active}
-        }},
-        {"timestamps", {
-            {"camera_timestamp", record.camera_timestamp},
-            {"timestamp_sys_ns", record.timestamp_sys_ns},
-            {"event_epoch_us", record.event_epoch_us},
-            {"event_monotonic_us", record.event_monotonic_us}
-        }},
-        {"yolo", std::move(yolo)},
-        {"spatial_mask", std::move(spatial_mask)},
-        {"detections", std::move(detections)},
-        {"citrus_live_ipc", {
-            {"enabled", record.ipc_enabled},
-            {"requested", record.ipc_requested},
-            {"request_status", record.ipc_request_status}
-        }}
-    };
-
-    file_ << root.dump() << '\n';
+    WriteLine(ev::to_json(line), record);
     if (file_) last_written_by_folder_[record.recording_folder] = record.recording_frame_id;
-    else failed_folders_.insert(record.recording_folder);
 }
 
 void YoloEventLogger::ThreadMain() {

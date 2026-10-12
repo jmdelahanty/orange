@@ -140,6 +140,8 @@ private:
     // line is written whenever the policy generation changes; frame lines
     // carry only identity, timestamps, results and per-frame mask results.
     void WriteSessionHeaderIfNeeded(const YoloResultRecord& record);
+    void WriteLine(const nlohmann::json& line, const YoloResultRecord& record);
+    void RefuseLine(const char* kind, const std::string& error, const YoloResultRecord& record);
     void WriteSpatialMaskPolicyIfChanged(const YoloResultRecord& record);
     void WriteResult(const YoloResultRecord& record);
     void ThreadMain();

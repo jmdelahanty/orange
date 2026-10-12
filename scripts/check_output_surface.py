@@ -8,11 +8,16 @@ Extracts the output surface of Orange's producer sources (src/ and the recorder 
   - schemas:     schema_id / schema_version pairs, with k-constants resolved. A declared
                  version of a schema family published in docs/schemas must have its file.
 
+A file that writes through generated code (#include "orange_outputs/<schema>.h", see
+tools/schema_codegen) is credited with that schema's property names and schema_id / version,
+since the key literals live in the generated header.
+
   check_output_surface.py                 compare with tools/output_surface_snapshot.json
   check_output_surface.py --update        rewrite the snapshot (commit it with the change)
-  check_output_surface.py --base <ref>    also require that, if csv_headers or json_keys
-                                          differ from the snapshot at <ref>, the schemas
-                                          differ too (a version was bumped or added)
+  check_output_surface.py --base <ref>    also require that, if the csv_headers or json_keys
+                                          over all files differ from the snapshot at <ref>,
+                                          the schemas differ too (a version was bumped or
+                                          added); a name moving between files is no change
 
 Static extraction: it sees names in the source, not files on disk, so it complements the
 writers' own tests rather than replacing them. No dependencies beyond the standard library.
@@ -50,6 +55,31 @@ TEXT_SCHEMA_PAIR = re.compile(
     r'\\"schema_id\\":\s*\\"([a-z][a-z0-9_.]*)\\",(?:\\n)?[\s"<>\w\\]*?\\"schema_version\\":\s*([0-9]+)')
 INT_CONSTANT = re.compile(r"\b(k[A-Za-z0-9_]+)\s*=\s*([0-9]+)\s*;")
 STR_CONSTANT = re.compile(r'\b(k[A-Za-z0-9_]+)\s*=\s*"([a-z][a-z0-9_.]*)"\s*;')
+GENERATED_INCLUDE = re.compile(r'#include\s+"orange_outputs/([a-z0-9_]+)\.h"')
+
+
+def schema_surface(name: str) -> tuple[set[str], set[tuple[str, str]]]:
+    """Property names and schema_id / version consts declared by docs/schemas/<name>.schema.json."""
+    keys: set[str] = set()
+    schemas: set[tuple[str, str]] = set()
+
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            props = node.get("properties")
+            if isinstance(props, dict):
+                keys.update(props)
+                sid = props.get("schema_id", {})
+                ver = props.get("schema_version", {})
+                if isinstance(sid, dict) and isinstance(ver, dict) and "const" in sid and "const" in ver:
+                    schemas.add((sid["const"], str(ver["const"])))
+            for child in node.values():
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(json.loads((REPO / "docs" / "schemas" / f"{name}.schema.json").read_text(encoding="utf-8")))
+    return keys, schemas
 
 
 def constants(texts: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
@@ -87,6 +117,10 @@ def extract() -> dict[str, dict[str, list]]:
             (resolve(sid, strs), resolve(ver, ints)) for sid, ver in SCHEMA_PAIR.findall(text)
         }
         schemas.update(TEXT_SCHEMA_PAIR.findall(text))
+        for name in GENERATED_INCLUDE.findall(text):
+            generated_keys, generated_schemas = schema_surface(name)
+            keys |= generated_keys
+            schemas |= generated_schemas
         if headers or keys or schemas:
             surface[rel] = {
                 "csv_headers": sorted(headers),
@@ -133,13 +167,18 @@ def all_schemas(surface: dict) -> set[str]:
     return {json.dumps(s) for entry in surface.values() for s in entry["schemas"]}
 
 
+def all_names(surface: dict) -> dict[str, set[str]]:
+    """The output names over every producer file: moving a name between files changes nothing."""
+    return {kind: {name for entry in surface.values() for name in entry[kind]}
+            for kind in ("csv_headers", "json_keys")}
+
+
 def names_changed(old: dict, new: dict) -> list[str]:
+    before, after = all_names(old), all_names(new)
     changed = []
-    for rel in sorted(set(old) | set(new)):
-        for kind in ("csv_headers", "json_keys"):
-            if old.get(rel, {}).get(kind, []) != new.get(rel, {}).get(kind, []):
-                changed.append(rel)
-                break
+    for kind in ("csv_headers", "json_keys"):
+        changed += [f"+{name}" for name in sorted(after[kind] - before[kind])]
+        changed += [f"-{name}" for name in sorted(before[kind] - after[kind])]
     return changed
 
 
@@ -185,7 +224,7 @@ def main() -> int:
             changed = names_changed(base, snapshot)
             if changed and all_schemas(base) == all_schemas(snapshot):
                 print("check_output_surface: output names changed since "
-                      f"{args.base} in {', '.join(changed)} but no schema version changed")
+                      f"{args.base} ({', '.join(changed)}) but no schema version changed")
                 status = 1
     if status == 0:
         print(f"check_output_surface: passed ({len(current)} producer files)")

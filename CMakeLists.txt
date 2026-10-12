@@ -1346,6 +1346,15 @@ if(BUILD_TESTING)
     target_link_libraries(yolo_event_log_drain_tests PRIVATE Threads::Threads)
     add_test(NAME yolo_event_log_drain_tests COMMAND yolo_event_log_drain_tests)
 
+    add_executable(yolo_event_log_golden_tests
+        "tools/yolo_event_log_golden_tests.cpp" "${SRC_DIR}/yolo_event_log.cpp"
+        "${SRC_DIR}/model_identity.cpp" "${SRC_DIR}/pose_skeleton_sidecar.cpp")
+    target_include_directories(yolo_event_log_golden_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(yolo_event_log_golden_tests PRIVATE cxx_std_17)
+    target_link_libraries(yolo_event_log_golden_tests PRIVATE Threads::Threads)
+    add_test(NAME yolo_event_log_golden_tests COMMAND yolo_event_log_golden_tests
+        "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/golden/Cam2010093_yolo_events.jsonl")
+
     add_executable(yolo_spatial_mask_tests
         "tools/yolo_spatial_mask_tests.cpp"
     )
