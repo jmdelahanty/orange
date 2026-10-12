@@ -995,6 +995,59 @@ void test_ptp_summary_captures_host_evidence_live_at_start()
     std::filesystem::remove_all(folder);
 }
 
+void test_ptp_summary_records_host_clock_configuration()
+{
+    namespace fs = std::filesystem;
+    const fs::path folder = fs::temp_directory_path() /
+        ("orange_host_clock_" + std::to_string(static_cast<long long>(::getpid())));
+    fs::remove_all(folder);
+    const fs::path host = folder / "host";
+    auto put = [](const fs::path& path, const std::string& bytes) {
+        fs::create_directories(path.parent_path());
+        std::ofstream(path, std::ios::binary) << bytes;
+    };
+    put(host / "etc/ptp4l.conf", "[global]\nboundary_clock_jbod 1\n");
+    put(host / "etc/systemd/system/ptp4l.service", "ExecStart=/usr/sbin/ptp4l -f /etc/ptp4l.conf\n");
+    put(host / "etc/systemd/system/phc2sys.service", "ExecStart=/usr/sbin/phc2sys -a -rr\n");
+    put(host / "usr/share/zoneinfo/leap-seconds.list",
+        "#@\t4023129600\n3644697600\t36\t# 1 Jul 2015\n3692217600\t37\t# 1 Jan 2017\n");
+    put(host / "proc/4242/comm", "phc2sys\n");
+    put(host / "proc/4242/cmdline", std::string("/usr/sbin/phc2sys\0-a\0-rr\0", 25));
+    put(host / "proc/4243/comm", "ptp4l\n");
+    put(host / "proc/4243/cmdline", std::string("/usr/sbin/ptp4l\0-f\0/etc/ptp4l.conf\0", 35));
+    require(::setenv("ORANGE_HOST_CLOCK_ROOT", host.c_str(), 1) == 0, "set host clock root");
+    require(initialize_ptp_sync_summary(folder.string(), "host_clock", 1, true, nullptr),
+            "PTP summary initialization should succeed");
+    ::unsetenv("ORANGE_HOST_CLOCK_ROOT");
+    const nlohmann::json summary = read_json(folder / "ptp_sync_summary.json");
+    require(summary.at("schema_version") == 2, "ptp_sync_summary is v2");
+    const nlohmann::json& clock = summary.at("host_clock_configuration");
+    require(clock.at("schema_id") == "orange.host_clock.configuration" && clock.at("schema_version") == 1,
+            "host clock configuration identity");
+    require(clock.at("ptp4l").at("config").at("text") == "[global]\nboundary_clock_jbod 1\n" &&
+                clock.at("ptp4l").at("config").at("sha256").get<std::string>().rfind("sha256:", 0) == 0,
+            "ptp4l config text and token digest recorded");
+    require(clock.at("phc2sys").at("process").at("argv") == nlohmann::json({"/usr/sbin/phc2sys", "-a", "-rr"}),
+            "running phc2sys command line recorded (direction -rr)");
+    require(clock.at("ptp4l").at("process").at("pid") == 4243, "running ptp4l found by comm");
+    require(clock.at("leap_seconds").at("tai_minus_utc_seconds_now") == 37 &&
+                clock.at("leap_seconds").at("expires_utc") == "2027-06-28T00:00:00Z",
+            "leap table offset and expiry recorded");
+    require(clock.at("system_clock").contains("kernel_ntp_synchronized"), "kernel sync state recorded");
+
+    // On the real host every block is present (values depend on the machine).
+    fs::remove(folder / "ptp_sync_summary.json");
+    require(initialize_ptp_sync_summary(folder.string(), "host_clock", 1, true, nullptr), "real host");
+    const nlohmann::json real = read_json(folder / "ptp_sync_summary.json").at("host_clock_configuration");
+    require(real.contains("ptp4l") && real.contains("phc2sys") && real.contains("leap_seconds"),
+            "real host capture has every block");
+    std::cout << "host clock (real): ptp4l running=" << !real.at("ptp4l").at("process").is_null()
+              << " phc2sys=" << real.at("phc2sys").at("process").dump()
+              << " ntp_synchronized=" << real.at("system_clock").at("kernel_ntp_synchronized")
+              << " tai_minus_utc=" << real.at("leap_seconds").value("tai_minus_utc_seconds_now", nlohmann::json()) << "\n";
+    fs::remove_all(folder);
+}
+
 void test_manifest_freezes_external_returned_identity_proof()
 {
     const std::filesystem::path folder =
@@ -1893,6 +1946,8 @@ int main()
          test_manifest_preserves_untraceable_ptp_timescale_evidence},
         {"ptp_summary_captures_host_evidence_live_at_start",
          test_ptp_summary_captures_host_evidence_live_at_start},
+        {"ptp_summary_records_host_clock_configuration",
+         test_ptp_summary_records_host_clock_configuration},
         {"manifest_freezes_external_returned_identity_proof",
          test_manifest_freezes_external_returned_identity_proof},
         {"manifest_seals_dense_acquisition_index_mapping_and_exact_metadata_checksum",

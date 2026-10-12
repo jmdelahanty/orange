@@ -18,6 +18,7 @@
 #include <pwd.h>
 #include <sys/stat.h>    // For mkdir
 #include <sys/wait.h>
+#include <sys/timex.h>
 #include <iostream>
 #include <fstream>       // For std::ifstream
 #include <filesystem>    // For std::filesystem
@@ -4481,6 +4482,133 @@ nlohmann::json build_host_ptp_management_evidence() {
     return evidence;
 }
 
+namespace {
+
+// Host-clock evidence files are read under ORANGE_HOST_CLOCK_ROOT when set (tests).
+std::filesystem::path host_clock_path(const std::string& absolute) {
+    const char* root = std::getenv("ORANGE_HOST_CLOCK_ROOT");
+    return root && *root ? std::filesystem::path(root) / absolute.substr(1) : std::filesystem::path(absolute);
+}
+
+nlohmann::json host_clock_file(const std::string& absolute, bool include_text) {
+    const std::filesystem::path path = host_clock_path(absolute);
+    std::string error;
+    const std::string bytes = read_file_to_string(path.string(), &error);
+    nlohmann::json file = {{"path", absolute}, {"present", !bytes.empty()}};
+    if (!bytes.empty()) {
+        file["sha256"] = orange::outputs::sha256_token(bytes);
+        file["size_bytes"] = bytes.size();
+        if (include_text) {
+            file["text"] = bytes;
+        }
+    }
+    return file;
+}
+
+// argv of the running process whose /proc/<pid>/comm is `name` (first match), or null.
+nlohmann::json running_process(const std::string& name) {
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(host_clock_path("/proc"), ec)) {
+        const std::string pid = entry.path().filename().string();
+        if (pid.empty() || pid.find_first_not_of("0123456789") != std::string::npos) {
+            continue;
+        }
+        std::string comm_error;
+        std::string comm = read_file_to_string((entry.path() / "comm").string(), &comm_error);
+        while (!comm.empty() && (comm.back() == '\n' || comm.back() == '\r')) comm.pop_back();
+        if (comm != name) {
+            continue;
+        }
+        std::string cmd_error;
+        const std::string raw = read_file_to_string((entry.path() / "cmdline").string(), &cmd_error);
+        nlohmann::json argv = nlohmann::json::array();
+        std::string arg;
+        for (const char ch : raw) {
+            if (ch == '\0') { argv.push_back(arg); arg.clear(); } else { arg += ch; }
+        }
+        if (!arg.empty()) argv.push_back(arg);
+        return {{"pid", std::stoll(pid)}, {"argv", argv}};
+    }
+    return nullptr;
+}
+
+// TAI-UTC for now and the table's expiry from an IERS leap-seconds.list text.
+nlohmann::json leap_seconds_summary(const std::string& text) {
+    constexpr long long kNtpMinusUnix = 2208988800LL;
+    const long long now_ntp = static_cast<long long>(std::time(nullptr)) + kNtpMinusUnix;
+    long long expires_ntp = 0;
+    nlohmann::json tai_minus_utc = nullptr;
+    std::istringstream lines(text);
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (line.rfind("#@", 0) == 0) {
+            try { expires_ntp = std::stoll(line.substr(2)); } catch (...) {}
+        } else if (!line.empty() && std::isdigit(static_cast<unsigned char>(line[0]))) {
+            std::istringstream fields(line);
+            long long at = 0;
+            long long offset = 0;
+            if (fields >> at >> offset && at <= now_ntp) {
+                tai_minus_utc = offset;
+            }
+        }
+    }
+    nlohmann::json out = {{"tai_minus_utc_seconds_now", tai_minus_utc}};
+    if (expires_ntp > 0) {
+        const std::time_t expires = static_cast<std::time_t>(expires_ntp - kNtpMinusUnix);
+        std::tm tm{};
+        gmtime_r(&expires, &tm);
+        char buffer[32];
+        std::strftime(buffer, sizeof(buffer), "%Y-%m-%dT%H:%M:%SZ", &tm);
+        out["expires_utc"] = buffer;
+        out["expired"] = now_ntp >= expires_ntp;
+    }
+    return out;
+}
+
+}  // namespace
+
+// What defines camera time on this host, captured at the recording start: the PTP daemons'
+// configuration and the command lines actually running (phc2sys -rr = system clock -> PHCs ->
+// cameras), the kernel's NTP synchronization state of CLOCK_REALTIME, and the IERS table the
+// 37 s TAI-UTC offset is checked against (pancakebatter docs/ptp_services.md).
+nlohmann::json build_host_clock_configuration() {
+    nlohmann::json leap = host_clock_file("/usr/share/zoneinfo/leap-seconds.list", false);
+    if (leap.value("present", false)) {
+        std::string error;
+        leap.update(leap_seconds_summary(
+            read_file_to_string(host_clock_path("/usr/share/zoneinfo/leap-seconds.list").string(), &error)));
+    }
+    struct timex tx{};
+    const int clock_state = ::adjtimex(&tx);
+    const bool kernel_synchronized = clock_state != TIME_ERROR && (tx.status & STA_UNSYNC) == 0;
+    std::error_code ec;
+    return {
+        {"schema_id", "orange.host_clock.configuration"},
+        {"schema_version", 1},
+        {"captured_at_utc", get_current_utc_timestamp()},
+        {"capture_trigger", "recording_start"},
+        {"ptp4l", {
+            {"config", host_clock_file("/etc/ptp4l.conf", true)},
+            {"unit", host_clock_file("/etc/systemd/system/ptp4l.service", false)},
+            {"process", running_process("ptp4l")},
+        }},
+        {"phc2sys", {
+            {"unit", host_clock_file("/etc/systemd/system/phc2sys.service", false)},
+            {"process", running_process("phc2sys")},
+        }},
+        {"system_clock", {
+            {"clock", "CLOCK_REALTIME"},
+            {"kernel_ntp_synchronized", kernel_synchronized},
+            {"kernel_clock_state", clock_state},
+            {"kernel_max_error_us", static_cast<long long>(tx.maxerror)},
+            {"kernel_estimated_error_us", static_cast<long long>(tx.esterror)},
+            {"timesyncd_synchronized_marker",
+             std::filesystem::exists(host_clock_path("/run/systemd/timesync/synchronized"), ec)},
+        }},
+        {"leap_seconds", leap},
+    };
+}
+
 nlohmann::json build_ptp_sync_summary_base(const std::string& recording_folder,
                                           const std::string& recording_id,
                                           int num_cameras,
@@ -4488,7 +4616,7 @@ nlohmann::json build_ptp_sync_summary_base(const std::string& recording_folder,
                                           const PTPParams* ptp_params,
                                           bool capture_host_evidence = true) {
     nlohmann::json summary = nlohmann::json::object();
-    summary["schema_version"] = 1;
+    summary["schema_version"] = 2;  // v2: host_clock_configuration
     summary["recording_id"] =
         recording_id.empty() ? std::filesystem::path(recording_folder).filename().string() : recording_id;
     summary["recording_folder"] = recording_folder;
@@ -4497,6 +4625,7 @@ nlohmann::json build_ptp_sync_summary_base(const std::string& recording_folder,
     summary["sync"] = build_recording_sync_snapshot(sync_camera_enabled, ptp_params, num_cameras);
     if (capture_host_evidence) {
         summary["host_ptp_management_evidence"] = build_host_ptp_management_evidence();
+        summary["host_clock_configuration"] = build_host_clock_configuration();
     } else {
         // Rebuilt after the start: evidence captured now would not describe the start.
         summary["host_ptp_management_evidence"] = {
