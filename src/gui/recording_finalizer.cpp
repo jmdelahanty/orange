@@ -4,6 +4,7 @@
 // called from this translation unit stay in an anonymous namespace here.
 
 #include "gui/recording_finalizer.h"
+#include "outputs/common/csv.h"
 #include "timing/log_writer.h"
 #include "fsuid_guard.h"
 #include "scoped_housekeeping_cpu.h"
@@ -266,13 +267,7 @@ struct GuiFrameMetadataCsvStats {
 
 std::vector<std::string> gui_split_csv_row(const std::string& row)
 {
-    std::vector<std::string> cells;
-    std::istringstream input(row);
-    std::string cell;
-    while (std::getline(input, cell, ',')) {
-        cells.push_back(cell);
-    }
-    return cells;
+    return orange::outputs::split_csv_row(row);
 }
 
 bool gui_parse_u64_cell(const std::string& value, uint64_t* out)

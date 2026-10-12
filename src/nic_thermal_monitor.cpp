@@ -1,4 +1,5 @@
 #include "nic_thermal_monitor.h"
+#include "outputs/common/csv.h"
 #include "outputs/common/atomic_file.h"
 #include "timing/clock.h"
 
@@ -235,19 +236,7 @@ bool write_json_atomic_owned(const std::filesystem::path& path,
 
 std::string csv_escape(const std::string& value)
 {
-    if (value.find_first_of(",\"\n\r") == std::string::npos) {
-        return value;
-    }
-    std::string escaped = "\"";
-    for (const char ch : value) {
-        if (ch == '\"') {
-            escaped += "\"\"";
-        } else {
-            escaped += ch;
-        }
-    }
-    escaped += '\"';
-    return escaped;
+    return orange::outputs::csv_field(value);
 }
 
 std::string join_strings(const std::vector<std::string>& values,

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include "outputs/common/csv.h"
 #include "outputs/common/atomic_file.h"
 #include "timing/diagnostics_index.h"
 #include "timing/log_writer.h"
@@ -6141,13 +6142,7 @@ std::vector<int> parse_toggle_override_list_field(const nlohmann::json& node,
 
 std::vector<std::string> split_csv_line_simple(const std::string& line)
 {
-    std::vector<std::string> cells;
-    std::stringstream stream(line);
-    std::string cell;
-    while (std::getline(stream, cell, ',')) {
-        cells.push_back(cell);
-    }
-    return cells;
+    return orange::outputs::split_csv_row(line);
 }
 
 std::string sanitize_run_component(const std::string& value)

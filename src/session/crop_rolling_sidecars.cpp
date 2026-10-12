@@ -1,4 +1,5 @@
 #include "session/crop_rolling_sidecars.h"
+#include "outputs/common/csv.h"
 
 #include "fsuid_guard.h"
 
@@ -26,36 +27,17 @@ void set_error(std::string* error_out, const std::string& message)
 
 std::string first_csv_field(const std::string& line)
 {
-    const size_t comma = line.find(',');
-    return comma == std::string::npos ? line : line.substr(0, comma);
+    return orange::outputs::split_csv_row(line).front();
 }
 
 std::vector<std::string> split_csv_fields(const std::string& line)
 {
-    std::vector<std::string> fields;
-    size_t start = 0;
-    while (start <= line.size()) {
-        const size_t comma = line.find(',', start);
-        if (comma == std::string::npos) {
-            fields.push_back(line.substr(start));
-            break;
-        }
-        fields.push_back(line.substr(start, comma - start));
-        start = comma + 1;
-    }
-    return fields;
+    return orange::outputs::split_csv_row(line);
 }
 
 std::string join_csv_fields(const std::vector<std::string>& fields)
 {
-    std::ostringstream out;
-    for (size_t i = 0; i < fields.size(); ++i) {
-        if (i > 0) {
-            out << ',';
-        }
-        out << fields[i];
-    }
-    return out.str();
+    return orange::outputs::csv_row(fields);
 }
 
 size_t csv_column_index(const std::string& header, const std::string& name)

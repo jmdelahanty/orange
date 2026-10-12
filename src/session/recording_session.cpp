@@ -1,4 +1,5 @@
 #include "session/recording_session.h"
+#include "outputs/common/csv.h"
 #include "outputs/common/digest.h"
 #include "outputs/common/atomic_file.h"
 #include "timing/diagnostics_index.h"
@@ -333,18 +334,7 @@ struct MetadataFrameStats {
 
 std::vector<std::string> split_simple_csv_row(const std::string& row)
 {
-    std::vector<std::string> fields;
-    std::size_t begin = 0;
-    while (begin <= row.size()) {
-        const std::size_t comma = row.find(',', begin);
-        if (comma == std::string::npos) {
-            fields.push_back(row.substr(begin));
-            break;
-        }
-        fields.push_back(row.substr(begin, comma - begin));
-        begin = comma + 1;
-    }
-    return fields;
+    return orange::outputs::split_csv_row(row);
 }
 
 MetadataFrameStats read_metadata_frame_stats_from_bytes(const std::string& metadata_bytes)
@@ -1022,23 +1012,7 @@ std::string csv_escape_value(const nlohmann::json& value)
         text = value.dump();
     }
 
-    const bool needs_quotes =
-        text.find_first_of(",\"\n\r") != std::string::npos;
-    if (!needs_quotes) {
-        return text;
-    }
-
-    std::string escaped;
-    escaped.reserve(text.size() + 2);
-    escaped.push_back('"');
-    for (char c : text) {
-        if (c == '"') {
-            escaped.push_back('"');
-        }
-        escaped.push_back(c);
-    }
-    escaped.push_back('"');
-    return escaped;
+    return orange::outputs::csv_field(text);
 }
 
 bool write_csv_file(const std::filesystem::path& path,

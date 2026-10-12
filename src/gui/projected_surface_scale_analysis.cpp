@@ -1,4 +1,5 @@
 #include "gui/projected_surface_scale_analysis.h"
+#include "outputs/common/csv.h"
 
 #include <opencv2/calib3d.hpp>
 #include <opencv2/imgproc.hpp>
@@ -34,18 +35,7 @@ bool fail(std::string* error_out, const std::string& error)
 
 std::vector<std::string> split_csv(const std::string& line)
 {
-    std::vector<std::string> fields;
-    std::string field;
-    for (const char ch : line) {
-        if (ch == ',') {
-            fields.push_back(field);
-            field.clear();
-        } else if (ch != '\r') {
-            field.push_back(ch);
-        }
-    }
-    fields.push_back(field);
-    return fields;
+    return orange::outputs::split_csv_row(line);
 }
 
 cv::Mat as_gray_u8(const cv::Mat& source)

@@ -1,4 +1,5 @@
 #include "gui/spatial_layout/physical_target_bundle.h"
+#include "outputs/common/csv.h"
 #include "outputs/common/digest.h"
 
 #include "fsuid_guard.h"
@@ -89,18 +90,7 @@ bool file_sha256(
 
 std::vector<std::string> split_csv_line(const std::string& line)
 {
-    std::vector<std::string> fields;
-    std::string field;
-    for (char ch : line) {
-        if (ch == ',') {
-            fields.push_back(field);
-            field.clear();
-        } else if (ch != '\r') {
-            field.push_back(ch);
-        }
-    }
-    fields.push_back(field);
-    return fields;
+    return orange::outputs::split_csv_row(line);
 }
 
 bool parse_finite_double(const std::string& text, double* value_out)

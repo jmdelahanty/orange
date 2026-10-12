@@ -1,4 +1,5 @@
 #include "session/acquisition_index_authority.h"
+#include "outputs/common/csv.h"
 #include "outputs/common/digest.h"
 
 #include "gui/spatial_layout/sha256.h"
@@ -135,18 +136,7 @@ bool camera_is_listed_once(const json& manifest, const std::string& camera_seria
 
 std::vector<std::string> split_csv_row(const std::string& row)
 {
-    std::vector<std::string> fields;
-    std::size_t begin = 0;
-    while (begin <= row.size()) {
-        const std::size_t comma = row.find(',', begin);
-        if (comma == std::string::npos) {
-            fields.push_back(row.substr(begin));
-            break;
-        }
-        fields.push_back(row.substr(begin, comma - begin));
-        begin = comma + 1;
-    }
-    return fields;
+    return orange::outputs::split_csv_row(row);
 }
 
 bool parse_strict_positive_uint64(const std::string& text, std::uint64_t* value_out)

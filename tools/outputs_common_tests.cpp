@@ -2,6 +2,7 @@
 #include "outputs/common/atomic_file.h"
 #include "outputs/common/digest.h"
 #include "outputs/common/safe_path.h"
+#include "outputs/common/csv.h"
 
 #include <filesystem>
 #include <fstream>
@@ -155,6 +156,21 @@ int main() {
     check(!is_inside(rec / ".." / "outside", rec), "dot-dot escape is not inside");
     fs::create_symlink(root / "outside", rec / "link");
     check(!is_inside(rec / "link" / "x.json", rec), "symlink escape is not inside");
+
+    // CSV (RFC 4180).
+    using V = std::vector<std::string>;
+    check(split_csv_row("1,2,3") == V({"1", "2", "3"}), "plain row");
+    check(split_csv_row("a,b,") == V({"a", "b", ""}), "trailing empty field kept");
+    check(split_csv_row("a,b\r") == V({"a", "b"}), "CRLF line ending dropped");
+    check(split_csv_row("") == V({""}), "empty line is one empty field");
+    check(split_csv_row("\"x,y\",\"say \"\"hi\"\"\",z") == V({"x,y", "say \"hi\"", "z"}), "quoted fields");
+    V parsed;
+    check(!parse_csv_row("\"open,1", &parsed), "unterminated quote refused");
+    check(!parse_csv_row("a\"b,1", &parsed), "quote inside unquoted field refused");
+    check(split_csv_row(csv_row({"plain", "comma,inside", "quote\"inside"})) ==
+              V({"plain", "comma,inside", "quote\"inside"}), "csv_row round-trips");
+    check(csv_row({"1", "2"}) == "1,2", "numeric rows are unchanged by escaping");
+    check(csv_column({"a", "b"}, "b") == 1 && csv_column({"a"}, "z") == static_cast<std::size_t>(-1), "csv_column");
 
     fs::remove_all(root);
     std::cout << (failures ? "outputs_common_tests FAILED\n" : "outputs_common_tests passed\n");
