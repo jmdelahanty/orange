@@ -262,6 +262,16 @@ Orange/Citrus commissioning) are in git history of this file and in
   Receipt v3 stays off (Citrus switch 2) until Palette ports sealer 3.2.0.
 - Transfer pre-check: `scripts/check_recording_transfer_source.sh` pins sealer
   3.2.0 (3.1.0 and 3.0.0 as rollback via `SEALER_VERSION`).
+- Camera time on the host clock: camera `timestamp` (PTP, TAI) - 37 s =
+  host `CLOCK_REALTIME` at exposure (pancake0 is the PTP grandmaster:
+  timesyncd -> CLOCK_REALTIME -> `phc2sys -a -rr` -> NIC clocks -> ptp4l ->
+  cameras). `timestamp_sys` is host receive time, a constant ~9.1 ms later;
+  never use it for stimulus timing. Since 2026-10-11 21:50 ptp4l declares
+  the 37 s offset valid (pancakebatter c6231c9/b0d73c9, set on every ptp4l
+  start), so recordings classify cameras as `TAI` / `ieee1588_tai`; earlier
+  recordings say `device_defined`. Restarting ptp4l drops camera PTP lock:
+  only with no `orange` or `orange_client` running
+  (`sudo ~/pancakebatter/install_ptp_units.sh --restart`, which checks).
 - Crop-only (`media_products.mode = registered_context_and_moving_crops`):
   in the code since 2026-09-23, never run on the rig. It needs an accepted
   per-camera registration (Orange physical or selected daily; the rig has
