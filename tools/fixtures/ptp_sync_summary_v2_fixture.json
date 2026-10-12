@@ -1,0 +1,657 @@
+{
+  "cameras": {
+    "2010093": {
+      "acquisition_frames_received_total": 5901,
+      "avg_frame_delta_ns_running": 10000000,
+      "avg_latch_delta_ns_running": 936344482,
+      "camera_frame_id_gaps": 0,
+      "camera_id": 0,
+      "camera_serial": "2010093",
+      "delta_samples": 5900,
+      "dropped_frames": 0,
+      "encoded_frame_count_authoritative_artifacts": {
+        "keyframe_json": "Cam2010093_keyframe.json",
+        "metadata_csv": "Cam2010093_meta.csv",
+        "recording_session_json": "recording_session.json"
+      },
+      "encoded_frame_count_source": "not_available_in_ptp_sync_summary",
+      "encoded_frames_total": null,
+      "finalized": true,
+      "frame_delta_ns": {
+        "last": 9999990,
+        "max": 10000029,
+        "mean": 10000000.001017122,
+        "min": 9999972,
+        "samples": 5899
+      },
+      "frames_received": 5901,
+      "get_frame_errors": 0,
+      "get_frame_errors_by_code": {},
+      "gpu_id": 3,
+      "last_frame_timestamp_ns": 1791770001269449785,
+      "last_get_frame_error_code": 0,
+      "last_latched_ptp_time_ns": 1791770001268655445,
+      "last_ptp_register_read_frame": 5900,
+      "last_recording_frame_id": 5900,
+      "latch_delta_ns": {
+        "last": 999992361,
+        "max": 1000263396,
+        "mean": 936344482.8730159,
+        "min": 9682515,
+        "samples": 63
+      },
+      "latch_delta_samples": 63,
+      "latch_minus_frame_ns": {
+        "last": 9205665,
+        "max": 9503250,
+        "mean": 9286021.40625,
+        "min": 9184074,
+        "samples": 64
+      },
+      "ptp_mode_readback": {
+        "changes": 0,
+        "first": "TwoStep",
+        "last": "TwoStep",
+        "samples": 60
+      },
+      "ptp_offset_ns": {
+        "last": -790,
+        "max": -779,
+        "mean": -802.9830508474577,
+        "min": -825,
+        "samples": 59
+      },
+      "ptp_readback_coverage": {
+        "attempts": 60,
+        "max_sample_gap_ns": 1010493728,
+        "mode_read_failures": 0,
+        "omitted_observations": 0,
+        "recording_frame_semantics": "last_assigned_in_this_recording_zero_before_first",
+        "schema_id": "orange.ptp.sampled_readback_coverage",
+        "schema_version": 2,
+        "semantics": "sampled_states_not_continuous_lock",
+        "state_run_capacity": 1024,
+        "status_read_failures": 0,
+        "steady_clock": "std_chrono_steady_clock_implementation_epoch"
+      },
+      "ptp_readback_observations": [
+        {
+          "first_recording_frame_id": 1,
+          "first_sampled_at_utc": "2026-10-12T01:51:45Z",
+          "first_sampled_steady_ns": 446841922471068,
+          "last_recording_frame_id": 5835,
+          "last_sampled_at_utc": "2026-10-12T01:52:43Z",
+          "last_sampled_steady_ns": 446900262968976,
+          "ptp_mode": "TwoStep",
+          "ptp_status": "Slave",
+          "recording_frame_id": 1,
+          "sampled_at_utc": "2026-10-12T01:52:43Z",
+          "samples": 60,
+          "stream_frame_id": 1,
+          "first_stream_frame_id": 1,
+          "last_stream_frame_id": 5835
+        }
+      ],
+      "ptp_register_read_decimate": 100,
+      "ptp_register_reads": 64,
+      "ptp_status_readback": {
+        "changes": 0,
+        "first": "Slave",
+        "last": "Slave",
+        "samples": 60
+      },
+      "recording_camera_minus_realtime_ns": {
+        "last": 36990875851,
+        "max": 36990882614,
+        "mean": 36990801766.248985,
+        "min": 36990280624,
+        "samples": 5900
+      },
+      "recording_frames_assigned_total": 5900,
+      "recording_ingress_enqueue_rejected_frames": 0,
+      "recording_ingress_submitted_frames": 5900,
+      "recording_timestamp_pair_source": {
+        "camera": "Emergent::CEmergentFrame.timestamp",
+        "host": "clock_gettime(CLOCK_REALTIME)",
+        "population": "frames_with_recording_frame_id"
+      },
+      "sync_camera_enabled": true,
+      "sync_observed_frame_count_source": "successful_EVT_CameraGetFrame",
+      "sync_observed_frames_total": 5901,
+      "updated_at_utc": "2026-10-12T01:52:44Z",
+      "worker_enqueue_rejections": 0,
+      "worker_entry_double_releases": 0,
+      "worker_entry_double_releases_camera": 0,
+      "worker_entry_double_releases_global": 0,
+      "worker_entry_release_underflows": 0,
+      "worker_entry_release_underflows_camera": 0,
+      "worker_entry_release_underflows_global": 0,
+      "worker_entry_retain_after_release_camera": 0,
+      "worker_entry_retain_after_release_count": 0,
+      "worker_entry_retain_after_release_global": 0
+    },
+    "2010094": {
+      "acquisition_frames_received_total": 5901,
+      "avg_frame_delta_ns_running": 9999999,
+      "avg_latch_delta_ns_running": 936346086,
+      "camera_frame_id_gaps": 0,
+      "camera_id": 1,
+      "camera_serial": "2010094",
+      "delta_samples": 5900,
+      "dropped_frames": 0,
+      "encoded_frame_count_authoritative_artifacts": {
+        "keyframe_json": "Cam2010094_keyframe.json",
+        "metadata_csv": "Cam2010094_meta.csv",
+        "recording_session_json": "recording_session.json"
+      },
+      "encoded_frame_count_source": "not_available_in_ptp_sync_summary",
+      "encoded_frames_total": null,
+      "finalized": true,
+      "frame_delta_ns": {
+        "last": 10000005,
+        "max": 10000026,
+        "mean": 10000000.00016952,
+        "min": 9999971,
+        "samples": 5899
+      },
+      "frames_received": 5901,
+      "get_frame_errors": 0,
+      "get_frame_errors_by_code": {},
+      "gpu_id": 1,
+      "last_frame_timestamp_ns": 1791770001269449778,
+      "last_get_frame_error_code": 0,
+      "last_latched_ptp_time_ns": 1791770001268676348,
+      "last_ptp_register_read_frame": 5900,
+      "last_recording_frame_id": 5900,
+      "latch_delta_ns": {
+        "last": 999996062,
+        "max": 1000226066,
+        "mean": 936346086.8412699,
+        "min": 9749175,
+        "samples": 63
+      },
+      "latch_delta_samples": 63,
+      "latch_minus_frame_ns": {
+        "last": 9226560,
+        "max": 9460290,
+        "mean": 9276296.0,
+        "min": 9172260,
+        "samples": 64
+      },
+      "ptp_mode_readback": {
+        "changes": 0,
+        "first": "TwoStep",
+        "last": "TwoStep",
+        "samples": 60
+      },
+      "ptp_offset_ns": {
+        "last": -533,
+        "max": -508,
+        "mean": -524.7966101694915,
+        "min": -545,
+        "samples": 59
+      },
+      "ptp_readback_coverage": {
+        "attempts": 60,
+        "max_sample_gap_ns": 1010387938,
+        "mode_read_failures": 0,
+        "omitted_observations": 0,
+        "recording_frame_semantics": "last_assigned_in_this_recording_zero_before_first",
+        "schema_id": "orange.ptp.sampled_readback_coverage",
+        "schema_version": 2,
+        "semantics": "sampled_states_not_continuous_lock",
+        "state_run_capacity": 1024,
+        "status_read_failures": 0,
+        "steady_clock": "std_chrono_steady_clock_implementation_epoch"
+      },
+      "ptp_readback_observations": [
+        {
+          "first_recording_frame_id": 1,
+          "first_sampled_at_utc": "2026-10-12T01:51:45Z",
+          "first_sampled_steady_ns": 446841922381348,
+          "last_recording_frame_id": 5832,
+          "last_sampled_at_utc": "2026-10-12T01:52:43Z",
+          "last_sampled_steady_ns": 446900233327240,
+          "ptp_mode": "TwoStep",
+          "ptp_status": "Slave",
+          "recording_frame_id": 1,
+          "sampled_at_utc": "2026-10-12T01:52:43Z",
+          "samples": 60,
+          "stream_frame_id": 1,
+          "first_stream_frame_id": 1,
+          "last_stream_frame_id": 5832
+        }
+      ],
+      "ptp_register_read_decimate": 100,
+      "ptp_register_reads": 64,
+      "ptp_status_readback": {
+        "changes": 0,
+        "first": "Slave",
+        "last": "Slave",
+        "samples": 60
+      },
+      "recording_camera_minus_realtime_ns": {
+        "last": 36990876000,
+        "max": 36990882813,
+        "mean": 36990804953.51,
+        "min": 36990276763,
+        "samples": 5900
+      },
+      "recording_frames_assigned_total": 5900,
+      "recording_ingress_enqueue_rejected_frames": 0,
+      "recording_ingress_submitted_frames": 5900,
+      "recording_timestamp_pair_source": {
+        "camera": "Emergent::CEmergentFrame.timestamp",
+        "host": "clock_gettime(CLOCK_REALTIME)",
+        "population": "frames_with_recording_frame_id"
+      },
+      "sync_camera_enabled": true,
+      "sync_observed_frame_count_source": "successful_EVT_CameraGetFrame",
+      "sync_observed_frames_total": 5901,
+      "updated_at_utc": "2026-10-12T01:52:44Z",
+      "worker_enqueue_rejections": 0,
+      "worker_entry_double_releases": 0,
+      "worker_entry_double_releases_camera": 0,
+      "worker_entry_double_releases_global": 0,
+      "worker_entry_release_underflows": 0,
+      "worker_entry_release_underflows_camera": 0,
+      "worker_entry_release_underflows_global": 0,
+      "worker_entry_retain_after_release_camera": 0,
+      "worker_entry_retain_after_release_count": 0,
+      "worker_entry_retain_after_release_global": 0
+    },
+    "2010095": {
+      "acquisition_frames_received_total": 5901,
+      "avg_frame_delta_ns_running": 9999999,
+      "avg_latch_delta_ns_running": 936346850,
+      "camera_frame_id_gaps": 0,
+      "camera_id": 2,
+      "camera_serial": "2010095",
+      "delta_samples": 5900,
+      "dropped_frames": 0,
+      "encoded_frame_count_authoritative_artifacts": {
+        "keyframe_json": "Cam2010095_keyframe.json",
+        "metadata_csv": "Cam2010095_meta.csv",
+        "recording_session_json": "recording_session.json"
+      },
+      "encoded_frame_count_source": "not_available_in_ptp_sync_summary",
+      "encoded_frames_total": null,
+      "finalized": true,
+      "frame_delta_ns": {
+        "last": 10000020,
+        "max": 10000029,
+        "mean": 9999999.998643838,
+        "min": 9999971,
+        "samples": 5899
+      },
+      "frames_received": 5901,
+      "get_frame_errors": 0,
+      "get_frame_errors_by_code": {},
+      "gpu_id": 7,
+      "last_frame_timestamp_ns": 1791770001269449792,
+      "last_get_frame_error_code": 0,
+      "last_latched_ptp_time_ns": 1791770001268818157,
+      "last_ptp_register_read_frame": 5900,
+      "last_recording_frame_id": 5900,
+      "latch_delta_ns": {
+        "last": 1000150665,
+        "max": 1000260491,
+        "mean": 936346850.5238096,
+        "min": 9677700,
+        "samples": 63
+      },
+      "latch_delta_samples": 63,
+      "latch_minus_frame_ns": {
+        "last": 9368370,
+        "max": 9516779,
+        "mean": 9286889.515625,
+        "min": 9179295,
+        "samples": 64
+      },
+      "ptp_mode_readback": {
+        "changes": 0,
+        "first": "TwoStep",
+        "last": "TwoStep",
+        "samples": 60
+      },
+      "ptp_offset_ns": {
+        "last": -593,
+        "max": -580,
+        "mean": -597.5932203389831,
+        "min": -619,
+        "samples": 59
+      },
+      "ptp_readback_coverage": {
+        "attempts": 60,
+        "max_sample_gap_ns": 1010612553,
+        "mode_read_failures": 0,
+        "omitted_observations": 0,
+        "recording_frame_semantics": "last_assigned_in_this_recording_zero_before_first",
+        "schema_id": "orange.ptp.sampled_readback_coverage",
+        "schema_version": 2,
+        "semantics": "sampled_states_not_continuous_lock",
+        "state_run_capacity": 1024,
+        "status_read_failures": 0,
+        "steady_clock": "std_chrono_steady_clock_implementation_epoch"
+      },
+      "ptp_readback_observations": [
+        {
+          "first_recording_frame_id": 1,
+          "first_sampled_at_utc": "2026-10-12T01:51:45Z",
+          "first_sampled_steady_ns": 446841922481678,
+          "last_recording_frame_id": 5835,
+          "last_sampled_at_utc": "2026-10-12T01:52:43Z",
+          "last_sampled_steady_ns": 446900262961021,
+          "ptp_mode": "TwoStep",
+          "ptp_status": "Slave",
+          "recording_frame_id": 1,
+          "sampled_at_utc": "2026-10-12T01:52:43Z",
+          "samples": 60,
+          "stream_frame_id": 1,
+          "first_stream_frame_id": 1,
+          "last_stream_frame_id": 5835
+        }
+      ],
+      "ptp_register_read_decimate": 100,
+      "ptp_register_reads": 64,
+      "ptp_status_readback": {
+        "changes": 0,
+        "first": "Slave",
+        "last": "Slave",
+        "samples": 60
+      },
+      "recording_camera_minus_realtime_ns": {
+        "last": 36990697240,
+        "max": 36990883510,
+        "mean": 36990803704.76797,
+        "min": 36990280241,
+        "samples": 5900
+      },
+      "recording_frames_assigned_total": 5900,
+      "recording_ingress_enqueue_rejected_frames": 0,
+      "recording_ingress_submitted_frames": 5900,
+      "recording_timestamp_pair_source": {
+        "camera": "Emergent::CEmergentFrame.timestamp",
+        "host": "clock_gettime(CLOCK_REALTIME)",
+        "population": "frames_with_recording_frame_id"
+      },
+      "sync_camera_enabled": true,
+      "sync_observed_frame_count_source": "successful_EVT_CameraGetFrame",
+      "sync_observed_frames_total": 5901,
+      "updated_at_utc": "2026-10-12T01:52:44Z",
+      "worker_enqueue_rejections": 0,
+      "worker_entry_double_releases": 0,
+      "worker_entry_double_releases_camera": 0,
+      "worker_entry_double_releases_global": 0,
+      "worker_entry_release_underflows": 0,
+      "worker_entry_release_underflows_camera": 0,
+      "worker_entry_release_underflows_global": 0,
+      "worker_entry_retain_after_release_camera": 0,
+      "worker_entry_retain_after_release_count": 0,
+      "worker_entry_retain_after_release_global": 0
+    },
+    "2010096": {
+      "acquisition_frames_received_total": 5901,
+      "avg_frame_delta_ns_running": 10000000,
+      "avg_latch_delta_ns_running": 936345486,
+      "camera_frame_id_gaps": 0,
+      "camera_id": 3,
+      "camera_serial": "2010096",
+      "delta_samples": 5900,
+      "dropped_frames": 0,
+      "encoded_frame_count_authoritative_artifacts": {
+        "keyframe_json": "Cam2010096_keyframe.json",
+        "metadata_csv": "Cam2010096_meta.csv",
+        "recording_session_json": "recording_session.json"
+      },
+      "encoded_frame_count_source": "not_available_in_ptp_sync_summary",
+      "encoded_frames_total": null,
+      "finalized": true,
+      "frame_delta_ns": {
+        "last": 9999990,
+        "max": 10000029,
+        "mean": 10000000.00033904,
+        "min": 9999971,
+        "samples": 5899
+      },
+      "frames_received": 5901,
+      "get_frame_errors": 0,
+      "get_frame_errors_by_code": {},
+      "gpu_id": 5,
+      "last_frame_timestamp_ns": 1791770001269449789,
+      "last_get_frame_error_code": 0,
+      "last_latched_ptp_time_ns": 1791770001268674709,
+      "last_ptp_register_read_frame": 5900,
+      "last_recording_frame_id": 5900,
+      "latch_delta_ns": {
+        "last": 999991701,
+        "max": 1000239606,
+        "mean": 936345486.8571428,
+        "min": 9738006,
+        "samples": 63
+      },
+      "latch_delta_samples": 63,
+      "latch_minus_frame_ns": {
+        "last": 9224925,
+        "max": 9459255,
+        "mean": 9283736.109375,
+        "min": 9175560,
+        "samples": 64
+      },
+      "ptp_mode_readback": {
+        "changes": 0,
+        "first": "TwoStep",
+        "last": "TwoStep",
+        "samples": 60
+      },
+      "ptp_offset_ns": {
+        "last": -675,
+        "max": -649,
+        "mean": -670.8644067796611,
+        "min": -694,
+        "samples": 59
+      },
+      "ptp_readback_coverage": {
+        "attempts": 60,
+        "max_sample_gap_ns": 1010425570,
+        "mode_read_failures": 0,
+        "omitted_observations": 0,
+        "recording_frame_semantics": "last_assigned_in_this_recording_zero_before_first",
+        "schema_id": "orange.ptp.sampled_readback_coverage",
+        "schema_version": 2,
+        "semantics": "sampled_states_not_continuous_lock",
+        "state_run_capacity": 1024,
+        "status_read_failures": 0,
+        "steady_clock": "std_chrono_steady_clock_implementation_epoch"
+      },
+      "ptp_readback_observations": [
+        {
+          "first_recording_frame_id": 1,
+          "first_sampled_at_utc": "2026-10-12T01:51:45Z",
+          "first_sampled_steady_ns": 446841922422686,
+          "last_recording_frame_id": 5835,
+          "last_sampled_at_utc": "2026-10-12T01:52:43Z",
+          "last_sampled_steady_ns": 446900263689523,
+          "ptp_mode": "TwoStep",
+          "ptp_status": "Slave",
+          "recording_frame_id": 1,
+          "sampled_at_utc": "2026-10-12T01:52:43Z",
+          "samples": 60,
+          "stream_frame_id": 1,
+          "first_stream_frame_id": 1,
+          "last_stream_frame_id": 5835
+        }
+      ],
+      "ptp_register_read_decimate": 100,
+      "ptp_register_reads": 64,
+      "ptp_status_readback": {
+        "changes": 0,
+        "first": "Slave",
+        "last": "Slave",
+        "samples": 60
+      },
+      "recording_camera_minus_realtime_ns": {
+        "last": 36990877148,
+        "max": 36990882946,
+        "mean": 36990803469.41593,
+        "min": 36990270400,
+        "samples": 5900
+      },
+      "recording_frames_assigned_total": 5900,
+      "recording_ingress_enqueue_rejected_frames": 0,
+      "recording_ingress_submitted_frames": 5900,
+      "recording_timestamp_pair_source": {
+        "camera": "Emergent::CEmergentFrame.timestamp",
+        "host": "clock_gettime(CLOCK_REALTIME)",
+        "population": "frames_with_recording_frame_id"
+      },
+      "sync_camera_enabled": true,
+      "sync_observed_frame_count_source": "successful_EVT_CameraGetFrame",
+      "sync_observed_frames_total": 5901,
+      "updated_at_utc": "2026-10-12T01:52:44Z",
+      "worker_enqueue_rejections": 0,
+      "worker_entry_double_releases": 0,
+      "worker_entry_double_releases_camera": 0,
+      "worker_entry_double_releases_global": 0,
+      "worker_entry_release_underflows": 0,
+      "worker_entry_release_underflows_camera": 0,
+      "worker_entry_release_underflows_global": 0,
+      "worker_entry_retain_after_release_camera": 0,
+      "worker_entry_retain_after_release_count": 0,
+      "worker_entry_retain_after_release_global": 0
+    }
+  },
+  "created_at_utc": "2026-10-12T01:51:38Z",
+  "host_ptp_management_evidence": {
+    "available": false,
+    "capture_method": "linuxptp_pmc_management_socket",
+    "capture_trigger": "recording_start",
+    "captured_at_utc": "2026-10-12T20:14:57Z",
+    "classification": {
+      "ptp_timescale_advertised": false,
+      "result": "timescale_unclassified",
+      "time_traceable": false,
+      "utc_offset_authoritative": false
+    },
+    "datasets_received": {
+      "default": false,
+      "parent": false,
+      "time_properties": false
+    },
+    "default": {},
+    "parent": {},
+    "pmc_exit_status": 1,
+    "raw_output": "captured_at_utc=2026-10-12T20:14:57Z\nsocket=/var/run/ptp4l\npmc_exit_status=1\n",
+    "raw_sha256": "sha256:db3d04b9f0897ca3c41f92aeacfbf35b2f92685a0731f83d083ce55560edddda",
+    "schema_id": "orange.host_ptp.management_evidence",
+    "schema_version": 1,
+    "socket": "/var/run/ptp4l",
+    "source_path": null,
+    "time_properties": {},
+    "unavailable_reason": "pmc_exit_status_1"
+  },
+  "recording_folder": "/home/jeremy/orange_data/exp/unsorted/fourcam_fused_recorder_realfish_int8_192_native_ownerpush_ring_od8ff_s16_integration_20261011_215128/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25__aq_off__tempaq_off__lookahead_off",
+  "recording_id": "run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25__aq_off__tempaq_off__lookahead_off",
+  "schema_version": 2,
+  "sync": {
+    "barriers": {
+      "start": {
+        "all_reached": false,
+        "participants_reached": 0
+      },
+      "stop": {
+        "all_reached": false,
+        "participants_reached": 0
+      }
+    },
+    "camera_sync_enabled": true,
+    "captured_at_utc": "2026-10-12T01:51:38Z",
+    "gate_times": {},
+    "mode": "ptp_local",
+    "network_sync": false,
+    "num_cameras_expected": 4,
+    "schema_version": 1,
+    "signals": {
+      "start_observed": false,
+      "stop_observed": false
+    }
+  },
+  "updated_at_utc": "2026-10-12T01:52:44Z",
+  "host_clock_configuration": {
+    "capture_trigger": "recording_start",
+    "captured_at_utc": "2026-10-12T20:14:57Z",
+    "leap_seconds": {
+      "expired": false,
+      "expires_utc": "2027-06-28T00:00:00Z",
+      "path": "/usr/share/zoneinfo/leap-seconds.list",
+      "present": true,
+      "sha256": "sha256:db5a895f16853b03bfc865e8d68f9fc8710ef1740e3400c701cd46a5bbbc3433",
+      "size_bytes": 5065,
+      "tai_minus_utc_seconds_now": 37
+    },
+    "phc2sys": {
+      "process": {
+        "argv": [
+          "/usr/sbin/phc2sys",
+          "-a",
+          "-rr",
+          "-z",
+          "/var/run/ptp4l",
+          "-m"
+        ],
+        "pid": 2421330
+      },
+      "unit": {
+        "path": "/etc/systemd/system/phc2sys.service",
+        "present": true,
+        "sha256": "sha256:3b7eff0d7c4f77a1e0573bedb3b2a054bb4fd47f512cce113dd70db5f399cfbc",
+        "size_bytes": 689
+      }
+    },
+    "ptp4l": {
+      "config": {
+        "path": "/etc/ptp4l.conf",
+        "present": true,
+        "sha256": "sha256:a92ea5357063b2787d0b6e95029531d4e9d667049b76a047d8bcdcdfb769e6d5",
+        "size_bytes": 84,
+        "text": "[global]\nverbose 1\nboundary_clock_jbod 1\nlogSyncInterval -4\ntx_timestamp_timeout 50\n"
+      },
+      "process": {
+        "argv": [
+          "/usr/sbin/ptp4l",
+          "-i",
+          "mlnx1_p1_25g",
+          "-i",
+          "mlnx1_p2_25g",
+          "-i",
+          "mlnx1_p3_25g",
+          "-i",
+          "mlnx2_p3_25g",
+          "-i",
+          "mlnx2_p4_25g",
+          "-f",
+          "/etc/ptp4l.conf",
+          "-m"
+        ],
+        "pid": 2421281
+      },
+      "unit": {
+        "path": "/etc/systemd/system/ptp4l.service",
+        "present": true,
+        "sha256": "sha256:4f62ac3a5b248f3b68a20e4187a5517c588f4368dc3bf039beecba59e9a21489",
+        "size_bytes": 1397
+      }
+    },
+    "schema_id": "orange.host_clock.configuration",
+    "schema_version": 1,
+    "system_clock": {
+      "clock": "CLOCK_REALTIME",
+      "kernel_clock_state": 0,
+      "kernel_estimated_error_us": 0,
+      "kernel_max_error_us": 462000,
+      "kernel_ntp_synchronized": true,
+      "timesyncd_synchronized_marker": true
+    }
+  },
+  "fixture_note": "Generated 2026-10-12 for Palette: schema_version, host_ptp_management_evidence and host_clock_configuration from Orange e384e31's writer on pancake0; sync and cameras from the 2026-10-11 21:51 gate recording (v1) with the frame_identity_v1 renames applied (Orange 0c821bb). Not a recording."
+}

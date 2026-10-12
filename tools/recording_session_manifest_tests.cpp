@@ -1041,6 +1041,9 @@ void test_ptp_summary_records_host_clock_configuration()
     const nlohmann::json real = read_json(folder / "ptp_sync_summary.json").at("host_clock_configuration");
     require(real.contains("ptp4l") && real.contains("phc2sys") && real.contains("leap_seconds"),
             "real host capture has every block");
+    if (const char* out = std::getenv("ORANGE_PTP_SUMMARY_FIXTURE_OUT"); out && *out) {
+        fs::copy_file(folder / "ptp_sync_summary.json", out, fs::copy_options::overwrite_existing);
+    }
     std::cout << "host clock (real): ptp4l running=" << !real.at("ptp4l").at("process").is_null()
               << " phc2sys=" << real.at("phc2sys").at("process").dump()
               << " ntp_synchronized=" << real.at("system_clock").at("kernel_ntp_synchronized")
