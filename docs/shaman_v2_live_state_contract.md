@@ -108,8 +108,8 @@ Every visible v2 slot must include:
 - `schema_version`: v2 ABI version.
 - `slot_bytes`: expected `sizeof(ShamanV2Slot)`.
 - `sequence_id`: strictly increasing per queue.
-- `state_frame_id`: the live frame id Citrus should treat as current.
-- `source_frame_id`: the frame id that produced the semantic content.
+- `state_stream_frame_id`: the live frame id Citrus should treat as current.
+- `source_stream_frame_id`: the frame id that produced the semantic content.
 - `camera_frame_id`: camera SDK/acquisition frame id when available.
 - `recording_frame_id`: recording-local frame id, or `0` when not recording.
 - `recording_identity_token`: exact `sha256:<64 lowercase hex>` binding to
@@ -126,23 +126,23 @@ Every visible v2 slot must include:
 Rules:
 
 - `sequence_id` must strictly increase.
-- `state_frame_id` must never move backward.
+- `state_stream_frame_id` must never move backward.
 - `recording_frame_id == 0` requires an empty token; a positive recording
   frame ID requires the token derived from the closed
   `orange.shaman_v2.recording_identity` v1 subject.
-- Multiple slots may use the same `state_frame_id` when Orange publishes a base
+- Multiple slots may use the same `state_stream_frame_id` when Orange publishes a base
   state and then a same-frame detection or pose enrichment.
-- A semantic update is live-publishable only when its `source_frame_id` matches
-  the current `state_frame_id`.
-- A semantic update with `source_frame_id < current_state_frame_id` is stale and
+- A semantic update is live-publishable only when its `source_stream_frame_id` matches
+  the current `state_stream_frame_id`.
+- A semantic update with `source_stream_frame_id < current_state_frame_id` is stale and
   must be suppressed from v2.
-- A semantic update with `source_frame_id > current_state_frame_id` may be held
+- A semantic update with `source_stream_frame_id > current_state_frame_id` may be held
   briefly as pending until the base frame arrives, subject to a bounded pending
   queue.
 
 `recording_frame_id` is never the live-state join key. Pose publication uses
-the crop's stream-local `local_frame_id` for both `state_frame_id` and
-`source_frame_id`; recording-local numbering remains metadata only.
+the crop's stream-local `local_frame_id` for both `state_stream_frame_id` and
+`source_stream_frame_id`; recording-local numbering remains metadata only.
 
 ## Payload Model
 
@@ -155,7 +155,7 @@ latest_tracking_state
 Every `latest_tracking_state` slot is a complete replacement state for Citrus.
 Citrus does not need to merge old keyed events to understand live state. If it
 drains several slots during one update, it can keep the highest valid
-`sequence_id` / latest `state_frame_id`.
+`sequence_id` / latest `state_stream_frame_id`.
 
 Recommended status enums:
 
@@ -321,8 +321,8 @@ struct ShamanV2Slot {
     uint32_t payload_kind;
     uint32_t flags;
 
-    uint64_t state_frame_id;
-    uint64_t source_frame_id;
+    uint64_t state_stream_frame_id;
+    uint64_t source_stream_frame_id;
     uint64_t camera_frame_id;
     uint64_t recording_frame_id;
     uint64_t camera_timestamp_ns;
@@ -465,9 +465,9 @@ Citrus v2 reader should:
 
 - reject incompatible `magic`, `schema_version`, or `slot_bytes`;
 - reject or warn on non-increasing `sequence_id`;
-- reject or warn on backward `state_frame_id`;
-- replace latest state when `state_frame_id` increases;
-- replace same-frame state when `state_frame_id` is equal and `sequence_id` is
+- reject or warn on backward `state_stream_frame_id`;
+- replace latest state when `state_stream_frame_id` increases;
+- replace same-frame state when `state_stream_frame_id` is equal and `sequence_id` is
   newer;
 - use explicit detection/pose statuses instead of inferring state from object
   count alone;

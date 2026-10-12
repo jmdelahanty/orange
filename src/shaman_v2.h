@@ -119,8 +119,18 @@ struct Slot {
     uint32_t payload_kind = static_cast<uint32_t>(PayloadKind::kLatestTrackingState);
     uint32_t flags = 0;
 
-    uint64_t state_frame_id = 0;
-    uint64_t source_frame_id = 0;
+    // Frame identity, per agent-contracts citrus-orange/frame_identity_v1_2026-10-12.md.
+    // The two *_stream_frame_id fields are values of the Orange stream counter: frames received
+    // since this camera's stream opened (preview included), 1-based, never reset at Record.
+    //   state: the frame this slot's live state is current for (never moves backward).
+    //   source: the frame whose detection/pose produced the content (stale if < state).
+    // camera_frame_id: the camera's own 16-bit counter (wraps 65535 -> 1); never an index.
+    // recording_frame_id: 1-based from Record, continuous across clips, 0 outside recording;
+    //   the only key for joining to Orange's videos and metadata.
+    // Renamed from state_frame_id / source_frame_id on 2026-10-12: names only, same offsets and
+    // meaning, so kSchemaVersion and the layout asserts below are unchanged.
+    uint64_t state_stream_frame_id = 0;
+    uint64_t source_stream_frame_id = 0;
     uint64_t camera_frame_id = 0;
     uint64_t recording_frame_id = 0;
     uint64_t camera_timestamp_ns = 0;

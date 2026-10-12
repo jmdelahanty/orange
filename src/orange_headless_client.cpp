@@ -4322,7 +4322,7 @@ bool start_headless_frame_ipc_runtime(HeadlessFrameIpcRuntime* runtime,
                                 slot.producer_generation;
                             stats.messages_popped++;
                             stats.v2_latest_state_messages++;
-                            const uint64_t frame_id = slot.state_frame_id;
+                            const uint64_t frame_id = slot.state_stream_frame_id;
                             if (slot.camera_id != stats.camera_id) {
                                 stats.camera_id_mismatches++;
                             }

@@ -25,7 +25,7 @@ struct FrameIPCFrameIdentity {
     // monotonic stream-local state identifier and carries every other identity
     // explicitly.
     uint64_t legacy_frame_id = 0;
-    uint64_t state_frame_id = 0;
+    uint64_t state_stream_frame_id = 0;
     uint64_t camera_frame_id = 0;
     uint64_t recording_frame_id = 0;
     uint64_t camera_timestamp_ns = 0;
@@ -136,20 +136,20 @@ public:
                    bool yolo_processing) {
         FrameIPCFrameIdentity identity;
         identity.legacy_frame_id = frame_id;
-        identity.state_frame_id = frame_id;
+        identity.state_stream_frame_id = frame_id;
         identity.camera_frame_id = frame_id;
         identity.camera_timestamp_ns = timestamp;
         return sendFrame(identity, yolo_processing, yolo_processing);
     }
 
     bool updateFrameWithDetections(uint64_t legacy_frame_id,
-                                   uint64_t state_frame_id,
+                                   uint64_t state_stream_frame_id,
                                    std::vector<shaman::Object> detections) {
         const auto status = detections.empty()
             ? shaman_v2::DetectionStatus::kZeroDetections
             : shaman_v2::DetectionStatus::kDetections;
         return updateFrameWithDetectionResult(
-            legacy_frame_id, state_frame_id, status, std::move(detections));
+            legacy_frame_id, state_stream_frame_id, status, std::move(detections));
     }
 
     // Extended grouped-live metadata. Counts are supplied by YOLO after
@@ -157,7 +157,7 @@ public:
     // those stages can use the compatibility overload above.
     bool updateFrameWithDetectionResult(
         uint64_t legacy_frame_id,
-        uint64_t state_frame_id,
+        uint64_t state_stream_frame_id,
         shaman_v2::DetectionStatus detection_status,
         std::vector<shaman::Object> detections,
         uint32_t source_detection_count,
@@ -168,7 +168,7 @@ public:
         bool synthetic_objects = false) {
         return enqueueDetectionUpdate(
             legacy_frame_id,
-            state_frame_id,
+            state_stream_frame_id,
             detection_status,
             std::move(detections),
             source_detection_count,
@@ -182,7 +182,7 @@ public:
     // pending base state like a real result and mark their objects synthetic.
     bool publishSyntheticYoloResult(
         uint64_t legacy_frame_id,
-        uint64_t state_frame_id,
+        uint64_t state_stream_frame_id,
         std::vector<shaman::Object> detections,
         uint32_t source_detection_count,
         uint32_t retained_detection_count,
@@ -194,7 +194,7 @@ public:
         }
         return enqueueDetectionUpdate(
             legacy_frame_id,
-            state_frame_id,
+            state_stream_frame_id,
             detection_status,
             std::move(detections),
             source_detection_count,
@@ -206,14 +206,14 @@ public:
 
     bool updateFrameWithDetectionResult(
         uint64_t legacy_frame_id,
-        uint64_t state_frame_id,
+        uint64_t state_stream_frame_id,
         shaman_v2::DetectionStatus detection_status,
         std::vector<shaman::Object> detections) {
         const uint32_t count = static_cast<uint32_t>(
             std::min<std::size_t>(detections.size(), UINT32_MAX));
         return enqueueDetectionUpdate(
             legacy_frame_id,
-            state_frame_id,
+            state_stream_frame_id,
             detection_status,
             std::move(detections),
             count,
@@ -226,11 +226,11 @@ public:
     // a terminal state.
     bool publishYoloWorkerEnqueueRejected(
         uint64_t legacy_frame_id,
-        uint64_t state_frame_id,
+        uint64_t state_stream_frame_id,
         uint64_t detection_model_id_hash = 0) {
         return enqueueDetectionUpdate(
             legacy_frame_id,
-            state_frame_id,
+            state_stream_frame_id,
             shaman_v2::DetectionStatus::kFailed,
             {},
             0,
@@ -242,7 +242,7 @@ public:
 private:
     bool enqueueDetectionUpdate(
         uint64_t legacy_frame_id,
-        uint64_t state_frame_id,
+        uint64_t state_stream_frame_id,
         shaman_v2::DetectionStatus detection_status,
         std::vector<shaman::Object> detections,
         uint32_t source_detection_count,
@@ -263,7 +263,7 @@ private:
             detection_reason =
                 shaman_v2::DetectionResultReason::kProcessingFailed;
         }
-        if (legacy_frame_id == 0 || state_frame_id == 0 ||
+        if (legacy_frame_id == 0 || state_stream_frame_id == 0 ||
             detections.size() > std::numeric_limits<uint32_t>::max() ||
             retained_detection_count != detections.size() ||
             source_detection_count < retained_detection_count ||
@@ -276,7 +276,7 @@ private:
         }
         UpdateEvent event;
         event.legacy_frame_id = legacy_frame_id;
-        event.state_frame_id = state_frame_id;
+        event.state_stream_frame_id = state_stream_frame_id;
         event.detection_status = detection_status;
         event.detections = std::move(detections);
         event.source_detection_count = source_detection_count;
@@ -346,13 +346,13 @@ public:
         if (!enabled_ || !v2_publisher_) {
             return false;
         }
-        if (pose_slot.state_frame_id == 0) {
-            pose_slot.state_frame_id = pose_slot.source_frame_id;
+        if (pose_slot.state_stream_frame_id == 0) {
+            pose_slot.state_stream_frame_id = pose_slot.source_stream_frame_id;
         }
-        if (pose_slot.source_frame_id == 0) {
-            pose_slot.source_frame_id = pose_slot.state_frame_id;
+        if (pose_slot.source_stream_frame_id == 0) {
+            pose_slot.source_stream_frame_id = pose_slot.state_stream_frame_id;
         }
-        if (pose_slot.state_frame_id == 0) {
+        if (pose_slot.state_stream_frame_id == 0) {
             return false;
         }
         if (pose_slot.object_count > shaman_v2::kMaxObjects) {
@@ -407,7 +407,7 @@ private:
 
     struct UpdateEvent {
         uint64_t legacy_frame_id = 0;
-        uint64_t state_frame_id = 0;
+        uint64_t state_stream_frame_id = 0;
         shaman_v2::DetectionStatus detection_status =
             shaman_v2::DetectionStatus::kFailed;
         std::vector<shaman::Object> detections;
@@ -594,8 +594,8 @@ private:
             return;
         }
         shaman_v2::Slot slot;
-        slot.state_frame_id = frame.identity.state_frame_id;
-        slot.source_frame_id = frame.identity.state_frame_id;
+        slot.state_stream_frame_id = frame.identity.state_stream_frame_id;
+        slot.source_stream_frame_id = frame.identity.state_stream_frame_id;
         slot.camera_frame_id = frame.identity.camera_frame_id;
         slot.recording_frame_id = frame.identity.recording_frame_id;
         slot.camera_timestamp_ns = frame.identity.camera_timestamp_ns;
@@ -623,8 +623,8 @@ private:
             return;
         }
         shaman_v2::Slot slot;
-        slot.state_frame_id = update.state_frame_id;
-        slot.source_frame_id = update.state_frame_id;
+        slot.state_stream_frame_id = update.state_stream_frame_id;
+        slot.source_stream_frame_id = update.state_stream_frame_id;
         slot.camera_id = static_cast<uint32_t>(camera_params_->camera_id);
         shaman_v2::copy_camera_serial(slot.camera_serial, camera_params_->camera_serial);
         slot.source_width_px = static_cast<uint32_t>(camera_params_->width);
@@ -664,11 +664,11 @@ private:
         if (!v2_publisher_) {
             return;
         }
-        if (slot.state_frame_id == 0) {
-            slot.state_frame_id = slot.source_frame_id;
+        if (slot.state_stream_frame_id == 0) {
+            slot.state_stream_frame_id = slot.source_stream_frame_id;
         }
-        if (slot.source_frame_id == 0) {
-            slot.source_frame_id = slot.state_frame_id;
+        if (slot.source_stream_frame_id == 0) {
+            slot.source_stream_frame_id = slot.state_stream_frame_id;
         }
         slot.camera_id = static_cast<uint32_t>(camera_params_->camera_id);
         shaman_v2::copy_camera_serial(slot.camera_serial, camera_params_->camera_serial);

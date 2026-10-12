@@ -33,8 +33,8 @@ std::string unique_queue_name(const std::string& suffix)
 shaman_v2::Slot make_slot(uint64_t frame_id)
 {
     shaman_v2::Slot slot;
-    slot.state_frame_id = frame_id;
-    slot.source_frame_id = frame_id;
+    slot.state_stream_frame_id = frame_id;
+    slot.source_stream_frame_id = frame_id;
     slot.camera_frame_id = frame_id + 1000;
     slot.recording_frame_id = frame_id + 10;
     shaman_v2::copy_recording_identity_token(
@@ -217,7 +217,7 @@ void test_writer_recovers_interrupted_reset()
         shaman_v2::SharedLiveStateQueue reader(name, false);
         shaman_v2::Slot out;
         require(reader.pop(out), "reader should consume self-healed state");
-        require(out.state_frame_id == 81,
+        require(out.state_stream_frame_id == 81,
                 "self-healed queue should not expose predecessor slots");
     }
 
@@ -278,8 +278,8 @@ void test_push_pop_latest_state()
         shaman_v2::Slot out;
         require(reader.pop(out), "reader should pop pushed slot");
         require(out.sequence_id == 1, "first sequence id should be 1");
-        require(out.state_frame_id == 42, "state frame id should round trip");
-        require(out.source_frame_id == 42, "source frame id should round trip");
+        require(out.state_stream_frame_id == 42, "state frame id should round trip");
+        require(out.source_stream_frame_id == 42, "source frame id should round trip");
         require(out.camera_frame_id == 1042, "camera frame id should round trip");
         require(std::strcmp(
                     out.recording_identity_token,
@@ -418,7 +418,7 @@ void test_live_state_publisher_suppresses_stale_updates()
 
         shaman_v2::Slot out;
         require(reader.pop(out), "reader should see only the base frame");
-        require(out.state_frame_id == 10, "base frame id should be preserved");
+        require(out.state_stream_frame_id == 10, "base frame id should be preserved");
         require(!reader.pop(out), "reader should not see stale updates");
     }
 
@@ -611,7 +611,7 @@ void test_frame_ipc_manager_opt_in_v2_base_yolo_and_stale()
         shaman_v2::SharedLiveStateQueue reader(v2_name, false);
         FrameIPCFrameIdentity identity;
         identity.legacy_frame_id = 1;
-        identity.state_frame_id = 101;
+        identity.state_stream_frame_id = 101;
         identity.camera_frame_id = 900;
         identity.recording_frame_id = 37;
         identity.recording_identity_token =
@@ -633,7 +633,7 @@ void test_frame_ipc_manager_opt_in_v2_base_yolo_and_stale()
 
         std::vector<shaman_v2::Slot> slots = wait_for_v2_slots(reader, 2);
         require(slots.size() == 2, "v2 reader should receive base and YOLO slots");
-        require(slots[0].state_frame_id == 101, "base v2 state frame should use local identity");
+        require(slots[0].state_stream_frame_id == 101, "base v2 state frame should use local identity");
         require(slots[0].camera_frame_id == 900,
                 "base v2 state should preserve camera frame identity");
         require(slots[0].recording_frame_id == 37,
@@ -647,7 +647,7 @@ void test_frame_ipc_manager_opt_in_v2_base_yolo_and_stale()
         require(slots[0].detection_status ==
                     static_cast<uint32_t>(shaman_v2::DetectionStatus::kPending),
                 "base v2 detection status should be pending");
-        require(slots[1].state_frame_id == 101,
+        require(slots[1].state_stream_frame_id == 101,
                 "YOLO v2 state should remain bound to local identity");
         require(slots[1].camera_frame_id == 900 && slots[1].recording_frame_id == 37,
                 "YOLO v2 update should retain base-frame identities");
@@ -669,7 +669,7 @@ void test_frame_ipc_manager_opt_in_v2_base_yolo_and_stale()
         require(slots[1].objects[0].x_px == 10.0f, "YOLO v2 object should round trip");
 
         identity.legacy_frame_id = 2;
-        identity.state_frame_id = 102;
+        identity.state_stream_frame_id = 102;
         identity.camera_frame_id = 901;
         identity.recording_frame_id = 38;
         identity.recording_identity_token =
@@ -679,7 +679,7 @@ void test_frame_ipc_manager_opt_in_v2_base_yolo_and_stale()
         identity.timestamp_sys_ns = 444;
         require(manager.sendFrame(identity, true), "second base frame enqueue should succeed");
         slots = wait_for_v2_slots(reader, 1);
-        require(slots.size() == 1 && slots[0].state_frame_id == 102,
+        require(slots.size() == 1 && slots[0].state_stream_frame_id == 102,
                 "v2 reader should receive second base frame");
         require(manager.updateFrameWithDetections(1, 101, {detection}),
                 "stale detection enqueue should still be accepted by async manager");
@@ -708,7 +708,7 @@ void test_frame_ipc_manager_publishes_v2_pose_update()
         shaman_v2::SharedLiveStateQueue reader(v2_name, false);
         FrameIPCFrameIdentity base_identity;
         base_identity.legacy_frame_id = 11;
-        base_identity.state_frame_id = 11;
+        base_identity.state_stream_frame_id = 11;
         base_identity.camera_frame_id = 1011;
         base_identity.recording_frame_id = 211;
         base_identity.camera_timestamp_ns = 1111;
@@ -730,8 +730,8 @@ void test_frame_ipc_manager_publishes_v2_pose_update()
                 "pose test YOLO vector should enqueue before pose");
 
         shaman_v2::Slot pose;
-        pose.state_frame_id = 11;
-        pose.source_frame_id = 11;
+        pose.state_stream_frame_id = 11;
+        pose.source_stream_frame_id = 11;
         pose.camera_frame_id = 1011;
         // Recording-local numbering intentionally differs from stream-local
         // state identity. Pose must remain bound to local frame 11.
@@ -771,12 +771,12 @@ void test_frame_ipc_manager_publishes_v2_pose_update()
         const std::vector<shaman_v2::Slot> slots = wait_for_v2_slots(reader, 3);
         require(slots.size() == 3,
                 "v2 reader should receive base, YOLO, and pose slots");
-        require(slots[0].state_frame_id == 11, "pose test base frame id should be 11");
+        require(slots[0].state_stream_frame_id == 11, "pose test base frame id should be 11");
         require(slots[1].object_count == 4 &&
                     slots[1].transmitted_object_count == 4,
                 "YOLO pose test should establish the complete four-box vector");
-        require(slots[2].state_frame_id == 11, "pose update frame id should be 11");
-        require(slots[2].source_frame_id == 11,
+        require(slots[2].state_stream_frame_id == 11, "pose update frame id should be 11");
+        require(slots[2].source_stream_frame_id == 11,
                 "pose source frame should use stream-local local_frame_id");
         require(slots[2].recording_frame_id == 211,
                 "pose recording identity should remain metadata only");
@@ -892,7 +892,7 @@ void test_frame_ipc_manager_publishes_enqueue_rejection_failure()
     shaman_v2::unlink_queue(v2_name);
 }
 
-// Contract (2026-09-22): base, YOLO and pose updates merge by state_frame_id,
+// Contract (2026-09-22): base, YOLO and pose updates merge by state_stream_frame_id,
 // which is the absolute per-camera frame id. recording_frame_id is a mirror
 // field only. A pose update keyed by the recording id (which restarts at 1
 // for every recording) is stale-suppressed while recording; this test pins
@@ -913,13 +913,13 @@ void test_frame_ipc_manager_pose_update_keys_on_absolute_frame_id()
         // 100 frames after streaming).
         FrameIPCFrameIdentity base;
         base.legacy_frame_id = 11;
-        base.state_frame_id = 111;
+        base.state_stream_frame_id = 111;
         base.camera_frame_id = 1111;
         base.recording_frame_id = 11;
         base.camera_timestamp_ns = 5555;
         require(manager.sendFrame(base, true), "base frame with differing ids should enqueue");
         std::vector<shaman_v2::Slot> slots = wait_for_v2_slots(reader, 1);
-        require(slots.size() == 1 && slots[0].state_frame_id == 111,
+        require(slots.size() == 1 && slots[0].state_stream_frame_id == 111,
                 "base state id should be the absolute frame id");
         // ABI v4 merges a pose into the detection with the same bbox, so the
         // frame needs an authoritative YOLO object first (legacy id 11,
@@ -930,14 +930,14 @@ void test_frame_ipc_manager_pose_update_keys_on_absolute_frame_id()
         require(manager.updateFrameWithDetectionResult(11, 111, shaman_v2::DetectionStatus::kDetections, detections),
                 "yolo update for the base frame should enqueue");
         slots = wait_for_v2_slots(reader, 1);
-        require(slots.size() == 1 && slots[0].state_frame_id == 111 && slots[0].object_count == 1,
+        require(slots.size() == 1 && slots[0].state_stream_frame_id == 111 && slots[0].object_count == 1,
                 "yolo update publishes one object on the absolute frame id");
 
         // Wrong: pose keyed by the recording id is below the base and is
         // suppressed as stale.
         shaman_v2::Slot stale;
-        stale.state_frame_id = 11;
-        stale.source_frame_id = 11;
+        stale.state_stream_frame_id = 11;
+        stale.source_stream_frame_id = 11;
         stale.recording_frame_id = 11;
         stale.detection_status = static_cast<uint32_t>(shaman_v2::DetectionStatus::kDetections);
         stale.pose_status = static_cast<uint32_t>(shaman_v2::PoseStatus::kPoses);
@@ -962,13 +962,13 @@ void test_frame_ipc_manager_pose_update_keys_on_absolute_frame_id()
         // Right: pose keyed by the absolute id merges and publishes, carrying
         // the recording id as a mirror.
         shaman_v2::Slot pose = stale;
-        pose.state_frame_id = 111;
-        pose.source_frame_id = 111;
+        pose.state_stream_frame_id = 111;
+        pose.source_stream_frame_id = 111;
         pose.objects[0].keypoints[0].x_px = 321.0f;
         require(manager.updateFrameWithPoseResult(pose), "absolute-id pose update should enqueue");
         slots = wait_for_v2_slots(reader, 1);
         require(slots.size() == 1, "absolute-id pose update should publish one slot");
-        require(slots[0].state_frame_id == 111, "published pose keeps the absolute state id");
+        require(slots[0].state_stream_frame_id == 111, "published pose keeps the absolute state id");
         require(slots[0].recording_frame_id == 11, "published pose mirrors the recording id");
         require(slots[0].pose_status == static_cast<uint32_t>(shaman_v2::PoseStatus::kPoses),
                 "published pose status should be poses");
@@ -1001,7 +1001,7 @@ void test_frame_ipc_manager_drains_in_arrival_order()
         manager.PauseWriterForTest();
         FrameIPCFrameIdentity base;
         base.legacy_frame_id = 501;
-        base.state_frame_id = 501;
+        base.state_stream_frame_id = 501;
         require(manager.sendFrame(base, true), "base 501 enqueue");
         std::vector<shaman::Object> objects(1);
         objects[0].rect.width = 30.0f;
@@ -1009,8 +1009,8 @@ void test_frame_ipc_manager_drains_in_arrival_order()
         require(manager.updateFrameWithDetectionResult(501, 501, shaman_v2::DetectionStatus::kDetections, objects),
                 "yolo 501 enqueue");
         shaman_v2::Slot pose;
-        pose.state_frame_id = 501;
-        pose.source_frame_id = 501;
+        pose.state_stream_frame_id = 501;
+        pose.source_stream_frame_id = 501;
         pose.detection_status = static_cast<uint32_t>(shaman_v2::DetectionStatus::kDetections);
         pose.pose_status = static_cast<uint32_t>(shaman_v2::PoseStatus::kPoses);
         pose.object_count = 1;
@@ -1025,25 +1025,25 @@ void test_frame_ipc_manager_drains_in_arrival_order()
         pose.objects[0].keypoints[0].flags = shaman_v2::kKeypointVisible;
         require(manager.updateFrameWithPoseResult(pose), "pose 501 enqueue");
         base.legacy_frame_id = 502;
-        base.state_frame_id = 502;
+        base.state_stream_frame_id = 502;
         require(manager.sendFrame(base, true), "base 502 enqueue");
         manager.ResumeWriterForTest();
 
         const std::vector<shaman_v2::Slot> slots = wait_for_v2_slots(reader, 4);
         require(slots.size() == 4, "base 501, yolo 501, pose 501 and base 502 should all publish: got " +
                                    std::to_string(slots.size()));
-        require(slots[0].state_frame_id == 501 &&
+        require(slots[0].state_stream_frame_id == 501 &&
                     slots[0].detection_status == static_cast<uint32_t>(shaman_v2::DetectionStatus::kPending),
                 "first slot is base 501");
-        require(slots[1].state_frame_id == 501 &&
+        require(slots[1].state_stream_frame_id == 501 &&
                     slots[1].detection_status == static_cast<uint32_t>(shaman_v2::DetectionStatus::kDetections),
                 "second slot is yolo 501");
-        require(slots[2].state_frame_id == 501 &&
+        require(slots[2].state_stream_frame_id == 501 &&
                     slots[2].pose_status == static_cast<uint32_t>(shaman_v2::PoseStatus::kPoses) &&
                     slots[2].object_count == 1 && slots[2].objects[0].keypoint_count == 1 &&
                     (slots[2].objects[0].flags & shaman_v2::kObjectHasPose),
                 "third slot is pose 501 merged into the detection");
-        require(slots[3].state_frame_id == 502, "fourth slot is base 502");
+        require(slots[3].state_stream_frame_id == 502, "fourth slot is base 502");
         const auto counters = manager.getV2Counters();
         require(counters.yolo_stale_suppressed == 0 && counters.pose_stale_suppressed == 0,
                 "nothing stale-suppressed when events arrive in order");
@@ -1127,7 +1127,7 @@ void test_frame_ipc_manager_pending_requires_live_terminal_capability()
 
         FrameIPCFrameIdentity identity;
         identity.legacy_frame_id = 1;
-        identity.state_frame_id = 1;
+        identity.state_stream_frame_id = 1;
         identity.camera_frame_id = 1001;
         // YOLO can still run for recording/analytics while live publication
         // is disabled. The explicit false terminal capability must therefore
@@ -1141,7 +1141,7 @@ void test_frame_ipc_manager_pending_requires_live_terminal_capability()
                 "base must not be pending when no live result can be published");
 
         identity.legacy_frame_id = 2;
-        identity.state_frame_id = 2;
+        identity.state_stream_frame_id = 2;
         identity.camera_frame_id = 1002;
         require(manager.sendFrame(identity, true, true),
                 "synthetic live base frame enqueue should succeed");

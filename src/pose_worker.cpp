@@ -1632,8 +1632,8 @@ void PoseWorker::publish_pose_result_v2(
     }
 
     shaman_v2::Slot slot;
-    slot.state_frame_id = frame_id;
-    slot.source_frame_id = frame_id;
+    slot.state_stream_frame_id = frame_id;
+    slot.source_stream_frame_id = frame_id;
     slot.camera_frame_id = frame.camera_frame_id;
     slot.recording_frame_id = frame.recording_frame_id;
     slot.camera_timestamp_ns = frame.timestamp;

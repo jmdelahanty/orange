@@ -49,8 +49,8 @@ struct CameraCounts {
 std::string slot_json(const std::string& serial, const shaman_v2::Slot& s)
 {
     std::ostringstream o;
-    o << "{\"serial\":\"" << serial << "\",\"state_frame_id\":" << s.state_frame_id
-      << ",\"source_frame_id\":" << s.source_frame_id << ",\"recording_frame_id\":" << s.recording_frame_id
+    o << "{\"serial\":\"" << serial << "\",\"state_stream_frame_id\":" << s.state_stream_frame_id
+      << ",\"source_stream_frame_id\":" << s.source_stream_frame_id << ",\"recording_frame_id\":" << s.recording_frame_id
       << ",\"camera_frame_id\":" << s.camera_frame_id << ",\"sequence_id\":" << s.sequence_id
       << ",\"camera_timestamp_ns\":" << s.camera_timestamp_ns << ",\"detection_status\":" << s.detection_status
       << ",\"pose_status\":" << s.pose_status << ",\"pose_model_id_hash\":" << s.pose_model_id_hash
@@ -120,9 +120,9 @@ int main(int argc, char** argv)
                 c.slots++;
                 if (c.last_sequence && s.sequence_id > c.last_sequence + 1) c.sequence_gaps++;
                 c.last_sequence = s.sequence_id;
-                if (!c.first_state_frame_id) c.first_state_frame_id = s.state_frame_id;
-                c.last_state_frame_id = s.state_frame_id;
-                c.state_frame_ids.insert(s.state_frame_id);
+                if (!c.first_state_frame_id) c.first_state_frame_id = s.state_stream_frame_id;
+                c.last_state_frame_id = s.state_stream_frame_id;
+                c.state_frame_ids.insert(s.state_stream_frame_id);
                 if (s.recording_frame_id > c.max_recording_frame_id) c.max_recording_frame_id = s.recording_frame_id;
                 const auto det = static_cast<shaman_v2::DetectionStatus>(s.detection_status);
                 const auto pose = static_cast<shaman_v2::PoseStatus>(s.pose_status);

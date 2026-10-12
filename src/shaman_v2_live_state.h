@@ -34,13 +34,13 @@ public:
     bool publish_base_frame(Slot base)
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (base.state_frame_id == 0) {
-            base.state_frame_id = base.source_frame_id;
+        if (base.state_stream_frame_id == 0) {
+            base.state_stream_frame_id = base.source_stream_frame_id;
         }
-        if (base.source_frame_id == 0) {
-            base.source_frame_id = base.state_frame_id;
+        if (base.source_stream_frame_id == 0) {
+            base.source_stream_frame_id = base.state_stream_frame_id;
         }
-        if (base.state_frame_id == 0) {
+        if (base.state_stream_frame_id == 0) {
             counters_.queue_drops++;
             return false;
         }
@@ -48,14 +48,14 @@ public:
             counters_.queue_drops++;
             return false;
         }
-        if (has_current_ && base.state_frame_id < latest_base_state_frame_id_) {
+        if (has_current_ && base.state_stream_frame_id < latest_base_state_frame_id_) {
             counters_.queue_drops++;
             return false;
         }
 
-        latest_base_state_frame_id_ = base.state_frame_id;
+        latest_base_state_frame_id_ = base.state_stream_frame_id;
         current_ = base;
-        current_.source_frame_id = current_.state_frame_id;
+        current_.source_stream_frame_id = current_.state_stream_frame_id;
         has_current_ = true;
         // A base frame is not a YOLO terminal result, even if a caller
         // happened to leave detection-looking fields populated in it.  Pose
@@ -90,7 +90,7 @@ public:
             counters_.queue_drops++;
             return false;
         }
-        const uint64_t frame_id = update.source_frame_id;
+        const uint64_t frame_id = update.source_stream_frame_id;
         if (is_stale(frame_id)) {
             counters_.yolo_stale_suppressed++;
             queue_.note_stale_suppressed();
@@ -113,7 +113,7 @@ public:
             counters_.queue_drops++;
             return false;
         }
-        const uint64_t frame_id = update.source_frame_id;
+        const uint64_t frame_id = update.source_stream_frame_id;
         if (is_stale(frame_id)) {
             counters_.pose_stale_suppressed++;
             queue_.note_stale_suppressed();
@@ -144,7 +144,7 @@ private:
         if (stale_traces_++ < 200) {
             std::cerr << "[v2_stale] t_ms=" << (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count() % 100000000)
                       << " queue=" << queue_name_for_trace_ << " kind=" << kind
-                      << " source_frame_id=" << frame_id
+                      << " source_stream_frame_id=" << frame_id
                       << " latest_base=" << latest_base_state_frame_id_
                       << " lag_frames=" << (latest_base_state_frame_id_ - frame_id) << std::endl;
         }
@@ -201,7 +201,7 @@ private:
         const Slot previous = current_;
         const Slot early_pose = pending_pose_evidence_;
         const bool had_early_pose = has_pending_pose_evidence_;
-        current_.source_frame_id = current_.state_frame_id;
+        current_.source_stream_frame_id = current_.state_stream_frame_id;
         current_.detection_status = update.detection_status;
         if (update.detection_model_id_hash != 0) {
             current_.detection_model_id_hash = update.detection_model_id_hash;
@@ -250,7 +250,7 @@ private:
 
     void apply_pose_update(const Slot& update)
     {
-        current_.source_frame_id = current_.state_frame_id;
+        current_.source_stream_frame_id = current_.state_stream_frame_id;
         current_.pose_status = update.pose_status;
         current_.pose_model_id_hash = update.pose_model_id_hash;
         current_.pose_skeleton_id_hash = update.pose_skeleton_id_hash;
