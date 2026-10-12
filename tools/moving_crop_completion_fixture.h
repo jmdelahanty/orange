@@ -34,7 +34,8 @@ struct Fixture {
     std::string tag;
     bool owns_root = true;
     json master, summary;
-    std::vector<json> events;
+    json header;                // detector session header line (null: none written)
+    std::vector<json> events;   // detector frame lines
     std::string options_recording_id;
     std::vector<std::string> rows;
     Fixture(uint64_t frame_count = 5, std::string camera_serial = "02010093", fs::path shared_root = {}, std::string file_tag = {})
@@ -61,16 +62,32 @@ struct Fixture {
                 std::to_string(frame.host_realtime_ns) + "," + (blank ? "0,1,blank_no_detection," : "1,0,detected_crop,") +
                 std::to_string(i - 1) + "," + std::to_string(i - 1));
             options_recording_id = options.recording_id;
-            events.push_back({{"schema_id", "orange.yolo_event"}, {"schema_version", 1}, {"event_sequence", i},
-                {"event_kind", "yolo_result"}, {"recording_id", options.recording_id}, {"camera_serial", serial},
+            events.push_back({{"schema_id", "orange.yolo_event"}, {"schema_version", 3}, {"event_sequence", i},
+                {"event_kind", "yolo_result"}, {"camera_serial", serial},
                 {"frame", {{"recording_frame_id", i}, {"stream_frame_id", frame.local_frame_id},
                            {"camera_frame_id", frame.camera_frame_id}, {"record_active", true}}},
-                {"timestamps", {{"camera_timestamp", frame.camera_timestamp_ns}, {"timestamp_sys_ns", frame.host_realtime_ns}}},
+                {"timestamps", {{"camera_timestamp", frame.camera_timestamp_ns}, {"timestamp_sys_ns", frame.host_realtime_ns},
+                                {"event_epoch_us", 1700000000000000ULL + i}, {"event_monotonic_us", 5000000ULL + i}}},
                 {"yolo", {{"status", blank ? "zero_detections" : "detections"}, {"detection_count", blank ? 0 : 1},
-                    {"coordinate_space", "source_frame_pixels"}, {"model_id", "fixture-model"}, {"detection_source", "model"},
-                    {"synthetic_runtime_detection", false}, {"production_detection_valid", true}}},
-                {"detections", blank ? json::array() : json::array({json::object()})}});
+                    {"detection_source", "model"}, {"synthetic_runtime_detection", false}, {"production_detection_valid", true}}},
+                {"spatial_mask", {{"policy_generation", 1}, {"outside_detections", json::array()},
+                    {"result", {{"raw_detection_count", blank ? 0 : 1}, {"inside_detection_count", 0},
+                                {"outside_detection_count", 0}, {"downstream_detection_count", blank ? 0 : 1}}}}},
+                {"detections", blank ? json::array() : json::array({Detection()})},
+                {"citrus_live_ipc", {{"enabled", false}, {"requested", false}, {"request_status", "disabled"}}}});
         }
+        // orange.yolo_event v3 session header (the shape of tools/fixtures/generated_outputs/golden).
+        header = {{"schema_id", "orange.yolo_event"}, {"schema_version", 3}, {"event_kind", "session_header"},
+            {"recording_id", options.recording_id}, {"camera_serial", serial}, {"camera_id", 0}, {"worker", "YoloWorker"},
+            {"frame_identity_key", "frame.recording_frame_id"}, {"source_frame", {{"width_px", 4512}, {"height_px", 4512}}},
+            {"line_format", {{"confidence_decimals", 4}, {"coordinate_decimals", 3}, {"latency_decimals", 3}}},
+            {"yolo", {{"worker", "YoloWorker"}, {"model_id", "fixture-model"}, {"engine_path", "/fixture.engine"},
+                      {"engine_sha256", ""}, {"engine_bytes", 0}, {"weights_sha256", ""}, {"onnx_sha256", ""},
+                      {"engine_manifest_run_id", ""}, {"gpu_id", 0}, {"coordinate_space", "source_frame_pixels"},
+                      {"detection_source", "model"}, {"synthetic_runtime_detection", false}}},
+            {"spatial_mask", {{"schema_id", "orange.analytics.spatial_mask_runtime"}, {"schema_version", 1},
+                              {"mode", "off"}, {"policy_generation", 1}}},
+            {"citrus_live_ipc", {{"queue_name", ""}, {"enabled", false}}}};
         master = journal.Finalize(true);
         summary = {{"schema_id", "orange.external_recorder.summary"}, {"schema_version", 2},
             {"session_id", options.recording_id}, {"stream_id", serial + "_crop"}, {"stream_kind", "crop"}, {"output_kind", "crop"},
@@ -87,31 +104,15 @@ struct Fixture {
         std::string csv = "recording_frame_id,stream_frame_id,camera_frame_id,timestamp,timestamp_sys,has_detection,blank_frame,crop_state,crop_video_frame_index,session_crop_video_frame_index\n";
         for (const auto& row : rows) csv += row + "\n";
         put(root / (prefix + "_crop_meta.csv"), csv);
-        std::string jsonl;
+        std::string jsonl = header.is_null() ? std::string() : header.dump() + "\n";
         for (const auto& event : events) jsonl += event.dump() + "\n";
         put(root / (prefix + "_yolo_events.jsonl"), jsonl);
         put(root / (tag + "summary.json"), summary.dump());
     }
     json Finish(bool normal = true) { return FinalizeMovingCropMetadata(root, serial, tag + "summary.json", normal); }
-    // Rewrite the detector log in the v2 line format (2026-10-09): a
-    // session_header line carries recording_id, camera_serial and the model
-    // block; frame lines keep identity, status, counts and per-frame markers.
-    void ToV2() {
-        json header = {{"schema_id", "orange.yolo_event"}, {"schema_version", 2}, {"event_kind", "session_header"},
-            {"recording_id", options_recording_id}, {"camera_serial", serial}, {"camera_id", 0},
-            {"yolo", {{"model_id", "fixture-model"}, {"engine_path", "/fixture.engine"}, {"gpu_id", 0},
-                      {"coordinate_space", "source_frame_pixels"}, {"detection_source", "model"},
-                      {"synthetic_runtime_detection", false}}}};
-        std::vector<json> v2;
-        v2.push_back(header);
-        for (json event : events) {
-            event["schema_version"] = 2;
-            event.erase("recording_id");
-            event["yolo"].erase("coordinate_space");
-            event["yolo"].erase("model_id");
-            v2.push_back(event);
-        }
-        events = v2;
+    static json Detection() {
+        return {{"index", 0}, {"x_px", 10.0}, {"y_px", 20.0}, {"width_px", 30.0}, {"height_px", 40.0},
+                {"label", 0}, {"confidence", 0.9}};
     }
     void Media(bool rolling) {
         const uint64_t count = rows.size();

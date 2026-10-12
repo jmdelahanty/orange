@@ -4,7 +4,7 @@
 #include "json.hpp"
 
 #include <fstream>
-#include <limits>
+#include <variant>
 
 namespace yolo_event_log {
 namespace {
@@ -151,68 +151,46 @@ YoloEventLogValidationStats summarize_yolo_event_log(
     }
 
     std::string line;
-    event_log_reader::SessionContext ctx;
+    event_log_reader::YoloSession session;
     while (std::getline(file, line)) {
         if (line.empty()) {
             continue;
         }
-        const nlohmann::json parsed = nlohmann::json::parse(line, nullptr, false);
-        if (parsed.is_discarded() || !parsed.is_object()) {
+        event_log_reader::yolo::OrangeYoloEventV3 parsed;
+        std::string parse_error;
+        const event_log_reader::LineStatus line_status =
+            event_log_reader::parse_yolo_line(line, &parsed, &parse_error);
+        if (line_status != event_log_reader::LineStatus::kOk) {
             stats.rows++;
-            stats.parse_errors++;
-            continue;
-        }
-        const uint64_t schema_version =
-            json_u64_or_default(parsed.value("schema_version", nlohmann::json()), 0);
-        if (json_string_or_default(parsed, "schema_id", "") != "orange.yolo_event" ||
-            (schema_version < 1 || schema_version > 3)) {
-            stats.rows++;
-            stats.schema_errors++;
-            continue;
-        }
-        if (event_log_reader::absorb_non_frame_line(parsed, &ctx)) {
-            // v2 session_header / spatial_mask_policy lines: not frame rows.
-            const std::string kind = json_string_or_default(parsed, "event_kind", "");
-            if (kind == "session_header") {
-                stats.header_rows++;
-                if (stats.rows != 0) stats.schema_errors++;  // header must lead
-            } else if (kind == "spatial_mask_policy") {
-                stats.header_rows++;
+            if (line_status == event_log_reader::LineStatus::kInvalidJson) {
+                stats.parse_errors++;
             } else {
                 stats.schema_errors++;
+                if (stats.error.empty()) stats.error = parse_error;
             }
             continue;
         }
+        if (const auto* header = std::get_if<event_log_reader::yolo::OrangeYoloEventV3SessionHeader>(&parsed)) {
+            stats.header_rows++;
+            if (stats.rows != 0 || session.header) stats.schema_errors++;  // one header, first
+            session.Absorb(*header);
+            continue;
+        }
+        if (const auto* policy = std::get_if<event_log_reader::yolo::OrangeYoloEventV3SpatialMaskPolicy>(&parsed)) {
+            stats.header_rows++;
+            session.Absorb(*policy);
+            continue;
+        }
+        const auto& event = std::get<event_log_reader::yolo::OrangeYoloEventV3YoloResult>(parsed);
         stats.rows++;
-        if (schema_version >= 2 && !ctx.has_header) {
+        if (!session.header) {
             stats.schema_errors++;
         }
-        // v1 lines carry every block; v2 frame lines are viewed through the
-        // header (model block, spatial-mask policy by generation).
-        nlohmann::json event = parsed;
-        event["yolo"] = event_log_reader::effective_block(parsed, ctx, "yolo");
-        {
-            bool found = false;
-            const nlohmann::json spatial = event_log_reader::effective_spatial_mask(parsed, ctx, &found);
-            if (found) event["spatial_mask"] = spatial;
-        }
-
-        const uint64_t sequence =
-            json_u64_or_default(event.value("event_sequence", nlohmann::json()), 0);
-        if (sequence != stats.rows) {
+        if (event.event_sequence != stats.rows) {
             stats.sequence_errors++;
         }
 
-        const nlohmann::json frame = event.value("frame", nlohmann::json::object());
-        const nlohmann::json yolo = event.value("yolo", nlohmann::json::object());
-        const nlohmann::json detections = event.value("detections", nlohmann::json::array());
-        if (!frame.is_object() || !yolo.is_object() || !detections.is_array()) {
-            stats.schema_errors++;
-            continue;
-        }
-
-        const uint64_t recording_frame_id =
-            json_u64_or_default(frame.value("recording_frame_id", nlohmann::json()), 0);
+        const uint64_t recording_frame_id = event.frame.recording_frame_id;
         if (recording_frame_id == 0) {
             stats.schema_errors++;
         } else if (!metadata_frame_ids.empty() &&
@@ -220,32 +198,16 @@ YoloEventLogValidationStats summarize_yolo_event_log(
             stats.metadata_join_misses++;
         }
 
-        const std::string status = json_string_or_default(yolo, "status", "");
-        const uint64_t detection_count =
-            json_u64_or_default(yolo.value("detection_count", nlohmann::json()),
-                                std::numeric_limits<uint64_t>::max());
+        const std::string& status = event.yolo.status;
+        const uint64_t detection_count = event.yolo.detection_count;
 
-        const auto spatial_it = event.find("spatial_mask");
-        if (spatial_it != event.end()) {
-            bool spatial_error = !spatial_it->is_object();
-            const nlohmann::json spatial = spatial_it->is_object()
-                ? *spatial_it
-                : nlohmann::json::object();
-            const std::string spatial_mode =
-                json_string_or_default(spatial, "mode", "");
-            const bool known_spatial_mode =
-                spatial_mode == "off" ||
-                spatial_mode == "audit" ||
-                spatial_mode == "gate_only" ||
-                spatial_mode == "gate_and_input_mask";
-            const nlohmann::json input_mask = spatial.value(
-                "input_mask", nlohmann::json::object());
-            const nlohmann::json centroid_gate = spatial.value(
-                "centroid_gate", nlohmann::json::object());
-            const nlohmann::json spatial_result = spatial.value(
-                "result", nlohmann::json::object());
-            const nlohmann::json outside = spatial.value(
-                "outside_detections", nlohmann::json::array());
+        // The result's counts against the policy its generation names.
+        {
+            const nlohmann::json* policy = session.Policy(event);
+            const nlohmann::json spatial = policy ? *policy : nlohmann::json::object();
+            const std::string spatial_mode = json_string_or_default(spatial, "mode", "");
+            const nlohmann::json input_mask = spatial.value("input_mask", nlohmann::json::object());
+            const nlohmann::json centroid_gate = spatial.value("centroid_gate", nlohmann::json::object());
             bool input_enabled_valid = false;
             const bool input_enabled = json_bool_or_default(
                 input_mask, "enabled", false, &input_enabled_valid);
@@ -255,38 +217,26 @@ YoloEventLogValidationStats summarize_yolo_event_log(
             bool gate_enforced_valid = false;
             const bool gate_enforced = json_bool_or_default(
                 centroid_gate, "enforced", false, &gate_enforced_valid);
-            const uint64_t raw_count = json_u64_or_default(
-                spatial_result.value("raw_detection_count", nlohmann::json()),
-                std::numeric_limits<uint64_t>::max());
-            const uint64_t inside_count = json_u64_or_default(
-                spatial_result.value("inside_detection_count", nlohmann::json()),
-                std::numeric_limits<uint64_t>::max());
-            const uint64_t outside_count = json_u64_or_default(
-                spatial_result.value("outside_detection_count", nlohmann::json()),
-                std::numeric_limits<uint64_t>::max());
-            const uint64_t downstream_count = json_u64_or_default(
-                spatial_result.value("downstream_detection_count", nlohmann::json()),
-                std::numeric_limits<uint64_t>::max());
-            spatial_error = spatial_error ||
-                json_string_or_default(spatial, "schema_id", "") !=
-                    "orange.analytics.spatial_mask_runtime" ||
-                json_u64_or_default(
-                    spatial.value("schema_version", nlohmann::json()), 0) != 1 ||
-                !known_spatial_mode ||
-                !spatial_result.is_object() ||
-                !outside.is_array() ||
+            const auto& result = event.spatial_mask.result;
+            const uint64_t raw_count = result.raw_detection_count;
+            const uint64_t inside_count = result.inside_detection_count;
+            const uint64_t outside_count = result.outside_detection_count;
+            const uint64_t downstream_count = result.downstream_detection_count;
+            bool spatial_error =
+                policy == nullptr ||
+                json_u64_or_default(spatial.value("schema_version", nlohmann::json()), 0) != 1 ||
                 downstream_count != detection_count ||
-                outside.size() != outside_count ||
+                event.spatial_mask.outside_detections.size() != outside_count ||
                 !input_enabled_valid ||
                 !gate_evaluated_valid ||
                 !gate_enforced_valid;
 
-            if (known_spatial_mode && spatial_mode == "off") {
+            if (spatial_mode == "off") {
                 spatial_error = spatial_error ||
                     input_enabled || gate_evaluated || gate_enforced ||
                     inside_count != 0 || outside_count != 0 ||
                     raw_count != downstream_count;
-            } else if (known_spatial_mode) {
+            } else if (policy != nullptr) {
                 const bool audit = spatial_mode == "audit";
                 const bool masked = spatial_mode == "gate_and_input_mask";
                 spatial_error = spatial_error ||
@@ -295,65 +245,25 @@ YoloEventLogValidationStats summarize_yolo_event_log(
                     input_enabled != masked ||
                     raw_count != inside_count + outside_count ||
                     downstream_count != (audit ? raw_count : inside_count) ||
-                    json_u64_or_default(
-                        spatial.value("policy_generation", nlohmann::json()), 0) == 0;
-                const nlohmann::json source = spatial.value(
-                    "source", nlohmann::json::object());
-                const std::string source_sha = json_string_or_default(
-                    source, "sha256", "");
+                    event.spatial_mask.policy_generation == 0;
+                const nlohmann::json source = spatial.value("source", nlohmann::json::object());
                 spatial_error = spatial_error ||
                     json_string_or_default(source, "artifact_id", "").empty() ||
-                    source_sha.rfind("sha256:", 0) != 0;
+                    json_string_or_default(source, "sha256", "").rfind("sha256:", 0) != 0;
             }
-            if (outside.is_array()) {
-                for (const nlohmann::json& decision : outside) {
-                    const std::string expected = spatial_mode == "audit"
-                        ? "would_reject"
-                        : "rejected";
-                    if (!decision.is_object() ||
-                        json_string_or_default(decision, "decision", "") != expected ||
-                        json_string_or_default(
-                            decision, "rejected_reason", "") !=
-                            "outside_valid_detection_region") {
-                        spatial_error = true;
-                        break;
-                    }
-                }
+            const std::string expected_decision = spatial_mode == "audit" ? "would_reject" : "rejected";
+            for (const auto& decision : event.spatial_mask.outside_detections) {
+                spatial_error = spatial_error || decision.decision != expected_decision;
             }
             if (spatial_error) {
                 stats.schema_errors++;
             }
         }
-        const std::string detection_source =
-            json_string_or_default(yolo, "detection_source", "");
-        bool synthetic_runtime_detection_valid = false;
-        const bool synthetic_runtime_detection =
-            json_bool_or_default(yolo,
-                                 "synthetic_runtime_detection",
-                                 false,
-                                 &synthetic_runtime_detection_valid);
-        bool production_detection_valid_present = false;
-        const bool production_detection_valid =
-            json_bool_or_default(yolo,
-                                 "production_detection_valid",
-                                 true,
-                                 &production_detection_valid_present);
-        const bool known_detection_source =
-            detection_source.empty() ||
-            detection_source == "model" ||
-            detection_source == "synthetic_center_box";
-        const bool invalid_runtime_synthetic_markers =
-            detection_source == "synthetic_center_box" &&
-            (!synthetic_runtime_detection_valid ||
-             !synthetic_runtime_detection ||
-             !production_detection_valid_present ||
-             production_detection_valid);
-        const bool invalid_production_marker =
-            synthetic_runtime_detection &&
-            (!production_detection_valid_present || production_detection_valid);
-        if (!known_detection_source ||
-            invalid_runtime_synthetic_markers ||
-            invalid_production_marker) {
+        const bool synthetic_center_box = event.yolo.detection_source == "synthetic_center_box";
+        const bool synthetic_runtime_detection = event.yolo.synthetic_runtime_detection;
+        const bool production_detection_valid = event.yolo.production_detection_valid;
+        if ((synthetic_center_box && (!synthetic_runtime_detection || production_detection_valid)) ||
+            (synthetic_runtime_detection && production_detection_valid)) {
             stats.schema_errors++;
         }
         const bool should_have_detection =
@@ -366,7 +276,7 @@ YoloEventLogValidationStats summarize_yolo_event_log(
             if (validate_synthetic_cadence &&
                 (!should_have_detection ||
                 detection_count != 1 ||
-                detections.size() != 1)) {
+                event.detections.size() != 1)) {
                 stats.cadence_errors++;
             }
         } else if (status == "zero_detections") {
@@ -375,15 +285,13 @@ YoloEventLogValidationStats summarize_yolo_event_log(
                 (should_have_detection ||
                 !config.emit_zero_detections ||
                 detection_count != 0 ||
-                !detections.empty())) {
+                !event.detections.empty())) {
                 stats.cadence_errors++;
             }
         } else if (status == "timeout") {
             stats.timeout_rows++;
-        } else if (status == "failed") {
-            stats.failed_rows++;
         } else {
-            stats.schema_errors++;
+            stats.failed_rows++;  // the schema allows no other status
         }
     }
 
@@ -396,7 +304,8 @@ YoloEventLogValidationStats summarize_yolo_event_log(
                stats.cadence_errors != 0 ||
                stats.metadata_join_misses != 0) {
         stats.status = "fail";
-        stats.error = "validation errors";
+        stats.error = stats.error.empty() ? "validation errors" : "validation errors; first line not matching "
+                      "orange.yolo_event v3: " + stats.error;
     } else {
         stats.status = "pass";
     }

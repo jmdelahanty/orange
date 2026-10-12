@@ -1,53 +1,13 @@
 #include "pose_event_log_validation.h"
 #include "event_log_reader.h"
 
-#include "json.hpp"
 #include "yolo_event_log_validation.h"
 
 #include <fstream>
-#include <limits>
+#include <optional>
+#include <variant>
 
 namespace pose_event_log {
-namespace {
-
-uint64_t json_u64_or_default(const nlohmann::json& value, uint64_t fallback)
-{
-    if (value.is_number_unsigned()) {
-        return value.get<uint64_t>();
-    }
-    if (value.is_number_integer()) {
-        const auto signed_value = value.get<int64_t>();
-        return signed_value >= 0 ? static_cast<uint64_t>(signed_value) : fallback;
-    }
-    if (value.is_number_float()) {
-        const double floating_value = value.get<double>();
-        return floating_value >= 0.0 ? static_cast<uint64_t>(floating_value) : fallback;
-    }
-    if (value.is_string()) {
-        try {
-            return static_cast<uint64_t>(std::stoull(value.get<std::string>()));
-        } catch (...) {
-            return fallback;
-        }
-    }
-    return fallback;
-}
-
-std::string json_string_or_default(const nlohmann::json& object,
-                                   const char* key,
-                                   const std::string& fallback)
-{
-    if (!object.is_object()) {
-        return fallback;
-    }
-    const auto it = object.find(key);
-    if (it == object.end() || !it->is_string()) {
-        return fallback;
-    }
-    return it->get<std::string>();
-}
-
-}  // namespace
 
 PoseEventLogValidationStats summarize_pose_event_log(
     const std::string& recording_folder,
@@ -92,57 +52,41 @@ PoseEventLogValidationStats summarize_pose_event_log(
     }
 
     std::string line;
-    event_log_reader::SessionContext ctx;
+    std::optional<event_log_reader::pose::OrangePoseEventV3SessionHeader> header;
     while (std::getline(file, line)) {
         if (line.empty()) {
             continue;
         }
-        const nlohmann::json parsed = nlohmann::json::parse(line, nullptr, false);
-        if (parsed.is_discarded() || !parsed.is_object()) {
+        event_log_reader::pose::OrangePoseEventV3 parsed;
+        std::string parse_error;
+        const event_log_reader::LineStatus line_status =
+            event_log_reader::parse_pose_line(line, &parsed, &parse_error);
+        if (line_status != event_log_reader::LineStatus::kOk) {
             stats.rows++;
-            stats.parse_errors++;
-            continue;
-        }
-        const uint64_t schema_version =
-            json_u64_or_default(parsed.value("schema_version", nlohmann::json()), 0);
-        if (json_string_or_default(parsed, "schema_id", "") != "orange.pose_event" ||
-            (schema_version < 1 || schema_version > 3)) {
-            stats.rows++;
-            stats.schema_errors++;
-            continue;
-        }
-        if (event_log_reader::absorb_non_frame_line(parsed, &ctx)) {
-            if (json_string_or_default(parsed, "event_kind", "") == "session_header") {
-                stats.header_rows++;
-                if (stats.rows != 0) stats.schema_errors++;  // header must lead
+            if (line_status == event_log_reader::LineStatus::kInvalidJson) {
+                stats.parse_errors++;
             } else {
                 stats.schema_errors++;
+                if (stats.error.empty()) stats.error = parse_error;
             }
             continue;
         }
+        if (const auto* h = std::get_if<event_log_reader::pose::OrangePoseEventV3SessionHeader>(&parsed)) {
+            stats.header_rows++;
+            if (stats.rows != 0 || header) stats.schema_errors++;  // one header, first
+            header = *h;
+            continue;
+        }
+        const auto& event = std::get<event_log_reader::pose::OrangePoseEventV3PoseResult>(parsed);
         stats.rows++;
-        if (schema_version >= 2 && !ctx.has_header) {
+        if (!header) {
             stats.schema_errors++;
         }
-        nlohmann::json event = parsed;
-        event["pose"] = event_log_reader::effective_block(parsed, ctx, "pose");
-
-        const uint64_t sequence =
-            json_u64_or_default(event.value("event_sequence", nlohmann::json()), 0);
-        if (sequence != stats.rows) {
+        if (event.event_sequence != stats.rows) {
             stats.sequence_errors++;
         }
 
-        const nlohmann::json frame = event.value("frame", nlohmann::json::object());
-        const nlohmann::json pose = event.value("pose", nlohmann::json::object());
-        const nlohmann::json poses = event.value("poses", nlohmann::json::array());
-        if (!frame.is_object() || !pose.is_object() || !poses.is_array()) {
-            stats.schema_errors++;
-            continue;
-        }
-
-        const uint64_t recording_frame_id =
-            json_u64_or_default(frame.value("recording_frame_id", nlohmann::json()), 0);
+        const uint64_t recording_frame_id = event.frame.recording_frame_id;
         if (recording_frame_id == 0) {
             stats.schema_errors++;
         } else if (!metadata_frame_ids.empty() &&
@@ -150,28 +94,21 @@ PoseEventLogValidationStats summarize_pose_event_log(
             stats.metadata_join_misses++;
         }
 
-        const std::string status = json_string_or_default(pose, "status", "");
+        const std::string& status = event.pose.status;
         if (status == "no_result") {
             stats.no_result_rows++;
         } else if (status == "poses") {
             stats.result_rows++;
-        } else if (status == "failed") {
-            stats.failed_rows++;
         } else {
+            stats.failed_rows++;  // the schema allows no other status
+        }
+        if (event.pose.instance_count != event.poses.size()) {
             stats.schema_errors++;
         }
 
         if (config.validate_noop()) {
-            const std::string backend = json_string_or_default(pose, "backend", "");
-            const std::string mode = json_string_or_default(pose, "mode", "");
-            const uint64_t instance_count =
-                json_u64_or_default(pose.value("instance_count", nlohmann::json()),
-                                    std::numeric_limits<uint64_t>::max());
-            if (backend != "noop" ||
-                mode != "noop" ||
-                status != "no_result" ||
-                instance_count != 0 ||
-                !poses.empty()) {
+            if (!header || header->pose.backend != "noop" || header->pose.mode != "noop" ||
+                status != "no_result" || !event.poses.empty()) {
                 stats.noop_errors++;
             }
         }
@@ -186,7 +123,8 @@ PoseEventLogValidationStats summarize_pose_event_log(
                stats.noop_errors != 0 ||
                stats.metadata_join_misses != 0) {
         stats.status = "fail";
-        stats.error = "validation errors";
+        stats.error = stats.error.empty() ? "validation errors" : "validation errors; first line not matching "
+                      "orange.pose_event v3: " + stats.error;
     } else {
         stats.status = "pass";
     }

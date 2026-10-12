@@ -43,16 +43,31 @@ pose_event_log::PoseEventLogValidationConfig noop_config()
     return config;
 }
 
+// orange.pose_event v3 lines (the shapes of tools/fixtures/generated_outputs/golden).
+nlohmann::json make_noop_header()
+{
+    return {
+        {"schema_id", "orange.pose_event"}, {"schema_version", 3}, {"event_kind", "session_header"},
+        {"recording_id", "test"}, {"camera_serial", "2010095"}, {"camera_id", 2}, {"worker", "PoseWorker"},
+        {"frame_identity_key", "frame.recording_frame_id"},
+        {"source_frame", {{"width_px", 4512}, {"height_px", 4512}}},
+        {"line_format", {{"confidence_decimals", 4}, {"coordinate_decimals", 3}, {"latency_decimals", 3}}},
+        {"pose", {{"worker", "PoseWorker"}, {"backend", "noop"}, {"mode", "noop"}, {"model_id", "none"},
+                  {"engine_path", ""}, {"engine_sha256", ""}, {"engine_bytes", 0}, {"worker_engine_sha256", ""},
+                  {"weights_sha256", ""}, {"onnx_sha256", ""}, {"engine_manifest_run_id", ""},
+                  {"ipc_model_id_hash", 0}, {"skeleton_id", "unknown"}, {"skeleton_path", ""},
+                  {"skeleton_sha256", ""}, {"ipc_skeleton_id_hash", 0}, {"keypoint_labels", nlohmann::json::array()},
+                  {"gpu_id", 5}, {"coordinate_space", "crop_pixels"}}},
+        {"crop", {{"coordinate_space", "source_frame_pixels"}, {"note", "crop note"}}},
+        {"detection", {{"coordinate_space", "source_frame_pixels"}, {"note", "detection note"}}}
+    };
+}
+
 nlohmann::json make_noop_event(uint64_t sequence, uint64_t recording_frame_id)
 {
     return {
-        {"schema_id", "orange.pose_event"},
-        {"schema_version", 1},
-        {"event_sequence", sequence},
-        {"event_kind", "pose_result"},
-        {"recording_id", "test"},
-        {"camera_serial", "2010095"},
-        {"camera_id", 2010095},
+        {"schema_id", "orange.pose_event"}, {"schema_version", 3}, {"event_kind", "pose_result"},
+        {"event_sequence", sequence}, {"camera_serial", "2010095"},
         {"frame", {
             {"stream_frame_id", recording_frame_id + 100},
             {"camera_frame_id", recording_frame_id + 1000},
@@ -65,39 +80,9 @@ nlohmann::json make_noop_event(uint64_t sequence, uint64_t recording_frame_id)
             {"event_epoch_us", 9012 + recording_frame_id},
             {"event_monotonic_us", 3456 + recording_frame_id}
         }},
-        {"source_frame", {
-            {"width_px", 4512},
-            {"height_px", 4512}
-        }},
-        {"crop", {
-            {"coordinate_space", "source_frame_pixels"},
-            {"x_px", 10},
-            {"y_px", 20},
-            {"width_px", 256},
-            {"height_px", 256},
-            {"blank_frame", false}
-        }},
-        {"detection", {
-            {"has_detection", true},
-            {"confidence", 0.9},
-            {"x_px", 10.0},
-            {"y_px", 20.0},
-            {"width_px", 256.0},
-            {"height_px", 256.0},
-            {"coordinate_space", "source_frame_pixels"}
-        }},
-        {"pose", {
-            {"status", "no_result"},
-            {"backend", "noop"},
-            {"mode", "noop"},
-            {"model_id", "none"},
-            {"engine_path", ""},
-            {"skeleton_id", "unknown"},
-            {"skeleton_path", ""},
-            {"gpu_id", 5},
-            {"coordinate_space", "crop_pixels"},
-            {"instance_count", 0}
-        }},
+        {"crop", {{"x_px", 10}, {"y_px", 20}, {"width_px", 256}, {"height_px", 256}, {"blank_frame", false}}},
+        {"detection", {{"has_detection", true}, {"confidence", 0.9}}},
+        {"pose", {{"status", "no_result"}, {"instance_count", 0}}},
         {"poses", nlohmann::json::array()},
         {"latency_ms", {
             {"capture_to_detect_done", 1.0},
@@ -119,9 +104,14 @@ void write_meta_csv(const std::filesystem::path& folder)
     meta << "2,1236,5680\n";
 }
 
-void write_jsonl(const std::filesystem::path& folder, const std::vector<nlohmann::json>& rows)
+// Writes `header` (unless null) and then the frame lines.
+void write_jsonl(const std::filesystem::path& folder, const std::vector<nlohmann::json>& rows,
+                 const nlohmann::json& header = make_noop_header())
 {
     std::ofstream out(folder / "Cam2010095_pose_events.jsonl");
+    if (!header.is_null()) {
+        out << header.dump() << '\n';
+    }
     for (const auto& row : rows) {
         out << row.dump() << '\n';
     }
@@ -162,9 +152,9 @@ bool test_wrong_noop_fails()
 {
     TestDir dir("wrong_noop");
     write_meta_csv(dir.path);
-    nlohmann::json event = make_noop_event(1, 1);
-    event["pose"]["backend"] = "tensorrt";
-    write_jsonl(dir.path, {event});
+    nlohmann::json header = make_noop_header();
+    header["pose"]["backend"] = "tensorrt";
+    write_jsonl(dir.path, {make_noop_event(1, 1)}, header);
     const auto stats = pose_event_log::summarize_pose_event_log(
         dir.path.string(),
         "2010095",
@@ -203,42 +193,31 @@ bool test_crop_metadata_source()
 }
 }  // namespace
 
-// v2 (2026-10-09): the model block moves to a session_header line; frame
-// lines carry status / instance_count only.
-nlohmann::json make_v2_noop_header()
+bool test_header_and_strictness()
 {
-    return {
-        {"schema_id", "orange.pose_event"}, {"schema_version", 2}, {"event_kind", "session_header"},
-        {"recording_id", "test"}, {"camera_serial", "2010095"}, {"camera_id", 2010095},
-        {"pose", {{"backend", "noop"}, {"mode", "noop"}, {"model_id", "none"}, {"keypoint_labels", nlohmann::json::array()}}}
-    };
-}
-
-nlohmann::json make_v2_noop_event(uint64_t sequence, uint64_t recording_frame_id)
-{
-    nlohmann::json event = make_noop_event(sequence, recording_frame_id);
-    event["schema_version"] = 2;
-    event.erase("recording_id"); event.erase("camera_id");
-    event["pose"] = {{"status", "no_result"}, {"instance_count", 0}};
-    return event;
-}
-
-bool test_v2_noop_passes()
-{
-    TestDir dir("v2_pass");
-    write_meta_csv(dir.path);
-    write_jsonl(dir.path, {make_v2_noop_header(), make_v2_noop_event(1, 1), make_v2_noop_event(2, 2)});
-    const auto stats = pose_event_log::summarize_pose_event_log(dir.path.string(), "2010095", noop_config());
     bool ok = true;
-    ok &= require(stats.status == "pass", "v2 noop log passes");
-    ok &= require(stats.rows == 2 && stats.header_rows == 1, "v2 header is not a frame row");
-    ok &= require(stats.no_result_rows == 2, "v2 rows classified");
-
-    TestDir no_header("v2_no_header");
+    TestDir no_header("no_header");
     write_meta_csv(no_header.path);
-    write_jsonl(no_header.path, {make_v2_noop_event(1, 1)});
+    write_jsonl(no_header.path, {make_noop_event(1, 1)}, nullptr);
     const auto bad = pose_event_log::summarize_pose_event_log(no_header.path.string(), "2010095", noop_config());
-    ok &= require(bad.status == "fail" && bad.schema_errors > 0, "v2 frame line without a header fails");
+    ok &= require(bad.status == "fail" && bad.schema_errors > 0, "a frame line without a header fails");
+
+    TestDir version("version");
+    write_meta_csv(version.path);
+    nlohmann::json old = make_noop_event(2, 2);
+    old["schema_version"] = 2;
+    write_jsonl(version.path, {make_noop_event(1, 1), old});
+    const auto v2 = pose_event_log::summarize_pose_event_log(version.path.string(), "2010095", noop_config());
+    ok &= require(v2.status == "fail" && v2.schema_errors == 1 &&
+                  v2.error.find("schema_version") != std::string::npos, "a v2 line in a v3 log fails, named");
+
+    TestDir count("count");
+    write_meta_csv(count.path);
+    nlohmann::json miscounted = make_noop_event(1, 1);
+    miscounted["pose"]["instance_count"] = 1;
+    write_jsonl(count.path, {miscounted});
+    const auto c = pose_event_log::summarize_pose_event_log(count.path.string(), "2010095", noop_config());
+    ok &= require(c.status == "fail" && c.schema_errors == 1, "instance_count must equal the poses listed");
     return ok;
 }
 
@@ -247,7 +226,7 @@ int main()
     bool ok = true;
     ok &= test_crop_metadata_source();
     ok &= test_noop_passes();
-    ok &= test_v2_noop_passes();
+    ok &= test_header_and_strictness();
     ok &= test_missing_log_fails();
     ok &= test_wrong_noop_fails();
     ok &= test_sequence_fails();

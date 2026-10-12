@@ -1239,6 +1239,121 @@
   ],
   "schemas": []
  },
+ "src/event_log_reader.h": {
+  "csv_headers": [],
+  "json_keys": [
+   "backend",
+   "blank_frame",
+   "box",
+   "camera_frame_id",
+   "camera_id",
+   "camera_serial",
+   "camera_timestamp",
+   "capture_to_detect_done",
+   "capture_to_pose_done",
+   "centroid_px",
+   "citrus_live_ipc",
+   "confidence",
+   "confidence_decimals",
+   "coordinate_decimals",
+   "coordinate_space",
+   "crop",
+   "crop_ready_to_pose_start",
+   "crop_worker_start_to_crop_ready",
+   "decision",
+   "detect_to_crop_ready",
+   "detect_to_crop_worker_start",
+   "detection",
+   "detection_count",
+   "detection_source",
+   "detections",
+   "downstream_detection_count",
+   "enabled",
+   "engine_bytes",
+   "engine_manifest_run_id",
+   "engine_path",
+   "engine_sha256",
+   "error",
+   "event_epoch_us",
+   "event_kind",
+   "event_monotonic_us",
+   "event_sequence",
+   "frame",
+   "frame_identity_key",
+   "gpu_id",
+   "has_detection",
+   "height_px",
+   "index",
+   "inside_detection_count",
+   "instance_count",
+   "ipc_model_id_hash",
+   "ipc_skeleton_id_hash",
+   "keypoint_labels",
+   "keypoints",
+   "label",
+   "latency_decimals",
+   "latency_ms",
+   "line_format",
+   "mode",
+   "model_id",
+   "note",
+   "onnx_sha256",
+   "outside_detection_count",
+   "outside_detections",
+   "policy_generation",
+   "pose",
+   "pose_start_to_pose_done",
+   "poses",
+   "production_detection_valid",
+   "queue_name",
+   "raw_detection_count",
+   "raw_index",
+   "record_active",
+   "recording_frame_id",
+   "recording_id",
+   "rejected_reason",
+   "request_status",
+   "requested",
+   "result",
+   "schema_id",
+   "schema_version",
+   "signed_boundary_distance_px",
+   "skeleton_id",
+   "skeleton_path",
+   "skeleton_sha256",
+   "source_frame",
+   "spatial_mask",
+   "status",
+   "stream_frame_id",
+   "synthetic_runtime_detection",
+   "timestamp_sys_ns",
+   "timestamps",
+   "visible",
+   "weights_sha256",
+   "width_px",
+   "worker",
+   "worker_engine_sha256",
+   "x",
+   "x_px",
+   "y",
+   "y_px",
+   "yolo"
+  ],
+  "schemas": [
+   [
+    "orange.analytics.spatial_mask_runtime",
+    "1"
+   ],
+   [
+    "orange.pose_event",
+    "3"
+   ],
+   [
+    "orange.yolo_event",
+    "3"
+   ]
+  ]
+ },
  "src/external_recorder_contract_utils.cpp": {
   "csv_headers": [],
   "json_keys": [
@@ -4592,13 +4707,6 @@
    ]
   ]
  },
- "src/pose_event_log_validation.cpp": {
-  "csv_headers": [],
-  "json_keys": [
-   "pose"
-  ],
-  "schemas": []
- },
  "src/pose_worker.cpp": {
   "csv_headers": [
    "camera_serial,gpu_id,worker,backend,mode,queue_size,frames_enqueued,frames_processed,queue_full_drops,queue_high_water,capture_to_detect_done_count,capture_to_detect_done_mean_ms,capture_to_detect_done_p50_ms,capture_to_detect_done_p95_ms,capture_to_detect_done_p99_ms,capture_to_detect_done_max_ms,detect_to_crop_worker_start_count,detect_to_crop_worker_start_mean_ms,detect_to_crop_worker_start_p50_ms,detect_to_crop_worker_start_p95_ms,detect_to_crop_worker_start_p99_ms,detect_to_crop_worker_start_max_ms,crop_worker_start_to_crop_ready_count,crop_worker_start_to_crop_ready_mean_ms,crop_worker_start_to_crop_ready_p50_ms,crop_worker_start_to_crop_ready_p95_ms,crop_worker_start_to_crop_ready_p99_ms,crop_worker_start_to_crop_ready_max_ms,detect_to_crop_ready_count,detect_to_crop_ready_mean_ms,detect_to_crop_ready_p50_ms,detect_to_crop_ready_p95_ms,detect_to_crop_ready_p99_ms,detect_to_crop_ready_max_ms,crop_ready_to_pose_start_count,crop_ready_to_pose_start_mean_ms,crop_ready_to_pose_start_p50_ms,crop_ready_to_pose_start_p95_ms,crop_ready_to_pose_start_p99_ms,crop_ready_to_pose_start_max_ms,pose_start_to_pose_done_count,pose_start_to_pose_done_mean_ms,pose_start_to_pose_done_p50_ms,pose_start_to_pose_done_p95_ms,pose_start_to_pose_done_p99_ms,pose_start_to_pose_done_max_ms,capture_to_pose_done_count,capture_to_pose_done_mean_ms,capture_to_pose_done_p50_ms,capture_to_pose_done_p95_ms,capture_to_pose_done_p99_ms,capture_to_pose_done_max_ms,latency_percentile_method,latency_max_retained_samples,device_stage_gpu_count,device_stage_gpu_mean_ms,device_stage_gpu_p50_ms,device_stage_gpu_p95_ms,device_stage_gpu_p99_ms,device_stage_gpu_max_ms"
@@ -7231,14 +7339,6 @@
     "3"
    ]
   ]
- },
- "src/yolo_event_log_validation.cpp": {
-  "csv_headers": [],
-  "json_keys": [
-   "spatial_mask",
-   "yolo"
-  ],
-  "schemas": []
  },
  "src/yolo_spatial_mask.h": {
   "csv_headers": [],

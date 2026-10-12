@@ -93,10 +93,12 @@ void detector_failures() {
         case 4: f.events[2]["yolo"]["synthetic_runtime_detection"] = true; break;
         case 5: f.events[2]["yolo"]["detection_count"] = 1; break;
         case 6: f.events[2]["event_sequence"] = 4; break;
-        case 7: f.events[2]["recording_id"] = "other"; break;
+        case 7: f.header["recording_id"] = "other"; break;
         case 8: f.events[2]["yolo"]["error"] = "technical_failure"; break;
         case 9: f.events[2]["yolo"]["status"] = "detections"; f.events[2]["yolo"]["detection_count"] = 1;
-                f.events[2]["detections"] = json::array({json::object()}); break;
+                f.events[2]["detections"] = json::array({Fixture::Detection()});
+                f.events[2]["spatial_mask"]["result"]["raw_detection_count"] = 1;
+                f.events[2]["spatial_mask"]["result"]["downstream_detection_count"] = 1; break;
         }
         f.Save(); refuses([&] { f.Finish(); });
     }
@@ -171,23 +173,23 @@ void custody_and_gate() {
     }
 }
 }
-void detector_v2_format() {
-    { Fixture f; f.ToV2(); f.Save(); f.Finish(); }
-    for (int mutation = 0; mutation < 5; ++mutation) {
-        Fixture f; f.ToV2();
+void detector_header() {
+    for (int mutation = 0; mutation < 6; ++mutation) {
+        Fixture f;
         switch (mutation) {
-        case 0: f.events[0]["recording_id"] = "other"; break;              // header identity
-        case 1: f.events[0]["yolo"]["model_id"] = ""; break;               // header model block
-        case 2: f.events.erase(f.events.begin()); break;                   // v2 lines without a header
-        case 3: f.events[3]["yolo"]["synthetic_runtime_detection"] = true; break;
-        case 4: f.events[3]["event_sequence"] = 9; break;
+        case 0: f.header["recording_id"] = "other"; break;                       // header identity
+        case 1: f.header["yolo"]["model_id"] = ""; break;                        // header model block
+        case 2: f.header = nullptr; break;                                       // frame lines without a header
+        case 3: f.events.insert(f.events.begin() + 1, f.header); f.header = nullptr; break;  // header not first
+        case 4: f.header["yolo"]["coordinate_space"] = "crop_pixels"; break;     // schema const
+        case 5: f.events[1]["schema_version"] = 2; break;                        // another version
         }
         f.Save(); refuses([&] { f.Finish(); });
     }
 }
 int main() {
     try {
-        success(); detector_failures(); detector_v2_format(); metadata_failures(); recorder_failures(); custody_and_gate(); encoded_media(); encoded_media_gate();
+        success(); detector_failures(); detector_header(); metadata_failures(); recorder_failures(); custody_and_gate(); encoded_media(); encoded_media_gate();
         std::cout << "8 moving crop metadata/media completion groups passed\n"; return 0;
     } catch (const std::exception& ex) { std::cerr << ex.what() << '\n'; return 1; }
 }

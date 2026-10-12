@@ -48,6 +48,34 @@ yolo_event_log::SyntheticYoloEventConfig make_config()
     return config;
 }
 
+// orange.yolo_event v3 lines (the shapes of tools/fixtures/generated_outputs/golden).
+nlohmann::json make_header()
+{
+    return {
+        {"schema_id", "orange.yolo_event"}, {"schema_version", 3}, {"event_kind", "session_header"},
+        {"recording_id", "rec"}, {"camera_serial", kCameraSerial}, {"camera_id", 0}, {"worker", "YoloWorker"},
+        {"frame_identity_key", "frame.recording_frame_id"},
+        {"source_frame", {{"width_px", 4512}, {"height_px", 4512}}},
+        {"line_format", {{"confidence_decimals", 4}, {"coordinate_decimals", 3}, {"latency_decimals", 3}}},
+        {"yolo", {{"worker", "YoloWorker"}, {"model_id", "m"}, {"engine_path", "/e"}, {"engine_sha256", ""},
+                  {"engine_bytes", 0}, {"weights_sha256", ""}, {"onnx_sha256", ""}, {"engine_manifest_run_id", ""},
+                  {"gpu_id", 0}, {"coordinate_space", "source_frame_pixels"}, {"detection_source", "model"},
+                  {"synthetic_runtime_detection", false}}},
+        {"spatial_mask", {{"schema_id", "orange.analytics.spatial_mask_runtime"}, {"schema_version", 1},
+                          {"mode", "off"}, {"policy_generation", 1},
+                          {"input_mask", {{"enabled", false}}},
+                          {"centroid_gate", {{"evaluated", false}, {"enforced", false}}},
+                          {"source", nlohmann::json::object()}}},
+        {"citrus_live_ipc", {{"queue_name", "/shm_cam_2010096_v2"}, {"enabled", true}}}
+    };
+}
+
+nlohmann::json detection_json()
+{
+    return {{"index", 0}, {"x_px", 10.0}, {"y_px", 20.0}, {"width_px", 30.0}, {"height_px", 40.0},
+            {"label", 0}, {"confidence", 0.9}};
+}
+
 nlohmann::json make_event(const uint64_t sequence,
                           const uint64_t recording_frame_id,
                           const yolo_event_log::SyntheticYoloEventConfig& config)
@@ -55,27 +83,34 @@ nlohmann::json make_event(const uint64_t sequence,
     const bool has_detection =
         recording_frame_id > 0 &&
         (recording_frame_id % static_cast<uint64_t>(config.every_n_frames)) == 0;
-    nlohmann::json detections = nlohmann::json::array();
-    if (has_detection) {
-        detections.push_back({
-            {"label", config.label},
-            {"confidence", config.confidence},
-            {"bbox_xywh_px", {10.0, 20.0, 30.0, 40.0}}
-        });
-    }
-
+    const int count = has_detection ? 1 : 0;
     return {
-        {"schema_id", "orange.yolo_event"},
-        {"schema_version", 1},
-        {"event_kind", "yolo_result"},
-        {"event_sequence", sequence},
-        {"frame", {{"recording_frame_id", recording_frame_id}}},
-        {"yolo", {
-            {"status", has_detection ? "detections" : "zero_detections"},
-            {"detection_count", has_detection ? 1 : 0}
-        }},
-        {"detections", detections}
+        {"schema_id", "orange.yolo_event"}, {"schema_version", 3}, {"event_kind", "yolo_result"},
+        {"event_sequence", sequence}, {"camera_serial", kCameraSerial},
+        {"frame", {{"stream_frame_id", recording_frame_id + 100}, {"camera_frame_id", recording_frame_id + 200},
+                   {"recording_frame_id", recording_frame_id}, {"record_active", true}}},
+        {"timestamps", {{"camera_timestamp", 1000 + recording_frame_id}, {"timestamp_sys_ns", 2000 + recording_frame_id},
+                        {"event_epoch_us", 3000 + recording_frame_id}, {"event_monotonic_us", 4000 + recording_frame_id}}},
+        {"yolo", {{"status", has_detection ? "detections" : "zero_detections"}, {"detection_count", count},
+                  {"detection_source", "model"}, {"synthetic_runtime_detection", false},
+                  {"production_detection_valid", true}}},
+        {"spatial_mask", {{"policy_generation", 1},
+            {"result", {{"raw_detection_count", count}, {"inside_detection_count", 0},
+                        {"outside_detection_count", 0}, {"downstream_detection_count", count}}},
+            {"outside_detections", nlohmann::json::array()}}},
+        {"detections", has_detection ? nlohmann::json::array({detection_json()}) : nlohmann::json::array()},
+        {"citrus_live_ipc", {{"enabled", true}, {"requested", true}, {"request_status", "published"}}}
     };
+}
+
+// Moves a frame line to a detection result, keeping the spatial mask counts consistent.
+void set_detections(nlohmann::json* event, const char* status, int count)
+{
+    (*event)["yolo"]["status"] = status;
+    (*event)["yolo"]["detection_count"] = count;
+    (*event)["spatial_mask"]["result"]["raw_detection_count"] = count;
+    (*event)["spatial_mask"]["result"]["downstream_detection_count"] = count;
+    (*event)["detections"] = count ? nlohmann::json::array({detection_json()}) : nlohmann::json::array();
 }
 
 void write_metadata(const std::filesystem::path& recording_folder,
@@ -95,10 +130,12 @@ void write_event_log(const std::filesystem::path& recording_folder,
                      const yolo_event_log::SyntheticYoloEventConfig& config,
                      const uint64_t frame_count,
                      const EventMutator& mutator = {},
-                     const uint64_t malformed_line = 0)
+                     const uint64_t malformed_line = 0,
+                     const bool with_header = true)
 {
     std::ofstream file(recording_folder / ("Cam" + std::string(kCameraSerial) + "_yolo_events.jsonl"));
     require(static_cast<bool>(file), "failed to create yolo event log fixture");
+    if (with_header) file << make_header().dump() << "\n";
     for (uint64_t line = 1; line <= frame_count; ++line) {
         if (line == malformed_line) {
             file << "{not-json}\n";
@@ -175,9 +212,7 @@ void test_cadence_error_fails()
     write_metadata(dir.path, 20);
     write_event_log(dir.path, config, 20, [](const uint64_t line, nlohmann::json* event) {
         if (line == 9) {
-            (*event)["yolo"]["status"] = "detections";
-            (*event)["yolo"]["detection_count"] = 1;
-            (*event)["detections"] = nlohmann::json::array({{{"label", 0}}});
+            set_detections(event, "detections", 1);
         }
     });
 
@@ -234,17 +269,11 @@ void test_real_worker_log_skips_synthetic_cadence()
     write_metadata(dir.path, 20);
     write_event_log(dir.path, config, 20, [](const uint64_t line, nlohmann::json* event) {
         if (line == 9) {
-            (*event)["yolo"]["status"] = "detections";
-            (*event)["yolo"]["detection_count"] = 1;
-            (*event)["detections"] = nlohmann::json::array({{{"label", 0}}});
+            set_detections(event, "detections", 1);
         } else if (line == 12) {
-            (*event)["yolo"]["status"] = "timeout";
-            (*event)["yolo"]["detection_count"] = 0;
-            (*event)["detections"] = nlohmann::json::array();
+            set_detections(event, "timeout", 0);
         } else if (line == 13) {
-            (*event)["yolo"]["status"] = "failed";
-            (*event)["yolo"]["detection_count"] = 0;
-            (*event)["detections"] = nlohmann::json::array();
+            set_detections(event, "failed", 0);
         }
     });
 
@@ -275,35 +304,13 @@ void test_runtime_synthetic_marker_mismatch_fails_schema()
     require(stats.schema_errors == 1, "expected one runtime synthetic marker schema error");
 }
 
-void add_off_spatial_mask(nlohmann::json* event)
-{
-    const uint64_t count = (*event)["yolo"]["detection_count"].get<uint64_t>();
-    (*event)["spatial_mask"] = {
-        {"schema_id", "orange.analytics.spatial_mask_runtime"},
-        {"schema_version", 1},
-        {"mode", "off"},
-        {"policy_generation", 0},
-        {"input_mask", {{"enabled", false}}},
-        {"centroid_gate", {{"evaluated", false}, {"enforced", false}}},
-        {"result", {
-            {"raw_detection_count", count},
-            {"inside_detection_count", 0},
-            {"outside_detection_count", 0},
-            {"downstream_detection_count", count},
-        }},
-        {"outside_detections", nlohmann::json::array()},
-    };
-}
-
 void test_valid_spatial_mask_result_passes()
 {
     TestDir dir("spatial_valid");
     auto config = make_config();
     config.mode = "real";
     write_metadata(dir.path, 20);
-    write_event_log(dir.path, config, 20, [](const uint64_t, nlohmann::json* event) {
-        add_off_spatial_mask(event);
-    });
+    write_event_log(dir.path, config, 20);
     const auto stats = summarize(dir.path, config);
     require(stats.status == "pass", "valid spatial mask result should pass");
     require(stats.schema_errors == 0, "valid spatial mask schema");
@@ -316,7 +323,6 @@ void test_spatial_mask_count_mismatch_fails_schema()
     config.mode = "real";
     write_metadata(dir.path, 20);
     write_event_log(dir.path, config, 20, [](const uint64_t line, nlohmann::json* event) {
-        add_off_spatial_mask(event);
         if (line == 1) {
             (*event)["spatial_mask"]["result"]["raw_detection_count"] = 1;
         }
@@ -324,6 +330,22 @@ void test_spatial_mask_count_mismatch_fails_schema()
     const auto stats = summarize(dir.path, config);
     require(stats.status == "fail", "spatial count mismatch should fail");
     require(stats.schema_errors == 1, "one spatial schema error expected");
+}
+
+void test_unknown_policy_generation_fails_schema()
+{
+    TestDir dir("spatial_generation");
+    auto config = make_config();
+    config.mode = "real";
+    write_metadata(dir.path, 20);
+    write_event_log(dir.path, config, 20, [](const uint64_t line, nlohmann::json* event) {
+        if (line == 5) {
+            (*event)["spatial_mask"]["policy_generation"] = 2;
+        }
+    });
+    const auto stats = summarize(dir.path, config);
+    require(stats.status == "fail" && stats.schema_errors == 1,
+            "a frame line naming an undeclared policy generation must fail");
 }
 
 void test_crop_metadata_source()
@@ -341,81 +363,44 @@ void test_crop_metadata_source()
 }
 }  // namespace
 
-// v2 line format (2026-10-09): a session_header line first, slim frame lines
-// whose spatial_mask names the policy generation; the validator views them
-// through the header.
-nlohmann::json make_v2_header()
+void test_log_without_header_fails()
 {
-    return {
-        {"schema_id", "orange.yolo_event"},
-        {"schema_version", 2},
-        {"event_kind", "session_header"},
-        {"recording_id", "rec"},
-        {"camera_serial", kCameraSerial},
-        {"camera_id", 0},
-        {"yolo", {{"model_id", "m"}, {"engine_path", "/e"}, {"gpu_id", 0},
-                  {"coordinate_space", "source_frame_pixels"}, {"detection_source", "model"},
-                  {"synthetic_runtime_detection", false}}},
-        {"spatial_mask", {{"schema_id", "orange.analytics.spatial_mask_runtime"}, {"schema_version", 1},
-                          {"mode", "off"}, {"policy_generation", 1},
-                          {"input_mask", {{"enabled", false}}},
-                          {"centroid_gate", {{"evaluated", false}, {"enforced", false}}},
-                          {"source", nlohmann::json::object()}}}
-    };
-}
-
-nlohmann::json make_v2_event(const uint64_t sequence,
-                             const uint64_t recording_frame_id,
-                             const yolo_event_log::SyntheticYoloEventConfig& config)
-{
-    nlohmann::json event = make_event(sequence, recording_frame_id, config);
-    event["schema_version"] = 2;
-    const int count = event["yolo"]["detection_count"].get<int>();
-    event["yolo"]["detection_source"] = "model";
-    event["yolo"]["synthetic_runtime_detection"] = false;
-    event["yolo"]["production_detection_valid"] = true;
-    event["spatial_mask"] = {{"policy_generation", 1},
-        {"result", {{"raw_detection_count", count}, {"inside_detection_count", 0},
-                    {"outside_detection_count", 0}, {"downstream_detection_count", count}}},
-        {"outside_detections", nlohmann::json::array()}};
-    return event;
-}
-
-void write_v2_event_log(const std::filesystem::path& recording_folder,
-                        const yolo_event_log::SyntheticYoloEventConfig& config,
-                        const uint64_t frame_count,
-                        const bool with_header)
-{
-    std::ofstream file(recording_folder / ("Cam" + std::string(kCameraSerial) + "_yolo_events.jsonl"));
-    require(static_cast<bool>(file), "failed to create v2 yolo event log fixture");
-    if (with_header) file << make_v2_header().dump() << "\n";
-    for (uint64_t line = 1; line <= frame_count; ++line) {
-        file << make_v2_event(line, line, config).dump() << "\n";
-    }
-}
-
-void test_v2_header_log_passes()
-{
-    TestDir dir("v2_pass");
+    TestDir dir("no_header");
     const auto config = make_config();
     write_metadata(dir.path, 20);
-    write_v2_event_log(dir.path, config, 20, true);
-    const auto stats = yolo_event_log::summarize_yolo_event_log(
-        dir.path.string(), kCameraSerial, config, {});
-    require(stats.status == "pass", "v2 log with a session header should pass: " + stats.error);
-    require(stats.rows == 20 && stats.header_rows == 1, "v2 header is not a frame row");
-    require(stats.detection_rows == 2 && stats.zero_rows == 18, "v2 rows classified");
+    write_event_log(dir.path, config, 20, {}, 0, false);
+    const auto stats = summarize(dir.path, config);
+    require(stats.status == "fail" && stats.schema_errors > 0, "frame lines without a header must fail");
 }
 
-void test_v2_log_without_header_fails()
+void test_other_schema_version_fails()
 {
-    TestDir dir("v2_no_header");
+    TestDir dir("version");
     const auto config = make_config();
     write_metadata(dir.path, 20);
-    write_v2_event_log(dir.path, config, 20, false);
-    const auto stats = yolo_event_log::summarize_yolo_event_log(
-        dir.path.string(), kCameraSerial, config, {});
-    require(stats.status == "fail" && stats.schema_errors > 0, "v2 frame lines without a header must fail");
+    write_event_log(dir.path, config, 20, [](const uint64_t line, nlohmann::json* event) {
+        if (line == 3) {
+            (*event)["schema_version"] = 2;
+        }
+    });
+    const auto stats = summarize(dir.path, config);
+    require(stats.status == "fail" && stats.schema_errors == 1, "a v2 line in a v3 log must fail");
+    require(stats.error.find("schema_version") != std::string::npos,
+            "the failure names the mismatching field: " + stats.error);
+}
+
+void test_undeclared_key_fails()
+{
+    TestDir dir("undeclared");
+    const auto config = make_config();
+    write_metadata(dir.path, 20);
+    write_event_log(dir.path, config, 20, [](const uint64_t line, nlohmann::json* event) {
+        if (line == 4) {
+            (*event)["frame"]["source_frame_id"] = 4;
+        }
+    });
+    const auto stats = summarize(dir.path, config);
+    require(stats.status == "fail" && stats.schema_errors == 1, "a key the schema does not declare must fail");
 }
 
 int main()
@@ -428,8 +413,9 @@ int main()
     const TestCase tests[] = {
         {"crop_metadata_source", &test_crop_metadata_source},
         {"valid_synthetic_log_passes", &test_valid_synthetic_log_passes},
-        {"v2_header_log_passes", &test_v2_header_log_passes},
-        {"v2_log_without_header_fails", &test_v2_log_without_header_fails},
+        {"log_without_header_fails", &test_log_without_header_fails},
+        {"other_schema_version_fails", &test_other_schema_version_fails},
+        {"undeclared_key_fails", &test_undeclared_key_fails},
         {"missing_log_reports_missing", &test_missing_log_reports_missing},
         {"sequence_error_fails", &test_sequence_error_fails},
         {"cadence_error_fails", &test_cadence_error_fails},
@@ -443,6 +429,8 @@ int main()
          &test_valid_spatial_mask_result_passes},
         {"spatial_mask_count_mismatch_fails_schema",
          &test_spatial_mask_count_mismatch_fails_schema},
+        {"unknown_policy_generation_fails_schema",
+         &test_unknown_policy_generation_fails_schema},
     };
 
     for (const auto& test : tests) {

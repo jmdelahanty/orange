@@ -7,8 +7,10 @@
 #include <algorithm>
 #include <charconv>
 #include <fstream>
+#include <optional>
 #include <set>
 #include <stdexcept>
+#include <variant>
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -154,16 +156,23 @@ json detection_coverage(const fs::path& root, const json& master,
     const auto camera = column("camera_frame_id"), timestamp = column("timestamp"), host = column("timestamp_sys");
     const auto detected = column("has_detection"), blank = column("blank_frame"), state = column("crop_state");
     uint64_t count = 0, blanks = 0, last_sequence = 0;
-    // v2 logs lead with a session_header line (and may carry
-    // spatial_mask_policy lines); those are folded into `ctx` and only frame
-    // lines are paired with crop rows.
-    event_log_reader::SessionContext ctx;
-    auto next_frame_event = [&](json* out) {
+    // The detector log (orange.yolo_event v3, generated parser) leads with its session_header and
+    // may carry spatial_mask_policy lines; only yolo_result lines are paired with crop rows.
+    namespace ev = event_log_reader::yolo;
+    std::optional<ev::OrangeYoloEventV3SessionHeader> session;
+    auto next_frame_event = [&](ev::OrangeYoloEventV3YoloResult* out) {
         while (line(events, &event_row)) {
-            json event = json::parse(event_row);
-            require(event.is_object() && event.at("schema_id") == "orange.yolo_event", "detector event identity mismatch");
-            if (event_log_reader::absorb_non_frame_line(event, &ctx)) continue;
-            *out = std::move(event);
+            ev::OrangeYoloEventV3 parsed;
+            std::string error;
+            if (event_log_reader::parse_yolo_line(event_row, &parsed, &error) != event_log_reader::LineStatus::kOk)
+                throw std::runtime_error("detector event is not orange.yolo_event v3: " + error);
+            if (const auto* header = std::get_if<ev::OrangeYoloEventV3SessionHeader>(&parsed)) {
+                require(!session && last_sequence == 0, "detector session header is not the first line");
+                session = *header;
+                continue;
+            }
+            if (std::holds_alternative<ev::OrangeYoloEventV3SpatialMaskPolicy>(parsed)) continue;
+            *out = std::get<ev::OrangeYoloEventV3YoloResult>(std::move(parsed));
             return true;
         }
         return false;
@@ -171,43 +180,36 @@ json detection_coverage(const fs::path& root, const json& master,
     while (line(crops, &row)) {
         const auto crop = fields(row);
         require(crop.size() == header.size(), "malformed crop detection row");
-        json event;
+        ev::OrangeYoloEventV3YoloResult event;
         require(next_frame_event(&event), "missing detector terminal event for crop");
-        const auto version = number(event.at("schema_version"));
-        require((version == 1 || version == 2) && (version == 1 || ctx.has_header) &&
-                event.at("event_kind") == "yolo_result" &&
-                event_log_reader::effective_string(event, ctx, "recording_id") == master.at("recording_id") &&
-                event_log_reader::effective_string(event, ctx, "camera_serial") == master.at("camera_serial"),
+        require(session && session->recording_id == master.at("recording_id") &&
+                session->camera_serial == master.at("camera_serial") &&
+                event.camera_serial == master.at("camera_serial"),
                 "detector event identity mismatch");
-        const auto sequence = number(event.at("event_sequence"));
-        require(sequence == last_sequence + 1, "detector event sequence gap/duplicate");
-        last_sequence = sequence;
-        const auto& frame = event.at("frame");
-        const auto& times = event.at("timestamps");
-        require(frame.at("record_active") == true &&
-                number(frame.at("recording_frame_id")) == integer(crop[rid]) &&
-                number(frame.at("stream_frame_id")) == integer(crop[local]) &&
-                number(frame.at("camera_frame_id")) == integer(crop[camera]) &&
-                number(times.at("camera_timestamp")) == integer(crop[timestamp]) &&
-                number(times.at("timestamp_sys_ns")) == integer(crop[host]), "detector/crop source correspondence mismatch");
-        const json yolo = event_log_reader::effective_block(event, ctx, "yolo");
-        require(yolo.at("synthetic_runtime_detection") == false && yolo.at("production_detection_valid") == true &&
-                yolo.at("detection_source") == "model" &&
-                yolo.at("coordinate_space") == "source_frame_pixels" &&
-                yolo.at("model_id").is_string() && !yolo.at("model_id").get<std::string>().empty(),
+        require(event.event_sequence == last_sequence + 1, "detector event sequence gap/duplicate");
+        last_sequence = event.event_sequence;
+        require(event.frame.record_active &&
+                event.frame.recording_frame_id == integer(crop[rid]) &&
+                event.frame.stream_frame_id == integer(crop[local]) &&
+                event.frame.camera_frame_id == integer(crop[camera]) &&
+                event.timestamps.camera_timestamp == integer(crop[timestamp]) &&
+                event.timestamps.timestamp_sys_ns == integer(crop[host]), "detector/crop source correspondence mismatch");
+        // The header's yolo block is source_frame_pixels by the schema (a const).
+        require(!event.yolo.synthetic_runtime_detection && event.yolo.production_detection_valid &&
+                event.yolo.detection_source == "model" && !session->yolo.synthetic_runtime_detection &&
+                session->yolo.detection_source == "model" && !session->yolo.model_id.empty(),
                 "detector evidence is not production model output");
-        require(!yolo.contains("error") || yolo.at("error") == "", "detector terminal error");
-        require(event.at("detections").is_array() &&
-                number(yolo.at("detection_count")) == event.at("detections").size(), "detector count mismatch");
-        const bool empty = event.at("detections").empty();
-        require(yolo.at("status") == (empty ? "zero_detections" : "detections"), "unsuccessful detector terminal state");
+        require(!event.yolo.error || event.yolo.error->empty(), "detector terminal error");
+        require(event.yolo.detection_count == event.detections.size(), "detector count mismatch");
+        const bool empty = event.detections.empty();
+        require(event.yolo.status == (empty ? "zero_detections" : "detections"), "unsuccessful detector terminal state");
         require(integer(crop[detected]) == (empty ? 0 : 1) && integer(crop[blank]) == (empty ? 1 : 0) &&
                 crop[state] == (empty ? "blank_no_detection" : "detected_crop"), "crop blank/detection state contradicts detector");
         ++count;
         blanks += empty;
     }
     {
-        json extra;
+        ev::OrangeYoloEventV3YoloResult extra;
         require(!next_frame_event(&extra), "extra detector terminal event");
     }
     require(count > 0 && count == number(master.at("source").at("assigned_frame_offers")), "detector/master frame count mismatch");
