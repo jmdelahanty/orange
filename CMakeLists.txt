@@ -202,9 +202,36 @@ set(ORANGE_THIRD_PARTY_INCLUDE_DIRS
     ${GLFW3_INCLUDE_DIRS}
 )
 
+# Schema-first outputs (docs/schema_first_outputs_design_2026-10-12.md): C++ for each listed
+# published schema, generated at configure time into the build tree; CMake re-runs when a
+# schema or the generator changes.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(ORANGE_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
+set(ORANGE_GENERATED_SCHEMAS
+    "orange_yolo_event_v3:yolo_event_v3"
+    "orange_pose_event_v3:pose_event_v3"
+)
+set(ORANGE_CODEGEN "${CMAKE_SOURCE_DIR}/tools/schema_codegen/codegen.py")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ORANGE_CODEGEN}")
+foreach(entry IN LISTS ORANGE_GENERATED_SCHEMAS)
+    string(REPLACE ":" ";" parts "${entry}")
+    list(GET parts 0 schema_name)
+    list(GET parts 1 schema_namespace)
+    set(schema_file "${CMAKE_SOURCE_DIR}/docs/schemas/${schema_name}.schema.json")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${schema_file}")
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" "${ORANGE_CODEGEN}" "${schema_file}"
+                "${ORANGE_GENERATED_DIR}/orange_outputs/${schema_name}.h" --namespace "${schema_namespace}"
+        RESULT_VARIABLE codegen_result)
+    if(NOT codegen_result EQUAL 0)
+        message(FATAL_ERROR "schema codegen failed for ${schema_name}")
+    endif()
+endforeach()
+
 set(ORANGE_COMMON_INCLUDE_DIRS
     "${SRC_DIR}"
     "${DIR_SHAMAN_IPC}/include"
+    "${ORANGE_GENERATED_DIR}"
 )
 
 file(GLOB NVENCODER_SOURCES "${DIR_NVENCODER}/*.cpp")
@@ -714,6 +741,10 @@ if(BUILD_TESTING)
     add_test(NAME crop_only_evidence_cli_tests COMMAND recording_crop_only_manifest_tests --verify-tool $<TARGET_FILE:verify_crop_only_recording>)
     set_tests_properties(crop_only_evidence_cli_tests PROPERTIES TIMEOUT 60)
     add_test(NAME crop_only_runner_tests COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/crop_only_runner_tests.py")
+    add_executable(generated_outputs_tests "tools/generated_outputs_tests.cpp")
+    target_include_directories(generated_outputs_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    add_test(NAME generated_outputs_tests COMMAND generated_outputs_tests
+             "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs")
     add_executable(outputs_common_tests "tools/outputs_common_tests.cpp")
     target_include_directories(outputs_common_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_link_libraries(outputs_common_tests PRIVATE Threads::Threads)
