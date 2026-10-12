@@ -13,13 +13,20 @@ schema_id without being it. --strict-nested makes their failures count.
 
   validate_output_schemas.py <recording folder or files>...  [--json report.json]
 
+Every JSON document is also checked against agent-contracts orange-palette/digest_form_v1
+(pinned in contracts/digest_form_v1.json): a field named sha256 / *_sha256 holds a
+"sha256:<hex>" token, and a digest-looking value sits under such a name. Known exceptions are in
+contracts/digest_form_allowlist.json.
+
 Needs the jsonschema package (pip install jsonschema).
 """
 
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -57,6 +64,54 @@ def load_schemas() -> tuple[dict[tuple[str, int], dict], set[str], Registry]:
     return by_identity, families, registry
 
 
+DIGEST_CONTRACT = REPO / "contracts" / "digest_form_v1.json"
+DIGEST_ALLOWLIST = REPO / "contracts" / "digest_form_allowlist.json"
+BARE_HEX = re.compile(r"^[0-9a-f]{64}$")
+SERIAL_SEGMENT = re.compile(r"/\d{7}(?=/|$)")
+HEX_SEGMENT = re.compile(r"/[0-9a-f]{64}(?=/|$)")
+
+
+def load_digest_rule():
+    rule = json.loads(DIGEST_CONTRACT.read_text(encoding="utf-8"))
+    allowed = json.loads(DIGEST_ALLOWLIST.read_text(encoding="utf-8"))["allowed"]
+    for entry in allowed:
+        if not entry.get("reason", "").strip():
+            raise SystemExit(f"{DIGEST_ALLOWLIST}: entry {entry} has no reason")
+    return (re.compile(rule["token_pattern"]), set(rule["digest_field_names"]["exact"]),
+            rule["digest_field_names"]["suffix"],
+            [(e["file"], re.compile(e["path"])) for e in allowed])
+
+
+def digest_violations(value, file_name: str, rule, path: str = ""):
+    """Yield 'path: problem' for digest_form_v1 violations not covered by the allowlist."""
+    token, exact, suffix, allowed = rule
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield from digest_violations(child, file_name, rule, f"{path}/{key}")
+        return
+    if isinstance(value, list):
+        for child in value:
+            yield from digest_violations(child, file_name, rule, f"{path}[]")
+        return
+    if not isinstance(value, str):
+        return
+    key = path.rsplit("/", 1)[-1].replace("[]", "")
+    digest_name = key in exact or key.endswith(suffix)
+    looks_like_digest = bool(token.match(value) or BARE_HEX.match(value))
+    problem = None
+    if digest_name and not token.match(value):
+        problem = "is not a sha256: token"
+    elif looks_like_digest and not digest_name:
+        problem = "holds a digest under a name that is not sha256 / *_sha256"
+    if problem is None:
+        return
+    normalized = HEX_SEGMENT.sub("/<hex>", SERIAL_SEGMENT.sub("/<serial>", path))
+    for pattern, path_re in allowed:
+        if fnmatch.fnmatch(file_name, pattern) and path_re.search(normalized):
+            return
+    yield f"{normalized}: {problem}"
+
+
 def documents(value, location: str):
     """Yield (location, object) for value and every nested object that declares a schema."""
     if isinstance(value, dict):
@@ -86,6 +141,8 @@ def main() -> int:
     args = parser.parse_args()
 
     by_identity, families, registry = load_schemas()
+    digest_rule = load_digest_rule()
+    digest_failures: Counter = Counter()
     validators: dict[tuple[str, int], Draft202012Validator] = {}
     validated: Counter = Counter()
     unpublished: Counter = Counter()
@@ -115,6 +172,12 @@ def main() -> int:
                 failures.append(f"{path}: invalid JSON ({exc})")
                 continue
         for where, document in parsed:
+            for violation in digest_violations(document, path.name, digest_rule):
+                key = f"{path.name}: {violation}"
+                if digest_failures[key] == 0:
+                    failures.append(f"{where}{violation.split(':', 1)[0]}: digest_form_v1: "
+                                    f"{violation.split(': ', 1)[1]}")
+                digest_failures[key] += 1
             for location, obj in documents(document, where):
                 identity = (obj["schema_id"], obj["schema_version"])
                 nested = location != where

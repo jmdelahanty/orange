@@ -107,9 +107,34 @@ def test_surface() -> None:
     print("[PASS] surface")
 
 
+VALIDATE = REPO / "scripts" / "validate_output_schemas.py"
+TOKEN = "sha256:" + "a" * 64
+
+
+def test_digest_form() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        (folder / "ok.json").write_text(json.dumps({"artifact": {"sha256": TOKEN}, "file_sha256": TOKEN}))
+        result = subprocess.run([sys.executable, str(VALIDATE), str(folder)], capture_output=True, text=True)
+        require(result.returncode == 0, f"tokens under digest names pass: {result.stdout}")
+        for bad, expected in (({"payload_sha256": "a" * 64}, "is not a sha256: token"),
+                              ({"blob": {"digest": TOKEN}}, "not sha256 / *_sha256"),
+                              ({"files": [{"sha256": "not-a-digest"}]}, "is not a sha256: token")):
+            (folder / "bad.json").write_text(json.dumps(bad))
+            result = subprocess.run([sys.executable, str(VALIDATE), str(folder)], capture_output=True, text=True)
+            require(result.returncode == 1 and expected in result.stdout,
+                    f"{bad} must fail with {expected!r}: {result.stdout}")
+        (folder / "bad.json").unlink()
+        (folder / "engine.manifest.json").write_text(json.dumps({"sha256": "a" * 64}))
+        result = subprocess.run([sys.executable, str(VALIDATE), str(folder)], capture_output=True, text=True)
+        require(result.returncode == 0, f"allowlisted family passes: {result.stdout}")
+    print("[PASS] digest form")
+
+
 def main() -> int:
     test_names()
     test_surface()
+    test_digest_form()
     print("output_ratchet_tests passed")
     return 0
 

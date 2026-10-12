@@ -1,0 +1,70 @@
+{
+  "$comment": "Digest fields scripts/validate_output_schemas.py accepts although they break agent-contracts orange-palette/digest_form_v1 (bare hex, or a digest under a non-digest name). Each entry: a file name glob, a JSON path regex (paths look like /a/b[]/c; serials become <serial>, 64-hex path segments <hex>), and the reason. The list only shrinks: remove entries when their family converts.",
+  "allowed": [
+    {
+      "file": "engine.manifest.json",
+      "path": ".*",
+      "reason": "Model identity family: orange.tensorrt_engine_manifest v1 (digest_form_v1 section 2, family A)."
+    },
+    {
+      "file": "int8_calibration.record.json",
+      "path": ".*",
+      "reason": "Model identity family: INT8 calibration record (family A)."
+    },
+    {
+      "file": "recording_snapshot*.json",
+      "path": "^/models/<serial>/(detect|pose)/runtime/(engine_sha256|onnx_sha256|weights_sha256|engine_manifest/.*)$",
+      "reason": "Model identity family: snapshot model runtime blocks (family A)."
+    },
+    {
+      "file": "recording_session.json",
+      "path": "^/model_artifacts/engines/<hex>(/.*)?$",
+      "reason": "Model identity family: engines keyed and described by bare hex (family A)."
+    },
+    {
+      "file": "recording_session.json",
+      "path": "^/realtime_products/cameras/<serial>/(detections|pose)/model_ref/(engine_sha256|weights_sha256|onnx_sha256)$",
+      "reason": "Model identity family: model_ref copies (family A)."
+    },
+    {
+      "file": "Cam*_yolo_events.jsonl",
+      "path": "^/yolo/(engine_sha256|onnx_sha256|weights_sha256)$",
+      "reason": "Model identity family: detector identity in the event-log session header (family A)."
+    },
+    {
+      "file": "Cam*_pose_events.jsonl",
+      "path": "^/pose/(engine_sha256|onnx_sha256|weights_sha256|skeleton_sha256|worker_engine_sha256)$",
+      "reason": "Model identity family: pose model identity in the event-log session header (family A)."
+    },
+    {
+      "file": "recording_session.json",
+      "path": "^/realtime_products/cameras/<serial>/(acquisition_files|crop_files|detections/files|pose/files)\\[\\]/sha256$",
+      "reason": "Realtime products file inventory, bare hex (family B)."
+    },
+    {
+      "file": "Cam*_yolo_events.jsonl",
+      "path": "^/spatial_mask/source/sha256$",
+      "reason": "Spatial-mask source digest, bare hex (family C)."
+    },
+    {
+      "file": "recording_geometry_contract.json",
+      "path": "^/(analytics_runtime/yolo_spatial_mask/cameras/<serial>/source|cameras/<serial>/yolo_spatial_mask_runtime/source)/sha256$",
+      "reason": "Spatial-mask source digest in the geometry contract, bare hex (family C)."
+    },
+    {
+      "file": "*.json",
+      "path": "importance_map/source/artifact_sha256$",
+      "reason": "Crop importance-map source digest in the crop recorder summary and supervisor plan, bare hex (family D)."
+    },
+    {
+      "file": "recording_session.json",
+      "path": "^/shaman_v2_recording_identity/recording_identity_token$",
+      "reason": "SHAMAN v2 recording identity token: a sha256 token under its fixed wire-field name (shaman-ipc Slot.recording_identity_token); renaming needs a SHAMAN layout change (family E)."
+    },
+    {
+      "file": "*.json",
+      "path": "(^|/)[a-z_]*checksum[a-z_]*$",
+      "reason": "Calibration and geometry artifacts name digests *checksum* with a separate checksum_algorithm field (image sets, homography/scale pointers, geometry assets manifest and contract copies) (family F)."
+    }
+  ]
+}

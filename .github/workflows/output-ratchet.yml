@@ -16,6 +16,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Python dependencies
+        run: python3 -m pip install --quiet "jsonschema>=4.18"
       - name: Frame identity names
         run: python3 scripts/check_output_names.py
       - name: Ratchet self-tests

@@ -1,0 +1,8 @@
+{
+  "$comment": "Machine-readable rule for orange-palette/digest_form_v1_2026-10-12.md.",
+  "contract_id": "digest_form",
+  "version": 1,
+  "token_pattern": "^sha256:[0-9a-f]{64}$",
+  "digest_field_names": {"exact": ["sha256"], "suffix": "_sha256"},
+  "canonical_json": "canonical_json_utf8_sort_keys_compact_v1"
+}
