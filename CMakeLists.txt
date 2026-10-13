@@ -779,7 +779,7 @@ if(BUILD_TESTING)
              "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs")
     add_test(NAME palette_canonical_manifest_tests
              COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/palette_canonical_manifest_tests.py"
-             "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/palette/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915.canonical.manifest.json")
+             "${CMAKE_SOURCE_DIR}/tools/fixtures/palette/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915.canonical.manifest.json")
     add_executable(outputs_common_tests "tools/outputs_common_tests.cpp")
     target_include_directories(outputs_common_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_link_libraries(outputs_common_tests PRIVATE Threads::Threads)
@@ -1169,7 +1169,7 @@ if(BUILD_TESTING)
     target_compile_features(model_identity_tests PRIVATE cxx_std_17)
     add_test(NAME model_identity_tests COMMAND model_identity_tests
         "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/engine_manifests/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915_a16_gpu5_trt100_fp16_bo5_avg32.manifest.json"
-        "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/palette/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915.canonical.manifest.json")
+        "${CMAKE_SOURCE_DIR}/tools/fixtures/palette/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915.canonical.manifest.json")
 
     add_executable(recording_subject_reference_tests
         "tools/recording_subject_reference_tests.cpp"

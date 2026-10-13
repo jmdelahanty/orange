@@ -65,11 +65,6 @@
       "file": "*.json",
       "path": "(^|/)[a-z_]*checksum[a-z_]*$",
       "reason": "Calibration and geometry artifacts name digests *checksum* with a separate checksum_algorithm field (image sets, homography/scale pointers, geometry assets manifest and contract copies) (family F)."
-    },
-    {
-      "schema_id": "palette.canonical_onnx_model_manifest",
-      "path": ".*",
-      "reason": "Palette-owned canonical ONNX manifest (pinned in contracts/): v1 predates digest_form_v1 and uses bare hex and payload_digest; v2 uses sha256: tokens. Orange checks it, never writes it."
     }
   ]
 }
