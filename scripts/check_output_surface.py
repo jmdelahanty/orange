@@ -11,7 +11,9 @@ Extracts the output surface of Orange's producer sources (src/ and the recorder 
 A file that writes through generated code (#include "orange_outputs/<schema>.h" and a call of
 the generated to_json, see tools/schema_codegen) is credited with that schema's property names
 and schema_id / version, since the key literals live in the generated header. A file that only
-reads through the generated parser is not credited: it writes nothing.
+reads through the generated parser is not credited: it writes nothing. A file that includes
+several generated headers is credited only with those whose to_json it calls by namespace (the
+generated namespace from CMakeLists.txt ORANGE_GENERATED_SCHEMAS, or a namespace alias of it).
 
 Published blocks without a schema_id (published_schemas.EMBEDDED, e.g. the snapshot's
 models.<serial>.detect) are recorded under "embedded <path>" with the path's keys, which their
@@ -61,6 +63,35 @@ TEXT_SCHEMA_PAIR = re.compile(
 INT_CONSTANT = re.compile(r"\b(k[A-Za-z0-9_]+)\s*=\s*([0-9]+)\s*;")
 STR_CONSTANT = re.compile(r'\b(k[A-Za-z0-9_]+)\s*=\s*"([a-z][a-z0-9_.]*)"\s*;')
 GENERATED_INCLUDE = re.compile(r'#include\s+"orange_outputs/([a-z0-9_]+)\.h"')
+GENERATED_ENTRY = re.compile(r'"([a-z0-9_]+):([a-z0-9_]+)"')
+NAMESPACE_ALIAS = re.compile(r'\bnamespace\s+([A-Za-z_]\w*)\s*=\s*(?:::)?orange::outputs::gen::([a-z0-9_]+)\s*;')
+
+
+def generated_namespaces() -> dict[str, str]:
+    """Generated header stem -> its namespace, from CMakeLists.txt ORANGE_GENERATED_SCHEMAS."""
+    cmake = REPO / "CMakeLists.txt"
+    text = cmake.read_text(encoding="utf-8") if cmake.exists() else ""
+    block = re.search(r"set\(ORANGE_GENERATED_SCHEMAS(.*?)\)", text, re.S)
+    return dict(GENERATED_ENTRY.findall(block.group(1))) if block else {}
+
+
+def written_generated(text: str, namespaces: dict[str, str]) -> list[str]:
+    """The generated headers whose writer this file calls."""
+    included = GENERATED_INCLUDE.findall(text)
+    if "to_json(" not in text:
+        return []
+    if len(included) == 1:
+        return included
+    aliases: dict[str, set[str]] = {}
+    for alias, namespace in NAMESPACE_ALIAS.findall(text):
+        aliases.setdefault(namespace, set()).add(alias)
+    written = []
+    for stem in included:
+        namespace = namespaces.get(stem)
+        names = {namespace, *aliases.get(namespace, ())} - {None}
+        if any(re.search(rf"\b{re.escape(n)}::to_json\(", text) for n in names):
+            written.append(stem)
+    return written
 
 
 def schema_surface(name: str) -> tuple[set[str], set[tuple[str, str]]]:
@@ -108,6 +139,7 @@ def extract() -> dict[str, dict[str, list]]:
         for p in producer_files()
     }
     ints, strs = constants(texts)
+    namespaces = generated_namespaces()
     surface: dict[str, dict[str, list]] = {}
     for rel, text in texts.items():
         headers: set[str] = set()
@@ -122,7 +154,7 @@ def extract() -> dict[str, dict[str, list]]:
             (resolve(sid, strs), resolve(ver, ints)) for sid, ver in SCHEMA_PAIR.findall(text)
         }
         schemas.update(TEXT_SCHEMA_PAIR.findall(text))
-        for name in GENERATED_INCLUDE.findall(text) if "to_json(" in text else ():
+        for name in written_generated(text, namespaces):
             generated_keys, generated_schemas = schema_surface(name)
             keys |= generated_keys
             schemas |= generated_schemas

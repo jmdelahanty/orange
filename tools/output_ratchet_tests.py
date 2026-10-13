@@ -129,6 +129,23 @@ def test_surface() -> None:
                 f"a generated include is credited with its schema: {snapshot.get('src/gen_writer.cpp')}")
         require("src/gen_reader.cpp" not in snapshot,
                 f"a file that only parses is not a writer: {snapshot.get('src/gen_reader.cpp')}")
+
+        # Several generated headers: only the schema whose to_json the file calls by namespace.
+        (root / "CMakeLists.txt").write_text('set(ORANGE_GENERATED_SCHEMAS\n    "orange_gen_v1:gen_v1"\n'
+                                             '    "orange_read_v1:read_v1"\n)\n')
+        (root / "docs" / "schemas" / "orange_read_v1.schema.json").write_text(json.dumps({
+            "properties": {"schema_id": {"const": "orange.read"}, "schema_version": {"const": 1},
+                           "read_only_key": {"type": "integer"}}}))
+        (root / "src" / "mixed.cpp").write_text(
+            '#include "orange_outputs/orange_gen_v1.h"\n#include "orange_outputs/orange_read_v1.h"\n'
+            'namespace out = orange::outputs::gen::gen_v1;\nnamespace in = orange::outputs::gen::read_v1;\n'
+            'bool ok = in::parse(j, &source, &error);\nauto k = out::to_json(value);\n')
+        require(run(SURFACE, root, "--update").returncode == 0, "snapshot update")
+        snapshot = json.loads((root / "tools" / "output_surface_snapshot.json").read_text())
+        mixed = snapshot.get("src/mixed.cpp", {})
+        require("generated_key" in mixed.get("json_keys", []) and "read_only_key" not in mixed.get("json_keys", [])
+                and ["orange.read", "1"] not in mixed.get("schemas", []),
+                f"a file with two generated includes is credited only with the one it writes: {mixed}")
     print("[PASS] surface")
 
 

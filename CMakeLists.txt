@@ -215,6 +215,7 @@ set(ORANGE_GENERATED_SCHEMAS
     "orange_analytics_spatial_mask_recording_arm_v1:spatial_mask_recording_arm_v1"
     "orange_recording_detect_model_v1:recording_detect_model_v1"
     "orange_recording_pose_model_v2:recording_pose_model_v2"
+    "orange_recording_model_artifacts_v2:recording_model_artifacts_v2"
 )
 set(ORANGE_CODEGEN "${CMAKE_SOURCE_DIR}/tools/schema_codegen/codegen.py")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ORANGE_CODEGEN}")

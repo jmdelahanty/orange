@@ -2,14 +2,16 @@
 
 // Model artifacts materialized into the recording folder (2026-10-09, Palette
 // intake item 7): for every distinct engine that ran (models.<serial>.detect /
-// .pose in the recording snapshot) the engine manifest, and for INT8 engines
-// the calibration record and the trtexec calibration cache, are copied to
-// `models/<engine_sha256>/` inside the recording folder and declared in
-// `recording_session.json.model_artifacts` (schema
-// orange.recording_model_artifacts v1) with path, size and sha256. One copy per
-// engine sha256; a camera's models_key names which engine it used. Runs on the
-// finalization path only (small files, never on a hot thread). The calibration
-// frames stay on the rig.
+// .pose in the recording snapshot) the files that say what the engine is are
+// copied to `models/<engine_sha256>/` inside the recording folder and declared
+// in `recording_session.json.model_artifacts` (schema
+// orange.recording_model_artifacts v2, generated writer) with path, size,
+// sha256 and the digest each should have: the engine manifest, the Palette
+// canonical ONNX manifest and (pose) the input contract it binds, and for INT8
+// engines the calibration record and the trtexec calibration cache. One copy
+// per engine sha256; a camera's models_key names which engine it used. Runs on
+// the finalization path only (small files, never on a hot thread). The
+// calibration frames stay on the rig.
 
 #include <string>
 #include <vector>
@@ -20,7 +22,8 @@ namespace orange::session {
 
 // `models` is the snapshot's models block (models.<serial>.<kind>). Copies the
 // files and returns the declaration; missing manifests are declared with
-// status "absent" and nothing is copied for them.
+// status "absent" and nothing is copied for them; a copy whose bytes differ from
+// the recorded digest is kept and declared digest_mismatch.
 nlohmann::json materialize_model_artifacts(const std::string& recording_folder,
                                            const nlohmann::json& models);
 

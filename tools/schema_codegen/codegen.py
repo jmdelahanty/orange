@@ -8,7 +8,8 @@ subset of JSON Schema and refuses anything else, so a schema never says more tha
 code enforces:
 
   type (object, array, string, integer, number, boolean; ["T", "null"] for nullable), properties,
-  required, additionalProperties (false; a schema for string-keyed maps; or absent/true on an
+  required, additionalProperties (false; a schema for string-keyed maps, whose keys a
+  propertyNames {pattern} may constrain; or absent/true on an
   object with properties, which is "open": declared fields are typed and checked, any other keys
   are kept verbatim in `extra` and written back unchanged), items, enum, const,
   minimum / maximum, minLength / maxLength, pattern, oneOf with one const discriminator property,
@@ -49,7 +50,7 @@ SUPPORTED = {
     "minimum", "maximum", "minLength", "maxLength", "pattern", "oneOf", "$defs", "$ref", "allOf",
     "description", "title", "$schema", "$id", "examples", "default",
     "x-orange-cpp-name", "x-orange-decimals", "x-orange-counter", "x-orange-digest",
-    "x-orange-map-key",
+    "x-orange-map-key", "propertyNames",
 }
 
 
@@ -95,6 +96,7 @@ class ArrayT:
 @dataclass
 class MapT:
     value: object
+    key_pattern: str | None = None   # propertyNames {pattern}
 
 
 @dataclass
@@ -235,7 +237,11 @@ class Builder:
             additional = node.get("additionalProperties", True)
             if props is None:
                 if isinstance(additional, dict):
-                    return MapT(self.type_of(additional, name + "Value", where + "/*"))
+                    names = node.get("propertyNames")
+                    if names is not None and (not isinstance(names, dict) or set(names) != {"pattern"}):
+                        raise SchemaError(f"{where}: propertyNames supports only {{pattern}}")
+                    return MapT(self.type_of(additional, name + "Value", where + "/*"),
+                                key_pattern=names["pattern"] if names else None)
                 return OpaqueT()
             if additional not in (False, True):
                 raise SchemaError(f"{where}: additionalProperties must be false or true on an object with properties")
@@ -486,6 +492,11 @@ class Emitter:
             out.append(f"for (auto it = {src}.begin(); it != {src}.end(); ++it) {{")
             out.append(f"    {cpp_type(t.value)} value{{}};")
             out.append(f"    const std::string value_path = {path} + \"/\" + it.key();")
+            if t.key_pattern is not None:
+                self.regex_count += 1
+                out.append(f"    static const std::regex key_pattern_{self.regex_count}({json.dumps(t.key_pattern)}, std::regex::ECMAScript);")
+                out.append(f"    if (!std::regex_search(it.key(), key_pattern_{self.regex_count})) "
+                           f"{{ return detail::fail(error, value_path + \": key does not match pattern\"); }}")
             out += ["    " + s for s in self.parse_stmt(t.value, "it.value()", "value", "value_path", indent)]
             out.append(f"    {dst}.emplace(it.key(), std::move(value));")
             out.append("}")
