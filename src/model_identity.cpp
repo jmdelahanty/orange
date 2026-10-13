@@ -1,5 +1,6 @@
 #include "model_identity.h"
 
+#include "orange_outputs/orange_tensorrt_engine_manifest_v1.h"
 #include "pose_skeleton_sidecar.h"
 
 #include <fstream>
@@ -26,28 +27,17 @@ std::string read_file(const std::string& path, bool* ok)
     return buffer.str();
 }
 
-std::string string_at(const nlohmann::json& object, const char* key)
+std::string string_or_empty(const std::optional<std::string>& value)
 {
-    if (!object.is_object()) return {};
-    auto it = object.find(key);
-    if (it == object.end() || !it->is_string()) return {};
-    return it->get<std::string>();
-}
-
-const nlohmann::json& object_at(const nlohmann::json& object, const char* key)
-{
-    static const nlohmann::json empty = nlohmann::json::object();
-    if (!object.is_object()) return empty;
-    auto it = object.find(key);
-    if (it == object.end() || !it->is_object()) return empty;
-    return *it;
+    return value ? *value : std::string();
 }
 
 void read_manifest(ModelIdentity* identity)
 {
-    // Palette writes the manifest beside the engine as `<stem>.manifest.json`
-    // (`foo.engine` -> `foo.manifest.json`); `<engine>.manifest.json` is
-    // accepted as a fallback.
+    // Orange's engine build scripts (scripts/write_tensorrt_engine_manifest.py,
+    // scripts/write_pose_tensorrt_engine_manifest.py) write the manifest beside
+    // the engine as `<stem>.manifest.json` (`foo.engine` -> `foo.manifest.json`);
+    // `<engine>.manifest.json` is accepted as a fallback.
     std::error_code ec;
     const std::filesystem::path engine_file(identity->engine_path);
     const std::filesystem::path stem_manifest =
@@ -70,18 +60,19 @@ void read_manifest(ModelIdentity* identity)
         return;
     }
     identity->manifest_sha256 = orange::pose::file_sha256_hex(identity->manifest_path);
-    nlohmann::json manifest;
-    try {
-        manifest = nlohmann::json::parse(bytes);
-    } catch (const std::exception& e) {
-        identity->manifest_error = std::string("parse: ") + e.what();
+    const nlohmann::json manifest = nlohmann::json::parse(bytes, nullptr, false);
+    if (manifest.is_discarded()) {
+        identity->manifest_error = "parse: not valid JSON";
         return;
     }
     if (!manifest.is_object()) {
         identity->manifest_error = "not an object";
         return;
     }
-    identity->manifest_schema_id = string_at(manifest, "schema_id");
+    // What the file says it is, reported even when it is not a v1 engine manifest.
+    if (auto it = manifest.find("schema_id"); it != manifest.end() && it->is_string()) {
+        identity->manifest_schema_id = it->get<std::string>();
+    }
     if (auto it = manifest.find("schema_version"); it != manifest.end() && it->is_number_integer()) {
         identity->manifest_schema_version = it->get<int>();
     }
@@ -89,35 +80,44 @@ void read_manifest(ModelIdentity* identity)
         identity->manifest_error = "unexpected schema_id '" + identity->manifest_schema_id + "'";
         return;
     }
-    identity->manifest_status = string_at(manifest, "status");
-    identity->task = string_at(manifest, "task");
-    identity->run_id = string_at(manifest, "palette_run_id");
-    identity->set_id = string_at(manifest, "set_id");
-    identity->build_id = string_at(manifest, "build_id");
-    identity->precision = string_at(manifest, "precision");
-    identity->target_hardware_class = string_at(manifest, "target_hardware_class");
-    identity->created_at_utc = string_at(manifest, "created_at_utc");
+    // Generated strict reader of the published schema
+    // (docs/schemas/orange_tensorrt_engine_manifest_v1.schema.json): a manifest
+    // that does not match is reported, never read field by field into blanks.
+    namespace gen = orange::outputs::gen::tensorrt_engine_manifest_v1;
+    gen::OrangeTensorrtEngineManifestV1 parsed;
+    std::string error;
+    if (!gen::parse(manifest, &parsed, &error)) {
+        identity->manifest_error = "does not match orange.tensorrt_engine_manifest v1: " + error;
+        return;
+    }
+    identity->manifest_status = parsed.status;
+    identity->task = string_or_empty(parsed.task);
+    identity->run_id = parsed.palette_run_id;
+    identity->set_id = string_or_empty(parsed.set_id);
+    identity->build_id = string_or_empty(parsed.build_id);
+    identity->precision = parsed.precision;
+    identity->target_hardware_class = parsed.target_hardware_class;
+    identity->created_at_utc = parsed.created_at_utc;
 
-    const nlohmann::json& engine = object_at(manifest, "engine");
-    identity->declared_engine_sha256 = string_at(engine, "sha256");
+    identity->declared_engine_sha256 = parsed.engine.sha256;
     identity->declared_engine_sha256_matches =
         !identity->declared_engine_sha256.empty() &&
         identity->declared_engine_sha256 == identity->engine_sha256;
 
-    const nlohmann::json& source = object_at(manifest, "source");
-    const nlohmann::json& onnx = object_at(source, "onnx");
-    identity->onnx_sha256 = string_at(onnx, "sha256");
-    identity->onnx_path = string_at(onnx, "path");
-    const nlohmann::json& weights = object_at(source, "weights");
-    identity->weights_sha256 = string_at(weights, "sha256");
-    identity->weights_path = string_at(weights, "source_path");
-    if (identity->weights_path.empty()) identity->weights_path = string_at(weights, "relative_path");
-    const nlohmann::json& canonical = object_at(source, "canonical_manifest");
-    identity->canonical_manifest_path = string_at(canonical, "path");
-    identity->canonical_manifest_sha256 = string_at(canonical, "sha256");
-    const nlohmann::json& onnx_manifest = object_at(source, "onnx_manifest");
-    identity->onnx_manifest_path = string_at(onnx_manifest, "path");
-    identity->onnx_manifest_sha256 = string_at(onnx_manifest, "sha256");
+    const auto& source = parsed.source;
+    identity->onnx_sha256 = string_or_empty(source.onnx.sha256);
+    identity->onnx_path = string_or_empty(source.onnx.path);
+    identity->weights_sha256 = string_or_empty(source.weights.sha256);
+    identity->weights_path = string_or_empty(source.weights.source_path);
+    if (identity->weights_path.empty()) identity->weights_path = string_or_empty(source.weights.relative_path);
+    if (source.canonical_manifest) {
+        identity->canonical_manifest_path = string_or_empty(source.canonical_manifest->path);
+        identity->canonical_manifest_sha256 = string_or_empty(source.canonical_manifest->sha256);
+    }
+    if (source.onnx_manifest) {
+        identity->onnx_manifest_path = string_or_empty(source.onnx_manifest->path);
+        identity->onnx_manifest_sha256 = string_or_empty(source.onnx_manifest->sha256);
+    }
 }
 
 }  // namespace

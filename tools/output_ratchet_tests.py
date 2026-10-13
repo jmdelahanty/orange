@@ -118,12 +118,17 @@ def test_surface() -> None:
         (root / "docs" / "schemas" / "orange_gen_v1.schema.json").write_text(json.dumps({
             "properties": {"schema_id": {"const": "orange.gen"}, "schema_version": {"const": 1},
                            "generated_key": {"type": "integer"}}}))
-        (root / "src" / "gen_writer.cpp").write_text('#include "orange_outputs/orange_gen_v1.h"\n')
+        (root / "src" / "gen_writer.cpp").write_text(
+            '#include "orange_outputs/orange_gen_v1.h"\nauto j = gen::to_json(value);\n')
+        (root / "src" / "gen_reader.cpp").write_text(
+            '#include "orange_outputs/orange_gen_v1.h"\nbool ok = gen::parse(j, &value, &error);\n')
         require(run(SURFACE, root, "--update").returncode == 0, "snapshot update")
         snapshot = json.loads((root / "tools" / "output_surface_snapshot.json").read_text())
         require("generated_key" in snapshot["src/gen_writer.cpp"]["json_keys"]
                 and ["orange.gen", "1"] in snapshot["src/gen_writer.cpp"]["schemas"],
                 f"a generated include is credited with its schema: {snapshot.get('src/gen_writer.cpp')}")
+        require("src/gen_reader.cpp" not in snapshot,
+                f"a file that only parses is not a writer: {snapshot.get('src/gen_reader.cpp')}")
     print("[PASS] surface")
 
 

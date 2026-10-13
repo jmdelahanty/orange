@@ -5,16 +5,23 @@
 // generated writer; the bytes must be identical, so a writer switched to the generated code
 // produces exactly today's output. Also checks that the reader refuses malformed lines.
 //
+// Engine manifests (orange.tensorrt_engine_manifest v1, written by the Python build scripts) are
+// compared as JSON values, not bytes: Python formats them, not the generated writer.
+//
 //   generated_outputs_tests <fixture dir> [<extra yolo.jsonl> <extra pose.jsonl>]
+//   generated_outputs_tests --engine-manifests <manifest.json>...
 #include "orange_outputs/orange_pose_event_v3.h"
+#include "orange_outputs/orange_tensorrt_engine_manifest_v1.h"
 #include "orange_outputs/orange_yolo_event_v3.h"
 
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
 
 namespace yolo = orange::outputs::gen::yolo_event_v3;
 namespace pose = orange::outputs::gen::pose_event_v3;
+namespace manifest = orange::outputs::gen::tensorrt_engine_manifest_v1;
 
 namespace {
 int failures = 0;
@@ -42,9 +49,68 @@ void round_trip(const std::string& path, Parse parse, Write write, const std::st
     }
     check(lines > 0 && bad == 0, label + ": " + std::to_string(lines) + " lines round-trip byte-exact");
 }
+
+// parse -> to_json gives back the same JSON value (every key, every value, open objects kept).
+bool manifest_round_trip(const std::string& path) {
+    std::ifstream in(path);
+    const nlohmann::json original = nlohmann::json::parse(in, nullptr, false);
+    manifest::OrangeTensorrtEngineManifestV1 value;
+    std::string error;
+    if (original.is_discarded() || !manifest::parse(original, &value, &error)) {
+        std::cout << path << ": parse failed: " << error << "\n";
+        return false;
+    }
+    const nlohmann::json written = manifest::to_json(value);
+    if (written != original) {
+        std::cout << path << ": round trip differs: " << nlohmann::json::diff(original, written).dump().substr(0, 400) << "\n";
+        return false;
+    }
+    return true;
+}
+
+void engine_manifests(const std::string& dir) {
+    std::size_t files = 0, bad = 0;
+    std::string sample;
+    for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+        if (entry.path().extension() != ".json") continue;
+        ++files;
+        bad += manifest_round_trip(entry.path().string()) ? 0 : 1;
+        if (sample.empty() || entry.path().string().find("int8") != std::string::npos) sample = entry.path().string();
+    }
+    check(files >= 3 && bad == 0, "engine manifests: " + std::to_string(files) + " rig manifests round-trip as JSON values");
+
+    std::ifstream in(sample);
+    const nlohmann::json good = nlohmann::json::parse(in);
+    auto refused = [&](nlohmann::json j, const std::string& what, const std::string& expect) {
+        manifest::OrangeTensorrtEngineManifestV1 v;
+        std::string error;
+        const bool ok = manifest::parse(j, &v, &error);
+        check(!ok && error.find(expect) != std::string::npos, "manifest refuses " + what + " (" + error + ")");
+    };
+    { auto j = good; j["schema_id"] = "orange.other"; refused(j, "another schema_id", "must be"); }
+    { auto j = good; j.erase("engine"); refused(j, "a missing engine block", "missing"); }
+    { auto j = good; j["engine"]["sha256"] = 7; refused(j, "a non-string digest", "expected a string"); }
+    { auto j = good; j["build"]["command"] = 3; refused(j, "a union value of another type", "expected"); }
+    { auto j = good; j["keypoints"] = nullptr;
+      manifest::OrangeTensorrtEngineManifestV1 v; std::string e;
+      const bool ok = manifest::parse(j, &v, &e);
+      check(ok && v.keypoints && !*v.keypoints && manifest::to_json(v).at("keypoints").is_null(),
+            "an optional nullable field keeps an explicit null apart from absence"); }
+    { auto j = good; j.erase("keypoints");
+      manifest::OrangeTensorrtEngineManifestV1 v; std::string e;
+      const bool ok = manifest::parse(j, &v, &e);
+      check(ok && !v.keypoints && !manifest::to_json(v).contains("keypoints"),
+            "an absent optional nullable field stays absent"); }
+}
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc >= 2 && std::string(argv[1]) == "--engine-manifests") {
+        std::size_t bad = 0;
+        for (int i = 2; i < argc; ++i) bad += manifest_round_trip(argv[i]) ? 0 : 1;
+        std::cout << (argc - 2) << " engine manifests, " << bad << " failed\n";
+        return bad ? 1 : 0;
+    }
     if (argc != 2 && argc != 4) {
         std::cerr << "usage: generated_outputs_tests <fixture dir> [<yolo.jsonl> <pose.jsonl>]\n";
         return 2;
@@ -85,6 +151,8 @@ int main(int argc, char** argv) {
       yolo::OrangeYoloEventV3 v; std::string e;
       check(yolo::parse(j, &v, &e) && yolo::to_json(v)["spatial_mask"]["geometry_extra"] == 1,
             "open object keeps undeclared keys verbatim"); }
+
+    engine_manifests(dir + "/engine_manifests");
 
     std::cout << (failures ? "generated_outputs_tests FAILED\n" : "generated_outputs_tests passed\n");
     return failures ? 1 : 0;

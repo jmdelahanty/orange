@@ -2,15 +2,20 @@
 
 // Model identity for the recording snapshot (realtime-products slice, item 2).
 //
-// Every TensorRT engine Orange runs (detect and pose) is built by the Palette
-// engine pipeline, which writes `<engine>.manifest.json`
-// (`foo.engine` -> `foo.manifest.json`, schema_id
-// orange.tensorrt_engine_manifest) next to it with the engine's
-// SHA-256, the source ONNX SHA-256, the training weights SHA-256, the build id
-// and precision. This module hashes the engine bytes that actually ran, reads
-// that manifest and reports both, so `models.<serial>.detect/.pose.runtime`
+// Palette trains the models and exports the ONNX; Orange builds every TensorRT
+// engine it runs (detect and pose) on the rig, and its build scripts
+// (scripts/write_tensorrt_engine_manifest.py, write_pose_tensorrt_engine_manifest.py)
+// write `<stem>.manifest.json` beside the engine (`foo.engine` ->
+// `foo.manifest.json`, schema_id orange.tensorrt_engine_manifest v1, published in
+// docs/schemas) with the engine's SHA-256, the source ONNX, weights and Palette
+// manifest SHA-256s, the build id and precision. Palette's own ONNX manifests are
+// named there by path and digest only; Orange does not parse them. This module
+// hashes the engine bytes that actually ran, reads that manifest through the
+// generated strict reader and reports both, so `models.<serial>.detect/.pose.runtime`
 // carries the full identity chain (weights -> onnx -> engine) and whether the
-// bytes on disk still match the manifest's declaration.
+// bytes on disk still match the manifest's declaration. A manifest that does not
+// match the published schema leaves the fields empty and says why in
+// manifest_error.
 //
 // Resolution is cached per engine path (the hashes take tens of ms for the
 // 6-9 MB engines) and is only ever called from the record-start path, never

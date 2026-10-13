@@ -1,5 +1,9 @@
 // Unit tests for src/model_identity: engine hashing, manifest reading and the
-// snapshot JSON block (realtime-products item 2).
+// snapshot JSON block (realtime-products item 2). Manifests start from a real rig
+// manifest (tools/fixtures/generated_outputs/engine_manifests), since the reader is
+// the generated strict reader of orange.tensorrt_engine_manifest v1.
+//
+//   model_identity_tests <real engine manifest.json>
 #include "model_identity.h"
 #include "pose_skeleton_sidecar.h"
 
@@ -38,6 +42,8 @@ void write_file(const fs::path& path, const std::string& bytes)
     out << bytes;
 }
 
+nlohmann::json real_manifest;   // a schema-valid rig manifest, loaded in main
+
 void test_empty_path()
 {
     const ModelIdentity id = orange::model_identity::resolve_model_identity("");
@@ -62,26 +68,24 @@ void test_engine_with_manifest(const fs::path& dir)
     const std::string bytes = "tensorrt-engine-bytes";
     write_file(engine, bytes);
     const std::string expected_sha = orange::pose::file_sha256_hex(engine.string());
-    nlohmann::json manifest = {
-        {"schema_id", "orange.tensorrt_engine_manifest"},
-        {"schema_version", 1},
-        {"status", "candidate"},
-        {"task", "pose"},
-        {"palette_run_id", "run-1"},
-        {"set_id", "set-1"},
-        {"build_id", "a16_gpu5_trt100_fp16"},
-        {"precision", "fp16"},
-        {"target_hardware_class", "A16"},
-        {"created_at_utc", "2026-09-16T22:01:27Z"},
-        {"engine", {{"path", engine.string()}, {"sha256", expected_sha}, {"bytes", bytes.size()}}},
-        {"source", {
-            {"onnx", {{"path", "/m/source.onnx"}, {"sha256", std::string(64, 'a')}}},
-            {"weights", {{"source_path", "/m/best.pt"}, {"sha256", std::string(64, 'b')}}},
-            {"canonical_manifest", {{"path", "/m/c.canonical.manifest.json"}, {"sha256", std::string(64, 'c')}}},
-            {"onnx_manifest", {{"path", "/m/source.onnx.manifest.json"}, {"sha256", std::string(64, 'd')}}}
-        }}
-    };
-    // Palette's layout: foo.engine -> foo.manifest.json
+    nlohmann::json manifest = real_manifest;
+    manifest["status"] = "candidate";
+    manifest["task"] = "pose";
+    manifest["palette_run_id"] = "run-1";
+    manifest["set_id"] = "set-1";
+    manifest["build_id"] = "a16_gpu5_trt100_fp16";
+    manifest["precision"] = "fp16";
+    manifest["target_hardware_class"] = "A16";
+    manifest["created_at_utc"] = "2026-09-16T22:01:27Z";
+    manifest["engine"]["path"] = engine.string();
+    manifest["engine"]["sha256"] = expected_sha;
+    manifest["engine"]["bytes"] = bytes.size();
+    auto& source = manifest["source"];
+    source["onnx"] = {{"path", "/m/source.onnx"}, {"sha256", std::string(64, 'a')}};
+    source["weights"] = {{"source_path", "/m/best.pt"}, {"sha256", std::string(64, 'b')}};
+    source["canonical_manifest"] = {{"path", "/m/c.canonical.manifest.json"}, {"sha256", std::string(64, 'c')}};
+    source["onnx_manifest"] = {{"path", "/m/source.onnx.manifest.json"}, {"sha256", std::string(64, 'd')}};
+    // The build scripts' layout: foo.engine -> foo.manifest.json
     write_file(dir / "detect.manifest.json", manifest.dump(2));
 
     const ModelIdentity id = orange::model_identity::resolve_model_identity_uncached(engine.string());
@@ -122,8 +126,9 @@ void test_suffix_manifest_fallback(const fs::path& dir)
 {
     const fs::path engine = dir / "legacy.engine";
     write_file(engine, "y");
-    write_file(fs::path(engine.string() + ".manifest.json"),
-               R"({"schema_id":"orange.tensorrt_engine_manifest","schema_version":1,"build_id":"b"})");
+    nlohmann::json manifest = real_manifest;
+    manifest["build_id"] = "b";
+    write_file(fs::path(engine.string() + ".manifest.json"), manifest.dump());
     const ModelIdentity id = orange::model_identity::resolve_model_identity_uncached(engine.string());
     require(id.manifest_present && id.manifest_path == engine.string() + ".manifest.json" && id.build_id == "b",
             "<engine>.manifest.json accepted when no stem manifest exists");
@@ -143,12 +148,43 @@ void test_bad_manifests(const fs::path& dir)
     require(id.manifest_present && id.manifest_error.find("unexpected schema_id") != std::string::npos,
             "wrong schema id reported");
     require(id.onnx_sha256.empty() && id.weights_sha256.empty(), "wrong schema -> no identity fields");
+
+    // The right schema_id but not the published v1 shape: reported with the
+    // field, never read into partial identity.
+    nlohmann::json missing_engine = real_manifest;
+    missing_engine.erase("engine");
+    write_file(dir / "bad.manifest.json", missing_engine.dump());
+    id = orange::model_identity::resolve_model_identity_uncached(engine.string());
+    require(id.manifest_present &&
+            id.manifest_error == "does not match orange.tensorrt_engine_manifest v1: /engine: missing",
+            "schema mismatch reported with the field: " + id.manifest_error);
+    require(id.manifest_schema_id == "orange.tensorrt_engine_manifest" && id.manifest_schema_version == 1,
+            "a mismatching manifest still says what it claims to be");
+    require(id.onnx_sha256.empty() && id.run_id.empty() && id.precision.empty(),
+            "schema mismatch -> no identity fields");
+
+    nlohmann::json wrong_type = real_manifest;
+    wrong_type["source"]["onnx"]["sha256"] = 42;
+    write_file(dir / "bad.manifest.json", wrong_type.dump());
+    id = orange::model_identity::resolve_model_identity_uncached(engine.string());
+    require(id.manifest_error.find("/source/onnx/sha256: expected a string") != std::string::npos,
+            "a mistyped digest is reported: " + id.manifest_error);
 }
 
 }  // namespace
 
-int main()
+int main(int argc, char** argv)
 {
+    if (argc != 2) {
+        std::cerr << "usage: model_identity_tests <real engine manifest.json>" << std::endl;
+        return 2;
+    }
+    std::ifstream fixture(argv[1]);
+    real_manifest = nlohmann::json::parse(fixture, nullptr, false);
+    if (!real_manifest.is_object()) {
+        std::cerr << "unreadable fixture " << argv[1] << std::endl;
+        return 2;
+    }
     const fs::path dir = make_temp_dir();
     test_empty_path();
     test_missing_engine_and_manifest(dir);

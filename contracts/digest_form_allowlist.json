@@ -27,12 +27,12 @@
       "reason": "Model identity family: model_ref copies (family A)."
     },
     {
-      "file": "Cam*_yolo_events.jsonl",
+      "schema_id": "orange.yolo_event",
       "path": "^/yolo/(engine_sha256|onnx_sha256|weights_sha256)$",
       "reason": "Model identity family: detector identity in the event-log session header (family A)."
     },
     {
-      "file": "Cam*_pose_events.jsonl",
+      "schema_id": "orange.pose_event",
       "path": "^/pose/(engine_sha256|onnx_sha256|weights_sha256|skeleton_sha256|worker_engine_sha256)$",
       "reason": "Model identity family: pose model identity in the event-log session header (family A)."
     },
@@ -42,7 +42,7 @@
       "reason": "Realtime products file inventory, bare hex (family B)."
     },
     {
-      "file": "Cam*_yolo_events.jsonl",
+      "schema_id": "orange.yolo_event",
       "path": "^/spatial_mask/source/sha256$",
       "reason": "Spatial-mask source digest, bare hex (family C)."
     },

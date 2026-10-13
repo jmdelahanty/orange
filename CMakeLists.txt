@@ -210,6 +210,7 @@ set(ORANGE_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
 set(ORANGE_GENERATED_SCHEMAS
     "orange_yolo_event_v3:yolo_event_v3"
     "orange_pose_event_v3:pose_event_v3"
+    "orange_tensorrt_engine_manifest_v1:tensorrt_engine_manifest_v1"
 )
 set(ORANGE_CODEGEN "${CMAKE_SOURCE_DIR}/tools/schema_codegen/codegen.py")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ORANGE_CODEGEN}")
@@ -1105,7 +1106,8 @@ if(BUILD_TESTING)
     )
     target_include_directories(model_identity_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(model_identity_tests PRIVATE cxx_std_17)
-    add_test(NAME model_identity_tests COMMAND model_identity_tests)
+    add_test(NAME model_identity_tests COMMAND model_identity_tests
+        "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/engine_manifests/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915_a16_gpu5_trt100_fp16_bo5_avg32.manifest.json")
 
     add_executable(recording_subject_reference_tests
         "tools/recording_subject_reference_tests.cpp"

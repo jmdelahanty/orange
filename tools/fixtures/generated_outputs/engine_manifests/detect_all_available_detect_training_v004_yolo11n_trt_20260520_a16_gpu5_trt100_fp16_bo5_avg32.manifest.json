@@ -1,0 +1,655 @@
+{
+  "schema_id": "orange.tensorrt_engine_manifest",
+  "schema_version": 1,
+  "created_at_utc": "2026-05-21T18:28:03Z",
+  "status": "validated",
+  "deployment_runtime": "orange",
+  "target_hardware_class": "A16",
+  "palette_run_id": "detect_all_available_detect_training_v004_yolo11n_trt_20260520",
+  "source": {
+    "onnx": {
+      "path": "/home/jeremy/orange_data/model_sources/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/source.onnx",
+      "sha256": "d9bbeebd09ef7a30bc15759b0a149e0de51508735b5c32d9abc247514d950536",
+      "palette_manifest_sha256": "d9bbeebd09ef7a30bc15759b0a149e0de51508735b5c32d9abc247514d950536"
+    },
+    "onnx_manifest": {
+      "path": "/home/jeremy/orange_data/model_sources/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/source.onnx.manifest.json",
+      "sha256": "4d9c573b3b47fa4e69a1f60b76f5931393c15ded32e9206ed3e820efac35a88e"
+    },
+    "weights": {
+      "source_path": "/nvme1/models/detect/detect_all_available_detect_training_v004/detect_all_available_detect_training_v004_yolo11n_trt_20260520/weights/best.pt",
+      "sha256": "74458dc7a91b93d70edd7974617b8ad920d30ee78084a56161bcad57dd62ac58"
+    },
+    "training_manifest": {
+      "manifest_path": "/nvme1/training/datasets/detect_all_available_detect_training_v004/detect_all_available_detect_training_v004.manifest.json",
+      "manifest_sha256": "6b227f6ae064c8c09fde1a7c4b5bdf045cd25e7d6f8dd624a9f811cbe3307ed3",
+      "manifest_dataset_ids": [
+        "detect_all_available_detect_training_v004_merged"
+      ]
+    }
+  },
+  "engine": {
+    "path": "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.engine",
+    "sha256": "962579a2e8021409cce58410af1ec2260c399f4e59f17c8ba1a283a85b43d4c8",
+    "bytes": 8889572,
+    "format": "TensorRT serialized engine",
+    "portable": false
+  },
+  "precision": "fp16",
+  "input_contract": {
+    "input_name": "images",
+    "dtype": "FP32",
+    "shape": [
+      1,
+      3,
+      640,
+      640
+    ],
+    "layout": "NCHW",
+    "preprocessing": [
+      "Mono/luma source frame",
+      "letterbox resize to 640x640",
+      "padding value 114",
+      "divide by 255.0",
+      "replicate luma into B, G, R planes",
+      "planar NCHW FP32 tensor"
+    ]
+  },
+  "outputs": [
+    {
+      "name": "num_dets",
+      "shape": [
+        "1",
+        "1"
+      ],
+      "dtype": "INT32"
+    },
+    {
+      "name": "bboxes",
+      "shape": [
+        "1",
+        "1",
+        "4"
+      ],
+      "dtype": "FLOAT"
+    },
+    {
+      "name": "scores",
+      "shape": [
+        "1",
+        "1"
+      ],
+      "dtype": "FLOAT"
+    },
+    {
+      "name": "labels",
+      "shape": [
+        "1",
+        "1"
+      ],
+      "dtype": "INT32"
+    }
+  ],
+  "nms": {
+    "conf": 0.3,
+    "iou": 0.65,
+    "topk": 1
+  },
+  "plugins": {
+    "requires_plugins": true,
+    "plugin_ops": [
+      "TRT::EfficientNMS_TRT"
+    ],
+    "plugin_versions": {
+      "TRT::EfficientNMS_TRT": "1"
+    }
+  },
+  "build": {
+    "tool": "trtexec",
+    "trtexec_path": "/usr/local/TensorRT-10.0.1.6/targets/x86_64-linux-gnu/bin/trtexec",
+    "tensorrt_version": "10.0.1",
+    "tensorrt_log_version": "v100001",
+    "cuda_compiler_version": "12.2.140",
+    "driver_version": "535.183.06",
+    "selected_gpu": {
+      "device_id": 5,
+      "name": "NVIDIA A16",
+      "uuid": "GPU-840b0989-697c-1bf7-84d3-ad5a8c24e898",
+      "pci_bus_id": "00000000:45:00.0",
+      "compute_capability": "8.6",
+      "sm_count": 10,
+      "memory_total_mib_nvidia_smi": 15356,
+      "device_global_memory_mib_trtexec": 14891
+    },
+    "fp16": true,
+    "builder_optimization_level": 5,
+    "avg_timing": 32,
+    "profiling_verbosity": "detailed",
+    "build_duration_s": 462.694,
+    "created_engine_size_mib": 8.47776,
+    "command": [
+      "/usr/local/TensorRT-10.0.1.6/targets/x86_64-linux-gnu/bin/trtexec",
+      "--device=5",
+      "--onnx=/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520.onnx",
+      "--saveEngine=/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.engine",
+      "--fp16",
+      "--builderOptimizationLevel=5",
+      "--avgTiming=32",
+      "--profilingVerbosity=detailed",
+      "--exportTimes=/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_trtexec_times.json",
+      "--exportProfile=/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_trtexec_profile.json",
+      "--exportLayerInfo=/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_trtexec_layer_info.json"
+    ],
+    "log_path": "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_trtexec.log",
+    "parser_warnings": [
+      "Attribute class_agnostic not found in plugin node; TensorRT used plugin creator default value and engine build passed."
+    ]
+  },
+  "standalone_benchmark": {
+    "status": "passed",
+    "tool": "trtexec",
+    "command": [
+      "/usr/local/TensorRT-10.0.1.6/targets/x86_64-linux-gnu/bin/trtexec",
+      "--device=5",
+      "--loadEngine=/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.engine",
+      "--duration=10",
+      "--warmUp=1000",
+      "--exportTimes=/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_benchmark_times.json"
+    ],
+    "duration_s": 10,
+    "warmup_ms": 1000,
+    "warmup_queries": 411,
+    "timing_trace_queries": 4508,
+    "timing_trace_duration_s": 10.0049,
+    "throughput_qps": 450.58,
+    "latency_ms": {
+      "min": 2.91016,
+      "max": 3.17188,
+      "mean": 3.01014,
+      "median": 3.00977,
+      "p90": 3.02441,
+      "p95": 3.02832,
+      "p99": 3.03711
+    },
+    "enqueue_ms": {
+      "mean": 1.01596,
+      "p95": 1.05859
+    },
+    "h2d_ms": {
+      "mean": 0.785356,
+      "p95": 0.787354
+    },
+    "gpu_compute_ms": {
+      "mean": 2.21667,
+      "p95": 2.23438,
+      "p99": 2.24365
+    },
+    "d2h_ms": {
+      "mean": 0.00810373,
+      "p95": 0.00964355
+    },
+    "total_host_walltime_s": 10.0049,
+    "total_gpu_compute_time_s": 9.99276,
+    "log_path": "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_benchmark.log",
+    "times_json_path": "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_benchmark_times.json"
+  },
+  "artifacts": [
+    {
+      "kind": "trtexec_build_log",
+      "path": "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_trtexec.log",
+      "exists": true,
+      "bytes": 14993,
+      "sha256": "e908fdf48dc247a3bfbb6b29d8a8550d525210c930d30702f27ab79b46d1dac6"
+    },
+    {
+      "kind": "trtexec_profile_json",
+      "path": "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_trtexec_profile.json",
+      "exists": true,
+      "bytes": 36746,
+      "sha256": "a5026d41b7dbd5d3ca3114d44cffbf42272032620728dba569248777461c2599"
+    },
+    {
+      "kind": "trtexec_layer_info_json",
+      "path": "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_trtexec_layer_info.json",
+      "exists": true,
+      "bytes": 259373,
+      "sha256": "f5271a0800b6eae8596680e5823ab8da73aac1aec913525ab4c53278faeeab95"
+    },
+    {
+      "kind": "trtexec_profile_times_json",
+      "path": "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_trtexec_times.json",
+      "exists": false
+    },
+    {
+      "kind": "trtexec_benchmark_log",
+      "path": "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_benchmark.log",
+      "exists": true,
+      "bytes": 55328,
+      "sha256": "6362a10a645f759e9176e6d5364e3574847a488d0bea91e4598e01b3e8daff42"
+    },
+    {
+      "kind": "trtexec_benchmark_times_json",
+      "path": "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_benchmark_times.json",
+      "exists": true,
+      "bytes": 1276723,
+      "sha256": "41b8186c7457e2e0ff28745bfe1d9dec79f2ac756eb5316e8c8b446268519c61"
+    }
+  ],
+  "orange_app_validation": {
+    "status": "passed",
+    "validated_at_utc": "2026-05-21T18:28:55Z",
+    "validation_type": "two_camera_headless_external_ipc_ptp_smoke",
+    "command": [
+      "scripts/run_external_recorder_two_camera_ptp_smoke.sh",
+      "--spec",
+      "/tmp/orange_new_a16_engine_two_camera_ptp_spec.json",
+      "--duration",
+      "6",
+      "--warmup",
+      "1",
+      "--ptp-register-read-decimate",
+      "100",
+      "--keep-temp-spec"
+    ],
+    "temp_spec_path": "/tmp/orange_external_recorder_ptp_20260521_142838/external_recorder_two_camera_ptp_spec.json",
+    "artifact_root": "/tmp/orange_external_recorder_ptp_20260521_142838",
+    "analytics_root": "/home/jeremy/orange_data/exp/unsorted/2010095_2010096_new_a16_detect_engine_external_ipc_ptp_smoke_external_ipc_20260521_142838",
+    "analytics_run_dir": "/home/jeremy/orange_data/exp/unsorted/2010095_2010096_new_a16_detect_engine_external_ipc_ptp_smoke_external_ipc_20260521_142838/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25__aq_off__tempaq_off__lookahead_off",
+    "verification": {
+      "external_recorder_verifier": "passed",
+      "completed_runs": 1,
+      "pass_runs": 1,
+      "fail_runs": 0
+    },
+    "config": {
+      "cameras": [
+        "2010095",
+        "2010096"
+      ],
+      "analytics_gpu_ids": [
+        5,
+        7
+      ],
+      "recorder_shard_gpu_ids_per_camera": {
+        "2010095": [
+          5,
+          6
+        ],
+        "2010096": [
+          7,
+          8
+        ]
+      },
+      "sync_mode": "ptp_gate",
+      "ptp_mode": "TwoStep",
+      "ptp_register_read_decimate": 100,
+      "recording_sink_mode": "external_ipc",
+      "encode_fps": 100,
+      "encode_max_fps": 0,
+      "queue_depth": 32,
+      "yolo_prewarm_iterations": 3
+    },
+    "camera_results": {
+      "2010095": {
+        "status": "pass",
+        "reason": "meets current recording sink diagnostic policy",
+        "analytics_gpu_id": 5,
+        "engine_path": "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.engine",
+        "yolo_rows": 400,
+        "steady_state_after_frame": 50,
+        "steady_yolo_rows": 350,
+        "steady_metrics_from_latency_summary": {
+          "acquisition_to_detect_done_ms": {
+            "count": 350,
+            "p50": 3.01227,
+            "p95": 3.95617,
+            "p99": 4.135135,
+            "max": 5.079196,
+            "max_frame_id": "200",
+            "max_recording_frame_id": "200"
+          },
+          "total_ms": {
+            "count": 350,
+            "p50": 2.967956,
+            "p95": 3.904243,
+            "p99": 4.057911,
+            "max": 4.081125,
+            "max_frame_id": "109",
+            "max_recording_frame_id": "109"
+          },
+          "cpu_preprocess_ms": {
+            "count": 350,
+            "p50": 0.015059,
+            "p95": 0.019567,
+            "p99": 0.256852,
+            "max": 0.348033,
+            "max_frame_id": "204",
+            "max_recording_frame_id": "204"
+          },
+          "cpu_pre_sync_ms": {
+            "count": 350,
+            "p50": 0.070172,
+            "p95": 0.082344,
+            "p99": 0.299051,
+            "max": 0.394059,
+            "max_frame_id": "204",
+            "max_recording_frame_id": "204"
+          },
+          "external_detach_copy_ms": {
+            "count": 350,
+            "p50": 0.145403,
+            "p95": 0.178405,
+            "p99": 0.185057,
+            "max": 0.20302,
+            "max_frame_id": null,
+            "max_recording_frame_id": "102"
+          }
+        },
+        "steady_metrics_from_yolo_csv": {
+          "rows": 350,
+          "infer_ms": {
+            "p50": 2.529616,
+            "p95": 3.476995,
+            "p99": 3.540295,
+            "max": 3.634816
+          },
+          "sync_ms": {
+            "p50": 2.865981,
+            "p95": 3.812218,
+            "p99": 3.961289,
+            "max": 3.976548
+          },
+          "yolo_queue_wait_ms": {
+            "p50": 0.014558,
+            "p95": 0.018827,
+            "p99": 0.024428,
+            "max": 0.028474
+          },
+          "total_ms": {
+            "p50": 2.968182,
+            "p95": 3.91026,
+            "p99": 4.06043,
+            "max": 4.081125
+          },
+          "acquisition_to_detect_done_ms": {
+            "p50": 3.012515,
+            "p95": 3.962661,
+            "p99": 4.163167,
+            "max": 5.079196
+          }
+        },
+        "recorder": {
+          "frames_received": 400,
+          "acks_sent": 400,
+          "frames_encoded": 400,
+          "encode_skipped": 0,
+          "encode_dropped": 0,
+          "worker_failed": false,
+          "routing_policy": "gop_modulo",
+          "shard_count": 2,
+          "merged_packets": 400,
+          "merged_mp4": "/tmp/orange_external_recorder_ptp_20260521_142838/Cam2010095_external.mp4",
+          "merged_mp4_bytes": 77451386,
+          "lock_bitstream_p95_ms": 11.621998,
+          "encode_total_p95_ms": 11.684755
+        },
+        "orange_runtime_counters": {
+          "submitted_frames_final": 399,
+          "external_ipc_frames_acked_final": 400,
+          "external_ipc_failures_final": 0,
+          "external_ipc_ack_timeouts_final": 0,
+          "camera_frame_id_gaps": 0,
+          "get_frame_errors_final": 0,
+          "enc_fail_final": 0
+        },
+        "video_sanity": {
+          "status": "pass",
+          "frames": null,
+          "mean_luma": 92.82041601303798,
+          "max_stddev": 75.89075134726225,
+          "max_black_fraction_lt8": 0.0027420476051254966,
+          "path": "/tmp/orange_external_recorder_ptp_20260521_142838/Cam2010095_external_video_sanity.json"
+        }
+      },
+      "2010096": {
+        "status": "pass",
+        "reason": "meets current recording sink diagnostic policy",
+        "analytics_gpu_id": 7,
+        "engine_path": "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.engine",
+        "yolo_rows": 400,
+        "steady_state_after_frame": 50,
+        "steady_yolo_rows": 350,
+        "steady_metrics_from_latency_summary": {
+          "acquisition_to_detect_done_ms": {
+            "count": 350,
+            "p50": 2.988124,
+            "p95": 3.947774,
+            "p99": 4.12651,
+            "max": 4.792448,
+            "max_frame_id": "100",
+            "max_recording_frame_id": "100"
+          },
+          "total_ms": {
+            "count": 350,
+            "p50": 2.955282,
+            "p95": 3.909212,
+            "p99": 3.937325,
+            "max": 4.100832,
+            "max_frame_id": "352",
+            "max_recording_frame_id": "352"
+          },
+          "cpu_preprocess_ms": {
+            "count": 350,
+            "p50": 0.01618,
+            "p95": 0.022091,
+            "p99": 0.238467,
+            "max": 0.374924,
+            "max_frame_id": "304",
+            "max_recording_frame_id": "304"
+          },
+          "cpu_pre_sync_ms": {
+            "count": 350,
+            "p50": 0.077224,
+            "p95": 0.09034,
+            "p99": 0.290585,
+            "max": 0.429025,
+            "max_frame_id": "304",
+            "max_recording_frame_id": "304"
+          },
+          "external_detach_copy_ms": {
+            "count": 350,
+            "p50": 0.111178,
+            "p95": 0.169709,
+            "p99": 0.182252,
+            "max": 0.223549,
+            "max_frame_id": null,
+            "max_recording_frame_id": "282"
+          }
+        },
+        "steady_metrics_from_yolo_csv": {
+          "rows": 350,
+          "infer_ms": {
+            "p50": 2.434016,
+            "p95": 3.441174,
+            "p99": 3.51579,
+            "max": 3.549472
+          },
+          "sync_ms": {
+            "p50": 2.858266,
+            "p95": 3.804459,
+            "p99": 3.832284,
+            "max": 3.988671
+          },
+          "yolo_queue_wait_ms": {
+            "p50": 0.014953,
+            "p95": 0.023273,
+            "p99": 0.026816,
+            "max": 0.05328
+          },
+          "total_ms": {
+            "p50": 2.956329,
+            "p95": 3.910011,
+            "p99": 3.937534,
+            "max": 4.100832
+          },
+          "acquisition_to_detect_done_ms": {
+            "p50": 2.988645,
+            "p95": 3.948898,
+            "p99": 4.185357,
+            "max": 4.792448
+          }
+        },
+        "recorder": {
+          "frames_received": 400,
+          "acks_sent": 400,
+          "frames_encoded": 400,
+          "encode_skipped": 0,
+          "encode_dropped": 0,
+          "worker_failed": false,
+          "routing_policy": "gop_modulo",
+          "shard_count": 2,
+          "merged_packets": 400,
+          "merged_mp4": "/tmp/orange_external_recorder_ptp_20260521_142838/Cam2010096_external.mp4",
+          "merged_mp4_bytes": 77269051,
+          "lock_bitstream_p95_ms": 11.965893,
+          "encode_total_p95_ms": 12.055782
+        },
+        "orange_runtime_counters": {
+          "submitted_frames_final": 399,
+          "external_ipc_frames_acked_final": 400,
+          "external_ipc_failures_final": 0,
+          "external_ipc_ack_timeouts_final": 0,
+          "camera_frame_id_gaps": 0,
+          "get_frame_errors_final": 0,
+          "enc_fail_final": 0
+        },
+        "video_sanity": {
+          "status": "pass",
+          "frames": null,
+          "mean_luma": 129.66581577050115,
+          "max_stddev": 80.57251881034094,
+          "max_black_fraction_lt8": 0.0,
+          "path": "/tmp/orange_external_recorder_ptp_20260521_142838/Cam2010096_external_video_sanity.json"
+        }
+      }
+    },
+    "notes": "Both cameras loaded this engine, sustained the external IPC/PTP validation path, encoded 400/400 recorder frames each with zero recorder drops, zero IPC failures/timeouts, zero camera frame-id gaps, zero GetFrame errors, and passing decoded MP4 video sanity. Safe to register as validated; do not mark preferred until explicitly choosing it as the Orange default."
+  },
+  "palette_registration": {
+    "candidate_command": [
+      "scripts/py",
+      "-m",
+      "fisheye.utils.register_model_deployment_artifact",
+      "--registry",
+      "/nvme1/palette_registry.sqlite",
+      "--run-id",
+      "detect_all_available_detect_training_v004_yolo11n_trt_20260520",
+      "--manifest-path",
+      "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.manifest.json",
+      "--deployment-runtime",
+      "orange",
+      "--target-hardware-class",
+      "A16",
+      "--status",
+      "candidate",
+      "--apply"
+    ],
+    "promotion_policy": "Do not mark preferred until Orange validation passes and an explicit default-engine replacement decision is made.",
+    "validated_command": [
+      "scripts/py",
+      "-m",
+      "fisheye.utils.register_model_deployment_artifact",
+      "--registry",
+      "/nvme1/palette_registry.sqlite",
+      "--run-id",
+      "detect_all_available_detect_training_v004_yolo11n_trt_20260520",
+      "--manifest-path",
+      "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.manifest.json",
+      "--deployment-runtime",
+      "orange",
+      "--target-hardware-class",
+      "A16",
+      "--status",
+      "validated",
+      "--apply"
+    ],
+    "preferred_policy": "Only register with --status preferred after an explicit default-engine replacement decision."
+  },
+  "updated_at_utc": "2026-05-22T00:43:11Z",
+  "build_staging": {
+    "root": "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521",
+    "build_manifest_path": "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521/build_manifest.json",
+    "staged_at_utc": "2026-05-21T23:51:46Z",
+    "runtime_artifacts_remaining_in_detect": [
+      "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.engine",
+      "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.manifest.json"
+    ],
+    "moved_artifacts": [
+      {
+        "source": "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520.onnx",
+        "destination": "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521/source.onnx",
+        "action": "moved"
+      },
+      {
+        "source": "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520.onnx.manifest.json",
+        "destination": "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521/source.onnx.manifest.json",
+        "action": "moved"
+      },
+      {
+        "source": "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_trtexec.log",
+        "destination": "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_trtexec.log",
+        "action": "moved"
+      },
+      {
+        "source": "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_trtexec_profile.json",
+        "destination": "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_trtexec_profile.json",
+        "action": "moved"
+      },
+      {
+        "source": "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_trtexec_layer_info.json",
+        "destination": "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_trtexec_layer_info.json",
+        "action": "moved"
+      },
+      {
+        "source": "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_benchmark.log",
+        "destination": "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_benchmark.log",
+        "action": "moved"
+      },
+      {
+        "source": "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_benchmark_times.json",
+        "destination": "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_benchmark_times.json",
+        "action": "moved"
+      }
+    ],
+    "missing_optional_artifacts": [
+      "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32_trtexec_times.json"
+    ],
+    "build_manifest_sha256": "40407ca8b46b2111b8cca9d2b52fe1d698cef06ceec6ed674c5145374ba12c82",
+    "source_snapshot": {
+      "onnx": {
+        "path": "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521/source.onnx",
+        "sha256": "d9bbeebd09ef7a30bc15759b0a149e0de51508735b5c32d9abc247514d950536",
+        "bytes": 10508778
+      },
+      "onnx_manifest": {
+        "path": "/home/jeremy/orange_data/trt_builds/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/a16_gpu5_trt100_fp16_bo5_avg32_20260521/source.onnx.manifest.json",
+        "sha256": "4d9c573b3b47fa4e69a1f60b76f5931393c15ded32e9206ed3e820efac35a88e",
+        "bytes": 4352
+      }
+    }
+  },
+  "source_stage": {
+    "root": "/home/jeremy/orange_data/model_sources/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520",
+    "source_stage_manifest_path": "/home/jeremy/orange_data/model_sources/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/source_stage_manifest.json",
+    "onnx": {
+      "path": "/home/jeremy/orange_data/model_sources/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/source.onnx",
+      "sha256": "d9bbeebd09ef7a30bc15759b0a149e0de51508735b5c32d9abc247514d950536",
+      "bytes": 10508778
+    },
+    "onnx_manifest": {
+      "path": "/home/jeremy/orange_data/model_sources/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520/source.onnx.manifest.json",
+      "sha256": "4d9c573b3b47fa4e69a1f60b76f5931393c15ded32e9206ed3e820efac35a88e",
+      "bytes": 4352
+    }
+  }
+}

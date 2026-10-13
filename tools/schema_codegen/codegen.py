@@ -191,8 +191,6 @@ class Builder:
                 obj.fields.append(Field(json_name, cpp_identifier(json_name), None,
                                         json_name in required, const=sub_r["const"], is_const=True))
                 continue
-            if nullable and json_name not in required:
-                raise SchemaError(f"{where}/{json_name}: a nullable field must be required")
             t = self.type_of(sub, name + camel(json_name), f"{where}/{json_name}")
             obj.fields.append(Field(json_name, cpp_identifier(json_name), t,
                                     json_name in required, nullable=nullable))
@@ -349,8 +347,10 @@ class Emitter:
             if f.is_const:
                 continue
             t = cpp_type(f.type)
-            if not f.required or f.nullable:
-                t = f"std::optional<{t}>"
+            if f.nullable:
+                t = f"std::optional<{t}>"          # nullopt: the value is null
+            if not f.required:
+                t = f"std::optional<{t}>"          # nullopt: the key is absent
             self.w(f"    {t} {f.cpp_name}{{}};")
         if obj.open:
             self.w("    // Keys the schema does not declare (the object is open), kept verbatim.")
@@ -368,6 +368,8 @@ class Emitter:
             key = json.dumps(f.json_name)
             if f.is_const:
                 self.w(f"    out[{key}] = {json_literal(f.const)};")
+            elif f.nullable and not f.required:
+                self.w(f"    if (value.{f.cpp_name}) out[{key}] = *value.{f.cpp_name} ? {self.write_expr(f.type, '**value.' + f.cpp_name)} : nlohmann::json(nullptr);")
             elif f.nullable:
                 self.w(f"    out[{key}] = value.{f.cpp_name} ? {self.write_expr(f.type, '*value.' + f.cpp_name)} : nlohmann::json(nullptr);")
             elif not f.required:
@@ -406,7 +408,8 @@ class Emitter:
             self.w(f"    if (in.contains({key})) {{")
             src = f"in.at({key})"
             if f.nullable:
-                self.w(f"        if ({src}.is_null()) {{ out->{f.cpp_name}.reset(); }} else {{")
+                null_value = "std::nullopt" if f.required else f"std::optional<{cpp_type(f.type)}>{{}}"
+                self.w(f"        if ({src}.is_null()) {{ out->{f.cpp_name} = {null_value}; }} else {{")
                 self.w(f"            {cpp_type(f.type)} v{{}};")
                 for s in self.parse_stmt(f.type, src, "v", fpath, ""):
                     self.w(f"            {s}")

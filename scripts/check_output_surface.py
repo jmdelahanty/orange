@@ -8,9 +8,10 @@ Extracts the output surface of Orange's producer sources (src/ and the recorder 
   - schemas:     schema_id / schema_version pairs, with k-constants resolved. A declared
                  version of a schema family published in docs/schemas must have its file.
 
-A file that writes through generated code (#include "orange_outputs/<schema>.h", see
-tools/schema_codegen) is credited with that schema's property names and schema_id / version,
-since the key literals live in the generated header.
+A file that writes through generated code (#include "orange_outputs/<schema>.h" and a call of
+the generated to_json, see tools/schema_codegen) is credited with that schema's property names
+and schema_id / version, since the key literals live in the generated header. A file that only
+reads through the generated parser is not credited: it writes nothing.
 
   check_output_surface.py                 compare with tools/output_surface_snapshot.json
   check_output_surface.py --update        rewrite the snapshot (commit it with the change)
@@ -117,7 +118,7 @@ def extract() -> dict[str, dict[str, list]]:
             (resolve(sid, strs), resolve(ver, ints)) for sid, ver in SCHEMA_PAIR.findall(text)
         }
         schemas.update(TEXT_SCHEMA_PAIR.findall(text))
-        for name in GENERATED_INCLUDE.findall(text):
+        for name in GENERATED_INCLUDE.findall(text) if "to_json(" in text else ():
             generated_keys, generated_schemas = schema_surface(name)
             keys |= generated_keys
             schemas |= generated_schemas
