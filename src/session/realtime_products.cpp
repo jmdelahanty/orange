@@ -1,5 +1,6 @@
 #include "session/realtime_products.h"
 #include "session/snapshot_models.h"
+#include "event_log_reader.h"
 #include "timing/log_writer.h"
 
 #include <cstdint>
@@ -7,6 +8,7 @@
 #include <iostream>
 #include <fstream>
 #include <map>
+#include <variant>
 #include <sstream>
 
 #include "gui/spatial_layout/sha256.h"
@@ -44,11 +46,13 @@ bool read_file(const fs::path& path, std::string* out)
     return static_cast<bool>(in) || in.eof();
 }
 
+// The v3 schemas' status enums (detections: detections, zero_detections, timeout, failed; pose:
+// poses, no_result, failed) leave "other" empty; it stays in rows_by_kind as a declared count.
 std::string kind_for_status(const std::string& product, const std::string& status)
 {
     if (product == "detections") {
         if (status == "detections" || status == "zero_detections") return "result";
-        if (status == "failed" || status == "timeout" || status == "error") return "failed";
+        if (status == "failed" || status == "timeout") return "failed";
         return "other";
     }
     if (status == "poses") return "result";
@@ -57,9 +61,30 @@ std::string kind_for_status(const std::string& product, const std::string& statu
     return "other";
 }
 
-// product: "detections" (status under "yolo") or "pose" (status under "pose").
+// One frame line of either log: its frame id and the product's status.
+void count_frame_line(ScannedLog* log, const std::string& product, uint64_t frame_id, const std::string& status)
+{
+    log->row_count++;
+    if (frame_id > 0) {
+        if (log->first_recording_frame_id == 0 || frame_id < log->first_recording_frame_id) {
+            log->first_recording_frame_id = frame_id;
+        }
+        if (frame_id > log->last_recording_frame_id) {
+            log->last_recording_frame_id = frame_id;
+        }
+    }
+    log->rows_by_status[status]++;
+    log->rows_by_kind[kind_for_status(product, status)]++;
+}
+
+// product: "detections" (Cam<serial>_yolo_events.jsonl) or "pose" (Cam<serial>_pose_events.jsonl).
+// Every line is read with the generated parser of orange.yolo_event / orange.pose_event v3
+// (src/event_log_reader.h); a line that is not JSON or does not match the schema counts as a
+// parse error, never as a row. line_schema reports what the first line declares.
 ScannedLog scan_event_log(const fs::path& path, const std::string& product)
 {
+    namespace yolo = event_log_reader::yolo;
+    namespace pose = event_log_reader::pose;
     ScannedLog log;
     std::string bytes;
     if (!fs::exists(path) || !read_file(path, &bytes)) {
@@ -71,45 +96,39 @@ ScannedLog scan_event_log(const fs::path& path, const std::string& product)
     for (const char* kind : {"result", "no_result", "failed", "other"}) {
         log.rows_by_kind[kind] = 0;
     }
-    const std::string status_block = product == "detections" ? "yolo" : "pose";
+    bool first_line = true;
     size_t start = 0;
     while (start < bytes.size()) {
         size_t end = bytes.find('\n', start);
         if (end == std::string::npos) end = bytes.size();
         if (end > start) {
-            const nlohmann::json event = nlohmann::json::parse(
-                bytes.begin() + static_cast<std::ptrdiff_t>(start),
-                bytes.begin() + static_cast<std::ptrdiff_t>(end), nullptr, false);
-            if (event.is_discarded() || !event.is_object()) {
-                log.parse_errors++;
-            } else {
-                if (log.schema_id.empty()) {
-                    log.schema_id = event.value("schema_id", std::string());
-                    log.schema_version = event.value("schema_version", 0);
+            const std::string line = bytes.substr(start, end - start);
+            if (first_line) {
+                first_line = false;
+                const nlohmann::json declared = nlohmann::json::parse(line, nullptr, false);
+                if (declared.is_object()) {
+                    log.schema_id = declared.value("schema_id", std::string());
+                    log.schema_version = declared.value("schema_version", 0);
                 }
-                const std::string event_kind = event.value("event_kind", std::string());
-                // v2: session_header and spatial_mask_policy lines (any
-                // non-result kind) are header rows, never frame rows.
-                if (event_kind != "yolo_result" && event_kind != "pose_result") {
-                    log.header_rows++;
+            }
+            std::string error;
+            if (product == "detections") {
+                yolo::OrangeYoloEventV3 event;
+                if (event_log_reader::parse_yolo_line(line, &event, &error) != event_log_reader::LineStatus::kOk) {
+                    log.parse_errors++;
+                } else if (const auto* result = std::get_if<yolo::OrangeYoloEventV3YoloResult>(&event)) {
+                    count_frame_line(&log, product, result->frame.recording_frame_id, result->yolo.status);
                 } else {
-                    log.row_count++;
-                    const nlohmann::json frame = event.value("frame", nlohmann::json::object());
-                    const uint64_t frame_id = frame.is_object()
-                        ? frame.value("recording_frame_id", 0ULL) : 0ULL;
-                    if (frame_id > 0) {
-                        if (log.first_recording_frame_id == 0 || frame_id < log.first_recording_frame_id) {
-                            log.first_recording_frame_id = frame_id;
-                        }
-                        if (frame_id > log.last_recording_frame_id) {
-                            log.last_recording_frame_id = frame_id;
-                        }
-                    }
-                    const nlohmann::json block = event.value(status_block, nlohmann::json::object());
-                    const std::string status = block.is_object()
-                        ? block.value("status", std::string()) : std::string();
-                    log.rows_by_status[status.empty() ? "missing" : status]++;
-                    log.rows_by_kind[kind_for_status(product, status)]++;
+                    log.header_rows++;  // session_header, spatial_mask_policy
+                }
+            } else {
+                pose::OrangePoseEventV3 event;
+                if (event_log_reader::parse_pose_line(line, &event, &error) != event_log_reader::LineStatus::kOk) {
+                    log.parse_errors++;
+                } else if (const auto* result = std::get_if<pose::OrangePoseEventV3PoseResult>(&event)) {
+                    count_frame_line(&log, product, result->frame.recording_frame_id, result->pose.status);
+                } else {
+                    log.header_rows++;  // session_header
                 }
             }
         }

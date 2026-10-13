@@ -1106,7 +1106,8 @@ if(BUILD_TESTING)
     target_include_directories(realtime_products_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(realtime_products_tests PRIVATE cxx_std_17)
     add_test(NAME realtime_products_tests COMMAND realtime_products_tests
-        "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/recording_snapshot_models_excerpt.json")
+        "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/recording_snapshot_models_excerpt.json"
+        "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/golden")
 
     add_executable(media_content_digest_tests
         "tools/media_content_digest_tests.cpp"

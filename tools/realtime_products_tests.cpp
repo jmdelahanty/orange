@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <unistd.h>
 
@@ -28,21 +29,21 @@ const std::string kDetSha(64, 'a');
 
 int main(int argc, char** argv)
 {
-    if (argc != 2) {
-        std::cerr << "usage: realtime_products_tests <recording_snapshot_models_excerpt.json>" << std::endl;
+    if (argc != 3) {
+        std::cerr << "usage: realtime_products_tests <recording_snapshot_models_excerpt.json> <golden dir>" << std::endl;
         return 2;
     }
     const fs::path dir = fs::temp_directory_path() / ("realtime_products_tests_" + std::to_string(::getpid()));
     fs::create_directories(dir);
-    const std::string yolo =
-        R"({"schema_id":"orange.yolo_event","schema_version":1,"event_sequence":1,"event_kind":"yolo_result","frame":{"recording_frame_id":5},"yolo":{"status":"detections","detection_count":1},"detections":[{}]})" "\n"
-        R"({"schema_id":"orange.yolo_event","schema_version":1,"event_sequence":2,"event_kind":"yolo_result","frame":{"recording_frame_id":6},"yolo":{"status":"zero_detections","detection_count":0},"detections":[]})" "\n"
-        "not json\n"
-        R"({"schema_id":"orange.yolo_event","schema_version":1,"event_sequence":3,"event_kind":"yolo_result","frame":{"recording_frame_id":9},"yolo":{"status":"timeout"},"detections":[]})" "\n";
-    const std::string pose =
-        R"({"schema_id":"orange.pose_event","schema_version":1,"event_kind":"session_header"})" "\n"
-        R"({"schema_id":"orange.pose_event","schema_version":1,"event_sequence":1,"event_kind":"pose_result","frame":{"recording_frame_id":5},"pose":{"status":"poses"},"poses":[{}]})" "\n"
-        R"({"schema_id":"orange.pose_event","schema_version":1,"event_sequence":2,"event_kind":"pose_result","frame":{"recording_frame_id":6},"pose":{"status":"no_result"},"poses":[]})" "\n";
+    // The golden v3 logs (tools/fixtures/generated_outputs/golden), plus two lines that must count
+    // as parse errors and never as rows: not JSON, and a frame line of another schema version.
+    auto slurp = [](const fs::path& path) { std::ifstream in(path); std::stringstream b; b << in.rdbuf(); return b.str(); };
+    const std::string golden_yolo = slurp(fs::path(argv[2]) / "Cam2010093_yolo_events.jsonl");
+    nlohmann::json older = nlohmann::json::parse(golden_yolo.substr(golden_yolo.find('\n') + 1,
+        golden_yolo.find('\n', golden_yolo.find('\n') + 1) - golden_yolo.find('\n') - 1));
+    older["schema_version"] = 2;
+    const std::string yolo = golden_yolo + "not json\n" + older.dump() + "\n";
+    const std::string pose = slurp(fs::path(argv[2]) / "Cam2010093_pose_events.jsonl");
     put(dir / "Cam2010093_yolo_events.jsonl", yolo);
     put(dir / "Cam2010093_pose_events.jsonl", pose);
     put(dir / "Cam2010093_yolo_perf.csv", "a,b\n1,2\n");
@@ -60,17 +61,22 @@ int main(int argc, char** argv)
     require(block.value("schema_id", "") == "orange.recording_realtime_products" && block.value("schema_version", 0) == 1, "schema identity");
     const nlohmann::json& c = block.at("cameras").at("2010093");
     const nlohmann::json& d = c.at("detections");
-    require(d.value("status", "") == "present" && d.value("row_count", 0) == 3 && d.value("parse_errors", 0) == 1, "detections rows and parse errors");
-    require(d.at("rows_by_kind").value("result", 0) == 2 && d.at("rows_by_kind").value("failed", 0) == 1, "detections rows by kind");
-    require(d.value("first_recording_frame_id", 0) == 5 && d.value("last_recording_frame_id", 0) == 9, "detections frame range");
-    require(d.at("line_schema").value("schema_id", "") == "orange.yolo_event" && d.at("line_schema").value("schema_version", 0) == 1, "detections line schema");
+    // Golden detector log: header, 3 frame lines, a policy line, a frame line outside recording.
+    require(d.value("status", "") == "present" && d.value("row_count", 0) == 4 && d.value("header_rows", 0) == 2 &&
+            d.value("parse_errors", 0) == 2, "detections rows, header rows and parse errors");
+    require(d.at("rows_by_kind").value("result", 0) == 4 && d.at("rows_by_kind").value("failed", 0) == 0 &&
+            d.at("rows_by_status").value("zero_detections", 0) == 1 && d.at("rows_by_status").value("detections", 0) == 3,
+            "detections rows by kind and status");
+    require(d.value("first_recording_frame_id", 0) == 1 && d.value("last_recording_frame_id", 0) == 3, "detections frame range");
+    require(d.at("line_schema").value("schema_id", "") == "orange.yolo_event" && d.at("line_schema").value("schema_version", 0) == 3, "detections line schema");
     require(d.at("model_ref").value("models_key", "") == "models.2010093.detect" && d.at("model_ref").value("engine_sha256", "") == kDetSha, "detections model ref");
     require(d.at("files").size() == 2 && d.at("files")[0].value("path", "") == "Cam2010093_yolo_events.jsonl" &&
             d.at("files")[0].value("sha256", "") == sha256_hex(yolo) && d.at("files")[0].value("size_bytes", 0) == static_cast<int>(yolo.size()) &&
             d.at("files")[1].value("role", "") == "perf", "detections files with digests");
     const nlohmann::json& p = c.at("pose");
-    require(p.value("row_count", 0) == 2 && p.value("header_rows", 0) == 1 && p.at("rows_by_kind").value("result", 0) == 1 &&
-            p.at("rows_by_kind").value("no_result", 0) == 1 && p.value("pose_crop_size_px", 0) == 192, "pose rows, header, crop size");
+    require(p.value("row_count", 0) == 3 && p.value("header_rows", 0) == 1 && p.value("parse_errors", 0) == 0 &&
+            p.at("rows_by_kind").value("result", 0) == 1 && p.at("rows_by_kind").value("no_result", 0) == 1 &&
+            p.at("rows_by_kind").value("failed", 0) == 1 && p.value("pose_crop_size_px", 0) == 192, "pose rows, header, crop size");
     require(c.at("crop_files").size() == 1 && c.at("acquisition_files").size() == 1, "crop and acquisition files");
     const nlohmann::json& absent = block.at("cameras").at("2010094");
     require(absent.at("detections").value("status", "") == "absent" && absent.at("pose").value("status", "") == "absent" &&
