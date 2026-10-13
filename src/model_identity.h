@@ -57,6 +57,12 @@ struct ModelIdentity {
     std::string weights_path;
     std::string canonical_manifest_path;   // source.canonical_manifest (pose)
     std::string canonical_manifest_sha256;
+    // Palette's canonical ONNX manifest named above, checked when it is named: its bytes must
+    // match canonical_manifest_sha256, and it must be valid against the Palette schema version it
+    // declares (contracts/palette_canonical_onnx_model_manifest_v{1,2}.schema.json, generated
+    // readers). Empty when valid or not named. Not written to the snapshot; a non-empty value
+    // refuses the record start (canonical_manifest_refusal).
+    std::string canonical_manifest_error;
     std::string onnx_manifest_path;        // source.onnx_manifest (detect)
     std::string onnx_manifest_sha256;
 };
@@ -64,6 +70,10 @@ struct ModelIdentity {
 // Hash the engine and read its manifest. An empty path returns an empty
 // identity (engine_present false, no manifest). Cached per path.
 ModelIdentity resolve_model_identity(const std::string& engine_path);
+
+// Why a recording must not start with this engine, or empty: the canonical manifest its engine
+// manifest names is unreadable, has changed, or is not valid against its declared schema.
+std::string canonical_manifest_refusal(const ModelIdentity& identity);
 
 // Same, bypassing the cache (tests).
 ModelIdentity resolve_model_identity_uncached(const std::string& engine_path);

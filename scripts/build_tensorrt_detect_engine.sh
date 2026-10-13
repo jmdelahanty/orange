@@ -14,6 +14,9 @@ manifest are copied into the detect runtime directory.
 Required:
   --onnx <path>                    Palette ONNX export.
   --onnx-manifest <path>           ONNX export manifest JSON.
+  --canonical-manifest <path>      Palette canonical ONNX manifest (optional). Checked against the
+                                   pinned schema of its declared version before the build, and
+                                   recorded as source.canonical_manifest in the engine manifest.
   --run-id <id>                    Palette run_id.
   --device <gpu-id>                Explicit CUDA device for trtexec.
 
@@ -61,6 +64,7 @@ MANIFEST_WRITER="$SCRIPT_DIR/write_tensorrt_engine_manifest.py"
 
 ONNX=""
 ONNX_MANIFEST=""
+CANONICAL_MANIFEST=""
 RUN_ID=""
 DEVICE=""
 PRECISION="fp16"
@@ -100,6 +104,12 @@ while [[ $# -gt 0 ]]; do
       shift
       [[ $# -gt 0 ]] || { echo "--onnx-manifest requires a value." >&2; exit 2; }
       ONNX_MANIFEST="$1"
+      shift
+      ;;
+    --canonical-manifest)
+      shift
+      [[ $# -gt 0 ]] || { echo "--canonical-manifest requires a value." >&2; exit 2; }
+      CANONICAL_MANIFEST="$1"
       shift
       ;;
     --run-id)
@@ -263,6 +273,13 @@ fi
 
 ONNX="$(realpath -e "$ONNX")"
 ONNX_MANIFEST="$(realpath -e "$ONNX_MANIFEST")"
+CANONICAL_MANIFEST_ARGS=()
+if [[ -n "$CANONICAL_MANIFEST" ]]; then
+  CANONICAL_MANIFEST="$(realpath -e "$CANONICAL_MANIFEST")"
+  # Fail before the build, not after it.
+  python3 "$SCRIPT_DIR/palette_canonical_manifest.py" "$CANONICAL_MANIFEST" || exit 1
+  CANONICAL_MANIFEST_ARGS=(--canonical-manifest "$CANONICAL_MANIFEST")
+fi
 TRTEXEC="$(realpath -e "$TRTEXEC")"
 OUTPUT_ENGINE_DIR="$(realpath -m "$OUTPUT_ENGINE_DIR")"
 STAGING_ROOT="$(realpath -m "$STAGING_ROOT")"
@@ -364,6 +381,7 @@ python3 "$MANIFEST_WRITER" \
   --source-onnx-manifest "$STAGED_ONNX_MANIFEST" \
   --source-input-onnx "$ONNX" \
   --source-input-onnx-manifest "$ONNX_MANIFEST" \
+  "${CANONICAL_MANIFEST_ARGS[@]}" \
   --staged-engine "$STAGED_ENGINE" \
   --runtime-engine "$RUNTIME_ENGINE" \
   --runtime-manifest "$RUNTIME_MANIFEST" \

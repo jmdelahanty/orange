@@ -17,7 +17,8 @@ code enforces:
   properties and `then` constrains values below nested properties (const, enum, type, minLength,
   maxLength, pattern, minimum, maximum). They are checked on the parsed JSON with JSON Schema's
   semantics: an absent value satisfies a `properties` condition and is not constrained. `then`
-  may also list `required` keys.
+  may also list `required` keys; an `else` takes the same rules, and both accept
+  `not: {required: [...]}` (keys that must be absent).
   A `$ref` to another schema file in the same directory ("<stem>.schema.json") is that file's
   generated root type, from its header (the stem must be passed with --ref and its namespace).
   A `oneOf` below the root, whose branches are objects or such references, is a std::variant;
@@ -119,10 +120,11 @@ class Rule:                       # one leaf of an if / then tree
 
 
 @dataclass
-class Condition:                  # one allOf entry: if every `when` rule holds, every `then` must
-    index: int
+class Condition:                  # one allOf entry: if every `when` rule holds, every `then` must;
+    index: int                    # otherwise every `otherwise` (`else`) rule must
     when: list
     then: list
+    otherwise: list = field(default_factory=list)
 
 
 @dataclass
@@ -270,7 +272,12 @@ class Builder:
         if unknown:
             raise SchemaError(f"{where}: unsupported keywords in a condition {sorted(unknown)}")
         out = []
-        checks = {k: v for k, v in node.items() if k in allowed}
+        checks = {k: v for k, v in node.items() if k in allowed and k != "not"}
+        if "not" in node and "not" in allowed:
+            negated = node["not"]
+            if not isinstance(negated, dict) or set(negated) != {"required"}:
+                raise SchemaError(f"{where}: only not {{required: [...]}} is supported in a condition")
+            checks["forbidden"] = negated["required"]
         if checks:
             if "type" in checks and not isinstance(checks["type"], str):
                 raise SchemaError(f"{where}: a condition type must be one type name")
@@ -282,14 +289,16 @@ class Builder:
     def conditions(self, node: dict, where: str) -> list:
         out = []
         for index, entry in enumerate(node.get("allOf", [])):
-            if not isinstance(entry, dict) or set(entry) - {"if", "then"} - self.TREE_NOTES or \
+            if not isinstance(entry, dict) or set(entry) - {"if", "then", "else"} - self.TREE_NOTES or \
                     "if" not in entry or "then" not in entry:
-                raise SchemaError(f"{where}/allOf[{index}]: only {{if, then}} entries are supported")
+                raise SchemaError(f"{where}/allOf[{index}]: only {{if, then[, else]}} entries are supported")
             when = self.rules(entry["if"], self.IF_CHECKS, f"{where}/allOf[{index}]/if")
-            then = self.rules(entry["then"], self.THEN_CHECKS, f"{where}/allOf[{index}]/then")
+            then = self.rules(entry["then"], self.THEN_CHECKS | {"not"}, f"{where}/allOf[{index}]/then")
+            otherwise = (self.rules(entry["else"], self.THEN_CHECKS | {"not"}, f"{where}/allOf[{index}]/else")
+                         if "else" in entry else [])
             if not when or not then:
                 raise SchemaError(f"{where}/allOf[{index}]: an empty if or then")
-            out.append(Condition(index, when, then))
+            out.append(Condition(index, when, then, otherwise))
         return out
 
     def object(self, node: dict, name: str, where: str) -> ObjectT:
@@ -612,6 +621,9 @@ class Emitter:
             elif keyword == "required":
                 present = " && ".join(f"v.contains({json.dumps(k)})" for k in value)
                 tests.append((f"!v.is_object() || ({present})", f"must contain {', '.join(value)}"))
+            elif keyword == "forbidden":
+                absent = " && ".join(f"!v.contains({json.dumps(k)})" for k in value)
+                tests.append((f"!v.is_object() || ({absent})", f"must not contain {', '.join(value)}"))
         return tests
 
     def emit_condition(self, condition: Condition) -> None:
@@ -624,15 +636,22 @@ class Emitter:
                         f"if (!p) return true; const nlohmann::json& v = *p; return {test}; }}()")
         self.w(f"    // allOf[{condition.index}]")
         self.w(f"    if ({' && '.join(when)}) {{")
-        for rule in condition.then:
+        self.emit_rules(condition.then, condition.index, "")
+        if condition.otherwise:
+            self.w("    } else {")
+            self.emit_rules(condition.otherwise, condition.index, " (else)")
+        self.w("    }")
+
+    def emit_rules(self, rules: list, index: int, branch: str) -> None:
+        keys = lambda rule: "{" + ", ".join(json.dumps(k) for k in rule.path) + "}"
+        for rule in rules:
             pointer = "".join("/" + k for k in rule.path)
             self.w(f"        if (const nlohmann::json* p = detail::at_path(in, {keys(rule)})) {{")
             self.w("            const nlohmann::json& v = *p;")
             for test, message in self.rule_test(rule):
-                text = json.dumps(f"{pointer}: {message} (allOf[{condition.index}])")
+                text = json.dumps(f"{pointer}: {message} (allOf[{index}]{branch})")
                 self.w(f"            if (!({test})) return detail::fail(error, path + {text});")
             self.w("        }")
-        self.w("    }")
 
 
 def generate(schema_path: Path, namespace: str, refs: dict | None = None) -> str:

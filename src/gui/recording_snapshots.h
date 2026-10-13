@@ -3,6 +3,7 @@
 #include "json.hpp"
 
 #include <string>
+#include <vector>
 
 struct CameraEachSelect;
 struct CameraParams;
@@ -36,6 +37,15 @@ void update_gui_pose_model_snapshots(const std::string& recording_folder,
                                      const CameraParams* cameras_params,
                                      const CameraEachSelect* cameras_select,
                                      int num_cameras);
+
+// The engine each enabled camera's detector and pose network run (the paths the snapshot model
+// blocks record) whose Palette canonical manifest is unreadable, changed, or invalid against its
+// declared schema version; one message per engine, empty when the recording may start. Record
+// start refuses on any (GUI and headless).
+std::vector<std::string> gui_model_canonical_manifest_refusals(const CameraParams* cameras_params,
+                                                               const CameraEachSelect* cameras_select,
+                                                               int num_cameras,
+                                                               const std::string& selected_yolo_model);
 
 std::string spatial_calibration_artifact_env_name(const std::string& camera_serial);
 

@@ -3,15 +3,17 @@
 // manifest (tools/fixtures/generated_outputs/engine_manifests), since the reader is
 // the generated strict reader of orange.tensorrt_engine_manifest v1.
 //
-//   model_identity_tests <real engine manifest.json>
+//   model_identity_tests <real engine manifest.json> <real Palette canonical manifest.json>
 #include "model_identity.h"
 #include "orange_outputs/orange_recording_detect_model_v1.h"
 #include "pose_skeleton_sidecar.h"
+#include "outputs/common/digest.h"
 
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 
 namespace fs = std::filesystem;
@@ -181,12 +183,90 @@ void test_bad_manifests(const fs::path& dir)
             "a mistyped digest is reported: " + id.manifest_error);
 }
 
+// The Palette canonical manifest named by an engine manifest: digest, schema by declared version,
+// payload digest. Returns the refusal (empty when the start is allowed).
+std::string canonical_refusal(const fs::path& dir, const std::string& canonical_bytes,
+                              const std::string& recorded_sha256 = std::string())
+{
+    const fs::path engine = dir / "canon.engine";
+    write_file(engine, "canon-engine");
+    const fs::path canonical = dir / "canon.canonical.manifest.json";
+    write_file(canonical, canonical_bytes);
+    nlohmann::json manifest = real_manifest;
+    manifest["engine"]["path"] = engine.string();
+    manifest["engine"]["sha256"] = orange::pose::file_sha256_hex(engine.string());
+    manifest["source"]["canonical_manifest"] = {
+        {"path", canonical.string()},
+        {"sha256", recorded_sha256.empty() ? orange::pose::file_sha256_hex(canonical.string()) : recorded_sha256}};
+    write_file(dir / "canon.manifest.json", manifest.dump(2));
+    return orange::model_identity::canonical_manifest_refusal(
+        orange::model_identity::resolve_model_identity_uncached(engine.string()));
+}
+
+nlohmann::json v2_detect_manifest()
+{
+    const std::string token = "sha256:" + std::string(64, 'a');
+    nlohmann::json payload = {
+        {"status", "complete"}, {"run_id", "run"}, {"set_id", "set"}, {"task", "detect"},
+        {"weights", {{"relative_path", "weights/best.pt"}, {"sha256", token}}},
+        {"onnx", {{"relative_path", "exports/onnx/model.onnx"}, {"sha256", token}}},
+        {"source_export_manifest", {{"relative_path", "exports/onnx/model.onnx.manifest.json"}, {"sha256", token}}}};
+    return {{"schema_id", "palette.canonical_onnx_model_manifest"}, {"schema_version", 2},
+            {"canonicalization", "canonical_json_utf8_sort_keys_compact_v1"},
+            {"payload_sha256", "sha256:" + orange::outputs::sha256_hex(payload.dump())}, {"payload", payload}};
+}
+
+void test_canonical_manifest_checks(const fs::path& dir, const std::string& real_v1_path)
+{
+    std::ifstream in(real_v1_path);
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    const std::string v1 = buffer.str();
+    require(canonical_refusal(dir, v1).empty(), "the production pose canonical manifest (v1) is accepted");
+
+    std::string why = canonical_refusal(dir, v1, std::string(64, 'f'));
+    require(why.find("differs from the engine manifest") != std::string::npos, "a changed canonical manifest is refused: " + why);
+
+    nlohmann::json tampered = nlohmann::json::parse(v1);
+    tampered["payload"]["run_id"] = "another_run";
+    why = canonical_refusal(dir, tampered.dump(2));
+    require(why.find("payload_digest") != std::string::npos, "a payload that is not its digest is refused: " + why);
+
+    nlohmann::json mislabelled = nlohmann::json::parse(v1);
+    mislabelled["schema_version"] = 2;
+    why = canonical_refusal(dir, mislabelled.dump(2));
+    require(why.find("not valid against palette.canonical_onnx_model_manifest v2") != std::string::npos,
+            "a v1-shaped manifest declaring v2 is refused: " + why);
+
+    nlohmann::json future = nlohmann::json::parse(v1);
+    future["schema_version"] = 3;
+    why = canonical_refusal(dir, future.dump(2));
+    require(why.find("has no pinned Palette schema") != std::string::npos, "an unpinned version is refused: " + why);
+
+    const nlohmann::json v2 = v2_detect_manifest();
+    why = canonical_refusal(dir, v2.dump(2));
+    require(why.empty(), "a valid v2 detect manifest is accepted: " + why);
+
+    nlohmann::json with_contract = v2;
+    with_contract["payload"]["pose_model_input_contract"] = {
+        {"relative_path", "c.json"}, {"sha256", "sha256:" + std::string(64, 'b')}, {"payload_sha256", "sha256:" + std::string(64, 'b')}};
+    with_contract["payload_sha256"] = "sha256:" + orange::outputs::sha256_hex(with_contract["payload"].dump());
+    why = canonical_refusal(dir, with_contract.dump(2));
+    require(why.find("must not contain pose_model_input_contract") != std::string::npos,
+            "a detect manifest with a pose input contract is refused: " + why);
+
+    nlohmann::json absolute = v2;
+    absolute["payload"]["onnx"]["relative_path"] = "/abs/model.onnx";
+    absolute["payload_sha256"] = "sha256:" + orange::outputs::sha256_hex(absolute["payload"].dump());
+    why = canonical_refusal(dir, absolute.dump(2));
+    require(why.find("/payload/onnx/relative_path") != std::string::npos, "an absolute path is refused: " + why);
+}
 }  // namespace
 
 int main(int argc, char** argv)
 {
-    if (argc != 2) {
-        std::cerr << "usage: model_identity_tests <real engine manifest.json>" << std::endl;
+    if (argc != 3) {
+        std::cerr << "usage: model_identity_tests <real engine manifest.json> <real canonical manifest.json>" << std::endl;
         return 2;
     }
     std::ifstream fixture(argv[1]);
@@ -201,6 +281,7 @@ int main(int argc, char** argv)
     test_engine_with_manifest(dir);
     test_suffix_manifest_fallback(dir);
     test_bad_manifests(dir);
+    test_canonical_manifest_checks(dir, argv[2]);
     fs::remove_all(dir);
     if (failures) {
         std::cerr << failures << " model identity test(s) failed" << std::endl;

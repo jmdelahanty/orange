@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -230,6 +231,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--source-onnx-manifest", type=Path, required=True)
     parser.add_argument("--source-input-onnx", type=Path)
     parser.add_argument("--source-input-onnx-manifest", type=Path)
+    parser.add_argument("--canonical-manifest", type=Path,
+                        help="Palette canonical ONNX manifest of the source model; checked against its "
+                             "declared schema version and recorded as source.canonical_manifest")
     parser.add_argument("--staged-engine", type=Path, required=True)
     parser.add_argument("--runtime-engine", type=Path, required=True)
     parser.add_argument("--runtime-manifest", type=Path, required=True)
@@ -262,6 +266,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.canonical_manifest:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from palette_canonical_manifest import require_valid
+        require_valid(args.canonical_manifest)
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     source_input_onnx = args.source_input_onnx or args.source_onnx
     source_input_onnx_manifest = args.source_input_onnx_manifest or args.source_onnx_manifest
@@ -342,6 +350,9 @@ def main() -> int:
                 "sha256": onnx_manifest.get("weights", {}).get("sha256"),
             },
             "training_manifest": onnx_manifest.get("source_manifest", {}),
+            **({"canonical_manifest": {"path": str(args.canonical_manifest),
+                                       "sha256": sha256(args.canonical_manifest)}}
+               if args.canonical_manifest else {}),
         },
         "engine": {
             "path": str(args.runtime_engine),

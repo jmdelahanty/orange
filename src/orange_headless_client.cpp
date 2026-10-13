@@ -5179,6 +5179,15 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                 update_gui_crop_output_snapshots(record_folder, cameras_params, cameras_select, num_cameras,
                                                  crop_recording_config.crop_size_px);
                 update_gui_pose_model_snapshots(record_folder, cameras_params, cameras_select, num_cameras);
+                // Every engine's Palette canonical manifest must be the one its engine manifest
+                // recorded and valid against its declared schema version; otherwise refuse.
+                const std::vector<std::string> canonical_refusals = gui_model_canonical_manifest_refusals(
+                    cameras_params, cameras_select, num_cameras, yolo_worker_config.engine_path);
+                if (!canonical_refusals.empty()) {
+                    std::string error = "model canonical manifest check failed:";
+                    for (const std::string& refusal : canonical_refusals) error += " " + refusal + ";";
+                    throw std::runtime_error(error);
+                }
                 // Effective configuration (environment with sources; no app config in
                 // headless runs, the spec is the configuration). Never blocks a start.
                 try {

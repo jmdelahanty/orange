@@ -4149,6 +4149,28 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
         cameras_params,
         cameras_select,
         num_cameras);
+    // Every engine's Palette canonical manifest must be the one its engine manifest recorded
+    // and valid against its declared schema version; otherwise the start is refused.
+    {
+        const std::vector<std::string> canonical_refusals =
+            gui_model_canonical_manifest_refusals(
+                cameras_params, cameras_select, num_cameras, yolo_model);
+        if (!canonical_refusals.empty()) {
+            std::string error = "Model canonical manifest check failed:";
+            for (const std::string& refusal : canonical_refusals) error += " " + refusal + ";";
+            orange::session::abort_prepared_recording_run(
+                recording_session,
+                camera_control,
+                prepared,
+                orange::session::RecordingRunSupervisorStartOutcome{},
+                error);
+            if (recording_preflight_errors) {
+                *recording_preflight_errors = canonical_refusals;
+            }
+            std::cerr << "[GUI][recording] Start rejected: " << error << std::endl;
+            return GuiRecordingStartDispatch::kFailed;
+        }
+    }
     update_gui_spatial_calibration_snapshots(
         prepared.recording_folder,
         cameras_params,

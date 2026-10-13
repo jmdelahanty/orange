@@ -33,6 +33,10 @@ bundle = Path(sys.argv[1]); run_id = sys.argv[2]; build_id = sys.argv[3]; repo =
 eng_dir = bundle / "engines"
 onnx = bundle / f"{run_id}.onnx"
 canon = bundle / f"{run_id}.canonical.manifest.json"
+# The engine names Palette's canonical manifest: it must be valid for the version it declares.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from palette_canonical_manifest import require_valid  # noqa: E402
+require_valid(canon)
 contract = bundle / "pose_model_input_contract.json"
 engine = eng_dir / f"{run_id}_{build_id}.engine"
 build_log = eng_dir / "build_a16_gpu5_trt100_fp16.log"

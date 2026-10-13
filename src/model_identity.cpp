@@ -1,6 +1,9 @@
 #include "model_identity.h"
 
 #include "orange_outputs/orange_tensorrt_engine_manifest_v1.h"
+#include "orange_outputs/palette_canonical_onnx_model_manifest_v1.h"
+#include "orange_outputs/palette_canonical_onnx_model_manifest_v2.h"
+#include "outputs/common/digest.h"
 #include "pose_skeleton_sidecar.h"
 
 #include <fstream>
@@ -30,6 +33,61 @@ std::string read_file(const std::string& path, bool* ok)
 std::string string_or_empty(const std::optional<std::string>& value)
 {
     return value ? *value : std::string();
+}
+
+// Palette's canonical ONNX manifest: the bytes the engine manifest recorded, valid against the
+// pinned Palette schema of the version it declares.
+std::string check_canonical_manifest(const std::string& path, const std::string& declared_sha256)
+{
+    bool ok = false;
+    const std::string bytes = read_file(path, &ok);
+    if (!ok) {
+        return "unreadable";
+    }
+    const std::string actual = orange::pose::file_sha256_hex(path);
+    if (declared_sha256.empty() || actual != declared_sha256) {
+        return "sha256 " + actual + " differs from the engine manifest's " +
+            (declared_sha256.empty() ? std::string("(none recorded)") : declared_sha256);
+    }
+    const nlohmann::json manifest = nlohmann::json::parse(bytes, nullptr, false);
+    if (!manifest.is_object()) {
+        return "not a JSON object";
+    }
+    if (manifest.value("schema_id", std::string()) != "palette.canonical_onnx_model_manifest") {
+        return "schema_id is not palette.canonical_onnx_model_manifest";
+    }
+    std::string error;
+    const nlohmann::json version = manifest.value("schema_version", nlohmann::json());
+    // The payload digest is the SHA-256 of the payload's canonical JSON
+    // (canonical_json_utf8_sort_keys_compact_v1, outputs/common/digest.h).
+    std::string payload_hex;
+    try {
+        if (manifest.contains("payload")) {
+            payload_hex = orange::outputs::sha256_hex(orange::outputs::canonical_json_text(manifest.at("payload")));
+        }
+    } catch (const std::exception&) {
+        return "payload is not valid UTF-8 JSON";
+    }
+    if (version == 1) {
+        orange::outputs::gen::palette_canonical_onnx_manifest_v1::PaletteCanonicalOnnxModelManifestV1 parsed;
+        if (!orange::outputs::gen::palette_canonical_onnx_manifest_v1::parse(manifest, &parsed, &error)) {
+            return "not valid against palette.canonical_onnx_model_manifest v1: " + error;
+        }
+        if (parsed.payload_digest != payload_hex) {
+            return "payload_digest " + parsed.payload_digest + " is not the payload's digest " + payload_hex;
+        }
+    } else if (version == 2) {
+        orange::outputs::gen::palette_canonical_onnx_manifest_v2::PaletteCanonicalOnnxModelManifestV2 parsed;
+        if (!orange::outputs::gen::palette_canonical_onnx_manifest_v2::parse(manifest, &parsed, &error)) {
+            return "not valid against palette.canonical_onnx_model_manifest v2: " + error;
+        }
+        if (parsed.payload_sha256 != "sha256:" + payload_hex) {
+            return "payload_sha256 " + parsed.payload_sha256 + " is not the payload's digest sha256:" + payload_hex;
+        }
+    } else {
+        return "schema_version " + version.dump() + " has no pinned Palette schema";
+    }
+    return {};
 }
 
 void read_manifest(ModelIdentity* identity)
@@ -113,6 +171,10 @@ void read_manifest(ModelIdentity* identity)
     if (source.canonical_manifest) {
         identity->canonical_manifest_path = string_or_empty(source.canonical_manifest->path);
         identity->canonical_manifest_sha256 = string_or_empty(source.canonical_manifest->sha256);
+        if (!identity->canonical_manifest_path.empty()) {
+            identity->canonical_manifest_error = check_canonical_manifest(
+                identity->canonical_manifest_path, identity->canonical_manifest_sha256);
+        }
     }
     if (source.onnx_manifest) {
         identity->onnx_manifest_path = string_or_empty(source.onnx_manifest->path);
@@ -153,6 +215,15 @@ ModelIdentity resolve_model_identity(const std::string& engine_path)
         it = cache.emplace(engine_path, resolve_model_identity_uncached(engine_path)).first;
     }
     return it->second;
+}
+
+std::string canonical_manifest_refusal(const ModelIdentity& identity)
+{
+    if (identity.canonical_manifest_error.empty()) {
+        return {};
+    }
+    return "engine " + identity.engine_path + ": Palette canonical manifest " +
+        identity.canonical_manifest_path + " " + identity.canonical_manifest_error;
 }
 
 }  // namespace orange::model_identity

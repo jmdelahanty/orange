@@ -15,6 +15,7 @@
 #include "spatial_layout_schema.h"
 #include "video_capture.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -72,16 +73,60 @@ bool gui_camera_has_acquisition_work(const CameraEachSelect& camera_select)
            camera_select.frame_save_state == State_Write_New_Frame;
 }
 
+namespace {
+// The detector engine an enabled camera runs: its own selection, else the GUI's; "" when disabled.
+std::string gui_detect_engine_path(const CameraEachSelect& camera_select, const std::string& selected_yolo_model)
+{
+    if (!camera_select.yolo) {
+        return "";
+    }
+    if (camera_select.yolo_model && camera_select.yolo_model[0] != '\0') {
+        return camera_select.yolo_model;
+    }
+    return selected_yolo_model;
+}
+
+// The pose engine (ORANGE_POSE_ENGINE_PATH, set from the app config or the headless spec).
+std::string gui_pose_engine_path()
+{
+    const char* env_pose_engine_path = std::getenv("ORANGE_POSE_ENGINE_PATH");
+    return env_pose_engine_path ? env_pose_engine_path : "";
+}
+}  // namespace
+
+std::vector<std::string> gui_model_canonical_manifest_refusals(const CameraParams* cameras_params,
+                                                               const CameraEachSelect* cameras_select,
+                                                               const int num_cameras,
+                                                               const std::string& selected_yolo_model)
+{
+    std::vector<std::string> refusals;
+    if (!cameras_params || !cameras_select || num_cameras <= 0) {
+        return refusals;
+    }
+    std::vector<std::string> engines;
+    for (int i = 0; i < num_cameras; ++i) {
+        engines.push_back(gui_detect_engine_path(cameras_select[i], selected_yolo_model));
+        if (cameras_select[i].pose) {
+            engines.push_back(gui_pose_engine_path());
+        }
+    }
+    std::sort(engines.begin(), engines.end());
+    engines.erase(std::unique(engines.begin(), engines.end()), engines.end());
+    for (const std::string& engine : engines) {
+        if (engine.empty()) continue;
+        const std::string refusal = orange::model_identity::canonical_manifest_refusal(
+            orange::model_identity::resolve_model_identity(engine));
+        if (!refusal.empty()) refusals.push_back(refusal);
+    }
+    return refusals;
+}
+
 nlohmann::json build_gui_detect_model_snapshot(const CameraParams& camera_params,
                                                const CameraEachSelect& camera_select,
                                                const std::string& selected_yolo_model)
 {
     const bool enabled = camera_select.yolo;
-    std::string selected_engine_path = selected_yolo_model;
-    if (enabled && camera_select.yolo_model && camera_select.yolo_model[0] != '\0') {
-        selected_engine_path = camera_select.yolo_model;
-    }
-    const std::string engine_path = enabled ? selected_engine_path : "";
+    const std::string engine_path = gui_detect_engine_path(camera_select, selected_yolo_model);
     // Model identity (realtime-products item 2): the SHA-256 of the engine
     // bytes that ran plus the weights -> onnx -> engine chain from the
     // engine's manifest. Cached per path; record-start path only.
@@ -227,10 +272,7 @@ nlohmann::json build_gui_pose_model_snapshot(const CameraParams& camera_params,
             {"events", "Cam" + camera_serial + "_pose_events.jsonl"}
         };
     }
-    std::string pose_engine_path;
-    if (const char* env_pose_engine_path = std::getenv("ORANGE_POSE_ENGINE_PATH")) {
-        pose_engine_path = env_pose_engine_path;
-    }
+    const std::string pose_engine_path = gui_pose_engine_path();
     std::string pose_skeleton_id = "unknown";
     if (const char* env_pose_skeleton_id = std::getenv("ORANGE_POSE_SKELETON_ID")) {
         pose_skeleton_id = env_pose_skeleton_id;

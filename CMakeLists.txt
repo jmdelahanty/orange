@@ -240,6 +240,26 @@ foreach(entry IN LISTS ORANGE_GENERATED_SCHEMAS)
     endif()
 endforeach()
 
+# Schemas Orange consumes but does not own, pinned in contracts/ (contracts/README.md): readers only.
+set(ORANGE_GENERATED_CONSUMED_SCHEMAS
+    "palette_canonical_onnx_model_manifest_v1:palette_canonical_onnx_manifest_v1"
+    "palette_canonical_onnx_model_manifest_v2:palette_canonical_onnx_manifest_v2"
+)
+foreach(entry IN LISTS ORANGE_GENERATED_CONSUMED_SCHEMAS)
+    string(REPLACE ":" ";" parts "${entry}")
+    list(GET parts 0 schema_name)
+    list(GET parts 1 schema_namespace)
+    set(schema_file "${CMAKE_SOURCE_DIR}/contracts/${schema_name}.schema.json")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${schema_file}")
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" "${ORANGE_CODEGEN}" "${schema_file}"
+                "${ORANGE_GENERATED_DIR}/orange_outputs/${schema_name}.h" --namespace "${schema_namespace}"
+        RESULT_VARIABLE codegen_result)
+    if(NOT codegen_result EQUAL 0)
+        message(FATAL_ERROR "schema codegen failed for ${schema_name}")
+    endif()
+endforeach()
+
 set(ORANGE_COMMON_INCLUDE_DIRS
     "${SRC_DIR}"
     "${DIR_SHAMAN_IPC}/include"
@@ -757,6 +777,9 @@ if(BUILD_TESTING)
     target_include_directories(generated_outputs_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     add_test(NAME generated_outputs_tests COMMAND generated_outputs_tests
              "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs")
+    add_test(NAME palette_canonical_manifest_tests
+             COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/palette_canonical_manifest_tests.py"
+             "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/palette/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915.canonical.manifest.json")
     add_executable(outputs_common_tests "tools/outputs_common_tests.cpp")
     target_include_directories(outputs_common_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_link_libraries(outputs_common_tests PRIVATE Threads::Threads)
@@ -1145,7 +1168,8 @@ if(BUILD_TESTING)
     target_include_directories(model_identity_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(model_identity_tests PRIVATE cxx_std_17)
     add_test(NAME model_identity_tests COMMAND model_identity_tests
-        "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/engine_manifests/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915_a16_gpu5_trt100_fp16_bo5_avg32.manifest.json")
+        "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/engine_manifests/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915_a16_gpu5_trt100_fp16_bo5_avg32.manifest.json"
+        "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/palette/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915.canonical.manifest.json")
 
     add_executable(recording_subject_reference_tests
         "tools/recording_subject_reference_tests.cpp"
