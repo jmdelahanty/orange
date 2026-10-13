@@ -677,6 +677,11 @@ PoseWorker::PoseWorker(const char* name,
           camera_params ? camera_params->camera_id : 0,
           name ? name : "PoseWorker")
 {
+    // From here on the camera's SHAMAN slots say pose pending / not
+    // requested instead of disabled (FrameIPCManager::PoseExpectation).
+    if (frame_ipc_manager_) {
+        frame_ipc_manager_->SetPoseStageAttached();
+    }
     if (const char* engine_path = std::getenv("ORANGE_POSE_ENGINE_PATH")) {
         pose_engine_path_ = engine_path;
         if (!pose_engine_path_.empty()) {

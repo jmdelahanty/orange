@@ -1176,6 +1176,90 @@ void test_frame_ipc_manager_pending_requires_live_terminal_capability()
     shaman_v2::unlink_queue(v2_name);
 }
 
+
+// Pose status per frame: disabled without a pose stage; with one, a frame YOLO
+// processes starts pending and the rest not requested. The YOLO update may say
+// not requested / failed (the frame was not queued for pose), and a pose
+// result is never overwritten by a later YOLO update for the same frame.
+void test_frame_ipc_manager_pose_status_per_frame()
+{
+    const std::string serial = "v2posestatus" + std::to_string(getpid());
+    const std::string v2_name = shaman_v2::queue_name_for_camera_serial(serial);
+    shaman_v2::unlink_queue(v2_name);
+    const auto pose_status = [](const shaman_v2::Slot& slot) {
+        return static_cast<shaman_v2::PoseStatus>(slot.pose_status);
+    };
+
+    {
+        CameraParams camera = make_test_camera(serial);
+        FrameIPCManager manager(&camera);
+        shaman_v2::SharedLiveStateQueue reader(v2_name, false);
+
+        require(manager.sendFrame(1, 1001, true), "base without pose stage");
+        require(manager.updateFrameWithDetectionResult(
+                    1, 1, shaman_v2::DetectionStatus::kZeroDetections, {}),
+                "YOLO without pose stage");
+        auto slots = wait_for_v2_slots(reader, 2);
+        require(slots.size() == 2 &&
+                    pose_status(slots[0]) == shaman_v2::PoseStatus::kDisabled &&
+                    pose_status(slots[1]) == shaman_v2::PoseStatus::kDisabled,
+                "without a pose stage every slot says pose disabled");
+
+        manager.SetPoseStageAttached();
+
+        require(manager.sendFrame(2, 1002, false), "base of a frame YOLO skips");
+        slots = wait_for_v2_slots(reader, 1);
+        require(slots.size() == 1 &&
+                    pose_status(slots[0]) == shaman_v2::PoseStatus::kNotRequested,
+                "a frame YOLO does not process is pose not requested");
+
+        require(manager.sendFrame(3, 1003, true), "base of a posed frame");
+        require(manager.updateFrameWithDetectionResult(
+                    3, 3, shaman_v2::DetectionStatus::kZeroDetections, {}),
+                "YOLO of a posed frame");
+        slots = wait_for_v2_slots(reader, 2);
+        require(slots.size() == 2 &&
+                    pose_status(slots[0]) == shaman_v2::PoseStatus::kPending &&
+                    pose_status(slots[1]) == shaman_v2::PoseStatus::kPending,
+                "a frame queued for pose stays pending through its YOLO update");
+
+        require(manager.sendFrame(4, 1004, true), "base of a frame pose skipped");
+        require(manager.updateFrameWithDetectionResult(
+                    4, 4, shaman_v2::DetectionStatus::kZeroDetections, {}, 0, 0, 0,
+                    shaman_v2::DetectionResultReason::kNone, false,
+                    shaman_v2::PoseStatus::kNotRequested),
+                "YOLO of a frame not queued for pose");
+        slots = wait_for_v2_slots(reader, 2);
+        require(slots.size() == 2 &&
+                    pose_status(slots[0]) == shaman_v2::PoseStatus::kPending &&
+                    pose_status(slots[1]) == shaman_v2::PoseStatus::kNotRequested,
+                "the YOLO update says when the frame was not queued for pose");
+
+        // Pose result first, then a YOLO update that still says pending.
+        manager.PauseWriterForTest();
+        require(manager.sendFrame(5, 1005, true), "base of an early-pose frame");
+        shaman_v2::Slot pose;
+        pose.state_stream_frame_id = 5;
+        pose.source_stream_frame_id = 5;
+        pose.detection_status = static_cast<uint32_t>(shaman_v2::DetectionStatus::kNotScheduled);
+        pose.pose_status = static_cast<uint32_t>(shaman_v2::PoseStatus::kNoResult);
+        require(manager.updateFrameWithPoseResult(pose), "early pose result");
+        require(manager.updateFrameWithDetectionResult(
+                    5, 5, shaman_v2::DetectionStatus::kZeroDetections, {}),
+                "YOLO after the pose result");
+        manager.ResumeWriterForTest();
+        slots = wait_for_v2_slots(reader, 3);
+        require(slots.size() == 3 &&
+                    pose_status(slots[0]) == shaman_v2::PoseStatus::kPending &&
+                    pose_status(slots[1]) == shaman_v2::PoseStatus::kNoResult &&
+                    pose_status(slots[2]) == shaman_v2::PoseStatus::kNoResult,
+                "a later YOLO update keeps the frame's pose result");
+        manager.stop();
+    }
+
+    shaman_v2::unlink_queue(v2_name);
+}
+
 } // namespace
 
 int main()
@@ -1201,6 +1285,7 @@ int main()
         test_frame_ipc_manager_pending_requires_live_terminal_capability();
         test_frame_ipc_manager_fails_closed_on_object_overflow();
         test_frame_ipc_manager_publishes_enqueue_rejection_failure();
+        test_frame_ipc_manager_pose_status_per_frame();
     } catch (const std::exception& ex) {
         std::cerr << "shaman_v2_tests failed: " << ex.what() << std::endl;
         return 1;

@@ -4346,7 +4346,11 @@ bool start_headless_frame_ipc_runtime(HeadlessFrameIpcRuntime* runtime,
                                 static_cast<shaman_v2::PoseStatus>(slot.pose_status);
                             if (detection_status == shaman_v2::DetectionStatus::kPending ||
                                 detection_status == shaman_v2::DetectionStatus::kNotScheduled) {
-                                if (pose_status == shaman_v2::PoseStatus::kDisabled &&
+                                // A base slot says pose disabled, not requested
+                                // or pending, never a pose result.
+                                if ((pose_status == shaman_v2::PoseStatus::kDisabled ||
+                                     pose_status == shaman_v2::PoseStatus::kNotRequested ||
+                                     pose_status == shaman_v2::PoseStatus::kPending) &&
                                     slot.object_count == 0) {
                                     stats.base_messages++;
                                 }

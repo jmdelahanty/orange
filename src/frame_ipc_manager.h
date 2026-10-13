@@ -14,6 +14,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -165,7 +166,8 @@ public:
         uint64_t detection_model_id_hash,
         shaman_v2::DetectionResultReason detection_reason =
             shaman_v2::DetectionResultReason::kNone,
-        bool synthetic_objects = false) {
+        bool synthetic_objects = false,
+        std::optional<shaman_v2::PoseStatus> pose_status = std::nullopt) {
         return enqueueDetectionUpdate(
             legacy_frame_id,
             state_stream_frame_id,
@@ -175,7 +177,8 @@ public:
             retained_detection_count,
             detection_model_id_hash,
             detection_reason,
-            synthetic_objects);
+            synthetic_objects,
+            pose_status);
     }
 
     // Synthetic runtime detections are a test seam: they terminate the
@@ -188,7 +191,8 @@ public:
         uint32_t retained_detection_count,
         uint64_t detection_model_id_hash,
         shaman_v2::DetectionStatus detection_status,
-        shaman_v2::DetectionResultReason detection_reason) {
+        shaman_v2::DetectionResultReason detection_reason,
+        std::optional<shaman_v2::PoseStatus> pose_status = std::nullopt) {
         if (!enabled_ || !v2_publisher_) {
             return false;
         }
@@ -201,7 +205,8 @@ public:
             retained_detection_count,
             detection_model_id_hash,
             detection_reason,
-            true);
+            true,
+            pose_status);
     }
 
     bool updateFrameWithDetectionResult(
@@ -249,7 +254,8 @@ private:
         uint32_t retained_detection_count,
         uint64_t detection_model_id_hash,
         shaman_v2::DetectionResultReason detection_reason,
-        bool synthetic_objects = false) {
+        bool synthetic_objects = false,
+        std::optional<shaman_v2::PoseStatus> pose_status = std::nullopt) {
         if (!enabled_) {
             return false;
         }
@@ -284,6 +290,7 @@ private:
         event.detection_model_id_hash = detection_model_id_hash;
         event.detection_reason = detection_reason;
         event.synthetic_objects = synthetic_objects;
+        event.pose_status = pose_status;
 
         bool dropped = false;
         {
@@ -383,6 +390,13 @@ public:
         return true;
     }
 
+    // Called by the camera's pose worker when it is built, before
+    // acquisition starts. Without one, every slot says pose disabled; with
+    // one, a frame YOLO will process starts as pose pending and the rest as
+    // not requested, until the pose terminal (or the YOLO worker) says more.
+    void SetPoseStageAttached() { pose_stage_attached_.store(true, std::memory_order_release); }
+    bool PoseStageAttached() const { return pose_stage_attached_.load(std::memory_order_acquire); }
+
     bool isEnabled() const { return enabled_; }
     const std::string& getQueueName() const { return queue_name_; }
     const std::string& getInitError() const { return init_error_; }
@@ -417,6 +431,11 @@ private:
         shaman_v2::DetectionResultReason detection_reason =
             shaman_v2::DetectionResultReason::kNone;
         bool synthetic_objects = false;
+        // What the YOLO worker knows about this frame's pose once detect has
+        // run: nullopt leaves the frame's expectation (PoseExpectation), a
+        // value replaces it (not_requested: the frame was not queued for
+        // pose; failed: queuing it failed).
+        std::optional<shaman_v2::PoseStatus> pose_status;
     };
 
     // Each entry carries the manager-wide arrival sequence so DrainQueues can
@@ -589,6 +608,17 @@ private:
         return out;
     }
 
+    // A frame's pose status before any pose result: disabled without a pose
+    // stage, pending when YOLO processes the frame (the pose stage runs
+    // behind detect), not requested otherwise.
+    shaman_v2::PoseStatus PoseExpectation(bool yolo_processing) const {
+        if (!PoseStageAttached()) {
+            return shaman_v2::PoseStatus::kDisabled;
+        }
+        return yolo_processing ? shaman_v2::PoseStatus::kPending
+                               : shaman_v2::PoseStatus::kNotRequested;
+    }
+
     void EmitV2Base(const FrameEvent& frame) {
         if (!v2_publisher_) {
             return;
@@ -614,7 +644,7 @@ private:
             frame.v2_detection_terminal_expected
                 ? shaman_v2::DetectionStatus::kPending
                 : shaman_v2::DetectionStatus::kNotScheduled);
-        slot.pose_status = static_cast<uint32_t>(shaman_v2::PoseStatus::kDisabled);
+        slot.pose_status = static_cast<uint32_t>(PoseExpectation(frame.yolo_processing));
         v2_publisher_->publish_base_frame(slot);
     }
 
@@ -630,7 +660,8 @@ private:
         slot.source_width_px = static_cast<uint32_t>(camera_params_->width);
         slot.source_height_px = static_cast<uint32_t>(camera_params_->height);
         slot.detection_status = static_cast<uint32_t>(update.detection_status);
-        slot.pose_status = static_cast<uint32_t>(shaman_v2::PoseStatus::kDisabled);
+        slot.pose_status = static_cast<uint32_t>(
+            update.pose_status.value_or(PoseExpectation(true)));
         slot.retained_detection_count = update.retained_detection_count;
         slot.source_detection_count = update.source_detection_count;
         slot.detection_model_id_hash = update.detection_model_id_hash != 0
@@ -700,4 +731,5 @@ private:
     std::atomic<uint64_t> base_queue_drops_{0};
     std::atomic<uint64_t> update_queue_drops_{0};
     std::atomic<uint64_t> pose_update_queue_drops_{0};
+    std::atomic<bool> pose_stage_attached_{false};
 };

@@ -62,6 +62,7 @@ public:
         // evidence received before the same-frame YOLO terminal is retained
         // privately and must not make this interim state authoritative.
         has_authoritative_yolo_ = false;
+        has_pose_terminal_ = false;
         has_pending_pose_evidence_ = false;
         pending_pose_evidence_ = Slot{};
 
@@ -212,6 +213,12 @@ private:
         current_.objects_truncated = update.objects_truncated;
         current_.object_order = update.object_order;
         current_.detection_reason = update.detection_reason;
+        // The YOLO slot carries the frame's pose status as detect left it
+        // (pending, not requested, failed to queue). A pose result already
+        // applied for this frame is newer and stays.
+        if (!has_pose_terminal_) {
+            current_.pose_status = update.pose_status;
+        }
         current_.object_count = update.object_count;
         for (uint32_t i = 0; i < update.object_count && i < kMaxObjects; ++i) {
             current_.objects[i] = update.objects[i];
@@ -252,6 +259,7 @@ private:
     {
         current_.source_stream_frame_id = current_.state_stream_frame_id;
         current_.pose_status = update.pose_status;
+        has_pose_terminal_ = true;
         current_.pose_model_id_hash = update.pose_model_id_hash;
         current_.pose_skeleton_id_hash = update.pose_skeleton_id_hash;
         if (!has_authoritative_yolo_) {
@@ -331,6 +339,7 @@ private:
     size_t max_pending_updates_ = 8;
     bool has_current_ = false;
     bool has_authoritative_yolo_ = false;
+    bool has_pose_terminal_ = false;
     bool has_pending_pose_evidence_ = false;
     uint64_t latest_base_state_frame_id_ = 0;
     Slot current_;

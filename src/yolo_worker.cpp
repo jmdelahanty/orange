@@ -15,6 +15,7 @@
 #include <vector>
 #include <string>
 #include <chrono>
+#include <optional>
 #include "yolo_payload_generated.h"
 #include "message_wrapper_generated.h"
 #include "opengldisplay.h"
@@ -2689,6 +2690,20 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             frame_ipc_request_status = "not_requested_synthetic_runtime";
         }
 
+        // The frame's pose status as detect leaves it. On the device stage
+        // (device crop or fused graph) pose runs on every frame queued to it
+        // and its result follows; a frame not queued (slot busy, no safe
+        // source, synthetic boxes, path not taken) is not requested, and a
+        // failed queue is failed. The crop pipeline path decides later, per
+        // crop, so the expectation stays.
+        std::optional<shaman_v2::PoseStatus> live_pose_status;
+        if (m_pose_worker && m_pose_worker->device_stage_enabled() &&
+            device_crop_col != 1 && device_crop_col != 5) {
+            live_pose_status = device_crop_col == -2
+                ? shaman_v2::PoseStatus::kFailed
+                : shaman_v2::PoseStatus::kNotRequested;
+        }
+
         if (frame_ipc_enabled && !synthetic_detection_mode) {
             std::vector<shaman::Object> shaman_objects;
             shaman_v2::DetectionStatus live_status =
@@ -2732,7 +2747,9 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                     static_cast<uint32_t>(std::max(
                         0, spatial_mask_result.downstream_detection_count)),
                     detection_model_id_hash,
-                    detection_reason);
+                    detection_reason,
+                    false,
+                    live_pose_status);
             frame_ipc_request_status = frame_ipc_update_requested
                 ? "queued"
                 : "not_enabled";
@@ -2761,7 +2778,8 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                     synthetic_count,
                     detection_model_id_hash,
                     synthetic_status,
-                    synthetic_reason);
+                    synthetic_reason,
+                    live_pose_status);
             frame_ipc_request_status = frame_ipc_update_requested
                 ? "queued"
                 : "not_enabled";
