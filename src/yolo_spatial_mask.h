@@ -2,6 +2,7 @@
 
 #include "json.hpp"
 #include "citrus_recording_geometry.h"
+#include "orange_outputs/orange_analytics_spatial_mask_runtime_v1.h"
 
 #include <algorithm>
 #include <cctype>
@@ -548,51 +549,48 @@ inline ResolveResult resolve_policy_from_recording_geometry_contract(
     return result;
 }
 
-inline nlohmann::json circle_to_json(const Circle& circle)
+namespace detail {
+// One circle of the published policy (both generated circle structs share these members).
+template <class Geometry>
+Geometry circle_geometry(const Circle& circle)
 {
-    return {
-        {"type", "circle"},
-        {"coordinate_space", "camera_native_pixels"},
-        {"cx", circle.cx},
-        {"cy", circle.cy},
-        {"radius", circle.radius},
-    };
+    Geometry geometry;
+    geometry.cx = circle.cx;
+    geometry.cy = circle.cy;
+    geometry.radius = circle.radius;
+    return geometry;
 }
+}  // namespace detail
 
+// The runtime policy as published (docs/schemas/orange_analytics_spatial_mask_runtime_v1.schema.json),
+// written through the generated code. Embedding documents add policy_generation and status.
 inline nlohmann::json policy_to_json(const Policy& policy)
 {
-    return {
-        {"schema_id", "orange.analytics.spatial_mask_runtime"},
-        {"schema_version", 1},
-        {"mode", mode_to_string(policy.mode)},
-        {"camera_serial", policy.camera_serial},
-        {"arena_id", policy.arena_id},
-        {"registration_id", policy.registration_id},
-        {"source_raster", {
-            {"width", policy.source_width},
-            {"height", policy.source_height},
-        }},
-        {"input_mask", {
-            {"enabled", masks_input(policy.mode)},
-            {"outside_tensor_value", policy.outside_tensor_value},
-            {"input_context_outset_px", policy.input_context_outset_px},
-            {"geometry", circle_to_json(policy.input_circle)},
-        }},
-        {"centroid_gate", {
-            {"evaluated", evaluates_centroid(policy.mode)},
-            {"enforced", enforces_centroid(policy.mode)},
-            {"geometry", circle_to_json(policy.centroid_gate_circle)},
-        }},
-        {"source", {
-            {"artifact_id", policy.artifact_id},
-            {"artifact_schema_id", policy.artifact_schema_id},
-            {"artifact_schema_version", policy.artifact_schema_version},
-            {"artifact_fingerprint", policy.artifact_fingerprint},
-            {"path", policy.source_path},
-            {"recording_relative_path", policy.recording_relative_path},
-            {"sha256", policy.source_sha256},
-        }},
-    };
+    namespace gen = orange::outputs::gen::spatial_mask_runtime_v1;
+    gen::OrangeAnalyticsSpatialMaskRuntimeV1 out;
+    out.mode = mode_to_string(policy.mode);
+    out.camera_serial = policy.camera_serial;
+    out.arena_id = policy.arena_id;
+    out.registration_id = policy.registration_id;
+    out.source_raster.width = static_cast<std::uint64_t>(policy.source_width);
+    out.source_raster.height = static_cast<std::uint64_t>(policy.source_height);
+    out.input_mask.enabled = masks_input(policy.mode);
+    out.input_mask.outside_tensor_value = policy.outside_tensor_value;
+    out.input_mask.input_context_outset_px = policy.input_context_outset_px;
+    out.input_mask.geometry =
+        detail::circle_geometry<gen::OrangeAnalyticsSpatialMaskRuntimeV1InputMaskGeometry>(policy.input_circle);
+    out.centroid_gate.evaluated = evaluates_centroid(policy.mode);
+    out.centroid_gate.enforced = enforces_centroid(policy.mode);
+    out.centroid_gate.geometry = detail::circle_geometry<gen::OrangeAnalyticsSpatialMaskRuntimeV1CentroidGateGeometry>(
+        policy.centroid_gate_circle);
+    out.source.artifact_id = policy.artifact_id;
+    out.source.artifact_schema_id = policy.artifact_schema_id;
+    out.source.artifact_schema_version = static_cast<std::uint64_t>(policy.artifact_schema_version);
+    out.source.artifact_fingerprint = policy.artifact_fingerprint;
+    out.source.path = policy.source_path;
+    out.source.recording_relative_path = policy.recording_relative_path;
+    out.source.sha256 = policy.source_sha256;
+    return gen::to_json(out);
 }
 
 }  // namespace orange::analytics_mask

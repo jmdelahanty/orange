@@ -22,6 +22,7 @@
 // from an acquisition, YOLO or pose thread.
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 #include "json.hpp"
@@ -67,8 +68,42 @@ ModelIdentity resolve_model_identity(const std::string& engine_path);
 // Same, bypassing the cache (tests).
 ModelIdentity resolve_model_identity_uncached(const std::string& engine_path);
 
-// The `engine_manifest` object written into the snapshot runtime block; null
-// JSON when the engine path is empty.
-nlohmann::json engine_manifest_json(const ModelIdentity& identity);
+// The snapshot runtime block's `engine_manifest` (models.<serial>.detect/.pose),
+// filled into the generated struct of orange.recording_detect_model.v1 or
+// orange.recording_pose_model.v2 (both declare the same members); nullopt (JSON
+// null) when the engine path is empty.
+template <class Block>
+std::optional<Block> engine_manifest_block(const ModelIdentity& identity)
+{
+    if (identity.engine_path.empty()) {
+        return std::nullopt;
+    }
+    Block block;
+    block.path = identity.manifest_path;
+    block.present = identity.manifest_present;
+    block.sha256 = identity.manifest_sha256;
+    block.error = identity.manifest_error;
+    block.schema_id = identity.manifest_schema_id;
+    block.schema_version = static_cast<std::uint64_t>(identity.manifest_schema_version);
+    block.status = identity.manifest_status;
+    block.task = identity.task;
+    block.run_id = identity.run_id;
+    block.set_id = identity.set_id;
+    block.build_id = identity.build_id;
+    block.precision = identity.precision;
+    block.target_hardware_class = identity.target_hardware_class;
+    block.created_at_utc = identity.created_at_utc;
+    block.engine_sha256_declared = identity.declared_engine_sha256;
+    block.engine_sha256_matches = identity.declared_engine_sha256_matches;
+    block.onnx.path = identity.onnx_path;
+    block.onnx.sha256 = identity.onnx_sha256;
+    block.weights.path = identity.weights_path;
+    block.weights.sha256 = identity.weights_sha256;
+    block.canonical_manifest.path = identity.canonical_manifest_path;
+    block.canonical_manifest.sha256 = identity.canonical_manifest_sha256;
+    block.onnx_manifest.path = identity.onnx_manifest_path;
+    block.onnx_manifest.sha256 = identity.onnx_manifest_sha256;
+    return block;
+}
 
 }  // namespace orange::model_identity

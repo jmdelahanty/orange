@@ -5,6 +5,7 @@
 //
 //   model_identity_tests <real engine manifest.json>
 #include "model_identity.h"
+#include "orange_outputs/orange_recording_detect_model_v1.h"
 #include "pose_skeleton_sidecar.h"
 
 #include <cstdlib>
@@ -44,11 +45,20 @@ void write_file(const fs::path& path, const std::string& bytes)
 
 nlohmann::json real_manifest;   // a schema-valid rig manifest, loaded in main
 
+// The snapshot's runtime.engine_manifest as written (generated detect-model struct and writer).
+nlohmann::json manifest_block_json(const ModelIdentity& id)
+{
+    namespace dm = orange::outputs::gen::recording_detect_model_v1;
+    const auto block =
+        orange::model_identity::engine_manifest_block<dm::OrangeRecordingDetectModelV1RuntimeEngineManifest>(id);
+    return block ? dm::to_json(*block) : nlohmann::json(nullptr);
+}
+
 void test_empty_path()
 {
     const ModelIdentity id = orange::model_identity::resolve_model_identity("");
     require(!id.engine_present && id.engine_sha256.empty() && !id.manifest_present, "empty path -> empty identity");
-    require(orange::model_identity::engine_manifest_json(id).is_null(), "empty path -> null manifest json");
+    require(manifest_block_json(id).is_null(), "empty path -> null manifest json");
 }
 
 void test_missing_engine_and_manifest(const fs::path& dir)
@@ -57,7 +67,7 @@ void test_missing_engine_and_manifest(const fs::path& dir)
     const ModelIdentity id = orange::model_identity::resolve_model_identity_uncached(engine);
     require(!id.engine_present && id.engine_sha256.empty(), "missing engine -> no hash");
     require(!id.manifest_present && id.manifest_error.empty(), "missing manifest -> present false, no error");
-    const nlohmann::json j = orange::model_identity::engine_manifest_json(id);
+    const nlohmann::json j = manifest_block_json(id);
     require(j.is_object() && j.at("present") == false && j.at("path") == (dir / "missing.manifest.json").string(),
             "missing manifest json block");
 }
@@ -104,7 +114,7 @@ void test_engine_with_manifest(const fs::path& dir)
             id.precision == "fp16" && id.task == "pose" && id.manifest_status == "candidate",
             "manifest identity strings");
 
-    const nlohmann::json j = orange::model_identity::engine_manifest_json(id);
+    const nlohmann::json j = manifest_block_json(id);
     require(j.at("present") == true && j.at("engine_sha256_matches") == true &&
             j.at("onnx").at("sha256") == std::string(64, 'a') &&
             j.at("weights").at("sha256") == std::string(64, 'b') &&

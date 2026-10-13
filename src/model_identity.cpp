@@ -155,34 +155,4 @@ ModelIdentity resolve_model_identity(const std::string& engine_path)
     return it->second;
 }
 
-nlohmann::json engine_manifest_json(const ModelIdentity& identity)
-{
-    if (identity.engine_path.empty()) {
-        return nullptr;
-    }
-    nlohmann::json out = {
-        {"path", identity.manifest_path},
-        {"present", identity.manifest_present},
-        {"sha256", identity.manifest_sha256},
-        {"error", identity.manifest_error},
-        {"schema_id", identity.manifest_schema_id},
-        {"schema_version", identity.manifest_schema_version},
-        {"status", identity.manifest_status},
-        {"task", identity.task},
-        {"run_id", identity.run_id},
-        {"set_id", identity.set_id},
-        {"build_id", identity.build_id},
-        {"precision", identity.precision},
-        {"target_hardware_class", identity.target_hardware_class},
-        {"created_at_utc", identity.created_at_utc},
-        {"engine_sha256_declared", identity.declared_engine_sha256},
-        {"engine_sha256_matches", identity.declared_engine_sha256_matches},
-        {"onnx", {{"path", identity.onnx_path}, {"sha256", identity.onnx_sha256}}},
-        {"weights", {{"path", identity.weights_path}, {"sha256", identity.weights_sha256}}},
-        {"canonical_manifest", {{"path", identity.canonical_manifest_path}, {"sha256", identity.canonical_manifest_sha256}}},
-        {"onnx_manifest", {{"path", identity.onnx_manifest_path}, {"sha256", identity.onnx_manifest_sha256}}}
-    };
-    return out;
-}
-
 }  // namespace orange::model_identity

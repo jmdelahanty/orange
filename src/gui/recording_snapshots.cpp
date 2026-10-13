@@ -1,5 +1,7 @@
 #include "pose_skeleton_sidecar.h"
 #include "model_identity.h"
+#include "orange_outputs/orange_recording_detect_model_v1.h"
+#include "orange_outputs/orange_recording_pose_model_v2.h"
 #include "gui/recording_snapshots.h"
 #include "citrus_recording_geometry.h"
 #include "gui/spatial_layout/projection_snapshot_client.h"
@@ -16,6 +18,8 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <map>
+#include <optional>
 #include <string>
 
 namespace {
@@ -80,28 +84,27 @@ nlohmann::json build_gui_detect_model_snapshot(const CameraParams& camera_params
     const std::string engine_path = enabled ? selected_engine_path : "";
     // Model identity (realtime-products item 2): the SHA-256 of the engine
     // bytes that ran plus the weights -> onnx -> engine chain from the
-    // engine's Palette manifest. Cached per path; record-start path only.
+    // engine's manifest. Cached per path; record-start path only.
     const orange::model_identity::ModelIdentity identity =
         orange::model_identity::resolve_model_identity(engine_path);
-    return {
-        {"enabled", enabled},
-        {"source", {
-            {"ui_selected", camera_select.yolo},
-            {"camera_config_path", camera_params.config_path}
-        }},
-        {"runtime", {
-            {"worker", "YoloWorker"},
-            {"backend", enabled ? "tensorrt" : "none"},
-            {"engine_path", engine_path},
-            {"model_id", enabled ? build_model_id_from_path(engine_path) : "none"},
-            {"engine_sha256", identity.engine_sha256},
-            {"engine_bytes", identity.engine_bytes},
-            {"weights_sha256", identity.weights_sha256},
-            {"onnx_sha256", identity.onnx_sha256},
-            {"engine_manifest", orange::model_identity::engine_manifest_json(identity)},
-            {"gpu_id", camera_params.gpu_id}
-        }}
-    };
+    // Written through the code generated from the published
+    // orange.recording_detect_model.v1 (docs/schemas).
+    namespace dm = orange::outputs::gen::recording_detect_model_v1;
+    dm::OrangeRecordingDetectModelV1 block;
+    block.enabled = enabled;
+    block.source.ui_selected = camera_select.yolo;
+    block.source.camera_config_path = camera_params.config_path;
+    block.runtime.backend = enabled ? "tensorrt" : "none";
+    block.runtime.engine_path = engine_path;
+    block.runtime.model_id = enabled ? build_model_id_from_path(engine_path) : "none";
+    block.runtime.engine_sha256 = identity.engine_sha256;
+    block.runtime.engine_bytes = identity.engine_bytes;
+    block.runtime.weights_sha256 = identity.weights_sha256;
+    block.runtime.onnx_sha256 = identity.onnx_sha256;
+    block.runtime.engine_manifest = orange::model_identity::engine_manifest_block<
+        dm::OrangeRecordingDetectModelV1RuntimeEngineManifest>(identity);
+    block.runtime.gpu_id = camera_params.gpu_id;
+    return dm::to_json(block);
 }
 
 void update_gui_detect_model_snapshots(const std::string& recording_folder,
@@ -217,7 +220,7 @@ nlohmann::json build_gui_pose_model_snapshot(const CameraParams& camera_params,
     const bool enabled = camera_select.pose;
     const std::string camera_serial = camera_params.camera_serial;
 
-    nlohmann::json files = nlohmann::json::object();
+    std::map<std::string, std::string> files;
     if (enabled && !camera_serial.empty()) {
         files = {
             {"perf", "Cam" + camera_serial + "_pose_perf.csv"},
@@ -289,14 +292,14 @@ nlohmann::json build_gui_pose_model_snapshot(const CameraParams& camera_params,
         }
     }
     // Model identity (realtime-products item 2): engine bytes hashed once per
-    // path, plus the weights -> onnx -> engine chain from the engine's Palette
-    // manifest (`<engine>.manifest.json`).
+    // path, plus the weights -> onnx -> engine chain from the engine's
+    // manifest (`<engine stem>.manifest.json`, written by Orange's build scripts).
     const orange::model_identity::ModelIdentity identity =
         orange::model_identity::resolve_model_identity(enabled ? pose_engine_path : std::string());
     const std::string& engine_sha256 = identity.engine_sha256;
     // The skeleton sidecar names the ONNX export it was cut from; when both
-    // it and the engine manifest carry one, say whether they agree.
-    nlohmann::json onnx_matches_skeleton = nullptr;
+    // it and the engine manifest carry one, say whether they agree (null otherwise).
+    std::optional<bool> onnx_matches_skeleton;
     if (skeleton.is_object() && skeleton.contains("source_onnx_sha256") &&
         skeleton["source_onnx_sha256"].is_string() &&
         !skeleton["source_onnx_sha256"].get<std::string>().empty() &&
@@ -304,39 +307,39 @@ nlohmann::json build_gui_pose_model_snapshot(const CameraParams& camera_params,
         onnx_matches_skeleton = skeleton["source_onnx_sha256"].get<std::string>() == identity.onnx_sha256;
     }
 
-    return {
-        {"enabled", enabled},
-        {"source", {
-            {"ui_selected", enabled},
-            {"requires_yolo", true},
-            {"requires_crop_output", true},
-            {"camera_config_path", camera_params.config_path}
-        }},
-        {"runtime", {
-            {"worker", "PoseWorker"},
-            {"backend", enabled ? pose_backend : "none"},
-            {"mode", enabled ? pose_mode : "disabled"},
-            // Inference crop fed to the pose network (ORANGE_POSE_CROP_SIZE_PX; 0 =
-            // the video crop size). Distinct from the encoded crop video size in
-            // recording_outputs.<camera>.crop.width/height.
-            {"pose_crop_size_px", enabled ? pose_crop_size_px : 0},
-            {"engine_path", enabled ? pose_engine_path : ""},
-            {"model_id", enabled && !pose_engine_path.empty() ? build_model_id_from_path(pose_engine_path) : "none"},
-            {"skeleton_id", enabled ? pose_skeleton_id : "none"},
-            {"skeleton_path", enabled ? pose_skeleton_path : ""},
-            {"skeleton", skeleton},
-            {"engine_sha256", engine_sha256},
-            {"engine_bytes", identity.engine_bytes},
-            {"weights_sha256", identity.weights_sha256},
-            {"onnx_sha256", identity.onnx_sha256},
-            {"onnx_sha256_matches_skeleton_sidecar", onnx_matches_skeleton},
-            {"engine_manifest", orange::model_identity::engine_manifest_json(identity)},
-            {"ipc_model_id_hash", engine_sha256.empty() ? 0ULL : orange::pose::sha256_prefix64(engine_sha256)},
-            {"gpu_id", camera_params.gpu_id},
-            {"queue_size", enabled ? 32 : 0},
-            {"files", files}
-        }}
-    };
+    // Written through the code generated from the published
+    // orange.recording_pose_model.v2 (docs/schemas).
+    namespace pm = orange::outputs::gen::recording_pose_model_v2;
+    pm::OrangeRecordingPoseModelV2 block;
+    block.enabled = enabled;
+    block.source.ui_selected = enabled;
+    block.source.requires_yolo = true;
+    block.source.requires_crop_output = true;
+    block.source.camera_config_path = camera_params.config_path;
+    pm::OrangeRecordingPoseModelV2Runtime& runtime = block.runtime;
+    runtime.backend = enabled ? pose_backend : "none";
+    runtime.mode = enabled ? pose_mode : "disabled";
+    // Inference crop fed to the pose network (ORANGE_POSE_CROP_SIZE_PX; 0 =
+    // the video crop size). Distinct from the encoded crop video size in
+    // recording_outputs.<camera>.crop.width/height.
+    runtime.pose_crop_size_px = static_cast<std::uint64_t>(enabled ? pose_crop_size_px : 0);
+    runtime.engine_path = enabled ? pose_engine_path : "";
+    runtime.model_id = enabled && !pose_engine_path.empty() ? build_model_id_from_path(pose_engine_path) : "none";
+    runtime.skeleton_id = enabled ? pose_skeleton_id : "none";
+    runtime.skeleton_path = enabled ? pose_skeleton_path : "";
+    runtime.skeleton = skeleton;
+    runtime.engine_sha256 = engine_sha256;
+    runtime.engine_bytes = identity.engine_bytes;
+    runtime.weights_sha256 = identity.weights_sha256;
+    runtime.onnx_sha256 = identity.onnx_sha256;
+    runtime.onnx_sha256_matches_skeleton_sidecar = onnx_matches_skeleton;
+    runtime.engine_manifest = orange::model_identity::engine_manifest_block<
+        pm::OrangeRecordingPoseModelV2RuntimeEngineManifest>(identity);
+    runtime.ipc_model_id_hash = engine_sha256.empty() ? 0ULL : orange::pose::sha256_prefix64(engine_sha256);
+    runtime.gpu_id = camera_params.gpu_id;
+    runtime.queue_size = enabled ? 32 : 0;
+    runtime.files = files;
+    return pm::to_json(block);
 }
 
 void update_gui_pose_model_snapshots(const std::string& recording_folder,

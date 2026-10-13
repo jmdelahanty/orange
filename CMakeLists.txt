@@ -923,6 +923,28 @@ if(BUILD_TESTING)
                 "${CMAKE_BINARY_DIR}/synthetic_recording_bundle")
     set_tests_properties(synthetic_recording_bundle_tests
         PROPERTIES DEPENDS synthetic_recording_bundle_build)
+    # Golden bytes of the snapshot models blocks (GUI, headless and synthetic bundle builders).
+    add_executable(model_snapshot_golden_tests EXCLUDE_FROM_ALL
+        "tools/model_snapshot_golden_tests.cpp"
+        "${SRC_DIR}/calibration_image_set.cpp"
+        "${SRC_DIR}/session/acquisition_index_authority.cpp"
+        "${SRC_DIR}/gui/recording_snapshots.cpp"
+        "${SRC_DIR}/gui/spatial_layout/commissioning_finalize_request.cpp"
+        "${SRC_DIR}/gui/spatial_layout/projection_snapshot_client.cpp"
+        ${RECORDING_SESSION_MANIFEST_TEST_SOURCES}
+    )
+    target_include_directories(model_snapshot_golden_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(model_snapshot_golden_tests PRIVATE cxx_std_17)
+    add_test(
+        NAME model_snapshot_golden_tests_build
+        COMMAND ${CMAKE_COMMAND} --build "${CMAKE_BINARY_DIR}" --target model_snapshot_golden_tests)
+    add_test(
+        NAME model_snapshot_golden_tests
+        COMMAND model_snapshot_golden_tests
+                "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/golden/model_snapshot_blocks.jsonl"
+                "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/engine_manifests/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_int8mm_bo5_avg32.manifest.json"
+                "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/engine_manifests/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915_a16_gpu5_trt100_fp16_bo5_avg32.manifest.json")
+    set_tests_properties(model_snapshot_golden_tests PROPERTIES DEPENDS model_snapshot_golden_tests_build)
     add_test(
         NAME output_schema_validation_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/output_schema_validation_tests.py"
@@ -1366,6 +1388,11 @@ if(BUILD_TESTING)
     target_include_directories(yolo_spatial_mask_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(yolo_spatial_mask_tests PRIVATE cxx_std_17)
     add_test(NAME yolo_spatial_mask_tests COMMAND yolo_spatial_mask_tests)
+    add_executable(spatial_mask_policy_golden_tests "tools/spatial_mask_policy_golden_tests.cpp")
+    target_include_directories(spatial_mask_policy_golden_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_mask_policy_golden_tests PRIVATE cxx_std_17)
+    add_test(NAME spatial_mask_policy_golden_tests COMMAND spatial_mask_policy_golden_tests
+        "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/golden/spatial_mask_policies.jsonl")
 
     add_executable(calibration_transaction_tests
         "tools/calibration_transaction_tests.cpp"
@@ -1947,6 +1974,34 @@ if(TARGET recording_session_manifest_tests)
         pthread
     )
     target_link_libraries(synthetic_recording_bundle PRIVATE
+        orange_recording_master_journal
+        ${EVT_CAMERA_LIBRARY}
+        ${EVT_GENICAM_LIBRARY}
+        ${EVT_GIGE_LIBRARY}
+        ${ENET_LIBRARY}
+        ${CUDA_CUDART_LIBRARY}
+        ${CUDA_DRIVER_LIBRARY}
+        ${CUDA_NPPICC_LIBRARY}
+        ${CUDA_NPPIDEI_LIBRARY}
+        ${CUDA_NPPC_LIBRARY}
+        ${CUDA_NPPIG_LIBRARY}
+        ${CUDA_NPPIAL_LIBRARY}
+        ${NVIDIA_ENCODE_LIBRARY}
+        ${AVFORMAT_LIBRARY}
+        ${SWSCALE_LIBRARY}
+        ${SWRESAMPLE_LIBRARY}
+        ${AVUTIL_LIBRARY}
+        ${AVCODEC_LIBRARY}
+        ${OpenCV_LIBS}
+        ${TENSORRT_LIBRARY}
+        ${TENSORRT_PLUGIN_LIBRARY}
+        m
+        pthread
+    )
+endif()
+
+if(TARGET model_snapshot_golden_tests)
+    target_link_libraries(model_snapshot_golden_tests PRIVATE
         orange_recording_master_journal
         ${EVT_CAMERA_LIBRARY}
         ${EVT_GENICAM_LIBRARY}
