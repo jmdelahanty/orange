@@ -1,0 +1,203 @@
+{
+  "excerpt_of": "exp/unsorted/2026_08_25_20_24_59/recording_geometry_contract.json",
+  "analytics_runtime": {
+    "yolo_spatial_mask": {
+      "apply_timeout_ms": 750,
+      "armed_camera_count": 4,
+      "cameras": {
+        "2010093": {
+          "arena_id": "arena_1",
+          "camera_serial": "2010093",
+          "centroid_gate": {
+            "enforced": true,
+            "evaluated": true,
+            "geometry": {
+              "coordinate_space": "camera_native_pixels",
+              "cx": 2317.412109375,
+              "cy": 2267.841796875,
+              "radius": 2157.72705078125,
+              "type": "circle"
+            }
+          },
+          "input_mask": {
+            "enabled": false,
+            "geometry": {
+              "coordinate_space": "camera_native_pixels",
+              "cx": 2317.412109375,
+              "cy": 2267.841796875,
+              "radius": 2157.72705078125,
+              "type": "circle"
+            },
+            "input_context_outset_px": 0.0,
+            "outside_tensor_value": 0.0
+          },
+          "mode": "gate_only",
+          "policy_generation": 4,
+          "registration_id": "dailyreg_dailyregtxn_2026_08_25T23_46_16Z_838105_1396973458943345_4_operator_adjusted",
+          "schema_id": "orange.analytics.spatial_mask_runtime",
+          "schema_version": 1,
+          "source": {
+            "artifact_fingerprint": "fnv1a64:a68b391c001bed0b",
+            "artifact_id": "dishrim_2026-08-25T23_46_40Z_2010093",
+            "artifact_schema_id": "orange.calibration.dish_top_rim_observation",
+            "artifact_schema_version": 2,
+            "path": "/home/jeremy/orange_data/calibrations/sessions/calsess_2026_08_25T19_27_47Z_shadow/artifacts/Cam2010093_arena_1/top_rim_observations/dishrim_2026-08-25T23_46_40Z_2010093/observation.json",
+            "recording_relative_path": "recording_geometry_assets/cameras/Cam2010093/daily_registration/rim_observation/observation.json",
+            "sha256": "sha256:5daebbdbed5b8e5a71252340a4ffbb9563e9eb0b1932155c4a103c9656c4c5bd"
+          },
+          "source_raster": {
+            "height": 4512,
+            "width": 4512
+          },
+          "status": "armed"
+        },
+        "2010094": {
+          "arena_id": "arena_2",
+          "camera_serial": "2010094",
+          "centroid_gate": {
+            "enforced": true,
+            "evaluated": true,
+            "geometry": {
+              "coordinate_space": "camera_native_pixels",
+              "cx": 2306.396484375,
+              "cy": 2306.396484375,
+              "radius": 2160.75634765625,
+              "type": "circle"
+            }
+          },
+          "input_mask": {
+            "enabled": false,
+            "geometry": {
+              "coordinate_space": "camera_native_pixels",
+              "cx": 2306.396484375,
+              "cy": 2306.396484375,
+              "radius": 2160.75634765625,
+              "type": "circle"
+            },
+            "input_context_outset_px": 0.0,
+            "outside_tensor_value": 0.0
+          },
+          "mode": "gate_only",
+          "policy_generation": 4,
+          "registration_id": "dailyreg_dailyregtxn_2026_08_25T23_46_16Z_838105_1396973458943345_4_operator_adjusted",
+          "schema_id": "orange.analytics.spatial_mask_runtime",
+          "schema_version": 1,
+          "source": {
+            "artifact_fingerprint": "fnv1a64:00530d3807fc8b56",
+            "artifact_id": "dishrim_2026-08-25T23_46_40Z_2010094",
+            "artifact_schema_id": "orange.calibration.dish_top_rim_observation",
+            "artifact_schema_version": 2,
+            "path": "/home/jeremy/orange_data/calibrations/sessions/calsess_2026_08_25T19_27_47Z_shadow/artifacts/Cam2010094_arena_2/top_rim_observations/dishrim_2026-08-25T23_46_40Z_2010094/observation.json",
+            "recording_relative_path": "recording_geometry_assets/cameras/Cam2010094/daily_registration/rim_observation/observation.json",
+            "sha256": "sha256:219f93d31db65f8df00452b5122ebca30ec494e06a501449c41a37082f308f1f"
+          },
+          "source_raster": {
+            "height": 4512,
+            "width": 4512
+          },
+          "status": "armed"
+        },
+        "2010095": {
+          "arena_id": "arena_3",
+          "camera_serial": "2010095",
+          "centroid_gate": {
+            "enforced": true,
+            "evaluated": true,
+            "geometry": {
+              "coordinate_space": "camera_native_pixels",
+              "cx": 2311.904296875,
+              "cy": 2322.919921875,
+              "radius": 2166.81494140625,
+              "type": "circle"
+            }
+          },
+          "input_mask": {
+            "enabled": false,
+            "geometry": {
+              "coordinate_space": "camera_native_pixels",
+              "cx": 2311.904296875,
+              "cy": 2322.919921875,
+              "radius": 2166.81494140625,
+              "type": "circle"
+            },
+            "input_context_outset_px": 0.0,
+            "outside_tensor_value": 0.0
+          },
+          "mode": "gate_only",
+          "policy_generation": 4,
+          "registration_id": "dailyreg_dailyregtxn_2026_08_25T23_46_16Z_838105_1396973458943345_4_operator_adjusted",
+          "schema_id": "orange.analytics.spatial_mask_runtime",
+          "schema_version": 1,
+          "source": {
+            "artifact_fingerprint": "fnv1a64:7671063c385dbc76",
+            "artifact_id": "dishrim_2026-08-25T23_46_40Z_2010095",
+            "artifact_schema_id": "orange.calibration.dish_top_rim_observation",
+            "artifact_schema_version": 2,
+            "path": "/home/jeremy/orange_data/calibrations/sessions/calsess_2026_08_25T19_27_47Z_shadow/artifacts/Cam2010095_arena_3/top_rim_observations/dishrim_2026-08-25T23_46_40Z_2010095/observation.json",
+            "recording_relative_path": "recording_geometry_assets/cameras/Cam2010095/daily_registration/rim_observation/observation.json",
+            "sha256": "sha256:56bf7e4fcc0f3ae7d318fe7d62bc39861e1f650e462a1a6bd20078c832ca9430"
+          },
+          "source_raster": {
+            "height": 4512,
+            "width": 4512
+          },
+          "status": "armed"
+        },
+        "2010096": {
+          "arena_id": "arena_4",
+          "camera_serial": "2010096",
+          "centroid_gate": {
+            "enforced": true,
+            "evaluated": true,
+            "geometry": {
+              "coordinate_space": "camera_native_pixels",
+              "cx": 2270.595703125,
+              "cy": 2174.208984375,
+              "radius": 2133.49267578125,
+              "type": "circle"
+            }
+          },
+          "input_mask": {
+            "enabled": false,
+            "geometry": {
+              "coordinate_space": "camera_native_pixels",
+              "cx": 2270.595703125,
+              "cy": 2174.208984375,
+              "radius": 2133.49267578125,
+              "type": "circle"
+            },
+            "input_context_outset_px": 0.0,
+            "outside_tensor_value": 0.0
+          },
+          "mode": "gate_only",
+          "policy_generation": 4,
+          "registration_id": "dailyreg_dailyregtxn_2026_08_25T23_46_16Z_838105_1396973458943345_4_operator_adjusted",
+          "schema_id": "orange.analytics.spatial_mask_runtime",
+          "schema_version": 1,
+          "source": {
+            "artifact_fingerprint": "fnv1a64:8b1f2b673c28a912",
+            "artifact_id": "dishrim_2026-08-25T23_46_41Z_2010096",
+            "artifact_schema_id": "orange.calibration.dish_top_rim_observation",
+            "artifact_schema_version": 2,
+            "path": "/home/jeremy/orange_data/calibrations/sessions/calsess_2026_08_25T19_27_47Z_shadow/artifacts/Cam2010096_arena_4/top_rim_observations/dishrim_2026-08-25T23_46_41Z_2010096/observation.json",
+            "recording_relative_path": "recording_geometry_assets/cameras/Cam2010096/daily_registration/rim_observation/observation.json",
+            "sha256": "sha256:2aa0642467d8dff39998fc9658cf387b120f8c5bcca847232fef03fafcafa2a5"
+          },
+          "source_raster": {
+            "height": 4512,
+            "width": 4512
+          },
+          "status": "armed"
+        }
+      },
+      "configuration_source": "gui",
+      "immutable_for_recording": true,
+      "input_context_outset_px": 0.0,
+      "mode": "gate_only",
+      "outside_tensor_value": 0.0,
+      "schema_id": "orange.analytics.spatial_mask_recording_arm",
+      "schema_version": 1,
+      "status": "armed"
+    }
+  }
+}

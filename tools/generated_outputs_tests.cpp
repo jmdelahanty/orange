@@ -10,6 +10,7 @@
 //
 //   generated_outputs_tests <fixture dir> [<extra yolo.jsonl> <extra pose.jsonl>]
 //   generated_outputs_tests --engine-manifests <manifest.json>...
+#include "orange_outputs/orange_analytics_spatial_mask_recording_arm_v1.h"
 #include "orange_outputs/orange_pose_event_v3.h"
 #include "orange_outputs/orange_recording_detect_model_v1.h"
 #include "orange_outputs/orange_recording_pose_model_v2.h"
@@ -24,6 +25,7 @@
 namespace yolo = orange::outputs::gen::yolo_event_v3;
 namespace pose = orange::outputs::gen::pose_event_v3;
 namespace manifest = orange::outputs::gen::tensorrt_engine_manifest_v1;
+namespace arm = orange::outputs::gen::spatial_mask_recording_arm_v1;
 namespace detect_model = orange::outputs::gen::recording_detect_model_v1;
 namespace pose_model = orange::outputs::gen::recording_pose_model_v2;
 
@@ -137,6 +139,36 @@ void snapshot_models(const std::string& path) {
       const bool ok = detect_model::parse(j, &v, &e);
       check(ok, "the TensorRT rule applies only when enabled (" + e + ")"); }
 }
+// Real spatial mask arm records (GUI gate_only with active policies; headless off) through the
+// generated reader and writer; cameras.<serial> is a oneOf of the policy schema and a failure record.
+void spatial_mask_arms(const std::string& dir) {
+    for (const char* kind : {"arm_gui", "arm_headless"}) {
+        std::ifstream in(dir + "/" + kind + "/recording_geometry_contract.json");
+        const nlohmann::json record = nlohmann::json::parse(in).at("analytics_runtime").at("yolo_spatial_mask");
+        arm::OrangeAnalyticsSpatialMaskRecordingArmV1 value;
+        std::string error;
+        check(arm::parse(record, &value, &error) && arm::to_json(value) == record,
+              std::string(kind) + " round-trips (" + std::to_string(record.at("cameras").size()) + " cameras) " + error);
+    }
+    std::ifstream in(dir + "/arm_headless/recording_geometry_contract.json");
+    const nlohmann::json good = nlohmann::json::parse(in).at("analytics_runtime").at("yolo_spatial_mask");
+    auto refused = [&](nlohmann::json j, const std::string& what, const std::string& expect) {
+        arm::OrangeAnalyticsSpatialMaskRecordingArmV1 v;
+        std::string error;
+        const bool ok = arm::parse(j, &v, &error);
+        check(!ok && error.find(expect) != std::string::npos, "arm refuses " + what + " (" + error + ")");
+    };
+    { auto j = good; j.erase("application_phase"); refused(j, "headless without application_phase", "must contain application_phase"); }
+    { auto j = good; j["cameras"].begin().value()["mode"] = "bogus";
+      refused(j, "a camera entry matching neither branch", "must match exactly one of 2 alternatives, matched 0"); }
+    { nlohmann::json j = {{"schema_id", "orange.analytics.spatial_mask_recording_arm"}, {"schema_version", 1}, {"status", "failed"}};
+      refused(j, "a failed arm without its error", "must contain error"); }
+    { nlohmann::json j = {{"schema_id", "orange.analytics.spatial_mask_recording_arm"}, {"schema_version", 1}, {"status", "failed"},
+                          {"error", "x"}, {"cameras", {{"2010093", {{"status", "resolution_failed"}, {"error_code", "e"}, {"error", "x"}}}}}};
+      arm::OrangeAnalyticsSpatialMaskRecordingArmV1 v; std::string e;
+      check(arm::parse(j, &v, &e) && v.cameras && v.cameras->at("2010093").index() == 1 && arm::to_json(v) == j,
+            "a resolution failure is the second alternative " + e); }
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -189,6 +221,7 @@ int main(int argc, char** argv) {
 
     engine_manifests(dir + "/engine_manifests");
     snapshot_models(dir + "/recording_snapshot_models_excerpt.json");
+    spatial_mask_arms(dir);
 
     std::cout << (failures ? "generated_outputs_tests FAILED\n" : "generated_outputs_tests passed\n");
     return failures ? 1 : 0;

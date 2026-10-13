@@ -1,0 +1,203 @@
+{
+  "excerpt_of": "exp/unsorted/fourcam_fused_recorder_realfish_int8_192_native_ownerpush_ring_od8ff_s16_integration_20261011_215128/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25__aq_off__tempaq_off__lookahead_off/recording_geometry_contract.json",
+  "analytics_runtime": {
+    "yolo_spatial_mask": {
+      "application_phase": "before_headless_worker_start",
+      "armed_camera_count": 4,
+      "cameras": {
+        "2010093": {
+          "arena_id": "",
+          "camera_serial": "2010093",
+          "centroid_gate": {
+            "enforced": false,
+            "evaluated": false,
+            "geometry": {
+              "coordinate_space": "camera_native_pixels",
+              "cx": 0.0,
+              "cy": 0.0,
+              "radius": 0.0,
+              "type": "circle"
+            }
+          },
+          "input_mask": {
+            "enabled": false,
+            "geometry": {
+              "coordinate_space": "camera_native_pixels",
+              "cx": 0.0,
+              "cy": 0.0,
+              "radius": 0.0,
+              "type": "circle"
+            },
+            "input_context_outset_px": 0.0,
+            "outside_tensor_value": 0.0
+          },
+          "mode": "off",
+          "policy_generation": 1,
+          "registration_id": "",
+          "schema_id": "orange.analytics.spatial_mask_runtime",
+          "schema_version": 1,
+          "source": {
+            "artifact_fingerprint": "",
+            "artifact_id": "",
+            "artifact_schema_id": "",
+            "artifact_schema_version": 0,
+            "path": "",
+            "recording_relative_path": "",
+            "sha256": ""
+          },
+          "source_raster": {
+            "height": 4512,
+            "width": 4512
+          },
+          "status": "requested_before_worker_start"
+        },
+        "2010094": {
+          "arena_id": "",
+          "camera_serial": "2010094",
+          "centroid_gate": {
+            "enforced": false,
+            "evaluated": false,
+            "geometry": {
+              "coordinate_space": "camera_native_pixels",
+              "cx": 0.0,
+              "cy": 0.0,
+              "radius": 0.0,
+              "type": "circle"
+            }
+          },
+          "input_mask": {
+            "enabled": false,
+            "geometry": {
+              "coordinate_space": "camera_native_pixels",
+              "cx": 0.0,
+              "cy": 0.0,
+              "radius": 0.0,
+              "type": "circle"
+            },
+            "input_context_outset_px": 0.0,
+            "outside_tensor_value": 0.0
+          },
+          "mode": "off",
+          "policy_generation": 1,
+          "registration_id": "",
+          "schema_id": "orange.analytics.spatial_mask_runtime",
+          "schema_version": 1,
+          "source": {
+            "artifact_fingerprint": "",
+            "artifact_id": "",
+            "artifact_schema_id": "",
+            "artifact_schema_version": 0,
+            "path": "",
+            "recording_relative_path": "",
+            "sha256": ""
+          },
+          "source_raster": {
+            "height": 4512,
+            "width": 4512
+          },
+          "status": "requested_before_worker_start"
+        },
+        "2010095": {
+          "arena_id": "",
+          "camera_serial": "2010095",
+          "centroid_gate": {
+            "enforced": false,
+            "evaluated": false,
+            "geometry": {
+              "coordinate_space": "camera_native_pixels",
+              "cx": 0.0,
+              "cy": 0.0,
+              "radius": 0.0,
+              "type": "circle"
+            }
+          },
+          "input_mask": {
+            "enabled": false,
+            "geometry": {
+              "coordinate_space": "camera_native_pixels",
+              "cx": 0.0,
+              "cy": 0.0,
+              "radius": 0.0,
+              "type": "circle"
+            },
+            "input_context_outset_px": 0.0,
+            "outside_tensor_value": 0.0
+          },
+          "mode": "off",
+          "policy_generation": 1,
+          "registration_id": "",
+          "schema_id": "orange.analytics.spatial_mask_runtime",
+          "schema_version": 1,
+          "source": {
+            "artifact_fingerprint": "",
+            "artifact_id": "",
+            "artifact_schema_id": "",
+            "artifact_schema_version": 0,
+            "path": "",
+            "recording_relative_path": "",
+            "sha256": ""
+          },
+          "source_raster": {
+            "height": 4512,
+            "width": 4512
+          },
+          "status": "requested_before_worker_start"
+        },
+        "2010096": {
+          "arena_id": "",
+          "camera_serial": "2010096",
+          "centroid_gate": {
+            "enforced": false,
+            "evaluated": false,
+            "geometry": {
+              "coordinate_space": "camera_native_pixels",
+              "cx": 0.0,
+              "cy": 0.0,
+              "radius": 0.0,
+              "type": "circle"
+            }
+          },
+          "input_mask": {
+            "enabled": false,
+            "geometry": {
+              "coordinate_space": "camera_native_pixels",
+              "cx": 0.0,
+              "cy": 0.0,
+              "radius": 0.0,
+              "type": "circle"
+            },
+            "input_context_outset_px": 0.0,
+            "outside_tensor_value": 0.0
+          },
+          "mode": "off",
+          "policy_generation": 1,
+          "registration_id": "",
+          "schema_id": "orange.analytics.spatial_mask_runtime",
+          "schema_version": 1,
+          "source": {
+            "artifact_fingerprint": "",
+            "artifact_id": "",
+            "artifact_schema_id": "",
+            "artifact_schema_version": 0,
+            "path": "",
+            "recording_relative_path": "",
+            "sha256": ""
+          },
+          "source_raster": {
+            "height": 4512,
+            "width": 4512
+          },
+          "status": "requested_before_worker_start"
+        }
+      },
+      "configuration_source": "default_off",
+      "immutable_for_recording": true,
+      "input_context_outset_px": 0.0,
+      "mode": "off",
+      "outside_tensor_value": 0.0,
+      "schema_id": "orange.analytics.spatial_mask_recording_arm",
+      "schema_version": 1,
+      "status": "armed_before_worker_start"
+    }
+  }
+}

@@ -212,11 +212,18 @@ set(ORANGE_GENERATED_SCHEMAS
     "orange_pose_event_v3:pose_event_v3"
     "orange_tensorrt_engine_manifest_v1:tensorrt_engine_manifest_v1"
     "orange_analytics_spatial_mask_runtime_v1:spatial_mask_runtime_v1"
+    "orange_analytics_spatial_mask_recording_arm_v1:spatial_mask_recording_arm_v1"
     "orange_recording_detect_model_v1:recording_detect_model_v1"
     "orange_recording_pose_model_v2:recording_pose_model_v2"
 )
 set(ORANGE_CODEGEN "${CMAKE_SOURCE_DIR}/tools/schema_codegen/codegen.py")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ORANGE_CODEGEN}")
+# Every generated schema may $ref another one by file; the generator needs their namespaces.
+set(ORANGE_CODEGEN_REFS "")
+foreach(entry IN LISTS ORANGE_GENERATED_SCHEMAS)
+    string(REPLACE ":" "=" ref "${entry}")
+    list(APPEND ORANGE_CODEGEN_REFS "--ref" "${ref}")
+endforeach()
 foreach(entry IN LISTS ORANGE_GENERATED_SCHEMAS)
     string(REPLACE ":" ";" parts "${entry}")
     list(GET parts 0 schema_name)
@@ -226,6 +233,7 @@ foreach(entry IN LISTS ORANGE_GENERATED_SCHEMAS)
     execute_process(
         COMMAND "${Python3_EXECUTABLE}" "${ORANGE_CODEGEN}" "${schema_file}"
                 "${ORANGE_GENERATED_DIR}/orange_outputs/${schema_name}.h" --namespace "${schema_namespace}"
+                ${ORANGE_CODEGEN_REFS}
         RESULT_VARIABLE codegen_result)
     if(NOT codegen_result EQUAL 0)
         message(FATAL_ERROR "schema codegen failed for ${schema_name}")

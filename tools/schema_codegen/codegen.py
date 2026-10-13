@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate C++ structs, writers and strict readers from Orange's published JSON Schemas.
 
-  codegen.py <schema.json> <output header> [--namespace NAME]
+  codegen.py <schema.json> <output header> --namespace NAME [--ref SCHEMA_STEM=NAMESPACE]...
 
 Design: docs/schema_first_outputs_design_2026-10-12.md. The generator accepts a deliberate
 subset of JSON Schema and refuses anything else, so a schema never says more than the generated
@@ -16,13 +16,19 @@ code enforces:
   On an object: allOf of {if, then} rules, where `if` tests const / enum values below nested
   properties and `then` constrains values below nested properties (const, enum, type, minLength,
   maxLength, pattern, minimum, maximum). They are checked on the parsed JSON with JSON Schema's
-  semantics: an absent value satisfies a `properties` condition and is not constrained.
+  semantics: an absent value satisfies a `properties` condition and is not constrained. `then`
+  may also list `required` keys.
+  A `$ref` to another schema file in the same directory ("<stem>.schema.json") is that file's
+  generated root type, from its header (the stem must be passed with --ref and its namespace).
+  A `oneOf` below the root, whose branches are objects or such references, is a std::variant;
+  parse requires exactly one branch to match, as JSON Schema does.
 
 Generated per object schema:
   struct T { typed fields in schema order };      const fields are not stored
   nlohmann::json to_json(const T&);               consts filled in, numbers rounded as declared
   bool parse(const nlohmann::json&, T*, std::string* error);   exact keys, types, consts, enums,
                                                                 ranges, lengths, patterns
+An optional const is not stored but its presence is (`bool has_<name>`), so it round-trips.
 For a root oneOf: a std::variant of the branch structs, dispatched on the discriminator.
 
 Only the standard library is used, so the generator runs at CMake configure time anywhere.
@@ -128,6 +134,18 @@ class ObjectT:
 
 
 @dataclass
+class ExternalT:                  # the root type of another published schema file
+    stem: str                     # file name without .schema.json
+    namespace: str
+    type_name: str
+
+
+@dataclass
+class OneOfT:                     # a oneOf below the root: exactly one branch must match
+    branches: list
+
+
+@dataclass
 class VariantT:
     name: str
     discriminator: str
@@ -135,9 +153,28 @@ class VariantT:
 
 
 class Builder:
-    def __init__(self, root: dict):
+    def __init__(self, root: dict, schema_dir: Path | None = None, refs: dict | None = None):
         self.root = root
+        self.schema_dir = schema_dir
+        self.refs = refs or {}                # schema stem -> generated namespace
+        self.externals: dict[str, ExternalT] = {}
         self.objects: list[ObjectT] = []     # emission order: dependencies first
+
+    def external(self, node: dict, where: str):
+        """ExternalT for a {"$ref": "<stem>.schema.json"} node, else None."""
+        ref = node.get("$ref") if isinstance(node, dict) else None
+        if not isinstance(ref, str) or ref.startswith("#"):
+            return None
+        if not ref.endswith(".schema.json") or "/" in ref or set(node) - {"$ref", "description"}:
+            raise SchemaError(f"{where}: only a whole-file $ref to a sibling schema is supported, got {ref}")
+        stem = ref[: -len(".schema.json")]
+        if stem not in self.refs:
+            raise SchemaError(f"{where}: {ref} is not a generated schema (pass --ref {stem}=<namespace>)")
+        if stem not in self.externals:
+            target = json.loads((self.schema_dir / ref).read_text(encoding="utf-8"))
+            type_name = target.get("x-orange-cpp-name") or camel(stem)
+            self.externals[stem] = ExternalT(stem, self.refs[stem], type_name)
+        return self.externals[stem]
 
     def resolve(self, node: dict) -> dict:
         while "$ref" in node:
@@ -153,6 +190,9 @@ class Builder:
             raise SchemaError(f"{where}: unsupported keywords {sorted(unknown)}")
 
     def type_of(self, node: dict, name: str, where: str):
+        external = self.external(node, where)
+        if external is not None:
+            return external
         node = self.resolve(node)
         self.check_keywords(node, where)
         types = node.get("type")
@@ -167,7 +207,13 @@ class Builder:
                 raise SchemaError(f"{where}: duplicate types {types}")
             types = non_null[0]
         if "oneOf" in node:
-            raise SchemaError(f"{where}: oneOf is supported only at the schema root")
+            if set(node) - {"oneOf", "description", "title"}:
+                raise SchemaError(f"{where}: a oneOf below the root must stand alone")
+            branches = [self.type_of(b, f"{name}Option{i}", f"{where}/oneOf[{i}]")
+                        for i, b in enumerate(node["oneOf"])]
+            if not all(isinstance(b, (ObjectT, ExternalT)) for b in branches):
+                raise SchemaError(f"{where}: oneOf branches must be objects or schema references")
+            return OneOfT(branches)
         if "allOf" in node and "properties" not in node:
             raise SchemaError(f"{where}: allOf is supported only on an object with properties")
         if types == "object" or (types is None and "properties" in node):
@@ -200,7 +246,8 @@ class Builder:
         raise SchemaError(f"{where}: cannot map type {types!r}")
 
     IF_CHECKS = {"const", "enum"}
-    THEN_CHECKS = {"const", "enum", "type", "minLength", "maxLength", "pattern", "minimum", "maximum"}
+    THEN_CHECKS = {"const", "enum", "type", "minLength", "maxLength", "pattern", "minimum", "maximum",
+                   "required"}
     TREE_NOTES = {"description", "title"}
 
     def rules(self, node: dict, allowed: set, where: str, path: tuple = ()) -> list:
@@ -238,7 +285,7 @@ class Builder:
         obj.conditions = self.conditions(node, where)
         required = set(node.get("required", []))
         for json_name, sub in node["properties"].items():
-            sub_r = self.resolve(sub)
+            sub_r = sub if self.external(sub, f"{where}/{json_name}") else self.resolve(sub)
             self.check_keywords(sub_r, f"{where}/{json_name}")
             nullable = (isinstance(sub_r.get("type"), list) and "null" in sub_r["type"] and
                         len(sub_r["type"]) == 2)
@@ -287,6 +334,10 @@ def cpp_type(t) -> str:
         return f"std::map<std::string, {cpp_type(t.value)}>"
     if isinstance(t, OpaqueT):
         return "nlohmann::json"
+    if isinstance(t, ExternalT):
+        return f"::orange::outputs::gen::{t.namespace}::{t.type_name}"
+    if isinstance(t, OneOfT):
+        return "std::variant<" + ", ".join(cpp_type(b) for b in t.branches) + ">"
     if isinstance(t, ObjectT):
         return t.name
     raise TypeError(t)
@@ -324,6 +375,11 @@ class Emitter:
             return f"to_json({expr})"
         if isinstance(t, OpaqueT):
             return expr
+        if isinstance(t, ExternalT):
+            return f"::orange::outputs::gen::{t.namespace}::to_json({expr})"
+        if isinstance(t, OneOfT):
+            # Each alternative's to_json lives in its own namespace; ADL finds it.
+            return f"std::visit([](const auto& alt) {{ return nlohmann::json(to_json(alt)); }}, {expr})"
         if isinstance(t, ArrayT):
             return (f"[&] {{ nlohmann::json a = nlohmann::json::array(); for (const auto& v : {expr}) "
                     f"a.push_back({self.write_expr(t.item, 'v')}); return a; }}()")
@@ -370,6 +426,21 @@ class Emitter:
                     out.append(f"if (static_cast<double>({dst}) > {float(t.maximum)!r}) {fail('above maximum')}")
         elif isinstance(t, ObjectT):
             out.append(f"if (!parse({src}, &{dst}, error, {path})) return false;")
+        elif isinstance(t, ExternalT):
+            out.append(f"if (!::orange::outputs::gen::{t.namespace}::parse({src}, &{dst}, error, {path})) return false;")
+        elif isinstance(t, OneOfT):
+            out.append("{")
+            out.append("    int matches = 0;")
+            out.append("    std::string reasons;")
+            for i, branch in enumerate(t.branches):
+                call = (f"::orange::outputs::gen::{branch.namespace}::parse" if isinstance(branch, ExternalT)
+                        else "parse")
+                out.append(f"    {{ {cpp_type(branch)} alternative{{}}; std::string why;")
+                out.append(f"      if ({call}({src}, &alternative, &why, {path})) {{ {dst} = std::move(alternative); ++matches; }}")
+                out.append(f"      else {{ reasons += \" [{i}] \" + why; }} }}")
+            out.append(f"    if (matches != 1) return detail::fail(error, {path} + \": must match exactly one of "
+                       f"{len(t.branches)} alternatives, matched \" + std::to_string(matches) + reasons);")
+            out.append("}")
         elif isinstance(t, OpaqueT):
             if t.types:
                 checks = {"object": "is_object", "array": "is_array", "string": "is_string",
@@ -402,6 +473,8 @@ class Emitter:
         self.w(f"struct {obj.name} {{")
         for f in obj.fields:
             if f.is_const:
+                if not f.required:
+                    self.w(f"    bool has_{f.cpp_name}{{}};          // the optional const key is present")
                 continue
             t = cpp_type(f.type)
             if f.nullable:
@@ -423,7 +496,9 @@ class Emitter:
             self.w("    for (auto it = value.extra.begin(); it != value.extra.end(); ++it) out[it.key()] = it.value();")
         for f in obj.fields:
             key = json.dumps(f.json_name)
-            if f.is_const:
+            if f.is_const and not f.required:
+                self.w(f"    if (value.has_{f.cpp_name}) out[{key}] = {json_literal(f.const)};")
+            elif f.is_const:
                 self.w(f"    out[{key}] = {json_literal(f.const)};")
             elif f.nullable and not f.required:
                 self.w(f"    if (value.{f.cpp_name}) out[{key}] = *value.{f.cpp_name} ? {self.write_expr(f.type, '**value.' + f.cpp_name)} : nlohmann::json(nullptr);")
@@ -460,6 +535,7 @@ class Emitter:
                     self.w(f"    if (!{cond}) return detail::fail(error, {fpath} + \": missing\");")
                     self.w(f"    {check}")
                 else:
+                    self.w(f"    out->has_{f.cpp_name} = {cond};")
                     self.w(f"    if ({cond}) {{ {check} }}")
                 continue
             self.w(f"    if (in.contains({key})) {{")
@@ -520,6 +596,9 @@ class Emitter:
                 tests.append((f"!v.is_number() || v.get<double>() >= {float(value)!r}", f"must be >= {value}"))
             elif keyword == "maximum":
                 tests.append((f"!v.is_number() || v.get<double>() <= {float(value)!r}", f"must be <= {value}"))
+            elif keyword == "required":
+                present = " && ".join(f"v.contains({json.dumps(k)})" for k in value)
+                tests.append((f"!v.is_object() || ({present})", f"must contain {', '.join(value)}"))
         return tests
 
     def emit_condition(self, condition: Condition) -> None:
@@ -543,10 +622,10 @@ class Emitter:
         self.w("    }")
 
 
-def generate(schema_path: Path, namespace: str) -> str:
+def generate(schema_path: Path, namespace: str, refs: dict | None = None) -> str:
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     root_name = schema.get("x-orange-cpp-name") or camel(schema_path.name.replace(".schema.json", ""))
-    builder = Builder(schema)
+    builder = Builder(schema, schema_path.parent, refs)
     top = builder.build(root_name)
     em = Emitter()
     em.w("// GENERATED by tools/schema_codegen/codegen.py from")
@@ -555,6 +634,8 @@ def generate(schema_path: Path, namespace: str) -> str:
     em.w()
     for inc in ("json.hpp", ):
         em.w(f'#include "{inc}"')
+    for stem in sorted(builder.externals):
+        em.w(f'#include "orange_outputs/{stem}.h"')
     for inc in ("cmath", "cstdint", "initializer_list", "map", "optional", "regex", "set",
                 "string", "variant", "vector"):
         em.w(f"#include <{inc}>")
@@ -619,9 +700,18 @@ def main() -> int:
     parser.add_argument("schema", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--namespace", required=True)
+    parser.add_argument("--ref", action="append", default=[],
+                        help="SCHEMA_STEM=NAMESPACE of another generated schema this one may $ref")
     args = parser.parse_args()
+    refs = {}
+    for item in args.ref:
+        stem, _, ns = item.partition("=")
+        if not stem or not ns:
+            print(f"codegen: --ref {item!r} is not SCHEMA_STEM=NAMESPACE", file=sys.stderr)
+            return 2
+        refs[stem] = ns
     try:
-        text = generate(args.schema, args.namespace)
+        text = generate(args.schema, args.namespace, refs)
     except SchemaError as exc:
         print(f"codegen: {args.schema.name}: {exc}", file=sys.stderr)
         return 1

@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.analytics.spatial_mask_recording_arm.v1",
+  "title": "Orange YOLO spatial mask recording arm (version 1)",
+  "description": "recording_geometry_contract.json analytics_runtime.yolo_spatial_mask: how the YOLO spatial mask was armed for one recording, sealed with the recording. Written by the GUI (arm_gui_yolo_spatial_masks, src/orange.cpp; status armed, not_applicable_no_yolo_workers or failed, with apply_timeout_ms) and by the headless client (src/orange_headless_client.cpp; status armed_before_worker_start, with application_phase). cameras.<serial> holds each armed camera's orange.analytics.spatial_mask_runtime v1 policy, or the record of a camera whose policy did not resolve. A GUI start whose mask configuration did not resolve writes only schema_id, schema_version, status failed and error. The recording snapshot requires complete registration evidence when an armed mode is not off (update_recording_snapshot_geometry_contract_reference, src/project.cpp). Closed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_id", "schema_version", "status"],
+  "properties": {
+    "schema_id": {
+      "const": "orange.analytics.spatial_mask_recording_arm"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": ["armed", "armed_before_worker_start", "not_applicable_no_yolo_workers", "failed"],
+      "description": "armed: every YOLO worker applied its policy before recording (GUI). armed_before_worker_start: the policies were requested before the workers started (headless). not_applicable_no_yolo_workers: no camera runs YOLO (GUI). failed: arming failed and the start was refused (GUI)."
+    },
+    "error": {
+      "type": "string",
+      "description": "Why arming failed (status failed)."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["off", "audit", "gate_only", "gate_and_input_mask"],
+      "description": "The mode requested for every camera of the recording."
+    },
+    "configuration_source": {
+      "type": "string",
+      "enum": ["default_off", "environment", "gui"],
+      "description": "default_off: nothing requested a mode. environment: ORANGE_YOLO_SPATIAL_MASK_MODE. gui: the GUI's spatial mask panel."
+    },
+    "input_context_outset_px": {
+      "type": "number",
+      "minimum": 0
+    },
+    "outside_tensor_value": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "apply_timeout_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "GUI: how long each worker had to apply its policy."
+    },
+    "application_phase": {
+      "const": "before_headless_worker_start",
+      "description": "Headless: the policies are requested before the workers start."
+    },
+    "immutable_for_recording": {
+      "const": true
+    },
+    "armed_camera_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "cameras": {
+      "type": "object",
+      "description": "Camera serial -> its policy, or the record of a policy that did not resolve.",
+      "additionalProperties": {
+        "oneOf": [
+          {"$ref": "orange_analytics_spatial_mask_runtime_v1.schema.json"},
+          {"$ref": "#/$defs/resolution_failure"}
+        ]
+      }
+    }
+  },
+  "allOf": [
+    {
+      "description": "An armed recording says how and for which cameras.",
+      "if": {"properties": {"status": {"enum": ["armed", "armed_before_worker_start"]}}},
+      "then": {
+        "required": ["mode", "configuration_source", "input_context_outset_px", "outside_tensor_value",
+                     "immutable_for_recording", "cameras", "armed_camera_count"]
+      }
+    },
+    {
+      "description": "The GUI arms with a timeout.",
+      "if": {"properties": {"status": {"enum": ["armed", "not_applicable_no_yolo_workers"]}}},
+      "then": {
+        "required": ["mode", "configuration_source", "input_context_outset_px", "outside_tensor_value",
+                     "apply_timeout_ms", "immutable_for_recording", "cameras"]
+      }
+    },
+    {
+      "description": "The headless client arms before its workers start.",
+      "if": {"properties": {"status": {"const": "armed_before_worker_start"}}},
+      "then": {"required": ["application_phase"]}
+    },
+    {
+      "description": "A failed arm says why.",
+      "if": {"properties": {"status": {"const": "failed"}}},
+      "then": {"required": ["error"]}
+    }
+  ],
+  "$defs": {
+    "resolution_failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "error_code", "error"],
+      "description": "A camera whose policy could not be resolved from the recording geometry contract.",
+      "properties": {
+        "status": {
+          "const": "resolution_failed"
+        },
+        "error_code": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

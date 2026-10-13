@@ -84,7 +84,10 @@ then}` rules on an object (`if` tests const / enum values, `then` constrains con
 lengths, pattern and ranges, both below nested `properties`, with JSON Schema's semantics: an
 absent value satisfies the condition and is not constrained), arrays without `items` and
 multi-type unions kept as JSON checked against the declared types, and optional nullable fields
-as `std::optional<std::optional<T>>` (absent vs null).
+as `std::optional<std::optional<T>>` (absent vs null). Also (2026-10-13): a whole-file `$ref`
+to a sibling schema (that file's generated type, `--ref stem=namespace`), a `oneOf` below the
+root (a `std::variant`; exactly one branch must parse), `required` in `then`, and optional consts
+that keep their presence.
 
 ## 3. Generator
 
@@ -180,6 +183,14 @@ Palette's pin turnaround.
 - Spatial mask runtime policy: new `orange.analytics.spatial_mask_runtime` v1 schema (all 564 real
   policies match, every mode of `policy_to_json` passes the generated parser in
   `yolo_spatial_mask_tests`). Writer and readers not yet switched.
+
+- Readers of the models block (`session/snapshot_models.h`: model artifacts, realtime products)
+  and of the policy (event-log reader, YOLO validator) are generated; realtime products scans the
+  event logs with the generated v3 parsers. Old and new readers are byte-identical on 9 real
+  recordings.
+- Spatial mask arm (`analytics_runtime.yolo_spatial_mask`): new `orange.analytics.spatial_mask_recording_arm`
+  v1 schema; all 394 real arm documents (GUI and headless) and all 2,858 real policies, including
+  the 32 active ones of 2026-08-25, match. Writers not yet switched.
 
 ## 8. Open questions
 
