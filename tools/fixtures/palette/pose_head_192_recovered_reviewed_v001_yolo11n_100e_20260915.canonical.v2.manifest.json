@@ -1,28 +1,29 @@
 {
+  "canonicalization": "canonical_json_utf8_sort_keys_compact_v1",
   "payload": {
     "onnx": {
       "relative_path": "exports/onnx/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915.onnx",
-      "sha256": "db5c8c3305b71c52f147152507dd8cd890d42396162adf74b1b8afbafe84f12f"
+      "sha256": "sha256:db5c8c3305b71c52f147152507dd8cd890d42396162adf74b1b8afbafe84f12f"
     },
     "pose_model_input_contract": {
-      "payload_digest": "fc62e911e5df76e01b123a27f7e1c77c05ab40370fa3db81f19bbd3e03c66b61",
+      "payload_sha256": "sha256:fc62e911e5df76e01b123a27f7e1c77c05ab40370fa3db81f19bbd3e03c66b61",
       "relative_path": "pose_model_input_contract.json",
-      "sha256": "64cf20a2da29aa4df9a61c8bc2691f9114fc743d1f80e5f044eea96fb3d1ee83"
+      "sha256": "sha256:64cf20a2da29aa4df9a61c8bc2691f9114fc743d1f80e5f044eea96fb3d1ee83"
     },
     "run_id": "pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915",
     "set_id": "pose_head_192_recovered_reviewed_v001",
     "source_export_manifest": {
       "relative_path": "exports/onnx/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915.onnx.manifest.json",
-      "sha256": "6b1e5288384ebf2574acdb423ec0fd413fc9839df62941efe4abca91046e193e"
+      "sha256": "sha256:6b1e5288384ebf2574acdb423ec0fd413fc9839df62941efe4abca91046e193e"
     },
     "status": "complete",
     "task": "pose",
     "weights": {
       "relative_path": "weights/best.pt",
-      "sha256": "2edf67ad1fd97b5ac3835c2423a8d54775402c7d97a17c2a99a45e9e11d7b191"
+      "sha256": "sha256:2edf67ad1fd97b5ac3835c2423a8d54775402c7d97a17c2a99a45e9e11d7b191"
     }
   },
-  "payload_digest": "09d66a9e89ff17546fc1e14f1bca15bd4f626049f4d49e02e72cf994b7382de6",
+  "payload_sha256": "sha256:b8b2180fffebb47b84f87519d2641f036b84a2f368188de24d10edf5f07e67bf",
   "schema_id": "palette.canonical_onnx_model_manifest",
-  "schema_version": 1
+  "schema_version": 2
 }

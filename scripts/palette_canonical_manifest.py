@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Check a Palette canonical ONNX model manifest before an engine names it.
 
-The manifest must be valid against the pinned Palette schema of the version it declares
-(contracts/palette_canonical_onnx_model_manifest_v{1,2}.schema.json, contracts/README.md), and its
-payload digest (v1 payload_digest, v2 payload_sha256) must be the SHA-256 of the payload's
-canonical JSON (canonical_json_utf8_sort_keys_compact_v1: sorted keys, compact, UTF-8). Orange's
+The manifest must declare version 2 and be valid against the pinned Palette schema
+(contracts/palette_canonical_onnx_model_manifest_v2.schema.json, contracts/README.md; version 1,
+with a bare-hex payload_digest, was retired on 2026-10-13), and its payload_sha256 must be the
+SHA-256 token of the payload's canonical JSON (canonical_json_utf8_sort_keys_compact_v1: sorted keys, compact, UTF-8). Orange's
 record start checks the same in C++ (src/model_identity.cpp) and refuses on failure.
 
   palette_canonical_manifest.py <manifest.json>...     exit 1 when any is not valid
@@ -41,17 +41,15 @@ def problems(path: Path) -> list[str]:
     if not isinstance(manifest, dict) or manifest.get("schema_id") != SCHEMA_ID:
         return [f"schema_id is not {SCHEMA_ID}"]
     version = manifest.get("schema_version")
-    schema_file = CONTRACTS / f"palette_canonical_onnx_model_manifest_v{version}.schema.json"
-    if not isinstance(version, int) or not schema_file.exists():
-        return [f"schema_version {version!r} has no pinned Palette schema"]
-    schema = json.loads(schema_file.read_text(encoding="utf-8"))
-    found = [f"not valid against {SCHEMA_ID} v{version}: {e.message} at /{'/'.join(map(str, e.path))}"
+    if version != 2 or isinstance(version, bool):
+        return [f"schema_version {version!r} is not accepted: Orange accepts {SCHEMA_ID} v2 only"]
+    schema = json.loads((CONTRACTS / "palette_canonical_onnx_model_manifest_v2.schema.json").read_text(encoding="utf-8"))
+    found = [f"not valid against {SCHEMA_ID} v2: {e.message} at /{'/'.join(map(str, e.path))}"
              for e in Draft202012Validator(schema).iter_errors(manifest)]
     if found:
         return found
-    digest = payload_digest(manifest["payload"])
-    declared = manifest["payload_digest"] if version == 1 else manifest["payload_sha256"]
-    expected = digest if version == 1 else "sha256:" + digest
+    declared = manifest["payload_sha256"]
+    expected = "sha256:" + payload_digest(manifest["payload"])
     if declared != expected:
         return [f"payload digest {declared} is not the payload's digest {expected}"]
     return []

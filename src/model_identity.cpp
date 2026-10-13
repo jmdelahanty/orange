@@ -1,7 +1,6 @@
 #include "model_identity.h"
 
 #include "orange_outputs/orange_tensorrt_engine_manifest_v1.h"
-#include "orange_outputs/palette_canonical_onnx_model_manifest_v1.h"
 #include "orange_outputs/palette_canonical_onnx_model_manifest_v2.h"
 #include "outputs/common/digest.h"
 #include "pose_skeleton_sidecar.h"
@@ -36,7 +35,8 @@ std::string string_or_empty(const std::optional<std::string>& value)
 }
 
 // Palette's canonical ONNX manifest: the bytes the engine manifest recorded, valid against the
-// pinned Palette schema of the version it declares.
+// pinned Palette schema. Only version 2 is accepted; version 1 (bare-hex payload_digest) was
+// retired on 2026-10-13, when the last production engine was rebound to a v2 manifest.
 std::string check_canonical_manifest(const std::string& path, const std::string& declared_sha256)
 {
     bool ok = false;
@@ -68,24 +68,16 @@ std::string check_canonical_manifest(const std::string& path, const std::string&
     } catch (const std::exception&) {
         return "payload is not valid UTF-8 JSON";
     }
-    if (version == 1) {
-        orange::outputs::gen::palette_canonical_onnx_manifest_v1::PaletteCanonicalOnnxModelManifestV1 parsed;
-        if (!orange::outputs::gen::palette_canonical_onnx_manifest_v1::parse(manifest, &parsed, &error)) {
-            return "not valid against palette.canonical_onnx_model_manifest v1: " + error;
-        }
-        if (parsed.payload_digest != payload_hex) {
-            return "payload_digest " + parsed.payload_digest + " is not the payload's digest " + payload_hex;
-        }
-    } else if (version == 2) {
-        orange::outputs::gen::palette_canonical_onnx_manifest_v2::PaletteCanonicalOnnxModelManifestV2 parsed;
-        if (!orange::outputs::gen::palette_canonical_onnx_manifest_v2::parse(manifest, &parsed, &error)) {
-            return "not valid against palette.canonical_onnx_model_manifest v2: " + error;
-        }
-        if (parsed.payload_sha256 != "sha256:" + payload_hex) {
-            return "payload_sha256 " + parsed.payload_sha256 + " is not the payload's digest sha256:" + payload_hex;
-        }
-    } else {
-        return "schema_version " + version.dump() + " has no pinned Palette schema";
+    if (version != 2) {
+        return "schema_version " + version.dump() +
+            " is not accepted: Orange accepts palette.canonical_onnx_model_manifest v2 only";
+    }
+    orange::outputs::gen::palette_canonical_onnx_manifest_v2::PaletteCanonicalOnnxModelManifestV2 parsed;
+    if (!orange::outputs::gen::palette_canonical_onnx_manifest_v2::parse(manifest, &parsed, &error)) {
+        return "not valid against palette.canonical_onnx_model_manifest v2: " + error;
+    }
+    if (parsed.payload_sha256 != "sha256:" + payload_hex) {
+        return "payload_sha256 " + parsed.payload_sha256 + " is not the payload's digest sha256:" + payload_hex;
     }
     return {};
 }

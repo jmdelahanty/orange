@@ -31,6 +31,6 @@ re-encoding or requiring GPU access. Decoded base64 SHA-256:
 `palette/` holds documents Palette writes and Orange only reads, copied byte for byte from the
 rig, as test input for Orange's checks of them. They are not Orange outputs, so the output
 ratchets (`scripts/validate_output_schemas.py`, the digest-form allowlist) never apply to them.
-`pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915.canonical.manifest.json` is the
-production pose model's canonical ONNX manifest (palette.canonical_onnx_model_manifest v1), as its
-engine manifest names it.
+`pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915.canonical.v2.manifest.json` is the
+production pose model's canonical ONNX manifest (palette.canonical_onnx_model_manifest v2, Palette
+re-promotion #391, sha256 2ed34f75…3dd7), as its engine manifest names it since 2026-10-13.

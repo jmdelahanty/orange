@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """scripts/palette_canonical_manifest.py: the engine build's check of Palette canonical manifests.
 
-Mirrors the record-start check in tools/model_identity_tests.cpp: the production pose manifest (v1)
-and a valid v2 detect manifest pass; a v1 shape declaring v2, a tampered payload, an unpinned
-version and a detect manifest carrying a pose input contract fail.
+Mirrors the record-start check in tools/model_identity_tests.cpp: the production pose manifest (v2)
+and a valid v2 detect manifest pass; a version 1 manifest (retired), a v1 shape declaring v2, a
+tampered payload, an unknown version and a detect manifest carrying a pose input contract fail.
 
-  palette_canonical_manifest_tests.py <real v1 canonical manifest>
+  palette_canonical_manifest_tests.py <real v2 canonical manifest>
 """
 
 from __future__ import annotations
@@ -30,7 +30,9 @@ def check(doc, expect: str | None, what: str, folder: Path) -> bool:
 
 
 def main() -> int:
-    v1 = json.loads(Path(sys.argv[1]).read_text())
+    pose_v2 = json.loads(Path(sys.argv[1]).read_text())
+    v1 = {k: v for k, v in pose_v2.items() if k not in ("canonicalization", "payload_sha256")}
+    v1.update(schema_version=1, payload_digest=pose_v2["payload_sha256"][len("sha256:"):])
     token = "sha256:" + "a" * 64
     payload = {"status": "complete", "run_id": "run", "set_id": "set", "task": "detect",
                "weights": {"relative_path": "weights/best.pt", "sha256": token},
@@ -42,13 +44,14 @@ def main() -> int:
     ok = True
     with tempfile.TemporaryDirectory() as tmp:
         folder = Path(tmp)
-        ok &= check(v1, None, "the production pose canonical manifest (v1) passes", folder)
+        ok &= check(pose_v2, None, "the production pose canonical manifest (v2) passes", folder)
+        ok &= check(v1, "is not accepted", "a version 1 manifest (retired) fails", folder)
         ok &= check(v2, None, "a valid v2 detect manifest passes", folder)
         ok &= check(dict(v1, schema_version=2), "v2", "a v1 shape declaring v2 fails", folder)
-        tampered = copy.deepcopy(v1)
+        tampered = copy.deepcopy(pose_v2)
         tampered["payload"]["run_id"] = "another_run"
         ok &= check(tampered, "is not the payload's digest", "a tampered payload fails", folder)
-        ok &= check(dict(v1, schema_version=3), "no pinned Palette schema", "an unpinned version fails", folder)
+        ok &= check(dict(pose_v2, schema_version=3), "is not accepted", "an unknown version fails", folder)
         contract = copy.deepcopy(v2)
         contract["payload"]["pose_model_input_contract"] = {"relative_path": "c.json", "sha256": token, "payload_sha256": token}
         contract["payload_sha256"] = "sha256:" + payload_digest(contract["payload"])

@@ -216,32 +216,41 @@ nlohmann::json v2_detect_manifest()
             {"payload_sha256", "sha256:" + orange::outputs::sha256_hex(payload.dump())}, {"payload", payload}};
 }
 
-void test_canonical_manifest_checks(const fs::path& dir, const std::string& real_v1_path)
+void test_canonical_manifest_checks(const fs::path& dir, const std::string& real_v2_path)
 {
-    std::ifstream in(real_v1_path);
+    std::ifstream in(real_v2_path);
     std::stringstream buffer;
     buffer << in.rdbuf();
-    const std::string v1 = buffer.str();
-    require(canonical_refusal(dir, v1).empty(), "the production pose canonical manifest (v1) is accepted");
+    const std::string pose_v2 = buffer.str();
+    require(canonical_refusal(dir, pose_v2).empty(), "the production pose canonical manifest (v2) is accepted");
 
-    std::string why = canonical_refusal(dir, v1, std::string(64, 'f'));
+    std::string why = canonical_refusal(dir, pose_v2, std::string(64, 'f'));
     require(why.find("differs from the engine manifest") != std::string::npos, "a changed canonical manifest is refused: " + why);
 
-    nlohmann::json tampered = nlohmann::json::parse(v1);
+    nlohmann::json tampered = nlohmann::json::parse(pose_v2);
     tampered["payload"]["run_id"] = "another_run";
     why = canonical_refusal(dir, tampered.dump(2));
-    require(why.find("payload_digest") != std::string::npos, "a payload that is not its digest is refused: " + why);
+    require(why.find("payload_sha256") != std::string::npos, "a payload that is not its digest is refused: " + why);
 
-    nlohmann::json mislabelled = nlohmann::json::parse(v1);
+    // Version 1 (bare-hex payload_digest) is retired: refused whatever its content.
+    nlohmann::json v1 = nlohmann::json::parse(pose_v2);
+    v1["schema_version"] = 1;
+    v1.erase("canonicalization");
+    v1["payload_digest"] = v1["payload_sha256"].get<std::string>().substr(7);
+    v1.erase("payload_sha256");
+    why = canonical_refusal(dir, v1.dump(2));
+    require(why.find("is not accepted") != std::string::npos, "a version 1 manifest is refused: " + why);
+
+    nlohmann::json mislabelled = v1;
     mislabelled["schema_version"] = 2;
     why = canonical_refusal(dir, mislabelled.dump(2));
     require(why.find("not valid against palette.canonical_onnx_model_manifest v2") != std::string::npos,
             "a v1-shaped manifest declaring v2 is refused: " + why);
 
-    nlohmann::json future = nlohmann::json::parse(v1);
+    nlohmann::json future = nlohmann::json::parse(pose_v2);
     future["schema_version"] = 3;
     why = canonical_refusal(dir, future.dump(2));
-    require(why.find("has no pinned Palette schema") != std::string::npos, "an unpinned version is refused: " + why);
+    require(why.find("is not accepted") != std::string::npos, "an unpinned version is refused: " + why);
 
     const nlohmann::json v2 = v2_detect_manifest();
     why = canonical_refusal(dir, v2.dump(2));
