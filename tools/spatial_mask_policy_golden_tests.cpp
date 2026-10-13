@@ -4,7 +4,7 @@
 // Writes the policy in every mode (off from the default Policy, and audit / gate_only /
 // gate_and_input_mask resolved from a geometry-contract fixture, with and without an input
 // outset) and compares the bytes with
-// tools/fixtures/generated_outputs/golden/spatial_mask_policies.jsonl, produced by the
+// tools/fixtures/generated_outputs/golden/spatial_mask_policies.tsv, produced by the
 // hand-written writer before it switched to the generated orange.analytics.spatial_mask_runtime
 // v1 code (2026-10-12).
 //

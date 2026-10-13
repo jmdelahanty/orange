@@ -5,7 +5,7 @@
 // Builds the blocks across their branches (detect on/off, selected/default engine, missing
 // engine; pose real/noop/off, matching/mismatching/invalid skeleton sidecar, engine without a
 // manifest) under a fixed directory and compares every block's bytes with
-// tools/fixtures/generated_outputs/golden/model_snapshot_blocks.jsonl, produced by the
+// tools/fixtures/generated_outputs/golden/model_snapshot_blocks.tsv, produced by the
 // hand-written builders before they switched to the generated
 // orange.recording_detect_model.v1 / orange.recording_pose_model.v2 code (2026-10-12).
 //

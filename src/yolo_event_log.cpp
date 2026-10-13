@@ -4,6 +4,7 @@
 #include "timing/clock.h"
 #include "event_log_format.h"
 #include "model_identity.h"
+#include "yolo_spatial_mask.h"
 
 #include "fsuid_guard.h"
 #include "json.hpp"
@@ -204,25 +205,12 @@ namespace {
 
 nlohmann::json spatial_mask_policy_json(const YoloResultRecord& record)
 {
+    // A record without the worker's policy (the worker always attaches one; tests
+    // and synthetic emitters may not) logs the default off policy, written by the
+    // same generated writer as every other policy.
     nlohmann::json spatial_mask = record.spatial_mask.policy
         ? *record.spatial_mask.policy
-        : nlohmann::json{
-            {"schema_id", "orange.analytics.spatial_mask_runtime"},
-            {"schema_version", 1},
-            {"mode", "off"},
-            {"input_mask", {
-                {"enabled", false},
-                {"outside_tensor_value", 0.0},
-                {"input_context_outset_px", 0.0},
-                {"geometry", nlohmann::json::object()},
-            }},
-            {"centroid_gate", {
-                {"evaluated", false},
-                {"enforced", false},
-                {"geometry", nlohmann::json::object()},
-            }},
-            {"source", nlohmann::json::object()},
-        };
+        : orange::analytics_mask::policy_to_json(orange::analytics_mask::Policy{});
     spatial_mask["policy_generation"] = record.spatial_mask.policy_generation;
     return spatial_mask;
 }

@@ -4,11 +4,14 @@
 // YoloEventLogger and compares the file with
 // tools/fixtures/generated_outputs/golden/Cam2010093_yolo_events.jsonl, which was produced by the
 // hand-written writer before it switched to the generated orange.yolo_event v3 code (2026-10-12).
-// Any byte change to the log fails here.
+// Regenerated once on purpose the same day: a record without a policy now logs
+// policy_to_json(Policy{}) (schema-valid) instead of a reduced off object, and the gate_only
+// policy is written by policy_to_json. Any other byte change to the log fails here.
 //
 //   yolo_event_log_golden_tests <golden file>            compare
 //   yolo_event_log_golden_tests <golden file> --write    regenerate (only on a deliberate change)
 #include "yolo_event_log.h"
+#include "yolo_spatial_mask.h"
 
 #include <cstdlib>
 #include <filesystem>
@@ -87,15 +90,23 @@ int main(int argc, char** argv) {
         // 3. A policy change (generation 2, gate_only) with outside detections.
         auto r3 = base(folder, 3);
         r3.status = "detections";
-        auto policy = std::make_shared<nlohmann::json>(nlohmann::json{
-            {"schema_id", "orange.analytics.spatial_mask_runtime"}, {"schema_version", 1},
-            {"mode", "gate_only"},
-            {"centroid_gate", {{"evaluated", true}, {"enforced", true},
-                               {"geometry", {{"type", "circle"}, {"cx", 2256.0}, {"cy", 2256.0}, {"radius", 2000.0},
-                                             {"coordinate_space", "camera_native_pixels"}}}}},
-            {"input_mask", {{"enabled", false}, {"outside_tensor_value", 0.0}, {"input_context_outset_px", 0.0},
-                            {"geometry", nlohmann::json::object()}}},
-            {"source", {{"artifact_id", "golden_rim"}, {"sha256", ""}}}});
+        orange::analytics_mask::Policy gate;
+        gate.mode = orange::analytics_mask::Mode::kGateOnly;
+        gate.source_width = 4512;
+        gate.source_height = 4512;
+        gate.centroid_gate_circle = {2256.0f, 2256.0f, 2000.0f};
+        gate.input_circle = {2256.0f, 2256.0f, 2000.0f};
+        gate.camera_serial = "2010093";
+        gate.arena_id = "arena_golden";
+        gate.registration_id = "dailyreg_golden";
+        gate.artifact_id = "golden_rim";
+        gate.artifact_schema_id = "orange.calibration.dish_top_rim_observation";
+        gate.artifact_schema_version = 2;
+        gate.artifact_fingerprint = "fnv1a64:0123456789abcdef";
+        gate.source_path = "/golden/observation.json";
+        gate.recording_relative_path = "recording_geometry_assets/golden/observation.json";
+        gate.source_sha256 = "sha256:" + std::string(64, 'c');
+        auto policy = std::make_shared<nlohmann::json>(orange::analytics_mask::policy_to_json(gate));
         r3.spatial_mask.policy = policy;
         r3.spatial_mask.policy_generation = 2;
         r3.detections = {detection(2250.0f, 2250.0f, 20.0f, 20.0f, 0, 0.8f, 0)};

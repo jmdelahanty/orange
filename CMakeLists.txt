@@ -941,7 +941,7 @@ if(BUILD_TESTING)
     add_test(
         NAME model_snapshot_golden_tests
         COMMAND model_snapshot_golden_tests
-                "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/golden/model_snapshot_blocks.jsonl"
+                "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/golden/model_snapshot_blocks.tsv"
                 "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/engine_manifests/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_int8mm_bo5_avg32.manifest.json"
                 "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/engine_manifests/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915_a16_gpu5_trt100_fp16_bo5_avg32.manifest.json")
     set_tests_properties(model_snapshot_golden_tests PROPERTIES DEPENDS model_snapshot_golden_tests_build)
@@ -1392,7 +1392,7 @@ if(BUILD_TESTING)
     target_include_directories(spatial_mask_policy_golden_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(spatial_mask_policy_golden_tests PRIVATE cxx_std_17)
     add_test(NAME spatial_mask_policy_golden_tests COMMAND spatial_mask_policy_golden_tests
-        "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/golden/spatial_mask_policies.jsonl")
+        "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/golden/spatial_mask_policies.tsv")
 
     add_executable(calibration_transaction_tests
         "tools/calibration_transaction_tests.cpp"
