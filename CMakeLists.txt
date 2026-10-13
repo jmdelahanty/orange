@@ -211,6 +211,9 @@ set(ORANGE_GENERATED_SCHEMAS
     "orange_yolo_event_v3:yolo_event_v3"
     "orange_pose_event_v3:pose_event_v3"
     "orange_tensorrt_engine_manifest_v1:tensorrt_engine_manifest_v1"
+    "orange_analytics_spatial_mask_runtime_v1:spatial_mask_runtime_v1"
+    "orange_recording_detect_model_v1:recording_detect_model_v1"
+    "orange_recording_pose_model_v2:recording_pose_model_v2"
 )
 set(ORANGE_CODEGEN "${CMAKE_SOURCE_DIR}/tools/schema_codegen/codegen.py")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ORANGE_CODEGEN}")

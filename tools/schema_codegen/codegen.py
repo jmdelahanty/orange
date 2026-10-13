@@ -13,6 +13,10 @@ code enforces:
   are kept verbatim in `extra` and written back unchanged), items, enum, const,
   minimum / maximum, minLength / maxLength, pattern, oneOf with one const discriminator property,
   $defs and local $ref, plus the x-orange-* annotations (x-orange-cpp-name, x-orange-decimals).
+  On an object: allOf of {if, then} rules, where `if` tests const / enum values below nested
+  properties and `then` constrains values below nested properties (const, enum, type, minLength,
+  maxLength, pattern, minimum, maximum). They are checked on the parsed JSON with JSON Schema's
+  semantics: an absent value satisfies a `properties` condition and is not constrained.
 
 Generated per object schema:
   struct T { typed fields in schema order };      const fields are not stored
@@ -35,7 +39,7 @@ from pathlib import Path
 
 SUPPORTED = {
     "type", "properties", "required", "additionalProperties", "items", "enum", "const",
-    "minimum", "maximum", "minLength", "maxLength", "pattern", "oneOf", "$defs", "$ref",
+    "minimum", "maximum", "minLength", "maxLength", "pattern", "oneOf", "$defs", "$ref", "allOf",
     "description", "title", "$schema", "$id", "examples", "default",
     "x-orange-cpp-name", "x-orange-decimals", "x-orange-counter", "x-orange-digest",
     "x-orange-map-key",
@@ -103,10 +107,24 @@ class Field:
 
 
 @dataclass
+class Rule:                       # one leaf of an if / then tree
+    path: tuple                   # property names from the object down to the value
+    checks: dict                  # keyword -> value (const, enum, type, minLength, ...)
+
+
+@dataclass
+class Condition:                  # one allOf entry: if every `when` rule holds, every `then` must
+    index: int
+    when: list
+    then: list
+
+
+@dataclass
 class ObjectT:
     name: str
     fields: list = field(default_factory=list)
     open: bool = False            # additionalProperties absent/true: undeclared keys kept in extra
+    conditions: list = field(default_factory=list)
 
 
 @dataclass
@@ -150,6 +168,8 @@ class Builder:
             types = non_null[0]
         if "oneOf" in node:
             raise SchemaError(f"{where}: oneOf is supported only at the schema root")
+        if "allOf" in node and "properties" not in node:
+            raise SchemaError(f"{where}: allOf is supported only on an object with properties")
         if types == "object" or (types is None and "properties" in node):
             props = node.get("properties")
             additional = node.get("additionalProperties", True)
@@ -179,8 +199,43 @@ class Builder:
             return OpaqueT(())             # any JSON value
         raise SchemaError(f"{where}: cannot map type {types!r}")
 
+    IF_CHECKS = {"const", "enum"}
+    THEN_CHECKS = {"const", "enum", "type", "minLength", "maxLength", "pattern", "minimum", "maximum"}
+    TREE_NOTES = {"description", "title"}
+
+    def rules(self, node: dict, allowed: set, where: str, path: tuple = ()) -> list:
+        """Flatten an if / then tree of nested `properties` into leaf rules."""
+        if not isinstance(node, dict):
+            raise SchemaError(f"{where}: expected a schema object")
+        unknown = set(node) - allowed - {"properties"} - self.TREE_NOTES
+        if unknown:
+            raise SchemaError(f"{where}: unsupported keywords in a condition {sorted(unknown)}")
+        out = []
+        checks = {k: v for k, v in node.items() if k in allowed}
+        if checks:
+            if "type" in checks and not isinstance(checks["type"], str):
+                raise SchemaError(f"{where}: a condition type must be one type name")
+            out.append(Rule(path, checks))
+        for key, sub in (node.get("properties") or {}).items():
+            out += self.rules(sub, allowed, f"{where}/{key}", path + (key,))
+        return out
+
+    def conditions(self, node: dict, where: str) -> list:
+        out = []
+        for index, entry in enumerate(node.get("allOf", [])):
+            if not isinstance(entry, dict) or set(entry) - {"if", "then"} - self.TREE_NOTES or \
+                    "if" not in entry or "then" not in entry:
+                raise SchemaError(f"{where}/allOf[{index}]: only {{if, then}} entries are supported")
+            when = self.rules(entry["if"], self.IF_CHECKS, f"{where}/allOf[{index}]/if")
+            then = self.rules(entry["then"], self.THEN_CHECKS, f"{where}/allOf[{index}]/then")
+            if not when or not then:
+                raise SchemaError(f"{where}/allOf[{index}]: an empty if or then")
+            out.append(Condition(index, when, then))
+        return out
+
     def object(self, node: dict, name: str, where: str) -> ObjectT:
         obj = ObjectT(name=name, open=node.get("additionalProperties", True) is True)
+        obj.conditions = self.conditions(node, where)
         required = set(node.get("required", []))
         for json_name, sub in node["properties"].items():
             sub_r = self.resolve(sub)
@@ -201,6 +256,8 @@ class Builder:
         root = self.root
         self.check_keywords(root, "#")
         if "oneOf" in root:
+            if "allOf" in root:
+                raise SchemaError("#: allOf beside a root oneOf is not supported")
             branches = [self.resolve(b) for b in root["oneOf"]]
             discriminator = None
             for candidate in branches[0].get("properties", {}):
@@ -427,9 +484,63 @@ class Emitter:
                 self.w(f"    }} else {{ return detail::fail(error, {fpath} + \": missing\"); }}")
             else:
                 self.w(f"    }} else {{ out->{f.cpp_name}.reset(); }}")
+        for condition in obj.conditions:
+            self.emit_condition(condition)
         self.w("    return true;")
         self.w("}")
         self.w()
+
+    def rule_test(self, rule: Rule) -> list[tuple[str, str]]:
+        """(C++ test on `const nlohmann::json& v`, failure text) per check of a leaf rule."""
+        tests = []
+        for keyword, value in rule.checks.items():
+            if keyword == "const":
+                tests.append((f"v == {json_literal(value)}", f"must be {json.dumps(value)}"))
+            elif keyword == "enum":
+                alternatives = " || ".join(f"v == {json_literal(x)}" for x in value)
+                tests.append((f"({alternatives})", f"must be one of {json.dumps(value)}"))
+            elif keyword == "type":
+                checks = {"object": "is_object", "array": "is_array", "string": "is_string",
+                          "number": "is_number", "integer": "is_number_integer",
+                          "boolean": "is_boolean", "null": "is_null"}
+                tests.append((f"v.{checks[value]}()", f"must be of type {value}"))
+            elif keyword == "minLength":
+                tests.append((f"!v.is_string() || v.get_ref<const std::string&>().size() >= {int(value)}u",
+                              f"must be at least {value} characters"))
+            elif keyword == "maxLength":
+                tests.append((f"!v.is_string() || v.get_ref<const std::string&>().size() <= {int(value)}u",
+                              f"must be at most {value} characters"))
+            elif keyword == "pattern":
+                self.regex_count += 1
+                name = f"condition_pattern_{self.regex_count}"
+                self.w(f"    static const std::regex {name}({json.dumps(value)}, std::regex::ECMAScript);")
+                tests.append((f"!v.is_string() || std::regex_search(v.get_ref<const std::string&>(), {name})",
+                              f"must match {value}"))
+            elif keyword == "minimum":
+                tests.append((f"!v.is_number() || v.get<double>() >= {float(value)!r}", f"must be >= {value}"))
+            elif keyword == "maximum":
+                tests.append((f"!v.is_number() || v.get<double>() <= {float(value)!r}", f"must be <= {value}"))
+        return tests
+
+    def emit_condition(self, condition: Condition) -> None:
+        """allOf[i] {if, then}: absent values satisfy `if` and are not constrained by `then`."""
+        keys = lambda rule: "{" + ", ".join(json.dumps(k) for k in rule.path) + "}"
+        when = []
+        for rule in condition.when:
+            test = " && ".join(f"({t})" for t, _ in self.rule_test(rule))
+            when.append(f"[&] {{ const nlohmann::json* p = detail::at_path(in, {keys(rule)}); "
+                        f"if (!p) return true; const nlohmann::json& v = *p; return {test}; }}()")
+        self.w(f"    // allOf[{condition.index}]")
+        self.w(f"    if ({' && '.join(when)}) {{")
+        for rule in condition.then:
+            pointer = "".join("/" + k for k in rule.path)
+            self.w(f"        if (const nlohmann::json* p = detail::at_path(in, {keys(rule)})) {{")
+            self.w("            const nlohmann::json& v = *p;")
+            for test, message in self.rule_test(rule):
+                text = json.dumps(f"{pointer}: {message} (allOf[{condition.index}])")
+                self.w(f"            if (!({test})) return detail::fail(error, path + {text});")
+            self.w("        }")
+        self.w("    }")
 
 
 def generate(schema_path: Path, namespace: str) -> str:
@@ -457,6 +568,17 @@ def generate(schema_path: Path, namespace: str) -> str:
     em.w("    double scale = 1.0;")
     em.w("    for (int i = 0; i < decimals; ++i) scale *= 10.0;")
     em.w("    return std::round(value * scale) / scale;")
+    em.w("}")
+    em.w("// The value at a property path, or nullptr where a step is absent or not an object.")
+    em.w("inline const nlohmann::json* at_path(const nlohmann::json& in, std::initializer_list<const char*> keys) {")
+    em.w("    const nlohmann::json* node = &in;")
+    em.w("    for (const char* key : keys) {")
+    em.w("        if (!node->is_object()) return nullptr;")
+    em.w("        const auto it = node->find(key);")
+    em.w("        if (it == node->end()) return nullptr;")
+    em.w("        node = &*it;")
+    em.w("    }")
+    em.w("    return node;")
     em.w("}")
     em.w("inline bool one_of(const std::string& value, std::initializer_list<const char*> allowed) {")
     em.w("    for (const char* a : allowed) if (value == a) return true;")

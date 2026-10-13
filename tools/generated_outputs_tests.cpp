@@ -11,6 +11,8 @@
 //   generated_outputs_tests <fixture dir> [<extra yolo.jsonl> <extra pose.jsonl>]
 //   generated_outputs_tests --engine-manifests <manifest.json>...
 #include "orange_outputs/orange_pose_event_v3.h"
+#include "orange_outputs/orange_recording_detect_model_v1.h"
+#include "orange_outputs/orange_recording_pose_model_v2.h"
 #include "orange_outputs/orange_tensorrt_engine_manifest_v1.h"
 #include "orange_outputs/orange_yolo_event_v3.h"
 
@@ -22,6 +24,8 @@
 namespace yolo = orange::outputs::gen::yolo_event_v3;
 namespace pose = orange::outputs::gen::pose_event_v3;
 namespace manifest = orange::outputs::gen::tensorrt_engine_manifest_v1;
+namespace detect_model = orange::outputs::gen::recording_detect_model_v1;
+namespace pose_model = orange::outputs::gen::recording_pose_model_v2;
 
 namespace {
 int failures = 0;
@@ -102,6 +106,37 @@ void engine_manifests(const std::string& dir) {
       check(ok && !v.keypoints && !manifest::to_json(v).contains("keypoints"),
             "an absent optional nullable field stays absent"); }
 }
+// A real snapshot models.<serial> block (detect + pose; an excerpt of a 2026-10-11 gate
+// recording's recording_snapshot_start.json) through the generated readers and writers.
+void snapshot_models(const std::string& path) {
+    std::ifstream in(path);
+    const nlohmann::json fixture = nlohmann::json::parse(in);
+    const nlohmann::json& camera = fixture.at("models").begin().value();
+    const nlohmann::json& detect = camera.at("detect");
+    const nlohmann::json& pose = camera.at("pose");
+    detect_model::OrangeRecordingDetectModelV1 d;
+    pose_model::OrangeRecordingPoseModelV2 p;
+    std::string error;
+    check(detect_model::parse(detect, &d, &error) && detect_model::to_json(d) == detect,
+          "snapshot detect block round-trips " + error);
+    check(pose_model::parse(pose, &p, &error) && pose_model::to_json(p) == pose,
+          "snapshot pose block round-trips " + error);
+    // allOf[0]: an enabled detector is TensorRT with an engine path ("none" is in the backend enum).
+    { auto j = detect; j["runtime"]["backend"] = "none";
+      detect_model::OrangeRecordingDetectModelV1 v; std::string e;
+      const bool ok = detect_model::parse(j, &v, &e);
+      check(!ok && e.find("/runtime/backend: must be \"tensorrt\" (allOf[0])") != std::string::npos,
+            "an enabled detector must be TensorRT (" + e + ")"); }
+    { auto j = detect; j["runtime"]["engine_path"] = "";
+      detect_model::OrangeRecordingDetectModelV1 v; std::string e;
+      const bool ok = detect_model::parse(j, &v, &e);
+      check(!ok && e.find("/runtime/engine_path: must be at least 1 characters (allOf[0])") != std::string::npos,
+            "an enabled detector names its engine (" + e + ")"); }
+    { auto j = detect; j["enabled"] = false; j["runtime"]["backend"] = "none";
+      detect_model::OrangeRecordingDetectModelV1 v; std::string e;
+      const bool ok = detect_model::parse(j, &v, &e);
+      check(ok, "the TensorRT rule applies only when enabled (" + e + ")"); }
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -153,6 +188,7 @@ int main(int argc, char** argv) {
             "open object keeps undeclared keys verbatim"); }
 
     engine_manifests(dir + "/engine_manifests");
+    snapshot_models(dir + "/recording_snapshot_models_excerpt.json");
 
     std::cout << (failures ? "generated_outputs_tests FAILED\n" : "generated_outputs_tests passed\n");
     return failures ? 1 : 0;

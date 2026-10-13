@@ -163,10 +163,28 @@ def test_digest_form() -> None:
     print("[PASS] digest form")
 
 
+def test_embedded_blocks() -> None:
+    """Published blocks without a schema_id (snapshot models.<serial>.detect/.pose) are validated by path."""
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        (folder / "recording_snapshot_start.json").write_text(
+            json.dumps({"models": {"2010093": {"detect": {"enabled": True}}}}))
+        result = subprocess.run([sys.executable, str(VALIDATE), str(folder)], capture_output=True, text=True)
+        require(result.returncode == 1 and "orange_recording_detect_model_v1.schema.json" in result.stdout
+                and "'runtime' is a required property" in result.stdout,
+                f"an incomplete snapshot detect block must fail: {result.stdout}")
+        (folder / "recording_snapshot_start.json").unlink()
+        (folder / "other.json").write_text(json.dumps({"models": {"2010093": {"detect": {"enabled": True}}}}))
+        result = subprocess.run([sys.executable, str(VALIDATE), str(folder)], capture_output=True, text=True)
+        require(result.returncode == 0, f"the same path in another file is not a snapshot: {result.stdout}")
+    print("[PASS] embedded blocks")
+
+
 def main() -> int:
     test_names()
     test_surface()
     test_digest_form()
+    test_embedded_blocks()
     print("output_ratchet_tests passed")
     return 0
 

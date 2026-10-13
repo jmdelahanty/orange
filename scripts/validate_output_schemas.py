@@ -13,6 +13,11 @@ schema_id without being it. --strict-nested makes their failures count.
 
   validate_output_schemas.py <recording folder or files>...  [--json report.json]
 
+Blocks that carry no schema_id of their own but have a published schema are located by file and
+path (EMBEDDED below) and validated too: the snapshot's models.<serial>.detect / .pose. They
+describe what the current writers produce; snapshots older than the model identity block
+(2026-10-09) do not match and are reported, since the snapshot's schema_version did not change.
+
 Every JSON document is also checked against agent-contracts orange-palette/digest_form_v1
 (pinned in contracts/digest_form_v1.json): a field named sha256 / *_sha256 holds a
 "sha256:<hex>" token, and a digest-looking value sits under such a name. Known exceptions are in
@@ -62,6 +67,24 @@ def load_schemas() -> tuple[dict[tuple[str, int], dict], set[str], Registry]:
                    for identity, (name, pointer) in published(SCHEMAS).items()}
     families = {sid for sid, _ in by_identity}
     return by_identity, families, registry
+
+
+# (file pattern, normalized JSON path, schema file) for published blocks without a schema_id.
+EMBEDDED = (
+    ("recording_snapshot*.json", "/models/<serial>/detect", "orange_recording_detect_model_v1.schema.json"),
+    ("recording_snapshot*.json", "/models/<serial>/pose", "orange_recording_pose_model_v2.schema.json"),
+)
+
+
+def embedded_blocks(value, file_name: str, path: str = ""):
+    """Yield (normalized path, location, object, schema file) for EMBEDDED blocks in a document."""
+    if isinstance(value, dict):
+        normalized = SERIAL_SEGMENT.sub("/<serial>", path)
+        for pattern, block_path, schema_file in EMBEDDED:
+            if normalized == block_path and fnmatch.fnmatch(file_name, pattern):
+                yield normalized, path, value, schema_file
+        for key, child in value.items():
+            yield from embedded_blocks(child, file_name, f"{path}/{key}")
 
 
 DIGEST_CONTRACT = REPO / "contracts" / "digest_form_v1.json"
@@ -160,6 +183,7 @@ def main() -> int:
     nested_mismatch: Counter = Counter()
     nested_lines: list[str] = []
     older_unpublished: Counter = Counter()
+    embedded_validators: dict[str, Draft202012Validator] = {}
 
     for path in files(args.targets):
         try:
@@ -182,6 +206,15 @@ def main() -> int:
                 failures.append(f"{path}: invalid JSON ({exc})")
                 continue
         for where, document in parsed:
+            for normalized, location, block, schema_file in embedded_blocks(document, path.name):
+                if schema_file not in embedded_validators:
+                    embedded_validators[schema_file] = Draft202012Validator(
+                        {"$ref": schema_file}, registry=registry)
+                errors = sorted(embedded_validators[schema_file].iter_errors(block), key=lambda e: list(e.path))
+                validated[f"{schema_file} at {normalized}"] += 1
+                for error in errors[:MAX_ERRORS_PER_DOCUMENT]:
+                    failures.append(f"{where}{location}: {schema_file}: {error.message[:300]} at "
+                                    f"/{'/'.join(str(p) for p in error.path)}")
             for violation in digest_violations(document, path.name, digest_rule):
                 key = f"{path.name}: {violation}"
                 if digest_failures[key] == 0:

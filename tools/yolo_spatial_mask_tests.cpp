@@ -1,5 +1,6 @@
 #include "citrus_recording_geometry.h"
 #include "yolo_spatial_mask.h"
+#include "orange_outputs/orange_analytics_spatial_mask_runtime_v1.h"
 
 #include <cmath>
 #include <iostream>
@@ -223,6 +224,63 @@ void test_centroid_decisions()
 
 }  // namespace
 
+// policy_to_json output against the published schema
+// (docs/schemas/orange_analytics_spatial_mask_runtime_v1.schema.json, generated parser), in
+// every mode and with the keys the embedding documents add; the schema's per-mode rules refuse
+// contradictions.
+void test_policy_matches_published_schema()
+{
+    using namespace orange::analytics_mask;
+    namespace gen = orange::outputs::gen::spatial_mask_runtime_v1;
+    auto parses = [](const nlohmann::json& j, std::string* error) {
+        gen::OrangeAnalyticsSpatialMaskRuntimeV1 parsed;
+        return gen::parse(j, &parsed, error);
+    };
+    std::string error;
+    const nlohmann::json off = policy_to_json(Policy{});
+    require(parses(off, &error), "mode off policy: " + error);
+    nlohmann::json event_log = off;
+    event_log["policy_generation"] = 1;
+    require(parses(event_log, &error), "event-log embedding: " + error);
+    nlohmann::json contract = off;
+    contract["status"] = "armed";
+    contract["policy_generation"] = 3;
+    require(parses(contract, &error), "geometry-contract embedding: " + error);
+
+    for (const Mode mode : {Mode::kAudit, Mode::kGateOnly, Mode::kGateAndInputMask}) {
+        ResolveResult resolved = resolve_policy_from_recording_geometry_contract(
+            valid_contract(), "2010095", 4512, 4512, mode, 24.5f);
+        require(resolved.ok, resolved.error);
+        const nlohmann::json active = policy_to_json(resolved.policy);
+        require(parses(active, &error), std::string(mode_to_string(mode)) + " policy: " + error);
+        gen::OrangeAnalyticsSpatialMaskRuntimeV1 parsed;
+        require(gen::parse(active, &parsed, &error) && gen::to_json(parsed) == active,
+                std::string(mode_to_string(mode)) + " policy round-trips");
+    }
+
+    auto refused = [&](nlohmann::json j, const std::string& what, const std::string& expect) {
+        std::string why;
+        require(!parses(j, &why) && why.find(expect) != std::string::npos,
+                "refuses " + what + " (" + why + ")");
+    };
+    ResolveResult gate = resolve_policy_from_recording_geometry_contract(
+        valid_contract(), "2010095", 4512, 4512, Mode::kGateOnly, 24.5f);
+    require(gate.ok, gate.error);
+    const nlohmann::json gate_only = policy_to_json(gate.policy);
+    { auto j = gate_only; j["source"]["sha256"] = std::string(64, 'a');
+      refused(j, "an active policy with a bare-hex source digest", "/source/sha256: must match"); }
+    { auto j = gate_only; j["input_mask"]["enabled"] = true;
+      refused(j, "gate_only with the input mask on", "/input_mask/enabled: must be false"); }
+    { auto j = gate_only; j["registration_id"] = "";
+      refused(j, "an active policy without a registration", "/registration_id: must be at least 1"); }
+    { auto j = off; j["centroid_gate"]["evaluated"] = true;
+      refused(j, "mode off that evaluates the gate", "/centroid_gate/evaluated: must be false"); }
+    { auto j = off; j["status"] = "pending";
+      refused(j, "an unknown embedding status", "/status: value not in enum"); }
+    { auto j = off; j["result"] = nlohmann::json::object();
+      refused(j, "a frame result merged into the policy", "/result: unexpected field"); }
+}
+
 int main()
 {
     try {
@@ -232,6 +290,7 @@ int main()
         test_standalone_physical_registration_precedence();
         test_strict_resolution_failures();
         test_centroid_decisions();
+        test_policy_matches_published_schema();
         std::cout << "yolo_spatial_mask_tests: PASS\n";
         return 0;
     } catch (const std::exception& error) {

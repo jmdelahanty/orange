@@ -78,8 +78,13 @@ than the generated code enforces: `type` (object, array, string, integer, number
 via a type array), `properties`, `required`, `additionalProperties` (false, or a schema for maps),
 `items`, `enum`, `const`, `minimum` / `maximum`, `minLength` / `maxLength`, `pattern`, `oneOf` with
 a const discriminator, local `$ref` and `$ref` to another file in `docs/schemas/`, `$defs`.
-`if/then/else`, `anyOf`, `patternProperties`, `dependentSchemas` are refused (existing schemas
-that use them are rewritten when their family converts).
+`anyOf`, `else`, `patternProperties`, `dependentSchemas` are refused. Published schemas are
+immutable, so the subset grew to cover what they already use (2026-10-12): an `allOf` of `{if,
+then}` rules on an object (`if` tests const / enum values, `then` constrains const, enum, type,
+lengths, pattern and ranges, both below nested `properties`, with JSON Schema's semantics: an
+absent value satisfies the condition and is not constrained), arrays without `items` and
+multi-type unions kept as JSON checked against the declared types, and optional nullable fields
+as `std::optional<std::optional<T>>` (absent vs null).
 
 ## 3. Generator
 
@@ -162,6 +167,19 @@ is amended to name identity tokens `*_token` instead of renaming it.
 
 Size estimate: steps 1-4 about two days of work with the suite green throughout; step 5 depends on
 Palette's pin turnaround.
+
+### Progress (2026-10-12)
+
+- Event logs: writers (golden bytes) and readers on the generated v3 code.
+- Engine manifest: `model_identity.cpp` reads it through the generated v1 parser; all 42 rig
+  manifests round-trip, the snapshot block is byte-identical.
+- Snapshot models block: the published `orange.recording_detect_model.v1` and
+  `orange.recording_pose_model.v2` already described it (every snapshot since 2026-10-10
+  matches); they are now generated and enforced by `validate_output_schemas.py` by path, since the
+  block has no `schema_id`. Writer and readers not yet switched.
+- Spatial mask runtime policy: new `orange.analytics.spatial_mask_runtime` v1 schema (all 564 real
+  policies match, every mode of `policy_to_json` passes the generated parser in
+  `yolo_spatial_mask_tests`). Writer and readers not yet switched.
 
 ## 8. Open questions
 

@@ -44,12 +44,12 @@
     {
       "schema_id": "orange.yolo_event",
       "path": "^/spatial_mask/source/sha256$",
-      "reason": "Spatial-mask source digest, bare hex (family C)."
+      "reason": "Spatial-mask source digest (family C): an empty string while the mask mode is off (every recording so far); an active policy carries a sha256: token, required by orange.analytics.spatial_mask_runtime v1 and validate_policy."
     },
     {
       "file": "recording_geometry_contract.json",
       "path": "^/(analytics_runtime/yolo_spatial_mask/cameras/<serial>/source|cameras/<serial>/yolo_spatial_mask_runtime/source)/sha256$",
-      "reason": "Spatial-mask source digest in the geometry contract, bare hex (family C)."
+      "reason": "Spatial-mask source digest in the geometry contract (family C): an empty string while the mask mode is off; a sha256: token when active (orange.analytics.spatial_mask_runtime v1)."
     },
     {
       "file": "*.json",

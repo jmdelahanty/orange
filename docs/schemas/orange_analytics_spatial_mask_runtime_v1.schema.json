@@ -1,0 +1,248 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.analytics.spatial_mask_runtime.v1",
+  "title": "Orange YOLO spatial mask runtime policy (version 1)",
+  "description": "The policy one camera's YOLO worker applies to detections: the dish centroid gate and the optional neural-input mask, in camera-native pixels, with the registration artifact it came from. Written by orange::analytics_mask::policy_to_json (src/yolo_spatial_mask.h). It appears embedded, never as a file of its own: in Cam<serial>_yolo_events.jsonl (session_header and spatial_mask_policy lines, spatial_mask, with policy_generation), and in recording_geometry_contract.json (analytics_runtime.yolo_spatial_mask.cameras.<serial> and cameras.<serial>.yolo_spatial_mask_runtime, with status and, once armed, policy_generation). mode off is the default and the only mode run on the rig so far (no accepted registration): the ids, paths and digest are then empty strings and both circles are zero. An active mode (audit, gate_only, gate_and_input_mask) needs a schema-v2 dish top-rim observation and a recording-local copy identified by a sha256: token. Closed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "mode",
+    "camera_serial",
+    "arena_id",
+    "registration_id",
+    "source_raster",
+    "input_mask",
+    "centroid_gate",
+    "source"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "orange.analytics.spatial_mask_runtime"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["off", "audit", "gate_only", "gate_and_input_mask"],
+      "description": "off: nothing evaluated. audit: the centroid gate is evaluated and outside detections are logged as would_reject, nothing is removed. gate_only: outside detections are removed. gate_and_input_mask: removed, and the network input outside the input circle is set to outside_tensor_value."
+    },
+    "camera_serial": {
+      "type": "string"
+    },
+    "arena_id": {
+      "type": "string"
+    },
+    "registration_id": {
+      "type": "string",
+      "description": "The physical or daily registration the circles come from."
+    },
+    "source_raster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "description": "The camera-native raster the circles are expressed in (0 x 0 when mode is off).",
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "input_mask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "outside_tensor_value", "input_context_outset_px", "geometry"],
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "True only in gate_and_input_mask."
+        },
+        "outside_tensor_value": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Normalised network-input value written outside the input circle."
+        },
+        "input_context_outset_px": {
+          "type": "number",
+          "minimum": 0,
+          "description": "How far the input circle extends beyond the centroid-gate circle, in pixels."
+        },
+        "geometry": {
+          "$ref": "#/$defs/circle"
+        }
+      }
+    },
+    "centroid_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evaluated", "enforced", "geometry"],
+      "properties": {
+        "evaluated": {
+          "type": "boolean",
+          "description": "True in every mode but off."
+        },
+        "enforced": {
+          "type": "boolean",
+          "description": "True in gate_only and gate_and_input_mask: outside detections are removed before tracking and IPC."
+        },
+        "geometry": {
+          "$ref": "#/$defs/circle"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "artifact_schema_id",
+        "artifact_schema_version",
+        "artifact_fingerprint",
+        "path",
+        "recording_relative_path",
+        "sha256"
+      ],
+      "description": "The registration artifact (a dish top-rim observation) the circles were resolved from.",
+      "properties": {
+        "artifact_id": {
+          "type": "string"
+        },
+        "artifact_schema_id": {
+          "type": "string"
+        },
+        "artifact_schema_version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "artifact_fingerprint": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string",
+          "description": "Where Orange read the artifact on the host."
+        },
+        "recording_relative_path": {
+          "type": "string",
+          "description": "The copy sealed with the recording, relative to the recording root."
+        },
+        "sha256": {
+          "type": "string",
+          "description": "sha256: token of the recording-local copy (agent-contracts digest_form_v1); empty when mode is off."
+        }
+      }
+    },
+    "policy_generation": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Added where the policy is embedded: the worker's policy generation (event logs; geometry contract once armed). Frame lines name the generation whose policy applied."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["resolved", "armed", "requested_before_worker_start"],
+      "description": "Added in the geometry contract: resolved (GUI, before the worker took it), armed (GUI, worker applied it), requested_before_worker_start (headless)."
+    }
+  },
+  "allOf": [
+    {
+      "description": "mode off evaluates nothing.",
+      "if": {"properties": {"mode": {"const": "off"}}},
+      "then": {
+        "properties": {
+          "input_mask": {"properties": {"enabled": {"const": false}}},
+          "centroid_gate": {"properties": {"evaluated": {"const": false}, "enforced": {"const": false}}}
+        }
+      }
+    },
+    {
+      "description": "An active mode is identified by its registration and a schema-v2 top-rim observation copied into the recording.",
+      "if": {"properties": {"mode": {"enum": ["audit", "gate_only", "gate_and_input_mask"]}}},
+      "then": {
+        "properties": {
+          "camera_serial": {"minLength": 1},
+          "arena_id": {"minLength": 1},
+          "registration_id": {"minLength": 1},
+          "source_raster": {"properties": {"width": {"minimum": 1}, "height": {"minimum": 1}}},
+          "centroid_gate": {
+            "properties": {
+              "evaluated": {"const": true},
+              "geometry": {"properties": {"radius": {"minimum": 1e-09}}}
+            }
+          },
+          "input_mask": {"properties": {"geometry": {"properties": {"radius": {"minimum": 1e-09}}}}},
+          "source": {
+            "properties": {
+              "artifact_id": {"minLength": 1},
+              "artifact_schema_id": {"const": "orange.calibration.dish_top_rim_observation"},
+              "artifact_schema_version": {"const": 2},
+              "recording_relative_path": {"minLength": 1},
+              "sha256": {"pattern": "^sha256:[0-9a-f]{64}$"}
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "audit only evaluates.",
+      "if": {"properties": {"mode": {"const": "audit"}}},
+      "then": {
+        "properties": {
+          "input_mask": {"properties": {"enabled": {"const": false}}},
+          "centroid_gate": {"properties": {"enforced": {"const": false}}}
+        }
+      }
+    },
+    {
+      "description": "gate_only removes outside detections; the input is not masked.",
+      "if": {"properties": {"mode": {"const": "gate_only"}}},
+      "then": {
+        "properties": {
+          "input_mask": {"properties": {"enabled": {"const": false}}},
+          "centroid_gate": {"properties": {"enforced": {"const": true}}}
+        }
+      }
+    },
+    {
+      "description": "gate_and_input_mask removes outside detections and masks the network input.",
+      "if": {"properties": {"mode": {"const": "gate_and_input_mask"}}},
+      "then": {
+        "properties": {
+          "input_mask": {"properties": {"enabled": {"const": true}}},
+          "centroid_gate": {"properties": {"enforced": {"const": true}}}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "circle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "coordinate_space", "cx", "cy", "radius"],
+      "properties": {
+        "type": {
+          "const": "circle"
+        },
+        "coordinate_space": {
+          "const": "camera_native_pixels"
+        },
+        "cx": {
+          "type": "number"
+        },
+        "cy": {
+          "type": "number"
+        },
+        "radius": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}
