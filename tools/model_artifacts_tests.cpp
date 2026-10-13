@@ -86,13 +86,13 @@ int main(int argc, char** argv)
     require(det.at("files").size() == 4 && det.at("status") == "present", "manifest + canonical manifest + record + cache copied");
     std::vector<std::string> roles; for (const auto& f : det.at("files")) roles.push_back(f.at("role"));
     require(roles == std::vector<std::string>{"engine_manifest", "canonical_onnx_manifest", "int8_calibration_record", "int8_calibration_cache"}, "detect roles");
-    require(det.at("files").at(0).at("expected_sha256") == det_manifest_sha, "engine manifest expected digest from the snapshot");
-    require(det.at("files").at(2).at("expected_sha256") == "", "no recorded digest: expected empty");
+    require(det.at("files").at(0).at("expected_sha256") == "sha256:" + det_manifest_sha, "engine manifest expected digest from the snapshot");
+    require(det.at("files").at(2).at("expected_sha256").is_null(), "no recorded digest: expected null");
     for (const auto& f : det.at("files")) {
         const fs::path p = root / "run" / f.at("path").get<std::string>();
         require(fs::exists(p), "copied file exists: " + p.string());
         std::string chk, err; orange::gui::spatial_layout::checksum::file_sha256(p, &chk, &err);
-        require(chk == "sha256:" + f.at("sha256").get<std::string>() && f.at("size_bytes") == fs::file_size(p), "digest and size declared");
+        require(chk == f.at("sha256").get<std::string>() && f.at("size_bytes") == fs::file_size(p), "digest token and size declared");
         require(f.at("path").get<std::string>().rfind("models/" + det_sha + "/", 0) == 0, "path under models/<sha>/");
     }
     const auto& pose = engines.at(pose_sha);
@@ -101,11 +101,13 @@ int main(int argc, char** argv)
             "pose canonical manifest copied");
     const auto& contract = pose.at("files").at(2);
     require(contract.at("role") == "pose_model_input_contract" && contract.at("status") == "digest_mismatch"
-            && contract.at("sha256") == sha_of("{\"changed\":1}") && contract.at("expected_sha256") == sha_of("{\"original\":1}")
+            && contract.at("sha256") == "sha256:" + sha_of("{\"changed\":1}")
+            && contract.at("expected_sha256") == "sha256:" + sha_of("{\"original\":1}")
             && fs::exists(root / "run" / contract.at("path").get<std::string>()),
             "a changed input contract is copied and declared digest_mismatch");
     const auto& missing = engines.at(std::string(64, 'c'));
-    require(missing.at("status") == "absent" && missing.at("files").at(0).at("status") == "absent", "missing manifest declared absent");
+    require(missing.at("status") == "absent" && missing.at("files").at(0).at("status") == "absent"
+            && missing.at("files").at(0).at("sha256").is_null(), "missing manifest declared absent, no digest");
     require(!fs::exists(root / "run" / "models" / std::string(64, 'c') / "engine.manifest.json"), "nothing copied for a missing manifest");
     fs::remove_all(root);
     if (failures) { std::cerr << failures << " model artifacts test(s) failed" << std::endl; return 1; }

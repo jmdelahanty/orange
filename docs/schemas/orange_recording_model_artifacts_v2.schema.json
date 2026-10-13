@@ -2,10 +2,15 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "orange.recording_model_artifacts.v2",
   "title": "Orange recording model artifacts (version 2)",
-  "description": "recording_session.json model_artifacts: for every distinct engine that ran (keyed by engine sha256, the same value as models.<serial>.<detect|pose>.runtime.engine_sha256 in the snapshot) the files that say what the engine is, copied byte for byte into <recording folder>/models/<engine_sha256>/ and declared with path (relative to the recording folder), size, sha256 and the digest the file should have. The files: the engine manifest; the Palette canonical ONNX model manifest the engine manifest binds (source.canonical_manifest), for detect and pose; the pose model input contract a pose engine binds (source.input_contract); and, for INT8 engines, the calibration record and the trtexec calibration cache (build.int8_calibration). A file is listed when the engine manifest names it. expected_sha256 is the digest recorded where the file is named (the snapshot's engine_manifest.sha256 for the engine manifest, the engine manifest's sha256 for the others), empty when none is recorded; a copy whose bytes differ is kept and marked digest_mismatch. models_keys lists the cameras and tasks that used the engine. Engine status present = every listed file copied with the expected digest; partial = some file absent, not copied or mismatched; absent = the engine manifest was not present on the rig (nothing copied). The skeleton is not copied: the snapshot's pose block embeds it. v2 adds the canonical_onnx_manifest and pose_model_input_contract roles, expected_sha256 and the digest_mismatch status to v1. Written by materialize_model_artifacts (src/session/model_artifacts.cpp) at finalization; closed.",
+  "description": "recording_session.json model_artifacts: for every distinct engine that ran (keyed by engine sha256, the same value as models.<serial>.<detect|pose>.runtime.engine_sha256 in the snapshot) the files that say what the engine is, copied byte for byte into <recording folder>/models/<engine_sha256>/ and declared with path (relative to the recording folder), size, sha256 and the digest the file should have, both as sha256: tokens (agent-contracts digest_form_v1; the engine keys and engine_sha256 stay bare hex, the join key with the snapshot's model blocks, model identity family A). The files: the engine manifest; the Palette canonical ONNX model manifest the engine manifest binds (source.canonical_manifest), for detect and pose; the pose model input contract a pose engine binds (source.input_contract); and, for INT8 engines, the calibration record and the trtexec calibration cache (build.int8_calibration). A file is listed when the engine manifest names it. expected_sha256 is the digest recorded where the file is named (the snapshot's engine_manifest.sha256 for the engine manifest, the engine manifest's sha256 for the others), null when none is recorded; a copy whose bytes differ is kept and marked digest_mismatch. models_keys lists the cameras and tasks that used the engine. Engine status present = every listed file copied with the expected digest; partial = some file absent, not copied or mismatched; absent = the engine manifest was not present on the rig (nothing copied). The skeleton is not copied: the snapshot's pose block embeds it. v2 adds the canonical_onnx_manifest and pose_model_input_contract roles, expected_sha256 and the digest_mismatch status to v1. Written by materialize_model_artifacts (src/session/model_artifacts.cpp) at finalization; closed.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_id", "schema_version", "root", "engines"],
+  "required": [
+    "schema_id",
+    "schema_version",
+    "root",
+    "engines"
+  ],
   "properties": {
     "schema_id": {
       "const": "orange.recording_model_artifacts"
@@ -30,8 +35,19 @@
     "engine": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["engine_sha256", "task", "model_id", "engine_path", "engine_bytes", "precision", "build_id",
-                   "run_id", "models_keys", "files", "status"],
+      "required": [
+        "engine_sha256",
+        "task",
+        "model_id",
+        "engine_path",
+        "engine_bytes",
+        "precision",
+        "build_id",
+        "run_id",
+        "models_keys",
+        "files",
+        "status"
+      ],
       "properties": {
         "engine_sha256": {
           "type": "string",
@@ -39,7 +55,10 @@
         },
         "task": {
           "type": "string",
-          "enum": ["detect", "pose"]
+          "enum": [
+            "detect",
+            "pose"
+          ]
         },
         "model_id": {
           "type": "string"
@@ -75,19 +94,36 @@
         },
         "status": {
           "type": "string",
-          "enum": ["present", "partial", "absent"]
+          "enum": [
+            "present",
+            "partial",
+            "absent"
+          ]
         }
       }
     },
     "file": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["role", "source_path", "path", "size_bytes", "sha256", "expected_sha256", "status"],
+      "required": [
+        "role",
+        "source_path",
+        "path",
+        "size_bytes",
+        "sha256",
+        "expected_sha256",
+        "status"
+      ],
       "properties": {
         "role": {
           "type": "string",
-          "enum": ["engine_manifest", "canonical_onnx_manifest", "pose_model_input_contract",
-                   "int8_calibration_record", "int8_calibration_cache"]
+          "enum": [
+            "engine_manifest",
+            "canonical_onnx_manifest",
+            "pose_model_input_contract",
+            "int8_calibration_record",
+            "int8_calibration_cache"
+          ]
         },
         "source_path": {
           "type": "string",
@@ -102,18 +138,29 @@
           "minimum": 0
         },
         "sha256": {
-          "type": "string",
-          "pattern": "^([0-9a-f]{64})?$",
-          "description": "Digest of the copied bytes; empty when nothing was copied."
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "sha256: token (agent-contracts digest_form_v1) of the copied bytes; null when nothing was copied."
         },
         "expected_sha256": {
-          "type": "string",
-          "pattern": "^([0-9a-f]{64})?$",
-          "description": "The digest recorded where the file is named; empty when none is recorded."
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "The digest recorded where the file is named, as a sha256: token; null when none is recorded."
         },
         "status": {
           "type": "string",
-          "enum": ["present", "absent", "copy_failed", "digest_mismatch"]
+          "enum": [
+            "present",
+            "absent",
+            "copy_failed",
+            "digest_mismatch"
+          ]
         }
       }
     }

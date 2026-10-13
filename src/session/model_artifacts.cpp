@@ -31,6 +31,12 @@ bool read_bytes(const fs::path& path, std::string* out)
     return static_cast<bool>(in) || in.eof();
 }
 
+// A recorded bare-hex digest as a digest_form_v1 sha256: token; nullopt when none is recorded.
+std::optional<std::string> digest_token(const std::string& hex)
+{
+    return hex.empty() ? std::nullopt : std::optional<std::string>("sha256:" + hex);
+}
+
 // Copy `source` to `<folder>/<relative>` (temp + rename) and describe it; a copy whose digest is
 // not `expected_sha256` (when one is recorded) is kept and marked digest_mismatch.
 ma::OrangeRecordingModelArtifactsV2File copy_declared(const fs::path& folder, const std::string& role,
@@ -41,7 +47,7 @@ ma::OrangeRecordingModelArtifactsV2File copy_declared(const fs::path& folder, co
     file.role = role;
     file.source_path = source;
     file.path = relative;
-    file.expected_sha256 = expected_sha256;
+    file.expected_sha256 = digest_token(expected_sha256);
     file.status = "absent";
     std::string bytes;
     if (source.empty() || !read_bytes(source, &bytes)) {
@@ -54,8 +60,8 @@ ma::OrangeRecordingModelArtifactsV2File copy_declared(const fs::path& folder, co
         return file;
     }
     file.size_bytes = bytes.size();
-    file.sha256 = sha256_hex(bytes);
-    file.status = expected_sha256.empty() || file.sha256 == expected_sha256 ? "present" : "digest_mismatch";
+    file.sha256 = digest_token(sha256_hex(bytes));
+    file.status = !file.expected_sha256 || file.sha256 == file.expected_sha256 ? "present" : "digest_mismatch";
     return file;
 }
 
