@@ -1,8 +1,10 @@
 #include "citrus_recording_geometry.h"
 #include "yolo_spatial_mask.h"
+#include "spatial_mask_arm_record.h"
 #include "orange_outputs/orange_analytics_spatial_mask_runtime_v1.h"
 
 #include <cmath>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -281,8 +283,50 @@ void test_policy_matches_published_schema()
       refused(j, "a frame result merged into the policy", "/result: unexpected field"); }
 }
 
-int main()
+std::string fixture_dir;
+
+// The arm builder reproduces real arm records byte for byte: the envelope built with the
+// recording's inputs, with the recorded policies, equals the recorded document
+// (tools/fixtures/generated_outputs/arm_*: a 2026-08-25 GUI gate_only arm, a headless off arm).
+void test_arm_record_matches_real_records()
 {
+    using namespace orange::analytics_mask;
+    for (const bool gui : {true, false}) {
+        std::ifstream in(fixture_dir + (gui ? "/arm_gui" : "/arm_headless") + "/recording_geometry_contract.json");
+        const nlohmann::json recorded = nlohmann::json::parse(in).at("analytics_runtime").at("yolo_spatial_mask");
+        Mode mode = Mode::kOff;
+        require(parse_mode(recorded.at("mode").get<std::string>(), &mode), "fixture mode");
+        ArmRecord record = gui
+            ? gui_arm_record(mode, recorded.at("configuration_source"), 0.0f, recorded.at("apply_timeout_ms").get<int>())
+            : headless_arm_record(mode, recorded.at("configuration_source"), 0.0f);
+        for (auto camera = recorded.at("cameras").begin(); camera != recorded.at("cameras").end(); ++camera) {
+            PolicyRecord policy;
+            std::string error;
+            require(runtime_schema::parse(camera.value(), &policy, &error), "fixture policy: " + error);
+            (*record.cameras)[camera.key()] = policy;
+        }
+        record.status = recorded.at("status");
+        record.armed_camera_count = recorded.at("armed_camera_count").get<std::uint64_t>();
+        nlohmann::json contract = nlohmann::json::object();
+        store_arm_record(&contract, record);
+        require(contract.at("analytics_runtime").at("yolo_spatial_mask").dump() == recorded.dump(),
+                std::string(gui ? "GUI" : "headless") + " arm record bytes equal the recorded one");
+    }
+    // A GUI start whose mask configuration did not resolve.
+    nlohmann::json contract = nlohmann::json::object();
+    store_arm_record(&contract, failed_arm_record("bad mode"));
+    require(contract.at("analytics_runtime").at("yolo_spatial_mask").dump() ==
+                R"({"error":"bad mode","schema_id":"orange.analytics.spatial_mask_recording_arm","schema_version":1,"status":"failed"})",
+            "early failure record");
+}
+
+int main(int argc, char** argv)
+{
+    if (argc != 2) {
+        std::cerr << "usage: yolo_spatial_mask_tests <tools/fixtures/generated_outputs>\n";
+        return 2;
+    }
+    fixture_dir = argv[1];
     try {
         test_modes();
         test_environment_config();
@@ -291,6 +335,7 @@ int main()
         test_strict_resolution_failures();
         test_centroid_decisions();
         test_policy_matches_published_schema();
+        test_arm_record_matches_real_records();
         std::cout << "yolo_spatial_mask_tests: PASS\n";
         return 0;
     } catch (const std::exception& error) {

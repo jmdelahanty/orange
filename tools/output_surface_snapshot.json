@@ -3999,8 +3999,6 @@
    "ack_state",
    "action",
    "active_recorders",
-   "apply_timeout_ms",
-   "armed_camera_count",
    "build_calls",
    "build_ms_max",
    "build_ms_total",
@@ -4013,7 +4011,6 @@
    "commanded_focus",
    "commanded_iris",
    "config_directory",
-   "configuration_source",
    "copied",
    "copied_at_utc",
    "copied_path",
@@ -4027,7 +4024,6 @@
    "elapsed_seconds",
    "empty_frames",
    "enabled",
-   "error",
    "error_code",
    "event",
    "event_at_utc",
@@ -4055,9 +4051,7 @@
    "halo_delta_qp",
    "halo_px",
    "health",
-   "immutable_for_recording",
    "importance_map",
-   "input_context_outset_px",
    "inside_delta_qp",
    "interval_s",
    "jpg",
@@ -4090,10 +4084,8 @@
    "node",
    "operation_id",
    "outside_delta_qp",
-   "outside_tensor_value",
    "pending_request_id",
    "policy",
-   "policy_generation",
    "pose_overlay",
    "profile",
    "reads",
@@ -4123,15 +4115,9 @@
    "timing_windows",
    "tolerance_fraction",
    "valid",
-   "yolo_spatial_mask",
    "yolo_spatial_mask_runtime"
   ],
-  "schemas": [
-   [
-    "orange.analytics.spatial_mask_recording_arm",
-    "1"
-   ]
-  ]
+  "schemas": []
  },
  "src/orange_headless_client.cpp": {
   "csv_headers": [
@@ -4145,10 +4131,8 @@
    "acq_starve_final",
    "acquisition_buffer_mode",
    "allow_push_failures",
-   "application_phase",
    "aq",
    "aq_override",
-   "armed_camera_count",
    "artifact_path",
    "artifact_root",
    "authoritative_video_mode",
@@ -4201,7 +4185,6 @@
    "enc_slow_final",
    "engine_path",
    "error",
-   "error_code",
    "every_n_frames",
    "exit_code",
    "experiment_id",
@@ -4261,7 +4244,6 @@
    "helper_fallback_frames_final",
    "helper_noop_source_read",
    "helper_requested_frames_final",
-   "immutable_for_recording",
    "importance_map_active_mode",
    "importance_map_block_size",
    "importance_map_enabled",
@@ -4315,7 +4297,6 @@
    "pattern",
    "pid",
    "planned_duration_seconds",
-   "policy_generation",
    "pose",
    "pose_event_log_failed_rows",
    "pose_event_log_metadata_join_misses",
@@ -4535,7 +4516,6 @@
    "yolo_event_log_timeout_rows",
    "yolo_event_log_zero_rows",
    "yolo_events_min",
-   "yolo_spatial_mask",
    "yolo_spatial_mask_runtime",
    "yolo_sync_event",
    "yolo_worker",
@@ -4546,10 +4526,6 @@
    "yolo_worker_status"
   ],
   "schemas": [
-   [
-    "orange.analytics.spatial_mask_recording_arm",
-    "1"
-   ],
    [
     "orange.headless.frame_ipc_summary",
     "3"
@@ -6926,6 +6902,32 @@
   "schemas": [
    [
     "orange.homography_candidate.operator_review",
+    "1"
+   ]
+  ]
+ },
+ "src/spatial_mask_arm_record.h": {
+  "csv_headers": [],
+  "json_keys": [
+   "application_phase",
+   "apply_timeout_ms",
+   "armed_camera_count",
+   "cameras",
+   "configuration_source",
+   "error",
+   "error_code",
+   "immutable_for_recording",
+   "input_context_outset_px",
+   "mode",
+   "outside_tensor_value",
+   "schema_id",
+   "schema_version",
+   "status",
+   "yolo_spatial_mask"
+  ],
+  "schemas": [
+   [
+    "orange.analytics.spatial_mask_recording_arm",
     "1"
    ]
   ]

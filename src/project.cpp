@@ -7,6 +7,7 @@
 #include "camera_config_schema.h"
 #include "yolo_runtime_flags.h"
 #include "citrus_recording_geometry.h"
+#include "spatial_mask_arm_record.h"
 #include "external_recorder_ipc_protocol.h"
 #include "fnv1a64_fingerprint.h"
 #include "fsuid_guard.h"
@@ -7840,13 +7841,26 @@ bool write_recording_geometry_contract(
         }
         return false;
     }
-    const nlohmann::json spatial_mask = materialized_contract.value(
-        "analytics_runtime", nlohmann::json::object()).value(
-            "yolo_spatial_mask", nlohmann::json::object());
-    const bool mask_evidence_required = spatial_mask.is_object() &&
-        spatial_mask.value("mode", "off") != "off" &&
-        (spatial_mask.value("status", "") == "armed" ||
-         spatial_mask.value("status", "") == "armed_before_worker_start");
+    // The spatial mask arm record (orange.analytics.spatial_mask_recording_arm v1, generated
+    // reader): an armed mode other than off needs complete registration evidence.
+    bool mask_evidence_required = false;
+    const auto runtime_it = materialized_contract.find("analytics_runtime");
+    if (runtime_it != materialized_contract.end() && runtime_it->is_object() &&
+        runtime_it->contains("yolo_spatial_mask")) {
+        orange::analytics_mask::ArmRecord arm;
+        std::string arm_error;
+        if (!orange::analytics_mask::arm_schema::parse(
+                runtime_it->at("yolo_spatial_mask"), &arm, &arm_error,
+                "analytics_runtime/yolo_spatial_mask")) {
+            if (error_out) {
+                *error_out = "spatial mask arm record does not match "
+                    "orange.analytics.spatial_mask_recording_arm v1: " + arm_error;
+            }
+            return false;
+        }
+        mask_evidence_required = arm.mode.value_or("off") != "off" &&
+            (arm.status == "armed" || arm.status == "armed_before_worker_start");
+    }
     if (mask_evidence_required && materialized_status != "complete") {
         if (error_out) {
             *error_out = "live spatial masking requires complete recording-local "

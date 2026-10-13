@@ -12,7 +12,7 @@ code enforces:
   object with properties, which is "open": declared fields are typed and checked, any other keys
   are kept verbatim in `extra` and written back unchanged), items, enum, const,
   minimum / maximum, minLength / maxLength, pattern, oneOf with one const discriminator property,
-  $defs and local $ref, plus the x-orange-* annotations (x-orange-cpp-name, x-orange-decimals).
+  $defs and local $ref (each $defs entry is one type, named <Root><Key>), plus the x-orange-* annotations (x-orange-cpp-name, x-orange-decimals).
   On an object: allOf of {if, then} rules, where `if` tests const / enum values below nested
   properties and `then` constrains values below nested properties (const, enum, type, minLength,
   maxLength, pattern, minimum, maximum). They are checked on the parsed JSON with JSON Schema's
@@ -159,6 +159,8 @@ class Builder:
         self.refs = refs or {}                # schema stem -> generated namespace
         self.externals: dict[str, ExternalT] = {}
         self.objects: list[ObjectT] = []     # emission order: dependencies first
+        self.root_name = ""
+        self.def_types: dict[str, object] = {}   # $defs key -> its type, generated once
 
     def external(self, node: dict, where: str):
         """ExternalT for a {"$ref": "<stem>.schema.json"} node, else None."""
@@ -193,6 +195,16 @@ class Builder:
         external = self.external(node, where)
         if external is not None:
             return external
+        ref = node.get("$ref") if isinstance(node, dict) else None
+        if isinstance(ref, str) and ref.startswith("#/$defs/"):
+            # A $defs entry is one type named after its key, however many places use it.
+            key = ref[len("#/$defs/"):]
+            if key not in self.def_types:
+                definition = self.root["$defs"][key]
+                self.def_types[key] = self.type_of(
+                    definition, definition.get("x-orange-cpp-name", self.root_name + camel(key)),
+                    f"#/$defs/{key}")
+            return self.def_types[key]
         node = self.resolve(node)
         self.check_keywords(node, where)
         types = node.get("type")
@@ -300,6 +312,7 @@ class Builder:
         return obj
 
     def build(self, root_name: str):
+        self.root_name = root_name
         root = self.root
         self.check_keywords(root, "#")
         if "oneOf" in root:

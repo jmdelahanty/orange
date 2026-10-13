@@ -67,6 +67,7 @@
 #include "nic_thermal_monitor.h"
 #include "yolov8_det.h"
 #include "yolo_worker.h"
+#include "spatial_mask_arm_record.h"
 #include "yolo_event_log.h"
 #include "yolo_event_log_validation.h"
 #include "crop_producer_worker.h"
@@ -5020,19 +5021,11 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     "and a resolved recording geometry contract");
             }
 
-            nlohmann::json spatial_runtime = {
-                {"schema_id", "orange.analytics.spatial_mask_recording_arm"},
-                {"schema_version", 1},
-                {"status", "resolving"},
-                {"mode", orange::analytics_mask::mode_to_string(spatial_mode)},
-                {"configuration_source", spatial_config.config.source},
-                {"input_context_outset_px",
-                 spatial_config.config.input_context_outset_px},
-                {"outside_tensor_value", 0.0},
-                {"application_phase", "before_headless_worker_start"},
-                {"immutable_for_recording", true},
-                {"cameras", nlohmann::json::object()},
-            };
+            // The arm record (orange.analytics.spatial_mask_recording_arm v1).
+            orange::analytics_mask::ArmRecord spatial_runtime =
+                orange::analytics_mask::headless_arm_record(
+                    spatial_mode, spatial_config.config.source,
+                    spatial_config.config.input_context_outset_px);
             std::size_t armed_spatial_workers = 0;
             for (int idx : selected_indices) {
                 if (!yolo_workers[idx]) {
@@ -5057,11 +5050,6 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                             spatial_mode,
                             spatial_config.config.input_context_outset_px);
                     if (!resolved.ok) {
-                        spatial_runtime["cameras"][serial] = {
-                            {"status", "resolution_failed"},
-                            {"error_code", resolved.error_code},
-                            {"error", resolved.error},
-                        };
                         throw std::runtime_error(
                             "headless spatial mask camera " + serial + ": " +
                             resolved.error);
@@ -5077,16 +5065,13 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                         "headless spatial mask camera " + serial +
                         " rejected policy: " + request_error);
                 }
-                spatial_runtime["cameras"][serial] =
-                    orange::analytics_mask::policy_to_json(policy);
-                spatial_runtime["cameras"][serial]["status"] =
-                    "requested_before_worker_start";
-                spatial_runtime["cameras"][serial]["policy_generation"] =
-                    generation;
+                orange::analytics_mask::set_camera_policy(
+                    &spatial_runtime, serial, policy,
+                    "requested_before_worker_start", generation);
                 if (enable_artifacts) {
                     headless_recording_geometry_contract["cameras"][serial]
                         ["yolo_spatial_mask_runtime"] =
-                            spatial_runtime["cameras"][serial];
+                            orange::analytics_mask::camera_policy_json(spatial_runtime, serial);
                     if (spatial_mode != orange::analytics_mask::Mode::kOff) {
                         orange::recording_geometry::
                             mark_recording_dish_mask_runtime_use(
@@ -5099,11 +5084,11 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                 }
                 ++armed_spatial_workers;
             }
-            spatial_runtime["status"] = "armed_before_worker_start";
-            spatial_runtime["armed_camera_count"] = armed_spatial_workers;
+            spatial_runtime.status = "armed_before_worker_start";
+            spatial_runtime.armed_camera_count = armed_spatial_workers;
             if (enable_artifacts) {
-                headless_recording_geometry_contract["analytics_runtime"]
-                    ["yolo_spatial_mask"] = std::move(spatial_runtime);
+                orange::analytics_mask::store_arm_record(
+                    &headless_recording_geometry_contract, spatial_runtime);
                 std::string geometry_error;
                 if (!write_recording_geometry_contract(
                         record_folder,

@@ -24,6 +24,7 @@
 #include "network_base.h"
 #include "enet_thread.h"
 #include "yolo_worker.h"
+#include "spatial_mask_arm_record.h"
 #include "global.h"
 #include "encoder_preprocess_worker.h"
 #include "encoder_hw_worker.h"
@@ -1972,18 +1973,10 @@ GuiYoloSpatialMaskArmResult arm_gui_yolo_spatial_masks(
         return result;
     }
 
-    nlohmann::json runtime = {
-        {"schema_id", "orange.analytics.spatial_mask_recording_arm"},
-        {"schema_version", 1},
-        {"status", "resolving"},
-        {"mode", orange::analytics_mask::mode_to_string(config.mode)},
-        {"configuration_source", config.source},
-        {"input_context_outset_px", config.input_context_outset_px},
-        {"outside_tensor_value", 0.0},
-        {"apply_timeout_ms", config.apply_timeout_ms},
-        {"immutable_for_recording", true},
-        {"cameras", nlohmann::json::object()},
-    };
+    // The arm record (orange.analytics.spatial_mask_recording_arm v1), stored in the contract
+    // with its final status on every return below.
+    orange::analytics_mask::ArmRecord runtime = orange::analytics_mask::gui_arm_record(
+        config.mode, config.source, config.input_context_outset_px, config.apply_timeout_ms);
 
     struct PendingArm {
         int camera_index = -1;
@@ -2006,10 +1999,8 @@ GuiYoloSpatialMaskArmResult arm_gui_yolo_spatial_masks(
         if (!arm.worker) {
             result.error = "YOLO spatial mask arm has no worker for camera " +
                 arm.camera_serial;
-            runtime["status"] = "failed";
-            runtime["error"] = result.error;
-            (*recording_geometry_contract)["analytics_runtime"]
-                ["yolo_spatial_mask"] = std::move(runtime);
+            orange::analytics_mask::set_arm_failed(&runtime, result.error);
+            orange::analytics_mask::store_arm_record(recording_geometry_contract, runtime);
             return result;
         }
 
@@ -2030,29 +2021,22 @@ GuiYoloSpatialMaskArmResult arm_gui_yolo_spatial_masks(
             if (!resolved.ok) {
                 result.error = "camera " + arm.camera_serial + ": " +
                     resolved.error;
-                runtime["status"] = "failed";
-                runtime["error"] = result.error;
-                runtime["cameras"][arm.camera_serial] = {
-                    {"status", "resolution_failed"},
-                    {"error_code", resolved.error_code},
-                    {"error", resolved.error},
-                };
-                (*recording_geometry_contract)["analytics_runtime"]
-                    ["yolo_spatial_mask"] = std::move(runtime);
+                orange::analytics_mask::set_arm_failed(&runtime, result.error);
+                orange::analytics_mask::set_camera_failure(
+                    &runtime, arm.camera_serial, resolved.error_code, resolved.error);
+                orange::analytics_mask::store_arm_record(recording_geometry_contract, runtime);
                 return result;
             }
             arm.policy = std::move(resolved.policy);
         }
-        runtime["cameras"][arm.camera_serial] =
-            orange::analytics_mask::policy_to_json(arm.policy);
-        runtime["cameras"][arm.camera_serial]["status"] = "resolved";
+        orange::analytics_mask::set_camera_policy(
+            &runtime, arm.camera_serial, arm.policy, "resolved");
         pending.push_back(std::move(arm));
     }
 
     if (pending.empty()) {
-        runtime["status"] = "not_applicable_no_yolo_workers";
-        (*recording_geometry_contract)["analytics_runtime"]
-            ["yolo_spatial_mask"] = std::move(runtime);
+        runtime.status = "not_applicable_no_yolo_workers";
+        orange::analytics_mask::store_arm_record(recording_geometry_contract, runtime);
         result.ok = true;
         return result;
     }
@@ -2077,11 +2061,9 @@ GuiYoloSpatialMaskArmResult arm_gui_yolo_spatial_masks(
                 arm.policy, &arm.generation, &request_error)) {
             result.error = "camera " + arm.camera_serial +
                 " rejected spatial mask policy: " + request_error;
-            runtime["status"] = "failed";
-            runtime["error"] = result.error;
+            orange::analytics_mask::set_arm_failed(&runtime, result.error);
             request_off_rollback();
-            (*recording_geometry_contract)["analytics_runtime"]
-                ["yolo_spatial_mask"] = std::move(runtime);
+            orange::analytics_mask::store_arm_record(recording_geometry_contract, runtime);
             return result;
         }
     }
@@ -2093,19 +2075,16 @@ GuiYoloSpatialMaskArmResult arm_gui_yolo_spatial_masks(
                 &wait_error)) {
             result.error = "camera " + arm.camera_serial +
                 " did not apply spatial mask policy: " + wait_error;
-            runtime["status"] = "failed";
-            runtime["error"] = result.error;
+            orange::analytics_mask::set_arm_failed(&runtime, result.error);
             request_off_rollback();
-            (*recording_geometry_contract)["analytics_runtime"]
-                ["yolo_spatial_mask"] = std::move(runtime);
+            orange::analytics_mask::store_arm_record(recording_geometry_contract, runtime);
             return result;
         }
-        runtime["cameras"][arm.camera_serial]["status"] = "armed";
-        runtime["cameras"][arm.camera_serial]["policy_generation"] =
-            arm.generation;
+        orange::analytics_mask::update_camera_policy(
+            &runtime, arm.camera_serial, "armed", arm.generation);
         (*recording_geometry_contract)["cameras"][arm.camera_serial]
             ["yolo_spatial_mask_runtime"] =
-                runtime["cameras"][arm.camera_serial];
+                orange::analytics_mask::camera_policy_json(runtime, arm.camera_serial);
         if (arm.policy.mode != orange::analytics_mask::Mode::kOff) {
             orange::recording_geometry::mark_recording_dish_mask_runtime_use(
                 recording_geometry_contract,
@@ -2115,10 +2094,9 @@ GuiYoloSpatialMaskArmResult arm_gui_yolo_spatial_masks(
                 orange::analytics_mask::masks_input(arm.policy.mode));
         }
     }
-    runtime["status"] = "armed";
-    runtime["armed_camera_count"] = pending.size();
-    (*recording_geometry_contract)["analytics_runtime"]
-        ["yolo_spatial_mask"] = std::move(runtime);
+    runtime.status = "armed";
+    runtime.armed_camera_count = pending.size();
+    orange::analytics_mask::store_arm_record(recording_geometry_contract, runtime);
     result.ok = true;
     return result;
 }
@@ -4035,13 +4013,9 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
             num_cameras);
     if (!spatial_mask_arm.ok &&
         !recording_geometry_contract.contains("analytics_runtime")) {
-        recording_geometry_contract["analytics_runtime"]
-            ["yolo_spatial_mask"] = {
-                {"schema_id", "orange.analytics.spatial_mask_recording_arm"},
-                {"schema_version", 1},
-                {"status", "failed"},
-                {"error", spatial_mask_arm.error},
-            };
+        orange::analytics_mask::store_arm_record(
+            &recording_geometry_contract,
+            orange::analytics_mask::failed_arm_record(spatial_mask_arm.error));
     }
     std::string geometry_write_error;
     const bool geometry_written = write_gui_recording_geometry_contract(

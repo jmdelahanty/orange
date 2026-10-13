@@ -50,7 +50,7 @@ nlohmann::json manifest_block_json(const ModelIdentity& id)
 {
     namespace dm = orange::outputs::gen::recording_detect_model_v1;
     const auto block =
-        orange::model_identity::engine_manifest_block<dm::OrangeRecordingDetectModelV1RuntimeEngineManifest>(id);
+        orange::model_identity::engine_manifest_block<dm::OrangeRecordingDetectModelV1EngineManifest>(id);
     return block ? dm::to_json(*block) : nlohmann::json(nullptr);
 }
 

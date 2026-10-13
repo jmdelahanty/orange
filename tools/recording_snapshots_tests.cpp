@@ -1,3 +1,4 @@
+#include "spatial_mask_arm_record.h"
 #include "dish_top_rim_observation_schema.h"
 #include "citrus_recording_geometry.h"
 #include "gui/recording_snapshots.h"
@@ -989,15 +990,18 @@ void test_standalone_physical_registration_recording_materialization()
             {"cameras", {{"cam1", camera_physical}}},
         }},
         {"warnings", nlohmann::json::array()},
-        {"analytics_runtime", {{"yolo_spatial_mask", {
-            {"status", "armed"},
-            {"mode", "gate_and_input_mask"},
-        }}}},
     };
+    // An armed gate_and_input_mask record, as the GUI writes it (spatial_mask_arm_record.h).
+    {
+        orange::analytics_mask::ArmRecord arm = orange::analytics_mask::gui_arm_record(
+            orange::analytics_mask::Mode::kGateAndInputMask, "gui", 0.0f, 750);
+        arm.status = "armed";
+        arm.armed_camera_count = 0;
+        orange::analytics_mask::store_arm_record(&contract, arm);
+    }
     std::string error;
-    require(write_recording_geometry_contract(
-                recording.string(), contract, &error),
-            "complete selected physical evidence must persist: " + error);
+    const bool persisted = write_recording_geometry_contract(recording.string(), contract, &error);
+    require(persisted, "complete selected physical evidence must persist: " + error);
     require(read_exact_fixture(
                 recording / "recording_geometry_assets" / "cameras" /
                 "Camcam1" / "physical_registration" / "observation.json") ==
@@ -1036,6 +1040,10 @@ void test_standalone_physical_registration_recording_materialization()
     require(write_recording_geometry_contract(
                 optional_recording.string(), contract, &error),
             "mask-off full-frame recording must remain valid with partial optional evidence");
+    contract["analytics_runtime"]["yolo_spatial_mask"] = {{"status", "armed"}, {"mode", "gate_only"}};
+    const bool refused = !write_recording_geometry_contract(optional_recording.string(), contract, &error);
+    require(refused && error.find("does not match orange.analytics.spatial_mask_recording_arm v1") != std::string::npos,
+            "an arm record that does not match its schema is refused: " + error);
     std::filesystem::remove_all(root);
 }
 

@@ -102,7 +102,7 @@ nlohmann::json build_gui_detect_model_snapshot(const CameraParams& camera_params
     block.runtime.weights_sha256 = identity.weights_sha256;
     block.runtime.onnx_sha256 = identity.onnx_sha256;
     block.runtime.engine_manifest = orange::model_identity::engine_manifest_block<
-        dm::OrangeRecordingDetectModelV1RuntimeEngineManifest>(identity);
+        dm::OrangeRecordingDetectModelV1EngineManifest>(identity);
     block.runtime.gpu_id = camera_params.gpu_id;
     return dm::to_json(block);
 }
@@ -334,7 +334,7 @@ nlohmann::json build_gui_pose_model_snapshot(const CameraParams& camera_params,
     runtime.onnx_sha256 = identity.onnx_sha256;
     runtime.onnx_sha256_matches_skeleton_sidecar = onnx_matches_skeleton;
     runtime.engine_manifest = orange::model_identity::engine_manifest_block<
-        pm::OrangeRecordingPoseModelV2RuntimeEngineManifest>(identity);
+        pm::OrangeRecordingPoseModelV2EngineManifest>(identity);
     runtime.ipc_model_id_hash = engine_sha256.empty() ? 0ULL : orange::pose::sha256_prefix64(engine_sha256);
     runtime.gpu_id = camera_params.gpu_id;
     runtime.queue_size = enabled ? 32 : 0;
