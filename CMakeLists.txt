@@ -1105,7 +1105,8 @@ if(BUILD_TESTING)
     )
     target_include_directories(realtime_products_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(realtime_products_tests PRIVATE cxx_std_17)
-    add_test(NAME realtime_products_tests COMMAND realtime_products_tests)
+    add_test(NAME realtime_products_tests COMMAND realtime_products_tests
+        "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/recording_snapshot_models_excerpt.json")
 
     add_executable(media_content_digest_tests
         "tools/media_content_digest_tests.cpp"
@@ -1122,7 +1123,10 @@ if(BUILD_TESTING)
     )
     target_include_directories(model_artifacts_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(model_artifacts_tests PRIVATE cxx_std_17)
-    add_test(NAME model_artifacts_tests COMMAND model_artifacts_tests)
+    add_test(NAME model_artifacts_tests COMMAND model_artifacts_tests
+        "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/recording_snapshot_models_excerpt.json"
+        "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/engine_manifests/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_int8mm_bo5_avg32.manifest.json"
+        "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/engine_manifests/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915_a16_gpu5_trt100_fp16_bo5_avg32.manifest.json")
 
     add_executable(model_identity_tests
         "tools/model_identity_tests.cpp"

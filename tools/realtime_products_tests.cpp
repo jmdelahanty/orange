@@ -24,8 +24,14 @@ static void require(bool ok, const char* what)
 
 static void put(const fs::path& p, const std::string& s) { std::ofstream(p) << s; }
 
-int main()
+const std::string kDetSha(64, 'a');
+
+int main(int argc, char** argv)
 {
+    if (argc != 2) {
+        std::cerr << "usage: realtime_products_tests <recording_snapshot_models_excerpt.json>" << std::endl;
+        return 2;
+    }
     const fs::path dir = fs::temp_directory_path() / ("realtime_products_tests_" + std::to_string(::getpid()));
     fs::create_directories(dir);
     const std::string yolo =
@@ -42,9 +48,13 @@ int main()
     put(dir / "Cam2010093_yolo_perf.csv", "a,b\n1,2\n");
     put(dir / "Cam2010093_crop_meta.csv", "x\n");
     put(dir / "Cam2010093_owner_push.csv", "k\n");
-    put(dir / "recording_snapshot.json", nlohmann::json{{"models", {{"2010093", {
-        {"detect", {{"enabled", true}, {"runtime", {{"model_id", "det-model"}, {"engine_path", "/e/det.engine"}, {"engine_sha256", "ab"}}}}},
-        {"pose", {{"enabled", true}, {"runtime", {{"model_id", "pose-model"}, {"engine_sha256", "cd"}, {"pose_crop_size_px", 192}}}}}}}}}}.dump());
+    // Model blocks: the real excerpt (tools/fixtures/generated_outputs) with this test's values.
+    std::ifstream excerpt_in(argv[1]);
+    const nlohmann::json excerpt = nlohmann::json::parse(excerpt_in).at("models").begin().value();
+    nlohmann::json detect = excerpt.at("detect"), pose_block = excerpt.at("pose");
+    detect.merge_patch({{"enabled", true}, {"runtime", {{"model_id", "det-model"}, {"engine_path", "/e/det.engine"}, {"engine_sha256", kDetSha}}}});
+    pose_block.merge_patch({{"enabled", true}, {"runtime", {{"model_id", "pose-model"}, {"engine_sha256", std::string(64, 'c')}, {"pose_crop_size_px", 192}}}});
+    put(dir / "recording_snapshot.json", nlohmann::json{{"models", {{"2010093", {{"detect", detect}, {"pose", pose_block}}}}}}.dump());
 
     const nlohmann::json block = orange::session::build_realtime_products_json(dir.string(), {"2010093", "2010094"});
     require(block.value("schema_id", "") == "orange.recording_realtime_products" && block.value("schema_version", 0) == 1, "schema identity");
@@ -54,7 +64,7 @@ int main()
     require(d.at("rows_by_kind").value("result", 0) == 2 && d.at("rows_by_kind").value("failed", 0) == 1, "detections rows by kind");
     require(d.value("first_recording_frame_id", 0) == 5 && d.value("last_recording_frame_id", 0) == 9, "detections frame range");
     require(d.at("line_schema").value("schema_id", "") == "orange.yolo_event" && d.at("line_schema").value("schema_version", 0) == 1, "detections line schema");
-    require(d.at("model_ref").value("models_key", "") == "models.2010093.detect" && d.at("model_ref").value("engine_sha256", "") == "ab", "detections model ref");
+    require(d.at("model_ref").value("models_key", "") == "models.2010093.detect" && d.at("model_ref").value("engine_sha256", "") == kDetSha, "detections model ref");
     require(d.at("files").size() == 2 && d.at("files")[0].value("path", "") == "Cam2010093_yolo_events.jsonl" &&
             d.at("files")[0].value("sha256", "") == sha256_hex(yolo) && d.at("files")[0].value("size_bytes", 0) == static_cast<int>(yolo.size()) &&
             d.at("files")[1].value("role", "") == "perf", "detections files with digests");

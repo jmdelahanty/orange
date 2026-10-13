@@ -14,7 +14,7 @@ schema_id without being it. --strict-nested makes their failures count.
   validate_output_schemas.py <recording folder or files>...  [--json report.json]
 
 Blocks that carry no schema_id of their own but have a published schema are located by file and
-path (EMBEDDED below) and validated too: the snapshot's models.<serial>.detect / .pose. They
+path (published_schemas.EMBEDDED) and validated too: the snapshot's models.<serial>.detect / .pose. They
 describe what the current writers produce; snapshots older than the model identity block
 (2026-10-09) do not match and are reported, since the snapshot's schema_version did not change.
 
@@ -38,7 +38,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from published_schemas import published  # noqa: E402
+from published_schemas import EMBEDDED, published  # noqa: E402
 
 try:
     from jsonschema import Draft202012Validator
@@ -67,13 +67,6 @@ def load_schemas() -> tuple[dict[tuple[str, int], dict], set[str], Registry]:
                    for identity, (name, pointer) in published(SCHEMAS).items()}
     families = {sid for sid, _ in by_identity}
     return by_identity, families, registry
-
-
-# (file pattern, normalized JSON path, schema file) for published blocks without a schema_id.
-EMBEDDED = (
-    ("recording_snapshot*.json", "/models/<serial>/detect", "orange_recording_detect_model_v1.schema.json"),
-    ("recording_snapshot*.json", "/models/<serial>/pose", "orange_recording_pose_model_v2.schema.json"),
-)
 
 
 def embedded_blocks(value, file_name: str, path: str = ""):

@@ -13,6 +13,10 @@ the generated to_json, see tools/schema_codegen) is credited with that schema's 
 and schema_id / version, since the key literals live in the generated header. A file that only
 reads through the generated parser is not credited: it writes nothing.
 
+Published blocks without a schema_id (published_schemas.EMBEDDED, e.g. the snapshot's
+models.<serial>.detect) are recorded under "embedded <path>" with the path's keys, which their
+writers pass as arguments.
+
   check_output_surface.py                 compare with tools/output_surface_snapshot.json
   check_output_surface.py --update        rewrite the snapshot (commit it with the change)
   check_output_surface.py --base <ref>    also require that, if the csv_headers or json_keys
@@ -36,7 +40,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from check_output_names import producer_files, strip_comments  # noqa: E402
-from published_schemas import published  # noqa: E402
+from published_schemas import EMBEDDED, published  # noqa: E402
 
 # ORANGE_RATCHET_ROOT points the checks at another tree (used by their tests).
 REPO = Path(os.environ.get("ORANGE_RATCHET_ROOT") or Path(__file__).resolve().parents[1])
@@ -128,6 +132,9 @@ def extract() -> dict[str, dict[str, list]]:
                 "json_keys": sorted(keys),
                 "schemas": sorted([sid, str(ver)] for sid, ver in schemas),
             }
+    for _pattern, path, schema_file in EMBEDDED:
+        keys = sorted(k for k in path.strip("/").split("/") if not k.startswith("<"))
+        surface[f"embedded {path}"] = {"csv_headers": [], "json_keys": keys, "schemas": [[schema_file, "path"]]}
     return dict(sorted(surface.items()))
 
 

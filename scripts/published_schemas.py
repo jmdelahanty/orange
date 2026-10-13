@@ -5,12 +5,23 @@ A schema file declares the identity of the documents it describes with a "schema
 oneOf/anyOf/allOf branch (one file per document with several line kinds, e.g. event logs), or in
 a root $defs entry. Declarations deeper down describe embedded documents of other schemas and
 do not count. Shared by validate_output_schemas.py and check_output_surface.py.
+
+EMBEDDED lists the published blocks that carry no schema_id of their own, located by file and
+path instead: validate_output_schemas.py validates them, check_output_surface.py records their
+path keys (the writers pass them as arguments, where its static extraction cannot see them).
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+
+
+# (file pattern, normalized JSON path, schema file) for published blocks without a schema_id.
+EMBEDDED = (
+    ("recording_snapshot*.json", "/models/<serial>/detect", "orange_recording_detect_model_v1.schema.json"),
+    ("recording_snapshot*.json", "/models/<serial>/pose", "orange_recording_pose_model_v2.schema.json"),
+)
 
 
 def _identity(node) -> tuple[str, int] | None:

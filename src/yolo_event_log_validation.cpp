@@ -7,68 +7,6 @@
 #include <variant>
 
 namespace yolo_event_log {
-namespace {
-
-uint64_t json_u64_or_default(const nlohmann::json& value, uint64_t fallback)
-{
-    if (value.is_number_unsigned()) {
-        return value.get<uint64_t>();
-    }
-    if (value.is_number_integer()) {
-        const auto signed_value = value.get<int64_t>();
-        return signed_value >= 0 ? static_cast<uint64_t>(signed_value) : fallback;
-    }
-    if (value.is_number_float()) {
-        const double floating_value = value.get<double>();
-        return floating_value >= 0.0 ? static_cast<uint64_t>(floating_value) : fallback;
-    }
-    if (value.is_string()) {
-        try {
-            return static_cast<uint64_t>(std::stoull(value.get<std::string>()));
-        } catch (...) {
-            return fallback;
-        }
-    }
-    return fallback;
-}
-
-std::string json_string_or_default(const nlohmann::json& object,
-                                   const char* key,
-                                   const std::string& fallback)
-{
-    if (!object.is_object()) {
-        return fallback;
-    }
-    const auto it = object.find(key);
-    if (it == object.end() || !it->is_string()) {
-        return fallback;
-    }
-    return it->get<std::string>();
-}
-
-bool json_bool_or_default(const nlohmann::json& object,
-                          const char* key,
-                          const bool fallback,
-                          bool* valid_out = nullptr)
-{
-    if (valid_out) {
-        *valid_out = false;
-    }
-    if (!object.is_object()) {
-        return fallback;
-    }
-    const auto it = object.find(key);
-    if (it == object.end() || !it->is_boolean()) {
-        return fallback;
-    }
-    if (valid_out) {
-        *valid_out = true;
-    }
-    return it->get<bool>();
-}
-
-}  // namespace
-
 std::unordered_set<uint64_t> read_recording_metadata_frame_ids(
     const std::filesystem::path& metadata_path,
     uint64_t* row_count)
@@ -201,22 +139,18 @@ YoloEventLogValidationStats summarize_yolo_event_log(
         const std::string& status = event.yolo.status;
         const uint64_t detection_count = event.yolo.detection_count;
 
-        // The result's counts against the policy its generation names.
+        // The result's counts against the policy its generation names. The policy itself (mode,
+        // gate and input-mask flags, source identity and digest form) was checked against
+        // orange.analytics.spatial_mask_runtime v1 when its header / policy line was read; a
+        // generation without a valid policy makes every frame line naming it an error.
         {
-            const nlohmann::json* policy = session.Policy(event);
-            const nlohmann::json spatial = policy ? *policy : nlohmann::json::object();
-            const std::string spatial_mode = json_string_or_default(spatial, "mode", "");
-            const nlohmann::json input_mask = spatial.value("input_mask", nlohmann::json::object());
-            const nlohmann::json centroid_gate = spatial.value("centroid_gate", nlohmann::json::object());
-            bool input_enabled_valid = false;
-            const bool input_enabled = json_bool_or_default(
-                input_mask, "enabled", false, &input_enabled_valid);
-            bool gate_evaluated_valid = false;
-            const bool gate_evaluated = json_bool_or_default(
-                centroid_gate, "evaluated", false, &gate_evaluated_valid);
-            bool gate_enforced_valid = false;
-            const bool gate_enforced = json_bool_or_default(
-                centroid_gate, "enforced", false, &gate_enforced_valid);
+            const auto* policy = session.Policy(event);
+            if (!policy) {
+                const auto why = session.policy_errors.find(event.spatial_mask.policy_generation);
+                if (why != session.policy_errors.end() && stats.error.empty()) {
+                    stats.error = why->second;
+                }
+            }
             const auto& result = event.spatial_mask.result;
             const uint64_t raw_count = result.raw_detection_count;
             const uint64_t inside_count = result.inside_detection_count;
@@ -224,34 +158,21 @@ YoloEventLogValidationStats summarize_yolo_event_log(
             const uint64_t downstream_count = result.downstream_detection_count;
             bool spatial_error =
                 policy == nullptr ||
-                json_u64_or_default(spatial.value("schema_version", nlohmann::json()), 0) != 1 ||
                 downstream_count != detection_count ||
-                event.spatial_mask.outside_detections.size() != outside_count ||
-                !input_enabled_valid ||
-                !gate_evaluated_valid ||
-                !gate_enforced_valid;
-
-            if (spatial_mode == "off") {
+                event.spatial_mask.outside_detections.size() != outside_count;
+            if (policy != nullptr && policy->mode == "off") {
                 spatial_error = spatial_error ||
-                    input_enabled || gate_evaluated || gate_enforced ||
                     inside_count != 0 || outside_count != 0 ||
                     raw_count != downstream_count;
             } else if (policy != nullptr) {
-                const bool audit = spatial_mode == "audit";
-                const bool masked = spatial_mode == "gate_and_input_mask";
+                const bool audit = policy->mode == "audit";
                 spatial_error = spatial_error ||
-                    !gate_evaluated ||
-                    gate_enforced == audit ||
-                    input_enabled != masked ||
                     raw_count != inside_count + outside_count ||
                     downstream_count != (audit ? raw_count : inside_count) ||
                     event.spatial_mask.policy_generation == 0;
-                const nlohmann::json source = spatial.value("source", nlohmann::json::object());
-                spatial_error = spatial_error ||
-                    json_string_or_default(source, "artifact_id", "").empty() ||
-                    json_string_or_default(source, "sha256", "").rfind("sha256:", 0) != 0;
             }
-            const std::string expected_decision = spatial_mode == "audit" ? "would_reject" : "rejected";
+            const std::string expected_decision =
+                policy != nullptr && policy->mode == "audit" ? "would_reject" : "rejected";
             for (const auto& decision : event.spatial_mask.outside_detections) {
                 spatial_error = spatial_error || decision.decision != expected_decision;
             }

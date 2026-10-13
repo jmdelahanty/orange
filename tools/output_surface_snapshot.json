@@ -1,4 +1,30 @@
 {
+ "embedded /models/<serial>/detect": {
+  "csv_headers": [],
+  "json_keys": [
+   "detect",
+   "models"
+  ],
+  "schemas": [
+   [
+    "orange_recording_detect_model_v1.schema.json",
+    "path"
+   ]
+  ]
+ },
+ "embedded /models/<serial>/pose": {
+  "csv_headers": [],
+  "json_keys": [
+   "models",
+   "pose"
+  ],
+  "schemas": [
+   [
+    "orange_recording_pose_model_v2.schema.json",
+    "path"
+   ]
+  ]
+ },
  "src/FFmpegWriter.cpp": {
   "csv_headers": [],
   "json_keys": [
@@ -1242,6 +1268,11 @@
  "src/event_log_reader.h": {
   "csv_headers": [],
   "json_keys": [
+   "arena_id",
+   "artifact_fingerprint",
+   "artifact_id",
+   "artifact_schema_id",
+   "artifact_schema_version",
    "backend",
    "blank_frame",
    "box",
@@ -1251,6 +1282,7 @@
    "camera_timestamp",
    "capture_to_detect_done",
    "capture_to_pose_done",
+   "centroid_gate",
    "centroid_px",
    "citrus_live_ipc",
    "confidence",
@@ -1260,6 +1292,8 @@
    "crop",
    "crop_ready_to_pose_start",
    "crop_worker_start_to_crop_ready",
+   "cx",
+   "cy",
    "decision",
    "detect_to_crop_ready",
    "detect_to_crop_worker_start",
@@ -1269,21 +1303,27 @@
    "detections",
    "downstream_detection_count",
    "enabled",
+   "enforced",
    "engine_bytes",
    "engine_manifest_run_id",
    "engine_path",
    "engine_sha256",
    "error",
+   "evaluated",
    "event_epoch_us",
    "event_kind",
    "event_monotonic_us",
    "event_sequence",
    "frame",
    "frame_identity_key",
+   "geometry",
    "gpu_id",
    "has_detection",
+   "height",
    "height_px",
    "index",
+   "input_context_outset_px",
+   "input_mask",
    "inside_detection_count",
    "instance_count",
    "ipc_model_id_hash",
@@ -1300,36 +1340,46 @@
    "onnx_sha256",
    "outside_detection_count",
    "outside_detections",
+   "outside_tensor_value",
+   "path",
    "policy_generation",
    "pose",
    "pose_start_to_pose_done",
    "poses",
    "production_detection_valid",
    "queue_name",
+   "radius",
    "raw_detection_count",
    "raw_index",
    "record_active",
    "recording_frame_id",
    "recording_id",
+   "recording_relative_path",
+   "registration_id",
    "rejected_reason",
    "request_status",
    "requested",
    "result",
    "schema_id",
    "schema_version",
+   "sha256",
    "signed_boundary_distance_px",
    "skeleton_id",
    "skeleton_path",
    "skeleton_sha256",
+   "source",
    "source_frame",
+   "source_raster",
    "spatial_mask",
    "status",
    "stream_frame_id",
    "synthetic_runtime_detection",
    "timestamp_sys_ns",
    "timestamps",
+   "type",
    "visible",
    "weights_sha256",
+   "width",
    "width_px",
    "worker",
    "worker_engine_sha256",
@@ -6078,7 +6128,6 @@
   "csv_headers": [],
   "json_keys": [
    "build_id",
-   "detect",
    "engine_bytes",
    "engine_path",
    "engine_sha256",

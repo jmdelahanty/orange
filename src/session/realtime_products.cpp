@@ -1,4 +1,5 @@
 #include "session/realtime_products.h"
+#include "session/snapshot_models.h"
 #include "timing/log_writer.h"
 
 #include <cstdint>
@@ -137,23 +138,30 @@ nlohmann::json file_entry(const fs::path& folder, const std::string& name, const
     return {{"role", role}, {"path", name}, {"size_bytes", size}, {"sha256", sha}};
 }
 
-nlohmann::json model_ref(const nlohmann::json& models, const std::string& serial, const std::string& kind)
+// The product's model, from the snapshot block it names (models.<serial>.<kind>); empty and
+// disabled when the block is absent or did not match its published schema.
+nlohmann::json model_ref(const SnapshotModels& models, const std::string& serial, const std::string& kind)
 {
     nlohmann::json ref = {{"models_key", "models." + serial + "." + kind}};
-    const nlohmann::json camera = models.is_object() ? models.value(serial, nlohmann::json::object()) : nlohmann::json::object();
-    const nlohmann::json block = camera.is_object() ? camera.value(kind, nlohmann::json::object()) : nlohmann::json::object();
-    const nlohmann::json runtime = block.is_object() ? block.value("runtime", nlohmann::json::object()) : nlohmann::json::object();
-    ref["enabled"] = block.is_object() ? block.value("enabled", false) : false;
-    ref["model_id"] = runtime.is_object() ? runtime.value("model_id", std::string()) : std::string();
-    ref["engine_path"] = runtime.is_object() ? runtime.value("engine_path", std::string()) : std::string();
-    ref["engine_sha256"] = runtime.is_object() ? runtime.value("engine_sha256", std::string()) : std::string();
-    ref["weights_sha256"] = runtime.is_object() ? runtime.value("weights_sha256", std::string()) : std::string();
+    auto fill = [&](const auto* block) {
+        ref["enabled"] = block ? block->enabled : false;
+        ref["model_id"] = block ? block->runtime.model_id : std::string();
+        ref["engine_path"] = block ? block->runtime.engine_path : std::string();
+        ref["engine_sha256"] = block ? block->runtime.engine_sha256 : std::string();
+        ref["weights_sha256"] = block ? block->runtime.weights_sha256 : std::string();
+    };
+    const auto camera = models.find(serial);
+    if (kind == "detect") {
+        fill(camera != models.end() && camera->second.detect ? &*camera->second.detect : nullptr);
+    } else {
+        fill(camera != models.end() && camera->second.pose ? &*camera->second.pose : nullptr);
+    }
     return ref;
 }
 
 nlohmann::json product_json(const fs::path& folder, const std::string& serial, const std::string& product,
                             const std::string& events_name, const std::string& perf_name,
-                            const nlohmann::json& models)
+                            const SnapshotModels& models)
 {
     const ScannedLog log = scan_event_log(folder / events_name, product);
     nlohmann::json out = {
@@ -197,15 +205,10 @@ nlohmann::json build_realtime_products_json(const std::string& recording_folder,
                      "per-frame log digests may describe partial files" << std::endl;
     }
     const fs::path folder(recording_folder);
-    nlohmann::json models = nlohmann::json::object();
-    {
-        std::string bytes;
-        if (read_file(folder / "recording_snapshot.json", &bytes)) {
-            const nlohmann::json snapshot = nlohmann::json::parse(bytes, nullptr, false);
-            if (snapshot.is_object()) {
-                models = snapshot.value("models", nlohmann::json::object());
-            }
-        }
+    std::vector<std::string> model_errors;
+    const SnapshotModels models = load_snapshot_models(folder / "recording_snapshot.json", &model_errors);
+    for (const std::string& error : model_errors) {
+        std::cerr << "[realtime_products] " << error << std::endl;
     }
     nlohmann::json cameras = nlohmann::json::object();
     for (const std::string& serial : camera_serials) {
@@ -219,13 +222,10 @@ nlohmann::json build_realtime_products_json(const std::string& recording_folder,
             {"acquisition_files", nlohmann::json::array()}
         };
         {
-            const nlohmann::json pose_block = models.is_object()
-                ? models.value(serial, nlohmann::json::object()).value("pose", nlohmann::json::object())
-                : nlohmann::json::object();
-            const nlohmann::json runtime = pose_block.is_object()
-                ? pose_block.value("runtime", nlohmann::json::object()) : nlohmann::json::object();
-            camera["pose"]["pose_crop_size_px"] = runtime.is_object()
-                ? runtime.value("pose_crop_size_px", 0) : 0;
+            const auto models_camera = models.find(serial);
+            camera["pose"]["pose_crop_size_px"] =
+                models_camera != models.end() && models_camera->second.pose
+                    ? models_camera->second.pose->runtime.pose_crop_size_px : 0;
         }
         for (const auto& [name, role] : std::vector<std::pair<std::string, std::string>>{
                  {prefix + "_crop_meta.csv", "crop_ledger_session"},

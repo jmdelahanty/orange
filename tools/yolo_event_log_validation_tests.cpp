@@ -1,4 +1,5 @@
 #include "yolo_event_log_validation.h"
+#include "yolo_spatial_mask.h"
 #include "json.hpp"
 
 #include <chrono>
@@ -48,6 +49,36 @@ yolo_event_log::SyntheticYoloEventConfig make_config()
     return config;
 }
 
+// A spatial mask policy as the YOLO worker writes it (policy_to_json), with its generation.
+nlohmann::json policy_json(const orange::analytics_mask::Policy& policy, uint64_t generation)
+{
+    nlohmann::json out = orange::analytics_mask::policy_to_json(policy);
+    out["policy_generation"] = generation;
+    return out;
+}
+
+// A valid gate_only policy (camera 2010096).
+orange::analytics_mask::Policy gate_only_policy()
+{
+    orange::analytics_mask::Policy policy;
+    policy.mode = orange::analytics_mask::Mode::kGateOnly;
+    policy.source_width = 4512;
+    policy.source_height = 4512;
+    policy.centroid_gate_circle = {2256.0f, 2256.0f, 2000.0f};
+    policy.input_circle = {2256.0f, 2256.0f, 2000.0f};
+    policy.camera_serial = kCameraSerial;
+    policy.arena_id = "arena_1";
+    policy.registration_id = "dailyreg_test";
+    policy.artifact_id = "dishrim_test";
+    policy.artifact_schema_id = "orange.calibration.dish_top_rim_observation";
+    policy.artifact_schema_version = 2;
+    policy.artifact_fingerprint = "fnv1a64:0123456789abcdef";
+    policy.source_path = "/test/observation.json";
+    policy.recording_relative_path = "recording_geometry_assets/test/observation.json";
+    policy.source_sha256 = "sha256:" + std::string(64, 'c');
+    return policy;
+}
+
 // orange.yolo_event v3 lines (the shapes of tools/fixtures/generated_outputs/golden).
 nlohmann::json make_header()
 {
@@ -61,11 +92,7 @@ nlohmann::json make_header()
                   {"engine_bytes", 0}, {"weights_sha256", ""}, {"onnx_sha256", ""}, {"engine_manifest_run_id", ""},
                   {"gpu_id", 0}, {"coordinate_space", "source_frame_pixels"}, {"detection_source", "model"},
                   {"synthetic_runtime_detection", false}}},
-        {"spatial_mask", {{"schema_id", "orange.analytics.spatial_mask_runtime"}, {"schema_version", 1},
-                          {"mode", "off"}, {"policy_generation", 1},
-                          {"input_mask", {{"enabled", false}}},
-                          {"centroid_gate", {{"evaluated", false}, {"enforced", false}}},
-                          {"source", nlohmann::json::object()}}},
+        {"spatial_mask", policy_json(orange::analytics_mask::Policy{}, 1)},
         {"citrus_live_ipc", {{"queue_name", "/shm_cam_2010096_v2"}, {"enabled", true}}}
     };
 }
@@ -348,6 +375,71 @@ void test_unknown_policy_generation_fails_schema()
             "a frame line naming an undeclared policy generation must fail");
 }
 
+// A spatial_mask_policy line switches to an active gate_only policy (generation 2) from frame 11;
+// frame lines name it and report one outside detection rejected.
+void test_active_policy_line_passes()
+{
+    TestDir dir("policy_line");
+    auto config = make_config();
+    config.mode = "real";
+    write_metadata(dir.path, 20);
+    write_event_log(dir.path, config, 20, [](const uint64_t line, nlohmann::json* event) {
+        if (line < 11) return;
+        auto& mask = (*event)["spatial_mask"];
+        const uint64_t count = (*event)["yolo"]["detection_count"].get<uint64_t>();
+        mask["policy_generation"] = 2;
+        mask["result"] = {{"raw_detection_count", count + 1}, {"inside_detection_count", count},
+                          {"outside_detection_count", 1}, {"downstream_detection_count", count}};
+        mask["outside_detections"] = nlohmann::json::array({{
+            {"raw_index", 0},
+            {"box", {{"x_px", 10.0}, {"y_px", 20.0}, {"width_px", 30.0}, {"height_px", 40.0},
+                     {"label", 0}, {"confidence", 0.9}}},
+            {"centroid_px", {{"x", 25.0}, {"y", 40.0}}},
+            {"signed_boundary_distance_px", 12.5}, {"decision", "rejected"},
+            {"rejected_reason", "outside_valid_detection_region"}}});
+        (*event)["detections"] = count ? nlohmann::json::array({detection_json()}) : nlohmann::json::array();
+    });
+    // Insert the policy line before frame 11 (file line 12: header + 10 frames).
+    const auto path = dir.path / ("Cam" + std::string(kCameraSerial) + "_yolo_events.jsonl");
+    std::ifstream in(path);
+    std::string text, line;
+    for (int n = 1; std::getline(in, line); ++n) {
+        if (n == 12) {
+            text += nlohmann::json{{"schema_id", "orange.yolo_event"}, {"schema_version", 3},
+                                   {"event_kind", "spatial_mask_policy"}, {"camera_serial", kCameraSerial},
+                                   {"frame", {{"recording_frame_id", 11}}},
+                                   {"spatial_mask", policy_json(gate_only_policy(), 2)}}.dump() + "\n";
+        }
+        text += line + "\n";
+    }
+    in.close();
+    std::ofstream(path) << text;
+    const auto stats = summarize(dir.path, config);
+    require(stats.status == "pass" && stats.header_rows == 2,
+            "an active policy introduced by a policy line passes: " + stats.error);
+}
+
+// A policy that contradicts its mode (gate_only with the input mask on) is refused by the schema;
+// every frame line naming its generation is an error, and the reason is reported.
+void test_contradictory_policy_fails()
+{
+    TestDir dir("policy_contradiction");
+    auto config = make_config();
+    config.mode = "real";
+    write_metadata(dir.path, 5);
+    std::ofstream file(dir.path / ("Cam" + std::string(kCameraSerial) + "_yolo_events.jsonl"));
+    nlohmann::json header = make_header();
+    header["spatial_mask"] = policy_json(gate_only_policy(), 1);
+    header["spatial_mask"]["input_mask"]["enabled"] = true;
+    file << header.dump() << "\n";
+    for (uint64_t frame = 1; frame <= 5; ++frame) file << make_event(frame, frame, config).dump() << "\n";
+    file.close();
+    const auto stats = summarize(dir.path, config);
+    require(stats.status == "fail" && stats.schema_errors == 5, "five frame lines name an invalid policy");
+    require(stats.error.find("/spatial_mask/input_mask/enabled: must be false") != std::string::npos,
+            "the schema's reason is reported: " + stats.error);
+}
+
 void test_crop_metadata_source()
 {
     TestDir dir("crop_metadata_source");
@@ -431,6 +523,8 @@ int main()
          &test_spatial_mask_count_mismatch_fails_schema},
         {"unknown_policy_generation_fails_schema",
          &test_unknown_policy_generation_fails_schema},
+        {"active_policy_line_passes", &test_active_policy_line_passes},
+        {"contradictory_policy_fails", &test_contradictory_policy_fails},
     };
 
     for (const auto& test : tests) {
