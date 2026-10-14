@@ -50,8 +50,47 @@ def digest(value: dict[str, Any]) -> str:
     return "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
+# Live since 2026-10-12: acceptance v3 contract.subject and receipt v3
+# contract.subject_reference (agent-contracts citrus-orange/subject_declaration_v1).
+SUBJECT_DECLARATION = {
+    "schema_id": "citrus.subject_declaration",
+    "schema_version": 1,
+    "dish_id": "19234_2",
+    "fish_id": None,
+    "subject_count": 1,
+    "subject_type": "individual",
+    "declared_at_utc": "2026-10-12T15:00:00Z",
+    "source": "citrus_operator_declaration",
+}
+SUBJECT_REFERENCE = {
+    "schema_id": "citrus.subject_reference",
+    "schema_version": 1,
+    "dish_id": "19234_2",
+    "lookup_status": "collected",
+    "lookup_reason": None,
+    "lookup_http_status": None,
+    "queried_at_utc": "2026-10-12T15:00:01Z",
+    "dish": {
+        "dish_id": "19234_2",
+        "dish_uuid": "061346be-666a-49f3-8b95-9f0eb352bf3a",
+        "dish_revision": 2,
+        "dish_updated_at": "2026-10-12 09:00:00",
+        "fish_count": 1,
+        "cross_id": None,
+    },
+    "fish_status": "not_collected",
+    "fish_reason": "operator_did_not_select",
+    "fish": None,
+    "subject_id": "c1a0f3d2-5b7e-4c1a-9d2e-3f4a5b6c7d8e",
+    "subject_type": "individual",
+    "subject_count": 1,
+    "zebrobot_version": None,
+    "source": "citrus_mzb_lookup",
+}
+
+
 def seal(schema: str, id_field: str, contract: dict[str, Any]) -> dict[str, Any]:
-    """Envelope version follows the contract (request/acceptance 1|2, receipt 1)."""
+    """Envelope version follows the contract (request 1|2, acceptance 1|2|3, receipt 1|3)."""
     sha = digest(contract)
     prefix = {
         "request_id": "obsbindreq_",
@@ -91,10 +130,14 @@ CONTEXT_NO_SUBTYPE["schema_version"] = 2
 
 
 def fixture(root: Path, version: int = 1, unified_h5: bool = False,
-            parent_context: dict[str, Any] = CONTEXT) -> None:
+            parent_context: dict[str, Any] = CONTEXT,
+            subject_declaration: dict[str, Any] | None = None,
+            subject_reference: dict[str, Any] | None = None) -> None:
     """version 2 carries the frozen context in each request (and a start
     snapshot that freezes it); unified_h5 writes the Citrus 9aa6d57 layout
-    (/evidence/recording_binding + /metadata/session) instead of the root one."""
+    (/evidence/recording_binding + /metadata/session) instead of the root one.
+    subject_declaration makes the acceptances v3 (version must be 2);
+    subject_reference makes the receipts v3 (citsess_ session, citrus_artifacts)."""
     import h5py
 
     if version == 2:
@@ -109,6 +152,9 @@ def fixture(root: Path, version: int = 1, unified_h5: bool = False,
     experiment_id = "citexp_fixture"
     for index, camera in enumerate(("2010093", "2010094", "2010095", "2010096"), 1):
         context = "obsctx_" + hashlib.sha256(camera.encode()).hexdigest()
+        session_uuid = (
+            "citsess_" + context.removeprefix("obsctx_")
+            if subject_reference is not None else f"session_{index}")
         target = {
             "rig_id": "omnifin0",
             "canvas_name": "shadow",
@@ -150,17 +196,19 @@ def fixture(root: Path, version: int = 1, unified_h5: bool = False,
         h5_relative = Path("citrus") / f"arena_{index}.h5"
         acceptance_contract = {
             "schema_id": "citrus.recording_observation_binding_acceptance",
-            "schema_version": version,
+            "schema_version": 3 if subject_declaration is not None else version,
             "status": "accepted",
             "request_id": request["request_id"],
             "request_contract_sha256": request["contract_sha256"],
             "observation_context_id": context,
             "decided_at_utc": "2026-08-13T20:00:01Z",
             "citrus_experiment_id": experiment_id,
-            "citrus_session_uuid": f"session_{index}",
+            "citrus_session_uuid": session_uuid,
             "target": target,
             "planned_h5_relative_path": str(h5_relative),
         }
+        if subject_declaration is not None:
+            acceptance_contract["subject"] = dict(subject_declaration)
         acceptance = seal(
             "citrus.recording_observation_binding_acceptance",
             "acceptance_id",
@@ -182,7 +230,7 @@ def fixture(root: Path, version: int = 1, unified_h5: bool = False,
         with h5py.File(h5_path, "w") as h5:
             session = h5.create_group("metadata/session") if unified_h5 else h5
             session.attrs["session_status"] = "COMPLETE"
-            session.attrs["session_uuid"] = f"session_{index}"
+            session.attrs["session_uuid"] = session_uuid
             if version == 2:
                 for key in ("recording_type", "recording_subtype", "behavior_mode"):
                     if key in parent_context:
@@ -205,7 +253,7 @@ def fixture(root: Path, version: int = 1, unified_h5: bool = False,
         }
         receipt_contract = {
             "schema_id": "citrus.recording_observation_finalized_receipt",
-            "schema_version": 1,
+            "schema_version": 3 if subject_reference is not None else 1,
             "request_id": request["request_id"],
             "request_contract_sha256": request["contract_sha256"],
             "acceptance_id": acceptance["acceptance_id"],
@@ -213,7 +261,7 @@ def fixture(root: Path, version: int = 1, unified_h5: bool = False,
             "observation_context_id": context,
             "finalized_at_utc": "2026-08-13T20:01:00Z",
             "citrus_experiment_id": experiment_id,
-            "citrus_session_uuid": f"session_{index}",
+            "citrus_session_uuid": session_uuid,
             "target": target,
             "h5_artifact": h5_artifact,
             "session_status": "COMPLETE",
@@ -223,6 +271,9 @@ def fixture(root: Path, version: int = 1, unified_h5: bool = False,
                 "semantic_sha256": "sha256:" + "3" * 64,
             },
         }
+        if subject_reference is not None:
+            receipt_contract["citrus_artifacts"] = []
+            receipt_contract["subject_reference"] = dict(subject_reference)
         receipt = seal(
             "citrus.recording_observation_finalized_receipt",
             "receipt_id",
@@ -391,6 +442,41 @@ def main() -> int:
             assert "present although the accepted context omits it" in str(error), str(error)
         else:
             raise AssertionError("substituted subtype passed validation")
+
+    # Acceptance v3 + receipt v3 (live since 2026-10-12): pass with the subject
+    # declaration and reference; malformed subject blocks are refused.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        fixture(root, version=2, unified_h5=True,
+                subject_declaration=SUBJECT_DECLARATION, subject_reference=SUBJECT_REFERENCE)
+        result = module.validate(root, expected, 4)
+        assert result["status"] == "pass"
+        assert {row["receipt_schema_version"] for row in result["receipts"]} == {3}
+
+    refused = [
+        # A subject identity v4 dish group: dish set, subject_id null. Valid only
+        # in reference v2 (receipt v4), so receipt v3 refuses it.
+        ({}, dict(SUBJECT_REFERENCE, subject_id=None, subject_type="dish_group", subject_count=4,
+                  fish_reason="dish_group_subject"),
+         "subject reference nullability"),
+        ({}, dict(SUBJECT_REFERENCE, fish_status="collected"), "subject reference nullability"),
+        ({}, dict(SUBJECT_REFERENCE, schema_version=2), "subject reference is invalid"),
+        ({"fish_id": "C1A0F3D2-5B7E-4C1A-9D2E-3F4A5B6C7D8E"}, SUBJECT_REFERENCE,
+         "subject declaration is invalid"),
+        ({"dish_id": None}, SUBJECT_REFERENCE, "subject declaration nullability"),
+    ]
+    for declaration_change, reference, message in refused:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixture(root, version=2, unified_h5=True,
+                    subject_declaration=dict(SUBJECT_DECLARATION, **declaration_change),
+                    subject_reference=reference)
+            try:
+                module.validate(root, expected, 4)
+            except module.ValidationError as error:
+                assert message in str(error), str(error)
+            else:
+                raise AssertionError(f"{message} passed validation")
 
     print("validate_recording_observation_bindings_tests passed")
     return 0

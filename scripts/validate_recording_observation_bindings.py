@@ -144,6 +144,144 @@ PRE310_DIAGNOSTIC_PATH = re.compile(
 )
 REVISION_REASON = "citrus_receipt_v2_upgrade"
 
+# Acceptance v3 carries contract.subject (citrus.subject_declaration v1) and
+# receipt v3 contract.subject_reference (citrus.subject_reference v1), both
+# live since 2026-10-12 (agent-contracts citrus-orange/subject_declaration_v1).
+# The rules mirror validate_subject_declaration / validate_subject_reference in
+# src/session/recording_observation_binding.cpp.
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+LOWER_HEX_40 = re.compile(r"^[0-9a-f]{40}$")
+LOWER_HEX_64 = re.compile(r"^[0-9a-f]{64}$")
+
+
+def is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def null_or_string(value: Any, min_len: int = 1, max_len: int = 0) -> bool:
+    if value is None:
+        return True
+    return isinstance(value, str) and len(value) >= min_len and (max_len == 0 or len(value) <= max_len)
+
+
+def null_or_int(value: Any, minimum: int, maximum: int | None = None) -> bool:
+    if value is None:
+        return True
+    return is_int(value) and value >= minimum and (maximum is None or value <= maximum)
+
+
+def utc_timestamp(value: Any) -> bool:
+    return isinstance(value, str) and 20 <= len(value) <= 64 and "T" in value and value.endswith("Z")
+
+
+def uuid_or_null(value: Any) -> bool:
+    return value is None or (isinstance(value, str) and UUID.match(value) is not None)
+
+
+def validate_subject_declaration(subject: Any, context_id: str) -> None:
+    """citrus.subject_declaration v1 (acceptance v3 contract.subject)."""
+    require(
+        isinstance(subject, dict)
+        and set(subject) == {"schema_id", "schema_version", "dish_id", "fish_id", "subject_count",
+                             "subject_type", "declared_at_utc", "source"}
+        and subject["schema_id"] == "citrus.subject_declaration"
+        and is_int(subject["schema_version"]) and subject["schema_version"] == 1
+        and null_or_string(subject["dish_id"], 1, 128)
+        and uuid_or_null(subject["fish_id"])
+        and null_or_int(subject["subject_count"], 1)
+        and subject["subject_type"] in (None, "individual", "dish_group")
+        and utc_timestamp(subject["declared_at_utc"])
+        and subject["source"] == "citrus_operator_declaration",
+        f"acceptance subject declaration is invalid: {context_id}",
+    )
+    if subject["dish_id"] is None:
+        nullability = subject["fish_id"] is None and subject["subject_count"] is None and subject["subject_type"] is None
+    else:
+        nullability = is_int(subject["subject_count"]) and isinstance(subject["subject_type"], str)
+    require(nullability, f"acceptance subject declaration nullability is invalid: {context_id}")
+
+
+def validate_subject_reference(reference: Any, context_id: str) -> None:
+    """citrus.subject_reference v1 (receipt v3 contract.subject_reference)."""
+    require(
+        isinstance(reference, dict)
+        and set(reference) == {"schema_id", "schema_version", "dish_id", "lookup_status", "lookup_reason",
+                               "lookup_http_status", "queried_at_utc", "dish", "fish_status", "fish_reason",
+                               "fish", "subject_id", "subject_type", "subject_count", "zebrobot_version",
+                               "source"}
+        and reference["schema_id"] == "citrus.subject_reference"
+        and is_int(reference["schema_version"]) and reference["schema_version"] == 1
+        and null_or_string(reference["dish_id"], 1, 128)
+        and reference["lookup_status"] in ("collected", "not_collected")
+        and null_or_string(reference["lookup_reason"])
+        and null_or_int(reference["lookup_http_status"], 100, 599)
+        and utc_timestamp(reference["queried_at_utc"])
+        and reference["fish_status"] in ("collected", "not_collected")
+        and null_or_string(reference["fish_reason"])
+        and null_or_string(reference["subject_id"])
+        and reference["subject_type"] in (None, "individual", "dish_group")
+        and null_or_int(reference["subject_count"], 1)
+        and reference["source"] == "citrus_mzb_lookup",
+        f"receipt subject reference is invalid: {context_id}",
+    )
+    dish = reference["dish"]
+    require(
+        dish is None
+        or (isinstance(dish, dict)
+            and set(dish) == {"dish_id", "dish_uuid", "dish_revision", "dish_updated_at", "fish_count", "cross_id"}
+            and isinstance(dish["dish_id"], str) and dish["dish_id"]
+            and uuid_or_null(dish["dish_uuid"]) and dish["dish_uuid"] is not None
+            and is_int(dish["dish_revision"]) and dish["dish_revision"] >= 0
+            and isinstance(dish["dish_updated_at"], str) and dish["dish_updated_at"]
+            and is_int(dish["fish_count"]) and dish["fish_count"] >= 0
+            and (dish["cross_id"] is None or isinstance(dish["cross_id"], str))),
+        f"receipt subject reference dish is invalid: {context_id}",
+    )
+    fish = reference["fish"]
+    require(
+        fish is None
+        or (isinstance(fish, dict)
+            and set(fish) == {"fish_id", "revision", "updated_at"}
+            and uuid_or_null(fish["fish_id"]) and fish["fish_id"] is not None
+            and is_int(fish["revision"]) and fish["revision"] >= 0
+            and isinstance(fish["updated_at"], str) and fish["updated_at"]),
+        f"receipt subject reference fish is invalid: {context_id}",
+    )
+    version = reference["zebrobot_version"]
+    require(
+        version is None
+        or (isinstance(version, dict)
+            and set(version) == {"base_url", "api_schema_version", "service_commit", "service_commit_dirty",
+                                 "consumer_schema_sha256", "http_status", "error"}
+            and null_or_string(version["base_url"])
+            and null_or_int(version["api_schema_version"], 1)
+            and (version["service_commit"] is None
+                 or (isinstance(version["service_commit"], str) and LOWER_HEX_40.match(version["service_commit"])))
+            and (version["service_commit_dirty"] is None or isinstance(version["service_commit_dirty"], bool))
+            and (version["consumer_schema_sha256"] is None
+                 or (isinstance(version["consumer_schema_sha256"], str)
+                     and LOWER_HEX_64.match(version["consumer_schema_sha256"])))
+            and null_or_int(version["http_status"], 100, 599)
+            and (version["error"] is None or isinstance(version["error"], str))),
+        f"receipt subject reference zebrobot_version is invalid: {context_id}",
+    )
+    if reference["lookup_status"] == "collected":
+        lookup_ok = isinstance(dish, dict) and reference["lookup_reason"] is None and reference["lookup_http_status"] is None
+    else:
+        lookup_ok = dish is None and isinstance(reference["lookup_reason"], str)
+    if reference["fish_status"] == "collected":
+        fish_ok = isinstance(fish, dict) and reference["fish_reason"] is None
+    else:
+        fish_ok = fish is None and isinstance(reference["fish_reason"], str)
+    if reference["dish_id"] is None:
+        subject_ok = (reference["subject_id"] is None and reference["subject_type"] is None
+                      and reference["subject_count"] is None)
+    else:
+        subject_ok = (isinstance(reference["subject_id"], str) and isinstance(reference["subject_type"], str)
+                      and is_int(reference["subject_count"]))
+    require(lookup_ok and fish_ok and subject_ok,
+            f"receipt subject reference nullability is invalid: {context_id}")
+
 
 def validate_citrus_artifacts(
     recording: Path,
@@ -276,7 +414,8 @@ def validate_sealed_record(
     """Check a sealed envelope and return its schema_version.
 
     Request and acceptance envelopes are v1 or v2 with their contracts (the
-    outer and inner schema_version must match); finalized receipts stay v1.
+    outer and inner schema_version must match); acceptances also v3, finalized
+    receipts v1, v2 or v3.
     """
     require(value.get("schema_id") == schema_id, f"wrong schema: {schema_id}")
     version = schema_version_int(value)
@@ -422,11 +561,18 @@ def validate(
         acceptance, raw = load_json(path)
         require(reference.get("sha256") == sha256_bytes(raw), f"acceptance file digest mismatch: {context_id}")
         require(reference.get("byte_size") == len(raw), f"acceptance byte size mismatch: {context_id}")
-        acceptance_version = validate_sealed_record(acceptance, ACCEPTANCE_SCHEMA, "acceptance_id", (1, 2))
+        acceptance_version = validate_sealed_record(acceptance, ACCEPTANCE_SCHEMA, "acceptance_id", (1, 2, 3))
+        # Acceptance v3 (contract.subject) answers a v2 request.
         require(
-            acceptance_version == request_versions[context_id],
+            acceptance_version == request_versions[context_id]
+            or (acceptance_version == 3 and request_versions[context_id] == 2),
             f"acceptance version {acceptance_version} differs from request version {request_versions[context_id]}: {context_id}",
         )
+        if acceptance_version == 3:
+            validate_subject_declaration(acceptance["contract"].get("subject"), context_id)
+        else:
+            require("subject" not in acceptance["contract"],
+                    f"acceptance v{acceptance_version} carries subject: {context_id}")
         require(reference.get("acceptance_id") == acceptance.get("acceptance_id"), f"acceptance ID mismatch: {context_id}")
         require(reference.get("acceptance_contract_sha256") == acceptance.get("contract_sha256"), f"acceptance contract digest mismatch: {context_id}")
         contract = acceptance["contract"]
@@ -580,7 +726,7 @@ def validate(
             receipt_ref.get("sha256") == sha256_bytes(receipt_raw),
             f"receipt file digest mismatch: {context_id}",
         )
-        receipt_version = validate_sealed_record(receipt, RECEIPT_SCHEMA, "receipt_id", (1, 2))
+        receipt_version = validate_sealed_record(receipt, RECEIPT_SCHEMA, "receipt_id", (1, 2, 3))
         require(
             receipt_ref.get("receipt_id") == receipt.get("receipt_id")
             and receipt_ref.get("contract_sha256") == receipt.get("contract_sha256"),
@@ -639,9 +785,15 @@ def validate(
         declared_paths.add(h5_artifact.get("relative_path"))
         citrus_rows: list[dict[str, Any]] = []
         receipt_versions.add(receipt_version)
-        if receipt_version == 2:
+        if receipt_version == 3:
+            validate_subject_reference(receipt_contract.get("subject_reference"), context_id)
+        else:
+            require("subject_reference" not in receipt_contract,
+                    f"receipt v{receipt_version} carries subject_reference: {context_id}")
+        if receipt_version >= 2:
+            # Receipt v3 = v2 + subject_reference.
             require(set(receipt_contract) >= {"citrus_artifacts"},
-                    f"receipt v2 lacks citrus_artifacts: {context_id}")
+                    f"receipt v{receipt_version} lacks citrus_artifacts: {context_id}")
             require(receipt_contract.get("citrus_session_uuid")
                     == "citsess_" + context_id.removeprefix("obsctx_"),
                     f"receipt v2 citrus_session_uuid is not citsess_ + the context hex: {context_id}")

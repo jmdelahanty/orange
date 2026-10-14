@@ -260,7 +260,10 @@ Orange/Citrus commissioning) are in git history of this file and in
 - The start snapshot is sealed before the binding requests (they carry its
   digest), so Citrus data never changes it: pre-arm can only cross-check,
   and receipt v3 can only overlay (operator entry kept as `operator_entry`).
-  Receipt v3 stays off (Citrus switch 2) until Palette ports sealer 3.2.0.
+  Receipt v3 is live since 2026-10-12 00:23Z: both Citrus switches are 3
+  (`~/citrus/system_config.yml`) after Palette #363 and sealer 3.2.0. Every
+  bound receipt carries `contract.subject_reference` v1. The Orange overlay
+  itself is not built.
 - Transfer pre-check: `scripts/check_recording_transfer_source.sh` pins sealer
   3.2.0 (3.1.0 and 3.0.0 as rollback via `SEALER_VERSION`).
 - Camera time on the host clock: camera `timestamp` (PTP, TAI) - 37 s =
