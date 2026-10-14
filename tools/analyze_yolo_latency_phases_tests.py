@@ -145,6 +145,30 @@ def main() -> int:
         gpu_wait = cam["gpu_wait_ms"]["mean"]
         assert abs(gpu_wait - (cam["worker_total_ms"]["mean"] - 0.06)) < 1e-6
 
+        # No pose log: no pose block.
+        assert cam["pose"] is None
+
+        # A pose log: latency and statuses from pose_result rows only.
+        with open(run_dir / "Cam2010093_pose_events.jsonl", "w") as handle:
+            handle.write(json.dumps({"event_kind": "session_header"}) + "\n")
+            for i in range(300):
+                handle.write(json.dumps({
+                    "event_kind": "pose_result",
+                    "pose": {"status": "poses" if i % 3 == 0 else "no_result"},
+                    "latency_ms": {"capture_to_pose_done": 2.0 + (i % 10) * 0.1,
+                                   "pose_start_to_pose_done": 1.5},
+                }) + "\n")
+        rc = analysis.main([str(run_dir), "--json", str(json_path), "--quiet", "--steady-after", "0"])
+        assert rc == 0
+        pose = json.loads(json_path.read_text())["cameras"]["2010093"]["pose"]
+        assert pose["rows_total"] == 300 and pose["rows_steady"] == 300
+        assert pose["status_counts"] == {"poses": 100, "no_result": 200}
+        assert abs(pose["capture_to_pose_done_ms"]["max"] - 2.9) < 1e-9
+        assert pose["pose_start_to_pose_done_ms"]["p95"] == 1.5
+        rc = analysis.main([str(run_dir), "--json", str(json_path), "--quiet", "--steady-after", "100"])
+        assert json.loads(json_path.read_text())["cameras"]["2010093"]["pose"]["rows_steady"] == 200
+        os.remove(run_dir / "Cam2010093_pose_events.jsonl")
+
         # Camera filter and steady-after trimming.
         rc = analysis.main(
             [str(run_dir), "--json", str(json_path), "--quiet", "--cameras", "2010094", "--steady-after", "100"]

@@ -14,6 +14,10 @@ in the 2026-08-25 four-camera review:
   * periodic cudaEventRecord stalls (fractional second of run time),
   * the GUI preview cadence (frame_id mod 10).
 
+When the run had a pose stage it also reads Cam*_pose_events.jsonl and
+reports capture to pose done and the pose stage time per camera, with the
+result statuses (all no_result in a run without fish).
+
 Only numpy and the standard library are required. Output is a human-readable
 summary on stdout and, with --json, a machine-readable file that the review
 page or a notebook can consume.
@@ -41,6 +45,7 @@ import numpy as np
 YOLO_PERF_SUFFIX = "_yolo_perf.csv"
 ROUTING_SUFFIX = "_external_gop_routing.csv"
 DETACH_SUFFIX = "_external_detach.csv"
+POSE_EVENTS_SUFFIX = "_pose_events.jsonl"
 
 # Columns pulled from Cam*_yolo_perf.csv. Missing columns are tolerated.
 PERF_COLUMNS = [
@@ -213,6 +218,41 @@ def quantiles(values: np.ndarray) -> dict[str, float]:
         "p99": float(np.quantile(valid, 0.99)),
         "p999": float(np.quantile(valid, 0.999)),
         "max": float(valid.max()),
+    }
+
+
+def read_pose_latency(run_dir: str, serial: str, steady_after: int) -> dict[str, Any] | None:
+    """Pose latency from Cam<serial>_pose_events.jsonl (pose_result rows, the
+    first steady_after dropped like the YOLO rows); None without a pose log."""
+    path = os.path.join(run_dir, f"Cam{serial}{POSE_EVENTS_SUFFIX}")
+    if not os.path.exists(path):
+        return None
+    capture, stage, statuses = [], [], {}
+    with open(path) as handle:
+        rows = 0
+        for line in handle:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("event_kind") != "pose_result":
+                continue
+            rows += 1
+            if rows <= steady_after:
+                continue
+            status = (event.get("pose") or {}).get("status", "unknown")
+            statuses[status] = statuses.get(status, 0) + 1
+            latency = event.get("latency_ms") or {}
+            capture.append(latency.get("capture_to_pose_done", -1.0))
+            stage.append(latency.get("pose_start_to_pose_done", -1.0))
+    if rows == 0:
+        return None
+    return {
+        "rows_total": rows,
+        "rows_steady": sum(statuses.values()),
+        "status_counts": statuses,
+        "capture_to_pose_done_ms": quantiles(np.asarray(capture, dtype=float)),
+        "pose_start_to_pose_done_ms": quantiles(np.asarray(stage, dtype=float)),
     }
 
 
@@ -403,6 +443,8 @@ def analyze_camera(
     # Preview cadence: total_ms by frame_id mod 10.
     result["preview_cadence_mod10"] = group_stats(total, perf["stream_frame_id"] % 10, 10)
 
+    result["pose"] = read_pose_latency(run_dir, serial, args.steady_after)
+
     return result
 
 
@@ -431,6 +473,26 @@ def print_summary(result: dict[str, Any]) -> None:
             f"{fmt(tot.get('p95', math.nan)):>9} {fmt(cam['gpu_wait_ms'].get('mean', math.nan)):>8} "
             f"{fmt(cam['yolo_queue_wait_ms'].get('mean', math.nan)):>6}"
         )
+    if any(cam.get("pose") for cam in result["cameras"].values()):
+        print()
+        print("pose (ms; capture to pose done, pose stage = pose start to pose done):")
+        print(
+            f"{'camera':>9} {'rows':>7} {'c2p mean':>9} {'c2p p95':>8} {'c2p p99':>8} "
+            f"{'c2p max':>8} {'stage p95':>9}  statuses"
+        )
+        for serial, cam in result["cameras"].items():
+            pose = cam.get("pose")
+            if not pose:
+                print(f"{serial:>9} no pose events")
+                continue
+            c2p = pose["capture_to_pose_done_ms"]
+            stage = pose["pose_start_to_pose_done_ms"]
+            statuses = ", ".join(f"{k} {v}" for k, v in sorted(pose["status_counts"].items()))
+            print(
+                f"{serial:>9} {pose['rows_steady']:>7} {fmt(c2p.get('mean', math.nan)):>9} "
+                f"{fmt(c2p.get('p95', math.nan)):>8} {fmt(c2p.get('p99', math.nan)):>8} "
+                f"{fmt(c2p.get('max', math.nan)):>8} {fmt(stage.get('p95', math.nan)):>9}  {statuses}"
+            )
     print()
     print("gpu phases (event timing, ms; mean / p95 over measured frames):")
     for serial, cam in result["cameras"].items():
