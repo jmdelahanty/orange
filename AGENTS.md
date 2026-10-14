@@ -243,7 +243,8 @@ Orange/Citrus commissioning) are in git history of this file and in
 
 ## Subject, Citrus and intake status, 2026-10-11
 
-- Production d0922ee. Dish per camera: the Subject panel edits dish and
+- Production was d0922ee at the time; current production is in the
+  2026-10-14 section below. Dish per camera: the Subject panel edits dish and
   subject count per camera (app config `recording.subject_references`), and
   every GUI record start needs a fresh per-recording confirmation
   (`subject_confirmation.json` at the root). Fish IDs wait for subject
@@ -288,3 +289,42 @@ Orange/Citrus commissioning) are in git history of this file and in
   none, recordings use the commissioned base geometry) and the operator's
   scene declarations. Citrus and Palette are told it will become an intake
   method; neither accepts its layout yet.
+
+## Production 5c6a26d, 2026-10-14
+
+- Production (`agent/acquisition/shaman-v2-authoritative-20260824`,
+  `/home/jeremy/orange-gop-split-a16`) and integration
+  (`integration/device-roi-into-shaman-20260921`) are at 5c6a26d, promoted
+  from the dish branch `agent/gui/per-camera-dish-20261011` (38 commits since
+  91b80df). After checking out a new commit run
+  `git submodule update --init third_party/shaman-ipc` (now v4.0.1).
+- What it brought: frame_identity_v1 names in every output, no aliases
+  (old-format tools at tag `pre-frame-identity-v1`); the output ratchet
+  (`scripts/check_output_names.py`, `scripts/check_output_surface.py`,
+  digest-form ratchet, schema validation of real output) and schema-first
+  outputs (JSON Schema in `docs/schemas` -> `tools/schema_codegen` -> generated
+  C++ for event logs, snapshot models block, spatial mask, engine manifests,
+  model_artifacts v2); `src/outputs/common` (one atomic writer, digest, safe
+  path, CSV); recording geometry contract v2 (dish rim observation v3);
+  Palette canonical ONNX manifest v2 only at record start and engine build
+  (new engines need Palette promotion first); per-frame SHAMAN `pose_status`
+  (disabled without a pose stage, else pending / not_requested, then the pose
+  result; reader rules in shaman-ipc `README.md`).
+- Counterparts it needs, all live: Citrus f0d2dfc (accepts geometry contract
+  v1 or v2; ring backlog discard at open), Palette intake bb30bc07
+  (frame_identity_v1), Palette main e411602c (H5 geometry scope v2).
+- Pose model root
+  `~/orange_data/pose/pose_head_192_recovered_reviewed_v001_yolo11n_100e_20260915/`
+  holds Palette's bundle `pose_deployment_bundle_20261013_canonical_v2` and
+  the canonical v2 manifest the engine manifest names.
+- Native recorder rebuilt and installed 2026-10-14 (sha256 a9dcd08d...).
+  `scripts/build_orange_native_recorder.sh` refuses to build while a process
+  matching `external_recorder_ipc_probe` runs, and a shell whose own command
+  line contains that string can trip it: run the script on its own.
+- Gate 2026-10-14 00:23 (60 s, no fish under the cameras, frame IPC off in
+  the spec): 0 camera frame-id gaps, NIC counters unchanged, 5900/5900
+  encoded per full-frame and crop recorder, `encode_dropped` and
+  `early_stage_exhausted` 0, detect total p95 1.81-1.85 ms. Pipeline only:
+  pose was all `no_result` (Cam2010096 had a steady false detection near
+  x 780 / y 140 on 5899 frames with the spatial mask off), and per-frame
+  `pose_status` is exercised live only by a run with Citrus attached.
