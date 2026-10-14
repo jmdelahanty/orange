@@ -324,7 +324,10 @@ Orange/Citrus commissioning) are in git history of this file and in
 - Gate 2026-10-14 00:23 (60 s, no fish under the cameras, frame IPC off in
   the spec): 0 camera frame-id gaps, NIC counters unchanged, 5900/5900
   encoded per full-frame and crop recorder, `encode_dropped` and
-  `early_stage_exhausted` 0, detect total p95 1.81-1.85 ms. Pipeline only:
+  `early_stage_exhausted` 0, detect total p95 1.81-1.85 ms, capture to pose
+  done p95 2.40-2.44 ms (from `Cam*_pose_events.jsonl`
+  `latency_ms.capture_to_pose_done`; the run script does not print it; pose
+  runs on every frame on the device stage). Pipeline only:
   pose was all `no_result` (Cam2010096 had a steady false detection near
   x 780 / y 140 on 5899 frames with the spatial mask off), and per-frame
   `pose_status` is exercised live only by a run with Citrus attached.
