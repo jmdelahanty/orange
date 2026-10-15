@@ -265,7 +265,8 @@ Orange/Citrus commissioning) are in git history of this file and in
   bound receipt carries `contract.subject_reference` v1. The Orange overlay
   itself is not built.
 - Transfer pre-check: `scripts/check_recording_transfer_source.sh` pins sealer
-  3.2.0 (3.1.0 and 3.0.0 as rollback via `SEALER_VERSION`).
+  3.3.0 (since 2026-10-14; it adds Citrus receipt v4). 3.2.0, 3.1.0 and 3.0.0
+  are the rollbacks via `SEALER_VERSION`.
 - Camera time on the host clock: camera `timestamp` (PTP, TAI) - 37 s =
   host `CLOCK_REALTIME` at exposure (pancake0 is the PTP grandmaster:
   timesyncd -> CLOCK_REALTIME -> `phc2sys -a -rr` -> NIC clocks -> ptp4l ->

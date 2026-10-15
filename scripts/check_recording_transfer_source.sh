@@ -12,9 +12,12 @@
 # sha256; every installed package file matches the wheel's RECORD hashes; the
 # install is root-owned and not group/world writable. A mismatch refuses: ask
 # Citrus/Pancake Batter before re-pinning.
-#   3.2.0 (default since 2026-10-11, Jeremy): tag recording-transfer-v3.2.0
-#     (pancake-plate 00787e7); adds receipt v3 (contract.subject_reference,
-#     agent-contracts PR 75/77); receipt v2 recordings seal as before.
+#   3.3.0 (default since 2026-10-14, Jeremy): tag recording-transfer-v3.3.0
+#     (pancake-plate 9f6816e7, tag object adb049a6; Pancake Batter 0edd5ad);
+#     adds Citrus receipt v4 (contract.subject_reference v2, agent-contracts
+#     #105); v1-v3 inputs seal byte-identically to 3.2.0.
+#   3.2.0 (rollback): tag recording-transfer-v3.2.0 (pancake-plate 00787e7);
+#     adds receipt v3 (contract.subject_reference, agent-contracts PR 75/77).
 #   3.1.0 (rollback): tag recording-transfer-v3.1.0 (456d7fe); admits Citrus
 #     receipt v2 citrus_artifacts and Orange's collection revision chain;
 #     envelope schema 4865374c (agent-contracts citrus-recording-transfer-3.1).
@@ -22,14 +25,15 @@
 #     wheel rebuilt byte-identical in pancake-plate.
 #
 # Usage: scripts/check_recording_transfer_source.sh <recording_folder>
-#        SEALER_VERSION=3.1.0 (or 3.0.0) to use a rollback pin
+#        SEALER_VERSION=3.2.0 (or 3.1.0, 3.0.0) to use a rollback pin
 #        RECORDING_TRANSFER_ROOT=/opt/recording-transfer (default)
 set -euo pipefail
-[ $# -eq 1 ] || { sed -n 2,24p "$0"; exit 2; }
+[ $# -eq 1 ] || { sed -n 2,29p "$0"; exit 2; }
 FOLDER="$1"
-VERSION="${SEALER_VERSION:-3.2.0}"
+VERSION="${SEALER_VERSION:-3.3.0}"
 BASE="${RECORDING_TRANSFER_ROOT:-/opt/recording-transfer}"
 declare -A WHEEL_SHA256=(
+  ["3.3.0"]="608d40e2e6e9206de8333051bcb57af02c5cb8436d7beef50d2ad437e6604cac"
   ["3.2.0"]="02cd77b78aa7bc95eeebfa80abcac9abd2b781104dedda7b07103861b43bf35a"
   ["3.1.0"]="145a9b866a95cf36f98c2165867516fb1ea4f18bf8f3e86059574cfb6f977665"
   ["3.0.0"]="eb12e5df5435eb5ca11907cd5a0ceba9092b17bcc9d17f28a757539fadbdf1c9"
