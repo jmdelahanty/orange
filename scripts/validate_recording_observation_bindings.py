@@ -201,8 +201,10 @@ def validate_subject_declaration(subject: Any, context_id: str) -> None:
     require(nullability, f"acceptance subject declaration nullability is invalid: {context_id}")
 
 
-def validate_subject_reference(reference: Any, context_id: str) -> None:
-    """citrus.subject_reference v1 (receipt v3 contract.subject_reference)."""
+def validate_subject_reference(reference: Any, context_id: str, reference_version: int = 1) -> None:
+    """citrus.subject_reference v1 (receipt v3) or v2 (receipt v4, subject identity v4:
+    subject_id null or a lowercase UUID; with a dish an individual has a UUID and count 1,
+    a dish_group a null subject_id, count >= 2 and no fish)."""
     require(
         isinstance(reference, dict)
         and set(reference) == {"schema_id", "schema_version", "dish_id", "lookup_status", "lookup_reason",
@@ -210,7 +212,7 @@ def validate_subject_reference(reference: Any, context_id: str) -> None:
                                "fish", "subject_id", "subject_type", "subject_count", "zebrobot_version",
                                "source"}
         and reference["schema_id"] == "citrus.subject_reference"
-        and is_int(reference["schema_version"]) and reference["schema_version"] == 1
+        and is_int(reference["schema_version"]) and reference["schema_version"] == reference_version
         and null_or_string(reference["dish_id"], 1, 128)
         and reference["lookup_status"] in ("collected", "not_collected")
         and null_or_string(reference["lookup_reason"])
@@ -218,7 +220,7 @@ def validate_subject_reference(reference: Any, context_id: str) -> None:
         and utc_timestamp(reference["queried_at_utc"])
         and reference["fish_status"] in ("collected", "not_collected")
         and null_or_string(reference["fish_reason"])
-        and null_or_string(reference["subject_id"])
+        and (uuid_or_null(reference["subject_id"]) if reference_version == 2 else null_or_string(reference["subject_id"]))
         and reference["subject_type"] in (None, "individual", "dish_group")
         and null_or_int(reference["subject_count"], 1)
         and reference["source"] == "citrus_mzb_lookup",
@@ -277,10 +279,37 @@ def validate_subject_reference(reference: Any, context_id: str) -> None:
         subject_ok = (reference["subject_id"] is None and reference["subject_type"] is None
                       and reference["subject_count"] is None)
     else:
-        subject_ok = (isinstance(reference["subject_id"], str) and isinstance(reference["subject_type"], str)
-                      and is_int(reference["subject_count"]))
+        subject_ok = ((reference_version == 2 or isinstance(reference["subject_id"], str))
+                      and isinstance(reference["subject_type"], str) and is_int(reference["subject_count"]))
     require(lookup_ok and fish_ok and subject_ok,
             f"receipt subject reference nullability is invalid: {context_id}")
+    if reference_version == 2 and reference["subject_type"] == "individual":
+        require(reference["subject_id"] is not None and reference["subject_count"] == 1,
+                f"receipt subject reference v2 individual needs a UUID subject_id and count 1: {context_id}")
+    if reference_version == 2 and reference["subject_type"] == "dish_group":
+        require(reference["subject_id"] is None and is_int(reference["subject_count"])
+                and reference["subject_count"] >= 2 and reference["fish_status"] == "not_collected"
+                and fish is None,
+                f"receipt subject reference v2 dish_group needs a null subject_id, count >= 2 and no fish: "
+                f"{context_id}")
+
+
+def subject_declaration_disagreement(acceptance_contract: dict[str, Any],
+                                     receipt_contract: dict[str, Any]) -> str | None:
+    """Subject identity v4, one context: an individual's receipt subject_id equals the
+    acceptance v3 declaration's fish_id; a dish_group or no dish declares no fish. A
+    disagreement is a Citrus bug; it is reported, never refused (the receipt is
+    authoritative). Mirrors subject_declaration_receipt_disagreement in C++."""
+    declared = acceptance_contract["subject"]["fish_id"]
+    reference = receipt_contract["subject_reference"]
+    if reference["subject_type"] == "individual":
+        if declared != reference["subject_id"]:
+            return (f"individual receipt subject_id {reference['subject_id']!r} differs from the "
+                    f"declaration's fish_id {declared!r}")
+    elif declared is not None:
+        what = "no dish" if reference["dish_id"] is None else "a dish_group"
+        return f"the declaration names fish_id {declared!r} but the receipt records {what}"
+    return None
 
 
 def validate_citrus_artifacts(
@@ -415,7 +444,7 @@ def validate_sealed_record(
 
     Request and acceptance envelopes are v1 or v2 with their contracts (the
     outer and inner schema_version must match); acceptances also v3, finalized
-    receipts v1, v2 or v3.
+    receipts v1 to v4.
     """
     require(value.get("schema_id") == schema_id, f"wrong schema: {schema_id}")
     version = schema_version_int(value)
@@ -677,6 +706,7 @@ def validate(
     declared_paths: set[str] = set()
     pre310_contexts: list[str] = []
     receipt_versions: set[int] = set()
+    subject_disagreements: list[dict[str, str]] = []
     for context_row in finalized_contexts:
         require(isinstance(context_row, dict), "finalized context is not an object")
         context_id = context_row.get("observation_context_id")
@@ -726,7 +756,7 @@ def validate(
             receipt_ref.get("sha256") == sha256_bytes(receipt_raw),
             f"receipt file digest mismatch: {context_id}",
         )
-        receipt_version = validate_sealed_record(receipt, RECEIPT_SCHEMA, "receipt_id", (1, 2, 3))
+        receipt_version = validate_sealed_record(receipt, RECEIPT_SCHEMA, "receipt_id", (1, 2, 3, 4))
         require(
             receipt_ref.get("receipt_id") == receipt.get("receipt_id")
             and receipt_ref.get("contract_sha256") == receipt.get("contract_sha256"),
@@ -785,9 +815,19 @@ def validate(
         declared_paths.add(h5_artifact.get("relative_path"))
         citrus_rows: list[dict[str, Any]] = []
         receipt_versions.add(receipt_version)
-        if receipt_version == 3:
-            validate_subject_reference(receipt_contract.get("subject_reference"), context_id)
-        else:
+        disagreement = None
+        if receipt_version in (3, 4):
+            validate_subject_reference(receipt_contract.get("subject_reference"), context_id,
+                                       2 if receipt_version == 4 else 1)
+        if receipt_version == 4:
+            # Receipt v4 always answers an acceptance v3.
+            require(schema_version_int(acceptance) == 3,
+                    f"receipt v4 must answer an acceptance v3: {context_id}")
+            disagreement = subject_declaration_disagreement(acceptance_contract, receipt_contract)
+            if disagreement is not None:
+                subject_disagreements.append({"observation_context_id": context_id,
+                                              "disagreement": disagreement})
+        if receipt_version not in (3, 4):
             require("subject_reference" not in receipt_contract,
                     f"receipt v{receipt_version} carries subject_reference: {context_id}")
         if receipt_version >= 2:
@@ -822,6 +862,16 @@ def validate(
 
     require(finalized_ids == set(requests), "finalized collection does not cover every request")
     require(len(receipt_versions) == 1, "the head collection mixes receipt versions")
+    # Sealer 3.3.0: a chain never mixes v3/v4 receipts with another version, so
+    # every earlier revision of a v3 or v4 head carries that version too.
+    head_version = next(iter(receipt_versions))
+    for revision, _relative, collection, _raw in chain[:-1]:
+        for row in collection.get("observation_contexts") or []:
+            earlier, _ = load_json(resolve_recording_relative(
+                recording, (row.get("finalized_receipt") or {}).get("relative_path")))
+            earlier_version = schema_version_int(earlier)
+            require(not ({earlier_version, head_version} & {3, 4}) or earlier_version == head_version,
+                    f"collection r{revision} has receipt v{earlier_version} under a v{head_version} head")
     if pre310_contexts:
         require(len(pre310_contexts) == 1 and pre310_contexts[0] == min(finalized_ids),
                 "a pre-3.1.0 process diagnostic must appear once, in the lowest observation_context_id")
@@ -866,6 +916,8 @@ def validate(
         "arenas": sorted(arenas),
         "edges": h5_rows,
         "receipts": receipt_rows,
+        # Receipt v4 only: recorded, never a refusal.
+        "subject_declaration_disagreements": subject_disagreements,
     }
 
 

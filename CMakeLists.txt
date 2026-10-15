@@ -857,7 +857,8 @@ if(BUILD_TESTING)
     target_include_directories(recording_observation_binding_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(recording_observation_binding_tests PRIVATE cxx_std_17)
     target_compile_definitions(recording_observation_binding_tests PRIVATE
-        ORANGE_RECEIPT_V2_EXAMPLE="${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures/citrus_receipt_v2_example.json")
+        ORANGE_RECEIPT_V2_EXAMPLE="${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures/citrus_receipt_v2_example.json"
+        ORANGE_SUBJECT_V4_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tools/fixtures/citrus_subject_v4")
     add_test(NAME recording_observation_binding_tests COMMAND recording_observation_binding_tests)
 
     # Standalone pre-arm / finalization runner for cross-repository fixture

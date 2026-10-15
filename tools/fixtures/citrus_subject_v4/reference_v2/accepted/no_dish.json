@@ -1,0 +1,26 @@
+{
+  "schema_id": "citrus.subject_reference",
+  "schema_version": 2,
+  "dish_id": null,
+  "lookup_status": "not_collected",
+  "lookup_reason": "no_dish_declared",
+  "lookup_http_status": null,
+  "queried_at_utc": "2026-10-09T21:20:42Z",
+  "dish": null,
+  "fish_status": "not_collected",
+  "fish_reason": "no_dish_declared",
+  "fish": null,
+  "subject_id": null,
+  "subject_type": null,
+  "subject_count": null,
+  "zebrobot_version": {
+    "base_url": "http://delahantyj-ws1.hhmi.org",
+    "api_schema_version": 2,
+    "service_commit": "a56e219194d6dd9e0bfecf2f4a880c8778098bc2",
+    "service_commit_dirty": false,
+    "consumer_schema_sha256": "f5280e430d4b5f10c3643cb89a6187eacc45fdac7af55b2e81f5e315b7b754dc",
+    "http_status": 200,
+    "error": null
+  },
+  "source": "citrus_mzb_lookup"
+}

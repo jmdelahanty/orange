@@ -983,7 +983,9 @@ void test_v3_subject_declaration_and_reference()
 // root, and never changes the start snapshot or blocks the arm.
 std::filesystem::path run_prearm_subject_cross_check(const std::string& operator96_dish, const std::string& mode,
                                                      orange::session::RecordingObservationPreArmResult* result_out,
-                                                     std::string* start_before_out)
+                                                     std::string* start_before_out,
+                                                     orange::session::RecordingObservationBindingRequestMaterialization*
+                                                         requests_out = nullptr)
 {
     setenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION", "2", 1);
     json session = frozen_recording_contexts("stimulus_experiment");
@@ -1044,6 +1046,7 @@ std::filesystem::path run_prearm_subject_cross_check(const std::string& operator
                 replay.subject_mismatches == result_out->subject_mismatches &&
                 replay.subject_cross_check == result_out->subject_cross_check,
             "pre-arm replay must reproduce the subject verdict");
+    if (requests_out != nullptr) *requests_out = requests;
     return root;
 }
 
@@ -1717,10 +1720,191 @@ void test_citrus_example_receipt_v2_digest_agrees()
             "Orange's seal of the Citrus example receipt v2 differs (digest, id or envelope)");
 }
 
+
+// Subject identity v4 (agent-contracts #105, witnesses #115): Citrus's sealed
+// receipt v4 / acceptance v3 pairs and the citrus.subject_reference v2
+// fixtures, copied under tools/fixtures/citrus_subject_v4 (README there).
+std::filesystem::path subject_v4_fixtures()
+{
+    return std::filesystem::path(ORANGE_SUBJECT_V4_FIXTURES);
+}
+
+void test_subject_reference_v2_fixtures()
+{
+    const auto dir = subject_v4_fixtures() / "reference_v2";
+    int accepted = 0, refused = 0;
+    std::string error;
+    for (const auto& entry : std::filesystem::directory_iterator(dir / "accepted")) {
+        const json reference = json::parse(read_file(entry.path()));
+        require(orange::session::validate_citrus_subject_reference(reference, 2, &error),
+                "reference v2 fixture refused: " + entry.path().filename().string() + ": " + error);
+        ++accepted;
+    }
+    for (const auto& entry : std::filesystem::directory_iterator(dir / "refused")) {
+        const json reference = json::parse(read_file(entry.path()));
+        require(!orange::session::validate_citrus_subject_reference(reference, 2, &error),
+                "reference v2 refused fixture passed: " + entry.path().filename().string());
+        ++refused;
+    }
+    require(accepted == 5 && refused == 6, "expected 5 accepted and 6 refused reference v2 fixtures");
+    // A v4 dish group is not a valid v1 reference (why receipt v4 exists).
+    const json group = json::parse(read_file(dir / "accepted" / "dish_group.json"));
+    json as_v1 = group; as_v1["schema_version"] = 1;
+    require(!orange::session::validate_citrus_subject_reference(as_v1, 1, &error),
+            "a dish_group with a null subject_id must fail reference v1");
+}
+
+void test_citrus_receipt_v4_witnesses()
+{
+    std::string error;
+    const json example = json::parse(read_file(subject_v4_fixtures() / "example_receipt_v4.json"));
+    require(orange::session::validate_recording_observation_finalized_receipt_envelope(example, &error),
+            "Citrus example receipt v4 refused: " + error);
+
+    int pairs = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(subject_v4_fixtures() / "witnesses")) {
+        const std::string name = entry.path().filename().string();
+        const std::string suffix = ".receipt.json";
+        if (name.size() <= suffix.size() || name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0) {
+            continue;
+        }
+        const std::string stem = name.substr(0, name.size() - suffix.size());
+        const json receipt = json::parse(read_file(entry.path()));
+        const json acceptance = json::parse(read_file(entry.path().parent_path() / (stem + ".acceptance.json")));
+        // The two _refused witnesses fail on H5 content (an attr type, an H5
+        // that no longer matches its receipt), which a receipt check cannot
+        // see; their receipt and acceptance documents are valid.
+        require(orange::session::validate_recording_observation_finalized_receipt_envelope(receipt, &error),
+                "witness receipt v4 refused: " + stem + ": " + error);
+        require(receipt.at("schema_version") == 4 && acceptance.at("schema_version") == 3,
+                "witness must pair receipt v4 with acceptance v3: " + stem);
+        json resealed;
+        require(orange::session::seal_recording_observation_finalized_receipt(receipt.at("contract"), &resealed, &error) &&
+                    resealed == receipt,
+                "Orange's seal of the witness receipt differs: " + stem);
+        require(orange::session::seal_recording_observation_binding_acceptance(acceptance.at("contract"), &resealed, &error) &&
+                    resealed == acceptance,
+                "Orange's seal of the witness acceptance differs: " + stem);
+        require(acceptance.at("contract_sha256") == receipt.at("contract").at("acceptance_contract_sha256"),
+                "witness acceptance is not the receipt's: " + stem);
+        require(orange::session::subject_declaration_receipt_disagreement(acceptance, receipt).empty(),
+                "witness declaration and receipt disagree: " + stem);
+        ++pairs;
+    }
+    require(pairs == 9, "expected 9 receipt v4 witnesses, found " + std::to_string(pairs));
+
+    // A declaration that names another fish is reported, not refused.
+    const auto witness = [](const std::string& stem, const char* kind) {
+        return json::parse(read_file(subject_v4_fixtures() / "witnesses" / (stem + "." + kind + ".json")));
+    };
+    json acceptance = witness("subject_v4_individual_minted_queued", "acceptance");
+    const json receipt = witness("subject_v4_individual_minted_queued", "receipt");
+    json contract = acceptance.at("contract");
+    contract["subject"]["fish_id"] = "00000000-0000-4000-8000-000000000000";
+    require(orange::session::seal_recording_observation_binding_acceptance(contract, &acceptance, &error),
+            "edited acceptance must seal: " + error);
+    require(!orange::session::subject_declaration_receipt_disagreement(acceptance, receipt).empty(),
+            "an individual whose declared fish differs from the receipt must be reported");
+    json group_acceptance = witness("subject_v4_dish_group", "acceptance");
+    contract = group_acceptance.at("contract");
+    contract["subject"]["fish_id"] = "00000000-0000-4000-8000-000000000000";
+    require(orange::session::seal_recording_observation_binding_acceptance(contract, &group_acceptance, &error),
+            "edited group acceptance must seal: " + error);
+    require(!orange::session::subject_declaration_receipt_disagreement(
+                group_acceptance, witness("subject_v4_dish_group", "receipt")).empty(),
+            "a dish_group whose declaration names a fish must be reported");
+
+    // Strict pairing of receipt version and reference version.
+    json v3_with_v2 = receipt.at("contract");
+    v3_with_v2["schema_version"] = 3;
+    json sealed;
+    require(!orange::session::seal_recording_observation_finalized_receipt(v3_with_v2, &sealed, &error),
+            "receipt v3 must refuse subject_reference v2");
+    json v4_with_v1 = receipt.at("contract");
+    v4_with_v1["subject_reference"]["schema_version"] = 1;
+    require(!orange::session::seal_recording_observation_finalized_receipt(v4_with_v1, &sealed, &error),
+            "receipt v4 must refuse subject_reference v1");
+    json acceptance_v4 = acceptance.at("contract");
+    acceptance_v4["schema_version"] = 4;
+    require(!orange::session::seal_recording_observation_binding_acceptance(acceptance_v4, &sealed, &error),
+            "there is no acceptance v4");
+}
+
+// A whole receipt v4 finalize on a v2-request / acceptance-v3 recording: bound,
+// a declaration disagreement is recorded without refusing, a v3/v4 mix is
+// refused, and a v4 head is never upgraded.
+void test_receipt_v4_finalization()
+{
+    orange::session::RecordingObservationPreArmResult pre_arm;
+    orange::session::RecordingObservationBindingRequestMaterialization requests;
+    std::string start_before;
+    const auto root = run_prearm_subject_cross_check("19234_2", "required", &pre_arm, &start_before, &requests);
+    require(pre_arm.arm_allowed, "v4 finalize fixture: matching dishes must arm");
+
+    const auto receipts_for = [&](bool mix_v3, bool disagree) {
+        json receipts = json::array();
+        std::string error;
+        for (std::size_t index = 0; index < requests.artifacts.size(); ++index) {
+            const json& request = requests.artifacts[index].request;
+            const json& acceptance = pre_arm.acceptances[index].acceptance;
+            const std::string context = acceptance.at("contract").at("observation_context_id");
+            const std::string h5_relative = acceptance.at("contract").at("planned_h5_relative_path");
+            write_file(root / h5_relative, "closed-citrus-h5-v4-" + std::to_string(index));
+            json contract = receipt_contract(request, acceptance);
+            const bool v3 = mix_v3 && index == 0;
+            contract["schema_version"] = v3 ? 3 : 4;
+            contract["citrus_experiment_id"] = "citexp_transaction_test";
+            contract["citrus_session_uuid"] = "citsess_" + context.substr(7);
+            contract["target"] = acceptance.at("contract").at("target");
+            contract["citrus_artifacts"] = json::array();
+            contract["h5_artifact"] = {{"relative_path", h5_relative},
+                                       {"size_bytes", ("closed-citrus-h5-v4-" + std::to_string(index)).size()},
+                                       {"sha256", file_sha256(root / h5_relative)}};
+            json reference = subject_reference_fixture();
+            if (!v3) {
+                // The declaration (subject_declaration_fixture) has fish_id null,
+                // so an individual in the receipt is reported as a disagreement.
+                reference["schema_version"] = 2;
+                reference["subject_type"] = disagree ? "individual" : "dish_group";
+                reference["subject_id"] = disagree ? json("0f3a6c2e-1b4d-4e8f-9a7b-2c5d6e7f8a9b") : json(nullptr);
+                reference["subject_count"] = disagree ? 1 : 3;
+                reference["fish_status"] = "not_collected";
+                reference["fish"] = nullptr;
+                reference["fish_reason"] = disagree ? "create_transport_failure" : "dish_group_subject";
+            }
+            contract["subject_reference"] = reference;
+            json receipt;
+            require(orange::session::seal_recording_observation_finalized_receipt(contract, &receipt, &error),
+                    "v4 finalize fixture receipt seal failed: " + error);
+            receipts.push_back(std::move(receipt));
+        }
+        return receipts;
+    };
+    const auto mixed = orange::session::finalize_recording_observation_bindings(
+        root.string(), {{"experiment_id", "citexp_transaction_test"}, {"receipts", receipts_for(true, false)}});
+    require(!mixed.ok && mixed.error.find("mixes receipt versions") != std::string::npos,
+            "a receipt set mixing v3 and v4 must be refused: " + mixed.error);
+    const auto finalized = orange::session::finalize_recording_observation_bindings(
+        root.string(), {{"experiment_id", "citexp_transaction_test"}, {"receipts", receipts_for(false, true)}});
+    require(finalized.ok, "receipt v4 finalize failed: " + finalized.error);
+    require(finalized.subject_declaration_disagreements.size() == requests.artifacts.size(),
+            "every individual receipt naming a fish the declaration did not must be recorded");
+    const auto upgrade = orange::session::upgrade_recording_observation_receipts(
+        root.string(), {{"experiment_id", "citexp_transaction_test"},
+                        {"reason", orange::session::kObservationBindingRevisionReasonReceiptV2Upgrade},
+                        {"revised_at_utc", "2026-08-13T17:00:00Z"},
+                        {"receipts", json::array()}});
+    require(!upgrade.ok && upgrade.error.find("never upgraded") != std::string::npos,
+            "a receipt v4 collection must never be upgraded: " + upgrade.error);
+}
+
 int main()
 {
     try {
         test_complete_chain();
+        test_subject_reference_v2_fixtures();
+        test_citrus_receipt_v4_witnesses();
+        test_receipt_v4_finalization();
         test_request_artifact_materialization_and_tamper_gates();
         test_request_artifact_unavailable_and_contradictory_geometry();
         test_geometry_is_independent_from_binding();

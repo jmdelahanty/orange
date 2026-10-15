@@ -5672,6 +5672,11 @@ int main(int /*argc*/, char ** /*args*/) {
                     }
                     return nlohmann::json::object();
                 }
+                // Subject identity v4: a Citrus bug if it happens; recorded, never refused.
+                for (const auto& line : finalized.subject_declaration_disagreements) {
+                    std::cerr << "[GUI][observation_binding] subject declaration and receipt "
+                                 "disagree (recorded, not refused): " << line << std::endl;
+                }
                 std::string refresh_error;
                 if (!orange::session::
                         refresh_recording_session_observation_bindings(

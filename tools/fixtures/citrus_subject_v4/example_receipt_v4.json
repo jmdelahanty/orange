@@ -1,0 +1,105 @@
+{
+  "schema_id": "citrus.recording_observation_finalized_receipt",
+  "schema_version": 4,
+  "canonicalization": "canonical_json_utf8_sort_keys_compact_v1",
+  "receipt_id": "obsbindfin_30b29d7a78a8b43d6e31f89e6bf897c5f4ba804c39e62bae3a2c11aabbb363f4",
+  "contract_sha256": "sha256:30b29d7a78a8b43d6e31f89e6bf897c5f4ba804c39e62bae3a2c11aabbb363f4",
+  "contract": {
+    "acceptance_contract_sha256": "sha256:4c34a01c4fe704e00b558d42a8c6122c6b066d574f9cf637043e25139f17d3fe",
+    "acceptance_id": "obsbindacc_4c34a01c4fe704e00b558d42a8c6122c6b066d574f9cf637043e25139f17d3fe",
+    "citrus_experiment_id": "citexp_93f3e6c3d34740367484c179954b502b6731256979bf8804aebf60e08cf8e787",
+    "citrus_session_uuid": "citsess_3647e9472f1ecb9cf74196d08a4f9eec8cc6bc7d9ce11e0bc9c4208199d48bdc",
+    "finalized_at_utc": "2026-10-10T01:47:29Z",
+    "h5_artifact": {
+      "relative_path": "citrus/citsess_3647e9472f1ecb9cf74196d08a4f9eec8cc6bc7d9ce11e0bc9c4208199d48bdc_snow_1h.h5",
+      "sha256": "sha256:1b11936628c95edc53294c64379a4f7c0b9eebee632e443202a928a2e46d426c",
+      "size_bytes": 608139551
+    },
+    "observation_context_id": "obsctx_3647e9472f1ecb9cf74196d08a4f9eec8cc6bc7d9ce11e0bc9c4208199d48bdc",
+    "protocol_semantic": {
+      "semantic_sha256": "sha256:fc5282f6b2f2249a10504a4ad1ca0162c32542cf4eb00ea25c5dfb12d1802957",
+      "status": "available"
+    },
+    "request_contract_sha256": "sha256:94a48472454b5e1c5be83d8ad4fe798ac8f21768f94bc22c197617b6198a44e8",
+    "request_id": "obsbindreq_94a48472454b5e1c5be83d8ad4fe798ac8f21768f94bc22c197617b6198a44e8",
+    "runtime_geometry_contract_sha256": "sha256:a0ff8146935213b166171ab06d31f8f51d1584c6f91a2ced628e1dde7d9aba14",
+    "schema_id": "citrus.recording_observation_finalized_receipt",
+    "schema_version": 4,
+    "session_status": "COMPLETE",
+    "target": {
+      "arena_id": "arena_4",
+      "camera_id": "2010096",
+      "canvas_name": "shadow",
+      "rig_id": "omnifin0",
+      "source_camera_stream_id": "2010096"
+    },
+    "citrus_artifacts": [
+      {
+        "role": "stimulus_video",
+        "relative_path": "citrus/citsess_3647e9472f1ecb9cf74196d08a4f9eec8cc6bc7d9ce11e0bc9c4208199d48bdc_snow_1h.mp4",
+        "size_bytes": 116192958,
+        "sha256": "sha256:b4ff905427baa7599a8cc00a71bbc3fede259a4c9937243fe031bf3c6eb11051"
+      },
+      {
+        "role": "stimulus_video_container_finalization",
+        "relative_path": "citrus/citsess_3647e9472f1ecb9cf74196d08a4f9eec8cc6bc7d9ce11e0bc9c4208199d48bdc_snow_1h.mp4.finalization.json",
+        "size_bytes": 1234,
+        "sha256": "sha256:072d16caa7eecfa76e40749e7ceea1673117c2613a95463e5137ac4462dadd17",
+        "finalization": {
+          "schema_id": "citrus.stimulus_video_container_finalization",
+          "schema_version": 1,
+          "status": "complete",
+          "terminal": true,
+          "trailer_written": true,
+          "output_closed": true,
+          "container_file_size_bytes": 116192958
+        }
+      },
+      {
+        "role": "update_timing",
+        "relative_path": "citrus/citsess_3647e9472f1ecb9cf74196d08a4f9eec8cc6bc7d9ce11e0bc9c4208199d48bdc_snow_1h_update_timing.csv",
+        "size_bytes": 72786691,
+        "sha256": "sha256:3633f87bffebd2be8f97483a0a27c13c7b10969db9ac0b15221b38268d255c2a"
+      },
+      {
+        "role": "process_diagnostic",
+        "relative_path": "citrus/2026-10-09T19-38-03Z_threading_startup_989893.json",
+        "size_bytes": 9463,
+        "sha256": "sha256:e6cf0cbc90704906d421ea302d21ea281b67c8609c6c978d249f5d2e1e27ef0c"
+      }
+    ],
+    "subject_reference": {
+      "schema_id": "citrus.subject_reference",
+      "schema_version": 2,
+      "dish_id": "19234_2",
+      "lookup_status": "collected",
+      "lookup_reason": null,
+      "lookup_http_status": null,
+      "queried_at_utc": "2026-10-09T21:20:42Z",
+      "dish": {
+        "dish_id": "19234_2",
+        "dish_uuid": "b01892a2-c7a8-4d4e-9131-16676f295209",
+        "dish_revision": 4,
+        "dish_updated_at": "2026-10-09 15:45:02",
+        "fish_count": 6,
+        "cross_id": "19234"
+      },
+      "fish_status": "not_collected",
+      "fish_reason": "dish_group_subject",
+      "fish": null,
+      "subject_id": null,
+      "subject_type": "dish_group",
+      "subject_count": 4,
+      "zebrobot_version": {
+        "base_url": "http://delahantyj-ws1.hhmi.org",
+        "api_schema_version": 2,
+        "service_commit": "a56e219194d6dd9e0bfecf2f4a880c8778098bc2",
+        "service_commit_dirty": false,
+        "consumer_schema_sha256": "f5280e430d4b5f10c3643cb89a6187eacc45fdac7af55b2e81f5e315b7b754dc",
+        "http_status": 200,
+        "error": null
+      },
+      "source": "citrus_mzb_lookup"
+    }
+  }
+}

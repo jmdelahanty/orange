@@ -132,12 +132,14 @@ CONTEXT_NO_SUBTYPE["schema_version"] = 2
 def fixture(root: Path, version: int = 1, unified_h5: bool = False,
             parent_context: dict[str, Any] = CONTEXT,
             subject_declaration: dict[str, Any] | None = None,
-            subject_reference: dict[str, Any] | None = None) -> None:
+            subject_reference: dict[str, Any] | None = None,
+            receipt_version: int = 3) -> None:
     """version 2 carries the frozen context in each request (and a start
     snapshot that freezes it); unified_h5 writes the Citrus 9aa6d57 layout
     (/evidence/recording_binding + /metadata/session) instead of the root one.
     subject_declaration makes the acceptances v3 (version must be 2);
-    subject_reference makes the receipts v3 (citsess_ session, citrus_artifacts)."""
+    subject_reference makes the receipts v3, or receipt_version (4: reference v2),
+    with a citsess_ session and citrus_artifacts."""
     import h5py
 
     if version == 2:
@@ -253,7 +255,7 @@ def fixture(root: Path, version: int = 1, unified_h5: bool = False,
         }
         receipt_contract = {
             "schema_id": "citrus.recording_observation_finalized_receipt",
-            "schema_version": 3 if subject_reference is not None else 1,
+            "schema_version": receipt_version if subject_reference is not None else 1,
             "request_id": request["request_id"],
             "request_contract_sha256": request["contract_sha256"],
             "acceptance_id": acceptance["acceptance_id"],
@@ -346,6 +348,99 @@ def fixture(root: Path, version: int = 1, unified_h5: bool = False,
         "recording_observation_bindings": finalized,
         "observation_contexts": finalized_contexts,
     })
+
+
+SUBJECT_V4 = REPO_ROOT / "tools" / "fixtures" / "citrus_subject_v4"
+PINS = {  # agent-contracts main 2aaa7bc; the digests Citrus, the sealer and Palette pin
+    "citrus_subject_reference_v2.schema.json":
+        "30f42c9d49d1ba040b509d6743144aefacda63365c5ca4261524506b35931eb9",
+    "citrus_recording_observation_finalized_receipt_v4.schema.json":
+        "47d2251244ed6bf18cf5e65c360da2b4a809afbdee1864a3cef75b0b44a76b83",
+}
+GROUP_REFERENCE_V2 = dict(SUBJECT_REFERENCE, schema_version=2, subject_id=None, subject_type="dish_group",
+                          subject_count=4, fish_reason="dish_group_subject")
+FISH = "0f3a6c2e-1b4d-4e8f-9a7b-2c5d6e7f8a9b"
+INDIVIDUAL_REFERENCE_V2 = dict(SUBJECT_REFERENCE, schema_version=2, subject_id=FISH,
+                               fish_reason="create_transport_failure")
+
+
+def subject_v4_tests(module: Any, expected: set[str]) -> None:
+    """Receipt v4 / reference v2 (agent-contracts #105, witnesses #115)."""
+    import jsonschema
+
+    contracts = REPO_ROOT / "contracts"
+    for name, sha in PINS.items():
+        assert hashlib.sha256((contracts / name).read_bytes()).hexdigest() == sha, f"pin changed: {name}"
+    reference_schema = json.loads((contracts / "citrus_subject_reference_v2.schema.json").read_text())
+    receipt_schema = json.loads(
+        (contracts / "citrus_recording_observation_finalized_receipt_v4.schema.json").read_text())
+    reference_validator = jsonschema.Draft202012Validator(reference_schema)
+    receipt_validator = jsonschema.Draft202012Validator(receipt_schema)
+
+    # The 11 reference v2 fixtures: the pinned schema and Orange's rules agree.
+    for verdict in ("accepted", "refused"):
+        for path in sorted((SUBJECT_V4 / "reference_v2" / verdict).glob("*.json")):
+            document = json.loads(path.read_text())
+            assert reference_validator.is_valid(document) == (verdict == "accepted"), path.name
+            try:
+                module.validate_subject_reference(document, path.stem, 2)
+                ok = True
+            except module.ValidationError:
+                ok = False
+            assert ok == (verdict == "accepted"), f"Orange's reference v2 rules disagree: {path.name}"
+    # Citrus's sealed receipt v4 witnesses: schema-valid, rules pass, declaration agrees.
+    receipts = sorted((SUBJECT_V4 / "witnesses").glob("*.receipt.json"))
+    assert len(receipts) == 9
+    for path in receipts + [SUBJECT_V4 / "example_receipt_v4.json"]:
+        receipt = json.loads(path.read_text())
+        assert receipt_validator.is_valid(receipt), path.name
+        module.validate_subject_reference(receipt["contract"]["subject_reference"], path.name, 2)
+        if path.name.endswith(".receipt.json"):
+            acceptance_path = path.with_name(path.name.replace(".receipt.json", ".acceptance.json"))
+            acceptance = json.loads(acceptance_path.read_text())
+            assert module.subject_declaration_disagreement(acceptance["contract"], receipt["contract"]) is None
+
+    # Whole recordings with receipt v4.
+    declared = dict(SUBJECT_DECLARATION, fish_id=FISH)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        fixture(root, version=2, unified_h5=True, subject_declaration=declared,
+                subject_reference=INDIVIDUAL_REFERENCE_V2, receipt_version=4)
+        result = module.validate(root, expected, 4)
+        assert {row["receipt_schema_version"] for row in result["receipts"]} == {4}
+        assert result["subject_declaration_disagreements"] == []
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        group_declared = dict(SUBJECT_DECLARATION, subject_type="dish_group", subject_count=4)
+        fixture(root, version=2, unified_h5=True, subject_declaration=group_declared,
+                subject_reference=GROUP_REFERENCE_V2, receipt_version=4)
+        assert module.validate(root, expected, 4)["status"] == "pass"
+    with tempfile.TemporaryDirectory() as tmp:
+        # The declaration names no fish, the receipt an individual: recorded, not refused.
+        root = Path(tmp)
+        fixture(root, version=2, unified_h5=True, subject_declaration=SUBJECT_DECLARATION,
+                subject_reference=INDIVIDUAL_REFERENCE_V2, receipt_version=4)
+        result = module.validate(root, expected, 4)
+        assert result["status"] == "pass" and len(result["subject_declaration_disagreements"]) == 4
+    refused = [
+        (dict(SUBJECT_DECLARATION), dict(GROUP_REFERENCE_V2, schema_version=1), 4, "subject reference is invalid"),
+        (dict(SUBJECT_DECLARATION), GROUP_REFERENCE_V2, 3, "subject reference is invalid"),
+        (dict(SUBJECT_DECLARATION), dict(GROUP_REFERENCE_V2, subject_count=1), 4, "dish_group"),
+        (dict(SUBJECT_DECLARATION), dict(INDIVIDUAL_REFERENCE_V2, subject_id="not-a-uuid"), 4,
+         "subject reference is invalid"),
+        (None, INDIVIDUAL_REFERENCE_V2, 4, "acceptance v3"),
+    ]
+    for declaration, reference, version, message in refused:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fixture(root, version=2, unified_h5=True, subject_declaration=declaration,
+                    subject_reference=reference, receipt_version=version)
+            try:
+                module.validate(root, expected, 4)
+            except module.ValidationError as error:
+                assert message in str(error), str(error)
+            else:
+                raise AssertionError(f"{message} passed validation")
 
 
 def main() -> int:
@@ -478,6 +573,7 @@ def main() -> int:
             else:
                 raise AssertionError(f"{message} passed validation")
 
+    subject_v4_tests(module, expected)
     print("validate_recording_observation_bindings_tests passed")
     return 0
 

@@ -3,6 +3,7 @@
 #include "json.hpp"
 
 #include <string>
+#include <vector>
 
 namespace orange::session {
 
@@ -23,6 +24,10 @@ struct RecordingObservationFinalizationResult {
     std::string error;
     nlohmann::json collection = nlohmann::json::object();
     nlohmann::json collection_reference = nlohmann::json::object();
+    // Receipt v4 contexts whose receipt disagrees with the acceptance v3
+    // declaration (subject_declaration_receipt_disagreement), one line each.
+    // Recorded, not refused.
+    std::vector<std::string> subject_declaration_disagreements;
 };
 
 // Validate every Citrus receipt against the immutable Orange request and

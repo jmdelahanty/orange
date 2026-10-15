@@ -1,0 +1,37 @@
+{
+  "schema_id": "citrus.subject_reference",
+  "schema_version": 2,
+  "dish_id": "19234_2",
+  "lookup_status": "collected",
+  "lookup_reason": null,
+  "lookup_http_status": null,
+  "queried_at_utc": "2026-10-09T21:20:42Z",
+  "dish": {
+    "dish_id": "19234_2",
+    "dish_uuid": "b01892a2-c7a8-4d4e-9131-16676f295209",
+    "dish_revision": 4,
+    "dish_updated_at": "2026-10-09 15:45:02",
+    "fish_count": 6,
+    "cross_id": "19234"
+  },
+  "fish_status": "collected",
+  "fish_reason": null,
+  "fish": {
+    "fish_id": "6b1d0f3e-2c4a-4e8b-9a71-0d5e8c2f4b19",
+    "revision": 3,
+    "updated_at": "2026-10-09 18:12:05"
+  },
+  "subject_id": "6b1d0f3e-2c4a-4e8b-9a71-0d5e8c2f4b19",
+  "subject_type": "individual",
+  "subject_count": 1,
+  "zebrobot_version": {
+    "base_url": "http://delahantyj-ws1.hhmi.org",
+    "api_schema_version": 2,
+    "service_commit": "a56e219194d6dd9e0bfecf2f4a880c8778098bc2",
+    "service_commit_dirty": false,
+    "consumer_schema_sha256": "f5280e430d4b5f10c3643cb89a6187eacc45fdac7af55b2e81f5e315b7b754dc",
+    "http_status": 200,
+    "error": null
+  },
+  "source": "citrus_mzb_lookup"
+}

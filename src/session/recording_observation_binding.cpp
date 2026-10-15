@@ -311,21 +311,27 @@ bool validate_subject_declaration(const json& s, std::string* error_out)
 
 // citrus.subject_reference v1 (receipt v3 contract.subject_reference):
 // exactly citrus_subject_reference_v1.schema.json, including its
-// null-iff rules.
-bool validate_subject_reference(const json& s, std::string* error_out)
+// null-iff rules. v2 (receipt v4, citrus_subject_reference_v2.schema.json):
+// the same keys; subject_id is null or a lowercase canonical UUID; with a dish
+// an individual has a UUID subject_id and count 1, a dish_group a null
+// subject_id, count >= 2 and no fish (not_collected).
+bool validate_subject_reference(const json& s, std::string* error_out, int reference_version = 1)
 {
+    const bool v2 = reference_version == 2;
     if (!exact_keys(s, {"schema_id", "schema_version", "dish_id", "lookup_status", "lookup_reason",
                         "lookup_http_status", "queried_at_utc", "dish", "fish_status", "fish_reason",
                         "fish", "subject_id", "subject_type", "subject_count", "zebrobot_version",
                         "source"}) ||
-        s.value("schema_id", "") != kCitrusSubjectReferenceSchemaId || !schema_version_is(s, 1) ||
+        s.value("schema_id", "") != kCitrusSubjectReferenceSchemaId || !schema_version_is(s, reference_version) ||
         !null_or_string(s.at("dish_id"), 1, 128) ||
         !(s.at("lookup_status") == "collected" || s.at("lookup_status") == "not_collected") ||
         !null_or_string(s.at("lookup_reason")) || !null_or_int(s.at("lookup_http_status"), 100, 599) ||
         !s.at("queried_at_utc").is_string() ||
         !valid_utc_timestamp(s.at("queried_at_utc").get<std::string>()) ||
         !(s.at("fish_status") == "collected" || s.at("fish_status") == "not_collected") ||
-        !null_or_string(s.at("fish_reason")) || !null_or_string(s.at("subject_id")) ||
+        !null_or_string(s.at("fish_reason")) ||
+        !(v2 ? (s.at("subject_id").is_null() || valid_uuid(s.at("subject_id")))
+             : null_or_string(s.at("subject_id"))) ||
         !valid_subject_type(s.at("subject_type")) || !null_or_int(s.at("subject_count"), 1) ||
         s.value("source", "") != "citrus_mzb_lookup") {
         return fail(error_out, "receipt subject reference is invalid");
@@ -373,9 +379,19 @@ bool validate_subject_reference(const json& s, std::string* error_out)
                         : !(fish.is_null() && s.at("fish_reason").is_string())) ||
         (no_dish ? !(s.at("subject_id").is_null() && s.at("subject_type").is_null() &&
                      s.at("subject_count").is_null())
-                 : !(s.at("subject_id").is_string() && s.at("subject_type").is_string() &&
+                 : !((v2 || s.at("subject_id").is_string()) && s.at("subject_type").is_string() &&
                      s.at("subject_count").is_number_integer()))) {
         return fail(error_out, "receipt subject reference nullability is invalid");
+    }
+    if (v2 && s.at("subject_type") == "individual" &&
+        !(valid_uuid(s.at("subject_id")) && s.at("subject_count") == 1)) {
+        return fail(error_out, "receipt subject reference v2 individual needs a UUID subject_id and count 1");
+    }
+    if (v2 && s.at("subject_type") == "dish_group" &&
+        !(s.at("subject_id").is_null() && int_at_least(s.at("subject_count"), 2) &&
+          s.at("fish_status") == "not_collected" && fish.is_null())) {
+        return fail(error_out,
+                    "receipt subject reference v2 dish_group needs a null subject_id, count >= 2 and no fish");
     }
     return true;
 }
@@ -568,8 +584,10 @@ bool validate_receipt_contract(const json& contract, std::string* error_out)
         "finalized_at_utc", "citrus_experiment_id",
         "citrus_session_uuid", "target", "h5_artifact", "session_status",
         "runtime_geometry_contract_sha256", "protocol_semantic"};
-    // v3 = v2 plus subject_reference; everything v2 checks applies to v3.
-    const bool v3 = version == kObservationBindingFinalizedReceiptSchemaVersionV3;
+    // v3 = v2 plus subject_reference (v1); v4 = v3 with subject_reference v2.
+    // Everything v2 checks applies to v3 and v4.
+    const bool v4 = version == kObservationBindingFinalizedReceiptSchemaVersionV4;
+    const bool v3 = version == kObservationBindingFinalizedReceiptSchemaVersionV3 || v4;
     const bool v2_or_later = version == kObservationBindingFinalizedReceiptSchemaVersionV2 || v3;
     if (v2_or_later) {
         keys.insert("citrus_artifacts");
@@ -583,7 +601,7 @@ bool validate_receipt_contract(const json& contract, std::string* error_out)
         (version != kObservationBindingSchemaVersion && !v2_or_later)) {
         return fail(error_out, "finalized binding receipt contract is invalid");
     }
-    if (v3 && !validate_subject_reference(contract.at("subject_reference"), error_out)) {
+    if (v3 && !validate_subject_reference(contract.at("subject_reference"), error_out, v4 ? 2 : 1)) {
         return false;
     }
     if (!valid_derived_id(contract.value("request_id", ""), "obsbindreq_") ||
@@ -643,9 +661,8 @@ bool validate_receipt_contract(const json& contract, std::string* error_out)
     return true;
 }
 
-// The envelope carries the same schema_version as the contract it seals:
-// request and acceptance envelopes are v1 or v2 with their contracts, receipt
-// envelopes stay v1. Citrus rejects mixed outer/inner versions and so does
+// The envelope carries the same schema_version as the contract it seals
+// (request 1-2, acceptance 1-3, receipt 1-4). Citrus rejects mixed outer/inner versions and so does
 // Orange (validate_envelope).
 bool seal(const char* schema_id,
           const char* id_prefix,
@@ -657,10 +674,12 @@ bool seal(const char* schema_id,
         return fail(error_out, "binding record output is null");
     }
     const int version = binding_record_schema_version(contract);
-    // Requests stay 1 or 2; acceptances and receipts may be 3.
+    // Requests stay 1 or 2; acceptances and receipts may be 3; receipts 4.
     const bool request = std::string(id_prefix) == "obsbindreq_";
+    const bool receipt = std::string(id_prefix) == "obsbindfin_";
     if (!accepted_observation_binding_schema_version(version) &&
-        !(!request && version == kObservationBindingAcceptanceSchemaVersionV3)) {
+        !(!request && version == kObservationBindingAcceptanceSchemaVersionV3) &&
+        !(receipt && version == kObservationBindingFinalizedReceiptSchemaVersionV4)) {
         return fail(error_out, "binding contract schema_version is invalid");
     }
     const std::string digest = canonical_sha256(contract);
@@ -800,6 +819,50 @@ bool validate_recording_observation_binding_acceptance(
     return true;
 }
 
+bool validate_recording_observation_finalized_receipt_envelope(
+    const nlohmann::json& receipt,
+    std::string* error_out)
+{
+    return validate_envelope(
+               receipt, kObservationBindingFinalizedReceiptSchemaId, "receipt_id",
+               "obsbindfin_", /*max_version=*/kObservationBindingFinalizedReceiptSchemaVersionV4,
+               error_out) &&
+        validate_receipt_contract(receipt.at("contract"), error_out);
+}
+
+bool validate_citrus_subject_reference(const nlohmann::json& reference, int version,
+                                       std::string* error_out)
+{
+    if (version != 1 && version != 2) {
+        return fail(error_out, "subject reference version must be 1 or 2");
+    }
+    return validate_subject_reference(reference, error_out, version);
+}
+
+std::string subject_declaration_receipt_disagreement(const nlohmann::json& acceptance,
+                                                     const nlohmann::json& receipt)
+{
+    if (binding_record_schema_version(receipt) != kObservationBindingFinalizedReceiptSchemaVersionV4 ||
+        binding_record_schema_version(acceptance) != kObservationBindingAcceptanceSchemaVersionV3) {
+        return {};
+    }
+    const json& declaration = acceptance.at("contract").at("subject");
+    const json& reference = receipt.at("contract").at("subject_reference");
+    const std::string context = receipt.at("contract").value("observation_context_id", "");
+    const json& declared_fish = declaration.at("fish_id");
+    if (reference.at("subject_type") == "individual") {
+        if (declared_fish != reference.at("subject_id")) {
+            return context + ": individual receipt subject_id " + reference.at("subject_id").dump() +
+                " differs from the declaration's fish_id " + declared_fish.dump();
+        }
+    } else if (!declared_fish.is_null()) {
+        const std::string what = reference.at("dish_id").is_null() ? "no dish" : "a dish_group";
+        return context + ": the declaration names fish_id " + declared_fish.dump() +
+            " but the receipt records " + what;
+    }
+    return {};
+}
+
 bool validate_recording_observation_finalized_receipt(
     const nlohmann::json& receipt,
     const nlohmann::json& request,
@@ -813,11 +876,13 @@ bool validate_recording_observation_finalized_receipt(
     if (acceptance.at("contract").value("status", "") != "accepted") {
         return fail(error_out, "rejected binding cannot have a finalized receipt");
     }
-    if (!validate_envelope(
-            receipt, kObservationBindingFinalizedReceiptSchemaId, "receipt_id",
-            "obsbindfin_", /*max_version=*/kObservationBindingFinalizedReceiptSchemaVersionV3, error_out) ||
-        !validate_receipt_contract(receipt.at("contract"), error_out)) {
+    if (!validate_recording_observation_finalized_receipt_envelope(receipt, error_out)) {
         return false;
+    }
+    // Receipt v4 (subject reference v2) always answers an acceptance v3.
+    if (binding_record_schema_version(receipt) == kObservationBindingFinalizedReceiptSchemaVersionV4 &&
+        binding_record_schema_version(acceptance) != kObservationBindingAcceptanceSchemaVersionV3) {
+        return fail(error_out, "receipt v4 must answer an acceptance v3");
     }
 
     const json& request_contract = request.at("contract");

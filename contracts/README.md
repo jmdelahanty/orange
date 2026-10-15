@@ -22,3 +22,12 @@ version 2 only: the v1 pin (sha256 6b218c13…94d8, bare-hex payload_digest) was
 pose model, #391); Palette keeps reading v1 for historical records. An ONNX manifest without a
 schema_id (the detect training export manifest) is only hashed. Update them only with a Palette
 change, and record the new commit here.
+
+`citrus_subject_reference_v2.schema.json` (sha256 30f42c9d…31eb9) and
+`citrus_recording_observation_finalized_receipt_v4.schema.json` (sha256 47d22512…6b83) are byte
+copies of agent-contracts `citrus-orange/citrus_subject_reference_v2.schema.json` and
+`citrus-recording-transfer-3.1/citrus_recording_observation_finalized_receipt.v4.schema.json` at
+agent-contracts main 2aaa7bc (PR #105 merged 83f9ed5; subject identity v4). Receipt v4 carries
+reference v2 and always answers an acceptance v3; receipt v3 keeps reference v1. Sealer 3.3.0,
+Citrus and Palette pin the same digests. `tools/validate_recording_observation_bindings_tests.py`
+checks the digests and validates the fixtures in `tools/fixtures/citrus_subject_v4` against them.

@@ -36,6 +36,12 @@ inline constexpr int kObservationBindingFinalizedReceiptSchemaVersionV2 = 2;
 // record Citrus wrote to its H5). Orange accepts v2 and v3 side by side.
 inline constexpr int kObservationBindingAcceptanceSchemaVersionV3 = 3;
 inline constexpr int kObservationBindingFinalizedReceiptSchemaVersionV3 = 3;
+// Subject identity v4 (agent-contracts citrus-palette/subject_identity_v4_2026-10-14,
+// #105): receipt v4 = receipt v3 with contract.subject_reference as
+// citrus.subject_reference v2 (subject_id the MetaZebrobot fish UUID, null for
+// a dish_group), always answering an acceptance v3. Receipt v3 keeps reference
+// v1; one finalized collection, revisions included, never mixes v3 and v4.
+inline constexpr int kObservationBindingFinalizedReceiptSchemaVersionV4 = 4;
 inline constexpr const char* kCitrusSubjectDeclarationSchemaId = "citrus.subject_declaration";
 inline constexpr const char* kCitrusSubjectReferenceSchemaId = "citrus.subject_reference";
 inline constexpr const char* kCitrusArtifactRoleStimulusVideo = "stimulus_video";
@@ -57,7 +63,7 @@ inline bool accepted_observation_binding_schema_version(int version)
            version == kObservationBindingRequestSchemaVersionV2;
 }
 // The schema_version of a sealed envelope or of a contract payload as a
-// JSON integer (1, 2 or 3); 0 for anything else (missing, float, out of range).
+// JSON integer (1 to 4); 0 for anything else (missing, float, out of range).
 // Which versions a document admits is checked per document.
 inline int binding_record_schema_version(const nlohmann::json& record)
 {
@@ -67,6 +73,7 @@ inline int binding_record_schema_version(const nlohmann::json& record)
     if (v == kObservationBindingSchemaVersion) return kObservationBindingSchemaVersion;
     if (v == kObservationBindingRequestSchemaVersionV2) return kObservationBindingRequestSchemaVersionV2;
     if (v == kObservationBindingAcceptanceSchemaVersionV3) return kObservationBindingAcceptanceSchemaVersionV3;
+    if (v == kObservationBindingFinalizedReceiptSchemaVersionV4) return kObservationBindingFinalizedReceiptSchemaVersionV4;
     return 0;
 }
 
@@ -85,7 +92,7 @@ inline constexpr const char* kObservationBindingStatusHistoricallyUnavailable =
 
 // Seal a caller-supplied contract payload in the corresponding canonical
 // semantic-digest envelope; the envelope takes the contract's schema_version
-// (request/acceptance 1 or 2, receipt 1).  The payload is validated before it
+// (request 1 or 2, acceptance 1 to 3, receipt 1 to 4).  The payload is validated before it
 // is sealed.  These functions perform no filesystem access or producer
 // mutation.
 bool seal_recording_observation_binding_request(
@@ -121,5 +128,25 @@ bool validate_recording_observation_finalized_receipt(
     const nlohmann::json& request,
     const nlohmann::json& acceptance,
     std::string* error_out = nullptr);
+
+// One finalized receipt envelope and its contract on their own, without the
+// request/acceptance chain (fixtures, offline checks).
+bool validate_recording_observation_finalized_receipt_envelope(
+    const nlohmann::json& receipt,
+    std::string* error_out = nullptr);
+
+// citrus.subject_reference v1 (receipt v3) or v2 (receipt v4) on its own.
+bool validate_citrus_subject_reference(const nlohmann::json& reference, int version,
+                                       std::string* error_out = nullptr);
+
+// Subject identity v4, declaration against receipt for one context: for an
+// individual the receipt's subject_reference.subject_id equals the acceptance
+// v3 declaration's fish_id; for a dish_group or no dish the declaration's
+// fish_id is null. Citrus guarantees this, so a disagreement is a Citrus bug;
+// it is recorded (reported), never a refusal: the receipt is authoritative.
+// Returns the disagreement, or an empty string when they agree or the pair is
+// not receipt v4 + acceptance v3.
+std::string subject_declaration_receipt_disagreement(const nlohmann::json& acceptance,
+                                                     const nlohmann::json& receipt);
 
 }  // namespace orange::session

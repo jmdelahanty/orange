@@ -277,7 +277,7 @@ finalize_into(const std::string& recording_folder,
     }
 
     // One collection holds receipts of one version (the 3.1.0 sealer refuses a
-    // head that mixes v1 and v2).
+    // head that mixes v1 and v2; 3.3.0 also v3 and v4).
     std::set<int> receipt_versions;
     for (const auto& receipt : receipts) {
         receipt_versions.insert(binding_record_schema_version(receipt));
@@ -365,6 +365,12 @@ finalize_into(const std::string& recording_folder,
             experiment_id) {
             result.error = "receipt experiment ID mismatch";
             return result;
+        }
+        // Subject identity v4: recorded, never refused (the receipt is authoritative).
+        const std::string disagreement =
+            subject_declaration_receipt_disagreement(acceptance->second, receipt);
+        if (!disagreement.empty()) {
+            result.subject_declaration_disagreements.push_back(disagreement);
         }
         const json& h5 = receipt_contract.at("h5_artifact");
         const std::string h5_relative = h5.value("relative_path", "");
@@ -663,6 +669,25 @@ upgrade_recording_observation_receipts(
         head.collection.value("binding_status", "") != kObservationBindingStatusBound) {
         result.error = "the head collection is not finalized and bound";
         return result;
+    }
+
+    // The upgrade is a v1 -> v2 receipt revision. A head whose receipts are v3
+    // or v4 is never revised: a chain never mixes v3/v4 receipts with another
+    // version (sealer 3.3.0).
+    for (const auto& context : head.collection.at("observation_contexts")) {
+        json head_receipt;
+        const std::string relative = context.at("finalized_receipt").value("relative_path", "");
+        if (!safe_relative_path(relative) || !read_json(root / relative, &head_receipt, &result.error)) {
+            result.error = result.error.empty() ? "head receipt path is invalid" : result.error;
+            return result;
+        }
+        const int head_version = binding_record_schema_version(head_receipt);
+        if (head_version == kObservationBindingFinalizedReceiptSchemaVersionV3 ||
+            head_version == kObservationBindingFinalizedReceiptSchemaVersionV4) {
+            result.error = "a collection with receipt v" + std::to_string(head_version) +
+                " is never upgraded (no receipt version mix in a chain)";
+            return result;
+        }
     }
 
     // Idempotent retry: the head already carries exactly these receipts.
