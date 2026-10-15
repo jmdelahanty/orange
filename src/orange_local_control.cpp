@@ -360,6 +360,17 @@ bool prepare_event_log_directory(const std::filesystem::path& log_path,
     return true;
 }
 
+bool truncate_event_log_as_invoker(const std::filesystem::path& log_path,
+                                   std::string* error_out)
+{
+    orange::ScopedFsuid fsuid_guard;  // the event log belongs to the sudo invoker
+    if (!prepare_event_log_directory(log_path, error_out)) {
+        return false;
+    }
+    std::ofstream out(log_path, std::ios::trunc);
+    return static_cast<bool>(out);
+}
+
 bool InitializeLocalControlEventLog(const std::string& event_log_path,
                                     std::string* error_out)
 {
@@ -367,18 +378,30 @@ bool InitializeLocalControlEventLog(const std::string& event_log_path,
         return true;
     }
     const std::lock_guard<std::mutex> lock(g_event_log_mutex);
-    orange::ScopedFsuid fsuid_guard;  // the event log belongs to the sudo invoker
     const std::filesystem::path log_path(event_log_path);
-    if (!prepare_event_log_directory(log_path, error_out)) {
+    std::string directory_error;
+    if (truncate_event_log_as_invoker(log_path, &directory_error)) {
+        return true;
+    }
+    if (!directory_error.empty()) {
+        set_error(error_out, directory_error);
         return false;
     }
-    std::ofstream out(event_log_path, std::ios::trunc);
-    if (!out) {
-        set_error(error_out,
-                  "failed to initialize local control event log: " + event_log_path);
-        return false;
+    // The invoker cannot open a log an earlier root-run Orange left behind
+    // (before d9a9142 the log was created as root; on 2026-10-15 a 10-09 copy in
+    // /tmp kept every GUI launch from starting the server). Remove only a regular
+    // file at exactly this path, never a symlink or anything else, as the
+    // process's own user, then create it again as the invoker.
+    std::error_code ec;
+    const auto status = std::filesystem::symlink_status(log_path, ec);
+    if (!ec && status.type() == std::filesystem::file_type::regular &&
+        std::filesystem::remove(log_path, ec) && !ec &&
+        truncate_event_log_as_invoker(log_path, &directory_error)) {
+        return true;
     }
-    return true;
+    set_error(error_out,
+              "failed to initialize local control event log: " + event_log_path);
+    return false;
 }
 
 std::string socket_lock_path_for_socket(const std::string& socket_path)
@@ -1031,18 +1054,14 @@ void LocalControlServer::ServeLoop()
         return;
     }
 
+    // The event log is diagnostic; the socket is what Citrus needs to complete
+    // and finalize a recording. A log that cannot be written is reported and
+    // the server runs without it, never the other way round.
     std::string event_log_error;
     if (!InitializeLocalControlEventLog(options_.event_log_path, &event_log_error)) {
-        SetLastError(event_log_error);
-        close(listen_fd_);
-        listen_fd_ = -1;
-        if (owns_socket_path_.load(std::memory_order_acquire)) {
-            unlink(options_.socket_path.c_str());
-            owns_socket_path_.store(false, std::memory_order_release);
-        }
-        ReleaseSocketPathLock();
-        running_.store(false, std::memory_order_release);
-        return;
+        std::cerr << "[GUI][local_control] event log disabled: " << event_log_error
+                  << std::endl;
+        options_.event_log_path.clear();
     }
 
     running_.store(true, std::memory_order_release);

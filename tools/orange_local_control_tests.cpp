@@ -729,6 +729,60 @@ void test_server_start_removes_stale_socket_and_truncates_log()
     require(contents.empty(), "stale socket recovery should truncate stale event log contents");
 }
 
+
+// 2026-10-15: a log left by an earlier root-run Orange (unwritable for the
+// invoker) is replaced, and the server starts. Simulated here with a read-only
+// file owned by the test user.
+void test_server_start_replaces_unwritable_event_log()
+{
+    const auto socket_path = temp_path("unwritable_log.sock");
+    const auto log_path = temp_path("unwritable_log/events.jsonl");
+    std::filesystem::remove(socket_path);
+    std::filesystem::remove_all(log_path.parent_path());
+    std::filesystem::create_directories(log_path.parent_path());
+    {
+        std::ofstream out(log_path);
+        out << "{\"stale\":true}\n";
+    }
+    std::filesystem::permissions(log_path, std::filesystem::perms::owner_read |
+                                               std::filesystem::perms::group_read |
+                                               std::filesystem::perms::others_read);
+    if (std::ofstream(log_path, std::ios::app)) {
+        std::cout << "orange_local_control_tests: unwritable-log case skipped (running as root)\n";
+        return;
+    }
+
+    LocalControlServer server;
+    require_start_server(&server, socket_path, log_path);
+    require(std::filesystem::is_socket(socket_path), "the control socket must exist");
+    server.Stop();
+    std::ifstream in(log_path);
+    const std::string contents((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    require(static_cast<bool>(std::ofstream(log_path, std::ios::app)) && contents.empty(),
+            "the stale event log must be replaced by a fresh writable one");
+}
+
+// The event log is diagnostic: when it cannot be created at all, the server
+// still listens.
+void test_server_start_listens_without_event_log()
+{
+    const auto socket_path = temp_path("no_event_log.sock");
+    const auto blocker = temp_path("no_event_log_parent_file");
+    const auto log_path = blocker / "events.jsonl";
+    std::filesystem::remove(socket_path);
+    std::filesystem::remove_all(blocker);
+    {
+        std::ofstream out(blocker);
+        out << "not a directory\n";
+    }
+    LocalControlServer server;
+    require_start_server(&server, socket_path, log_path);
+    require(std::filesystem::is_socket(socket_path),
+            "the control socket must exist although the event log cannot be created");
+    server.Stop();
+    std::filesystem::remove(blocker);
+}
+
 void test_server_start_fails_when_socket_parent_is_not_directory()
 {
     const auto parent_path = temp_path("socket_parent_file");
@@ -1767,6 +1821,10 @@ int main()
          test_server_start_removes_stale_socket_and_truncates_log},
         {"server_start_fails_when_socket_parent_is_not_directory",
          test_server_start_fails_when_socket_parent_is_not_directory},
+        {"server_start_replaces_unwritable_event_log",
+         test_server_start_replaces_unwritable_event_log},
+        {"server_start_listens_without_event_log",
+         test_server_start_listens_without_event_log},
         {"projected_center_preflight_requires_operation_id",
          test_projected_center_preflight_requires_operation_id},
         {"projected_center_preflight_2010096_fails_without_suppression",
