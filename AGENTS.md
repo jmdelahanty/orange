@@ -336,3 +336,25 @@ Orange/Citrus commissioning) are in git history of this file and in
   pose was all `no_result` (Cam2010096 had a steady false detection near
   x 780 / y 140 on 5899 frames with the spatial mask off), and per-frame
   `pose_status` is exercised live only by a run with Citrus attached.
+
+## Production b40b94d, 2026-10-15
+
+- Production and integration are at b40b94d: the 5c6a26d code plus the
+  following, all promoted from the dish branch.
+  - 2926f8b: the binding checker accepts acceptance v3 and receipt v3.
+  - 71ddf9f: the transfer pre-check pins sealer 3.3.0.
+  - b40b94d: Orange accepts Citrus receipt v4.
+- Receipt v4 is part of subject identity v4 (agent-contracts #105, witnesses
+  #115). It carries `citrus.subject_reference` v2 (`subject_id` = MetaZebrobot
+  fish UUID, null for a dish_group) and answers an acceptance v3.
+  - Receipt v3 keeps reference v1.
+  - No v3/v4 mix is allowed in a receipt set or a revision chain.
+  - A declaration/receipt fish disagreement is recorded (GUI log, the
+    checker's `subject_declaration_disagreements`) and never refused.
+- Pins: `contracts/citrus_subject_reference_v2.schema.json` and
+  `contracts/citrus_recording_observation_finalized_receipt_v4.schema.json`.
+  Test data: `tools/fixtures/citrus_subject_v4`.
+- Citrus still writes receipt v3. Citrus v4 needs `subject_identity_version: 4`
+  with receipt 4 and acceptance 3 together, and Jeremy flips it.
+- No rig run on b40b94d yet. The finalize change is inert while Citrus writes
+  receipt v3.
