@@ -1,3 +1,4 @@
+#include "timing/phase_timer.h"
 #include "session/recording_session.h"
 #include "outputs/common/csv.h"
 #include "outputs/common/digest.h"
@@ -2774,6 +2775,7 @@ bool write_recording_session_manifest(const std::string& path,
         if (error_out) *error_out = std::string("required master journal gate: ") + ex.what();
         return false;
     }
+    orange::timing::MarkPhase("manifest.required_product_gates");
     try {
         // Parent recording context frozen at record start (Citrus transfer-v2):
         // copied verbatim from the sealed start snapshot on every write, so
@@ -2790,6 +2792,7 @@ bool write_recording_session_manifest(const std::string& path,
         if (error_out) *error_out = std::string("subject references gate: ") + ex.what();
         return false;
     }
+    orange::timing::MarkPhase("manifest.context_and_subject_gates");
     if (!add_shaman_v2_recording_identity_contract(
             &finalized_manifest, error_out)) {
         return false;
@@ -2798,10 +2801,12 @@ bool write_recording_session_manifest(const std::string& path,
             &finalized_manifest, manifest_path, error_out)) {
         return false;
     }
+    orange::timing::MarkPhase("manifest.shaman_identity_contracts");
     if (!crop_only && !add_finalized_frame_identity_contract(
             &finalized_manifest, manifest_path, error_out)) {
         return false;
     }
+    orange::timing::MarkPhase("manifest.frame_identity_contract");
     // Explicit opt-in until the projection profile is reviewed by both v1
     // consumers. Existing whole mappings and already sealed generations stay
     // byte-for-byte unchanged; no acquisition hot-path work is introduced.
@@ -2820,17 +2825,21 @@ bool write_recording_session_manifest(const std::string& path,
             finalized_manifest.erase("rolling_metadata_projection_sha256");
         }
     }
+    orange::timing::MarkPhase("manifest.rolling_projection");
     if (!crop_only && !add_acquisition_index_mapping_contract(
             &finalized_manifest, manifest_path, error_out)) {
         return false;
     }
+    orange::timing::MarkPhase("manifest.acquisition_index_mapping");
     if (!crop_only) add_finalized_timestamp_clock_contract(&finalized_manifest, manifest_path);
+    orange::timing::MarkPhase("manifest.timestamp_clock_contract");
     if (!apply_recording_observation_finalization_to_manifest(
             manifest_path.parent_path().string(),
             &finalized_manifest,
             error_out)) {
         return false;
     }
+    orange::timing::MarkPhase("manifest.observation_bindings");
     try {
         if (crop_only) orange::recording::PublishCropOnlyRecordingIndex(manifest_path.parent_path(), &finalized_manifest);
     } catch (const std::exception& ex) {
@@ -2838,6 +2847,7 @@ bool write_recording_session_manifest(const std::string& path,
         return false;
     }
     if (!write_json_file(manifest_path, finalized_manifest, error_out)) return false;
+    orange::timing::MarkPhase("manifest.write");
     if (written_manifest) *written_manifest = std::move(finalized_manifest);
     return true;
 }

@@ -4,7 +4,9 @@
 // called from this translation unit stay in an anonymous namespace here.
 
 #include "gui/recording_finalizer.h"
+#include "timing/phase_timer.h"
 #include "outputs/common/csv.h"
+#include "outputs/common/atomic_file.h"
 #include "timing/log_writer.h"
 #include "fsuid_guard.h"
 #include "scoped_housekeeping_cpu.h"
@@ -1347,6 +1349,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
             !inputs->master_frame_journals->Finalize(true, &journal_error))
             std::cerr << "[GUI][finalize] Required master journal incomplete: " << journal_error << std::endl;
     }
+    orange::timing::MarkPhase("master_journal_finalize");
     const bool external_ipc = inputs->external_ipc;
     const int crop_size_px = inputs->crop_size_px;
     const nlohmann::json& gui_display_frame_rate = inputs->gui_display_frame_rate;
@@ -1447,6 +1450,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
         std::cerr << "[GUI][recording] NIC thermal monitor shutdown warning: "
                   << nic_thermal_stop_error << std::endl;
     }
+    orange::timing::MarkPhase("nic_thermal_stop");
 
     // Crop recorder env overrides are stacked after full-frame recorder
     // overrides. Stop crop first so scoped environment restoration unwinds in
@@ -1467,6 +1471,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
         }
     }
 
+    orange::timing::MarkPhase("crop_recorder_stop");
     if (external_ipc) {
         if (!inputs->recording_session_available) {
             external_recorder_ok = false;
@@ -1506,6 +1511,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                 external_recorder_ok = false;
             }
 
+            orange::timing::MarkPhase("full_frame_recorder_stop");
             // Ingress stats were snapshotted from the live pipelines in the
             // prepare phase; the drain gate guarantees they are final.
             const nlohmann::json& ingress_stats = inputs->ingress_stats;
@@ -1813,6 +1819,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                 true);
     }
 
+    orange::timing::MarkPhase("full_frame_summaries");
     publish_stage(GuiRecordingFinalizeStage::kReadingSummaries);
     if (crop_external_recorder_active) {
         if (!inputs->external_crop_recorder_lifecycle.last_artifact_error.empty()) {
@@ -2288,6 +2295,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
         }
     }
 
+    orange::timing::MarkPhase("crop_summaries_and_csv_split");
     if (external_ipc || crop_external_recorder_active) {
         recording_backend["session_duration_aware_storage_preflight_path"] =
             (std::filesystem::path(run.recording_folder) /
@@ -2373,6 +2381,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
         duration_enforcement_ok && external_recorder_ok &&
         (!crop_external_recorder_active || crop_external_recorder_ok);
 
+    orange::timing::MarkPhase("duration_and_output_checks");
     publish_stage(GuiRecordingFinalizeStage::kWritingClipManifests);
     const std::filesystem::path manifest_path =
         std::filesystem::path(run.recording_folder) / "recording_session.json";
@@ -2574,6 +2583,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
         };
     }
 
+    orange::timing::MarkPhase("session_manifest_written");
     publish_stage(GuiRecordingFinalizeStage::kUpdatingSnapshot);
     if (external_ipc && inputs->recording_session_available) {
         orange::external_recorder::FinalizationManifestOptions finalization_options;
@@ -2673,6 +2683,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
         }
     }
 
+    orange::timing::MarkPhase("snapshot_and_finalization_artifacts");
     outcome.ok = true;
     outcome.external_recorder_error = external_recorder_error;
     outcome.crop_external_recorder_error = crop_external_recorder_error;
@@ -2734,12 +2745,14 @@ bool gui_complete_recording_finalize(
               << manifest_path.string() << std::endl;
     // Backstop for writers that ran without a ScopedFsuid: nothing in a
     // finished recording folder stays root-owned.
+    orange::timing::MarkPhase("f3_release_folder");
     if (const std::size_t reowned =
             orange::normalize_recording_ownership(run->recording_folder)) {
         std::cout << "[GUI][recording] Handed " << reowned
                   << " root-owned entries in the recording folder to the sudo invoker"
                   << std::endl;
     }
+    orange::timing::MarkPhase("f3_ownership_sweep");
     if (inputs->external_ipc && recording_session) {
         recording_session->active_external_recorder_contract = nlohmann::json::object();
         recording_session->external_recorder_contract_path.clear();
@@ -2766,6 +2779,35 @@ namespace {
 
 // Joins the worker and runs F3 on the calling (GUI) thread. The caller must
 // have observed done == true or accept blocking until the worker finishes.
+// One line on stdout and, when a directory is set, one JSON file per finalize
+// outside the recording folder (the recording's inventory is sealed).
+void gui_report_recording_finalize_timing(const orange::timing::PhaseTimer& timer,
+                                          const std::filesystem::path& directory,
+                                          const std::string& recording_folder,
+                                          const bool worker_ok,
+                                          const bool finalized)
+{
+    nlohmann::json report = timer.ToJson();
+    report["schema_id"] = "orange.gui.recording_finalize_timing";
+    report["schema_version"] = 1;
+    report["recording_folder"] = recording_folder;
+    report["worker_ok"] = worker_ok;
+    report["finalized"] = finalized;
+    std::cout << "[GUI][finalize_timing] " << report.dump() << std::endl;
+    if (directory.empty() || recording_folder.empty()) return;
+    try {
+        orange::ScopedFsuid user_files;
+        std::filesystem::create_directories(directory);
+        const std::filesystem::path path = directory /
+            (std::filesystem::path(recording_folder).filename().string() + "_finalize_timing.json");
+        std::string error;
+        if (!orange::outputs::write_file_atomic(path, report.dump(2) + "\n", {}, &error))
+            std::cerr << "[GUI][finalize_timing] could not write " << path << ": " << error << std::endl;
+    } catch (const std::exception& ex) {
+        std::cerr << "[GUI][finalize_timing] could not write the timing file: " << ex.what() << std::endl;
+    }
+}
+
 bool gui_complete_async_recording_finalize(
     GuiAsyncRecordingFinalizeState* state,
     GuiRecordingRunState* run,
@@ -2776,12 +2818,22 @@ bool gui_complete_async_recording_finalize(
         state->worker.join();
     }
     state->active = false;
-    const bool finalized = gui_complete_recording_finalize(
-        &state->inputs,
-        std::move(state->outcome),
-        run,
-        recording_session,
-        camera_control);
+    const std::string timed_folder = state->inputs.run.recording_folder;
+    const bool worker_ok = state->outcome.ok;
+    bool finalized = false;
+    {
+        orange::timing::ScopedPhaseTimer phase_timer(&state->timing);
+        orange::timing::MarkPhase("gui_poll_after_worker");
+        finalized = gui_complete_recording_finalize(
+            &state->inputs,
+            std::move(state->outcome),
+            run,
+            recording_session,
+            camera_control);
+        orange::timing::MarkPhase("f3_complete");
+    }
+    gui_report_recording_finalize_timing(state->timing, state->timing_artifact_directory,
+                                         timed_folder, worker_ok, finalized);
     state->inputs = GuiRecordingFinalizeInputs{};
     state->outcome = GuiRecordingFinalizeOutcome{};
     state->progress.stage.store(
@@ -2820,6 +2872,7 @@ void gui_launch_async_recording_finalize(
     state->progress.clips_done.store(0, std::memory_order_relaxed);
     state->progress.clips_total.store(0, std::memory_order_relaxed);
     state->started_at = std::chrono::steady_clock::now();
+    state->timing.Reset();
     state->done.store(false, std::memory_order_release);
     state->active = true;
     GuiAsyncRecordingFinalizeState* worker_state = state;
@@ -2829,6 +2882,7 @@ void gui_launch_async_recording_finalize(
         // Catch, report through the outcome slot, and let the GUI poll
         // surface the failure loudly (finalizing stays latched; the gate
         // retries).
+        orange::timing::ScopedPhaseTimer phase_timer(&worker_state->timing);
         try {
             worker_state->outcome = gui_run_recording_finalize(
                 &worker_state->inputs,

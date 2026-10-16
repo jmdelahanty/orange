@@ -5580,6 +5580,8 @@ int main(int /*argc*/, char ** /*args*/) {
     // teardown/shutdown by gui_join_async_recording_finalize - never
     // detached (see GuiAsyncRecordingFinalizeState in gui/recording_finalizer.h).
     GuiAsyncRecordingFinalizeState gui_async_recording_finalize;
+    gui_async_recording_finalize.timing_artifact_directory =
+        std::filesystem::path(orange_root_dir_str) / "diagnostics" / "recording_finalize";
     // Shadow-mode incremental clip splitter (stage 4, gated by
     // ORANGE_GUI_INCREMENTAL_CLIP_SHADOW; default OFF = zero new behavior,
     // zero new threads). Started with an external-IPC rolling recording,

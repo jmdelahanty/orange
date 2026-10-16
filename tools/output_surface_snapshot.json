@@ -2466,6 +2466,7 @@
    "external_recorder_finalization_json",
    "external_recorder_session_json",
    "external_recorder_supervisor_plan_path",
+   "finalized",
    "forced_finalize_requested",
    "forced_finalize_requested_at_utc",
    "forced_finalize_stream_stop_requested",
@@ -2501,6 +2502,7 @@
    "recorder_gpu_id",
    "recording_backend",
    "recording_control",
+   "recording_folder",
    "recording_mode",
    "recording_session_camera_count",
    "recording_session_index",
@@ -2515,6 +2517,8 @@
    "rolling_index_row_count",
    "rolling_supported",
    "rollover",
+   "schema_id",
+   "schema_version",
    "scope",
    "seamless_writer_switch",
    "selection_policy",
@@ -2535,7 +2539,8 @@
    "supported_mode",
    "terminal_tail_coalesce_frames",
    "tuning",
-   "video_backend"
+   "video_backend",
+   "worker_ok"
   ],
   "schemas": []
  },
@@ -6986,6 +6991,17 @@
     "1"
    ]
   ]
+ },
+ "src/timing/phase_timer.h": {
+  "csv_headers": [],
+  "json_keys": [
+   "at_ms",
+   "ms",
+   "phase",
+   "phases",
+   "total_ms"
+  ],
+  "schemas": []
  },
  "src/usaf_resolution_calibration.cpp": {
   "csv_headers": [

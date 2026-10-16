@@ -5,10 +5,12 @@
 #include "nic_thermal_monitor.h"
 #include "json.hpp"
 #include "recording_master_acquisition.h"
+#include "timing/phase_timer.h"
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <string>
@@ -257,6 +259,11 @@ struct GuiAsyncRecordingFinalizeState {
     GuiRecordingFinalizeOutcome outcome;
     GuiRecordingFinalizeProgress progress;
     std::chrono::steady_clock::time_point started_at{};
+    // Wall-clock phases of the finalize (background phase, then F3), written
+    // as <timing_artifact_directory>/<recording id>_finalize_timing.json and
+    // printed as "[GUI][finalize_timing]". Empty directory = print only.
+    orange::timing::PhaseTimer timing;
+    std::filesystem::path timing_artifact_directory;
 };
 
 // Polled once per GUI frame. The display-rate builder remains lazy until the
