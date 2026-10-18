@@ -1156,6 +1156,15 @@ orange::control::LocalControlStatusSnapshot gui_build_local_control_status(
         }
     }
     snapshot.recording_finalized = recording_run.finalized;
+    // Never attach the previous run's timing to a newly selected folder.
+    if (!recording_run.recording_folder.empty() &&
+        snapshot.recording_folder == recording_run.recording_folder) {
+        snapshot.recording_timing =
+            orange::control::ObserveRecordingFinalizationTiming(
+                recording_run.recording_started_at,
+                recording_run.recording_stop_requested_at,
+                std::chrono::steady_clock::now());
+    }
     snapshot.recording_sink_mode = recording_session.recording_sink_mode;
     snapshot.expected_camera_serials = gui_split_expected_camera_serials();
     snapshot.open_camera_serials =
@@ -8749,3 +8758,4 @@ int main(int /*argc*/, char ** /*args*/) {
     }
     return 0;
 }
+

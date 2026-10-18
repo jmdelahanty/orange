@@ -1,6 +1,7 @@
 #pragma once
 
 #include "json.hpp"
+#include "recording_finalization_timing.h"
 
 #include <atomic>
 #include <cstdint>
@@ -80,6 +81,7 @@ struct LocalControlStatusSnapshot {
     bool recording_finalized = false;
     int active_recorders = 0;
     std::string recording_folder;
+    RecordingFinalizationTiming recording_timing;
     std::string recording_sink_mode = "real";
     std::vector<std::string> expected_camera_serials;
     std::vector<std::string> open_camera_serials;
@@ -211,3 +213,4 @@ private:
 };
 
 }  // namespace orange::control
+

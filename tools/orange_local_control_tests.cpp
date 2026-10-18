@@ -220,6 +220,37 @@ void test_parse_requires_operation_for_mutating_methods()
             "status without operation_id should parse");
 }
 
+void test_recording_finalization_timing_uses_actual_stop()
+{
+    using Clock = std::chrono::steady_clock;
+    using orange::control::ObserveRecordingFinalizationTiming;
+    const auto start = Clock::time_point{} + std::chrono::seconds(100);
+    const auto stop = start + std::chrono::hours(10);
+    const auto active = ObserveRecordingFinalizationTiming(start, {}, stop);
+    require(active.started && !active.stop_requested &&
+            active.recording_duration_seconds == 36000 && active.seconds_since_stop == 0,
+            "active timing must count recording duration without inventing a stop");
+    const auto stopped = ObserveRecordingFinalizationTiming(
+        start, stop, stop + std::chrono::seconds(780));
+    require(stopped.started && stopped.stop_requested &&
+            stopped.recording_duration_seconds == 36000 && stopped.seconds_since_stop == 780,
+            "recorded duration must freeze at actual stop while finalization age grows");
+    require(!ObserveRecordingFinalizationTiming({}, {}, stop).started,
+            "unstarted recording must not expose timing authority");
+
+    LocalControlStatusSnapshot snapshot;
+    snapshot.recording_folder = "/synthetic/ten_hour";
+    snapshot.recording_finalizing = true;
+    snapshot.recording_timing = stopped;
+    const auto status = orange::control::LocalControlStatusSnapshotToJson(snapshot);
+    const auto& timing = status.at("recording").at("timing");
+    require(timing.at("clock_basis") == "steady_clock_durations" &&
+            timing.at("stop_requested") == true &&
+            timing.at("recording_duration_seconds") == 36000 &&
+            timing.at("seconds_since_stop") == 780,
+            "status must publish the additive timing contract");
+}
+
 void test_status_request_returns_readiness_snapshot()
 {
     const auto socket_path = temp_path("status.sock");
@@ -1791,6 +1822,8 @@ void test_start_stop_are_rejected_in_diagnostic_mode()
 int main()
 {
     const std::vector<std::pair<const char*, void (*)()>> tests = {
+        {"recording_finalization_timing_uses_actual_stop",
+         test_recording_finalization_timing_uses_actual_stop},
         {"parse_requires_operation_for_mutating_methods",
          test_parse_requires_operation_for_mutating_methods},
         {"status_request_returns_readiness_snapshot",
@@ -1879,3 +1912,4 @@ int main()
     std::cout << "orange_local_control_tests passed" << std::endl;
     return 0;
 }
+
