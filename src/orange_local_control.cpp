@@ -671,6 +671,14 @@ nlohmann::json LocalControlStatusSnapshotToJson(
          {
              {"folder", snapshot.recording_folder},
              {"sink_mode", snapshot.recording_sink_mode},
+             {"timing", {
+                 {"clock_basis", "steady_clock_durations"},
+                 {"started", snapshot.recording_timing.started},
+                 {"stop_requested", snapshot.recording_timing.stop_requested},
+                 {"recording_duration_seconds",
+                  snapshot.recording_timing.recording_duration_seconds},
+                 {"seconds_since_stop", snapshot.recording_timing.seconds_since_stop},
+             }},
          }},
         {"cameras",
          {
@@ -1529,3 +1537,4 @@ void LocalControlServer::LogEvent(const nlohmann::json& event)
 }
 
 }  // namespace orange::control
+

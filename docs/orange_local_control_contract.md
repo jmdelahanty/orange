@@ -355,6 +355,24 @@ Status gate fields are JSON booleans, not string flags. Orchestrators should
 not treat `"true"`/`"false"` strings as readiness, timeout, active/armed, or
 forced-finalize booleans.
 
+### Recording finalization timing (additive, 2026-10-18)
+
+`status.recording.timing` reports `clock_basis: "steady_clock_durations"`,
+boolean `started` and `stop_requested`, numeric `recording_duration_seconds`,
+and numeric `seconds_since_stop`. These are elapsed durations from Orange's
+monotonic clock, not timestamps to compare across processes. Before stop,
+recording duration grows and stop age is zero. At Orange's actual stop,
+recording duration freezes and stop age starts increasing, including during
+background finalization. A run that has not started has `started: false`.
+Timing is attached only when the GUI run folder matches the status folder.
+
+Citrus uses this optional status to anchor one shared acquisition-mapping wait
+and scale its safety timeout with recording length. Consumers must match the
+bound folder and validate typed/nonnegative/finite fields. `recording_finalized`
+is not proof of success and never replaces mapping schema, digest, or identity
+checks. This field changes no recording files, stop behavior, receipt contract,
+or finalization outcomes. Existing consumers may ignore it.
+
 `ack_state` is the pollable local-control acknowledgment state for Citrus and
 orchestrators: `accepted` after the GUI thread schedules the stop, `executing`
 after the stop has triggered and drain/finalization is in progress, `executed`
@@ -896,3 +914,4 @@ Citrus reports the experiment active/armed, sends Citrus `stop_experiment` after
 that active runtime, then waits for Citrus terminal state. That gives short
 orchestrator smoke tests a deterministic Citrus terminal state while preserving
 Orange-owned recording drain/finalization.
+
