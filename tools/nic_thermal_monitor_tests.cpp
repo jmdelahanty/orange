@@ -9,6 +9,8 @@
 #include <string>
 #include <thread>
 
+#include <pthread.h>
+#include <signal.h>
 #include <unistd.h>
 
 namespace {
@@ -165,13 +167,24 @@ void test_missing_mlx5_is_observable()
     std::filesystem::remove_all(root, ec);
 }
 
-void test_parent_process_lifecycle()
+void test_parent_process_lifecycle(bool parent_blocks_termination_signals)
 {
     const std::filesystem::path root = make_fixture_root("process");
     const std::filesystem::path helper = binary_directory / "nic_thermal_monitor";
     setenv("ORANGE_NIC_THERMAL_MONITOR_BIN", helper.c_str(), 1);
     setenv("ORANGE_NIC_THERMAL_MONITOR_ENABLED", "1", 1);
     setenv("ORANGE_NIC_THERMAL_SAMPLE_SECONDS", "1", 1);
+
+    // The GUI blocks SIGTERM/SIGINT/SIGHUP in every thread (orange.cpp); the
+    // helper it spawns must still stop on SIGTERM, promptly and cleanly.
+    sigset_t blocked;
+    sigemptyset(&blocked);
+    sigaddset(&blocked, SIGTERM);
+    sigaddset(&blocked, SIGINT);
+    sigaddset(&blocked, SIGHUP);
+    sigset_t previous;
+    pthread_sigmask(parent_blocks_termination_signals ? SIG_BLOCK : SIG_SETMASK,
+                    parent_blocks_termination_signals ? &blocked : nullptr, &previous);
 
     orange::monitoring::NicThermalMonitorProcess process;
     std::string error;
@@ -190,14 +203,23 @@ void test_parent_process_lifecycle()
            "spawned helper creates its CSV");
     expect(std::filesystem::exists(process.summary_path),
            "spawned helper publishes a running summary");
+    const auto stop_started = std::chrono::steady_clock::now();
     expect(
         orange::monitoring::StopNicThermalMonitorProcess(&process, &error),
         "parent stops and reaps the helper: " + error);
+    const auto stop_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - stop_started).count();
+    std::cout << "NIC thermal helper stop took " << stop_ms << " ms (parent "
+              << (parent_blocks_termination_signals ? "blocks" : "does not block")
+              << " termination signals)\n";
+    expect(stop_ms < 2000,
+           "stop returns once the helper exits, not at the bounded shutdown timeout");
     expect(!process.active && process.status == "completed",
            "normal SIGTERM produces a clean terminal process state");
     expect(read_json(process.summary_path).value("status", "") == "completed",
            "helper publishes a completed terminal summary");
 
+    pthread_sigmask(SIG_SETMASK, &previous, nullptr);
     unsetenv("ORANGE_NIC_THERMAL_MONITOR_BIN");
     unsetenv("ORANGE_NIC_THERMAL_MONITOR_ENABLED");
     unsetenv("ORANGE_NIC_THERMAL_SAMPLE_SECONDS");
@@ -215,7 +237,8 @@ int main(int argc, char** argv)
     }
     test_valid_and_unavailable_samples();
     test_missing_mlx5_is_observable();
-    test_parent_process_lifecycle();
+    test_parent_process_lifecycle(false);
+    test_parent_process_lifecycle(true);
     if (failures != 0) {
         std::cerr << failures << " NIC thermal monitor test(s) failed\n";
         return 1;
