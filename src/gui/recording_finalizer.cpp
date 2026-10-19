@@ -761,6 +761,7 @@ bool gui_write_external_rolling_recording_session_manifest(
         }
     }
 
+    orange::timing::MarkPhase("rolling.clip_metadata_validation");
     if (clips_by_index.empty()) {
         if (error_out) {
             *error_out = "GUI external rolling manifest bridge found no clips";
@@ -864,6 +865,7 @@ bool gui_write_external_rolling_recording_session_manifest(
         }
     }
 
+    orange::timing::MarkPhase("rolling.clip_manifests");
     nlohmann::json rolling_recording_backend = recording_backend;
     if (!rolling_recording_backend.is_object()) {
         rolling_recording_backend = nlohmann::json::object();
@@ -957,6 +959,7 @@ bool gui_write_external_rolling_recording_session_manifest(
             manifest_options);
     const std::filesystem::path manifest_path =
         std::filesystem::path(run.recording_folder) / "recording_session.json";
+    orange::timing::MarkPhase("rolling.session_manifest_build");
     orange::session::RecordingSessionIndexArtifacts index_artifacts;
     if (!orange::session::write_rolling_clip_index_artifacts(
             run.recording_folder,
@@ -965,6 +968,7 @@ bool gui_write_external_rolling_recording_session_manifest(
             error_out)) {
         return false;
     }
+    orange::timing::MarkPhase("rolling.clip_index_artifacts");
     std::string manifest_error;
     if (!orange::session::write_recording_session_manifest(
             manifest_path.string(),
@@ -991,6 +995,7 @@ bool gui_write_external_rolling_recording_session_manifest(
         }
         return false;
     }
+    orange::timing::MarkPhase("rolling.snapshot_update");
     if (manifest.contains("recording_outputs") &&
         manifest["recording_outputs"].is_object() &&
         !update_recording_snapshot_recording_outputs(
