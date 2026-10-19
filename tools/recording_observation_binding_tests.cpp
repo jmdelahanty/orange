@@ -7,6 +7,8 @@
 #include "session/recording_observation_request_artifacts.h"
 #include "gui/spatial_layout/sha256.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -14,6 +16,8 @@
 #include <iterator>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace {
@@ -1235,7 +1239,8 @@ void test_prearm_not_applicable_never_contacts_citrus()
     std::filesystem::remove_all(root);
 }
 
-void test_post_close_finalization_is_complete_idempotent_and_manifest_bound()
+// A pre-armed two-context recording with closed H5s and sealed receipts.
+std::filesystem::path make_post_close_fixture(json* params_out)
 {
     const auto root = make_materialization_fixture(resolved_geometry());
     orange::session::RecordingObservationBindingRequestMaterialization requests;
@@ -1277,10 +1282,19 @@ void test_post_close_finalization_is_complete_idempotent_and_manifest_bound()
         receipts.push_back(std::move(receipt));
     }
 
-    const json params = {
+    *params_out = {
         {"experiment_id", "citexp_transaction_test"},
         {"receipts", receipts},
     };
+    return root;
+}
+
+void test_post_close_finalization_is_complete_idempotent_and_manifest_bound()
+{
+    json params;
+    const auto root = make_post_close_fixture(&params);
+    const json receipts = params.at("receipts");
+    std::string error;
     const auto conflicting_receipt_path =
         root / "recording_observation_bindings/receipts" /
         (receipts.front().at("contract")
@@ -1370,6 +1384,146 @@ void test_post_close_finalization_is_complete_idempotent_and_manifest_bound()
             root.string(), params);
     require(!tampered.ok,
             "finalization retry accepted H5 bytes that no longer match receipt");
+    std::filesystem::remove_all(root);
+}
+
+struct FileIdentity {
+    ino_t inode = 0;
+    long mtime_ns = 0;
+    std::string bytes;
+    bool operator==(const FileIdentity& other) const
+    {
+        return inode == other.inode && mtime_ns == other.mtime_ns && bytes == other.bytes;
+    }
+};
+
+FileIdentity file_identity(const std::filesystem::path& path)
+{
+    struct stat info {};
+    require(::stat(path.c_str(), &info) == 0, "stat failed: " + path.string());
+    return {info.st_ino, info.st_mtim.tv_sec * 1000000000L + info.st_mtim.tv_nsec,
+            read_file(path)};
+}
+
+// Citrus retries finalize until it sees a bound answer: a slow first
+// verification answers "verifying" (never bound), a retry of a finalized set
+// is answered from the stored collection without hashing or writing.
+void test_finalization_jobs_answer_fast_and_never_rewrite()
+{
+    json params;
+    const auto root = make_post_close_fixture(&params);
+    write_file(root / "recording_session.json",
+               json{{"schema_id", "orange.recording_session"}}.dump(2) + "\n");
+
+    std::atomic<bool> release{false};
+    std::atomic<int> finalizer_calls{0};
+    orange::session::RecordingObservationFinalizationJobs::Options options;
+    options.inline_wait = std::chrono::milliseconds(50);
+    options.finalizer = [&](const std::string& folder, const json& request,
+                            const orange::session::FinalizationProgress& progress) {
+        ++finalizer_calls;
+        while (!release.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return orange::session::finalize_recording_observation_bindings(folder, request, progress);
+    };
+    options.after_finalized = [](const std::string& folder,
+                                 const orange::session::RecordingObservationFinalizationResult&,
+                                 std::string* error) {
+        return orange::session::refresh_recording_session_observation_bindings(folder, error);
+    };
+    orange::session::RecordingObservationFinalizationJobs jobs(options);
+
+    std::uint64_t declared = 0;
+    for (const auto& receipt : params.at("receipts")) {
+        declared += receipt.at("contract").at("h5_artifact").at("size_bytes").get<std::uint64_t>();
+    }
+    const auto verifying = jobs.Submit(root.string(), params);
+    const json& progress = verifying.effect.at("recording_observation_bindings");
+    require(verifying.accepted && progress.at("status") == "verifying" &&
+                !progress.contains("binding_status") && !progress.contains("context_count") &&
+                progress.at("bytes_total") == declared && progress.at("bytes_verified") == 0,
+            "a slow first verification must answer verifying without a bound proof");
+
+    const json other_set = {
+        {"experiment_id", "citexp_transaction_test"},
+        {"receipts", json::array({params.at("receipts").front()})},
+    };
+    const auto busy = jobs.Submit(root.string(), other_set);
+    require(!busy.accepted && busy.error_code == "finalization_verification_in_progress",
+            "a different receipt set during verification must be refused");
+    require(jobs.Submit(root.string(), params).effect.at("recording_observation_bindings")
+                    .at("status") == "verifying" && finalizer_calls == 1,
+            "a resend during verification must poll, not start a second verification");
+
+    release = true;
+    orange::session::RecordingObservationFinalizationJobs::Answer done;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    do {
+        done = jobs.Submit(root.string(), params);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    } while (done.effect.value("recording_observation_bindings", json::object())
+                     .value("status", "") == "verifying" &&
+             std::chrono::steady_clock::now() < deadline);
+    const json& bound = done.effect.at("recording_observation_bindings");
+    require(done.accepted && bound.at("status") == "finalized" &&
+                bound.at("binding_status") == "bound" && bound.at("context_count") == 2,
+            "verification did not end in the bound proof: " + done.error);
+    const auto collection_path =
+        root / orange::session::kObservationBindingFinalizationRelativePath;
+    require(file_sha256(collection_path) == bound.at("sha256"),
+            "stored answer does not name the collection's bytes");
+
+    const FileIdentity manifest_before = file_identity(root / "recording_session.json");
+    const FileIdentity collection_before = file_identity(collection_path);
+    const int calls_before = finalizer_calls;
+    const auto started = std::chrono::steady_clock::now();
+    const auto repeated = jobs.Submit(root.string(), params);
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    require(repeated.accepted && repeated.effect == done.effect && finalizer_calls == calls_before,
+            "a finalized retry must be answered from the stored collection");
+    require(elapsed < std::chrono::milliseconds(200),
+            "a finalized retry must answer without hashing");
+    require(file_identity(root / "recording_session.json") == manifest_before &&
+                file_identity(collection_path) == collection_before,
+            "a finalized retry rewrote recording_session.json or the collection");
+
+    json other_experiment = params;
+    other_experiment["experiment_id"] = "citexp_other";
+    require(!orange::session::find_finalized_recording_observation_reference(
+                root.string(), other_experiment, nullptr),
+            "a different experiment must not match the stored collection");
+    std::filesystem::remove_all(root);
+}
+
+void test_finalization_jobs_refusal_is_sticky()
+{
+    json params;
+    const auto root = make_post_close_fixture(&params);
+    const std::string first_h5 =
+        params.at("receipts").front().at("contract").at("h5_artifact").at("relative_path");
+    write_file(root / first_h5, "tampered-before-finalize");
+
+    std::atomic<int> finalizer_calls{0};
+    orange::session::RecordingObservationFinalizationJobs::Options options;
+    options.inline_wait = std::chrono::seconds(5);
+    options.finalizer = [&](const std::string& folder, const json& request,
+                            const orange::session::FinalizationProgress& progress) {
+        ++finalizer_calls;
+        return orange::session::finalize_recording_observation_bindings(folder, request, progress);
+    };
+    orange::session::RecordingObservationFinalizationJobs jobs(options);
+    const auto refused = jobs.Submit(root.string(), params);
+    require(!refused.accepted &&
+                refused.error_code == "recording_observation_finalization_rejected" &&
+                !refused.error.empty(),
+            "tampered H5 must be refused");
+    const auto again = jobs.Submit(root.string(), params);
+    require(!again.accepted && again.error == refused.error && finalizer_calls == 1,
+            "a refusal must be sticky for the same receipt set");
+    require(!std::filesystem::exists(
+                root / orange::session::kObservationBindingFinalizationRelativePath),
+            "a refused verification wrote a collection");
     std::filesystem::remove_all(root);
 }
 
@@ -1928,6 +2082,8 @@ int main()
     test_receipt_upgrade_writes_a_verified_revision_chain();
     test_citrus_example_receipt_v2_digest_agrees();
         test_manifest_never_infers_bound_without_final_receipts();
+        test_finalization_jobs_answer_fast_and_never_rewrite();
+        test_finalization_jobs_refusal_is_sticky();
         test_streaming_sha256_matches_known_vector();
         std::cout << "recording_observation_binding_tests: PASS\n";
         return 0;

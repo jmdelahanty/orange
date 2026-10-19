@@ -4043,7 +4043,6 @@
    "reads",
    "reason",
    "received_at_utc",
-   "recording_observation_bindings",
    "rehome_iris",
    "rehomed",
    "relative_path",
@@ -6162,11 +6161,14 @@
    "authority",
    "binding_mode",
    "binding_status",
+   "bytes_total",
+   "bytes_verified",
    "citrus_experiment_id",
    "citrus_h5",
    "context_count",
    "contexts",
    "contract_sha256",
+   "experiment_id",
    "finalized_at_utc",
    "finalized_receipt",
    "identity_policy",
@@ -6175,8 +6177,10 @@
    "observation_identity",
    "observation_identity_sha256",
    "parent_field",
+   "poll_after_ms",
    "reason",
    "receipt_id",
+   "receipts",
    "recording_id",
    "recording_observation_bindings",
    "relative_path",
@@ -6190,12 +6194,21 @@
    "schema_version",
    "sha256",
    "size_bytes",
+   "started_at_utc",
    "status",
    "supersedes"
   ],
   "schemas": [
    [
     "orange.recording.observation_binding_finalization",
+    "1"
+   ],
+   [
+    "orange.recording.observation_binding_finalization_progress",
+    "1"
+   ],
+   [
+    "orange.recording.observation_binding_finalization_reference",
     "1"
    ],
    [

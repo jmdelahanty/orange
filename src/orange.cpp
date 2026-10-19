@@ -5616,6 +5616,35 @@ int main(int /*argc*/, char ** /*args*/) {
     orange::gui::GuiTimingSidecarWriter gui_timing_sidecar_writer;
     GuiExternalRecorderLifecycleRefreshState gui_external_recorder_refresh_state;
     GuiCameraTemperatureSamplingState gui_camera_temperature_sampling_state;
+    // Citrus's receipt finalize: verified off the control server thread,
+    // answered from the stored collection on every retry. Declared before
+    // the server so it outlives it.
+    orange::session::RecordingObservationFinalizationJobs::Options
+        observation_finalization_options;
+    observation_finalization_options.after_finalized =
+        [](const std::string& recording_folder,
+           const orange::session::RecordingObservationFinalizationResult& finalized,
+           std::string* error_out) {
+            // Subject identity v4: a Citrus bug if it happens; recorded, never refused.
+            for (const auto& line : finalized.subject_declaration_disagreements) {
+                std::cerr << "[GUI][observation_binding] subject declaration and receipt "
+                             "disagree (recorded, not refused): " << line << std::endl;
+            }
+            std::string refresh_error;
+            if (!orange::session::refresh_recording_session_observation_bindings(
+                    recording_folder, &refresh_error)) {
+                if (error_out != nullptr) {
+                    *error_out =
+                        "receipts were persisted, but the finalized "
+                        "recording_session.json refresh failed: " +
+                        refresh_error;
+                }
+                return false;
+            }
+            return true;
+        };
+    orange::session::RecordingObservationFinalizationJobs
+        gui_observation_finalization_jobs(observation_finalization_options);
     orange::control::LocalControlServer gui_local_control_server;
     g_gui_local_control_server = &gui_local_control_server;
     std::string gui_local_control_event_log_path;
@@ -5633,9 +5662,11 @@ int main(int /*argc*/, char ** /*args*/) {
         control_options.allow_gui_citrus_completion_commands =
             gui_local_control_stop_scheduler.citrus_completion_enabled;
         control_options.recording_observation_finalization_handler =
-            [](const nlohmann::json& params,
-               const orange::control::LocalControlStatusSnapshot& status,
-               std::string* error_out) {
+            [&gui_observation_finalization_jobs](
+                const nlohmann::json& params,
+                const orange::control::LocalControlStatusSnapshot& status,
+                std::string* error_out,
+                std::string* error_code_out) {
                 const std::string requested_folder =
                     params.value("recording_folder", "");
                 if (!status.recording_folder.empty() &&
@@ -5665,37 +5696,18 @@ int main(int /*argc*/, char ** /*args*/) {
                     status.recording_folder.empty()
                     ? requested_folder
                     : status.recording_folder;
-                const auto finalized =
-                    orange::session::finalize_recording_observation_bindings(
-                        recording_folder, params);
-                if (!finalized.ok) {
+                const auto answer =
+                    gui_observation_finalization_jobs.Submit(recording_folder, params);
+                if (!answer.accepted) {
                     if (error_out != nullptr) {
-                        *error_out = finalized.error;
+                        *error_out = answer.error;
+                    }
+                    if (error_code_out != nullptr) {
+                        *error_code_out = answer.error_code;
                     }
                     return nlohmann::json::object();
                 }
-                // Subject identity v4: a Citrus bug if it happens; recorded, never refused.
-                for (const auto& line : finalized.subject_declaration_disagreements) {
-                    std::cerr << "[GUI][observation_binding] subject declaration and receipt "
-                                 "disagree (recorded, not refused): " << line << std::endl;
-                }
-                std::string refresh_error;
-                if (!orange::session::
-                        refresh_recording_session_observation_bindings(
-                            recording_folder,
-                            &refresh_error)) {
-                    if (error_out != nullptr) {
-                        *error_out =
-                            "receipts were persisted, but the finalized "
-                            "recording_session.json refresh failed: " +
-                            refresh_error;
-                    }
-                    return nlohmann::json::object();
-                }
-                return nlohmann::json{
-                    {"recording_observation_bindings",
-                     finalized.collection_reference},
-                };
+                return answer.effect;
             };
         std::string control_error;
         if (!gui_local_control_server.Start(control_options, &control_error)) {

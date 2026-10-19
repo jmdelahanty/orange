@@ -1434,7 +1434,8 @@ void test_recording_observation_finalization_uses_synchronous_handler()
     options.recording_observation_finalization_handler =
         [&handler_calls](const nlohmann::json& params,
                          const LocalControlStatusSnapshot&,
-                         std::string* error) {
+                         std::string* error,
+                         std::string*) {
             ++handler_calls;
             if (params.value("experiment_id", "") != "citexp_fixture" ||
                 params.value("recording_folder", "") !=
@@ -1474,6 +1475,38 @@ void test_recording_observation_finalization_uses_synchronous_handler()
             "finalization response did not return the bound collection proof");
     require(server.DrainPendingCommands().empty(),
             "finalization must never enter the GUI-thread command queue");
+}
+
+void test_recording_observation_finalization_refusal_carries_handler_code()
+{
+    const auto socket_path = temp_path("observation_finalization_code.sock");
+    std::filesystem::remove(socket_path);
+    LocalControlServer server;
+    LocalControlServerOptions options;
+    options.socket_path = socket_path.string();
+    options.recording_observation_finalization_handler =
+        [](const nlohmann::json&, const LocalControlStatusSnapshot&,
+           std::string* error, std::string* error_code) {
+            *error = "a different receipt set for this recording is still being verified";
+            *error_code = "finalization_verification_in_progress";
+            return nlohmann::json::object();
+        };
+    std::string error;
+    require(server.Start(options, &error),
+            "finalization server start failed: " + error);
+    wait_until_running(&server);
+    const nlohmann::json response = send_request(
+        socket_path,
+        request_json("finalize_recording_observation_bindings",
+                     "finalize-code-req-1",
+                     "finalize-code-op-1",
+                     {{"experiment_id", "citexp_fixture"},
+                      {"recording_folder", "/tmp/recording_observation_fixture"},
+                      {"receipts", nlohmann::json::array({{{"receipt_id", "fixture"}}})}}));
+    server.Stop();
+    require(!response.at("ok") && !response.at("accepted") &&
+                response.at("error").at("code") == "finalization_verification_in_progress",
+            "the handler's refusal code did not reach the response");
 }
 
 void test_fenced_stop_is_queued_and_reports_epoch_telemetry()
@@ -1857,6 +1890,8 @@ int main()
          test_recording_observation_finalization_requires_complete_payload},
         {"recording_observation_finalization_uses_synchronous_handler",
          test_recording_observation_finalization_uses_synchronous_handler},
+        {"recording_observation_finalization_refusal_carries_handler_code",
+         test_recording_observation_finalization_refusal_carries_handler_code},
         {"fenced_stop_is_queued_and_reports_epoch_telemetry",
          test_fenced_stop_is_queued_and_reports_epoch_telemetry},
         {"stale_epoch_command_is_rejected_and_not_queued",

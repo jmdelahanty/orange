@@ -94,11 +94,15 @@ struct LocalControlStatusSnapshot {
 };
 
 struct LocalControlServerOptions {
+    // Returns the effect; a refusal sets the message (and optionally a code;
+    // default recording_observation_finalization_rejected). Must answer
+    // within about a second: the server handles one connection at a time.
     using RecordingObservationFinalizationHandler =
         std::function<nlohmann::json(
-            const nlohmann::json&,
-            const LocalControlStatusSnapshot&,
-            std::string*)>;
+            const nlohmann::json& params,
+            const LocalControlStatusSnapshot& status,
+            std::string* error_out,
+            std::string* error_code_out)>;
 
     std::string socket_path;
     std::string event_log_path;

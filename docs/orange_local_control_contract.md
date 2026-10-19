@@ -487,6 +487,39 @@ When start triggers, it routes through the same GUI/operator start path:
 - update detect/crop/pose/spatial snapshots
 - reset GUI recording timing and display frame-rate telemetry
 
+### `finalize_recording_observation_bindings`
+
+Citrus delivers its finalized receipts with this method (params:
+`experiment_id`, `recording_folder`, `receipts`). It has no enable flag. The
+handler answers within about a second (since 2026-10-18; before, it hashed
+every H5 and Citrus artifact on the server thread, 17-20 s for a 90-minute
+recording, on every retry). Citrus resending the same request is the poll.
+
+- **Already finalized with exactly these receipts:** answered from the stored
+  `finalized_collection.json` (head of the revision chain), with no hashing and
+  no writes. `recording_session.json` is rewritten only if its binding
+  projection would change. `effect.recording_observation_bindings` is the
+  reference: `status` `finalized`, `binding_status` `bound`, `context_count`,
+  `relative_path`, `sha256`, `size_bytes` (`revision` for a revised chain).
+- **New receipt set:** verified on a background thread at reduced priority, one
+  per recording folder. The handler waits up to 500 ms. Then:
+  - if the verification has finished: the reference above, or the refusal;
+  - if not: `ok` and `accepted` true with
+    `effect.recording_observation_bindings` =
+    `orange.recording.observation_binding_finalization_progress` v1:
+    `status` `verifying`, `experiment_id`, `started_at_utc`, `bytes_total`,
+    `bytes_verified` (whole files), `poll_after_ms`. It never carries
+    `binding_status` or `context_count`: Citrus treats those as delivery
+    confirmed.
+- **Refusals** (`ok` and `accepted` false):
+  - `error.code` `recording_observation_finalization_rejected`: verification
+    failed. Sticky: resending the same receipt set returns the same refusal
+    without re-verifying.
+  - `finalization_verification_in_progress`: a different receipt set arrived
+    while one is still being verified.
+- Citrus's done test: `status` `finalized` and `binding_status` `bound` and
+  `context_count` equal to the number of receipts.
+
 ## Citrus GUI Control Slice
 
 Citrus now has its first opt-in real-GUI automation and local-control status

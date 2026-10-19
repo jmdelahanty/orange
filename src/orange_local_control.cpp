@@ -1313,9 +1313,11 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
             return response;
         }
         std::string finalization_error;
+        std::string finalization_error_code;
         const nlohmann::json effect =
             options_.recording_observation_finalization_handler(
-                parsed.params, status_snapshot, &finalization_error);
+                parsed.params, status_snapshot, &finalization_error,
+                &finalization_error_code);
         const bool accepted = finalization_error.empty();
         nlohmann::json response = {
             {"schema_id", kLocalControlResponseSchemaId},
@@ -1333,7 +1335,9 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
         };
         if (!accepted) {
             response["error"] = {
-                {"code", "recording_observation_finalization_rejected"},
+                {"code", finalization_error_code.empty()
+                             ? std::string("recording_observation_finalization_rejected")
+                             : finalization_error_code},
                 {"message", finalization_error},
             };
         }

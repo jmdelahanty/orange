@@ -2,6 +2,13 @@
 
 #include "json.hpp"
 
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -30,6 +37,9 @@ struct RecordingObservationFinalizationResult {
     std::vector<std::string> subject_declaration_disagreements;
 };
 
+// Called with the byte size of each file once verified (H5s, Citrus artifacts).
+using FinalizationProgress = std::function<void(std::uint64_t bytes)>;
+
 // Validate every Citrus receipt against the immutable Orange request and
 // acceptance, independently verify the closed H5 byte size and SHA-256, and
 // materialize create-once receipt/collection artifacts. This function is
@@ -37,7 +47,70 @@ struct RecordingObservationFinalizationResult {
 RecordingObservationFinalizationResult
 finalize_recording_observation_bindings(
     const std::string& recording_folder,
-    const nlohmann::json& params);
+    const nlohmann::json& params,
+    const FinalizationProgress& progress = {});
+
+// True when the head of the recording's finalized-collection chain is
+// finalized and bound for params.experiment_id with exactly params.receipts
+// (byte-identical to the collection's records and the stored receipt files).
+// Reads only small JSON files: no hashing of H5s or artifacts, no writes.
+// reference_out gets the same reference a first finalize returns.
+bool find_finalized_recording_observation_reference(
+    const std::string& recording_folder,
+    const nlohmann::json& params,
+    nlohmann::json* reference_out);
+
+// Answers Citrus's finalize_recording_observation_bindings within a bounded
+// time. A receipt set already finalized is answered from the stored
+// collection. A new set is verified on a background thread (one per
+// recording folder): Submit waits up to `inline_wait`, then answers
+// "verifying" with progress; Citrus's resend of the same set is the poll.
+// A refusal is kept for that receipt set (sticky); a different set while one
+// is verifying is refused with finalization_verification_in_progress. The
+// "verifying" effect never carries binding_status or context_count, which
+// Citrus reads as done.
+class RecordingObservationFinalizationJobs {
+public:
+    struct Answer {
+        bool accepted = false;
+        std::string error_code;
+        std::string error;
+        nlohmann::json effect = nlohmann::json::object();
+    };
+    using Finalizer = std::function<RecordingObservationFinalizationResult(
+        const std::string& recording_folder,
+        const nlohmann::json& params,
+        const FinalizationProgress& progress)>;
+    // Runs after a verification succeeds and before every stored answer
+    // (the GUI refreshes recording_session.json, a no-op when unchanged).
+    using AfterFinalized = std::function<bool(
+        const std::string& recording_folder,
+        const RecordingObservationFinalizationResult& result,
+        std::string* error_out)>;
+    struct Options {
+        Finalizer finalizer;          // default: finalize_recording_observation_bindings
+        AfterFinalized after_finalized;
+        std::chrono::milliseconds inline_wait{500};
+        int poll_after_ms = 2000;
+    };
+
+    RecordingObservationFinalizationJobs();
+    explicit RecordingObservationFinalizationJobs(Options options);
+    ~RecordingObservationFinalizationJobs();
+    RecordingObservationFinalizationJobs(const RecordingObservationFinalizationJobs&) = delete;
+    RecordingObservationFinalizationJobs& operator=(const RecordingObservationFinalizationJobs&) = delete;
+
+    Answer Submit(const std::string& recording_folder, const nlohmann::json& params);
+
+private:
+    struct Job;
+    Answer AnswerFor(const Job& job) const;
+
+    Options options_;
+    mutable std::mutex mutex_;
+    std::condition_variable done_;
+    std::map<std::string, std::shared_ptr<Job>> jobs_;  // by recording folder
+};
 
 // Re-mint the receipts of an already bound recording (sealer 3.1.0: Citrus
 // receipt v2 for sessions recorded before it). Writes revision N+1 of the

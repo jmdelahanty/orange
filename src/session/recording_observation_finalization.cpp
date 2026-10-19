@@ -20,8 +20,13 @@
 #include <system_error>
 
 #include <fcntl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
+
+#include <ctime>
+#include <thread>
 
 namespace orange::session {
 namespace {
@@ -201,6 +206,8 @@ struct FinalizeTarget {
     std::string collection_relative = kObservationBindingFinalizationRelativePath;
     json extra_collection_fields = json::object();
     std::function<bool(const json& collection, std::string* error_out)> check;
+    // Called with each verified file's byte size (H5s and Citrus artifacts).
+    FinalizationProgress progress;
 };
 
 // The same proof as for the H5: a safe path inside the recording, a regular
@@ -208,6 +215,7 @@ struct FinalizeTarget {
 // finalization also the declared container facts against the file.
 bool verify_citrus_artifact_files(const fs::path& root,
                                   const json& artifacts,
+                                  const FinalizationProgress& progress,
                                   std::string* error_out)
 {
     for (const auto& artifact : artifacts) {
@@ -228,6 +236,9 @@ bool verify_citrus_artifact_files(const fs::path& root,
             return fail(error_out,
                         "declared Citrus artifact size or SHA-256 does not match receipt: " +
                             relative);
+        }
+        if (progress) {
+            progress(size);
         }
         if (role == kCitrusArtifactRoleStimulusVideoFinalization) {
             json finalization;
@@ -397,6 +408,9 @@ finalize_into(const std::string& recording_folder,
                 : result.error;
             return result;
         }
+        if (target.progress) {
+            target.progress(h5_size);
+        }
 
         if (!declared_paths.insert(h5_relative).second) {
             result.error = "receipt H5 path is declared twice in the collection";
@@ -404,7 +418,7 @@ finalize_into(const std::string& recording_folder,
         }
         if (receipt_contract.contains("citrus_artifacts")) {
             const json& artifacts = receipt_contract.at("citrus_artifacts");
-            if (!verify_citrus_artifact_files(root, artifacts, &result.error)) {
+            if (!verify_citrus_artifact_files(root, artifacts, target.progress, &result.error)) {
                 return result;
             }
             for (const auto& artifact : artifacts) {
@@ -777,9 +791,90 @@ upgrade_recording_observation_receipts(
 RecordingObservationFinalizationResult
 finalize_recording_observation_bindings(
     const std::string& recording_folder,
-    const nlohmann::json& params)
+    const nlohmann::json& params,
+    const FinalizationProgress& progress)
 {
-    return finalize_into(recording_folder, params, FinalizeTarget{});
+    FinalizeTarget target;
+    target.progress = progress;
+    return finalize_into(recording_folder, params, target);
+}
+
+bool find_finalized_recording_observation_reference(
+    const std::string& recording_folder,
+    const nlohmann::json& params,
+    nlohmann::json* reference_out)
+{
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    try {
+    const fs::path root = fs::path(recording_folder).lexically_normal();
+    const std::string experiment_id = params.value("experiment_id", "");
+    const json receipts = params.value("receipts", json::array());
+    std::vector<CollectionRevision> chain;
+    std::string error;
+    if (experiment_id.empty() || !receipts.is_array() || receipts.empty() ||
+        !load_collection_chain(root, &chain, &error) || chain.empty()) {
+        return false;
+    }
+    const CollectionRevision& head = chain.back();
+    const json& collection = head.collection;
+    if (collection.value("status", "") != "finalized" ||
+        collection.value("binding_status", "") != kObservationBindingStatusBound ||
+        collection.value("citrus_experiment_id", "") != experiment_id ||
+        !collection.contains("observation_contexts") ||
+        !collection.at("observation_contexts").is_array() ||
+        collection.at("observation_contexts").size() != receipts.size()) {
+        return false;
+    }
+    std::map<std::string, json> stored_by_context;
+    for (const auto& context : collection.at("observation_contexts")) {
+        stored_by_context[context.value("observation_context_id", "")] =
+            context.value("finalized_receipt", json::object());
+    }
+    std::set<std::string> seen;
+    for (const auto& receipt : receipts) {
+        const std::string context =
+            receipt.value("contract", json::object()).value("observation_context_id", "");
+        const auto stored = stored_by_context.find(context);
+        if (stored == stored_by_context.end() || !seen.insert(context).second) {
+            return false;
+        }
+        // The request's receipt, the collection's record of it and the
+        // stored receipt file must be the same bytes.
+        const std::string sha = byte_sha256(receipt.dump(2) + "\n");
+        const std::string relative = stored->second.value("relative_path", "");
+        std::string stored_bytes;
+        if (sha != stored->second.value("sha256", "") || !safe_relative_path(relative) ||
+            !read_bytes(root / relative, &stored_bytes, &error) ||
+            byte_sha256(stored_bytes) != sha) {
+            return false;
+        }
+    }
+    std::error_code ec;
+    const auto size = fs::file_size(root / head.relative_path, ec);
+    if (ec) {
+        return false;
+    }
+    json reference = {
+        {"relative_path", head.relative_path},
+        {"size_bytes", size},
+        {"sha256", head.sha256},
+        {"schema_id", "orange.recording.observation_binding_finalization_reference"},
+        {"schema_version", 1},
+        {"status", "finalized"},
+        {"binding_status", kObservationBindingStatusBound},
+        {"context_count", collection.at("observation_contexts").size()},
+    };
+    if (head.revision > 1) {
+        reference["revision"] = head.revision;
+    }
+    if (reference_out != nullptr) {
+        *reference_out = std::move(reference);
+    }
+    return true;
+    } catch (const std::exception&) {
+        return false;
+    }
 }
 
 bool apply_recording_observation_finalization_to_manifest(
@@ -894,15 +989,216 @@ bool refresh_recording_session_observation_bindings(
         return fail(error_out,
                     "recording_session.json is not a regular file");
     }
-    json manifest;
-    if (!read_json(manifest_path, &manifest, error_out) ||
+    std::string current_bytes;
+    if (!read_bytes(manifest_path, &current_bytes, error_out)) {
+        return false;
+    }
+    json manifest = json::parse(current_bytes, nullptr, false);
+    if (manifest.is_discarded() ||
         !manifest.is_object() ||
         !apply_recording_observation_finalization_to_manifest(
             recording_folder, &manifest, error_out)) {
-        return false;
+        return manifest.is_discarded()
+            ? fail(error_out, "invalid JSON in " + manifest_path.string())
+            : false;
     }
-    return write_atomic_replace(
-        manifest_path, manifest.dump(2) + "\n", error_out);
+    const std::string bytes = manifest.dump(2) + "\n";
+    // A refresh that changes nothing writes nothing: the folder stays
+    // quiescent for the sealer (Citrus retries finalize).
+    if (bytes == current_bytes) {
+        return true;
+    }
+    return write_atomic_replace(manifest_path, bytes, error_out);
+}
+
+namespace {
+
+std::string finalization_utc_now()
+{
+    const std::time_t now = std::time(nullptr);
+    std::tm utc{};
+    gmtime_r(&now, &utc);
+    char text[32];
+    std::strftime(text, sizeof(text), "%Y-%m-%dT%H:%M:%SZ", &utc);
+    return text;
+}
+
+std::uint64_t declared_size(const json& entry)
+{
+    const json size = entry.is_object() ? entry.value("size_bytes", json()) : json();
+    return size.is_number_unsigned() ? size.get<std::uint64_t>() : 0;
+}
+
+// Bytes a verification hashes: each receipt's H5 and declared Citrus artifacts.
+std::uint64_t declared_receipt_bytes(const json& receipts)
+{
+    std::uint64_t total = 0;
+    for (const auto& receipt : receipts) {
+        const json contract = receipt.is_object()
+            ? receipt.value("contract", json::object()) : json::object();
+        total += declared_size(contract.value("h5_artifact", json::object()));
+        const json artifacts = contract.value("citrus_artifacts", json::array());
+        if (artifacts.is_array()) {
+            for (const auto& artifact : artifacts) {
+                total += declared_size(artifact);
+            }
+        }
+    }
+    return total;
+}
+
+}  // namespace
+
+struct RecordingObservationFinalizationJobs::Job {
+    std::string receipt_set_sha256;
+    std::string experiment_id;
+    std::string started_at_utc;
+    std::uint64_t bytes_total = 0;
+    std::uint64_t bytes_verified = 0;  // under mutex_
+    bool done = false;                 // under mutex_
+    Answer answer;                     // valid once done
+    std::thread worker;
+};
+
+RecordingObservationFinalizationJobs::RecordingObservationFinalizationJobs()
+    : RecordingObservationFinalizationJobs(Options{})
+{
+}
+
+RecordingObservationFinalizationJobs::RecordingObservationFinalizationJobs(Options options)
+    : options_(std::move(options))
+{
+    if (!options_.finalizer) {
+        options_.finalizer = [](const std::string& folder, const json& params,
+                                const FinalizationProgress& progress) {
+            return finalize_recording_observation_bindings(folder, params, progress);
+        };
+    }
+}
+
+RecordingObservationFinalizationJobs::~RecordingObservationFinalizationJobs()
+{
+    std::vector<std::shared_ptr<Job>> jobs;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& entry : jobs_) {
+            jobs.push_back(entry.second);
+        }
+    }
+    for (auto& job : jobs) {
+        if (job->worker.joinable()) {
+            job->worker.join();
+        }
+    }
+}
+
+RecordingObservationFinalizationJobs::Answer
+RecordingObservationFinalizationJobs::AnswerFor(const Job& job) const
+{
+    if (job.done) {
+        return job.answer;
+    }
+    Answer answer;
+    answer.accepted = true;
+    answer.effect = {{"recording_observation_bindings", {
+        {"schema_id", "orange.recording.observation_binding_finalization_progress"},
+        {"schema_version", 1},
+        {"status", "verifying"},
+        {"experiment_id", job.experiment_id},
+        {"started_at_utc", job.started_at_utc},
+        {"bytes_total", job.bytes_total},
+        {"bytes_verified", job.bytes_verified},
+        {"poll_after_ms", options_.poll_after_ms},
+    }}};
+    return answer;
+}
+
+RecordingObservationFinalizationJobs::Answer
+RecordingObservationFinalizationJobs::Submit(const std::string& recording_folder,
+                                             const json& params)
+{
+    const std::string root = fs::path(recording_folder).lexically_normal().string();
+    const json receipts = params.value("receipts", json::array());
+
+    // Already finalized with exactly these receipts: the stored answer.
+    json reference;
+    if (find_finalized_recording_observation_reference(root, params, &reference)) {
+        Answer answer;
+        RecordingObservationFinalizationResult stored;
+        stored.ok = true;
+        stored.collection_reference = reference;
+        std::string error;
+        if (options_.after_finalized && !options_.after_finalized(root, stored, &error)) {
+            answer.error_code = "recording_observation_finalization_rejected";
+            answer.error = error;
+            return answer;
+        }
+        answer.accepted = true;
+        answer.effect = {{"recording_observation_bindings", reference}};
+        return answer;
+    }
+
+    const std::string receipt_set_sha256 = byte_sha256(json{
+        {"experiment_id", params.value("experiment_id", "")},
+        {"receipts", receipts},
+    }.dump());
+    std::unique_lock<std::mutex> lock(mutex_);
+    std::shared_ptr<Job>& slot = jobs_[root];
+    if (slot && slot->receipt_set_sha256 == receipt_set_sha256) {
+        return AnswerFor(*slot);  // still verifying, or the sticky outcome
+    }
+    if (slot && !slot->done) {
+        Answer answer;
+        answer.error_code = "finalization_verification_in_progress";
+        answer.error = "a different receipt set for this recording is still being verified";
+        return answer;
+    }
+    if (slot && slot->worker.joinable()) {
+        slot->worker.join();  // finished; its thread has released mutex_ for good
+    }
+    auto job = std::make_shared<Job>();
+    job->receipt_set_sha256 = receipt_set_sha256;
+    job->experiment_id = params.value("experiment_id", "");
+    job->started_at_utc = finalization_utc_now();
+    job->bytes_total = declared_receipt_bytes(receipts);
+    slot = job;
+    job->worker = std::thread([this, job, root, params]() {
+        // Hashing gigabytes is background work: below the GUI and recorders.
+        setpriority(PRIO_PROCESS, static_cast<id_t>(::syscall(SYS_gettid)), 10);
+        const FinalizationProgress progress = [this, job](std::uint64_t bytes) {
+            std::lock_guard<std::mutex> progress_lock(mutex_);
+            job->bytes_verified += bytes;
+        };
+        Answer answer;
+        RecordingObservationFinalizationResult result;
+        try {
+            result = options_.finalizer(root, params, progress);
+        } catch (const std::exception& error) {
+            result.ok = false;
+            result.error = std::string("recording-observation finalization failed: ") +
+                error.what();
+        }
+        std::string error;
+        if (!result.ok) {
+            answer.error_code = "recording_observation_finalization_rejected";
+            answer.error = result.error;
+        } else if (options_.after_finalized &&
+                   !options_.after_finalized(root, result, &error)) {
+            answer.error_code = "recording_observation_finalization_rejected";
+            answer.error = error;
+        } else {
+            answer.accepted = true;
+            answer.effect = {{"recording_observation_bindings", result.collection_reference}};
+        }
+        {
+            std::lock_guard<std::mutex> done_lock(mutex_);
+            job->answer = std::move(answer);
+            job->done = true;
+        }
+        done_.notify_all();
+    });
+    done_.wait_for(lock, options_.inline_wait, [&job]() { return job->done; });
+    return AnswerFor(*job);
 }
 
 }  // namespace orange::session
