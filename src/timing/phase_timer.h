@@ -6,6 +6,8 @@
 // below it calls MarkPhase(name) when a step ends, and the step's duration is
 // the time since the previous mark. Without an installed timer MarkPhase does
 // nothing, so instrumented library code costs nothing on other paths.
+// NotePhase(key, value) attaches a detail to the report the same way (for
+// example how realtime_products obtained each digest).
 
 #include "json.hpp"
 
@@ -22,6 +24,7 @@ public:
     {
         started_ = last_ = std::chrono::steady_clock::now();
         phases_ = nlohmann::json::array();
+        notes_ = nlohmann::json::object();
     }
 
     // Ends the step that ran since the previous mark.
@@ -33,9 +36,14 @@ public:
         last_ = now;
     }
 
+    // A detail for the report, under `key` (the last value wins).
+    void Note(const std::string& key, nlohmann::json value) { notes_[key] = std::move(value); }
+
     nlohmann::json ToJson() const
     {
-        return {{"total_ms", milliseconds(last_ - started_)}, {"phases", phases_}};
+        nlohmann::json out = {{"total_ms", milliseconds(last_ - started_)}, {"phases", phases_}};
+        if (!notes_.empty()) out["notes"] = notes_;
+        return out;
     }
 
 private:
@@ -47,6 +55,7 @@ private:
     std::chrono::steady_clock::time_point started_;
     std::chrono::steady_clock::time_point last_;
     nlohmann::json phases_;
+    nlohmann::json notes_ = nlohmann::json::object();
 };
 
 inline PhaseTimer*& CurrentPhaseTimer()
@@ -58,6 +67,11 @@ inline PhaseTimer*& CurrentPhaseTimer()
 inline void MarkPhase(const char* name)
 {
     if (PhaseTimer* timer = CurrentPhaseTimer()) timer->Mark(name);
+}
+
+inline void NotePhase(const char* key, nlohmann::json value)
+{
+    if (PhaseTimer* timer = CurrentPhaseTimer()) timer->Note(key, std::move(value));
 }
 
 // Installs a timer for the current thread; restores the previous one on exit.

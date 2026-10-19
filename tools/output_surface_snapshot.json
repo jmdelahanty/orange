@@ -2542,7 +2542,12 @@
    "video_backend",
    "worker_ok"
   ],
-  "schemas": []
+  "schemas": [
+   [
+    "orange.gui.recording_finalize_timing",
+    "2"
+   ]
+  ]
  },
  "src/gui/recording_panel.cpp": {
   "csv_headers": [],
@@ -6997,9 +7002,25 @@
   "json_keys": [
    "at_ms",
    "ms",
+   "notes",
    "phase",
    "phases",
    "total_ms"
+  ],
+  "schemas": []
+ },
+ "src/timing/written_file_digest.h": {
+  "csv_headers": [],
+  "json_keys": [
+   "digest_source",
+   "files",
+   "finalize_reread_bytes",
+   "finalize_reread_files",
+   "path",
+   "reason",
+   "size_bytes",
+   "writer_running_digest_bytes",
+   "writer_running_digest_files"
   ],
   "schemas": []
  },

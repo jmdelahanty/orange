@@ -2792,9 +2792,9 @@ void gui_report_recording_finalize_timing(const orange::timing::PhaseTimer& time
                                           const bool worker_ok,
                                           const bool finalized)
 {
-    nlohmann::json report = timer.ToJson();
-    report["schema_id"] = "orange.gui.recording_finalize_timing";
-    report["schema_version"] = 1;
+    // Version 2 (2026-10-18): optional "notes" (realtime_products_digests).
+    nlohmann::json report = {{"schema_id", "orange.gui.recording_finalize_timing"}, {"schema_version", 2}};
+    report.update(timer.ToJson());
     report["recording_folder"] = recording_folder;
     report["worker_ok"] = worker_ok;
     report["finalized"] = finalized;

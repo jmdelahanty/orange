@@ -1,4 +1,5 @@
 #include "pose_event_log.h"
+#include "event_log_reader.h"
 #include "orange_outputs/orange_pose_event_v3.h"
 #include "timing/log_writer.h"
 #include "timing/clock.h"
@@ -11,6 +12,7 @@
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <iterator>
 #include <utility>
 
 namespace pose_event_log {
@@ -185,8 +187,19 @@ void PoseEventLogger::OpenFile(const std::string& folder)
 
     const bool first_open = opened_folders_.insert(current_folder_).second;
     const auto mode = std::ios::out | (first_open ? std::ios::trunc : std::ios::app);
+    orange::timing::WrittenFileDigestRegistry::Instance().Opened(file_path_);
+    orange::timing::RunningFileDigest& digest = digests_by_folder_[current_folder_];
+    if (first_open) {
+        digest.Reset();
+    } else {
+        // Appending: the hash continues only if the file is still what was hashed.
+        std::error_code size_ec;
+        const auto size = std::filesystem::file_size(file_path_, size_ec);
+        if (size_ec || size != digest.bytes()) digest.Fail("file changed while closed");
+    }
     file_.open(file_path_, mode);
     if (!file_) {
+        digest.Fail("open failed");
         std::cerr << "[POSE_EVENT_LOG] " << worker_name_
                   << " failed to open " << file_path_ << std::endl;
         current_folder_.clear();
@@ -202,6 +215,9 @@ void PoseEventLogger::CloseFile()
 {
     if (file_.is_open()) {
         file_.close();
+        orange::timing::RunningFileDigest& digest = digests_by_folder_[current_folder_];
+        if (file_.fail()) digest.Fail("flush or close failed");
+        orange::timing::WrittenFileDigestRegistry::Instance().Closed(digest.Freeze(file_path_, worker_name_));
     }
     current_folder_.clear();
     recording_id_.clear();
@@ -254,7 +270,21 @@ void PoseEventLogger::WriteSessionHeaderIfNeeded(const PoseResultRecord& record)
     pose.gpu_id = record.gpu_id;
     header.crop.note = "crop x_px/y_px/width_px/height_px on each frame line; keypoints are crop pixels relative to that origin";
     header.detection.note = "frame lines carry has_detection and confidence only; the box is on the same frame's yolo_result line and in the crop ledger";
-    file_ << ev::to_json(header).dump() << '\n';
+    WriteLine(ev::to_json(header).dump());
+}
+
+void PoseEventLogger::WriteLine(const std::string& text)
+{
+    file_ << text << '\n';
+    orange::timing::RunningFileDigest& digest = digests_by_folder_[current_folder_];
+    if (!file_) {
+        digest.Fail("write failed");
+        return;
+    }
+    // Hashed and counted as written, so finalize need not re-read the log.
+    digest.Append(text);
+    digest.Append("\n", 1);
+    event_log_reader::tally_event_line(event_log_reader::EventLogProduct::kPose, text, &digest.tally());
 }
 
 void PoseEventLogger::WriteResult(PoseResultRecord record)
@@ -320,7 +350,7 @@ void PoseEventLogger::WriteResult(PoseResultRecord record)
     line.latency_ms.pose_start_to_pose_done = round_ms(t.pose_start_to_pose_done_ms);
     line.latency_ms.capture_to_pose_done = round_ms(t.capture_to_pose_done_ms);
 
-    file_ << ev::to_json(line).dump() << '\n';
+    WriteLine(ev::to_json(line).dump());
     ++rows_written_;
     ++rows_since_flush_;
     MaybeFlush(false);
@@ -344,6 +374,7 @@ void PoseEventLogger::MaybeFlush(bool force)
 
 void PoseEventLogger::ThreadMain()
 {
+    orange::timing::LogWriter::DetachFromCreatorScheduling("orange_pose_log");
     std::unique_lock<std::mutex> lock(mutex_);
     while (running_ || !queue_.empty()) {
         if (queue_.empty()) {
@@ -377,7 +408,16 @@ void PoseEventLogger::ThreadMain()
                     orange::timing::LogWriter::PathUnder(file_path_, event.seal_folder)) {
                     CloseFile();  // finalize is about to digest it
                 }
-                if (!event.seal_folder.empty()) sealed_folders_.push_back(event.seal_folder);
+                if (!event.seal_folder.empty()) {
+                    sealed_folders_.push_back(event.seal_folder);
+                    // Published at close; never reopened.
+                    for (auto it = digests_by_folder_.begin(); it != digests_by_folder_.end();) {
+                        const std::string key = orange::timing::LogWriter::FolderKey(it->first);
+                        const bool sealed = key == event.seal_folder ||
+                                            orange::timing::LogWriter::PathUnder(key, event.seal_folder);
+                        it = sealed ? digests_by_folder_.erase(it) : std::next(it);
+                    }
+                }
                 event.completion->set_value(ok);
                 break;
             }

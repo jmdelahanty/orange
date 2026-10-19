@@ -2,6 +2,7 @@
 
 #include "common.hpp"
 #include "json.hpp"
+#include "timing/written_file_digest.h"
 #include "yolo_event_log_config.h"
 
 #include <condition_variable>
@@ -167,6 +168,9 @@ private:
     std::unordered_set<std::string> failed_folders_;
     std::unordered_set<std::string> header_written_folders_;
     std::unordered_map<std::string, uint64_t> last_policy_generation_by_folder_;
+    // Writer thread: what was written into each folder's file (hashed and
+    // tallied as written; published at every close, dropped at the seal).
+    std::unordered_map<std::string, orange::timing::RunningFileDigest> digests_by_folder_;
     size_t dropped_ = 0;
 };
 

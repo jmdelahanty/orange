@@ -1,4 +1,5 @@
 #include "yolo_event_log.h"
+#include "event_log_reader.h"
 #include "orange_outputs/orange_yolo_event_v3.h"
 #include "timing/log_writer.h"
 #include "timing/clock.h"
@@ -14,6 +15,7 @@
 #include <chrono>
 #include <filesystem>
 #include <iostream>
+#include <iterator>
 #include <utility>
 
 namespace yolo_event_log {
@@ -169,8 +171,19 @@ void YoloEventLogger::OpenFile(const std::string& folder) {
 
     const bool first_open = opened_folders_.insert(current_folder_).second;
     const auto mode = std::ios::out | (first_open ? std::ios::trunc : std::ios::app);
+    orange::timing::WrittenFileDigestRegistry::Instance().Opened(file_path_);
+    orange::timing::RunningFileDigest& digest = digests_by_folder_[current_folder_];
+    if (first_open) {
+        digest.Reset();
+    } else {
+        // Appending: the hash continues only if the file is still what was hashed.
+        std::error_code ec;
+        const auto size = std::filesystem::file_size(file_path_, ec);
+        if (ec || size != digest.bytes()) digest.Fail("file changed while closed");
+    }
     file_.open(file_path_, mode);
     if (!file_) {
+        digest.Fail("open failed");
         failed_folders_.insert(folder);
         std::cerr << "[YOLO_EVENT_LOG] " << worker_name_
                   << " failed to open " << file_path_ << std::endl;
@@ -186,7 +199,12 @@ void YoloEventLogger::OpenFile(const std::string& folder) {
 void YoloEventLogger::CloseFile() {
     if (file_.is_open()) {
         file_.close();
-        if (file_.fail()) failed_folders_.insert(current_folder_);
+        orange::timing::RunningFileDigest& digest = digests_by_folder_[current_folder_];
+        if (file_.fail()) {
+            failed_folders_.insert(current_folder_);
+            digest.Fail("flush or close failed");
+        }
+        orange::timing::WrittenFileDigestRegistry::Instance().Closed(digest.Freeze(file_path_, worker_name_));
     }
     current_folder_.clear();
     recording_id_.clear();
@@ -229,8 +247,18 @@ bool spatial_mask_block(const YoloResultRecord& record, Block* block, std::strin
 
 void YoloEventLogger::WriteLine(const nlohmann::json& line, const YoloResultRecord& record)
 {
-    file_ << line.dump() << '\n';
-    if (!file_) failed_folders_.insert(record.recording_folder);
+    const std::string text = line.dump();
+    file_ << text << '\n';
+    orange::timing::RunningFileDigest& digest = digests_by_folder_[current_folder_];
+    if (!file_) {
+        failed_folders_.insert(record.recording_folder);
+        digest.Fail("write failed");
+        return;
+    }
+    // Hashed and counted as written, so finalize need not re-read the log.
+    digest.Append(text);
+    digest.Append("\n", 1);
+    event_log_reader::tally_event_line(event_log_reader::EventLogProduct::kDetections, text, &digest.tally());
 }
 
 void YoloEventLogger::RefuseLine(const char* kind, const std::string& error, const YoloResultRecord& record)
@@ -391,6 +419,7 @@ void YoloEventLogger::WriteResult(const YoloResultRecord& record) {
 }
 
 void YoloEventLogger::ThreadMain() {
+    orange::timing::LogWriter::DetachFromCreatorScheduling("orange_yolo_log");
     std::vector<Event> pending;
     std::unique_lock<std::mutex> lock(mutex_);
     while (running_ || !queue_.empty()) {
@@ -424,7 +453,16 @@ void YoloEventLogger::ThreadMain() {
                         CloseFile();  // finalize is about to digest it
                     }
                 }
-                if (!event.seal_folder.empty()) sealed_folders_.push_back(event.seal_folder);
+                if (!event.seal_folder.empty()) {
+                    sealed_folders_.push_back(event.seal_folder);
+                    // Published at close; never reopened.
+                    for (auto it = digests_by_folder_.begin(); it != digests_by_folder_.end();) {
+                        const std::string key = orange::timing::LogWriter::FolderKey(it->first);
+                        const bool sealed = key == event.seal_folder ||
+                                            orange::timing::LogWriter::PathUnder(key, event.seal_folder);
+                        it = sealed ? digests_by_folder_.erase(it) : std::next(it);
+                    }
+                }
                 event.completion->set_value(ok);
                 break;
             }

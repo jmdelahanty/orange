@@ -1134,9 +1134,14 @@ if(BUILD_TESTING)
         "tools/realtime_products_tests.cpp"
         "${SRC_DIR}/session/realtime_products.cpp"
     "${SRC_DIR}/session/model_artifacts.cpp"
+        "${SRC_DIR}/yolo_event_log.cpp"
+        "${SRC_DIR}/pose_event_log.cpp"
+        "${SRC_DIR}/model_identity.cpp"
+        "${SRC_DIR}/pose_skeleton_sidecar.cpp"
     )
     target_include_directories(realtime_products_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(realtime_products_tests PRIVATE cxx_std_17)
+    target_link_libraries(realtime_products_tests PRIVATE Threads::Threads)
     add_test(NAME realtime_products_tests COMMAND realtime_products_tests
         "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/recording_snapshot_models_excerpt.json"
         "${CMAKE_SOURCE_DIR}/tools/fixtures/generated_outputs/golden")
