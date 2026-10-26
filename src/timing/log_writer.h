@@ -18,6 +18,10 @@
 // under ScopedFsuid, so they belong to the sudo invoker.
 //
 // A slow file fills only its own ring; other channels keep draining.
+//
+// Each channel hashes what it writes (timing/written_file_digest.h) and
+// publishes the digest when it closes the file, so finalize does not re-read
+// a sealed log to digest it.
 #pragma once
 
 #include <pthread.h>
@@ -44,6 +48,7 @@
 
 #include "fsuid_guard.h"
 #include "timing/clock.h"
+#include "timing/written_file_digest.h"
 
 namespace orange::timing {
 
@@ -145,24 +150,21 @@ public:
         if (key.empty()) {
             return FlushAll(timeout);
         }
-        return Barrier(timeout, key);
+        if (!Barrier(timeout, key)) {
+            return false;
+        }
+        // Every writer closed its file there and refuses to reopen one: the
+        // digests published at close describe the files from now on.
+        WrittenFileDigestRegistry::Instance().SealUnder(key);
+        return true;
     }
 
     // "folder" without trailing separators, lexically normal.
-    static std::string FolderKey(const std::string& path)
-    {
-        std::string key = std::filesystem::path(path).lexically_normal().string();
-        while (key.size() > 1 && key.back() == '/') {
-            key.pop_back();
-        }
-        return key;
-    }
+    static std::string FolderKey(const std::string& path) { return NormalPathKey(path); }
     // True if `path` lies strictly under the folder `key` (a FolderKey).
     static bool PathUnder(const std::string& path, const std::string& key)
     {
-        const std::string candidate = FolderKey(path);
-        return !key.empty() && candidate.size() > key.size() &&
-               candidate.compare(0, key.size(), key) == 0 && candidate[key.size()] == '/';
+        return PathUnderKey(path, key);
     }
 
     // A writer that keeps its own thread registers a flush barrier here so
@@ -257,20 +259,11 @@ public:
 
     static constexpr std::chrono::milliseconds kPollInterval{5};
 
-    ~LogWriter()
-    {
-        running_.store(false, std::memory_order_release);
-        if (thread_.joinable()) {
-            thread_.join();
-        }
-    }
-
-private:
-    LogWriter() = default;
-
     // Same rule as AsyncLineSink: normal priority, never on an isolated CPU,
-    // whatever the thread that first registered a channel was running as.
-    static void DetachFromCreatorScheduling()
+    // whatever the thread that started the calling thread was running as.
+    // For the writer thread and for writers with their own thread (the YOLO
+    // and pose event loggers, which hash and tally every line they write).
+    static void DetachFromCreatorScheduling(const char* thread_name)
     {
         sched_param param{};
         param.sched_priority = 0;
@@ -303,12 +296,23 @@ private:
         if (CPU_COUNT(&mask) > 0) {
             (void)pthread_setaffinity_np(pthread_self(), sizeof(mask), &mask);
         }
-        (void)pthread_setname_np(pthread_self(), "orange_logwr");
+        (void)pthread_setname_np(pthread_self(), thread_name);
     }
+
+    ~LogWriter()
+    {
+        running_.store(false, std::memory_order_release);
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+
+private:
+    LogWriter() = default;
 
     void Run()
     {
-        DetachFromCreatorScheduling();
+        DetachFromCreatorScheduling("orange_logwr");
         while (running_.load(std::memory_order_acquire)) {
             std::vector<std::shared_ptr<LogChannelBase>> channels;
             {
@@ -661,6 +665,8 @@ private:
             std::error_code ec;
             std::filesystem::create_directories(parent, ec);
         }
+        WrittenFileDigestRegistry::Instance().Opened(path);
+        digest_.Reset();
         file_.open(path, std::ios::out | std::ios::trunc | std::ios::binary);
         if (!file_.is_open()) {
             open_failures_.fetch_add(1, std::memory_order_relaxed);
@@ -697,6 +703,9 @@ private:
             if (!file_) {
                 write_failures_.fetch_add(1, std::memory_order_relaxed);
                 file_.clear();
+                digest_.Fail("write failed");
+            } else {
+                digest_.Append(buffer_);
             }
         }
         written_.fetch_add(pending_rows_, std::memory_order_relaxed);
@@ -710,6 +719,11 @@ private:
         if (file_.is_open()) {
             file_.flush();
             file_.close();
+            if (file_.fail()) {
+                digest_.Fail("flush or close failed");
+                file_.clear();
+            }
+            WrittenFileDigestRegistry::Instance().Closed(digest_.Freeze(file_path_, options_.name));
             LogFileRecord record;
             record.path = file_path_;
             record.channel = options_.name;
@@ -758,6 +772,7 @@ private:
     uint64_t at_open_write_failures_ = 0;
     std::string buffer_;
     uint64_t pending_rows_ = 0;
+    RunningFileDigest digest_;  // of the open file
     std::vector<std::string> sealed_folders_;  // FolderKeys, in seal order
     std::chrono::steady_clock::time_point last_flush_{};
 };

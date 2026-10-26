@@ -476,6 +476,14 @@ int RunNicThermalMonitorHelper(const NicThermalHelperOptions& options,
     action.sa_flags = 0;
     sigaction(SIGTERM, &action, nullptr);
     sigaction(SIGINT, &action, nullptr);
+    // A spawner that blocks the termination signals (the GUI blocks them in
+    // every thread) passes its mask on: unblock them, or the stop request
+    // stays pending and the parent kills the helper before its final summary.
+    sigset_t stop_signals;
+    sigemptyset(&stop_signals);
+    sigaddset(&stop_signals, SIGTERM);
+    sigaddset(&stop_signals, SIGINT);
+    sigprocmask(SIG_UNBLOCK, &stop_signals, nullptr);
     if (options.expected_parent_pid > 0) {
         if (::prctl(PR_SET_PDEATHSIG, SIGTERM) != 0) {
             set_error(error_out, "failed to configure parent-death signal");
@@ -803,14 +811,32 @@ bool StartNicThermalMonitorProcess(const std::string& recording_folder,
     posix_spawn_file_actions_adddup2(&actions, stderr_fd, STDERR_FILENO);
     posix_spawn_file_actions_addclose(&actions, null_fd);
     posix_spawn_file_actions_addclose(&actions, stderr_fd);
+    // The child starts with no signal blocked and default dispositions: the
+    // GUI blocks SIGTERM/SIGINT/SIGHUP in every thread, and an inherited mask
+    // kept the helper from seeing the stop SIGTERM, so every GUI stop waited
+    // the full bounded shutdown (5 s) and then killed it before it wrote its
+    // final summary.
+    posix_spawnattr_t attributes;
+    posix_spawnattr_init(&attributes);
+    sigset_t no_signals;
+    sigemptyset(&no_signals);
+    posix_spawnattr_setsigmask(&attributes, &no_signals);
+    sigset_t default_signals;
+    sigemptyset(&default_signals);
+    sigaddset(&default_signals, SIGTERM);
+    sigaddset(&default_signals, SIGINT);
+    sigaddset(&default_signals, SIGHUP);
+    posix_spawnattr_setsigdefault(&attributes, &default_signals);
+    posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
     pid_t pid = -1;
     const int spawn_result = posix_spawn(
         &pid,
         monitor->executable_path.c_str(),
         &actions,
-        nullptr,
+        &attributes,
         argv.data(),
         environ);
+    posix_spawnattr_destroy(&attributes);
     posix_spawn_file_actions_destroy(&actions);
     ::close(null_fd);
     ::close(stderr_fd);

@@ -1,9 +1,15 @@
 // Tests src/timing/log_writer.h: ordering across rotation, drop counting on a
 // full ring, flush barriers, multi-producer channels, and that a stalled
 // channel never blocks another channel's producer, and a sealed folder is
-// never written again.
+// never written again; the running digest each channel publishes at close
+// (timing/written_file_digest.h), its checks against the disk, and its cost.
 #include "timing/log_writer.h"
 
+#include "gui/spatial_layout/sha256.h"
+
+#include <unistd.h>
+
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -203,6 +209,100 @@ int main()
                !LogWriter::PathUnder((dir / "sealed_recording_next" / "perf.csv").string(), key),
                "PathUnder covers paths under the folder only");
         expect(inside->Retire(wait) && outside->Retire(wait), "sealed retire");
+    }
+
+    // 9. Running digest: a channel hashes what it writes; the digest becomes
+    //    usable at finalize only once the folder is sealed, and only while the
+    //    file on disk is what the channel closed.
+    {
+        using orange::gui::spatial_layout::checksum::sha256_hex;
+        auto& registry = WrittenFileDigestRegistry::Instance();
+        const fs::path folder = dir / "digest_recording";
+        const std::string path = (folder / "Cam1_pipeline_perf.csv").string();
+        auto channel = LogChannel<Row>::Create({"digest", 1 << 12}, format_row);
+        channel->Open(path, "frame,value\n");
+        for (uint64_t i = 1; i <= 3000; ++i) channel->Emit({i, static_cast<int64_t>(i * 7)});
+        expect(channel->WaitApplied(channel->Close(), wait), "digest close");
+        expect(!registry.Sealed(path), "a closed but unsealed file has no usable digest");
+        expect(LogWriter::Instance().SealFolder(folder.string(), wait), "digest seal");
+        const auto digest = registry.Sealed(path);
+        const std::string bytes = slurp(path);
+        expect(digest && digest->sha256 == sha256_hex(bytes) && digest->bytes == bytes.size() &&
+                   digest->lines == 3001 && digest->failure.empty() && !digest->tally,
+               "sealed digest = sha256 / size / lines of the file bytes");
+        std::string reason;
+        expect(digest && VerifyAgainstDisk(*digest, path, &reason), "untouched file verifies: " + reason);
+        expect(digest && digest->head == "frame,value\n" &&
+                   digest->tail == bytes.substr(bytes.size() - RunningFileDigest::kTailBytes),
+               "first line and tail kept");
+        // Any change after the close sends finalize back to a full read.
+        const auto mtime = fs::last_write_time(path);
+        { std::ofstream(path, std::ios::app) << "x"; }
+        expect(digest && !VerifyAgainstDisk(*digest, path, &reason) && reason.find("size") != std::string::npos,
+               "an appended byte is refused: " + reason);
+        fs::resize_file(path, bytes.size());
+        {
+            std::fstream edit(path, std::ios::in | std::ios::out | std::ios::binary);
+            edit.seekp(static_cast<std::streamoff>(bytes.size() - 2));
+            edit.put('9');
+        }
+        fs::last_write_time(path, mtime);  // even with the mtime put back
+        expect(digest && !VerifyAgainstDisk(*digest, path, &reason) && reason.find("tail") != std::string::npos,
+               "a same-size edit in the tail is refused: " + reason);
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));  // past the coarse mtime tick
+        { std::ofstream(path, std::ios::binary | std::ios::trunc) << bytes; }
+        expect(digest && !VerifyAgainstDisk(*digest, path, &reason), "a rewrite with the same bytes is refused (mtime)");
+        fs::remove(path);
+        { std::ofstream(dir / "elsewhere.csv", std::ios::binary) << bytes; }
+        fs::create_symlink(dir / "elsewhere.csv", path);
+        expect(digest && !VerifyAgainstDisk(*digest, path, &reason) && reason == "not a regular file",
+               "a symlink is refused: " + reason);
+        // Reopening a path drops its digest (the writer will publish a new one).
+        registry.Closed(*digest);
+        registry.SealUnder(LogWriter::FolderKey(folder.string()));
+        expect(registry.Sealed(path).has_value(), "republished digest sealed");
+        registry.Opened(path);
+        expect(!registry.Sealed(path), "an open drops the published digest");
+        expect(channel->Retire(wait), "digest retire");
+    }
+
+    // 10. A write the stream refuses poisons the digest: never usable.
+    {
+        RunningFileDigest digest;
+        digest.Append("a,b\n");
+        digest.Fail("write failed");
+        digest.Append("c,d\n");
+        const fs::path path = dir / "poisoned.csv";
+        { std::ofstream(path, std::ios::binary) << "a,b\n"; }
+        const WrittenFileDigest frozen = digest.Freeze(path.string(), "test");
+        std::string reason;
+        expect(frozen.bytes == 4 && !VerifyAgainstDisk(frozen, path.string(), &reason) &&
+                   reason.find("write failed") != std::string::npos,
+               "a failed write is never verified: " + reason);
+    }
+
+    // 11. Cost on the writer thread: hashing as the channel writes. Rows in
+    //     64 KiB chunks (the channel's write size) and ~900-byte lines (an
+    //     event log line); printed per MB, bounded loosely so a regression to
+    //     something expensive fails.
+    {
+        std::string row;
+        for (int i = 0; i < 9; ++i) row += "12345678901234567890,123456789012345678901234567890,1.234,5.678,0.000,";
+        row.back() = '\n';
+        std::string chunk;
+        while (chunk.size() < 64 * 1024) chunk += row;
+        const size_t total = 64u << 20;
+        for (const auto& [label, piece] : {std::pair<const char*, const std::string*>{"64 KiB chunks", &chunk},
+                                           std::pair<const char*, const std::string*>{"single lines", &row}}) {
+            RunningFileDigest digest;
+            const auto start = std::chrono::steady_clock::now();
+            for (size_t written = 0; written < total; written += piece->size()) digest.Append(*piece);
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+            const double ms_per_mb = ms / (static_cast<double>(digest.bytes()) / (1 << 20));
+            std::cout << "running digest, " << label << ": " << ms_per_mb << " ms per MiB ("
+                      << 1000.0 / ms_per_mb << " MiB/s)" << std::endl;
+            expect(ms_per_mb < 50.0, std::string("running digest cost per MiB is bounded: ") + label);
+        }
     }
 
     fs::remove_all(dir);

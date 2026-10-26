@@ -15,6 +15,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "timing/written_file_digest.h"
+
 namespace pose_event_log {
 
 struct PoseKeypointRecord {
@@ -132,6 +134,8 @@ private:
     // v2 line format (2026-10-09): one session_header line per file with the
     // session-constant blocks, slim frame lines, rounded numbers.
     void WriteSessionHeaderIfNeeded(const PoseResultRecord& record);
+    // One line (without its newline): written, hashed and counted.
+    void WriteLine(const std::string& text);
     void WriteResult(PoseResultRecord record);
     void ThreadMain();
 
@@ -151,6 +155,9 @@ private:
     std::vector<std::string> sealed_folders_;  // writer thread
     std::unordered_map<std::string, uint64_t> next_sequence_by_folder_;
     std::unordered_set<std::string> header_written_folders_;
+    // Writer thread: what was written into each folder's file (hashed and
+    // tallied as written; published at every close, dropped at the seal).
+    std::unordered_map<std::string, orange::timing::RunningFileDigest> digests_by_folder_;
     size_t dropped_ = 0;
     size_t rows_written_ = 0;
     size_t rows_since_flush_ = 0;

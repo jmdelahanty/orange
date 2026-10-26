@@ -2,48 +2,113 @@
 #include "session/snapshot_models.h"
 #include "event_log_reader.h"
 #include "timing/log_writer.h"
+#include "timing/phase_timer.h"
+#include "timing/written_file_digest.h"
 
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <fstream>
 #include <map>
-#include <variant>
-#include <sstream>
+#include <optional>
+#include <vector>
 
 #include "gui/spatial_layout/sha256.h"
-using orange::gui::spatial_layout::checksum::sha256_hex;
 
 namespace orange::session {
 namespace {
 
 namespace fs = std::filesystem;
+using event_log_reader::EventLogProduct;
+using orange::timing::EventLogTally;
+using DigestReport = orange::timing::DigestSourceReport;
 
-struct ScannedLog {
+// One declared file: its digest and, for an event log, its row tally.
+struct DigestedFile {
     bool present = false;
     uint64_t size_bytes = 0;
     std::string sha256;
-    std::string schema_id;
-    int schema_version = 0;
-    uint64_t header_rows = 0;
-    uint64_t row_count = 0;      // frame rows (event rows that are not a header)
-    uint64_t parse_errors = 0;
-    uint64_t first_recording_frame_id = 0;
-    uint64_t last_recording_frame_id = 0;
-    std::map<std::string, uint64_t> rows_by_status;
-    std::map<std::string, uint64_t> rows_by_kind;  // result | no_result | failed | other
+    EventLogTally tally;
 };
 
-bool read_file(const fs::path& path, std::string* out)
+// Reads the file once: the SHA-256 of every byte and, for an event log, every line through
+// event_log_reader::tally_event_line (the count the loggers keep as they write).
+bool reread_file(const fs::path& path, const EventLogProduct* product, DigestedFile* out)
 {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         return false;
     }
-    std::ostringstream buffer;
-    buffer << in.rdbuf();
-    *out = buffer.str();
-    return static_cast<bool>(in) || in.eof();
+    orange::gui::spatial_layout::checksum::StreamingSha256 sha;
+    std::vector<char> buffer(4 << 20);
+    std::string partial;  // a line split across reads
+    while (in) {
+        in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const size_t count = static_cast<size_t>(in.gcount());
+        if (count == 0) {
+            break;
+        }
+        sha.update(reinterpret_cast<const std::uint8_t*>(buffer.data()), count);
+        out->size_bytes += count;
+        if (!product) {
+            continue;
+        }
+        size_t start = 0;
+        while (start < count) {
+            const char* begin = buffer.data() + start;
+            const char* newline = static_cast<const char*>(std::memchr(begin, '\n', count - start));
+            if (!newline) {
+                partial.append(begin, count - start);
+                break;
+            }
+            partial.append(begin, static_cast<size_t>(newline - begin));
+            event_log_reader::tally_event_line(*product, partial, &out->tally);
+            partial.clear();
+            start = static_cast<size_t>(newline - buffer.data()) + 1;
+        }
+    }
+    if (in.bad()) {
+        return false;
+    }
+    if (product && !partial.empty()) {
+        event_log_reader::tally_event_line(*product, partial, &out->tally);
+    }
+    out->sha256 = sha.final_hex();
+    out->present = true;
+    return true;
+}
+
+// The digest (and tally) of folder/name. A file this process's writers hashed while writing
+// it, sealed, and still on disk exactly as they closed it (timing/written_file_digest.h) is
+// not read again; anything else is read in full as before: no running digest (a writer outside
+// the log writer, a file from an earlier process), or a failed check.
+DigestedFile digest_file(const fs::path& folder, const std::string& name,
+                         const std::optional<EventLogProduct>& product, DigestReport* report)
+{
+    DigestedFile out;
+    const fs::path path = folder / name;
+    if (!fs::exists(path)) {
+        return out;
+    }
+    std::string reason = "no sealed running digest";
+    if (const auto written = orange::timing::WrittenFileDigestRegistry::Instance().Sealed(path.string())) {
+        if (product && !written->tally) {
+            reason = "running digest has no event tally";
+        } else if (orange::timing::VerifyAgainstDisk(*written, path.string(), &reason)) {
+            out.present = true;
+            out.size_bytes = written->bytes;
+            out.sha256 = written->sha256;
+            if (written->tally) out.tally = *written->tally;
+            report->Add(name, true, out.size_bytes, {});
+            return out;
+        }
+    }
+    if (!reread_file(path, product ? &*product : nullptr, &out)) {
+        return DigestedFile{};
+    }
+    report->Add(name, false, out.size_bytes, reason);
+    return out;
 }
 
 // The v3 schemas' status enums (detections: detections, zero_detections, timeout, failed; pose:
@@ -61,100 +126,14 @@ std::string kind_for_status(const std::string& product, const std::string& statu
     return "other";
 }
 
-// One frame line of either log: its frame id and the product's status.
-void count_frame_line(ScannedLog* log, const std::string& product, uint64_t frame_id, const std::string& status)
-{
-    log->row_count++;
-    if (frame_id > 0) {
-        if (log->first_recording_frame_id == 0 || frame_id < log->first_recording_frame_id) {
-            log->first_recording_frame_id = frame_id;
-        }
-        if (frame_id > log->last_recording_frame_id) {
-            log->last_recording_frame_id = frame_id;
-        }
-    }
-    log->rows_by_status[status]++;
-    log->rows_by_kind[kind_for_status(product, status)]++;
-}
-
-// product: "detections" (Cam<serial>_yolo_events.jsonl) or "pose" (Cam<serial>_pose_events.jsonl).
-// Every line is read with the generated parser of orange.yolo_event / orange.pose_event v3
-// (src/event_log_reader.h); a line that is not JSON or does not match the schema counts as a
-// parse error, never as a row. line_schema reports what the first line declares.
-ScannedLog scan_event_log(const fs::path& path, const std::string& product)
-{
-    namespace yolo = event_log_reader::yolo;
-    namespace pose = event_log_reader::pose;
-    ScannedLog log;
-    std::string bytes;
-    if (!fs::exists(path) || !read_file(path, &bytes)) {
-        return log;
-    }
-    log.present = true;
-    log.size_bytes = bytes.size();
-    log.sha256 = sha256_hex(bytes);
-    for (const char* kind : {"result", "no_result", "failed", "other"}) {
-        log.rows_by_kind[kind] = 0;
-    }
-    bool first_line = true;
-    size_t start = 0;
-    while (start < bytes.size()) {
-        size_t end = bytes.find('\n', start);
-        if (end == std::string::npos) end = bytes.size();
-        if (end > start) {
-            const std::string line = bytes.substr(start, end - start);
-            if (first_line) {
-                first_line = false;
-                const nlohmann::json declared = nlohmann::json::parse(line, nullptr, false);
-                if (declared.is_object()) {
-                    log.schema_id = declared.value("schema_id", std::string());
-                    log.schema_version = declared.value("schema_version", 0);
-                }
-            }
-            std::string error;
-            if (product == "detections") {
-                yolo::OrangeYoloEventV3 event;
-                if (event_log_reader::parse_yolo_line(line, &event, &error) != event_log_reader::LineStatus::kOk) {
-                    log.parse_errors++;
-                } else if (const auto* result = std::get_if<yolo::OrangeYoloEventV3YoloResult>(&event)) {
-                    count_frame_line(&log, product, result->frame.recording_frame_id, result->yolo.status);
-                } else {
-                    log.header_rows++;  // session_header, spatial_mask_policy
-                }
-            } else {
-                pose::OrangePoseEventV3 event;
-                if (event_log_reader::parse_pose_line(line, &event, &error) != event_log_reader::LineStatus::kOk) {
-                    log.parse_errors++;
-                } else if (const auto* result = std::get_if<pose::OrangePoseEventV3PoseResult>(&event)) {
-                    count_frame_line(&log, product, result->frame.recording_frame_id, result->pose.status);
-                } else {
-                    log.header_rows++;  // session_header
-                }
-            }
-        }
-        start = end + 1;
-    }
-    return log;
-}
-
 nlohmann::json file_entry(const fs::path& folder, const std::string& name, const std::string& role,
-                          const std::string& sha256_known = std::string(), uint64_t size_known = 0)
+                          DigestReport* report)
 {
-    const fs::path path = folder / name;
-    if (!fs::exists(path)) {
+    const DigestedFile file = digest_file(folder, name, std::nullopt, report);
+    if (!file.present) {
         return nullptr;
     }
-    std::string sha = sha256_known;
-    uint64_t size = size_known;
-    if (sha.empty()) {
-        std::string bytes;
-        if (!read_file(path, &bytes)) {
-            return nullptr;
-        }
-        sha = sha256_hex(bytes);
-        size = bytes.size();
-    }
-    return {{"role", role}, {"path", name}, {"size_bytes", size}, {"sha256", sha}};
+    return {{"role", role}, {"path", name}, {"size_bytes", file.size_bytes}, {"sha256", file.sha256}};
 }
 
 // The product's model, from the snapshot block it names (models.<serial>.<kind>); empty and
@@ -178,11 +157,17 @@ nlohmann::json model_ref(const SnapshotModels& models, const std::string& serial
     return ref;
 }
 
+// product: "detections" (Cam<serial>_yolo_events.jsonl) or "pose" (Cam<serial>_pose_events.jsonl).
+// Every line is counted through the generated parser of orange.yolo_event / orange.pose_event v3
+// (event_log_reader::tally_event_line); a line that is not JSON or does not match the schema
+// counts as a parse error, never as a row. line_schema reports what the first line declares.
 nlohmann::json product_json(const fs::path& folder, const std::string& serial, const std::string& product,
                             const std::string& events_name, const std::string& perf_name,
-                            const SnapshotModels& models)
+                            const SnapshotModels& models, DigestReport* report)
 {
-    const ScannedLog log = scan_event_log(folder / events_name, product);
+    const DigestedFile log = digest_file(
+        folder, events_name,
+        product == "detections" ? EventLogProduct::kDetections : EventLogProduct::kPose, report);
     nlohmann::json out = {
         {"status", log.present ? "present" : "absent"},
         {"model_ref", model_ref(models, serial, product == "detections" ? "detect" : "pose")},
@@ -191,18 +176,25 @@ nlohmann::json product_json(const fs::path& folder, const std::string& serial, c
     if (!log.present) {
         return out;
     }
-    out["line_schema"] = {{"schema_id", log.schema_id}, {"schema_version", log.schema_version}};
+    std::map<std::string, uint64_t> rows_by_kind;
+    for (const char* kind : {"result", "no_result", "failed", "other"}) {
+        rows_by_kind[kind] = 0;
+    }
+    for (const auto& [status, count] : log.tally.rows_by_status) {
+        rows_by_kind[kind_for_status(product, status)] += count;
+    }
+    out["line_schema"] = {{"schema_id", log.tally.schema_id}, {"schema_version", log.tally.schema_version}};
     out["frame_identity_key"] = "frame.recording_frame_id";
-    out["row_count"] = log.row_count;
-    out["header_rows"] = log.header_rows;
-    out["parse_errors"] = log.parse_errors;
-    out["first_recording_frame_id"] = log.first_recording_frame_id;
-    out["last_recording_frame_id"] = log.last_recording_frame_id;
-    out["rows_by_kind"] = log.rows_by_kind;
-    out["rows_by_status"] = log.rows_by_status;
+    out["row_count"] = log.tally.row_count;
+    out["header_rows"] = log.tally.header_rows;
+    out["parse_errors"] = log.tally.parse_errors;
+    out["first_recording_frame_id"] = log.tally.first_recording_frame_id;
+    out["last_recording_frame_id"] = log.tally.last_recording_frame_id;
+    out["rows_by_kind"] = rows_by_kind;
+    out["rows_by_status"] = log.tally.rows_by_status;
     out["files"].push_back({{"role", "events"}, {"path", events_name},
                             {"size_bytes", log.size_bytes}, {"sha256", log.sha256}});
-    const nlohmann::json perf = file_entry(folder, perf_name, "perf");
+    const nlohmann::json perf = file_entry(folder, perf_name, "perf", report);
     if (!perf.is_null()) {
         out["files"].push_back(perf);
     }
@@ -218,25 +210,28 @@ nlohmann::json build_realtime_products_json(const std::string& recording_folder,
     // (and the YOLO/pose event loggers' own threads). Seal the folder: every
     // row queued before finalize is on disk, and no writer appends after the
     // hash (the acquisition thread samples pipeline perf until the finalizer
-    // releases the folder, which is after this manifest is written).
+    // releases the folder, which is after this manifest is written). A
+    // completed seal also makes the writers' running digests usable here.
     if (!orange::timing::LogWriter::Instance().SealFolder(recording_folder)) {
         std::cerr << "[realtime_products] log writer did not flush within its timeout; "
                      "per-frame log digests may describe partial files" << std::endl;
     }
+    orange::timing::MarkPhase("realtime_products.seal");
     const fs::path folder(recording_folder);
     std::vector<std::string> model_errors;
     const SnapshotModels models = load_snapshot_models(folder / "recording_snapshot.json", &model_errors);
     for (const std::string& error : model_errors) {
         std::cerr << "[realtime_products] " << error << std::endl;
     }
+    DigestReport report;
     nlohmann::json cameras = nlohmann::json::object();
     for (const std::string& serial : camera_serials) {
         const std::string prefix = "Cam" + serial;
         nlohmann::json camera = {
             {"detections", product_json(folder, serial, "detections",
-                                        prefix + "_yolo_events.jsonl", prefix + "_yolo_perf.csv", models)},
+                                        prefix + "_yolo_events.jsonl", prefix + "_yolo_perf.csv", models, &report)},
             {"pose", product_json(folder, serial, "pose",
-                                  prefix + "_pose_events.jsonl", prefix + "_pose_perf.csv", models)},
+                                  prefix + "_pose_events.jsonl", prefix + "_pose_perf.csv", models, &report)},
             {"crop_files", nlohmann::json::array()},
             {"acquisition_files", nlohmann::json::array()}
         };
@@ -250,7 +245,7 @@ nlohmann::json build_realtime_products_json(const std::string& recording_folder,
                  {prefix + "_crop_meta.csv", "crop_ledger_session"},
                  {prefix + "_crop_perf.csv", "perf"},
                  {prefix + "_crop_sidecar_perf.csv", "perf"}}) {
-            const nlohmann::json entry = file_entry(folder, name, role);
+            const nlohmann::json entry = file_entry(folder, name, role, &report);
             if (!entry.is_null()) camera["crop_files"].push_back(entry);
         }
         for (const auto& [name, role] : std::vector<std::pair<std::string, std::string>>{
@@ -258,11 +253,17 @@ nlohmann::json build_realtime_products_json(const std::string& recording_folder,
                  {prefix + "_ring_release.csv", "diagnostic"},
                  {prefix + "_owner_push.csv", "diagnostic"},
                  {prefix + "_pipeline_perf.csv", "perf"}}) {
-            const nlohmann::json entry = file_entry(folder, name, role);
+            const nlohmann::json entry = file_entry(folder, name, role, &report);
             if (!entry.is_null()) camera["acquisition_files"].push_back(entry);
         }
         cameras[serial] = std::move(camera);
     }
+    // How each digest was obtained: Orange-internal, in the finalize timing
+    // report (the published block above is the same either way).
+    std::cout << "[realtime_products] digests: " << report.writer_files << " file(s) from the writers' running digests ("
+              << report.writer_bytes << " bytes), " << report.reread_files << " re-read (" << report.reread_bytes
+              << " bytes)" << std::endl;
+    orange::timing::NotePhase("realtime_products_digests", report.ToJson());
     return {
         {"schema_id", kRealtimeProductsSchemaId},
         {"schema_version", kRealtimeProductsSchemaVersion},
