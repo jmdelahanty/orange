@@ -4257,6 +4257,9 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
                           observation_pre_arm.reason
                     : "Start refused: the dish entered in the Subject panel differs from Citrus's "
                       "(correct the dish and confirm again)";
+            if (!observation_pre_arm.handshake_error.empty()) {
+                error += " (" + observation_pre_arm.handshake_error + ")";
+            }
             for (const auto& rejection : observation_pre_arm.context_rejections) {
                 error += "; " + rejection.observation_context_id + ": " + rejection.reason;
             }

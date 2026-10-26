@@ -533,11 +533,25 @@ bool execute_recording_observation_pre_arm(
             result_out->lifecycle_status = "unbound";
             result_out->reason = "handshake_not_completed";
             result_out->arm_allowed = binding_mode == "optional";
+            result_out->handshake_error = transport_error;
+            std::cerr << "[recording][citrus] binding handshake not completed: "
+                      << transport_error << std::endl;
         } else if (!response.value("ok", false) ||
                    !response.value("accepted", false)) {
             result_out->lifecycle_status = "unbound";
             result_out->reason = "handshake_rejected";
             result_out->arm_allowed = binding_mode == "optional";
+            const auto error = response.find("error");
+            if (error != response.end() && error->is_string()) {
+                result_out->handshake_error = error->get<std::string>();
+            } else if (error != response.end() && !error->is_null()) {
+                result_out->handshake_error = error->dump();
+            }
+            std::cerr << "[recording][citrus] binding handshake rejected: "
+                      << (result_out->handshake_error.empty()
+                              ? std::string("(Citrus gave no error text)")
+                              : result_out->handshake_error)
+                      << std::endl;
         } else {
             const json effect = response.value("effect", json::object());
             if (!effect.is_object()) {

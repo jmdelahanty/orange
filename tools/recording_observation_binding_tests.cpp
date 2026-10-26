@@ -670,7 +670,57 @@ void test_prearm_required_and_optional_transport_failure_policy()
                     result.transport_attempted &&
                     result.arm_allowed == (mode == "optional"),
                 mode + " transport failure policy is incorrect");
+        require(result.handshake_error == "fixture_transport_unavailable",
+                mode + " transport failure must keep the transport error for the operator");
         std::filesystem::remove_all(root);
+    }
+}
+
+void test_prearm_keeps_citrus_request_refusal_text()
+{
+    // Citrus refuses the whole request before taking the pending slot
+    // (e.g. the rig camera binding check): ok=false with "code: sentence".
+    // The reason stays handshake_rejected; the text reaches the operator and
+    // is not written to the pre-arm decision.
+    const std::string refusal =
+        "rig_binding_camera_not_in_rig: arena_1 camera 2012856 is not a camera "
+        "of rig omnifin0 (/etc/pancakebatter/rigs/omnifin0.yml)";
+    const auto refused = [&refusal](const json&, json* response, std::string*) {
+        *response = {{"ok", false}, {"accepted", false}, {"error", refusal}};
+        return true;
+    };
+    const auto refused_without_text = [](const json&, json* response, std::string*) {
+        *response = {{"ok", false}};
+        return true;
+    };
+    for (const std::string mode : {"required", "optional"}) {
+        for (const bool with_text : {true, false}) {
+            const auto root = make_materialization_fixture(resolved_geometry());
+            orange::session::RecordingObservationBindingRequestMaterialization requests;
+            orange::session::RecordingObservationPreArmResult result;
+            std::string error;
+            const orange::session::RecordingObservationBindingTransport transport =
+                with_text ? orange::session::RecordingObservationBindingTransport(refused)
+                          : orange::session::RecordingObservationBindingTransport(refused_without_text);
+            require(orange::session::prepare_recording_observation_pre_arm(
+                        root.string(), mode, "2026-08-13T16:00:00Z",
+                        &requests, &result, &error, transport),
+                    mode + " refused handshake should produce an explicit decision: " + error);
+            require(result.lifecycle_status == "unbound" &&
+                        result.reason == "handshake_rejected" &&
+                        result.transport_attempted &&
+                        result.acceptances.empty() &&
+                        result.context_rejections.empty() &&
+                        result.arm_allowed == (mode == "optional"),
+                    mode + " refused handshake policy is incorrect");
+            require(result.handshake_error == (with_text ? refusal : std::string()),
+                    mode + " refused handshake must keep Citrus's error text verbatim");
+            require(!result.decision_relative_path.empty(), "refused handshake wrote no decision");
+            require(read_file(root / result.decision_relative_path).find("rig_binding") ==
+                        std::string::npos,
+                    "the refusal text must not enter the pre-arm decision");
+            std::filesystem::remove_all(root);
+        }
     }
 }
 
@@ -2071,6 +2121,7 @@ int main()
         test_prearm_required_acceptance_is_persisted_and_idempotent();
         test_prearm_rejects_non_atomic_or_inconsistent_batch();
         test_prearm_required_and_optional_transport_failure_policy();
+        test_prearm_keeps_citrus_request_refusal_text();
         test_prearm_not_applicable_never_contacts_citrus();
         test_request_v2_carries_frozen_recording_context();
         test_prearm_surfaces_v2_context_rejection_reasons();

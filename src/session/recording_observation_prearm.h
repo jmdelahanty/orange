@@ -40,6 +40,12 @@ struct RecordingObservationPreArmResult {
         std::string reason;
     };
     std::vector<ContextRejection> context_rejections;
+    // The handshake's own failure text, for the operator: Citrus's "error"
+    // when it refuses the whole request (reason handshake_rejected, e.g.
+    // "rig_binding_camera_not_in_rig: ..."), or the transport error when the
+    // handshake never completed (reason handshake_not_completed). Empty
+    // otherwise. Not written to the pre-arm decision.
+    std::string handshake_error;
     // Acceptance v3 only: Citrus's per-camera dish declaration compared with
     // the operator's frozen entry (orange.recording_subject_cross_check v1,
     // written to <recording>/subject_cross_check.json);
