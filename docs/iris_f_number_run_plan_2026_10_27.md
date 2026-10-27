@@ -38,13 +38,27 @@ does, and the GUI already has what the sweep needs:
 - the **Iris** slider in Camera Properties writes while streaming. It is
   locked only during a recording. Each write waits for the lens and verifies
   the read-back (`src/gui/camera_properties_panel.cpp:495`);
-- **Save pictures all** writes one full-resolution frame from every camera
-  under one timestamp name (`src/orange.cpp:7319`);
-- the **Intensity Histogram** panel shows the mean, p99 and clipped % over N
-  preview frames, as a live sanity check.
+- the **Intensity Histogram** panel shows the mean, p1/p50/p99 and clipped %
+  over N averaged preview frames (`src/orange.cpp:8463`). The preview is
+  box-downsampled on the GPU, so the mean is preserved.
 
-So the run needs no code, no Citrus scene, and no filter change: the R72
-stays in, the light is the production 855 nm illumination, and focus is
+**Save pictures does not work** in the current pipeline (code reading,
+2026-10-27): the job queued at `src/acquire_frames.cpp:2696` carries only the
+event pointer. `ImageWriterWorker` then finds no CPU buffer and writes nothing,
+and `~/orange_data/pictures` is empty. So this plan has two capture options:
+
+- **A, now, no code:** read the Intensity Histogram numbers by hand. You get
+  whole-frame stats only, no files and no central ROI. That's enough for the
+  relative curve, because vignetting is small at these apertures: the 12.4 mm
+  sensor uses only the centre of the EF image circle.
+- **B, after the scene-capture CLI exists** (scope branch
+  `agent/calibration/scene-brightness-capture-20261020`, waiting for Jeremy):
+  that CLI already runs bounded `orange_client` captures on all four cameras
+  with the IR lit. An Iris ladder field would make the sweep automatic, with
+  raw block maps per step. This is better data, but needs code and a build.
+
+Either way, the run needs no Citrus scene and no filter change: the R72 stays
+in, the light is the production 855 nm illumination, and focus is
 untouched.
 
 ## Conditions
@@ -92,32 +106,35 @@ All four cameras step together; each camera's iris is independent.
 
 1. Launch the GUI as usual (your sudo), open cameras, start streaming. Note
    the four Iris ranges and the exposure/gain limits from Camera Properties.
-2. Save one test picture and check that it is 4512 × 4512 Mono8.
+2. Open the Intensity Histogram panel: Frames to average 30.
 3. Wait out the 30 minute warm-up.
 4. For each segment:
    - set exposure and gain on all four cameras;
-   - **darks:** caps on all four lenses, Save pictures all ×3, caps off;
+   - **darks:** caps on all four lenses, histogram Grab on each camera,
+     caps off;
    - **up sweep:** Iris 0 → 32 (S1), 24 → 56 (S2), 40 → 56 (S3), step 4. At
      each value: set Iris on all four (slider release), wait until the GUI
-     log shows the verified iris plus 2 s, then Save pictures all ×3;
+     log shows the verified iris plus 2 s, then histogram Grab on each
+     camera (option B: the CLI does this step);
    - **down sweep** over the same values;
    - Iris 24 (S3: Iris 48) at the start, middle and end, for drift;
-   - write the sheet as you go: picture timestamp name, Iris, exposure, gain,
-     segment, up/down. The GUI log has the iris writes with times as a
-     cross-check.
+   - write the sheet as you go: camera, Iris, exposure, gain, segment,
+     up/down, mean, p99, clipped %. The GUI log has the iris writes with times
+     as a cross-check.
 5. Restore on all four: Iris 24, exposure 100 µs, gain 256. Remove the
    targets. Stop streaming, start again: the exposure check must say `ok`
    (or `ok after re-home`) on every camera before the next fish recording.
 
-Time: about 70 Iris states × 3 saves, at ~1 min per state, plus darks and
-warm-up: about **1.5–2 h** for all four cameras together. Disk: about 20 MB
-per frame, so ~17 GB on the OS drive (1.2 T free).
+Time (option A): about 70 Iris states, ~1–1.5 min per state for four
+histogram reads, plus darks and warm-up: about **2 h** for all four cameras
+together. No disk use.
 
 ## Analysis (offline, after the run)
 
-- Per frame: dark-subtracted mean over a central ROI (the centre 1/4 of the
-  field, to keep wide-open vignetting out of the anchor), plus the 8 × 8 grid.
-  Frames with any clipped pixel in the ROI are dropped.
+- Option A: the hand-read means, dark-subtracted; a state with clipped
+  > 0.1 % is dropped. Option B: per frame, the dark-subtracted mean over a
+  central ROI (the centre 1/4 of the field) plus the 8 × 8 grid; frames with
+  any clipped pixel in the ROI are dropped.
 - Per segment: ΔEV(Iris) = log2(mean(Iris) / mean(ref)); segments stitched by
   the median overlap ratio.
 - Drift: Iris 24 repeats bracket each sweep. Drift above 1 % is linearly
@@ -130,10 +147,11 @@ per frame, so ~17 GB on the OS drive (1.2 T free).
 - Output: `~/orange_data/calibrations/optics/<date>/Cam<serial>_iris_f_number.{json,csv}`,
   schema `orange.optics.iris_f_number_characterization` v1, method
   `photometric_relative` anchored at Iris 0. It carries every source file's
-  sha256, and measured and inferred values are never mixed. rig-designer
+  sha256 (option A: the sheet), and measured and inferred values are never
+  mixed. rig-designer
   reads it.
-- The analysis script is offline Python (juicebox env) and can be written and
-  tested on the March frames before the run.
+- The analysis script is offline Python (juicebox env). It can be written
+  and tested on the March frames before the run.
 
 ## Limits
 
