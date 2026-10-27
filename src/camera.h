@@ -346,7 +346,8 @@ void test_gpo_manual_toggle(Emergent::CEmergentCamera* camera);
 void change_camera_ip_persistent(GigEVisionDeviceInfo* device_info, Emergent::CEmergentCamera* camera, const char* new_ip, CameraParams *camera_params);
 void update_color_temperature(Emergent::CEmergentCamera *camera, std::string color_string, CameraParams *camera_params);
 void update_gain_value(Emergent::CEmergentCamera* camera, int gain_val, CameraParams* camera_params);
-void update_exposure_value(Emergent::CEmergentCamera* camera, int exposure_val, CameraParams* camera_params);
+// Writes Exposure when it lies in the camera's current range; false (logged) otherwise.
+bool update_exposure_value(Emergent::CEmergentCamera* camera, int exposure_val, CameraParams* camera_params);
 void update_exposure_framerate_value(Emergent::CEmergentCamera *camera, int exposure_val, int* frame_rate_val, CameraParams *camera_params);
 void update_frame_rate_value(Emergent::CEmergentCamera* camera, int frame_rate_val, CameraParams* camera_params);
 void update_width_value(Emergent::CEmergentCamera* camera, int width_val, CameraParams* camera_params);

@@ -1866,17 +1866,30 @@ void update_height_value(Emergent::CEmergentCamera *camera, int height_val, Came
 }
 
 
-void update_exposure_value(Emergent::CEmergentCamera *camera, int exposure_val, CameraParams *camera_params)
+bool update_exposure_value(Emergent::CEmergentCamera *camera, int exposure_val, CameraParams *camera_params)
 {
     EVT_CameraGetUInt32ParamMax(camera, "Exposure", &camera_params->exposure_max);
     EVT_CameraGetUInt32ParamMin(camera, "Exposure", &camera_params->exposure_min);
     EVT_CameraGetUInt32ParamInc(camera, "Exposure", &camera_params->exposure_inc);
 
-    if (exposure_val >= static_cast<int>(camera_params->exposure_min) && exposure_val <= static_cast<int>(camera_params->exposure_max))
+    if (exposure_val < static_cast<int>(camera_params->exposure_min) || exposure_val > static_cast<int>(camera_params->exposure_max))
     {
-        EVT_CameraSetUInt32Param(camera, "Exposure", exposure_val);
-        camera_params->exposure = exposure_val;
+        std::cout << camera_params->camera_serial
+                  << " [update_exposure_value] Exposure set SKIPPED: requested=" << exposure_val
+                  << " out of range=[" << camera_params->exposure_min << "," << camera_params->exposure_max << "]"
+                  << std::endl;
+        return false;
     }
+    const EVT_ERROR set_err = EVT_CameraSetUInt32Param(camera, "Exposure", exposure_val);
+    if (set_err != EVT_SUCCESS) {
+        std::cout << camera_params->camera_serial
+                  << " [update_exposure_value] Exposure set FAIL: requested=" << exposure_val
+                  << " error=" << get_evt_error_string(set_err)
+                  << std::endl;
+        return false;
+    }
+    camera_params->exposure = exposure_val;
+    return true;
 }
 
 
@@ -2097,16 +2110,21 @@ void open_camera_with_params(Emergent::CEmergentCamera *camera,
     // check_camera_errors(EVT_CameraSetUInt32Param(camera, "Gain", camera_params.gain));
     update_gain_value(camera, camera_params->gain, camera_params);
 
-    // check_camera_errors(EVT_CameraSetUInt32Param(camera, "Exposure", camera_params->exposure));
-    update_exposure_value(camera, camera_params->exposure, camera_params);
-
-    // unsigned int frame_rate_max;
-    // check_camera_errors(EVT_CameraGetUInt32ParamMax(camera, "FrameRate", &frame_rate_max));
-    // printf("FrameRate Max: \t\t%d\n", frame_rate_max);
-
-    // check_camera_errors(EVT_CameraSetUInt32Param(camera, "FrameRate", camera_params->frame_rate));
-    // printf("FrameRate Set to: \t%d\n", camera_params.frame_rate);
+    // Exposure's range depends on the current FrameRate and FrameRate's on the
+    // current Exposure, so no single order fits every change. Exposure first
+    // covers a shorter exposure at a higher rate; a longer exposure that only
+    // fits the new, lower rate is out of range until FrameRate is written, so
+    // it is written again after FrameRate.
+    const int requested_exposure = static_cast<int>(camera_params->exposure);
+    const bool exposure_written = update_exposure_value(camera, requested_exposure, camera_params);
     update_frame_rate_value(camera, camera_params->frame_rate, camera_params);
+    if (!exposure_written) {
+        const bool written_after_frame_rate = update_exposure_value(camera, requested_exposure, camera_params);
+        std::cout << camera_params->camera_serial
+                  << " [open_camera_with_params] Exposure " << requested_exposure
+                  << (written_after_frame_rate ? " set after FrameRate" : " still not set after FrameRate")
+                  << std::endl;
+    }
     if (camera_params->lens_control_enabled) {
         const bool focus_ok = set_focus_value_checked(camera, static_cast<int>(camera_params->focus), camera_params, "open_camera_with_params");
         const int configured_iris = static_cast<int>(camera_params->iris);

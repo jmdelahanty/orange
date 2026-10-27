@@ -16,6 +16,7 @@
 #include <iostream>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -560,11 +561,16 @@ void apply_overrides(CEmergentCamera* camera, CameraParams* camera_params, const
     if (options.gain_set) {
         update_gain_value(camera, static_cast<int>(options.gain), camera_params);
     }
-    if (options.exposure_set) {
-        update_exposure_value(camera, static_cast<int>(options.exposure), camera_params);
-    }
+    // A longer exposure may only fit after the lower FrameRate is written, so a
+    // skipped Exposure is written again after FrameRate (as in camera open).
+    const bool exposure_written =
+        options.exposure_set && update_exposure_value(camera, static_cast<int>(options.exposure), camera_params);
     if (options.frame_rate_set) {
         update_frame_rate_value(camera, static_cast<int>(options.frame_rate), camera_params);
+    }
+    if (options.exposure_set && !exposure_written &&
+        !update_exposure_value(camera, static_cast<int>(options.exposure), camera_params)) {
+        throw std::runtime_error("Exposure " + std::to_string(options.exposure) + " is out of the camera's range");
     }
     if (options.focus_set) {
         update_focus_value(camera, static_cast<int>(options.focus), camera_params);
