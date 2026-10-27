@@ -55,6 +55,18 @@ Existing image and lens fields remain at the top level:
 - `offset_x`
 - `offset_y`
 
+`width`, `height`, `offset_x` and `offset_y` describe the camera's area of
+interest (AOI) on the sensor, not the sensor itself: the stream raster is
+`width` x `height` pixels starting at sensor pixel (`offset_x`, `offset_y`),
+and that raster is the `camera_native_pixels` space every Orange output uses
+(definition in `docs/recording_metadata.md`). The sensor extent is the
+camera's `X_RES` x `Y_RES` (4512 x 4512 on the HB-20000SBM) and is read
+back, together with `Bin`, into `camera_runtime.<serial>.sensor_pipeline.raster_geometry`.
+Orange does not set `Bin`; it assumes `1x1` and records a mismatch if the
+camera is binned. A user who sets a sub-sensor AOI or an offset must
+re-run every pixel-space calibration, because the registrations and the
+Citrus homographies are fitted in the AOI raster and are not translated.
+
 Schema and GPIO-related fields:
 
 - `schema_id`

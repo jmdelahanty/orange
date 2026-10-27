@@ -83,9 +83,12 @@ Related contracts:
   resize the canonical area.
 - [x] Keep `dish_mask.outer_geometry` as the physical inner rim and
   `dish_mask.valid_geometry` as the separately derived centroid gate.
-- [x] Record coordinate origin, axis directions, pixel-center convention,
-  boundary-inclusion rule, camera-native raster, and target plane with every
-  runtime geometry.
+- [x] Record coordinate origin, axis directions, boundary-inclusion rule,
+  camera-native raster, and target plane with every runtime geometry.
+- [ ] Record the pixel convention with every runtime geometry. Orange's
+  convention is continuous pixel edge, not pixel centre; it was defined on
+  2026-10-27 in `docs/recording_metadata.md` ("The `camera_native_pixels`
+  space") and no runtime geometry carries a field for it yet.
 - [x] Prohibit cross-camera and cross-arena fallback.
 - [ ] Prohibit mutation of calibration packages while an experiment is armed or
   active.

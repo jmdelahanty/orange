@@ -24,8 +24,11 @@ Citrus ownership, the 3 mm target-plane contract, scale QC, and explicit
 candidate promotion, see `docs/projected_surface_scale_commissioning.md`.
 
 Camera-raster coordinate convention is shared with the calibration image-set
-contract: `(0,0)` is the top-left camera pixel, `x` increases right, and `y`
-increases downward. The Orange live stream and grouped-capture thumbnails are
+contract and defined once in `docs/recording_metadata.md` ("The
+`camera_native_pixels` space"): `(0,0)` is the top-left camera pixel, `x`
+increases right, `y` increases downward, coordinates are continuous pixel
+edge (pixel `i` spans `[i, i + 1)`), and the raster is the camera's
+unbinned AOI. The Orange live stream and grouped-capture thumbnails are
 the visual reference for this orientation. Spatial Layout preview canvases must
 render images to match that convention; if a preview appears flipped relative
 to the live stream, fix the preview renderer rather than flipping saved images

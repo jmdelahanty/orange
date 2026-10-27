@@ -440,9 +440,9 @@ Notes:
 - `coordinate_frame` is emitted from the resolved camera dimensions and raster
   convention, not from `calibrations`. Consumers should use it even when
   `calibrations` is absent.
-- `coordinate_frame.coordinate_space = "camera_native_pixels"` means the raw
-  producer camera raster: `(0,0)` is the top-left pixel, `x` increases right,
-  `y` increases downward, and points are ordered `[x, y]`.
+- `coordinate_frame.coordinate_space = "camera_native_pixels"` is defined
+  once, below, in "The `camera_native_pixels` space". Every other Orange
+  document and schema that names it refers to that definition.
 - `coordinate_frame.extent.x_max_exclusive_px` and
   `coordinate_frame.extent.y_max_exclusive_px` give the half-open continuous
   image extent. `pixel_indexing.valid_*_index_max` gives the largest valid
@@ -455,6 +455,54 @@ Notes:
   corresponding PTP gate times were populated at snapshot time.
 - `barriers` and `signals` are a best-effort capture of current synchronization
   state at recording start; they are not a complete event log.
+
+### The `camera_native_pixels` space
+
+This is the one definition of `camera_native_pixels`. The names
+`full_frame_pixels` and `source_frame_pixels` in older outputs mean the same
+space.
+
+- **Raster.** The camera's stream raster: `Width` x `Height` pixels at
+  `OffsetX`, `OffsetY` on the sensor, as configured in the camera JSON
+  (`width`, `height`, `offset_x`, `offset_y`) and applied by the camera. This
+  is the area of interest (AOI), not the sensor: the sensor is larger when the
+  AOI is offset or smaller than `X_RES` x `Y_RES`. On pancake0 the AOI is the
+  whole 4512 x 4512 sensor at offset 0. Orange assumes the camera is unbinned
+  (`Bin = 1x1`); a 2x2 binning halves the raster and invalidates every
+  calibration fitted in this space. Between the camera and everything Orange
+  writes (full-frame video, crops, detections, pose, masks, registrations)
+  there is no flip, rotation, binning, decimation or resampling, so a recorded
+  video pixel `(x, y)` is stream pixel `(x, y)`.
+- **Origin and axes.** `(0, 0)` is the top-left pixel of the stream raster.
+  `x` increases to the right (column index), `y` increases downward (row
+  index). Indices are 0-based and points are ordered `[x, y]`. The visual
+  reference for this orientation is the Orange live stream
+  (`coordinate_frame.orientation_reference = "orange_live_stream"`).
+- **Pixel convention.** Continuous pixel edge: integer coordinate `i` is the
+  left (top) edge of pixel `i`, which spans `[i, i + 1)`, and its centre is
+  `i + 0.5`. The image extent is half-open, `[0, Width) x [0, Height)`.
+  Detection boxes are float top-left `x, y, w, h` clamped to this extent,
+  keypoints are float positions in the same convention, and crop origins are
+  integers (the crop's top-left edge). Orange adds no half-pixel term
+  anywhere. A consumer that fits a pixel-centre model (for example a
+  homography fitted to pixel-centre coordinates) converts with
+  `x_centre = x_edge - 0.5` and must say so in its own artifact.
+- **Where it is declared and checked.** The space is declared per camera in
+  `camera_runtime.<serial>.coordinate_frame`, built from the configured
+  `width` and `height` (`src/project.cpp`,
+  `build_camera_coordinate_frame_snapshot`). The camera's applied values are
+  read back separately into `camera_runtime.<serial>.sensor_pipeline`
+  (schema `orange.camera.sensor_pipeline_state` version 2), whose
+  `raster_geometry` block relates the sensor to the AOI (`bin`, sensor
+  extent, AOI offset and size, `aoi_is_full_sensor`, flip and subsampling node
+  presence) and whose `requested_readbacks.Bin` compares the unbinned
+  assumption with the camera. Today the readback is evidence only: a
+  configured-versus-applied difference is recorded, not refused.
+- **Not yet declared.** The viewing side of the camera (dorsal or ventral),
+  mirrors in the optical path and the camera's physical rotation are not in
+  any Orange output; they are rig facts owned by the pancakebatter rig
+  document (`rigs/<rig_id>/rig.yml`), which Orange will seal once it is
+  installed.
 
 ## Spatial Calibration Extension
 
