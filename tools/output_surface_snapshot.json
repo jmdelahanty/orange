@@ -463,7 +463,7 @@
   "schemas": [
    [
     "orange.camera.sensor_pipeline_state",
-    "1"
+    "2"
    ]
   ]
  },
@@ -525,9 +525,16 @@
   "json_keys": [
    "all_requested_features_readable",
    "all_requested_readbacks_match",
+   "aoi",
+   "aoi_is_full_sensor",
    "applied_state_status",
    "applied_value",
    "attribute_error",
+   "bin",
+   "bin_factor",
+   "bin_status",
+   "binning_horizontal",
+   "binning_vertical",
    "byte_count",
    "camera",
    "candidate_node_count",
@@ -536,13 +543,19 @@
    "category",
    "code",
    "complete_table_collected",
+   "coordinate_space",
+   "decimation_horizontal",
+   "decimation_vertical",
    "embedded",
    "error",
    "error_count",
    "evt_sdk_version",
    "features",
    "firmware",
+   "flip_nodes",
    "genicam_xml",
+   "height_max_px",
+   "height_px",
    "increment",
    "interpretation",
    "inventory_summary",
@@ -554,7 +567,11 @@
    "name",
    "node_name",
    "node_type",
+   "note",
+   "offset_x_px",
+   "offset_y_px",
    "options",
+   "raster_geometry",
    "read_error",
    "read_only",
    "readable",
@@ -564,21 +581,29 @@
    "requested_feature_values",
    "requested_readbacks",
    "requested_value",
+   "reverse_x",
+   "reverse_y",
    "schema_id",
    "schema_version",
    "scope",
    "selector_writes_performed",
+   "sensor",
    "serial",
    "sha256",
+   "source",
    "status",
+   "stream_raster",
+   "subsampling_nodes",
    "supported",
    "unsupported_count",
-   "value"
+   "value",
+   "width_max_px",
+   "width_px"
   ],
   "schemas": [
    [
     "orange.camera.sensor_pipeline_state",
-    "1"
+    "2"
    ]
   ]
  },
@@ -5170,7 +5195,7 @@
    ],
    [
     "orange.camera.sensor_pipeline_state",
-    "1"
+    "2"
    ],
    [
     "orange.host_clock.configuration",

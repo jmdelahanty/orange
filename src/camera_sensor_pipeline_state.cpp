@@ -124,6 +124,19 @@ const std::vector<FeatureSpec>& feature_specs()
         {"Height", "image_geometry", "Applied ROI height in native camera pixels."},
         {"OffsetX", "image_geometry", "ROI origin X; not the analog black-level offset."},
         {"OffsetY", "image_geometry", "ROI origin Y; not the analog black-level offset."},
+        {"Bin", "image_geometry", "On-sensor binning (1x1 = unbinned). 2x2 halves the stream raster; every Orange pixel-space calibration assumes 1x1."},
+        {"X_RES", "image_geometry", "Firmware sensor width constant (unbinned sensor raster), independent of the AOI; EVT HB firmware exposes it as a SwissKnife."},
+        {"Y_RES", "image_geometry", "Firmware sensor height constant (unbinned sensor raster), independent of the AOI."},
+        {"WIDTH_MAX", "image_geometry", "Largest Width at the current OffsetX and Bin (X_RES / bin - OffsetX)."},
+        {"HEIGHT_MAX", "image_geometry", "Largest Height at the current OffsetY and Bin (Y_RES / bin - OffsetY)."},
+        {"SensorWidth", "image_geometry", "SFNC sensor width, if exposed; absent on EVT HB firmware (use X_RES)."},
+        {"SensorHeight", "image_geometry", "SFNC sensor height, if exposed; absent on EVT HB firmware (use Y_RES)."},
+        {"ReverseX", "image_geometry", "SFNC horizontal flip. `unsupported` is evidence the camera cannot mirror the raster in firmware."},
+        {"ReverseY", "image_geometry", "SFNC vertical flip. `unsupported` is evidence the camera cannot mirror the raster in firmware."},
+        {"BinningHorizontal", "image_geometry", "SFNC binning alias, if exposed; EVT HB firmware uses Bin instead."},
+        {"BinningVertical", "image_geometry", "SFNC binning alias, if exposed; EVT HB firmware uses Bin instead."},
+        {"DecimationHorizontal", "image_geometry", "SFNC decimation, if exposed; `unsupported` means no subsampling stage exists."},
+        {"DecimationVertical", "image_geometry", "SFNC decimation, if exposed; `unsupported` means no subsampling stage exists."},
         {"FrameRate", "exposure_timing", "Applied camera frame rate."},
         {"Exposure", "exposure_timing", "Applied exposure time in the camera node's units."},
         {"Gain", "gain", "Emergent digital gain; linear multiplier is Gain/256."},
@@ -327,6 +340,131 @@ bool read_genicam_xml(
     return true;
 }
 
+namespace {
+
+const nlohmann::json* readable_feature(const nlohmann::json& features, const char* name)
+{
+    if (!features.is_object()) return nullptr;
+    const auto found = features.find(name);
+    if (found == features.end()) return nullptr;
+    if (!found->value("readable", false) || !found->contains("value")) return nullptr;
+    return &(*found);
+}
+
+nlohmann::json feature_status(const nlohmann::json& features, const char* name)
+{
+    if (!features.is_object()) return "not_in_inventory";
+    const auto found = features.find(name);
+    if (found == features.end()) return "not_in_inventory";
+    return found->value("status", std::string("unknown"));
+}
+
+nlohmann::json integer_value(const nlohmann::json* feature, const char* key = "value")
+{
+    if (feature == nullptr || !feature->contains(key)) return nullptr;
+    const nlohmann::json& value = (*feature)[key];
+    if (value.is_number_integer()) return value.get<long long>();
+    if (value.is_number()) return static_cast<long long>(value.get<double>());
+    return nullptr;
+}
+
+}  // namespace
+
+nlohmann::json summarize_raster_geometry(const nlohmann::json& features)
+{
+    // Bin: the enum entry name ("1x1", "2x2", ...) carries the factor.
+    nlohmann::json bin = nullptr;
+    nlohmann::json bin_factor = nullptr;
+    if (const nlohmann::json* feature = readable_feature(features, "Bin")) {
+        const nlohmann::json& value = (*feature)["value"];
+        if (value.is_string()) {
+            bin = value;
+            const std::string text = value.get<std::string>();
+            const auto x = text.find('x');
+            if (x != std::string::npos && x > 0) {
+                try {
+                    bin_factor = std::stoll(text.substr(0, x));
+                } catch (const std::exception&) {
+                    bin_factor = nullptr;
+                }
+            }
+        }
+    }
+
+    const nlohmann::json width = integer_value(readable_feature(features, "Width"));
+    const nlohmann::json height = integer_value(readable_feature(features, "Height"));
+    const nlohmann::json offset_x = integer_value(readable_feature(features, "OffsetX"));
+    const nlohmann::json offset_y = integer_value(readable_feature(features, "OffsetY"));
+    const nlohmann::json width_max = integer_value(readable_feature(features, "Width"), "max");
+    const nlohmann::json height_max = integer_value(readable_feature(features, "Height"), "max");
+
+    // Sensor extent: the firmware constant when readable, otherwise derived from
+    // the Width/Height maxima, which the EVT HB GenICam XML defines as
+    // X_RES / bin - OffsetX (so sensor = (max + offset) * bin).
+    nlohmann::json sensor_width = integer_value(readable_feature(features, "X_RES"));
+    nlohmann::json sensor_height = integer_value(readable_feature(features, "Y_RES"));
+    std::string sensor_extent_source = "firmware_constant";
+    if (sensor_width.is_null() || sensor_height.is_null()) {
+        sensor_width = nullptr;
+        sensor_height = nullptr;
+        sensor_extent_source = "unavailable";
+        if (!width_max.is_null() && !height_max.is_null() &&
+            !offset_x.is_null() && !offset_y.is_null() && !bin_factor.is_null()) {
+            const long long factor = bin_factor.get<long long>();
+            sensor_width = (width_max.get<long long>() + offset_x.get<long long>()) * factor;
+            sensor_height = (height_max.get<long long>() + offset_y.get<long long>()) * factor;
+            sensor_extent_source = "derived_from_width_max_offset_and_bin";
+        }
+    }
+
+    nlohmann::json aoi_is_full_sensor = nullptr;
+    if (!sensor_width.is_null() && !sensor_height.is_null() && !width.is_null() &&
+        !height.is_null() && !offset_x.is_null() && !offset_y.is_null() &&
+        !bin_factor.is_null()) {
+        const long long factor = bin_factor.get<long long>();
+        aoi_is_full_sensor =
+            offset_x.get<long long>() == 0 && offset_y.get<long long>() == 0 &&
+            width.get<long long>() * factor == sensor_width.get<long long>() &&
+            height.get<long long>() * factor == sensor_height.get<long long>();
+    }
+
+    return {
+        {"note", "Readback-derived relation between the physical sensor and the applied AOI. The stream raster (Width x Height after Bin) is the camera_native_pixels raster Orange records and calibrates in; OffsetX/OffsetY locate it on the sensor. Evidence only."},
+        {"bin", bin},
+        {"bin_factor", bin_factor},
+        {"bin_status", feature_status(features, "Bin")},
+        {"sensor", {
+            {"width_px", sensor_width},
+            {"height_px", sensor_height},
+            {"source", sensor_extent_source},
+        }},
+        {"aoi", {
+            {"offset_x_px", offset_x},
+            {"offset_y_px", offset_y},
+            {"width_px", width},
+            {"height_px", height},
+            {"width_max_px", width_max},
+            {"height_max_px", height_max},
+        }},
+        {"stream_raster", {
+            {"coordinate_space", "camera_native_pixels"},
+            {"width_px", width},
+            {"height_px", height},
+        }},
+        {"aoi_is_full_sensor", aoi_is_full_sensor},
+        {"flip_nodes", {
+            {"reverse_x", feature_status(features, "ReverseX")},
+            {"reverse_y", feature_status(features, "ReverseY")},
+        }},
+        {"subsampling_nodes", {
+            {"binning_horizontal", feature_status(features, "BinningHorizontal")},
+            {"binning_vertical", feature_status(features, "BinningVertical")},
+            {"decimation_horizontal", feature_status(features, "DecimationHorizontal")},
+            {"decimation_vertical", feature_status(features, "DecimationVertical")},
+        }},
+    };
+}
+
 void add_requested_readbacks(
     nlohmann::json* state,
     const nlohmann::json& requested_feature_values,
@@ -403,7 +541,7 @@ nlohmann::json capture_state(
 {
     nlohmann::json state = {
         {"schema_id", "orange.camera.sensor_pipeline_state"},
-        {"schema_version", 1},
+        {"schema_version", 2},
         {"captured_at_utc", utc_now()},
         {"capture_stage", capture_stage},
         {"read_only", true},
@@ -461,6 +599,8 @@ nlohmann::json capture_state(
             {"embedded", false},
         };
     }
+
+    state["raster_geometry"] = summarize_raster_geometry(state["features"]);
 
     add_requested_readbacks(
         &state, requested_feature_values, requested_feature_sources);

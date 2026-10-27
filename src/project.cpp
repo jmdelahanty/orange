@@ -3712,7 +3712,7 @@ nlohmann::json build_camera_runtime_snapshot(const CameraParams& camera_params)
     snapshot["sensor_pipeline"] = camera_params.sensor_pipeline_state.empty()
         ? nlohmann::json{
             {"schema_id", "orange.camera.sensor_pipeline_state"},
-            {"schema_version", 1},
+            {"schema_version", 2},
             {"capture_stage", "not_captured"},
             {"applied_state_status", "unavailable"},
         }

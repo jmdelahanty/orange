@@ -2160,6 +2160,7 @@ void open_camera_with_params(Emergent::CEmergentCamera *camera,
             {"Exposure", camera_params->exposure},
             {"Gain", camera_params->gain},
             {"PixelFormat", camera_params->pixel_format},
+            {"Bin", "1x1"},
             {"LUTEnable", false},
             {"AutoGain", false},
         };
@@ -2172,6 +2173,10 @@ void open_camera_with_params(Emergent::CEmergentCamera *camera,
             {"Exposure", "camera_config"},
             {"Gain", "camera_config"},
             {"PixelFormat", "camera_config"},
+            // Orange never writes Bin; its raster geometry (config Width x
+            // Height == the recorded raster) is only valid unbinned, so a
+            // binned camera must show up as a mismatch here.
+            {"Bin", "orange_unbinned_raster_assumption"},
             {"LUTEnable", "orange_factory_defaults"},
             {"AutoGain", "orange_factory_defaults"},
         };
@@ -2205,7 +2210,7 @@ void open_camera_with_params(Emergent::CEmergentCamera *camera,
     } catch (const std::exception& error) {
         camera_params->sensor_pipeline_state = {
             {"schema_id", "orange.camera.sensor_pipeline_state"},
-            {"schema_version", 1},
+            {"schema_version", 2},
             {"capture_stage", "post_configuration_pre_stream"},
             {"read_only", true},
             {"applied_state_status", "capture_error"},

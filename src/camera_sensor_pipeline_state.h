@@ -40,6 +40,11 @@ bool read_genicam_xml(
     std::string* xml_out,
     std::string* error_out);
 
+// Relates the physical sensor to the applied AOI from an already collected
+// `features` object (Bin, X_RES/Y_RES or the Width/Height maxima, OffsetX/Y,
+// Width/Height, flip and subsampling node presence). Pure; unit tested.
+nlohmann::json summarize_raster_geometry(const nlohmann::json& features);
+
 // Adds requested-vs-applied comparisons to an already collected state. This
 // is separate from hardware I/O so the contract can be unit tested without a
 // camera and reused by the standalone capability probe.

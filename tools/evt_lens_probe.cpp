@@ -455,6 +455,18 @@ void print_sensor_pipeline_state(const nlohmann::json& state)
     std::cout << "  readable=" << summary.value("readable_count", 0)
               << " unsupported=" << summary.value("unsupported_count", 0)
               << " errors=" << summary.value("error_count", 0) << "\n";
+    if (state.contains("raster_geometry")) {
+        const nlohmann::json& geometry = state["raster_geometry"];
+        std::cout << "  raster: bin=" << geometry["bin"].dump()
+                  << " sensor=" << geometry["sensor"]["width_px"].dump() << "x"
+                  << geometry["sensor"]["height_px"].dump()
+                  << " (" << geometry["sensor"].value("source", std::string("?")) << ")"
+                  << " aoi=" << geometry["aoi"]["width_px"].dump() << "x"
+                  << geometry["aoi"]["height_px"].dump() << "+"
+                  << geometry["aoi"]["offset_x_px"].dump() << "+"
+                  << geometry["aoi"]["offset_y_px"].dump()
+                  << " full_sensor=" << geometry["aoi_is_full_sensor"].dump() << "\n";
+    }
     const nlohmann::json& xml = state.at("genicam_xml");
     std::cout << "  GenICam XML: " << xml.value("status", std::string("unknown"));
     if (xml.contains("sha256")) std::cout << " " << xml["sha256"].get<std::string>();
