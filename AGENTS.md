@@ -289,9 +289,12 @@ Orange/Citrus commissioning) are in git history of this file and in
   (`sudo ~/pancakebatter/install_ptp_units.sh --restart`, which checks).
 - Crop-only (`media_products.mode = registered_context_and_moving_crops`):
   in the code since 2026-09-23, never run on the rig. It needs an accepted
-  per-camera registration (Orange physical or selected daily; the rig has
-  none, recordings use the commissioned base geometry) and the operator's
-  scene declarations. Citrus and Palette are told it will become an intake
+  per-camera registration (Orange physical or selected daily). Cam2010093 has
+  an accepted physical registration since 2026-10-09
+  (`~/orange_data/calibrations/active/physical_dish_registration/Cam2010093.json`);
+  the other three cameras have none, and recordings still use the
+  commissioned base geometry. It also needs the operator's scene
+  declarations. Citrus and Palette are told it will become an intake
   method; neither accepts its layout yet.
 
 ## Production 5c6a26d, 2026-10-14
