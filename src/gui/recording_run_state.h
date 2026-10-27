@@ -29,6 +29,10 @@ struct GuiRecordingRunState {
     bool duration_deadline_stop_issued = false;
     std::chrono::steady_clock::time_point duration_deadline{};
     bool diagnostic_finalize_stall_reported = false;
+    // When the finalize gate asked the acquisition threads to close the PTP
+    // evidence (CameraControl::close_ptp_evidence), and whether it gave up waiting.
+    std::chrono::steady_clock::time_point ptp_evidence_close_requested_at{};
+    bool ptp_evidence_close_timeout_reported = false;
     // Shadow-mode incremental clip split cross-check result for the last
     // finalized run (stage 4, ORANGE_GUI_INCREMENTAL_CLIP_SHADOW); empty
     // unless shadow mode ran. Kept here so the GUI status can render it.

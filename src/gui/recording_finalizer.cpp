@@ -1163,6 +1163,35 @@ bool gui_recording_finalize_gate_ready(
         return false;
     }
 
+    // The manifest's clock contract reads ptp_sync_summary.json, so every syncing
+    // camera's PTP evidence must be closed and its final summary posted first. The
+    // session stays preserved until after the manifest, so ask for the close and
+    // wait here (polled on the GUI thread). Bounded: a camera whose acquisition
+    // thread has stopped streaming never closes it, and the contract then records
+    // the summary as not finalized.
+    if (camera_control) {
+        constexpr double kPtpEvidenceCloseTimeoutSeconds = 5.0;
+        if (!has_gui_timepoint(run->ptp_evidence_close_requested_at)) {
+            run->ptp_evidence_close_requested_at = std::chrono::steady_clock::now();
+            camera_control->close_ptp_evidence.store(true, std::memory_order_release);
+        }
+        const int open = camera_control->ptp_evidence_open.load(std::memory_order_acquire);
+        if (open > 0) {
+            const double waited = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - run->ptp_evidence_close_requested_at).count();
+            if (waited < kPtpEvidenceCloseTimeoutSeconds) {
+                return false;
+            }
+            if (!run->ptp_evidence_close_timeout_reported) {
+                run->ptp_evidence_close_timeout_reported = true;
+                std::cerr << "[GUI][finalize] " << open
+                          << " camera(s) did not post final PTP evidence within "
+                          << kPtpEvidenceCloseTimeoutSeconds
+                          << " s; the clock contract will mark them not finalized" << std::endl;
+            }
+        }
+    }
+
     const int diagnostic_finalize_stall_seconds =
         gui_local_control_diagnostic_finalize_stall_seconds();
     if (diagnostic_finalize_stall_seconds > 0 &&

@@ -63,11 +63,14 @@ void gui_note_recording_started(GuiRecordingRunState* run,
               std::chrono::seconds(run->requested_record_for_seconds)
         : std::chrono::steady_clock::time_point{};
     run->diagnostic_finalize_stall_reported = false;
+    run->ptp_evidence_close_requested_at = {};
+    run->ptp_evidence_close_timeout_reported = false;
     // The cross-check summary describes the PREVIOUS finalized run; a new
     // run starts with no shadow verdict.
     run->shadow_cross_check_summary.clear();
     if (camera_control) {
         camera_control->preserve_recording_session_state = true;
+        camera_control->close_ptp_evidence = false;
     }
 }
 

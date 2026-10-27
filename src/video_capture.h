@@ -218,6 +218,14 @@ struct CameraControl
     uint64_t recording_rollover_completed_frame_id = 0;
     std::string recording_rollover_completed_folder;
     bool preserve_recording_session_state = false;
+    // The GUI finalizer keeps preserve_recording_session_state set until after the
+    // manifest, but the manifest's clock contract needs every camera's final PTP
+    // evidence. close_ptp_evidence asks the acquisition threads to close it once
+    // recording has stopped; ptp_evidence_open counts syncing cameras whose evidence
+    // for the current folder is still open (incremented when a camera starts it,
+    // decremented when its final ptp_sync_summary is posted or the thread ends).
+    std::atomic<bool> close_ptp_evidence{false};
+    std::atomic<int> ptp_evidence_open{0};
     // Why the last worker-initiated recording stop happened (e.g.
     // "fail_on_drop"). Pipeline workers that flip record_video false
     // themselves set this under recording_folder_mutex (first writer wins);

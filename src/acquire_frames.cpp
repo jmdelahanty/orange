@@ -1742,6 +1742,13 @@ void acquire_frames(
     uint64_t last_recorded_local_frame_id = 0;
     std::string recording_logs_finished_folder;
     bool ptp_summary_final_posted = false;
+    bool ptp_evidence_counted = false;
+    auto release_ptp_evidence_open = [&]() {
+        if (ptp_evidence_counted) {
+            camera_control->ptp_evidence_open.fetch_sub(1, std::memory_order_acq_rel);
+            ptp_evidence_counted = false;
+        }
+    };
 
     auto finalize_pipeline_perf_recorder_if_drained = [&]() -> bool {
         if (pipeline_perf_recorder.current_folder().empty()) {
@@ -2290,10 +2297,13 @@ void acquire_frames(
                     !ptp_summary_final_posted) {
                     post_ptp_sync_summary(ptp_summary_recording_folder, build_ptp_camera_summary_json(true));
                 }
+                release_ptp_evidence_open();
                 ptp_summary_recording_folder = live_recording_folder;
                 ptp_summary_final_posted = false;
                 reset_ptp_summary_stats();
                 if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera) {
+                    camera_control->ptp_evidence_open.fetch_add(1, std::memory_order_acq_rel);
+                    ptp_evidence_counted = true;
                     ptp_readback_evidence.recorded_frame(current_entry->recording_frame_id);
                     sample_ptp_readbacks();
                 }
@@ -2301,13 +2311,17 @@ void acquire_frames(
             if (!ptp_summary_recording_folder.empty()) {
                 ptp_readback_evidence.recorded_frame(current_entry->recording_frame_id);
                 // The final summary when the recording stops (the evidence
-                // closes); nothing rewrites the file after it.
+                // closes); nothing rewrites the file after it. The GUI keeps the
+                // session preserved through its manifest and asks for the close
+                // with close_ptp_evidence, so the manifest reads final evidence.
                 if (ptp_readback_evidence.finish_if_stopped(camera_control->record_video,
-                        camera_control->preserve_recording_session_state)) {
+                        camera_control->preserve_recording_session_state &&
+                            !camera_control->close_ptp_evidence.load(std::memory_order_acquire))) {
                     if (camera_control->sync_camera) {
                         post_ptp_sync_summary(ptp_summary_recording_folder, build_ptp_camera_summary_json(true));
                     }
                     ptp_summary_final_posted = true;
+                    release_ptp_evidence_open();
                 }
             }
 
@@ -3233,6 +3247,7 @@ void acquire_frames(
     if (camera_control->sync_camera && !ptp_summary_recording_folder.empty() && !ptp_summary_final_posted) {
         post_ptp_sync_summary(ptp_summary_recording_folder, build_ptp_camera_summary_json(true));
     }
+    release_ptp_evidence_open();
     // The acquisition thread is ending: wait for the final summary update
     // (finalize reads ptp_sync_summary.json).
     ptp_summary_jobs->Retire();

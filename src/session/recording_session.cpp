@@ -1390,6 +1390,11 @@ nlohmann::json build_camera_clock_descriptor(
         !camera_evidence.empty();
     const bool source_summary_finalized =
         camera_evidence_available && camera_evidence.value("finalized", false);
+    if (camera_ptp_enabled && !source_summary_finalized) {
+        std::cerr << "[recording_session] camera " << camera_evidence.value("camera_serial", std::string())
+                  << ": ptp_sync_summary is not finalized when the clock contract is built;"
+                  << " the camera clock cannot classify better than device_defined" << std::endl;
+    }
 
     int64_t ptp_offset_min = 0;
     int64_t ptp_offset_max = 0;
