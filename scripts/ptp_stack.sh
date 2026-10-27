@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PTP_CONF="${PTP_CONF:-/etc/ptp4l.conf}"
+# ptp4l and phc2sys run only as the systemd units pancakebatter's
+# install_ptp_units.sh installs (interfaces, CPU affinity, and the ExecStartPost
+# setter that declares the TAI-UTC offset valid). A ptp4l started by hand never
+# runs that setter, so cameras classify ieee1588_ptp_timescale_untraceable.
+PTP_UNITS=(ptp4l.service phc2sys.service)
 PTP_SOCKET="${PTP_SOCKET:-/var/run/ptp4l}"
 PTP_LOG_DIR="${PTP_LOG_DIR:-/tmp/ptp-stack}"
-PTP_IFACES_DEFAULT="mlnx1_p1_25g mlnx1_p2_25g mlnx2_p3_25g mlnx2_p4_25g"
-PTP_IFACES="${PTP_IFACES:-$PTP_IFACES_DEFAULT}"
 
-PTP4L_LOG="${PTP_LOG_DIR}/ptp4l.log"
-PHC2SYS_LOG="${PTP_LOG_DIR}/phc2sys.log"
 PTP_MANAGEMENT_EVIDENCE="${PTP_LOG_DIR}/management_evidence.txt"
 
 usage() {
@@ -16,17 +16,20 @@ usage() {
 Usage: ptp_stack.sh <command>
 
 Commands:
-  start      Start ptp4l and phc2sys in background
-  stop       Stop phc2sys and ptp4l
-  status     Show process state and TIME_STATUS_NP
-  restart    Stop then start
-  logs       Tail both log files
+  start      Start ptp4l.service and phc2sys.service
+  stop       Stop both units (and any ptp4l/phc2sys started outside them)
+  status     Show process state, TIME_STATUS_NP and who started the daemons
+  restart    Stop then start; replaces daemons started outside the units
+  logs       Follow both units' journal
+
+Stopping or restarting ptp4l drops the cameras' PTP lock: do it only with no
+orange or orange_client running.
+
+The units come from pancakebatter: sudo ~/pancakebatter/install_ptp_units.sh
 
 Optional environment variables:
-  PTP_CONF     Default: /etc/ptp4l.conf
   PTP_SOCKET   Default: /var/run/ptp4l
-  PTP_LOG_DIR  Default: /tmp/ptp-stack
-  PTP_IFACES   Default: "${PTP_IFACES_DEFAULT}"
+  PTP_LOG_DIR  Default: /tmp/ptp-stack (management evidence)
 EOF
 }
 
@@ -39,17 +42,45 @@ is_running() {
   pgrep -x "${name}" >/dev/null 2>&1
 }
 
+unit_active() {
+  systemctl is-active --quiet "$1"
+}
+
+# Prints "<name> pid <pid>" for each ptp4l/phc2sys process that is not its
+# unit's main process.
+outside_unit_daemons() {
+  local name main_pid pid
+  for name in ptp4l phc2sys; do
+    main_pid="$(systemctl show -p MainPID --value "${name}.service" 2>/dev/null || echo 0)"
+    for pid in $(pgrep -x "${name}" || true); do
+      if [[ "${pid}" != "${main_pid}" ]]; then
+        echo "${name} pid ${pid}"
+      fi
+    done
+  done
+}
+
+require_units() {
+  local unit load_state
+  for unit in "${PTP_UNITS[@]}"; do
+    load_state="$(systemctl show -p LoadState --value "${unit}" 2>/dev/null || true)"
+    if [[ "${load_state}" != "loaded" ]]; then
+      echo "ERROR: ${unit} is not installed (LoadState=${load_state:-unknown})." >&2
+      echo "Install the units with: sudo ~/pancakebatter/install_ptp_units.sh" >&2
+      return 1
+    fi
+  done
+}
+
 prepare_runtime_paths() {
   local invoking_uid invoking_gid
   invoking_uid="$(id -u)"
   invoking_gid="$(id -g)"
 
-  # These files may have been created by a privileged or sandboxed launcher.
-  # Make the invoking operator the explicit owner so shell redirection cannot
-  # fail before sudo starts the daemon.
+  # The evidence directory may have been created by a privileged or sandboxed
+  # launcher. Make the invoking operator the explicit owner so the evidence
+  # write cannot fail.
   sudo install -d -o "${invoking_uid}" -g "${invoking_gid}" -m 0755 "${PTP_LOG_DIR}"
-  sudo touch "${PTP4L_LOG}" "${PHC2SYS_LOG}"
-  sudo chown "${invoking_uid}:${invoking_gid}" "${PTP4L_LOG}" "${PHC2SYS_LOG}"
 
   if ! is_running "ptp4l" && [[ -S "${PTP_SOCKET}" ]]; then
     echo "Removing stale PTP management socket: ${PTP_SOCKET}"
@@ -59,7 +90,6 @@ prepare_runtime_paths() {
 
 require_running() {
   local name="$1"
-  local log_path="$2"
   local tries=30
   local stable_samples=0
   while (( tries > 0 )); do
@@ -74,25 +104,26 @@ require_running() {
     sleep 0.1
     tries=$((tries - 1))
   done
-  echo "ERROR: ${name} did not remain stable for one second; inspect ${log_path}" >&2
+  echo "ERROR: ${name} did not remain stable for one second; inspect: journalctl -u ${name}.service" >&2
   return 1
 }
 
-start_ptp4l() {
-  if is_running "ptp4l"; then
-    echo "ptp4l is already running."
+start_units() {
+  local outside
+  outside="$(outside_unit_daemons)"
+  if [[ -n "${outside}" ]]; then
+    echo "ERROR: running outside the systemd units:" >&2
+    sed 's/^/  /' <<<"${outside}" >&2
+    echo "A ptp4l started by hand never declares the TAI-UTC offset valid." >&2
+    echo "Replace it with the units while no orange or orange_client runs: ptp_stack.sh restart" >&2
+    return 1
+  fi
+  if unit_active ptp4l.service && unit_active phc2sys.service; then
+    echo "ptp4l.service and phc2sys.service are already active."
     return
   fi
-
-  local args=()
-  local iface
-  for iface in ${PTP_IFACES}; do
-    args+=("-i" "${iface}")
-  done
-
-  echo "Starting ptp4l on: ${PTP_IFACES}"
-  sudo -b ptp4l "${args[@]}" -f "${PTP_CONF}" -m >>"${PTP4L_LOG}" 2>&1
-  require_running "ptp4l" "${PTP4L_LOG}"
+  echo "Starting ${PTP_UNITS[*]}..."
+  sudo systemctl start "${PTP_UNITS[@]}"
 }
 
 wait_for_socket() {
@@ -106,17 +137,6 @@ wait_for_socket() {
   done
   echo "ERROR: Timed out waiting for PTP socket at ${PTP_SOCKET}" >&2
   return 1
-}
-
-start_phc2sys() {
-  if is_running "phc2sys"; then
-    echo "phc2sys is already running."
-    return
-  fi
-
-  echo "Starting phc2sys (autoconfig mode)..."
-  sudo -b phc2sys -a -rr -z "${PTP_SOCKET}" -m >>"${PHC2SYS_LOG}" 2>&1
-  require_running "phc2sys" "${PHC2SYS_LOG}"
 }
 
 capture_management_evidence() {
@@ -158,37 +178,40 @@ capture_management_evidence() {
   fi
   mv -f "${tmp_path}" "${PTP_MANAGEMENT_EVIDENCE}"
   echo "PTP management evidence: ${PTP_MANAGEMENT_EVIDENCE}"
+  if ! grep -Eq "^[[:space:]]*currentUtcOffsetValid[[:space:]]+1[[:space:]]*$" "${PTP_MANAGEMENT_EVIDENCE}"; then
+    echo "WARNING: the grandmaster does not declare the TAI-UTC offset valid (currentUtcOffsetValid is not 1);" \
+         "recordings will classify cameras ieee1588_ptp_timescale_untraceable." >&2
+    echo "WARNING: the setter runs at ptp4l.service start; to apply it now without a restart:" \
+         "sudo /usr/local/libexec/pancakebatter/ptp4l_gm_settings" >&2
+  fi
 }
 
 start_stack() {
   need_sudo
+  require_units
   prepare_runtime_paths
-  start_ptp4l
+  start_units
+  require_running "ptp4l"
   wait_for_socket
-  start_phc2sys
+  require_running "phc2sys"
   capture_management_evidence || true
-  require_running "ptp4l" "${PTP4L_LOG}"
-  require_running "phc2sys" "${PHC2SYS_LOG}"
-  echo "PTP stack started. Logs:"
-  echo "  ${PTP4L_LOG}"
-  echo "  ${PHC2SYS_LOG}"
+  echo "PTP stack started (${PTP_UNITS[*]}). Logs: journalctl -u ptp4l.service -u phc2sys.service"
 }
 
 stop_stack() {
   need_sudo
-  if is_running "phc2sys"; then
-    echo "Stopping phc2sys..."
-    sudo pkill -x phc2sys
-  else
-    echo "phc2sys is not running."
-  fi
+  require_units
+  echo "Stopping ${PTP_UNITS[*]}..."
+  sudo systemctl stop phc2sys.service ptp4l.service
 
-  if is_running "ptp4l"; then
-    echo "Stopping ptp4l..."
-    sudo pkill -x ptp4l
-  else
-    echo "ptp4l is not running."
-  fi
+  # Daemons started by hand (older versions of this script did that).
+  local name
+  for name in phc2sys ptp4l; do
+    if is_running "${name}"; then
+      echo "Stopping ${name} running outside its unit..."
+      sudo pkill -x "${name}"
+    fi
+  done
 }
 
 status_stack() {
@@ -213,11 +236,24 @@ status_stack() {
   else
     echo "(not refreshed because ptp4l is not running; no valid prior evidence)"
   fi
+  echo
+  echo "Systemd units:"
+  local unit
+  for unit in "${PTP_UNITS[@]}"; do
+    echo "  ${unit}: $(systemctl is-active "${unit}" 2>/dev/null || true)," \
+         "$(systemctl is-enabled "${unit}" 2>/dev/null || echo not-installed) at boot"
+  done
+  local outside
+  outside="$(outside_unit_daemons)"
+  if [[ -n "${outside}" ]]; then
+    echo "WARNING: running outside the systemd units (no TAI-UTC offset setter):" >&2
+    sed 's/^/  /' <<<"${outside}" >&2
+    echo "WARNING: replace them while no orange or orange_client runs: ptp_stack.sh restart" >&2
+  fi
 }
 
 logs_stack() {
-  touch "${PTP4L_LOG}" "${PHC2SYS_LOG}"
-  tail -n 60 -f "${PTP4L_LOG}" "${PHC2SYS_LOG}"
+  journalctl -u ptp4l.service -u phc2sys.service -n 60 -f
 }
 
 if [[ $# -ne 1 ]]; then

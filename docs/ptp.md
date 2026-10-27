@@ -34,37 +34,37 @@ If you later stop using PTP, you can re-enable with:
 sudo timedatectl set-ntp true
 ```
 
-#### 3. Start `ptp4l` and `phc2sys` (recommended helper script)
+#### 3. Start `ptp4l` and `phc2sys` (systemd units via the helper script)
 
-Use the helper at `scripts/ptp_stack.sh`:
+On pancake0, `ptp4l` and `phc2sys` run as the systemd units `ptp4l.service`
+and `phc2sys.service`, installed and enabled for boot by pancakebatter
+(`sudo ~/pancakebatter/install_ptp_units.sh`, see pancakebatter
+`docs/ptp_services.md`). The units carry the camera interfaces, the CPU
+affinity off the isolated cores, and an `ExecStartPost` setter that declares
+the 37 s TAI-UTC offset valid. Never start the daemons by hand: a hand-started
+`ptp4l` keeps `currentUtcOffsetValid 0` and every recording then classifies
+the cameras `ieee1588_ptp_timescale_untraceable` (this happened from
+2026-10-17 to 2026-10-27, when older versions of this script ran
+`sudo -b ptp4l` and `pkill`).
+
+`scripts/ptp_stack.sh` drives the units:
 
 ```bash
-./scripts/ptp_stack.sh start
-./scripts/ptp_stack.sh status
-./scripts/ptp_stack.sh logs
+./scripts/ptp_stack.sh start     # systemctl start ptp4l.service phc2sys.service
+./scripts/ptp_stack.sh status    # processes, TIME_STATUS_NP, evidence, unit state
+./scripts/ptp_stack.sh logs      # journalctl -u ptp4l.service -u phc2sys.service -f
+./scripts/ptp_stack.sh stop      # systemctl stop (and kills hand-started daemons)
+./scripts/ptp_stack.sh restart   # replaces hand-started daemons with the units
 ```
 
-Stop:
-
-```bash
-./scripts/ptp_stack.sh stop
-```
+`status` warns when a daemon runs outside its unit or when the grandmaster
+does not declare the offset valid. Stopping or restarting `ptp4l` drops the
+cameras' PTP lock: only with no `orange` or `orange_client` running.
 
 Headless `ptp_gate` experiment runs may auto-start this host stack when they
-detect that `ptp4l` / `phc2sys` are not ready. When a run repairs the host PTP
-stack this way, it leaves the stack running on exit so follow-up PTP validation
-does not silently lose clock sync. After the final PTP run, stop it explicitly:
-
-```bash
-./scripts/ptp_stack.sh stop
-```
-
-You can confirm it is stopped when:
-
-```bash
-pgrep -af "ptp4l|phc2sys"   # no output
-ls -l /var/run/ptp4l         # no such file
-```
+detect that `ptp4l` / `phc2sys` are not ready. A run that started the stack
+from nothing stops it again on exit; a run that repaired a partly running stack
+leaves it running. The units come back at the next boot either way.
 
 If Orange is running with sufficient privileges (for example via `sudo`), the
 main UI now also exposes a `Host PTP Stack` section with:
@@ -117,6 +117,11 @@ ptp-stack stop
 ```
 
 #### 4. Manual commands (without helper script)
+
+Diagnostics only, never on pancake0 for recordings: these commands skip the
+unit's offset setter, so the cameras classify
+`ieee1588_ptp_timescale_untraceable`. Stop them and run
+`./scripts/ptp_stack.sh start` afterwards.
 
 Start `ptp4l` with all camera NIC ports:
 
