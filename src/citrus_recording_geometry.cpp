@@ -931,7 +931,9 @@ void resolve_daily_registration_geometry(
             const bool compact_identity_valid =
                 image_set.value("schema_id", "") ==
                     "orange.calibration.image_set" &&
-                image_set.value("schema_version", 0) ==
+                image_set.value("schema_version", 0) >=
+                    orange::calibration::kCalibrationImageSetOldestReadableSchemaVersion &&
+                image_set.value("schema_version", 0) <=
                     orange::calibration::kCalibrationImageSetSchemaVersion &&
                 image_set.value("artifact_id", "") ==
                     observation.value.value("artifact_id", "") &&

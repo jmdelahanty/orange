@@ -220,7 +220,8 @@ Fixture make_inherited_fixture()
              "derived_by_outward_offset_for_bounding_box_centroid_forgiveness"}}}});
     write_json(observation_dir / "image_set.json", {
         {"schema_id", "orange.calibration.image_set"},
-        {"schema_version", orange::calibration::kCalibrationImageSetSchemaVersion},
+        // The rig's accepted registrations predate raster_transform (v3): v2 must stay readable.
+        {"schema_version", orange::calibration::kCalibrationImageSetOldestReadableSchemaVersion},
         {"artifact_id", "dishrim_fixture_cam1"},
         {"purpose", "dish_top_rim"},
         {"coordinate_space", "camera_native_pixels"},

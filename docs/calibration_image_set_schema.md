@@ -499,9 +499,12 @@ raster the camera delivered (a downsampled image is scaled, not reoriented; its
 carries its ReverseX/ReverseY status (`unsupported` on the EVT HB-20000SBM:
 the firmware cannot mirror). Citrus multiplies this link into the
 homography mirror-parity check with the rig's optics; the optics themselves
-are rig facts (pancakebatter `rig.yml`), not Orange's. Both fields are
-optional additions to the version 2 camera block (`additionalProperties` is
-true there), so v2 readers accept them unchanged.
+are rig facts (pancakebatter `rig.yml`), not Orange's. They arrived with
+schema version 3 (`docs/schemas/orange_calibration_image_set_v3.schema.json`,
+where `raster_transform` is required); version 2 image sets lack them but
+were written by the same untransformed path. Orange still reads version 2
+image sets (the recording geometry's top-rim identity check), and Citrus
+checks only the schema id.
 
 ## Calibration Domains
 

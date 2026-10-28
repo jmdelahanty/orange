@@ -10,7 +10,9 @@
 namespace orange::calibration {
 
 inline constexpr const char* kCalibrationImageSetSchemaId = "orange.calibration.image_set";
-inline constexpr int kCalibrationImageSetSchemaVersion = 2;  // v2: *_stream_frame_id
+inline constexpr int kCalibrationImageSetSchemaVersion = 3;  // v2: *_stream_frame_id; v3: camera.raster_transform
+// Version 2 image sets (before raster_transform) stay readable where Orange reads its own image sets.
+inline constexpr int kCalibrationImageSetOldestReadableSchemaVersion = 2;
 
 struct CalibrationImageSetShape {
     int height = 0;
