@@ -504,8 +504,45 @@ space.
   readback in `flip_nodes`). The viewing side of the camera (dorsal or ventral),
   mirrors in the optical path and the camera's physical rotation are not in
   any Orange output; they are rig facts owned by the pancakebatter rig
-  document (`rigs/<rig_id>/rig.yml`), which Orange will seal once it is
-  installed.
+  document (`rigs/<rig_id>/rig.yml`), which Orange pins at record start
+  (`session.rig_config`, below) without interpreting.
+
+### Rig documents (`session.rig_config`)
+
+`recording_snapshot_start.json` `session.rig_config` (schema
+`orange.recording.rig_config` v1,
+`docs/schemas/orange_recording_rig_config_v1.schema.json`, closed) pins the
+pancakebatter rig documents in effect when the recording started, so a
+recording says which rig description and which open part conditions it was
+made under (for example the shelf scratches at arenas 2 and 3 on omnifin0).
+Written by `BuildRigConfigPin` (`src/rig_config_pin.cpp`) in the GUI and the
+headless client just before the start snapshot is sealed.
+
+- **Resolution.** `$PANCAKEBATTER_RIG_CONFIG` (a rig file path; the sudo
+  wrappers do not pass it, so production uses the installed copy), else
+  `/etc/pancakebatter/rigs/<rig_id>.yml` for the recording's Citrus rig id
+  (geometry contract `selection.rig_id`). The ledger sits beside it
+  (`<rig_id>.events.yml`, or `events.yml` next to a repository `rig.yml`), the
+  installer's `.source` sidecar names the commit. There is no default: a
+  missing file is `not_installed`. `resolution` names the source used and the
+  rig id resolved for, so an override shows in the record.
+- **Pins.** Path, sha256 and size of both files, `rig_id`,
+  `rig_geometry_revision`, and from the sidecar the commit, install time and
+  whether each sha256 still equals the installed one.
+- **Conditions.** Every `condition_observed` event with corrections applied
+  and no later `condition_cleared`, copied in full as the ledger has it (a
+  port of `rig_events.active_conditions`, tested against `rig_events.py`
+  results in `tools/fixtures/rig_config`).
+- **Attestations.** Every `attested` event no correction voided (event id,
+  fields, revision, orientation sha256, scene id) with
+  `attestation_revision_matches` (its revision equals the pinned rig file's).
+  Whether an attestation is still current is decided offline from the pinned
+  bytes (`rig_events.current_attestations`); Orange does not recompute the
+  orientation digest.
+- **Status** (closed): `pinned`, `rig_id_unknown`, `not_installed`,
+  `unreadable`, `invalid`, `rig_id_mismatch`, `events_missing`,
+  `sidecar_mismatch` (meanings in the schema). Anything but `pinned` logs a
+  warning; no status blocks a start.
 
 ## Spatial Calibration Extension
 

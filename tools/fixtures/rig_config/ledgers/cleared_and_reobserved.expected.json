@@ -1,0 +1,35 @@
+{
+  "active_conditions": [
+    {
+      "arenas": [
+        "arena_1"
+      ],
+      "at_precision": "window",
+      "condition": "bubble",
+      "condition_id": "c2",
+      "event_id": "e4",
+      "extent": "one",
+      "kind": "condition_observed",
+      "layer": "film",
+      "not_after": "2026-10-21T00:00:00Z",
+      "not_before": "2026-10-19T00:00:00Z",
+      "recorded_at": "2026-11-03"
+    },
+    {
+      "arenas": [
+        "arena_3"
+      ],
+      "at": "2026-11-05",
+      "at_precision": "exact",
+      "condition": "scratches",
+      "condition_id": "c1",
+      "event_id": "e5",
+      "extent": "new ones",
+      "kind": "condition_observed",
+      "layer": "shelf",
+      "recorded_at": "2026-11-05"
+    }
+  ],
+  "attestations": [],
+  "generated_by": "pancakebatter rig_events.py @ 7ba822c4cec21ed8540d22a367dc6b2afade4a2f"
+}

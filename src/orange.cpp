@@ -11,6 +11,7 @@
 #include "gui/pose_overlay.h"
 #include "recording_context.h"
 #include "effective_configuration.h"
+#include "rig_config_pin.h"
 #include <ImGuiFileDialog.h>
 #include "project.h"
 #include "gui.h"
@@ -4177,6 +4178,23 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
         cameras_select,
         num_cameras);
     update_gui_citrus_runtime_geometry_snapshot(prepared.recording_folder);
+    {
+        // Rig documents (pancakebatter rig.yml + events ledger) pinned with their
+        // open conditions; never blocks a start (status records what happened).
+        try {
+            const auto rig_config = orange::recording::BuildRigConfigPinForRecording(
+                orange::recording::RecordingRigIdFromGeometryContract(recording_geometry_contract),
+                get_current_utc_timestamp());
+            for (const auto& warning : rig_config.at("warnings")) {
+                std::cerr << "[GUI][recording] WARNING rig documents: " << warning.get<std::string>() << std::endl;
+            }
+            if (!update_recording_snapshot_session_artifacts(prepared.recording_folder, {{"rig_config", rig_config}})) {
+                throw std::runtime_error("failed to persist rig_config");
+            }
+        } catch (const std::exception& ex) {
+            std::cerr << "[GUI][recording] WARNING rig documents not captured: " << ex.what() << std::endl;
+        }
+    }
     // Context import must precede the immutable seal. Its asynchronous branch
     // seals below, then the common completion gate performs observation prearm.
     if (!evidence_config.enabled) {

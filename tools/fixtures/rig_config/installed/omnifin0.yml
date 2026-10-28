@@ -1,0 +1,5 @@
+# Minimal rig document for Orange's rig_config tests (the real one is pancakebatter rigs/omnifin0/rig.yml).
+schema: {name: rig, version: 1}
+rig_id: omnifin0
+rig_geometry_revision: 10
+description: test rig

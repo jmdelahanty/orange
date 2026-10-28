@@ -1,0 +1,7 @@
+# rig_events test_correction_replaces_and_voids (void): the condition disappears.
+schema: {name: rig_events, version: 1}
+rig: omnifin0
+events:
+  - {event_id: e2, kind: condition_observed, condition_id: c1, layer: shelf, arenas: [arena_2, arena_3],
+     condition: scratches, extent: a few, at: "2026-10-27", at_precision: on_or_before, recorded_at: "2026-10-27"}
+  - {event_id: e3, kind: correction, corrects: e2, void: true, reason: r, recorded_at: "2026-10-28"}

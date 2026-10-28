@@ -1,0 +1,20 @@
+{
+  "active_conditions": [
+    {
+      "arenas": [
+        "arena_2"
+      ],
+      "at": "2026-10-27",
+      "at_precision": "on_or_before",
+      "condition": "scratches",
+      "condition_id": "c1",
+      "event_id": "e2",
+      "extent": "a few",
+      "kind": "condition_observed",
+      "layer": "shelf",
+      "recorded_at": "2026-10-27"
+    }
+  ],
+  "attestations": [],
+  "generated_by": "pancakebatter rig_events.py @ 7ba822c4cec21ed8540d22a367dc6b2afade4a2f"
+}

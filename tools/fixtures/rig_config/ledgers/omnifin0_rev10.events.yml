@@ -1,0 +1,78 @@
+# omnifin0: append-only rig events (schemas/rig_events.v1.schema.json; rules in docs/equipment_events.md
+# "Rig events"). Never edit or delete an event: append a correction. rig.yml holds current values; this
+# file says when they changed and which part conditions recordings must carry. Recordings pin this
+# file's sha256 next to rig.yml's.
+schema: {name: rig_events, version: 1}
+rig: omnifin0
+events:
+  - event_id: e1
+    kind: setting_changed
+    item: projector.benq.x3100i
+    setting: game_and_pic.brightness     # same path as SpecSail settings_as_found.json
+    old: 11
+    new: 50
+    at_precision: window                 # exact time not recorded: 11 valid until not_before, 50 from not_after
+    not_before: "2026-10-24T20:17:50Z"
+    not_after: "2026-10-24T22:04:44Z"
+    recorded_at: "2026-10-27"
+    by: Jeremy Delahanty
+    method: projector remote, OSD Picture > Brightness
+    baseline: ~/SpecSail/runs/projector_settings_20261019/settings_as_found.json   # every other setting as found there
+    reason: kept at 50 going forward (Jeremy, 2026-10-24 evening); Brightness 11 protocols belong to the earlier commissioning
+    evidence: >-
+      Contrast 30 and Sharpness 5 checked unchanged in the photo. Window: after the Brightness 11 power-meter
+      sweep omnifin0_pm_arena1_disc_in_code_sweep_20261024_20261024T194048Z sealed and before
+      omnifin0_pm_arena1_disc_in_code_sweep_brightness50_20261024_20261024T220444Z started. No fish recording
+      ran in the window: the newest sessions are /mnt/Data2/orange_data/exp/unsorted/2026_10_18_11_32_33
+      (2026-10-18) and /mnt/Data1/.../2026_10_15_22_33_13; no .h5/.mp4 on either disk was written on or after
+      2026-10-24; Citrus showed no running arenas (specsail-calibration-protocol, 2026-10-24/25).
+    evidence_files:
+      - path: ~/SpecSail/runs/projector_settings_20261019/settings_as_found.json
+        sha256: ef2ab8e7c323c8a3b7ad21e4117b9cad501d36ff870b0b756978dca29f6fe82b
+      - path: ~/SpecSail/runs/projector_settings_20261024/settings_change.json
+        sha256: 6747f0b3fcf05fb5321f2f5c297e6e3d0b72deae522f53faaf61b67a77bf91f0
+      - path: ~/SpecSail/runs/projector_settings_20261024/01_game_and_pic_brightness50.jpg
+        sha256: 773a55664367121f8dd5441beff491778019c784d44ffd2747900e5c43706a0d
+  - event_id: e2
+    kind: condition_observed
+    condition_id: c1
+    layer: shelf                         # the single shared acrylic base sheet under all four arenas
+    arenas: [arena_2, arena_3]           # where on the sheet the scratches are; arenas 1 and 4 share the sheet
+    condition: scratches
+    extent: "a few small, noticeable scratches; local, not across the whole surface"
+    locations: >-
+      Jeremy's words, the same in the camera image and seen from above at the door: arena_2 slightly off
+      centre toward the bottom left, i.e. toward (-x, -y); arena_3 a little toward the top right, i.e.
+      toward (+x, +y). Bottom = door side = canvas -y and left = operator's left = canvas -x
+      (rig.yml room_orientation).
+    effect: unknown
+    remedy: replace the whole shelf acrylic sheet (a rig revision, then condition_cleared c1)
+    at: "2026-10-27"
+    at_precision: on_or_before
+    recorded_at: "2026-10-27"
+    by: Jeremy Delahanty
+    evidence: >-
+      Jeremy in the pancakebatter session 2026-10-27 (the shelf acrylic is the shared base; the whole part
+      must be replaced); extent and locations relayed by rig-designer and Orange 2026-10-27.
+  - event_id: e3
+    kind: attested
+    fields: [room_orientation]
+    rig_geometry_revision: 10
+    orientation_sha256: 5266d56288ab95c92f0fbe0e93b98c0775ff2ef430b2519322f6e7791eef63c1   # rigconfig.orientation_digest, rev 10
+    method: >-
+      Citrus projected a bold crosshair at arena 1 offset (0, -30) mm; Jeremy saw it on the door side, with
+      arena 1 on his left from the door: canvas -y toward the operator, canvas -x the operator's left.
+    scene_id: orientation_crosshair_20261027T222450Z
+    at_precision: window                 # scene on the projector from Citrus presenting to the stop file
+    not_before: "2026-10-27T22:24:50Z"
+    not_after: "2026-10-27T22:29:43Z"
+    recorded_at: "2026-10-27"
+    by: Jeremy Delahanty
+    evidence: >-
+      Jeremy's observation and the photo from the door both show the crosshair scene (times and photo hash
+      checked by specsail-calibration-protocol, 2026-10-27; "arena 1 is on my left from the door", Jeremy to
+      rig-designer). A remount of the projector, cameras or shelf changes rig.yml's orientation fields and
+      ends this attestation; check again and append a new one.
+    evidence_files:
+      - path: /home/jeremy/SpecSail/runs/pm_20261024/photos/orientation_crosshair_20261027T222450Z_from_door.jpg
+        sha256: 08d38bdcffe885698bcf94e7b0cb9ad6b753c55e0727a69af11f8e0cce417f0e

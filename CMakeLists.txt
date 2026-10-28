@@ -644,6 +644,13 @@ target_compile_features(orange_recording_master_journal PUBLIC cxx_std_17)
 target_link_libraries(orange_recording_master_journal PUBLIC Threads::Threads)
 target_link_libraries(orange_recording_master_journal PUBLIC ${AVFORMAT_LIBRARY} ${AVCODEC_LIBRARY} ${AVUTIL_LIBRARY})
 
+# Rig documents pin (pancakebatter rig.yml + events ledger) for the recording start snapshot.
+find_package(yaml-cpp REQUIRED)
+add_library(orange_rig_config_pin STATIC "${SRC_DIR}/rig_config_pin.cpp")
+target_include_directories(orange_rig_config_pin PUBLIC ${ORANGE_COMMON_INCLUDE_DIRS})
+target_compile_features(orange_rig_config_pin PUBLIC cxx_std_17)
+target_link_libraries(orange_rig_config_pin PUBLIC yaml-cpp)
+
 add_library(orange_daily_registered_context INTERFACE)
 target_link_libraries(orange_daily_registered_context INTERFACE orange_recording_master_journal)
 
@@ -651,8 +658,9 @@ add_executable(verify_crop_only_recording "tools/verify_crop_only_recording.cpp"
 target_link_libraries(verify_crop_only_recording PRIVATE orange_recording_master_journal)
 
 add_executable(orange ${ORANGE_SOURCES})
-target_link_libraries(orange PRIVATE orange_daily_registered_context)
+target_link_libraries(orange PRIVATE orange_daily_registered_context orange_rig_config_pin)
 add_executable(orange_client EXCLUDE_FROM_ALL ${ORANGE_CLIENT_SOURCES})
+target_link_libraries(orange_client PRIVATE orange_rig_config_pin)
 add_executable(yolo_offline EXCLUDE_FROM_ALL ${YOLO_OFFLINE_SOURCES})
 add_executable(evt_lens_probe ${EVT_LENS_PROBE_SOURCES})
 add_executable(evt_force_reboot EXCLUDE_FROM_ALL ${EVT_FORCE_REBOOT_SOURCES})
@@ -1188,6 +1196,10 @@ if(BUILD_TESTING)
         NAME recording_subject_reference_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/recording_subject_reference_tests.py"
                 "${CMAKE_BINARY_DIR}/recording_subject_reference_tests")
+
+    add_executable(rig_config_pin_tests "tools/rig_config_pin_tests.cpp")
+    target_link_libraries(rig_config_pin_tests PRIVATE orange_rig_config_pin)
+    add_test(NAME rig_config_pin_tests COMMAND rig_config_pin_tests "${CMAKE_SOURCE_DIR}/tools/fixtures/rig_config")
 
     add_executable(effective_configuration_tests
         "tools/effective_configuration_tests.cpp"

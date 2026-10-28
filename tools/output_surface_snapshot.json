@@ -4081,6 +4081,7 @@
    "relative_path",
    "request_id",
    "required",
+   "rig_config",
    "samples",
    "schema_id",
    "schema_version",
@@ -4406,6 +4407,7 @@
    "require_video_sanity",
    "required",
    "reserved_free_bytes",
+   "rig_config",
    "roi_source",
    "rolling_clip_count",
    "rolling_index_row_count",
@@ -5958,6 +5960,54 @@
    "iris",
    "pixel_format",
    "width"
+  ],
+  "schemas": []
+ },
+ "src/rig_config_pin.cpp": {
+  "csv_headers": [],
+  "json_keys": [
+   "active_conditions",
+   "at",
+   "attestation_revision_matches",
+   "attestations",
+   "captured_at_utc",
+   "commit",
+   "environment_variable",
+   "event_id",
+   "events_file",
+   "events_sha256_matches",
+   "events_source",
+   "fields",
+   "installed",
+   "orientation_sha256",
+   "path",
+   "recording_rig_id",
+   "resolution",
+   "rig_file",
+   "rig_geometry_revision",
+   "rig_id",
+   "rig_sha256_matches",
+   "scene_id",
+   "schema_id",
+   "schema_version",
+   "sha256",
+   "size_bytes",
+   "source",
+   "source_sidecar",
+   "status",
+   "warnings"
+  ],
+  "schemas": [
+   [
+    "orange.recording.rig_config",
+    "1"
+   ]
+  ]
+ },
+ "src/rig_config_pin.h": {
+  "csv_headers": [],
+  "json_keys": [
+   "pinned"
   ],
   "schemas": []
  },

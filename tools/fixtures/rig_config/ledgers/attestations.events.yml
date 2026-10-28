@@ -1,0 +1,16 @@
+# Attested events: one kept, one voided, one corrected (method replaced), one at another revision.
+schema: {name: rig_events, version: 1}
+rig: omnifin0
+events:
+  - {event_id: e1, kind: attested, fields: [room_orientation], rig_geometry_revision: 9,
+     orientation_sha256: a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1, method: crosshair,
+     at_precision: window, not_before: "2026-10-20T10:00:00Z", not_after: "2026-10-20T10:05:00Z", recorded_at: "2026-10-20"}
+  - {event_id: e2, kind: attested, fields: [room_orientation], rig_geometry_revision: 10,
+     orientation_sha256: b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2, method: crosshair,
+     scene_id: s2, at_precision: window, not_before: "2026-10-27T22:24:50Z", not_after: "2026-10-27T22:29:43Z",
+     recorded_at: "2026-10-27"}
+  - {event_id: e3, kind: attested, fields: [room_orientation], rig_geometry_revision: 10,
+     orientation_sha256: c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3, method: photo,
+     at: "2026-10-28", at_precision: exact, recorded_at: "2026-10-28"}
+  - {event_id: e4, kind: correction, corrects: e3, void: true, reason: wrong photo, recorded_at: "2026-10-28"}
+  - {event_id: e5, kind: correction, corrects: e2, method: crosshair from the door, reason: r, recorded_at: "2026-10-28"}

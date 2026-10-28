@@ -1,0 +1,24 @@
+{
+  "active_conditions": [],
+  "attestations": [
+    {
+      "event_id": "e1",
+      "fields": [
+        "room_orientation"
+      ],
+      "orientation_sha256": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "rig_geometry_revision": 9,
+      "scene_id": null
+    },
+    {
+      "event_id": "e2",
+      "fields": [
+        "room_orientation"
+      ],
+      "orientation_sha256": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "rig_geometry_revision": 10,
+      "scene_id": "s2"
+    }
+  ],
+  "generated_by": "pancakebatter rig_events.py @ 7ba822c4cec21ed8540d22a367dc6b2afade4a2f"
+}

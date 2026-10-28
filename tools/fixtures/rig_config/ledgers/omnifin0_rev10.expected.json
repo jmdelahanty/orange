@@ -1,0 +1,36 @@
+{
+  "active_conditions": [
+    {
+      "arenas": [
+        "arena_2",
+        "arena_3"
+      ],
+      "at": "2026-10-27",
+      "at_precision": "on_or_before",
+      "by": "Jeremy Delahanty",
+      "condition": "scratches",
+      "condition_id": "c1",
+      "effect": "unknown",
+      "event_id": "e2",
+      "evidence": "Jeremy in the pancakebatter session 2026-10-27 (the shelf acrylic is the shared base; the whole part must be replaced); extent and locations relayed by rig-designer and Orange 2026-10-27.",
+      "extent": "a few small, noticeable scratches; local, not across the whole surface",
+      "kind": "condition_observed",
+      "layer": "shelf",
+      "locations": "Jeremy's words, the same in the camera image and seen from above at the door: arena_2 slightly off centre toward the bottom left, i.e. toward (-x, -y); arena_3 a little toward the top right, i.e. toward (+x, +y). Bottom = door side = canvas -y and left = operator's left = canvas -x (rig.yml room_orientation).",
+      "recorded_at": "2026-10-27",
+      "remedy": "replace the whole shelf acrylic sheet (a rig revision, then condition_cleared c1)"
+    }
+  ],
+  "attestations": [
+    {
+      "event_id": "e3",
+      "fields": [
+        "room_orientation"
+      ],
+      "orientation_sha256": "5266d56288ab95c92f0fbe0e93b98c0775ff2ef430b2519322f6e7791eef63c1",
+      "rig_geometry_revision": 10,
+      "scene_id": "orientation_crosshair_20261027T222450Z"
+    }
+  ],
+  "generated_by": "pancakebatter rig_events.py @ 7ba822c4cec21ed8540d22a367dc6b2afade4a2f"
+}

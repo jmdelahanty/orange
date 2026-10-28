@@ -58,6 +58,7 @@
 #include "session/recording_observation_prearm.h"
 #include "gui/recording_snapshots.h"
 #include "effective_configuration.h"
+#include "rig_config_pin.h"
 #include "session/recording_observation_request_artifacts.h"
 #include "external_recorder_contract_utils.h"
 #include "external_recorder_lifecycle.h"
@@ -5257,6 +5258,19 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                 if (!update_recording_snapshot_session_artifacts(record_folder,
                     {{"registered_scene_context", registered_context->evidence.StartEvidence()}}))
                     throw std::runtime_error("cannot publish registered context prearm evidence");
+            }
+            // Rig documents (pancakebatter rig.yml + events ledger) pinned with their
+            // open conditions; never blocks a start (status records what happened).
+            try {
+                const auto rig_config = orange::recording::BuildRigConfigPinForRecording(
+                    orange::recording::RecordingRigIdFromGeometryContract(headless_recording_geometry_contract),
+                    get_current_utc_timestamp());
+                for (const auto& warning : rig_config.at("warnings"))
+                    std::cerr << "[headless] WARNING rig documents: " << warning.get<std::string>() << std::endl;
+                if (!update_recording_snapshot_session_artifacts(record_folder, {{"rig_config", rig_config}}))
+                    throw std::runtime_error("failed to persist rig_config");
+            } catch (const std::exception& ex) {
+                std::cerr << "[headless] WARNING rig documents not captured: " << ex.what() << std::endl;
             }
             std::string immutable_snapshot_error;
             if (!seal_immutable_recording_start_snapshot(

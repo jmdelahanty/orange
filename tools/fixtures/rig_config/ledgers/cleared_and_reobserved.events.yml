@@ -1,0 +1,15 @@
+# Open, clear, re-observe; a second condition observed earlier but appended later (timeline order by date);
+# a correction that moves e2 to a window (at dropped); a non-correctable key (condition_id) ignored.
+schema: {name: rig_events, version: 1}
+rig: omnifin0
+events:
+  - {event_id: e2, kind: condition_observed, condition_id: c1, layer: shelf, arenas: [arena_2, arena_3],
+     condition: scratches, extent: a few, at: "2026-10-27", at_precision: on_or_before, recorded_at: "2026-10-27"}
+  - {event_id: e3, kind: condition_cleared, condition_id: c1, at: "2026-11-02", at_precision: exact, recorded_at: "2026-11-02"}
+  - {event_id: e4, kind: condition_observed, condition_id: c2, layer: film, arenas: [arena_1],
+     condition: bubble, extent: one, at: "2026-10-20", at_precision: exact, recorded_at: "2026-11-03"}
+  - {event_id: e5, kind: condition_observed, condition_id: c1, layer: shelf, arenas: [arena_3],
+     condition: scratches, extent: new ones, at: "2026-11-05", at_precision: exact, recorded_at: "2026-11-05"}
+  - {event_id: e6, kind: correction, corrects: e4, at_precision: window, not_before: "2026-10-19T00:00:00Z",
+     not_after: "2026-10-21T00:00:00Z", condition_id: c9, reason: window, recorded_at: "2026-11-06"}
+  - {event_id: e7, kind: correction, corrects: e99, extent: ignored, reason: unknown target, recorded_at: "2026-11-06"}

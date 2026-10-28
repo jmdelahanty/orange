@@ -1,0 +1,7 @@
+source: /home/jeremy/pancakebatter/rigs/omnifin0/rig.yml
+commit: 7ba822c4cec21ed8540d22a367dc6b2afade4a2f
+installed: 2026-10-27T22:50:22-04:00
+sha256: c46020d2a5bf4c63104b89ca705ac2080f49ca199dbe4e04ce31abcef6389ca8
+rig_geometry_revision: 10
+events_source: /home/jeremy/pancakebatter/rigs/omnifin0/events.yml
+events_sha256: fc949ac247840a1eb0d9e49e99ceedde4f1090508d5cafedbf70d571dc2f7018
