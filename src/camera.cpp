@@ -2210,7 +2210,7 @@ void open_camera_with_params(Emergent::CEmergentCamera *camera,
     } catch (const std::exception& error) {
         camera_params->sensor_pipeline_state = {
             {"schema_id", "orange.camera.sensor_pipeline_state"},
-            {"schema_version", 2},
+            {"schema_version", 3},
             {"capture_stage", "post_configuration_pre_stream"},
             {"read_only", true},
             {"applied_state_status", "capture_error"},

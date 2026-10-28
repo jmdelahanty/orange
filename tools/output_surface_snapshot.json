@@ -371,6 +371,7 @@
    "first_camera_frame_id",
    "first_stream_frame_id",
    "fixture_state",
+   "flip_nodes",
    "frame_rate_hz",
    "gain",
    "gpu_direct",
@@ -411,6 +412,7 @@
    "projector_state",
    "projector_visible_to_camera",
    "purpose",
+   "raster_transform",
    "recording_frame_id",
    "reference_only",
    "requires_camera_mount_unchanged",
@@ -463,7 +465,7 @@
   "schemas": [
    [
     "orange.camera.sensor_pipeline_state",
-    "2"
+    "3"
    ]
   ]
  },
@@ -572,6 +574,7 @@
    "offset_y_px",
    "options",
    "raster_geometry",
+   "raster_transform",
    "read_error",
    "read_only",
    "readable",
@@ -603,7 +606,7 @@
   "schemas": [
    [
     "orange.camera.sensor_pipeline_state",
-    "2"
+    "3"
    ]
   ]
  },
@@ -5195,7 +5198,7 @@
    ],
    [
     "orange.camera.sensor_pipeline_state",
-    "2"
+    "3"
    ],
    [
     "orange.host_clock.configuration",

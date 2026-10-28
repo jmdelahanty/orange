@@ -1010,6 +1010,7 @@ CalibrationImageSetRequest build_dish_top_rim_image_set_request(
     image_set.camera.pixel_format = request.camera.pixel_format;
     image_set.camera.configured_height = request.camera.height;
     image_set.camera.configured_width = request.camera.width;
+    image_set.camera.flip_nodes = request.camera.flip_nodes;
 
     image_set.capture.operation_id = request.capture.operation_id;
     image_set.capture.timestamp_utc = request.created_utc;

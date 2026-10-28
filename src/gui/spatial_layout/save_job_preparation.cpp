@@ -291,6 +291,18 @@ void restore_spatial_layout_capture_state(
         std::move(backup.pending_full_res_snapshot_pre_capture);
 }
 
+// The camera's ReverseX/ReverseY readback from its sensor_pipeline state, or null.
+nlohmann::json camera_flip_nodes(const CameraParams& camera)
+{
+    const nlohmann::json& state = camera.sensor_pipeline_state;
+    if (state.is_object() && state.contains("raster_geometry") &&
+        state["raster_geometry"].is_object() &&
+        state["raster_geometry"].contains("flip_nodes")) {
+        return state["raster_geometry"]["flip_nodes"];
+    }
+    return nullptr;
+}
+
 bool prepare_generic_calibration_image_set_save_job_from_group_capture_impl(
     SpatialLayoutUiState* ui_state,
     const SpatialLayoutGroupCaptureFrame& capture,
@@ -555,6 +567,7 @@ bool prepare_dish_top_rim_observation_save_job_from_spatial_layout(
     request.camera.name = selected_camera.camera_name;
     request.camera.width = ui_state->captured_texture_width;
     request.camera.height = ui_state->captured_texture_height;
+    request.camera.flip_nodes = camera_flip_nodes(selected_camera);
     request.camera.pixel_format = selected_camera.pixel_format.empty()
                                       ? "captured_rgba_converted_to_gray8"
                                       : selected_camera.pixel_format;
@@ -921,6 +934,7 @@ bool prepare_generic_calibration_image_set_save_job_from_spatial_layout(
                                       : selected_camera.pixel_format;
     request.camera.configured_height = selected_camera.height;
     request.camera.configured_width = selected_camera.width;
+    request.camera.flip_nodes = camera_flip_nodes(selected_camera);
 
     request.capture.operation_id =
         "spatial_layout_image_set_" + request.artifact_id +

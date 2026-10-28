@@ -1,4 +1,5 @@
 #include "camera_sensor_pipeline_state.h"
+#include "raster_transform.h"
 #include "timing/clock.h"
 
 #include "gui/spatial_layout/sha256.h"
@@ -452,6 +453,7 @@ nlohmann::json summarize_raster_geometry(const nlohmann::json& features)
             {"height_px", height},
         }},
         {"aoi_is_full_sensor", aoi_is_full_sensor},
+        {"raster_transform", orange::kRasterTransform},
         {"flip_nodes", {
             {"reverse_x", feature_status(features, "ReverseX")},
             {"reverse_y", feature_status(features, "ReverseY")},
@@ -541,7 +543,7 @@ nlohmann::json capture_state(
 {
     nlohmann::json state = {
         {"schema_id", "orange.camera.sensor_pipeline_state"},
-        {"schema_version", 2},
+        {"schema_version", 3},  // v3: raster_geometry.raster_transform
         {"captured_at_utc", utc_now()},
         {"capture_stage", capture_stage},
         {"read_only", true},

@@ -50,6 +50,7 @@ struct DishTopRimCameraInfo {
     int width = 0;
     int height = 0;
     std::string pixel_format;
+    nlohmann::json flip_nodes = nullptr;  // passed to the image set's camera block
 };
 
 struct DishTopRimHoughParams {

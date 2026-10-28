@@ -1,4 +1,5 @@
 #include "calibration_image_set.h"
+#include "raster_transform.h"
 #include "outputs/common/atomic_file.h"
 
 #include "fsuid_guard.h"
@@ -735,6 +736,10 @@ nlohmann::json camera_to_json(const CalibrationImageSetCameraInfo& camera)
     }
     if (!camera.camera_config_ref.empty()) {
         out["camera_config_ref"] = camera.camera_config_ref;
+    }
+    out["raster_transform"] = orange::kRasterTransform;
+    if (camera.flip_nodes.is_object()) {
+        out["flip_nodes"] = camera.flip_nodes;
     }
     return out;
 }

@@ -27,6 +27,9 @@ struct CalibrationImageSetCameraInfo {
     bool has_gpu_direct = false;
     bool gpu_direct = false;
     nlohmann::json camera_config_ref = nlohmann::json::object();
+    // The camera's ReverseX/ReverseY readback (sensor_pipeline raster_geometry
+    // flip_nodes) when the writer has it; omitted otherwise.
+    nlohmann::json flip_nodes = nullptr;
 };
 
 struct CalibrationImageSetCaptureContext {

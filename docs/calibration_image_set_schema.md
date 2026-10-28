@@ -492,6 +492,17 @@ flipped relative to the live stream or grouped-capture thumbnail, the preview
 canvas is wrong. Do not flip saved source images, Hough/manual fit
 coordinates, or artifact geometry to compensate for a display-only inversion.
 
+The image set's `camera` block declares this: `raster_transform: "none"` says
+Orange did not flip, mirror, rotate or transpose the saved image relative to the
+raster the camera delivered (a downsampled image is scaled, not reoriented; its
+`image_shape` says so). When the writer has the camera's readback, `flip_nodes`
+carries its ReverseX/ReverseY status (`unsupported` on the EVT HB-20000SBM:
+the firmware cannot mirror). Citrus multiplies this link into the
+homography mirror-parity check with the rig's optics; the optics themselves
+are rig facts (pancakebatter `rig.yml`), not Orange's. Both fields are
+optional additions to the version 2 camera block (`additionalProperties` is
+true there), so v2 readers accept them unchanged.
+
 ## Calibration Domains
 
 `target_plane` names the physical plane where the calibration image was

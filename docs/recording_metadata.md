@@ -492,13 +492,16 @@ space.
   `width` and `height` (`src/project.cpp`,
   `build_camera_coordinate_frame_snapshot`). The camera's applied values are
   read back separately into `camera_runtime.<serial>.sensor_pipeline`
-  (schema `orange.camera.sensor_pipeline_state` version 2), whose
+  (schema `orange.camera.sensor_pipeline_state` version 3), whose
   `raster_geometry` block relates the sensor to the AOI (`bin`, sensor
   extent, AOI offset and size, `aoi_is_full_sensor`, flip and subsampling node
-  presence) and whose `requested_readbacks.Bin` compares the unbinned
+  presence), declares `raster_transform: "none"` (version 3: Orange never
+  flips, mirrors, rotates or transposes a frame; `src/raster_transform.h`) and whose `requested_readbacks.Bin` compares the unbinned
   assumption with the camera. Today the readback is evidence only: a
   configured-versus-applied difference is recorded, not refused.
-- **Not yet declared.** The viewing side of the camera (dorsal or ventral),
+- **Not yet declared.** Orange declares only its own link in the orientation
+  chain (`raster_transform`, above, with the camera's ReverseX/ReverseY
+  readback in `flip_nodes`). The viewing side of the camera (dorsal or ventral),
   mirrors in the optical path and the camera's physical rotation are not in
   any Orange output; they are rig facts owned by the pancakebatter rig
   document (`rigs/<rig_id>/rig.yml`), which Orange will seal once it is

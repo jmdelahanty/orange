@@ -172,6 +172,7 @@ void test_raster_geometry_full_sensor_unbinned()
     require(
         geometry.at("flip_nodes").at("reverse_x") == "unsupported",
         "absent flip node is recorded as unsupported, not omitted");
+    require(geometry.at("raster_transform") == "none", "Orange declares no software reorientation");
     require(
         geometry.at("subsampling_nodes").at("decimation_horizontal") == "not_in_inventory",
         "a node missing from the features object is distinguishable from unsupported");

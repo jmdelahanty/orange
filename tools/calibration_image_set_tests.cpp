@@ -200,6 +200,8 @@ void test_writer_emits_core_shape()
     require(image_set["camera"].value("serial", "") == "2010093", "camera serial");
     require(image_set["camera"]["image_shape"].value("height", 0) == 4512, "camera height");
     require(image_set["camera"]["image_shape"].value("width", 0) == 4512, "camera width");
+    require(image_set["camera"].value("raster_transform", "") == "none", "raster transform declared");
+    require(!image_set["camera"].contains("flip_nodes"), "no flip readback is invented");
     require(
         image_set.value("capture_timestamp_utc", "") == "2026-06-08T19:45:00Z",
         "capture timestamp alias");
