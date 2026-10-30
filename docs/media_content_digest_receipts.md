@@ -97,3 +97,28 @@ Citrus's 2.1.0 draft (PR #6, fc865ef) accepted all 32 receipts of the
 the receipt's mtime is the last one (about 20 s after the MP4, sidecars and
 CSV, at idle priority with eight hashers sharing the pool), so a receipt
 means everything for that video is final.
+
+## Why the digest needs a read-back, and the decision to keep it (2026-10-30)
+
+A digest computed while the recorder writes (no read-back) is not possible
+with the MP4 layout Orange writes. The FFmpeg MP4 muxer writes `ftyp`, then
+the `mdat` box header with a placeholder size, then the media, then `moov`
+at the end; at the trailer it seeks back and patches the `mdat` size near
+the start of the file. SHA-256 consumes bytes strictly in order, so the
+bytes it would have hashed first change after the fact. Only a layout that
+writes strictly forward (fragmented MP4) could be hashed while writing.
+
+Decision (Jeremy, 2026-10-30): keep the current MP4 layout; no switch to
+fragmented MP4 for the foreseeable future (Palette's and Citrus's readers
+would have to accept it). Video digests stay with these receipts, which
+read the file back at idle priority and capped rate, and the receipts stay
+parked (off) as above. Recordings record each video's size (the
+`.finalization.json` sidecar has `file_size_bytes`); a video hash is only
+available from a receipt or from the sealer.
+
+A read-back also has a side effect a forward-only hash would lose: reading
+finds media errors that writing does not. The Data1 failure on 2026-10-16
+surfaced that way, when the GUI finalize re-read the recording's files and
+hit unrecovered read errors (EIO on 12 diagnostic and metadata files, no
+MP4 hit). A drive-health check (NVMe SMART media errors, kernel log) is the
+proposed replacement for relying on that; it is not built.
