@@ -70,7 +70,10 @@ struct Options {
     // and deferred-release. Frames from another GPU, or without the nv12_pool
     // layout token, fall back to the direct-source copy.
     bool registered_source = false;
-    bool native_local_input = false;  // opt-in same-GPU full-frame API13 backend
+    // Not an option: set by parse_options for every full-frame HEVC stream of
+    // the native (CUDA 13) build. The same-GPU shard then encodes from native
+    // NV12 arrays; H.264 is not validated there and keeps the registered source.
+    bool native_local_input = false;
     // Optional PTX surface-write update for the native local backend. Empty
     // keeps the validated CUDA copy-engine path.
     std::string native_local_kernel_ptx;
@@ -322,7 +325,6 @@ void crash_handler(int sig)
         << "  --offline-width/--offline-height    Offline frame size (default 4512x4512)\n"
         << "  --offline-input-format gray|yuv420p Offline input layout (default gray; yuv420p uses the luma plane only)\n"
         << "  --owner-push          Peer-GPU shards export staging slots; the analytics process pushes frames into them (env ORANGE_EXTERNAL_RECORDER_OWNER_PUSH=1, slots ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_SLOTS). Default off.\n"
-        << "  --native-local-input  Native NV12 arrays for same-GPU full-frame shards (isolated API13 build only).\n"
         << "  --native-local-kernel-ptx <path> Use PTX surface-write Y updates for native local input (env ORANGE_EXTERNAL_RECORDER_NATIVE_KERNEL_PTX).\n"
         << "  --registered-source   Encode from the NV12-shaped pool buffer registered with NVENC (no copy); implies --direct-input-source and --deferred-source-release. Default on since 2026-09-04 (env ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE=0 disables).\n"
         << "  --early-peer-stage    Other-GPU shards copy the pool frame into a staging buffer at descriptor arrival, before the NVENC input wait. Default on since 2026-09-17 (env ORANGE_EXTERNAL_RECORDER_EARLY_PEER_STAGE=0 disables).\n"
@@ -519,8 +521,6 @@ Options parse_options(int argc, char** argv)
         env_flag_enabled("ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE", false);
     // Default on since 2026-09-04 (lever 2c; 30-minute endurance passed).
     // ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE=0 restores the copy path.
-    options.native_local_input =
-        env_flag_enabled("ORANGE_EXTERNAL_RECORDER_NATIVE_LOCAL_INPUT", false);
     if (const char* kernel_env = std::getenv("ORANGE_EXTERNAL_RECORDER_NATIVE_KERNEL_PTX");
         kernel_env && *kernel_env) {
         options.native_local_kernel_ptx = kernel_env;
@@ -621,8 +621,6 @@ Options parse_options(int argc, char** argv)
             options.direct_input_source = true;
         } else if (arg == "--deferred-source-release") {
             options.deferred_source_release = true;
-        } else if (arg == "--native-local-input") {
-            options.native_local_input = true;
         } else if (arg == "--native-local-kernel-ptx") {
             options.native_local_kernel_ptx = consume(arg.c_str());
         } else if (arg == "--registered-source") {
@@ -854,13 +852,10 @@ Options parse_options(int argc, char** argv)
         throw std::runtime_error(
             "Importance maps are currently supported only for full_frame streams");
     }
-    if (options.native_local_input) {
-#ifndef ORANGE_NVENC_NATIVE_ARRAY_INPUT
-        throw std::runtime_error("--native-local-input requires the isolated CUDA13/NVENC13 recorder build");
+#ifdef ORANGE_NVENC_NATIVE_ARRAY_INPUT
+    options.native_local_input = options.stream_kind == "full_frame" && options.codec == "hevc";
 #endif
-        if (options.stream_kind != "full_frame" || options.codec != "hevc") {
-            throw std::runtime_error("Native local input currently requires full-frame HEVC");
-        }
+    if (options.native_local_input) {
         options.registered_source = true;
     }
     if (!options.native_local_kernel_ptx.empty()) {
@@ -870,7 +865,7 @@ Options parse_options(int argc, char** argv)
 #else
         if (!options.native_local_input) {
             throw std::runtime_error(
-                "--native-local-kernel-ptx requires --native-local-input");
+                "--native-local-kernel-ptx applies only to full-frame HEVC streams");
         }
         std::ifstream kernel_ptx(options.native_local_kernel_ptx, std::ios::binary);
         if (!kernel_ptx) {
@@ -4586,14 +4581,33 @@ private:
                     "orange_native_nv12_write_luma"),
                 "cuModuleGetFunction(orange_native_nv12_write_luma)");
         }
+        // Storage width: the pitch the driver gives a linear NV12 frame of
+        // this size. An array declared at the visible width encodes sheared
+        // (4512 wide: PSNR 7.8 dB); declared at that pitch it is exact (4512 ->
+        // 4608, docs/nvenc_input_layout_journal.md).
+        {
+            CUdeviceptr pitch_probe = 0;
+            size_t pitch = 0;
+            check_cu(
+                cuMemAllocPitch(
+                    &pitch_probe,
+                    &pitch,
+                    static_cast<size_t>(desc.width),
+                    static_cast<size_t>(desc.height) * 3 / 2,
+                    16),
+                "cuMemAllocPitch(native recorder storage width)");
+            check_cu(cuMemFree(pitch_probe), "cuMemFree(native recorder storage width)");
+            native_storage_width_ = pitch;
+        }
+        const size_t storage_width = native_storage_width_;
         native_surfaces_.reserve(encoder_->GetEncoderBufferCount());
-        std::vector<uint8_t> y_padding(4608 * static_cast<size_t>(desc.height), 0);
-        std::vector<uint8_t> neutral_uv(4608 * static_cast<size_t>(desc.height / 2), 128);
+        std::vector<uint8_t> y_padding(storage_width * static_cast<size_t>(desc.height), 0);
+        std::vector<uint8_t> neutral_uv(storage_width * static_cast<size_t>(desc.height / 2), 128);
         for (int i = 0; i < encoder_->GetEncoderBufferCount(); ++i) {
             native_surfaces_.emplace_back();
             auto& surface = native_surfaces_.back();
             CUDA_ARRAY3D_DESCRIPTOR allocation{};
-            allocation.Width = 4608;
+            allocation.Width = storage_width;
             allocation.Height = desc.height;
             allocation.Format = CU_AD_FORMAT_NV12;
             allocation.NumChannels = 3;
@@ -4612,10 +4626,10 @@ private:
             CUDA_MEMCPY2D fill{};
             fill.srcMemoryType = CU_MEMORYTYPE_HOST;
             fill.srcHost = y_padding.data();
-            fill.srcPitch = 4608;
+            fill.srcPitch = storage_width;
             fill.dstMemoryType = CU_MEMORYTYPE_ARRAY;
             fill.dstArray = surface.y;
-            fill.WidthInBytes = 4608;
+            fill.WidthInBytes = storage_width;
             fill.Height = desc.height;
             check_cu(cuMemcpy2D(&fill), "cuMemcpy2D(native recorder Y initialize)");
             fill.srcHost = neutral_uv.data();
@@ -4623,11 +4637,13 @@ private:
             fill.Height = desc.height / 2;
             check_cu(cuMemcpy2D(&fill), "cuMemcpy2D(native recorder UV initialize)");
             surface.registered = encoder_->RegisterExternalResource(
-                reinterpret_cast<void*>(surface.parent), NV_ENC_INPUT_RESOURCE_TYPE_CUDAARRAY, 4608);
+                reinterpret_cast<void*>(surface.parent), NV_ENC_INPUT_RESOURCE_TYPE_CUDAARRAY,
+                static_cast<int>(storage_width));
         }
         std::cout << "external_recorder_ipc_probe input_backend=native_nv12_array"
-                  << " gpu=" << options_.gpu_id << " visible=4512x4512 storage_width=4608"
-                  << " register_pitch=4608 input_pitch=4608 native_update="
+                  << " gpu=" << options_.gpu_id << " visible=" << desc.width << "x" << desc.height
+                  << " storage_width=" << storage_width << " register_pitch=" << storage_width
+                  << " input_pitch=" << storage_width << " native_update="
                   << (native_kernel_function_ ? "kernel" : "copy")
                   << " source_release_boundary="
                   << (native_kernel_function_ ? "kernel_complete" : "copy_complete")
@@ -4699,10 +4715,10 @@ private:
         // nv12_pool condition a crop recorder on the detect die prepared
         // external slots and then had no input frame for the copy fallback
         // (2026-09-04).
-        native_local_enabled_ = options_.native_local_input && desc.source_gpu_id == options_.gpu_id;
-        if (native_local_enabled_ && (!desc.nv12_pool || desc.width != 4512 || desc.height != 4512)) {
-            throw std::runtime_error("Native local input requires the validated 4512x4512 NV12-shaped pool");
-        }
+        // Native arrays are filled from the analytics process's NV12-shaped
+        // pool on this GPU; offline input (no pool) keeps owned buffers.
+        native_local_enabled_ =
+            options_.native_local_input && desc.source_gpu_id == options_.gpu_id && desc.nv12_pool;
         registered_mode_enabled_ =
             options_.registered_source &&
             desc.source_gpu_id == options_.gpu_id &&
@@ -5731,7 +5747,7 @@ private:
         pic_params.inputTimeStamp = item.desc.recording_frame_id;
         pic_params.inputDuration = 1;
         apply_forced_idr_after_prewarm(&pic_params);
-        if (native_local_enabled_) { pic_params.inputPitch = 4608; }
+        if (native_local_enabled_) { pic_params.inputPitch = static_cast<uint32_t>(native_storage_width_); }
         apply_importance_map(&pic_params);
 
         if (options_.split_submit) {
@@ -6631,6 +6647,7 @@ private:
     bool registered_fallback_logged_ = false;
     bool registered_mode_enabled_ = false;
     bool native_local_enabled_ = false;
+    size_t native_storage_width_ = 0;  // array width and NVENC pitch, from initialize_native_surfaces
     uint64_t native_frames_ = 0;
 #ifdef ORANGE_NVENC_NATIVE_ARRAY_INPUT
     struct NativeSurface {

@@ -832,7 +832,6 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
 
     SupervisorPlan plan;
     plan.recorder_tool_path = options.recorder_tool_path;
-    plan.native_local_input = options.native_local_input;
     plan.native_local_kernel_ptx = options.native_local_kernel_ptx;
     plan.full_frame_extra_output_delay = options.full_frame_extra_output_delay;
     plan.mode = "off";
@@ -1671,12 +1670,12 @@ std::vector<std::string> BuildRecorderCommand(const SupervisorPlan& plan,
         argv.push_back("--gop-route-offset");
         argv.push_back(std::to_string(stream.gop_route_offset));
     }
-    if (plan.native_local_input && stream.stream_kind == "full_frame") {
-        argv.push_back("--native-local-input");
-        if (!plan.native_local_kernel_ptx.empty()) {
-            argv.push_back("--native-local-kernel-ptx");
-            argv.push_back(plan.native_local_kernel_ptx);
-        }
+    // The recorder itself encodes every full-frame HEVC stream's same-GPU
+    // shard from native NV12 arrays; the optional surface-write kernel is a
+    // diagnostic that only applies there.
+    if (stream.stream_kind == "full_frame" && stream.codec == "hevc" && !plan.native_local_kernel_ptx.empty()) {
+        argv.push_back("--native-local-kernel-ptx");
+        argv.push_back(plan.native_local_kernel_ptx);
     }
     // Full-frame-only NVENC pipeline depth (2026-09-20): the env form
     // ORANGE_EXTERNAL_RECORDER_EXTRA_OUTPUT_DELAY reaches every supervised
@@ -1754,10 +1753,9 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
     }
 
     return {
-        {"schema_id", plan.schema_id},
-        {"schema_version", plan.schema_version},
+        {"schema_id", kSupervisorPlanSchemaId},
+        {"schema_version", kSupervisorPlanSchemaVersion},
         {"recorder_tool_path", plan.recorder_tool_path},
-        {"native_local_input", plan.native_local_input},
         {"native_local_kernel_ptx", plan.native_local_kernel_ptx},
         {"full_frame_extra_output_delay", plan.full_frame_extra_output_delay},
         {"source_path", plan.source_path},

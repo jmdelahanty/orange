@@ -625,10 +625,14 @@ void test_two_shard_plan_builds_gop_modulo_command()
             "command should include shard GPU csv");
     require(!has_arg(argv, "--preserve-shard-mp4s"),
             "default command should not preserve shard MP4s");
+    require(!has_arg(argv, "--native-local-input"),
+            "native local input is the recorder's own decision, not an argument");
 
     const nlohmann::json json_plan = SupervisorPlanToJson(plan);
     require(json_plan["schema_id"] == "orange.external_recorder.supervisor_plan",
             "plan json schema id should be present");
+    require(json_plan["schema_version"] == 2 && !json_plan.contains("native_local_input"),
+            "plan v2 has no native_local_input switch");
     require(json_plan["streams"][0]["command"]["argv"].is_array(),
             "plan json should expose command argv");
     require(json_plan.value("require_status", false),

@@ -221,7 +221,7 @@ The separate CMake switches `BUILD_NATIVE_RECORDER`, `BUILD_CONTENTION_TOOLS`,
 and `BUILD_LEGACY_RECORDER_CONTROL` keep this work outside Orange's main build.
 
 - `external_recorder_ipc_probe_native` uses isolated CUDA 13.1 and the pinned
-  NVENC 13.1 interface. Native arrays are opt-in with `--native-local-input`.
+  NVENC 13.1 interface. Native arrays are always used for full-frame HEVC (no option since 2026-10-30).
 - `external_recorder_ipc_probe_legacy` checks the same recorder source against
   the existing CUDA 12.2/NVENC headers and rejects the native option.
 - `trt_contention_probe` runs a required CUDA graph on the production CUDA 12.2
@@ -252,9 +252,10 @@ vectorized surface stores and preserves neutral UV; it still moves the pixels
 and consumes SM resources. The original `copy_*` CSV columns are retained as
 compatibility aliases, and `native_update` plus generic `update_*` columns
 identify and time the selected operation. The external recorder's native backend also supports this experimental kernel
-with `--native-local-input --native-local-kernel-ptx PATH` (or
-`ORANGE_EXTERNAL_RECORDER_NATIVE_LOCAL_INPUT=1` and
+with `--native-local-kernel-ptx PATH` (or
 `ORANGE_EXTERNAL_RECORDER_NATIVE_KERNEL_PTX=PATH`). The copy remains its default.
+Since 2026-10-30 native input itself is not an option: the recorder uses it for
+every full-frame HEVC stream's same-GPU shard, at any frame size.
 The kernel and arrays stay inside the external recorder process. Source RELEASE
 waits for the selected operation to finish, and summaries distinguish `copy`
 from `kernel`. The option applies only to validated local full-frame shards;

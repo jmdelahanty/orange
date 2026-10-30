@@ -354,7 +354,6 @@ struct ExperimentSpec {
     long long external_recorder_owner_push_chunk_bytes = 0;
     bool acq_ring_release_log = false;   // ORANGE_ACQ_RING_RELEASE_LOG (per-frame ring release timeline)
     bool acq_cadence_probe_all = false;  // ORANGE_ACQ_CADENCE_PROBE_ALL (cadence probe on every frame)  // ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_CHUNK_BYTES (0: client default 2 MB)
-    bool external_recorder_native_local_input = false;  // full-frame recorders get --native-local-input (CUDA 13 recorder build; contract recorder_tool_path must point at it)
     bool external_recorder_content_digest_receipts = false;  // recorders write <video>.content_digest.json after each finalize (receipt-backed sealer); env ORANGE_EXTERNAL_RECORDER_CONTENT_DIGEST_RECEIPTS
     std::string external_recorder_native_kernel_ptx;    // optional --native-local-kernel-ptx path
     int external_recorder_extra_output_delay = -1;    // ORANGE_EXTERNAL_RECORDER_EXTRA_OUTPUT_DELAY (-1: probe default 3); reaches crop recorders too
@@ -8400,6 +8399,13 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         }
         spec->citrus_observation_binding_mode = mode;
     }
+    if (fixed.contains("external_recorder_native_local_input")) {
+        if (error_out) {
+            *error_out = "fixed.external_recorder_native_local_input was removed: full-frame recorders always use "
+                         "native local input; delete the key from the spec";
+        }
+        return false;
+    }
     if (fixed.contains("recording_contexts")) {
         try {
             if (fixed.at("recording_contexts").is_null())
@@ -8506,8 +8512,6 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         fixed.value("external_recorder_owner_push_chunk_bytes", 0LL);
     spec->acq_ring_release_log = fixed.value("acq_ring_release_log", false);
     spec->acq_cadence_probe_all = fixed.value("acq_cadence_probe_all", false);
-    spec->external_recorder_native_local_input =
-        fixed.value("external_recorder_native_local_input", false);
     spec->external_recorder_content_digest_receipts =
         fixed.value("external_recorder_content_digest_receipts", false);
     spec->external_recorder_native_kernel_ptx =
@@ -9284,8 +9288,6 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                  spec.external_recorder_split_submit},
                                                                 {"external_recorder_owner_push",
                                                                  spec.external_recorder_owner_push},
-                                                                {"external_recorder_native_local_input",
-                                                                 spec.external_recorder_native_local_input},
                                                                 {"external_recorder_content_digest_receipts",
                                                                  spec.external_recorder_content_digest_receipts},
                                                                 {"external_recorder_native_kernel_ptx",
@@ -9864,13 +9866,9 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
                 options.duration_seconds);
         lifecycle_options.recorder_tool_path =
             options.external_recorder_contract.recorder_tool_path;
-        if (const char* native_env = std::getenv("ORANGE_HEADLESS_NATIVE_LOCAL_INPUT");
-            native_env && std::string(native_env) == "1") {
-            lifecycle_options.native_local_input = true;
-            if (const char* ptx_env = std::getenv("ORANGE_HEADLESS_NATIVE_KERNEL_PTX");
-                ptx_env && *ptx_env) {
-                lifecycle_options.native_local_kernel_ptx = ptx_env;
-            }
+        if (const char* ptx_env = std::getenv("ORANGE_HEADLESS_NATIVE_KERNEL_PTX");
+            ptx_env && *ptx_env) {
+            lifecycle_options.native_local_kernel_ptx = ptx_env;
         }
         if (const char* od_env = std::getenv("ORANGE_HEADLESS_FULL_FRAME_EXTRA_OUTPUT_DELAY");
             od_env && *od_env) {
@@ -12098,8 +12096,6 @@ int run_local_experiment(const HeadlessCliOptions& options)
         setenv("ORANGE_EXTERNAL_RECORDER_OWNER_PUSH_CHUNK_BYTES",
                std::to_string(spec.external_recorder_owner_push_chunk_bytes).c_str(), 1);
     }
-    setenv("ORANGE_HEADLESS_NATIVE_LOCAL_INPUT",
-           spec.external_recorder_native_local_input ? "1" : "0", 1);
     // The recorder processes inherit this environment; the recorder itself
     // reads the flag (default off) and derives the recording root from its
     // summary path.

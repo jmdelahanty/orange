@@ -207,8 +207,7 @@
     "analytics_device_roi": true,
     "analytics_device_crop": true,
     "analytics_copy_after_pose": true,
-    "analytics_fused_frame": true,
-    "external_recorder_native_local_input": true
+    "analytics_fused_frame": true
   },
   "matrix": {
     "codec": [

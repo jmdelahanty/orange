@@ -10,12 +10,16 @@
 
 namespace orange::external_recorder {
 
+// 2: native_local_input removed (the recorder uses native input for every
+// full-frame HEVC stream; there is no switch).
+inline constexpr const char* kSupervisorPlanSchemaId = "orange.external_recorder.supervisor_plan";
+inline constexpr int kSupervisorPlanSchemaVersion = 2;
+
 struct SupervisorPlanOptions {
     // The CUDA 13 native recorder serves every stream kind (crops included)
     // since 2026-10-08; the CUDA 12 build of the same source is retired.
     std::string recorder_tool_path = "/opt/orange/bin/external_recorder_ipc_probe_native";
-    bool native_local_input = false;         // --native-local-input on full_frame streams
-    std::string native_local_kernel_ptx;     // --native-local-kernel-ptx <path> (optional)
+    std::string native_local_kernel_ptx;     // --native-local-kernel-ptx <path> (optional; full_frame streams)
     int full_frame_extra_output_delay = -1;  // --extra-output-delay <n> on full_frame streams only (-1: recorder default/env)
     std::string default_session_id;
     int default_encode_fps = 100;
@@ -119,10 +123,9 @@ struct StorageBudgetPolicy {
 };
 
 struct SupervisorPlan {
-    std::string schema_id = "orange.external_recorder.supervisor_plan";
-    int schema_version = 1;
+    std::string schema_id = kSupervisorPlanSchemaId;
+    int schema_version = kSupervisorPlanSchemaVersion;
     std::string recorder_tool_path;
-    bool native_local_input = false;
     std::string native_local_kernel_ptx;
     int full_frame_extra_output_delay = -1;
     std::string source_path;

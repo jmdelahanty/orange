@@ -1590,7 +1590,6 @@
    "mode",
    "mp4",
    "mp4_keyframe",
-   "native_local_input",
    "native_local_kernel_ptx",
    "ok",
    "output_kind",
@@ -1698,7 +1697,12 @@
    "video_sanity_json",
    "worker_failed"
   ],
-  "schemas": []
+  "schemas": [
+   [
+    "orange.external_recorder.supervisor_plan",
+    "2"
+   ]
+  ]
  },
  "src/gui/arena_centering_analysis.cpp": {
   "csv_headers": [],
@@ -4191,7 +4195,6 @@
    "external_recorder_gop_routing_csv_path",
    "external_recorder_mp4_path",
    "external_recorder_native_kernel_ptx",
-   "external_recorder_native_local_input",
    "external_recorder_owner_push",
    "external_recorder_owner_push_slots",
    "external_recorder_peer_access",

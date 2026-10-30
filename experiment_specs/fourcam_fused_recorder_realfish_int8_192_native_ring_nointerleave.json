@@ -202,7 +202,6 @@
     "analytics_device_crop": true,
     "analytics_copy_after_pose": true,
     "analytics_fused_frame": true,
-    "external_recorder_native_local_input": true,
     "acq_ring_release_log": true,
     "acq_cadence_probe_all": true
   },

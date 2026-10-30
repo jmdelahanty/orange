@@ -1672,12 +1672,12 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                                                  0, 64, error_out, ctx)) {
                 return false;
             }
-            if (external_ipc.contains("native_local_input") && !external_ipc["native_local_input"].is_null()) {
-                if (!read_optional_bool_field(external_ipc, "native_local_input",
-                                              &config.gui_external_ipc_native_local_input, error_out, ctx)) {
-                    return false;
-                }
-                config.gui_external_ipc_native_local_input_configured = true;
+            if (external_ipc.contains("native_local_input")) {
+                // Not read: every full-frame recorder uses native input. Said
+                // here because the production build still reads the same file.
+                std::cerr << "[app_config] " << config_path.string()
+                          << ": recording.external_ipc.native_local_input is ignored; full-frame recorders"
+                             " always use native local input" << std::endl;
             }
             if (external_ipc.contains("content_digest_receipts") && !external_ipc["content_digest_receipts"].is_null()) {
                 if (!read_optional_bool_field(external_ipc, "content_digest_receipts",

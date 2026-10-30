@@ -25,7 +25,6 @@ from typing import Any
 
 SCHEMA_ID = "orange.nvenc_native.ipc_replay_matrix"
 FORCED_ENV_NAMES = (
-    "ORANGE_EXTERNAL_RECORDER_NATIVE_LOCAL_INPUT",
     "ORANGE_EXTERNAL_RECORDER_NATIVE_KERNEL_PTX",
     "ORANGE_EXTERNAL_RECORDER_SPLIT_SUBMIT",
     "ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE",
@@ -467,7 +466,6 @@ def wait_for_socket(path: Path, process: subprocess.Popen[Any], timeout_s: float
 
 def child_env(case: Case, args: argparse.Namespace) -> tuple[dict[str, str], dict[str, str]]:
     overrides = {
-        "ORANGE_EXTERNAL_RECORDER_NATIVE_LOCAL_INPUT": "1" if case.native else "0",
         "ORANGE_EXTERNAL_RECORDER_NATIVE_KERNEL_PTX": (
             str(args.native_kernel_ptx)
             if case.native and args.native_kernel_ptx is not None
@@ -807,7 +805,7 @@ def main() -> int:
     cases = [
         Case(topology, native, split_submit)
         for topology in ("same_gpu", "split_gpu")
-        for native in (False, True)
+        for native in (True,)  # full-frame HEVC is always native since 2026-10-30; no off case exists
         for split_submit in (False, True)
     ]
     matrix: dict[str, Any] = {

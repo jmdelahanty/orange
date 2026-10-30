@@ -142,7 +142,6 @@ void test_missing_config_uses_defaults()
             config.gui_external_ipc_full_frame_extra_output_delay == -1 &&
             config.gui_external_ipc_owner_push_chunk_bytes == -1 &&
             config.gui_external_ipc_mp4_writeback_pace_bytes == -1 &&
-            !config.gui_external_ipc_native_local_input_configured &&
             config.gui_external_ipc_recorder_tool_path.empty() &&
             config.gui_analytics_device_roi == -1 && config.gui_analytics_early_owned_frame == -1 &&
             config.gui_analytics_yolo_prewarm_iterations == -1 && config.gui_analytics_pose_device_stage == -1 &&
@@ -292,9 +291,6 @@ void test_loads_gui_and_crop_defaults()
     require(config.gui_external_ipc_owner_push_slots == 16, "owner_push_slots should load");
     require(config.gui_external_ipc_full_frame_extra_output_delay == 8,
             "full_frame_extra_output_delay should load");
-    require(config.gui_external_ipc_native_local_input &&
-                config.gui_external_ipc_native_local_input_configured,
-            "native_local_input should load");
     require(config.gui_external_ipc_owner_push_chunk_bytes == 2097152, "owner_push_chunk_bytes should load");
     require(config.gui_require_external_ipc, "recording.require_external_ipc should load");
     require(config.gui_external_ipc_mp4_writeback_pace_bytes == 33554432, "mp4_writeback_pace_bytes should load");

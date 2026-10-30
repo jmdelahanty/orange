@@ -40,7 +40,7 @@ difference between the headless gate and the GUI remains, flagged below
 | Owner-push chunk bytes | GUI 2 MiB; headless gate 64 MiB | `owner_push_chunk_bytes` = 2097152 (new) | 2 MiB | `external_recorder_owner_push_chunk_bytes` 67108864 |
 | Owner-push freshness / deadline / transfer allowance | 8 / 10 / 3.6 ms | none (env only) | 8.0 / 10.0 / 3.6 | spec does not set them (defaults) |
 | Full-frame `extra_output_delay` | 8 | `full_frame_extra_output_delay` = 8 | recorder default | 8 |
-| Native NV12 array input (CUDA 13 recorder) | on | `native_local_input` = true | off | `external_recorder_native_local_input` true |
+| Native NV12 array input (CUDA 13 recorder) | on | none: every HEVC full-frame recorder (since 2026-10-30; array width = the driver's pitch for the frame width, any height); `native_local_input` is ignored with a log line | on, no switch (H.264 full frame keeps registered source) | none; a spec that sets `external_recorder_native_local_input` is refused |
 | Recorder binary | native build | `recorder_tool_path` = `/opt/orange/bin/external_recorder_ipc_probe_native` | sibling binary (CUDA 12) | same path |
 | MP4 writeback pacing | `sync_file_range` every 32 MiB | `mp4_writeback_pace_bytes` = 33554432 (new) | 32 MiB on (`FFmpegWriter.h`, shared by the recorder binaries) | default |
 | Registered NV12 source in the recorder | on | none (recorder default) | on since 2026-09-04 (`ORANGE_EXTERNAL_RECORDER_REGISTERED_SOURCE=0` disables) | `external_recorder_registered_source` true |

@@ -126,9 +126,6 @@ void ApplyLifecycleEnvOverrides(SupervisedRecorderLifecycleOptions* options)
     if (!options) {
         return;
     }
-    if (const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_FULL_FRAME_NATIVE_LOCAL_INPUT"); env && *env) {
-        options->native_local_input = std::string(env) == "1";
-    }
     if (const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_FULL_FRAME_NATIVE_KERNEL_PTX"); env && *env) {
         options->native_local_kernel_ptx = env;
     }
@@ -166,7 +163,6 @@ bool StartSupervisedRecorderLifecycle(const SupervisedRecorderLifecycleOptions& 
     plan_options.recorder_tool_path =
         ResolveExternalRecorderToolPath(options.recorder_tool_path);
     plan_options.default_session_id = options.default_session_id;
-    plan_options.native_local_input = options.native_local_input;
     plan_options.native_local_kernel_ptx = options.native_local_kernel_ptx;
     plan_options.full_frame_extra_output_delay = options.full_frame_extra_output_delay;
     if (!BuildSupervisorPlanFromContract(

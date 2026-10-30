@@ -14,10 +14,9 @@ class ScopedExternalRecorderEnvOverride;
 struct SupervisedRecorderLifecycleOptions {
     nlohmann::json contract = nlohmann::json::object();
     std::string recorder_tool_path;
-    // Native NV12 array input on the recorder's same-GPU full-frame shard
-    // (2026-09-19; needs the CUDA 13 recorder build). Passed as recorder
-    // argv for full_frame streams only; crop recorders never see it.
-    bool native_local_input = false;
+    // Full-frame HEVC recorders always encode their same-GPU shard from native
+    // NV12 arrays (CUDA 13 recorder build); this optional kernel replaces the
+    // copy-engine update there and stays a diagnostic.
     std::string native_local_kernel_ptx;
     // --extra-output-delay for full_frame recorders only (-1: leave to the recorder).
     int full_frame_extra_output_delay = -1;
@@ -27,9 +26,8 @@ struct SupervisedRecorderLifecycleOptions {
     SupervisorProcessOptions process_options;
 };
 
-// Fill native_local_input / native_local_kernel_ptx /
-// full_frame_extra_output_delay from the environment when set:
-// ORANGE_EXTERNAL_RECORDER_FULL_FRAME_NATIVE_LOCAL_INPUT (1/0),
+// Fill native_local_kernel_ptx / full_frame_extra_output_delay from the
+// environment when set:
 // ORANGE_EXTERNAL_RECORDER_FULL_FRAME_NATIVE_KERNEL_PTX (the un-prefixed
 // names are read by the recorder binary itself and must not reach crop
 // recorders),

@@ -5209,15 +5209,6 @@ int main(int /*argc*/, char ** /*args*/) {
             std::to_string(app_storage_config.gui_external_ipc_full_frame_extra_output_delay),
             "full-frame external recorder extra output delay");
     }
-    if (app_storage_config.gui_external_ipc_native_local_input_configured) {
-        // FULL_FRAME_ prefix: the recorder binary itself reads
-        // ORANGE_EXTERNAL_RECORDER_NATIVE_LOCAL_INPUT, and a crop recorder
-        // exits on it ("Native local input currently requires full-frame HEVC").
-        set_gui_env_from_app_config_if_absent(
-            "ORANGE_EXTERNAL_RECORDER_FULL_FRAME_NATIVE_LOCAL_INPUT",
-            app_storage_config.gui_external_ipc_native_local_input ? "1" : "0",
-            "full-frame external recorder native local input");
-    }
     if (app_storage_config.gui_external_ipc_content_digest_receipts_configured) {
         // Recorder-side media content digests (receipt-backed sealer); the
         // supervised recorders inherit the variable.

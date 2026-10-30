@@ -202,7 +202,6 @@
     "analytics_device_crop": true,
     "analytics_copy_after_pose": true,
     "analytics_fused_frame": true,
-    "external_recorder_native_local_input": true,
     "external_recorder_owner_push": true,
     "external_recorder_owner_push_chunk_bytes": 67108864
   },
