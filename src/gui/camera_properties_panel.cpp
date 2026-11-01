@@ -155,6 +155,49 @@ std::string make_rig_io_connection_key(const CameraParams& camera_params,
     return camera_params.camera_serial + ":" + connection.camera_line + ":" + connection.purpose;
 }
 
+// Arrow-key steps for the lens sliders. Hover Focus or Iris and press
+// Left/Right (or Down/Up): 1 count per press, 10 with Shift, held keys repeat.
+// Lens writes block until the mount settles, so the camera gets one write, of
+// the last value, once no key has been pressed for kLensNudgeCooldownSeconds.
+constexpr double kLensNudgeCooldownSeconds = 0.5;
+
+struct LensNudge {
+    int camera = -1;  // -1: nothing pending
+    int value = 0;
+    double last_press_s = 0.0;
+};
+
+void nudge_hovered_slider(LensNudge* nudge, int camera, int* value, int min_value, int max_value)
+{
+    if (!ImGui::IsItemHovered()) {
+        return;
+    }
+    ImGui::SetItemTooltip("Left/Right: -/+1, Shift: 10; sent %.1f s after the last key", kLensNudgeCooldownSeconds);
+    if (nudge->camera >= 0 && nudge->camera != camera) {
+        return;  // another camera's step is still waiting for its write
+    }
+    const int step = ImGui::GetIO().KeyShift ? 10 : 1;
+    int delta = 0;
+    if (ImGui::IsKeyPressed(ImGuiKey_RightArrow) || ImGui::IsKeyPressed(ImGuiKey_UpArrow)) {
+        delta += step;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_DownArrow)) {
+        delta -= step;
+    }
+    if (delta == 0) {
+        return;
+    }
+    *value = std::clamp(*value + delta, min_value, max_value);
+    nudge->camera = camera;
+    nudge->value = *value;
+    nudge->last_press_s = ImGui::GetTime();
+}
+
+bool lens_nudge_due(const LensNudge& nudge)
+{
+    return nudge.camera >= 0 && ImGui::GetTime() - nudge.last_press_s >= kLensNudgeCooldownSeconds;
+}
+
 }  // namespace
 
 namespace orange::gui {
@@ -404,18 +447,28 @@ void render_camera_properties_panel(CameraEmergent* ecams,
         static int rig_io_diagnostic_status_camera = -1;
         static CameraRigIoOutputState rig_io_restore_state;
         static std::string rig_io_restore_key;
+        static LensNudge focus_nudge;
+        static LensNudge iris_nudge;
 
         if (num_cameras <= 0) {
+            focus_nudge = {};
+            iris_nudge = {};
             ImGui::TreePop();
             return;
         }
 
         selected_camera = std::clamp(selected_camera, 0, num_cameras - 1);
 
+        static int sliders_loaded_for = -1;
         for (int n = 0; n < num_cameras; n++) {
             if (ImGui::Selectable(cameras_params[n].camera_name.c_str(), selected_camera == n)) {
                 selected_camera = n;
             }
+        }
+        // Reload the sliders from the camera, but not while one is held: Focus
+        // and Iris commit on release, and ImGui does not set the value on the
+        // release frame, so a reload there would commit the old value.
+        if (selected_camera != sliders_loaded_for || !ImGui::IsAnyItemActive()) {
             slider_gain = cameras_params[selected_camera].gain;
             slider_iris = cameras_params[selected_camera].iris;
             slider_focus = cameras_params[selected_camera].focus;
@@ -425,6 +478,13 @@ void render_camera_properties_panel(CameraEmergent* ecams,
             slider_frame_rate = cameras_params[selected_camera].frame_rate;
             OffsetX = cameras_params[selected_camera].offsetx;
             OffsetY = cameras_params[selected_camera].offsety;
+            sliders_loaded_for = selected_camera;
+        }
+        if (focus_nudge.camera == selected_camera) {
+            slider_focus = focus_nudge.value;
+        }
+        if (iris_nudge.camera == selected_camera) {
+            slider_iris = iris_nudge.value;
         }
 
         if (recording_mutation_locked) {
@@ -479,11 +539,29 @@ void render_camera_properties_panel(CameraEmergent* ecams,
         if (!cameras_params[selected_camera].lens_control_enabled) {
             ImGui::BeginDisabled();
         }
+        if (lens_nudge_due(focus_nudge)) {
+            const LensNudge nudge = std::exchange(focus_nudge, LensNudge{});
+            if (nudge.camera < num_cameras) {
+                update_focus_value(&ecams[nudge.camera].camera, nudge.value, &cameras_params[nudge.camera]);
+            }
+        }
+        if (lens_nudge_due(iris_nudge)) {
+            const LensNudge nudge = std::exchange(iris_nudge, LensNudge{});
+            if (nudge.camera < num_cameras && !recording_mutation_locked) {
+                update_iris_value(&ecams[nudge.camera].camera, nudge.value, &cameras_params[nudge.camera]);
+            }
+        }
+
         // Lens writes now wait for the mount and verify FocusCurrent, so commit
         // once on release instead of on every dragged frame.
         ImGui::SliderInt("Focus", &slider_focus, cameras_params[selected_camera].focus_min, cameras_params[selected_camera].focus_max, "%d");
         if (ImGui::IsItemDeactivatedAfterEdit()) {
+            focus_nudge = {};  // the dragged value replaces a pending step
             update_focus_value(&ecams[selected_camera].camera, slider_focus, &cameras_params[selected_camera]);
+        } else {
+            nudge_hovered_slider(&focus_nudge, selected_camera, &slider_focus,
+                                 static_cast<int>(cameras_params[selected_camera].focus_min),
+                                 static_cast<int>(cameras_params[selected_camera].focus_max));
         }
         if (!cameras_params[selected_camera].lens_control_enabled) {
             ImGui::EndDisabled();
@@ -494,7 +572,12 @@ void render_camera_properties_panel(CameraEmergent* ecams,
         }
         ImGui::SliderInt("Iris", &slider_iris, cameras_params[selected_camera].iris_min, cameras_params[selected_camera].iris_max, "%d");
         if (ImGui::IsItemDeactivatedAfterEdit()) {
+            iris_nudge = {};  // the dragged value replaces a pending step
             update_iris_value(&ecams[selected_camera].camera, slider_iris, &cameras_params[selected_camera]);
+        } else {
+            nudge_hovered_slider(&iris_nudge, selected_camera, &slider_iris,
+                                 static_cast<int>(cameras_params[selected_camera].iris_min),
+                                 static_cast<int>(cameras_params[selected_camera].iris_max));
         }
         if (recording_mutation_locked || !cameras_params[selected_camera].lens_control_enabled) {
             ImGui::EndDisabled();
