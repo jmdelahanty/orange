@@ -101,6 +101,27 @@ void ImageLevelsCheck::RequestMeasureNow(int camera_index)
     measure_now_.push_back(camera_index);
 }
 
+bool ImageLevelsCheck::Busy(int camera_index) const
+{
+    if (camera_index < 0 || camera_index >= static_cast<int>(cameras_.size())) return false;
+    for (int requested : measure_now_) {
+        if (requested == camera_index) return true;
+    }
+    const Camera& c = cameras_[static_cast<size_t>(camera_index)];
+    switch (c.phase) {
+    case Phase::kSettling:
+    case Phase::kRequested:
+    case Phase::kComputing:
+    case Phase::kRehoming:
+        return true;
+    case Phase::kIdle:
+        return c.armed;
+    case Phase::kDone:
+        return false;
+    }
+    return false;
+}
+
 ImageLevelsCheck::View ImageLevelsCheck::CameraView(int camera_index) const
 {
     if (camera_index < 0 || camera_index >= static_cast<int>(cameras_.size())) return {"waiting_for_stream", nullptr};
@@ -129,6 +150,7 @@ void ImageLevelsCheck::Poll(const Inputs& in, CameraParams* cameras, int num_cam
         CameraParams& params = cameras[i];
         SpatialSnapshotWorker* worker = workers ? workers[i] : nullptr;
         c.serial = params.camera_serial;
+        c.armed = in.enabled && in.streaming && worker;
         if (!in.enabled || !in.streaming || !worker) {
             if (c.phase != Phase::kIdle || !c.result.is_null()) {
                 reset(&c, worker);

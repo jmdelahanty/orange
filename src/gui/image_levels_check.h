@@ -54,6 +54,12 @@ public:
     };
     View CameraView(int camera_index) const;
     std::optional<image_levels::Measurement> LastMeasurement(int camera_index) const;
+    // GUI thread. True while this camera's check holds, or is about to take, its
+    // snapshot worker's single native request: settling, requested, computing,
+    // re-homing, a pending Measure now, or idle on a stream that has not yet
+    // delivered frames. Another native-snapshot user (the empty-background
+    // capture) refuses the camera while this is true instead of queuing.
+    bool Busy(int camera_index) const;
 
 private:
     enum class Phase { kIdle, kSettling, kRequested, kComputing, kRehoming, kDone };
@@ -71,6 +77,7 @@ private:
         std::optional<image_levels::Measurement> measurement;
         bool rehomed = false;
         bool second_pass = false;
+        bool armed = false;  // enabled, streaming and a worker: idle means about to settle
         std::string not_measured_reason;
         std::shared_ptr<std::atomic<bool>> rehome_done;
         std::thread rehome_thread;
