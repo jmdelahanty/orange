@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
@@ -389,6 +390,17 @@ ProbeResult probe_camera(
             std::cout << " inc=" << params.frame_rate_inc;
         }
         std::cout << "\n";
+        // The camera keeps its previous rate when the requested one does not fit
+        // the current frame size and exposure; open_camera_with_params only warns.
+        // Keep streaming so the measurement shows what the camera really does.
+        std::string rate_failure;
+        if (params.frame_rate != requested_frame_rate) {
+            rate_failure = "FrameRate readback " + std::to_string(params.frame_rate) +
+                           " != requested " + std::to_string(requested_frame_rate) +
+                           " (camera range [" + std::to_string(params.frame_rate_min) + "," +
+                           std::to_string(params.frame_rate_max) + "])";
+            std::cerr << "[FAIL] " << params.camera_serial << " " << rate_failure << "\n";
+        }
         if (options.override_gpu_direct >= 0) {
             std::cout << "[INFO] " << params.camera_serial
                       << " GPUDirect configured=" << (configured_gpu_direct ? "true" : "false")
@@ -713,9 +725,23 @@ ProbeResult probe_camera(
                           << " last_frame_id=" << last_frame_id
                           << std::defaultfloat
                           << "\n";
+                // Within 1 % of the requested rate, and no frame lost (not while dumping,
+                // whose copies slow the loop).
+                const double rate_error = std::abs(measured_fps - requested_frame_rate) / requested_frame_rate;
+                if (rate_failure.empty() && !dumping && (rate_error > 0.01 || frame_id_gaps > 0)) {
+                    std::ostringstream measure_failure;
+                    measure_failure << std::fixed << std::setprecision(3) << "measured fps " << measured_fps
+                                    << " for requested " << requested_frame_rate << ", frame_id_gaps "
+                                    << frame_id_gaps;
+                    rate_failure = measure_failure.str();
+                    std::cerr << "[FAIL] " << params.camera_serial << " " << rate_failure << "\n";
+                }
             }
         }
 
+        if (!rate_failure.empty()) {
+            throw std::runtime_error(rate_failure);
+        }
         result.ok = true;
     } catch (const std::exception& ex) {
         result.ok = false;
