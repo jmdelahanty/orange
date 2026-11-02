@@ -8,7 +8,7 @@ subset of JSON Schema and refuses anything else, so a schema never says more tha
 code enforces:
 
   type (object, array, string, integer, number, boolean; ["T", "null"] for nullable), properties,
-  minItems / maxItems on an array (checked on parse),
+  minItems / maxItems on an array and minProperties / maxProperties on a map (checked on parse),
   required, additionalProperties (false; a schema for string-keyed maps, whose keys a
   propertyNames {pattern} may constrain; or absent/true on an
   object with properties, which is "open": declared fields are typed and checked, any other keys
@@ -49,7 +49,7 @@ from pathlib import Path
 
 SUPPORTED = {
     "type", "properties", "required", "additionalProperties", "items", "enum", "const",
-    "minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems", "pattern", "oneOf", "$defs", "$ref", "allOf",
+    "minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties", "pattern", "oneOf", "$defs", "$ref", "allOf",
     "description", "title", "$schema", "$id", "examples", "default",
     "x-orange-cpp-name", "x-orange-decimals", "x-orange-counter", "x-orange-digest",
     "x-orange-map-key", "propertyNames",
@@ -101,6 +101,8 @@ class ArrayT:
 class MapT:
     value: object
     key_pattern: str | None = None   # propertyNames {pattern}
+    min_properties: int | None = None
+    max_properties: int | None = None
 
 
 @dataclass
@@ -261,8 +263,16 @@ class Builder:
                     if names is not None and (not isinstance(names, dict) or set(names) != {"pattern"}):
                         raise SchemaError(f"{where}: propertyNames supports only {{pattern}}")
                     return MapT(self.type_of(additional, name + "Value", where + "/*"),
-                                key_pattern=names["pattern"] if names else None)
+                                key_pattern=names["pattern"] if names else None,
+                                min_properties=node.get("minProperties"),
+                                max_properties=node.get("maxProperties"))
+                if "minProperties" in node or "maxProperties" in node:
+                    raise SchemaError(f"{where}: minProperties / maxProperties only on a map "
+                                      "(additionalProperties schema, no properties)")
                 return OpaqueT()
+            if "minProperties" in node or "maxProperties" in node:
+                raise SchemaError(f"{where}: minProperties / maxProperties only on a map "
+                                  "(additionalProperties schema, no properties)")
             if additional not in (False, True):
                 raise SchemaError(f"{where}: additionalProperties must be false or true on an object with properties")
             return self.object(node, node.get("x-orange-cpp-name", name), where)
@@ -373,7 +383,8 @@ class Builder:
             variant = VariantT(root_name, discriminator)
             for b in branches:
                 value = b["properties"][discriminator]["const"]
-                variant.branches.append((value, self.object(b, root_name + camel(str(value)), f"#/oneOf/{value}")))
+                branch_name = b.get("x-orange-cpp-name") or root_name + camel(str(value))
+                variant.branches.append((value, self.object(b, branch_name, f"#/oneOf/{value}")))
             return variant
         return self.object(root, root.get("x-orange-cpp-name", root_name), "#")
 
@@ -520,6 +531,10 @@ class Emitter:
             out.append("}")
         elif isinstance(t, MapT):
             out.append(f"if (!{src}.is_object()) {fail('expected an object')}")
+            if t.min_properties is not None:
+                out.append(f"if ({src}.size() < {t.min_properties}u) {fail(f'fewer than {t.min_properties} entries')}")
+            if t.max_properties is not None:
+                out.append(f"if ({src}.size() > {t.max_properties}u) {fail(f'more than {t.max_properties} entries')}")
             out.append(f"{dst}.clear();")
             out.append(f"for (auto it = {src}.begin(); it != {src}.end(); ++it) {{")
             out.append(f"    {cpp_type(t.value)} value{{}};")
