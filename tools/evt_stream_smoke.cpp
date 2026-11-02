@@ -390,17 +390,9 @@ ProbeResult probe_camera(
             std::cout << " inc=" << params.frame_rate_inc;
         }
         std::cout << "\n";
-        // The camera keeps its previous rate when the requested one does not fit
-        // the current frame size and exposure; open_camera_with_params only warns.
-        // Keep streaming so the measurement shows what the camera really does.
+        // open_camera_with_params refuses a FrameRate the camera did not take;
+        // --measure-seconds also checks the rate the stream delivers.
         std::string rate_failure;
-        if (params.frame_rate != requested_frame_rate) {
-            rate_failure = "FrameRate readback " + std::to_string(params.frame_rate) +
-                           " != requested " + std::to_string(requested_frame_rate) +
-                           " (camera range [" + std::to_string(params.frame_rate_min) + "," +
-                           std::to_string(params.frame_rate_max) + "])";
-            std::cerr << "[FAIL] " << params.camera_serial << " " << rate_failure << "\n";
-        }
         if (options.override_gpu_direct >= 0) {
             std::cout << "[INFO] " << params.camera_serial
                       << " GPUDirect configured=" << (configured_gpu_direct ? "true" : "false")

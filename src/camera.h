@@ -352,7 +352,9 @@ void update_gain_value(Emergent::CEmergentCamera* camera, int gain_val, CameraPa
 // Writes Exposure when it lies in the camera's current range; false (logged) otherwise.
 bool update_exposure_value(Emergent::CEmergentCamera* camera, int exposure_val, CameraParams* camera_params);
 void update_exposure_framerate_value(Emergent::CEmergentCamera *camera, int exposure_val, int* frame_rate_val, CameraParams *camera_params);
-void update_frame_rate_value(Emergent::CEmergentCamera* camera, int frame_rate_val, CameraParams* camera_params);
+// Writes FrameRate; true only when the camera reads back the requested rate.
+// Out of range for the current size and exposure, the camera keeps its rate.
+bool update_frame_rate_value(Emergent::CEmergentCamera* camera, int frame_rate_val, CameraParams* camera_params);
 void update_width_value(Emergent::CEmergentCamera* camera, int width_val, CameraParams* camera_params);
 void update_height_value(Emergent::CEmergentCamera* camera, int height_val, CameraParams* camera_params);
 void update_offsetX_value(Emergent::CEmergentCamera* camera, int OFFSET_X_VAL, CameraParams* camera_params);

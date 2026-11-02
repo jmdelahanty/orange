@@ -1927,10 +1927,10 @@ void update_exposure_framerate_value(Emergent::CEmergentCamera *camera, int expo
 }
 
 
-void update_frame_rate_value(Emergent::CEmergentCamera *camera, int frame_rate_val, CameraParams *camera_params)
+bool update_frame_rate_value(Emergent::CEmergentCamera *camera, int frame_rate_val, CameraParams *camera_params)
 {
     if (camera == nullptr || camera_params == nullptr) {
-        return;
+        return false;
     }
 
     const unsigned int requested =
@@ -1945,7 +1945,7 @@ void update_frame_rate_value(Emergent::CEmergentCamera *camera, int frame_rate_v
         std::cout << camera_params->camera_serial
                   << " [update_frame_rate_value] FrameRate set FAIL: unable to query range."
                   << std::endl;
-        return;
+        return false;
     }
 
     auto range_string = [&]() {
@@ -1983,7 +1983,7 @@ void update_frame_rate_value(Emergent::CEmergentCamera *camera, int frame_rate_v
             std::cout << " current=" << camera_params->frame_rate;
         }
         std::cout << std::endl;
-        return;
+        return false;
     }
 
     const EVT_ERROR set_err = EVT_CameraSetUInt32Param(camera, "FrameRate", requested);
@@ -1998,7 +1998,7 @@ void update_frame_rate_value(Emergent::CEmergentCamera *camera, int frame_rate_v
             std::cout << " current=" << camera_params->frame_rate;
         }
         std::cout << std::endl;
-        return;
+        return false;
     }
 
     unsigned int readback = 0;
@@ -2011,7 +2011,7 @@ void update_frame_rate_value(Emergent::CEmergentCamera *camera, int frame_rate_v
                   << " set ok, readback failed: " << get_evt_error_string(get_err)
                   << " range=" << range_string()
                   << std::endl;
-        return;
+        return false;
     }
 
     camera_params->frame_rate = readback;
@@ -2030,6 +2030,7 @@ void update_frame_rate_value(Emergent::CEmergentCamera *camera, int frame_rate_v
                   << " range=" << range_string()
                   << std::endl;
     }
+    return readback == requested;
 }
 
 void update_offsetX_value(Emergent::CEmergentCamera *camera, int OFFSET_X_VAL, CameraParams *camera_params)
@@ -2116,14 +2117,34 @@ void open_camera_with_params(Emergent::CEmergentCamera *camera,
     // fits the new, lower rate is out of range until FrameRate is written, so
     // it is written again after FrameRate.
     const int requested_exposure = static_cast<int>(camera_params->exposure);
+    const unsigned int requested_frame_rate = camera_params->frame_rate;
     const bool exposure_written = update_exposure_value(camera, requested_exposure, camera_params);
-    update_frame_rate_value(camera, camera_params->frame_rate, camera_params);
+    const bool frame_rate_applied = update_frame_rate_value(camera, static_cast<int>(requested_frame_rate), camera_params);
+    bool exposure_applied = exposure_written;
     if (!exposure_written) {
-        const bool written_after_frame_rate = update_exposure_value(camera, requested_exposure, camera_params);
+        exposure_applied = update_exposure_value(camera, requested_exposure, camera_params);
         std::cout << camera_params->camera_serial
                   << " [open_camera_with_params] Exposure " << requested_exposure
-                  << (written_after_frame_rate ? " set after FrameRate" : " still not set after FrameRate")
+                  << (exposure_applied ? " set after FrameRate" : " still not set after FrameRate")
                   << std::endl;
+    }
+    // A camera that keeps its previous rate or exposure would stream, and record,
+    // something other than its config says: refuse the open instead.
+    if (!frame_rate_applied) {
+        std::ostringstream error;
+        error << camera_params->camera_serial << ": FrameRate " << requested_frame_rate
+              << " not applied (camera reads " << camera_params->frame_rate << ", range ["
+              << camera_params->frame_rate_min << "," << camera_params->frame_rate_max << "] at "
+              << camera_params->width << "x" << camera_params->height << ", exposure "
+              << camera_params->exposure << " us); lower the frame rate, the height or the exposure";
+        throw std::runtime_error(error.str());
+    }
+    if (!exposure_applied) {
+        std::ostringstream error;
+        error << camera_params->camera_serial << ": Exposure " << requested_exposure
+              << " us not applied at FrameRate " << camera_params->frame_rate
+              << "; lower the exposure or the frame rate";
+        throw std::runtime_error(error.str());
     }
     if (camera_params->lens_control_enabled) {
         const bool focus_ok = set_focus_value_checked(camera, static_cast<int>(camera_params->focus), camera_params, "open_camera_with_params");
