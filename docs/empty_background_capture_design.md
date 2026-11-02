@@ -65,6 +65,8 @@ no background.
     and 0.14 for 81. Past about 17 the gain is small and memory grows. The count
     came from the August crop-only design; it stays a configured constant in the
     descriptor (`method: median_17`, version 1), not an operator knob.
+  - Worked example and the table behind the choice:
+    `docs/background_median_frame_count.md`.
   - At 250 Hz the burst lasts 68 ms, at 100 Hz 170 ms. Nothing in an empty dish
     moves, so consecutive frames are fine.
 - **Cameras:** all streaming cameras in one action, each with its own burst.
