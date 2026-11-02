@@ -31,7 +31,8 @@
     },
     "source_descriptor_path": {
       "type": "string",
-      "pattern": "^/[^\\u0000\\r\\n]+(?![\\s\\S])"
+      "pattern": "^/[^\\u0000\\r\\n]+(?![\\s\\S])",
+      "description": "Provenance only: the descriptor's path in the host's background store at record start. Readers must not resolve it; the recording copy (descriptor) and its sha256 are authoritative."
     },
     "descriptor": {
       "type": "object",
@@ -75,7 +76,8 @@
               "not_selected",
               "missing_in_capture",
               "copy_failed"
-            ]
+            ],
+            "description": "attached: settings match, image copied. settings_changed: image copied, settings_differences lists each checked setting that differs. not_selected: no capture attached to this recording (capture_selected false). missing_in_capture: the capture has no image for this camera, either because the camera is absent from the descriptor's cameras[] or because its capture_status there is failed; in the latter case failure_reason is that entry's failure_reason copied verbatim. copy_failed: the copy into the recording or its sha256 check failed; failure_reason says why."
           },
           "image": {
             "type": "object",
@@ -138,7 +140,7 @@
                   "maximum": 18446744073709551615
                 }
               },
-              "description": "pixel_format is Mono8 on both sides by schema, so it never appears here."
+              "description": "One differing checked setting. Every checked setting is an unsigned integer at the source (see the descriptor's camera_configuration), so capture_value and recording_value have the same integer type as the matching camera_configuration field. pixel_format is Mono8 on both sides by schema, so it never appears here."
             }
           },
           "failure_reason": {

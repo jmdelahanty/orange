@@ -428,7 +428,7 @@
                 "maximum": 18446744073709551615
               }
             },
-            "description": "Camera settings as configured at capture (Orange runtime configuration). Every key except frame_rate_hz is checked at record start."
+            "description": "Camera settings as configured at capture (Orange runtime configuration). All are unsigned integers at the source (Orange CameraParams: exposure in microseconds, gain and iris and focus in camera units, frame rate in Hz), so equality is exact. Every key except frame_rate_hz is checked at record start."
           },
           "source_frames": {
             "type": "array",
@@ -447,12 +447,14 @@
                 "stream_frame_id": {
                   "type": "integer",
                   "minimum": 1,
-                  "maximum": 18446744073709551615
+                  "maximum": 18446744073709551615,
+                  "description": "Orange's per-camera counter since stream open (frame_identity_v1). The burst is outside any recording, so there is no recording_frame_id."
                 },
                 "camera_frame_id": {
                   "type": "integer",
-                  "minimum": 0,
-                  "maximum": 18446744073709551615
+                  "minimum": 1,
+                  "maximum": 65535,
+                  "description": "The camera's own frame counter (agent-contracts citrus-orange/frame_identity_v1): 1..65535, wraps 65535 -> 1, never 0. Used only to show the 17 frames were consecutive."
                 },
                 "camera_timestamp_ns": {
                   "type": "integer",
@@ -496,7 +498,7 @@
             "description": "PNG, 8-bit greyscale, no alpha, no gAMA/iCCP/sRGB chunks; IHDR width/height equal camera_configuration."
           },
           "statistics": {
-            "$ref": "orange_image_levels_v1.schema.json",
+            "$ref": "orange.image_levels.v1",
             "description": "Levels of the median image."
           },
           "any_frame_saturated_fraction": {
