@@ -353,9 +353,8 @@
         "properties": {
           "camera_serial": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 128,
-            "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+            "pattern": "^[0-9]{1,20}(?![\\s\\S])",
+            "description": "Exact camera serial (EVT serials are decimal digits). Unique within cameras[] (a consumer check; JSON Schema cannot express it)."
           },
           "capture_status": {
             "enum": [
@@ -483,7 +482,8 @@
             "properties": {
               "relative_path": {
                 "type": "string",
-                "pattern": "^Cam[A-Za-z0-9_-]+_empty_background\\.png(?![\\s\\S])"
+                "pattern": "^Cam[0-9]{1,20}_empty_background\\.png(?![\\s\\S])",
+                "description": "Cam<camera_serial>_empty_background.png; the serial equals this entry's camera_serial (a consumer check)."
               },
               "size_bytes": {
                 "type": "integer",
