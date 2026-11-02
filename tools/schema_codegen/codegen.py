@@ -22,8 +22,8 @@ code enforces:
   may also list `required` keys; an `else` takes the same rules, and both accept
   `not: {required: [key]}` (a key that must be absent; exactly one key, because JSON Schema reads a
   longer list as "not all present").
-  A `$ref` to another schema file in the same directory ("<stem>.schema.json") is that file's
-  generated root type, from its header (the stem must be passed with --ref and its namespace).
+  A `$ref` to another schema file in the same directory ("<stem>.schema.json", or that file's
+  "$id", which is how a byte-for-byte vendored copy resolves it) is that file's generated root type, from its header (the stem must be passed with --ref and its namespace).
   A `oneOf` below the root, whose branches are objects or such references, is a std::variant;
   parse requires exactly one branch to match, as JSON Schema does.
 
@@ -170,11 +170,27 @@ class Builder:
         self.root_name = ""
         self.def_types: dict[str, object] = {}   # $defs key -> its type, generated once
 
+    def sibling_by_id(self, ref: str, where: str) -> str:
+        """File name of the sibling schema whose "$id" is `ref`; exactly one must match."""
+        matches = []
+        for path in sorted((self.schema_dir or Path(".")).glob("*.schema.json")):
+            try:
+                if json.loads(path.read_text(encoding="utf-8")).get("$id") == ref:
+                    matches.append(path.name)
+            except (json.JSONDecodeError, AttributeError):
+                continue
+        if len(matches) != 1:
+            raise SchemaError(f"{where}: $ref {ref} must match the $id of exactly one sibling schema, "
+                              f"matched {matches}")
+        return matches[0]
+
     def external(self, node: dict, where: str):
-        """ExternalT for a {"$ref": "<stem>.schema.json"} node, else None."""
+        """ExternalT for a {"$ref": "<stem>.schema.json" or "<sibling $id>"} node, else None."""
         ref = node.get("$ref") if isinstance(node, dict) else None
         if not isinstance(ref, str) or ref.startswith("#"):
             return None
+        if not ref.endswith(".schema.json") and "/" not in ref and "#" not in ref:
+            ref = self.sibling_by_id(ref, where)
         if not ref.endswith(".schema.json") or "/" in ref or set(node) - {"$ref", "description"}:
             raise SchemaError(f"{where}: only a whole-file $ref to a sibling schema is supported, got {ref}")
         stem = ref[: -len(".schema.json")]

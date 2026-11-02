@@ -62,6 +62,10 @@ def load_schemas() -> tuple[dict[tuple[str, int], dict], set[str], Registry]:
 
     registry = Registry(retrieve=retrieve).with_resources(
         (name, Resource.from_contents(schema)) for name, schema in by_name.items())
+    # A $ref may also name a sibling schema by its "$id" (vendored copies resolve it that way).
+    registry = registry.with_resources(
+        (schema["$id"], Resource.from_contents(schema)) for schema in by_name.values()
+        if isinstance(schema.get("$id"), str) and schema["$id"] not in by_name)
     # Validate with a $ref into the publishing file so relative $refs and $defs resolve there.
     by_identity = {identity: {"$ref": f"{name}{pointer}"}
                    for identity, (name, pointer) in published(SCHEMAS).items()}
