@@ -95,7 +95,7 @@ recording since 2026-09-23, including the 2026-10-01 fish run.
 | Skip pushed GOPs in the preview | 0 (off since the downsample fix) | `gui.display.skip_pushed_gops` = 0 | 0 |
 | Pose overlay | on | `gui.display.pose_overlay` = true | off |
 | Stream downsample | 4 | `gui.stream.downsample` = 4 | 4 |
-| Optical exposure check with iris re-home | on, ±15 %, expected means per serial | `gui.exposure_check.*` | off |
+| Image-levels check (whole-image mean and saturation, one native frame per camera after stream start, iris re-home on an out-of-band mean, warn-only) | on; expectations per camera config | `image_levels_check.*` (behaviour) and each camera JSON's `image_levels` (expectations); `gui.exposure_check` is no longer read | on, no expectation = statistics only |
 | Local control | Citrus completion stop only, drain 60 s | `gui.local_control.*` | all off |
 | Readiness gate: recorders prepared, crop recorders prepared before enable | strict | code (`ORANGE_GUI_RECORDER_PREPARE_STRICT` default strict) | strict |
 

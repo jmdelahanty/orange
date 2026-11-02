@@ -5,6 +5,7 @@
 #include "outputs/common/atomic_file.h"
 #include "timing/clock.h"
 #include "camera_config_schema.h"
+#include "image_levels.h"
 #include "yolo_runtime_flags.h"
 #include "citrus_recording_geometry.h"
 #include "spatial_mask_arm_record.h"
@@ -1271,10 +1272,9 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
     config.gui_crop_external_encode_queue_depth = -1;
     config.gui_crop_external_recorder_gpu_id = -1;
     config.gui_crop_external_recorder_gpu_ids_by_serial.clear();
-    config.gui_exposure_check_enabled = false;
-    config.gui_exposure_check_tolerance_fraction = 0.15;
-    config.gui_exposure_check_rehome_iris = true;
-    config.gui_exposure_check_expected_preview_mean_by_serial.clear();
+    config.image_levels_check_enabled = true;
+    config.image_levels_check_rehome_iris = true;
+    config.image_levels_check_housekeeping_cpu = -1;
     config.gui_crop_frame_pool_size = -1;
     config.gui_external_recorder_contract_path.clear();
     config.gui_external_recorder_contract = nlohmann::json::object();
@@ -1890,49 +1890,11 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
             }
         }
         if (gui.contains("exposure_check")) {
-            if (!gui["exposure_check"].is_object()) {
-                if (error_out) {
-                    *error_out = "gui.exposure_check must be an object in " + config_path.string();
-                }
-                return false;
-            }
-            const nlohmann::json& check = gui["exposure_check"];
-            if (!read_optional_bool_field(check, "enabled", &config.gui_exposure_check_enabled, error_out, "gui.exposure_check") ||
-                !read_optional_bool_field(check, "rehome_iris", &config.gui_exposure_check_rehome_iris, error_out, "gui.exposure_check")) {
-                if (error_out && error_out->find(config_path.string()) == std::string::npos) {
-                    *error_out += " in " + config_path.string();
-                }
-                return false;
-            }
-            if (check.contains("tolerance_fraction")) {
-                const nlohmann::json& tol = check["tolerance_fraction"];
-                if (!tol.is_number() || tol.get<double>() < 0.01 || tol.get<double>() > 0.9) {
-                    if (error_out) {
-                        *error_out = "gui.exposure_check.tolerance_fraction must be a number in [0.01, 0.9] in " + config_path.string();
-                    }
-                    return false;
-                }
-                config.gui_exposure_check_tolerance_fraction = tol.get<double>();
-            }
-            if (check.contains("expected_preview_mean_by_serial")) {
-                const nlohmann::json& by_serial = check["expected_preview_mean_by_serial"];
-                if (!by_serial.is_object()) {
-                    if (error_out) {
-                        *error_out = "gui.exposure_check.expected_preview_mean_by_serial must be an object in " + config_path.string();
-                    }
-                    return false;
-                }
-                for (auto it = by_serial.begin(); it != by_serial.end(); ++it) {
-                    if (!it.value().is_number() || it.value().get<double>() < 1.0 || it.value().get<double>() > 254.0) {
-                        if (error_out) {
-                            *error_out = "gui.exposure_check.expected_preview_mean_by_serial." + it.key() +
-                                         " must be a number in [1, 254] in " + config_path.string();
-                        }
-                        return false;
-                    }
-                    config.gui_exposure_check_expected_preview_mean_by_serial[it.key()] = it.value().get<double>();
-                }
-            }
+            // Replaced by the top-level image_levels_check and each camera
+            // config's image_levels block; not read.
+            std::cerr << "[config] gui.exposure_check is no longer read: expectations live in each camera config's"
+                      << " image_levels block, behaviour in image_levels_check (" << config_path.string() << ")"
+                      << std::endl;
         }
         if (gui.contains("telemetry")) {
             if (!gui["telemetry"].is_object()) {
@@ -2003,6 +1965,41 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
         }
     }
 
+    if (root.contains("image_levels_check")) {
+        const nlohmann::json& check = root["image_levels_check"];
+        if (!check.is_object()) {
+            if (error_out) {
+                *error_out = "image_levels_check must be an object in " + config_path.string();
+            }
+            return false;
+        }
+        for (auto it = check.begin(); it != check.end(); ++it) {
+            if (it.key() != "enabled" && it.key() != "rehome_iris" && it.key() != "housekeeping_cpu" &&
+                it.key() != "note") {
+                if (error_out) {
+                    *error_out = "image_levels_check has an unknown field `" + it.key() + "` in " + config_path.string();
+                }
+                return false;
+            }
+        }
+        if (!read_optional_bool_field(check, "enabled", &config.image_levels_check_enabled, error_out, "image_levels_check") ||
+            !read_optional_bool_field(check, "rehome_iris", &config.image_levels_check_rehome_iris, error_out, "image_levels_check")) {
+            if (error_out && error_out->find(config_path.string()) == std::string::npos) {
+                *error_out += " in " + config_path.string();
+            }
+            return false;
+        }
+        if (check.contains("housekeeping_cpu")) {
+            const nlohmann::json& cpu = check["housekeeping_cpu"];
+            if (!cpu.is_number_integer() || cpu.get<int>() < -1 || cpu.get<int>() >= CPU_SETSIZE) {
+                if (error_out) {
+                    *error_out = "image_levels_check.housekeeping_cpu must be -1 or a CPU index in " + config_path.string();
+                }
+                return false;
+            }
+            config.image_levels_check_housekeeping_cpu = cpu.get<int>();
+        }
+    }
     if (root.contains("storage") && root["storage"].is_object()) {
         const nlohmann::json& storage = root["storage"];
         if (storage.contains("default_recording_root")) {
@@ -3351,6 +3348,7 @@ void reset_camera_config_extensions(CameraParams* camera_params) {
     camera_params->gpio_nodes.clear();
     camera_params->rig_io_connections.clear();
     camera_params->optics = CameraOpticsConfig();
+    camera_params->image_levels = orange::image_levels::CameraExpectation();
     camera_params->recording = CameraRecordingConfig();
     camera_params->crop_pipeline = CameraCropPipelineConfig();
     camera_params->lens_control_enabled = true;
@@ -3616,6 +3614,10 @@ nlohmann::json build_camera_config_json_from_params(const CameraParams& camera_p
     if (!optics.empty()) {
         camera_config["optics"] = std::move(optics);
     }
+    nlohmann::json image_levels = orange::image_levels::BuildCameraExpectation(camera_params.image_levels);
+    if (!image_levels.empty()) {
+        camera_config["image_levels"] = std::move(image_levels);
+    }
     camera_config["recording"] = build_recording_config_json_from_params(camera_params);
     camera_config["crop_pipeline"] = build_crop_pipeline_config_json_from_params(camera_params);
     return camera_config;
@@ -3814,6 +3816,11 @@ void load_camera_json_config_files(std::string file_name, CameraParams* camera_p
     parse_gpio_nodes_from_json(camera_config, camera_params);
     orange::camera_config::parse_rig_io_config(camera_config, camera_params);
     orange::camera_config::parse_optics_config(camera_config, camera_params);
+    try {
+        camera_params->image_levels = orange::image_levels::ParseCameraExpectation(camera_config);
+    } catch (const std::exception& ex) {
+        throw std::runtime_error("Invalid camera config `" + file_name + "`: " + ex.what());
+    }
     parse_recording_config_from_json(camera_config, camera_params);
     parse_crop_pipeline_config_from_json(camera_config, camera_params);
     infer_camera_gpio_metadata(camera_params);

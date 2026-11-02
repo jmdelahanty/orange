@@ -480,6 +480,50 @@ Notes:
   config so downstream analysis can determine which lens/filter stack was
   attached when the image or video was acquired.
 
+## `image_levels`
+
+The whole-image brightness and saturation this camera should show in this
+configuration folder: schema `orange.camera.image_levels` version 1
+(`docs/schemas/orange_camera_image_levels_v1.schema.json`). It is optional, and
+each configuration folder carries its own, because the same camera expects
+different levels at another frame size, iris or lighting.
+
+```json
+"image_levels": {
+  "schema_id": "orange.camera.image_levels",
+  "schema_version": 1,
+  "expected_mean": 182.0,
+  "mean_tolerance_fraction": 0.15,
+  "max_saturated_fraction": 0.001,
+  "basis": {
+    "source": "gui_measurement",
+    "measured_at_utc": "2026-11-02T20:00:00Z",
+    "camera_frame_id": 1234,
+    "settings": {"exposure": 150, "gain": 256, "iris": 19, "focus": 3185,
+                 "width": 4512, "height": 1792, "offset_x": 0, "offset_y": 1360},
+    "statistics": {"pixel_count": 8085504, "saturation_value": 255, "mean": 182.0, "...": "..."}
+  }
+}
+```
+
+- `expected_mean` (1 to 254) needs `mean_tolerance_fraction` (0.01 to 0.9);
+  `max_saturated_fraction` (0 to 1) is the largest fraction of pixels allowed
+  at 255. At least one of the two checks must be present.
+- `basis` says where the numbers came from. The GUI's camera panel ("Image
+  levels", "Save measurement as this camera's expectation") writes it with the
+  settings and the statistics (`orange.image_levels.v1`) of the measurement.
+- Unknown fields and out-of-range values are refused at load.
+- Every pixel of one native full-resolution frame is measured, 2 s after the
+  stream delivers frames and never while a recording is starting, running or
+  finalizing. An out-of-band mean re-homes the EF iris once and measures again.
+  The result is sealed into the recording start snapshot as
+  `session.image_levels_check` (`orange.recording.image_levels_check` v1).
+  Policy is warn-only: a failed check never refuses a stream or a recording.
+- Behaviour is set in the app config, top-level `image_levels_check`:
+  `enabled` (default true), `rehome_iris` (default true), `housekeeping_cpu`
+  (the CPU the frame copy runs on; default -1 = the lowest CPU of the GUI's own
+  affinity).
+
 ## Example
 
 ```json

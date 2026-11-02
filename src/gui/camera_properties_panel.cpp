@@ -1,10 +1,14 @@
 #include "gui/camera_properties_panel.h"
+#include "gui/image_levels_check.h"
+#include "image_levels.h"
 
 #include "imgui.h"
 #include "misc/cpp/imgui_stdlib.h"
 #include "project.h"
 
 #include <algorithm>
+#include <cmath>
+#include <optional>
 #include <cstdio>
 #include <string>
 #include <utility>
@@ -1127,6 +1131,112 @@ void render_camera_properties_panel(CameraEmergent* ecams,
         }
         if (cameras_params[selected_camera].sync_mode == "ptp_gate") {
             ImGui::TextDisabled("Note: ptp_gate uses the existing gated-start flow and does not use the generic trigger block as its primary runtime path.");
+        }
+
+        ImGui::Separator();
+        if (ImGui::TreeNode("Image levels (brightness and saturation)")) {
+            // Whole image, every pixel of one native frame (src/gui/image_levels_check.h).
+            // The expectation is part of this camera's config file, so each
+            // configuration folder carries its own.
+            static float tolerance_input = 0.10f;
+            static float max_saturated_input = 0.001f;
+            static std::string levels_status;
+            static bool levels_error = false;
+            CameraParams& levels_camera = cameras_params[selected_camera];
+            ImageLevelsCheck& levels_check = GuiImageLevelsCheck();
+            const ImageLevelsCheck::View view = levels_check.CameraView(selected_camera);
+            ImGui::Text("Check: %s", view.phase.c_str());
+            if (view.result.is_object()) {
+                const nlohmann::json& r = view.result;
+                const std::string status = r.at("status").get<std::string>();
+                const ImVec4 colour = status == "ok" ? ImVec4(0.35f, 0.85f, 0.45f, 1.0f)
+                                    : status == "warning" || status == "measurement_failed" ? ImVec4(1.0f, 0.55f, 0.2f, 1.0f)
+                                                                                           : ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
+                ImGui::TextColored(colour, "Status: %s %s", status.c_str(),
+                                   r.at("warnings").empty() ? "" : r.at("warnings").dump().c_str());
+                if (r.at("not_measured_reason").is_string()) {
+                    ImGui::TextDisabled("%s", r.at("not_measured_reason").get<std::string>().c_str());
+                }
+                const nlohmann::json& m = r.at("measurement");
+                if (m.is_object() && m.value("ok", false)) {
+                    const nlohmann::json& st = m.at("statistics");
+                    ImGui::Text("Mean %.1f   saturated (255) %.4f%%   zero %.4f%%", st.at("mean").get<double>(),
+                                100.0 * st.at("saturated_fraction").get<double>(),
+                                100.0 * st.at("zero_fraction").get<double>());
+                    ImGui::Text("p01 %d  p05 %d  p50 %d  p95 %d  p99 %d  p99.9 %d", st.at("p01").get<int>(),
+                                st.at("p05").get<int>(), st.at("p50").get<int>(), st.at("p95").get<int>(),
+                                st.at("p99").get<int>(), st.at("p999").get<int>());
+                    ImGui::TextDisabled("Measured %s at exposure %u, gain %u, iris %u",
+                                        m.at("measured_at_utc").get<std::string>().c_str(),
+                                        m.at("settings").at("exposure").get<unsigned>(),
+                                        m.at("settings").at("gain").get<unsigned>(),
+                                        m.at("settings").at("iris").get<unsigned>());
+                } else if (m.is_object()) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "Measurement failed: %s",
+                                       m.value("error", std::string()).c_str());
+                }
+                if (!r.at("expectation_basis_settings_differ").empty()) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.2f, 1.0f),
+                                       "Expectation was measured at other settings: %s",
+                                       r.at("expectation_basis_settings_differ").dump().c_str());
+                }
+            }
+            if (levels_camera.image_levels.configured) {
+                const auto& e = levels_camera.image_levels;
+                ImGui::Text("Expectation: mean %s, max saturated %s",
+                            e.expected_mean ? (std::to_string(*e.expected_mean) + " +/- " +
+                                               std::to_string(static_cast<int>(e.mean_tolerance_fraction * 100.0 + 0.5)) + "%").c_str()
+                                            : "not checked",
+                            e.max_saturated_fraction ? (std::to_string(*e.max_saturated_fraction * 100.0) + "%").c_str()
+                                                     : "not checked");
+            } else {
+                ImGui::TextDisabled("No expectation in this camera's config.");
+            }
+            ImGui::BeginDisabled(recording_mutation_locked);
+            if (ImGui::Button("Measure now")) {
+                levels_check.RequestMeasureNow(selected_camera);
+            }
+            ImGui::EndDisabled();
+            ImGui::SetNextItemWidth(120.0f);
+            ImGui::InputFloat("Mean tolerance (fraction)", &tolerance_input, 0.01f, 0.05f, "%.2f");
+            tolerance_input = std::clamp(tolerance_input, 0.01f, 0.9f);
+            ImGui::SetNextItemWidth(120.0f);
+            ImGui::InputFloat("Max saturated fraction", &max_saturated_input, 0.0001f, 0.001f, "%.4f");
+            max_saturated_input = std::clamp(max_saturated_input, 0.0f, 1.0f);
+            const std::optional<image_levels::Measurement> last = levels_check.LastMeasurement(selected_camera);
+            const bool can_save = last && last->ok && !levels_camera.config_path.empty() && !recording_mutation_locked;
+            ImGui::BeginDisabled(!can_save);
+            if (ImGui::Button("Save measurement as this camera's expectation")) {
+                image_levels::CameraExpectation e;
+                e.configured = true;
+                e.expected_mean = std::round(last->statistics.mean * 10.0) / 10.0;
+                e.mean_tolerance_fraction = tolerance_input;
+                e.max_saturated_fraction = max_saturated_input;
+                e.basis_json = nlohmann::json{{"source", "gui_measurement"},
+                                              {"measured_at_utc", last->measured_at_utc},
+                                              {"camera_frame_id", last->camera_frame_id},
+                                              {"settings", image_levels::SettingsToJson(last->settings)},
+                                              {"statistics", image_levels::StatisticsToJson(last->statistics)}}
+                                   .dump();
+                const image_levels::CameraExpectation previous = levels_camera.image_levels;
+                levels_camera.image_levels = e;
+                std::string save_error;
+                if (save_camera_json_config(levels_camera, &save_error)) {
+                    levels_status = "Saved to " + levels_camera.config_path;
+                    levels_error = false;
+                } else {
+                    levels_camera.image_levels = previous;
+                    levels_status = save_error.empty() ? "Failed to save camera config." : save_error;
+                    levels_error = true;
+                }
+            }
+            ImGui::EndDisabled();
+            ImGui::TextDisabled("Saving writes this camera's whole config file with its current settings.");
+            if (!levels_status.empty()) {
+                ImGui::TextColored(levels_error ? ImVec4(1.0f, 0.35f, 0.35f, 1.0f) : ImVec4(0.35f, 0.85f, 0.45f, 1.0f),
+                                   "%s", levels_status.c_str());
+            }
+            ImGui::TreePop();
         }
 
         ImGui::Separator();

@@ -1,4 +1,5 @@
 #include "spatial_layout_ui.h"
+#include "gui/image_levels_check.h"
 #include "gui/spatial_layout/daily_native_context_capture.h"
 
 #include "camera_preview_utils.h"
@@ -936,6 +937,7 @@ void render_spatial_layout_window(
             }
             SpatialSnapshotResult snapshot_result;
             while (worker->PopCompletedSnapshot(&snapshot_result)) {
+                if (orange::gui::GuiImageLevelsCheck().TryConsume(&snapshot_result)) continue;
                 if (orange::gui::spatial_layout::consume_daily_native_context_snapshot(ui_state, &snapshot_result)) continue;
                 if (consume_group_snapshot_result(
                         ui_state,

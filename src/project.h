@@ -108,13 +108,15 @@ struct AppStorageConfig {
     int gui_display_skip_pushed_gops = 0;
     // Pose keypoint overlay on the previews (ORANGE_GUI_POSE_OVERLAY).
     bool gui_display_pose_overlay = false;
-    // gui.exposure_check: absolute brightness check at stream start against a
-    // per-camera expected preview mean (the EF iris is an open-loop stepper;
-    // only the image proves the glass is where the counter says).
-    bool gui_exposure_check_enabled = false;
-    double gui_exposure_check_tolerance_fraction = 0.15;
-    bool gui_exposure_check_rehome_iris = true;
-    std::map<std::string, double> gui_exposure_check_expected_preview_mean_by_serial;
+    // image_levels_check: whole-image brightness and saturation of one native
+    // frame per camera at stream start, against each camera config's
+    // `image_levels` block (src/image_levels.h). The EF iris is an open-loop
+    // stepper, so a mean out of band re-homes the iris once and measures again.
+    // Warn-only; the result is sealed into the recording start snapshot.
+    bool image_levels_check_enabled = true;
+    bool image_levels_check_rehome_iris = true;
+    // CPU the native copy runs on; -1 = the lowest CPU of the GUI's own affinity.
+    int image_levels_check_housekeeping_cpu = -1;
     int gui_swap_interval = -1;
     int gui_frame_max_fps = -1;
     bool gui_show_speed_graphs = false;

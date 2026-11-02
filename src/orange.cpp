@@ -79,6 +79,8 @@
 #include "session/recording_session.h"
 #include "spatial_layout_ui.h"
 #include "spatial_snapshot_worker.h"
+#include "gui/image_levels_check.h"
+#include "image_levels_camera.h"
 #include "usaf_resolution_ui.h"
 #include <opencv2/opencv.hpp>
 
@@ -4179,6 +4181,33 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
         num_cameras);
     update_gui_citrus_runtime_geometry_snapshot(prepared.recording_folder);
     {
+        // Image levels measured after stream start (warn-only; never blocks a start).
+        try {
+            std::vector<std::pair<std::string, orange::image_levels::LevelSettings>> level_cameras;
+            for (int i = 0; i < num_cameras; ++i) {
+                if (cameras_select[i].record) {
+                    level_cameras.emplace_back(cameras_params[i].camera_serial,
+                                               orange::image_levels::LevelSettingsFromCamera(cameras_params[i]));
+                }
+            }
+            const nlohmann::json image_levels_check =
+                orange::image_levels::GuiResultStore().BuildRecordingBlockAt(level_cameras);
+            for (auto it = image_levels_check.at("cameras").begin(); it != image_levels_check.at("cameras").end(); ++it) {
+                const std::string status = it.value().at("status").get<std::string>();
+                if (status != "ok") {
+                    std::cerr << "[GUI][recording] WARNING image levels Cam" << it.key() << ": " << status << " "
+                              << it.value().at("warnings").dump() << std::endl;
+                }
+            }
+            if (!update_recording_snapshot_session_artifacts(prepared.recording_folder,
+                                                             {{"image_levels_check", image_levels_check}})) {
+                throw std::runtime_error("failed to persist image_levels_check");
+            }
+        } catch (const std::exception& ex) {
+            std::cerr << "[GUI][recording] WARNING image levels not captured: " << ex.what() << std::endl;
+        }
+    }
+    {
         // Rig documents (pancakebatter rig.yml + events ledger) pinned with their
         // open conditions; never blocks a start (status records what happened).
         try {
@@ -5494,21 +5523,6 @@ int main(int /*argc*/, char ** /*args*/) {
     std::vector<bool> gui_pose_overlay_bound;
     std::vector<orange::gui::PoseOverlaySkeletonEdge> gui_pose_overlay_edges{{0, 1}, {0, 2}, {1, 2}};
     orange::gui::PoseOverlayOptions gui_pose_overlay_options;
-    struct GuiExposureCheckState {
-        std::string status = "pending";  // pending | ok | rehome_pending | ok_after_rehome | failed | no_expected_value
-        double expected = 0.0;
-        double tolerance = 0.0;
-        double first_mean = 0.0;
-        double final_mean = 0.0;
-        bool rehomed = false;
-        uint64_t samples_at_rehome = 0;
-        // The re-home (iris 0, then configured) blocks ~0.5 s in SDK calls;
-        // it runs on its own thread so the GUI loop never stalls (a stalled
-        // GUI loop at recording start cost external-recorder ACK timeouts).
-        std::shared_ptr<std::atomic<bool>> rehome_done;
-        std::thread rehome_thread;
-    };
-    std::vector<GuiExposureCheckState> gui_exposure_check;
     orange::gui::PoseOverlayStats gui_pose_overlay_main_stats;
     orange::gui::PoseOverlayStats gui_pose_overlay_crop_stats;
     double gui_pose_overlay_draw_ms_total = 0.0;
@@ -5958,21 +5972,6 @@ int main(int /*argc*/, char ** /*args*/) {
             snapshot["lens_watch"] = {
                 {"source", "GUI thread, IrisCurrent/FocusCurrent/LensBusy once per interval per camera"},
                 {"cameras", lens_watch}};
-            nlohmann::json check = nlohmann::json::object();
-            for (int i = 0; i < num_cameras && i < static_cast<int>(gui_exposure_check.size()); ++i) {
-                const auto& st = gui_exposure_check[static_cast<std::size_t>(i)];
-                check[cameras_params[i].camera_serial] = nlohmann::json{
-                    {"status", st.status},
-                    {"expected_preview_mean", st.expected},
-                    {"tolerance_fraction", st.tolerance},
-                    {"first_mean", st.first_mean},
-                    {"final_mean", st.final_mean},
-                    {"rehomed", st.rehomed}};
-            }
-            snapshot["exposure_check"] = {
-                {"enabled", app_storage_config.gui_exposure_check_enabled},
-                {"rehome_iris", app_storage_config.gui_exposure_check_rehome_iris},
-                {"cameras", check}};
         }
         return snapshot;
     };
@@ -8359,101 +8358,34 @@ int main(int /*argc*/, char ** /*args*/) {
                 std::chrono::steady_clock::now());
         }
 
-        // Exposure check (app config gui.exposure_check): compare each
-        // camera's first exposure-watch sample with its expected preview mean.
-        // Out of band -> re-home the iris once (0, then the configured value)
-        // and re-check three samples later; still out -> failed (snapshot +
-        // validator). The state resets whenever streaming stops.
-        if (app_storage_config.gui_exposure_check_enabled) {
-            if (static_cast<int>(gui_exposure_check.size()) != num_cameras) {
-                gui_exposure_check.clear();
-                gui_exposure_check.resize(static_cast<std::size_t>(num_cameras));  // std::thread member: no copies
-            }
-            if (!(camera_control->open && camera_control->subscribe)) {
-                for (auto& st : gui_exposure_check) {
-                    if (st.status != "pending") {
-                        if (st.rehome_thread.joinable()) {
-                            st.rehome_thread.join();
-                        }
-                        st = GuiExposureCheckState{};
-                    }
-                }
-            } else {
-                for (int i = 0; i < num_cameras && i < static_cast<int>(openGLDisplayWorkers.size()); ++i) {
-                    auto& st = gui_exposure_check[static_cast<std::size_t>(i)];
-                    if (st.status == "ok" || st.status == "ok_after_rehome" || st.status == "failed" || st.status == "no_expected_value") {
-                        continue;
-                    }
-                    if (!openGLDisplayWorkers[static_cast<std::size_t>(i)]) {
-                        continue;
-                    }
-                    const auto w = openGLDisplayWorkers[static_cast<std::size_t>(i)]->exposure_watch();
-                    const std::string& serial = cameras_params[i].camera_serial;
-                    const auto expected_it = app_storage_config.gui_exposure_check_expected_preview_mean_by_serial.find(serial);
-                    if (expected_it == app_storage_config.gui_exposure_check_expected_preview_mean_by_serial.end()) {
-                        st.status = "no_expected_value";
-                        std::cout << "[EXPOSURE_CHECK] Cam" << serial << " no expected_preview_mean configured; skipped" << std::endl;
-                        continue;
-                    }
-                    st.expected = expected_it->second;
-                    st.tolerance = app_storage_config.gui_exposure_check_tolerance_fraction;
-                    const auto in_band = [&](double mean) {
-                        return std::fabs(mean - st.expected) <= st.tolerance * st.expected;
-                    };
-                    if (st.status == "pending" && w.samples >= 1) {
-                        st.first_mean = w.first_mean;
-                        if (in_band(st.first_mean)) {
-                            st.status = "ok";
-                            st.final_mean = st.first_mean;
-                            std::cout << "[EXPOSURE_CHECK] Cam" << serial << " ok: first preview mean " << st.first_mean
-                                      << " within " << (st.tolerance * 100.0) << "% of expected " << st.expected << std::endl;
-                        } else if (app_storage_config.gui_exposure_check_rehome_iris && cameras_params[i].lens_control_enabled) {
-                            const int configured_iris = static_cast<int>(cameras_params[i].iris);
-                            std::cout << "[EXPOSURE_CHECK] Cam" << serial << " OUT OF BAND: first preview mean " << st.first_mean
-                                      << " vs expected " << st.expected << " (+/-" << (st.tolerance * 100.0)
-                                      << "%); re-homing iris (0 then " << configured_iris << ")" << std::endl;
-                            st.rehomed = true;
-                            st.status = "rehome_pending";
-                            st.rehome_done = std::make_shared<std::atomic<bool>>(false);
-                            if (st.rehome_thread.joinable()) {
-                                st.rehome_thread.join();
-                            }
-                            Emergent::CEmergentCamera* rehome_camera = &ecams[i].camera;
-                            CameraParams* rehome_params = &cameras_params[i];
-                            auto done = st.rehome_done;
-                            rehome_params->lens_watch_suppress++;
-                            st.rehome_thread = std::thread([rehome_camera, rehome_params, configured_iris, done]() {
-                                update_iris_value(rehome_camera, 0, rehome_params);
-                                update_iris_value(rehome_camera, configured_iris, rehome_params);
-                                rehome_params->lens_watch_suppress--;
-                                done->store(true, std::memory_order_release);
-                            });
-                        } else {
-                            st.status = "failed";
-                            st.final_mean = st.first_mean;
-                            std::cout << "[EXPOSURE_CHECK] Cam" << serial << " FAILED: first preview mean " << st.first_mean
-                                      << " vs expected " << st.expected << " (re-home disabled)" << std::endl;
-                        }
-                    } else if (st.status == "rehome_pending" && st.rehome_done && st.rehome_done->load(std::memory_order_acquire) &&
-                               st.samples_at_rehome == 0) {
-                        // Re-home finished: start counting fresh samples from here.
-                        if (st.rehome_thread.joinable()) {
-                            st.rehome_thread.join();
-                        }
-                        st.samples_at_rehome = w.samples;
-                    } else if (st.status == "rehome_pending" && st.samples_at_rehome > 0 && w.samples >= st.samples_at_rehome + 3) {
-                        st.final_mean = w.last_mean;
-                        if (in_band(st.final_mean)) {
-                            st.status = "ok_after_rehome";
-                            std::cout << "[EXPOSURE_CHECK] Cam" << serial << " ok after re-home: preview mean " << st.final_mean << std::endl;
-                        } else {
-                            st.status = "failed";
-                            std::cout << "[EXPOSURE_CHECK] Cam" << serial << " FAILED after re-home: preview mean " << st.final_mean
-                                      << " vs expected " << st.expected << std::endl;
-                        }
-                    }
-                }
-            }
+        // Image-levels check (src/gui/image_levels_check.h): one native frame per
+        // camera after stream start against each camera config's image_levels
+        // block; an out-of-band mean re-homes the iris once and measures again.
+        // Warn-only; the result is sealed into the recording start snapshot.
+        {
+            orange::gui::ImageLevelsCheck::Inputs image_levels_inputs;
+            image_levels_inputs.enabled = app_storage_config.image_levels_check_enabled;
+            orange::image_levels::GuiResultStore().SetCheckSettings(app_storage_config.image_levels_check_enabled,
+                                                                   app_storage_config.image_levels_check_rehome_iris);
+            image_levels_inputs.rehome_iris = app_storage_config.image_levels_check_rehome_iris;
+            image_levels_inputs.housekeeping_cpu = app_storage_config.image_levels_check_housekeeping_cpu;
+            image_levels_inputs.streaming = camera_control->open && camera_control->subscribe;
+            image_levels_inputs.recording_busy = camera_control->record_video || gui_async_recording_start.active ||
+                                                 camera_control->recording_draining || gui_recording_run.active ||
+                                                 gui_recording_run.finalizing;
+            // The re-home (iris 0, then configured) blocks ~0.5 s in SDK calls;
+            // the checker runs it on its own thread so the GUI loop never stalls.
+            image_levels_inputs.rehome_iris_blocking = [ecams_now = ecams, params_now = cameras_params](int camera_index) {
+                CameraParams* params = &params_now[camera_index];
+                const int configured_iris = static_cast<int>(params->iris);
+                params->lens_watch_suppress++;
+                update_iris_value(&ecams_now[camera_index].camera, 0, params);
+                update_iris_value(&ecams_now[camera_index].camera, configured_iris, params);
+                params->lens_watch_suppress--;
+            };
+            orange::gui::GuiImageLevelsCheck().Poll(
+                image_levels_inputs, cameras_params, (cameras_params && ecams) ? num_cameras : 0,
+                spatialSnapshotWorkers.size() == static_cast<size_t>(num_cameras) ? spatialSnapshotWorkers.data() : nullptr);
         }
 
         // Lens feedback watch (src/camera.cpp lens_watch_poll): once a second

@@ -18,6 +18,8 @@
 #include <stdexcept>
 #include <vector>
 #include <utility>
+
+#include "image_levels_expectation.h"
 #include <numeric>
 #include "encoder_pipeline.h"
 #include "json.hpp"
@@ -213,6 +215,7 @@ struct CameraParams{
     std::vector<CameraGpioNodeConfig> gpio_nodes;
     std::vector<CameraRigIoConnection> rig_io_connections;
     CameraOpticsConfig optics;
+    orange::image_levels::CameraExpectation image_levels;
     CameraRecordingConfig recording;
     CameraCropPipelineConfig crop_pipeline;
     unsigned int gain_max; 

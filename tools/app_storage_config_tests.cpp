@@ -1034,6 +1034,116 @@ void test_invalid_local_control_field_fails()
     std::filesystem::remove_all(root);
 }
 
+
+const char* kImageLevelsCameraConfig = R"json({
+  "schema_id": "orange.camera.config",
+  "schema_version": 4,
+  "device_serial_number": "2010095",
+  "name": "Cam2010095",
+  "width": 4512,
+  "height": 1792,
+  "offset_x": 0,
+  "offset_y": 1360,
+  "frame_rate": 250,
+  "gain": 256,
+  "exposure": 150,
+  "pixel_format": "Mono8",
+  "color_temp": "CT_3000K",
+  "source_gpu_id": 7,
+  "gpu_direct": true,
+  "color": false,
+  "focus": 3185,
+  "iris": 19,
+  "image_levels": IMAGE_LEVELS
+})json";
+
+// Writes the camera config through the GUI's save path and reads it back.
+nlohmann::json saved_camera_config(CameraParams params, const std::filesystem::path& path)
+{
+    params.config_path = path.string();
+    std::string error;
+    require(save_camera_json_config(params, &error), "save_camera_json_config: " + error);
+    std::ifstream in(path);
+    return nlohmann::json::parse(in);
+}
+
+std::string camera_config_with_image_levels(const std::string& block)
+{
+    std::string text = kImageLevelsCameraConfig;
+    text.replace(text.find("IMAGE_LEVELS"), std::string("IMAGE_LEVELS").size(), block);
+    return text;
+}
+
+void test_camera_config_image_levels_round_trip()
+{
+    const std::filesystem::path root = make_temp_dir();
+    const std::filesystem::path config_path = root / "2010095.json";
+    const std::string block = R"json({
+    "schema_id": "orange.camera.image_levels",
+    "schema_version": 1,
+    "expected_mean": 210.5,
+    "mean_tolerance_fraction": 0.1,
+    "max_saturated_fraction": 0.001,
+    "basis": {"source": "gui_measurement", "settings": {"iris": 19}}
+  })json";
+    write_text(config_path, camera_config_with_image_levels(block));
+    CameraParams params{};
+    load_camera_json_config_files(config_path.string(), &params, 0, 1);
+    require(params.image_levels.configured, "image_levels should load");
+    require(params.image_levels.expected_mean && *params.image_levels.expected_mean == 210.5, "expected_mean loads");
+    require(params.image_levels.max_saturated_fraction && *params.image_levels.max_saturated_fraction == 0.001,
+            "max_saturated_fraction loads");
+    const nlohmann::json saved = saved_camera_config(params, root / "saved.json");
+    require(saved.at("image_levels") == nlohmann::json::parse(block), "image_levels round-trips through save");
+
+    write_text(config_path, std::string(kImageLevelsCameraConfig).replace(
+        std::string(kImageLevelsCameraConfig).find(",\n  \"image_levels\": IMAGE_LEVELS"),
+        std::string(",\n  \"image_levels\": IMAGE_LEVELS").size(), ""));
+    CameraParams without{};
+    load_camera_json_config_files(config_path.string(), &without, 0, 1);
+    require(!without.image_levels.configured, "no block, not configured");
+    require(!saved_camera_config(without, root / "saved_without.json").contains("image_levels"), "no block is saved");
+
+    write_text(config_path, camera_config_with_image_levels(
+        R"json({"schema_id": "orange.camera.image_levels", "schema_version": 1, "max_saturated_fraction": 0.1, "typo": 1})json"));
+    bool refused = false;
+    try {
+        CameraParams bad{};
+        load_camera_json_config_files(config_path.string(), &bad, 0, 1);
+    } catch (const std::runtime_error& ex) {
+        refused = std::string(ex.what()).find("image_levels has an unknown field: typo") != std::string::npos;
+    }
+    require(refused, "an unknown image_levels field refuses the camera config");
+    std::filesystem::remove_all(root);
+}
+
+void test_image_levels_check_app_config()
+{
+    const std::filesystem::path root = make_temp_dir();
+    const std::filesystem::path config_path = root / "default.json";
+    AppStorageConfig defaults = load_from_path(root / "missing.json");
+    require(defaults.image_levels_check_enabled && defaults.image_levels_check_rehome_iris &&
+                defaults.image_levels_check_housekeeping_cpu == -1,
+            "image_levels_check defaults");
+    write_text(config_path, R"json({
+  "schema_id": "orange.app.config",
+  "schema_version": 1,
+  "gui": {"exposure_check": {"enabled": true, "expected_preview_mean_by_serial": {"2010095": 179.0}}},
+  "image_levels_check": {"enabled": false, "rehome_iris": false, "housekeeping_cpu": 3}
+})json");
+    const AppStorageConfig config = load_from_path(config_path);
+    require(!config.image_levels_check_enabled && !config.image_levels_check_rehome_iris &&
+                config.image_levels_check_housekeeping_cpu == 3,
+            "image_levels_check loads; the old gui.exposure_check is ignored");
+    write_text(config_path, R"json({
+  "schema_id": "orange.app.config",
+  "schema_version": 1,
+  "image_levels_check": {"expected_mean": 3}
+})json");
+    require_load_fails(config_path, "image_levels_check has an unknown field `expected_mean`");
+    std::filesystem::remove_all(root);
+}
+
 }  // namespace
 
 int main()
@@ -1072,6 +1182,8 @@ int main()
         {"invalid_stream_downsample_fails", &test_invalid_stream_downsample_fails},
         {"invalid_speed_graph_type_fails", &test_invalid_speed_graph_type_fails},
         {"invalid_local_control_field_fails", &test_invalid_local_control_field_fails},
+        {"camera_config_image_levels_round_trip", &test_camera_config_image_levels_round_trip},
+        {"image_levels_check_app_config", &test_image_levels_check_app_config},
     };
 
     for (const auto& test : tests) {

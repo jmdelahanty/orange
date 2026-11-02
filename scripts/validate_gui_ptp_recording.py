@@ -4430,22 +4430,34 @@ def check_lens_feedback(
                 f"Cam{serial} lens watch: mount counters changed {watch.get('changes')} time(s) mid-stream "
                 f"(last at {watch.get('last_change_stream_ms')} ms)",
             )
-    check = nested_dict(snapshot, "session", "gui_display_frame_rate", "exposure_check")
+    # Image levels (orange.recording.image_levels_check v1): warn-only by policy, so
+    # every outcome other than ok is a warning, never a failure.
+    check = nested_dict(snapshot, "session", "image_levels_check")
     if isinstance(check, dict) and check.get("enabled"):
         for serial in cameras:
             st = (check.get("cameras") or {}).get(serial)
             if not isinstance(st, dict):
-                reporter.fail(f"Cam{serial} exposure check enabled but no result recorded")
+                reporter.warn(f"Cam{serial} image levels: no result recorded")
                 continue
             status = st.get("status")
-            reporter.check(
-                status in ("ok", "ok_after_rehome"),
-                f"Cam{serial} exposure check {status}: first mean {st.get('first_mean', 0):.1f} vs expected {st.get('expected_preview_mean', 0):.1f}",
-                f"Cam{serial} exposure check {status}: first mean {st.get('first_mean', 0):.1f}, final {st.get('final_mean', 0):.1f}, "
-                f"expected {st.get('expected_preview_mean', 0):.1f} +/-{100 * (st.get('tolerance_fraction') or 0):.0f}%",
+            measurement = st.get("measurement") if isinstance(st.get("measurement"), dict) else {}
+            stats = measurement.get("statistics") if isinstance(measurement.get("statistics"), dict) else {}
+            summary = (
+                f"mean {stats.get('mean', 0):.1f}, saturated {100 * (stats.get('saturated_fraction') or 0):.3f}%, "
+                f"p99 {stats.get('p99')}, p99.9 {stats.get('p999')}"
+                if stats else (st.get("not_measured_reason") or measurement.get("error") or "")
             )
-            if st.get("rehomed"):
-                reporter.warn(f"Cam{serial} exposure check re-homed the iris at stream start (first mean {st.get('first_mean', 0):.1f})")
+            if status == "ok":
+                reporter.pass_(f"Cam{serial} image levels ok: {summary}")
+            else:
+                reporter.warn(f"Cam{serial} image levels {status} {st.get('warnings') or ''}: {summary}")
+            if st.get("rehomed_iris"):
+                first = ((st.get("first_measurement") or {}).get("statistics") or {}).get("mean")
+                reporter.warn(f"Cam{serial} image levels re-homed the iris at stream start (first mean {first})")
+            if st.get("settings_changed_since_measurement"):
+                reporter.warn(
+                    f"Cam{serial} image levels measured before {st['settings_changed_since_measurement']} changed"
+                )
     exposure = nested_dict(snapshot, "session", "gui_display_frame_rate", "exposure_watch", "cameras")
     for serial in cameras:
         w = exposure.get(serial) if isinstance(exposure, dict) else None

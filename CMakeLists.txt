@@ -351,6 +351,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/yolo_event_log.cpp"
     "${SRC_DIR}/enet_thread.cpp"
     "${SRC_DIR}/project.cpp"
+    "${SRC_DIR}/image_levels.cpp"
     "${SRC_DIR}/nic_thermal_monitor.cpp"
     "${SRC_DIR}/recording_validation.cpp"
     "${SRC_DIR}/recording_encoding_budget.cpp"
@@ -377,6 +378,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/arena_centering_autorun.cpp"
     "${SRC_DIR}/gui/arena_centering_autorun_config.cpp"
     "${SRC_DIR}/gui/camera_properties_panel.cpp"
+    "${SRC_DIR}/gui/image_levels_check.cpp"
     "${SRC_DIR}/gui/frame_ipc_panel.cpp"
     "${SRC_DIR}/gui/host_ptp_panel.cpp"
     "${SRC_DIR}/gui/incremental_clip_shadow.cpp"
@@ -513,6 +515,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/pre_encoder_reference_writer.cpp"
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/project.cpp"
+    "${SRC_DIR}/image_levels.cpp"
     "${SRC_DIR}/nic_thermal_monitor.cpp"
     "${SRC_DIR}/citrus_recording_geometry.cpp"
     "${SRC_DIR}/recording_physical_registration.cpp"
@@ -564,6 +567,7 @@ set(EVT_APERTURE_CHARACTERIZE_SOURCES
     "${SRC_DIR}/camera.cpp"
     "${SRC_DIR}/camera_sensor_pipeline_state.cpp"
     "${SRC_DIR}/project.cpp"
+    "${SRC_DIR}/image_levels.cpp"
     "${SRC_DIR}/spatial_calibration_snapshot.cpp"
     "${SRC_DIR}/spatial_layout_schema.cpp"
 )
@@ -573,6 +577,7 @@ set(EVT_STREAM_SMOKE_SOURCES
     "${SRC_DIR}/camera.cpp"
     "${SRC_DIR}/camera_sensor_pipeline_state.cpp"
     "${SRC_DIR}/project.cpp"
+    "${SRC_DIR}/image_levels.cpp"
     "${SRC_DIR}/spatial_calibration_snapshot.cpp"
     "${SRC_DIR}/spatial_layout_schema.cpp"
 )
@@ -1197,6 +1202,15 @@ if(BUILD_TESTING)
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/recording_subject_reference_tests.py"
                 "${CMAKE_BINARY_DIR}/recording_subject_reference_tests")
 
+    add_executable(image_levels_tests "tools/image_levels_tests.cpp" "${SRC_DIR}/image_levels.cpp")
+    target_include_directories(image_levels_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(image_levels_tests PRIVATE cxx_std_17)
+    add_test(NAME image_levels_tests COMMAND image_levels_tests)
+    add_test(
+        NAME image_levels_schema_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/image_levels_schema_tests.py"
+                "${CMAKE_BINARY_DIR}/image_levels_tests")
+
     add_executable(rig_config_pin_tests "tools/rig_config_pin_tests.cpp")
     target_link_libraries(rig_config_pin_tests PRIVATE orange_rig_config_pin)
     add_test(NAME rig_config_pin_tests COMMAND rig_config_pin_tests "${CMAKE_SOURCE_DIR}/tools/fixtures/rig_config")
@@ -1490,6 +1504,7 @@ if(BUILD_TESTING)
     add_executable(app_storage_config_tests
         "tools/app_storage_config_tests.cpp"
         "${SRC_DIR}/project.cpp"
+        "${SRC_DIR}/image_levels.cpp"
         "${SRC_DIR}/camera.cpp"
         "${SRC_DIR}/camera_sensor_pipeline_state.cpp"
         "${SRC_DIR}/spatial_calibration_snapshot.cpp"
@@ -1518,6 +1533,7 @@ if(BUILD_TESTING)
         "${SRC_DIR}/gui/spatial_layout/commissioning_finalize_request.cpp"
         "${SRC_DIR}/gui/spatial_layout/projection_snapshot_client.cpp"
         "${SRC_DIR}/project.cpp"
+        "${SRC_DIR}/image_levels.cpp"
         "${SRC_DIR}/camera.cpp"
         "${SRC_DIR}/camera_sensor_pipeline_state.cpp"
         "${SRC_DIR}/spatial_calibration_snapshot.cpp"

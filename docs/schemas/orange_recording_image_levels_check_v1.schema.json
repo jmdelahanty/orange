@@ -1,0 +1,421 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.recording.image_levels_check.v1",
+  "title": "Orange recording image-levels check (version 1)",
+  "description": "recording_snapshot_start.json session.image_levels_check: whole-image brightness and saturation of one full-resolution native Mono8 frame per recording camera, measured by the GUI 2 s after the stream delivers frames and before any recording (never during one), against the expectation in each camera's config file (camera JSON image_levels, orange.camera.image_levels v1). Statistics are orange.image_levels.v1 over every pixel. A mean out of band re-homes the EF iris once (0, then the configured value) and measures again. Policy warn_only: the check never refuses a stream or a recording. Written by src/image_levels.cpp (ResultStore::BuildRecordingBlockAt) from src/gui/image_levels_check.cpp.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "policy",
+    "enabled",
+    "rehome_iris",
+    "source",
+    "cameras"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "orange.recording.image_levels_check"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "policy": {
+      "const": "warn_only"
+    },
+    "enabled": {
+      "type": "boolean"
+    },
+    "rehome_iris": {
+      "type": "boolean"
+    },
+    "source": {
+      "type": "string"
+    },
+    "cameras": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[0-9]+$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/camera"
+      },
+      "description": "Per recording camera serial."
+    }
+  },
+  "$defs": {
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exposure",
+        "gain",
+        "iris",
+        "focus",
+        "width",
+        "height",
+        "offset_x",
+        "offset_y"
+      ],
+      "properties": {
+        "exposure": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "gain": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "iris": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "focus": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "offset_x": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "offset_y": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        }
+      },
+      "description": "Camera settings as CameraParams holds them (unsigned integers): exposure in microseconds, gain and iris and focus in camera units, the AOI in sensor pixels."
+    },
+    "camera": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "warnings",
+        "expectation",
+        "expectation_basis_settings_differ",
+        "live_settings",
+        "measurement",
+        "first_measurement",
+        "rehomed_iris",
+        "not_measured_reason",
+        "settings_changed_since_measurement"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "ok",
+            "warning",
+            "no_expectation",
+            "measurement_failed",
+            "not_measured"
+          ],
+          "description": "ok: every configured check passed; warning: at least one failed (see warnings); no_expectation: measured, but the camera config has no image_levels block; measurement_failed: the native frame or its copy failed; not_measured: see not_measured_reason."
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "mean_out_of_band",
+              "saturated_fraction_above_limit"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "expectation": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "schema_id",
+                "schema_version"
+              ],
+              "properties": {
+                "schema_id": {
+                  "const": "orange.camera.image_levels"
+                },
+                "schema_version": {
+                  "const": 1
+                },
+                "expected_mean": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 254
+                },
+                "mean_tolerance_fraction": {
+                  "type": "number",
+                  "minimum": 0.01,
+                  "maximum": 0.9
+                },
+                "max_saturated_fraction": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "basis": {
+                  "type": "object"
+                }
+              },
+              "dependentRequired": {
+                "expected_mean": [
+                  "mean_tolerance_fraction"
+                ],
+                "mean_tolerance_fraction": [
+                  "expected_mean"
+                ]
+              },
+              "anyOf": [
+                {
+                  "required": [
+                    "expected_mean"
+                  ]
+                },
+                {
+                  "required": [
+                    "max_saturated_fraction"
+                  ]
+                }
+              ],
+              "description": "The camera config's image_levels block as loaded at the time of the check (orange_camera_image_levels_v1.schema.json)."
+            }
+          ]
+        },
+        "expectation_basis_settings_differ": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "exposure",
+              "gain",
+              "iris",
+              "focus",
+              "width",
+              "height",
+              "offset_x",
+              "offset_y"
+            ]
+          },
+          "uniqueItems": true,
+          "description": "Settings recorded in the expectation's basis.settings that differ from live_settings."
+        },
+        "live_settings": {
+          "$ref": "#/$defs/settings"
+        },
+        "measurement": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "ok",
+                    "measured_at_utc",
+                    "source",
+                    "native_source_storage",
+                    "camera_frame_id",
+                    "camera_timestamp_ns",
+                    "timestamp_sys_ns",
+                    "settings",
+                    "statistics"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    },
+                    "measured_at_utc": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "source": {
+                      "const": "full_resolution_native_stream_snapshot"
+                    },
+                    "native_source_storage": {
+                      "enum": [
+                        "analytics_owned_device",
+                        "pool_owned_ring_device"
+                      ]
+                    },
+                    "camera_frame_id": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "camera_timestamp_ns": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "timestamp_sys_ns": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "settings": {
+                      "$ref": "#/$defs/settings"
+                    },
+                    "statistics": {
+                      "$ref": "orange.image_levels.v1"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "ok",
+                    "error",
+                    "measured_at_utc"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "const": false
+                    },
+                    "error": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "measured_at_utc": {
+                      "type": "string"
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "description": "The measurement the status is judged on (after an iris re-home, the second one)."
+        },
+        "first_measurement": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "ok",
+                    "measured_at_utc",
+                    "source",
+                    "native_source_storage",
+                    "camera_frame_id",
+                    "camera_timestamp_ns",
+                    "timestamp_sys_ns",
+                    "settings",
+                    "statistics"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "const": true
+                    },
+                    "measured_at_utc": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "source": {
+                      "const": "full_resolution_native_stream_snapshot"
+                    },
+                    "native_source_storage": {
+                      "enum": [
+                        "analytics_owned_device",
+                        "pool_owned_ring_device"
+                      ]
+                    },
+                    "camera_frame_id": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "camera_timestamp_ns": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "timestamp_sys_ns": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "settings": {
+                      "$ref": "#/$defs/settings"
+                    },
+                    "statistics": {
+                      "$ref": "orange.image_levels.v1"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "ok",
+                    "error",
+                    "measured_at_utc"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "const": false
+                    },
+                    "error": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "measured_at_utc": {
+                      "type": "string"
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "description": "The out-of-band measurement that triggered the iris re-home, when rehomed_iris is true."
+        },
+        "rehomed_iris": {
+          "type": "boolean"
+        },
+        "not_measured_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Set when status is not_measured: disabled_in_app_config, not_streaming, recording_started_before_measurement, no_check_result, or measurement_in_progress_<phase>."
+        },
+        "settings_changed_since_measurement": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "exposure",
+              "gain",
+              "iris",
+              "focus",
+              "width",
+              "height",
+              "offset_x",
+              "offset_y"
+            ]
+          },
+          "uniqueItems": true,
+          "description": "Settings that changed between the measurement and the record start."
+        }
+      }
+    }
+  }
+}
