@@ -1,9 +1,9 @@
 # Empty-dish background capture
 
-Date: 2026-11-02. Status: design agreed with Jeremy; not implemented. Nothing
-here is declared to Palette yet: the file layout and schema ids below are
-proposals until Palette agrees (standing rule: tell Palette before declaring
-new recording files).
+Date: 2026-11-02. Status: design agreed with Jeremy; file layout, descriptor
+and statistic names agreed with Palette (session palette-empty-background,
+2026-11-02, checked against Palette main f6f23487). Not implemented. The
+schema goes to agent-contracts before Orange writes any of these files.
 
 ## Purpose
 
@@ -29,9 +29,13 @@ data and to find the fish in frames where the live detector missed it.
 6. **Keep only the median**, not the burst of source frames.
 7. **No YOLO check of the burst.** The detector still fires on dust and
    bubbles, so it would give false warnings.
-8. **Settings drift refuses the background, not the recording.** At record
-   start, any difference in the checked settings drops the background for that
-   camera and names the setting.
+8. **Settings drift is copied and flagged, never refused.** At record start,
+   a camera whose checked settings differ from the capture still gets its
+   median copied into the recording, with status `settings_changed` naming each
+   setting and both values. The recording starts. Palette decides per use
+   whether it can model the difference or must refuse the image. (Jeremy,
+   2026-11-02; this replaces the first version of this decision, which dropped
+   the image.)
 9. **Hard-frame mining belongs to Palette**, working from full-frame
    recordings and Orange's existing per-frame outputs. Orange writes no new
    per-frame data for it. Crop-only and held-ROI crops are out of scope for
@@ -41,7 +45,10 @@ data and to find the fish in frames where the live detector missed it.
 
 1. Set up cameras, illumination and dishes for the experiment, with water and
    no fish. Start streaming. Detection can be on or off.
-2. Press **Capture empty background** and declare that the dishes are empty.
+2. Press **Capture empty background** and declare that the dishes are empty
+   and what the stimulus display shows (off, or on with what canvas or colour).
+   Orange cannot observe the display (Citrus/SpecSail drive it, and there is no
+   Citrus binding before a recording), so this is an operator declaration.
    Orange captures every streaming camera and saves one capture to the
    background store. No recording starts.
 3. Add the fish. Do not change camera settings or illumination.
@@ -81,13 +88,16 @@ no background.
   Frames are copied to host, the median is computed per row band, and the
   source frames are freed. The daily context's admission limits (64 MiB per
   image, 256 MiB total) are for one frame and need their own burst limits.
+- **Saturation:** while computing the median, Orange also counts the pixels
+  that were 255 in any of the 17 frames (`any_frame_saturated_fraction`). The
+  median cannot show these, and they mark where subtraction is unreliable.
 - **Failure:** a camera whose burst does not complete within a timeout gets no
   background. Other cameras keep theirs, and the descriptor says which camera
   failed and why.
 
 ## What is stored
 
-Background store, outside any recording (proposed):
+Background store, outside any recording:
 
 ```text
 ~/orange_data/backgrounds/<capture_id>/
@@ -95,22 +105,45 @@ Background store, outside any recording (proposed):
   Cam<serial>_empty_background.png  8-bit grayscale median, native raster
 ```
 
-PNG is proposed because it is lossless, carries its own dimensions and opens in
-any tool. Palette may prefer raw Mono8 plus dimensions; that is their call.
+**Image (agreed with Palette):** PNG, 8-bit greyscale, no alpha, no gamma,
+iCCP or sRGB chunks. Palette refuses a PNG whose header disagrees with the
+descriptor's width, height or pixel format.
 
-`background.json` (proposed `orange.empty_background_capture`, version 1)
-carries, per camera:
+`background.json` (`orange.empty_background_capture`, version 1). Field names
+follow the daily native context (`orange.calibration.registered_native_context`
+v2) where they overlap; sha256 values use the `sha256:<hex>` form.
 
-- serial, width, height, offset_x, offset_y, pixel format;
-- exposure, gain, iris, focus and frame rate as configured at capture;
-- the stream and camera frame IDs and camera and host timestamps of the 17
-  source frames;
-- the method (`median_17`, version 1);
-- the image file's size and SHA-256.
+- `capture_id`, `captured_at_utc`.
+- `scene_declaration`: `dishes_empty: true`, free-text `note`, and
+  `stimulus_display` with `source: "operator_declared"`, `state` (`off` or
+  `on`) and, when on, what was shown (canvas or colour); `not_displayed` when
+  no display is part of the rig.
+- `method`: `name: "median_17"`, `version: 1`, `frame_count: 17`.
+- `pixel_declaration`: raw sensor Mono8, full range, no conversion. Palette
+  compares the median with decoded full-frame HEVC and must not apply a
+  tv-range shift.
+- `registration_id` and geometry, only when a registration was selected; their
+  absence is normal.
+- `cameras[]`, per camera:
+  - `camera_serial`;
+  - `camera_configuration`: `width`, `height`, `offset_x`, `offset_y`,
+    `pixel_format` (`Mono8`), `frame_rate_hz`, `exposure_us`, `gain`, `focus`,
+    `iris`, as configured at capture;
+  - `source_frames[17]`: `stream_frame_id`, `camera_frame_id`,
+    `camera_timestamp_ns` (PTP/TAI; host clock = minus 37 s),
+    `timestamp_sys_ns`;
+  - `image`: `relative_path`, `size_bytes`, `sha256`;
+  - `statistics` of the median, over the whole image: `saturation_value` (255),
+    `saturated_fraction` (median == 255), `any_frame_saturated_fraction`,
+    `zero_fraction`, `mean`, `p01`, `p05`, `p50`, `p95`, `p99`, `p999`. The
+    image-levels check uses the same names (without the burst-only
+    `any_frame_saturated_fraction`). p999 is there because p99 is already 255
+    on the 2026-11-01 setup (about 3.4% of pixels clip in a single frame);
+  - `failure` with a reason instead of `image` and `statistics` when the burst
+    did not complete.
 
-It also carries the capture time (UTC) and the operator declaration
-(`dishes_empty: true`, free-text note). The registration id and geometry are
-included only when a registration was selected; their absence is normal.
+No per-pixel saturation mask and no 17-frame max image (Palette derives
+median == 255 itself).
 
 ## Recording binding
 
@@ -121,24 +154,33 @@ snapshot is sealed:
    live configuration: exposure, gain, iris, focus, width, height, offset_x,
    offset_y, pixel format. Frame rate is recorded, not checked, because each
    frame's illumination follows exposure, not frame rate.
-2. A match copies the median into the recording and verifies its SHA-256. A
-   difference refuses that camera's background and names each differing
-   setting with both values. The recording still starts.
-3. The start snapshot gets an `empty_background` block with the capture id and
-   descriptor digest, and a per-camera status. Proposed statuses:
-   `attached`, `not_selected`, `settings_changed` (with the list),
-   `missing_in_capture`, `copy_failed`.
+2. The median is copied into the recording and its SHA-256 verified, both on
+   a match (`attached`) and on a difference (`settings_changed`, naming each
+   differing setting with both values). The recording starts either way.
+3. The start snapshot gets an `empty_background` block on **every** recording,
+   with the capture id and descriptor digest when one is attached, and a
+   status per recording camera, keyed by `camera_serial`, so every image in
+   the recording copy maps to exactly one status. Statuses: `attached`,
+   `settings_changed` (with the list), `not_selected`, `missing_in_capture`,
+   `copy_failed`. A recording without a capture says `not_selected` for every
+   camera: a declared absence, not a missing block. The status lives in the
+   snapshot, not in the copied descriptor, which stays byte-exact.
 4. The GUI shows the per-camera result before the recording starts, and
-   loudly for any refusal.
+   loudly for `settings_changed` and any failure.
 
-Proposed recording layout (at the recording root, outside
-`recording_observation_bindings/`):
+Recording layout (at the recording root, outside
+`recording_observation_bindings/`; agreed with Palette):
 
 ```text
 <recording>/empty_background/
   background.json                   exact copy of the capture descriptor
-  Cam<serial>_empty_background.png  exact copies, attached cameras only
+  Cam<serial>_empty_background.png  exact copies, attached and settings_changed cameras
 ```
+
+The directory is written at record start, so it exists before the transfer
+sealer runs and the seal covers it. Palette checks each image's SHA-256
+against the descriptor and the seal. Intake does not refuse undeclared files,
+so no inventory change is needed first.
 
 Rolling clips share the parent recording's background, as they share its
 other context.
@@ -163,8 +205,16 @@ they are.
 
 ## For Palette
 
-1. **The background files:** layout, PNG or raw, descriptor fields. Tell
-   Orange what intake needs before Orange declares anything.
+1. **The background files:** agreed 2026-11-02 (sections above). Palette
+   asked for the schema in agent-contracts, as for `yolo_event` v3, so it can
+   vendor it under `shared/contracts`. Palette treats the background as a
+   prior, not a truth: it reads the snapshot status before any use, refuses
+   `settings_changed` unless the consumer handles the listed differences,
+   checks the median against fish-free regions of the decoded video per
+   recording (the dish can move when the fish are added), and builds its own
+   background when no capture exists. The full-frame video is lossy (about
+   4.8 grey levels MAE), so a difference against decoded HEVC is good for
+   mining candidate frames, not for pixel-level labels.
 2. **Inputs for hard-frame mining**, all existing outputs of a full-frame
    recording:
    - `Cam<serial>_yolo_events.jsonl`: per-frame detections with confidence,
@@ -178,7 +228,9 @@ they are.
    - Signals seen on the 2026-11-01 250 Hz session (`2026_11_01_14_19_25`):
      13.5% of frames without a detection, rare detection-centre jumps of over
      1000 px between frames, and pose keypoint jumps of 15 to 40 px.
-3. Out of scope for Orange in this round: per-frame hard-frame lists, crop-only
+3. Open for Jeremy (raised by Palette): whether mined hard frames get labels
+   from the full-frame video or from the lossless crop when one exists.
+4. Out of scope for Orange in this round: per-frame hard-frame lists, crop-only
    capture of missed frames and held-ROI crops.
 
 ## Deferred
@@ -191,8 +243,10 @@ they are.
 
 ## Implementation checklist (Orange)
 
-- [ ] Palette agrees on the file layout and descriptor; schemas in new files
-      under `docs/schemas`, through the output ratchet.
+- [x] Palette agrees on the file layout and descriptor (2026-11-02).
+- [ ] Schemas (capture descriptor, start-snapshot block) in new files under
+      `docs/schemas`, through the output ratchet; the same schemas in an
+      agent-contracts PR for Palette (push needs Jeremy's word).
 - [ ] Burst capture and median on the snapshot worker; refused while
       recording; per-camera timeout and failure reporting.
 - [ ] Background store and descriptor, written atomically, descriptor last.
@@ -201,7 +255,7 @@ they are.
       per-camera result display.
 - [ ] Record-start binding: settings check, copy, digest, start-snapshot block.
 - [ ] Headless spec key and the same binding.
-- [ ] Tests: median correctness, settings-drift refusal per setting,
+- [ ] Tests: median correctness, statistics, settings-drift flag per setting,
       missing camera, copy failure, a recording that never selects one.
 - [ ] Rig check: capture at 4512 x 4512 and 4512 x 1792, then a recording with
       the background attached, with 0 camera frame-id gaps and unchanged NIC
