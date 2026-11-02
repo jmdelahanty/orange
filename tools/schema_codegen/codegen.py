@@ -8,6 +8,7 @@ subset of JSON Schema and refuses anything else, so a schema never says more tha
 code enforces:
 
   type (object, array, string, integer, number, boolean; ["T", "null"] for nullable), properties,
+  minItems / maxItems on an array (checked on parse),
   required, additionalProperties (false; a schema for string-keyed maps, whose keys a
   propertyNames {pattern} may constrain; or absent/true on an
   object with properties, which is "open": declared fields are typed and checked, any other keys
@@ -19,7 +20,8 @@ code enforces:
   maxLength, pattern, minimum, maximum). They are checked on the parsed JSON with JSON Schema's
   semantics: an absent value satisfies a `properties` condition and is not constrained. `then`
   may also list `required` keys; an `else` takes the same rules, and both accept
-  `not: {required: [...]}` (keys that must be absent).
+  `not: {required: [key]}` (a key that must be absent; exactly one key, because JSON Schema reads a
+  longer list as "not all present").
   A `$ref` to another schema file in the same directory ("<stem>.schema.json") is that file's
   generated root type, from its header (the stem must be passed with --ref and its namespace).
   A `oneOf` below the root, whose branches are objects or such references, is a std::variant;
@@ -47,7 +49,7 @@ from pathlib import Path
 
 SUPPORTED = {
     "type", "properties", "required", "additionalProperties", "items", "enum", "const",
-    "minimum", "maximum", "minLength", "maxLength", "pattern", "oneOf", "$defs", "$ref", "allOf",
+    "minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems", "pattern", "oneOf", "$defs", "$ref", "allOf",
     "description", "title", "$schema", "$id", "examples", "default",
     "x-orange-cpp-name", "x-orange-decimals", "x-orange-counter", "x-orange-digest",
     "x-orange-map-key", "propertyNames",
@@ -91,6 +93,8 @@ class Scalar:
 @dataclass
 class ArrayT:
     item: object
+    min_items: int | None = None
+    max_items: int | None = None
 
 
 @dataclass
@@ -248,8 +252,11 @@ class Builder:
             return self.object(node, node.get("x-orange-cpp-name", name), where)
         if types == "array":
             if "items" not in node:
+                if "minItems" in node or "maxItems" in node:
+                    raise SchemaError(f"{where}: minItems / maxItems need items")
                 return OpaqueT(("array",))   # items left open by the schema
-            return ArrayT(self.type_of(node["items"], name + "Item", where + "[]"))
+            return ArrayT(self.type_of(node["items"], name + "Item", where + "[]"),
+                          min_items=node.get("minItems"), max_items=node.get("maxItems"))
         if types in ("string", "integer", "number", "boolean"):
             kind = {"string": "string", "number": "double", "boolean": "bool"}.get(types)
             if types == "integer":
@@ -283,6 +290,11 @@ class Builder:
             negated = node["not"]
             if not isinstance(negated, dict) or set(negated) != {"required"}:
                 raise SchemaError(f"{where}: only not {{required: [...]}} is supported in a condition")
+            if not isinstance(negated["required"], list) or len(negated["required"]) != 1:
+                # JSON Schema reads not {required: [a, b]} as "not all of a, b present"; the generated
+                # code would read it as "none present". One key per rule keeps the two readings equal.
+                raise SchemaError(f"{where}: not {{required: [...]}} must name exactly one key "
+                                  "(use one allOf entry per forbidden key)")
             checks["forbidden"] = negated["required"]
         if checks:
             if "type" in checks and not isinstance(checks["type"], str):
@@ -479,6 +491,10 @@ class Emitter:
             out.append(f"{dst} = {src};")
         elif isinstance(t, ArrayT):
             out.append(f"if (!{src}.is_array()) {fail('expected an array')}")
+            if t.min_items is not None:
+                out.append(f"if ({src}.size() < {t.min_items}u) {fail(f'fewer than {t.min_items} items')}")
+            if t.max_items is not None:
+                out.append(f"if ({src}.size() > {t.max_items}u) {fail(f'more than {t.max_items} items')}")
             out.append(f"{dst}.clear();")
             out.append(f"for (std::size_t i = 0; i < {src}.size(); ++i) {{")
             out.append(f"    {cpp_type(t.item)} item{{}};")
