@@ -115,9 +115,12 @@ v2) where they overlap; sha256 values use the `sha256:<hex>` form.
 
 - `capture_id`, `captured_at_utc`.
 - `scene_declaration`: `dishes_empty: true`, free-text `note`, and
-  `stimulus_display` with `source: "operator_declared"`, `state` (`off` or
-  `on`) and, when on, what was shown (canvas or colour); `not_displayed` when
-  no display is part of the rig.
+  `stimulus_display` with `source: "operator_declared"` and `state`: `off`
+  (a display in the light path, dark), `on`, `unknown` (Palette treats it
+  like on with an unknown scene) or `not_displayed` (no display in the light
+  path). Only `on` carries `shown`: `{kind: solid_color, rgba8: [r,g,b,a]}`
+  (the rigs' colour standard, sRGB rgba8), `{kind: canvas, canvas_name}` or
+  `{kind: other, note}` when no exact value is known.
 - `method`: `name: "median_17"`, `version: 1`, `frame_count: 17`.
 - `pixel_declaration`: raw sensor Mono8, full range, no conversion. Palette
   compares the median with decoded full-frame HEVC and must not apply a
@@ -244,9 +247,15 @@ they are.
 ## Implementation checklist (Orange)
 
 - [x] Palette agrees on the file layout and descriptor (2026-11-02).
-- [ ] Schemas (capture descriptor, start-snapshot block) in new files under
-      `docs/schemas`, through the output ratchet; the same schemas in an
-      agent-contracts PR for Palette (push needs Jeremy's word).
+- [x] Schema drafts (2026-11-02): `orange_empty_background_capture_v1`,
+      `orange_recording_empty_background_v1` (start-snapshot block),
+      `orange_image_levels_v1` (shared `statistics`, also used by the
+      image-levels check), with examples; codegen and jsonschema agree on them.
+- [ ] Palette review of the drafts; agent-contracts PR (push needs Jeremy's
+      word).
+- [ ] With the writer: `ORANGE_GENERATED_SCHEMAS` in CMake,
+      `published_schemas.EMBEDDED` entry for `/session/empty_background`, and
+      `check_output_surface.py --update`.
 - [ ] Burst capture and median on the snapshot worker; refused while
       recording; per-camera timeout and failure reporting.
 - [ ] Background store and descriptor, written atomically, descriptor last.
