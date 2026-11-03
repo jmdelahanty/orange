@@ -181,7 +181,8 @@ during recorder start-up has to reclaim and compact on the spot.
     6 GB/s on host bridge 20, and that cost camera frames.
   - The MP4 writer also paces its own writeback (`sync_file_range` every
     32 MB).
-- **2026-09-23:** `vm.compaction_proactiveness = 0` (same file).
+- **2026-09-23:** `vm.compaction_proactiveness = 0` (same file; its source is
+  pancakebatter `configs/sysctl/90-orange-writeback.conf`).
   - Background compaction (`kcompactd`) migrated pages during recordings. Each
     migration sent TLB shootdowns to Orange's isolated cores: more than 5,000
     IPIs/s in 15 of 18 seconds on the 2026-09-23 soaks.
@@ -213,8 +214,20 @@ during recorder start-up has to reclaim and compact on the spot.
     and callback; and remote TLB shootdowns on the isolated cores.
   - `scripts/summarize_memory_trace.py` reports them. See "Running the trace"
     below.
-- **Larger free-memory reserve (`vm.min_free_kbytes`): to discuss with
-  pancake-batter**, which owns the host provisioning record. Open.
+- **Larger free-memory reserve: wait for the trace** (pancake-batter,
+  2026-11-02; nothing changed).
+  - The 5 GB free was in small blocks, so this is fragmentation more than too
+    little free memory. The kernel's watermarks count free pages, not block
+    sizes, so a bigger reserve may not help.
+  - If tuning is needed after the trace, use `vm.watermark_scale_factor`, not
+    `vm.min_free_kbytes`.
+  - `vm.compaction_proactiveness = 0` does not stop `kswapd` from waking
+    `kcompactd` after a high-order reclaim. `compact_daemon_wake` stood at
+    2.59 million since boot, so background compaction still runs on demand.
+  - The setting belongs in pancakebatter `configs/sysctl/90-orange-writeback.conf`.
+    That is the source of the installed `/etc/sysctl.d` file, and
+    `check_kernel_tuning.py` and `hosts/pancake0/config.yml` already read it.
+  - pancake-batter agrees the recorder page-cache drop is the right first step.
 - **Starting the recorders before streaming: deferred.** If the recorders started
   before the cameras streamed, their start-up could not overlap live
   acquisition. It is a larger change.
