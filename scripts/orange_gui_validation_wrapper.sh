@@ -626,19 +626,41 @@ stop_stall_monitor() {
     fi
     if [[ -f "${stall_monitor_prefix}_summary.json" ]]; then
       echo "[sudo-wrapper] host_stall_monitor summary: $(python3 -c "import json,sys;d=json.load(open(sys.argv[1]));h=d['heartbeat'];print('gaps=%d max_gap_ms=%.1f allocstall=%d compact_stall=%d irq_burst_s=%s compilers=%s loadavg_max=%s' % (h['gaps'],h['max_gap_ms'],d['deltas']['allocstall_normal'],d['deltas']['compact_stall'],d.get('isolated_irq_burst_seconds'),d.get('compilers_seen'),d.get('loadavg_1m_max')))" "${stall_monitor_prefix}_summary.json" 2>/dev/null || echo unreadable)"
-      # Copy the monitor outputs next to every recording that references
-      # this monitor (Orange writes the prefix into recording_snapshot.json),
-      # so the host contention record travels with the artifact.
-      for snapshot in $(grep -ls -- "${stall_monitor_prefix}" /home/jeremy/orange_data/exp/unsorted/*/recording_snapshot.json 2>/dev/null); do
-        folder="$(dirname "$snapshot")"
-        for kind in summary.json heartbeat.csv counters.csv irq_top.csv procs.csv kernel_tuning.txt; do
-          src="${stall_monitor_prefix}_${kind}"
-          [[ -f "$src" ]] && cp -f -- "$src" "${folder}/host_monitor_${kind}"
-        done
-        if [[ -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" ]]; then
-          chown -- "${SUDO_UID}:${SUDO_GID}" "${folder}"/host_monitor_* 2>/dev/null || true
-        fi
-        echo "[sudo-wrapper] host_stall_monitor outputs copied to ${folder}"
+      # Give every recording of this GUI session its own host contention
+      # record. Orange writes the monitor prefix into recording_snapshot.json;
+      # host_monitor_window.py cuts the session's per-second files down to that
+      # recording's window (session start to stop request) and writes
+      # host_monitor_* into its folder. Recordings live under the app config's
+      # storage.default_recording_root (Data2 since 2026-10-16), older ones
+      # under ~/orange_data/exp/unsorted.
+      recording_roots=("/home/jeremy/orange_data/exp/unsorted")
+      app_config="${ORANGE_GUI_APP_CONFIG_PATH:-${ORANGE_APP_CONFIG_PATH:-/home/jeremy/orange_data/config/app/default.json}}"
+      configured_root="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("storage", {}).get("default_recording_root", ""))' "$app_config" 2>/dev/null || true)"
+      if [[ -n "$configured_root" && -d "$configured_root" && "$configured_root" != "${recording_roots[0]}" ]]; then
+        recording_roots+=("$configured_root")
+      fi
+      window_script="$(dirname "$stall_monitor_script")/host_monitor_window.py"
+      for root in "${recording_roots[@]}"; do
+        while IFS= read -r snapshot; do
+          [[ -n "$snapshot" ]] || continue
+          folder="$(dirname "$snapshot")"
+          if [[ ! -f "$window_script" ]]; then
+            # A tree from before host_monitor_window.py: the whole session's files.
+            for kind in summary.json heartbeat.csv counters.csv irq_top.csv procs.csv kernel_tuning.txt; do
+              src="${stall_monitor_prefix}_${kind}"
+              [[ -f "$src" ]] && cp -f -- "$src" "${folder}/host_monitor_${kind}"
+            done
+            echo "[sudo-wrapper] host_stall_monitor session outputs copied to ${folder} (no ${window_script})"
+          elif window_error="$(python3 "$window_script" --prefix "$stall_monitor_prefix" --recording-folder "$folder" --write 2>&1 >/dev/null)"; then
+            echo "[sudo-wrapper] host_stall_monitor record for this recording's window written to ${folder}"
+          else
+            echo "[sudo-wrapper] host_stall_monitor window failed for ${folder}: ${window_error##*$'\n'}" >&2
+          fi
+          if [[ -n "${SUDO_UID:-}" && -n "${SUDO_GID:-}" ]]; then
+            chown -- "${SUDO_UID}:${SUDO_GID}" "${folder}"/host_monitor_* 2>/dev/null || true
+          fi
+        done < <(find "$root" -mindepth 2 -maxdepth 2 -name recording_snapshot.json -newer "${stall_monitor_prefix}.log" -print0 2>/dev/null |
+                 xargs -0 -r grep -ls -- "${stall_monitor_prefix}" 2>/dev/null)
       done
     fi
     stall_monitor_pid=""

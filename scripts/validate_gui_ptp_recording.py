@@ -618,22 +618,39 @@ def check_host_monitor(reporter: "Reporter", recording_folder: Path, snapshot: d
     monitor's outputs into the recording folder as host_monitor_*; older
     artifacts only carry the diagnostics prefix in the snapshot."""
     summary_path = recording_folder / "host_monitor_summary.json"
+    summary = None
     if not summary_path.is_file():
+        # No copy in the folder (the GUI session is still running, or an older
+        # wrapper): cut the session monitor's per-second files down to this
+        # recording's window. Its session summary would cover every recording
+        # of the GUI session, so it is only the last resort.
         prefix = nested_dict(snapshot, "session").get("host_stall_monitor_prefix") or ""
-        candidate = Path(str(prefix) + "_summary.json") if prefix else None
-        if candidate and candidate.is_file():
-            summary_path = candidate
-        else:
-            if args.require_host_monitor:
-                reporter.fail("host monitor summary missing (host_monitor_summary.json and no diagnostics prefix)")
+        if prefix and Path(str(prefix) + "_counters.csv").is_file():
+            try:
+                sys.path.insert(0, str(Path(__file__).resolve().parent))
+                from host_monitor_window import recording_summary
+                summary, _ = recording_summary(str(prefix), str(recording_folder))
+                # Nominal session path: the kernel-tuning file sits beside it.
+                summary_path = Path(str(prefix) + "_summary.json")
+            except Exception as exc:  # noqa: BLE001
+                reporter.warn(f"host monitor: could not compute this recording's window from {prefix}: {exc}")
+        if summary is None:
+            candidate = Path(str(prefix) + "_summary.json") if prefix else None
+            if candidate and candidate.is_file():
+                summary_path = candidate
+                reporter.warn("host monitor: using the whole GUI session's summary, not this recording's window")
             else:
-                reporter.warn("host monitor summary missing; host contention during the run is unknown")
+                if args.require_host_monitor:
+                    reporter.fail("host monitor summary missing (host_monitor_summary.json and no diagnostics prefix)")
+                else:
+                    reporter.warn("host monitor summary missing; host contention during the run is unknown")
+                return {}
+    if summary is None:
+        try:
+            summary = read_json(summary_path)
+        except Exception as exc:  # noqa: BLE001
+            reporter.fail(f"host monitor summary unreadable: {summary_path}: {exc}")
             return {}
-    try:
-        summary = read_json(summary_path)
-    except Exception as exc:  # noqa: BLE001
-        reporter.fail(f"host monitor summary unreadable: {summary_path}: {exc}")
-        return {}
     heartbeat = summary.get("heartbeat", {})
     deltas = summary.get("deltas", {})
     gaps = int(heartbeat.get("gaps", 0))
@@ -664,7 +681,12 @@ def check_host_monitor(reporter: "Reporter", recording_folder: Path, snapshot: d
     foreign = summary.get("foreign_cpu_seconds_by_process", {})
     loadavg_max = summary.get("loadavg_1m_max")
     report = reporter.fail if args.strict_host_monitor else reporter.warn
-    reporter.pass_(f"host monitor present: {summary_path}")
+    if summary.get("basis") == "recording_window":
+        window = summary.get("window", {})
+        reporter.pass_(f"host monitor present: this recording's window ({window.get('coverage')} coverage, "
+                       f"{summary.get('duration_s', 0):.0f} s) from {summary.get('session_monitor_prefix')}_*")
+    else:
+        reporter.pass_(f"host monitor present: {summary_path}")
     if gaps:
         report(f"host monitor: {gaps} heartbeat gap(s), max {heartbeat.get('max_gap_ms')} ms (host-wide pauses)")
     else:

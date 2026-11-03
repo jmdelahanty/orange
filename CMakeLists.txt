@@ -1426,6 +1426,10 @@ if(BUILD_TESTING)
         NAME evt_stream_smoke_wrapper_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/evt_stream_smoke_wrapper_tests.py")
 
+    add_test(
+        NAME host_monitor_window_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/host_monitor_window_tests.py")
+
     add_executable(yolo_event_log_validation_tests
         "tools/yolo_event_log_validation_tests.cpp"
         "${SRC_DIR}/yolo_event_log_validation.cpp"

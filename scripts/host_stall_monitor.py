@@ -178,6 +178,7 @@ class Heartbeat(threading.Thread):
             pass  # unprivileged: ordinary priority is still a usable probe
         w = csv.writer(self.out)
         w.writerow(["t_ns", "mono_ns", "late_ms"])
+        self.out.flush()  # an empty file would look like a monitor that never started
         period = 1_000_000
         nxt = time.monotonic_ns() + period
         while not self.stop.is_set():
