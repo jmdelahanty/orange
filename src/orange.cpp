@@ -4075,6 +4075,44 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
         return GuiRecordingStartDispatch::kFailed;
     }
 
+    // A stimulus experiment needs Orange's control socket: Citrus stops the
+    // recording and delivers its receipts through it. Refuse loudly while it is
+    // down (Jeremy, 2026-11-03); the operator retries once the GUI shows it
+    // listening again. Checked before the subject confirmation is consumed and
+    // before any folder exists.
+    try {
+        const auto contexts = orange::gui::RecordingContextsForStream();
+        bool stimulus = contexts.default_context &&
+                        contexts.default_context->recording_intent == "stimulus_experiment";
+        for (const auto& [serial, ctx] : contexts.cameras) {
+            stimulus = stimulus || ctx.recording_intent == "stimulus_experiment";
+        }
+        std::string socket_problem;
+        if (stimulus) {
+            if (!g_gui_local_control_server || !g_gui_local_control_server->running()) {
+                socket_problem = g_gui_local_control_server && !g_gui_local_control_server->last_error().empty()
+                    ? g_gui_local_control_server->last_error()
+                    : std::string("the control server is not running");
+            } else {
+                std::error_code ec;
+                if (!std::filesystem::is_socket(gui_local_control_socket_path(), ec)) {
+                    socket_problem = "socket file missing at " + gui_local_control_socket_path();
+                }
+            }
+        }
+        if (!socket_problem.empty()) {
+            const std::string error =
+                "Start refused: the Citrus control socket is down (" + socket_problem +
+                "). A stimulus experiment needs it for Citrus's stop and receipts. Orange restarts it "
+                "within 5 s; start again once the Subject panel shows it listening.";
+            if (recording_preflight_errors) *recording_preflight_errors = {error};
+            std::cerr << "[GUI][recording] " << error << std::endl;
+            return GuiRecordingStartDispatch::kFailed;
+        }
+    } catch (const std::exception&) {
+        // An invalid context is refused with its own message just below.
+    }
+
     if (recording_preflight_errors) {
         recording_preflight_errors->clear();
     }
