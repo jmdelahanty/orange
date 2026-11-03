@@ -28,6 +28,9 @@ recording::SubjectReferencesConfig SubjectReferencesForRecordStart(nlohmann::jso
 // confirmed entries (one line each; empty = all matched or none declared).
 // Shown in the Subject panel until the next start.
 void SetSubjectCrossCheckResult(const std::vector<std::string>& mismatches, bool citrus_declared);
+// Orange's local control socket (Citrus's stop and receipts reach Orange
+// through it), shown beside the recording intent: up, or down with the reason.
+void SetCitrusControlSocketStatus(bool up, const std::string& detail);
 recording::ZebrobotLookupConfig ZebrobotLookupForStream();
 // Default dish/count plus one editable row per camera serial (overrides).
 void RenderSubjectReferenceSelection(bool locked, const std::vector<std::string>& camera_serials);

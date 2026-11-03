@@ -1,5 +1,6 @@
 // src/orange.cpp
 
+#include <syslog.h>
 #include "video_capture.h"
 #include "recording_startup_audit.h"
 #include <iostream>
@@ -1188,6 +1189,89 @@ orange::control::LocalControlStatusSnapshot gui_build_local_control_status(
     snapshot.local_control_recording_stop =
         gui_control_stop_snapshot(local_control_stop_scheduler);
     return snapshot;
+}
+
+struct GuiLocalControlWatchState {
+    bool down = false;
+    std::string down_reason;
+    std::chrono::steady_clock::time_point down_since{};
+    std::chrono::steady_clock::time_point last_restart_attempt{};
+    std::chrono::steady_clock::time_point last_socket_check{};
+    int restarts = 0;
+    std::string status_shown;
+};
+
+// Keeps the control socket up for Citrus. Once a second it checks that the
+// server runs and that its socket file still exists; when either is lost it
+// records why (stderr, syslog, the control event log, the GUI) and restarts
+// the server every 5 s until it listens again.
+void gui_supervise_local_control_server(
+    orange::control::LocalControlServer* server,
+    const orange::control::LocalControlServerOptions& options,
+    const std::string& event_log_path,
+    GuiLocalControlWatchState* watch)
+{
+    using clock = std::chrono::steady_clock;
+    const auto now = clock::now();
+    if (now - watch->last_socket_check < std::chrono::seconds(1)) {
+        return;
+    }
+    watch->last_socket_check = now;
+    std::string reason;
+    if (!server->running()) {
+        reason = server->last_error().empty() ? "server not running" : server->last_error();
+    } else {
+        std::error_code ec;
+        if (!std::filesystem::is_socket(options.socket_path, ec)) {
+            reason = "socket file missing at " + options.socket_path;
+        }
+    }
+    if (reason.empty()) {
+        if (watch->down) {
+            const double down_s =
+                std::chrono::duration<double>(now - watch->down_since).count();
+            std::cout << "[GUI][local_control] listening again after " << down_s
+                      << " s (restart " << watch->restarts << ")" << std::endl;
+            syslog(LOG_WARNING, "orange GUI local control listening again after %.1f s", down_s);
+            std::ostringstream recovered;
+            recovered << "listening again after " << down_s << " s, " << watch->restarts
+                      << " restart(s); was down: " << watch->down_reason;
+            gui_log_local_control_event(
+                event_log_path,
+                {{"event", "server_recovered"}, {"reason", recovered.str()}});
+            watch->down = false;
+        }
+        if (watch->status_shown != "up") {
+            orange::gui::SetCitrusControlSocketStatus(true, options.socket_path);
+            watch->status_shown = "up";
+        }
+        return;
+    }
+    if (!watch->down) {
+        watch->down = true;
+        watch->down_reason = reason;
+        watch->down_since = now;
+        std::cerr << "[GUI][local_control] listener DOWN: " << reason << std::endl;
+        syslog(LOG_ERR, "orange GUI local control listener down: %s", reason.c_str());
+        gui_log_local_control_event(event_log_path, {{"event", "server_down"}, {"reason", reason}});
+    }
+    if (watch->status_shown != "down:" + reason) {
+        orange::gui::SetCitrusControlSocketStatus(false, reason);
+        watch->status_shown = "down:" + reason;
+    }
+    if (now - watch->last_restart_attempt < std::chrono::seconds(5)) {
+        return;
+    }
+    watch->last_restart_attempt = now;
+    ++watch->restarts;
+    server->Stop();
+    std::string error;
+    if (server->Start(options, &error) && server->running()) {
+        std::cout << "[GUI][local_control] restarted (attempt " << watch->restarts << ")" << std::endl;
+    } else {
+        std::cerr << "[GUI][local_control] restart " << watch->restarts << " failed: "
+                  << (error.empty() ? server->last_error() : error) << std::endl;
+    }
 }
 
 void gui_drain_local_control_commands(
@@ -5705,6 +5789,12 @@ int main(int /*argc*/, char ** /*args*/) {
     orange::control::LocalControlServer gui_local_control_server;
     g_gui_local_control_server = &gui_local_control_server;
     std::string gui_local_control_event_log_path;
+    // Kept for restarts: the supervision in the main loop starts the server
+    // again with the same options if its listener dies (2026-11-02, when the
+    // listener closed mid-session and the reason only reached the terminal).
+    orange::control::LocalControlServerOptions gui_local_control_options;
+    bool gui_local_control_configured = false;
+    GuiLocalControlWatchState gui_local_control_watch;
     if (!gui_local_control_disabled()) {
         orange::control::LocalControlServerOptions control_options;
         control_options.socket_path = gui_local_control_socket_path();
@@ -5767,9 +5857,12 @@ int main(int /*argc*/, char ** /*args*/) {
                 return answer.effect;
             };
         std::string control_error;
+        gui_local_control_options = control_options;
+        gui_local_control_configured = true;
         if (!gui_local_control_server.Start(control_options, &control_error)) {
             std::cerr << "[GUI][local_control] failed to start: "
                       << control_error << std::endl;
+            syslog(LOG_ERR, "orange GUI local control failed to start: %s", control_error.c_str());
         }
     } else {
         std::cout << "[GUI][local_control] disabled by environment" << std::endl;
@@ -6619,6 +6712,13 @@ int main(int /*argc*/, char ** /*args*/) {
                 std::cout << "[GUI][signal] teardown did not complete within 120 s; closing the window anyway" << std::endl;
                 glfwSetWindowShouldClose(window->render_target, GLFW_TRUE);
             }
+        }
+        if (gui_local_control_configured) {
+            gui_supervise_local_control_server(
+                &gui_local_control_server,
+                gui_local_control_options,
+                gui_local_control_event_log_path,
+                &gui_local_control_watch);
         }
         if (gui_local_control_server.running()) {
             gui_local_control_server.UpdateStatus(

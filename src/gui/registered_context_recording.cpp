@@ -72,6 +72,12 @@ recording::SubjectReferencesConfig SubjectReferencesForStream() {
     if (!subject_error.empty()) throw std::runtime_error("GUI subject references: " + subject_error);
     return subject_references;
 }
+bool citrus_control_socket_up = true;
+std::string citrus_control_socket_detail;
+void SetCitrusControlSocketStatus(bool up, const std::string& detail) {
+    citrus_control_socket_up = up;
+    citrus_control_socket_detail = detail;
+}
 void SetSubjectCrossCheckResult(const std::vector<std::string>& mismatches, bool citrus_declared) {
     subject_cross_check_mismatches = mismatches;
     subject_cross_check_ran = citrus_declared;
@@ -271,6 +277,15 @@ void RenderSubjectReferenceSelection(bool locked, const std::vector<std::string>
                            intent == "stimulus_experiment" ? "required"
                            : intent == "recording_only"    ? "not applicable"
                                                            : "impossible, Record will be refused");
+    }
+    if (!citrus_control_socket_detail.empty()) {
+        if (citrus_control_socket_up)
+            ImGui::TextWrapped("Citrus control socket: listening (%s).", citrus_control_socket_detail.c_str());
+        else
+            ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.25f, 1.0f),
+                               "Citrus control socket DOWN: %s. Citrus cannot stop this recording or deliver its "
+                               "receipts until it is back; Orange is restarting it.",
+                               citrus_control_socket_detail.c_str());
     }
     if (subject_confirmed)
         ImGui::TextWrapped("Confirmed at %s for the next recording.",
