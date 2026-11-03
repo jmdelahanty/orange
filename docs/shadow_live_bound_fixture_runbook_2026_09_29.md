@@ -57,7 +57,6 @@ sudo -n scripts/ptp_stack.sh status            # must be running
 scripts/check_gui_citrus_completion_ready.py --check-socket
 
 ORANGE_CITRUS_BINDING_REQUEST_VERSION=2 \
-ORANGE_CITRUS_OBSERVATION_BINDING_MODE=required \
 ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH=/home/jeremy/citrus/targets/rigs/omnifin0/shadow/shadow.json \
 scripts/run_gui_fourcam_external_ipc_validation.sh \
   --hidden-crop-preview --citrus-display-safe --manual-citrus-completion-control

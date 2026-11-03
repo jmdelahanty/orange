@@ -210,8 +210,8 @@ bool materialize_recording_observation_binding_requests(
     if (!result_out || recording_folder.empty()) {
         return fail(error_out, "recording folder and materialization result are required");
     }
-    if (binding_mode != "required" && binding_mode != "optional") {
-        return fail(error_out, "binding mode must be required or optional");
+    if (binding_mode != "required") {
+        return fail(error_out, "binding requests are only made for binding mode required");
     }
 
     const std::filesystem::path folder = normalized_absolute(recording_folder);

@@ -293,11 +293,6 @@ struct ExperimentSpec {
     // geometry contract selects (exported as ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH
     // when that variable is absent; the environment wins).
     std::string citrus_recording_canvas_config_path;
-    // fixed.citrus_observation_binding_mode: required, optional or not_applicable
-    // (exported as ORANGE_CITRUS_OBSERVATION_BINDING_MODE when that variable is absent;
-    // the environment wins). A run that selects a canvas only for its geometry
-    // (calibration captures) sets not_applicable so it sends Citrus no binding request.
-    std::string citrus_observation_binding_mode;
     // fixed.require_external_ipc: the spec may only record through the external
     // recorder (full frame and crops); validation refuses otherwise and the run
     // exports ORANGE_REQUIRE_EXTERNAL_IPC=1.
@@ -5283,13 +5278,11 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
             orange::session::RecordingObservationBindingRequestMaterialization
                 observation_requests;
             std::string observation_binding_mode_error;
-            std::string observation_binding_mode =
-                orange::session::resolve_recording_observation_binding_mode(
-                    &observation_binding_mode_error);
-            if (!observation_binding_mode.empty()) {
-                observation_binding_mode = orange::recording::ApplyRecordingIntentToBindingMode(
-                    record_folder, observation_binding_mode, &observation_binding_mode_error);
-            }
+            // Citrus binding follows the session's recording intent (2026-11-02):
+            // stimulus_experiment -> required, recording_only -> not_applicable.
+            const std::string observation_binding_mode =
+                orange::recording::BindingModeFromRecordingIntent(
+                    record_folder, &observation_binding_mode_error);
             orange::session::RecordingObservationPreArmResult observation_pre_arm;
             std::string observation_request_error;
             if (observation_binding_mode.empty() ||
@@ -8391,13 +8384,12 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         spec->citrus_recording_canvas_config_path = node.get<std::string>();
     }
     if (fixed.contains("citrus_observation_binding_mode")) {
-        const auto& node = fixed.at("citrus_observation_binding_mode");
-        const std::string mode = node.is_string() ? node.get<std::string>() : std::string();
-        if (mode != "required" && mode != "optional" && mode != "not_applicable") {
-            if (error_out) *error_out = "citrus_observation_binding_mode must be required, optional or not_applicable";
-            return false;
+        // Removed 2026-11-02: the Citrus binding follows the recording intent.
+        if (error_out) {
+            *error_out = "citrus_observation_binding_mode was removed; declare fixed.recording_contexts "
+                         "recording_intent instead (stimulus_experiment binds Citrus, recording_only never does)";
         }
-        spec->citrus_observation_binding_mode = mode;
+        return false;
     }
     if (fixed.contains("external_recorder_native_local_input")) {
         if (error_out) {
@@ -12083,13 +12075,6 @@ int run_local_experiment(const HeadlessCliOptions& options)
         if (!existing || !*existing) {
             setenv("ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH", spec.citrus_recording_canvas_config_path.c_str(), 1);
             std::cout << "[headless] Citrus recording canvas from spec: " << spec.citrus_recording_canvas_config_path << std::endl;
-        }
-    }
-    if (!spec.citrus_observation_binding_mode.empty()) {
-        const char* existing = std::getenv("ORANGE_CITRUS_OBSERVATION_BINDING_MODE");
-        if (!existing || !*existing) {
-            setenv("ORANGE_CITRUS_OBSERVATION_BINDING_MODE", spec.citrus_observation_binding_mode.c_str(), 1);
-            std::cout << "[headless] Citrus observation binding mode from spec: " << spec.citrus_observation_binding_mode << std::endl;
         }
     }
     if (spec.external_recorder_owner_push_chunk_bytes > 0) {

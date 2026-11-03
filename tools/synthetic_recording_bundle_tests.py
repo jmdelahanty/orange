@@ -32,7 +32,6 @@ def run(binary: Path, out: Path, rig: Path, *extra: str) -> dict:
            "--recording-id", out.name, *(f for c in CAMERAS for f in ("--camera", c)), *extra]
     env = dict(os.environ)
     env.pop("ORANGE_CITRUS_BINDING_REQUEST_VERSION", None)
-    env.pop("ORANGE_CITRUS_OBSERVATION_BINDING_MODE", None)
     result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     assert result.returncode == 0, f"{' '.join(cmd)}\n{result.stdout}\n{result.stderr}"
     # The writers log to stdout before the summary; the root label is the summary.
@@ -182,7 +181,7 @@ def main() -> int:
         # Bound, subtype-free (context v2), request v2, with the placeholder manifest.
         out = root / "synthetic_bound_v2"
         summary = run(binary, out, root / "rig_a", "--intent", "stimulus_experiment",
-                      "--recording-subtype", "omit", "--binding-mode", "required",
+                      "--recording-subtype", "omit",
                       "--request-version", "2", "--manifest")
         check_bundle(out, summary, expect_subtype=False, expect_requests=True, request_version=2)
         manifest = load(out / "recording_session.json")
@@ -207,7 +206,7 @@ def main() -> int:
         # Bound, request v1 (default): the request carries no context field.
         out3 = root / "synthetic_bound_v1"
         summary3 = run(binary, out3, root / "rig_c", "--intent", "stimulus_experiment",
-                       "--recording-subtype", "dish_stimulus", "--binding-mode", "optional")
+                       "--recording-subtype", "dish_stimulus")
         check_bundle(out3, summary3, expect_subtype=True, expect_requests=True, request_version=1)
         for row in summary3["observation_binding_requests"]["requests"]:
             assert "recording_context" not in load(out3 / row["relative_path"])["contract"]

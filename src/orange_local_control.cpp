@@ -241,6 +241,7 @@ std::string recording_stop_ack_state(
     }
     if (snapshot.last_event == "ignored_disabled" ||
         snapshot.last_event == "ignored_not_recording" ||
+        snapshot.last_event == "ignored_not_citrus_bound" ||
         snapshot.last_event == "cancelled_recording_inactive") {
         return "ignored";
     }

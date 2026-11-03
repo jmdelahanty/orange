@@ -100,13 +100,14 @@ targets/release/synthetic_recording_bundle \
   --fixture-rig /tmp/orange_synthetic_rig_20260926 \
   --camera 2010093 --camera 2010094 --camera 2010095 --camera 2010096 \
   --intent stimulus_experiment --recording-subtype omit --behavior-mode embedded \
-  --binding-mode required --request-version 2 --manifest
+  --request-version 2 --manifest
 ```
 
 `--recording-subtype omit` (or absent) emits `citrus.parent_recording_context`
 version 2 without a subtype; an explicit subtype emits version 1.
-`--intent recording_only` produces no binding requests (mode
-`not_applicable`). `--copy-images` also copies image evidence (none in the
+The binding mode follows `--intent` as in production (2026-11-02):
+`stimulus_experiment` seals `required` requests, `recording_only` produces no
+binding requests (mode `not_applicable`). `--copy-images` also copies image evidence (none in the
 fixture rig). Timestamps and `source_version` differ between runs by design;
 reproducibility means the same inputs produce the same structure, statuses,
 file set and declared-checksum verification, not byte-identical snapshots.
@@ -120,7 +121,7 @@ by default) runs the two production steps that follow the bundle:
 # Orange -> Citrus: send the sealed requests to Citrus's local-control socket,
 # persist acceptances + the create-once pre-arm decision (idempotent replay).
 targets/release/recording_observation_binding_cli prearm \
-  --folder <bundle> --binding-mode required --request-version 2 \
+  --folder <bundle> --request-version 2 \
   --socket /tmp/orange_local_control.sock [--timeout-ms 2000]
 
 # Citrus -> Orange: after the H5s are closed and the receipts sealed,
@@ -129,8 +130,7 @@ targets/release/recording_observation_binding_cli finalize \
   --folder <bundle> --receipts <params.json>
 ```
 
-`--binding-mode` must equal the mode the bundle's requests were sealed with
-(a different one is refused as an evidence mismatch). `finalize` validates
+`prearm` takes the binding mode from the bundle's frozen intent. `finalize` validates
 every receipt against the immutable request/acceptance chain, verifies the
 closed H5 bytes, writes the create-once receipts and
 `recording_observation_bindings/finalized_collection.json`, and refreshes the
@@ -142,8 +142,7 @@ Exit codes are the contract a runner should rely on, together with the JSON:
 - `prearm`: `0` only when every request was accepted (lifecycle
   `accepted_pending_finalization` with one acceptance per request) or the mode
   is `not_applicable`; `3` when a decision was written but the session is
-  unbound (rejections, handshake not completed, transport failure), whether
-  or not Orange would allow arming in optional mode; `1` when no decision
+  unbound (rejections, handshake not completed, transport failure); `1` when no decision
   could be produced (evidence mismatch, malformed folder).
 - `finalize`: `0` only when the finalized collection is written or verified
   with `binding_status = bound` and the manifest projection refreshed; `1`

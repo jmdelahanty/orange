@@ -221,18 +221,14 @@ void test_intent_binding_mode_coupling()
         folder.write("recording_snapshot_start.json", {{"session", {{"recording_contexts", orange::recording::EmittedRecordingContextsJson(r)}}}});
     };
     std::string error;
-    // no frozen block: unchanged
-    EXPECT(orange::recording::ApplyRecordingIntentToBindingMode(folder.path.string(), "optional", &error) == "optional" && error.empty());
+    // No frozen block: no intent declared, so no binding mode and the start is refused.
+    EXPECT(orange::recording::BindingModeFromRecordingIntent(folder.path.string(), &error).empty());
+    EXPECT(error.find("no recording intent declared") != std::string::npos);
     freeze("recording_only");
-    EXPECT(orange::recording::ApplyRecordingIntentToBindingMode(folder.path.string(), "optional", &error) == "not_applicable");
-    EXPECT(orange::recording::ApplyRecordingIntentToBindingMode(folder.path.string(), "not_applicable", &error) == "not_applicable");
     error.clear();
-    EXPECT(orange::recording::ApplyRecordingIntentToBindingMode(folder.path.string(), "required", &error).empty());
-    EXPECT(error.find("recording_only") != std::string::npos);
+    EXPECT(orange::recording::BindingModeFromRecordingIntent(folder.path.string(), &error) == "not_applicable" && error.empty());
     freeze("stimulus_experiment");
-    error.clear();
-    EXPECT(orange::recording::ApplyRecordingIntentToBindingMode(folder.path.string(), "required", &error) == "required" && error.empty());
-    EXPECT(orange::recording::ApplyRecordingIntentToBindingMode(folder.path.string(), "optional", &error) == "optional");
+    EXPECT(orange::recording::BindingModeFromRecordingIntent(folder.path.string(), &error) == "required" && error.empty());
 }
 
 }  // namespace

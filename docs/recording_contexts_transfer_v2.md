@@ -69,10 +69,9 @@ GUI: app config `recording.contexts`. Headless: experiment spec
    verbatim to `recording_contexts`. A manifest that already holds a different
    block, or a block without a frozen source, is refused. Clip manifests are
    not touched.
-3. Intent versus Citrus binding: `recording_only` forces the observation
-   binding mode to `not_applicable` (default env `optional`), and refuses the
-   start if `ORANGE_CITRUS_OBSERVATION_BINDING_MODE=required` was set
-   explicitly. `stimulus_experiment` leaves the mode as configured. Carrying
+3. Intent decides the Citrus binding (2026-11-02): `stimulus_experiment` is
+   `required`, `recording_only` is `not_applicable`, and a session with no
+   declared intent is refused. There is no environment override. Carrying
    the context to Citrus before capture (binding request v2) is separate
    joint work.
 

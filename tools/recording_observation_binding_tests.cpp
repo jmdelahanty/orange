@@ -289,7 +289,7 @@ void test_request_artifact_materialization_and_tamper_gates()
     orange::session::RecordingObservationBindingRequestMaterialization result;
     std::string error;
     require(orange::session::materialize_recording_observation_binding_requests(
-                root.string(), "optional", "2026-08-13T16:00:00Z",
+                root.string(), "required", "2026-08-13T16:00:00Z",
                 &result, &error),
             "request artifact materialization failed: " + error);
     require(result.status == "materialized" && result.artifacts.size() == 2,
@@ -321,7 +321,7 @@ void test_request_artifact_materialization_and_tamper_gates()
 
     orange::session::RecordingObservationBindingRequestMaterialization repeated;
     require(orange::session::materialize_recording_observation_binding_requests(
-                root.string(), "optional", "2099-01-01T00:00:00Z",
+                root.string(), "required", "2099-01-01T00:00:00Z",
                 &repeated, &error),
             "idempotent request verification should pass: " + error);
     require(repeated.collection_sha256 == result.collection_sha256,
@@ -337,7 +337,7 @@ void test_request_artifact_materialization_and_tamper_gates()
         permission_error);
     require(!permission_error, "could not make request artifact writable for test");
     require(!orange::session::materialize_recording_observation_binding_requests(
-                root.string(), "optional", "2026-08-13T16:00:00Z",
+                root.string(), "required", "2026-08-13T16:00:00Z",
                 &repeated, &error),
             "writable request artifact must fail closed");
     require(error.find("writable") != std::string::npos,
@@ -354,9 +354,9 @@ void test_request_artifact_unavailable_and_contradictory_geometry()
     orange::session::RecordingObservationBindingRequestMaterialization result;
     std::string error;
     require(orange::session::materialize_recording_observation_binding_requests(
-                root.string(), "optional", "2026-08-13T16:00:00Z",
+                root.string(), "required", "2026-08-13T16:00:00Z",
                 &result, &error),
-            "Orange-only optional materialization should remain available: " + error);
+            "unconfigured geometry must report unavailable, not fail: " + error);
     require(result.status == "unavailable" && result.artifacts.empty() &&
                 result.reason == "citrus_canvas_not_selected",
             "unconfigured Citrus geometry must not fabricate an edge request");
@@ -366,7 +366,7 @@ void test_request_artifact_unavailable_and_contradictory_geometry()
     contradictory["cameras"]["2010095"]["camera_serial"] = "2010096";
     root = make_materialization_fixture(contradictory);
     require(!orange::session::materialize_recording_observation_binding_requests(
-                root.string(), "optional", "2026-08-13T16:00:00Z",
+                root.string(), "required", "2026-08-13T16:00:00Z",
                 &result, &error),
             "contradictory recording-bound camera identity must fail closed");
     require(error.find("mismatched camera") != std::string::npos,
@@ -649,13 +649,27 @@ void test_prearm_rejects_non_atomic_or_inconsistent_batch()
     std::filesystem::remove_all(root);
 }
 
-void test_prearm_required_and_optional_transport_failure_policy()
+void test_prearm_transport_failure_refuses_arm()
 {
     const auto unavailable = [](const json&, json*, std::string* error) {
         if (error) *error = "fixture_transport_unavailable";
         return false;
     };
-    for (const std::string mode : {"required", "optional"}) {
+    // There is no optional mode (2026-11-02): it is refused before any request.
+    {
+        const auto root = make_materialization_fixture(resolved_geometry());
+        orange::session::RecordingObservationBindingRequestMaterialization requests;
+        orange::session::RecordingObservationPreArmResult result;
+        std::string error;
+        require(!orange::session::prepare_recording_observation_pre_arm(
+                    root.string(), "optional", "2026-08-13T16:00:00Z",
+                    &requests, &result, &error, unavailable),
+                "optional binding mode must be refused");
+        require(error.find("required or not_applicable") != std::string::npos,
+                "optional refusal should name the two modes: " + error);
+        std::filesystem::remove_all(root);
+    }
+    for (const std::string mode : {"required"}) {
         const auto root = make_materialization_fixture(resolved_geometry());
         orange::session::RecordingObservationBindingRequestMaterialization requests;
         orange::session::RecordingObservationPreArmResult result;
@@ -668,8 +682,8 @@ void test_prearm_required_and_optional_transport_failure_policy()
         require(result.lifecycle_status == "unbound" &&
                     result.reason == "handshake_not_completed" &&
                     result.transport_attempted &&
-                    result.arm_allowed == (mode == "optional"),
-                mode + " transport failure policy is incorrect");
+                    !result.arm_allowed,
+                mode + " transport failure must refuse the arm");
         require(result.handshake_error == "fixture_transport_unavailable",
                 mode + " transport failure must keep the transport error for the operator");
         std::filesystem::remove_all(root);
@@ -693,7 +707,7 @@ void test_prearm_keeps_citrus_request_refusal_text()
         *response = {{"ok", false}};
         return true;
     };
-    for (const std::string mode : {"required", "optional"}) {
+    for (const std::string mode : {"required"}) {
         for (const bool with_text : {true, false}) {
             const auto root = make_materialization_fixture(resolved_geometry());
             orange::session::RecordingObservationBindingRequestMaterialization requests;
@@ -711,7 +725,7 @@ void test_prearm_keeps_citrus_request_refusal_text()
                         result.transport_attempted &&
                         result.acceptances.empty() &&
                         result.context_rejections.empty() &&
-                        result.arm_allowed == (mode == "optional"),
+                        !result.arm_allowed,
                     mode + " refused handshake policy is incorrect");
             require(result.handshake_error == (with_text ? refusal : std::string()),
                     mode + " refused handshake must keep Citrus's error text verbatim");
@@ -1121,14 +1135,6 @@ void test_prearm_subject_cross_check()
         require(check.at("mismatch_count") == 0 && check.at("arm_refused") == false &&
                     check.at("policy") == "refuse_arm_on_mismatch_interim_v1",
                 "a matching cross-check records the interim policy and no refusal");
-    }
-    // Interim policy: a mismatch refuses the arm even in optional mode.
-    {
-        orange::session::RecordingObservationPreArmResult optional_result;
-        run_prearm_subject_cross_check("19234_3", "optional", &optional_result, &start_before);
-        require(!optional_result.arm_allowed && optional_result.lifecycle_status == "refused_subject_mismatch" &&
-                    optional_result.reason == "subject_declaration_mismatch",
-                "a subject mismatch must refuse the arm in optional mode");
     }
     const auto root = run_prearm_subject_cross_check("19234_3", "required", &result, &start_before);
     require(!result.arm_allowed && result.lifecycle_status == "refused_subject_mismatch" &&
@@ -2120,7 +2126,7 @@ int main()
         test_final_receipt_path_must_match_acceptance();
         test_prearm_required_acceptance_is_persisted_and_idempotent();
         test_prearm_rejects_non_atomic_or_inconsistent_batch();
-        test_prearm_required_and_optional_transport_failure_policy();
+        test_prearm_transport_failure_refuses_arm();
         test_prearm_keeps_citrus_request_refusal_text();
         test_prearm_not_applicable_never_contacts_citrus();
         test_request_v2_carries_frozen_recording_context();

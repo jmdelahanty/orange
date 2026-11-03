@@ -618,6 +618,14 @@ void test_successful_start_flips_record_video_at_completion()
     CameraControl camera_control;
     orange::session::RecordingSessionState state;
     state.recording_sink_mode = "external_ipc";
+    // A recording must declare its intent (2026-11-02); this stub run has no
+    // Citrus, so recording_only.
+    state.recording_contexts = orange::recording::RecordingContextsConfig::Parse(
+        {{"schema_version", 1},
+         {"default", {{"recording_type", "behavior"},
+                      {"behavior_mode", "free"},
+                      {"recording_intent", "recording_only"},
+                      {"data_origin", "acquired"}}}});
     CameraParams camera = make_camera_params();
     CameraEachSelect select;
     select.record = true;
@@ -727,11 +735,11 @@ void test_successful_start_flips_record_video_at_completion()
             "successful supervisor startup must preserve recording-start"
             " snapshot extensions");
     require(completed_snapshot.at("observation_binding_requests").at(
-                "status") == "unavailable" &&
+                "status") == "not_applicable" &&
                 completed_snapshot.at("observation_binding_requests").at(
-                    "reason") == "citrus_canvas_not_selected",
-            "completion must record that no Citrus request was fabricated for"
-            " an unconfigured optional recording");
+                    "reason") == "orange_recording_only",
+            "completion must record that a recording_only session makes no"
+            " Citrus request");
     const auto& immutable_reference =
         completed_snapshot.at("immutable_recording_start_snapshot");
     require(immutable_reference.at("role") ==

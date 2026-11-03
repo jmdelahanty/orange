@@ -624,16 +624,11 @@ request and does not block an optional Orange recording; contradictory or
 tampered recording-bound evidence fails activation closed.
 
 Orange then performs one bounded, atomic pre-arm transaction for the complete
-request collection. Configure its policy with:
-
-```text
-ORANGE_CITRUS_OBSERVATION_BINDING_MODE=required|optional|not_applicable
-```
-
-The default is `optional`. `required` rejects arm unless Citrus accepts every
-selected edge; `optional` records a controlled `unbound` state when Citrus is
-unavailable or rejects the request; `not_applicable` deliberately skips all
-Citrus communication for an Orange-only recording. The socket defaults to the
+request collection. Its policy follows the recording intent (2026-11-02):
+`stimulus_experiment` is `required`, which rejects arm unless Citrus accepts
+every selected edge; `recording_only` is `not_applicable`, which skips all
+Citrus communication. A session with no declared intent is refused. There is
+no `optional` mode and no environment override. The socket defaults to the
 normal Citrus local-control socket and can be overridden with
 `ORANGE_CITRUS_OBSERVATION_BINDING_SOCKET`; the bounded timeout defaults to
 1500 ms and can be changed with

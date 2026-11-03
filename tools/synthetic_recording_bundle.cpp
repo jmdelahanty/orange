@@ -78,7 +78,6 @@ struct Options {
     std::string recording_subtype;                      // empty = omitted (context v2)
     std::string behavior_mode = "embedded";
     std::string recording_intent = "stimulus_experiment";
-    std::string binding_mode;                           // empty = derived from intent
     int request_version = 0;                            // 0 = leave env alone
     std::string captured_at_utc;                        // empty = now
     bool manifest = false;
@@ -100,7 +99,6 @@ struct Options {
         "         [--recording-type <label>] [--recording-subtype <label>|omit]\n"
         "         [--behavior-mode free|embedded|none]\n"
         "         [--intent stimulus_experiment|recording_only]\n"
-        "         [--binding-mode required|optional|not_applicable]\n"
         "         [--request-version 1|2] [--manifest] [--placeholder-frames N]\n"
         "         [--copy-images] [--raster WxH] [--frame-rate N]\n\n"
         "Writes a clearly labelled synthetic recording folder with Orange's production\n"
@@ -136,7 +134,6 @@ Options parse_args(int argc, char** argv)
         else if (a == "--recording-subtype") { o.recording_subtype = need(i, "--recording-subtype"); if (o.recording_subtype == "omit") o.recording_subtype.clear(); }
         else if (a == "--behavior-mode") o.behavior_mode = need(i, "--behavior-mode");
         else if (a == "--intent") o.recording_intent = need(i, "--intent");
-        else if (a == "--binding-mode") o.binding_mode = need(i, "--binding-mode");
         else if (a == "--request-version") o.request_version = std::stoi(need(i, "--request-version"));
         else if (a == "--manifest") o.manifest = true;
         else if (a == "--placeholder-frames") o.placeholder_frames = std::stoi(need(i, "--placeholder-frames"));
@@ -608,8 +605,8 @@ int main(int argc, char** argv)
         }
 
         // 6. Observation binding requests (Orange's sealed binding inputs for Citrus).
-        std::string binding_mode = o.binding_mode.empty() ? "optional" : o.binding_mode;
-        binding_mode = orange::recording::ApplyRecordingIntentToBindingMode(o.out.string(), binding_mode, &error);
+        // The binding mode follows the declared intent, as in production.
+        const std::string binding_mode = orange::recording::BindingModeFromRecordingIntent(o.out.string(), &error);
         if (binding_mode.empty()) throw std::runtime_error("binding mode: " + error);
         json requests_summary = {{"binding_mode", binding_mode}, {"status", "not_applicable"}};
         if (binding_mode != "not_applicable") {

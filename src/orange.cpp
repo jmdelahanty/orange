@@ -1364,6 +1364,39 @@ void gui_drain_local_control_commands(
             continue;
         }
 
+        if (command.method == "citrus_completion") {
+            // Citrus can only end a recording it is bound to: a recording_only
+            // session (binding not_applicable) is not Citrus's to stop.
+            std::string folder;
+            {
+                std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
+                folder = camera_control->recording_folder;
+            }
+            std::string mode_error;
+            const std::string mode =
+                orange::recording::BindingModeFromRecordingIntent(folder, &mode_error);
+            if (mode != "required") {
+                gui_note_local_control_stop_event(stop_scheduler, "ignored_not_citrus_bound");
+                std::cout << "[GUI][local_control] recording stop ignored"
+                          << " method=" << command.method
+                          << " request_id=" << command.request_id
+                          << " reason=recording_not_citrus_bound binding_mode="
+                          << (mode.empty() ? "none" : mode) << std::endl;
+                gui_log_local_control_event(
+                    event_log_path,
+                    {
+                        {"event", "recording_stop_ignored"},
+                        {"method", command.method},
+                        {"request_id", command.request_id},
+                        {"operation_id", command.operation_id},
+                        {"command_source", command.source},
+                        {"reason", "recording_not_citrus_bound"},
+                        {"received_at_utc", command.received_at_utc},
+                    });
+                continue;
+            }
+        }
+
         const double default_grace_seconds =
             command.method == "stop_recording" ? 0.0 : 10.0;
         const double grace_seconds =
@@ -4248,13 +4281,11 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
             return GuiRecordingStartDispatch::kFailed;
         }
         std::string observation_binding_mode_error;
-        std::string observation_binding_mode =
-            orange::session::resolve_recording_observation_binding_mode(
-                &observation_binding_mode_error);
-        if (!observation_binding_mode.empty()) {
-            observation_binding_mode = orange::recording::ApplyRecordingIntentToBindingMode(
-                prepared.recording_folder, observation_binding_mode, &observation_binding_mode_error);
-        }
+        // Citrus binding follows the session's recording intent (2026-11-02):
+        // stimulus_experiment -> required, recording_only -> not_applicable.
+        const std::string observation_binding_mode =
+            orange::recording::BindingModeFromRecordingIntent(
+                prepared.recording_folder, &observation_binding_mode_error);
         orange::session::RecordingObservationBindingRequestMaterialization
             observation_requests;
         orange::session::RecordingObservationPreArmResult observation_pre_arm;

@@ -3809,13 +3809,11 @@ RecordingRunStartResult complete_recording_run(
     RecordingObservationBindingRequestMaterialization observation_requests;
     RecordingObservationPreArmResult observation_pre_arm;
     std::string observation_binding_mode_error;
-    std::string observation_binding_mode =
-        resolve_recording_observation_binding_mode(
-            &observation_binding_mode_error);
-    if (!observation_binding_mode.empty()) {
-        observation_binding_mode = orange::recording::ApplyRecordingIntentToBindingMode(
-            prepared.recording_folder, observation_binding_mode, &observation_binding_mode_error);
-    }
+    // Citrus binding follows the session's recording intent (2026-11-02):
+    // stimulus_experiment -> required, recording_only -> not_applicable.
+    const std::string observation_binding_mode =
+        orange::recording::BindingModeFromRecordingIntent(
+            prepared.recording_folder, &observation_binding_mode_error);
     std::string observation_request_error;
     if (observation_binding_mode.empty() ||
         !prepare_recording_observation_pre_arm(

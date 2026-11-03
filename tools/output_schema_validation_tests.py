@@ -35,7 +35,7 @@ def main() -> int:
             [str(binary), "--out", str(out), "--fixture-rig", str(Path(tmp) / "rig"),
              "--recording-id", "bundle", "--camera", "2010093", "--camera", "2010094",
              "--intent", "stimulus_experiment", "--recording-subtype", "omit",
-             "--binding-mode", "required", "--request-version", "2", "--manifest"],
+             "--request-version", "2", "--manifest"],
             capture_output=True, text=True, check=False)
         if generated.returncode != 0:
             print(generated.stdout[-2000:], generated.stderr[-2000:])

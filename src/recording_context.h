@@ -88,15 +88,15 @@ void ApplyRecordingContextsGate(const std::string& recording_folder, nlohmann::j
 std::optional<std::map<std::string, RecordingContext>> ReadFrozenRecordingContexts(
     const std::string& recording_folder, std::string* error_out);
 
-// Citrus observation binding mode versus the frozen intent:
-// recording_only parents must never bind (Citrus refuses the transfer).
-// Returns the binding mode to use, or an empty string with error_out set.
-//   intent recording_only + mode required     -> error (explicit conflict)
-//   intent recording_only + mode optional     -> "not_applicable"
-//   intent recording_only + not_applicable    -> unchanged
-//   no frozen block / stimulus_experiment     -> unchanged
-std::string ApplyRecordingIntentToBindingMode(const std::string& recording_folder,
-                                              const std::string& binding_mode,
-                                              std::string* error_out);
+// The Citrus observation binding mode of a recording session, from the one
+// recording_intent its frozen recording contexts carry (Jeremy, 2026-11-02):
+//   stimulus_experiment -> "required": Citrus must accept every binding before
+//                          arm, or the start is refused.
+//   recording_only      -> "not_applicable": no Citrus binding request at all.
+// A session that froze no recording contexts declared no intent and is refused
+// (empty string, error_out set). There is no optional mode and no environment
+// override.
+std::string BindingModeFromRecordingIntent(const std::string& recording_folder,
+                                           std::string* error_out);
 
 }  // namespace orange::recording

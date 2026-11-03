@@ -124,8 +124,8 @@ def test_default_dry_run_builds_live_profile() -> None:
             "profile should bind Orange recording geometry to Shadow",
         )
         require(
-            orange_env["ORANGE_CITRUS_OBSERVATION_BINDING_MODE"] == "required",
-            "profile should fail closed on the Phase-A binding handshake",
+            "ORANGE_CITRUS_OBSERVATION_BINDING_MODE" not in orange_env,
+            "the binding mode follows the recording intent; the profile must not set a mode",
         )
         require(
             orange_env["ORANGE_CITRUS_OBSERVATION_BINDING_SOCKET"]

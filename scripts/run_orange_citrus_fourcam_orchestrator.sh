@@ -109,9 +109,6 @@ Options:
   --citrus-recording-canvas-config <path>
                                   Citrus canvas Orange seals as recording
                                   geometry authority. Defaults to Shadow.
-  --observation-binding-mode <mode>
-                                  required, optional, or not_applicable.
-                                  This acceptance profile defaults to required.
   --observation-binding-timeout-ms <ms>
                                   Bounded Orange-to-Citrus pre-arm timeout.
   --skip-observation-binding-validation
@@ -212,7 +209,6 @@ CITRUS_AUTORUN_START_DELAY_SECONDS="${ORANGE_CITRUS_CITRUS_AUTORUN_START_DELAY_S
 CITRUS_RUN_SECONDS="${ORANGE_CITRUS_CITRUS_RUN_SECONDS:-}"
 DAILY_REGISTRATION_MODE="${ORANGE_CITRUS_DAILY_REGISTRATION_MODE:-preserve}"
 CITRUS_RECORDING_CANVAS_CONFIG="${ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH:-/home/jeremy/citrus/targets/rigs/omnifin0/shadow/shadow.json}"
-OBSERVATION_BINDING_MODE="${ORANGE_CITRUS_OBSERVATION_BINDING_MODE:-required}"
 OBSERVATION_BINDING_TIMEOUT_MS="${ORANGE_CITRUS_OBSERVATION_BINDING_TIMEOUT_MS:-5000}"
 OBSERVATION_BINDING_VALIDATION_ENABLED="${ORANGE_CITRUS_OBSERVATION_BINDING_VALIDATION_ENABLED:-1}"
 OBSERVATION_BINDING_VALIDATION_JSON="${ORANGE_CITRUS_OBSERVATION_BINDING_VALIDATION_JSON:-}"
@@ -536,12 +532,6 @@ while [[ $# -gt 0 ]]; do
       CITRUS_RECORDING_CANVAS_CONFIG="$1"
       shift
       ;;
-    --observation-binding-mode)
-      shift
-      require_value "--observation-binding-mode" "$#"
-      OBSERVATION_BINDING_MODE="$1"
-      shift
-      ;;
     --observation-binding-timeout-ms)
       shift
       require_value "--observation-binding-timeout-ms" "$#"
@@ -632,14 +622,6 @@ case "${STOP_POLICY}" in
     exit 2
     ;;
 esac
-case "${OBSERVATION_BINDING_MODE}" in
-  required|optional|not_applicable)
-    ;;
-  *)
-    echo "--observation-binding-mode must be required, optional, or not_applicable" >&2
-    exit 2
-    ;;
-esac
 case "${DAILY_REGISTRATION_MODE}" in
   preserve|base_only)
     ;;
@@ -653,17 +635,13 @@ is_positive_integer "${OBSERVATION_BINDING_TIMEOUT_MS}" &&
     echo "--observation-binding-timeout-ms must be an integer from 50 through 5000" >&2
     exit 2
   }
-if [[ "${OBSERVATION_BINDING_MODE}" != "not_applicable" ]]; then
-  [[ -f "${CITRUS_RECORDING_CANVAS_CONFIG}" ]] || {
-    echo "Missing Citrus recording canvas config: ${CITRUS_RECORDING_CANVAS_CONFIG}" >&2
-    exit 1
-  }
-fi
-if [[ "${OBSERVATION_BINDING_VALIDATION_ENABLED}" == "1" &&
-      "${OBSERVATION_BINDING_MODE}" != "required" ]]; then
-  echo "Phase-A binding validation requires --observation-binding-mode required; use --skip-observation-binding-validation for another policy" >&2
-  exit 2
-fi
+# Orange's binding mode follows the recording intent (stimulus_experiment ->
+# required, from the app config's recording.recording_contexts), so an
+# orchestrated Citrus run always binds and needs the canvas.
+[[ -f "${CITRUS_RECORDING_CANVAS_CONFIG}" ]] || {
+  echo "Missing Citrus recording canvas config: ${CITRUS_RECORDING_CANVAS_CONFIG}" >&2
+  exit 1
+}
 if [[ -z "${ORANGE_STOP_GRACE_SECONDS}" ]]; then
   case "${STOP_POLICY}" in
     citrus_completion|citrus_completion_notify)
@@ -682,7 +660,6 @@ if [[ -n "${ORANGE_RECORD_SECONDS}" ]]; then
 fi
 ORANGE_PROFILE_ENV+=(
   "ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH=${CITRUS_RECORDING_CANVAS_CONFIG}"
-  "ORANGE_CITRUS_OBSERVATION_BINDING_MODE=${OBSERVATION_BINDING_MODE}"
   "ORANGE_CITRUS_OBSERVATION_BINDING_SOCKET=${CITRUS_SOCKET}"
   "ORANGE_CITRUS_OBSERVATION_BINDING_TIMEOUT_MS=${OBSERVATION_BINDING_TIMEOUT_MS}"
 )

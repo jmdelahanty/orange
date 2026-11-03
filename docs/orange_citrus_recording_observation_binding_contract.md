@@ -143,13 +143,19 @@ reuse the same observation identity.
 
 ## Binding modes
 
-An Orange recording declares one mode for each observation edge:
+An Orange recording uses one mode for every observation edge. Since
+2026-11-02 the mode follows the session's recording intent and nothing else
+(`recording::BindingModeFromRecordingIntent`):
 
-| Mode | Meaning | Arm behavior |
+| Intent | Mode | Arm behavior |
 | --- | --- | --- |
-| `required` | The experiment is Citrus-backed and this edge must be accepted before experiment activation | Reject experiment arm if acceptance is absent or rejected |
-| `optional` | Citrus association is desirable but absence must not block this acquisition | Recording may proceed with an explicit unbound state |
-| `not_applicable` | This is intentionally an Orange-only recording | Do not create or send a Citrus binding request |
+| `stimulus_experiment` | `required` | Reject experiment arm if any acceptance is absent or rejected |
+| `recording_only` | `not_applicable` | Do not create or send a Citrus binding request; Citrus cannot bind or stop the recording |
+| none declared | none | Record start refused |
+
+Orange no longer produces `optional`, and `ORANGE_CITRUS_OBSERVATION_BINDING_MODE`
+was removed. The request schemas still allow `optional`, since published
+schemas don't change, so recordings made before 2026-11-02 may carry it.
 
 `not_applicable` must never be used merely because Citrus was unavailable.
 
@@ -375,11 +381,11 @@ acceptance path. It launches both GUI processes under the workstation's existing
 session, but all lifecycle control is performed through their local-control
 sockets; no operator interaction with either GUI is required after launch.
 
-The four-camera profile defaults to:
+The four-camera profile defaults to (the binding mode comes from the app
+config's `stimulus_experiment` intent):
 
 ```text
 ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH=/home/jeremy/citrus/targets/rigs/omnifin0/shadow/shadow.json
-ORANGE_CITRUS_OBSERVATION_BINDING_MODE=required
 ORANGE_CITRUS_OBSERVATION_BINDING_SOCKET=/tmp/citrus_local_control.sock
 ORANGE_CITRUS_OBSERVATION_BINDING_TIMEOUT_MS=5000
 ```
@@ -474,8 +480,8 @@ Implemented in Orange now:
   with one exact request collection defining the atomic selected-arena set;
 - create-once exact Citrus acceptance artifacts and a create-once pre-arm
   decision;
-- explicit `required`, `optional`, and `not_applicable` policy, defaulting to
-  `optional` unless `ORANGE_CITRUS_OBSERVATION_BINDING_MODE` is set;
+- `required` and `not_applicable` policy from the recording intent
+  (`optional` and its environment variable were removed on 2026-11-02);
 - Citrus validation of the immutable collection, request envelopes, recording
   snapshot and geometry bytes, selected rig/canvas/arena, exactly one active
   camera for each selected arena, protocol filename, and output containment;
@@ -509,15 +515,14 @@ Phase-B acceptance.
 Operational controls:
 
 ```text
-ORANGE_CITRUS_OBSERVATION_BINDING_MODE=required|optional|not_applicable
 ORANGE_CITRUS_OBSERVATION_BINDING_SOCKET=/tmp/citrus_local_control.sock
 ORANGE_CITRUS_OBSERVATION_BINDING_TIMEOUT_MS=1500
 ```
 
-`required` blocks Orange arm unless every selected edge is accepted.
-`optional` persists a controlled unbound reason and permits Orange recording.
-`not_applicable` does not contact Citrus and is reserved for intentionally
-Orange-only recordings.
+The mode follows the recording intent. `required` (`stimulus_experiment`)
+blocks Orange arm unless every selected edge is accepted. `not_applicable`
+(`recording_only`) does not contact Citrus, and the GUI ignores a Citrus
+completion stop for such a recording (`recording_not_citrus_bound`).
 
 ## Request v2 and acceptance v2: parent recording context (opt-in)
 

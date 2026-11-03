@@ -262,6 +262,16 @@ void RenderSubjectReferenceSelection(bool locked, const std::vector<std::string>
     } else if (subject_cross_check_ran) {
         ImGui::TextWrapped("Current recording: Citrus's dish declarations match your confirmed entries.");
     }
+    {
+        // What the confirmed recording will do with Citrus, from the applied intent.
+        const std::string intent =
+            recording_contexts.default_context ? recording_contexts.default_context->recording_intent : std::string();
+        ImGui::TextWrapped("Recording intent: %s. Citrus binding: %s.",
+                           intent.empty() ? "not declared" : intent.c_str(),
+                           intent == "stimulus_experiment" ? "required"
+                           : intent == "recording_only"    ? "not applicable"
+                                                           : "impossible, Record will be refused");
+    }
     if (subject_confirmed)
         ImGui::TextWrapped("Confirmed at %s for the next recording.",
                            subject_confirmation.value("confirmed_at_utc", "").c_str());
@@ -357,12 +367,20 @@ void RenderRecordingContextSelection(bool locked) {
                               ctx.recording_subtype ? ctx.recording_subtype->c_str() : "(no subtype)",
                               ctx.behavior_mode.c_str(), ctx.recording_intent.c_str(), ctx.data_origin.c_str());
     }
+    // The binding the next record start will use, from the applied intent
+    // (recording::BindingModeFromRecordingIntent).
+    const std::string applied_intent =
+        recording_contexts.default_context ? recording_contexts.default_context->recording_intent : std::string();
     if (!recording_contexts.configured())
-        ImGui::TextWrapped("No recording context configured: recording_session.json will carry none and Citrus transfer-v2 will refuse the recording.");
-    else if (ctx_intent == 1)
-        ImGui::TextWrapped("recording_only: no Citrus observation binding for this recording (binding mode not_applicable).");
-    else
-        ImGui::TextWrapped("stimulus_experiment: Citrus binding mode follows ORANGE_CITRUS_OBSERVATION_BINDING_MODE; the context is frozen in the start snapshot and, once the v2 handshake lands, sent to Citrus before capture.");
+        ImGui::TextColored(ImVec4(0.95f, 0.45f, 0.25f, 1.0f),
+                           "Citrus binding: none possible. No recording intent is declared, so Record will be refused.");
+    else if (applied_intent == "recording_only")
+        ImGui::TextWrapped("Citrus binding: not applicable. recording_only never binds Citrus; Citrus cannot attach to "
+                           "this recording.");
+    else if (applied_intent == "stimulus_experiment")
+        ImGui::TextColored(ImVec4(0.30f, 0.75f, 0.65f, 1.0f),
+                           "Citrus binding: required. Citrus must accept the binding before recording starts, or "
+                           "Record is refused. For a recording without Citrus, choose recording_only.");
     if (ctx_subtype[0] == '\0' && recording_contexts.configured())
         ImGui::TextWrapped("No subtype: emitted as citrus.parent_recording_context version 2 (subtype omitted, no default substituted). Citrus and Palette must accept version 2 before a subtype-free recording is transferred.");
     ImGui::TextWrapped("Frozen into the recording start snapshot for exactly the recording cameras; every manifest write carries it unchanged.");

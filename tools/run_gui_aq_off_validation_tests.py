@@ -198,7 +198,6 @@ def test_forwards_recording_observation_binding_environment() -> None:
             print_exec_env=True,
             extra_env={
                 "ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH": str(citrus_config),
-                "ORANGE_CITRUS_OBSERVATION_BINDING_MODE": "required",
                 "ORANGE_CITRUS_OBSERVATION_BINDING_SOCKET": "/tmp/citrus-binding-test.sock",
                 "ORANGE_CITRUS_OBSERVATION_BINDING_TIMEOUT_MS": "5000",
             },
@@ -206,7 +205,6 @@ def test_forwards_recording_observation_binding_environment() -> None:
         require(result.returncode == 0, f"binding env forwarding failed: {result.stderr}")
         for expected in (
             f"ORANGE_CITRUS_RECORDING_CANVAS_CONFIG_PATH={citrus_config}",
-            "ORANGE_CITRUS_OBSERVATION_BINDING_MODE=required",
             "ORANGE_CITRUS_OBSERVATION_BINDING_SOCKET=/tmp/citrus-binding-test.sock",
             "ORANGE_CITRUS_OBSERVATION_BINDING_TIMEOUT_MS=5000",
         ):

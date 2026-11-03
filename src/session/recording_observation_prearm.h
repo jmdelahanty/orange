@@ -62,12 +62,6 @@ using RecordingObservationBindingTransport = std::function<bool(
     nlohmann::json* response_out,
     std::string* error_out)>;
 
-// Resolve required|optional|not_applicable from
-// ORANGE_CITRUS_OBSERVATION_BINDING_MODE. The default remains optional so an
-// ordinary Orange recording is never made Citrus-dependent implicitly.
-std::string resolve_recording_observation_binding_mode(
-    std::string* error_out = nullptr);
-
 // Execute or verify the create-once pre-arm decision. A materialized request
 // collection is sent as one bounded batch so Citrus can assign one shared
 // experiment-group ID atomically. Semantic rejections are persisted as

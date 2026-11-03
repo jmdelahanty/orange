@@ -5,8 +5,10 @@
 // complete the Orange side without compiling ad-hoc clients.
 //
 //   recording_observation_binding_cli prearm --folder <recording>
-//       [--binding-mode required|optional|not_applicable] [--decided-at <utc>]
+//       [--decided-at <utc>]
 //       [--socket <af_unix path>] [--timeout-ms N] [--request-version 1|2]
+//     The binding mode follows the folder's frozen recording intent
+//     (stimulus_experiment -> required, recording_only -> not_applicable).
 //     Materializes (or verifies) the sealed requests, sends the binding batch
 //     to Citrus's local-control socket, persists the acceptances and the
 //     create-once pre-arm decision. Idempotent: a repeat replays the existing
@@ -14,8 +16,7 @@
 //     Exit codes: 0 = every request accepted (lifecycle
 //     accepted_pending_finalization) or mode not_applicable; 3 = a decision was
 //     written but the session is unbound (rejected, handshake not completed,
-//     transport failure), whether or not Orange would allow arming in optional
-//     mode; 1 = no decision could be produced. The JSON result carries the
+//     transport failure); 1 = no decision could be produced. The JSON result carries the
 //     details either way.
 //
 //   recording_observation_binding_cli finalize --folder <recording>
@@ -41,6 +42,7 @@
 //     projection (head + revision_chain). Exit 0 only when bound.
 //
 // No camera, recorder or GUI is involved. See docs/synthetic_recording_bundle.md.
+#include "recording_context.h"
 #include "json.hpp"
 #include "session/recording_observation_finalization.h"
 #include "session/recording_observation_prearm.h"
@@ -62,7 +64,7 @@ using json = nlohmann::json;
     if (!error.empty()) std::cerr << "error: " << error << "\n\n";
     std::cerr <<
         "usage: recording_observation_binding_cli prearm --folder <recording>\n"
-        "           [--binding-mode required|optional|not_applicable] [--decided-at <utc>]\n"
+        "           [--decided-at <utc>]\n"
         "           [--socket <path>] [--timeout-ms N] [--request-version 1|2]\n"
         "       recording_observation_binding_cli finalize --folder <recording> --receipts <params.json>\n"
         "       recording_observation_binding_cli upgrade-receipts --folder <recording> --receipts <params.json>\n"
@@ -94,12 +96,11 @@ json rejections_json(const orange::session::RecordingObservationPreArmResult& re
 
 int run_prearm(int argc, char** argv)
 {
-    std::string folder, binding_mode = "optional", decided_at, socket_path, timeout_ms, request_version;
+    std::string folder, decided_at, socket_path, timeout_ms, request_version;
     for (int i = 2; i < argc; ++i) {
         const std::string a = argv[i];
         auto need = [&]() -> std::string { if (i + 1 >= argc) usage(a + " needs a value"); return argv[++i]; };
         if (a == "--folder") folder = need();
-        else if (a == "--binding-mode") binding_mode = need();
         else if (a == "--decided-at") decided_at = need();
         else if (a == "--socket") socket_path = need();
         else if (a == "--timeout-ms") timeout_ms = need();
@@ -115,7 +116,8 @@ int run_prearm(int argc, char** argv)
     orange::session::RecordingObservationBindingRequestMaterialization requests;
     orange::session::RecordingObservationPreArmResult result;
     std::string error;
-    const bool ok = orange::session::prepare_recording_observation_pre_arm(
+    const std::string binding_mode = orange::recording::BindingModeFromRecordingIntent(folder, &error);
+    const bool ok = !binding_mode.empty() && orange::session::prepare_recording_observation_pre_arm(
         folder, binding_mode, decided_at, &requests, &result, &error);
     // "bound" means every request has an acceptance and the lifecycle is
     // accepted_pending_finalization; a not_applicable session has nothing to bind.

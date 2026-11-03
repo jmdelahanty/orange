@@ -317,12 +317,6 @@ validate_env_item() {
         return 2
       }
       ;;
-    ORANGE_CITRUS_OBSERVATION_BINDING_MODE)
-      [[ "$value" =~ ^(required|optional|not_applicable)$ ]] || {
-        echo "Invalid observation-binding mode: $value" >&2
-        return 2
-      }
-      ;;
     ORANGE_CITRUS_BINDING_REQUEST_VERSION)
       [[ "$value" =~ ^(1|2)$ ]] || {
         echo "Invalid Citrus binding request version: $value" >&2

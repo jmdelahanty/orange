@@ -207,7 +207,16 @@
     "acq_ring_release_log": false,
     "acq_cadence_probe_all": false,
     "external_recorder_full_frame_extra_output_delay": 8,
-    "external_recorder_owner_push_slots": 16
+    "external_recorder_owner_push_slots": 16,
+    "recording_contexts": {
+      "schema_version": 1,
+      "default": {
+        "recording_type": "behavior",
+        "behavior_mode": "free",
+        "recording_intent": "recording_only",
+        "data_origin": "acquired"
+      }
+    }
   },
   "matrix": {
     "codec": [

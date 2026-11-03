@@ -421,7 +421,7 @@ bool parse_existing_decision(
         (result_out->lifecycle_status == "unbound" &&
          expected_binding_mode != "not_applicable" &&
          !any_accepted && !result_out->reason.empty() &&
-         result_out->arm_allowed == (expected_binding_mode == "optional"));
+         !result_out->arm_allowed);
     if (!lifecycle_consistent) {
         return fail(error_out,
                     "existing pre-arm decision lifecycle is inconsistent");
@@ -431,18 +431,6 @@ bool parse_existing_decision(
 
 }  // namespace
 
-std::string resolve_recording_observation_binding_mode(std::string* error_out)
-{
-    const char* raw = std::getenv("ORANGE_CITRUS_OBSERVATION_BINDING_MODE");
-    const std::string mode = raw && raw[0] != '\0' ? raw : "optional";
-    if (mode != "required" && mode != "optional" &&
-        mode != "not_applicable") {
-        fail(error_out,
-             "ORANGE_CITRUS_OBSERVATION_BINDING_MODE must be required, optional, or not_applicable");
-        return {};
-    }
-    return mode;
-}
 
 nlohmann::json recording_observation_pre_arm_decision_reference(
     const RecordingObservationPreArmResult& result)
@@ -476,6 +464,11 @@ bool execute_recording_observation_pre_arm(
     if (error_out) {
         error_out->clear();
     }
+    // The mode comes from the recording intent (BindingModeFromRecordingIntent):
+    // stimulus_experiment binds or refuses, recording_only never binds.
+    if (binding_mode != "required" && binding_mode != "not_applicable") {
+        return fail(error_out, "binding mode must be required or not_applicable, from the recording intent");
+    }
     *result_out = RecordingObservationPreArmResult{};
     result_out->binding_mode = binding_mode;
     const std::filesystem::path folder =
@@ -501,7 +494,7 @@ bool execute_recording_observation_pre_arm(
     } else if (requests.status != "materialized") {
         result_out->lifecycle_status = "unbound";
         result_out->reason = "unavailable_at_recording_start";
-        result_out->arm_allowed = binding_mode == "optional";
+        result_out->arm_allowed = false;
     } else {
         json exact_requests = json::array();
         for (const auto& artifact : requests.artifacts) {
@@ -532,7 +525,7 @@ bool execute_recording_observation_pre_arm(
                         : default_transport(local_request, &response, &transport_error))) {
             result_out->lifecycle_status = "unbound";
             result_out->reason = "handshake_not_completed";
-            result_out->arm_allowed = binding_mode == "optional";
+            result_out->arm_allowed = false;
             result_out->handshake_error = transport_error;
             std::cerr << "[recording][citrus] binding handshake not completed: "
                       << transport_error << std::endl;
@@ -540,7 +533,7 @@ bool execute_recording_observation_pre_arm(
                    !response.value("accepted", false)) {
             result_out->lifecycle_status = "unbound";
             result_out->reason = "handshake_rejected";
-            result_out->arm_allowed = binding_mode == "optional";
+            result_out->arm_allowed = false;
             const auto error = response.find("error");
             if (error != response.end() && error->is_string()) {
                 result_out->handshake_error = error->get<std::string>();
@@ -725,7 +718,7 @@ bool execute_recording_observation_pre_arm(
                 ? "accepted_pending_finalization"
                 : "unbound";
             result_out->reason = all_accepted ? "" : "handshake_rejected";
-            result_out->arm_allowed = all_accepted || binding_mode == "optional";
+            result_out->arm_allowed = all_accepted;
             if (all_accepted && !result_out->subject_mismatches.empty()) {
                 // Interim policy: refused in every binding mode, since
                 // Palette refuses the import of a recording whose operator
@@ -790,6 +783,9 @@ bool prepare_recording_observation_pre_arm(
 {
     if (!requests_out) {
         return fail(error_out, "request materialization result is required");
+    }
+    if (binding_mode != "required" && binding_mode != "not_applicable") {
+        return fail(error_out, "binding mode must be required or not_applicable, from the recording intent");
     }
     *requests_out = RecordingObservationBindingRequestMaterialization{};
     requests_out->binding_mode = binding_mode;

@@ -313,9 +313,8 @@ void ApplyRecordingContextsGate(const std::string& recording_folder, json* manif
     (*manifest)["recording_contexts"] = emitted;
 }
 
-std::string ApplyRecordingIntentToBindingMode(const std::string& recording_folder,
-                                              const std::string& binding_mode,
-                                              std::string* error_out)
+std::string BindingModeFromRecordingIntent(const std::string& recording_folder,
+                                           std::string* error_out)
 {
     std::string error;
     const auto frozen = ReadFrozenRecordingContexts(recording_folder, &error);
@@ -323,20 +322,20 @@ std::string ApplyRecordingIntentToBindingMode(const std::string& recording_folde
         if (error_out) *error_out = error;
         return {};
     }
-    if (!frozen) return binding_mode;
-    bool any_recording_only = false;
-    for (const auto& [serial, ctx] : *frozen) {
-        if (ctx.recording_intent == "recording_only") any_recording_only = true;
-    }
-    if (!any_recording_only) return binding_mode;
-    if (binding_mode == "required") {
+    if (!frozen || frozen->empty()) {
         if (error_out) {
-            *error_out = "recording_intent is recording_only but ORANGE_CITRUS_OBSERVATION_BINDING_MODE=required; "
-                         "a recording-only session must not bind Citrus observations";
+            *error_out = "no recording intent declared: set recording_contexts (recording_intent "
+                         "stimulus_experiment for a Citrus stimulus experiment, recording_only for a "
+                         "recording without Citrus) before recording";
         }
         return {};
     }
-    return "not_applicable";
+    // Resolve() already refuses a session that mixes intents.
+    const std::string& intent = frozen->begin()->second.recording_intent;
+    if (intent == "stimulus_experiment") return "required";
+    if (intent == "recording_only") return "not_applicable";
+    if (error_out) *error_out = "unknown recording_intent " + intent;
+    return {};
 }
 
 }  // namespace orange::recording
