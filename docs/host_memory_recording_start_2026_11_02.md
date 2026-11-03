@@ -173,6 +173,64 @@ So most of the page cache was our own video, written once and never read again
 on the rig. With 5 GB free and fragmented, whatever asks for contiguous memory
 during recorder start-up has to reclaim and compact on the spot.
 
+## Trace of one record start (2026-11-02 23:04-23:08)
+
+`sudo scripts/trace_record_start_memory.sh --seconds 240`, started by Jeremy. Inside it, the 60 s four-camera headless gate
+`fourcam_fused_recorder_realfish_int8_192_native_ownerpush_ring_od8ff_s16`
+ran on production `orange_client` 10a68c9 from 23:05:11 to 23:06:32.
+- The gate passed: all four cameras, 5,798 frames submitted, NIC
+  `rx_discards_phy`/`tx_global_pause` unchanged on all four ports.
+- Output: `~/orange_data/diagnostics/memory_trace/20261103T040437Z/`.
+- 56,866 events were lost to ring-buffer overrun, mostly from busy desktop
+  threads, so the interrupt counts are lower bounds.
+
+**Who stalls: the recorders, inside the NVIDIA driver.**
+- All 46 direct reclaims and all 82 direct compactions were in the recorder
+  processes: `external_record` (main thread) and `ExternalIpcReco` (its worker
+  thread).
+- They happened at 23:05:22-23 while the recorders set up. Orange's own
+  process had none.
+- They were order 5 and 6 requests: 128 KB and 256 KB physically contiguous.
+- Every kernel stack goes through the NVIDIA kernel module:
+  - `os_alloc_mem` → `__kmalloc` (large);
+  - `nv_alloc_pages` → `nvos_create_alloc` → `kvmalloc_node`;
+  - `nv_dma_map_alloc` → `os_alloc_mem`.
+- These are the driver's own bookkeeping arrays (page lists and DMA-mapping
+  tables for the buffers the recorder allocates and imports). It asks for them
+  with `kmalloc`, which must be physically contiguous.
+- `kvmalloc` falls back to virtually contiguous memory when that fails. The
+  compaction attempts ended 47 success, 30 contended, 14 complete, 13 partial.
+
+**Who interrupts the isolated cores: kernel-wide function calls from the
+recorders.**
+- 8,916 function-call deliveries landed on the isolated cores (a lower bound).
+  5,520 were in the one second 23:05:23.
+- The senders were `ExternalIpcReco` (474 sends), `external_record` (317),
+  CUDA helper threads (36) and `orange_client` (363 sends, 192 of them to
+  isolated cores).
+- The recorders' sends target every CPU except the sender
+  (`cpumask=ffffffff,fffdffff` and the like), through `on_each_cpu_cond_mask`.
+  That is a flush or attribute change in the kernel's own address space, which
+  must reach every core whatever runs there. Driver `vmalloc`/`vfree`
+  (including the `kvmalloc` fallback) and memory-type changes both do this.
+  The tracepoint does not say which.
+- Remote TLB shootdowns (`tlb_flush`, reason 1) on the isolated cores: none.
+  All 56,096 recorded were on other cores.
+- Teardown (23:06:27-31) sent another 1,500.
+
+**What this means.**
+- The compaction stalls are the driver wanting contiguous memory for its own
+  tables while memory is fragmented. Dropping written video from the page
+  cache (edcc97d) should make most of them disappear.
+- The function-call broadcasts are part of the driver setting up GPU memory.
+  Less fragmentation will not remove them. Only moving recorder set-up out of
+  the live-camera window will: the deferred "start the recorders before
+  streaming" item.
+- This was the headless client. The GUI's record start also showed
+  `TLB:`-line bursts in `/proc/interrupts`, including the aborted 19:40:54
+  start, which may come from Orange's own GUI process. A traced GUI start
+  would separate the two.
+
 ## History of the settings involved
 
 - **2026-09-21:** `vm.dirty_background_bytes` 64 MB and `vm.dirty_bytes`

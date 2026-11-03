@@ -48,6 +48,22 @@ def parse_cpus(text: str) -> set[int]:
     return cpus
 
 
+def parse_cpumask(text: str) -> set[int]:
+    """Kernel cpumask bitmap as tracefs prints it: comma-separated 32-bit hex
+    words, most significant first (e.g. 0e000000,40180000)."""
+    cpus: set[int] = set()
+    words = [w for w in text.strip().split(",") if w]
+    for i, word in enumerate(reversed(words)):
+        value = int(word, 16)
+        bit = 0
+        while value:
+            if value & 1:
+                cpus.add(i * 32 + bit)
+            value >>= 1
+            bit += 1
+    return cpus
+
+
 def fields_of(text: str) -> dict[str, str]:
     return {k: v for k, v in FIELD.findall(text)}
 
@@ -122,7 +138,7 @@ def summarize(directory: Path) -> dict:
             elif event == "mm_page_alloc_extfrag":
                 extfrag[(task, int(fl.get("alloc_order", -1)), fl.get("fragmenting", "?"))] += 1
             elif event in ("ipi_send_cpumask", "ipi_send_cpu"):
-                targets = parse_cpus(fl.get("cpumask", "")) if event == "ipi_send_cpumask" \
+                targets = parse_cpumask(fl.get("cpumask", "")) if event == "ipi_send_cpumask" \
                     else {int(fl.get("cpu", -1))}
                 key = (task, frame_name(fl.get("callsite", "?")), frame_name(fl.get("callback", "?")))
                 ipi[key] += 1
