@@ -106,6 +106,17 @@ private:
     int pace_fd_ = -1;
     size_t pace_interval_bytes_ = 32u * 1024u * 1024u;
     size_t pace_bytes_since_ = 0;
+    // Dropping written pages (2026-11-02): at each pacing tick the pages up to
+    // the previous tick, written back by then, leave the page cache
+    // (posix_fadvise DONTNEED), and the whole file at close. Video is written
+    // once and never read back on the rig; cached, it filled ~85 GB of RAM and
+    // left free memory small and fragmented, so the next recording's start-up
+    // stalled in direct reclaim and compaction
+    // (docs/host_memory_recording_start_2026_11_02.md).
+    // ORANGE_MP4_DROP_WRITTEN_PAGES=0 keeps them.
+    bool pace_drop_pages_ = true;
+    off_t pace_previous_tick_size_ = 0;
+    off_t pace_dropped_until_ = 0;
     void open_pace_fd(const char* path);
     void pace_after_write(size_t bytes);
     void close_pace_fd();

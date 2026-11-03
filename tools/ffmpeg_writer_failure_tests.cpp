@@ -8,8 +8,15 @@
 #include "json.hpp"
 #include "video_container_finalization.h"
 
+#include <chrono>
 #include <cstdlib>
 #include <cerrno>
+#include <thread>
+#include <vector>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -325,6 +332,67 @@ void test_queue_byte_limit_fails_closed_before_enqueuing()
     std::filesystem::remove_all(dir);
 }
 
+// Fraction of a file's pages resident in the page cache (mincore).
+double resident_fraction(const std::string& path)
+{
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    expect(fd >= 0, "could not open " + path);
+    struct stat st {};
+    expect(::fstat(fd, &st) == 0 && st.st_size > 0, "could not stat " + path);
+    void* map = ::mmap(nullptr, static_cast<size_t>(st.st_size), PROT_READ, MAP_SHARED, fd, 0);
+    expect(map != MAP_FAILED, "could not mmap " + path);
+    const long page = ::sysconf(_SC_PAGESIZE);
+    const size_t pages = (static_cast<size_t>(st.st_size) + page - 1) / page;
+    std::vector<unsigned char> resident(pages);
+    expect(::mincore(map, static_cast<size_t>(st.st_size), resident.data()) == 0, "mincore failed");
+    size_t count = 0;
+    for (unsigned char r : resident) {
+        count += (r & 1u);
+    }
+    ::munmap(map, static_cast<size_t>(st.st_size));
+    ::close(fd);
+    return static_cast<double>(count) / static_cast<double>(pages);
+}
+
+// Writes ~8 MB of packets with writeback pacing every 256 KB, then reports the
+// output's resident fraction.
+double write_paced_file(const std::filesystem::path& dir, const char* drop_pages)
+{
+    ::setenv("ORANGE_MP4_WRITEBACK_PACE_BYTES", "262144", 1);
+    ::setenv("ORANGE_MP4_DROP_WRITTEN_PAGES", drop_pages, 1);
+    const std::string out_path = (dir / (std::string("paced_") + drop_pages + ".mp4")).string();
+    {
+        FFmpegWriter writer(AV_CODEC_ID_H264, 640, 480, 100, out_path.c_str(), nullptr);
+        writer.create_thread();
+        std::vector<uint8_t> packet(64 * 1024, 0x5a);
+        packet[0] = 0; packet[1] = 0; packet[2] = 0; packet[3] = 1; packet[4] = 0x65;
+        for (int i = 0; i < 128; ++i) {
+            expect(writer.push_packet(packet.data(), static_cast<int>(packet.size()), i),
+                   "packet submission rejected");
+            // Give the disk time to finish the writeback each tick started.
+            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+        }
+        writer.quit_thread();
+        writer.join_thread();
+        expect(!writer.writer_thread_failed(), "paced writer failed");
+    }
+    ::unsetenv("ORANGE_MP4_WRITEBACK_PACE_BYTES");
+    ::unsetenv("ORANGE_MP4_DROP_WRITTEN_PAGES");
+    expect(std::filesystem::file_size(out_path) > 8u * 1000u * 1000u, "paced output too small");
+    return resident_fraction(out_path);
+}
+
+void test_written_pages_leave_the_page_cache()
+{
+    const std::filesystem::path dir = make_temp_dir();
+    const double kept = write_paced_file(dir, "0");
+    const double dropped = write_paced_file(dir, "1");
+    std::cout << "  resident after close: drop off " << kept << ", drop on " << dropped << "\n";
+    expect(kept > 0.9, "with ORANGE_MP4_DROP_WRITTEN_PAGES=0 the written file stays cached");
+    expect(dropped < 0.5, "written pages must leave the page cache once written back");
+    std::filesystem::remove_all(dir);
+}
+
 void test_failed_construction_leaves_no_file_behind_null_path_guard()
 {
     // A failed construction must not leave a partially constructed object;
@@ -361,6 +429,8 @@ int main()
          &test_mux_write_failure_is_latched_and_persisted},
         {"queue_byte_limit_fails_closed_before_enqueuing",
          &test_queue_byte_limit_fails_closed_before_enqueuing},
+        {"written_pages_leave_the_page_cache",
+         &test_written_pages_leave_the_page_cache},
         {"failed_construction_leaves_no_object",
          &test_failed_construction_leaves_no_file_behind_null_path_guard},
     };

@@ -1,6 +1,7 @@
 // src/FFmpegWriter.cpp
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <cerrno>
 #include <cstdlib>
@@ -459,8 +460,13 @@ void FFmpegWriter::open_pace_fd(const char* path)
 {
     close_pace_fd();
     pace_bytes_since_ = 0;
+    pace_previous_tick_size_ = 0;
+    pace_dropped_until_ = 0;
     if (const char* env = std::getenv("ORANGE_MP4_WRITEBACK_PACE_BYTES"); env && *env) {
         pace_interval_bytes_ = static_cast<size_t>(std::strtoull(env, nullptr, 10));
+    }
+    if (const char* env = std::getenv("ORANGE_MP4_DROP_WRITTEN_PAGES"); env && *env) {
+        pace_drop_pages_ = std::strcmp(env, "0") != 0;
     }
     if (pace_interval_bytes_ == 0 || !path) {
         return;
@@ -482,6 +488,21 @@ void FFmpegWriter::pace_after_write(size_t bytes)
         return;
     }
     pace_bytes_since_ = 0;
+    if (pace_drop_pages_) {
+        // Writeback of everything up to the previous tick started one interval
+        // ago; drop those pages now. DONTNEED only drops clean pages and never
+        // waits for writeback, so a page still dirty simply stays cached.
+        if (pace_previous_tick_size_ > pace_dropped_until_) {
+            (void)::posix_fadvise(pace_fd_, pace_dropped_until_,
+                                  pace_previous_tick_size_ - pace_dropped_until_,
+                                  POSIX_FADV_DONTNEED);
+            pace_dropped_until_ = pace_previous_tick_size_;
+        }
+        struct stat st {};
+        if (::fstat(pace_fd_, &st) == 0) {
+            pace_previous_tick_size_ = st.st_size;
+        }
+    }
     // Start writeback of every dirty page of this file; does not wait.
     (void)::sync_file_range(pace_fd_, 0, 0, SYNC_FILE_RANGE_WRITE);
 }
@@ -489,6 +510,13 @@ void FFmpegWriter::pace_after_write(size_t bytes)
 void FFmpegWriter::close_pace_fd()
 {
     if (pace_fd_ >= 0) {
+        if (pace_drop_pages_) {
+            // After the trailer: start writeback of the tail and drop every page
+            // already clean. The last few MB stay cached until the kernel's own
+            // writeback; nothing here waits.
+            (void)::sync_file_range(pace_fd_, 0, 0, SYNC_FILE_RANGE_WRITE);
+            (void)::posix_fadvise(pace_fd_, 0, 0, POSIX_FADV_DONTNEED);
+        }
         ::close(pace_fd_);
         pace_fd_ = -1;
     }
