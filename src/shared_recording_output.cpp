@@ -146,11 +146,12 @@ void SharedRecordingOutput::prepare_rollover(const SharedRecordingOutputOpenPara
     close_writer_locked(&prepared_writer_);
 
     {
+        // The rollover meta CSV too, not only the folder.
         orange::ScopedFsuid fsuid_guard;
         (void)fsuid_guard;
         make_folder(params.folder_name);
+        initialize_writer_locked(&prepared_writer_, params);
     }
-    initialize_writer_locked(&prepared_writer_, params);
     rollover_pending_ = true;
     rollover_request_id_ = request_id;
     rollover_at_frame_id_ = rollover_first_frame_id;

@@ -7569,6 +7569,10 @@ void start_headless_gpu_dmon_monitor(HeadlessGpuDmonMonitor* monitor,
         return;
     }
 
+    // Created as the sudo invoker; the root nvidia-smi child only writes
+    // through the inherited descriptors.
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
     const int stdout_fd = ::open(monitor->artifact_path.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
     if (stdout_fd < 0) {
         monitor->status = "failed_to_start";
@@ -9906,6 +9910,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         const std::filesystem::path crop_contract_path =
             std::filesystem::path(active_record_folder) / "external_crop_recorder_contract.json";
         {
+            orange::ScopedFsuid fsuid_guard;
+            (void)fsuid_guard;
             std::ofstream out(crop_contract_path);
             out << crop_contract.dump(2) << "\n";
         }

@@ -351,6 +351,8 @@ bool update_local_calibration_registry(const std::filesystem::path& artifact_roo
         return set_error(error_out, "manifest must contain artifact_id and artifact_schema_id");
     }
 
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
     std::filesystem::create_directories(artifact_root_dir);
     const std::filesystem::path registry_path = artifact_root_dir / "index.json";
     nlohmann::json registry = nlohmann::json::object();

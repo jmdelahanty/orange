@@ -2277,6 +2277,9 @@ bool WriteDurationAwareStoragePreflightArtifact(
     const DurationAwareStoragePreflight& preflight,
     std::string* error_out)
 {
+    // The artifact lives in the recording folder: the sudo invoker owns it.
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
     return write_json_atomic(path, DurationAwareStoragePreflightToJson(preflight), error_out);
 }
 

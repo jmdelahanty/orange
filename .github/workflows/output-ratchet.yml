@@ -3,7 +3,8 @@ name: Output ratchet
 # Runs on GitHub-hosted runners: plain Python over the sources, no CUDA, no rig.
 # Fails when an output name breaks agent-contracts frame_identity_v1, when the
 # output surface differs from tools/output_surface_snapshot.json, or when output
-# names changed against the base without a schema version change.
+# names changed against the base without a schema version change, or when a
+# file writer runs without the sudo-invoker ownership guard.
 on:
   push:
   pull_request:
@@ -22,6 +23,10 @@ jobs:
         run: python3 scripts/check_output_names.py
       - name: Ratchet self-tests
         run: python3 tools/output_ratchet_tests.py
+      - name: Writer ownership (files created as root belong to the sudo invoker)
+        run: |
+          python3 scripts/check_writer_ownership.py
+          python3 tools/writer_ownership_ratchet_tests.py
       - name: Output surface (version bump rule against the previous commit or PR base)
         run: |
           base="${{ github.event.pull_request.base.sha || github.event.before }}"

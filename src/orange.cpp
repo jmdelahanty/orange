@@ -386,6 +386,10 @@ void gui_copy_local_control_event_log_to_recording_session(
     if (event_log_path.empty() || recording_folder.empty()) {
         return;
     }
+    // The copy and the manifest update belong to the sudo invoker, like every
+    // other recording file (a root-owned copy failed the GUI validator).
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
 
     const std::filesystem::path source_path(event_log_path);
     const std::filesystem::path recording_dir(recording_folder);

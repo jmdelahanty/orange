@@ -1,0 +1,131 @@
+{
+ "$comment": "Writer ownership ratchet (scripts/check_writer_ownership.py). allowed: unguarded writer sites that are correct, keyed file|function|kind, with count and reason; the counts only go down. helpers: functions that write for guarded callers; every call to one is checked like a writer.",
+ "allowed": {
+  "src/encoder_hw_worker.cpp|initialize_writer_hw|stream_open": {
+   "count": 1,
+   "reason": "Helper: its callers hold the guard, and every call is checked (see helpers)."
+  },
+  "src/external_recorder_frame_metadata.cpp|Open|stream_open": {
+   "count": 1,
+   "reason": "Recorder frame metadata; the native recorder opens it under its own guard (no root-owned recorder file in recordings, 2026-11-03). The name Open is too generic to check callers."
+  },
+  "src/gui/startup_timing.cpp|FlushPending|atomic_writer": {
+   "count": 1,
+   "reason": "Calls this file's own write_json_atomic, which holds the guard."
+  },
+  "src/nic_thermal_monitor.cpp|write_json_atomic_owned|atomic_writer": {
+   "count": 1,
+   "reason": "Sets the owner itself (AtomicWriteOptions.owner = sudo invoker), for the separate nic_thermal_monitor process."
+  },
+  "src/orange_local_control.cpp|ServeLoop|mkdir": {
+   "count": 1,
+   "reason": "Root-owned on purpose: the control socket's directory belongs to the root process that binds the socket."
+  },
+  "src/orange_local_control.cpp|acquire_socket_path_lock|open_creat": {
+   "count": 1,
+   "reason": "Root-owned on purpose: the control socket's /tmp lock belongs to the root process that binds the socket."
+  },
+  "src/orange_local_control.cpp|prepare_event_log_directory|mkdir": {
+   "count": 1,
+   "reason": "Helper: its callers hold the guard, and every call is checked (see helpers)."
+  },
+  "src/outputs/common/atomic_file.h|create_file_once|mkdir": {
+   "count": 1,
+   "reason": "Shared atomic writer: callers keep their own ScopedFsuid (header comment), and every caller is checked by the atomic_writer kind."
+  },
+  "src/outputs/common/atomic_file.h|create_file_once|open_creat": {
+   "count": 1,
+   "reason": "Shared atomic writer: callers keep their own ScopedFsuid (header comment), and every caller is checked by the atomic_writer kind."
+  },
+  "src/outputs/common/atomic_file.h|write_file_atomic|mkdir": {
+   "count": 1,
+   "reason": "Shared atomic writer: callers keep their own ScopedFsuid (header comment), and every caller is checked by the atomic_writer kind."
+  },
+  "src/outputs/common/atomic_file.h|write_file_atomic|open_creat": {
+   "count": 1,
+   "reason": "Shared atomic writer: callers keep their own ScopedFsuid (header comment), and every caller is checked by the atomic_writer kind."
+  },
+  "src/outputs/common/atomic_file.h|write_json_atomic|atomic_writer": {
+   "count": 1,
+   "reason": "Shared atomic writer: callers keep their own ScopedFsuid (header comment), and every caller is checked by the atomic_writer kind."
+  },
+  "src/project.cpp|create_immutable_file_once|atomic_writer": {
+   "count": 1,
+   "reason": "Helper: its callers hold the guard, and every call is checked (see helpers)."
+  },
+  "src/project.cpp|recording_geometry_write_exact_file|mkdir": {
+   "count": 1,
+   "reason": "Helper: its callers hold the guard, and every call is checked (see helpers)."
+  },
+  "src/project.cpp|recording_geometry_write_exact_file|ofstream": {
+   "count": 1,
+   "reason": "Helper: its callers hold the guard, and every call is checked (see helpers)."
+  },
+  "src/project.cpp|write_json_atomic|atomic_writer": {
+   "count": 1,
+   "reason": "project.cpp's wrapper over the shared atomic writer: callers guard, and every caller is checked by the atomic_writer kind."
+  },
+  "src/project.cpp|write_latest_recording_pointer|atomic_writer": {
+   "count": 1,
+   "reason": "Root-owned on purpose: /run/orange/latest_recording.json (the user-visible pointers in the same function are guarded)."
+  },
+  "src/project.cpp|write_latest_recording_pointer|mkdir": {
+   "count": 1,
+   "reason": "Root-owned on purpose: /run/orange, which only root can create."
+  },
+  "src/recording_master_crop_coverage.cpp|Publication|mkstemp": {
+   "count": 1,
+   "reason": "Constructed only under the guard of its two builders (crop coverage publication); generic name, callers not checked."
+  },
+  "src/recording_master_journal.cpp|publish|mkstemp": {
+   "count": 1,
+   "reason": "Called from Finalize under its guard; generic name, callers not checked."
+  },
+  "src/session/recording_observation_finalization.cpp|write_atomic_replace|atomic_writer": {
+   "count": 1,
+   "reason": "Helper: its callers hold the guard, and every call is checked (see helpers)."
+  },
+  "src/session/recording_observation_finalization.cpp|write_create_once_exact|atomic_writer": {
+   "count": 1,
+   "reason": "Helper: its callers hold the guard, and every call is checked (see helpers)."
+  },
+  "src/session/recording_observation_prearm.cpp|create_read_only_file_once|atomic_writer": {
+   "count": 1,
+   "reason": "Helper: its callers hold the guard, and every call is checked (see helpers)."
+  },
+  "src/session/recording_observation_request_artifacts.cpp|create_read_only_file_once|atomic_writer": {
+   "count": 1,
+   "reason": "Helper: its callers hold the guard, and every call is checked (see helpers)."
+  },
+  "src/shaman_v2.h|SharedLiveStateQueue|open_creat": {
+   "count": 2,
+   "reason": "SHAMAN v2 lock files: root-owned with the ipc group set explicitly (fchown -1, gid)."
+  },
+  "src/shaman_v2.h|SharedLiveStateQueue|shm_open": {
+   "count": 1,
+   "reason": "SHAMAN v2 shared memory: root-owned with the ipc group set explicitly (fchown -1, gid) so Citrus can read it."
+  },
+  "src/shared_recording_output.cpp|initialize_writer_locked|stream_open": {
+   "count": 1,
+   "reason": "Helper: its callers hold the guard, and every call is checked (see helpers)."
+  },
+  "src/spatial_roi_session_authority_store.cpp|open_absolute_directory|mkdir": {
+   "count": 1,
+   "reason": "Authority store internals; every public caller (crop-only manifest, registered context, daily context) holds the guard."
+  },
+  "tools/external_recorder_ipc_probe.cpp|run_offline_reencode|ofstream": {
+   "count": 2,
+   "reason": "Offline re-encode mode of the recorder tool, run by hand as the user, never by Orange as root."
+  }
+ },
+ "helpers": {
+  "create_immutable_file_once": "Seals immutable recording files.",
+  "create_read_only_file_once": "Writes Citrus observation request and pre-arm artifacts into the recording folder.",
+  "initialize_writer_hw": "Opens the hardware encoder's meta CSV in the recording folder.",
+  "initialize_writer_locked": "Opens the shared recording output's meta CSV in the recording folder.",
+  "prepare_event_log_directory": "Creates the local-control event log directory.",
+  "recording_geometry_write_exact_file": "Writes recording geometry assets into the recording folder.",
+  "write_atomic_replace": "Replaces Citrus observation finalization artifacts.",
+  "write_create_once_exact": "Writes Citrus observation finalization artifacts."
+ }
+}
