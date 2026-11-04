@@ -1204,7 +1204,13 @@ void render_camera_properties_panel(CameraEmergent* ecams,
             ImGui::InputFloat("Max saturated fraction", &max_saturated_input, 0.0001f, 0.001f, "%.4f");
             max_saturated_input = std::clamp(max_saturated_input, 0.0f, 1.0f);
             const std::optional<image_levels::Measurement> last = levels_check.LastMeasurement(selected_camera);
-            const bool can_save = last && last->ok && !levels_camera.config_path.empty() && !recording_mutation_locked;
+            const std::string save_refusal =
+                last ? image_levels::SaveRefusal(*last, max_saturated_input) : std::string();
+            const bool can_save = last && last->ok && save_refusal.empty() &&
+                                  !levels_camera.config_path.empty() && !recording_mutation_locked;
+            if (last && last->ok && !save_refusal.empty()) {
+                ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.2f, 1.0f), "%s", save_refusal.c_str());
+            }
             ImGui::BeginDisabled(!can_save);
             if (ImGui::Button("Save measurement as this camera's expectation")) {
                 image_levels::CameraExpectation e;

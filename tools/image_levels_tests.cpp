@@ -207,11 +207,25 @@ void write_samples(const std::string& dir)
     std::ofstream(dir + "/camera_image_levels_sample.json") << BuildCameraExpectation(e).dump(2);
 }
 
+void test_save_refusal()
+{
+    Measurement m;
+    require(!SaveRefusal(m, 0.001).empty(), "failed measurement is refused");
+    m.ok = true;
+    m.statistics.saturated_fraction = 0.0177;
+    const std::string refusal = SaveRefusal(m, 0.001);
+    require(!refusal.empty(), "limit below the measurement is refused");
+    require(refusal.find("0.0177") != std::string::npos, "refusal names the measured fraction");
+    require(SaveRefusal(m, 0.0177).empty(), "limit equal to the measurement is accepted");
+    require(SaveRefusal(m, 0.03).empty(), "limit above the measurement is accepted");
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
 {
     test_statistics();
+    test_save_refusal();
     test_camera_block();
     test_evaluate();
     if (argc == 2) write_samples(argv[1]);

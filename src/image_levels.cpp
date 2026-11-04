@@ -197,6 +197,23 @@ bool MeanInBand(const CameraExpectation& e, double mean)
     return std::fabs(mean - *e.expected_mean) <= e.mean_tolerance_fraction * *e.expected_mean;
 }
 
+std::string SaveRefusal(const Measurement& m, double max_saturated_fraction)
+{
+    if (!m.ok) {
+        return "No successful measurement to save.";
+    }
+    const double measured = m.statistics.saturated_fraction;
+    if (measured > max_saturated_fraction) {
+        char text[256];
+        std::snprintf(text, sizeof(text),
+                      "This measurement has %.4f saturated (%.2f%%), above the limit %.4f. "
+                      "Raise the limit to at least %.4f, or lower the brightness and measure again.",
+                      measured, measured * 100.0, max_saturated_fraction, std::ceil(measured * 1e4) / 1e4);
+        return text;
+    }
+    return {};
+}
+
 std::vector<std::string> BasisSettingsDiffer(const CameraExpectation& e, const LevelSettings& live)
 {
     std::vector<std::string> differ;

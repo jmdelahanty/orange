@@ -78,6 +78,11 @@ nlohmann::json EvaluateCamera(const CameraExpectation& expectation,
 
 bool MeanInBand(const CameraExpectation& expectation, double mean);
 
+// Why this measurement may not be saved as an expectation with this
+// saturation limit, or empty when it may: an expectation the measurement
+// already breaks warns on every check (2026-11-03, all four cameras).
+std::string SaveRefusal(const Measurement& measurement, double max_saturated_fraction);
+
 // Settings in the expectation's basis that differ from the live ones
 // (names only; both values are in the block).
 std::vector<std::string> BasisSettingsDiffer(const CameraExpectation& expectation, const LevelSettings& live);
