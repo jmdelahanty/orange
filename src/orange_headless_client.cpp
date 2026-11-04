@@ -3998,6 +3998,7 @@ void reset_ptp_params(PTPParams* ptp_params)
     ptp_params->ptp_stop_reached = false;
     ptp_params->ptp_start_reached = false;
     ptp_params->network_set_stop_ptp = false;
+    ptp_params->ptp_start_aborted = false;
 }
 
 void shutdown_headless_run(std::vector<std::thread>& camera_threads,

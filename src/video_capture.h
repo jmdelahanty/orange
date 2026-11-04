@@ -595,9 +595,18 @@ void report_statistics(CameraParams *camera_params,
                        uint64_t preprocess_frames_dropped = 0,
                        uint64_t encode_failures = 0,
                        uint64_t encode_slow_frames = 0);
-void show_ptp_offset(PTPState *ptp_state, CameraEmergent *ecam);
-void start_ptp_sync(PTPState *ptp_state, PTPParams *ptp_params, CameraParams *camera_params, CameraEmergent *ecam, unsigned int delay_in_second);
-void grab_frames_after_countdown(PTPState *ptp_state, CameraEmergent *ecam);
+// The PTP start steps never wait without a limit. Each returns false, with
+// *error_out set, when the camera shows no PTP lock in time, another camera
+// aborted the start (ptp_start_aborted), or *keep_running went false (the
+// stream is being stopped). A camera thread stuck here blocks the stream
+// stop that joins it: on 2026-11-04 ptp4l was stopped and the GUI hung.
+bool show_ptp_offset(PTPState *ptp_state, CameraEmergent *ecam,
+                     const bool *keep_running, std::string *error_out);
+bool start_ptp_sync(PTPState *ptp_state, PTPParams *ptp_params, CameraParams *camera_params,
+                    CameraEmergent *ecam, unsigned int delay_in_second,
+                    const bool *keep_running, std::string *error_out);
+bool grab_frames_after_countdown(PTPState *ptp_state, CameraEmergent *ecam,
+                                 const bool *keep_running, std::string *error_out);
 bool try_start_timer();
 bool try_stop_timer();
 #endif

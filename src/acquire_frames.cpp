@@ -1772,33 +1772,56 @@ void acquire_frames(
             orange::gui::GuiStartupTimingRecorder::NowNs());
     }
 
+    // A failed PTP start leaves this thread idle until the stream stops; it
+    // never enters the frame loop and never blocks the join (see
+    // show_ptp_offset in video_capture.h).
+    bool acquisition_started = false;
+    std::string ptp_start_error;
     {
         const uint64_t acquisition_start_setup_ns =
             orange::gui::GuiStartupTimingRecorder::NowNs();
         NVTX_RANGE("Camera_Initialization");
+        bool ptp_ready = true;
         if (camera_control->sync_camera) {
             NVTX_RANGE_PUSH("PTP_Sync_Setup");
-            show_ptp_offset(&ptp_state, ecam);
-            start_ptp_sync(&ptp_state, ptp_params, camera_params, ecam, 3);
+            ptp_ready =
+                show_ptp_offset(&ptp_state, ecam, &camera_control->subscribe, &ptp_start_error) &&
+                start_ptp_sync(&ptp_state, ptp_params, camera_params, ecam, 3,
+                               &camera_control->subscribe, &ptp_start_error);
             NVTX_RANGE_POP();
         }
 
-        NVTX_CAMERA("Camera_Acquisition_Start");
-        check_camera_errors(EVT_CameraExecuteCommand(&ecam->camera, "AcquisitionStart"), camera_params->camera_serial.c_str());
-        if (startup_timing) {
-            startup_timing->MarkCameraInstant(
-                camera_params->camera_serial,
-                "acquisition_start_command_issued");
-        }
+        if (ptp_ready) {
+            NVTX_CAMERA("Camera_Acquisition_Start");
+            check_camera_errors(EVT_CameraExecuteCommand(&ecam->camera, "AcquisitionStart"), camera_params->camera_serial.c_str());
+            acquisition_started = true;
+            if (startup_timing) {
+                startup_timing->MarkCameraInstant(
+                    camera_params->camera_serial,
+                    "acquisition_start_command_issued");
+            }
 
-        if (camera_control->sync_camera) {
-            NVTX_RANGE_PUSH("PTP_Countdown");
-            grab_frames_after_countdown(&ptp_state, ecam);
-            NVTX_RANGE_POP();
-        } else {
-            try_start_timer();
+            if (camera_control->sync_camera) {
+                NVTX_RANGE_PUSH("PTP_Countdown");
+                ptp_ready = grab_frames_after_countdown(
+                    &ptp_state, ecam, &camera_control->subscribe, &ptp_start_error);
+                NVTX_RANGE_POP();
+            } else {
+                try_start_timer();
+            }
         }
-        if (startup_timing) {
+        if (!ptp_ready) {
+            // Only the first failing camera reports: the others fail with
+            // "another camera aborted the PTP start".
+            const bool first_failure =
+                !__atomic_exchange_n(&ptp_params->ptp_start_aborted, true, __ATOMIC_ACQ_REL);
+            const std::string message =
+                "camera " + camera_params->camera_serial + ": " + ptp_start_error;
+            std::cerr << "[PTP] " << message << std::endl;
+            if (startup_timing && first_failure) {
+                startup_timing->MarkFailed(message);
+            }
+        } else if (startup_timing) {
             startup_timing->RecordCameraInterval(
                 camera_params->camera_serial,
                 camera_control->sync_camera
@@ -1812,8 +1835,14 @@ void acquire_frames(
         }
     }
 
-    ptp_params->ptp_start_reached = true;
+    if (ptp_start_error.empty()) {
+        ptp_params->ptp_start_reached = true;
+    }
     w.Start();
+    while (!ptp_start_error.empty() &&
+           __atomic_load_n(&camera_control->subscribe, __ATOMIC_ACQUIRE)) {
+        usleep(10000);
+    }
 
 #if PIPELINE_PROFILE
     struct CopyProfileEvents {
@@ -3279,7 +3308,7 @@ void acquire_frames(
         acquisition_cadence_probe_recorder.Close();
         ring_release_recorder.Close();
 
-        {
+        if (acquisition_started) {
             NVTX_CAMERA("Camera_Acquisition_Stop");
             check_camera_errors(EVT_CameraExecuteCommand(&ecam->camera, "AcquisitionStop"), camera_params->camera_serial.c_str());
         }

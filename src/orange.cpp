@@ -6213,6 +6213,7 @@ int main(int /*argc*/, char ** /*args*/) {
             ptp_params->network_set_start_ptp = false;
             ptp_params->ptp_stop_reached = false;
             ptp_params->ptp_start_reached = false;
+            ptp_params->ptp_start_aborted = false;
             camera_control->sync_camera = false; // Also reset this flag
             std::cout << "PTPParams state has been reset for the next run." << std::endl;
         }

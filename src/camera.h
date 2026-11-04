@@ -301,6 +301,9 @@ struct PTPParams{
     bool ptp_stop_reached = false;
     bool network_set_stop_ptp = false;
     bool network_set_start_ptp = false;
+    // Set by the first camera whose PTP start fails; the others leave the
+    // start barrier instead of waiting for it.
+    bool ptp_start_aborted = false;
 };
 
 void print_camera_device_struct(GigEVisionDeviceInfo* device_info, int camera_idx);

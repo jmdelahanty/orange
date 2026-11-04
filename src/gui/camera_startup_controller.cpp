@@ -5,6 +5,7 @@
 #include "crop_producer_worker.h"
 #include "frame_ipc_manager.h"
 #include "acquire_frames.h"
+#include "host_ptp_check.h"
 #include "gui/async_startup_worker.h"
 #include "gui/bounded_startup_tasks.h"
 #include "gui/env_util.h"
@@ -1735,6 +1736,10 @@ bool GuiCameraStartupController::StartStream(
     std::string* error_out)
 {
     if (!impl_ || !validate_stream_bindings(bindings, error_out)) {
+        return false;
+    }
+    if (bindings.ptp_stream_sync &&
+        !orange::host_ptp_stack_running(error_out)) {
         return false;
     }
     const std::vector<int> active_camera_indices =
