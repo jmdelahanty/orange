@@ -187,6 +187,11 @@ void start_host_ptp_stack_command(orange::gui::HostPtpStackUiState* ui_state,
     if (!ui_state) {
         return;
     }
+    if (command != "start" && command != "status") {
+        std::lock_guard<std::mutex> lock(ui_state->mutex);
+        ui_state->error_message = "Orange runs only `start` and `status` on the host PTP stack.";
+        return;
+    }
 
     orange::gui::reap_host_ptp_stack_worker(ui_state);
     if (ui_state->running.load()) {
@@ -279,9 +284,7 @@ void reap_host_ptp_stack_worker(HostPtpStackUiState* ui_state)
     }
 }
 
-void render_host_ptp_stack_panel(HostPtpStackUiState* ui_state,
-                                 const bool streaming_active,
-                                 const bool ptp_stream_sync_enabled)
+void render_host_ptp_stack_panel(HostPtpStackUiState* ui_state)
 {
     if (!ui_state) {
         return;
@@ -289,7 +292,6 @@ void render_host_ptp_stack_panel(HostPtpStackUiState* ui_state,
 
     const bool host_ptp_command_running = ui_state->running.load(std::memory_order_acquire);
     const bool host_ptp_controls_available = (geteuid() == 0);
-    const bool host_ptp_stop_unsafe = streaming_active && ptp_stream_sync_enabled;
 
     HostPtpStackStatusSummary host_ptp_status_summary;
     std::string host_ptp_status_message;
@@ -313,9 +315,6 @@ void render_host_ptp_stack_panel(HostPtpStackUiState* ui_state,
     ImGui::TextUnformatted("Host PTP Stack");
     if (!host_ptp_controls_available) {
         ImGui::TextDisabled("Run Orange with sudo to control host linuxptp from the UI.");
-    } else if (host_ptp_stop_unsafe) {
-        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f),
-                           "Stop/restart is disabled while streaming with PTP Stream Sync enabled.");
     }
     if (!host_ptp_status_message.empty()) {
         ImGui::TextWrapped("Status: %s", host_ptp_status_message.c_str());
@@ -342,8 +341,6 @@ void render_host_ptp_stack_panel(HostPtpStackUiState* ui_state,
     }
 
     const bool disable_start_status = !host_ptp_controls_available || host_ptp_command_running;
-    const bool disable_stop_restart =
-        !host_ptp_controls_available || host_ptp_command_running || host_ptp_stop_unsafe;
 
     if (disable_start_status) {
         ImGui::BeginDisabled();
@@ -358,21 +355,10 @@ void render_host_ptp_stack_panel(HostPtpStackUiState* ui_state,
     if (disable_start_status) {
         ImGui::EndDisabled();
     }
-
-    ImGui::SameLine();
-    if (disable_stop_restart) {
-        ImGui::BeginDisabled();
-    }
-    if (ImGui::Button("Stop PTP stack")) {
-        start_host_ptp_stack_command(ui_state, "stop", true);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Restart PTP stack")) {
-        start_host_ptp_stack_command(ui_state, "restart", true);
-    }
-    if (disable_stop_restart) {
-        ImGui::EndDisabled();
-    }
+    // No stop or restart here: stopping ptp4l drops every camera's PTP lock,
+    // and PTP-gated cameras then deliver no frames. A Stop button next to
+    // Refresh stopped the stack by accident on 2026-11-04.
+    ImGui::TextDisabled("Stop or restart the PTP stack from a terminal, with no orange running.");
 
     if (!host_ptp_script_path.empty()) {
         ImGui::TextWrapped("Script: %s", host_ptp_script_path.c_str());

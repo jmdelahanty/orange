@@ -7883,10 +7883,7 @@ int main(int /*argc*/, char ** /*args*/) {
                 }
             }
 
-            orange::gui::render_host_ptp_stack_panel(
-                &host_ptp_stack_ui,
-                camera_control->subscribe || gui_camera_startup.busy(),
-                ptp_stream_sync);
+            orange::gui::render_host_ptp_stack_panel(&host_ptp_stack_ui);
 
             if (!camera_control->record_video && camera_control->open) {
                 if (camera_control->subscribe) {

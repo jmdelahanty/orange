@@ -411,22 +411,17 @@ struct ExperimentRunPlan {
     nlohmann::json config_json = nlohmann::json::object();
 };
 
-struct HeadlessHostPtpStackGuard;
-void teardown_headless_host_ptp_stack(HeadlessHostPtpStackGuard* guard);
-
 struct HeadlessHostPtpStatusSummary {
     bool ptp4l_running = false;
     bool phc2sys_running = false;
     bool socket_present = false;
 };
 
+// Orange starts the host PTP stack when it is down but never stops it:
+// stopping ptp4l drops every camera's PTP lock, and a PTP-gated camera then
+// delivers no frames (2026-11-04). The systemd units own the stack.
 struct HeadlessHostPtpStackGuard {
     std::string script_path;
-    bool stop_on_exit = false;
-
-    ~HeadlessHostPtpStackGuard() {
-        teardown_headless_host_ptp_stack(this);
-    }
 };
 
 struct HeadlessHostPtpCommandResult {
@@ -603,10 +598,6 @@ bool ensure_headless_host_ptp_stack(HeadlessHostPtpStackGuard* guard, std::strin
         return false;
     }
     guard->script_path = script_path.string();
-    // Do not reset stop_on_exit here: the experiment-spec path calls this
-    // twice, and the second call finds the stack healthy because the first
-    // call started it. Resetting would drop ownership and leave an
-    // auto-started stack running after exit.
 
     const HeadlessHostPtpCommandResult status_before =
         run_ptp_stack_command(guard->script_path, "status");
@@ -624,8 +615,6 @@ bool ensure_headless_host_ptp_stack(HeadlessHostPtpStackGuard* guard, std::strin
     }
 
     std::cout << "[HEADLESS][PTP] Host PTP stack not ready; starting it now." << std::endl;
-    const bool stack_absent_before =
-        !before_summary.ptp4l_running && !before_summary.phc2sys_running && !before_summary.socket_present;
     const HeadlessHostPtpCommandResult start_result =
         run_ptp_stack_command(guard->script_path, "start");
     if (!start_result.error_message.empty() || start_result.exit_code != 0) {
@@ -655,37 +644,9 @@ bool ensure_headless_host_ptp_stack(HeadlessHostPtpStackGuard* guard, std::strin
         return false;
     }
 
-    guard->stop_on_exit = stack_absent_before;
-    if (guard->stop_on_exit) {
-        std::cout << "[HEADLESS][PTP] Host PTP stack was started by this run and will be stopped on exit."
-                  << std::endl;
-    } else {
-        std::cout << "[HEADLESS][PTP] Host PTP stack was repaired for this run and will be left running on exit."
-                  << std::endl;
-    }
+    std::cout << "[HEADLESS][PTP] Host PTP stack started for this run and will be left running on exit."
+              << std::endl;
     return true;
-}
-
-void teardown_headless_host_ptp_stack(HeadlessHostPtpStackGuard* guard)
-{
-    if (!guard || !guard->stop_on_exit || guard->script_path.empty()) {
-        return;
-    }
-    const HeadlessHostPtpCommandResult stop_result =
-        run_ptp_stack_command(guard->script_path, "stop");
-    if (!stop_result.error_message.empty() || stop_result.exit_code != 0) {
-        std::cerr << "[HEADLESS][PTP] Failed to stop host PTP stack after run.";
-        if (!stop_result.error_message.empty()) {
-            std::cerr << " " << stop_result.error_message;
-        }
-        if (!stop_result.output.empty()) {
-            std::cerr << "\n" << stop_result.output;
-        }
-        std::cerr << std::endl;
-        return;
-    }
-    std::cout << "[HEADLESS][PTP] Stopped host PTP stack started by this run." << std::endl;
-    guard->stop_on_exit = false;
 }
 
 struct ExperimentCsvWindowStats {

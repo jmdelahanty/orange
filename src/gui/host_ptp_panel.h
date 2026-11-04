@@ -33,8 +33,6 @@ struct HostPtpStackUiState {
 
 void reap_host_ptp_stack_worker(HostPtpStackUiState* ui_state);
 
-void render_host_ptp_stack_panel(HostPtpStackUiState* ui_state,
-                                 bool streaming_active,
-                                 bool ptp_stream_sync_enabled);
+void render_host_ptp_stack_panel(HostPtpStackUiState* ui_state);
 
 }  // namespace orange::gui

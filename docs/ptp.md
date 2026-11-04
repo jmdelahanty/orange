@@ -62,17 +62,18 @@ does not declare the offset valid. Stopping or restarting `ptp4l` drops the
 cameras' PTP lock: only with no `orange` or `orange_client` running.
 
 Headless `ptp_gate` experiment runs may auto-start this host stack when they
-detect that `ptp4l` / `phc2sys` are not ready. A run that started the stack
-from nothing stops it again on exit; a run that repaired a partly running stack
-leaves it running. The units come back at the next boot either way.
+detect that `ptp4l` / `phc2sys` are not ready, and leave it running on exit.
 
 If Orange is running with sufficient privileges (for example via `sudo`), the
 main UI now also exposes a `Host PTP Stack` section with:
 
 - `Start PTP stack`
 - `Refresh PTP status`
-- `Stop PTP stack`
-- `Restart PTP stack`
+
+Orange never stops or restarts the stack (since 2026-11-04). A `Stop PTP stack`
+button next to `Refresh PTP status` stopped it by accident that day, and the
+PTP-gated cameras then delivered no frames. Stop or restart it from a terminal
+with no `orange` or `orange_client` running.
 
 The UI calls `scripts/ptp_stack.sh` directly and shows captured stdout/stderr,
 plus a compact status summary for `ptp4l`, `phc2sys`, and socket presence.
