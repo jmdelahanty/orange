@@ -1135,9 +1135,10 @@ void render_camera_properties_panel(CameraEmergent* ecams,
 
         ImGui::Separator();
         if (ImGui::TreeNode("Image levels (brightness and saturation)")) {
-            // Whole image, every pixel of one native frame (src/gui/image_levels_check.h).
-            // The expectation is part of this camera's config file, so each
-            // configuration folder carries its own.
+            // One native frame, measured over the dish interior (the camera's
+            // active rim observation) and the whole image
+            // (src/gui/image_levels_check.h). The expectation is part of this
+            // camera's config file, so each configuration folder carries its own.
             static float tolerance_input = 0.10f;
             static float max_saturated_input = 0.001f;
             static std::string levels_status;
@@ -1159,13 +1160,26 @@ void render_camera_properties_panel(CameraEmergent* ecams,
                 }
                 const nlohmann::json& m = r.at("measurement");
                 if (m.is_object() && m.value("ok", false)) {
-                    const nlohmann::json& st = m.at("statistics");
-                    ImGui::Text("Mean %.1f   saturated (255) %.4f%%   zero %.4f%%", st.at("mean").get<double>(),
-                                100.0 * st.at("saturated_fraction").get<double>(),
-                                100.0 * st.at("zero_fraction").get<double>());
-                    ImGui::Text("p01 %d  p05 %d  p50 %d  p95 %d  p99 %d  p99.9 %d", st.at("p01").get<int>(),
-                                st.at("p05").get<int>(), st.at("p50").get<int>(), st.at("p95").get<int>(),
-                                st.at("p99").get<int>(), st.at("p999").get<int>());
+                    const auto show_statistics = [](const char* label, const nlohmann::json& st) {
+                        ImGui::Text("%s: mean %.1f   saturated (255) %.4f%%   zero %.4f%%", label,
+                                    st.at("mean").get<double>(), 100.0 * st.at("saturated_fraction").get<double>(),
+                                    100.0 * st.at("zero_fraction").get<double>());
+                        ImGui::Text("    p01 %d  p05 %d  p50 %d  p95 %d  p99 %d  p99.9 %d", st.at("p01").get<int>(),
+                                    st.at("p05").get<int>(), st.at("p50").get<int>(), st.at("p95").get<int>(),
+                                    st.at("p99").get<int>(), st.at("p999").get<int>());
+                    };
+                    const nlohmann::json& dish = m.at("dish_interior");
+                    if (dish.at("statistics").is_object()) {
+                        show_statistics("Dish interior", dish.at("statistics"));
+                        ImGui::TextDisabled("    inside the rim of %s",
+                                            dish.at("region").at("source").value("artifact_id", std::string()).c_str());
+                    } else {
+                        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.2f, 1.0f),
+                                           "Dish interior: unavailable (%s). Record a dish rim observation for "
+                                           "this camera to check the inside of the dish.",
+                                           dish.at("region").value("reason", std::string()).c_str());
+                    }
+                    show_statistics("Whole frame", m.at("statistics"));
                     ImGui::TextDisabled("Measured %s at exposure %u, gain %u, iris %u",
                                         m.at("measured_at_utc").get<std::string>().c_str(),
                                         m.at("settings").at("exposure").get<unsigned>(),
@@ -1183,7 +1197,7 @@ void render_camera_properties_panel(CameraEmergent* ecams,
             }
             if (levels_camera.image_levels.configured) {
                 const auto& e = levels_camera.image_levels;
-                ImGui::Text("Expectation: mean %s, max saturated %s",
+                ImGui::Text("Expectation (%s): mean %s, max saturated %s", image_levels::RegionName(e.region),
                             e.expected_mean ? (std::to_string(*e.expected_mean) + " +/- " +
                                                std::to_string(static_cast<int>(e.mean_tolerance_fraction * 100.0 + 0.5)) + "%").c_str()
                                             : "not checked",
@@ -1213,17 +1227,24 @@ void render_camera_properties_panel(CameraEmergent* ecams,
             }
             ImGui::BeginDisabled(!can_save);
             if (ImGui::Button("Save measurement as this camera's expectation")) {
+                const image_levels::LevelsRegion region = image_levels::SaveRegion(*last);
+                const image_levels::Statistics& checked = *image_levels::StatisticsFor(*last, region);
                 image_levels::CameraExpectation e;
                 e.configured = true;
-                e.expected_mean = std::round(last->statistics.mean * 10.0) / 10.0;
+                e.region = region;
+                e.expected_mean = std::round(checked.mean * 10.0) / 10.0;
                 e.mean_tolerance_fraction = tolerance_input;
                 e.max_saturated_fraction = max_saturated_input;
-                e.basis_json = nlohmann::json{{"source", "gui_measurement"},
-                                              {"measured_at_utc", last->measured_at_utc},
-                                              {"camera_frame_id", last->camera_frame_id},
-                                              {"settings", image_levels::SettingsToJson(last->settings)},
-                                              {"statistics", image_levels::StatisticsToJson(last->statistics)}}
-                                   .dump();
+                nlohmann::json basis{{"source", "gui_measurement"},
+                                     {"measured_at_utc", last->measured_at_utc},
+                                     {"camera_frame_id", last->camera_frame_id},
+                                     {"settings", image_levels::SettingsToJson(last->settings)},
+                                     {"statistics", image_levels::StatisticsToJson(last->statistics)}};
+                if (last->dish_interior) {
+                    basis["dish_interior"] = {{"region", image_levels::DishRegionToJson(last->dish_region)},
+                                              {"statistics", image_levels::StatisticsToJson(*last->dish_interior)}};
+                }
+                e.basis_json = basis.dump();
                 const image_levels::CameraExpectation previous = levels_camera.image_levels;
                 levels_camera.image_levels = e;
                 std::string save_error;
@@ -1237,6 +1258,10 @@ void render_camera_properties_panel(CameraEmergent* ecams,
                 }
             }
             ImGui::EndDisabled();
+            if (last && last->ok) {
+                ImGui::TextDisabled("Saving checks the %s from now on.",
+                                    last->dish_interior ? "dish interior" : "whole frame (no dish rim observation)");
+            }
             ImGui::TextDisabled("Saving writes this camera's whole config file with its current settings.");
             if (!levels_status.empty()) {
                 ImGui::TextColored(levels_error ? ImVec4(1.0f, 0.35f, 0.35f, 1.0f) : ImVec4(0.35f, 0.85f, 0.45f, 1.0f),

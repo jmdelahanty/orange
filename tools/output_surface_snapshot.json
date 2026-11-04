@@ -2028,10 +2028,12 @@
   "csv_headers": [],
   "json_keys": [
    "camera_frame_id",
+   "dish_interior",
    "enum",
    "free_run",
    "measured_at_utc",
    "nir_strobe_trigger",
+   "region",
    "settings",
    "source",
    "statistics",
@@ -2258,6 +2260,15 @@
  "src/gui/image_levels_check.cpp": {
   "csv_headers": [],
   "json_keys": [
+   "active_pointer_path",
+   "active_pointer_sha256",
+   "artifact_id",
+   "artifact_schema_id",
+   "boundary",
+   "manifest_sha256",
+   "observation_created_utc",
+   "observation_path",
+   "observation_sha256",
    "waiting_for_stream"
   ],
   "schemas": []
@@ -3883,10 +3894,15 @@
  "src/image_levels.cpp": {
   "csv_headers": [],
   "json_keys": [
+   "available",
    "basis",
    "camera_frame_id",
    "camera_timestamp_ns",
    "cameras",
+   "center_px",
+   "checked_region",
+   "coordinate_space",
+   "dish_interior",
    "enabled",
    "error",
    "expectation",
@@ -3896,6 +3912,7 @@
    "first_measurement",
    "focus",
    "gain",
+   "geometry",
    "height",
    "iris",
    "live_settings",
@@ -3916,7 +3933,11 @@
    "p99",
    "p999",
    "pixel_count",
+   "pixel_rule",
    "policy",
+   "radius_px",
+   "reason",
+   "region",
    "rehome_iris",
    "rehomed_iris",
    "saturated_fraction",
@@ -3929,18 +3950,25 @@
    "statistics",
    "status",
    "timestamp_sys_ns",
+   "type",
    "warnings",
    "width",
+   "x",
+   "y",
    "zero_fraction"
   ],
   "schemas": [
    [
     "orange.camera.image_levels",
+    "2"
+   ],
+   [
+    "orange.image_levels_dish_interior",
     "1"
    ],
    [
     "orange.recording.image_levels_check",
-    "1"
+    "2"
    ]
   ]
  },

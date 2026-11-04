@@ -1094,7 +1094,28 @@ void test_camera_config_image_levels_round_trip()
     require(params.image_levels.max_saturated_fraction && *params.image_levels.max_saturated_fraction == 0.001,
             "max_saturated_fraction loads");
     const nlohmann::json saved = saved_camera_config(params, root / "saved.json");
-    require(saved.at("image_levels") == nlohmann::json::parse(block), "image_levels round-trips through save");
+    nlohmann::json as_v2 = nlohmann::json::parse(block);
+    as_v2["schema_version"] = 2;
+    as_v2["region"] = "whole_frame";
+    require(saved.at("image_levels") == as_v2, "a v1 image_levels block is saved as v2, whole_frame");
+
+    const std::string block_v2 = R"json({
+    "schema_id": "orange.camera.image_levels",
+    "schema_version": 2,
+    "region": "dish_interior",
+    "expected_mean": 150.0,
+    "mean_tolerance_fraction": 0.1,
+    "max_saturated_fraction": 0.002,
+    "basis": {"source": "gui_measurement", "settings": {"iris": 19}}
+  })json";
+    write_text(config_path, camera_config_with_image_levels(block_v2));
+    CameraParams params_v2{};
+    load_camera_json_config_files(config_path.string(), &params_v2, 0, 1);
+    require(params_v2.image_levels.region == orange::image_levels::LevelsRegion::kDishInterior,
+            "v2 dish_interior loads");
+    require(saved_camera_config(params_v2, root / "saved_v2.json").at("image_levels") ==
+                nlohmann::json::parse(block_v2),
+            "v2 image_levels round-trips through save");
 
     write_text(config_path, std::string(kImageLevelsCameraConfig).replace(
         std::string(kImageLevelsCameraConfig).find(",\n  \"image_levels\": IMAGE_LEVELS"),

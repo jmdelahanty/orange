@@ -4452,8 +4452,9 @@ def check_lens_feedback(
                 f"Cam{serial} lens watch: mount counters changed {watch.get('changes')} time(s) mid-stream "
                 f"(last at {watch.get('last_change_stream_ms')} ms)",
             )
-    # Image levels (orange.recording.image_levels_check v1): warn-only by policy, so
-    # every outcome other than ok is a warning, never a failure.
+    # Image levels (orange.recording.image_levels_check v1 or v2): warn-only by
+    # policy, so every outcome other than ok is a warning, never a failure. v2
+    # judges checked_region: the dish interior or the whole frame (v1: whole frame).
     check = nested_dict(snapshot, "session", "image_levels_check")
     if isinstance(check, dict) and check.get("enabled"):
         for serial in cameras:
@@ -4463,11 +4464,16 @@ def check_lens_feedback(
                 continue
             status = st.get("status")
             measurement = st.get("measurement") if isinstance(st.get("measurement"), dict) else {}
+            region = st.get("checked_region") or "whole_frame"
             stats = measurement.get("statistics") if isinstance(measurement.get("statistics"), dict) else {}
+            if region == "dish_interior":
+                dish = measurement.get("dish_interior") if isinstance(measurement.get("dish_interior"), dict) else {}
+                stats = dish.get("statistics") if isinstance(dish.get("statistics"), dict) else {}
             summary = (
-                f"mean {stats.get('mean', 0):.1f}, saturated {100 * (stats.get('saturated_fraction') or 0):.3f}%, "
+                f"{region}: mean {stats.get('mean', 0):.1f}, "
+                f"saturated {100 * (stats.get('saturated_fraction') or 0):.3f}%, "
                 f"p99 {stats.get('p99')}, p99.9 {stats.get('p999')}"
-                if stats else (st.get("not_measured_reason") or measurement.get("error") or "")
+                if stats else (st.get("not_measured_reason") or measurement.get("error") or region)
             )
             if status == "ok":
                 reporter.pass_(f"Cam{serial} image levels ok: {summary}")

@@ -1,0 +1,239 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.image_levels_dish_interior.v1",
+  "title": "Orange image levels inside the dish (version 1)",
+  "description": "Brightness and saturation of one native Mono8 frame inside the dish: the operator-confirmed inner rim (water side) of the camera's active physical registration (orange.calibration.active_physical_registration_pointer -> orange.calibration.dish_top_rim_observation accepted_inner_rim_boundary). The region is unavailable when the camera has no active rim observation, the pointer or its checksums do not verify, or the frame does not match the observation's raster. Written by src/image_levels.cpp (MeasurementToJson) from src/gui/image_levels_check.cpp.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "region",
+    "statistics"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "orange.image_levels_dish_interior"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "region": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "available",
+            "reason"
+          ],
+          "properties": {
+            "available": {
+              "const": false
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "description": "no_active_dish_rim_observation, invalid_pointer: <detail>, invalid_selected: <detail>, native_frame_not_tightly_packed, or dish_region_lookup_failed: <detail>."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "available",
+            "geometry",
+            "source"
+          ],
+          "properties": {
+            "available": {
+              "const": true
+            },
+            "geometry": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "type",
+                "coordinate_space",
+                "center_px",
+                "radius_px",
+                "pixel_rule"
+              ],
+              "properties": {
+                "type": {
+                  "const": "circle"
+                },
+                "coordinate_space": {
+                  "const": "camera_native_pixels"
+                },
+                "center_px": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "x",
+                    "y"
+                  ],
+                  "properties": {
+                    "x": {
+                      "type": "number"
+                    },
+                    "y": {
+                      "type": "number"
+                    }
+                  }
+                },
+                "radius_px": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "pixel_rule": {
+                  "const": "(x - center_x)^2 + (y - center_y)^2 <= radius_px^2, x and y integer pixel indices",
+                  "description": "Which pixels count, evaluated in double precision on center_px and radius_px exactly as stored."
+                }
+              }
+            },
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "boundary",
+                "active_pointer_path",
+                "active_pointer_sha256",
+                "artifact_id",
+                "artifact_schema_id",
+                "observation_path",
+                "observation_sha256",
+                "manifest_sha256",
+                "observation_created_utc"
+              ],
+              "properties": {
+                "boundary": {
+                  "const": "accepted_inner_rim_boundary"
+                },
+                "active_pointer_path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "active_pointer_sha256": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "artifact_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "artifact_schema_id": {
+                  "const": "orange.calibration.dish_top_rim_observation"
+                },
+                "observation_path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "observation_sha256": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "manifest_sha256": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "observation_created_utc": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "statistics": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "saturation_value",
+            "pixel_count",
+            "saturated_fraction",
+            "zero_fraction",
+            "mean",
+            "p01",
+            "p05",
+            "p50",
+            "p95",
+            "p99",
+            "p999"
+          ],
+          "properties": {
+            "saturation_value": {
+              "const": 255,
+              "description": "The level counted as saturated, declared rather than implied."
+            },
+            "pixel_count": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 18446744073709551615,
+              "description": "Pixels inside the region; the denominator of the fractions."
+            },
+            "saturated_fraction": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "x-orange-decimals": 8,
+              "description": "Fraction of pixels equal to saturation_value."
+            },
+            "zero_fraction": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "x-orange-decimals": 8,
+              "description": "Fraction of pixels equal to 0."
+            },
+            "mean": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 255,
+              "x-orange-decimals": 3
+            },
+            "p01": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            "p05": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            "p50": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            "p95": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            "p99": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            "p999": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            }
+          },
+          "description": "Same fields and exact definitions as orange.image_levels.v1, applied to the pixels inside the region instead of the whole image: count(L) counts only pixels whose (x, y) satisfies region.geometry.pixel_rule, and pixel_count is the number of those pixels (not width x height)."
+        }
+      ],
+      "description": "Null exactly when the region is unavailable."
+    }
+  }
+}

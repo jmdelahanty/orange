@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orange.camera.image_levels.v2",
+  "title": "Orange camera config image_levels block (version 2)",
+  "description": "Camera config JSON (orange.camera.config v4) key image_levels: the brightness and saturation this camera should show in this configuration folder, checked at stream start (orange.recording.image_levels_check v2). Version 2 adds region: dish_interior checks the pixels inside the camera's active rim observation (orange.image_levels_dish_interior.v1), whole_frame every pixel (orange.image_levels.v1). Version 1 blocks still load and check the whole frame; the GUI writes version 2. At least one of expected_mean (with mean_tolerance_fraction) and max_saturated_fraction. basis records where the numbers came from: the GUI writes source gui_measurement, measured_at_utc, camera_frame_id, settings, statistics (whole frame) and, when the dish region was available, dish_interior {region, statistics}. Unknown fields are refused at load. Parsed and written by src/image_levels.cpp.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_id",
+    "schema_version",
+    "region"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "orange.camera.image_levels"
+    },
+    "schema_version": {
+      "const": 2
+    },
+    "region": {
+      "enum": [
+        "dish_interior",
+        "whole_frame"
+      ],
+      "description": "The pixels the limits apply to."
+    },
+    "expected_mean": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 254
+    },
+    "mean_tolerance_fraction": {
+      "type": "number",
+      "minimum": 0.01,
+      "maximum": 0.9
+    },
+    "max_saturated_fraction": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "basis": {
+      "type": "object"
+    }
+  },
+  "dependentRequired": {
+    "expected_mean": [
+      "mean_tolerance_fraction"
+    ],
+    "mean_tolerance_fraction": [
+      "expected_mean"
+    ]
+  },
+  "anyOf": [
+    {
+      "required": [
+        "expected_mean"
+      ]
+    },
+    {
+      "required": [
+        "max_saturated_fraction"
+      ]
+    }
+  ]
+}

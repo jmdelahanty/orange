@@ -1,6 +1,8 @@
 #include "image_levels.h"
 
+#include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <stdexcept>
 
 namespace orange::image_levels {
@@ -59,6 +61,53 @@ Statistics ComputeStatistics(const uint8_t* pixels, size_t count)
     return StatisticsFromHistogram(counts);
 }
 
+Statistics ComputeStatisticsInCircle(const uint8_t* pixels, int width, int height,
+                                     double cx, double cy, double r)
+{
+    uint64_t counts[256] = {};
+    if (pixels && width > 0 && height > 0 && r > 0.0) {
+        const double r2 = r * r;
+        const auto inside = [&](int x, double dy2) {
+            const double dx = static_cast<double>(x) - cx;
+            return dx * dx + dy2 <= r2;
+        };
+        for (int y = 0; y < height; ++y) {
+            const double dy = static_cast<double>(y) - cy;
+            const double dy2 = dy * dy;
+            if (dy2 > r2) continue;
+            // Row span from the square root, then settled on the exact
+            // inequality so the pixel set is the one the schema defines.
+            const double half = std::sqrt(r2 - dy2);
+            long x0 = std::max<long>(0, static_cast<long>(std::ceil(cx - half)));
+            long x1 = std::min<long>(width - 1, static_cast<long>(std::floor(cx + half)));
+            while (x0 <= x1 && !inside(static_cast<int>(x0), dy2)) ++x0;
+            while (x0 > 0 && inside(static_cast<int>(x0 - 1), dy2)) --x0;
+            while (x1 >= x0 && !inside(static_cast<int>(x1), dy2)) --x1;
+            while (x1 + 1 < width && inside(static_cast<int>(x1 + 1), dy2)) ++x1;
+            const uint8_t* row = pixels + static_cast<size_t>(y) * static_cast<size_t>(width);
+            for (long x = x0; x <= x1; ++x) {
+                ++counts[row[x]];
+            }
+        }
+    }
+    return StatisticsFromHistogram(counts);
+}
+
+nlohmann::json DishRegionToJson(const DishRegion& d)
+{
+    if (!d.available) {
+        return {{"available", false}, {"reason", d.unavailable_reason}};
+    }
+    return {{"available", true},
+            {"geometry",
+             {{"type", "circle"},
+              {"coordinate_space", "camera_native_pixels"},
+              {"center_px", {{"x", d.center_x}, {"y", d.center_y}}},
+              {"radius_px", d.radius},
+              {"pixel_rule", "(x - center_x)^2 + (y - center_y)^2 <= radius_px^2, x and y integer pixel indices"}}},
+            {"source", d.source_json.empty() ? nlohmann::json::object() : nlohmann::json::parse(d.source_json)}};
+}
+
 namespace {
 // Half away from zero, as the schema states (std::round's rule).
 double round_to(double value, int decimals)
@@ -113,22 +162,37 @@ CameraExpectation ParseCameraExpectation(const nlohmann::json& camera_config)
     if (!block.is_object()) {
         throw std::runtime_error("image_levels must be an object");
     }
+    const int version = block.contains("schema_version") && block.at("schema_version").is_number_integer()
+                            ? block.at("schema_version").get<int>()
+                            : 0;
     if (block.value("schema_id", std::string()) != kCameraImageLevelsSchemaId ||
-        !block.contains("schema_version") || !block.at("schema_version").is_number_integer() ||
-        block.at("schema_version").get<int>() != kCameraImageLevelsSchemaVersion) {
+        (version != kCameraImageLevelsSchemaVersion && version != kCameraImageLevelsSchemaVersionWholeFrameOnly)) {
         throw std::runtime_error(std::string("image_levels must declare schema_id ") + kCameraImageLevelsSchemaId +
-                                 " and schema_version " + std::to_string(kCameraImageLevelsSchemaVersion));
+                                 " and schema_version " + std::to_string(kCameraImageLevelsSchemaVersion) +
+                                 " (or " + std::to_string(kCameraImageLevelsSchemaVersionWholeFrameOnly) + ")");
     }
-    static const char* kKnown[] = {"schema_id", "schema_version", "expected_mean", "mean_tolerance_fraction",
-                                   "max_saturated_fraction", "basis"};
+    static const char* kKnown[] = {"schema_id", "schema_version", "region", "expected_mean",
+                                   "mean_tolerance_fraction", "max_saturated_fraction", "basis"};
     for (auto it = block.begin(); it != block.end(); ++it) {
         bool known = false;
         for (const char* k : kKnown) known = known || it.key() == k;
-        if (!known) {
+        if (!known || (it.key() == "region" && version == kCameraImageLevelsSchemaVersionWholeFrameOnly)) {
             throw std::runtime_error("image_levels has an unknown field: " + it.key());
         }
     }
     e.configured = true;
+    if (version == kCameraImageLevelsSchemaVersion) {
+        const std::string region = block.contains("region") && block.at("region").is_string()
+                                       ? block.at("region").get<std::string>()
+                                       : std::string();
+        if (region == "dish_interior") {
+            e.region = LevelsRegion::kDishInterior;
+        } else if (region == "whole_frame") {
+            e.region = LevelsRegion::kWholeFrame;
+        } else {
+            throw std::runtime_error("image_levels.region must be dish_interior or whole_frame");
+        }
+    }
     if (block.contains("expected_mean") && !block.at("expected_mean").is_null()) {
         e.expected_mean = require_number(block, "expected_mean", 1.0, 254.0);
         if (!block.contains("mean_tolerance_fraction")) {
@@ -159,7 +223,8 @@ nlohmann::json BuildCameraExpectation(const CameraExpectation& e)
         return nlohmann::json::object();
     }
     nlohmann::json block = {{"schema_id", kCameraImageLevelsSchemaId},
-                            {"schema_version", kCameraImageLevelsSchemaVersion}};
+                            {"schema_version", kCameraImageLevelsSchemaVersion},
+                            {"region", RegionName(e.region)}};
     if (e.expected_mean) {
         block["expected_mean"] = *e.expected_mean;
         block["mean_tolerance_fraction"] = e.mean_tolerance_fraction;
@@ -186,7 +251,12 @@ nlohmann::json MeasurementToJson(const Measurement& m)
             {"camera_timestamp_ns", m.camera_timestamp_ns},
             {"timestamp_sys_ns", m.timestamp_sys_ns},
             {"settings", SettingsToJson(m.settings)},
-            {"statistics", StatisticsToJson(m.statistics)}};
+            {"statistics", StatisticsToJson(m.statistics)},
+            {"dish_interior",
+             {{"schema_id", kDishInteriorLevelsSchemaId},
+              {"schema_version", kDishInteriorLevelsSchemaVersion},
+              {"region", DishRegionToJson(m.dish_region)},
+              {"statistics", m.dish_interior ? StatisticsToJson(*m.dish_interior) : nlohmann::json(nullptr)}}}};
 }
 
 bool MeanInBand(const CameraExpectation& e, double mean)
@@ -197,18 +267,39 @@ bool MeanInBand(const CameraExpectation& e, double mean)
     return std::fabs(mean - *e.expected_mean) <= e.mean_tolerance_fraction * *e.expected_mean;
 }
 
+const char* RegionName(LevelsRegion region)
+{
+    return region == LevelsRegion::kDishInterior ? "dish_interior" : "whole_frame";
+}
+
+LevelsRegion SaveRegion(const Measurement& m)
+{
+    return m.dish_interior ? LevelsRegion::kDishInterior : LevelsRegion::kWholeFrame;
+}
+
+const Statistics* StatisticsFor(const Measurement& m, LevelsRegion region)
+{
+    if (region == LevelsRegion::kWholeFrame) {
+        return &m.statistics;
+    }
+    return m.dish_interior ? &*m.dish_interior : nullptr;
+}
+
 std::string SaveRefusal(const Measurement& m, double max_saturated_fraction)
 {
     if (!m.ok) {
         return "No successful measurement to save.";
     }
-    const double measured = m.statistics.saturated_fraction;
+    const LevelsRegion region = SaveRegion(m);
+    const double measured = StatisticsFor(m, region)->saturated_fraction;
     if (measured > max_saturated_fraction) {
-        char text[256];
+        char text[320];
         std::snprintf(text, sizeof(text),
-                      "This measurement has %.4f saturated (%.2f%%), above the limit %.4f. "
+                      "This measurement has %.4f saturated (%.2f%%) in the %s, above the limit %.4f. "
                       "Raise the limit to at least %.4f, or lower the brightness and measure again.",
-                      measured, measured * 100.0, max_saturated_fraction, std::ceil(measured * 1e4) / 1e4);
+                      measured, measured * 100.0,
+                      region == LevelsRegion::kDishInterior ? "dish interior" : "whole frame",
+                      max_saturated_fraction, std::ceil(measured * 1e4) / 1e4);
         return text;
     }
     return {};
@@ -250,7 +341,8 @@ nlohmann::json EvaluateCamera(const CameraExpectation& e,
                           {"measurement", nullptr},
                           {"first_measurement", nullptr},
                           {"rehomed_iris", rehomed},
-                          {"not_measured_reason", nullptr}};
+                          {"not_measured_reason", nullptr},
+                          {"checked_region", e.configured ? nlohmann::json(RegionName(e.region)) : nlohmann::json(nullptr)}};
     if (first_measurement) {
         out["first_measurement"] = MeasurementToJson(*first_measurement);
     }
@@ -267,12 +359,16 @@ nlohmann::json EvaluateCamera(const CameraExpectation& e,
         out["status"] = "no_expectation";
         return out;
     }
-    const Statistics& s = measurement->statistics;
-    if (!MeanInBand(e, s.mean)) {
-        out["warnings"].push_back("mean_out_of_band");
-    }
-    if (e.max_saturated_fraction && s.saturated_fraction > *e.max_saturated_fraction) {
-        out["warnings"].push_back("saturated_fraction_above_limit");
+    const Statistics* s = StatisticsFor(*measurement, e.region);
+    if (!s) {
+        out["warnings"].push_back("dish_interior_unavailable");
+    } else {
+        if (!MeanInBand(e, s->mean)) {
+            out["warnings"].push_back("mean_out_of_band");
+        }
+        if (e.max_saturated_fraction && s->saturated_fraction > *e.max_saturated_fraction) {
+            out["warnings"].push_back("saturated_fraction_above_limit");
+        }
     }
     out["status"] = out["warnings"].empty() ? "ok" : "warning";
     return out;

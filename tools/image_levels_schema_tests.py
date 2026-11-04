@@ -23,7 +23,7 @@ def main() -> int:
             capture_output=True, text=True)
         print(result.stdout, end="")
         print(result.stderr, end="", file=sys.stderr)
-        if result.returncode != 0 or "orange.recording.image_levels_check v1" not in result.stdout:
+        if result.returncode != 0 or "orange.recording.image_levels_check v2" not in result.stdout:
             return 1
     print("image_levels_schema_tests: PASS")
     return 0

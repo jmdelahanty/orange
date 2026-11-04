@@ -1,5 +1,9 @@
 #include "gui/image_levels_check.h"
 
+#include "dish_top_rim_observation_schema.h"
+#include "gui/spatial_layout/physical_registration_selection.h"
+#include "recording_physical_registration.h"
+
 #include "image_levels_camera.h"
 #include "project.h"
 #include "spatial_snapshot_worker.h"
@@ -25,6 +29,43 @@ int lowest_cpu_of_this_thread()
         if (CPU_ISSET(cpu, &set)) return cpu;
     }
     return -1;
+}
+
+// The camera's active physical registration (operator-confirmed inner rim)
+// as the dish region; unavailable, with the reason, when there is none or it
+// does not match this frame.
+image_levels::DishRegion ResolveDishRegion(const std::string& serial, int width, int height)
+{
+    image_levels::DishRegion region;
+    try {
+        const auto resolution = orange::gui::spatial_layout::resolve_active_physical_registration(
+            orange::recording_geometry::resolve_recording_calibration_base_dir(), serial, width, height, "Mono8");
+        if (!resolution.valid) {
+            region.unavailable_reason = resolution.status == "not_selected"
+                                            ? "no_active_dish_rim_observation"
+                                            : resolution.status + (resolution.error.empty() ? "" : ": " + resolution.error);
+            return region;
+        }
+        const auto& c = resolution.candidate;
+        region.available = true;
+        region.center_x = c.accepted_center_x_px;
+        region.center_y = c.accepted_center_y_px;
+        region.radius = c.accepted_radius_px;
+        region.source_json = nlohmann::json{
+            {"boundary", "accepted_inner_rim_boundary"},
+            {"active_pointer_path", resolution.pointer_path.string()},
+            {"active_pointer_sha256", resolution.pointer_sha256},
+            {"artifact_id", c.artifact_id},
+            {"artifact_schema_id", orange::calibration::kDishTopRimObservationSchemaId},
+            {"observation_path", c.observation_path.string()},
+            {"observation_sha256", c.observation_sha256},
+            {"manifest_sha256", c.manifest_sha256},
+            {"observation_created_utc", c.created_utc}}.dump();
+    } catch (const std::exception& ex) {
+        region = {};
+        region.unavailable_reason = std::string("dish_region_lookup_failed: ") + ex.what();
+    }
+    return region;
 }
 
 double seconds_since(std::chrono::steady_clock::time_point t)
@@ -228,7 +269,8 @@ void ImageLevelsCheck::Poll(const Inputs& in, CameraParams* cameras, int num_cam
             c.consumed.reset();
             const image_levels::LevelSettings settings = image_levels::LevelSettingsFromCamera(params);
             const std::string at = get_current_utc_timestamp();
-            c.computing = std::async(std::launch::async, [frame, settings, at]() {
+            const std::string serial = params.camera_serial;
+            c.computing = std::async(std::launch::async, [frame, settings, at, serial]() {
                 image_levels::Measurement m;
                 m.measured_at_utc = at;
                 m.settings = settings;
@@ -243,6 +285,18 @@ void ImageLevelsCheck::Poll(const Inputs& in, CameraParams* cameras, int num_cam
                 m.camera_timestamp_ns = frame->camera_timestamp_ns;
                 m.timestamp_sys_ns = frame->timestamp_sys_ns;
                 m.statistics = image_levels::ComputeStatistics(frame->native_bytes.data(), frame->native_bytes.size());
+                m.dish_region = ResolveDishRegion(serial, frame->width, frame->height);
+                if (m.dish_region.available &&
+                    frame->native_bytes.size() !=
+                        static_cast<size_t>(frame->width) * static_cast<size_t>(frame->height)) {
+                    m.dish_region.available = false;
+                    m.dish_region.unavailable_reason = "native_frame_not_tightly_packed";
+                }
+                if (m.dish_region.available) {
+                    m.dish_interior = image_levels::ComputeStatisticsInCircle(
+                        frame->native_bytes.data(), frame->width, frame->height, m.dish_region.center_x,
+                        m.dish_region.center_y, m.dish_region.radius);
+                }
                 return m;
             });
             c.phase = Phase::kComputing;
@@ -251,7 +305,9 @@ void ImageLevelsCheck::Poll(const Inputs& in, CameraParams* cameras, int num_cam
         case Phase::kComputing: {
             if (c.computing.wait_for(std::chrono::seconds(0)) != std::future_status::ready) break;
             image_levels::Measurement m = c.computing.get();
-            const bool out_of_band = m.ok && !image_levels::MeanInBand(params.image_levels, m.statistics.mean);
+            const image_levels::Statistics* checked =
+                m.ok ? image_levels::StatisticsFor(m, params.image_levels.region) : nullptr;
+            const bool out_of_band = checked && !image_levels::MeanInBand(params.image_levels, checked->mean);
             if (out_of_band && !c.second_pass && in.rehome_iris && params.lens_control_enabled &&
                 in.rehome_iris_blocking && !in.recording_busy) {
                 std::cout << "[IMAGE_LEVELS] Cam" << params.camera_serial << " mean " << m.statistics.mean
@@ -290,8 +346,16 @@ void ImageLevelsCheck::Poll(const Inputs& in, CameraParams* cameras, int num_cam
                 std::cout << "[IMAGE_LEVELS] Cam" << params.camera_serial << " " << r.at("status").get<std::string>();
                 if (c.measurement && c.measurement->ok) {
                     const auto& s = c.measurement->statistics;
-                    std::cout << " mean " << s.mean << " saturated_fraction " << s.saturated_fraction << " p99 " << s.p99
-                              << " p999 " << s.p999;
+                    std::cout << " whole_frame mean " << s.mean << " saturated_fraction " << s.saturated_fraction
+                              << " p99 " << s.p99 << " p999 " << s.p999;
+                    if (c.measurement->dish_interior) {
+                        const auto& d = *c.measurement->dish_interior;
+                        std::cout << " dish_interior mean " << d.mean << " saturated_fraction "
+                                  << d.saturated_fraction << " p999 " << d.p999;
+                    } else {
+                        std::cout << " dish_interior unavailable (" << c.measurement->dish_region.unavailable_reason
+                                  << ")";
+                    }
                 }
                 if (!r.at("warnings").empty()) std::cout << " warnings " << r.at("warnings").dump();
                 if (c.measurement && !c.measurement->ok) std::cout << " error " << c.measurement->error;
