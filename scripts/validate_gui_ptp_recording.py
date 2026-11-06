@@ -4633,6 +4633,85 @@ def check_sync_config(
             )
 
 
+# EVT camera frame ids run 1..65535 and wrap to 1 (count_camera_frame_id_gaps,
+# src/video_capture.h).
+CAMERA_FRAME_ID_PERIOD = 65535
+
+
+def crop_ledger_end_rows(path: Path) -> tuple[dict[str, str], dict[str, str]] | None:
+    """First and last data rows of a crop ledger CSV, without reading the middle."""
+    try:
+        with path.open("rb") as handle:
+            header = handle.readline().decode().strip().split(",")
+            first = handle.readline().decode().strip()
+            handle.seek(0, os.SEEK_END)
+            end = handle.tell()
+            handle.seek(max(0, end - 65536))
+            last = handle.read().decode(errors="replace").rstrip("\n").rsplit("\n", 1)[-1].strip()
+    except OSError:
+        return None
+    if not first or not last:
+        return None
+    return dict(zip(header, first.split(","))), dict(zip(header, last.split(",")))
+
+
+def recording_window_camera_drops(recording_folder: Path, cameras: list[str]) -> dict[str, dict[str, Any]]:
+    """Camera frames lost between the first and the last recorded frame, per camera.
+
+    The acquisition counters (camera_frame_id_gaps, camera_dropped_frames) run
+    from stream start, so frames the camera dropped before Record was pressed
+    count there too. In the crop ledger, camera_frame_id minus stream_frame_id
+    grows by one per frame the camera dropped; its change from the first to the
+    last recorded row is the loss inside the recording.
+    """
+    result: dict[str, dict[str, Any]] = {}
+    for serial in cameras:
+        path = recording_folder / f"Cam{serial}_crop_meta.csv"
+        rows = crop_ledger_end_rows(path) if path.exists() else None
+        if rows is None:
+            continue
+        first, last = rows
+        try:
+            stream_span = int(last["stream_frame_id"]) - int(first["stream_frame_id"])
+            camera_span = int(last["camera_frame_id"]) - int(first["camera_frame_id"])
+        except (KeyError, ValueError):
+            continue
+        if stream_span < 0:
+            continue
+        result[serial] = {
+            "source": path.name,
+            "first_recording_frame_id": integer(first.get("recording_frame_id")),
+            "last_recording_frame_id": integer(last.get("recording_frame_id")),
+            "dropped_during_recording": (camera_span - stream_span) % CAMERA_FRAME_ID_PERIOD,
+        }
+    return result
+
+
+def check_camera_drop_counter(
+    reporter: "Reporter",
+    serial: str,
+    label: str,
+    stream_total: int | None,
+    window: dict[str, Any] | None,
+) -> None:
+    """A stream-wide drop counter, judged on the recording when the ledger says where the drops were."""
+    if not stream_total or window is None:
+        reporter.check(stream_total == 0, f"Cam{serial} {label}=0", f"Cam{serial} {label}={stream_total}")
+        return
+    during = int(window["dropped_during_recording"])
+    before = stream_total - during
+    if during > 0:
+        reporter.fail(f"Cam{serial} {label}={during} during the recording ({stream_total} since stream start)")
+    else:
+        reporter.warn(
+            f"Cam{serial} {label}={stream_total} since stream start, all before the recording "
+            f"(0 between recorded frames {window['first_recording_frame_id']} and "
+            f"{window['last_recording_frame_id']}, {window['source']})"
+        )
+    if before < 0:
+        reporter.warn(f"Cam{serial} {label}: the crop ledger counts {during} drops, more than the stream total")
+
+
 def check_ptp_counters(
     reporter: Reporter,
     summary: dict[str, Any],
@@ -4640,6 +4719,7 @@ def check_ptp_counters(
     cameras: list[str],
     expected_decimate: int,
     skip_decimate: bool,
+    window_drops: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     ptp_cameras = nested_dict(summary, "ptp", "cameras")
     raw_ptp_cameras = ptp_sync_summary.get("cameras")
@@ -4656,7 +4736,7 @@ def check_ptp_counters(
 
         gaps = integer(camera.get("camera_frame_id_gaps", raw_camera.get("camera_frame_id_gaps")))
         get_frame_errors = integer(camera.get("get_frame_errors", raw_camera.get("get_frame_errors")))
-        reporter.check(gaps == 0, f"Cam{serial} PTP frame gaps=0", f"Cam{serial} PTP frame gaps={gaps}")
+        check_camera_drop_counter(reporter, serial, "PTP frame gaps", gaps, (window_drops or {}).get(serial))
         reporter.check(
             get_frame_errors == 0,
             f"Cam{serial} GetFrame errors=0",
@@ -4695,6 +4775,7 @@ def check_pipeline(
     cameras: list[str],
     expected_display_preview_max_fps: int | None = None,
     crop_only: bool = False,
+    window_drops: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     for serial in cameras:
         pipeline = nested_dict(summary, "pipeline", serial)
@@ -4720,6 +4801,9 @@ def check_pipeline(
             if field not in final or final.get(field) is None:
                 continue
             value = integer(final.get(field))
+            if field in ("camera_dropped_frames", "camera_frame_id_gaps"):
+                check_camera_drop_counter(reporter, serial, label, value, (window_drops or {}).get(serial))
+                continue
             reporter.check(value == 0, f"Cam{serial} {label}=0", f"Cam{serial} {label}={value}")
         enc_slow = integer(final.get("enc_slow"))
         if enc_slow is not None:
@@ -7642,6 +7726,7 @@ def main() -> int:
             args.expected_ptp_mode,
         )
         check_lens_feedback(reporter, snapshot, cameras)
+        window_drops = recording_window_camera_drops(recording_folder, cameras)
         check_ptp_counters(
             reporter,
             summary,
@@ -7649,6 +7734,7 @@ def main() -> int:
             cameras,
             args.expect_ptp_register_read_decimate,
             args.skip_ptp_register_decimate_check,
+            window_drops,
         )
         recording_session_manifest = check_recording_session_manifest(
             reporter,
@@ -7691,6 +7777,7 @@ def main() -> int:
             cameras,
             args.expect_display_preview_max_fps,
             crop_only=crop_only,
+            window_drops=window_drops,
         )
         video_sanity = {} if crop_only else check_videos(
             reporter,
@@ -7777,6 +7864,7 @@ def main() -> int:
     host_monitor_summary = check_host_monitor(reporter, recording_folder, snapshot, args)
     nic_port_counters_summary = check_nic_port_counters(reporter, recording_folder, args)
     if not cameras:
+        window_drops = {}
         video_sanity = {}
         crop_preview_summary = {}
         crop_recording_summary = {}
@@ -7818,6 +7906,7 @@ def main() -> int:
         "external_recorder_status": external_recorder_status_summary,
         "gui_display_frame_rate": gui_display_frame_rate_summary,
         "nic_port_counters": nic_port_counters_summary,
+        "recording_window_camera_drops": window_drops,
     }
 
     if args.json_out:
