@@ -610,7 +610,95 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ffmpeg", default=default_tool(DEFAULT_FFMPEG, "ffmpeg"))
     parser.add_argument("--json", action="store_true", help="Print only machine-readable JSON.")
     parser.add_argument("--json-out", type=Path, help="Optional path to write the validation JSON summary.")
+    parser.add_argument(
+        "--require-nic-port-counters",
+        action="store_true",
+        help=(
+            "Fail when nic_port_counters.json is missing (the GUI passes this after a finalize). "
+            "Without it a missing file is a warning, for recordings that predate it."
+        ),
+    )
     return parser.parse_args()
+
+
+# nic_port_counters.json (the NIC helper, src/nic_thermal_monitor.cpp): a rise
+# in these over the recording fails the run, in these warns.
+NIC_PORT_FAIL_COUNTERS = ("rx_discards_phy", "rx_out_of_buffer", "rx_crc_errors_phy", "link_down_events_phy")
+NIC_PORT_WARN_COUNTERS = ("tx_global_pause", "tx_pause_ctrl_phy", "rx_symbol_err_phy", "rx_buffer_passed_thres_phy")
+
+
+def check_nic_port_counters(reporter: "Reporter", recording_folder: Path, args: argparse.Namespace) -> dict[str, Any]:
+    """Camera-NIC loss over the recording: first and last ethtool readings per mlx5 port."""
+    path = recording_folder / "nic_port_counters.json"
+    if not path.exists():
+        message = f"NIC port counters not recorded ({path.name} missing)"
+        if args.require_nic_port_counters:
+            reporter.fail(message)
+        else:
+            reporter.warn(message + "; read ethtool -S rx_discards_phy/tx_global_pause by hand")
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        reporter.fail(f"NIC port counters unreadable: {path}: {exc}")
+        return {}
+    if data.get("schema_id") != "orange.nic_port_counters" or data.get("schema_version") != 1:
+        reporter.fail(f"NIC port counters: unexpected schema {data.get('schema_id')!r} v{data.get('schema_version')!r}")
+        return {}
+    status = data.get("status")
+    if status == "failed":
+        reporter.fail(f"NIC port counters: helper failed: {data.get('error') or data.get('stop_reason')}")
+    elif status != "completed":
+        reporter.warn(f"NIC port counters: status {status!r}, the helper did not finish; the last reading may be early")
+    elif not data.get("final_sample_at_stop"):
+        reporter.warn("NIC port counters: no reading at the stop; the last one is up to one sample period early")
+
+    ports = data.get("ports") if isinstance(data.get("ports"), dict) else {}
+    started_ns = integer(data.get("started_realtime_posix_ns"))
+    compact: dict[str, Any] = {}
+    carrying = 0
+    lost = False
+    for name in sorted(ports):
+        port = ports[name] if isinstance(ports[name], dict) else {}
+        delta = port.get("delta") if isinstance(port.get("delta"), dict) else {}
+        valid = integer(port.get("valid_samples")) or 0
+        failed = integer(port.get("failed_samples")) or 0
+        operstate = port.get("operstate")
+        packets = integer(delta.get("rx_packets_phy")) or 0
+        compact[name] = {
+            "operstate": operstate,
+            "rx_packets_phy": packets,
+            **{counter: delta.get(counter) for counter in NIC_PORT_FAIL_COUNTERS + NIC_PORT_WARN_COUNTERS if counter in delta},
+        }
+        if valid < 2:
+            if operstate == "up":
+                reporter.warn(f"NIC port {name}: {valid} readable sample(s), {failed} failed ({port.get('last_error')})")
+            continue
+        if packets > 0:
+            carrying += 1
+        decreased = port.get("counters_decreased") or []
+        if decreased:
+            reporter.warn(f"NIC port {name}: counters went down during the recording (driver reset?): {decreased}")
+        first_change_s = None
+        intervals = port.get("changed_intervals") if isinstance(port.get("changed_intervals"), list) else []
+        if intervals and started_ns is not None:
+            first_ns = integer(intervals[0].get("realtime_posix_ns"))
+            if first_ns is not None:
+                first_change_s = (first_ns - started_ns) / 1e9
+        when = f" (first change {first_change_s:.0f} s after the helper started)" if first_change_s is not None else ""
+        for counter in NIC_PORT_FAIL_COUNTERS:
+            value = integer(delta.get(counter))
+            if value:
+                lost = True
+                reporter.fail(f"NIC port {name}: {counter} +{value} during the recording{when}")
+        for counter in NIC_PORT_WARN_COUNTERS:
+            value = integer(delta.get(counter))
+            if value:
+                reporter.warn(f"NIC port {name}: {counter} +{value} during the recording{when}")
+    if not lost:
+        reporter.pass_(f"NIC port counters: no discards or link errors on {len(ports)} mlx5 port(s), "
+                       f"{carrying} carrying camera traffic")
+    return {"status": status, "ports_with_loss": data.get("ports_with_loss"), "ports": compact}
 
 
 def check_host_monitor(reporter: "Reporter", recording_folder: Path, snapshot: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
@@ -7687,6 +7775,7 @@ def main() -> int:
             args.require_imgui_glfw_size_cache,
         )
     host_monitor_summary = check_host_monitor(reporter, recording_folder, snapshot, args)
+    nic_port_counters_summary = check_nic_port_counters(reporter, recording_folder, args)
     if not cameras:
         video_sanity = {}
         crop_preview_summary = {}
@@ -7728,6 +7817,7 @@ def main() -> int:
         "crop_recording": crop_recording_summary,
         "external_recorder_status": external_recorder_status_summary,
         "gui_display_frame_rate": gui_display_frame_rate_summary,
+        "nic_port_counters": nic_port_counters_summary,
     }
 
     if args.json_out:

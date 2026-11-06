@@ -181,6 +181,8 @@ recording-scoped helper process and its `nic_thermal_monitor.csv`,
 Linux mlx5 hwmon sysfs directly every five seconds by default. mlx5 zero input
 values are explicitly classified as unavailable rather than valid 0 C
 measurements. This first contract is evidence-only and does not gate recording.
+The same helper writes `nic_port_counters.json`: the camera NIC ports' ethtool
+loss counters over the recording (see `docs/output_artifacts_contract.md`).
 
 When pre-encoder reference capture is enabled, the recording folder may also
 contain:

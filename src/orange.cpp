@@ -56,6 +56,7 @@
 #include "gui/gui_timing_sidecar_writer.h"
 #include "gui/host_ptp_panel.h"
 #include "gui/incremental_clip_shadow.h"
+#include "gui/post_finalize_validation.h"
 #include "gui/recording_finalizer.h"
 #include "gui/recording_panel.h"
 #include "gui/registered_context_recording.h"
@@ -4120,6 +4121,8 @@ GuiRecordingStartDispatch gui_request_recording_start_through_operator_path(
     if (recording_preflight_errors) {
         recording_preflight_errors->clear();
     }
+    // The last recording's validator must not load the host while this one runs.
+    orange::gui::CancelPostFinalizeValidation("a recording started before it finished");
     const std::string output_root =
         encoder_config && !encoder_config->folder_name.empty()
             ? encoder_config->folder_name
@@ -6317,6 +6320,7 @@ int main(int /*argc*/, char ** /*args*/) {
                 gui_recording_run.recording_folder);
             std::cout << "[GUI][recording] Finalized recording session during stream shutdown."
                       << std::endl;
+            orange::gui::StartPostFinalizeValidation(gui_recording_run.recording_folder);
         }
         gui_mark_recording_finished(&gui_session_timing);
         gui_mark_stream_stopped(&gui_session_timing);
@@ -8203,6 +8207,7 @@ int main(int /*argc*/, char ** /*args*/) {
             // phase) the frame the worker finishes; true exactly when a
             // finalize completed successfully this frame, matching the old
             // synchronous gui_finalize_recording_session_if_ready contract.
+            orange::gui::PollPostFinalizeValidation();
             if (gui_poll_async_recording_finalize(
                     &gui_async_recording_finalize,
                     &gui_recording_run,
@@ -8221,6 +8226,7 @@ int main(int /*argc*/, char ** /*args*/) {
                     &gui_local_control_stop_scheduler,
                     gui_local_control_event_log_path,
                     gui_recording_run.recording_folder);
+                orange::gui::StartPostFinalizeValidation(gui_recording_run.recording_folder);
                 if (gui_local_control_exit_after_finalize &&
                     gui_local_control_stop_scheduler.stop_triggered) {
                     gui_local_control_exit_pending_after_finalize = true;
@@ -8812,6 +8818,8 @@ int main(int /*argc*/, char ** /*args*/) {
                         gui_recording_run.recording_folder);
                     std::cout << "[GUI][recording] Finalized recording session during"
                                  " window-close shutdown." << std::endl;
+                    // The GUI is closing: the validator outlives it and leaves its result file.
+                    orange::gui::StartPostFinalizeValidation(gui_recording_run.recording_folder);
                 } else {
                     std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 }

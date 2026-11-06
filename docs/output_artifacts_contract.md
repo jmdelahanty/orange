@@ -74,6 +74,7 @@ Default configured base path in runtime:
 | NIC thermal samples | `<recording_folder>/nic_thermal_monitor.csv` | Optional | GUI or headless recording with the recording-scoped NIC thermal helper enabled |
 | NIC thermal summary | `<recording_folder>/nic_thermal_monitor_summary.json` | Optional | Same; atomically refreshed while running and terminal at helper shutdown |
 | NIC thermal stderr log | `<recording_folder>/nic_thermal_monitor.stderr.log` | Optional | Same; helper startup/runtime diagnostics |
+| NIC port counters | `<recording_folder>/nic_port_counters.json` | Optional | Same helper; per mlx5 port first/last/delta of the loss counters, refreshed every sample, terminal at helper shutdown |
 | Crop video | `<recording_folder>/Cam<serial>_crop.mp4` | Optional | Crop-and-encode active |
 | Crop video finalization | `<crop-video-path>.finalization.json` | Optional for newly written crop MP4s | Crop MP4 writer opened; terminal at clean close |
 | Crop metadata CSV | `<recording_folder>/Cam<serial>_crop_meta.csv` | Optional | Crop-and-encode active |
@@ -710,6 +711,29 @@ be interpreted as a measured 0 degrees Celsius. The summary uses schema
 maxima, warnings, critical samples, invalid reasons, and sensor-set changes.
 Monitoring is observational in this first slice: failure is preserved in the
 artifacts but does not reject or stop a recording.
+
+The same helper reads the ethtool statistics of every `mlx5_core` interface
+(SIOCETHTOOL, the values `ethtool -S` prints) at every sample, once more when
+it is stopped at the end of the recording, and keeps them in
+`nic_port_counters.json` (schema `orange.nic_port_counters` version 1). Per
+port: `operstate`, `first`, `last` and `delta` of `rx_discards_phy`,
+`rx_out_of_buffer`, `tx_global_pause`, `tx_pause_ctrl_phy`,
+`rx_crc_errors_phy`, `rx_symbol_err_phy`, `rx_buffer_passed_thres_phy`,
+`link_down_events_phy` and `rx_packets_phy`; `changed_intervals` lists the
+samples where any of them but `rx_packets_phy` moved (at most 256 per port).
+`ports_with_loss` names the ports whose `rx_discards_phy` or `rx_out_of_buffer`
+rose. A port that cannot be read keeps its error and failed-sample count.
+`final_sample_at_stop` is false when the helper ended without its stop signal,
+so the last reading may be one sample period early. The file is evidence; the
+verdict is the validator's (`scripts/validate_gui_ptp_recording.py` fails a
+rise in discards, out-of-buffer, CRC errors or link-down events, and warns on
+pause frames, symbol errors and buffer-threshold crossings).
+
+After every finalized GUI recording, the GUI runs that validator in the
+background (as the sudo invoker, nice 19, idle I/O, non-isolated cores; a
+recording start stops it) and shows PASS/FAIL in the Recording panel. Its result
+goes to `~/orange_data/recording_validation/<recording>.json` and `.log`,
+outside the recording folder.
 
 `pipeline_metrics` object (current shape):
 - Key: camera identifier string (serial or camera_id string).

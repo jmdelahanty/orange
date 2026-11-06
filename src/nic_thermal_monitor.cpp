@@ -23,7 +23,12 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <linux/ethtool.h>
+#include <linux/sockios.h>
+#include <net/if.h>
 #include <spawn.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/prctl.h>
 #include <sys/wait.h>
@@ -455,7 +460,286 @@ std::string resolve_helper_executable()
     return (std::filesystem::path(directory) / "nic_thermal_monitor").string();
 }
 
+// Bound on the intervals kept per port; a port whose counters keep moving
+// already fails the check, and its first intervals say when it started.
+constexpr std::size_t kMaxChangedIntervalsPerPort = 256;
+
+bool read_ethtool_stats(int fd,
+                        const std::string& interface,
+                        std::map<std::string, uint64_t>* wanted,
+                        std::string* error_out)
+{
+    struct ifreq request{};
+    std::strncpy(request.ifr_name, interface.c_str(), IFNAMSIZ - 1);
+
+    // ETHTOOL_GSSET_INFO: how many statistics the port has.
+    std::vector<uint8_t> info_buffer(sizeof(ethtool_sset_info) + sizeof(uint32_t), 0);
+    auto* info = reinterpret_cast<ethtool_sset_info*>(info_buffer.data());
+    info->cmd = ETHTOOL_GSSET_INFO;
+    info->sset_mask = 1ULL << ETH_SS_STATS;
+    request.ifr_data = reinterpret_cast<char*>(info);
+    if (::ioctl(fd, SIOCETHTOOL, &request) != 0) {
+        *error_out = "ETHTOOL_GSSET_INFO: " + std::string(std::strerror(errno));
+        return false;
+    }
+    uint32_t count = 0;
+    if (info->sset_mask & (1ULL << ETH_SS_STATS)) {
+        std::memcpy(&count, info_buffer.data() + sizeof(ethtool_sset_info), sizeof(count));
+    }
+    if (count == 0) {
+        *error_out = "the port reports no ethtool statistics";
+        return false;
+    }
+
+    std::vector<uint8_t> strings_buffer(sizeof(ethtool_gstrings) + static_cast<std::size_t>(count) * ETH_GSTRING_LEN, 0);
+    auto* strings = reinterpret_cast<ethtool_gstrings*>(strings_buffer.data());
+    strings->cmd = ETHTOOL_GSTRINGS;
+    strings->string_set = ETH_SS_STATS;
+    strings->len = count;
+    request.ifr_data = reinterpret_cast<char*>(strings);
+    if (::ioctl(fd, SIOCETHTOOL, &request) != 0) {
+        *error_out = "ETHTOOL_GSTRINGS: " + std::string(std::strerror(errno));
+        return false;
+    }
+
+    std::vector<uint8_t> stats_buffer(sizeof(ethtool_stats) + static_cast<std::size_t>(count) * sizeof(uint64_t), 0);
+    auto* stats = reinterpret_cast<ethtool_stats*>(stats_buffer.data());
+    stats->cmd = ETHTOOL_GSTATS;
+    stats->n_stats = count;
+    request.ifr_data = reinterpret_cast<char*>(stats);
+    if (::ioctl(fd, SIOCETHTOOL, &request) != 0) {
+        *error_out = "ETHTOOL_GSTATS: " + std::string(std::strerror(errno));
+        return false;
+    }
+
+    const uint32_t returned = std::min(count, std::min(strings->len, stats->n_stats));
+    const uint8_t* names = strings_buffer.data() + sizeof(ethtool_gstrings);
+    const uint8_t* values = stats_buffer.data() + sizeof(ethtool_stats);
+    for (uint32_t i = 0; i < returned; ++i) {
+        const char* name = reinterpret_cast<const char*>(names + static_cast<std::size_t>(i) * ETH_GSTRING_LEN);
+        const std::string key(name, strnlen(name, ETH_GSTRING_LEN));
+        auto it = wanted->find(key);
+        if (it != wanted->end()) {
+            std::memcpy(&it->second, values + static_cast<std::size_t>(i) * sizeof(uint64_t), sizeof(uint64_t));
+        }
+    }
+    return true;
+}
+
+nlohmann::json counters_to_json(const std::map<std::string, uint64_t>& counters)
+{
+    nlohmann::json value = nlohmann::json::object();
+    for (const auto& [name, count] : counters) {
+        value[name] = count;
+    }
+    return value;
+}
+
 }  // namespace
+
+const std::vector<std::string>& NicPortCounterNames()
+{
+    static const std::vector<std::string> names = {
+        "rx_discards_phy",
+        "rx_out_of_buffer",
+        "tx_global_pause",
+        "tx_pause_ctrl_phy",
+        "rx_crc_errors_phy",
+        "rx_symbol_err_phy",
+        "rx_buffer_passed_thres_phy",
+        "link_down_events_phy",
+        "rx_packets_phy",
+    };
+    return names;
+}
+
+const std::vector<std::string>& NicPortLossCounterNames()
+{
+    static const std::vector<std::string> names = {
+        "rx_discards_phy",
+        "rx_out_of_buffer",
+    };
+    return names;
+}
+
+std::vector<NicPortCounterReading> ReadMlx5PortCounters(const std::string& net_root)
+{
+    std::vector<NicPortCounterReading> readings;
+    std::error_code ec;
+    if (!std::filesystem::is_directory(net_root, ec) || ec) {
+        return readings;
+    }
+    std::vector<std::filesystem::path> interfaces;
+    for (const auto& entry : std::filesystem::directory_iterator(net_root, ec)) {
+        if (ec) {
+            break;
+        }
+        std::error_code driver_ec;
+        const std::filesystem::path driver =
+            std::filesystem::read_symlink(entry.path() / "device" / "driver", driver_ec);
+        if (!driver_ec && driver.filename() == "mlx5_core") {
+            interfaces.push_back(entry.path());
+        }
+    }
+    std::sort(interfaces.begin(), interfaces.end());
+    if (interfaces.empty()) {
+        return readings;
+    }
+
+    const int fd = ::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    for (const std::filesystem::path& path : interfaces) {
+        NicPortCounterReading reading;
+        reading.interface = path.filename().string();
+        std::error_code device_ec;
+        const std::filesystem::path device = std::filesystem::canonical(path / "device", device_ec);
+        if (!device_ec) {
+            reading.pci_bdf = device.filename().string();
+        }
+        std::string operstate;
+        if (read_text_file(path / "operstate", &operstate)) {
+            reading.operstate = trim(operstate);
+        }
+        if (fd < 0) {
+            reading.error = "socket: " + std::string(std::strerror(errno));
+            readings.push_back(std::move(reading));
+            continue;
+        }
+        // UINT64_MAX marks a name the port did not report; only reported names are kept.
+        std::map<std::string, uint64_t> found;
+        for (const std::string& name : NicPortCounterNames()) {
+            found[name] = UINT64_MAX;
+        }
+        std::string error;
+        if (read_ethtool_stats(fd, reading.interface, &found, &error)) {
+            reading.read_ok = true;
+            for (const auto& [name, value] : found) {
+                if (value != UINT64_MAX) {
+                    reading.counters[name] = value;
+                }
+            }
+        } else {
+            reading.error = error;
+        }
+        readings.push_back(std::move(reading));
+    }
+    if (fd >= 0) {
+        ::close(fd);
+    }
+    return readings;
+}
+
+void NicPortCounterTracker::AddSample(uint64_t sample_index,
+                                      uint64_t elapsed_ns,
+                                      uint64_t realtime_ns,
+                                      const std::vector<NicPortCounterReading>& readings)
+{
+    ++sample_count_;
+    for (const NicPortCounterReading& reading : readings) {
+        Port& port = ports_[reading.interface];
+        if (!reading.pci_bdf.empty()) {
+            port.pci_bdf = reading.pci_bdf;
+        }
+        port.operstate = reading.operstate;
+        if (!reading.read_ok) {
+            ++port.failed_samples;
+            port.last_error = reading.error;
+            continue;
+        }
+        if (port.valid_samples == 0) {
+            port.first = reading.counters;
+        } else {
+            Interval interval;
+            bool moved = false;
+            for (const auto& [name, value] : reading.counters) {
+                const auto previous = port.previous.find(name);
+                if (previous == port.previous.end()) {
+                    continue;
+                }
+                const int64_t delta = static_cast<int64_t>(value - previous->second);
+                if (delta == 0 || name == "rx_packets_phy") {
+                    continue;
+                }
+                interval.delta[name] = delta;
+                moved = true;
+            }
+            if (moved) {
+                if (port.changed_intervals.size() < kMaxChangedIntervalsPerPort) {
+                    interval.sample_index = sample_index;
+                    interval.elapsed_ns = elapsed_ns;
+                    interval.realtime_ns = realtime_ns;
+                    port.changed_intervals.push_back(std::move(interval));
+                } else {
+                    port.changed_intervals_truncated = true;
+                }
+            }
+        }
+        ++port.valid_samples;
+        port.previous = reading.counters;
+        port.last = reading.counters;
+    }
+}
+
+nlohmann::json NicPortCounterTracker::PortsJson() const
+{
+    nlohmann::json ports = nlohmann::json::object();
+    for (const auto& [interface, port] : ports_) {
+        nlohmann::json delta = nlohmann::json::object();
+        nlohmann::json decreased = nlohmann::json::array();
+        for (const auto& [name, last] : port.last) {
+            const auto first = port.first.find(name);
+            if (first == port.first.end()) {
+                continue;
+            }
+            delta[name] = static_cast<int64_t>(last - first->second);
+            if (last < first->second) {
+                decreased.push_back(name);
+            }
+        }
+        nlohmann::json intervals = nlohmann::json::array();
+        for (const Interval& interval : port.changed_intervals) {
+            nlohmann::json changed = nlohmann::json::object();
+            for (const auto& [name, value] : interval.delta) {
+                changed[name] = value;
+            }
+            intervals.push_back({
+                {"sample_index", interval.sample_index},
+                {"monotonic_elapsed_ns", interval.elapsed_ns},
+                {"realtime_posix_ns", interval.realtime_ns},
+                {"delta", changed},
+            });
+        }
+        ports[interface] = {
+            {"pci_bdf", port.pci_bdf},
+            {"operstate", port.operstate},
+            {"valid_samples", port.valid_samples},
+            {"failed_samples", port.failed_samples},
+            {"last_error", port.last_error},
+            {"first", counters_to_json(port.first)},
+            {"last", counters_to_json(port.last)},
+            {"delta", delta},
+            {"counters_decreased", decreased},
+            {"changed_intervals", intervals},
+            {"changed_intervals_truncated", port.changed_intervals_truncated},
+        };
+    }
+    return ports;
+}
+
+nlohmann::json NicPortCounterTracker::PortsWithLossJson() const
+{
+    nlohmann::json names = nlohmann::json::array();
+    for (const auto& [interface, port] : ports_) {
+        for (const std::string& counter : NicPortLossCounterNames()) {
+            const auto first = port.first.find(counter);
+            const auto last = port.last.find(counter);
+            if (first != port.first.end() && last != port.last.end() && last->second > first->second) {
+                names.push_back(interface);
+                break;
+            }
+        }
+    }
+    return names;
+}
 
 int RunNicThermalMonitorHelper(const NicThermalHelperOptions& options,
                                std::string* error_out)
@@ -580,6 +864,50 @@ int RunNicThermalMonitorHelper(const NicThermalHelperOptions& options,
             &runtime_error);
     };
 
+    NicPortCounterTracker port_counters;
+    const NicPortCounterSource read_port_counters =
+        options.port_counter_source
+            ? options.port_counter_source
+            : NicPortCounterSource([&options]() { return ReadMlx5PortCounters(options.net_root); });
+    bool port_counters_final_sample_at_stop = false;
+    auto sample_port_counters = [&](uint64_t index, uint64_t elapsed_ns, uint64_t sample_realtime_ns) {
+        if (!options.port_counters_path.empty()) {
+            port_counters.AddSample(index, elapsed_ns, sample_realtime_ns, read_port_counters());
+        }
+    };
+    auto publish_port_counters = [&](const std::string& status) -> bool {
+        if (options.port_counters_path.empty()) {
+            return true;
+        }
+        const nlohmann::json value = {
+            {"schema_id", "orange.nic_port_counters"},
+            {"schema_version", 1},
+            {"status", status},
+            {"counter_source", "ethtool_ioctl_gstats"},
+            {"driver_name", "mlx5_core"},
+            {"net_root", options.net_root},
+            {"sample_period_ms", options.sample_period_ms},
+            {"started_at_utc", started_at_utc},
+            {"started_realtime_posix_ns", started_realtime_ns},
+            {"updated_at_utc", utc_now()},
+            {"updated_realtime_posix_ns", realtime_ns()},
+            {"sample_count", port_counters.sample_count()},
+            {"final_sample_at_stop", port_counters_final_sample_at_stop},
+            {"counter_names", NicPortCounterNames()},
+            {"loss_counter_names", NicPortLossCounterNames()},
+            {"ports_with_loss", port_counters.PortsWithLossJson()},
+            {"ports", port_counters.PortsJson()},
+            {"stop_reason", stop_reason},
+            {"error", runtime_error},
+        };
+        return write_json_atomic_owned(
+            options.port_counters_path,
+            value,
+            options.output_uid,
+            options.output_gid,
+            &runtime_error);
+    };
+
     while (!g_helper_stop_requested) {
         const uint64_t sample_realtime_ns = realtime_ns();
         const uint64_t elapsed_ns = static_cast<uint64_t>(
@@ -666,6 +994,7 @@ int RunNicThermalMonitorHelper(const NicThermalHelperOptions& options,
         }
         previous_sensor_set = std::move(current_sensor_set);
         have_previous_sensor_set = true;
+        sample_port_counters(sample_count, elapsed_ns, sample_realtime_ns);
         ++sample_count;
         if (::fflush(csv) != 0) {
             runtime_error = "failed to flush thermal CSV";
@@ -674,6 +1003,10 @@ int RunNicThermalMonitorHelper(const NicThermalHelperOptions& options,
         }
         if (!publish_summary("running")) {
             stop_reason = "summary_write_error";
+            break;
+        }
+        if (!publish_port_counters("running")) {
+            stop_reason = "port_counters_write_error";
             break;
         }
         if (options.max_samples > 0 && sample_count >= options.max_samples) {
@@ -691,6 +1024,16 @@ int RunNicThermalMonitorHelper(const NicThermalHelperOptions& options,
 
     if (g_helper_stop_requested) {
         stop_reason = "signal_requested";
+        // The stop comes at the end of the recording: read the port counters
+        // once more so the last reading is at the stop, not up to one period
+        // before it.
+        sample_port_counters(
+            sample_count,
+            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                      std::chrono::steady_clock::now() - started_steady)
+                                      .count()),
+            realtime_ns());
+        port_counters_final_sample_at_stop = !options.port_counters_path.empty();
     }
     if (::fflush(csv) != 0 && runtime_error.empty()) {
         runtime_error = "failed to flush thermal CSV at shutdown";
@@ -702,6 +1045,10 @@ int RunNicThermalMonitorHelper(const NicThermalHelperOptions& options,
     if (!publish_summary(success ? "completed" : "failed") &&
         runtime_error.empty()) {
         runtime_error = "failed to publish final thermal summary";
+    }
+    if (!publish_port_counters(success ? "completed" : "failed") &&
+        runtime_error.empty()) {
+        runtime_error = "failed to publish final NIC port counters";
     }
     if (!runtime_error.empty()) {
         set_error(error_out, runtime_error);
@@ -741,6 +1088,8 @@ bool StartNicThermalMonitorProcess(const std::string& recording_folder,
     monitor->stderr_path =
         (std::filesystem::path(recording_folder) /
          "nic_thermal_monitor.stderr.log").string();
+    monitor->port_counters_path =
+        (std::filesystem::path(recording_folder) / "nic_port_counters.json").string();
     monitor->started_at_utc = utc_now();
     if (!monitor->enabled) {
         monitor->status = "disabled";
@@ -793,6 +1142,7 @@ bool StartNicThermalMonitorProcess(const std::string& recording_folder,
         monitor->executable_path,
         "--csv", monitor->csv_path,
         "--summary", monitor->summary_path,
+        "--port-counters", monitor->port_counters_path,
         "--sample-period-ms", period,
         "--parent-pid", parent_pid_text,
         "--output-uid", uid_text,

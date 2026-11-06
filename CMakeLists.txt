@@ -384,6 +384,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/incremental_clip_shadow.cpp"
     "${SRC_DIR}/gui/recording_finalizer.cpp"
     "${SRC_DIR}/gui/recording_panel.cpp"
+    "${SRC_DIR}/gui/post_finalize_validation.cpp"
     "${SRC_DIR}/gui/registered_context_recording.cpp"
     "${SRC_DIR}/gui/recording_snapshots.cpp"
     "${SRC_DIR}/gui/session_status.cpp"
@@ -804,6 +805,7 @@ if(BUILD_TESTING)
     # Writer ownership ratchet: files Orange creates as root belong to the sudo invoker.
     add_test(NAME writer_ownership_check COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_writer_ownership.py")
     add_test(NAME writer_ownership_ratchet_tests COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/writer_ownership_ratchet_tests.py")
+    add_test(NAME validate_nic_port_counters_tests COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_nic_port_counters_tests.py")
     set_tests_properties(recording_crop_only_manifest_tests PROPERTIES TIMEOUT 30)
     add_executable(recording_master_acquisition_tests "tools/recording_master_acquisition_tests.cpp")
     add_executable(recording_media_plan_tests "tools/recording_media_plan_tests.cpp")

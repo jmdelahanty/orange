@@ -41,7 +41,8 @@ void print_usage(const char* argv0)
 {
     std::cerr
         << "Usage: " << argv0
-        << " --csv PATH --summary PATH [--hwmon-root PATH]"
+        << " --csv PATH --summary PATH [--port-counters PATH]"
+           " [--hwmon-root PATH] [--net-root PATH]"
            " [--sample-period-ms N] [--max-samples N]"
            " [--parent-pid N]"
            " [--output-uid N] [--output-gid N]\n";
@@ -69,6 +70,14 @@ int main(int argc, char** argv)
             const char* value = require_value("--summary");
             if (!value) return 2;
             options.summary_path = value;
+        } else if (argument == "--port-counters") {
+            const char* value = require_value("--port-counters");
+            if (!value) return 2;
+            options.port_counters_path = value;
+        } else if (argument == "--net-root") {
+            const char* value = require_value("--net-root");
+            if (!value) return 2;
+            options.net_root = value;
         } else if (argument == "--hwmon-root") {
             const char* value = require_value("--hwmon-root");
             if (!value) return 2;

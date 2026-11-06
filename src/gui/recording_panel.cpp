@@ -1,4 +1,5 @@
 #include "gui/recording_panel.h"
+#include "gui/post_finalize_validation.h"
 
 #include "encoder_hw_worker.h"
 #include "imgui.h"
@@ -640,6 +641,36 @@ RecordingPanelActions render_recording_config_panel(std::string* input_folder,
             "Last recording preflight failure:");
         for (const std::string& error : *preflight_errors) {
             ImGui::BulletText("%s", error.c_str());
+        }
+    }
+
+    {
+        const orange::gui::PostFinalizeValidationView validation =
+            orange::gui::PostFinalizeValidationStatus();
+        if (!validation.status.empty()) {
+            ImGui::Spacing();
+            const int seconds = static_cast<int>(validation.elapsed_seconds);
+            if (validation.status == "running") {
+                ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "Validating %s ... %d s",
+                                   validation.recording_name.c_str(), seconds);
+            } else if (validation.status == "pass") {
+                ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.45f, 1.0f), "Validation %s: PASS (%d warnings)",
+                                   validation.recording_name.c_str(), validation.warnings);
+            } else if (validation.status == "fail") {
+                ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.3f, 1.0f), "Validation %s: FAIL (%d failures, %d warnings)",
+                                   validation.recording_name.c_str(), validation.failures, validation.warnings);
+                for (const std::string& line : validation.failure_lines) {
+                    ImGui::BulletText("%s", line.c_str());
+                }
+            } else {
+                ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f), "Validation %s: %s",
+                                   validation.recording_name.c_str(), validation.status.c_str());
+                ImGui::TextWrapped("%s", validation.detail.c_str());
+            }
+            if (validation.status != "running" && !validation.json_path.empty() &&
+                ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", validation.json_path.c_str());
+            }
         }
     }
 
