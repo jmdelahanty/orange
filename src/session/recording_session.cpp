@@ -821,6 +821,14 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
 
     const std::string artifact_root = contract["artifact_root"].get<std::string>();
     const int external_crop_encode_queue_depth = resolve_external_crop_encode_queue_depth();
+    const ExternalCropEncodeQuality crop_quality = resolve_external_crop_encode_quality();
+    if (crop_quality.error.empty() && crop_quality.tuning != "lossless") {
+        std::cout << "[recording_session] Crop video: constant QP " << crop_quality.quality_value
+                  << ", all-intra (lossy)" << std::endl;
+    }
+    if (!crop_quality.error.empty()) {
+        contract["validation_errors"].push_back(crop_quality.error);
+    }
     for (int i = 0; i < num_cameras; ++i) {
         if (!cameras_select[i].crop_and_encode) {
             continue;
@@ -909,7 +917,9 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
             {"rollover", crop_rollover},
             {"codec", "hevc"},
             {"preset", "p7"},
-            {"tuning", "lossless"},
+            {"tuning", crop_quality.tuning},
+            {"rate_control_mode", crop_quality.rate_control_mode},
+            {"quality_value", crop_quality.quality_value},
             {"gop", crop_gop},
             {"max_pending_gops", 8},
             {"max_pending_bytes", 268435456},

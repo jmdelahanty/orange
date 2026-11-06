@@ -5341,6 +5341,12 @@ int main(int /*argc*/, char ** /*args*/) {
             std::to_string(app_storage_config.gui_crop_external_encode_queue_depth),
             "crop external encode queue depth");
     }
+    if (app_storage_config.gui_crop_external_qp > 0) {
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_CROP_EXTERNAL_QP",
+            std::to_string(app_storage_config.gui_crop_external_qp),
+            "crop video constant QP");
+    }
     if (app_storage_config.gui_crop_frame_pool_size > 0) {
         set_gui_env_from_app_config_if_absent(
             "ORANGE_CROP_FRAME_POOL_SIZE",

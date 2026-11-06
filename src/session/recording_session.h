@@ -1,5 +1,6 @@
 #pragma once
 
+#include "session/crop_encode_quality.h"
 #include "modern_recording_pipeline.h"
 #include "external_recorder_lifecycle.h"
 #include "nic_thermal_monitor.h"
@@ -21,6 +22,11 @@
 namespace yolo_event_log { class YoloEventLogger; }
 namespace orange::session {
 
+// Crop video quality for the external crop recorder. Unset
+// ORANGE_CROP_EXTERNAL_QP (app config recording.crop.external_ipc.qp): lossless
+// (all-intra, QP 0). 1..51: constant QP, still all-intra. An invalid value
+// sets error, and the start is refused rather than falling back, since it
+// decides what the stored crops can be used for.
 struct RecordingControlConfig {
     int record_for_seconds = 0;
     int clip_seconds = 0;

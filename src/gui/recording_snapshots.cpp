@@ -10,6 +10,7 @@
 #include "crop_and_encode_worker.h"
 #include "crop_producer.h"
 #include "project.h"
+#include "session/recording_session.h"
 #include "recording_physical_registration.h"
 #include "spatial_calibration_snapshot.h"
 #include "spatial_layout_schema.h"
@@ -224,7 +225,9 @@ nlohmann::json build_gui_crop_output_snapshot(const CameraParams& camera_params,
             {"blank_frame_policy", "encode_black_frame_when_no_detection"},
             {"codec", enabled ? "hevc" : "none"},
             {"container", enabled ? "mp4" : "none"},
-            {"tuning", enabled ? "lossless" : "none"},
+            // The QP itself is in external_crop_recorder_contract.json and the
+            // recorder summary's rate_control.const_qp.
+            {"tuning", enabled ? orange::session::resolve_external_crop_encode_quality().tuning : "none"},
             {"frame_rate", camera_params.frame_rate},
             {"files", files}
         }}

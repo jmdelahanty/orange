@@ -40,6 +40,7 @@ struct AppStorageConfig {
     int gui_recording_clip_seconds = 0;
     std::string gui_crop_recording_sink_mode = "in_process";
     int gui_crop_external_encode_queue_depth = -1;
+    int gui_crop_external_qp = -1;  // recording.crop.external_ipc.qp -> ORANGE_CROP_EXTERNAL_QP (1..51 constant QP; unset = lossless)
     int gui_crop_external_recorder_gpu_id = -1;
     std::map<std::string, int> gui_crop_external_recorder_gpu_ids_by_serial;
     int gui_crop_external_interleave = -1;  // recording.crop.external_ipc.interleave -> ORANGE_CROP_EXTERNAL_INTERLEAVE (GOP-parity two-shard crops)

@@ -59,6 +59,17 @@ Crop recorders: `recording.crop.sink_mode` = external_ipc, `frame_pool_size`
 extra output delay and run on the same CUDA 13 native binary as the
 full-frame recorders (since 2026-10-08; the CUDA 12 recorder build is retired).
 
+Crop video quality: lossless (all-intra, QP 0) unless
+`recording.crop.external_ipc.qp` is set (1..51; headless spec
+`fixed.crop_recording.qp`; env `ORANGE_CROP_EXTERNAL_QP`). With a QP the crops
+are constant-QP, still all-intra (one keyframe per crop frame); an invalid
+value refuses the start. The recording keeps the value in
+`external_crop_recorder_contract.json` and the recorder summary
+(`rate_control.const_qp`). Added 2026-11-05 to cut crop storage (lossless crops
+were 59-77 % of a recording's bytes); the production QP is chosen from the
+offline comparison on real fish crops. Crop-only media products still require
+lossless crops.
+
 **Owner-push chunk size.** The 30-minute headless endurance pushed each
 20 MB frame as one 64 MiB-bounded chunk; every GUI soak pushed 2 MiB chunks
 (the client default, since the wrapper allow-list cannot set the variable).

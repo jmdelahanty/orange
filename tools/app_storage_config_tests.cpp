@@ -133,6 +133,7 @@ void test_missing_config_uses_defaults()
     require(!config.gui_incremental_clip_shadow, "default incremental clip shadow disabled");
     require(config.gui_crop_recording_sink_mode == "in_process", "default crop sink mode");
     require(config.gui_crop_external_encode_queue_depth == -1, "default crop queue unset");
+    require(config.gui_crop_external_qp == -1, "default crop QP unset (lossless)");
     require(config.gui_crop_external_recorder_gpu_id == -1, "default crop recorder GPU unset");
     require(
         config.gui_crop_external_recorder_gpu_ids_by_serial.empty() &&
@@ -215,6 +216,7 @@ void test_loads_gui_and_crop_defaults()
       "frame_pool_size": 256,
       "external_ipc": {
         "encode_queue_depth": 128,
+        "qp": 26,
         "recorder_gpu_id": 4,
         "recorder_gpu_ids_by_serial": {
           "2010095": 8,
@@ -274,6 +276,7 @@ void test_loads_gui_and_crop_defaults()
     require(config.gui_incremental_clip_shadow, "incremental_clip_shadow should load");
     require(config.gui_crop_recording_sink_mode == "external_ipc", "crop sink mode should load");
     require(config.gui_crop_external_encode_queue_depth == 128, "crop queue depth should load");
+    require(config.gui_crop_external_qp == 26, "crop QP should load");
     require(config.gui_crop_external_recorder_gpu_id == 4, "crop recorder GPU should load");
     require(
         config.gui_crop_external_recorder_gpu_ids_by_serial.size() == 2,
@@ -902,6 +905,23 @@ void test_invalid_crop_sink_fails()
     std::filesystem::remove_all(root);
 }
 
+void test_invalid_crop_qp_fails()
+{
+    for (const char* qp : {"0", "52"}) {
+        const std::filesystem::path root = make_temp_dir();
+        const std::filesystem::path config_path = root / "default.json";
+        write_text(
+            config_path,
+            std::string(R"json({
+  "schema_id": "orange.app.config",
+  "schema_version": 1,
+  "recording": { "crop": { "external_ipc": { "qp": )json") + qp + R"json( } } }
+})json");
+        require_load_fails(config_path, "recording.crop.external_ipc.qp must be in [1,51]");
+        std::filesystem::remove_all(root);
+    }
+}
+
 void test_invalid_crop_queue_depth_fails()
 {
     const std::filesystem::path root = make_temp_dir();
@@ -1198,6 +1218,7 @@ int main()
         {"invalid_citrus_binding_request_version_fails", &test_invalid_citrus_binding_request_version_fails},
         {"invalid_crop_sink_fails", &test_invalid_crop_sink_fails},
         {"invalid_crop_queue_depth_fails", &test_invalid_crop_queue_depth_fails},
+        {"invalid_crop_qp_fails", &test_invalid_crop_qp_fails},
         {"invalid_crop_recorder_gpu_fails", &test_invalid_crop_recorder_gpu_fails},
         {"invalid_crop_recorder_gpu_map_fails", &test_invalid_crop_recorder_gpu_map_fails},
         {"invalid_stream_downsample_fails", &test_invalid_stream_downsample_fails},

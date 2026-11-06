@@ -147,11 +147,12 @@ struct HeadlessCropRecordingConfig {
     int recorder_gpu = -1;      // external_ipc: explicit GPU, otherwise existing contract/env defaults
     std::map<std::string, int> recorder_gpus;  // external_ipc: per-camera-serial override, wins over recorder_gpu
     bool interleave = true;     // external_ipc: GOP-parity interleaving across the card's two dies (default on since 2026-09-04)
+    int qp = 0;                 // external_ipc: 0 lossless; 1..51 constant QP, all-intra (ORANGE_CROP_EXTERNAL_QP)
     bool enabled() const { return mode == "in_process" || mode == "external_ipc"; }
     bool external() const { return mode == "external_ipc"; }
     nlohmann::json ToJson() const {
         nlohmann::json result = {{"mode", mode}, {"crop_size_px", crop_size_px}, {"recorder_gpu", recorder_gpu},
-            {"recorder_gpus", recorder_gpus}, {"interleave", interleave}};
+            {"recorder_gpus", recorder_gpus}, {"interleave", interleave}, {"qp", qp}};
         return result;
     }
 };
@@ -8564,6 +8565,11 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         spec->crop_recording.crop_size_px = node.value("crop_size_px", 0);
         spec->crop_recording.recorder_gpu = node.value("recorder_gpu", -1);
         spec->crop_recording.interleave = node.value("interleave", true);
+        spec->crop_recording.qp = node.value("qp", 0);
+        if (spec->crop_recording.qp < 0 || spec->crop_recording.qp > 51) {
+            if (error_out) *error_out = "Experiment spec fixed.crop_recording.qp must be 0 (lossless) or 1..51";
+            return false;
+        }
         if (node.contains("recorder_gpus") && node["recorder_gpus"].is_object()) {
             for (const auto& [serial, gpu] : node["recorder_gpus"].items()) {
                 if (gpu.is_number_integer()) {
@@ -9862,6 +9868,11 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     // the parent recording folder (external_crop_recorder/).
     if (enable_recording && options.crop_recording.external()) {
         setenv("ORANGE_CROP_EXTERNAL_INTERLEAVE", options.crop_recording.interleave ? "1" : "0", 1);
+        if (options.crop_recording.qp > 0) {
+            setenv("ORANGE_CROP_EXTERNAL_QP", std::to_string(options.crop_recording.qp).c_str(), 1);
+        } else {
+            unsetenv("ORANGE_CROP_EXTERNAL_QP");
+        }
         for (int inventory_index : selected_inventory_indices) {
             CameraParams& camera = cameras_params[inventory_index];
             cameras_select[inventory_index].crop_and_encode = true;

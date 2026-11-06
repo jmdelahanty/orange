@@ -639,10 +639,14 @@ void apply_video_encode_profile_to_nvenc_config(
     apply_full_range_video_signal_to_nvenc_config(profile.codec, encode_config);
 
     if (profile.output_kind == "crop") {
+        // All-intra constant QP: 0 with lossless tuning, else the profile's QP.
+        const uint32_t crop_qp = video_encode_tuning_is_lossless(profile.tuning)
+            ? 0U
+            : static_cast<uint32_t>(clamp_video_encode_quality_value(profile.quality_value));
         encode_config->gopLength = 1;
         encode_config->frameIntervalP = 1;
         encode_config->rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
-        encode_config->rcParams.constQP = {0, 0, 0};
+        encode_config->rcParams.constQP = {crop_qp, crop_qp, crop_qp};
         encode_config->rcParams.averageBitRate = 0;
         encode_config->rcParams.maxBitRate = 0;
         encode_config->rcParams.vbvBufferSize = 0;

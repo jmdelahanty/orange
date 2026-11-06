@@ -1065,12 +1065,18 @@ bool file_exists(const std::string& path)
     return std::filesystem::exists(path, ec) && !ec;
 }
 
-// The GOP the NVENC session actually runs: lossless (crop) streams are
-// all-intra (1), everything else uses the contract's gop. Mirrors
-// build_external_video_encode_profile().
+// The GOP the NVENC session actually runs: crop streams (lossless or
+// constant QP) and any lossless stream are all-intra (1); the full frame
+// uses the contract's gop. For crops the contract's gop is only the shards'
+// routing period. Mirrors build_external_video_encode_profile().
+static bool encoder_runs_all_intra(const Options& options)
+{
+    return options.output_kind == "crop" || video_encode_tuning_is_lossless(options.tuning);
+}
+
 static uint32_t encoder_resolved_gop_length(const Options& options)
 {
-    return video_encode_tuning_is_lossless(options.tuning) ? 1u : std::max<uint32_t>(1u, options.gop);
+    return encoder_runs_all_intra(options) ? 1u : std::max<uint32_t>(1u, options.gop);
 }
 
 VideoEncodeProfile build_external_video_encode_profile(
@@ -1082,9 +1088,11 @@ VideoEncodeProfile build_external_video_encode_profile(
     int encode_gpu_id)
 {
     VideoEncodeProfile profile;
-    profile.name = options.output_kind == "crop"
-        ? "external_crop_hevc_lossless_gop1"
-        : "external_full_hevc_low_latency";
+    profile.name = options.output_kind != "crop"
+        ? "external_full_hevc_low_latency"
+        : video_encode_tuning_is_lossless(normalize_video_encode_tuning(options.tuning))
+            ? "external_crop_hevc_lossless_gop1"
+            : "external_crop_hevc_cqp_gop1";
     profile.output_kind = options.output_kind;
     profile.role = options.output_kind == "crop"
         ? "runtime_derived_acquisition_input"
@@ -1103,10 +1111,7 @@ VideoEncodeProfile build_external_video_encode_profile(
             ? 0
             : clamp_video_encode_quality_value(static_cast<int>(options.quality_value));
     profile.requested_gop_length = static_cast<int>(std::max<uint32_t>(1, options.gop));
-    profile.resolved_gop_length =
-        video_encode_tuning_is_lossless(profile.tuning)
-            ? 1
-            : std::max<uint32_t>(1, options.gop);
+    profile.resolved_gop_length = static_cast<int>(encoder_resolved_gop_length(options));
     profile.width = static_cast<uint32_t>(std::max(0, width));
     profile.height = static_cast<uint32_t>(std::max(0, height));
     profile.source_width = profile.width;

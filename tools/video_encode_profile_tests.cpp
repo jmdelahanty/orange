@@ -331,6 +331,30 @@ void test_crop_profile()
         "crop metadata json ffprobe validation flag");
 }
 
+// Constant-QP crops (ORANGE_CROP_EXTERNAL_QP): the profile's QP reaches NVENC
+// and the stream stays all-intra, whatever GOP the caller asked for.
+void test_crop_constant_qp_profile()
+{
+    const CameraParams camera = make_camera();
+    VideoEncodeProfile profile = build_crop_video_encode_profile(camera, 384, 384);
+    profile.tuning = "hq";
+    profile.rate_control_mode = "cqp";
+    profile.quality_value = 26;
+    profile.requested_gop_length = 25;
+    profile.resolved_gop_length = 25;
+    NV_ENC_INITIALIZE_PARAMS initialize_params = {NV_ENC_INITIALIZE_PARAMS_VER};
+    const NV_ENC_CONFIG encode_config = apply_to_config(profile, &initialize_params);
+    require(encode_config.rcParams.rateControlMode == NV_ENC_PARAMS_RC_CONSTQP, "cqp crop constqp");
+    require(encode_config.rcParams.constQP.qpIntra == 26, "cqp crop I QP");
+    require(encode_config.rcParams.constQP.qpInterP == 26, "cqp crop P QP");
+    require(encode_config.rcParams.constQP.qpInterB == 26, "cqp crop B QP");
+    require(encode_config.gopLength == 1, "cqp crop stays all-intra");
+    require(encode_config.encodeCodecConfig.hevcConfig.idrPeriod == 1, "cqp crop IDR every frame");
+    require(resolve_video_encode_profile_nvenc_guids(profile).tuning_info ==
+                NV_ENC_TUNING_INFO_HIGH_QUALITY,
+            "cqp crop tuning GUID is not lossless");
+}
+
 void test_normalization()
 {
     require(normalize_video_encode_codec("vp9") == "h264", "unknown codec fallback");
@@ -351,6 +375,7 @@ int main()
     test_vbr_cq_profile_with_external_style_overrides();
     test_lossless_full_profile();
     test_crop_profile();
+    test_crop_constant_qp_profile();
     test_normalization();
     std::cout << "video_encode_profile_tests passed" << std::endl;
     return 0;

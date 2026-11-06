@@ -928,6 +928,27 @@ void test_crop_only_prepare_preserves_rolling_without_full_supervisor()
     std::cout << "PASS test_crop_only_prepare_preserves_rolling_without_full_supervisor\n";
 }
 
+void test_external_crop_encode_quality_from_env()
+{
+    unsetenv("ORANGE_CROP_EXTERNAL_QP");
+    auto quality = orange::session::resolve_external_crop_encode_quality();
+    require(quality.error.empty() && quality.tuning == "lossless" &&
+                quality.rate_control_mode == "cqp" && quality.quality_value == 0,
+            "unset crop QP must mean lossless");
+    setenv("ORANGE_CROP_EXTERNAL_QP", " 26 ", 1);
+    quality = orange::session::resolve_external_crop_encode_quality();
+    require(quality.error.empty() && quality.tuning == "hq" &&
+                quality.rate_control_mode == "cqp" && quality.quality_value == 26,
+            "crop QP 26 must give constant QP 26");
+    for (const char* bad : {"0", "52", "26x", "abc", "-3"}) {
+        setenv("ORANGE_CROP_EXTERNAL_QP", bad, 1);
+        quality = orange::session::resolve_external_crop_encode_quality();
+        require(!quality.error.empty(), std::string("invalid crop QP accepted: ") + bad);
+    }
+    unsetenv("ORANGE_CROP_EXTERNAL_QP");
+    std::cout << "PASS test_external_crop_encode_quality_from_env\n";
+}
+
 int main(int, char** argv)
 {
     // These tests exercise the phased recorder lifecycle, not the optional
@@ -941,6 +962,7 @@ int main(int, char** argv)
         g_binary_dir = std::filesystem::absolute(argv[0]).parent_path();
     }
     try {
+        test_external_crop_encode_quality_from_env();
         test_crop_only_prepare_preserves_rolling_without_full_supervisor();
         test_explicit_media_plan_is_frozen_and_persisted();
         test_gui_context_must_be_ready_before_arm();

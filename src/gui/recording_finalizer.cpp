@@ -2546,7 +2546,7 @@ GuiRecordingFinalizeOutcome gui_run_recording_finalize(
                     output.frame_rate = camera.frame_rate;
                     output.codec = "hevc";
                     output.container = "mp4";
-                    output.tuning = "lossless";
+                    output.tuning = orange::session::resolve_external_crop_encode_quality().tuning;
                     output.pixel_source_format = "mono8";
                     output.encoded_format = "nv12";
                     output.details = {

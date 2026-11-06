@@ -1270,6 +1270,7 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
     config.gui_recording_clip_seconds = 0;
     config.gui_crop_recording_sink_mode = "in_process";
     config.gui_crop_external_encode_queue_depth = -1;
+    config.gui_crop_external_qp = -1;
     config.gui_crop_external_recorder_gpu_id = -1;
     config.gui_crop_external_recorder_gpu_ids_by_serial.clear();
     config.image_levels_check_enabled = true;
@@ -1601,6 +1602,20 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                         &config.gui_crop_external_encode_queue_depth,
                         1,
                         4096,
+                        error_out,
+                        "recording.crop.external_ipc")) {
+                    if (error_out &&
+                        error_out->find(config_path.string()) == std::string::npos) {
+                        *error_out += " in " + config_path.string();
+                    }
+                    return false;
+                }
+                if (!read_optional_bounded_int_field(
+                        external_ipc,
+                        "qp",
+                        &config.gui_crop_external_qp,
+                        1,
+                        51,
                         error_out,
                         "recording.crop.external_ipc")) {
                     if (error_out &&
