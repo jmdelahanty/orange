@@ -230,6 +230,13 @@ void RenderSubjectReferenceSelection(bool locked, const std::vector<std::string>
         }
         ImGui::EndTable();
     }
+    // Declared absence in one click: blank the default and every camera row.
+    // The operator still confirms it like any other declaration.
+    if (ImGui::Button("Blank all (no subject information)")) {
+        subject_default_row = SubjectRow{};
+        for (auto& [serial, row] : subject_camera_rows) row = SubjectRow{};
+        changed = true;
+    }
     if (changed) {
         clear_subject_confirmation();
         std::string err;
