@@ -18,6 +18,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <optional>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -1203,6 +1204,21 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
     }
 
     const std::string received_at_utc = utc_now();
+    // A command for the owner's thread is queued only when this function
+    // returns, after its request/response row is in the event log: the
+    // owner's own rows for the command (gui_command_accepted, ...) then always
+    // follow it (2026-11-10, 2026_11_10_21_16_57: the GUI drained a
+    // citrus_completion and logged it before this row was written).
+    struct DeferredQueue {
+        LocalControlServer* server = nullptr;
+        std::optional<PendingLocalControlCommand> command;
+        ~DeferredQueue()
+        {
+            if (!command) return;
+            std::lock_guard<std::mutex> lock(server->state_mutex_);
+            server->pending_commands_.push_back(std::move(*command));
+        }
+    } deferred_queue{this, std::nullopt};
     bool duplicate = false;
     bool queued_for_gui_thread = false;
     bool stale_epoch = false;
@@ -1266,7 +1282,7 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
             command.epoch = parsed.epoch;
             command.seq = parsed.seq;
             command.params = parsed.params;
-            pending_commands_.push_back(std::move(command));
+            deferred_queue.command = std::move(command);
             queued_for_gui_thread = true;
         }
     }

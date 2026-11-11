@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <thread>
 
@@ -203,6 +204,15 @@ void TestHostOverSocket()
         EXPECT(pending.size() == 1 && pending[0].method == "citrus_completion" &&
                    pending[0].params.value("experiment_id", "") == "exp1",
                "completion queued for the owner");
+        {
+            // The server's request/response row is in the log before the
+            // owner can drain the command, so the owner's rows follow it.
+            std::ifstream log(host.options().event_log_path);
+            std::string line;
+            bool logged = false;
+            while (std::getline(log, line)) logged = logged || line.find("\"c1\"") != std::string::npos;
+            EXPECT(logged, "socket row logged before the command was drained");
+        }
 
         // Receipts for another folder are refused.
         reply = Send(socket_path, Request("finalize_recording_observation_bindings", "f0",
