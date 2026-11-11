@@ -610,6 +610,13 @@
    ]
   ]
  },
+ "src/camera_stream_event_log.h": {
+  "csv_headers": [
+   "event,host_realtime_ns,stream_frames_received,previous_camera_frame_id,camera_frame_id,get_frame_return_code,get_frame_wait_ns,get_frame_timeout_ms,missing_camera_frames,get_frame_errors_total,camera_dropped_frames_total,sdk_dropped_frames,record_active"
+  ],
+  "json_keys": [],
+  "schemas": []
+ },
  "src/citrus_recording_geometry.cpp": {
   "csv_headers": [],
   "json_keys": [

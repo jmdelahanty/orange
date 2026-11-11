@@ -40,6 +40,7 @@
 #include <sstream>
 #include "timing/clock.h"
 #include "timing/log_writer.h"
+#include "camera_stream_event_log.h"
 #include <limits>
 #include <map>
 
@@ -1447,6 +1448,9 @@ void acquire_frames(
     };
     AcquisitionCadenceProbeRecorder acquisition_cadence_probe_recorder(camera_params);
     RingReleaseRecorder ring_release_recorder(camera_params);
+    orange::camera_stream::StreamEventLog stream_event_log(
+        orange::camera_stream::StreamEventLog::DefaultDirectory(build_default_orange_root_dir()),
+        camera_params ? camera_params->camera_serial : std::string("unknown"));
     std::deque<PtpReceiveHistoryEntry> ptp_receive_history;
     std::deque<RecordingSubmitHistoryEntry> recording_submit_history;
     bool ptp_stale_history_dumped = false;
@@ -2112,6 +2116,18 @@ void acquire_frames(
                     received_frame->frame_id);
                 camera_state.dropped_frames += gap_count;
                 if (gap_count > 0) {
+                    orange::camera_stream::StreamEventLog::Row gap_row;
+                    gap_row.event = orange::camera_stream::StreamEventLog::Event::kCameraFrameGap;
+                    gap_row.host_realtime_ns = real_time;
+                    gap_row.stream_frames_received = camera_state.frame_count;
+                    gap_row.previous_camera_frame_id = camera_state.id_prev;
+                    gap_row.camera_frame_id = received_frame->frame_id;
+                    gap_row.missing_camera_frames = gap_count;
+                    gap_row.get_frame_errors_total = camera_state.get_frame_errors;
+                    gap_row.camera_dropped_frames_total = camera_state.dropped_frames;
+                    gap_row.sdk_dropped_frames = ecam->camera.GetDroppedFrameCount();
+                    gap_row.record_active = camera_control->record_video;
+                    stream_event_log.Emit(gap_row);
                     // SDK-side accounting at the moment of the gap: frames the
                     // SDK itself discarded as incomplete (the packet counters
                     // are declared inline and not exported by the SDK library).
@@ -3233,6 +3249,21 @@ void acquire_frames(
                 clock_gettime(CLOCK_REALTIME, &ts_error);
                 const uint64_t error_realtime_ns =
                     static_cast<uint64_t>(ts_error.tv_sec) * 1000000000ULL + static_cast<uint64_t>(ts_error.tv_nsec);
+                orange::camera_stream::StreamEventLog::Row error_row;
+                error_row.event = orange::camera_stream::StreamEventLog::Event::kGetFrameError;
+                error_row.host_realtime_ns = error_realtime_ns;
+                error_row.stream_frames_received = camera_state.frame_count;
+                error_row.previous_camera_frame_id = camera_state.id_prev;
+                error_row.get_frame_return_code = camera_state.camera_return;
+                error_row.get_frame_wait_ns = get_frame_return_host_ns > get_frame_call_host_ns
+                                                  ? get_frame_return_host_ns - get_frame_call_host_ns
+                                                  : 0;
+                error_row.get_frame_timeout_ms = kGetFrameTimeoutMs;
+                error_row.get_frame_errors_total = camera_state.get_frame_errors;
+                error_row.camera_dropped_frames_total = camera_state.dropped_frames;
+                error_row.sdk_dropped_frames = ecam->camera.GetDroppedFrameCount();
+                error_row.record_active = camera_control->record_video;
+                stream_event_log.Emit(error_row);
                 orange::RecordingStartupAudit::Instance().MarkStreamFrame(
                     camera_params->camera_serial, "get_frame_error",
                     "code=" + std::to_string(camera_state.camera_return) + " wait_ns=" +

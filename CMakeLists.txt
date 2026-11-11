@@ -841,6 +841,12 @@ if(BUILD_TESTING)
     target_link_libraries(timing_log_writer_tests PRIVATE Threads::Threads)
     add_test(NAME timing_log_writer_tests COMMAND timing_log_writer_tests)
 
+    add_executable(camera_stream_event_log_tests "tools/camera_stream_event_log_tests.cpp")
+    target_include_directories(camera_stream_event_log_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(camera_stream_event_log_tests PRIVATE cxx_std_17)
+    target_link_libraries(camera_stream_event_log_tests PRIVATE Threads::Threads)
+    add_test(NAME camera_stream_event_log_tests COMMAND camera_stream_event_log_tests)
+
     add_executable(timing_diagnostics_index_tests "tools/timing_diagnostics_index_tests.cpp")
     target_include_directories(timing_diagnostics_index_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(timing_diagnostics_index_tests PRIVATE cxx_std_17)
