@@ -807,6 +807,7 @@ if(BUILD_TESTING)
     add_test(NAME writer_ownership_ratchet_tests COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/writer_ownership_ratchet_tests.py")
     add_test(NAME validate_nic_port_counters_tests COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_nic_port_counters_tests.py")
     add_test(NAME validate_camera_drop_window_tests COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_camera_drop_window_tests.py")
+    add_test(NAME validate_camera_timestamp_continuity_tests COMMAND python3 "${CMAKE_CURRENT_SOURCE_DIR}/tools/validate_camera_timestamp_continuity_tests.py")
     set_tests_properties(recording_crop_only_manifest_tests PROPERTIES TIMEOUT 30)
     add_executable(recording_master_acquisition_tests "tools/recording_master_acquisition_tests.cpp")
     add_executable(recording_media_plan_tests "tools/recording_media_plan_tests.cpp")
@@ -1576,6 +1577,13 @@ if(BUILD_TESTING)
     add_test(
         NAME calibration_package_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/calibration_package_tests.py")
+
+    add_executable(camera_frame_id_tests
+        "tools/camera_frame_id_tests.cpp"
+    )
+    target_include_directories(camera_frame_id_tests PRIVATE "${SRC_DIR}")
+    target_compile_features(camera_frame_id_tests PRIVATE cxx_std_17)
+    add_test(NAME camera_frame_id_tests COMMAND camera_frame_id_tests)
 
     add_executable(canvas_projection_geometry_identity_tests
         "tools/canvas_projection_geometry_identity_tests.cpp"

@@ -4633,8 +4633,7 @@ def check_sync_config(
             )
 
 
-# EVT camera frame ids run 1..65535 and wrap to 1 (count_camera_frame_id_gaps,
-# src/video_capture.h).
+# EVT camera frame ids run 1..65535 and wrap to 1 (src/camera_frame_id.h).
 CAMERA_FRAME_ID_PERIOD = 65535
 
 
@@ -4712,6 +4711,202 @@ def check_camera_drop_counter(
         reporter.warn(f"Cam{serial} {label}: the crop ledger counts {during} drops, more than the stream total")
 
 
+def recording_window_get_frame_errors(recording_folder: Path, cameras: list[str]) -> dict[str, dict[str, Any]]:
+    """GetFrame errors between the pipeline samples that bracket the recording, per camera.
+
+    get_frame_errors runs from stream start, like the drop counters. The
+    pipeline perf CSV samples it about once a second next to recording_frame_id
+    (0 before Record). Errors after the last sample before recording frame 1
+    and up to the last recorded sample count as during the recording, so an
+    error in the second before Record is counted against the recording.
+    """
+    result: dict[str, dict[str, Any]] = {}
+    for serial in cameras:
+        path = recording_folder / f"Cam{serial}_pipeline_perf.csv"
+        if not path.exists():
+            continue
+        before: int | None = None
+        last_recorded: tuple[int, int] | None = None
+        first_recorded: int | None = None
+        try:
+            with path.open("r", encoding="utf-8", newline="") as handle:
+                for row in csv.DictReader(handle):
+                    recording_frame_id = integer(row.get("recording_frame_id"))
+                    errors = integer(row.get("get_frame_errors"))
+                    if recording_frame_id is None or errors is None:
+                        continue
+                    if recording_frame_id <= 0:
+                        if first_recorded is None:
+                            before = errors
+                        continue
+                    if first_recorded is None:
+                        first_recorded = recording_frame_id
+                    last_recorded = (recording_frame_id, errors)
+        except OSError:
+            continue
+        if last_recorded is None:
+            continue
+        result[serial] = {
+            "source": path.name,
+            "errors_before_recording": before if before is not None else 0,
+            "errors_at_last_recorded_sample": last_recorded[1],
+            "errors_during_recording": last_recorded[1] - (before or 0),
+            "first_sampled_recording_frame_id": first_recorded,
+            "last_sampled_recording_frame_id": last_recorded[0],
+            "baseline": "sample_before_recording" if before is not None else "stream_start",
+        }
+    return result
+
+
+def check_get_frame_errors(
+    reporter: "Reporter",
+    serial: str,
+    stream_total: int | None,
+    window: dict[str, Any] | None,
+) -> None:
+    """GetFrame errors judged on the recording when the pipeline samples say where they were."""
+    if not stream_total or window is None:
+        reporter.check(
+            stream_total == 0,
+            f"Cam{serial} GetFrame errors=0",
+            f"Cam{serial} GetFrame errors={stream_total}",
+        )
+        return
+    during = int(window["errors_during_recording"])
+    span = (
+        f"pipeline samples at recorded frames {window['first_sampled_recording_frame_id']}"
+        f"..{window['last_sampled_recording_frame_id']}, {window['source']}"
+    )
+    if during > 0:
+        reporter.fail(
+            f"Cam{serial} GetFrame errors={during} during the recording "
+            f"({stream_total} since stream start; {span})"
+        )
+    else:
+        reporter.warn(
+            f"Cam{serial} GetFrame errors={stream_total} since stream start, none during the recording ({span})"
+        )
+
+
+def camera_metadata_paths(recording_folder: Path, manifest: dict[str, Any], serial: str) -> list[Path]:
+    """Per-frame metadata CSVs of one camera's full-frame video, in clip order."""
+    paths: list[Path] = []
+    clips = manifest.get("clips")
+    for clip in clips if isinstance(clips, list) else []:
+        metadata = nested_dict(clip if isinstance(clip, dict) else {}, "artifacts", "metadata")
+        value = metadata.get(serial) if isinstance(metadata, dict) else None
+        if value:
+            paths.append(path_from_recording_folder(recording_folder, value))
+    if not paths:
+        artifact = nested_dict(manifest, "camera_artifacts", serial)
+        if artifact.get("metadata"):
+            paths.append(path_from_recording_folder(recording_folder, artifact.get("metadata")))
+    if not paths:
+        crop_ledger = recording_folder / f"Cam{serial}_crop_meta.csv"
+        if crop_ledger.exists():
+            paths.append(crop_ledger)
+    return paths
+
+
+def camera_timestamp_steps(paths: list[Path]) -> dict[str, Any] | None:
+    """Frame periods between consecutive recorded frames, from the camera timestamps.
+
+    The period is the median of the first deltas. Each delta is then rounded to
+    whole periods on its own (one lost frame = a delta of two periods), so the
+    count does not depend on the period being exact to the nanosecond; over a
+    long recording a few ns of period error would add up to whole frames.
+    """
+    timestamps: list[int] = []
+    sources: list[str] = []
+    for path in paths:
+        try:
+            with path.open("r", encoding="utf-8", newline="") as handle:
+                reader = csv.reader(handle)
+                header = next(reader, [])
+                if "timestamp" not in header:
+                    return None
+                column = header.index("timestamp")
+                for row in reader:
+                    if len(row) <= column:
+                        continue
+                    try:
+                        timestamps.append(int(row[column]))
+                    except ValueError:
+                        continue
+        except OSError:
+            return None
+        sources.append(path.name)
+    if len(timestamps) < 3:
+        return None
+    first_deltas = sorted(b - a for a, b in zip(timestamps[:2001], timestamps[1:2001]))
+    period = first_deltas[len(first_deltas) // 2]
+    if period <= 0:
+        return None
+    missing = 0
+    non_advancing = 0
+    gaps: list[dict[str, Any]] = []
+    for index in range(1, len(timestamps)):
+        delta = timestamps[index] - timestamps[index - 1]
+        periods = round(delta / period)
+        if periods < 1:
+            non_advancing += 1
+            continue
+        if periods > 1:
+            missing += periods - 1
+            if len(gaps) < 20:
+                gaps.append({"after_recorded_row": index, "delta_ns": delta, "missing": periods - 1})
+    return {
+        "sources": sources,
+        "rows": len(timestamps),
+        "frame_period_ns": period,
+        "missing_frames": missing,
+        "non_advancing_steps": non_advancing,
+        "gaps": gaps,
+    }
+
+
+def check_camera_timestamp_continuity(
+    reporter: "Reporter",
+    recording_folder: Path,
+    cameras: list[str],
+    window_drops: dict[str, dict[str, Any]] | None,
+) -> dict[str, dict[str, Any]]:
+    """Frames missing from the recording, from the camera timestamps alone.
+
+    Independent of the camera frame-id counter (src/camera_frame_id.h): with
+    PTP-gated, fixed-rate frames every step between recorded frames is one
+    frame period, so a step of n periods is n - 1 camera frames that never
+    reached the recording.
+    """
+    manifest = read_json(recording_folder / "recording_session.json")
+    results: dict[str, dict[str, Any]] = {}
+    for serial in cameras:
+        steps = camera_timestamp_steps(camera_metadata_paths(recording_folder, manifest, serial))
+        if steps is None:
+            reporter.warn(f"Cam{serial} camera timestamp continuity: no per-frame metadata to check")
+            continue
+        results[serial] = steps
+        missing = steps["missing_frames"]
+        label = (
+            f"Cam{serial} camera timestamps: {steps['rows']} recorded frames at "
+            f"{steps['frame_period_ns'] / 1e6:.3f} ms"
+        )
+        if steps["non_advancing_steps"]:
+            reporter.fail(f"{label}: {steps['non_advancing_steps']} step(s) shorter than half a period")
+        if missing:
+            where = ", ".join(f"after row {gap['after_recorded_row']}" for gap in steps["gaps"][:5])
+            reporter.fail(f"{label}: {missing} camera frame(s) missing from the recording ({where})")
+        elif not steps["non_advancing_steps"]:
+            reporter.pass_(f"{label}: none missing")
+        window = (window_drops or {}).get(serial)
+        if window is not None and int(window["dropped_during_recording"]) != missing:
+            reporter.fail(
+                f"Cam{serial} camera frame-id gaps during the recording ({window['dropped_during_recording']}, "
+                f"{window['source']}) disagree with the timestamp check ({missing})"
+            )
+    return results
+
+
 def check_ptp_counters(
     reporter: Reporter,
     summary: dict[str, Any],
@@ -4720,6 +4915,7 @@ def check_ptp_counters(
     expected_decimate: int,
     skip_decimate: bool,
     window_drops: dict[str, dict[str, Any]] | None = None,
+    window_get_frame_errors: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     ptp_cameras = nested_dict(summary, "ptp", "cameras")
     raw_ptp_cameras = ptp_sync_summary.get("cameras")
@@ -4737,11 +4933,7 @@ def check_ptp_counters(
         gaps = integer(camera.get("camera_frame_id_gaps", raw_camera.get("camera_frame_id_gaps")))
         get_frame_errors = integer(camera.get("get_frame_errors", raw_camera.get("get_frame_errors")))
         check_camera_drop_counter(reporter, serial, "PTP frame gaps", gaps, (window_drops or {}).get(serial))
-        reporter.check(
-            get_frame_errors == 0,
-            f"Cam{serial} GetFrame errors=0",
-            f"Cam{serial} GetFrame errors={get_frame_errors}",
-        )
+        check_get_frame_errors(reporter, serial, get_frame_errors, (window_get_frame_errors or {}).get(serial))
         if "finalized" in raw_camera:
             reporter.check(
                 raw_camera.get("finalized") is True,
@@ -4776,6 +4968,7 @@ def check_pipeline(
     expected_display_preview_max_fps: int | None = None,
     crop_only: bool = False,
     window_drops: dict[str, dict[str, Any]] | None = None,
+    window_get_frame_errors: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     for serial in cameras:
         pipeline = nested_dict(summary, "pipeline", serial)
@@ -4803,6 +4996,9 @@ def check_pipeline(
             value = integer(final.get(field))
             if field in ("camera_dropped_frames", "camera_frame_id_gaps"):
                 check_camera_drop_counter(reporter, serial, label, value, (window_drops or {}).get(serial))
+                continue
+            if field == "get_frame_errors":
+                check_get_frame_errors(reporter, serial, value, (window_get_frame_errors or {}).get(serial))
                 continue
             reporter.check(value == 0, f"Cam{serial} {label}=0", f"Cam{serial} {label}={value}")
         enc_slow = integer(final.get("enc_slow"))
@@ -7727,6 +7923,7 @@ def main() -> int:
         )
         check_lens_feedback(reporter, snapshot, cameras)
         window_drops = recording_window_camera_drops(recording_folder, cameras)
+        window_get_frame_errors = recording_window_get_frame_errors(recording_folder, cameras)
         check_ptp_counters(
             reporter,
             summary,
@@ -7735,6 +7932,10 @@ def main() -> int:
             args.expect_ptp_register_read_decimate,
             args.skip_ptp_register_decimate_check,
             window_drops,
+            window_get_frame_errors,
+        )
+        timestamp_continuity = check_camera_timestamp_continuity(
+            reporter, recording_folder, cameras, window_drops
         )
         recording_session_manifest = check_recording_session_manifest(
             reporter,
@@ -7778,6 +7979,7 @@ def main() -> int:
             args.expect_display_preview_max_fps,
             crop_only=crop_only,
             window_drops=window_drops,
+            window_get_frame_errors=window_get_frame_errors,
         )
         video_sanity = {} if crop_only else check_videos(
             reporter,
@@ -7865,6 +8067,8 @@ def main() -> int:
     nic_port_counters_summary = check_nic_port_counters(reporter, recording_folder, args)
     if not cameras:
         window_drops = {}
+        window_get_frame_errors = {}
+        timestamp_continuity = {}
         video_sanity = {}
         crop_preview_summary = {}
         crop_recording_summary = {}
@@ -7907,6 +8111,8 @@ def main() -> int:
         "gui_display_frame_rate": gui_display_frame_rate_summary,
         "nic_port_counters": nic_port_counters_summary,
         "recording_window_camera_drops": window_drops,
+        "recording_window_get_frame_errors": window_get_frame_errors,
+        "camera_timestamp_continuity": timestamp_continuity,
     }
 
     if args.json_out:

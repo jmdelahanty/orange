@@ -15,6 +15,7 @@
 #include <mutex>
 #include <map>
 #include "network_base.h"
+#include "camera_frame_id.h"
 #include "common.hpp" // For pose::Object
 #include "recording_master_acquisition.h"
 #include "recording_master_source_slot.h"
@@ -530,29 +531,7 @@ struct CameraState
 
 static inline uint64_t count_camera_frame_id_gaps(unsigned short prev_id, unsigned short current_id)
 {
-    if (prev_id == 0 || current_id == 0) {
-        return 0;
-    }
-
-    constexpr uint32_t kFrameIdMax = std::numeric_limits<unsigned short>::max();
-    const uint32_t expected_next = (prev_id == kFrameIdMax) ? 1u : (static_cast<uint32_t>(prev_id) + 1u);
-    const uint32_t current = static_cast<uint32_t>(current_id);
-
-    if (current == expected_next) {
-        return 0;
-    }
-
-    if (current > prev_id) {
-        return current - expected_next;
-    }
-
-    return (kFrameIdMax - static_cast<uint32_t>(prev_id)) + current;
-}
-
-static inline unsigned short next_camera_frame_id_prev(unsigned short current_id)
-{
-    constexpr unsigned short kFrameIdMax = std::numeric_limits<unsigned short>::max();
-    return (current_id == kFrameIdMax) ? 0 : current_id;
+    return orange::camera_frame_id::MissingBetween(prev_id, current_id);
 }
 
 struct PTPState

@@ -2125,7 +2125,11 @@ void acquire_frames(
                         camera_state.frame_count + 1);
                 }
             }
-            camera_state.id_prev = next_camera_frame_id_prev(received_frame->frame_id);
+            // Keep 65535 as the previous id: the next frame (1 after the wrap) is
+            // checked against it like any other.
+            if (received_frame->frame_id != 0) {
+                camera_state.id_prev = received_frame->frame_id;
+            }
             camera_state.frames_recd++;
             camera_state.frame_count++;
             current_entry->frame_id = camera_state.frame_count; // Assign absolute frame ID
