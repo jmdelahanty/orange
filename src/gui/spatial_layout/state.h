@@ -416,6 +416,13 @@ struct DailyRegistrationWorkflowUiState {
     std::string pending_operation_id;
     std::string pending_terminal_stage;
     std::string pending_terminal_reason;
+    // Begin request bookkeeping (daily_registration_citrus_status.h).
+    double begin_requested_monotonic_seconds = 0.0;
+    std::string begin_prior_transition;
+    std::string begin_prior_error;
+    // Citrus answered an abort with daily_registration_transaction_not_active;
+    // waiting_abort confirms that from its status instead of an abort receipt.
+    bool abort_citrus_reported_inactive = false;
     std::string candidate_path;
     std::string candidate_sha256;
     std::string automatic_candidate_path;

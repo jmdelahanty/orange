@@ -1,4 +1,5 @@
 #include "gui/spatial_layout/daily_registration_workflow.h"
+#include "gui/spatial_layout/daily_registration_citrus_status.h"
 #include "gui/spatial_layout/daily_native_context_capture.h"
 
 #include "dish_top_rim_observation.h"
@@ -570,6 +571,22 @@ bool RequestAbort(
     const std::string operation = NextOperationId("abort");
     const auto result = abort_citrus_daily_registration(
         workflow->transaction_id, reason, operation);
+    if (!result.ok &&
+        result.reason == orange::gui::daily_registration::kAbortTransactionNotActive) {
+        // Nothing to abort on the Citrus side (for example a begin it refused,
+        // or a Citrus restart). waiting_abort confirms it from the status.
+        workflow->pending_operation_id.clear();
+        workflow->pending_terminal_stage = terminal_stage;
+        workflow->pending_terminal_reason = reason;
+        workflow->abort_citrus_reported_inactive = true;
+        workflow->stage = "waiting_abort";
+        workflow->active = true;
+        workflow->status =
+            "Citrus reports no active daily-registration transaction; confirming from its status.";
+        workflow->error = terminal_stage == "failed" ? reason : std::string();
+        Checkpoint(workflow);
+        return true;
+    }
     if (!result.ok) {
         const std::string error =
             "Citrus did not accept the daily-registration abort request: " +
@@ -588,6 +605,7 @@ bool RequestAbort(
     workflow->pending_operation_id = operation;
     workflow->pending_terminal_stage = terminal_stage;
     workflow->pending_terminal_reason = reason;
+    workflow->abort_citrus_reported_inactive = false;
     workflow->stage = "waiting_abort";
     workflow->active = true;
     workflow->status =
@@ -2790,6 +2808,34 @@ void advance_daily_registration_workflow(
                 : "guided_daily_waiting_reject");
         if (!status.ok) return;
         const auto& daily = status.daily_registration;
+        if (workflow.stage == "waiting_abort" && workflow.abort_citrus_reported_inactive) {
+            workflow.abort_citrus_reported_inactive = false;
+            if (!orange::gui::daily_registration::CitrusHasNoActiveTransaction(
+                    daily, workflow.transaction_id)) {
+                // The status says our transaction is active after all: keep
+                // the operator on the retry path rather than closing it.
+                workflow.stage = "abort_request_failed";
+                workflow.status =
+                    "Citrus refused the abort as not active but its status shows this transaction active. Retry abort or inspect Citrus status; do not start an experiment yet.";
+                Checkpoint(&workflow);
+                return;
+            }
+            workflow.active = false;
+            workflow.stage = workflow.pending_terminal_stage.empty()
+                ? "aborted"
+                : workflow.pending_terminal_stage;
+            workflow.status = workflow.stage == "failed"
+                ? "Daily registration stopped. Citrus has no active daily-registration transaction, so nothing needed restoring; commissioned base geometry remains available."
+                : "Daily registration closed. Citrus has no active daily-registration transaction, so nothing needed restoring; commissioned base geometry remains available.";
+            workflow.pending_terminal_stage.clear();
+            workflow.pending_terminal_reason.clear();
+            Checkpoint(&workflow);
+            release_spatial_calibration_transaction(
+                ui_state,
+                workflow.stage,
+                workflow.status);
+            return;
+        }
         const std::string expected_transition =
             workflow.stage == "waiting_abort" ? "aborted" : "rejected";
         if (daily.value("active", true) ||
@@ -2835,6 +2881,9 @@ void advance_daily_registration_workflow(
                                {"camera_id", target.camera_serial}});
         }
         const std::string operation = NextOperationId("begin");
+        workflow.begin_prior_transition = JsonString(daily, "transition");
+        workflow.begin_prior_error = JsonString(daily, "error");
+        workflow.begin_requested_monotonic_seconds = MonotonicSeconds();
         const auto result = begin_citrus_daily_registration(
             workflow.transaction_id, targets, operation);
         if (!result.ok) {
@@ -2853,12 +2902,23 @@ void advance_daily_registration_workflow(
         const auto status = query_citrus_daily_registration_status(
             "guided_daily_waiting_begin");
         if (!status.ok) return;
-        if (status.daily_registration.value("active", false) &&
-            JsonString(status.daily_registration, "transaction_id") ==
-                workflow.transaction_id &&
-            JsonString(status.daily_registration, "operation_id") ==
-                workflow.pending_operation_id &&
-            JsonString(status.daily_registration, "transition") == "begun") {
+        namespace daily_status = orange::gui::daily_registration;
+        const auto wait = daily_status::ClassifyBeginWait(
+            status.daily_registration,
+            workflow.transaction_id,
+            workflow.pending_operation_id,
+            workflow.begin_prior_transition,
+            workflow.begin_prior_error,
+            MonotonicSeconds() - workflow.begin_requested_monotonic_seconds);
+        if (wait.outcome == daily_status::BeginWait::kRefused ||
+            wait.outcome == daily_status::BeginWait::kTimedOut) {
+            // fail() sends an abort first: harmless when Citrus never began
+            // (it answers not-active and the workflow closes), and it releases
+            // a transaction that began after all.
+            fail(wait.reason);
+            return;
+        }
+        if (wait.outcome == daily_status::BeginWait::kBegun) {
             workflow.citrus_begin_status = status.daily_registration;
             workflow.stage = "ready_rim_capture";
             workflow.status =

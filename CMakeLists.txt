@@ -1700,6 +1700,13 @@ if(BUILD_TESTING)
         NAME projector_intensity_authority_tests
         COMMAND projector_intensity_authority_tests)
 
+    add_executable(daily_registration_citrus_status_tests
+        "tools/daily_registration_citrus_status_tests.cpp"
+    )
+    target_include_directories(daily_registration_citrus_status_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(daily_registration_citrus_status_tests PRIVATE cxx_std_17)
+    add_test(NAME daily_registration_citrus_status_tests COMMAND daily_registration_citrus_status_tests)
+
     add_executable(daily_registration_geometry_tests
         "tools/daily_registration_geometry_tests.cpp"
         "${SRC_DIR}/gui/daily_registration_geometry.cpp"
