@@ -6924,6 +6924,15 @@
    ]
   ]
  },
+ "src/session/session_control_host.cpp": {
+  "csv_headers": [],
+  "json_keys": [
+   "event_at_utc",
+   "schema_id",
+   "schema_version"
+  ],
+  "schemas": []
+ },
  "src/shaman_v2_recording_identity.h": {
   "csv_headers": [],
   "json_keys": [

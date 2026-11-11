@@ -359,6 +359,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/video_encode_profile.cpp"
     "${SRC_DIR}/recording_output_utils.cpp"
     "${SRC_DIR}/orange_local_control.cpp"
+    "${SRC_DIR}/session/session_control_host.cpp"
     "${SRC_DIR}/projected_center_preflight.cpp"
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/image_writer_worker.cpp"
@@ -497,6 +498,9 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/session/model_artifacts.cpp"
     "${SRC_DIR}/session/recording_observation_binding.cpp"
     "${SRC_DIR}/session/recording_observation_finalization.cpp"
+    "${SRC_DIR}/session/session_control_host.cpp"
+    "${SRC_DIR}/orange_local_control.cpp"
+    "${SRC_DIR}/projected_center_preflight.cpp"
     "${SRC_DIR}/session/recording_observation_identity.cpp"
     "${SRC_DIR}/session/recording_observation_prearm.cpp"
     "${SRC_DIR}/session/recording_observation_request_artifacts.cpp"
@@ -1949,6 +1953,25 @@ if(BUILD_TESTING)
     target_compile_features(orange_local_control_tests PRIVATE cxx_std_17)
     target_link_libraries(orange_local_control_tests PRIVATE Threads::Threads)
     add_test(NAME orange_local_control_tests COMMAND orange_local_control_tests)
+
+    add_executable(session_control_host_tests
+        "tools/session_control_host_tests.cpp"
+        "${SRC_DIR}/session/session_control_host.cpp"
+        "${SRC_DIR}/orange_local_control.cpp"
+        "${SRC_DIR}/projected_center_preflight.cpp"
+        "${SRC_DIR}/session/recording_observation_binding.cpp"
+        "${SRC_DIR}/recording_context.cpp"
+        "${SRC_DIR}/recording_subject_reference.cpp"
+        "${SRC_DIR}/effective_configuration.cpp"
+        "${SRC_DIR}/session/recording_observation_finalization.cpp"
+        "${SRC_DIR}/session/recording_observation_identity.cpp"
+        "${SRC_DIR}/session/recording_observation_prearm.cpp"
+        "${SRC_DIR}/session/recording_observation_request_artifacts.cpp"
+    )
+    target_include_directories(session_control_host_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(session_control_host_tests PRIVATE cxx_std_17)
+    target_link_libraries(session_control_host_tests PRIVATE Threads::Threads)
+    add_test(NAME session_control_host_tests COMMAND session_control_host_tests)
 
     add_test(
         NAME orange_local_control_client_tests

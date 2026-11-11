@@ -77,6 +77,7 @@
 #include "session/crop_rolling_sidecars.h"
 #include "session/recording_observation_prearm.h"
 #include "session/recording_observation_finalization.h"
+#include "session/session_control_host.h"
 #include "session/recording_observation_request_artifacts.h"
 #include "session/recording_session.h"
 #include "spatial_layout_ui.h"
@@ -340,20 +341,12 @@ bool gui_local_control_exit_after_finalize_enabled(
 
 std::string gui_local_control_socket_path()
 {
-    std::string path = gui_env_string_or_empty("ORANGE_GUI_LOCAL_CONTROL_SOCKET");
-    if (path.empty()) {
-        path = gui_env_string_or_empty("ORANGE_LOCAL_CONTROL_SOCKET");
-    }
-    return path.empty() ? "/tmp/orange_local_control.sock" : path;
+    return orange::session::LocalControlSocketPathFromEnvironment();
 }
 
 std::string gui_local_control_log_path(const std::string& socket_path)
 {
-    std::string path = gui_env_string_or_empty("ORANGE_GUI_LOCAL_CONTROL_LOG");
-    if (path.empty()) {
-        path = gui_env_string_or_empty("ORANGE_LOCAL_CONTROL_LOG");
-    }
-    return path.empty() ? (socket_path + ".events.jsonl") : path;
+    return orange::session::LocalControlEventLogPathFromEnvironment(socket_path);
 }
 
 void gui_log_local_control_event(
@@ -5808,36 +5801,24 @@ int main(int /*argc*/, char ** /*args*/) {
     orange::gui::GuiTimingSidecarWriter gui_timing_sidecar_writer;
     GuiExternalRecorderLifecycleRefreshState gui_external_recorder_refresh_state;
     GuiCameraTemperatureSamplingState gui_camera_temperature_sampling_state;
-    // Citrus's receipt finalize: verified off the control server thread,
-    // answered from the stored collection on every retry. Declared before
-    // the server so it outlives it.
-    orange::session::RecordingObservationFinalizationJobs::Options
-        observation_finalization_options;
-    observation_finalization_options.after_finalized =
-        [](const std::string& recording_folder,
-           const orange::session::RecordingObservationFinalizationResult& finalized,
-           std::string* error_out) {
-            // Subject identity v4: a Citrus bug if it happens; recorded, never refused.
-            for (const auto& line : finalized.subject_declaration_disagreements) {
-                std::cerr << "[GUI][observation_binding] subject declaration and receipt "
-                             "disagree (recorded, not refused): " << line << std::endl;
-            }
-            std::string refresh_error;
-            if (!orange::session::refresh_recording_session_observation_bindings(
-                    recording_folder, &refresh_error)) {
-                if (error_out != nullptr) {
-                    *error_out =
-                        "receipts were persisted, but the finalized "
-                        "recording_session.json refresh failed: " +
-                        refresh_error;
-                }
-                return false;
-            }
-            return true;
-        };
-    orange::session::RecordingObservationFinalizationJobs
-        gui_observation_finalization_jobs(observation_finalization_options);
-    orange::control::LocalControlServer gui_local_control_server;
+    // The control endpoint (server, Citrus receipt finalization, receipt
+    // tracking) is shared with orange_client: session/session_control_host.h.
+    // Receipts are verified off the control server thread and answered from
+    // the stored collection on every retry.
+    orange::session::SessionControlHostOptions gui_control_host_options;
+    gui_control_host_options.process = "orange_gui";
+    gui_control_host_options.socket_path = gui_local_control_socket_path();
+    gui_control_host_options.event_log_path =
+        gui_local_control_log_path(gui_control_host_options.socket_path);
+    gui_control_host_options.allow_start_recording =
+        gui_local_control_start_request.enabled;
+    gui_control_host_options.allow_stop_recording =
+        gui_local_control_stop_scheduler.stop_recording_enabled;
+    gui_control_host_options.allow_citrus_completion =
+        gui_local_control_stop_scheduler.citrus_completion_enabled;
+    orange::session::SessionControlHost gui_control_host(gui_control_host_options);
+    orange::control::LocalControlServer& gui_local_control_server =
+        gui_control_host.server();
     g_gui_local_control_server = &gui_local_control_server;
     std::string gui_local_control_event_log_path;
     // Kept for restarts: the supervision in the main loop starts the server
@@ -5847,70 +5828,11 @@ int main(int /*argc*/, char ** /*args*/) {
     bool gui_local_control_configured = false;
     GuiLocalControlWatchState gui_local_control_watch;
     if (!gui_local_control_disabled()) {
-        orange::control::LocalControlServerOptions control_options;
-        control_options.socket_path = gui_local_control_socket_path();
-        control_options.event_log_path =
-            gui_local_control_log_path(control_options.socket_path);
-        gui_local_control_event_log_path = control_options.event_log_path;
-        control_options.allow_gui_lifecycle_commands = false;
-        control_options.allow_gui_start_recording_commands =
-            gui_local_control_start_request.enabled;
-        control_options.allow_gui_stop_recording_commands =
-            gui_local_control_stop_scheduler.stop_recording_enabled;
-        control_options.allow_gui_citrus_completion_commands =
-            gui_local_control_stop_scheduler.citrus_completion_enabled;
-        control_options.recording_observation_finalization_handler =
-            [&gui_observation_finalization_jobs](
-                const nlohmann::json& params,
-                const orange::control::LocalControlStatusSnapshot& status,
-                std::string* error_out,
-                std::string* error_code_out) {
-                const std::string requested_folder =
-                    params.value("recording_folder", "");
-                if (!status.recording_folder.empty() &&
-                    std::filesystem::path(status.recording_folder)
-                            .lexically_normal() !=
-                        std::filesystem::path(requested_folder)
-                            .lexically_normal()) {
-                    if (error_out != nullptr) {
-                        *error_out =
-                            "Citrus receipt folder conflicts with Orange's "
-                            "current recording folder";
-                    }
-                    return nlohmann::json::object();
-                }
-                if (!status.recording_folder.empty() &&
-                    !status.recording_active &&
-                    !status.recording_finalizing &&
-                    !status.recording_finalized) {
-                    if (error_out != nullptr) {
-                        *error_out =
-                            "Orange's current recording is not in a receipt-"
-                            "eligible lifecycle state";
-                    }
-                    return nlohmann::json::object();
-                }
-                const std::string recording_folder =
-                    status.recording_folder.empty()
-                    ? requested_folder
-                    : status.recording_folder;
-                const auto answer =
-                    gui_observation_finalization_jobs.Submit(recording_folder, params);
-                if (!answer.accepted) {
-                    if (error_out != nullptr) {
-                        *error_out = answer.error;
-                    }
-                    if (error_code_out != nullptr) {
-                        *error_code_out = answer.error_code;
-                    }
-                    return nlohmann::json::object();
-                }
-                return answer.effect;
-            };
+        gui_local_control_event_log_path = gui_control_host.server_options().event_log_path;
         std::string control_error;
-        gui_local_control_options = control_options;
+        gui_local_control_options = gui_control_host.server_options();
         gui_local_control_configured = true;
-        if (!gui_local_control_server.Start(control_options, &control_error)) {
+        if (!gui_control_host.Start(&control_error)) {
             std::cerr << "[GUI][local_control] failed to start: "
                       << control_error << std::endl;
             syslog(LOG_ERR, "orange GUI local control failed to start: %s", control_error.c_str());
