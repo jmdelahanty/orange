@@ -3675,7 +3675,7 @@ def main(argv: list[str] | None = None) -> int:
         orchestrator.persist_artifacts(summary)
         write_summary(args.summary_json, summary)
         print(json.dumps(summary, indent=2, sort_keys=True))
-        return 0
+        return 0 if summary.get("result") in {"pass", "dry_run"} else 1
     except Exception as exc:
         if args.orange_mode == "headless":
             # Before the start: end both (orange_client finalizes on SIGTERM; give
