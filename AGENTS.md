@@ -60,13 +60,16 @@ slots, full-frame `extra_output_delay 8` (crop recorders keep the default),
 native local input from the CUDA 13 recorder build, MP4 writeback pacing
 (`sync_file_range` every 32 MB, default on). Since 2026-10-09: full-frame
 45/60 Mbit/s VBR (was 150/150; `docs/production_configuration.md`),
-15-minute rolling clips at 100 fps that no longer need a timed recording,
-recordings on `/mnt/Data1`.
+15-minute rolling clips at 100 fps that no longer need a timed recording.
+Recordings go to `/mnt/Data2/orange_data/exp/unsorted` (app config
+`storage.default_recording_root`) since 2026-10-16; Data1 is failing, never
+write to it.
 
 Headless spec: `experiment_specs/..._native_ownerpush_ring_od8ff_s16*.json`
 (60 s round and `_endurance30`, 30 minutes). GUI: the same shape comes from
 `~/orange_data/config/app/default.json` `recording.external_ipc` (owner
-push, slots, delay, native input, recorder tool path); env overrides win.
+push, slots, delay, recorder tool path); env overrides win. Native input
+has no knob since 49df0bd: the `native_local_input` key is ignored.
 
 Gate result (30 min, four cameras, real fish, everything recording):
 0 camera frame-id gaps, NIC counters unchanged, 179,901 frames received =
@@ -168,8 +171,12 @@ scripts/build_orange_native_recorder.sh --install  # -> /opt/orange/bin (sudo)
 
 `/opt/orange/bin/external_recorder_ipc_probe_native` is the only recorder
 binary since 2026-10-08: the app config, the specs, the supervisor default
-and the smoke scripts all point at it, and it serves the crop recorders too
-(native array input turns itself off for anything but 4512x4512). The CUDA
+and the smoke scripts all point at it, and it serves the crop recorders too.
+Since 49df0bd (2026-10-30) native array input is the recorder's own decision
+for every same-GPU full-frame HEVC shard, at any frame size: the NV12 arrays
+are sized from the frame (pitch 4608 for 4512 wide), so the 250 Hz config
+(4512x1792) uses it too. Crops and H.264 use the registered source. The
+`--native-local-input` flag and its env var are gone. The CUDA
 12 build of the same source (`external_recorder_ipc_probe` in the main
 CMake) is retired. Every recorder change needs a rebuild and an install of
 the native binary before the next run.
@@ -244,7 +251,7 @@ Orange/Citrus commissioning) are in git history of this file and in
 ## Subject, Citrus and intake status, 2026-10-11
 
 - Production was d0922ee at the time; current production is in the
-  2026-10-14 section below. Dish per camera: the Subject panel edits dish and
+  last section of this file. Dish per camera: the Subject panel edits dish and
   subject count per camera (app config `recording.subject_references`), and
   every GUI record start needs a fresh per-recording confirmation
   (`subject_confirmation.json` at the root). Fish IDs wait for subject
@@ -340,7 +347,7 @@ Orange/Citrus commissioning) are in git history of this file and in
   x 780 / y 140 on 5899 frames with the spatial mask off), and per-frame
   `pose_status` is exercised live only by a run with Citrus attached.
 
-## Production b40b94d, 2026-10-15
+## Production b40b94d, 2026-10-15 (superseded, see edc5450 below)
 
 - Production and integration are at b40b94d: the 5c6a26d code plus the
   following, all promoted from the dish branch.
@@ -361,3 +368,51 @@ Orange/Citrus commissioning) are in git history of this file and in
   with receipt 4 and acceptance 3 together, and Jeremy flips it.
 - No rig run on b40b94d yet. The finalize change is inert while Citrus writes
   receipt v3.
+
+## Production edc5450, 2026-11-10
+
+- Production (`agent/acquisition/shaman-v2-authoritative-20260824`) and
+  integration are at edc5450, pushed to the fork (`origin`) only; never push
+  `upstream`. Tree count at edc5450: 1351 files (`git ls-tree -r HEAD | wc -l`).
+  What came after b40b94d (`git log b40b94d..edc5450`):
+  - Recording intent drives the Citrus binding (c479455): stimulus_experiment
+    = binding required (needs a Citrus canvas imported in the GUI, else the
+    start is refused with `citrus_canvas_not_selected`), recording_only =
+    `not_applicable`, no intent = start refused. Mode `optional` and
+    `ORANGE_CITRUS_OBSERVATION_BINDING_MODE` are gone. A stimulus-experiment
+    start is refused while the GUI control socket is down (c78d332).
+  - Start snapshot pins the pancakebatter rig documents
+    (`/etc/pancakebatter/rigs/<rig_id>.yml` + events + sidecar) and their open
+    conditions (305a650, `session.rig_config`).
+  - Native input at every full-frame size (49df0bd, above).
+  - Camera open refuses a frame rate or exposure the camera did not take
+    (35219e0); the stream smoke fails the same way (a47031c).
+  - Orange never stops the host PTP stack, and a PTP-gated start without host
+    PTP is refused (d794e78, 4d67c7a).
+  - MP4 writer drops written video pages from the page cache (edcc97d).
+  - Image levels: per-camera brightness/saturation check inside the dish rim,
+    warn-only (b093749, 83c46b3).
+  - Files Orange creates belong to the sudo invoker (6af7c8b).
+  - Crop video: optional constant QP, all-intra (153e718). The app config sets
+    `recording.crop.external_ipc.qp: 29` (since 2026-11-10; unset = lossless).
+  - Every recording carries `nic_port_counters.json`, and the GUI runs
+    `scripts/validate_gui_ptp_recording.py` in the background after each
+    finalize (6df4e5b; result in `~/orange_data/recording_validation/`); camera
+    drops are judged on the recording window (6a03180).
+  - Subject panel "Blank all (no subject information)" button (edc5450): a
+    blank dish declares `not_collected`; Confirm is still required.
+- Installed native recorder: built from 6a03180 (includes 49df0bd), sha256
+  fff3621e...
+- Citrus still writes receipt v3 (`~/citrus/system_config.yml`); the transfer
+  pre-check still pins sealer 3.3.0.
+- Rig runs on edc5450, 2026-11-10: QP29 crop test `2026_11_10_14_14_34` and
+  the 30-min four-arena Citrus run at 240 Hz `2026_11_10_15_55_37` (Orange side
+  clean: 0 drops, binding accepted; the Citrus H5s failed on the Citrus
+  chaser-last bug, fix in progress on the Citrus side).
+- Known gap: guided daily registration is blocked until the Citrus
+  commissioning release is refit on the current canvas; Orange's canvas import
+  reports the homographies `stale_or_incompatible`. Recordings still resolve
+  their geometry.
+- 250 Hz: `~/orange_data/config/local/250_cam4_ptp_fourcam` (4512x1792 at
+  250 fps, offset_y 1360) needs no app config change. It has not been run in
+  the GUI with analytics and crops yet.
