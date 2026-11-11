@@ -11,9 +11,10 @@
 #   external_recorder_contract.artifact_root (the client refuses to reuse a
 #   non-empty run folder),
 # - runs it through the NOPASSWD benchmark wrapper with YOLO perf logging,
-# - runs scripts/analyze_yolo_latency_phases.py on the result, writing
-#   <run folder>/latency_phases.json, and prints the summary (with deltas
-#   against the optional baseline JSON).
+# - runs scripts/analyze_yolo_latency_phases.py on the first run, writing
+#   <output_root>/<experiment_id>/latency_phases.json next to runs.json (never
+#   into the run folder, which orange_client has sealed), and prints the
+#   summary (with deltas against the optional baseline JSON).
 #
 # Pre-flight the cameras first (a stale control session refuses to open):
 #   sudo -n /usr/local/bin/orange-evt-stream-smoke \
@@ -80,13 +81,17 @@ sudo -n /usr/local/bin/orange-local-benchmark --orange-client "$CLIENT" --yolo-p
 RC=$?
 set -e
 echo "[run] exit=$RC"
-RUN_DIR="$(ls -d "$OUTPUT_ROOT/$EXPERIMENT_ID"/run_0001* 2>/dev/null | head -1 || true)"
+# The run folder from runs.json: run_0001__..., or <experiment_id>__run_0001__...
+# with unique_run_id.
+EXPERIMENT_DIR="$OUTPUT_ROOT/$EXPERIMENT_ID"
+RUN_DIR="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['runs'][0].get('recording_folder', ''))" "$EXPERIMENT_DIR/runs.json" 2>/dev/null || true)"
+[[ -n "$RUN_DIR" && -d "$RUN_DIR" ]] || RUN_DIR=""
 if [[ -z "$RUN_DIR" ]]; then
   echo "[run] no run folder produced; last log lines:" >&2
   grep -v "PIPELINE\|YOLO_PERF" "$LOG" | tail -8 >&2
   exit "$RC"
 fi
-python3 - "$OUTPUT_ROOT/$EXPERIMENT_ID/runs.json" <<'PY'
+python3 - "$EXPERIMENT_DIR/runs.json" <<'PY'
 import json, sys
 r = json.load(open(sys.argv[1]))['runs'][0]
 print(f"[run] status={r.get('status')} pass_fail={r.get('pass_fail')} reason={str(r.get('reason'))[:200]}")
@@ -96,8 +101,25 @@ for row in r.get('camera_results', []):
           f" submitted={row.get('submitted_frames_final')}"
           f" acked={row.get('external_ipc_frames_acked_final')}")
 PY
-ARGS=("$RUN_DIR" --steady-after 200 --json "$RUN_DIR/latency_phases.json")
-[[ -n "$ARTIFACT_ROOT" ]] && ARGS+=(--external-recorder-dir "$ARTIFACT_ROOT")
+ANALYSIS_JSON="$EXPERIMENT_DIR/latency_phases.json"
+ARGS=("$RUN_DIR" --steady-after 200 --json "$ANALYSIS_JSON")
+# A relative artifact_root lives under the run folder.
+if [[ -n "$ARTIFACT_ROOT" ]]; then
+  [[ "$ARTIFACT_ROOT" == /* ]] || ARTIFACT_ROOT="$RUN_DIR/$ARTIFACT_ROOT"
+  ARGS+=(--external-recorder-dir "$ARTIFACT_ROOT")
+fi
 [[ -n "$BASELINE_JSON" ]] && ARGS+=(--baseline-json "$BASELINE_JSON")
-python3 "$REPO_ROOT/scripts/analyze_yolo_latency_phases.py" "${ARGS[@]}"
-echo "[run] analysis json: $RUN_DIR/latency_phases.json"
+# The analysis needs numpy, which /usr/bin/python3 lacks: ORANGE_ANALYSIS_PYTHON,
+# else the juicebox env, else python3. Its result never changes this script's
+# exit code, which is orange_client's.
+ANALYSIS_PYTHON="${ORANGE_ANALYSIS_PYTHON:-}"
+if [[ -z "$ANALYSIS_PYTHON" ]]; then
+  ANALYSIS_PYTHON=python3
+  [[ -x "$HOME/miniforge3/envs/juicebox/bin/python" ]] && ANALYSIS_PYTHON="$HOME/miniforge3/envs/juicebox/bin/python"
+fi
+if "$ANALYSIS_PYTHON" "$REPO_ROOT/scripts/analyze_yolo_latency_phases.py" "${ARGS[@]}"; then
+  echo "[run] analysis json: $ANALYSIS_JSON"
+else
+  echo "[run] latency analysis FAILED ($ANALYSIS_PYTHON); rerun: $ANALYSIS_PYTHON scripts/analyze_yolo_latency_phases.py ${ARGS[*]}" >&2
+fi
+exit "$RC"
