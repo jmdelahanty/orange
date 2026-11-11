@@ -795,7 +795,7 @@ void test_request_v2_carries_frozen_recording_context()
         require(error.find("frozen recording context") != std::string::npos, "v2 refusal reason: " + error);
         std::filesystem::remove_all(root);
     }
-    unsetenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION");
+    setenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION", "1", 1);
     {
         const auto root = make_materialization_fixture(
             resolved_geometry(), frozen_recording_contexts("stimulus_experiment"));
@@ -1108,7 +1108,7 @@ std::filesystem::path run_prearm_subject_cross_check(const std::string& operator
     require(orange::session::prepare_recording_observation_pre_arm(
                 root.string(), mode, "2026-08-13T16:00:05Z", &requests, &replay, &error, transport),
             "v3 pre-arm replay failed: " + error);
-    unsetenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION");
+    setenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION", "1", 1);  // back to the v1 fixtures
     require(replay.arm_allowed == result_out->arm_allowed &&
                 replay.lifecycle_status == result_out->lifecycle_status && replay.reason == result_out->reason &&
                 replay.subject_mismatches == result_out->subject_mismatches &&
@@ -1260,7 +1260,7 @@ void test_prearm_surfaces_v2_context_rejection_reasons()
                     error.find("context_rejections do not match") != std::string::npos,
                 "a decision summary that disagrees with the sealed acceptances must be refused: " + error);
     }
-    unsetenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION");
+    setenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION", "1", 1);  // back to the v1 fixtures
     std::filesystem::remove_all(root);
 }
 
@@ -2108,9 +2108,31 @@ void test_receipt_v4_finalization()
             "a receipt v4 collection must never be upgraded: " + upgrade.error);
 }
 
+void test_request_version_default_is_v2()
+{
+    // One request version for the GUI and orange_client: Citrus refuses v1
+    // (unified_h5_binding_v2_required, 2026-11-10).
+    unsetenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION");
+    std::string error;
+    require(orange::session::resolve_recording_observation_binding_request_version(&error) ==
+                orange::session::kObservationBindingRequestSchemaVersionV2,
+            "default request version is v2");
+    setenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION", "1", 1);
+    require(orange::session::resolve_recording_observation_binding_request_version(&error) ==
+                orange::session::kObservationBindingSchemaVersion,
+            "explicit v1 for fixture tools");
+    setenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION", "3", 1);
+    require(orange::session::resolve_recording_observation_binding_request_version(&error) == 0 && !error.empty(),
+            "anything else is refused");
+}
+
 int main()
 {
     try {
+        test_request_version_default_is_v2();
+        // The fixtures below are v1 requests (no recording context): pin v1
+        // for them, as the fixture tools do with --request-version 1.
+        setenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION", "1", 1);
         test_complete_chain();
         test_subject_reference_v2_fixtures();
         test_citrus_receipt_v4_witnesses();

@@ -203,13 +203,20 @@ def main() -> int:
                        "--recording-subtype", "dish_freeswim")
         check_bundle(out2, summary2, expect_subtype=True, expect_requests=False, request_version=1)
 
-        # Bound, request v1 (default): the request carries no context field.
+        # Bound, request v1 (explicit, for old-format fixtures): no context field.
         out3 = root / "synthetic_bound_v1"
         summary3 = run(binary, out3, root / "rig_c", "--intent", "stimulus_experiment",
-                       "--recording-subtype", "dish_stimulus")
+                       "--recording-subtype", "dish_stimulus", "--request-version", "1")
         check_bundle(out3, summary3, expect_subtype=True, expect_requests=True, request_version=1)
         for row in summary3["observation_binding_requests"]["requests"]:
             assert "recording_context" not in load(out3 / row["relative_path"])["contract"]
+
+        # Bound, no version given: v2, the one both binaries send (Citrus
+        # requires it), with the recording context in every request.
+        out4 = root / "synthetic_bound_default"
+        summary4 = run(binary, out4, root / "rig_d", "--intent", "stimulus_experiment",
+                       "--recording-subtype", "dish_stimulus")
+        check_bundle(out4, summary4, expect_subtype=True, expect_requests=True, request_version=2)
 
         # An acquired origin cannot be requested: data_origin is fixed by the tool.
         for f in (out / "synthetic_bundle.json", out2 / "synthetic_bundle.json", out3 / "synthetic_bundle.json"):

@@ -19,8 +19,8 @@ inline constexpr int kObservationBindingSchemaVersion = 1;
 // v2 whose rejection reasons add recording_context_{missing,invalid,
 // mismatch,unavailable} and batch_rejected. Envelope and contract carry the
 // same version; a v2 request needs a v2 acceptance; receipts stay v1 (Citrus
-// 9aa6d57). Opt-in until the joint test passes:
-// ORANGE_CITRUS_BINDING_REQUEST_VERSION=2 (default 1).
+// 9aa6d57). The default since 2026-11-10 for both binaries (Citrus refuses
+// v1); ORANGE_CITRUS_BINDING_REQUEST_VERSION=1 only for fixture tools.
 inline constexpr int kObservationBindingRequestSchemaVersionV2 = 2;
 // Finalized receipt v2 (2026-10-10, sealer 3.1.0, joint with Citrus/Palette):
 // the v1 contract plus `citrus_artifacts`, every per-session file Citrus

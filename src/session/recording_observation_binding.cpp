@@ -914,8 +914,12 @@ bool validate_recording_observation_finalized_receipt(
 
 int resolve_recording_observation_binding_request_version(std::string* error_out)
 {
+    // One answer for the GUI and orange_client: v2, which Citrus requires
+    // (unified_h5_binding_v2_required; 2026-11-10 an orange_client run sent v1
+    // because only the GUI took the version from its app config). An explicit
+    // ORANGE_CITRUS_BINDING_REQUEST_VERSION=1 is for fixture tools only.
     const char* raw = std::getenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION");
-    if (!raw || raw[0] == '\0') return kObservationBindingSchemaVersion;
+    if (!raw || raw[0] == '\0') return kObservationBindingRequestSchemaVersionV2;
     const std::string value = raw;
     if (value == "1") return kObservationBindingSchemaVersion;
     if (value == "2") return kObservationBindingRequestSchemaVersionV2;

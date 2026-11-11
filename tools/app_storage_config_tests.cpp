@@ -150,7 +150,6 @@ void test_missing_config_uses_defaults()
         "default per-camera crop recorder GPU map unset");
     require(config.gui_crop_frame_pool_size == -1, "default crop frame pool unset");
     require(config.gui_ptp_register_read_decimate == 1, "default PTP decimate");
-    require(config.gui_citrus_binding_request_version == 0, "binding request version unset by default");
     require(config.gui_stream_downsample == -1, "default stream downsample unset");
     require(!config.gui_show_speed_graphs, "default speed graphs disabled");
     require(
@@ -302,7 +301,6 @@ void test_loads_gui_and_crop_defaults()
                 "/opt/orange/bin/external_recorder_ipc_probe_native",
             "recorder_tool_path should load");
     require(config.gui_ptp_register_read_decimate == 100, "PTP decimate should load");
-    require(config.gui_citrus_binding_request_version == 2, "Citrus binding request version should load");
     require(config.gui_analytics_device_roi == 1 && config.gui_analytics_device_crop == 1 &&
                 config.gui_analytics_fused_frame == 1 && config.gui_analytics_copy_after_pose == 1,
             "analytics flags should load as 1");
@@ -868,20 +866,27 @@ void test_recording_snapshot_includes_camera_coordinate_frame()
     std::filesystem::remove_all(root);
 }
 
-void test_invalid_citrus_binding_request_version_fails()
+void test_citrus_binding_request_version_key_is_ignored()
 {
+    // The request version is the protocol's, the same in both binaries: the
+    // key loads (old configs carry it) and changes nothing, whatever it says.
     const std::filesystem::path root = make_temp_dir();
-    const std::filesystem::path config_path = root / "bad_version.json";
-    {
-        std::ofstream out(config_path);
-        out << R"({"recording": {"citrus_binding_request_version": 3}})";
+    const std::filesystem::path config_path = root / "ignored_version.json";
+    for (const char* body : {R"({"recording": {"citrus_binding_request_version": 1}})",
+                             R"({"recording": {"citrus_binding_request_version": "3"}})"}) {
+        {
+            std::ofstream out(config_path);
+            out << body;
+        }
+        ScopedEnv app_config("ORANGE_APP_CONFIG_PATH");
+        ScopedEnv gui_app_config("ORANGE_GUI_APP_CONFIG_PATH");
+        app_config.Set(config_path.string());
+        gui_app_config.Unset();
+        AppStorageConfig config;
+        std::string error;
+        require(load_app_storage_config("/tmp/orange_data_for_app_config_tests", &config, &error),
+                "a config with citrus_binding_request_version still loads: " + error);
     }
-    require_load_fails(config_path, "recording.citrus_binding_request_version must be 1 or 2");
-    {
-        std::ofstream out(config_path);
-        out << R"({"recording": {"citrus_binding_request_version": "2"}})";
-    }
-    require_load_fails(config_path, "recording.citrus_binding_request_version must be 1 or 2");
     std::filesystem::remove_all(root);
 }
 
@@ -1215,7 +1220,7 @@ int main()
          &test_recording_encode_bitrate_parsing_and_resolution},
         {"recording_snapshot_includes_camera_coordinate_frame",
          &test_recording_snapshot_includes_camera_coordinate_frame},
-        {"invalid_citrus_binding_request_version_fails", &test_invalid_citrus_binding_request_version_fails},
+        {"citrus_binding_request_version_key_is_ignored", &test_citrus_binding_request_version_key_is_ignored},
         {"invalid_crop_sink_fails", &test_invalid_crop_sink_fails},
         {"invalid_crop_queue_depth_fails", &test_invalid_crop_queue_depth_fails},
         {"invalid_crop_qp_fails", &test_invalid_crop_qp_fails},
