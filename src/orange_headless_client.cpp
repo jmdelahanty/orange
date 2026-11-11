@@ -6464,10 +6464,17 @@ bool run_supervised_external_recorder_verifier(
         resolve_headless_repo_relative_path(
             "scripts/verify_external_recorder_session.py",
             "ORANGE_EXTERNAL_RECORDER_VERIFY_SCRIPT");
+    // The run's per-camera verdict (a camera frame lost, a latency outside
+    // the spec) belongs in runs.json pass_fail; it does not make the recording
+    // incomplete. The verifier still fails on recording integrity (IPC
+    // failures and ACKs, deferred-release cap skips), so a recording whose
+    // media are whole is finalized "completed" and its acquisition mapping
+    // sealed, as in the GUI. On 2026-11-11 one lost frame left a Citrus-bound
+    // recording "failed", unsealed, and without receipts.
     std::string command =
         "python3 " + shell_single_quote(script.string()) + " " +
         shell_single_quote(config.artifact_root) + " --analytics-root " +
-        shell_single_quote(experiment_root.string());
+        shell_single_quote(experiment_root.string()) + " --analytics-verdict advisory";
     if (config.require_status) {
         command += " --require-recorder-status";
     }

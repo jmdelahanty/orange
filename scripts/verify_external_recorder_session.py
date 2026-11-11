@@ -59,6 +59,18 @@ def parse_args() -> argparse.Namespace:
         help="Analytics experiment root containing experiment_spec.json/runs.json or recording_session.json.",
     )
     parser.add_argument(
+        "--analytics-verdict",
+        choices=("required", "advisory"),
+        default="required",
+        help=(
+            "required (default): every runs.json camera row must have pass_fail=pass. "
+            "advisory: the row's diagnostic verdict (camera drops, acquisition starvation, "
+            "preprocess drops) is reported but does not fail verification; the recording "
+            "integrity checks (external IPC failures and ACKs, deferred-release cap skips) "
+            "still do. orange_client's recording finalize uses advisory, as the GUI does."
+        ),
+    )
+    parser.add_argument(
         "--spec",
         help="Experiment spec JSON. Defaults to <analytics-root>/experiment_spec.json when present.",
     )
@@ -2174,7 +2186,7 @@ def verify_summary(
     }
 
 
-def verify_analytics_root(analytics_root: Path, serials: list[str]) -> list[Path]:
+def verify_analytics_root(analytics_root: Path, serials: list[str], verdict_required: bool = True) -> list[Path]:
     runs_path = analytics_root / "runs.json"
     if not runs_path.exists():
         manifest_path = analytics_root / "recording_session.json"
@@ -2200,7 +2212,13 @@ def verify_analytics_root(analytics_root: Path, serials: list[str]) -> list[Path
     for row in rows:
         serial = str(row.get("camera_serial"))
         require(row.get("recording_sink_mode") == "external_ipc", f"analytics row {serial} is not external_ipc")
-        require(row.get("pass_fail") == "pass", f"analytics row {serial} pass_fail={row.get('pass_fail')!r}")
+        if verdict_required:
+            require(row.get("pass_fail") == "pass", f"analytics row {serial} pass_fail={row.get('pass_fail')!r}")
+        elif row.get("pass_fail") != "pass":
+            print(
+                f"  analytics verdict (advisory) camera={serial} pass_fail={row.get('pass_fail')!r} "
+                f"reason={row.get('reason')!r}"
+            )
         require(as_int(row.get("external_ipc_failures_final", 0), "external_ipc_failures_final") == 0, f"external IPC failures for {serial}")
         require(as_int(row.get("external_ipc_ack_timeouts_final", 0), "external_ipc_ack_timeouts_final") == 0, f"external IPC ACK timeouts for {serial}")
         acked = as_int(row.get("external_ipc_frames_acked_final", 0), "external_ipc_frames_acked_final")
@@ -2502,7 +2520,9 @@ def verify(args: argparse.Namespace) -> None:
 
     recording_folders: list[Path] = []
     if analytics_root is not None:
-        recording_folders = verify_analytics_root(analytics_root, list(streams.keys()))
+        recording_folders = verify_analytics_root(
+            analytics_root, list(streams.keys()), verdict_required=args.analytics_verdict == "required"
+        )
         verify_analytics_recording_session_manifests(recording_folders, summaries)
 
     total_frames = sum(item["frames_received"] for item in summaries)
