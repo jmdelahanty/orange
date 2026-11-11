@@ -2036,8 +2036,9 @@ void acquire_frames(
         }
 
         Emergent::CEmergentFrame* received_frame = &current_entry->camera_frame_recv;
+        constexpr unsigned int kGetFrameTimeoutMs = 1000;
         const uint64_t get_frame_call_host_ns = steady_clock_now_ns();
-        camera_state.camera_return = EVT_CameraGetFrame(&ecam->camera, received_frame, 1000);
+        camera_state.camera_return = EVT_CameraGetFrame(&ecam->camera, received_frame, kGetFrameTimeoutMs);
 
         if (camera_state.camera_return == EVT_SUCCESS) {
             Emergent::CEmergentFrame* frame_to_requeue =
@@ -3222,6 +3223,30 @@ void acquire_frames(
             }
         } else {
             camera_state.get_frame_errors++;
+            {
+                // One audit event per failed GetFrame, so a recording says when
+                // each one happened and whether the call waited out its 1000 ms
+                // timeout or returned early (2026-11-10: three EVT_ERROR_AGAIN
+                // returns inside a 250 Hz recording cost no frame).
+                const uint64_t get_frame_return_host_ns = steady_clock_now_ns();
+                struct timespec ts_error{};
+                clock_gettime(CLOCK_REALTIME, &ts_error);
+                const uint64_t error_realtime_ns =
+                    static_cast<uint64_t>(ts_error.tv_sec) * 1000000000ULL + static_cast<uint64_t>(ts_error.tv_nsec);
+                orange::RecordingStartupAudit::Instance().MarkStreamFrame(
+                    camera_params->camera_serial, "get_frame_error",
+                    "code=" + std::to_string(camera_state.camera_return) + " wait_ns=" +
+                        std::to_string(get_frame_return_host_ns > get_frame_call_host_ns
+                                           ? get_frame_return_host_ns - get_frame_call_host_ns
+                                           : 0) +
+                        " timeout_ms=" + std::to_string(kGetFrameTimeoutMs) +
+                        " previous_camera_frame_id=" + std::to_string(camera_state.id_prev) +
+                        " error_realtime_ns=" + std::to_string(error_realtime_ns) +
+                        " errors_total=" + std::to_string(camera_state.get_frame_errors) +
+                        " dropped_total=" + std::to_string(camera_state.dropped_frames) +
+                        " sdk_dropped_frames=" + std::to_string(ecam->camera.GetDroppedFrameCount()),
+                    camera_state.frame_count + 1);
+            }
             orange::recording::MasterFrameFact fact;
             fact.kind = orange::recording::MasterFactKind::receive_error;
             fact.reject_reason = orange::recording::MasterRejectReason::receive_failed;

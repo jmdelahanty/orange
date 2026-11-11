@@ -31,12 +31,14 @@ print('\n== milestones (ms relative to recording_enabled; negative = before) =='
 for r in sorted(milestones, key=rel):
     flag = '  <-- after recording enabled' if enabled and rel(r) > 0 and r['milestone'] not in (
         'recording_enabled', 'first_frame_submitted', 'first_frame_acked', 'first_owner_push_done',
-        'camera_frame_gap', 'recording_stop_requested', 'owner_push_stream_create_start',
+        'camera_frame_gap', 'get_frame_error', 'recording_stop_requested', 'owner_push_stream_create_start',
         'owner_push_stream_create_done') else ''
     if r['milestone'] in ('owner_push_stream_create_start', 'owner_push_stream_create_done') and rel(r) > 0:
         flag = '  <-- first-use work after recording enabled'
     if r['milestone'] == 'camera_frame_gap':
         flag = '  <== GAP'
+    if r['milestone'] == 'get_frame_error':
+        flag = '  <== GetFrame error'
     print(f"{rel(r):10.1f}  {r['camera'] or '-':8s} {r['milestone']:32s} rec={r['recording_frame_id']:<6d} stream={r['stream_frame_id']:<8d} {r['detail'][:110]}{flag}")
 
 print('\n== first-use durations ==')

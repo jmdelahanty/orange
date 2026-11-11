@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Tests for the camera timestamp continuity and recording-window GetFrame error checks
-in validate_gui_ptp_recording.py."""
+in validate_gui_ptp_recording.py, including the early-return rule from the audit events."""
 
 from __future__ import annotations
 
@@ -140,9 +140,58 @@ def test_get_frame_errors() -> None:
     require(not reporter.failures, "zero passes")
 
 
+def audit_line(camera: str, detail: str, milestone: str = "get_frame_error") -> str:
+    return json.dumps({"t_steady_ns": 1, "t_rel_enabled_ms": 1000.0, "camera": camera, "milestone": milestone,
+                       "recording_frame_id": 0, "stream_frame_id": 669400, "detail": detail}) + "\n"
+
+
+def test_get_frame_errors_returned_early() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp)
+        early = "code=11 wait_ns=212000 timeout_ms=1000 previous_camera_frame_id=26782 errors_total=2"
+        (folder / "recording_startup_audit.jsonl").write_text(
+            json.dumps({"record": "session"}) + "\n"
+            + audit_line("2010096", early)
+            + audit_line("2010096", early.replace("212000", "4100000"))
+            + audit_line("2010095", "code=11 wait_ns=1000004000 timeout_ms=1000")
+            + audit_line("2010096", "missing=1 next_camera_frame_id=23291", "camera_frame_gap"))
+        events = validator.recording_audit_get_frame_errors(folder)
+    require(len(events["2010096"]) == 2 and events["2010096"][0]["wait_ns"] == 212000
+            and events["2010096"][0]["code"] == 11 and events["2010096"][0]["timeout_ms"] == 1000,
+            f"audit events parsed, gaps ignored: {events}")
+
+    base = {"errors_during_recording": 2, "errors_before_recording": 1, "source": "Cam2010096_pipeline_perf.csv",
+            "first_sampled_recording_frame_id": 21, "last_sampled_recording_frame_id": 797137}
+
+    def judge(window: dict) -> validator.Reporter:
+        reporter = validator.Reporter(verbose=False)
+        validator.check_get_frame_errors(reporter, "2010096", 3, window)
+        return reporter
+
+    reporter = judge({**base, "audit_events": events["2010096"], "timestamp_missing_frames": 0})
+    require(not reporter.failures and any("each returned early (longest wait 4.100 ms)" in w
+                                          for w in reporter.warnings),
+            f"early returns with no loss warn: {reporter.failures} {reporter.warnings}")
+    reporter = judge({**base, "audit_events": events["2010096"], "timestamp_missing_frames": 1})
+    require(any("show 1 missing frame" in f for f in reporter.failures), f"a missing frame fails: {reporter.failures}")
+    reporter = judge({**base, "audit_events": events["2010095"] * 2, "timestamp_missing_frames": 0})
+    require(any("waited 1000004000 ns of its 1000 ms timeout" in f for f in reporter.failures),
+            f"a real timeout fails: {reporter.failures}")
+    reporter = judge({**base, "audit_events": events["2010096"][:1], "timestamp_missing_frames": 0})
+    require(any("1 get_frame_error event(s) logged for 2 error(s)" in f for f in reporter.failures),
+            f"unlogged errors fail: {reporter.failures}")
+    reporter = judge({**base, "timestamp_missing_frames": 0})
+    require(any("no recording_startup_audit.jsonl" in f for f in reporter.failures),
+            f"no audit fails: {reporter.failures}")
+    reporter = judge({**base, "audit_events": events["2010096"]})
+    require(any("no camera timestamp check" in f for f in reporter.failures),
+            f"no timestamp check fails: {reporter.failures}")
+
+
 def main() -> int:
     test_timestamps()
     test_get_frame_errors()
+    test_get_frame_errors_returned_early()
     print("validate_camera_timestamp_continuity_tests: PASS")
     return 0
 

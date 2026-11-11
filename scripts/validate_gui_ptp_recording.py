@@ -4758,13 +4758,77 @@ def recording_window_get_frame_errors(recording_folder: Path, cameras: list[str]
     return result
 
 
+def recording_audit_get_frame_errors(recording_folder: Path) -> dict[str, list[dict[str, Any]]]:
+    """The get_frame_error events of recording_startup_audit.jsonl, per camera.
+
+    Acquisition marks one per failed EVT_CameraGetFrame while the recording
+    session is armed: return code, how long the call waited, its timeout.
+    Recordings made before that mark existed have none.
+    """
+    path = recording_folder / "recording_startup_audit.jsonl"
+    events: dict[str, list[dict[str, Any]]] = {}
+    if not path.exists():
+        return events
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return events
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(record, dict) or record.get("milestone") != "get_frame_error":
+            continue
+        fields = dict(
+            token.split("=", 1) for token in str(record.get("detail", "")).split() if "=" in token
+        )
+        events.setdefault(str(record.get("camera")), []).append({
+            "t_rel_enabled_ms": record.get("t_rel_enabled_ms"),
+            "stream_frame_id": record.get("stream_frame_id"),
+            "code": integer(fields.get("code")),
+            "wait_ns": integer(fields.get("wait_ns")),
+            "timeout_ms": integer(fields.get("timeout_ms")),
+        })
+    return events
+
+
+def get_frame_errors_returned_early(window: dict[str, Any]) -> tuple[bool, str]:
+    """Whether every GetFrame error of the recording returned well before its timeout
+    and the camera timestamps show no frame missing; the reason when not."""
+    during = int(window["errors_during_recording"])
+    events = window.get("audit_events")
+    if not isinstance(events, list):
+        return False, "no recording_startup_audit.jsonl to say how each error returned"
+    if len(events) < during:
+        return False, f"{len(events)} get_frame_error event(s) logged for {during} error(s)"
+    for event in events:
+        wait_ns, timeout_ms = event.get("wait_ns"), event.get("timeout_ms")
+        if wait_ns is None or not timeout_ms or wait_ns >= timeout_ms * 1_000_000 // 2:
+            return False, f"a GetFrame error waited {wait_ns} ns of its {timeout_ms} ms timeout"
+    missing = window.get("timestamp_missing_frames")
+    if missing is None:
+        return False, "no camera timestamp check to show that no frame is missing"
+    if missing:
+        return False, f"the camera timestamps show {missing} missing frame(s)"
+    longest = max(int(event["wait_ns"]) for event in events) / 1e6 if events else 0.0
+    return True, (
+        f"each returned early (longest wait {longest:.3f} ms) and the camera timestamps show no missing frame"
+    )
+
+
 def check_get_frame_errors(
     reporter: "Reporter",
     serial: str,
     stream_total: int | None,
     window: dict[str, Any] | None,
 ) -> None:
-    """GetFrame errors judged on the recording when the pipeline samples say where they were."""
+    """GetFrame errors judged on the recording when the pipeline samples say where they were.
+
+    An error inside the recording warns only when the audit shows every one
+    returned early and the timestamp check shows no frame missing; otherwise
+    it fails.
+    """
     if not stream_total or window is None:
         reporter.check(
             stream_total == 0,
@@ -4778,10 +4842,15 @@ def check_get_frame_errors(
         f"..{window['last_sampled_recording_frame_id']}, {window['source']}"
     )
     if during > 0:
-        reporter.fail(
+        early, reason = get_frame_errors_returned_early(window)
+        message = (
             f"Cam{serial} GetFrame errors={during} during the recording "
-            f"({stream_total} since stream start; {span})"
+            f"({stream_total} since stream start; {span}): {reason}"
         )
+        if early:
+            reporter.warn(message)
+        else:
+            reporter.fail(message)
     else:
         reporter.warn(
             f"Cam{serial} GetFrame errors={stream_total} since stream start, none during the recording ({span})"
@@ -7924,6 +7993,16 @@ def main() -> int:
         check_lens_feedback(reporter, snapshot, cameras)
         window_drops = recording_window_camera_drops(recording_folder, cameras)
         window_get_frame_errors = recording_window_get_frame_errors(recording_folder, cameras)
+        timestamp_continuity = check_camera_timestamp_continuity(
+            reporter, recording_folder, cameras, window_drops
+        )
+        audit_present = (recording_folder / "recording_startup_audit.jsonl").exists()
+        audit_get_frame_errors = recording_audit_get_frame_errors(recording_folder)
+        for serial, window in window_get_frame_errors.items():
+            if audit_present:
+                window["audit_events"] = audit_get_frame_errors.get(serial, [])
+            if serial in timestamp_continuity:
+                window["timestamp_missing_frames"] = timestamp_continuity[serial]["missing_frames"]
         check_ptp_counters(
             reporter,
             summary,
@@ -7933,9 +8012,6 @@ def main() -> int:
             args.skip_ptp_register_decimate_check,
             window_drops,
             window_get_frame_errors,
-        )
-        timestamp_continuity = check_camera_timestamp_continuity(
-            reporter, recording_folder, cameras, window_drops
         )
         recording_session_manifest = check_recording_session_manifest(
             reporter,
