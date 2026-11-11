@@ -3689,8 +3689,10 @@ def headless_orange_status(recording_folder: Path, *, recording: bool) -> dict[s
             "recording_finalized": False,
         },
         "recording": {"folder": str(recording_folder) if recording else "", "sink_mode": "real"},
+        # The shape orange_client reports (src/orange_local_control.cpp).
         "local_control": {
-            "recording_stop": {"enabled": True, "citrus_completion_enabled": True},
+            "recording_stop": {"enabled": True},
+            "citrus_completion_stop": {"enabled": True},
         },
     }
 
@@ -3886,6 +3888,18 @@ def test_headless_mode_refuses_citrus_without_wait_for_control() -> None:
         require(state["starts"] == 0, "no second start for a Citrus that started itself")
 
 
+def test_headless_completion_flag_read_where_orange_client_reports_it() -> None:
+    module = load_module()
+    status = headless_orange_status(Path("/tmp/x"), recording=True)
+    require(module.orange_headless_citrus_completion_enabled(status), "citrus_completion_stop.enabled")
+    status["local_control"]["citrus_completion_stop"]["enabled"] = False
+    require(not module.orange_headless_citrus_completion_enabled(status), "completion off")
+    # 2026-11-11 rig run: the old path (recording_stop.citrus_completion_enabled)
+    # does not exist in orange_client's status and must not count.
+    stale = {"local_control": {"recording_stop": {"enabled": True, "citrus_completion_enabled": True}}}
+    require(not module.orange_headless_citrus_completion_enabled(stale), "stale path ignored")
+
+
 def test_headless_mode_needs_orange_command_and_notify_policy() -> None:
     module = load_module()
     args = module.parse_args(["--execute", "--orange-mode", "headless", "--stop-policy", "citrus_completion_notify"])
@@ -3933,6 +3947,7 @@ def main() -> int:
         test_headless_mode_refuses_start_without_accepted_pre_arm,
         test_headless_mode_refuses_citrus_without_wait_for_control,
         test_headless_mode_needs_orange_command_and_notify_policy,
+        test_headless_completion_flag_read_where_orange_client_reports_it,
     ]
     for test in tests:
         test()

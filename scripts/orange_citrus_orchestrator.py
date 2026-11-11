@@ -2074,9 +2074,9 @@ def orange_headless_ready_for_citrus(status: dict[str, Any]) -> bool:
 
 
 def orange_headless_citrus_completion_enabled(status: dict[str, Any]) -> bool:
-    return json_bool(
-        json_path(status, ["local_control", "recording_stop", "citrus_completion_enabled"], False)
-    )
+    # orange_client reports fixed.local_control.stop_on_citrus_completion as
+    # local_control.citrus_completion_stop.enabled (src/orange_local_control.cpp).
+    return json_bool(json_path(status, ["local_control", "citrus_completion_stop", "enabled"], False))
 
 
 def read_pre_arm_lifecycle_status(recording_folder: str) -> str:
@@ -2477,6 +2477,27 @@ class Orchestrator:
                 info["returncode"] = process.poll()
                 step.finish(ok=False, pid=pid, action=action, error=str(exc))
 
+    def orange_client_still_running(self) -> str:
+        """After a pre-start cleanup, whether orange_client still answers.
+
+        orange_client runs as root under sudo, so the signal to the launcher's
+        process group need not reach it. Returns "" when it is gone.
+        """
+        step = self.step("check_orange_client_exited")
+        try:
+            _, status = self.status("orange", ORANGE_REQUEST_SCHEMA_ID, self.args.orange_socket)
+        except Exception:  # no socket or no answer: it is gone
+            step.finish(ok=True)
+            return ""
+        folder = orange_recording_folder(status)
+        message = (
+            "orange_client is still running (root under sudo; the launcher's signal did not reach it); "
+            f"recording {folder or '-'} ends at the spec's record_for_seconds ceiling, then it waits "
+            "fixed.local_control.receipt_wait_seconds for receipts before it exits"
+        )
+        step.finish(ok=False, error=message, recording_folder=folder)
+        return message
+
     def cleanup_launched_socket_files(self) -> None:
         launched_labels = {
             str(info.get("label", ""))
@@ -2797,11 +2818,17 @@ class Orchestrator:
                 pre_arm_lifecycle_status=lifecycle,
                 citrus_completion_enabled=completion_enabled,
             )
+            reasons = []
+            if lifecycle != "accepted_pending_finalization":
+                reasons.append(
+                    f"pre_arm lifecycle_status={lifecycle!r} (needs accepted_pending_finalization)"
+                )
+            if not completion_enabled:
+                reasons.append(
+                    "Citrus completion is off (needs fixed.local_control.stop_on_citrus_completion)"
+                )
             raise OrchestratorError(
-                "orange_client is recording but not ready for a Citrus-ended run: "
-                f"pre_arm lifecycle_status={lifecycle!r} (needs accepted_pending_finalization), "
-                f"citrus_completion_enabled={completion_enabled} "
-                "(needs fixed.local_control.stop_on_citrus_completion)"
+                "orange_client is recording but not ready for a Citrus-ended run: " + "; ".join(reasons)
             )
         step.finish(
             ok=True,
@@ -3656,13 +3683,19 @@ def main(argv: list[str] | None = None) -> int:
             # start: leave both running so Citrus completes and orange_client
             # stops, finalizes and waits for the receipts on its own.
             failure_stop_response = None
+            error = str(exc)
             if not orchestrator.citrus_start_sent:
                 orchestrator.cleanup_started_processes(
                     labels={"orange"},
                     terminate_timeout_seconds=args.orange_ready_timeout_seconds,
                 )
                 orchestrator.cleanup_started_processes(labels={"citrus"})
+                if orchestrator.processes.get("orange") is not None:
+                    still_running = orchestrator.orange_client_still_running()
+                    if still_running:
+                        error = f"{error}; {still_running}"
         else:
+            error = str(exc)
             failure_stop_response = orchestrator.best_effort_stop_after_failure()
             cleanup_labels = {"citrus"}
             if (
@@ -3674,7 +3707,7 @@ def main(argv: list[str] | None = None) -> int:
         orchestrator.cleanup_launched_socket_files()
         summary = orchestrator.summary(
             "fail",
-            error=str(exc),
+            error=error,
             failure_stop_response=failure_stop_response,
         )
         orchestrator.persist_artifacts(summary)
