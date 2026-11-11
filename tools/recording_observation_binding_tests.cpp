@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -17,7 +18,9 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 namespace {
@@ -2138,6 +2141,63 @@ void test_pre_arm_decision_paths()
             "Orange-only decision at the root");
 }
 
+int listening_socket(const std::filesystem::path& path)
+{
+    const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    sockaddr_un address{};
+    address.sun_family = AF_UNIX;
+    std::strncpy(address.sun_path, path.c_str(), sizeof(address.sun_path) - 1);
+    require(fd >= 0 && ::bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0 &&
+                ::listen(fd, 4) == 0,
+            "test socket listens");
+    return fd;
+}
+
+void test_citrus_probe_tells_exited_from_busy()
+{
+    using orange::session::CitrusLocalControlProbe;
+    using orange::session::probe_citrus_local_control;
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() /
+        ("orange_citrus_probe_" + std::to_string(static_cast<long long>(getpid())));
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+    const auto path = root / "citrus.sock";
+    setenv("ORANGE_CITRUS_OBSERVATION_BINDING_SOCKET", path.c_str(), 1);
+    setenv("ORANGE_CITRUS_OBSERVATION_BINDING_TIMEOUT_MS", "200", 1);
+
+    require(probe_citrus_local_control() == CitrusLocalControlProbe::kNotListening,
+            "no socket file: Citrus has exited");
+
+    const int silent = listening_socket(path);
+    require(probe_citrus_local_control() == CitrusLocalControlProbe::kNoAnswer,
+            "a listener that never replies is a busy Citrus, not an exited one");
+    ::close(silent);
+    std::filesystem::remove(path);
+
+    const int fd = listening_socket(path);
+    std::thread server([fd] {
+        const int client = ::accept(fd, nullptr, nullptr);
+        if (client < 0) return;
+        char buffer[4096];
+        (void)::recv(client, buffer, sizeof(buffer), 0);
+        const std::string reply = "{\"ok\":true,\"status\":{}}\n";
+        (void)::send(client, reply.data(), reply.size(), MSG_NOSIGNAL);
+        ::close(client);
+    });
+    const auto answered = probe_citrus_local_control();
+    server.join();
+    require(answered == CitrusLocalControlProbe::kAnswered, "a status reply means Citrus is there");
+
+    ::close(fd);  // the socket file stays: connect is refused
+    require(probe_citrus_local_control() == CitrusLocalControlProbe::kNotListening,
+            "stale socket file: Citrus has exited");
+
+    unsetenv("ORANGE_CITRUS_OBSERVATION_BINDING_SOCKET");
+    unsetenv("ORANGE_CITRUS_OBSERVATION_BINDING_TIMEOUT_MS");
+    std::filesystem::remove_all(root);
+}
+
 int main()
 {
     try {
@@ -2169,6 +2229,7 @@ int main()
         test_v2_envelopes_carry_matching_versions_and_reject_mixing();
         test_v3_subject_declaration_and_reference();
         test_prearm_subject_cross_check();
+        test_citrus_probe_tells_exited_from_busy();
         test_post_close_finalization_is_complete_idempotent_and_manifest_bound();
     test_receipt_v2_live_finalize_and_process_diagnostic_rules();
     test_receipt_upgrade_writes_a_verified_revision_chain();

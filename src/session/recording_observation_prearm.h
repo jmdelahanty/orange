@@ -62,6 +62,13 @@ using RecordingObservationBindingTransport = std::function<bool(
     nlohmann::json* response_out,
     std::string* error_out)>;
 
+// Whether Citrus's local-control socket (the one the pre-arm binding uses)
+// answers a status request. kNotListening: nothing listens there (no socket
+// file, or the connect is refused), so the Citrus that took the binding has
+// exited. kNoAnswer: something listens but the request failed (a busy Citrus).
+enum class CitrusLocalControlProbe { kAnswered, kNotListening, kNoAnswer };
+CitrusLocalControlProbe probe_citrus_local_control();
+
 // Execute or verify the create-once pre-arm decision. A materialized request
 // collection is sent as one bounded batch so Citrus can assign one shared
 // experiment-group ID atomically. Semantic rejections are persisted as

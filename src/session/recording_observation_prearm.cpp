@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
@@ -194,7 +195,8 @@ bool send_all(const int fd, const std::string& payload, std::string* error_out)
 
 bool default_transport(const json& request,
                        json* response_out,
-                       std::string* error_out)
+                       std::string* error_out,
+                       int* connect_errno_out = nullptr)
 {
     const std::string payload = request.dump() + "\n";
     if (payload.size() > kMaximumPayloadBytes) {
@@ -220,6 +222,9 @@ bool default_transport(const json& request,
     }
     std::strncpy(address.sun_path, endpoint.c_str(), sizeof(address.sun_path) - 1);
     if (::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+        if (connect_errno_out != nullptr) {
+            *connect_errno_out = errno;
+        }
         const std::string message = std::string("Citrus binding connect failed: ") +
             std::strerror(errno);
         ::close(fd);
@@ -805,6 +810,35 @@ bool prepare_recording_observation_pre_arm(
     return execute_recording_observation_pre_arm(
         recording_folder, *requests_out, binding_mode, decided_at_utc,
         result_out, error_out, std::move(transport));
+}
+
+CitrusLocalControlProbe probe_citrus_local_control()
+{
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t seconds = std::chrono::system_clock::to_time_t(now);
+    std::tm utc{};
+    gmtime_r(&seconds, &utc);
+    char sent_at[32];
+    std::strftime(sent_at, sizeof(sent_at), "%Y-%m-%dT%H:%M:%SZ", &utc);
+    const json request = {
+        {"schema_id", "citrus.local_control.request"},
+        {"schema_version", 1},
+        {"method", "status"},
+        {"request_id", "orange_client:citrus_probe:" +
+                           std::to_string(now.time_since_epoch().count())},
+        {"source", "orange_client"},
+        {"sent_at_utc", sent_at},
+        {"params", json::object()},
+    };
+    json response;
+    std::string error;
+    int connect_errno = 0;
+    if (default_transport(request, &response, &error, &connect_errno)) {
+        return CitrusLocalControlProbe::kAnswered;
+    }
+    return connect_errno == ENOENT || connect_errno == ECONNREFUSED
+        ? CitrusLocalControlProbe::kNotListening
+        : CitrusLocalControlProbe::kNoAnswer;
 }
 
 }  // namespace orange::session

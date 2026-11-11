@@ -29,6 +29,7 @@
 #include <limits>
 #include <mutex>
 #include <numeric>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <thread>
@@ -12172,21 +12173,47 @@ bool wait_for_headless_citrus_receipts(
     }
     std::cout << "[orange_client][local_control] waiting up to " << receipt_wait_seconds
               << " s for Citrus's receipts folder=" << recording_folder << std::endl;
+    // Citrus delivers the receipts from its main loop, before it closes its
+    // local-control socket (at most an in-flight send finishes after that), so
+    // once nothing has listened there for kCitrusGone no receipt can arrive:
+    // a Citrus that refused to build them (2026-11-11) or crashed exits.
+    constexpr auto kCitrusGone = std::chrono::seconds(15);
     const auto started = std::chrono::steady_clock::now();
+    auto last_probe = started;
+    std::optional<std::chrono::steady_clock::time_point> citrus_not_listening_since;
     bool finalized = false;
+    bool citrus_gone = false;
     while (!quit_server && !finalized &&
            std::chrono::steady_clock::now() - started < std::chrono::seconds(receipt_wait_seconds)) {
         finalized = control_host.WaitForReceipts(recording_folder, std::chrono::milliseconds(500));
+        const auto now = std::chrono::steady_clock::now();
+        if (finalized || now - last_probe < std::chrono::seconds(1)) continue;
+        last_probe = now;
+        if (orange::session::probe_citrus_local_control() !=
+            orange::session::CitrusLocalControlProbe::kNotListening) {
+            citrus_not_listening_since.reset();
+        } else if (!citrus_not_listening_since) {
+            citrus_not_listening_since = now;
+        } else if (now - *citrus_not_listening_since >= kCitrusGone) {
+            citrus_gone = true;
+            break;
+        }
     }
     receipts["waited_s"] = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
     if (!finalized) {
         receipts["status"] = "not_received";
+        if (citrus_gone) receipts["reason"] = "citrus_exited";
         if (run_entry) (*run_entry)["citrus_receipts"] = receipts;
         if (error_out) {
-            *error_out = "Citrus receipts not received within " + std::to_string(receipt_wait_seconds) +
-                         " s (finalize_recording_observation_bindings)";
+            *error_out = citrus_gone
+                ? "Citrus exited without delivering its receipts (its local-control socket has not "
+                  "listened for " + std::to_string(kCitrusGone.count()) + " s)"
+                : "Citrus receipts not received within " + std::to_string(receipt_wait_seconds) +
+                      " s (finalize_recording_observation_bindings)";
         }
-        control_host.LogEvent({{"event", "citrus_receipts_not_received"}, {"recording_folder", recording_folder}});
+        control_host.LogEvent({{"event", "citrus_receipts_not_received"},
+                               {"recording_folder", recording_folder},
+                               {"reason", citrus_gone ? "citrus_exited" : "timeout"}});
         return false;
     }
     // The run's final manifest may have been written after the receipts were
