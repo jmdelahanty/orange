@@ -1972,6 +1972,9 @@ if(BUILD_TESTING)
     target_compile_features(session_control_host_tests PRIVATE cxx_std_17)
     target_link_libraries(session_control_host_tests PRIVATE Threads::Threads)
     add_test(NAME session_control_host_tests COMMAND session_control_host_tests)
+    add_test(
+        NAME headless_local_control_spec_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/headless_local_control_spec_tests.py" $<TARGET_FILE:orange_client>)
 
     add_test(
         NAME orange_local_control_client_tests

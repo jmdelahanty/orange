@@ -60,6 +60,7 @@
 #include "effective_configuration.h"
 #include "rig_config_pin.h"
 #include "session/recording_observation_request_artifacts.h"
+#include "session/session_control_host.h"
 #include "external_recorder_contract_utils.h"
 #include "external_recorder_lifecycle.h"
 #include "external_recorder_supervisor.h"
@@ -199,6 +200,22 @@ struct HeadlessRecordingControlConfig {
     }
 };
 
+// fixed.local_control: serve the Orange local-control socket (the GUI's path
+// and log naming, session/session_control_host.h) so Citrus can end a bound
+// recording (citrus_completion) and deliver its receipts
+// (finalize_recording_observation_bindings) to an unattended headless run.
+struct HeadlessLocalControlConfig {
+    bool enabled = false;
+    // Stop the recording when Citrus reports its experiment complete (after
+    // Citrus's grace). recording_control.record_for_seconds stays the ceiling.
+    bool stop_on_citrus_completion = false;
+    // Accept a generic stop_recording too (an operator or runner tool).
+    bool allow_stop_recording = false;
+    // After a Citrus-bound run is finalized, wait this long for the receipts
+    // before the run is counted failed and the process moves on or exits.
+    int receipt_wait_seconds = 900;
+};
+
 struct HeadlessExternalRecorderContractConfig {
     std::string mode = "off";
     std::string schema_id = "orange.external_recorder.contract";
@@ -282,6 +299,10 @@ struct HeadlessCliOptions {
     HeadlessPoseWorkerConfig pose_worker;
     HeadlessCropRecordingConfig crop_recording;
     HeadlessRecordingControlConfig recording_control;
+    HeadlessLocalControlConfig local_control;
+    // Owned by run_local_experiment for the whole process when
+    // local_control.enabled; null otherwise.
+    orange::session::SessionControlHost* control_host = nullptr;
     HeadlessExternalRecorderContractConfig external_recorder_contract;
     bool has_recording_override = false;
     nlohmann::json recording_override = nlohmann::json::object();
@@ -379,6 +400,7 @@ struct ExperimentSpec {
     HeadlessPoseWorkerConfig pose_worker;
     HeadlessCropRecordingConfig crop_recording;
     HeadlessRecordingControlConfig recording_control;
+    HeadlessLocalControlConfig local_control;
     HeadlessExternalRecorderContractConfig external_recorder_contract;
     bool has_recording_profile = false;
     orange::headless::RecordingProfile recording_profile;
@@ -3046,6 +3068,49 @@ bool parse_headless_pose_worker_json(
 
     *config_out = config;
     return true;
+}
+
+bool parse_headless_local_control_json(
+    const nlohmann::json& node,
+    HeadlessLocalControlConfig* config_out,
+    std::string* error_out)
+{
+    const auto fail = [error_out](const std::string& message) {
+        if (error_out) *error_out = "Experiment spec fixed.local_control: " + message;
+        return false;
+    };
+    if (!node.is_object()) return fail("must be a JSON object");
+    HeadlessLocalControlConfig config;
+    for (const auto& [key, value] : node.items()) {
+        if (key == "enabled" || key == "stop_on_citrus_completion" || key == "allow_stop_recording") {
+            if (!value.is_boolean()) return fail(key + " must be true or false");
+        } else if (key == "receipt_wait_seconds") {
+            if (!value.is_number_integer() || value.get<int64_t>() < 1 || value.get<int64_t>() > 86400) {
+                return fail("receipt_wait_seconds must be a whole number of seconds in [1, 86400]");
+            }
+        } else {
+            return fail("unknown key " + key);
+        }
+    }
+    config.enabled = node.value("enabled", false);
+    config.stop_on_citrus_completion = node.value("stop_on_citrus_completion", false);
+    config.allow_stop_recording = node.value("allow_stop_recording", false);
+    config.receipt_wait_seconds = node.value("receipt_wait_seconds", config.receipt_wait_seconds);
+    if (!config.enabled && (config.stop_on_citrus_completion || config.allow_stop_recording)) {
+        return fail("stop_on_citrus_completion and allow_stop_recording need enabled: true");
+    }
+    *config_out = config;
+    return true;
+}
+
+nlohmann::json build_headless_local_control_config_json(const HeadlessLocalControlConfig& config)
+{
+    return {
+        {"enabled", config.enabled},
+        {"stop_on_citrus_completion", config.stop_on_citrus_completion},
+        {"allow_stop_recording", config.allow_stop_recording},
+        {"receipt_wait_seconds", config.receipt_wait_seconds},
+    };
 }
 
 bool parse_headless_recording_control_json(
@@ -8597,6 +8662,10 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             return false;
         }
     }
+    if (fixed.contains("local_control") &&
+        !parse_headless_local_control_json(fixed["local_control"], &spec->local_control, error_out)) {
+        return false;
+    }
     if (fixed.contains("external_recorder_contract")) {
         if (!parse_headless_external_recorder_contract_json(
                 fixed["external_recorder_contract"],
@@ -8693,6 +8762,15 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         if (error_out) {
             *error_out =
                 "Experiment spec fixed.recording_control requires recording; stream_only must be false.";
+        }
+        return false;
+    }
+    if (spec->local_control.stop_on_citrus_completion &&
+        (spec->stream_only || spec->recording_control.record_for_seconds <= 0)) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.local_control.stop_on_citrus_completion needs a recording with "
+                "fixed.recording_control.record_for_seconds as its ceiling";
         }
         return false;
     }
@@ -9154,6 +9232,8 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             run.options.registered_scene_context = spec.registered_scene_context;
                                                             run.options.recording_control =
                                                                 spec.recording_control;
+                                                            run.options.local_control =
+                                                                spec.local_control;
                                                             run.options.external_recorder_contract =
                                                                 spec.external_recorder_contract;
                                                             resolve_headless_recorder_contract_paths(
@@ -9287,6 +9367,9 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                 {"recording_control",
                                                                  build_headless_recording_control_config_json(
                                                                      run.options.recording_control)},
+                                                                {"local_control",
+                                                                 build_headless_local_control_config_json(
+                                                                     run.options.local_control)},
                                                                 {"external_recorder_contract",
                                                                  build_headless_external_recorder_contract_config_json(
                                                                      run.options.external_recorder_contract,
@@ -10335,7 +10418,84 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         ? run_start_time + std::chrono::seconds(options.duration_seconds)
         : std::chrono::steady_clock::time_point::max();
 
+    // Local control (fixed.local_control): Citrus's completion ends a bound
+    // recording after its grace; the status snapshot answers Citrus and the
+    // receipt handler from this run's state.
+    orange::session::SessionControlHost* const control_host = options.control_host;
+    orange::session::StopSchedule control_stop_schedule;
+    bool control_stop_executed = false;
+    const auto control_status = [&](bool finalizing, bool finalized) {
+        orange::control::LocalControlStatusSnapshot status;
+        status.process = "orange_client";
+        status.updated_at_utc = get_current_utc_timestamp();
+        status.streaming_active = camera_control.subscribe;
+        status.cameras_open = true;
+        status.recording_active = camera_control.record_video.load(std::memory_order_relaxed);
+        status.recording_finalizing = finalizing || camera_control.recording_draining;
+        status.recording_finalized = finalized;
+        status.active_recorders = camera_control.active_recorders.load(std::memory_order_relaxed);
+        status.recording_folder = active_record_folder;
+        status.recording_sink_mode = options.recording_sink_mode;
+        auto& stop = status.local_control_recording_stop;
+        stop.enabled = options.local_control.stop_on_citrus_completion || options.local_control.allow_stop_recording;
+        stop.citrus_completion_enabled = options.local_control.stop_on_citrus_completion;
+        stop.scheduled = control_stop_schedule.scheduled;
+        stop.stop_triggered = control_stop_executed;
+        stop.grace_seconds = control_stop_schedule.grace_seconds;
+        if (control_stop_schedule.scheduled && !control_stop_executed) {
+            stop.seconds_until_deadline = std::max(0.0, std::chrono::duration<double>(
+                control_stop_schedule.deadline - std::chrono::steady_clock::now()).count());
+        }
+        stop.method = control_stop_schedule.method;
+        stop.request_id = control_stop_schedule.request_id;
+        stop.operation_id = control_stop_schedule.operation_id;
+        stop.source = control_stop_schedule.source;
+        stop.experiment_id = control_stop_schedule.experiment_id;
+        stop.terminal_state = control_stop_schedule.terminal_state;
+        stop.reason = control_stop_schedule.reason;
+        stop.received_at_utc = control_stop_schedule.received_at_utc;
+        return status;
+    };
+    const auto poll_local_control = [&]() -> bool {
+        if (control_host == nullptr) return false;
+        control_host->UpdateStatus(control_status(false, false));
+        const auto now = std::chrono::steady_clock::now();
+        for (const auto& command : control_host->DrainPendingCommands()) {
+            orange::session::StopInputs inputs;
+            inputs.citrus_completion_enabled = options.local_control.stop_on_citrus_completion;
+            inputs.stop_recording_enabled = options.local_control.allow_stop_recording;
+            inputs.recording_active =
+                enable_recording && camera_control.record_video.load(std::memory_order_relaxed);
+            std::string mode_error;
+            inputs.binding_mode = inputs.recording_active
+                ? orange::recording::BindingModeFromRecordingIntent(active_record_folder, &mode_error)
+                : std::string();
+            const auto decision = orange::session::DecideStop(command, inputs, now, &control_stop_schedule);
+            if (decision == orange::session::StopDecision::kNotAStop) continue;
+            std::cout << "[orange_client][local_control] " << command.method << " "
+                      << orange::session::StopDecisionName(decision)
+                      << " request_id=" << command.request_id;
+            if (decision == orange::session::StopDecision::kScheduled) {
+                std::cout << " grace_s=" << control_stop_schedule.grace_seconds;
+            }
+            std::cout << " folder=" << active_record_folder << std::endl;
+            control_host->LogEvent({
+                {"event", std::string("recording_stop_") + orange::session::StopDecisionName(decision)},
+                {"method", command.method},
+                {"request_id", command.request_id},
+                {"operation_id", command.operation_id},
+                {"command_source", command.source},
+                {"received_at_utc", command.received_at_utc},
+                {"recording_folder", active_record_folder},
+                {"binding_mode", inputs.binding_mode},
+            });
+        }
+        return control_stop_schedule.scheduled && !control_stop_executed &&
+               std::chrono::steady_clock::now() >= control_stop_schedule.deadline;
+    };
+
     while (!quit_server && std::chrono::steady_clock::now() < deadline) {
+        const bool control_stop_due = poll_local_control();
         if (options.registered_scene_context.enabled && !registered_context.evidence.Complete()) {
             try {
                 if (!registered_context.Poll() && std::chrono::steady_clock::now() - run_start_time >=
@@ -10394,16 +10554,31 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         if (enable_recording &&
             recording_armed &&
             !recording_auto_stop_requested &&
-            options.recording_control.record_for_seconds > 0 &&
-            recording_start_time.time_since_epoch().count() > 0 &&
-            std::chrono::steady_clock::now() >=
-                recording_start_time + std::chrono::seconds(
-                    options.recording_control.record_for_seconds)) {
+            (control_stop_due ||
+             (options.recording_control.record_for_seconds > 0 &&
+              recording_start_time.time_since_epoch().count() > 0 &&
+              std::chrono::steady_clock::now() >=
+                  recording_start_time + std::chrono::seconds(
+                      options.recording_control.record_for_seconds)))) {
             const auto now = std::chrono::steady_clock::now();
             const std::string now_utc = get_current_utc_timestamp();
             recording_stop_request_time = now;
             recording_stop_requested_at_utc = now_utc;
-            recording_stop_reason = "record_for_seconds_elapsed";
+            recording_stop_reason = control_stop_due ? control_stop_schedule.method : "record_for_seconds_elapsed";
+            if (control_stop_due) {
+                control_stop_executed = true;
+                if (control_host != nullptr) {
+                    control_host->LogEvent({
+                        {"event", "recording_stop_triggered"},
+                        {"method", control_stop_schedule.method},
+                        {"request_id", control_stop_schedule.request_id},
+                        {"operation_id", control_stop_schedule.operation_id},
+                        {"experiment_id", control_stop_schedule.experiment_id},
+                        {"terminal_state", control_stop_schedule.terminal_state},
+                        {"recording_folder", active_record_folder},
+                    });
+                }
+            }
             std::cout << "Local headless timed recording stop requested."
                       << " record_for_seconds="
                       << options.recording_control.record_for_seconds
@@ -10448,7 +10623,13 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             std::cout << "Local headless timed recording drain "
                       << (recording_drain_completed ? "completed." : "timed out.")
                       << " folder=" << options.record_folder
+                      << " reason=" << recording_stop_reason
                       << std::endl;
+            if (control_stop_due) {
+                // Citrus ended the experiment: end the run now instead of
+                // streaming out the rest of duration_s.
+                break;
+            }
         } else if (enable_recording &&
                    rolling_clip_recording &&
                    recording_armed &&
@@ -10528,6 +10709,10 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
                       << std::endl;
         }
         usleep(20000);
+    }
+    if (control_host != nullptr) {
+        // Receipts may arrive while this run drains and writes its manifest.
+        control_host->UpdateStatus(control_status(true, false));
     }
 
     if (thread_failure_state.has_failure() && gpu_dmon_monitor.error.empty()) {
@@ -11468,8 +11653,12 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     }
     const int timed_record_for_seconds =
         run.options.recording_control.record_for_seconds;
+    // With stop_on_citrus_completion, record_for_seconds is a ceiling: Citrus
+    // ends the recording, so the video is checked against the ceiling only.
+    const bool citrus_stopped_recording =
+        run.options.local_control.stop_on_citrus_completion && !run.options.stream_only;
     const bool timed_recording =
-        timed_record_for_seconds > 0 && !run.options.stream_only;
+        timed_record_for_seconds > 0 && !run.options.stream_only && !citrus_stopped_recording;
     if (timed_recording && !crop_only) {
         row["recording_control_video_duration_error_s"] =
             video_stats.duration_s - static_cast<double>(timed_record_for_seconds);
@@ -11625,10 +11814,13 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
                 ? std::max(1.0, static_cast<double>(timed_record_for_seconds) * 0.25)
                 : 0.0;
         const bool video_duration_policy_failed =
-            timed_recording &&
-            (video_stats.duration_s <= 0.0 ||
-             std::abs(video_stats.duration_s - static_cast<double>(timed_record_for_seconds)) >
-                 video_duration_tolerance_s);
+            (timed_recording &&
+             (video_stats.duration_s <= 0.0 ||
+              std::abs(video_stats.duration_s - static_cast<double>(timed_record_for_seconds)) >
+                  video_duration_tolerance_s)) ||
+            (citrus_stopped_recording &&
+             (video_stats.duration_s <= 0.0 ||
+              video_stats.duration_s > static_cast<double>(timed_record_for_seconds) + 1.0));
         const bool counter_policy_failed =
             (spec.require_zero_camera_drops && camera_drops > 0) ||
             (spec.require_zero_acq_starve && acq_starve > 0) ||
@@ -11681,30 +11873,34 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
                 row["reason"] = "pre-encoder reference capture incomplete";
             } else if (counter_policy_failed) {
                 set_counter_policy_failure();
-            } else if (timed_recording && !acq_fps_ok) {
+            } else if ((timed_recording || citrus_stopped_recording) && !acq_fps_ok) {
                 row["pass_fail"] = "marginal";
                 row["reason"] = "acquisition fps below target tolerance";
-            } else if (!timed_recording && !fps_ok) {
+            } else if (!timed_recording && !citrus_stopped_recording && !fps_ok) {
                 row["pass_fail"] = "marginal";
                 row["reason"] = "encode fps below target tolerance";
             } else {
                 row["pass_fail"] = "pass";
-                row["reason"] = timed_recording
+                row["reason"] = citrus_stopped_recording
+                    ? "meets current Citrus-stopped recording policy"
+                    : timed_recording
                     ? "meets current timed-recording policy"
                     : "meets current policy";
             }
         } else {
             if (counter_policy_failed) {
                 set_counter_policy_failure();
-            } else if (timed_recording && !acq_fps_ok) {
+            } else if ((timed_recording || citrus_stopped_recording) && !acq_fps_ok) {
                 row["pass_fail"] = "marginal";
                 row["reason"] = "acquisition fps below target tolerance";
-            } else if (!timed_recording && !fps_ok) {
+            } else if (!timed_recording && !citrus_stopped_recording && !fps_ok) {
                 row["pass_fail"] = "marginal";
                 row["reason"] = "encode fps below target tolerance";
             } else {
                 row["pass_fail"] = "pass";
-                row["reason"] = timed_recording
+                row["reason"] = citrus_stopped_recording
+                    ? "meets current Citrus-stopped recording policy"
+                    : timed_recording
                     ? "meets current timed-recording policy"
                     : "meets current policy";
             }
@@ -11939,6 +12135,75 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
     return true;
 }
 
+// After a run is finalized: a recording bound to Citrus is only complete once
+// Citrus's receipts are verified and stored (finalize_recording_observation_
+// bindings over the control socket), so wait for them before the next run or
+// the exit. recording_only runs and runs whose pre-arm did not bind Citrus
+// return at once.
+bool wait_for_headless_citrus_receipts(
+    orange::session::SessionControlHost& control_host,
+    const std::string& recording_folder,
+    int receipt_wait_seconds,
+    nlohmann::json* run_entry,
+    std::string* error_out)
+{
+    orange::control::LocalControlStatusSnapshot status;
+    status.process = "orange_client";
+    status.updated_at_utc = get_current_utc_timestamp();
+    status.recording_folder = recording_folder;
+    status.recording_finalized = true;
+    control_host.UpdateStatus(status);
+
+    std::string mode_error;
+    const std::string mode = orange::recording::BindingModeFromRecordingIntent(recording_folder, &mode_error);
+    nlohmann::json decision = nlohmann::json::object();
+    {
+        std::ifstream in(std::filesystem::path(recording_folder) / "recording_observation_pre_arm_decision.json");
+        if (in) decision = nlohmann::json::parse(in, nullptr, false);
+    }
+    const std::string lifecycle =
+        decision.is_object() ? decision.value("lifecycle_status", std::string()) : std::string();
+    nlohmann::json receipts = {{"binding_mode", mode}, {"pre_arm_lifecycle_status", lifecycle}};
+    if (mode != "required" || lifecycle != "accepted_pending_finalization") {
+        receipts["status"] = "not_expected";
+        if (run_entry) (*run_entry)["citrus_receipts"] = receipts;
+        return true;
+    }
+    std::cout << "[orange_client][local_control] waiting up to " << receipt_wait_seconds
+              << " s for Citrus's receipts folder=" << recording_folder << std::endl;
+    const auto started = std::chrono::steady_clock::now();
+    bool finalized = false;
+    while (!quit_server && !finalized &&
+           std::chrono::steady_clock::now() - started < std::chrono::seconds(receipt_wait_seconds)) {
+        finalized = control_host.WaitForReceipts(recording_folder, std::chrono::milliseconds(500));
+    }
+    receipts["waited_s"] = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    if (!finalized) {
+        receipts["status"] = "not_received";
+        if (run_entry) (*run_entry)["citrus_receipts"] = receipts;
+        if (error_out) {
+            *error_out = "Citrus receipts not received within " + std::to_string(receipt_wait_seconds) +
+                         " s (finalize_recording_observation_bindings)";
+        }
+        control_host.LogEvent({{"event", "citrus_receipts_not_received"}, {"recording_folder", recording_folder}});
+        return false;
+    }
+    // The run's final manifest may have been written after the receipts were
+    // stored: bring recording_session.json up to date once more.
+    std::string refresh_error;
+    if (!orange::session::refresh_recording_session_observation_bindings(recording_folder, &refresh_error)) {
+        receipts["status"] = "manifest_refresh_failed";
+        if (run_entry) (*run_entry)["citrus_receipts"] = receipts;
+        if (error_out) *error_out = "Citrus receipts stored, but recording_session.json refresh failed: " + refresh_error;
+        return false;
+    }
+    receipts["status"] = "finalized";
+    if (run_entry) (*run_entry)["citrus_receipts"] = receipts;
+    control_host.LogEvent({{"event", "citrus_receipts_finalized"}, {"recording_folder", recording_folder}});
+    std::cout << "[orange_client][local_control] Citrus's receipts finalized folder=" << recording_folder << std::endl;
+    return true;
+}
+
 int run_local_experiment(const HeadlessCliOptions& options)
 {
     ExperimentSpec spec;
@@ -12120,6 +12385,32 @@ int run_local_experiment(const HeadlessCliOptions& options)
               << " output_root=" << experiment_root.string()
               << std::endl;
 
+    // fixed.local_control: one control endpoint for the whole process (the
+    // GUI's socket path), listening before any recording starts.
+    std::unique_ptr<orange::session::SessionControlHost> control_host;
+    if (spec.local_control.enabled) {
+        orange::session::SessionControlHostOptions control_options;
+        control_options.process = "orange_client";
+        control_options.allow_citrus_completion = spec.local_control.stop_on_citrus_completion;
+        control_options.allow_stop_recording = spec.local_control.allow_stop_recording;
+        control_host = std::make_unique<orange::session::SessionControlHost>(control_options);
+        std::string control_error;
+        if (!control_host->Start(&control_error)) {
+            std::cerr << "[orange_client][local_control] refusing the experiment: the control socket "
+                      << control_host->options().socket_path << " did not start: " << control_error << std::endl;
+            return 1;
+        }
+        for (int i = 0; i < 100 && !control_host->listening(); ++i) usleep(20000);
+        if (!control_host->listening()) {
+            std::cerr << "[orange_client][local_control] refusing the experiment: the control socket "
+                      << control_host->options().socket_path << " is not listening" << std::endl;
+            return 1;
+        }
+        std::cout << "[orange_client][local_control] listening socket=" << control_host->options().socket_path
+                  << " stop_on_citrus_completion=" << (spec.local_control.stop_on_citrus_completion ? 1 : 0)
+                  << " receipt_wait_s=" << spec.local_control.receipt_wait_seconds << std::endl;
+    }
+
     int run_failures = 0;
     for (const ExperimentRunPlan& run : runs) {
         if (quit_server) {
@@ -12175,7 +12466,9 @@ int run_local_experiment(const HeadlessCliOptions& options)
                   << std::endl;
 
         const std::string started_at_utc = get_current_utc_timestamp();
-        const int rc = run_local_recording_session(run.options, false);
+        HeadlessCliOptions run_options = run.options;
+        run_options.control_host = control_host.get();
+        const int rc = run_local_recording_session(run_options, false);
         bool run_failed = (rc != 0);
         // Set once the run reached its results stage (snapshot read, camera
         // results built); the diagnostic pass/fail verdict does not clear it.
@@ -12342,6 +12635,24 @@ int run_local_experiment(const HeadlessCliOptions& options)
                     std::cerr << error << std::endl;
                     return 1;
                 }
+            }
+        }
+
+        if (control_host) {
+            std::string receipt_error;
+            if (!wait_for_headless_citrus_receipts(
+                    *control_host, run.recording_folder, spec.local_control.receipt_wait_seconds,
+                    &run_entry, &receipt_error)) {
+                run_failed = true;
+                run_entry["status"] = "failed";
+                run_entry["pass_fail"] = "fail";
+                run_entry["reason"] = receipt_error;
+            }
+            runs_json["runs"][runs_json["runs"].size() - 1] = run_entry;
+            summary_json = build_summary_json();
+            if (!write_experiment_manifests(spec, experiment_root, runs_json, summary_json, &error)) {
+                std::cerr << error << std::endl;
+                return 1;
             }
         }
 
