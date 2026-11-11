@@ -432,6 +432,11 @@ bool parse_existing_decision(
 }  // namespace
 
 
+const char* recording_observation_pre_arm_decision_relative_path(const std::string& binding_mode)
+{
+    return decision_relative_path_for(binding_mode);
+}
+
 nlohmann::json recording_observation_pre_arm_decision_reference(
     const RecordingObservationPreArmResult& result)
 {

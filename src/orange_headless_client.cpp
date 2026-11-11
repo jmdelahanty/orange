@@ -12158,7 +12158,8 @@ bool wait_for_headless_citrus_receipts(
     const std::string mode = orange::recording::BindingModeFromRecordingIntent(recording_folder, &mode_error);
     nlohmann::json decision = nlohmann::json::object();
     {
-        std::ifstream in(std::filesystem::path(recording_folder) / "recording_observation_pre_arm_decision.json");
+        std::ifstream in(std::filesystem::path(recording_folder) /
+                         orange::session::recording_observation_pre_arm_decision_relative_path(mode));
         if (in) decision = nlohmann::json::parse(in, nullptr, false);
     }
     const std::string lifecycle =

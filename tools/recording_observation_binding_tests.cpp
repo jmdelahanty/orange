@@ -2126,10 +2126,23 @@ void test_request_version_default_is_v2()
             "anything else is refused");
 }
 
+void test_pre_arm_decision_paths()
+{
+    // orange_client finds the decision through this (2026-11-10: it looked at
+    // the root and missed a bound run's decision under the bindings folder).
+    require(std::string(orange::session::recording_observation_pre_arm_decision_relative_path("required")) ==
+                "recording_observation_bindings/pre_arm_decision.json",
+            "bound decision under recording_observation_bindings/");
+    require(std::string(orange::session::recording_observation_pre_arm_decision_relative_path("not_applicable")) ==
+                "recording_observation_pre_arm_decision.json",
+            "Orange-only decision at the root");
+}
+
 int main()
 {
     try {
         test_request_version_default_is_v2();
+        test_pre_arm_decision_paths();
         // The fixtures below are v1 requests (no recording context): pin v1
         // for them, as the fixture tools do with --request-version 1.
         setenv("ORANGE_CITRUS_BINDING_REQUEST_VERSION", "1", 1);

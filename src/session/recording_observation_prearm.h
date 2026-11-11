@@ -90,4 +90,9 @@ bool prepare_recording_observation_pre_arm(
 nlohmann::json recording_observation_pre_arm_decision_reference(
     const RecordingObservationPreArmResult& result);
 
+// Where the pre-arm decision of a recording with this binding mode lives,
+// relative to the recording folder: recording_observation_bindings/
+// pre_arm_decision.json when Citrus is bound, the recording root otherwise.
+const char* recording_observation_pre_arm_decision_relative_path(const std::string& binding_mode);
+
 }  // namespace orange::session
