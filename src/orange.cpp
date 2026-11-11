@@ -1158,6 +1158,7 @@ orange::control::LocalControlStatusSnapshot gui_build_local_control_status(
         }
     }
     snapshot.recording_finalized = recording_run.finalized;
+    snapshot.recording_manifest = recording_run.recording_manifest;
     snapshot.recording_sink_mode = recording_session.recording_sink_mode;
     snapshot.expected_camera_serials = gui_split_expected_camera_serials();
     snapshot.open_camera_serials =

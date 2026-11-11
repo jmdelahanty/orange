@@ -304,6 +304,11 @@ struct HeadlessCliOptions {
     // Owned by run_local_experiment for the whole process when
     // local_control.enabled; null otherwise.
     orange::session::SessionControlHost* control_host = nullptr;
+    // Set by run_local_experiment when finalize_supervised_external_recorder_run
+    // writes this run's final recording_session.json: the in-loop manifest then
+    // says "finalizing", never "completed" (Citrus read an in-loop "completed"
+    // as final on 2026-11-11).
+    bool supervised_finalize_writes_final_manifest = false;
     HeadlessExternalRecorderContractConfig external_recorder_contract;
     bool has_recording_override = false;
     nlohmann::json recording_override = nlohmann::json::object();
@@ -10994,7 +10999,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             manifest_options.recording_folder = active_record_folder;
             manifest_options.status =
                 (recording_started && recording_drain_completed && all_clips_drained)
-                    ? "completed"
+                    ? (options.supervised_finalize_writes_final_manifest ? "finalizing" : "completed")
                     : "incomplete";
             manifest_options.requested_stream_duration_seconds = options.duration_seconds;
             manifest_options.stream_start_delay_seconds = options.stream_start_delay_seconds;
@@ -11051,7 +11056,9 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             manifest_options.updated_at_utc = session_finished_at_utc;
             manifest_options.recording_folder = active_record_folder;
             manifest_options.status =
-                (recording_started && recording_drain_completed) ? "completed" : "incomplete";
+                (recording_started && recording_drain_completed)
+                    ? (options.supervised_finalize_writes_final_manifest ? "finalizing" : "completed")
+                    : "incomplete";
             manifest_options.requested_stream_duration_seconds = options.duration_seconds;
             manifest_options.stream_start_delay_seconds = options.stream_start_delay_seconds;
             manifest_options.stream_started_at_utc = session_started_at_utc;
@@ -12143,6 +12150,25 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
     return true;
 }
 
+// A run whose final manifest belongs to finalize_supervised_external_recorder_run
+// but that never got one (the session failed, the finalize was not eligible or
+// stopped before its candidate manifest) still says "finalizing": end it as
+// "failed", so the folder never stays non-terminal.
+void fail_unfinalized_recording_session_manifest(const std::string& recording_folder)
+{
+    const std::filesystem::path path =
+        std::filesystem::path(recording_folder) / "recording_session.json";
+    nlohmann::json manifest = read_json_file_best_effort(path);
+    if (!manifest.is_object() || manifest.value("status", "") != "finalizing") return;
+    manifest["status"] = "failed";
+    std::string error;
+    if (!orange::session::write_recording_session_manifest(path.string(), manifest, &error)) {
+        std::cerr << "[headless] could not mark " << path << " failed: " << error << std::endl;
+        return;
+    }
+    std::cout << "[headless] " << path << " was left finalizing; marked failed" << std::endl;
+}
+
 // After a run is finalized: a recording bound to Citrus is only complete once
 // Citrus's receipts are verified and stored (finalize_recording_observation_
 // bindings over the control socket), so wait for them before the next run or
@@ -12160,6 +12186,15 @@ bool wait_for_headless_citrus_receipts(
     status.updated_at_utc = get_current_utc_timestamp();
     status.recording_folder = recording_folder;
     status.recording_finalized = true;
+    // The final recording_session.json is written (in-loop, or by the
+    // supervised finalize): Citrus reads it once this names its folder.
+    std::string publication_error;
+    status.recording_manifest =
+        orange::session::recording_manifest_publication(recording_folder, &publication_error);
+    if (status.recording_manifest.is_null()) {
+        std::cerr << "[orange_client][local_control] recording_manifest not published: "
+                  << publication_error << std::endl;
+    }
     control_host.UpdateStatus(status);
 
     std::string mode_error;
@@ -12503,6 +12538,12 @@ int run_local_experiment(const HeadlessCliOptions& options)
         const std::string started_at_utc = get_current_utc_timestamp();
         HeadlessCliOptions run_options = run.options;
         run_options.control_host = control_host.get();
+        // The condition under which finalize_supervised_external_recorder_run
+        // runs below (when the run reaches its results stage).
+        run_options.supervised_finalize_writes_final_manifest =
+            run.options.media_products.FullFrame() &&
+            run.options.external_recorder_contract.enabled() &&
+            run.options.external_recorder_contract.supervise_processes;
         const int rc = run_local_recording_session(run_options, false);
         bool run_failed = (rc != 0);
         // Set once the run reached its results stage (snapshot read, camera
@@ -12671,6 +12712,10 @@ int run_local_experiment(const HeadlessCliOptions& options)
                     return 1;
                 }
             }
+        }
+
+        if (run_options.supervised_finalize_writes_final_manifest) {
+            fail_unfinalized_recording_session_manifest(run.recording_folder);
         }
 
         if (control_host) {

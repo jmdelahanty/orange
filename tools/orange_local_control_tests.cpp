@@ -343,6 +343,31 @@ void test_status_reports_completed_recording_after_streaming_stop_path()
             "completed recording folder should remain visible for orchestrator validation");
 }
 
+void test_status_recording_manifest_is_null_until_published()
+{
+    LocalControlStatusSnapshot status = healthy_status();
+    status.recording_active = false;
+    status.recording_folder = "/tmp/orange_control_test_finalized";
+    // Inferred readiness.recording_finalized turns true here; the manifest
+    // block must not follow it.
+    nlohmann::json json = orange::control::LocalControlStatusSnapshotToJson(status);
+    require(json["readiness"]["recording_finalized"].get<bool>(),
+            "precondition: recording_finalized is inferred true");
+    require(json["local_control"].contains("recording_manifest") &&
+                json["local_control"]["recording_manifest"].is_null(),
+            "recording_manifest must be present and null until the owner publishes it");
+
+    status.recording_manifest = {
+        {"folder", status.recording_folder},
+        {"status", "completed"},
+        {"written_at_utc", "2026-11-11T20:00:00Z"},
+        {"acquisition_index_mapping_sha256", std::string(64, 'a')},
+    };
+    json = orange::control::LocalControlStatusSnapshotToJson(status);
+    require(json["local_control"]["recording_manifest"] == status.recording_manifest,
+            "a published recording_manifest must be reported verbatim");
+}
+
 void test_status_reports_separate_stop_and_citrus_completion_gates()
 {
     LocalControlStatusSnapshot status = healthy_status();
@@ -1834,6 +1859,8 @@ int main()
          test_citrus_readiness_requires_external_recorders_when_enabled},
         {"status_reports_completed_recording_after_streaming_stop_path",
          test_status_reports_completed_recording_after_streaming_stop_path},
+        {"status_recording_manifest_is_null_until_published",
+         test_status_recording_manifest_is_null_until_published},
         {"status_reports_separate_stop_and_citrus_completion_gates",
          test_status_reports_separate_stop_and_citrus_completion_gates},
         {"status_reports_local_control_drain_timeout_telemetry",

@@ -350,6 +350,24 @@ Orange readiness means more than process started. Status reports:
   `stop_triggered_at_utc`, and `drain_completed_at_utc`.
 - `local_control.citrus_completion_stop`: same scheduler/drain status, but
   with the `enabled` gate for Citrus `citrus_completion`
+- `local_control.recording_manifest` (2026-11-11): the trigger for reading
+  `recording_session.json`. `null` until this process has written the final
+  `recording_session.json` of its current recording, and back to `null` when
+  a new recording starts; then
+  `{folder, status, written_at_utc, acquisition_index_mapping_sha256}`.
+  `folder` is the binding request's `recording.recording_folder`, byte for
+  byte (`outputs::resolved_path`); `status` is the manifest's own
+  (`completed`, `failed` or `incomplete`); the digest is the manifest's
+  `acquisition_index_mapping_sha256`, `null` when the mapping is unsealed.
+  The block is set explicitly by the owner after the final write (GUI: F3 of
+  the finalizer; `orange_client`: before it waits for Citrus's receipts),
+  never inferred like `readiness.recording_finalized`. Earlier writes of
+  `recording_session.json` are not final: `orange_client` writes its in-loop
+  manifest as `finalizing` when its supervised finalize writes the final one,
+  and a run that never reaches that finalize ends `failed`. Citrus waits for
+  this block to name its bound folder, reads the manifest once, requires the
+  mapping digest to match when `status` is `completed`, and fails closed
+  otherwise. An Orange without the key is too old for that Citrus.
 
 Status gate fields are JSON booleans, not string flags. Orchestrators should
 not treat `"true"`/`"false"` strings as readiness, timeout, active/armed, or

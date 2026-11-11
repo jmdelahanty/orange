@@ -702,6 +702,47 @@ void test_manifest_references_recording_geometry_contract()
     std::filesystem::remove_all(folder);
 }
 
+void test_recording_manifest_publication_reports_written_manifest()
+{
+    const std::filesystem::path folder =
+        std::filesystem::temp_directory_path() /
+        ("orange_session_manifest_publication_" +
+         std::to_string(static_cast<long long>(::getpid())));
+    std::filesystem::remove_all(folder);
+    std::filesystem::create_directories(folder);
+    const auto write_manifest = [&](const nlohmann::json& manifest) {
+        std::ofstream output(folder / "recording_session.json");
+        output << manifest.dump(2) << '\n';
+    };
+
+    std::string error;
+    require(orange::session::recording_manifest_publication(folder.string(), &error).is_null() &&
+                !error.empty(),
+            "no manifest: nothing to publish, with a reason");
+
+    const std::string digest(64, 'b');
+    write_manifest({{"status", "completed"}, {"acquisition_index_mapping_sha256", digest}});
+    // A trailing slash and a "." still name the folder the binding request names.
+    nlohmann::json published = orange::session::recording_manifest_publication(
+        (folder / "." / "").string(), &error);
+    require(published.is_object() &&
+                published.value("folder", std::string()) ==
+                    std::filesystem::weakly_canonical(folder).string() &&
+                published.value("status", std::string()) == "completed" &&
+                published.value("acquisition_index_mapping_sha256", std::string()) == digest &&
+                !published.value("written_at_utc", std::string()).empty() &&
+                published.size() == 4,
+            "a sealed completed manifest publishes its status and digest: " + published.dump());
+
+    write_manifest({{"status", "failed"}, {"acquisition_index_mapping", {{"status", "unsealed"}}}});
+    published = orange::session::recording_manifest_publication(folder.string(), &error);
+    require(published.value("status", std::string()) == "failed" &&
+                published.contains("acquisition_index_mapping_sha256") &&
+                published["acquisition_index_mapping_sha256"].is_null(),
+            "an unsealed manifest publishes a null digest: " + published.dump());
+    std::filesystem::remove_all(folder);
+}
+
 void test_manifest_freezes_inferred_ptp_tai_clock_contract()
 {
     const std::filesystem::path folder =
@@ -1926,6 +1967,7 @@ int main()
     };
 
     const TestCase tests[] = {
+        {"recording_manifest_publication_reports_written_manifest", test_recording_manifest_publication_reports_written_manifest},
         {"required_registered_context_prevents_parent_completion", test_required_registered_context_prevents_parent_completion},
         {"recording_contexts_flow_through_parent_writers_and_refresh", test_recording_contexts_flow_through_parent_writers_and_refresh},
         {"native_rolling_projection_opt_in_seals_existing_v1_authority", test_native_rolling_projection_opt_in_seals_existing_v1_authority},

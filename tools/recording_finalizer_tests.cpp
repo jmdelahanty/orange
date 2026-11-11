@@ -783,6 +783,8 @@ void test_phased_finalize_failure_leaves_retryable_state()
     // the loud error is installed for the GUI status line.
     require(fixture.run.active && fixture.run.finalizing && !fixture.run.finalized,
             "a failed finalize must leave the run latched finalizing");
+    require(fixture.run.recording_manifest.is_null(),
+            "a failed finalize must not publish local_control.recording_manifest");
     require(fixture.camera_control.recording_folder == session.string(),
             "a failed finalize must leave the folder claimed");
     require(fixture.camera_control.preserve_recording_session_state,
@@ -818,6 +820,16 @@ void test_phased_finalize_failure_leaves_retryable_state()
     }
     require(manifest.value("status", std::string()) == "completed",
             "real-mode manifest should complete");
+    const nlohmann::json& published = fixture.run.recording_manifest;
+    require(published.is_object() &&
+                published.value("folder", std::string()) ==
+                    std::filesystem::weakly_canonical(session).string() &&
+                published.value("status", std::string()) == "completed" &&
+                !published.value("written_at_utc", std::string()).empty() &&
+                published.contains("acquisition_index_mapping_sha256") &&
+                published["acquisition_index_mapping_sha256"] ==
+                    manifest.value("acquisition_index_mapping_sha256", nlohmann::json(nullptr)),
+            "F3 must publish the final manifest's status and mapping digest: " + published.dump());
 
     // Terminal state flips exactly once: a further poll must be a no-op.
     require(!gui_finalize_recording_session_if_ready(

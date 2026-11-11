@@ -332,6 +332,14 @@ bool write_recording_session_manifest(const std::string& path,
                                       const nlohmann::json& manifest,
                                       std::string* error_out = nullptr,
                                       nlohmann::json* written_manifest = nullptr);
+// The local-control status block local_control.recording_manifest for a
+// folder whose final recording_session.json has just been written:
+// {folder (resolved as in the binding request), status (the manifest's), written_at_utc (now),
+// acquisition_index_mapping_sha256 (string, or null when the manifest has
+// none)}. Citrus reads the manifest once this names its bound folder. Null,
+// with the reason in error_out, when the manifest cannot be read.
+nlohmann::json recording_manifest_publication(const std::string& recording_folder,
+                                              std::string* error_out = nullptr);
 bool write_rolling_clip_index_artifacts(const std::string& recording_folder,
                                         const nlohmann::json& manifest,
                                         RecordingSessionIndexArtifacts* artifacts_out = nullptr,

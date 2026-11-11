@@ -45,6 +45,7 @@ void gui_note_recording_started(GuiRecordingRunState* run,
     run->active = true;
     run->finalizing = false;
     run->finalized = false;
+    run->recording_manifest = nullptr;
     run->recording_folder = recording_folder;
     run->recording_sink_mode = recording_sink_mode.empty() ? "real" : recording_sink_mode;
     run->recording_started_at = std::chrono::steady_clock::now();

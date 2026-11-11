@@ -3,6 +3,7 @@
 #include "outputs/common/csv.h"
 #include "outputs/common/digest.h"
 #include "outputs/common/atomic_file.h"
+#include "outputs/common/safe_path.h"
 #include "timing/diagnostics_index.h"
 #include "timing/log_writer.h"
 #include "session/realtime_products.h"
@@ -2869,6 +2870,29 @@ bool write_recording_session_manifest(const std::string& path,
     orange::timing::MarkPhase("manifest.write");
     if (written_manifest) *written_manifest = std::move(finalized_manifest);
     return true;
+}
+
+nlohmann::json recording_manifest_publication(const std::string& recording_folder,
+                                              std::string* error_out)
+{
+    const std::filesystem::path path =
+        std::filesystem::path(recording_folder) / "recording_session.json";
+    std::ifstream in(path);
+    const nlohmann::json manifest =
+        in ? nlohmann::json::parse(in, nullptr, false) : nlohmann::json();
+    if (!manifest.is_object() || !manifest.contains("status") || !manifest["status"].is_string()) {
+        if (error_out) *error_out = "cannot read the status of " + path.string();
+        return nullptr;
+    }
+    const auto digest = manifest.find("acquisition_index_mapping_sha256");
+    return {
+        // The binding request's recording.recording_folder form, byte for byte.
+        {"folder", orange::outputs::resolved_path(recording_folder).string()},
+        {"status", manifest["status"]},
+        {"written_at_utc", get_current_utc_timestamp()},
+        {"acquisition_index_mapping_sha256",
+         digest != manifest.end() && digest->is_string() ? *digest : nlohmann::json(nullptr)},
+    };
 }
 
 bool write_rolling_clip_index_artifacts(const std::string& recording_folder,

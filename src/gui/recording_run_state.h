@@ -14,6 +14,9 @@ struct GuiRecordingRunState {
     bool active = false;
     bool finalizing = false;
     bool finalized = false;
+    // local_control.recording_manifest of this run: null until F3 has the
+    // final recording_session.json (session::recording_manifest_publication).
+    nlohmann::json recording_manifest = nullptr;
     std::string recording_folder;
     std::string recording_sink_mode = "real";
     std::string recording_started_at_utc;

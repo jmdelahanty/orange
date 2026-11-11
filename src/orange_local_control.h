@@ -91,6 +91,11 @@ struct LocalControlStatusSnapshot {
     RecorderReadinessSnapshot crop_recorder;
     LocalControlRecordingStartSnapshot local_control_recording_start;
     LocalControlRecordingStopSnapshot local_control_recording_stop;
+    // local_control.recording_manifest: null until the final
+    // recording_session.json of the current recording is written, then
+    // session::recording_manifest_publication(folder). Set explicitly by the
+    // owner after that write; never inferred from the flags above.
+    nlohmann::json recording_manifest = nullptr;
 };
 
 struct LocalControlServerOptions {

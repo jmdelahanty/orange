@@ -2802,6 +2802,15 @@ bool gui_complete_recording_finalize(
     if (!outcome.shadow_cross_check_summary.empty()) {
         run->shadow_cross_check_summary = outcome.shadow_cross_check_summary;
     }
+    // The final manifest is on disk: publish it for Citrus, which reads the
+    // file only once local_control.recording_manifest names its folder.
+    std::string publication_error;
+    run->recording_manifest =
+        orange::session::recording_manifest_publication(run->recording_folder, &publication_error);
+    if (run->recording_manifest.is_null()) {
+        std::cerr << "[GUI][recording] local_control.recording_manifest not published: "
+                  << publication_error << std::endl;
+    }
     run->active = false;
     run->finalizing = false;
     run->finalized = true;

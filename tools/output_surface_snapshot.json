@@ -4738,6 +4738,7 @@
    "recording_finalized",
    "recording_finalizing",
    "recording_lifecycle_mutated",
+   "recording_manifest",
    "recording_start",
    "recording_start_requested",
    "recording_start_warmup_complete",
@@ -6503,6 +6504,7 @@
    "request_id",
    "schema_id",
    "schema_version",
+   "sent_at_utc",
    "sha256",
    "source",
    "transport_attempted"
@@ -6655,6 +6657,7 @@
    "finalized_at_utc",
    "finished_at_utc",
    "first_recording_frame_id",
+   "folder",
    "frame_count",
    "frame_identity_contract",
    "frame_identity_contract_ref",
@@ -6843,7 +6846,8 @@
    "verification_status",
    "video",
    "video_sanity_json",
-   "videos"
+   "videos",
+   "written_at_utc"
   ],
   "schemas": [
    [

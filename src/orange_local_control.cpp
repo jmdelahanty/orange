@@ -700,6 +700,7 @@ nlohmann::json LocalControlStatusSnapshotToJson(
               recording_stop_to_json(
                   snapshot.local_control_recording_stop,
                   snapshot.local_control_recording_stop.citrus_completion_enabled)},
+             {"recording_manifest", snapshot.recording_manifest},
          }},
     };
 }
